@@ -1604,9 +1604,12 @@ class PluginsFakeGcp(VerifyFakeGcp):
         return self.found.get(url)
 
 
-def _plugins_ctx() -> Any:
+def _plugins_ctx(*, released: bool = True) -> Any:
     ctx = _ctx()
     ctx.state.region = REGION
+    if released:
+        ctx.outputs["image_digests"] = {**(ctx.outputs.get("image_digests") or {}),
+                                        "swarm-plugin-intake": "sha256:" + "2" * 64}
     return ctx
 
 
@@ -1619,12 +1622,33 @@ def test_plugins_check_met_when_the_bucket_the_job_and_a_tenant_read_exist() -> 
 @pytest.mark.parametrize(("fake", "said"), [
     (lambda: PluginsFakeGcp(bucket=False), f"gs://{PLUGINS_BUCKET} does not exist"),
     (lambda: PluginsFakeGcp(job=False), "swarm-plugin-intake is not deployed"),
-    (lambda: PluginsFakeGcp(bindings=[]), "no tenant worker account may read platform/"),
 ])
 def test_plugins_check_unmet_names_what_is_missing(fake: Any, said: str) -> None:
     observed = verify.PluginsStep(fake, Answers()).check(_plugins_ctx())
     assert observed.status == UNMET
     assert said in observed.detail
+
+
+# Installs declare no Terraform tenants and the intake image ships in a later
+# lane, so a fresh install's stage 14 names those two gaps as pending instead
+# of keeping the install from READY; `swarm doctor` still reports them unmet.
+@pytest.mark.parametrize(("fake", "released", "said"), [
+    (lambda: PluginsFakeGcp(job=False), False, "the release carries no swarm-plugin-intake image"),
+    (lambda: PluginsFakeGcp(bindings=[]), True, "no tenant worker account may read platform/ yet"),
+    (lambda: PluginsFakeGcp(job=False, bindings=[]), False, "pending: the release carries no"),
+])
+def test_plugins_check_names_what_later_lanes_make_as_pending(fake: Any, released: bool, said: str) -> None:
+    observed = verify.PluginsStep(fake, Answers()).check(_plugins_ctx(released=released))
+    assert observed.status == MET, observed.detail
+    assert said in observed.detail
+    assert f"gs://{PLUGINS_BUCKET} exists" in observed.detail
+
+
+def test_plugins_check_unmet_on_a_missing_bucket_even_before_the_intake_image() -> None:
+    observed = verify.PluginsStep(lambda: PluginsFakeGcp(bucket=False), Answers()).check(
+        _plugins_ctx(released=False))
+    assert observed.status == UNMET
+    assert f"gs://{PLUGINS_BUCKET} does not exist" in observed.detail
 
 
 def test_plugins_check_runs_in_stage_14_before_the_runs() -> None:

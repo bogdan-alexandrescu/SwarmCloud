@@ -7,7 +7,7 @@
 | `verify.digests` | `other.verify-digests` | every service serves 100 % on its latest ready revision, and that revision's **digest** is the release's | 28: labels lie; a pinned revision served 0 % |
 | `verify.reconciler-jobs` | (lesson 30) | the reconciler may list Jobs in every tenant namespace, namespaced, by email and by uniqueId | 30: it listed Jobs at cluster scope and saw nothing |
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
-| `verify.plugins` | (managed-plugins.md §15) | the managed plugins' bucket exists, the `swarm-plugin-intake` job is deployed, and a tenant worker account may read `platform/` (`swarm doctor`'s same check) | |
+| `verify.plugins` | (managed-plugins.md §15) | the managed plugins' bucket exists, the `swarm-plugin-intake` job is deployed once the release carries its image, and a tenant worker account may read `platform/`; the job before its image and the read before register-tenant.sh grants it are named as pending (`swarm doctor`'s same check, strict there) | |
 | `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row`, `other.verify-gke`, `other.verify-live-browser`, `other.verify-code-intelligence` | seven runs on the NEW deployment: a single task and a workflow from the plugin and from the console, each to a pull request, and three check runs (a task on GKE, a live-browser task, a code-intelligence read) | 18: the plugin signs in with the Desktop client; 43: no run's task cloned or pushed with a personal access token; the console's used an App installation token (below) |
 
 **The new deployment, never the person's current context.** The step uses
@@ -93,7 +93,7 @@ from ..record import PERSONAL, RECORD_SCHEMA_VERSION, VERIFY_RUNS, console_docum
 from ..state import SCHEMA_VERSION
 from ..doctor import NotFound, Target
 from ..exitcodes import UNKNOWN
-from ..verbs.doctor import plugins_finding
+from ..verbs.doctor import PLUGIN_INTAKE_JOB, plugins_finding
 from ..swarm_context import (Run, deployment_url, list_contexts, points_at, run_command, run_interactive, swarm_cli,
                              verify_env)
 from ..waits import FAILED, WaitSpec, cloud_page
@@ -641,7 +641,10 @@ class PluginsStep(_Base):
         target = Target(project=ctx.project, environment=str(getattr(ctx.state, "environment", "") or ""),
                         region=str(ctx.state.region or ctx.outputs.get("region") or ""),
                         outputs=dict(ctx.outputs))
-        finding = plugins_finding(target, _AsDoctorGcp(self.gcp))
+        # Strict on what plugins.tf makes; the job once the release carries its
+        # image, a workspace's read once register-tenant.sh grants it (pending).
+        released = PLUGIN_INTAKE_JOB in (ctx.outputs.get("image_digests") or {})
+        finding = plugins_finding(target, _AsDoctorGcp(self.gcp), intake_released=released, reader_required=False)
         if finding.status == MET:
             return Observation(MET, finding.detail)
         cause = f"{finding.detail} ({finding.status})" if finding.status == UNKNOWN else finding.detail

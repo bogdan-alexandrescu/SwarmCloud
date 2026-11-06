@@ -184,9 +184,17 @@ def _found(gcp: doctor.Gcp, url: str, permission: str, resource: str) -> Mapping
         return None
 
 
-def plugins_finding(target: doctor.Target, gcp: doctor.Gcp) -> doctor.Finding:
+def plugins_finding(target: doctor.Target, gcp: doctor.Gcp, *, intake_released: bool = True,
+                    reader_required: bool = True) -> doctor.Finding:
     """The plugins bucket exists, the intake job is deployed in the region, and
-    at least one tenant worker account may read `platform/`. Never writes."""
+    at least one tenant worker account may read `platform/`. Never writes.
+
+    `swarm doctor` asks for all three. Stage 14 passes `intake_released` False
+    while the release carries no swarm-plugin-intake image (the job is planned
+    only once it does) and `reader_required` False because installs declare no
+    Terraform tenants and scripts/register-tenant.sh does not yet grant a
+    workspace's read: either gap is then named in the detail as pending, not a
+    failure that keeps the install from READY."""
     bucket = plugins_bucket(target.project, target.outputs)
     gcs = f"//storage.googleapis.com/projects/_/buckets/{bucket}"
     job = f"projects/{target.project}/locations/{target.region}/jobs/{PLUGIN_INTAKE_JOB}"
@@ -197,8 +205,14 @@ def plugins_finding(target: doctor.Target, gcp: doctor.Gcp) -> doctor.Finding:
         if not target.region:
             return doctor.Finding(PLUGINS_CHECK, UNKNOWN, "the install state records no region to look for "
                                   f"the {PLUGIN_INTAKE_JOB} job in", fix=PLUGINS_FIX)
+        pending: list[str] = []
         if _found(gcp, f"https://run.googleapis.com/v2/{job}", "run.jobs.get",
-                  f"//run.googleapis.com/{job}") is None:
+                  f"//run.googleapis.com/{job}") is not None:
+            deployed = f"{PLUGIN_INTAKE_JOB} is deployed"
+        elif not intake_released:
+            deployed = f"{PLUGIN_INTAKE_JOB} is not deployed"
+            pending.append(f"the release carries no {PLUGIN_INTAKE_JOB} image, so its job is not made yet")
+        else:
             return doctor.Finding(PLUGINS_CHECK, UNMET, f"the plugin intake job {PLUGIN_INTAKE_JOB} is not deployed "
                                   f"in {target.region} (it is made once the release carries its image)",
                                   fix=PLUGINS_FIX)
@@ -207,10 +221,17 @@ def plugins_finding(target: doctor.Target, gcp: doctor.Gcp) -> doctor.Finding:
     except Exception as exc:  # noqa: BLE001 - a read that cannot run is unknown, never fine
         return doctor.Finding(PLUGINS_CHECK, UNKNOWN, f"{type(exc).__name__}: {exc}", fix=PLUGINS_FIX)
     reader = platform_reader(policy, bucket)
-    if not reader:
+    if not reader and reader_required:
         return doctor.Finding(PLUGINS_CHECK, UNMET, f"no tenant worker account may read platform/ in gs://{bucket}",
                               fix=PLUGINS_FIX)
-    return doctor.Finding(PLUGINS_CHECK, MET, f"gs://{bucket} exists, {PLUGIN_INTAKE_JOB} is deployed, "
+    if not reader:
+        pending.append("no tenant worker account may read platform/ yet")
+        return doctor.Finding(PLUGINS_CHECK, MET, f"gs://{bucket} exists, {deployed}; pending: "
+                              + "; ".join(pending))
+    if pending:
+        return doctor.Finding(PLUGINS_CHECK, MET, f"gs://{bucket} exists, {deployed} and {reader} may read "
+                              "platform/; pending: " + "; ".join(pending))
+    return doctor.Finding(PLUGINS_CHECK, MET, f"gs://{bucket} exists, {deployed}, "
                           f"and {reader} may read platform/")
 
 
