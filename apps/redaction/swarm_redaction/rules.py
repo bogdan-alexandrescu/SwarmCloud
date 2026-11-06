@@ -786,12 +786,15 @@ _CONTAINER = (
 #: `%(name)s` -- then at most a closing quote, then where a value ends. A
 #: default (`${TOKEN:-<v>}`), a second name, or any character glued to it
 #: (`{TOKEN}<v>`, `<v>{TOKEN}`, `{TOKEN}:<v>`) is not a placeholder, and the
-#: value is masked as before. `$NAME` takes its name possessively: a shell
-#: reads `$TOKENabc` as one longer name, and so does this.
+#: value is masked as before. A `,`, `;`, `)`, `]` or `}` ends the value only
+#: when no value character follows it (`{TOKEN};<v>` is masked). A literal
+#: spelled like a name (`{abc123}`, `$abc123`) is kept: it names a variable.
+#: `$NAME` takes its name possessively: a shell reads `$TOKENabc` as one
+#: longer name, and so does this.
 _PLACEHOLDER = (
     r"(?:\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|\$\{[A-Za-z_][A-Za-z0-9_]{0,63}\}"
     r"|\$[A-Za-z_][A-Za-z0-9_]{0,63}+|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])"
-    r"(?:\\{0,15}[\"'`])?(?=[\s,;)\]}]|$)"
+    r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}](?![^\s,;)\]}\"'`]))"
 )
 _AUTH_SCHEME = r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)"
 #: Under the `authorization` key: an optional string prefix (`f`, `rb`) and
