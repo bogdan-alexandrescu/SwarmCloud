@@ -152,8 +152,8 @@ export function ownerQuestionsHold(
  */
 export function ciWaitStuckLine(task: Pick<Task, 'state' | 'park_reason' | 'blocked_by' | 'waiting'>): string | null {
   if (task.state !== 'PARKED' || task.park_reason !== 'HUMAN_REQUIRED') return null
-  const waiting = isRecord(task.waiting) ? task.waiting : {}
-  const detail = isRecord(waiting.detail) ? waiting.detail : {}
+  const waiting: Record<string, unknown> = isRecord(task.waiting) ? task.waiting : {}
+  const detail: Record<string, unknown> = isRecord(waiting.detail) ? waiting.detail : {}
   const parked =
     detail.park_phase === 'ci_wait_stuck' ||
     (task.blocked_by ?? []).some((e) => isRecord(e) && e.reason === 'HUMAN_REQUIRED' && e.park_phase === 'ci_wait_stuck')
