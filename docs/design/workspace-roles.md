@@ -849,7 +849,10 @@ The email must be a person. A service account is refused with
 `role_person_required` (new route only), using
 `gitidentity.py::is_service_account`. A listed service-account member
 (`AuthContext.member_scope`, contract request 30) already has its own narrower
-scope, and a role must not widen it.
+scope, and a role must not widen it. Its listing, not the workspace's default,
+decides its role: it resolves to `member` with `source: "listing"`, inside the
+routes its scope reaches and never `admin` (a `viewer` default refused the CI
+fixer's every submit on 2026-11-06).
 
 ### 4.7 Migration: everyone keeps what they have until an admin narrows it
 
