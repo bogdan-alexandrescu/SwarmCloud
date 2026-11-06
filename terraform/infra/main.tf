@@ -351,12 +351,19 @@ module "cloud_run_api" {
       # attempt's lease renewal, and a gap past the 120 s lease timeout gets
       # live attempts fenced. Two, not one, so one instance's replacement never
       # leaves none; the 30 s / 120 s timings stay as they are. Fixed cost: about
-      # $105 a month per environment at list price (1 vCPU, 1 GiB, CPU always
-      # allocated, ~$53 an instance). A floor, not demand: no QUEUED task adds
-      # to it (invariant 1). Every other service still scales to zero.
+      # $210 a month per environment at list price (2 vCPU x $0.000018 + 2 GiB
+      # x $0.000002 a second, CPU always allocated, 730 hours: ~$105 an
+      # instance; it was ~$53 at 1 vCPU / 1 GiB). A floor, not demand: no
+      # QUEUED task adds to it (invariant 1). Every other service still scales
+      # to zero.
       min_instances = 2
-      cpu           = "1"
-      memory        = "1Gi"
+      # 2 vCPU AND 2 GiB, NOT 1 AND 1 (BGD's pick, 2026-11-06, part of #2688).
+      # The load analysis that day found swarm-api at 5 of its 5 instances for
+      # 359 of the last 360 minutes, at 91% CPU and 94% memory. Request equals
+      # limit for memory, and Cloud Run renders cpu as its one limit
+      # (invariant 7). The ceiling is dev.tfvars' service_max_instances.
+      cpu    = "2"
+      memory = "2Gi"
       # 36 STARTUP-PROBE FAILURES, NOT THE MODULE'S 12 (owner decision (d),
       # 2026-10-21, #1816). The probe polls every 5 s, and with 12 failures a
       # start is killed at about 96 s; healthy but slow swarm-api starts were
@@ -366,12 +373,13 @@ module "cloud_run_api" {
       # service keeps 12.
       startup_failure_threshold = 36
       # STARTUP CPU BOOST ON (BGD's decision, 2026-10-23, #1816 option (a)).
-      # Most of a ~21 s start is Python startup on 1 vCPU, and starts that ran
-      # past the probe left callers with Cloud Run's 429 on 2026-10-21. The
-      # boost bursts past the 1 vCPU limit while an instance starts, so it is
-      # BGD's recorded exception to invariant 7 for this one service; about $1
-      # a month (35-80 starts a day, ~30 boosted vCPU-seconds each). Every
-      # other service keeps the module's false, and cpu_idle stays false here.
+      # Most of a ~21 s start is Python startup (measured on 1 vCPU), and starts
+      # that ran past the probe left callers with Cloud Run's 429 on
+      # 2026-10-21. The boost bursts past the cpu limit while an instance
+      # starts, so it is BGD's recorded exception to invariant 7 for this one
+      # service; about $1 a month at 1 vCPU (35-80 starts a day, ~30 boosted
+      # vCPU-seconds each), so about $2 at 2 vCPU. Every other service keeps
+      # the module's false, and cpu_idle stays false here.
       startup_cpu_boost = true
       # The ONLY control-plane service that calls another one. It proxies every
       # account-pool request to the quota broker, whose ingress is
@@ -380,7 +388,14 @@ module "cloud_run_api" {
       # VPC, arrives as external traffic and is refused with an HTML 404. The
       # worker jobs already run ALL_TRAFFIC, which is why they could reach the
       # broker and this could not.
-      vpc_egress  = "ALL_TRAFFIC"
+      vpc_egress = "ALL_TRAFFIC"
+      # 80, UNCHANGED AT 2 vCPU (2026-11-06). The image runs ONE uvicorn
+      # process an instance (images/swarm-api/Dockerfile), so its Python work
+      # holds one core under the GIL and the second serves the threadpool,
+      # gRPC and TLS; raising this with the CPU count would pack more requests
+      # onto the same event loop. The doubled memory is headroom for the 80 it
+      # already carries (94% at 1 GiB). More instances, not more per instance,
+      # is how the 2026-11-06 pick adds capacity.
       concurrency = 80
       # 660s, NOT THE MODULE'S 300s (#2576). git_push_branch, git_fetch and
       # git_rebase_onto run git against GitHub under
