@@ -381,7 +381,19 @@ FEATURE_TITLE_MAX_CHARS = 120
 #: fallback writes its own value, so the console can mark a generated one.
 DESCRIPTION_SOURCE_KEY = "description_source"
 DESCRIPTION_SOURCE_SUBMITTER = "submitter"
-ABOUT_METADATA_KEYS = ("description", "feature", DESCRIPTION_SOURCE_KEY)
+#: The description in three labelled parts (BGD, 2026-11-06), each optional:
+#: `purpose`, one sentence saying why the work exists; `goals`, up to three
+#: short items it must achieve; `output`, one sentence saying what lands (a
+#: pull request, mock-up frames, a report). The console draws them as three
+#: short lines, so each is capped well under the 600 of a free description.
+#: A spec's bare `description` is served as the purpose.
+ABOUT_KEY = "about"
+ABOUT_PURPOSE_MAX_CHARS = 300
+ABOUT_GOAL_MAX_CHARS = 120
+ABOUT_GOALS_MAX = 3
+ABOUT_OUTPUT_MAX_CHARS = 300
+ABOUT_PARTS = ("purpose", "goals", "output")
+ABOUT_METADATA_KEYS = ("description", "feature", DESCRIPTION_SOURCE_KEY, ABOUT_KEY)
 
 #: Markup a plain-text description may not hold: an HTML tag or comment, a
 #: Markdown link or image, a code fence, a heading, bold or emphasis by
@@ -437,6 +449,41 @@ def _description(value: Any) -> str:
     return text
 
 
+def _about_line(field: str, value: Any, cap: int) -> str:
+    """One part of `metadata.about`: one line of plain text, at most `cap`."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be non-empty text, or left out")
+    text = value.strip()
+    if len(text) > cap:
+        raise ValueError(f"{field} is {len(text)} characters and holds at most {cap}")
+    if "\n" in text or _CONTROL.search(text):
+        raise ValueError(f"{field} must be one line of plain text")
+    if _MARKUP.search(text):
+        raise ValueError(
+            f"{field} holds markup (HTML, a Markdown link, heading, code fence or bold): send plain text")
+    return text
+
+
+def check_about(value: Any) -> dict[str, Any]:
+    """`metadata.about` checked and tidied: `{purpose?, goals?, output?}`,
+    at least one part, each held to `_about_line`. Raises ValueError naming
+    the field (`metadata.about.goals[2]`)."""
+    if not isinstance(value, dict) or not value or not set(value) <= set(ABOUT_PARTS):
+        raise ValueError("metadata.about must be {purpose?, goals?, output?} with at least one of them")
+    about: dict[str, Any] = {}
+    if "purpose" in value:
+        about["purpose"] = _about_line("metadata.about.purpose", value["purpose"], ABOUT_PURPOSE_MAX_CHARS)
+    if "goals" in value:
+        goals = value["goals"]
+        if not isinstance(goals, list) or not goals or len(goals) > ABOUT_GOALS_MAX:
+            raise ValueError(f"metadata.about.goals must be a list of 1 to {ABOUT_GOALS_MAX} short items")
+        about["goals"] = [_about_line(f"metadata.about.goals[{n}]", goal, ABOUT_GOAL_MAX_CHARS)
+                          for n, goal in enumerate(goals)]
+    if "output" in value:
+        about["output"] = _about_line("metadata.about.output", value["output"], ABOUT_OUTPUT_MAX_CHARS)
+    return about
+
+
 def _feature(value: Any, repository_url: str | None) -> dict[str, str]:
     if not isinstance(value, dict) or not set(value) <= {"title", "url"} or "title" not in value:
         raise ValueError("metadata.feature must be {title, url?}: the feature the work belongs to")
@@ -472,8 +519,9 @@ def _feature(value: Any, repository_url: str | None) -> dict[str, str]:
 def check_workflow_about(
     metadata: dict[str, Any], repository_url: str | None, steps: list[Any],
 ) -> dict[str, Any]:
-    """`metadata` with its `description` and `feature` checked and tidied, and
-    `description_source: "submitter"` beside a description. Raises ValueError
+    """`metadata` with its `description`, `about` and `feature` checked and
+    tidied, and `description_source: "submitter"` beside a description or an
+    about (`check_about`, whose refusals name the part). Raises ValueError
     (a 422 naming the rule) for a description over 600 characters, empty, or
     holding markup; a feature title over 120 characters or empty; a feature
     URL that is not an https github.com issue or pull request of the
@@ -497,6 +545,9 @@ def check_workflow_about(
     checked = {k: v for k, v in metadata.items() if k != DESCRIPTION_SOURCE_KEY}
     if "description" in metadata:
         checked["description"] = _description(metadata["description"])
+        checked[DESCRIPTION_SOURCE_KEY] = DESCRIPTION_SOURCE_SUBMITTER
+    if ABOUT_KEY in metadata:
+        checked[ABOUT_KEY] = check_about(metadata[ABOUT_KEY])
         checked[DESCRIPTION_SOURCE_KEY] = DESCRIPTION_SOURCE_SUBMITTER
     if "feature" in metadata:
         checked["feature"] = _feature(metadata["feature"], repository_url)

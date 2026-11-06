@@ -66,7 +66,7 @@ allocation over a limit is `too_large`.
 
 Codes (`GitExecError.code`): `bad_remote`, `bad_ref`, `bad_bundle`,
 `too_large`, `non_fast_forward`, `remote_rejected`, `busy`, `timed_out`,
-`failed`.
+`remote_unavailable`, `failed`.
 """
 
 from __future__ import annotations
@@ -104,6 +104,13 @@ MAX_HAVES = 16
 #: Prerequisites a push bundle may name. `<remote tip>..HEAD` has one per
 #: merged-in line of history; each costs a depth-1 fetch.
 MAX_PREREQUISITES = 16
+#: Fetches of one push bundle's base before its failure means anything: the
+#: first, then one fresh one (AI Studio's report, 2026-11-06). Both run within
+#: the call's one deadline, so the second adds no time the call did not have.
+PREREQUISITE_FETCHES = 2
+#: A base the remote could not be asked about, after the fresh fetch too: a
+#: 5xx, a dropped connection. Retryable; never `bad_bundle`.
+REMOTE_UNAVAILABLE = "remote_unavailable"
 #: The most of a bundle's header read before its pack must have started.
 BUNDLE_HEADER_MAX_BYTES = 64 * 1024
 #: The most of git's stderr an error carries, after scrubbing.
@@ -142,6 +149,10 @@ _LIMIT_SHIM = (
     "os.execvp(sys.argv[3], sys.argv[3:])\n"
 )
 _OVER_LIMIT = re.compile(r"File too large|[Oo]ut of memory|Cannot allocate memory")
+#: git's answer when the remote does not have a sha asked for by name: GitHub
+#: and `git upload-pack` (protocol v2) say "not our ref", a v0 server that
+#: refuses unadvertised wants says so. Only this makes a base `bad_bundle`.
+_ABSENT = re.compile(r"not our ref|unadvertised object|couldn't find remote ref")
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 #: A ref name the agent may ask for: what `gitops.validate_ref` accepts, minus
@@ -595,13 +606,7 @@ class GitExec:
             repo = self._init(scratch)
             with self._credential(scratch, host, token) as cred:
                 old = self._remote_tip(scratch, repo, url, branch, token, cred)
-                for sha in header.prerequisites:
-                    run = self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
-                                                    "--no-write-fetch-head", "--depth=1", "--",
-                                                    url, sha], token=token, credential=cred)
-                    if run.code != 0:
-                        raise GitExecError("bad_bundle", f"the bundle is built on {sha}, which "
-                                                         "the remote does not have; fetch again")
+                self._fetch_prerequisites(scratch, repo, url, header.prerequisites, token, cred)
                 # The one step that reads what the agent built, so it carries
                 # no credential and its objects are checked. Not through
                 # `fetch.fsckObjects`: git 2.39 (bookworm's) does not apply it
@@ -630,6 +635,39 @@ class GitExec:
                                                 f"{new}:refs/heads/{branch}"],
                                 token=token, credential=cred)
             return self._pushed(run, branch, old, new)
+
+    def _fetch_prerequisites(self, scratch: Path, repo: Path, url: str,
+                             prerequisites: Sequence[str], token: str, cred: Path) -> None:
+        """Each of a push bundle's bases, fetched from the remote at depth 1.
+
+        A base whose fetch fails is fetched once more, with the same
+        credential and within the same call deadline, before anything is
+        concluded from it (AI Studio's report, 2026-11-06: two bases that were
+        on GitHub were refused `bad_bundle` while GitHub was failing). Only
+        git's own answer that the remote lacks the sha (`_ABSENT`) is
+        `bad_bundle`; any other failure of the second fetch is
+        `remote_unavailable`, which the caller may ask again. Both readers of
+        a bundle's prerequisites -- `push_bundle` and gittools'
+        `_workflow_paths` -- come through here, so they never disagree.
+        """
+        for sha in prerequisites:
+            for _ in range(PREREQUISITE_FETCHES):
+                run = self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
+                                                "--no-write-fetch-head", "--depth=1", "--",
+                                                url, sha], token=token, credential=cred)
+                if run.code == 0 or _OVER_LIMIT.search(run.stderr):
+                    break
+            if run.code == 0:
+                continue
+            if _ABSENT.search(run.stderr):
+                raise GitExecError("bad_bundle", f"the bundle is built on {sha}, which "
+                                                 "the remote does not have; fetch again")
+            if _OVER_LIMIT.search(run.stderr):
+                self._must(run, f"fetch of the bundle's base {sha}")     # too_large
+            raise GitExecError(REMOTE_UNAVAILABLE, (
+                f"the remote did not answer the fetch of the bundle's base {sha} twice "
+                f"(exit {run.code}: {run.stderr.strip()[-STDERR_TAIL_CHARS:]}); "
+                "nothing was pushed; ask again"))
 
     def _bounded_head(self, bundle: bytes | Path) -> bytes:
         """The bundle's first bytes, after its size is held to the cap."""

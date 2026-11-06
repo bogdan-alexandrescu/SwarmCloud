@@ -195,6 +195,7 @@ from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Any, Callable, Literal, Mapping
+from urllib.parse import quote, urlencode
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -3756,6 +3757,63 @@ def run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
             key: value for key, value in pull.items() if key not in PULL_REQUEST_SUMMARY_DROPPED
         }
     return out
+
+
+#: `GET /v1/runs/{id}`'s `planner_documents` (BGD, 6 November 2026, on the
+#: full-page interview lane: "Serve them on the run"): the planner step's
+#: design document and diagrams for the proposal page. A design doc is a
+#: Markdown artifact whose file name holds this word (gstack's planning skills
+#: write `<user>-<branch>-design-<time>.md`); a diagram is an artifact the name
+#: table calls an `image` -- PNG, JPEG, GIF or WebP, which the raw route serves
+#: as an image only when the bytes agree. SVG is text there, so it is no diagram.
+PLANNER_DOC_WORD = "design"
+
+#: At most this many of each, in name order: the page draws every one it is
+#: served, and a planner that wrote hundreds of screenshots is not a proposal.
+MAX_PLANNER_DOCS = 4
+MAX_PLANNER_DIAGRAMS = 12
+
+
+def planner_documents(task_id: str, rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """The planner task's design docs and diagrams out of its artifact listing.
+
+    `rows` are `AgentOutputService.list_artifacts`' entries (each with the name
+    table's `kind`). Each is served by NAME, size and a read link through the
+    planner task's own `/artifacts/raw` route -- never the bytes, never a
+    `gs://` uri or a signed URL -- so whoever follows the link passes that
+    route's tenant check (another tenant's member gets its 404) and its
+    read-time redaction. Pure: nothing is read here.
+    """
+    docs: list[dict[str, Any]] = []
+    diagrams: list[dict[str, Any]] = []
+    for row in rows:
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        kind = row.get("kind")
+        base = name.rsplit("/", 1)[-1].lower()
+        if kind == "markdown" and PLANNER_DOC_WORD in base:
+            docs.append(_planner_entry(task_id, name, row))
+        elif kind == "image":
+            diagrams.append(_planner_entry(task_id, name, row))
+    return {
+        "task_id": task_id,
+        "design_docs": sorted(docs, key=lambda d: d["name"])[:MAX_PLANNER_DOCS],
+        "diagrams": sorted(diagrams, key=lambda d: d["name"])[:MAX_PLANNER_DIAGRAMS],
+    }
+
+
+def _planner_entry(task_id: str, name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    content_type = row.get("content_type")
+    return {
+        "name": name,
+        "bytes": _opt_int(row.get("bytes")),
+        "content_type": content_type if isinstance(content_type, str) else None,
+        "read_url": (
+            f"/v1/tasks/{quote(task_id, safe='')}/artifacts/raw"
+            f"?{urlencode({'name': name, 'disposition': 'inline'}, quote_via=quote)}"
+        ),
+    }
 
 
 def _schedule_mark(metadata: Any) -> dict[str, Any] | None:
