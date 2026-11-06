@@ -59,7 +59,7 @@ def test_a_submission_is_recorded_by_the_workflow_id_swarmcloud_named(where, mon
     reply = _submit(spec, "wf_mine")
     assert reply["workflow_id"] == "wf_mine"
     (line,) = _lines(folder)
-    assert line == {"workflow_id": "wf_mine", "kind": "submit", "title": "SC · nightly · 3 steps",
+    assert line == {"workflow_id": "wf_mine", "kind": "submit", "title": "SC ∴ nightly · 3 steps",
                     "claude_session": SESSION, "repository": "github.com/acme/ci-runners",
                     "launched_at": line["launched_at"], "name": "nightly"}
 
