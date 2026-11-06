@@ -28,7 +28,7 @@ import pytest
 
 from agent_worker import lifecycle
 from agent_worker.runners import ceiling
-from agent_worker.runners.base import RunnerContext
+from agent_worker.runners.base import RunnerContext, RunnerFailure
 from agent_worker.runners.cliagent import (
     RESUME_REASON_ENV,
     RESUME_SESSION_ENV,
@@ -57,6 +57,14 @@ plan = json.load(open(os.path.join(home, "plan.json")))
 step = plan[min(n, len(plan) - 1)]
 sid = f"sess-{{n:04d}}-abcdef"
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": sid}}), flush=True)
+if step.get("refuse"):
+    print(json.dumps({{"type": "system", "subtype": "model_refusal_no_fallback",
+                      "session_id": sid}}), flush=True)
+    print(json.dumps({{"type": "result", "subtype": "error_during_execution", "is_error": True,
+                      "session_id": sid, "num_turns": 0, "total_cost_usd": 0.0,
+                      "result": "API Error: our safeguards flagged this message "
+                                "[reasoning_extraction]"}}), flush=True)
+    sys.exit(1)
 contexts = step["contexts"]
 for turn, context in enumerate(contexts, 1):
     content = [{{"type": "tool_use", "id": f"t{{n}}-{{turn}}", "name": "Bash",
@@ -86,6 +94,9 @@ print(json.dumps({{"type": "result", "subtype": "success", "is_error": False,
 
 #: A session the ceiling stops: one turn of 210,000 tokens, then the boundary.
 STOPPED = {"contexts": [210_000, 1_000, 1_000], "pause": 1.0, "cost": 9.99}
+#: A fresh session the provider refuses on its first call
+#: (task_a27c0b2241d1492492ee): no assistant message, and claude-code exits 1.
+REFUSED = {"refuse": True, "contexts": [], "cost": 0.0}
 #: A session that runs to its end and reports $0.20 (qa4-docs's last session).
 LAST = {"contexts": [1_000, 2_000, 3_000], "cost": 0.20}
 
@@ -120,7 +131,7 @@ def ctx(tmp_path, monkeypatch) -> RunnerContext:
     monkeypatch.setenv("FAKE_BIN", str(cli))
     monkeypatch.setenv("FAKE_KEY", "k-" + pysecrets.token_hex(8))
     for name in (RESUME_SESSION_ENV, RESUME_REASON_ENV, SESSION_FILE_ENV, "SWARM_ACCOUNT_STREAM",
-                 "SWARM_ACCOUNT_MOVE", "SWARM_CLONE_BASE"):
+                 "SWARM_ACCOUNT_MOVE", "SWARM_CLONE_BASE", ceiling.SESSION_TAIL_ENV):
         monkeypatch.delenv(name, raising=False)
     work, artifacts = tmp_path / "work", tmp_path / "artifacts"
     work.mkdir()
@@ -255,7 +266,8 @@ def test_a_single_session_attempt_is_unchanged(ctx, worker_factory):
     assert pricer.asked == [] and "cost_estimated" not in total
 
 
-def test_the_handoff_carries_the_previous_sessions_notes(ctx, tmp_path):
+def test_the_handoff_carries_the_previous_sessions_notes(ctx, tmp_path, monkeypatch):
+    monkeypatch.setenv(ceiling.SESSION_TAIL_ENV, "1")
     finding = "FINDING F-7: the pricing tab answers 500 on save " + pysecrets.token_hex(4)
     todos = [{"content": "walk the market page", "status": "completed"},
              {"content": "write findings.md", "status": "pending"}]
@@ -278,12 +290,80 @@ def test_the_handoff_carries_the_previous_sessions_notes(ctx, tmp_path):
     assert prompt.startswith("CONTEXT CEILING HANDOFF")
     # MUTATION: leave the session's last words out and the finding is lost.
     assert finding in prompt
+    assert "## Its last messages" in prompt
     assert "- [completed] walk the market page" in prompt
     assert "- [pending] write findings.md" in prompt
     assert "findings.md (11 bytes)" in prompt
     assert "shots/measure.json (2 bytes)" in prompt
     assert "page.png" not in prompt
     assert "secret-notes" not in prompt and "linked" not in prompt
+
+
+def test_the_handoff_carries_no_session_tail_by_default(ctx):
+    finding = "FINDING F-8: the session's own words " + pysecrets.token_hex(4)
+    todos = [{"content": "write findings.md", "status": "pending"}]
+    (ctx.artifacts_dir / "handoff.md").write_text("done: the audit; left: the fix")
+    (ctx.artifacts_dir / "findings.md").write_text("# Findings\n")
+    _plan(ctx, {**STOPPED, "say": finding, "todos": todos}, LAST)
+    run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    prompt = second["stdin"]
+    # MUTATION: carry the tail by default and the refused first call is back.
+    assert "Its last messages" not in prompt
+    assert finding not in prompt
+    # Everything else still goes in.
+    assert "done: the audit; left: the fix" in prompt
+    assert "- [pending] write findings.md" in prompt
+    assert "findings.md (11 bytes)" in prompt
+    assert "## The previous session's note" in prompt
+
+
+def test_a_fresh_session_refused_on_its_first_call_restarts_once_minimal(ctx):
+    todos = [{"content": "fix the parser", "status": "in_progress"}]
+    (ctx.artifacts_dir / "handoff.md").write_text("note for the next session")
+    (ctx.artifacts_dir / "findings.md").write_text("# Findings\n")
+    _plan(ctx, {**STOPPED, "todos": todos}, REFUSED, LAST)
+    out = run_cli_agent(ctx, _spec())
+
+    first, refused, retried = _starts(ctx)
+    assert refused["stdin"].startswith("CONTEXT CEILING HANDOFF")
+    minimal = retried["stdin"]
+    assert minimal.startswith("CONTEXT CEILING HANDOFF")
+    assert "do the work" in minimal
+    assert "note for the next session" in minimal
+    assert "- [in_progress] fix the parser" in minimal
+    # Only the task, the note file and the todos.
+    assert "findings.md" not in minimal and "## Recent commits" not in minimal
+    assert "--resume" not in retried["argv"]
+    summary = ctx.report["context_ceiling"]
+    assert summary["refusal_restarts"] == [
+        {"refusal": "model_refusal_no_fallback", "session": 2}]
+    assert out is not None
+
+
+def test_a_second_refusal_fails_the_step_naming_the_refusal(ctx):
+    _plan(ctx, STOPPED, REFUSED, REFUSED, LAST)
+    with pytest.raises(RunnerFailure) as caught:
+        run_cli_agent(ctx, _spec())
+
+    assert len(_starts(ctx)) == 3
+    message = str(caught.value)
+    assert "refused on its first call" in message
+    assert "model_refusal_no_fallback" in message
+    assert "again, from the minimal handoff" in message
+
+
+def test_first_call_refusal_reads_only_a_start_that_got_no_answer():
+    refusal = [{"type": "system", "subtype": "init"},
+               {"type": "result", "is_error": True,
+                "result": "API Error: our safeguards flagged this message"}]
+    assert ceiling.first_call_refusal(refusal) == "safeguards refusal"
+    answered = [{"type": "assistant", "message": {"content": []}},
+                {"type": "system", "subtype": "model_refusal_no_fallback"}]
+    assert ceiling.first_call_refusal(answered) is None
+    assert ceiling.first_call_refusal([{"type": "result", "result": "done"}]) is None
+    assert ceiling.first_call_refusal(None) is None
 
 
 def test_the_agent_is_told_to_keep_its_notes_in_files():
