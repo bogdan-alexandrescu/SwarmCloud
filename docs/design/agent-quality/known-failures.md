@@ -15,7 +15,7 @@ counts differ from this table, so the table is the tree's.
 
 | Kind | Count | What it means here |
 |---|---|---|
-| `skipif` | 222 | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
+| `skipif` | 224 | `pytest.mark.skipif`: every one is conditional on the machine (a tool on `PATH`: git, jq, bash, shellcheck, uv, node, ffmpeg; procfs or Linux; a checked-out `apps/swarm-ui`; a built binary) |
 | `skip` | 0 | `pytest.mark.skip` with no condition: none |
 | `skip_call` | 61 | `pytest.skip(...)` inside a test, again on a missing tool or platform, or on a fixture the test looks for ("the budget route moved; pick another route") |
 | `xfail` | 1 | the one expected failure, below |
@@ -49,6 +49,7 @@ read from here**, so a green CI run is not, by itself, evidence that they ran:
 | `tests/unit/worker/test_jev_outbound_filter.py` (lines 61, 231) | node is installed | Jev adapter (the outbound filter) |
 | `tests/unit/worker/test_jev_internal_compat.py` (line 94) | node is installed | Jev adapter |
 | `tests/unit/worker/test_quality_gates.py` (line 674) | node is installed | Jev quality gates |
+| `tests/unit/worker/test_qa_target_signin.py` (line 1047) | node is installed | browser QA gate (the sign-in start click) |
 | `tests/unit/control_plane/test_log_redaction.py` (line 585) | node is installed | Jev outbound filter against the redaction rules |
 | `tests/unit/worker/test_repo_index_lsp_servers.py` (line 148) | the language servers are installed | index |
 | `tests/unit/worker/test_mcp_runner_config.py` (lines 439, 441) | the `claude` or `codex` CLI is installed | agent plugins and MCP |

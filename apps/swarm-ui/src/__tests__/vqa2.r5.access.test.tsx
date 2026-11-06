@@ -155,7 +155,7 @@ describe('Access (VQA2-R5)', () => {
   it('V165: "Install on <a long owner>" shrinks to its card and wraps, at 400 and at 1440', async () => {
     api([ORG('example-org'), UNINSTALLED])
     await mount('choose')
-    const link = await screen.findByRole('link', { name: `Install on ${LONG}` })
+    const link = await screen.findByRole('link', { name: `Install on ${LONG}` }, { timeout: 5000 })
     expect(link.parentElement!.classList.contains('ac-owner-acts')).toBe(true)
     for (const env of [WIDE, PHONE]) {
       expect(painted(link, 'white-space', env), `nowrap at ${env.width}`).toBe('normal')

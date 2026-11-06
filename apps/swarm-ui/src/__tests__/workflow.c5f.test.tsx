@@ -224,7 +224,7 @@ describe('G3-09: the Workflow column holds at least 280px at 1440 and the id nev
     await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
     const heads = [...document.querySelectorAll('.wfg-table thead th')]
     const shown = heads.filter((h) => at(h, 'display') !== 'none')
-    expect(shown.map((h) => h.getAttribute('data-col'))).toEqual(['state', 'workflow', 'steps', 'needs', 'spent', 'owner', 'changed'])
+    expect(shown.map((h) => h.getAttribute('data-col'))).toEqual(['state', 'workflow', 'repo', 'steps', 'needs', 'spent', 'owner', 'changed'])
     const r = row('wf_fresh')
     expect(r.querySelector('td[data-col="shape"], td[data-col="runners"], .wfl-mix')).toBeNull()
     const name = r.querySelector('td[data-col="workflow"]')!

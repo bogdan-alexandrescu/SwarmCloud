@@ -9,7 +9,7 @@ queued the other 10. Owner decision, 2026-10-21: a plugin setting `rows`.
   when they change; a step that fails or waits for a person is named on a line
   of its own.
 * `per-step`: one row per unfinished step, split over several titled runs
-  (`SC · <name> · N steps · rows 1-8`, `rows 9-16`, ...) so each run stays
+  (`SC ∴ <name> · N steps · rows 1-8`, `rows 9-16`, ...) so each run stays
   within the host's limit; the first copy alone reports the finished steps,
   and `max_live_rows` still caps the total.
 
@@ -124,18 +124,21 @@ def test_the_default_attach_of_an_18_step_workflow_writes_one_copy_that_runs_the
     assert copy["args"]["rows"] == "summary"  # MUTATION: leave the mode out of the args -- KeyError.
     assert copy["args"]["attach"] == "wf_big"
     assert "row_share" not in copy["args"]  # MUTATION: hand the summary a share -- present.
-    assert copy["title"] == "SC · big · 18 steps"  # MUTATION: add a rows suffix to a summary -- " · rows 1-18".
+    assert copy["title"] == "SC ∴ big · 18 steps"  # MUTATION: add a rows suffix to a summary -- " · rows 1-18".
     assert Path(copy["script_path"]).is_file()
     # The reply's own fields are that one copy's, so a caller reading only
     # `script_path` still launches it.
     assert out["script_path"] == copy["script_path"] and out["args"] == copy["args"]
 
 
-def test_the_single_task_batch_is_one_summary_row_by_default():
+def test_single_tasks_are_one_run_each_at_the_default_summary_setting():
+    """Owner 2026-11-04: a batch of single tasks is never one summary row --
+    twelve tasks are twelve runs, each one row, titled from its task."""
     entries = [{"task_id": f"task_{i}", "label": f"t{i}"} for i in range(12)]
     out = launch.for_tasks(entries, dispatched=False)
-    assert out["args"]["rows"] == "summary"  # MUTATION: no mode on a task batch -- KeyError.
-    assert len(out["args"]["attach_tasks"]) == 12
+    assert [copy["args"]["rows"] for copy in out["launches"]] == ["summary"] * 12
+    assert [len(copy["args"]["attach_tasks"]) for copy in out["launches"]] == [1] * 12  # MUTATION: one batch copy.
+    assert [copy["title"] for copy in out["launches"]] == [f"SC · t{i}" for i in range(12)]
 
 
 def test_attach_all_writes_one_summary_copy_per_workflow(monkeypatch):
@@ -161,9 +164,9 @@ def test_per_step_18_rows_at_a_limit_of_8_writes_3_copies_titled_with_their_shar
 
     titles = [l["title"] for l in out["launches"]]
     assert titles == [  # MUTATION: one copy for all 18 -- a single title with no share.
-        "SC · big · 20 steps · rows 1-8",
-        "SC · big · 20 steps · rows 9-16",
-        "SC · big · 20 steps · rows 17-18",
+        "SC ∴ big · 20 steps · rows 1-8",
+        "SC ∴ big · 20 steps · rows 9-16",
+        "SC ∴ big · 20 steps · rows 17-18",
     ]
     shares = _shares(out)
     assert [len(s) for s in shares] == [8, 8, 2]  # MUTATION: split at 16, not the host's 8 -- [16, 2].
@@ -201,7 +204,7 @@ def test_max_live_rows_still_caps_the_per_step_rows(monkeypatch):
 def test_per_step_within_the_limit_is_one_copy_as_before(monkeypatch):
     monkeypatch.setenv("SWARM_PLUGIN_ROWS", "per-step")
     out = launch.for_attach(_Client(_envelope(5)), "wf_big")
-    assert [l["title"] for l in out["launches"]] == ["SC · big · 5 steps"]  # MUTATION: always add a share -- " · rows 1-5".
+    assert [l["title"] for l in out["launches"]] == ["SC ∴ big · 5 steps"]  # MUTATION: always add a share -- " · rows 1-5".
     assert "row_share" not in out["args"]
 
 
@@ -318,16 +321,18 @@ def test_a_summary_run_of_a_spec_follows_its_steps_with_one_row(tmp_path):
     assert got["result"]["state"] == "SUCCEEDED"
 
 
-def test_a_summary_batch_of_single_tasks_is_one_row(tmp_path):
+@pytest.mark.parametrize("rows", ["summary", "pane", "per-step"])
+def test_single_tasks_get_one_task_row_each_whatever_the_rows_setting(tmp_path, rows):
+    """Owner 2026-11-04: a summary row over a batch of single tasks read `0/1`
+    and showed counts, not lanes. Each task is one sc:task row, every mode."""
     tasks = [{"task_id": f"task_{i}", "title": f"t{i}"} for i in range(5)]
-    answers = {"SUMMARY": _followed("FINISHED", [_task(f"task_{i}", "SUCCEEDED") for i in range(5)])}
-    got = _run(tmp_path, {"attach_tasks": tasks, "rows": "summary"}, answers)
+    answers = {f"task_id: task_{i}": _step("SUCCEEDED") for i in range(5)}
+    got = _run(tmp_path, {"attach_tasks": tasks, "rows": rows}, answers)
 
     assert "error" not in got, got.get("error")
     kinds = [c["agentType"] for c in got["calls"]]
-    assert kinds == ["sc:summary"]  # MUTATION: a row per task -- five sc:task rows.
-    assert [line for line in got["logs"] if line.startswith("5 tasks: ")][-1].startswith(
-        "5 tasks: 0 running · 0 queued · 5 done · 0 failed")
+    assert kinds == ["sc:task"] * 5  # MUTATION: keep the summary branch -- one sc:summary row.
+    assert [c["label"] for c in got["calls"]] == [f"[SwarmCloud] t{i} · task" for i in range(5)]
     assert {t["task_id"]: t["state"] for t in got["result"]["tasks"]} == {f"task_{i}": "SUCCEEDED" for i in range(5)}
 
 

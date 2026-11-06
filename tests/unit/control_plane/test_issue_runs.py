@@ -835,6 +835,24 @@ def test_every_step_task_of_an_approved_run_carries_the_title_and_label(client, 
         assert task["metadata"]["unit"] == "issue-42"
 
 
+def test_an_approved_runs_workflow_carries_the_mark_and_reads_as_started_from_an_issue_run(
+        client, db, objects):
+    # `metadata.issue_run` is reserved from every caller (test_issue_run_reserved.py),
+    # so the issue-run code is what still writes it: every step task of the
+    # approved run's workflow carries the run's id, and the console's "where it
+    # was started" reads it.
+    run = _planned(client, db, objects)
+    response = _approve(client, run["id"], run["plan_digest"])
+    assert response.status_code == 200, response.text
+    workflow_id = response.json()["run"]["workflow_id"]
+    tasks = [d for d in _docs(db, "tasks").values() if d.get("workflow_id") == workflow_id]
+    assert tasks
+    assert all(t["metadata"]["issue_run"]["run_id"] == run["id"] for t in tasks)
+    read = client.get(f"/v1/workflows/{workflow_id}", headers=auth_header("alice"))
+    assert read.status_code == 200, read.text
+    assert read.json()["workflow"]["started_from"] == "issue_run"
+
+
 def test_an_auto_merge_run_submits_its_workflow_with_no_merge_step(client):
     client.put("/v1/admin/settings", headers=auth_header("root"), json={"merge_by_default": True})
     spec = compile_plan(_stored_run(auto_merge=True))

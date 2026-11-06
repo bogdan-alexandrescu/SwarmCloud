@@ -2025,6 +2025,8 @@ export interface StepNeeds {
     repository_url: string | null
     asked_at: string | null
     expires_at: string | null
+    /** The skill that asked, as the worker recorded it (the last `Skill` call before the question); null when not known. */
+    skill?: string | null
   } | null
 }
 

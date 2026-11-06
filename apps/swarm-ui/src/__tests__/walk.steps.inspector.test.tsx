@@ -32,6 +32,13 @@ const WIDE: CascadeEnv = { width: 1440 }
 const WF = 'wf_5e5ad3b6f7da4299a839'
 /** The table's box at 1440 with the side panel open (walk.steps.test.tsx). */
 const AT_1440 = 1440 - 84 - 236 - 64 - 34
+/**
+ * The window the table and the step card are waited for: a cold first render
+ * of the whole App under the console CI's parallel shards outlasts setup.ts's
+ * 2000 ms (5 November 2026). 4000 ms is the agent page's workspace-switch wait
+ * (agentDetailTenantSwitch.test.tsx) for the same cause.
+ */
+const WAIT = { timeout: 4000 }
 
 /** Ten long step names, the shape a planned issue run gives its steps. */
 const LONG = [
@@ -161,13 +168,16 @@ async function tableWithCard(): Promise<{ shell: HTMLElement; wrap: HTMLElement;
     const w = document.querySelector<HTMLElement>('.wf-card .wf-table')
     expect(w?.querySelectorAll('tbody tr[data-step]').length ?? 0).toBeGreaterThan(1)
     return w!
-  })
+  }, WAIT)
   fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
   const shell = await waitFor(() => {
     const s = document.querySelector<HTMLElement>('.wi.is-docked')
-    expect(s?.querySelector(':scope > .wi-dock .wf-inspect'), 'the step card did not open beside the table').toBeTruthy()
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): `StepInspector` (`.wf-inspect`) is replaced on the page by
+    // `StepCard` (`section.sc-card`).
+    expect(s?.querySelector(':scope > .wi-dock .sc-card'), 'the step card did not open beside the table').toBeTruthy()
     return s!
-  })
+  }, WAIT)
   return { shell, wrap, t: wrap.querySelector('table')! }
 }
 
@@ -208,10 +218,13 @@ describe('item 1: the Steps table with the step card open', () => {
       }
     }
     expect(visited).toBe(LONG.length * 2)
-    // 90 s, not the config's 30: it measured 13.5 s alone on the SwarmCloud
-    // container (2026-11-05) and went past 30 s in a loaded CI shard (PR
-    // #3304, component tests 3/8). A timeout is not what this test asserts.
-  }, 90_000)
+    // Own budget, not the config's 30 s: it measured ~10 s on an idle
+    // container and 13.5 s alone on the SwarmCloud container (2026-11-05;
+    // cascades over ten rows at two widths), and went past 30 s in loaded CI
+    // shards (PR #3255; PR #3304, component tests 3/8; PR #3342) with nothing
+    // wrong. 120 s, as qa.u11b.workflows, qa.head and keyboard carry; a hang
+    // still fails. A timeout is not what this test asserts.
+  }, 120_000)
 
   // Browser QA D12 (2026-10-04) reversed item 1's wrap: ten names wrapped to
   // two and three lines at their hyphens. A name is one line now, cut, with

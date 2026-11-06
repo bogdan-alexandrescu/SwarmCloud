@@ -166,8 +166,10 @@ describe('the Approvals page', () => {
     // word no chip carries, and three chips the sentence leaves out.
     expect(said).not.toMatch(/firing/i)
     for (const c of chips) expect(said, `the empty sentence leaves out "${c}"`).toContain(c.toLowerCase())
-    // MUTATION: join the list with commas only ("spec, answer is waiting").
-    expect(said).toMatch(/, spec or answer in this workspace is waiting for a person/)
+    // MUTATION: join the list with commas only ("answer, contract judgment is
+    // waiting"). The last kind is a step waiting on its owner's contract
+    // judgment (PR #3255).
+    expect(said).toMatch(/, spec, answer or contract judgment waits for a person/)
   })
 
   it('lists every kind oldest first, each row opening the item’s own page', async () => {

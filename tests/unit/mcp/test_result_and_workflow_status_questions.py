@@ -81,7 +81,8 @@ def test_swarm_result_carries_the_owner_questions(swarm, world):
 
     reply = _result(swarm, "task_q")
 
-    assert reply["owner_questions"] == QUESTIONS
+    # Each under its index in questions.json (`progress.open_owner_questions`).
+    assert reply["owner_questions"] == [{"index": i, **q} for i, q in enumerate(QUESTIONS)]
     assert "questions_unavailable_because" not in reply
     # Still listed as an artifact, which is where a person reads the raw file.
     assert NAME in json.dumps(reply["outputs"])
