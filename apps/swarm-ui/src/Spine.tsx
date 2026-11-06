@@ -67,6 +67,7 @@ import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 import { voiceItOpen } from './voice/Section'
 import { HOME_JUMPS } from './Home'
+import { aboutOf } from './WorkflowFacts'
 
 export type SpineSection = 'profile' | 'home' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
 
@@ -3622,7 +3623,9 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
     for (const id of ids) askedThisLoad.add(id)
     void loadWorkflowsById(ids).then((r) => {
       if (r.status !== 'ok' && r.status !== 'stale') return
-      refreshRecentWorkflows([...r.data.reads.values()].map(({ workflow: w }) => ({ id: w.workflow_id, state: derivedStateOf(w), name: null })))
+      // RECENT NAMES A WORKFLOW BY ITS SERVED TITLE (`workflowName`'s first
+      // choice); with none, the name the list or the page recorded is kept.
+      refreshRecentWorkflows([...r.data.reads.values()].map(({ workflow: w }) => ({ id: w.workflow_id, state: derivedStateOf(w), name: aboutOf(w).title ?? null })))
     })
   }, [unreadKey])
   if (items.length === 0) return null

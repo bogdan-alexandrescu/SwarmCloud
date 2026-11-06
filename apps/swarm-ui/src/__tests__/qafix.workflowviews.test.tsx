@@ -204,8 +204,12 @@ describe('WG-4, WG-6: the step card says each figure in words', () => {
     // 2026-11-05): StepCard draws no head of its own at all -- `.wf-inspect-times`
     // is a class only the non-page StepInspector ever drew, so there is
     // nothing of that shape to assert against here any more.
+    // The start is the head's facts card's When (the picked facts card,
+    // 2026-11-05), so the count note no longer says it.
+    const when = [...document.querySelectorAll('.wff-facts dt')].find((dt) => dt.textContent === 'When')
+    expect(when?.nextElementSibling?.textContent ?? '').toMatch(/Z$/)
     const note = (document.querySelector<HTMLElement>('.c-count-note')?.textContent ?? '').replace(/\s+/g, ' ')
-    expect(note).toMatch(/started/)
+    expect(note).not.toMatch(/started/)
     // MUTATION: print `· sub ${submitted}` again (StepInspector's times line).
     expect(note).not.toMatch(/\bsub\b/)
   })

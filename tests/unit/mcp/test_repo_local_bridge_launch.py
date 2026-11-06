@@ -68,11 +68,11 @@ def test_a_repo_local_launch_writes_its_copy_under_the_checkout(_checkout, tmp_p
     assert script.parent == _checkout / launch.REPO_RUN_DIR
     assert not (tmp_path / "system-tmp" / launch.RUN_DIR).exists(), "nothing goes to the system temp dir"
     # The copy is the checkout's run.js with the title in it.
-    assert script.read_text().splitlines()[1] == '  name: "SC · nightly · 3 steps",'
+    assert script.read_text().splitlines()[1] == '  name: "SC ∴ nightly",'
 
 
 def test_the_repo_local_run_folder_ignores_itself(_checkout):
-    script = launch.write_script("SC · t · 1 steps", "d")
+    script = launch.write_script("SC ∴ t · 1 steps", "d")
     ignore = script.parent / ".gitignore"
     assert ignore.read_text().splitlines()[0] == "*"
     if shutil.which("git"):
@@ -104,5 +104,5 @@ def test_outside_repo_mode_the_copies_stay_in_the_system_temp_dir(monkeypatch, t
     monkeypatch.delenv("SWARM_MCP_CONFIG_FROM", raising=False)
     monkeypatch.setenv(launch.PLUGIN_ROOT_ENV, str(_PLUGIN))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    script = launch.write_script("SC · t · 1 steps", "d")
+    script = launch.write_script("SC ∴ t · 1 steps", "d")
     assert script.parent == tmp_path / launch.RUN_DIR

@@ -282,8 +282,10 @@ describe('C-10: times are UTC, written with Z', () => {
     expect(fact(sum, 'Submitted')?.getAttribute('title')).toMatch(/submitted \d{4}-\d\d-\d\dT/)
     cleanup()
     await page(AUDIT)
-    // MUTATION: use `workflowStartText` in `pageSummary` -- `started 02:21:40`.
-    await waitFor(() => expect(flat(document.querySelector('.c-count-note'))).toMatch(/started (\d\d:\d\d:\d\dZ|[A-Z][a-z]{2} \d{1,2} \d\d:\d\dZ)$/))
+    // The start moved off the count line onto the facts card's When.
+    // MUTATION: print `workflowStartText` (local, no zone) in WorkflowFacts' When.
+    await waitFor(() => expect(flat(fact(document.querySelector<HTMLElement>('.wff-facts')!, 'When'))).toMatch(/(\d\d:\d\d:\d\dZ|[A-Z][a-z]{2} \d{1,2} \d\d:\d\dZ)$/))
+    expect(flat(document.querySelector('.c-count-note'))).not.toMatch(/· started /)
   })
 })
 
