@@ -696,9 +696,13 @@ _CLOSED_CALL = (
 #: A run of `;`, `)`, `]` or `}` with a literal glued after it is not where
 #: `${NAME}` ends (owner's pick 'tighten' on PR #3448): `token=${NAME};<v>`
 #: and `authorization=${NAME})<v>` were served whole, and are masked now.
+#: Nor is a quote after that run with a literal glued after the quote:
+#: `Authorization: Bearer {TOKEN});'<v>'` was served whole (the security
+#: re-review of PR #3448); a quote ends the value only where the value ends.
+_GLUED_AFTER_QUOTE = r"[;)\]}]++[\"'`][;)\]}\"'`\\]*+[^\s,;)\]}\"'`\\]"
 _SHELL_SUBSTITUTION = (
     r"\"?\$(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}[ )]"
-    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}(?![;)\]}]++[^\s,\"'`])|\{\{ )"
+    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}(?![;)\]}]++[^\s,\"'`]|" + _GLUED_AFTER_QUOTE + r")|\{\{ )"
 )
 _EXPRESSION_PASSWORD = (
     r"(?-i:={1,2}[ \t]|(?:await|new|not)[ \t]"
@@ -791,14 +795,15 @@ _CONTAINER = (
 #: (`{TOKEN}<v>`, `<v>{TOKEN}`, `{TOKEN}:<v>`) is not a placeholder, and the
 #: value is masked as before. A run of `,`, `;`, `)`, `]` or `}` ends the
 #: value only when no value character follows it (`{TOKEN};<v>` and
-#: `{TOKEN}});<v>` are masked). A literal
+#: `{TOKEN}});<v>` are masked), nor a quote after it with a value glued on
+#: (`{TOKEN});'<v>'`: `_GLUED_AFTER_QUOTE`). A literal
 #: spelled like a name (`{abc123}`, `$abc123`) is kept: it names a variable.
 #: `$NAME` takes its name possessively: a shell reads `$TOKENabc` as one
 #: longer name, and so does this.
 _PLACEHOLDER = (
     r"(?:\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|\$\{[A-Za-z_][A-Za-z0-9_]{0,63}\}"
     r"|\$[A-Za-z_][A-Za-z0-9_]{0,63}+|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])"
-    r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}]++(?![^\s\"'`]))"
+    r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}]++(?![^\s\"'`]))(?!" + _GLUED_AFTER_QUOTE + r")"
 )
 _AUTH_SCHEME = r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)"
 #: Under the `authorization` key: an optional string prefix (`f`, `rb`) and

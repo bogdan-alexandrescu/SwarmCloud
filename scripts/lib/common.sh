@@ -2552,8 +2552,9 @@ redact() {
   # `${NAME}` ends where a value ends: a `;`, `)`, `]` or `}` with a literal
   # glued after it is not an end (`_SHELL_SUBSTITUTION`; the owner's pick
   # 'tighten' on PR #3448). The character after it is in the marked span, so
-  # the s command puts it back.
-  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}([^];)}]|[];)}]+([,"'"'"'`[:space:]]|$)|$)|\{\{ )'
+  # the s command puts it back. Nor is a quote after that run with a literal
+  # glued after the quote (`_GLUED_AFTER_QUOTE`): `token=${NAME});'<v>'`.
+  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}([^];)}]|[];)}]+([,[:space:]]|$|["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))|$)|\{\{ )'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -2578,7 +2579,9 @@ redact() {
   local a_prefix='([bfru]{1,2}\\{0,15}["'"'"']|\\{0,15}["'"'"'])?'
   local a_scheme='((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:blank:]]+)?'
   local a_name='(\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|[$]\{[A-Za-z_][A-Za-z0-9_]{0,63}\}|[$][A-Za-z_][A-Za-z0-9_]{0,63}|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])'
-  local a_end='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+(["'"'"'`[:space:]]|$))'
+  # A quote after a run with no comma in it ends the value only where the
+  # value ends (`_GLUED_AFTER_QUOTE`): `Bearer {TOKEN});'<v>'` is masked.
+  local a_end='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
   # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
   # restated move for move -- its comment says why each move is there. The
   # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
