@@ -84,17 +84,20 @@ def test_render_trims_the_answer_to_what_fits_and_says_how_many_more():
     header = {"task_type": "implement", "jev": {"state": "off", "reason": "x"},
               "freshness": {"index_sha": "a" * 40, "base_sha": "b" * 40, "behind_by": 0,
                             "changed_since_index": 0},
-              "seeds": {"files": [], "tests": [], "symbols": []}}
+              "seeds": {"files": [f"src/seed{i:02}/" + "s" * 100 + ".py" for i in range(12)],
+                        "tests": [], "symbols": [],
+                        "unknown": [f"new{i}/" + "u" * 110 for i in range(8)]}}
+    # A never-cut section just under its own cap, in full.
     always = [Candidate(kind="cannot_push", ref=f"zone{i:03}/" + "x" * 90 + "/**",
                         path=f"zone{i:03}", why="a human must approve " + "y" * 80)
-              for i in range(48)]
+              for i in range(46)]
     graph = answer_mod.GraphAnswer(files=[
-        {"path": f"src/mod{i:02}/" + "p" * 100 + ".py", "score": 10.0 - i,
-         "why": "defines `thing` " + "w" * 150} for i in range(answer_mod.GRAPH_FILES)])
+        {"path": f"src/mod{i:02}/" + "p" * 140 + ".py", "score": 10.0 - i,
+         "why": "defines `thing` " + "w" * 250} for i in range(answer_mod.GRAPH_FILES)])
     text, _shown, _paged = render_markdown(header, always, [], 0, answer=graph)
     assert len(text.encode()) <= contextpack.BUDGET_BYTES
     for cand in always:
-        assert cand.ref.split("/")[0] in text
+        assert cand.ref in text and cand.why in text
     assert 0 < graph.shown < answer_mod.GRAPH_FILES
     assert f"{answer_mod.GRAPH_FILES - graph.shown} more in pack.json" in text
 
