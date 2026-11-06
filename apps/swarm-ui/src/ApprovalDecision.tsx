@@ -1047,11 +1047,15 @@ export interface PlanBrief {
   edges: MapEdge[]
   risk: { level: RiskLevel | null; factors: string[]; blast: string | null; invariants: BriefInvariant[]; mitigations: string[]; rollback: string | null } | null
   frozen: string[]
-  validation: { tests: { file: string; proves: string[] }[]; qa: { check: string; where: string | null; when: string | null }[] } | null
+  /** Each test file with what it proves and the ids (`R1`, the requirement's place) of the requirements it proves. */
+  validation: { tests: { file: string; proves: string[]; requirements: string[] }[]; qa: { check: string; where: string | null; when: string | null }[] } | null
   steps: BriefStep[]
   estimate: string | null
-  /** Each overlap with the files it shares with this plan, read off the run's open work when it lists them. */
-  overlaps: { ref: string; kind: string; note: string | null; required: boolean; shared: string[] }[]
+  /**
+   * Each overlap with the files it shares with this plan: the ones its `theirs` serves, with what the other
+   * work does to each, and the ones the run's open work lists for it, `theirs` null where none is served.
+   */
+  overlaps: { ref: string; kind: string; note: string | null; required: boolean; shared: { file: string; theirs: string | null }[] }[]
   requirements: string[]
 }
 
@@ -1081,6 +1085,13 @@ function invariantOf(v: unknown): BriefInvariant | null {
   if (s === null) return null
   const m = /^(?:invariant\s*)?#?(\d+)\b[\s:.,)-]*(.*)$/i.exec(s)
   return m ? { label: `Invariant ${m[1]}`, words: m[2] ?? '' } : { label: s, words: '' }
+}
+
+/** A test's requirement as served -- `R2`, `2` or 2 -- as its id `R2`; null when the plan has no such requirement. */
+function requirementId(v: unknown, count: number): string | null {
+  const m = typeof v === 'number' ? [String(v), String(v)] : typeof v === 'string' ? /^\s*R?(\d+)\s*$/i.exec(v) : null
+  const n = m === null ? NaN : Number(m[1])
+  return Number.isInteger(n) && n >= 1 && n <= count ? `R${n}` : null
 }
 
 /** The plan as the brief draws it, from the sections the planner serves or, without them, from its steps. */
@@ -1138,14 +1149,19 @@ export function planBrief(plan: Json, pulls: OpenPull[] = []): PlanBrief {
           rollback: text(r.rollback),
         }
   const v = plan.validation !== null && typeof plan.validation === 'object' ? (plan.validation as Json) : null
-  const tests: { file: string; proves: string[] }[] = []
+  const requirements = texts(plan.requirements)
+  const tests: { file: string; proves: string[]; requirements: string[] }[] = []
   for (const o of objs(v?.tests)) {
     const file = text(o.file)
     const proves = text(o.proves)
     if (file === null) continue
+    const ids = (Array.isArray(o.requirements) ? o.requirements : []).flatMap((x) => requirementId(x, requirements.length) ?? [])
     const at = tests.find((t) => t.file === file)
-    if (at === undefined) tests.push({ file, proves: proves === null ? [] : [proves] })
-    else if (proves !== null) at.proves.push(proves)
+    if (at === undefined) tests.push({ file, proves: proves === null ? [] : [proves], requirements: [...new Set(ids)] })
+    else {
+      if (proves !== null) at.proves.push(proves)
+      at.requirements = [...new Set([...at.requirements, ...ids])].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
+    }
   }
   const qa = objs(v?.qa).flatMap((o) => {
     const check = text(o.check)
@@ -1169,10 +1185,12 @@ export function planBrief(plan: Json, pulls: OpenPull[] = []): PlanBrief {
       if (ref === null) return []
       const kind = text(o.kind) ?? 'issue'
       const n = Number(/#(\d+)$/.exec(ref)?.[1] ?? NaN)
-      const theirs = kind === 'pull_request' ? (pulls.find((p) => p.number === n)?.files ?? []) : []
-      return [{ ref, kind, note: text(o.note), required: o.action === 'required', shared: changes.filter((c) => theirs.includes(c.file)).map((c) => c.file) }]
+      const read = kind === 'pull_request' ? (pulls.find((p) => p.number === n)?.files ?? []) : []
+      const served = new Map(objs(o.theirs).flatMap((t) => (text(t.file) === null ? [] : [[text(t.file)!, text(t.what)] as const])))
+      const shared = changes.filter((c) => served.has(c.file) || read.includes(c.file)).map((c) => ({ file: c.file, theirs: served.get(c.file) ?? null }))
+      return [{ ref, kind, note: text(o.note), required: o.action === 'required', shared }]
     }),
-    requirements: texts(plan.requirements),
+    requirements,
   }
 }
 
@@ -1418,6 +1436,15 @@ function ValidationCard({ v, requirements }: { v: NonNullable<PlanBrief['validat
                       {p}
                     </span>
                   ))}
+                  {t.requirements.length > 0 && (
+                    <span className="ab-treqs" aria-label={`T${i + 1} proves ${t.requirements.join(', ')}`}>
+                      {t.requirements.map((id) => (
+                        <span key={id} className="ab-req" title={requirements[Number(id.slice(1)) - 1]}>
+                          {id}
+                        </span>
+                      ))}
+                    </span>
+                  )}
                 </div>
               </li>
             ))}
@@ -1447,11 +1474,15 @@ function ValidationCard({ v, requirements }: { v: NonNullable<PlanBrief['validat
         <details className="ab-reqlist">
           <summary>Done when · {requirements.length}</summary>
           <ul>
-            {requirements.map((r, i) => (
-              <li key={r}>
-                <span className="ab-req">R{i + 1}</span> {r}
-              </li>
-            ))}
+            {requirements.map((r, i) => {
+              const by = v.tests.flatMap((t, j) => (t.requirements.includes(`R${i + 1}`) ? [`T${j + 1}`] : []))
+              return (
+                <li key={r}>
+                  <span className="ab-req">R{i + 1}</span> {r}
+                  {by.length > 0 && <span className="ab-dim"> · proved by {by.join(', ')}</span>}
+                </li>
+              )
+            })}
           </ul>
         </details>
       )}
@@ -1547,7 +1578,7 @@ function OverlapsCard({ overlaps, changes }: { overlaps: PlanBrief['overlaps']; 
               )}
               <div className="ab-over-t">
                 {o.note !== null && <span>{o.note}</span>}
-                {o.shared.length > 0 && <span className="ab-dim">{o.shared.map(base).join(', ')}</span>}
+                {o.shared.length > 0 && <span className="ab-dim">{o.shared.map((s) => base(s.file)).join(', ')}</span>}
               </div>
               <span className="ab-where">{o.kind === 'pull_request' ? 'pull request' : 'issue'}</span>
               <span className="ab-effect">{o.required ? 'action needed' : null}</span>
@@ -1558,11 +1589,14 @@ function OverlapsCard({ overlaps, changes }: { overlaps: PlanBrief['overlaps']; 
               )}
               {open === o.ref && (
                 <dl className="ab-over-d" data-testid="ab-over-d">
-                  {o.shared.map((f) => (
+                  {o.shared.map(({ file: f, theirs }) => (
                     <div key={f}>
                       <dt className="mono">{f}</dt>
                       <dd>
                         <span className="ab-fk">This plan</span> {changes.find((c) => c.file === f)?.what || 'changes it'}
+                      </dd>
+                      <dd>
+                        <span className="ab-fk">Theirs</span> {theirs ?? 'changes it'}
                       </dd>
                     </div>
                   ))}

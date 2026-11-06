@@ -236,6 +236,7 @@
 .ab-reqlist > summary { cursor: pointer; font-weight: 600; color: var(--text-dim); }
 .ab-reqlist ul { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
 .ab-req { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--sk-ac) 13%, var(--surface)); color: var(--sk-ac); }
+.ab-treqs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
 .ab-overs > li[data-on='y'] { background: color-mix(in srgb, var(--sk-ac) 6%, transparent); }
 
 /* ---- raw ----------------------------------------------------------------- */
