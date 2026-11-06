@@ -1275,19 +1275,72 @@ def _without_benign(text: str, benign: Sequence[re.Pattern[str]]) -> list[str]:
     return [line for line in text.splitlines() if not any(p.match(line) for p in benign)]
 
 
+def _error_text(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return _error_text(value.get("message"))
+    if isinstance(value, list):
+        return " ".join(text for text in (_error_text(item) for item in value) if text)
+    return value if isinstance(value, str) else ""
+
+
+def _result_error(parsed: Any) -> str:
+    """Why the CLI's stdout result says the run failed, on one line; else "".
+
+    Issue #3547: a `claude --output-format stream-json` run that exits non-zero
+    with an empty stderr writes its reason to stdout -- the last `result` event
+    carries `is_error`, a subtype such as `error_max_turns` or
+    `error_during_execution`, and the result text. Only that last result event
+    (or a single untyped object) is read, and only when it reports an error: a
+    successful result adds nothing, and a stream with no result event (codex)
+    yields "". Not bounded here: the caller scrubs and redacts what this
+    returns and `exit_error` bounds it after, so a cut never splits a secret
+    the scrub would then miss.
+    """
+    events = parsed if isinstance(parsed, list) else [parsed]
+    event: Any = None
+    for candidate in reversed(events):
+        if not isinstance(candidate, Mapping):
+            continue
+        typed = candidate.get("type")
+        if typed == "result" or (typed is None and ("is_error" in candidate or "subtype" in candidate)):
+            event = candidate
+            break
+    if event is None:
+        return ""
+    subtype = event.get("subtype") if isinstance(event.get("subtype"), str) else ""
+    if not (event.get("is_error") is True or subtype.startswith("error")):
+        return ""
+    text = _error_text(event.get("result")) or _error_text(event.get("error")) or _error_text(
+        event.get("errors"))
+    return ": ".join(part for part in (" ".join(subtype.split()), " ".join(text.split())) if part)
+
+
 def exit_error(
-    name: str, exit_code: int | None, stderr: str, benign: Sequence[re.Pattern[str]]
+    name: str,
+    exit_code: int | None,
+    stderr: str,
+    benign: Sequence[re.Pattern[str]],
+    *,
+    result_reason: str = "",
 ) -> str:
-    """The error recorded for a CLI that exited `exit_code` with `stderr`."""
+    """The error recorded for a CLI that exited `exit_code` with `stderr`.
+
+    `result_reason` (from `_result_error`, already scrubbed) is used only when
+    stderr has nothing to say once the benign lines and capture notices are
+    gone (#3547); a real stderr message reads exactly as it did before.
+    """
+    result_reason = result_reason[:_SIGNAL_DETAIL_CHARS]
     lines = _without_benign(stderr, benign)
     sig = _signal_of(exit_code) if exit_code is not None else None
+    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
     if sig is None:
+        if not candidates and result_reason:
+            return f"{name} exited {exit_code}: {result_reason}"
         return f"{name} exited {exit_code}: " + "\n".join(lines).strip()
     verb = "killed" if sig == signal.SIGKILL else "terminated"
     sentence = f"{name} {verb} by {sig.name} (exit {exit_code})"
-    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
     if not candidates:
-        return sentence
+        return f"{sentence}: {result_reason}" if result_reason else sentence
     errors = [line for line in candidates if _ERROR_WORD.search(line)]
     detail = (errors or candidates)[-1]
     return f"{sentence}: {detail[:_SIGNAL_DETAIL_CHARS]}"
@@ -2285,8 +2338,13 @@ def run_cli_agent(
         run_watcher: AccountStreamWatcher | None,
         spend: dict[str, Any],
         combined: str,
+        parsed_run: Any,
     ) -> None:
-        """Raise the signal or failure one start of the CLI ended in, if any."""
+        """Raise the signal or failure one start of the CLI ended in, if any.
+
+        `parsed_run` is the parsed stdout of the start being judged: its result
+        reason names a non-zero exit whose stderr says nothing (#3547).
+        """
         if budget is not None and budget.stopped_for is not None:
             # STOPPED FOR THE BUDGET (#2459), at a turn boundary or past 120%
             # mid-turn. Not judged as a rate limit or a refused credential, and
@@ -2363,7 +2421,8 @@ def run_cli_agent(
         if run_result.exit_code != 0:
             raise RunnerFailure(
                 exit_error(
-                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr
+                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr,
+                    result_reason=redact_text(scrub_text(_result_error(parsed_run), secrets)).text,
                 ),
                 spend=spend,
             )
@@ -2505,7 +2564,7 @@ def run_cli_agent(
     # once more from the minimal handoff (below, `refused_handoff`), not judged.
     first_refusal = handoff_refusal(parsed) if resumed_over is not None else None
     if not ceiling_stop_pending() and first_refusal is None:
-        judge(result, watcher, spend, combined)
+        judge(result, watcher, spend, combined, parsed)
 
     def parked_on_question() -> bool:
         """The last start stopped on a question the bridge recorded: no turn
@@ -2595,7 +2654,7 @@ def run_cli_agent(
         combined = detection_text(pass_raw, pass_parsed)
         refusal = handoff_refusal(pass_parsed) if handoff else None
         if not ceiling_stop_pending() and refusal is None:
-            judge(result, watcher, spend, combined)
+            judge(result, watcher, spend, combined, pass_parsed)
         duration_seconds += result.duration_seconds
         stdout_bytes += result.stdout_bytes
         stderr_bytes += result.stderr_bytes

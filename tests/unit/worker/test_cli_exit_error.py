@@ -269,7 +269,20 @@ def test_result_error_reads_the_last_result_event(parsed, reason):
     assert cliagent._result_error(parsed) == reason
 
 
-def test_result_error_is_bounded_and_one_line():
+def test_result_error_is_one_line_and_left_whole_for_the_scrub():
     reason = cliagent._result_error(_failed(subtype="error_during_execution", result="a\nb " * 1000))
-    assert len(reason) <= cliagent._SIGNAL_DETAIL_CHARS
     assert "\n" not in reason
+    # Bounded by exit_error, after the scrub: a cut here could split a secret.
+    assert len(reason) > cliagent._SIGNAL_DETAIL_CHARS
+    bounded = cliagent.exit_error("claude-code", 1, "", (), result_reason=reason)
+    assert bounded == "claude-code exited 1: " + reason[: cliagent._SIGNAL_DETAIL_CHARS]
+
+
+def test_a_secret_across_the_bound_is_masked_not_cut(tmp_path, monkeypatch):
+    key = _anthropic_key()
+    subtype = "error_during_execution"
+    pad = "x" * (cliagent._SIGNAL_DETAIL_CHARS - len(subtype) - len(": ") - 10)
+    stdout = _stream(INIT, _failed(subtype=subtype, result=f"{pad}{key} tail"))
+    error = _run(tmp_path, monkeypatch, "", 1, stdout=stdout, key=key)
+    assert key[:10] not in error, "a cut-off prefix of the registered key reached the message"
+    assert error.startswith(f"claude-code exited 1: {subtype}: {pad}"), error
