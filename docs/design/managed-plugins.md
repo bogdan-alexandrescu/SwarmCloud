@@ -1,0 +1,722 @@
+# Managed plugins: any Claude Code plugin added, configured, updated and removed from the console
+
+**Status: design, 6 November 2026. Nothing here is built.** Part of #2688. It extends
+[agent-plugins.md](agent-plugins.md) (the per-step `plugins` field, as built) from a catalogue written in code and
+baked into the images to a catalogue that admins manage from the console. Every fact below was read on `main` at
+`33861db` on 6 November 2026; files are named, lines are not, because they move. Every question that is the owner's
+to answer is in the lane's `questions.json` (Q1-Q15 below) with options and a recommendation; where this document
+depends on an answer it says "recommended, pending Qn" and never treats it as decided.
+
+## The ask
+
+The owner (BGD) asked on 6 November 2026, at about 01:18 and 01:20 UTC, for "a really well built and all inclusive
+way to add plugins and skills directly from the Console UI", "super generic so it supports any plugin and allows
+customization where needed depending on the plugin", "add and remove, basically fully managed plugins directly from
+console", proven by installing and configuring jev-belay and jev-enforce. His answers, at about 01:30 UTC, which this
+design follows:
+
+1. **Who installs: both.** A platform admin installs into a **platform catalogue**, which each workspace opts into
+   with its existing Allowed list (Config › Plugins). A workspace admin may also install plugins **private to that
+   workspace**.
+2. **Sources:** a GitHub repository (a private one through the workspace's GitHub connection) or a Claude Code
+   marketplace, at a tag or a commit, or an uploaded `.zip` or `.tar.gz`. **Every installed copy is pinned:** fetched
+   once, its commit and sha256 digest recorded, and every step runs exactly that copy until an admin updates it.
+   **Update** shows what changed (manifest, hooks, settings) before it applies. **Remove** names the workflows and
+   steps that use it.
+3. **Scope:** a workspace admin can mark a plugin **on for every step**; a step can still add plugins in the builder
+   or turn a default one off. **Settings are set once per workspace**, and a step may override the non-secret ones.
+4. **The deployment switches** (`SWARM_WORK_CONTRACTS`, `SWARM_CONTRACT_REVIEW`, today Terraform-set environment
+   variables) become **signed platform settings** on the admin plugins page, the Terraform value being the default
+   when no setting is stored.
+
+## What exists today
+
+* **The catalogue is code.** `swarm_api/plugincatalogue.py` holds two `PluginEntry` values, gstack (1.92.55.0) and
+  security-audit (a pinned commit), each with an install path in the image, the five claude-code runner profiles and,
+  per mode, the skills a step may name. `agent_worker/plugins.py` restates it; a unit test holds the two equal.
+* **A step names plugins in its own `plugins` field** (`schemas.StepPluginCreate`: `{name: {mode, skills}}`).
+  `plugins.check_step` checks it against the catalogue, the workspace's signed `plugins.allowed` block and the step's
+  runner profile; `plugins.with_step_plugins` carries it in the step's work contract (`capabilities.plugins`), whose
+  digest rides in the signed dispatch block (`metadata.dispatch.work_contract`). With `SWARM_WORK_CONTRACTS` off a
+  step naming plugins is refused. The frozen contract document (`swarm_common.workcontract.WorkContract.to_document`)
+  carries only `mode` and `skills` per plugin: no version, no digest, no settings.
+* **The workspace's Allowed list** is `workspace_settings/{tenant}.plugins.allowed`, written through
+  `PUT /v1/workspaces/{tenant_id}/plugins` (`routes/plugin_settings.py`) by the workspace's owner or admin or a
+  platform admin, audited in `admin_audit` (`workspace_plugins_set`), and MAC'd under `swarm-settings-key` as block
+  `plugins` (`specsign.SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`). The console page is `ConfigPlugins.tsx`; the
+  builder's picker is `PluginSheet.tsx`.
+* **The worker links skills only.** `agent_worker/plugins.py` links `work/.claude/skills/...` to the read-only install
+  under `/opt/swarm/plugins/`. It writes no settings file and passes no `--plugin-dir`, so **a plugin's hooks,
+  commands, agents and MCP servers never load**. The claude-code runner (`runners/claude_code.py`, CLI 2.1.283) writes
+  its own `--settings` file (`write_headless_settings`) and one `--mcp-config` file (`write_mcp_config`). `HOME` is the
+  attempt's `work/`, which is checkpointed; the root filesystem is read-only; the worker and the agent run as the
+  same uid in one container (`scheduler/dispatch.py`, `runAsUser: WORKER_UID`).
+* **jev-belay and jev-enforce are already in the image, as quality gates, not as plugins.** The base Dockerfile
+  vendors jev-belay v0.2.0 (`valentynkit/jev-belay` at `ef719db7...`, three files: `belay.mjs`, `package.json`,
+  `LICENSE`) and downloads jev-enforce v1.1.1 from the npm registry by sha512, under `/opt/swarm/jev-gates`. Neither
+  ships a `.claude-plugin/plugin.json` or a `hooks/hooks.json`. The runner registers them in its own `--settings`
+  hooks (Stop: `belay` and `enforce-stop`; PostToolUse on `Edit|Write|MultiEdit`: `enforce-edit`) through the
+  launcher `swarm-jev-gate.mjs`, which holds the workspace's TypeSafe key in its own process, deletes the variables
+  that would point the tools elsewhere, and scrubs registered secrets. They run only when the signed workspace
+  setting `quality_gates.jev` is on.
+* **Images may not fetch from GitHub at build time.** Every outside source comes through `build/tool-mirror`
+  (`docs/runbooks/build-mirror.md`) and is checked by hash. The base image carries Node 24, Bun 1.4.2, Python 3,
+  `git` and `jq`.
+* **Secrets.** Provider keys are `swarm-tenant-<t>-<provider>` (`Tenant.secret_name`), the TypeSafe key among them
+  (`swarm-tenant-<t>-typesafe`, set through `PUT /v1/provider-keys/typesafe/tenant` by a one-time form). Workspace
+  store secrets are `swarm-tenant-<t>-wsec-<16 hex>`; the tenant's GSA holds **no** grant on them and swarm-api
+  releases each one to an attempt that is entitled to it (`routes/attempts_secrets.py`). A secret reaches the runner
+  as a 0600 file under `private/` (never checkpointed, never uploaded), never as the pod's environment. Redaction
+  (`agent_worker/redact.py`) replaces registered literal values, longest first.
+* **Egress.** A tenant namespace denies everything, then allows DNS, the metadata server, Private Google Access and
+  the internet minus private ranges (`kubernetes/network-policies/allow-egress.yaml`). An FQDN policy exists only for
+  TypeSafe, and only on a cluster that supports FQDN network policy (`network-policies/fqdn/`).
+* **The switches.** `SWARM_WORK_CONTRACTS` is read by swarm-api (`workcontract.enabled`: on only when exactly `on`);
+  no Terraform variable sets it today, so it is off. `SWARM_CONTRACT_REVIEW` (`off|report|enforce`) is read by
+  `contractreview.mode` and set from `var.contract_review_mode` (`terraform/infra/locals.tf`); the Day One installer
+  renders it `off` (`swarm_install/tfvars.py`). A per-workspace `contract_review.enabled` block is already signed.
+
+### Claude Code's plugin format, as this design uses it
+
+A plugin is a directory. `.claude-plugin/plugin.json` names it (`name`, `version`, `description`, `author`, ...) and
+may declare `userConfig`: named fields, each with a `type`, a `title`/description, a default, `required`, and
+`sensitive: true` for a secret. Beside it: `skills/<skill>/SKILL.md`, `commands/*.md`, `agents/*.md`,
+`hooks/hooks.json` (event → matcher → `{type: "command", command, timeout}`), and `.mcp.json` (MCP servers). Commands
+and server definitions refer to the plugin's own files through `${CLAUDE_PLUGIN_ROOT}`, and plugins get a writable
+`${CLAUDE_PLUGIN_DATA}`. `claude --plugin-dir <dir>` (repeatable) loads a plugin from a directory for one session,
+with every component, without a marketplace or an install. `userConfig` values reach hook commands and MCP server
+definitions as `${user_config.<key>}` and the plugin's subprocesses as `CLAUDE_PLUGIN_OPTION_<KEY>`; the CLI keeps a
+sensitive value in the system keychain, or a credentials file under `~/.claude` where there is none. A marketplace is
+a repository whose `.claude-plugin/marketplace.json` lists plugins, each with a `source`: a path inside the
+marketplace repository, a `github` repository or a git URL, optionally at a `ref` or a `sha`, or a package registry.
+
+What this design must not rely on without proof: how CLI 2.1.283, headless (`claude -p`), with no keychain and
+`HOME` in a checkpointed folder, takes a sensitive `userConfig` value. Lane 2 (the loading spike) measures it; §4.4
+says what is built either way.
+
+## The design in one screen
+
+1. **The catalogue is Firestore data.** A plugin is an *install* (who owns it, its source, which version is current)
+   and immutable *versions* (each a pinned copy: commit, source digest, runnable digest, parsed manifest). Platform
+   installs serve every workspace that allows them; workspace installs serve one workspace. gstack and
+   security-audit stay as **built-in** entries, baked in the image, that nobody can remove.
+2. **Fetch and pin once.** swarm-api downloads a GitHub archive at a resolved commit (or receives an upload) into a
+   quarantine object as bytes only; an isolated **plugin intake job** with no network and no secrets unpacks it,
+   refuses what escapes or exceeds the caps, parses the manifest, and writes one normalised tarball named by its
+   sha256 into the scope's GCS prefix.
+3. **At a step's start** the worker downloads each signed plugin's tarball, checks its sha256 against the **signed**
+   digest, unpacks it outside the checkpointed tree, and passes `--plugin-dir` per plugin, so hooks, skills, commands,
+   agents and MCP servers all load. Every hook and MCP server command runs through one launcher,
+   `swarm-plugin-exec`, which gives that plugin, and only that plugin, its secrets, scrubs its output, and counts its
+   runs for the result.
+4. **Settings are generic.** `userConfig` renders as a form. Non-secret values live in the signed workspace settings;
+   secret values live in Secret Manager under a name derived from the workspace, the plugin and the field, or are a
+   **binding** to an existing workspace key (TypeSafe). A plugin with no `userConfig` gets **declared settings**:
+   environment variables and files (a rules file), written by the admin at install time into the version's overlay.
+5. **Defaults reach steps at submission.** A workspace's "every step" plugins and its settings are merged by swarm-api
+   into the step's **signed plugin set** (`metadata.dispatch.plugins`), so the worker trusts only what was signed. A
+   step may add a plugin, turn a default off, or override a non-secret value.
+6. **Update and remove never touch a step already submitted:** it keeps the version it was signed with.
+7. **Every change is audited**, and every plugin a step ran is in its result, with its version, digest and hook
+   counts.
+8. **The two deployment switches become signed platform settings** on Admin › Plugins, defaulting to Terraform.
+
+## 1. The catalogue as data
+
+### 1.1 Documents
+
+| Collection / document | Written by | Holds |
+|---|---|---|
+| `plugin_installs/{install_id}` | swarm-api only | `scope` (`platform` or `workspace`), `tenant_id` (workspace scope only), `name` (the manifest's), `display_name`, `source` (§2.1), `current_version`, `built_in`, `state` (`active`, `removed`), `created_by/at`, `updated_by/at`, `mac` |
+| `plugin_installs/{install_id}/versions/{version_id}` | swarm-api only, from the intake job's report | `source` (as resolved: repository, ref asked for, commit; or upload name and size), `source_sha256`, `runnable_sha256`, `object` (the GCS name), `manifest` (§1.3), `overlay` (§6.3), `requires` (§5), `files`, `bytes`, `intake` (the job's checks), `created_by/at`, `mac` |
+| `workspace_settings/{tenant}.plugins` | swarm-api only | `allowed` (as today, now install ids), `defaults` (install ids on for every step), `configs_digest` (§6.2), `set_by/at`, `mac` |
+| `workspace_settings/{tenant}/plugin_configs/{install_id}` | swarm-api only | per field: a non-secret `value`, or `secret: {kind: "plugin", set_at}`, or `binding: {kind: "provider_key", provider: "typesafe"}`; `set_by/at` |
+| `platform_settings/switches` | swarm-api only | `work_contracts` (`on`/`off`), `contract_review` (`off`/`report`/`enforce`), `set_by/at`, `mac` (§11) |
+| `plugin_intake/{intake_id}` | swarm-api and the intake job | one fetch or upload in flight: requested source, quarantine object, state, refusal reason; deleted a day after it ends |
+
+**Why install and version are two documents.** Pinning is the owner's rule: a step runs exactly one copy. A version
+is never edited after it is written; an update writes a new version and moves `current_version`, so a step signed
+yesterday can still name yesterday's version by id, and the Update dialog can compare two stored versions instead of
+re-fetching.
+
+**Why every document carries a MAC.** The tenant GSAs hold project-wide Firestore access (this is why the workspace
+blocks are MAC'd today), so any tenant's worker can write any of these documents. A forged version document could
+swap the digest every workspace's steps would be signed with. swarm-api therefore acts on an install, a version or a
+setting only when its MAC verifies under `swarm-settings-key`, and the worker never reads these documents at all: it
+trusts only the step's signed plugin set and the bytes' sha256. The canonical form of an install and a version needs
+a contract change (request P2, §14).
+
+**Install ids.** `p-<12 hex>` for platform scope and `w-<12 hex>` for workspace scope, random, never derived from a
+name, so two workspaces may each install their own `jev-enforce` without colliding and a name can be reused after a
+removal without resurrecting old settings. The console shows the manifest `name`; a step and the builder show the
+name with its scope ("jev-enforce · this workspace" or "· platform").
+
+### 1.2 Who sees what
+
+* A workspace's catalogue is: the built-ins, the platform installs the workspace **allows**, and its own workspace
+  installs (allowed by being installed; a workspace admin may still switch one off without removing it).
+* A platform install is invisible to a workspace until a workspace admin allows it, as the Allowed list works today.
+* A workspace install is invisible to every other workspace and to the platform catalogue. A platform admin sees it
+  on Admin › Plugins in a per-workspace list (read-only except **Remove**, for an incident).
+
+### 1.3 The parsed manifest
+
+The intake job parses and stores, so neither the console nor submission ever reads the archive:
+
+* `plugin.json`'s `name`, `version`, `description`, `author`, `homepage`, `license`, and `userConfig` (each field's
+  key, type, title, description, default, `required`, `sensitive`);
+* the **components**: skill names (each `skills/<name>/SKILL.md` and its frontmatter `name` and `description`),
+  command names, agent names, every hook (event, matcher, command, timeout) and every MCP server (name, command,
+  arguments, environment keys, never values); a server with a `url` transport is listed with its host;
+* `requires` (§5), from the overlay.
+
+### 1.4 Built-in entries
+
+gstack and security-audit stay image-baked and keep their code entries in `plugincatalogue.py`: they need a build
+(gstack compiles binaries, renders skills, needs Bun) that an intake job cannot do without running untrusted build
+code, and `security_review.py` validates its own findings with the skill's own validators at a known path. Each
+appears in the catalogue view as `built_in: true`, version as the image pins it, **no Remove, no Update** (an image
+release updates it); a workspace still allows each one and may make it a default. Recommended, pending Q13.
+
+## 2. Sources, fetch and pin
+
+### 2.1 What an admin may name
+
+| Source | Form | Resolves to |
+|---|---|---|
+| GitHub repository | `owner/repo`, a tag, a branch or a commit, an optional subdirectory | one 40-hex commit, through `GET /repos/{o}/{r}/commits/{ref}` |
+| Claude Code marketplace | a GitHub `owner/repo` holding `.claude-plugin/marketplace.json`, a ref, and the plugin's name in it | the marketplace's commit, then the entry's `source`: a relative path (same commit, that subdirectory); a `github` source at a `sha` (that commit) or a `ref` (resolved as above, and the resolution recorded). A `url`, `npm` or `pip` source is refused, recommended pending Q10 |
+| Upload | one `.zip`, `.tar.gz` or `.tgz` | its own bytes; "commit" is recorded as `upload` with the uploader and the file's name |
+
+A private repository is read through the **workspace's GitHub connection**: the App installation token, minted by
+swarm-api for this one repository with `contents: read` only (GitHub lets an installation token be narrowed to
+named repositories and permissions), used once, never stored. A platform install from GitHub uses public
+repositories, or the platform's own App installation when the repository belongs to the deployment's organisation.
+A person's own GitHub token is never used to fetch.
+
+### 2.2 Who fetches, and through which network path
+
+The rule that images may not fetch from GitHub at build time is about the image's reproducibility; fetching a
+plugin is a runtime act. Three places could do it (Q7):
+
+* **A: swarm-api downloads bytes, an isolated intake job checks them (recommended, pending Q7).** swarm-api (Cloud
+  Run, which already holds the GitHub App's key and reaches GitHub) streams the archive of exactly the resolved
+  commit (`GET /repos/{o}/{r}/tarball/{commit}`) into `gs://<plugins bucket>/quarantine/<intake_id>`, stopping at
+  the compressed cap, **without unpacking it**. It then starts one execution of the Cloud Run job
+  `swarm-plugin-intake`, whose service account can read `quarantine/`, write the scope's pinned prefix and its own
+  report, and nothing else: no Firestore, no Secret Manager, no GitHub, and **no egress** (the job runs with all
+  traffic through the VPC and no route out except Private Google Access). The untrusted archive is parsed only
+  there.
+* **B: swarm-api does all of it.** One service fewer, but archive parsing (zip bombs, path tricks, parser bugs) would
+  run in the process that holds the settings key, the KMS signing permission and every workspace's data.
+* **C: a SwarmCloud agent job.** Reuses the dispatch machinery, but puts the forge token in a pod and costs a
+  container start per install.
+
+An **upload** takes the same path from the quarantine object on: the console asks swarm-api for a V4 signed upload
+URL to `quarantine/<intake_id>`, bound to the content type and to `x-goog-content-length-range: 0,<cap>`, valid ten
+minutes, so the bytes never pass through swarm-api and a larger file is refused by Cloud Storage itself.
+
+### 2.3 The intake job's checks
+
+In this order, each refusal naming the entry and the rule, no partial result written:
+
+1. **Size before unpacking:** the compressed object at most 25 MiB (recommended, pending Q8).
+2. **Every entry, read from the archive's index before any byte is written:** a relative path; no `..` segment; no
+   absolute path, drive letter or backslash; no NUL; at most 32 segments and 255 bytes per segment; no duplicate
+   after Unicode NFC normalisation and case folding (a checkout on a case-insensitive disk must not differ); only
+   regular files, directories and **symbolic links whose target, resolved inside the archive, stays inside it and is
+   not itself a link** (no hard links, devices, FIFOs or sockets).
+3. **Caps while unpacking, counted from bytes actually written, not from headers:** at most 100 MiB unpacked, 5,000
+   files, 50 MiB per file, and a compression ratio of at most 100:1 per entry (recommended, pending Q8). The job
+   unpacks into its own in-memory filesystem; the caps also bound its memory.
+4. **Modes are normalised:** files `0444`, or `0555` when any execute bit was set; directories `0555`; no setuid,
+   setgid or sticky bit; owner and timestamps zeroed.
+5. **The plugin root:** the archive's single top folder (GitHub's tarballs wrap the tree in one) and then the
+   requested subdirectory. It must hold `.claude-plugin/plugin.json`, **or** the admin must have supplied an overlay
+   (§6.3) that declares one.
+6. **The manifest parses** (`plugin.json` is a JSON object; `hooks/hooks.json` and `.mcp.json`, when present, parse
+   and use only the documented keys); every path a hook or a server names through `${CLAUDE_PLUGIN_ROOT}` exists in
+   the tree.
+7. **Dependencies are shipped, never installed:** a `package.json` that lists `dependencies` with no `node_modules`
+   beside it is refused with that reason (recommended, pending Q9). The job never runs `npm install`, a build or
+   any file from the archive.
+8. **Digests.** `source_sha256` is over the quarantined bytes as fetched or uploaded. The **runnable tree** is the
+   normalised tree plus the overlay; it is written as one tar in a canonical order (paths sorted, fixed modes, zeroed
+   owners and times), and `runnable_sha256` is over that tar. The object is `<scope prefix>/<runnable_sha256>.tar`,
+   written with `ifGenerationMatch=0`, so an existing digest is never overwritten.
+
+The job writes its report (the parsed manifest, the counts, the digests or the refusal) to
+`reports/<intake_id>.json`. The job has no route to swarm-api, so the bucket's finalize notification on `reports/`
+(Pub/Sub, pushed to swarm-api with an OIDC token, as the deployment's other push subscriptions are) tells swarm-api
+the intake ended; an execution that fails without a report is found by the same notification's absence after the
+job's 10-minute timeout, through Cloud Run's execution state, read once. swarm-api reads the report, checks that the object exists with that size and digest, and only
+then writes the version document. The quarantine object is deleted when the intake ends, either way.
+
+**Why one canonical tar and not the original archive.** The worker must verify one digest and unpack one format with
+no choice to make; a zip's central directory and a tar's headers can disagree, and the intake job has already proven
+this tree safe. `source_sha256` keeps the link to what upstream shipped, for the audit and for an admin who wants to
+check it against a release.
+
+## 3. Where pinned copies live
+
+* One bucket, `<project>-swarm-plugins`, uniform bucket-level access, no public access, labelled
+  `managed-by=swarm-terraform`, in the deployment's region.
+* `platform/<runnable_sha256>.tar` for platform installs; `tenants/<tenant_id>/<runnable_sha256>.tar` for workspace
+  installs; `quarantine/` and `reports/` for intake.
+* **Reads:** each tenant GSA gets `storage.objectViewer` on `platform/` and on its own `tenants/<tenant_id>/` only
+  (IAM conditions on the object name prefix), so a worker of workspace A cannot download workspace B's private
+  plugin even with B's digest in hand. **Writes:** only the intake job's service account, and only to `platform/`,
+  `tenants/` and `reports/`; swarm-api writes `quarantine/` and deletes (§9.3).
+* By digest, so two workspaces installing the same bytes privately each hold a copy in their own prefix (no
+  cross-workspace sharing of private objects), while two versions with the same bytes in one scope share one object.
+
+## 4. The start of a step: install and load
+
+### 4.1 What the worker reads
+
+Only `metadata.dispatch.plugins`, the step's signed plugin set (§8): per plugin its install id, version id, scope,
+`runnable_sha256`, the object name, the non-secret values, the secret fields' references, and the skills a step chose
+when the plugin offers skills by mode. It reads no catalogue document.
+
+### 4.2 Install
+
+For each plugin, before the agent starts:
+
+1. Download the object as the tenant GSA into `private/plugins/<runnable_sha256>.tar` (private: never checkpointed,
+   never uploaded), streaming its sha256.
+2. **Refuse the step** (`PluginUnavailable`, CANNOT_START, the message naming the plugin and the version, never the
+   prompt) when the digest is not the signed one, the object is missing, or it exceeds the version's recorded size.
+3. Unpack into `private/plugins/<install_id>/` with the same entry checks as the intake job (defence in depth: the
+   bytes are already proven, the check costs milliseconds), then make the tree read-only.
+4. Write the plugin's data folder, `private/plugin-data/<install_id>/`, for `${CLAUDE_PLUGIN_DATA}`.
+5. Pass `--plugin-dir private/plugins/<install_id>` per plugin to the CLI, after the runner's own `--settings` and
+   `--mcp-config`.
+
+A plugin's copy is downloaded and verified again by every attempt, never restored from a checkpoint. **Why not in
+`work/`:** `work/` is checkpointed, so a copy there would be restored into the next attempt unverified, and every
+checkpoint would carry it. **Why "read-only" is not a security boundary here:** the agent runs as the worker's uid
+and could `chmod` the tree back, but anything the agent can do to the plugin it can already do directly; what matters
+is that a modified copy never outlives the attempt, and it does not.
+
+Built-ins are linked as today (`plugins.link_skills`); nothing changes for them.
+
+### 4.3 Load: every component, not only skills
+
+`--plugin-dir` loads the plugin's skills, commands, agents, hooks and MCP servers. Two things the runner adds:
+
+* **Skills chosen per step.** A plugin whose manifest offers skills by mode (gstack's shape) keeps the per-step skill
+  choice: the worker links only the chosen skills, as today. A plugin loaded whole by `--plugin-dir` brings all its
+  skills; the builder shows them, and a step may turn off any of them (`disabled_skills` in the signed set). Lane 2
+  measures whether the CLI's permission rules can deny one plugin skill; if they cannot, the builder offers no
+  per-skill switch for a whole-loaded plugin and says so behind an (i), rather than promise a switch that does not
+  hold.
+* **The runner's settings still win.** The runner's own hooks (background refusal, guards, handoff, budget) stay in
+  its `--settings` file. A plugin hook runs in addition, never instead.
+
+### 4.4 Settings and secrets into the plugin: `swarm-plugin-exec`
+
+When the intake job builds the runnable tree (§2.3, step 8) it changes exactly one thing in the plugin's own files:
+every hook command and every MCP server command, from upstream or from the overlay (§6.3), becomes
+
+```
+/opt/swarm/bin/swarm-plugin-exec <install_id> -- <the original command>
+```
+
+The launcher is a small Python program in `agent-runtime-base` (it imports `agent_worker.redact`; the worker's
+Python is in every image that runs a claude-code profile). For one hook or server process it:
+
+1. reads `private/plugin-env/<install_id>.json` (0600, written by the worker at start: that plugin's non-secret
+   environment and the paths of its secret files) and sets exactly that plugin's variables, nothing of any other
+   plugin;
+2. reads that plugin's secret files and sets them as the variables the plugin expects (`CLAUDE_PLUGIN_OPTION_<KEY>`
+   for a `userConfig` field, or the declared variable name, e.g. `TYPESAFE_API_KEY`), registering each value for
+   redaction;
+3. deletes from its child's environment the variables no plugin may inherit (the worker's own, the runner's
+   credentials, other plugins');
+4. runs the command, passes stdin through, and scrubs the child's stdout and stderr of every registered value
+   (longest first, `redact.scrub_text`) before they reach the CLI, so a hook that prints its key, or the GitHub
+   token it found in the checkout's git config, returns `[REDACTED]` into the transcript;
+5. appends one line of counts (event, matcher, exit code, duration) to `private/plugin-runs/<install_id>.jsonl`.
+
+**Why a launcher and not `${user_config.*}`.** CLI substitution puts a value into the command line (visible in the
+process table to the agent and every other plugin) or keeps it under `~/.claude`, which is the checkpointed `work/`.
+The launcher keeps each secret in one process's environment, for one plugin. The jev gates' launcher
+(`swarm-jev-gate.mjs`) already works this way; this generalises it. Lane 2 measures whether CLI 2.1.283 needs the
+`userConfig` values present in its own settings for a plugin with a required field to load at all; if so, the worker
+writes **non-secret** values into the runner's settings (`pluginConfigs`) and a placeholder for each sensitive field,
+and the launcher still supplies the real value.
+
+The rewrite is part of the runnable tree, so its digest covers it, and the Update dialog shows it.
+
+### 4.5 The record
+
+`record` gains, per managed plugin: install id, name, scope, version id, `runnable_sha256`, the source commit, and
+per hook event the runs and non-zero exits counted by the launcher; per MCP server whether it started; skills called
+(as today, from `Skill` tool calls). Names and counts only, never arguments, output or settings values.
+
+## 5. What a plugin needs, and what a runner profile can run
+
+A version's `requires` (from the overlay, filled in by the admin at install time, with what the intake job found as a
+suggestion: a `package.json` `engines.node`, a `.py` hook, a `bun` command):
+
+* **runtimes:** a closed list, `node`, `bun`, `python3`, `bash`, with a minimum version for `node` and `bun`;
+* **network hosts:** the hosts its hooks or servers call (`api.typesafe.ai` for both Jev plugins), shown at install,
+  in the Allowed switch and in the builder;
+* **profiles it supports:** any claude-code profile by default; an admin may narrow it (a browser-driving plugin to
+  `claude-code-browser`).
+
+**What a profile can run** is declared once per runner profile in its `runtime_capabilities`
+(`swarm_common.profiles.RunnerProfile`, contract request 136), today `()` for every profile: request P4 (§14) sets
+`claude_plugins`, `node`, `bun`, `python3` and `bash` on the five claude-code profiles, matching
+`agent-runtime-base`. Until it is accepted, swarm-api keeps the same table beside `CLAUDE_CODE_PROFILES` in
+`plugincatalogue.py`, with a unit test that reads the Dockerfile's `ARG` lines so the table cannot claim a runtime the
+image lacks. Submission refuses a step whose profile lacks a plugin's runtime, naming both. A codex step names no
+managed plugin (codex does not load Claude Code plugins).
+
+**Egress** is not narrowed per plugin today: the agent, every plugin and anything in the checkout share the pod's
+network namespace, and a NetworkPolicy cannot tell a hook from the agent. Whether a step that loads a non-built-in
+plugin gets an FQDN policy limited to the platform's hosts plus the plugins' declared hosts is Q1 (recommended:
+declared and shown in the first release, enforcement a follow-up lane once the cluster supports FQDN policy).
+
+## 6. Generic settings
+
+### 6.1 The form
+
+Admin › Plugins (platform) and Config › Plugins (workspace) render each plugin's settings as a form generated from its
+fields, `userConfig` or declared (§6.3): `string` a text box, `number` a number box, `boolean` a switch, `directory`
+or `file` a path inside the checkout (validated as relative, no `..`), an enum a select; `required` marked; the
+field's description behind an (i). A **sensitive** field is a write-only box with **Set**, **Replace**, **Remove**
+and **Use a workspace key**; once saved it shows "set by <who>, <when>" and never its value.
+
+Settings are **per workspace**, also for a platform plugin: a platform admin installs the code; each workspace
+supplies its own values and secrets (recommended, pending Q2: no platform-held secret shared across workspaces,
+because every workspace's agents could read it).
+
+### 6.2 Where values live
+
+* **Non-secret values:** `workspace_settings/{tenant}/plugin_configs/{install_id}`, written only by swarm-api for
+  the workspace's owner or admin, audited. Each document's canonical bytes are digested; the sorted digests of all
+  the workspace's config documents make `configs_digest` in the signed `plugins` block, so a forged value does not
+  verify and swarm-api refuses to merge it (request P1).
+* **Secret values:** Secret Manager, `swarm-tenant-<t>-plg-<16 hex>`, the hex being the first 16 of
+  `sha256(install_id + "/" + field)`: derived from the workspace, the plugin and the field, never from anything a
+  caller types, so no value can be addressed into another workspace's or plugin's name. Labelled
+  `managed-by=swarm-api`, `tenant=<t>`, `plugin=<install_id>`. The tenant GSA holds **no** grant on them; swarm-api
+  releases each one to an attempt whose signed plugin set names it (the `attempts_secrets` pattern), so a step that
+  does not load the plugin cannot read the plugin's secret even though it runs in the same workspace. The value is
+  entered through a one-time form (the `secrets-scopes.md` §6.3 link: 32 random bytes, ten minutes, one use, bound to
+  the caller, the workspace and the destination) and never returns: not in Firestore, not in a log, not in the
+  console after saving, not in the audit row.
+* **A binding instead of a value.** "Use a workspace key" stores `binding: {kind: "provider_key", provider:
+  "typesafe"}` instead of a secret: the step's set carries the binding, and the worker delivers the workspace's
+  TypeSafe key exactly as `jevkey.resolve_workspace` resolves it for the quality gates (the workspace's key, never a
+  person's), into that plugin's secret file. With the TypeSafe forwarder on (`SWARM_TYPESAFE_INJECT=on`), the worker
+  never holds the key: the binding then delivers the forwarder's shim (its base URL and the attempt's ticket) and
+  sets the plugin's declared base-URL variable to it, as `swarm-jev-gate.mjs` does today. Bindable keys are a closed
+  list (TypeSafe first; any provider key the workspace already holds can follow), so a binding never names an
+  arbitrary secret.
+* **A binding brings its adapter.** The workspace's TypeSafe key is never handed to a plugin bare: a plugin bound to
+  it runs its `node` hooks through the **Jev adapter**, the baked gates' launcher logic factored out of
+  `swarm-jev-gate.mjs` (the key in that process only, `fetch` replaced by one that sends only to TypeSafe or the shim
+  through the outbound filter, the variables that would point it elsewhere removed, and every call recorded in the
+  calls file the worker already sends to `state/jev-usage`). So a managed jev-belay sends, and is accounted, exactly
+  as the baked one does. A plugin bound to TypeSafe whose hooks are not `node` commands is refused at the binding,
+  with that reason. Adapters are platform code, one per bindable key, never supplied by an admin.
+
+A secret field's name must be in `swarm-tenant-<t>-plg-...`; its consumer kind `plugin` is request P3, because
+`Tenant.secret_name` and the secret-consumer kinds are frozen.
+
+### 6.3 Declared settings and the overlay (a plugin with no `userConfig`, or no manifest)
+
+jev-belay and jev-enforce ship no `plugin.json`, no `hooks/hooks.json` and no `userConfig`; they read environment
+variables (`JEV_ENFORCE_RULES_ONLY`, `JEV_BELAY_CHECK`, `TYPESAFE_API_KEY`, ...) and a rules file. "Customisation
+where needed" is the **overlay**, a small JSON document an admin writes in the install dialog, stored on the version
+and part of its runnable tree:
+
+* `plugin`: the `plugin.json` to use when the source has none (name, version, description);
+* `hooks`: hook entries when the source has no `hooks/hooks.json`: event, matcher, timeout, and a command that is a
+  runtime from §5 and a path **inside the plugin** plus fixed arguments (`node ${CLAUDE_PLUGIN_ROOT}/belay.mjs`),
+  never a free shell line; the intake job checks the path exists;
+* `settings`: declared fields, each with a type, a description, `sensitive`, and where it goes: an **environment
+  variable** name, or a **file** (its content set in the form, written by the worker to
+  `private/plugin-files/<install_id>/<name>` and its path put in a named variable, e.g. a rules file);
+* `requires` (§5).
+
+An overlay may add to a plugin that has its own manifest (declare `requires`, add a file setting) but never replace
+its hooks, so what upstream ships is what runs. Variable names are checked against a deny list
+(`PATH`, `HOME`, `LD_*`, `NODE_OPTIONS`, `PYTHON*`, `CLAUDE_*` except `CLAUDE_PLUGIN_OPTION_*`, `SWARM_*`,
+`GOOGLE_*`, `GIT_*`) so a setting cannot redirect the runtime that runs the hook.
+
+### 6.4 Per-step overrides
+
+A step may override a **non-secret** value of a plugin it loads, through the builder's plugin sheet, as a typed value
+against the same field definitions (invariant 10: values for fields the plugin declares, never a command, path outside
+the checkout, image or resource spec). A secret is never overridden per step: a workflow is shared across members and
+its JSON is visible to them.
+
+## 7. Workspace defaults ("on for every step") and how they reach a step
+
+* A workspace admin marks an allowed plugin **on for every step** (`plugins.defaults`, signed, request P1).
+* **At submission** swarm-api computes the step's plugin set: the workspace defaults, plus the plugins the step adds,
+  minus the defaults the step turns off (`plugins_off`), each resolved to the install's **current version at that
+  moment**, with the workspace's values, the step's overrides and the secret references. It writes the set into the
+  step's `metadata.dispatch.plugins` before the step is signed.
+* A default the step's runner profile cannot run (a codex step, a missing runtime) is skipped for that step and
+  recorded as skipped in the step's dispatch record; it does not refuse the step (recommended, pending Q6), because a
+  workspace default must not break every non-Claude step.
+* The builder shows defaults on every step card as chips with an "off for this step" switch, so the step's JSON says
+  what it turned off and an exported workflow carries no copy of the defaults.
+
+**Why at submission and not at the worker.** The worker trusts only what was signed. A default resolved at start from
+Firestore would be a value the tenant can write; resolved at submission, it is inside the KMS-signed spec, and a step
+keeps the defaults it was submitted with even if the workspace changes them while it waits in the queue.
+
+## 8. What is signed, and what the worker trusts
+
+The step's plugin set rides in `metadata.dispatch`, which the step spec signs whole (`specsign.
+SIGNED_METADATA_KEYS`). So **no spec format bump** and **no change to the work contract document** are needed for the
+step:
+
+```
+metadata.dispatch.plugins = {
+  "<install_id>": {
+    "name": "jev-enforce", "scope": "workspace", "version_id": "...",
+    "runnable_sha256": "<64 hex>", "object": "tenants/<t>/<64 hex>.tar",
+    "env": {"JEV_ENFORCE_RULES_ONLY": "1"},
+    "files": {"JEV_ENFORCE_RULES_FILE": {"sha256": "<64 hex>"}},
+    "secrets": {"TYPESAFE_API_KEY": {"binding": "provider_key:typesafe"}},
+    "skills": null, "disabled_skills": []
+  }
+}
+```
+
+A file setting's content travels as a released value like a secret (it may be long, and a rules file may say more
+than a member should read in a workflow's JSON), and its sha256 is what is signed. The work contract keeps
+`capabilities.plugins` for the built-ins (unchanged), and a managed plugin is outside it, so managed plugins **do not
+need `SWARM_WORK_CONTRACTS`**. The worker refuses a set it cannot verify exactly as it refuses an unsigned contract.
+
+What still needs the frozen contract (§14): the workspace block's new fields (P1), the install and version MAC form
+(P2), the plugin secret name and consumer kind (P3), the profiles' runtime capabilities (P4) and the platform
+switches' MAC form (P5).
+
+## 9. Update and remove
+
+### 9.1 Update
+
+1. An admin opens a plugin and picks **Check for update**: for a GitHub or marketplace source, swarm-api resolves the
+   same ref (or a new tag the admin picks) to a commit; for an upload, the admin uploads the new archive. Intake runs
+   as in §2; the result is a **candidate** version, not yet current.
+2. **The diff**, from two stored versions, with no fetch: `plugin.json` fields; hooks added, removed or changed
+   (event, matcher, command); MCP servers added, removed or changed; skills, commands and agents added or removed;
+   settings fields added, removed, retyped or newly sensitive; `requires` and network hosts; the file list with sizes
+   (added, removed, changed); upstream commit range with a link to GitHub's compare page. A change to hooks, servers,
+   network hosts or sensitivity is marked, because that is where a malicious update acts.
+3. **Apply** (a typed confirmation of the plugin's name when hooks, servers or hosts changed) moves
+   `current_version`. A new required setting with no value blocks the apply until it is set.
+
+**What happens to steps:** a step already submitted, queued, parked (waiting for an answer or quota) or running keeps
+the version it was signed with, through every retry and resume, because its digest is in its signed spec. A step
+submitted after the apply gets the new version. A scheduled workflow's next run is a new submission, so it gets the
+new one. There is no automatic update (a malicious push upstream changes nothing until an admin applies it).
+
+### 9.2 Remove
+
+**Remove** first lists who uses it: workspaces that allow it (platform scope), workspaces where it is a default,
+saved workflows and agents whose steps name it, schedules that run those workflows, and steps queued or running with
+it now. Confirming (typed name) sets `state: removed`: it leaves the catalogue, the Allowed lists and the defaults; a
+saved workflow naming it is refused at submission with a reason naming the plugin (recommended, pending Q5); queued
+and running steps keep their copy. The plugin's secrets (`-plg-` names for that install) are destroyed when the
+install is removed. A built-in has no Remove.
+
+### 9.3 Garbage collection
+
+A pinned object is deleted when no version that is current, no candidate, and no step that is not finished names its
+digest, and it is older than 7 days. The reconciler's existing sweep runs this daily; the delete is by
+`ifGenerationMatch`, so a concurrent intake of the same bytes is never lost.
+
+## 10. Audit events
+
+Each written to `admin_audit` in the same transaction as the change it records (`{action, by, at, target, detail}`),
+`detail` naming ids, versions, digests, field names and counts, never a value:
+
+`plugin_intake_started`, `plugin_intake_refused` (with the rule), `plugin_installed`, `plugin_update_checked`,
+`plugin_updated` (old and new version and digest), `plugin_removed`, `plugin_allowed_set` (as today's
+`workspace_plugins_set`), `plugin_defaults_set`, `plugin_config_set` (field names), `plugin_secret_set` and
+`plugin_secret_removed` (field name), `plugin_secret_bound` (field and provider), `platform_switch_set` (switch, old
+and new value). The step's result (§4.5) is the run-time half.
+
+## 11. The platform switches as console settings
+
+`SWARM_WORK_CONTRACTS` and `SWARM_CONTRACT_REVIEW` become two controls on Admin › Plugins › Platform: a switch and a
+three-way select, each showing "Terraform default: off" beside it, and "Reset to default".
+
+* **Stored** in `platform_settings/switches` with a MAC under `swarm-settings-key` over a canonical form with its own
+  purpose (`swarm.platform-settings/v1`, request P5), so a value copied from a workspace block never verifies.
+* **Read** by swarm-api through one function per switch that returns the stored value when the document exists and
+  its MAC verifies, else the environment variable (the Terraform value), else `off`. The read is cached for 30
+  seconds per instance, so a change reaches every instance within half a minute without a redeploy. The environment
+  read stays (`scripts/lib/check-env-parity.sh` still sees swarm-api read what Terraform sets).
+* **A MAC that fails** reads as the Terraform default, never as the stored value, and logs `platform_switch_unsigned`
+  once per instance.
+* **Who:** a platform admin; audited (`platform_switch_set`); a confirmation dialog naming what changes (turning
+  contract review to `enforce` refuses steps; turning work contracts off makes steps that name built-in plugins
+  refused) (recommended, pending Q11).
+* Each workspace's own `contract_review.enabled` block stays; the platform mode composes with it as today.
+
+## 12. Threats, read as an attacker
+
+A plugin's hooks and MCP servers run code in every agent container that loads it, with that workspace's secrets as
+the step holds them, its GitHub token, its checkout and the tenant GSA's metadata-server token.
+
+| Attack | What stops it |
+|---|---|
+| **A workspace member installs a plugin** to run code in every step | Only a workspace owner or admin installs, updates, removes, allows, sets defaults or settings (recommended, pending Q3); a member only picks allowed plugins in the builder. A plugin runs nowhere until an admin allows it, and in no step that does not name it or have it as a default. |
+| **A workspace admin installs a platform plugin** | Platform scope needs a platform admin; the route checks the role server-side. |
+| **A platform plugin reads a workspace's secrets** | It runs only inside a workspace's own step container, so it sees what that step sees: the secrets that step's plugins and slots release, its forge token, its tenant GSA. It cannot reach another workspace's secrets (the tenant GSA has no grant on them, and the plugin-secret release checks the step's signed set) or another workspace's objects (IAM conditions per prefix). What it can read in the step is the honest residual: allowing a platform plugin is trusting it with that workspace's steps, which the Allow switch says behind its (i). |
+| **A malicious update upstream** (a compromised maintainer, a moved tag, a force-push) | Nothing updates on its own; a tag is resolved to a commit once, and the copy is ours. Update shows the diff with hooks, servers, hosts and sensitive fields marked, and needs a typed confirmation. A second approver for platform updates is Q4. |
+| **A tampered pinned copy** | Objects are written only by the intake job's account, never overwritten (`ifGenerationMatch=0`), and the worker checks the sha256 against the signed digest before unpacking. |
+| **A forged catalogue document** (a tenant worker writes a version document with its own digest) | swarm-api acts only on documents whose MAC verifies (P1, P2); the worker reads none of them. |
+| **An archive escaping its folder** (`../`, absolute paths, symlinks out, hard links, devices, zip bombs, case collisions) | §2.3: refused from the index before writing, caps counted on bytes written, unpacked by a job with no network, no secrets and no Firestore; the worker checks the entries again. |
+| **A hook printing a secret** | The launcher scrubs every registered value from the hook's output before the CLI sees it; the worker's existing scrub runs over the transcript and logs at the end. A secret the step never registered (one the hook found on disk) is not caught by a literal scrub: that residual is the same as the agent's own today. |
+| **A hook reading another plugin's secret** | Each plugin's secrets are set only in its own launcher's child; files are per plugin. Within one container the same uid can read another plugin's 0600 file: plugins loaded in the same step trust each other, as the agent and its tools already do. |
+| **Egress to exfiltrate** | Today an agent step reaches the internet minus private ranges whatever plugins it loads; per-step FQDN restriction is Q1. A plugin's declared hosts are shown before an admin allows it. |
+| **A workspace plugin reaching another workspace** | Its object sits under its workspace's prefix (other GSAs cannot read it), its install id is refused at submission for any other tenant, it runs in its own workspace's namespace under that workspace's GSA, and nothing on the platform catalogue lists it. |
+| **A setting redirecting the runtime** (`NODE_OPTIONS=--require ...`, `PATH`, `LD_PRELOAD`) | §6.3's deny list, checked at install and at every settings write and override. |
+| **A plugin hook that blocks a step forever, or answers "ask"** | Every hook has a timeout (the manifest's, capped at 120 s); the step's own wall-clock and turn limits stand. Nobody can answer "ask" in a headless step: lane 2 measures what CLI 2.1.283 does with a plugin hook's "ask" under `-p`, and the launcher rewrites an "ask" decision to "deny" if the CLI would otherwise wait; the result counts it. |
+| **A hook sending a secret or the code out** (in its request to its own API) | Output scrubbing does not cover what a hook sends. For a plugin bound to the TypeSafe key, the Jev adapter (§6.2) applies the baked gates' outbound filter: `fetch` only to TypeSafe or the shim, secret-shaped files sent by name only, the redaction rule families dropped, registered secrets replaced (`swarm-jev-gate.mjs`, "THE OUTBOUND FILTER"; `docs/jev-data-flow.md`). Any other plugin's requests are not filtered: a plugin in another runtime, or one with its own HTTP client, sends what it sends to the hosts it declared, and allowing it is trusting it with that. Q1 decides whether egress is narrowed to those hosts. |
+| **Planting state across attempts** (`${CLAUDE_PLUGIN_DATA}`) | The data folder is in `private/`, not checkpointed; a plugin that needs state across a park says so, and is refused until the question bridge design covers plugin state. |
+
+## 13. CONTRACT.md invariants
+
+1. **Demand:** an intake job is not a step and creates no agent demand; a step loading plugins is sized and
+   admitted exactly as before. A queued step holds a digest, not a container.
+2. **All-or-nothing reservation:** untouched.
+3. **Concurrency from LEASED:** untouched; intake jobs are bounded by the job's own parallelism (one per intake, at
+   most 4 at once per deployment), not by tenant slots.
+4. **No sleeping through a wait:** the worker downloads at start (a bounded transfer of at most 100 MiB per plugin);
+   nothing waits on an outside party. Intake polls nothing: the report object's finalize notification (Pub/Sub push
+   to swarm-api) ends the intake.
+5. **Fencing:** a stale attempt exits before it downloads or runs anything, as before; the launcher starts only
+   under the runner, after fencing.
+6. **Spot:** the intake job is a Cloud Run job; nothing changes.
+7. **Requests equal limits:** no pod spec changes; downloads land on the attempt's existing private storage, counted
+   against its existing ephemeral-storage request, and the cap per plugin keeps the sum predictable (at most 8
+   plugins per step).
+8. **Checkpointing:** unchanged; the plugin copy is deliberately outside the checkpoint and re-verified per attempt.
+9. **Per-tenant isolation:** workspace plugins live under the tenant's own GCS prefix and its own Secret Manager
+   names, run in its own namespace under its own GSA; platform plugins hold no shared secrets (Q2).
+10. **Callers name, never send:** a step names install ids and values for declared fields. Code, commands, paths and
+    hosts come only from a pinned copy an admin installed through a privileged, audited catalogue route, the way a
+    platform admin registers an MCP server (`registered-mcp-servers.md`); a step's submission can never supply them.
+
+## 14. Contract change requests (requests, not changes: `swarm_common` is frozen)
+
+* **P1. `specsign.SETTINGS_MAC_FIELDS["plugins"]`** becomes `("allowed", "defaults", "configs_digest")`: the
+  workspace's every-step plugins and the digest of its plugin settings are signed with the Allowed list. An absent key
+  projects as null, so every block stored today still verifies.
+* **P2. A canonical form for a plugin install and a plugin version** (`specsign.canonical_plugin_record(kind,
+  fields)`, purpose `swarm.plugin-record/v1`, kinds `install` and `version`, with the scope and the tenant id inside
+  the bytes), MAC'd under `swarm-settings-key` by swarm-api.
+* **P3. A plugin secret:** `Tenant.plugin_secret_name(install_id, field)` returning
+  `swarm-tenant-<t>-plg-<16 hex>`, and the secret-consumer kind `plugin` so a released secret's record says which
+  plugin it was for.
+* **P4. `RunnerProfile.runtime_capabilities`** on the five claude-code profiles: `("claude_plugins", "node", "bun",
+  "python3", "bash")`.
+* **P5. A canonical form for platform settings** (`specsign.canonical_platform_settings(fields)`, purpose
+  `swarm.platform-settings/v1`, fields `work_contracts` and `contract_review`).
+
+Each goes into `docs/contract-change-requests.md` through the lane that builds on it, and is in `questions.json` as
+Q12 for the owner to accept.
+
+## 15. The Day One installer
+
+A fresh deployment needs: the plugins bucket and its IAM (§3), the intake job and its service account (§2.2), the
+reconciler's GC grant (§9.3), and the Secret Manager grants for `-plg-` names to swarm-api. All of it is Terraform in
+`terraform/infra`, which `swarm install`'s infra passes already apply, so the installer gains **no prompt and no step**;
+the built-ins appear without seeding, because they are code. Lane 3 adds one check to `swarm doctor` and the install's
+verify stage (the bucket exists, the intake job is deployed, a tenant GSA can read `platform/`). The platform switches
+keep their Terraform defaults (`contract_review_mode` stays `off` in `tfvars.py`) until a platform admin changes them
+in the console. Whether Admin › Setup offers an optional "add a plugin" step is Q15 (recommended: no).
+
+## 16. The test: jev-belay and jev-enforce, managed
+
+**Done means** one workflow's result shows both plugins' hooks ran, from copies installed through the console.
+
+1. **jev-belay 0.2.0 from GitHub.** A platform admin installs `valentynkit/jev-belay` at tag `v0.2.0`. swarm-api
+   resolves it to `ef719db7eaadc56aa4def86c4da4ffff5bcbca35` (the commit the image vendors today; the test asserts the
+   resolution equals it). There is no `plugin.json`, so the admin writes the overlay: `plugin` (name `jev-belay`,
+   version `0.2.0`); one hook, `Stop`, `node ${CLAUDE_PLUGIN_ROOT}/belay.mjs`, timeout 25 s (today's gate value);
+   `requires`: `node >= 20`, host `api.typesafe.ai`; a declared secret `TYPESAFE_API_KEY` and a declared value
+   `JEV_BELAY_CHECK`. The test asserts the intake's `belay.mjs` sha256 equals the file `tests/unit/worker/
+   test_quality_gates.py` already pins.
+2. **jev-enforce 1.1.1-bgd.3 as an upload.** The owner's fork of `erkamyaman/jev-enforce`, on no remote, uploaded as
+   a `.tar.gz` by a workspace admin as a **workspace** plugin. The admin's overlay: `plugin` (name `jev-enforce`,
+   version `1.1.1-bgd.3`); hooks `Stop` → `node ${CLAUDE_PLUGIN_ROOT}/dist/src/cli.js hook stop` and `PostToolUse`
+   matching `Edit|Write|MultiEdit` → `... hook post-edit`, 30 s each; declared settings `JEV_ENFORCE_RULES_ONLY`
+   (boolean), `JEV_ENFORCE_MODE` (`end`), a **file** setting `JEV_ENFORCE_RULES_FILE` (the rules file, entered in the
+   form), and the secret `TYPESAFE_API_KEY`. The intake refuses the upload if its `package.json` lists dependencies
+   without `node_modules` (jev-enforce 1.1.1 has none). The exact variable names come from the fork's own README and
+   source at intake time; the test reads them from the stored manifest, never from this document.
+3. **Configure both with the workspace's TypeSafe key:** the workspace admin allows jev-belay (platform) and, on each
+   plugin's `TYPESAFE_API_KEY`, picks **Use a workspace key › TypeSafe**. No key is pasted.
+4. **jev-enforce on for every step.** The workspace admin marks it a default.
+5. **Run one workflow:** one claude-code step that adds jev-belay in the builder and edits one file. Its result's
+   `plugins` record shows jev-belay (`Stop` ≥ 1 run) and jev-enforce (`PostToolUse` ≥ 1 run, `Stop` ≥ 1 run), each
+   with its version and digest, exit codes counted; the attempt's Jev usage shows the hooks' calls (the adapter's
+   calls file, §6.2); and the transcript and logs hold no TypeSafe key (the test scans them).
+6. **The step's quality-gates switch is off** for this run (`quality_gates.jev`), so the baked gates do not also run
+   and the counts are the managed plugins' alone. What happens when both are on is Q14.
+
+The test is a `make smoke`-style check against a deployed environment (lane 12), plus the offline unit tests each
+lane carries (intake checks on crafted archives, digest refusal, launcher scrub and env isolation, submission merge
+and signing, MAC refusal).
+
+## 17. The lane plan
+
+In order. Territories are disjoint; "needs" names what must merge first. Console lanes hold about three UI files each
+and **wait for the console mock-ups** the owner picks from (a separate lane renders two directions now); every console
+lane keeps the prose guard's count where it is or lower, explanations behind (i) and tooltips.
+
+| # | Lane | Territory | Needs | Gives |
+|---|---|---|---|---|
+| 1 | **Contract requests P1-P5** | `docs/contract-change-requests.md`; then `apps/common/swarm_common/specsign.py`, `models.py`, `profiles.py` only by the owner's acceptance | the owner's answer to Q12 | the signed shapes |
+| 2 | **Loading spike** (no merge to the product path) | `docs/design/managed-plugins-spike.md`, `images/agent-runtime-base/spikes/plugin-dir/` | nothing | whether CLI 2.1.283 headless loads hooks, MCP servers, commands and agents from `--plugin-dir`, takes `userConfig` without a keychain, and expands `${CLAUDE_PLUGIN_ROOT}` inside a wrapped command; jev-belay and jev-enforce hand-wrapped as plugins and run |
+| 3 | **Infrastructure** | `terraform/infra/plugins.tf` (bucket, IAM conditions, intake job and account, Secret Manager grants), `terraform/infra/variables.tf` (the bucket name), `apps/swarm-install/swarm_install/steps/verify.py` and `verbs/doctor.py` (the check) | nothing | the bucket and the job's slot, in every new deployment |
+| 4 | **Intake job** | `apps/plugin-intake/` (new: unpack, checks, normalise, digest, report), its Dockerfile, its tests | 3 | safe pinned copies |
+| 5 | **Catalogue store and routes** | `apps/swarm-api/swarm_api/pluginstore.py` (new), `routes/plugin_catalogue.py` (new), `plugincatalogue.py` (built-ins as entries in the data view) | 1 (P2), 3 | installs, versions, audit; the GitHub/marketplace resolution and the fetch into quarantine; the signed upload URL; intake callback |
+| 6 | **Settings and secrets** | `apps/swarm-api/swarm_api/pluginconfig.py` (new), `routes/plugin_config.py` (new), `routes/attempts_secrets.py` (plugin releases) | 1 (P1, P3), 5 | forms' data, one-time secret links, bindings, defaults |
+| 7 | **Submission merge and signing** | `apps/swarm-api/swarm_api/plugins.py`, `schemas.py` (`plugins_off`, overrides), `service.py` (the merge before signing) | 5, 6 | `metadata.dispatch.plugins` on every step |
+| 8 | **Worker install, load and launcher** | `apps/agent-worker/agent_worker/pluginload.py` (new), `runners/claude_code.py` (`--plugin-dir`), `images/agent-runtime-base/swarm-plugin-exec` and its Dockerfile lines, `agent_worker/plugins.py` (`record`), the Jev adapter factored out of `images/agent-runtime-base/jev-gates/bin/swarm-jev-gate.mjs` (the quality-gates lane's file, crossed with the reason in the commit) | 2, 7 | hooks, skills, commands, agents and MCP servers running from pinned copies |
+| 9 | **Platform switches** | `apps/swarm-api/swarm_api/platformswitches.py` (new), `routes/platform_switches.py` (new), the two readers in `workcontract.py` and `contractreview.py` | 1 (P5) | console-set switches with Terraform defaults |
+| 10a | **Console: Admin › Plugins** (catalogue, install dialog with source and overlay, platform switches) | `apps/swarm-ui/src/AdminPlugins.tsx` (new), `AdminPluginInstall.tsx` (new), `styles/admin-plugins.css` (new) | 5, 9, **the mock-ups** | |
+| 10b | **Console: a plugin's page** (versions, Update with the diff, Remove with its users) | `apps/swarm-ui/src/PluginDetail.tsx` (new), `PluginDiff.tsx` (new), `styles/plugin-detail.css` (new) | 5, **the mock-ups** | |
+| 10c | **Console: Config › Plugins** (Allowed, every step, the generated settings form, secrets and bindings, workspace installs) | `apps/swarm-ui/src/ConfigPlugins.tsx`, `PluginSettingsForm.tsx` (new), `styles/plugins.css` | 6, **the mock-ups** | |
+| 10d | **Console: the builder** (defaults as chips with "off for this step", added managed plugins, non-secret overrides) | `apps/swarm-ui/src/PluginSheet.tsx`, `SubmitWorkflow.tsx`, `types.ts` (plugin types only) | 7, **the mock-ups** | |
+| 10e | **Console: shared wiring** (routes, API calls, navigation) | `apps/swarm-ui/src/api.ts` (plugin calls only), `App.tsx`, `Spine.tsx` | 10a-10d's shapes agreed | |
+| 11 | **Garbage collection and audit views** | `apps/reconciler/reconciler/plugingc.py` (new) | 5, 8 | §9.3 |
+| 12 | **The test** | `scripts/smoke-managed-plugins.sh` (new), `tests/smoke/managed_plugins/` (new) | 8, 10a-10d, 11; and the owner's jev-enforce 1.1.1-bgd.3 archive, which is on no remote: he uploads it through Admin › Plugins himself (the step that proves the upload path), and the smoke reads the stored version | §16 against a deployed environment |
+
+Two lanes never edit the same file: 7 owns `schemas.py` and `service.py` for this wave, 8 owns `agent_worker/plugins.py`,
+10e alone touches `App.tsx`, `Spine.tsx` and `api.ts` (the other console lanes export their pages and calls for it).
+Lanes 1, 2, 3 and 4 start together. 5 needs P2 accepted; until then it can build everything but the MAC, which it
+must not ship without. The console lanes wait for the mock-ups and for the routes they draw.
+
+## 18. Questions for the owner
+
+In the lane's `questions.json`, each with options and a recommendation:
+
+* **Q1** Egress for steps that load a non-built-in plugin.
+* **Q2** Whether a platform plugin may hold a platform-wide secret.
+* **Q3** Who may install workspace-private plugins.
+* **Q4** A second approver for platform plugin updates.
+* **Q5** What a saved workflow naming a removed plugin does.
+* **Q6** A default the step's profile cannot run: skip or refuse.
+* **Q7** Who fetches and unpacks.
+* **Q8** The size and file caps.
+* **Q9** Plugins whose dependencies must be installed.
+* **Q10** Marketplace entries whose source is a package registry or a bare git URL.
+* **Q11** How a platform switch change is confirmed.
+* **Q12** Accepting contract change requests P1-P5.
+* **Q13** Whether gstack and security-audit stay image-baked built-ins.
+* **Q14** The baked Jev quality gates and the managed jev-belay and jev-enforce in one step.
+* **Q15** Whether Admin › Setup offers an optional plugin step.
