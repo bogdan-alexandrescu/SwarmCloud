@@ -1050,7 +1050,15 @@ export interface PlanBrief {
   validation: { tests: { file: string; proves: string[] }[]; qa: { check: string; where: string | null; when: string | null }[] } | null
   steps: BriefStep[]
   estimate: string | null
-  overlaps: { ref: string; kind: string; note: string | null; required: boolean }[]
+  /** Each overlap with the files it shares with this plan, read off the run's open work when it lists them. */
+  overlaps: { ref: string; kind: string; note: string | null; required: boolean; shared: string[] }[]
+  requirements: string[]
+}
+
+/** An open pull request as the run's `open_work` lists it: its number and its files, null when unread. */
+export interface OpenPull {
+  number: number
+  files: string[] | null
 }
 
 /** A test file by its path: under tests/ or __tests__/, or named as one. */
@@ -1076,7 +1084,7 @@ function invariantOf(v: unknown): BriefInvariant | null {
 }
 
 /** The plan as the brief draws it, from the sections the planner serves or, without them, from its steps. */
-export function planBrief(plan: Json): PlanBrief {
+export function planBrief(plan: Json, pulls: OpenPull[] = []): PlanBrief {
   const steps: BriefStep[] = objs(plan.steps).flatMap((o, i) => {
     const title = text(o.title) ?? text(o.prompt)
     if (title === null) return []
@@ -1158,8 +1166,13 @@ export function planBrief(plan: Json): PlanBrief {
     estimate: text(plan.estimate),
     overlaps: objs(plan.overlaps).flatMap((o) => {
       const ref = text(o.ref)
-      return ref === null ? [] : [{ ref, kind: text(o.kind) ?? 'issue', note: text(o.note), required: o.action === 'required' }]
+      if (ref === null) return []
+      const kind = text(o.kind) ?? 'issue'
+      const n = Number(/#(\d+)$/.exec(ref)?.[1] ?? NaN)
+      const theirs = kind === 'pull_request' ? (pulls.find((p) => p.number === n)?.files ?? []) : []
+      return [{ ref, kind, note: text(o.note), required: o.action === 'required', shared: changes.filter((c) => theirs.includes(c.file)).map((c) => c.file) }]
     }),
+    requirements: texts(plan.requirements),
   }
 }
 
@@ -1377,7 +1390,7 @@ function RiskCard({ risk, frozen }: { risk: NonNullable<PlanBrief['risk']>; froz
   )
 }
 
-function ValidationCard({ v }: { v: NonNullable<PlanBrief['validation']> }) {
+function ValidationCard({ v, requirements }: { v: NonNullable<PlanBrief['validation']>; requirements: string[] }) {
   return (
     <BriefCard id="ab-val" title="Validation" aside={<span className="ab-dim">{v.tests.length} test files · {v.qa.length} QA checks</span>}>
       {v.tests.length > 0 && (
@@ -1423,6 +1436,18 @@ function ValidationCard({ v }: { v: NonNullable<PlanBrief['validation']> }) {
             ))}
           </ol>
         </>
+      )}
+      {requirements.length > 0 && (
+        <details className="ab-reqlist">
+          <summary>Done when · {requirements.length}</summary>
+          <ul>
+            {requirements.map((r, i) => (
+              <li key={r}>
+                <span className="ab-req">R{i + 1}</span> {r}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </BriefCard>
   )
@@ -1498,14 +1523,15 @@ function StepsCard({ b }: { b: PlanBrief }) {
   )
 }
 
-function OverlapsCard({ overlaps }: { overlaps: PlanBrief['overlaps'] }) {
+function OverlapsCard({ overlaps, changes }: { overlaps: PlanBrief['overlaps']; changes: MapChange[] }) {
+  const [open, setOpen] = useState<string | null>(null)
   return (
     <BriefCard id="ab-over" title="Overlaps" aside={<span className="ab-dim">{overlaps.length} in flight</span>}>
       <ul className="ab-overs">
         {overlaps.map((o) => {
           const url = refUrl(o.ref, o.kind)
           return (
-            <li key={o.ref} data-on="n">
+            <li key={o.ref} data-on={open === o.ref ? 'y' : 'n'}>
               {url === null ? (
                 <span className="ab-pr mono">{o.ref}</span>
               ) : (
@@ -1513,9 +1539,29 @@ function OverlapsCard({ overlaps }: { overlaps: PlanBrief['overlaps'] }) {
                   {o.ref}
                 </a>
               )}
-              <div className="ab-over-t">{o.note !== null && <span>{o.note}</span>}</div>
+              <div className="ab-over-t">
+                {o.note !== null && <span>{o.note}</span>}
+                {o.shared.length > 0 && <span className="ab-dim">{o.shared.map(base).join(', ')}</span>}
+              </div>
               <span className="ab-where">{o.kind === 'pull_request' ? 'pull request' : 'issue'}</span>
-              {o.required && <span className="ab-effect">action needed</span>}
+              <span className="ab-effect">{o.required ? 'action needed' : null}</span>
+              {o.shared.length > 0 && (
+                <button type="button" className="c-btn is-ghost is-sm ab-over-x" aria-expanded={open === o.ref} aria-label={`${open === o.ref ? 'Hide' : 'Show'} the files shared with ${o.ref}`} onClick={() => setOpen(open === o.ref ? null : o.ref)}>
+                  {open === o.ref ? 'Hide' : 'Compare'}
+                </button>
+              )}
+              {open === o.ref && (
+                <dl className="ab-over-d" data-testid="ab-over-d">
+                  {o.shared.map((f) => (
+                    <div key={f}>
+                      <dt className="mono">{f}</dt>
+                      <dd>
+                        <span className="ab-fk">This plan</span> {changes.find((c) => c.file === f)?.what || 'changes it'}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
             </li>
           )
         })}
@@ -1571,9 +1617,9 @@ function RawFold({ steps }: { steps: BriefStep[] }) {
 }
 
 /** A plan's decision page as its brief. */
-function PlanBriefPage({ d, plan, docs, kind, go, onDecided }: { d: Decision; plan: Json; docs: ShownDocuments | null; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided }: { d: Decision; plan: Json; docs: ShownDocuments | null; pulls: OpenPull[]; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
   const a = d.approval
-  const b = planBrief(plan)
+  const b = planBrief(plan, pulls)
   const hold = a.hold ?? null
   const multi = b.steps.length > 1
   return (
@@ -1601,11 +1647,11 @@ function PlanBriefPage({ d, plan, docs, kind, go, onDecided }: { d: Decision; pl
       {(b.risk !== null || b.validation !== null) && (
         <div className="ab-pair">
           {b.risk !== null && <RiskCard risk={b.risk} frozen={b.frozen} />}
-          {b.validation !== null && <ValidationCard v={b.validation} />}
+          {b.validation !== null && <ValidationCard v={b.validation} requirements={b.requirements} />}
         </div>
       )}
       {b.steps.length > 0 && <StepsCard b={b} />}
-      {b.overlaps.length > 0 && <OverlapsCard overlaps={b.overlaps} />}
+      {b.overlaps.length > 0 && <OverlapsCard overlaps={b.overlaps} changes={b.changes} />}
       <BriefCard id="ab-asked" title="What asked for it">
         <AskedBy d={d} go={go} />
       </BriefCard>
@@ -1622,7 +1668,7 @@ export function ApprovalDecision({ d, kind, go, onDecided, served = null }: { d:
   // A plan reads as its brief: the run's own read when it answered (it carries
   // the planner's sections), else the plan the approval served.
   const plan = served?.plan ?? (d.run?.plan as Json | null | undefined) ?? null
-  if (plan !== null && (a.kind === 'plan' || a.kind === 'hold')) return <PlanBriefPage d={d} plan={plan} docs={served?.docs ?? null} kind={kind} go={go} onDecided={onDecided} />
+  if (plan !== null && (a.kind === 'plan' || a.kind === 'hold')) return <PlanBriefPage d={d} plan={plan} docs={served?.docs ?? null} pulls={served?.pulls ?? []} kind={kind} go={go} onDecided={onDecided} />
   const word = STATE_WORD[a.state] ?? a.state
   const who = decidersWords(a.may_decide) ?? approversWords(a.approvers)
   const tone = a.state === 'pending' ? 'is-warn' : a.state === 'approved' ? 'is-ok' : a.state === 'rejected' ? 'is-bad' : 'is-done'
@@ -1683,6 +1729,7 @@ export function BackToList({ kind, go }: { kind: string | null; go: (to: string)
 export interface ServedPlan {
   plan: Json | null
   docs: ShownDocuments | null
+  pulls: OpenPull[]
 }
 
 /**
@@ -1699,8 +1746,8 @@ async function servedPlan(d: Decision): Promise<ServedPlan | null> {
   try {
     const r = await loadRun(runId)
     if (r.status !== 'ok' && r.status !== 'stale') return null
-    const run = r.data.run as unknown as { plan?: Json | null; planner_documents?: PlannerDocuments | null }
-    return { plan: run.plan ?? null, docs: await loadPlannerDocuments(run.planner_documents) }
+    const run = r.data.run as unknown as { plan?: Json | null; planner_documents?: PlannerDocuments | null; open_work?: { pull_requests?: OpenPull[] } | null }
+    return { plan: run.plan ?? null, docs: await loadPlannerDocuments(run.planner_documents), pulls: run.open_work?.pull_requests ?? [] }
   } catch {
     return null
   }
