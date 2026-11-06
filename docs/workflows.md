@@ -328,6 +328,20 @@ on-demand (contract request 113). A heavy lane picks it by name when
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code-large -->
 
+`claude-code-medium` is `claude-code` exactly (same image, runner, inputs,
+secret slots, model classes and 7,200 s timeout) on the `medium` resource
+class, 6 CPU and 16 GiB requested (2 units), on GKE Autopilot on-demand
+(contract request 139). Over the 7 days to 6 November 2026, 96% of the
+`claude-code-large` attempts fit it; name it before `claude-code-large`.
+It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-medium generated from RUNNER_PROFILES["claude-code-medium"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-medium runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-medium -->
+
 `claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
 image (contract request 127): the same runner, inputs, secret slots and
 model classes on the `standard` class, on GKE Autopilot on-demand, with

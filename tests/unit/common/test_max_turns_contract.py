@@ -45,7 +45,7 @@ def test_the_claude_code_runners_profiles_support_a_cap_and_no_other_does():
     supported = {name for name, p in RUNNER_PROFILES.items() if p.supports_max_turns}
     assert supported == {
         "claude-code", "claude-code-large", "claude-code-review", "indexer",
-        "claude-code-browser", "claude-code-lightpanda",
+        "claude-code-browser", "claude-code-lightpanda", "claude-code-medium",
     }
     # The rule behind the list: exactly the profiles that run the runner that
     # adds `--max-turns`.

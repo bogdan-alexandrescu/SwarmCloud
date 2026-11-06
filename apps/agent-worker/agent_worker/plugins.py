@@ -104,6 +104,7 @@ class PluginEntry:
 CLAUDE_CODE_PROFILES = (
     "claude-code",
     "claude-code-large",
+    "claude-code-medium",
     "claude-code-review",
     "claude-code-browser",
     "claude-code-lightpanda",

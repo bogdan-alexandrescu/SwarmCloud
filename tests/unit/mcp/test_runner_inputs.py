@@ -322,7 +322,7 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     declaring = sorted(name for name in RUNNER_PROFILES if _declared(name))
     assert declaring == [
         "browser", "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda",
-        "claude-code-review", "codex", "generic", "indexer", "mock",
+        "claude-code-medium", "claude-code-review", "codex", "generic", "indexer", "mock",
     ], declaring
     # claude-code-review is claude-code under its own Job (contract request 36);
     # indexer is claude-code on the indexer image (contract request 48), and
@@ -335,7 +335,7 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
     # Contract request 113: claude-code-large declares exactly what claude-code does,
     # and contract request 127 the same for claude-code-lightpanda: no browser_tool.
-    for name in ("claude-code", "claude-code-large", "claude-code-lightpanda", "codex"):
+    for name in ("claude-code", "claude-code-large", "claude-code-lightpanda", "claude-code-medium", "codex"):
         assert set(_declared(name)) == {"issue", "mcp_servers"}, (name, _declared(name))
     assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
     for name in RUNNER_PROFILES:

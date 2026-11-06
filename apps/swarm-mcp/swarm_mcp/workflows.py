@@ -50,6 +50,8 @@ import re
 import threading
 from typing import Any, Callable
 
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+
 from . import awaitinput
 from . import profiles as catalogue
 from .client import SwarmClient, SwarmError, check_additional_repositories, session_tag
@@ -1349,6 +1351,40 @@ def step_rows(
             row["produced"] = produced
         rows.append(row)
     return rows
+
+
+# --------------------------------------------------------------------------
+# A step that asks for claude-code-large (BGD, 2026-11-06, part of #2688)
+# --------------------------------------------------------------------------
+
+LARGE_PROFILE = "claude-code-large"
+#: Contract request 139's middle size, the one the warning names instead.
+MEDIUM_PROFILE = "claude-code-medium"
+#: The 7 days to 2026-11-06, measured without page cache: 96% of the large
+#: attempts fit 6 CPU and 16 GiB, and every large request came from a spec
+#: sent through this plugin. A measured share, so it is stated, not derived.
+LARGE_FIT_MEDIUM_SHARE = "96%"
+
+
+def _size(profile: str) -> str:
+    rc = RESOURCE_CLASSES[RUNNER_PROFILES[profile].resource_class]
+    return f"{rc.cpu:g} CPU, {rc.memory_gib} GiB, {rc.units} units"
+
+
+def large_step_warnings(steps: list[dict[str, Any]]) -> list[str]:
+    """One line per step that names claude-code-large, in the steps' order.
+
+    A warning, never a refusal: the step is submitted as written. It names
+    the medium profile and the measured share, so the next spec can start
+    smaller (plugin/README.md: start at `claude-code`, the standard class).
+    """
+    return [
+        f"step {step.get('step_id')} asks for {LARGE_PROFILE} ({_size(LARGE_PROFILE)}); "
+        f"{LARGE_FIT_MEDIUM_SHARE} of large attempts over 7 days fit {MEDIUM_PROFILE} "
+        f"({_size(MEDIUM_PROFILE)}): name it unless this step was OOM-killed on it"
+        for step in steps
+        if step.get("runner_profile") == LARGE_PROFILE
+    ]
 
 
 def browser_unused_steps(envelope: dict[str, Any]) -> list[str]:

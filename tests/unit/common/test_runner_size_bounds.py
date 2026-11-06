@@ -245,10 +245,11 @@ def test_equal_neighbouring_classes_are_accepted():
 
 def test_a_larger_class_smaller_than_the_one_below_is_refused():
     browser = default_sizes()["browser"]
-    large = _size(4, 8, 8, 3)  # disk 3 < browser's 4; cpu and memory equal it
-    refusals = check_size(_table(large=large))
+    # medium is the class above browser since contract request 139.
+    medium = _size(4, 8, 8, 3)  # disk 3 < browser's 4; cpu and memory equal it
+    refusals = check_size(_table(medium=medium))
     assert browser.disk_gib == 4
-    assert [r for r in _refused(refusals, "large", "disk_gib") if "browser" in r.bound], refusals
+    assert [r for r in _refused(refusals, "medium", "disk_gib") if "browser" in r.bound], refusals
 
 
 def test_the_default_live_split_is_accepted():

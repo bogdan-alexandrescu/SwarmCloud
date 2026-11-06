@@ -9,10 +9,14 @@ profile and the measured share, so the person picks the size next time.
 
 from __future__ import annotations
 
+import copy
 import json
+import re
 
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_mcp import server, workflows
 
+from test_plugin_agents_and_workflows import _ANSWERS, _RUN_JS, _SPEC, _run
 from test_plugin_rows_match_console import _FIXTURE, _Recorder
 
 
@@ -51,6 +55,36 @@ def test_the_warning_is_one_line_per_large_step_in_spec_order():
     lines = workflows.large_step_warnings(steps)
     assert [line.split(" ", 2)[1] for line in lines] == ["s0", "s2"]
     # MUTATION: point the warning at a profile that does not exist.
-    from swarm_common.profiles import RUNNER_PROFILES
     assert workflows.MEDIUM_PROFILE in RUNNER_PROFILES
     assert RUNNER_PROFILES[workflows.MEDIUM_PROFILE].resource_class == "medium"
+
+
+# --- /sc:swarmcloud's run.js says the same before it submits -----------------
+
+
+def test_run_js_restates_the_bridges_names_and_share():
+    source = _RUN_JS.read_text(encoding="utf-8")
+    for name in ("LARGE_PROFILE", "MEDIUM_PROFILE", "LARGE_FIT_MEDIUM_SHARE"):
+        found = re.search(rf"^const {name} = '([^']*)'$", source, re.MULTILINE)
+        # MUTATION: change the share in one place only and the two disagree.
+        assert found and found.group(1) == getattr(workflows, name), name
+
+
+def test_run_js_logs_the_warning_and_still_submits_a_large_step(tmp_path):
+    spec = copy.deepcopy(_SPEC)
+    spec["steps"][2]["runner_profile"] = "claude-code-large"
+    answers = copy.deepcopy(_ANSWERS)
+    answers["SUBMIT"]["spec_digest"] = workflows.spec_digest(spec)
+    got = _run(tmp_path, spec, answers)
+    # MUTATION: return before the submit row on a large step and no SUBMIT call is made.
+    assert got["calls"][0]["prompt"].startswith("SUBMIT")
+    warned = [line for line in got["logs"] if "asks for claude-code-large" in line]
+    assert warned == [
+        "step join asks for claude-code-large; 96% of large attempts over 7 days fit "
+        "claude-code-medium: name it unless this step was OOM-killed on it"
+    ], got["logs"]
+
+
+def test_run_js_logs_no_warning_without_a_large_step(tmp_path):
+    got = _run(tmp_path, _SPEC, _ANSWERS)
+    assert not [line for line in got["logs"] if "claude-code-large" in line]

@@ -133,9 +133,16 @@ class ResourceClass:
 # docs/design/runner-sizes.md §4.1). The requests are unchanged, so admission,
 # units and Autopilot's bill are unchanged; the limit is what a GKE pod may
 # borrow from its node's idle requests. Cloud Run profiles render `cpu` alone.
+#
+# MEDIUM (contract request 139, accepted by the owner 2026-11-06): over the 7
+# days to that date 771 large attempts (4.8% of 16,103) held 46% of all
+# capacity unit-hours and used about a third of what they reserved; measured
+# without page cache 96% fit 6 CPU and 16 GiB. `medium` is that size, 2 units
+# (`units_for`), its workspace half its memory as `large`'s is.
 RESOURCE_CLASSES: dict[str, ResourceClass] = {
     "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
     "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
+    "medium": ResourceClass("medium", cpu=6, memory_gib=16, disk_gib=8, units=2, cpu_limit=12),
     "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4, cpu_limit=16),
 }
 
@@ -172,13 +179,13 @@ LIVE_DISPLAY_MIN = (1, 5)
 #: Smallest first. A workflow step may name a SMALLER class than its
 #: profile's (`validate_resource_class_override`), so a resize that made
 #: `standard` larger than `browser` would let a step grow by "shrinking".
-CLASS_ORDER = ("standard", "browser", "large")
+CLASS_ORDER = ("standard", "browser", "medium", "large")
 
 
 def units_for(cpu_request: float, memory_gib: int) -> int:
     """The capacity units a size charges: one per 4 requested cores or 8 GiB,
     whichever is more. Derived, so a resize cannot leave the budget charging
-    the wrong weight; it reproduces today's 1 / 1 / 4."""
+    the wrong weight; it reproduces the classes' 1 / 1 / 2 / 4."""
     return max(math.ceil(cpu_request / 4), math.ceil(memory_gib / 8))
 
 
@@ -1955,6 +1962,31 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=14400,
+        inputs=_CLI_AGENT_MCP_INPUTS,
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
+    ),
+    # CONTRACT REQUEST 139, accepted by the owner 2026-11-06 (BGD's pick after
+    # the 7-day load analysis): claude-code on the `medium` class (6 CPU
+    # requested, 12 limit, 16 GiB, memory request == limit, 2 units), the size
+    # 96% of the large attempts fit. Every other field is claude-code's,
+    # timeout included, held equal by tests/unit/common/test_claude_code_medium.py.
+    # A literal for the same reason as the entry above. GKE Autopilot,
+    # on-demand only (invariant 6), the catalogue's default checkpoint
+    # interval (invariant 8).
+    "claude-code-medium": RunnerProfile(
+        name="claude-code-medium",
+        image="agent-runtime-base",
+        resource_class="medium",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
         inputs=_CLI_AGENT_MCP_INPUTS,
         secret_slots={"files": _FILES_SLOT},
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,

@@ -120,6 +120,10 @@ def tenant() -> Tenant:
     )
 
 
+def _cores(quantity: str) -> float:
+    return float(quantity[:-1]) / 1000 if quantity.endswith("m") else float(quantity)
+
+
 def test_its_gke_pod_requests_16_gib_with_requests_equal_to_limits(tenant):
     dispatcher = GkeJobDispatcher(scheduler_settings(),
                                   target=GkeTarget("https://k8s", "/ca.pem"),
@@ -135,8 +139,8 @@ def test_its_gke_pod_requests_16_gib_with_requests_equal_to_limits(tenant):
             assert r["requests"]["ephemeral-storage"] == r["limits"]["ephemeral-storage"]
     (worker,) = [c for c in spec["containers"] if c["name"] == "worker"]
     assert worker["resources"]["requests"]["memory"] == "16Gi"
-    assert float(worker["resources"]["requests"]["cpu"]) == 6
-    assert float(worker["resources"]["limits"]["cpu"]) == 12
+    assert _cores(worker["resources"]["requests"]["cpu"]) == 6
+    assert _cores(worker["resources"]["limits"]["cpu"]) == 12
 
 
 # --- admission against the medium pool ---------------------------------------
