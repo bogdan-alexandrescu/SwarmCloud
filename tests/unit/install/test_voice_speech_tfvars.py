@@ -1,7 +1,7 @@
 """The installer offers Voice it's own speech engine (lane L11; part of #2688;
 docs/design/voice-it-own-speech.md sections 14 and 15).
 
-Stage 0 asks one optional question beside Voice it, with the cost line the
+Stage 0 asks one optional question, only after a yes to Voice it, with the cost line the
 design writes, default no; stage 1, once Compute Engine is on, picks the first
 of the region's zones offering the NVIDIA L4 (`acceleratorTypes`), waits for
 an NVIDIA_L4_GPUS quota of at least 1 on the Quotas page, and pins the newest
@@ -137,7 +137,7 @@ def test_choice_is_a_stage_0_step_after_the_sizing() -> None:
 
 
 def test_choice_says_the_cost_and_the_zone_and_defaults_to_no() -> None:
-    ctx = FakeCtx(install_state())
+    ctx = FakeCtx(install_state(voice_it={"enabled": True}))
     asked, ask = _asker("")
     step = VoiceSpeechChoiceStep(_deps(ComputeFake()), ask=ask)
     assert step.check(ctx).status == UNMET
@@ -149,7 +149,7 @@ def test_choice_says_the_cost_and_the_zone_and_defaults_to_no() -> None:
 
 
 def test_choice_yes_is_recorded_and_never_asked_again() -> None:
-    ctx = FakeCtx(install_state())
+    ctx = FakeCtx(install_state(voice_it={"enabled": True}))
     asked, ask = _asker("y")
     step = VoiceSpeechChoiceStep(_deps(ComputeFake()), ask=ask)
     step.apply(ctx, step.plan(ctx))
@@ -158,7 +158,7 @@ def test_choice_yes_is_recorded_and_never_asked_again() -> None:
 
 
 def test_choice_before_the_project_exists_says_where_the_zone_comes_from() -> None:
-    ctx = FakeCtx(install_state())
+    ctx = FakeCtx(install_state(voice_it={"enabled": True}))
     gcp = ComputeFake(exists=False)
     asked, ask = _asker("no")
     VoiceSpeechChoiceStep(_deps(gcp), ask=ask).apply(ctx, VoiceSpeechChoiceStep(_deps(gcp), ask=ask).plan(ctx))
@@ -168,7 +168,7 @@ def test_choice_before_the_project_exists_says_where_the_zone_comes_from() -> No
 
 
 def test_choice_asks_again_on_an_answer_that_is_not_yes_or_no() -> None:
-    ctx = FakeCtx(install_state())
+    ctx = FakeCtx(install_state(voice_it={"enabled": True}))
     asked, ask = _asker("maybe", "yes")
     step = VoiceSpeechChoiceStep(_deps(ComputeFake()), ask=ask)
     step.apply(ctx, step.plan(ctx))
