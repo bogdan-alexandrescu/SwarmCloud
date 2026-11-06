@@ -66,10 +66,10 @@ the platform keeps, for the reconciler's stuck-browser judgement.
 USE OVER TIME, AND THROTTLING (LIVE-UTIL-API, #1689). The owner, 2026-10-20: a
 limit and a peak "will always show maximum when in fact the pods do not run at
 max cpu the entire time". So every `POINT_SECONDS` the sampler also takes one
-point -- the cores used over that window, the container's `memory.current`
-(RSS of the runner's process group without a cgroup), and the share of the
-window's CFS periods the container spent throttled, `cpu.stat`
-`nr_throttled / nr_periods` -- and each HEARTBEAT carries the points taken
+point -- the cores used over that window, the container's working set
+(`working_set_bytes`; RSS of the runner's process group without a cgroup),
+and the share of the window's CFS periods the container spent throttled,
+`cpu.stat` `nr_throttled / nr_periods` -- and each HEARTBEAT carries the points taken
 since the one before (`Worker._usage_reading`), which
 `GET /v1/tasks/{id}/utilisation` serves. Throttling is MEASURED this way rather
 than inferred from a peak at the limit:
@@ -904,10 +904,17 @@ class ResourceSampler:
         return now - self._origin
 
     def _memory_now(self) -> int | None:
-        """The container's memory now: cgroup `memory.current`, else the group's RSS."""
+        """The container's memory now: its WORKING SET, else the group's RSS.
+
+        `working_set_bytes` -- `memory.current` less `inactive_file` -- the
+        figure the memory guard and `peak_rss_bytes` read, so the Details
+        chart draws the same memory they judge, page cache excluded (owner's
+        pick on #3489, 2026-11-06). The reconciler's stalled-at-the-limit
+        judgement reads these points too, and so judges the working set.
+        """
         current = cgroup_memory_current()
         if current is not None:
-            return current
+            return working_set_bytes(current, cgroup_memory_stat())
         pid = self._pid_provider()
         if not pid:
             return None
