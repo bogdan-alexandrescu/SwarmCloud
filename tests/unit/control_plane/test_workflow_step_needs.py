@@ -13,6 +13,7 @@ Offline: the real routes over FakeFirestore.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,7 @@ from .conftest import auth_header, seed_task, seed_tenant
 T0 = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 NEEDS_KEYS = {
     "park_reason", "next_eligible_at", "updated_at", "human_wait", "owner_questions", "question_wait",
-    "questions", "questions_unread", "pull_request", "plugin_ask",
+    "questions", "questions_unread", "question_text_digests", "pull_request", "plugin_ask",
 }
 
 
@@ -142,6 +143,8 @@ def test_a_question_wait_serves_its_open_questions_and_not_the_answered(client, 
     assert needs["questions"] == [{
         "index": 0, "question": "Which database?",
         "options": [{"label": "Postgres", "description": "the usual"}], "recommended": "Postgres",
+        # Its words alone, as the worker keys an artifact question (PR body, 6 November 2026).
+        "text_digest": hashlib.sha256(b"which database?").hexdigest()[:16],
     }]
 
 
