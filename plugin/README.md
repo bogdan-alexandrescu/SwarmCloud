@@ -1512,6 +1512,7 @@ are the same value.
   answer, and no refusal names the label, so an agent cannot confirm its own
   removal. A host that cannot ask its human removes nothing and is told to run
   `sc account remove <account>` in a terminal, which asks there.
+* `swarm_task_answers` records up to 200 answers `{task_id, question_index, choice?, text?}` through the single-answer route with `reply=short` (each checked as one answer is; a refusal is its own line and never stops the rest), and `swarm_task_answer` takes `reply: "short"` (6 November 2026).
 * `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
   per task only when it changed, the state `transitions` since `since`, and a
   finished task's `outcome` reduced to the step result's fields. A call holds
