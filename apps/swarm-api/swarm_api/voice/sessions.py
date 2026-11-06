@@ -64,6 +64,21 @@ swarm-voice's own sentence, under the established codes:
 Either way the session is ended at once (cause `voice_pool_refused`) and the
 person's marker freed, so the next try is not a 409 of ours.
 
+THE MODELS (BGD, 6 November 2026: "wire-in-follow-up", "front-reads-it").
+Voice it › Settings is read once, before the start transaction, and both
+start bodies (live and text) carry what it names:
+
+  planner_model       the planner class's pin
+                      (`VoiceSettings.session_planner_model` over swarm-api's
+                      `worker_class_models`)
+  conversation_model  the fast front's model: the curated entry's id
+                      (`speech_catalogue.CONVERSATION_MODELS`)
+
+Each is omitted when the setting is unset, or names an entry the catalogue no
+longer lists or a class with no pin of its own, so swarm-voice keeps its pin
+(VOICE_PLANNER_MODEL, VOICE_FRONT_MODEL). swarm-voice keeps both for the
+session, so a change reaches the next session's start, never a running one.
+
 THE MODE (owner, 4 November 2026: "both paths"). OpenAI refuses the ChatGPT
 plan's token for GPT-Live, but the plan serves text. `pick_mode` asks the
 broker which account the person's next Live session would lease (`GET
@@ -103,7 +118,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -111,6 +126,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 
 from ..errors import ApiError, Conflict, Forbidden, NotFound, RateLimited, UpstreamUnavailable
+from . import speech_catalogue as cat
 
 log = logging.getLogger(__name__)
 
@@ -377,6 +393,10 @@ class StartCall:
     #: Excluded from the repr: it is the session's credential.
     grant: str
     mode: str = MODE_LIVE
+    #: Voice it › Settings' models, read at the start; None leaves swarm-voice
+    #: on its pin, and the field out of the body.
+    planner_model: str | None = None
+    conversation_model: str | None = None
 
     def __repr__(self) -> str:
         return (f"StartCall(session_id={self.session_id!r}, project_id={self.project_id!r}, "
@@ -476,6 +496,10 @@ class HttpVoiceClient:
             # today's, field for field (swarm-voice's `mode` defaults to live).
             body = {"voice_session_id": call.session_id, "project_id": call.project_id,
                     "person": call.person, "grant": call.grant, "mode": MODE_TEXT}
+        if call.planner_model is not None:
+            body["planner_model"] = call.planner_model
+        if call.conversation_model is not None:
+            body["conversation_model"] = call.conversation_model
         try:
             status, raw = self._post("/internal/sessions", body, START_TIMEOUT_SECONDS)
         except (OSError, ValueError) as exc:
@@ -592,11 +616,27 @@ class VoiceSessions:
     """Starts and ends one person's sessions in one tenant."""
 
     def __init__(self, db: Any, client: VoiceClient, *, marker_key: str = "",
-                 now: Callable[[], datetime]) -> None:
+                 now: Callable[[], datetime],
+                 class_models: Mapping[str, str] | None = None) -> None:
         self._db = db
         self._client = client
         self._marker_key = marker_key
         self._now = now
+        #: swarm-api's `worker_class_models`; None reads WORKER_CLASS_MODELS,
+        #: the variable `Settings.worker_class_models` is parsed from.
+        self._class_models = class_models
+
+    def _session_models(self) -> tuple[str | None, str | None]:
+        """(planner model, conversation model) for a session starting now,
+        each None where the setting leaves swarm-voice on its pin."""
+        from .settings import COLLECTION, DOCUMENT, VoiceSettings  # settings imports this module
+
+        pins = cat.configured_class_models() if self._class_models is None else self._class_models
+        planner = VoiceSettings(self._db, now=self._now).session_planner_model(pins)
+        snap = self._db.collection(COLLECTION).document(DOCUMENT).get()
+        stored = (snap.to_dict() or {}).get("conversation_model") if snap.exists else None
+        conversation = next((m.model for m in cat.CONVERSATION_MODELS if m.name == stored), None)
+        return planner, conversation
 
     def _project_ref(self, project_id: str) -> Any:
         return self._db.collection(PROJECTS).document(project_id)
@@ -638,6 +678,8 @@ class VoiceSessions:
         `mode` is `pick_mode`'s; a text session sends no offer."""
         if mode not in (MODE_LIVE, MODE_TEXT):
             raise ValueError(f"no Voice it session mode {mode!r}")
+        # Read before anything is written, so a failed read leaves nothing held.
+        planner_model, conversation_model = self._session_models()
         person = person.strip().lower()
         session_id = "vs_" + secrets.token_hex(16)
         new_project = project_id is None
@@ -680,7 +722,8 @@ class VoiceSessions:
         _open(self._db.transaction())
 
         call = StartCall(session_id=session_id, project_id=project_id, tenant_id=tenant_id,
-                         person=person, offer=offer if mode == MODE_LIVE else "", grant=grant, mode=mode)
+                         person=person, offer=offer if mode == MODE_LIVE else "", grant=grant, mode=mode,
+                         planner_model=planner_model, conversation_model=conversation_model)
         try:
             started = self._client.start(call)
             if not isinstance(started, StartAnswer):
