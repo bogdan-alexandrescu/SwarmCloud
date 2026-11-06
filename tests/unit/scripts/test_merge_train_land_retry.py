@@ -75,6 +75,14 @@ def save():
 
 if args[:2] == ["pr", "view"]:
     pr = world["prs"][args[2]]
+    # Reads that time out before landing: the member check (state, head,
+    # labels) and the title read, each as many times as the world says.
+    for wanted, key in (("state,headRefOid,labels", "check_read_fails"), ("title", "title_read_fails")):
+        if args[args.index("--json") + 1] == wanted and pr.get(key, 0) > 0:
+            pr[key] -= 1
+            save()
+            print(outcomes["timeout"][0], file=sys.stderr)
+            sys.exit(1)
     # The re-read between attempts asks for exactly these fields.
     if args[args.index("--json") + 1] == "state,headRefOid" and pr.get("reread_fails", 0) > 0:
         pr["reread_fails"] -= 1
@@ -286,6 +294,44 @@ def test_a_pull_request_pushed_to_between_attempts_is_not_retried(tmp_path):
     assert out["landed"] == ""
     assert "#3317 changed while its merge was being retried" in out["reason"]
     assert train.merges_of(3317) == 1
+
+
+def test_a_member_read_that_times_out_once_is_read_again_and_the_train_lands(tmp_path):
+    # 6 November 2026, 22:06Z: this read timed out once and a green train of
+    # 29 was closed as if a member had changed.
+    train = Train(tmp_path, {3317: ["ok"], 3318: ["ok"]}, {3318: {"check_read_fails": 1}})
+    out, said = train.land()
+    assert out["rc"] == "0", said
+    assert out["landed"] == "3317 3318"
+    assert "::warning::reading pull request #3318 failed transiently (attempt 1)" in said
+
+
+def test_a_member_that_cannot_be_read_keeps_the_train_and_merges_nothing(tmp_path):
+    train = Train(tmp_path, {3317: ["ok"], 3318: ["ok"]}, {3318: {"check_read_fails": 3}})
+    out, said = train.land()
+    assert out["rc"] == "3", said
+    assert out["landed"] == ""
+    assert out["reason"].startswith("#3318 could not be read before landing: ")
+    assert "i/o timeout" in out["reason"]
+    assert "changed after the train was built" not in out["reason"]
+    assert train.merges_of(3317) == 0 and train.merges_of(3318) == 0
+
+
+def test_a_title_read_that_times_out_once_is_read_again(tmp_path):
+    train = Train(tmp_path, {3317: ["ok"], 3318: ["ok"]}, {3317: {"title_read_fails": 1}})
+    out, said = train.land()
+    assert out["rc"] == "0", said
+    assert out["landed"] == "3317 3318"
+
+
+def test_the_tick_keeps_a_green_train_whose_member_could_not_be_read():
+    # The tick's case for land_train's 3 returns before finish_train, so the
+    # train is not closed, and says why in the run.
+    text = SCRIPT.read_text()
+    case3 = text[text.index("        3)\n          # A read that failed is not a change"):]
+    case3 = case3[:case3.index(";;")]
+    assert "finish_train" not in case3
+    assert "return 0" in case3
 
 
 def test_the_default_waits_are_three_attempts_of_a_short_growing_wait():
