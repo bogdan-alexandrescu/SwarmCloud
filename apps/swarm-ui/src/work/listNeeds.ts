@@ -29,9 +29,9 @@
  * named and opened, and its Answer disabled here.
  */
 import { handoffOf, ownerQuestionsHold } from '../Handoff'
-import { stepNeedsOf, summaryTask, type StepNeeds } from '../stepviews'
-import { type Task, type Workflow } from '../types'
-import { pluginAskOf, type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest } from './NeedsYou'
+import { stepNeedsOf, summaryTask, type StepNeedQuestion, type StepNeeds } from '../stepviews'
+import { TERMINAL_STATES, type Task, type Workflow } from '../types'
+import { pluginAskOf, type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest, type QuestionNeed } from './NeedsYou'
 
 function prOf(task: Task): NeedPullRequest | null {
   const git = task.result_summary?.git
@@ -111,8 +111,88 @@ export function workflowNeedItems(
   taskById: ReadonlyMap<string, Task> | null,
   title: (stepId: string) => string,
 ): NeedItems {
-  const out: NeedItem[] = []
+  const { items, blind, blindLive, unread } = classified(w, taskById, title)
+  // A FINISHED WORKFLOW's ended step asks nothing that counts, so only a
+  // block-less step that has not ended -- it may be a held merge -- leaves
+  // the block's kinds not known there.
+  const ended = workflowFinished(w) && !items.some((i) => i.kind === 'merge')
+  const unknownKinds = unread ? LIST_KINDS : (ended ? blindLive : blind) ? NEEDS_BLOCK_KINDS : []
+  return Object.assign(items, { unknownKinds })
+}
+
+/**
+ * ONLY WHAT STILL HOLDS WORK (BGD's pick, 6 November 2026): a workflow that
+ * has finished -- SUCCEEDED, FAILED, CANCELLED or DEAD_LETTERED, its derived
+ * state -- waits on nobody's answer, so its unanswered questions are neither
+ * Needs you nor the list's "?". Its page shows them as one quiet tick beside
+ * its state (`finishedQuestionsOf`). A merge held by owner questions is
+ * still work, and a held merge keeps every question in its workflow counted.
+ * The bell's task question source (`notifications._asked_item`) counts by the
+ * same rule.
+ */
+export const FINISHED_WORKFLOW_STATES: ReadonlySet<string> = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED'])
+
+export function workflowFinished(w: Workflow): boolean {
+  return FINISHED_WORKFLOW_STATES.has(w.state)
+}
+
+/**
+ * A question's words as two steps compare them: case and spacing aside. An
+ * implement step and its fix step often ask the same question with other
+ * option labels, so the text alone is matched (the server's
+ * `notifications._question_key` reads the same).
+ */
+export function questionKey(text: string): string {
+  return text.split(/\s+/).filter((t) => t !== '').join(' ').toLowerCase()
+}
+
+/**
+ * The keys of a question's words alone that `codec.step_needs` serves (the
+ * follow-up picked under BGD's overnight grant, 6 November 2026): the worker's
+ * `question_text_digests` of an ended step's artifact questions, by index, and
+ * each open wait question's `text_digest`. An implement and a fix step asking
+ * the same words with other option labels then count once, as the bell counts
+ * them; a step served without them counts as before.
+ */
+type KeyedNeeds = Omit<StepNeeds, 'questions'> & {
+  question_text_digests?: (string | null)[] | null
+  questions?: (StepNeedQuestion & { text_digest?: string | null })[]
+}
+
+const TEXT_DIGEST = /^[0-9a-f]{16}$/
+
+function textDigest(value: unknown): string | null {
+  return typeof value === 'string' && TEXT_DIGEST.test(value) ? value : null
+}
+
+/** One question row's key, null when it cannot be matched (its words unknown here). */
+function questionRowKey(item: QuestionNeed, needs: StepNeeds | null): string | null {
+  const keyed = needs as KeyedNeeds | null
+  if (item.question !== null) {
+    const served = textDigest(keyed?.questions?.find((q) => q.index === item.index)?.text_digest)
+    return served !== null ? `d:${served}` : `t:${questionKey(item.question)}`
+  }
+  const served = textDigest(keyed?.question_text_digests?.[item.index])
+  return served !== null ? `d:${served}` : null
+}
+
+/**
+ * The one walk both reads take: every step's rows, a question asked again by
+ * a later step in step order dropped (its words matched by `questionRowKey`;
+ * a row whose words are only on its page and served with no key cannot be
+ * matched and stays), and,
+ * for a finished workflow with no held merge, its question rows moved to
+ * `quiet`.
+ */
+function classified(
+  w: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+  title: (stepId: string) => string,
+): { items: NeedItem[]; quiet: QuestionNeed[]; blind: boolean; blindLive: boolean; unread: boolean } {
+  const all: NeedItem[] = []
+  const asked = new Set<string>()
   let blind = false
+  let blindLive = false
   let unread = false
   for (const step of w.steps) {
     if (!step.task_id) continue
@@ -123,9 +203,34 @@ export function workflowNeedItems(
       unread = true
       continue
     }
-    out.push(...stepNeedItems(task, needs, title(step.step_id)))
+    if (needs === null && !TERMINAL_STATES.has(task.state)) blindLive = true
+    for (const item of stepNeedItems(task, needs, title(step.step_id))) {
+      const key = item.kind === 'question' ? questionRowKey(item, needs) : null
+      if (key !== null) {
+        if (asked.has(key)) continue
+        asked.add(key)
+      }
+      all.push(item)
+    }
   }
-  return Object.assign(out, { unknownKinds: unread ? LIST_KINDS : blind ? NEEDS_BLOCK_KINDS : [] })
+  if (!workflowFinished(w) || all.some((i) => i.kind === 'merge')) return { items: all, quiet: [], blind, blindLive, unread }
+  return {
+    items: all.filter((i) => i.kind !== 'question'),
+    quiet: all.filter((i): i is QuestionNeed => i.kind === 'question'),
+    blind,
+    blindLive,
+    unread,
+  }
+}
+
+/**
+ * A FINISHED workflow's unanswered questions, which no longer count as Needs
+ * you: its page's quiet tick beside its state counts them, and opens each
+ * asking step's questions, still answerable there. Empty for a workflow that
+ * has not finished, or whose merge is held: its questions are Needs you.
+ */
+export function finishedQuestionsOf(w: Workflow, taskById: ReadonlyMap<string, Task> | null): QuestionNeed[] {
+  return classified(w, taskById, (stepId) => stepId).quiet
 }
 
 /**

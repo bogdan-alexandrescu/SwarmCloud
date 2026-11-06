@@ -312,6 +312,21 @@ locals {
       ]
     }
 
+    # ---- reconciler: the incremental pass's changed tasks -------------------
+    # reconciler.store.ControlStore.incremental_snapshot reads
+    #   tasks where state in (the four concurrency states) and updated_at > cursor
+    # every tick between full sweeps, so a pass reads what changed since the
+    # last one instead of every live task. `in` is an equality filter, so state
+    # leads and the range field follows it.
+    "tasks-state-updated" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "updated_at", order = "ASCENDING" },
+      ]
+    }
+
     "leases-tenant-created" = {
       collection  = "leases"
       query_scope = "COLLECTION"

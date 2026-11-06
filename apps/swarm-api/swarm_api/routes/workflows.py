@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict
 from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
-from .. import sessiontag
+from .. import route_scope, sessiontag
 from ..auth import AuthContext
 from .tasks import require_member
 from ..attempt_totals import IN_LIMIT, totals_for, with_totals
@@ -76,7 +76,14 @@ from ..deps import (
     tenant_scope,
 )
 from ..rollup import RollupResult, SweepReport
-from ..schemas import DESCRIPTION_SOURCE_KEY, McpCredentialCreate, WorkflowCreate, _mcp_credentials_field
+from ..schemas import (
+    ABOUT_GOALS_MAX,
+    ABOUT_KEY,
+    DESCRIPTION_SOURCE_KEY,
+    McpCredentialCreate,
+    WorkflowCreate,
+    _mcp_credentials_field,
+)
 from ..stalls import stalled_workflows
 from ..steprerun import RERUN_OF_METADATA_KEY
 from ..store import CancelContended, workflow_listing_token
@@ -193,7 +200,9 @@ def workflow_about(workflow: Any, step_tasks: dict[str, Task] | None) -> dict[st
     """What the workflow is about and where it came from, off its step tasks
     (the frozen `Workflow` has no metadata; every step task carries the
     workflow's): `repository_url`, `title`, `description`,
-    `description_source`, `feature` (`{title, url?}`) and `started_from`
+    `description_source`, `about` (`{purpose, goals, output}`: the spec's
+    `metadata.about`, else its description as the purpose, else null),
+    `feature` (`{title, url?}`) and `started_from`
     (`STARTED_FROM`). Served on every workflow read, the full and the summary
     view and every `GET /v1/workflows` row alike.
 
@@ -217,11 +226,18 @@ def workflow_about(workflow: Any, step_tasks: dict[str, Task] | None) -> dict[st
         if text(raw_feature.get("url")):
             feature["url"] = text(raw_feature.get("url"))
     description = text(stored.get("description"))
+    raw_about = stored.get(ABOUT_KEY) if isinstance(stored.get(ABOUT_KEY), dict) else {}
+    goals = [g for g in (text(goal) for goal in raw_about.get("goals") or [] if isinstance(goal, str)) if g]
+    about = {"purpose": text(raw_about.get("purpose")) or description,
+             "goals": goals[:ABOUT_GOALS_MAX], "output": text(raw_about.get("output"))}
+    # A bare description is the purpose; nothing served is null, not {}.
+    about = about if about["purpose"] or about["goals"] or about["output"] else None
     return {
         "repository_url": masking.repository_url(first.repository_url)[0],
         "title": text(stored.get("title")),
         "description": description,
-        "description_source": text(stored.get(DESCRIPTION_SOURCE_KEY)) if description else None,
+        "description_source": text(stored.get(DESCRIPTION_SOURCE_KEY)) if description or about else None,
+        "about": about,
         "feature": feature,
         "started_from": _started_from(tasks),
     }
@@ -235,6 +251,7 @@ def _workflow_api(workflow: Any, *args: Any, step_tasks: dict[str, Task] | None 
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def create_workflow(
     body: WorkflowCreate,
     response: Response,
@@ -280,6 +297,7 @@ def create_workflow(
 
 
 @router.get("")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_workflows(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
@@ -684,6 +702,7 @@ def _without_rerun_replaced(workflow: Any, tasks: list[Task]) -> list[Task]:
 
 
 @router.get("/{workflow_id}")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def get_workflow(
     workflow_id: str,
     tenant_id: str = Depends(tenant_scope),
