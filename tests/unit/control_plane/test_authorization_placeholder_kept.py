@@ -133,11 +133,20 @@ def test_a_short_literal_in_an_f_string_is_masked() -> None:
         "Authorization: Bearer {v}{p}",
         "Authorization: Bearer {p}:{v}",
         "curl -H 'Authorization: Bearer {p}:{v}'",
+        # Punctuation that could end a value, with a literal glued after it.
+        "Authorization: Bearer {p};{v}",
+        "Authorization: Bearer {p}){v}",
+        "Authorization: Bearer {p}]{v}",
+        "Authorization: Bearer {p}}{v}",
+        '"Authorization": f"Bearer {p};{v}"',
+        "authorization={p};{v}",
+        "authorization={p}){v}",
     ],
 )
 def test_a_literal_mixed_with_a_placeholder_is_masked(template: str, placeholder: str) -> None:
-    # After the placeholder the literal follows a `:` (a Basic pair's shape):
-    # glued straight on, `$TOKEN` and a run of letters is one longer name.
+    # After the placeholder the literal follows a `:` (a Basic pair's shape)
+    # or a `;`, `)`, `]` or `}` that is not where the value ends: glued
+    # straight on, `$TOKEN` and a run of letters is one longer name.
     value = _literal(8)
     line = template.replace("{v}", value).replace("{p}", placeholder)
     result = redact(line)
