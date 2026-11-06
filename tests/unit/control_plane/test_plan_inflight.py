@@ -422,3 +422,63 @@ def test_the_lane_round_trips_and_is_served():
                    "needs": []})
     back = issueruns.IssueRun.from_firestore(run.to_firestore())
     assert back.to_api()["not_ready"]["lane"] == f"{REPOSITORY}#1134"
+
+
+# --------------------------------------------------------------------------
+# #3507: a planner named a SAME FILES run lane by its run id as an overlap ref
+# --------------------------------------------------------------------------
+
+LANE = "run_3507a1b2c3d4"
+BUCKET = "swarm-artifacts-saga-agents-staging"
+
+
+def _finish_planner(db, objects, run: dict, plan: dict) -> None:
+    """The planner task ends, leaving plan.json as a worker uploads it."""
+    task_id = run["planner_task_id"]
+    doc = db.docs[f"tasks/{task_id}"]
+    doc["state"] = "SUCCEEDED"
+    raw = json.dumps(plan)
+    key = f"tenants/{doc['tenant_id']}/tasks/{task_id}/attempts/att_1/artifacts/plan.json"
+    objects.put(key, raw)
+    doc["result_summary"] = {"artifacts": [
+        {"name": "plan.json", "bytes": len(raw.encode()), "uri": f"gs://{BUCKET}/{key}"}]}
+
+
+def test_3507_a_same_files_run_lane_states_its_overlap_ref(client, db):
+    _create_run(client, db, 1200)
+    _put_run(db, LANE, 1070, issueruns.RunState.RUNNING, files=[MERGE])
+    run, prompt, stored = _create_run(client, db, 1080)
+    same_files = _part(_section(prompt, run["id"]), "SAME FILES")
+    assert f"lane `{LANE}` (overlap ref {REPOSITORY}#1070)" in same_files
+    in_flight = stored["index_context"]["in_flight"]
+    assert in_flight["same_files"] == [LANE]
+    assert in_flight["lane_refs"] == {LANE: f"{REPOSITORY}#1070"}
+    # The instructions say what an overlap's ref is, whatever the lane's id.
+    assert 'an overlap\'s "ref" is always owner/repo#N' in prompt
+
+
+def test_3507_a_same_issue_run_lane_states_its_overlap_ref(client, db):
+    first, _prompt, _stored = _create_run(client, db, 1133)
+    run, prompt, stored = _create_run(client, db, 1133)
+    same = _part(_section(prompt, run["id"]), "SAME ISSUE")
+    assert f"lane `{first['id']}` (overlap ref {REPOSITORY}#1133)" in same
+    assert stored["index_context"]["in_flight"]["lane_refs"] == {
+        first["id"]: f"{REPOSITORY}#1133"}
+
+
+def test_3507_a_plan_naming_a_listed_run_lane_as_overlap_ref_is_accepted_as_its_issue(
+        client, db, objects):
+    _create_run(client, db, 1200)
+    _put_run(db, LANE, 1070, issueruns.RunState.RUNNING, files=[MERGE])
+    run, _prompt, _stored = _create_run(client, db, 1080)
+    _finish_planner(db, objects, run, {
+        "summary": "merge only on green checks",
+        "overlaps": [{"ref": LANE, "kind": "issue", "action": "none",
+                      "note": "That lane fills other merge gaps; this step waits on it."}],
+        "steps": [{"step_id": "gate", "title": "gate the merge",
+                   "prompt": "Refuse a merge while a required check is pending.",
+                   "files": [MERGE]}]})
+    read = client.get(f"/v1/runs/{run['id']}", headers=auth_header("alice")).json()["run"]
+    assert read["state"] != "FAILED", read.get("error")
+    stored = db.docs[f"{issueruns.RUNS_COLLECTION}/{run['id']}"]
+    assert [o["ref"] for o in stored["plan"]["overlaps"]] == [f"{REPOSITORY}#1070"]
