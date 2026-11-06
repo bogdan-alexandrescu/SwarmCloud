@@ -170,8 +170,10 @@ RUN rm -rf /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
 # The GKE auth plugin and kubectl, at the pins agent-runtime-base verified.
 #
 # GKE_PLUGIN_*: the Filename and SHA256 of
-# google-cloud-cli-gke-gcloud-auth-plugin 591.0.0-0 in
-# https://packages.cloud.google.com/apt/dists/cloud-sdk/main/binary-amd64/Packages.
+# google-cloud-cli-gke-gcloud-auth-plugin 592.0.0-0 in
+# https://packages.cloud.google.com/apt/dists/cloud-sdk/main/binary-amd64/Packages
+# (go1.27.3, golang.org/x/net v0.61.0, read 2026-11-06), the same build
+# agent-runtime-base pins.
 # The .deb declares no Depends, so it installs beside an SDK this image did not
 # install through dpkg. Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031
 # reads "AUTH" in an ARG name as a secret.
@@ -183,14 +185,17 @@ RUN rm -rf /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
 #
 # amd64 only, like every image here: Cloud Build's default pool is amd64, and
 # so is Cloud Run.
+# GCLOUD_VERSION names the CLI this image's base (GCLOUD_IMAGE) carries, the same
+# as agent-runtime-base's; the plugin has its own GKE_PLUGIN_VERSION.
 ARG GCLOUD_VERSION=591.0.0
-ARG GKE_PLUGIN_POOL_ID=0f14e7e21ca8f8a0ba22a1f83c4b26b1
-ARG GKE_PLUGIN_SHA256=b46d7490fd2b596e3b58b0d94aa8f0328c288fcfa517a6f6b8a01e704b5760c7
+ARG GKE_PLUGIN_VERSION=592.0.0
+ARG GKE_PLUGIN_POOL_ID=a8fc8016eccf144b786a0d64a6f464aa
+ARG GKE_PLUGIN_SHA256=3a1da42673e0df59b86958c817d2369ef89d5b435767d1fea85e453707007df4
 ARG KUBECTL_VERSION=1.36.6
 ARG KUBECTL_SHA256=29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
 RUN mkdir -p /tmp/toolbox \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
-      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
+      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GKE_PLUGIN_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GKE_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \

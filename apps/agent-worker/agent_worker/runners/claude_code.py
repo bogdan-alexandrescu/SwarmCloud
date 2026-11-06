@@ -602,6 +602,19 @@ EXPLORATION_SKILL_CLAUSE = (
     f"invoke the `{GRAPH_SKILL_NAME}` skill before a `grep -rn` for a symbol "
     "across the tree"
 )
+#: The lookup line's tool in the `skill` shape (`graph_lookup_line`).
+GRAPH_LOOKUP_SKILL = f"invoke the `{GRAPH_SKILL_NAME}` skill"
+
+
+def graph_lookup_line(payload: Mapping[str, Any], work_dir: Path, *,
+                      shape: str) -> str | None:
+    """The one brief line naming the graph's lookup for an implement, review
+    or fix step (`contextpack.lookup_line`, BGD's pick of 6 November 2026),
+    in this shape's words, or None. Called only for a step with the graph."""
+    from .. import contextpack  # lazy, as `run_cli_agent` imports it
+
+    tool = GRAPH_LOOKUP_SKILL if shape == GRAPH_SHAPE_SKILL else contextpack.GRAPH_LOOKUP_TOOL
+    return contextpack.lookup_line(payload, work_dir, tool=tool)
 
 
 def graph_shape(environ: Mapping[str, str]) -> str:
@@ -2047,8 +2060,17 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if judge_config and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{JEV_DECIDE_NOTE}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    # Where to look a symbol up (BGD, 2026-11-06): an implement, review or fix
+    # step with the graph gets the one line naming the tool, and the
+    # exploration line then leaves its graph clause out, so it is named once.
+    has_graph = bool(graph_snapshot or graph_served)
+    lookup = graph_lookup_line(ctx.payload, Path(ctx.work_dir), shape=shape) \
+        if has_graph else None
+    if lookup and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{lookup}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     # Where to explore first, naming only the tools this attempt has (LANE CAPS).
-    explore = exploration_note(graph=bool(graph_snapshot or graph_served),
+    explore = exploration_note(graph=has_graph and not lookup,
                                children=env.get(CHILDREN_ENV, ""), shape=shape)
     if explore and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{explore}"

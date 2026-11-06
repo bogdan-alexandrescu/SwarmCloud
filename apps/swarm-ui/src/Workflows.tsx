@@ -5851,8 +5851,8 @@ function WorkflowList({
           </table>
         </div>
       )}
-      <p className="wfl-foot">
-        {rows.length} of {all.length} read · {SORT_LABEL[query.sort]} · 100 per read
+      <p className="wfl-foot" title="100 per read">
+        {rows.length} of {all.length} read · {SORT_LABEL[query.sort]}
         {older.more === null ? (
           ' · no older workflows'
         ) : (

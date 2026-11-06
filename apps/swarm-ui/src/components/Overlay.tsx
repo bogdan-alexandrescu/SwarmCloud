@@ -53,8 +53,10 @@ export function Tooltip({ tip, children }: { tip: string; children: ReactNode })
     >
       {children}
       {/* Always in the document, so the description is there before it is
-          shown; hidden until hover or focus. */}
-      <span role="tooltip" id={id} className="c-tip" hidden={!open}>
+          shown; hidden until hover or focus. `data-help-description` marks it
+          as help, not surface prose, so the prose ratchet (proseapp.tsx) does
+          not count it, as People's InfoTip and Profile's AboutTip are kept. */}
+      <span role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open}>
         {tip}
       </span>
     </span>

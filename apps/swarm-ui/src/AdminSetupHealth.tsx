@@ -26,11 +26,60 @@
  * rather than that it drifted; no doctor run at all says so rather than
  * drawing a clean page.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { loadSetupHealth, type HealthCheck, type HealthFinding, type Result, type SetupHealth } from './api'
-import { Banner, Button, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
+import { Banner, Button, Card, Chip, CodeBlock, ToneMark, Tooltip, type MarkTone } from './components'
 import { spanWords } from './AdminSetupSteps'
 import './styles/onboarding.css'
+import './styles/admin-setup.css'
+
+/**
+ * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05): a
+ * sentence that explains a heading sits behind an (i) beside it, and one that
+ * explains a label is that label's tooltip. Both open on hover AND focus (the
+ * canonical `Tooltip`), so a keyboard and a phone's tap reach them, and the
+ * text stays the host's description for a screen reader.
+ */
+/** The (i): a drawn glyph, not a letter, so the button holds no text to inset. */
+const INFO_GLYPH = (
+  <svg className="c-ic" viewBox="0 0 24 24" aria-hidden>
+    <path d="M12 10.5v7.5M12 6v.01" />
+  </svg>
+)
+
+export function About({ label, tip }: { label: string; tip: string }) {
+  return (
+    <Tooltip tip={tip}>
+      {/* The name is `aria-label`, not a string child: a string child would
+          also become a native `title`, a second tooltip over this one. */}
+      <Button size="sm" kind="ghost" iconOnly className="asm-about" icon={INFO_GLYPH} aria-label={`About ${label}`}>
+        <>{label}</>
+      </Button>
+    </Tooltip>
+  )
+}
+
+/** A label whose explanation is its tooltip; focusable, so a keyboard reaches it. */
+export function Explained({ tip, children }: { tip: string; children: ReactNode }) {
+  return (
+    <Tooltip tip={tip}>
+      <span className="asm-explained" tabIndex={0}>
+        {children}
+      </span>
+    </Tooltip>
+  )
+}
+
+/** A status tick whose tooltip carries the reason for the status beside it. */
+export function ReasonTick({ tone, reason }: { tone: MarkTone; reason: string }) {
+  return (
+    <Tooltip tip={reason}>
+      <span className="asm-tick" tabIndex={0} aria-label={`Why: ${reason}`}>
+        <ToneMark tone={tone} hidden />
+      </span>
+    </Tooltip>
+  )
+}
 
 interface ResultLook {
   tone: MarkTone
@@ -46,32 +95,44 @@ const resultOf = (c: HealthCheck): ResultLook => (c.result === 'passed' ? PASSED
 
 /** Why a probe saw a 403, in words (doctor.Finding.cause). */
 const CAUSE_WORDS: Record<string, string> = {
-  propagating: 'the doctor holds the permission, but IAM is still propagating the grant; the next run should see it.',
-  missing_grant: 'the doctor’s identity lacks a permission this check needs, so it could not look.',
+  propagating: 'The doctor holds the permission, but IAM is still propagating the grant; the next run should see it.',
+  missing_grant: 'The doctor’s identity lacks a permission this check needs, so it could not look.',
 }
 
-/** One finding: what the probe saw, why, the doctor's fix and its repair command. */
+/** An entry no install step makes: there is no repair command, and the doctor's fix is the way out. */
+const NO_REPAIR = 'No install step makes this one, so there is no repair command: the doctor’s fix says what to do.'
+
+/**
+ * One finding: what the probe saw, the doctor's fix and its repair command.
+ * Why it could not look is the tooltip of a tick beside its title, and an
+ * entry with no repair command says so in the title's tooltip.
+ */
 export function HealthFindingPanel({ finding }: { finding: HealthFinding }) {
   const drifted = finding.result === 'failed'
   const cause = finding.cause === null ? null : (CAUSE_WORDS[finding.cause] ?? finding.cause)
+  const head = drifted ? `${finding.id} drifted` : `${finding.id} could not be checked`
   return (
     <section aria-label={finding.id}>
-      <Banner tone={drifted ? 'bad' : 'warn'} title={drifted ? `${finding.id} drifted` : `${finding.id} could not be checked`}>
+      <Banner
+        tone={drifted ? 'bad' : 'warn'}
+        title={
+          <>
+            {finding.repair === null ? <Explained tip={NO_REPAIR}>{head}</Explained> : head}
+            {cause !== null && (
+              <>
+                {' '}
+                <ReasonTick tone={drifted ? 'bad' : 'unknown'} reason={cause} />
+              </>
+            )}
+          </>
+        }
+      >
         {finding.detail ?? (drifted ? `The ${finding.id} check failed on the last doctor run.` : `The ${finding.id} check could not decide on the last doctor run.`)}
       </Banner>
-      {cause !== null && (
-        <p className="ur-hint">
-          <b>Why:</b> {cause}
-        </p>
-      )}
       {finding.fix !== null && (
         <p className="ur-hint">{finding.fix}</p>
       )}
-      {finding.repair !== null ? (
-        <CodeBlock title="Repair" lang="shell" text={finding.repair} />
-      ) : (
-        <p className="ur-hint">No install step makes this one, so there is no repair command: the doctor’s fix says what to do.</p>
-      )}
+      {finding.repair !== null && <CodeBlock title="Repair" lang="shell" text={finding.repair} />}
     </section>
   )
 }
@@ -98,7 +159,11 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
   const when = Number.isNaN(at) ? 'at an unrecorded time' : `${spanWords((now - at) / 1000)} ago`
   return (
     <Card
-      title="Health"
+      title={
+        <>
+          Health <About label="Health" tip="The checks the hourly doctor runs, read-only, on the live deployment." />
+        </>
+      }
       action={
         <span className="ob-acts">
           {drifted > 0 && <Chip tone="bad">{drifted} drifted</Chip>}
@@ -107,7 +172,7 @@ export function HealthPanel({ health, now, onReload, busy }: { health: SetupHeal
           {reload}
         </span>
       }
-      foot={`The checks the hourly doctor runs, read-only, on the live deployment · last run ${when}`}
+      foot={`Last run ${when}`}
     >
       {health.findings.map((f) => (
         <HealthFindingPanel key={f.id} finding={f} />
