@@ -331,11 +331,21 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     # Contract request 88 gave claude-code, codex and claude-code-browser the
     # registered MCP servers by name, and the review and indexer profiles not.
     # Contract request 106 gave claude-code-browser alone its QA identity, by name.
-    for name in ("claude-code-review", "indexer"):
-        assert set(_declared(name)) == {"issue"}, (name, _declared(name))
-    # Contract request 113: claude-code-large declares exactly what claude-code does,
-    # and contract request 127 the same for claude-code-lightpanda: no browser_tool.
-    for name in ("claude-code", "claude-code-large", "claude-code-lightpanda", "claude-code-medium", "codex"):
+    # The owner's pick on #3470 (2026-11-06) gave claude-code, codex and
+    # claude-code-review the pull request a step works on, by number.
+    assert set(_declared("indexer")) == {"issue"}, _declared("indexer")
+    assert set(_declared("claude-code-review")) == {"issue", "pull_request"}, (
+        _declared("claude-code-review")
+    )
+    for name in ("claude-code", "codex"):
+        assert set(_declared(name)) == {"issue", "mcp_servers", "pull_request"}, (
+            name, _declared(name)
+        )
+    # Contract request 113: claude-code-large declares what claude-code did,
+    # and contract request 127 the same for claude-code-lightpanda: no
+    # browser_tool, and no pull_request, which #3470 gave the three alone;
+    # claude-code-medium (contract request 139) declares what claude-code-large does.
+    for name in ("claude-code-large", "claude-code-lightpanda", "claude-code-medium"):
         assert set(_declared(name)) == {"issue", "mcp_servers"}, (name, _declared(name))
     assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
     for name in RUNNER_PROFILES:
@@ -396,6 +406,15 @@ def test_every_declared_input_is_one_its_runner_reads():
     to nothing, as without it. QI-WORKER replaces this exemption with a check
     on the module that reads it."""
     unread_until_the_worker_lane = {"mcp_servers", "qa_identity"}
+    # Read by the worker before the runner starts, never by the runner: the
+    # worker stages the pull request as work/pull_request.md and names it in
+    # the brief (the owner's pick on #3470). Held to the module that reads it.
+    read_by_the_worker = {"pull_request": "agent_worker/pull_request.py"}
+    for key, module_path in read_by_the_worker.items():
+        reader = (_REPO / "apps" / "agent-worker" / module_path).read_text()
+        assert re.search(rf"""^INPUT_KEY = ["']{re.escape(key)}["']$""", reader, re.M), (
+            f"{module_path} no longer reads input.{key}"
+        )
     checked = 0
     for name in RUNNER_PROFILES:
         declared = _declared(name)
@@ -412,7 +431,7 @@ def test_every_declared_input_is_one_its_runner_reads():
         # which reads the four limits by name (`runners/limits.py`).
         limits = _limit_keys() if "resolve_limits(payload" in source else set()
         for key in declared:
-            if key in unread_until_the_worker_lane:
+            if key in unread_until_the_worker_lane or key in read_by_the_worker:
                 continue
             checked += 1
             assert key in limits or re.search(
@@ -426,7 +445,7 @@ def test_the_profiles_view_says_what_each_profile_takes():
     from a sentence of prose that can go stale."""
     entries = {entry["name"]: entry for entry in catalogue.catalogue()}
     assert set(entries["mock"]["inputs"]) == set(_declared("mock"))
-    assert set(entries["claude-code"]["inputs"]) == {"issue", "mcp_servers"}
+    assert set(entries["claude-code"]["inputs"]) == {"issue", "mcp_servers", "pull_request"}
 
 
 def test_swarm_profiles_prints_the_declared_inputs(capsys):

@@ -251,6 +251,11 @@ SPEC_KEYS = frozenset(
         # `check_feature` before anything is sent.
         "description",
         "feature",
+        # The description in three labelled parts (BGD, 2026-11-06):
+        # `{purpose?, goals?, output?}`, why the work exists, up to three
+        # things it must achieve, and what lands. Sent as `metadata.about`,
+        # for the reason `title` is; checked by `check_about` first.
+        "about",
     }
 )
 
@@ -259,6 +264,12 @@ SPEC_KEYS = frozenset(
 #: tests/unit/mcp/test_spec_description_feature.py holds them equal.
 DESCRIPTION_MAX_CHARS = 600
 FEATURE_TITLE_MAX_CHARS = 120
+#: swarm-api's `schemas.ABOUT_*` caps, held equal by
+#: tests/unit/mcp/test_spec_about.py.
+ABOUT_PURPOSE_MAX_CHARS = 300
+ABOUT_GOAL_MAX_CHARS = 120
+ABOUT_GOALS_MAX = 3
+ABOUT_OUTPUT_MAX_CHARS = 300
 #: The markup swarm-api refuses in a description (`schemas._MARKUP`):
 #: an HTML tag, a Markdown link, a code fence, a heading, doubled bold markers.
 _DESCRIPTION_MARKUP = re.compile(
@@ -289,6 +300,47 @@ def check_description(value: Any, *, where: str) -> str | None:
         raise SwarmError(f"{where}: description must be plain text, with no HTML, Markdown link, heading, "
                          "code fence, bold or control character. Nothing was sent")
     return text
+
+
+def _about_line(value: Any, *, field: str, cap: int, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{where}: {field} must be non-empty text, or left out. Nothing was sent")
+    text = value.strip()
+    if len(text) > cap:
+        raise SwarmError(f"{where}: {field} is {len(text)} characters and holds at most {cap}. Nothing was sent")
+    if "\n" in text or _CONTROL.search(text):
+        raise SwarmError(f"{where}: {field} must be one line of plain text. Nothing was sent")
+    if _DESCRIPTION_MARKUP.search(text):
+        raise SwarmError(f"{where}: {field} holds markup (HTML, a Markdown link, heading, code fence or "
+                         "bold): send plain text. Nothing was sent")
+    return text
+
+
+def check_about(value: Any, *, where: str) -> dict[str, Any] | None:
+    """A spec's optional `about`, `{purpose?, goals?, output?}`, tidied, or
+    None when absent: by the rule swarm-api applies (`schemas.check_about`),
+    each refusal naming the part (`about.goals[1]`), so a bad one costs no
+    request."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not value or not set(value) <= {"purpose", "goals", "output"}:
+        raise SwarmError(f"{where}: about must be {{purpose?, goals?, output?}} with at least one of them. "
+                         "Nothing was sent")
+    about: dict[str, Any] = {}
+    if "purpose" in value:
+        about["purpose"] = _about_line(value["purpose"], field="about.purpose",
+                                       cap=ABOUT_PURPOSE_MAX_CHARS, where=where)
+    if "goals" in value:
+        goals = value["goals"]
+        if not isinstance(goals, list) or not goals or len(goals) > ABOUT_GOALS_MAX:
+            raise SwarmError(f"{where}: about.goals must be a list of 1 to {ABOUT_GOALS_MAX} short items. "
+                             "Nothing was sent")
+        about["goals"] = [_about_line(goal, field=f"about.goals[{n}]", cap=ABOUT_GOAL_MAX_CHARS, where=where)
+                          for n, goal in enumerate(goals)]
+    if "output" in value:
+        about["output"] = _about_line(value["output"], field="about.output",
+                                      cap=ABOUT_OUTPUT_MAX_CHARS, where=where)
+    return about
 
 
 def check_feature(value: Any, *, where: str, repository_url: str | None = None) -> dict[str, str] | None:
@@ -672,8 +724,9 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
 
     Returns `steps` built by `build_steps`, and the spec's `strategy`,
     `carrier`, `repository_url`, `repository_ref`, `on_step_failure`,
-    `priority`, `label`, `title` and `merge` as given, `description` and
-    `feature` checked (`check_description`, `check_feature`), and
+    `priority`, `label`, `title` and `merge` as given, `description`,
+    `about` and `feature` checked (`check_description`, `check_about`,
+    `check_feature`), and
     `additional_repositories` checked for shape (None when absent). The caller decides what
     overrides them -- the terminal's flags, or the repository the bridge infers
     from a checkout.
@@ -702,6 +755,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         )
     title = check_title(document.get("title"), where=where)
     description = check_description(document.get("description"), where=where)
+    about = check_about(document.get("about"), where=where)
     feature = check_feature(document.get("feature"), where=where,
                             repository_url=document.get("repository_url"))
     return {
@@ -716,6 +770,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "label": document.get("label"),
         "title": title,
         "description": description,
+        "about": about,
         "feature": feature,
         "merge": document.get("merge"),
         "after": check_after(document.get("after"), where=where),
@@ -748,12 +803,14 @@ def submit(
     dispatch: dict[str, str] | None = None,
     description: str | None = None,
     feature: dict[str, str] | None = None,
+    about: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
 
-    `description` and `feature` go as `metadata.description` and
-    `metadata.feature`, only when given, checked again here
-    (`check_description`, `check_feature`) so no caller sends one unchecked.
+    `description`, `about` and `feature` go as `metadata.description`,
+    `metadata.about` and `metadata.feature`, only when given, checked again
+    here (`check_description`, `check_about`, `check_feature`) so no caller
+    sends one unchecked.
 
     `dispatch` is the spec's workflow switches (`check_dispatch`), sent
     top-level only when given, so a spec without them sends what it sent.
@@ -793,6 +850,7 @@ def submit(
             )
         merge = None
     description = check_description(description, where="submit")
+    about = check_about(about, where="submit")
     feature = check_feature(feature, where="submit", repository_url=repository_url)
     body: dict[str, Any] = {
         "steps": steps,
@@ -804,6 +862,7 @@ def submit(
             **({"unit": label} if label else {}),
             **({"title": title} if title else {}),
             **({"description": description} if description else {}),
+            **({"about": about} if about else {}),
             **({"feature": feature} if feature else {}),
             **({"merge": merge} if merge is not None else {}),
         },

@@ -93,7 +93,15 @@ def _medium() -> Any:
 
 
 def test_the_profile_is_claude_code_at_the_medium_class():
-    expected = dataclasses.replace(RUNNER_PROFILES["claude-code"], name=NAME, resource_class="medium")
+    claude = RUNNER_PROFILES["claude-code"]
+    # Every input but pull_request, the owner's pick on #3470 for claude-code,
+    # codex and claude-code-review alone (as claude-code-large).
+    expected = dataclasses.replace(
+        claude,
+        name=NAME,
+        resource_class="medium",
+        inputs={k: v for k, v in claude.inputs.items() if k != "pull_request"},
+    )
     # MUTATION: a different timeout, image, input or secret on the entry and it
     # is no longer claude-code made bigger.
     assert _medium() == expected

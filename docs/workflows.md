@@ -69,23 +69,50 @@ picked a short description written by whoever submits, and a head that names
 the repository, the feature, the description, and who started the workflow,
 when and from where.
 
-**What a submission may carry.** Two keys of the workflow's `metadata`,
+**What a submission may carry.** Three keys of the workflow's `metadata`,
 checked by `schemas.check_workflow_about` when `WorkflowCreate` is read:
 
 | Key | Rule |
 |---|---|
 | `description` | Plain text, two or three sentences saying what the work delivers. Trimmed; at most 600 characters. Longer is **refused**, never cut, because a cut description says something its author did not. Markup (an HTML tag, a Markdown link, heading, code fence or doubled bold markers) and control characters other than a line break or a tab are refused: the console shows the text as written. |
+| `about` | `{purpose?, goals?, output?}`, at least one (BGD, 2026-11-06): the owner, opening a workflow, asked what the work is for, what it must achieve and what it will produce. `purpose` is one sentence of at most 300 characters, `goals` a list of one to three items of at most 120, `output` one sentence of at most 300 (a pull request, mock-up frames, a report). Each part is one line of plain text, held to the description's markup rule; a refusal names the part (`metadata.about.goals[1]`). The caps are per part because the console draws each as a short labelled line. |
 | `feature` | `{title, url?}`: the feature the work belongs to. `title` is one line of at most 120 characters. `url`, when given, is an `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>` page **of the workflow's own `repository_url`**, in any spelling of that repository (https, `ssh://`, `git@`); another repository's link, or a link on a workflow with no GitHub repository, is refused. |
 
 Neither may be set in a step's `metadata`: a step's metadata is merged over
 the workflow's onto its agent, so a step's own would reach the store
-unchecked. Beside a description swarm-api records `description_source:
-"submitter"`. A caller's own `description_source` is never kept: it is set
+unchecked. Beside a description or an about swarm-api records
+`description_source: "submitter"`. A caller's own `description_source` is never kept: it is set
 beside a description and dropped without one. It is overwritten rather than
 refused because a validated spec is stored as its dump and read again (a
 custom-prompt schedule's `params.spec`), and that dump holds the value
-swarm-api wrote. A later lane's small-model fallback for a workflow with no
-description writes its own source, so the console can mark it as generated.
+swarm-api wrote. An issue run's workflow is submitted with its issue as the
+`feature` and its approved plan's summary as the `description`, so it is a
+submitter's description like any other.
+
+**A workflow submitted without one gets a generated description.** After the
+submission returns, swarm-api writes the same three parts as `metadata.about`
+(and the purpose as `metadata.description`, for readers that take only that),
+held to the same rule, and records `description_source: "generated"` so the
+console marks it. It reads the steps' masked briefs and what the spec says
+about its output: the step ids and labels, the title, the strategy (whether
+the steps publish a pull request), the `merge` setting and whether a merge step
+follows. The model switch ships off (`SWARM_WORKFLOW_DESCRIPTION_MODEL = "off"`
+on swarm-api, terraform/infra/locals.tf), so an extract is written: the purpose
+is the first sentence of the first brief, a goal per step (`<step id>: <first
+sentence>`) when there are two or more, and the expected output what the
+strategy and the merge setting publish; each usage row says outcome
+`extractive`. It turns to `"vertex"`, Claude Haiku on Vertex AI (the owner's
+pick, 2026-11-05), once the owner grants swarm-api's account
+`roles/aiplatform.user`, enables `aiplatform.googleapis.com` and accepts
+Anthropic's Model Garden terms; the model answers the three parts as JSON, and
+a call that fails, times out, is refused or answers parts the rule refuses
+falls back to the same extract. With the switch unset (a unit test, a local
+run) nothing is written: the page shows the title alone, nothing invented.
+Each workflow costs at most one call, recorded with its tokens and outcome in
+one `workflow_description_usage` row (`swarm_api.wfdescription` says why). A
+workflow that already holds a description or an about, an issue run's
+included, is never described over: the hook skips it, and each write re-reads
+the step and leaves one that holds either.
 
 **What every read serves.** `GET /v1/workflows/{id}`, the create reply and
 every `GET /v1/workflows` row, in the `full` and the `summary` view alike,
@@ -97,6 +124,7 @@ step agent carries the workflow's):
 | `repository_url` | the repository the steps clone |
 | `title` | `metadata.title`, or null |
 | `description`, `description_source` | as above, or null |
+| `about` | `{purpose, goals, output}`: the submitted or generated about, else a bare `description` as the purpose (`goals: []`, `output: null`), else null |
 | `feature` | `{title, url?}`, or null |
 | `started_from` | where the workflow came from, one of the values below |
 
@@ -271,6 +299,7 @@ What `claude-code` and `codex` declare (contract request 28, #265):
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
@@ -278,6 +307,7 @@ What `claude-code` and `codex` declare (contract request 28, #265):
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:codex -->
 
 `claude-code-review` is `claude-code` under its own Job and service account,
@@ -288,6 +318,7 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 | input | kind and bounds | what the claude-code-review runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code-review -->
 
 `indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries

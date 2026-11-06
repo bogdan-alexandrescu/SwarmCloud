@@ -2993,7 +2993,8 @@ TOOLS: list[dict[str, Any]] = [
             "shows it as answered in Claude Code; neither changes who may answer: the "
             "task's submitter or an admin, a viewer never. Re-answering replaces the "
             "answer and keeps the earlier one in its history. Answers with the questions "
-            "as the API now serves them, or the API's refusal word for word."
+            "as the API now serves them (`reply: \"short\"`: only the answer's record), or "
+            "the API's refusal word for word."
         ),
         "inputSchema": {
             "type": "object",
@@ -3011,8 +3012,49 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "The person's own words, or what they chose (at most 2,000 characters).",
                 },
+                "reply": {
+                    "type": "string",
+                    "enum": ["short", "full"],
+                    "description": (
+                        "`full` (the default): the task's questions as the API now serves them. "
+                        "`short`: only {status, task_id, question_index, recorded_at, by}."
+                    ),
+                },
             },
             "required": ["task_id", "question_index"],
+        },
+    },
+    {
+        "name": "swarm_task_answers",
+        "description": (
+            "Record many answers at once (at most 200): each entry goes through the same "
+            "route as swarm_task_answer with the short reply, as you, so each is checked "
+            "as a single answer is -- the task's submitter or an admin, a viewer never. "
+            "The same rule holds: only the person's own pick or words (or their decision, "
+            "such as closing finished tasks' questions as moot), never an answer the agent "
+            "chose itself. A refused entry does not stop the rest. Answers with counts and "
+            "one line per entry: {task_id, question_index, status} or {..., refused: <code>}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "maxItems": 200,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "question_index": {"type": "integer"},
+                            "choice": {"type": "string"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["task_id", "question_index"],
+                    },
+                    "description": "Up to 200 {task_id, question_index, choice?, text?}.",
+                },
+            },
+            "required": ["entries"],
         },
     },
     {
@@ -5936,6 +5978,8 @@ def _call(
             # Nor a description or a feature (BGD, 2026-11-04).
             description=fields.get("description"),
             feature=fields.get("feature"),
+            # Nor its three-part about (BGD, 2026-11-06).
+            about=fields.get("about"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
@@ -6174,6 +6218,13 @@ def _call(
         from . import answers
 
         return json.dumps(answers.record(client, args), indent=2)
+
+    if name == "swarm_task_answers":
+        # One POST per entry through the same route, `reply=short`; a
+        # refusal is that entry's line and the next is still sent.
+        from . import answers
+
+        return json.dumps(answers.record_many(client, args), indent=2)
 
     if name == "swarm_cancel":
         for task_id in args["task_ids"]:
