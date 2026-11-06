@@ -43,7 +43,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from .. import awaitinput, contractreask
+from .. import awaitinput, contractreask, route_scope
 from ..auth import AuthContext, SCHEDULE_TICK_USERS_ENV
 from ..deps import AppContext, admin_auth, get_context
 from ..errors import Forbidden
@@ -52,6 +52,7 @@ from ..schedulefire import run_tick
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/admin", tags=["schedules"])
+route_scope.router_default(router, route_scope.SCHEDULE_TICK)
 
 
 @router.post("/schedules/tick")
