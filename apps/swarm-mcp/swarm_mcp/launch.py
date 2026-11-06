@@ -168,7 +168,8 @@ prompts made this launch answer 94,498 characters -- over Claude Code's
 tool-output limit, so the reply landed in a file -- and the session was told
 to pass `args` as given, the whole spec included, which it cannot retype. So
 `args` are `{spec_handle, details, rows, titled_copy}`: run.js has one
-sc:workflow row read the handle's OUTLINE with `swarm_workflow_spec
+sc:spec row (no submit tool: on 2026-11-05 an sc:workflow read row submitted
+the spec instead) read the handle's OUTLINE with `swarm_workflow_spec
 {spec_handle, spec_digest}` (the digest checked where the bytes are read),
 and the submit row passes the handle again. Args from before this change,
 with `spec` beside the handle, still submit from the handle.
