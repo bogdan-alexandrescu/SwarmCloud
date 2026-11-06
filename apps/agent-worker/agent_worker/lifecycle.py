@@ -264,6 +264,7 @@ from .gitops import (
     commit_tree_onto,
     fetch_branch_tip,
     fold_agent_commits,
+    forge_holds_commit,
     hide_from_git,
     is_branch_ref_name,
     is_full_refname,
@@ -13424,6 +13425,24 @@ class Worker:
         )
         return floor
 
+    def _forge_holder(self, *, url: str, token: str) -> Callable[[str], bool]:
+        """Whether the forge serves a commit (`forge_holds_commit`), each sha
+        asked once: the replay and the fold ask of every merged head (#3359)."""
+        ws = self.ws
+        assert ws is not None
+        answers: dict[str, bool] = {}
+
+        def holds(sha: str) -> bool:
+            if sha not in answers:
+                answers[sha] = forge_holds_commit(
+                    url=url, sha=sha, token=token, private_dir=ws.private,
+                    logs_dir=ws.logs, timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                    logger=self.log,
+                )
+            return answers[sha]
+
+        return holds
+
     def _default_branch_tip(
         self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
     ) -> str | None:
@@ -15212,6 +15231,9 @@ class Worker:
                 logger=self.log,
                 allow_unknown_base=allow_unknown_base,
                 confirm_on_origin=self._origin_confirmer(fenced),
+                # A merge the agent left in progress is concluded as a merge
+                # by `commit_dirty`, never squashed (#3359).
+                carry_merge=True,
             )
         finally:
             # `prepare_publish_repo` reads a confirmer that raised as "origin
@@ -16143,6 +16165,9 @@ class Worker:
                     ),
                 )
             else:
+                # A merged branch the forge already holds stays a parent
+                # whatever its commits say: it is published already (#3359).
+                on_forge = self._forge_holder(url=url, token=token)
                 try:
                     replayed = replay_agent_commits(
                         repo=publish_repo,
@@ -16167,6 +16192,7 @@ class Worker:
                         leaks=self._leaks_in_added_text,
                         overlap=self._scan_overlap(),
                         upstream=scan_floor or "",
+                        on_forge=on_forge,
                     )
                     if replayed is not None:
                         kept = replayed
@@ -16204,6 +16230,7 @@ class Worker:
                                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                                 logger=self.log,
                             ),
+                            on_forge=on_forge,
                         )
                         # The worker's own auto-commit is among what was replaced
                         # when there was one; the rest were the agent's.
@@ -20198,6 +20225,7 @@ def replay_agent_commits(
     leaks: LeakPredicate | None = None,
     overlap: int = SCAN_OVERLAP_CHARS,
     upstream: str = "",
+    on_forge: Callable[[str], bool] | None = None,
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -20241,7 +20269,10 @@ def replay_agent_commits(
     fix round's `git merge origin/main` reached the forge with one parent,
     GitHub kept the old merge base and the pull request still conflicted;
     dropping train/an's was #3359, every conflict the lane resolved raised
-    again when its pull request merged back.
+    again when its pull request merged back. A parent `on_forge` says the
+    forge holds is kept whatever its commits say: it is published already
+    (#3359 again, 6 November 2026, a train branch with one attributed
+    commit made outside the platform).
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -20355,7 +20386,7 @@ def replay_agent_commits(
             raise GitError(f"could not read the tree of commit {sha[:12]}")
         merged = _published_merge_parents(
             run, g, header, upstream=upstream, base=floor, logger=logger,
-            history_leaks=history_leaks,
+            history_leaks=history_leaks, on_forge=on_forge,
         )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
@@ -20404,6 +20435,7 @@ def _published_merge_parents(
     base: str,
     logger: Any,
     history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """The merge parents of a commit (its `header`) the replay keeps (#1321, #3359).
 
@@ -20416,7 +20448,8 @@ def _published_merge_parents(
     without its history, and merging the pull request back raised every
     conflict the lane had resolved again (#3359). A side branch the agent
     committed on as Claude is still dropped: its commits would be pushed as
-    they were written. So is one `history_leaks` finds a credential in.
+    they were written. So is one `history_leaks` finds a credential in --
+    unless `on_forge` says the forge holds it already.
     """
     parents = [line[len("parent "):].strip() for line in header.split("\n")
                if line.startswith("parent ")]
@@ -20425,7 +20458,7 @@ def _published_merge_parents(
         if not _SHA_RE.match(other):
             continue
         if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger,
-                            history_leaks=history_leaks):
+                            history_leaks=history_leaks, on_forge=on_forge):
             kept.append(other)
     return kept
 
