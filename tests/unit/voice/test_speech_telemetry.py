@@ -59,10 +59,10 @@ class Clock:
 
 
 def _lease(db: FakeFirestore, owner: sm.SessionRef, generation: int,
-           state: str = sm.RUNNING) -> None:
+           state: str = sm.RUNNING, **more: Any) -> None:
     db.collection(sm.COLLECTION).document(sm.LEASE).set({
         "session_id": owner.session_id, "tenant_id": owner.tenant_id,
-        "generation": generation, "state": state})
+        "generation": generation, "state": state, **more})
 
 
 def _metrics(**over: Any) -> dict[str, Any]:
@@ -229,6 +229,13 @@ def test_a_session_summary_is_its_percentiles_totals_and_peaks(db, store, clock)
     assert row["peaks"]["gpu_util_pct"] == 95.0
     assert row["minutes"] == 12.0
     assert row["metrics_samples"] == 2
+
+
+def test_a_session_keeps_the_starts_phases_from_the_lease(db, store):
+    _lease(db, ENG, 2, start_phases={"start.boot": 41.5, "start.load": 12.0})
+    store.record(ENG, 2, _metrics())
+    [row] = store.sessions(tel.parse_span("2026-11-06", "2026-11-06", "UTC"), tenant_id="eng")
+    assert row["start_phases"] == {"start.boot": 41.5, "start.load": 12.0}
 
 
 def test_no_percentile_or_day_is_stored_only_samples_and_the_session(db, store):
