@@ -119,8 +119,12 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # PR #2390's and PR #2415's build-checks (runs 40260439312 and 40263732191,
 # 2026-10-26) refused it over curl and
 # libcurl 8.22.0-r0 (CVE-2026-92392, HIGH, fixed in 8.23.0-r0); same reason, same fix.
-# PR #3497's build-check (2026-11-06) refused it over zlib 1.3.2-r0
-# (CVE-2026-85091, HIGH, fixed in 1.3.2-r1); same reason, same fix.
+# The generated-descriptions pull request's build-check (2026-11-06, 07:24Z) and
+# PR #3497's (2026-11-06) refused it over zlib 1.3.2-r0 (CVE-2026-85091, HIGH,
+# heap buffer overflow in gz_vacate, fixed in 1.3.2-r1). Docker Hub's current
+# 1.31.6-alpine digest (sha256:884e0b7f..., Alpine 3.24.2, read on 2026-11-06)
+# still ships 1.3.2-r0 -- checked by listing its packages -- so the pin stays and
+# the package is upgraded; same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's

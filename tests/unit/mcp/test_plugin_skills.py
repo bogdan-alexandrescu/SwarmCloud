@@ -115,6 +115,8 @@ _WRITE_TOOLS = {
     "swarm_run_issue", "swarm_plan_approve", "swarm_plan_edit", "swarm_plan_reject",
     # ANSWER-SYNC (#1644): it records an answer on a task.
     "swarm_task_answer",
+    # 6 November 2026 (part of #2688): it records many answers.
+    "swarm_task_answers",
 }
 
 
