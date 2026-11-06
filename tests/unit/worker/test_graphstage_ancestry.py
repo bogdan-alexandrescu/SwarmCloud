@@ -417,13 +417,12 @@ def test_the_staging_delivers_the_graph_and_removes_the_scratch_history(
 
 def test_a_filter_the_forge_refuses_falls_back_to_the_bounded_deepen(tmp_path, monkeypatch):
     lane = _Lane(tmp_path)
-    refused = _blob_fetch_is_slow(tmp_path, filtered_exit=128)
-    real = tmp_path / "bin" / "fallback-git"
+    real = tmp_path / "bin" / "git"
+    real.parent.mkdir()
     # The fallback's own fetch runs real git: only the filtered one is refused.
     real.write_text(f'#!/bin/sh\ncase " $* " in *" --filter=blob:none "*) exit 128 ;; esac\n'
                     f'exec {_REAL_GIT} "$@"\n')
     real.chmod(real.stat().st_mode | stat.S_IXUSR)
-    assert refused.exists()
     fetch = _fetcher(lane, monkeypatch, real, limit=10.0)
 
     proof = graphstage.prove_ancestry(lane.checkout, lane.main[3], lane.base, {},
