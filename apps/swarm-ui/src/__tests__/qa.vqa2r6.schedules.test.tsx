@@ -490,8 +490,15 @@ describe('the approvals inbox (V169, V248, V249)', () => {
   // Reject… form gave way to the reason box beside Reject, and its typed
   // confirmation still takes focus.
   it('V169: holds the decision bar in view while the evidence scrolls', async () => {
+    // A plan reads as its brief now, its decision in the header card (BGD,
+    // 6 November 2026), so the pinned bar is measured on a run's page.
     // MUTATION: drop the sticky `.ad-bar` rule.
-    await mountApprovals('approval=apr_39', approvalRoutes())
+    await mountApprovals(
+      'approval=apr_39',
+      approvalRoutes((m, url) =>
+        m === 'GET' && url.split('?')[0] === '/v1/approvals/apr_39' ? { status: 200, body: { approval: item('apr_39', { kind: 'run' }), run: { id: 'run_8f2a', state: 'PLANNED', plan: PLAN } } } : null,
+      ),
+    )
     const detail = await loaded()
     const bar = await within(detail).findByTestId('ad-decide', undefined, WAIT)
     expect(painted(bar, 'position', WIDE)).toBe('sticky')

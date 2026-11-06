@@ -125,6 +125,8 @@ def main() -> int:
                 write_message(stdout, {"jsonrpc": "2.0", "id": message["id"],
                                        "error": {"code": -32603, "message": "cannot start"}})
                 continue
+            # A server whose start outlasts its grant: no version is reported.
+            time.sleep(scenario.get("slow_methods", {}).get("initialize", 0))
             write_message(stdout, {"jsonrpc": "2.0", "id": message["id"], "result": {
                 "capabilities": {"definitionProvider": True, "callHierarchyProvider": True,
                                  "referencesProvider": True},

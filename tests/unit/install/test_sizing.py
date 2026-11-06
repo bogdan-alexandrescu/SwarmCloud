@@ -105,7 +105,7 @@ def test_one_person_gets_a_small_deployment() -> None:
     assert found["service_max_instances"] == {"swarm-api": 2, "swarm-scheduler": 1, "swarm-quota-broker": 1,
                                               "swarm-reconciler": 1}
     assert found["pool_accounts"] == 1
-    assert found["budget_usd"] == 500
+    assert found["budget_usd"] == 600
 
 
 def test_a_team_the_live_size_lands_above_the_live_values() -> None:
@@ -113,7 +113,7 @@ def test_a_team_the_live_size_lands_above_the_live_values() -> None:
     headroom"), so a team the live size gets dev.tfvars' pool_limits (global
     180, default_tenant 40, standard 80, browser 100, large 40, the runner and
     backend ceilings) half again over, in the same ratios; service_max_instances
-    stays the live 5/2/2/1. provider_tenant is the one exception: 50 tenants
+    is the live 8/2/2/1 (swarm-api 8 since BGD's pick of 2026-11-06). provider_tenant is the one exception: 50 tenants
     share the provider pool, so it is global // 50 (N5)."""
     assert sizing.HEADROOM == 3
     found = sizing.propose("team", sizing.REFERENCE_MEMBERS)
@@ -124,10 +124,10 @@ def test_a_team_the_live_size_lands_above_the_live_values() -> None:
                             "generic": 30, "browser": 30},
         "backends": {"CLOUD_RUN_JOB": 150, "GKE_AUTOPILOT": 270},
     }
-    assert found["service_max_instances"] == {"swarm-api": 5, "swarm-scheduler": 2, "swarm-quota-broker": 2,
+    assert found["service_max_instances"] == {"swarm-api": 8, "swarm-scheduler": 2, "swarm-quota-broker": 2,
                                               "swarm-reconciler": 1}
     assert found["pool_accounts"] == 18
-    assert found["budget_usd"] == 3800
+    assert found["budget_usd"] == 3900
 
 
 # -- LIGHTPANDA-POOLS (docs/design/lightpanda-runtime.md, part of #2688) ----------------------
@@ -167,9 +167,9 @@ def test_the_table_for_1_5_15_and_50() -> None:
     assert [got[n]["pool_limits"]["global"] for n in (1, 5, 15, 50)] == [10, 27, 81, 270]
     assert [got[n]["pool_limits"]["default_tenant"] for n in (1, 5, 15, 50)] == [10, 9, 18, 60]
     assert [got[n]["pool_limits"]["provider_tenant"] for n in (1, 5, 15, 50)] == [10, 5, 5, 5]
-    assert [got[n]["service_max_instances"]["swarm-api"] for n in (1, 5, 15, 50)] == [2, 2, 2, 5]
+    assert [got[n]["service_max_instances"]["swarm-api"] for n in (1, 5, 15, 50)] == [2, 2, 3, 8]
     assert [got[n]["pool_accounts"] for n in (1, 5, 15, 50)] == [1, 2, 6, 18]
-    assert [got[n]["budget_usd"] for n in (1, 5, 15, 50)] == [500, 700, 1400, 3800]
+    assert [got[n]["budget_usd"] for n in (1, 5, 15, 50)] == [600, 800, 1500, 3900]
 
 
 def test_ceilings_grow_with_the_team() -> None:
@@ -209,7 +209,7 @@ def test_capped_keeps_the_persons_numbers_under_the_cap() -> None:
     assert lowered["pool_limits"]["provider_tenant"] == 1  # 25 // 15 tenants
     assert lowered["pool_limits"]["runner_profiles"]["codex"] == 9  # already under the cap: kept
     assert lowered["pool_limits"]["runner_profiles"]["claude-code"] == 25
-    assert lowered["service_max_instances"]["swarm-api"] == 2  # not a pool ceiling: kept
+    assert lowered["service_max_instances"]["swarm-api"] == 3  # not a pool ceiling: kept
     assert lowered["budget_usd"] == 9000
     assert sizing.problems(lowered, region_cpu_quota=108) == []
     tfvars.pool_limits(lowered)
@@ -246,7 +246,7 @@ def test_table_numbers_every_row() -> None:
     assert lines[0] == "Proposed sizing for a team of 15:"
     assert len(lines) == 1 + len(sizing.rows(sizing.propose("team", 15)))
     assert "1) tasks at once, the whole deployment (global)" in lines[1] and lines[1].endswith("81")
-    assert lines[-1].endswith("1400") and "monthly budget" in lines[-1]
+    assert lines[-1].endswith("1500") and "monthly budget" in lines[-1]
 
 
 # -- DAYONE-SIZING-CAP (audit 3, A6): a quota too small for the team is a wait ----------------

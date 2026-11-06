@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\" '${CLAUDE_PLUGIN_ROOT}'" },
+        { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs", "exec-form", "${user_config.region}", "${user_config.api_token}"] }
+      ] }
+    ],
+    "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] } ],
+    "PreToolUse": [ { "matcher": "Read", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] } ],
+    "PostToolUse": [
+      { "matcher": "Read", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] },
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] },
+      { "matcher": "mcp__.*", "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] }
+    ],
+    "SubagentStop": [ { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] } ],
+    "Stop": [ { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] } ],
+    "SessionEnd": [ { "hooks": [ { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/probe-hook.mjs\"" } ] } ]
+  }
+}

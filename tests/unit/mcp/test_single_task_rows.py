@@ -328,6 +328,10 @@ def test_a_batch_dispatch_reply_starts_a_row_per_task(_plugin_root, swarm, api, 
     assert [t["task_id"] for t in sent] == payload["task_ids"]
     assert [t["title"] for t in sent] == ["lane-1", payload["task_ids"][1]]
     assert [copy["title"] for copy in launches] == ["SC · lane-1", "SC · " + payload["task_ids"][1]]
+    # MUTATION: `start_now` says "call the Workflow tool once" with the reply's
+    # own script, which starts the first task's run and leaves the second rowless.
+    assert "once" not in payload["rows"]["start_now"]
+    assert "one Workflow tool call per entry of `rows.launches`" in payload["rows"]["start_now"]
 
 
 def test_a_dispatch_outside_the_plugin_still_dispatches_and_says_how_to_get_a_row(swarm, api, db, monkeypatch):  # noqa: F811
@@ -493,3 +497,17 @@ def test_the_task_row_never_passes_a_step_id_or_parents():
 def test_the_list_relay_relays_the_single_tasks():
     _, body = _load(_PLUGIN / "agents" / "workflow.md")
     assert "`single_tasks`" in body and "`single_tasks_error`" in body
+
+
+def test_the_bridge_texts_state_one_run_per_single_task():
+    """Owner 2026-11-04: every single task is a run of its own, `SC · <label>`,
+    whatever the `rows` setting; the bridge's tool descriptions say so."""
+    dispatch = " ".join(next(t for t in server.TOOLS if t["name"] == "swarm_dispatch")["description"].split())
+    assert "`rows.launches`" in dispatch and "one Workflow tool call per entry" in dispatch
+    assert "`SC · <label>`" in dispatch
+    started = " ".join(server.ROWS_START_NOW.split())
+    assert "`SC · <label>`" in started and "Workflow tool once" not in started
+    tool = " ".join(next(t for t in server.TOOLS if t["name"] == "swarm_workflow_launch")["description"].split())
+    # MUTATION: "A batch of single tasks follows `rows` too." -- the one-row task batch.
+    assert "batch of single tasks" not in tool
+    assert "Single tasks never follow `rows`" in tool

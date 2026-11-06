@@ -7,8 +7,10 @@ MEASURED, so 'starved' stops being an inference from a peak at the limit.
 What is pinned:
 
   * every 5 s the sampler takes one point from the container's cgroup: cores
-    used over the window, `memory.current`, and the share of the window's CFS
-    periods that were throttled (`cpu.stat` `nr_throttled` / `nr_periods`);
+    used over the window, the working set (`memory.current` less
+    `inactive_file`, as the memory guard judges it), and the share of the
+    window's CFS periods that were throttled (`cpu.stat` `nr_throttled` /
+    `nr_periods`);
   * the attempt's cumulative throttled seconds (`throttled_usec`), and a peak
     and a period-weighted mean throttled share, combined across runners;
   * None means not measured, never zero -- a cgroup with no throttling
@@ -94,6 +96,22 @@ def test_each_point_is_cores_memory_and_throttled_share_over_its_window(cgroup: 
         {"t": 10.0, "cpu": 2.0, "mem": None, "thr": 0.5},
     ]
     assert sampler.drain_points() == [], "a drained point was served twice"
+
+
+def test_a_points_memory_is_the_working_set_not_the_page_cache(cgroup: Path):
+    # MUTATION: return `memory.current` itself from `ResourceSampler._memory_now`
+    # -- the point reads 7 GiB, the clean cache counted, and this fails.
+    sampler = _sampler(ScriptedClock([0.0, 5.0]), origin=0.0)
+    sampler.sample_point()
+    # 2 GiB of heap and a 1 GiB tmpfs workspace (shmem, on the anon lists),
+    # then 4 GiB of a repository read once: inactive file cache.
+    _cgroup(cgroup, usage_usec=5_000_000, periods=50, throttled=0, throttled_usec=0, memory=7 * GIB)
+    (cgroup / "memory.stat").write_text(
+        f"anon {2 * GIB}\nshmem {GIB}\nfile {5 * GIB}\ninactive_file {4 * GIB}\nactive_file 0\n"
+    )
+    sampler.sample_point()
+
+    assert sampler.drain_points() == [{"t": 5.0, "cpu": 1.0, "mem": 3 * GIB, "thr": 0.0}]
 
 
 def test_the_attempt_keeps_throttled_seconds_and_a_peak_and_mean_share(cgroup: Path):
