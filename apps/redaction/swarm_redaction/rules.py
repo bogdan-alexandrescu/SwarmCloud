@@ -713,11 +713,15 @@ _GLUED_AFTER_QUOTE = r"[;)\]}]++[\"'`][;)\]}\"'`\\]*+[^\s,;)\]}\"'`\\]"
 _VALUE_ENDS = (
     r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}]++(?![^\s\"'`]))(?!" + _GLUED_AFTER_QUOTE + r")"
 )
-_CLOSED_CONSTRUCT = r"\$(?:\([^()\n]{0,256}\)|\{\{[^{}\n]{0,256}\}\})"
+#: A substitution may close nested quotes (`'TOKEN="$(gh auth token)"',`),
+#: as main kept, so a run of up to four closing quotes comes before the end.
+#: A `$(` whose line ends in a continuation (`"$(gcloud auth \`) is kept as
+#: main kept it: nothing is glued after it on that line.
 _SHELL_SUBSTITUTION = (
-    r"\"?\$(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}(?: [^()\n]{0,256})?\)"
+    r"\"?\$(?:(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}(?: [^()\n]{0,256})?\)"
     r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}"
-    r"|\{\{ [^{}\n]{0,256}\}\})" + _VALUE_ENDS
+    r"|\{\{ [^{}\n]{0,256}\}\})(?:\\{0,15}[\"'`]){0,3}" + _VALUE_ENDS
+    + r"|\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31} [^()\n]{0,256}\\(?=\n|$))"
 )
 #: A LITERAL AFTER A `;)]}` AND A DOUBLE QUOTE OR A COMMA IS IN THE SAME
 #: VALUE (the same review). The masked run stopped at the first `"` or `,`,
@@ -725,7 +729,11 @@ _SHELL_SUBSTITUTION = (
 #: served `<v>`. One `;)]}` then a quote (escaped or not) or a comma, with a
 #: value character after any further `;)]}` run, continues the run; a
 #: JSON `"x"},"next"` does not, since a quote follows the comma.
-_GLUED_RUN = r"[;)\]}](?:\\*\"|,)(?=[;)\]}]*[^\s,\"\\;)\]}])"
+_GLUED_TAIL = r"(?:\\*\"|,)(?=[;)\]}]*[^\s,\"\\;)\]}])"
+_GLUED_RUN = r"[;)\]}]" + _GLUED_TAIL
+#: A closed construct's own closer may start that run (`$(cmd)"<v>`): taking
+#: it here keeps the match as long as the shell's leftmost-longest one.
+_CLOSED_CONSTRUCT = r"\$(?:\([^()\n]{0,256}\)|\{\{[^{}\n]{0,256}\}\})(?:" + _GLUED_TAIL + r")?"
 _EXPRESSION_PASSWORD = (
     r"(?-i:={1,2}[ \t]|(?:await|new|not)[ \t]"
     + r"|(?:None|True|False|null|undefined|\{\}|\[\]|\(\)|" + _DOTTED + r"|" + _KEYWORD_WORD + r")"

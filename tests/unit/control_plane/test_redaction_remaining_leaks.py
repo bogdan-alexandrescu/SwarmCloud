@@ -98,6 +98,9 @@ KEPT = [
     'TOKEN="$(gh auth token)"',
     'export GH_TOKEN="$(gh auth token)"',
     "f(token=$(cat f))",
+    # Nested quoting and a line continuation, both kept on main.
+    "'TOKEN=\"$(gh auth token)\"',",
+    'ACCESS_TOKEN="$(gcloud auth print-access-token \\',
     "token = $(cat f); echo done",
     "token = ${{ secrets.T }}",
     "token: ${{ secrets.GITHUB_TOKEN }}",
