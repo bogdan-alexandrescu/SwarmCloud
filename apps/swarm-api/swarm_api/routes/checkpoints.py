@@ -35,10 +35,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
+from .. import route_scope
 from ..checkpoint_content import CheckpointContent
 from ..deps import AppContext, get_context, submission_scope, tenant_scope
 
 router = APIRouter(prefix="/v1/tasks", tags=["checkpoints"])
+route_scope.router_default(router, route_scope.CONTINUATION)
 
 
 def checkpoint_content(ctx: AppContext = Depends(get_context)) -> CheckpointContent:

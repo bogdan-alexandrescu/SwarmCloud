@@ -63,7 +63,7 @@ def test_a_removed_root_launches_from_its_newer_sibling_and_the_reply_says_so(ca
     spec = {**_FIXTURE["chain"], "title": "nightly"}
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec": spec}))
     assert "error" not in reply, reply
-    assert Path(reply["script_path"]).read_text().splitlines()[1] == '  name: "SC · nightly · 3 steps",'
+    assert Path(reply["script_path"]).read_text().splitlines()[1] == '  name: "SC ∴ nightly",'
     note = reply["plugin_root_note"]
     assert "\n" not in note
     assert "0.5.74" in note and "0.5.76" in note
@@ -122,5 +122,5 @@ def test_a_root_that_exists_is_used_unchanged(cache, monkeypatch):
     monkeypatch.setenv(launch.PLUGIN_ROOT_ENV, str(current))
     assert launch.plugin_root() == current
     assert launch.plugin_root_note() is None
-    script = launch.write_script("SC · t · 1 steps", "d")
+    script = launch.write_script("SC ∴ t · 1 steps", "d")
     assert script.is_file()

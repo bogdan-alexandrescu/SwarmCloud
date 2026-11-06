@@ -161,6 +161,7 @@ from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
+from . import pull_request as pull_request_mod
 from . import jevkey as jevkey_mod
 from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
@@ -1131,6 +1132,9 @@ class Worker:
         #: When the issue fetch started and ended, seconds since process
         #: start, for `agent_started`. None until a fetch has been joined.
         self._issue_fetch_timing: dict[str, Any] | None = None
+        #: The pull request this step works on (`_requested_pull_request`),
+        #: worked out once: `False` until then, None when it names none.
+        self._pull_request_number: int | None | bool = False
         self._clone_base: str | None = None
         #: The commit this attempt's clone checked out, recorded as
         #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
@@ -3884,6 +3888,13 @@ class Worker:
             self._security_review = {}
             if isinstance(payload.get("prompt"), str):
                 payload["prompt"] += security_review_mod.guidance(ws.artifacts)
+        # The pull request this step works on (Product Oracle, 2026-11-06):
+        # one line of the brief names `work/pull_request.md`, which STEP 6b'
+        # writes after the credentials, before the agent starts.
+        if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += "\n\n" + pull_request_mod.prompt_line(
+                pull_request_mod.pull_request_path(ws.work)
+            )
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -4019,6 +4030,15 @@ class Worker:
                     "beside_clone": False,
                 }
             )
+
+        # ---- STEP 6b': the pull request this step works on ----------------
+        # After the credentials, for the scrub, as the issue. A read that
+        # fails writes a file saying so and the agent starts: the pull
+        # request is context beside the checkout (`agent_worker.pull_request`).
+        pull_number = self._requested_pull_request()
+        if pull_number is not None:
+            self.phases.enter("fetch_pull_request")
+            self._stage_pull_request(pull_number, ws.work)
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -7295,6 +7315,12 @@ class Worker:
             | ws.control_file_names()
             # `issue.md`, when the task asks for an issue (#265).
             | issue_mod.reserved_names(task.get("input"), self.cfg.profile)
+            # `pull_request.md`, when the step works on a pull request.
+            | (
+                frozenset({pull_request_mod.FILE_NAME})
+                if self._requested_pull_request() is not None
+                else frozenset()
+            )
             # A review's owner questions, written after staging (#2070), and a
             # builds_on step's owner answers (#2836).
             | {owner_questions_mod.NAME, inputs_mod.OWNER_ANSWERS_NAME},
@@ -10170,6 +10196,81 @@ class Worker:
             ),
             refused=self._refused_credential,
         )
+
+    def _requested_pull_request(self) -> int | None:
+        """The pull request this step works on, or None (Product Oracle, 2026-11-06).
+
+        In order: the caller's `input.pull_request`; the signed `publish_to_pr`
+        it publishes onto; the pull request its signed `builds_on` step -- or,
+        for a single-pr reader or amender, its `pr_author` step -- recorded
+        opening: a review step's, in a workflow that has one. Only
+        for a step with a brief (a `prompt`) to name the file in. Worked out once.
+        """
+        if self._pull_request_number is not False:
+            return self._pull_request_number  # type: ignore[return-value]
+        number: int | None = None
+        task = self._task or {}
+        if pull_request_mod.takes_brief(task.get("input")):
+            number = pull_request_mod.from_input(task.get("input"), self.cfg.profile)
+            if number is None:
+                try:
+                    onto = self._publish_to_pr()
+                except WorkerError:
+                    onto = None
+                number = onto.number if onto is not None else None
+            if number is None and task.get("workflow_id"):
+                try:
+                    upstream = self._dispatch_builds_on()
+                    if not upstream and self._pr_role() in ("reader", "amender"):
+                        # A single-pr reader or amender: the pull request is
+                        # the one its signed `pr_author` step opened.
+                        upstream = self._pr_author_branch()[len(self.cfg.git_branch_prefix):]
+                    if upstream:
+                        number = post_verdict_mod.pull_request_number(
+                            inputs_mod.fetch_upstream_task(
+                                self.db, upstream_task_id=upstream,
+                                tenant_id=self.cfg.tenant_id,
+                                call_options=self.control.call_options(),
+                            )
+                        )
+                except (WorkerError, InputUnavailable):
+                    number = None
+        self._pull_request_number = number
+        return number
+
+    def _stage_pull_request(self, number: int, work_dir: Path) -> Path:
+        """`pull_request_mod.stage_pull_request` with the tenant's own `-git`
+        token, read again once on a 401 as the issue fetch is; scrubbed of
+        every registered secret and every credential-shaped run."""
+        refusal = self._git_token_refusal()
+
+        def token(again: bool) -> str | None:
+            value = self._git_token()
+            if value:
+                self.log.register_secret(value)
+            return value
+
+        path, _read = pull_request_mod.stage_pull_request(
+            number=number,
+            repository_url=self._repo_url,
+            token=token,
+            refusal=refusal,
+            work_dir=work_dir,
+            scrub=lambda text: str(self._scrub(redact_text(text).text)),
+            logger=self.log,
+            on_request=self._heartbeat,
+            retry=self._forge_retry(),
+            read_again=lambda read: call_reading_again(
+                read,
+                logger=self.log,
+                what="the pull request fetch",
+                twice=lambda exc: pull_request_mod.PullRequestUnavailable(
+                    f"{exc}; {FORGE_REFUSED_TWICE}"
+                ),
+                refused=self._refused_credential,
+            ),
+        )
+        return path
 
     def _refused_credential(self, exc: BaseException) -> bool:
         """A 401 worth a re-read: only when this worker reads a token at all."""
