@@ -128,13 +128,13 @@ def test_every_hostile_title_names_a_valid_file_in_the_project_and_a_record_line
     project.mkdir()
     monkeypatch.setenv(launch.PROJECT_DIR_ENV, str(project))
     folder = project / launch.REPO_RUN_DIR
-    scripts = [launch.write_script(title, "about " + title) for title in HOSTILE_TITLES + ["SC · ../../up · 1 step"]]
+    scripts = [launch.write_script(title, "about " + title) for title in HOSTILE_TITLES + ["SC ∴ ../../up · 1 step"]]
     assert len({s.name for s in scripts}) == len(scripts)
     for script in scripts:
         assert script.parent == folder
         assert re.fullmatch(r"SC-[A-Za-z0-9]+(-[A-Za-z0-9]+)*-[0-9a-f]{12}\.js", script.name), script.name
     got = _read(tmp_path, scripts)
-    assert [m["name"] for m in got] == HOSTILE_TITLES + ["SC · ../../up · 1 step"]
+    assert [m["name"] for m in got] == HOSTILE_TITLES + ["SC ∴ ../../up · 1 step"]
     replies = []
     for title in HOSTILE_TITLES:
         spec = {**_FIXTURE["chain"], "title": title}
@@ -163,7 +163,7 @@ def test_a_spec_launch_with_a_hostile_title_parses_and_names_its_run(_plugin_roo
     got = _read(tmp_path, [Path(r["script_path"]) for r in replies])
     for title, reply, meta in zip(HOSTILE_TITLES, replies, got):
         assert meta["parses"] is True, (title, meta["parses"])
-        assert meta["name"] == reply["title"] == workflows.workflow_title(workflows.title_name(title=title), 3)
+        assert meta["name"] == reply["title"] == launch.workflow_run_title(workflows.title_name(title=title), 3)
 
 
 def test_an_attach_with_a_hostile_stored_title_parses_and_hands_the_name_back_as_an_arg(_plugin_root, tmp_path):
@@ -176,7 +176,7 @@ def test_an_attach_with_a_hostile_stored_title_parses_and_hands_the_name_back_as
         name = workflows.title_name(stored=title)
         assert meta["parses"] is True, (title, meta["parses"])
         assert reply["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
-        assert meta["name"] == reply["title"] == workflows.workflow_title(name, 2)
+        assert meta["name"] == reply["title"] == launch.workflow_run_title(name, 2)
 
 
 #: The Claude Code session these listings were submitted by: `/sc attach

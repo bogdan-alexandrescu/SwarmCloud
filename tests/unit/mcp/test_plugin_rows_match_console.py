@@ -16,7 +16,7 @@ What this file holds:
   level and nothing else; a row that showed the spec's `stage` would differ.
 * EVERY OTHER ROW SAYS `setup`. At most two of them for a spec the plugin
   launches: the submit (which probes the follow) and the Result.
-* THE RUN IS NAMED AFTER THE WORKFLOW. `SC · <name> · N steps`, at
+* THE RUN IS NAMED AFTER THE WORKFLOW. `SC ∴ <name> · N steps`, at
   most 150 characters: the spec's `title`, else its `label` cut at a word with
   `…`, else (attach) the title or label SwarmCloud stored, else the id. `meta`
   is a literal, so the bridge writes a per-run copy of run.js with it filled in
@@ -232,7 +232,7 @@ def test_a_spec_given_as_an_object_has_no_read_row_and_names_its_steps_and_id(tm
     assert submit["prompt"].startswith("SUBMIT") and "READ SPEC" not in json.dumps(got["calls"])
     assert submit["label"] == "[SwarmCloud] implement, review, fix · 3 steps · setup · submit"
     assert result["label"] == "[SwarmCloud] implement, review, fix · 3 steps · wf_1 · setup · result"
-    assert got["result"]["title"] == "SC · implement, review, fix · 3 steps"
+    assert got["result"]["title"] == "SC ∴ implement, review, fix · 3 steps"
 
 
 def test_the_list_and_attach_rows_are_setup_rows(tmp_path):
@@ -255,21 +255,32 @@ def test_the_title_starts_sc_and_is_at_most_150_characters():
     assert workflows.TITLE_CHARS == 150
 
 
+def test_the_kind_marks_are_one_dot_for_a_task_and_three_for_a_workflow_in_both_places():
+    """Owner 2026-11-04 23:00: the kind right after `SC`, seen before the
+    panel's ~28-character cut. Defined once on each side, and held equal."""
+    assert (launch.TASK_MARK, launch.WORKFLOW_MARK) == ("\u00b7", "\u2234")
+    source = _RUN_JS.read_text(encoding="utf-8")
+    assert "const TASK_MARK = '\\u00b7'" in source and "const WORKFLOW_MARK = '\\u2234'" in source
+    assert launch.workflow_run_title("nightly", 3) == "SC ∴ nightly · 3 steps"
+    assert launch.workflow_run_title("nightly", None) == "SC ∴ nightly"
+    assert launch.task_run_title({"task_id": "task_a", "label": "lane-a"}) == "SC · lane-a"
+
+
 def test_a_120_character_name_is_kept_whole():
     name = " ".join(["headline"] * 14)[:120]
     assert len(name) == 120 and not name.endswith(" ")
-    assert workflows.workflow_title(name, 4) == f"SC · {name} · 4 steps"
-    assert len(workflows.workflow_title(name, 4)) <= 150
+    assert launch.workflow_run_title(name, 4) == f"SC ∴ {name} · 4 steps"
+    assert len(launch.workflow_run_title(name, 4)) <= 150
 
 
 def test_the_title_is_at_most_150_characters_and_ends_at_a_word():
     assert len(_LONG_LABEL) == 300
     name = workflows.title_name(label=_LONG_LABEL)
-    title = workflows.workflow_title(name, 3)
+    title = launch.workflow_run_title(name, 3)
     assert len(title) <= workflows.TITLE_CHARS == 150
     assert len(title) > 100, "the cap rose to 150 on 2026-10-05"
-    assert title.startswith("SC · refactor ") and title.endswith(" · 3 steps")
-    cut = title[len("SC · "):-len(" · 3 steps")]
+    assert title.startswith("SC ∴ refactor ") and title.endswith(" · 3 steps")
+    cut = title[len("SC ∴ "):-len(" · 3 steps")]
     assert cut.endswith("refactor…"), cut
     assert _LONG_LABEL.startswith(cut[:-1])
 
@@ -277,14 +288,14 @@ def test_the_title_is_at_most_150_characters_and_ends_at_a_word():
 def test_run_js_cuts_the_title_exactly_as_the_bridge_does(tmp_path):
     spec = {**_FIXTURE["chain"], "label": _LONG_LABEL}
     got = _run(tmp_path, {"spec": spec}, _answers(spec))
-    assert got["result"]["title"] == workflows.workflow_title(workflows.title_name(label=_LONG_LABEL), 3)
+    assert got["result"]["title"] == launch.workflow_run_title(workflows.title_name(label=_LONG_LABEL), 3)
 
 
 def test_a_spec_title_wins_over_its_label(tmp_path):
     assert workflows.title_name(title="nightly", label="a much longer label") == "nightly"
     spec = {**_FIXTURE["chain"], "title": "nightly"}
     got = _run(tmp_path, {"spec": spec}, _answers(spec))
-    assert got["result"]["title"] == "SC · nightly · 3 steps"
+    assert got["result"]["title"] == "SC ∴ nightly · 3 steps"
     assert got["calls"][0]["label"] == "[SwarmCloud] nightly · 3 steps · setup · submit"
 
 
@@ -300,7 +311,7 @@ def test_an_attach_takes_the_title_swarmcloud_stored(tmp_path):
         "ATTACH": attached, "step:a": _step("SUCCEEDED"),
         "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []},
     })
-    assert got["result"]["title"] == "SC · nightly · 1 step"
+    assert got["result"]["title"] == "SC ∴ nightly · 1 step"
     assert _step_rows(got)[0]["label"] == "[SwarmCloud] nightly · stage 1 · a"
 
 
@@ -385,7 +396,10 @@ def test_a_launch_writes_a_copy_of_run_js_named_after_the_workflow(_plugin_root,
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec": spec}))
     script = Path(reply["script_path"])
     meta = _meta_of(script)
-    assert meta["name"] == reply["title"] == workflows.workflow_title(workflows.title_name(label=_LONG_LABEL), 3)
+    # No count before the submission: SwarmCloud may append steps the spec
+    # does not hold (owner 2026-11-04: leave it out rather than show a wrong one).
+    assert meta["name"] == reply["title"] == launch.workflow_run_title(workflows.title_name(label=_LONG_LABEL), None)
+    assert " step" not in meta["name"]
     assert len(meta["name"]) <= workflows.TITLE_CHARS
     # SC-DESC-DETAILS: the description leads with the run's details, then
     # the name, clipped from the end at DESCRIPTION_CHARS.
@@ -398,7 +412,8 @@ def test_a_launch_writes_a_copy_of_run_js_named_after_the_workflow(_plugin_root,
     assert [i for i, (a, b) in enumerate(zip(copy, original)) if a != b] == [1, 2]
     # And it runs.
     got = _run(tmp_path, {"spec": spec}, _answers(spec), script=script)
-    assert got["result"]["title"] == meta["name"]
+    # The result's title counts the steps SwarmCloud served.
+    assert got["result"]["title"] == launch.workflow_run_title(workflows.title_name(label=_LONG_LABEL), 3)
 
 
 def test_a_launch_removes_run_copies_older_than_a_week_and_nothing_else(_plugin_root, tmp_path):
@@ -410,7 +425,7 @@ def test_a_launch_removes_run_copies_older_than_a_week_and_nothing_else(_plugin_
     week_ago = time.time() - launch.RUN_COPY_MAX_AGE_S - 60
     os.utime(stale, (week_ago, week_ago))
     os.utime(other, (week_ago, week_ago))
-    script = launch.write_script("SC · t · 1 steps", "d")
+    script = launch.write_script("SC ∴ t · 1 steps", "d")
     assert not stale.exists()
     assert fresh.exists() and other.exists() and script.exists()
 
@@ -421,8 +436,8 @@ def test_a_launch_by_spec_path_reads_the_title_from_the_file(_plugin_root, tmp_p
     target = tmp_path / "spec.json"
     target.write_text(json.dumps({**_FIXTURE["chain"], "title": "nightly"}))
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"spec_path": str(target)}))
-    assert reply["title"] == "SC · nightly · 3 steps"
-    assert _meta_of(Path(reply["script_path"]))["name"] == "SC · nightly · 3 steps"
+    assert reply["title"] == "SC ∴ nightly"
+    assert _meta_of(Path(reply["script_path"]))["name"] == "SC ∴ nightly"
 
 
 def _stored(title=None, unit=None) -> dict:
@@ -440,7 +455,7 @@ def test_an_attach_launch_takes_the_stored_title_else_the_unit_else_the_id(_plug
     for stored, name in ((_stored("nightly", "a long label"), "nightly"), (_stored(None, "a label"), "a label"),
                          (_stored(), "wf_9")):
         reply = json.loads(server._call(_Recorder(stored), "swarm_workflow_launch", {"attach": "wf_9"}))
-        assert reply["title"] == f"SC · {name} · 2 steps"
+        assert reply["title"] == f"SC ∴ {name} · 2 steps"
         assert reply["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
         assert _meta_of(Path(reply["script_path"]))["name"] == reply["title"]
 
@@ -496,7 +511,7 @@ def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root,
         {"attach": "wf_a", "title": "alpha", "rows": "summary", "titled_copy": launches[0]["script_path"]},
         {"attach": "wf_b", "title": "Beta!", "rows": "summary", "titled_copy": launches[1]["script_path"]},
     ]
-    assert [l["title"] for l in launches] == ["SC · alpha · 3 steps", "SC · Beta! · 2 steps"]
+    assert [l["title"] for l in launches] == ["SC ∴ alpha · 3 steps", "SC ∴ Beta! · 2 steps"]
     paths = {l["script_path"] for l in launches}
     assert len(paths) == 2, "two runs, two scripts: never one counter over both"
     assert [_meta_of(Path(p))["name"] for p in (l["script_path"] for l in launches)] == [l["title"] for l in launches]
