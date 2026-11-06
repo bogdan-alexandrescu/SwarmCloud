@@ -6172,6 +6172,13 @@ export interface PersonRow {
    * never who decided (the audit says).
    */
   loan_request: { state: string | null; requested_at: string | null; decided_at?: string | null; reason?: string | null } | null
+  /**
+   * Loans lent while their workspace was not ready, not granted yet
+   * (`people.People._row`, LOAN-NEW): applied by the first read that sees it
+   * ready, or the sweep. `last_error` is the broker's refusal of the last try.
+   * Absent from an older API.
+   */
+  pending_loans?: { account_id: string; owner_tenant: string; since: string | null; last_error: string | null }[]
   first_seen: string | null
   last_seen: string | null
   last_submitted: string | null
@@ -6299,6 +6306,14 @@ export interface WorkspaceLoanAnswer {
   owner_tenant: string
   lent: boolean
   changed: boolean
+  /**
+   * `applied` (granted now), `pending` (the workspace is not ready: recorded,
+   * granted once it is; `changed: false` when it was already pending) or
+   * `reclaimed` (`people.set_loan`). Absent from an older API.
+   */
+  state?: 'applied' | 'pending' | 'reclaimed'
+  /** With `pending`: the API's sentence saying when it applies. */
+  message?: string
 }
 
 /** `POST /v1/admin/people/{workspace_id}/loan/decline` (`people.People.decline_loan`). */
