@@ -785,8 +785,10 @@ def test_a_pending_task_backs_off_instead_of_polling_every_five_seconds(swarm, w
         sleep=clock.sleep, clock=clock.clock,
     )
 
-    assert clock.slept == [5.0, 10.0, 20.0, 30.0, 5.0], clock.slept
-    assert got["polls"] == 6
+    # Doubling while nothing new comes (`progress.IDLE_POLL_CAP_SECONDS`), the
+    # last wait cut to what is left of the window.
+    assert clock.slept == [5.0, 10.0, 20.0, 35.0], clock.slept
+    assert got["polls"] == 5
     assert got["stop"] is False
 
 

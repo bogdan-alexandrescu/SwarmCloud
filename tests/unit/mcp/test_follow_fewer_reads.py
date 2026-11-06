@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from swarm_mcp import compact
+from test_follow_cursor import swarm, world  # noqa: F401 - fixtures
 
 WORKFLOW = "wf_fewer"
 STEPS = ["t0", "t1", "t2", "t3", "t4"]
@@ -123,3 +124,15 @@ def test_a_single_task_follow_backs_off_too():
                            sleep=clock.sleep, clock=clock.clock, now=_now)
     assert clock.sleeps[:4] == [10.0, 20.0, 40.0, 60.0]
     assert api.workflow_reads == 0
+
+
+def test_a_quiet_running_task_in_the_lines_format_backs_off_to_a_minute(swarm, world):
+    from swarm_mcp import progress
+
+    world.task("task_a", state="RUNNING")
+    clock = _Clock()
+    first = progress.watch(swarm, ["task_a"], sleep=clock.sleep, clock=clock.clock)
+    got = progress.watch(swarm, ["task_a"], since=first["since"], wait_seconds=255,
+                         sleep=clock.sleep, clock=clock.clock)
+    assert clock.sleeps == [5.0, 10.0, 20.0, 40.0, 60.0, 60.0, 60.0], clock.sleeps
+    assert got["polls"] == 8
