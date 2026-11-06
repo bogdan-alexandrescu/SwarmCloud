@@ -72,8 +72,9 @@ EXPECTED_TOOLS = {
     # `sc:task` is `sc:step` for a task in NO workflow (#830): it follows
     # without `step_id`, so it watches and nothing else, like a step row.
     "task": {"swarm_follow"},
-    # `sc:summary` is ONE row for a whole workflow or task batch (the plugin's
-    # `rows: summary`, PLUGIN-ROW-SPLIT): it follows several tasks and only
+    # `sc:summary` is ONE row for a whole workflow (the plugin's `rows:
+    # summary`, PLUGIN-ROW-SPLIT; single tasks keep a row each since owner
+    # 2026-11-04): it follows several tasks and only
     # watches, like a step row.
     "summary": {"swarm_follow"},
     # `sc:finish` is the pane layout's ONE row per workflow (SC-BROWSER-BUILD,

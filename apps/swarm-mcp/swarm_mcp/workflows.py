@@ -982,11 +982,16 @@ def submit_merge_pr(
 # --------------------------------------------------------------------------
 
 #: The most characters a SwarmCloud workflow's run title has in Claude Code
-#: `SC · <name> · N steps`, whole, never longer. Owner 2026-10-04: SwarmCloud
+#: `SC ∴ <name> · N steps`, whole, never longer. Owner 2026-10-04: SwarmCloud
 #: prefix, at most 100; owner 2026-10-05: prefix `SC · ` because Claude Code's
 #: task panel shows ~28 characters of a name, and at most 150 because Enter
-#: shows the full name. plugin/workflows/run.js cuts the same way
-#: (`workflowTitle`), and test_plugin_rows_match_console holds the two equal.
+#: shows the full name. Since 2026-11-04 the mark after `SC` is the run's kind
+#: (launch.TASK_MARK, launch.WORKFLOW_MARK): a workflow's run is `SC ∴ ...`
+#: (launch.workflow_run_title), a single task's `SC · <label>`. TITLE_PREFIX
+#: stays the one dot: workflow_title's output is the submission's record
+#: title, and launch.record turns its prefix into the workflow mark.
+#: plugin/workflows/run.js cuts the same way (`workflowTitle`), and
+#: test_plugin_rows_match_console holds the two equal.
 TITLE_CHARS = 150
 TITLE_PREFIX = "SC · "
 
@@ -1077,7 +1082,9 @@ def workspace_tag(workspace: Any) -> str:
 
 
 def workflow_title(name: str, steps: int) -> str:
-    """`SC · <name> · N steps`, at most TITLE_CHARS characters.
+    """`SC · <name> · N steps`, at most TITLE_CHARS characters: the
+    submission's record title, which launch.record writes as `SC ∴ <name> ·
+    N steps`, the run's own title (launch.workflow_run_title).
 
     No workspace: SC-ROWS put `[<workspace>] ` after the prefix, SC-WS-DESC
     moved it to the run's description, and SC-DESC-DETAILS (owner 2026-10-14:
