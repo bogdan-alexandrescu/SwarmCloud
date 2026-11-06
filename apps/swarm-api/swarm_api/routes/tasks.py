@@ -1516,6 +1516,7 @@ def read_questions(
 def answer_question(
     task_id: str,
     body: agent_questions.AnswerBody,
+    reply: Literal["full", "short"] = Query("full"),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
@@ -1546,15 +1547,39 @@ def answer_question(
     A `viewer` answers nothing (`role_member_required`, through its switch),
     their own task's agent included: the submitter's rule is on top of the
     role, never instead of it (workspace-roles.md §4.8).
+
+    `?reply=short` answers only `{status: "recorded", task_id,
+    question_index, recorded_at, by}`, no question text: a whole task's
+    questions are about 4,000 tokens, and closing ~400 finished tasks'
+    questions one by one cost ~1.6 million (AI Studio, 6 November 2026,
+    part of #2688). The answer is checked and stored exactly as with the
+    default `reply=full`, which is unchanged.
     """
     require_member(ctx, auth, fresh=True)
-    return agent_questions.answer_question(
+    now = ctx.now()
+    served = agent_questions.answer_question(
         ctx.store, service, ctx.db, tenant_id, task_id, body,
-        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
+        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=now,
         # A pick other than the one a merge went past starts a pick-fix
         # round against the default branch, as the answering member.
         start_pick_fix=lambda merge, claim: mergewake.advisory_pick_fix(ctx, auth, merge, claim),
     )
+    if reply == "full":
+        return served
+    # The stored answer as served; the moment and the caller this request
+    # stored it with when the read no longer shows it (a later attempt's
+    # question at that index).
+    questions = served.get("questions") or []
+    index = body.question_index
+    stored = questions[index].get("answer") if 0 <= index < len(questions) else None
+    stored = stored if isinstance(stored, dict) else {}
+    return {
+        "status": "recorded",
+        "task_id": task_id,
+        "question_index": index,
+        "recorded_at": stored.get("at") or now.isoformat(),
+        "by": stored.get("by") or auth.email,
+    }
 
 
 @router.get("/{task_id}/input")

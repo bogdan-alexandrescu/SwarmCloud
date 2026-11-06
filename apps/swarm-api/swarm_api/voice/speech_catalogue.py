@@ -28,8 +28,14 @@ THE ENTRIES, and where each figure came from:
   platform already has (the owner's answer, 2026-11-05: "selected from a
   curated list that we have available"): each entry is a model the platform
   prices (`modelprices.SEED`), so every pick runs on the pool's accounts and
-  is costed like any other turn. Haiku 4.5, the smallest and fastest, is the
-  default; the two Sonnets trade a slower first word for a stronger reply.
+  is costed like any other turn. The default is the haiku class's pin,
+  `local.runner_models.haiku` (claude-haiku-5-5), the model swarm-voice's
+  front runs with no setting (VOICE_FRONT_MODEL; BGD, 6 November 2026); the
+  older claude-haiku-4-5 is no longer listed, so a stored pick of it reads as
+  this default. The two Sonnets trade a slower first word for a stronger
+  reply. swarm-voice holds the same ids (`claudefront.FRONT_MODELS`, held
+  equal by a test) and refuses any other in a start body; a session reads the
+  pick at its start, so a change reaches the next session, never a running one.
 * THE PLANNER MODEL (BGD, 2026-11-05: the planner runs the planning class,
   "make it configurable as well"): the model the planner turns of BOTH
   engines run, picked by CLASS, never by id. The names are the frozen
@@ -179,8 +185,9 @@ TTS_MODELS: tuple[TtsModel, ...] = (
 )
 
 CONVERSATION_MODELS: tuple[ConversationModel, ...] = (
-    ConversationModel("claude-haiku-4-5", model="claude-haiku-4-5-20251001", provider="anthropic",
-                      label="Claude Haiku 4.5 (fastest)"),
+    #: The haiku class's pin, `local.runner_models.haiku`: the default.
+    ConversationModel("claude-haiku-5-5", model="claude-haiku-5-5", provider="anthropic",
+                      label="Claude Haiku 5.5 (fastest)"),
     ConversationModel("claude-sonnet-5", model="claude-sonnet-5", provider="anthropic",
                       label="Claude Sonnet 5"),
     ConversationModel("claude-sonnet-4-6", model="claude-sonnet-4-6", provider="anthropic",
