@@ -102,8 +102,9 @@ says what is built either way.
    security-audit stay as **built-in** entries, baked in the image, that nobody can remove.
 2. **Fetch and pin once.** swarm-api downloads a GitHub archive at a resolved commit (or receives an upload) into a
    quarantine object as bytes only; an isolated **plugin intake job** with no network and no secrets unpacks it,
-   refuses what escapes or exceeds the caps, parses the manifest, and writes one normalised tarball named by its
-   sha256 into the scope's GCS prefix.
+   refuses what escapes or exceeds the caps, parses the manifest, and writes one normalised tarball and a report to a
+   staging name only it knows; swarm-api re-hashes that tarball and copies it, named by its sha256, into the scope's
+   GCS prefix.
 3. **At a step's start** the worker downloads each signed plugin's tarball, checks its sha256 against the **signed**
    digest, unpacks it outside the checkpointed tree, and passes `--plugin-dir` per plugin, so hooks, skills, commands,
    agents and MCP servers all load. Every hook and MCP server command runs through one launcher,
@@ -112,7 +113,8 @@ says what is built either way.
 4. **Settings are generic.** `userConfig` renders as a form. Non-secret values live in the signed workspace settings;
    secret values live in Secret Manager under a name derived from the workspace, the plugin and the field, or are a
    **binding** to an existing workspace key (TypeSafe). A plugin with no `userConfig` gets **declared settings**:
-   environment variables and files (a rules file), written by the admin at install time into the version's overlay.
+   environment variables and files (a rules file), declared by the admin at install time in the version's overlay,
+   their values set per workspace in the form (a file's content released to the step like a secret).
 5. **Defaults reach steps at submission.** A workspace's "every step" plugins and its settings are merged by swarm-api
    into the step's **signed plugin set** (`metadata.dispatch.plugins`), so the worker trusts only what was signed. A
    step may add a plugin, turn a default off, or override a non-secret value.
@@ -132,7 +134,7 @@ says what is built either way.
 | `workspace_settings/{tenant}.plugins` | swarm-api only | `allowed` (as today, now install ids), `defaults` (install ids on for every step), `configs_digest` (§6.2), `set_by/at`, `mac` |
 | `workspace_settings/{tenant}/plugin_configs/{install_id}` | swarm-api only | per field: a non-secret `value`, or `secret: {kind: "plugin", set_at}`, or `binding: {kind: "provider_key", provider: "typesafe"}`; `set_by/at` |
 | `platform_settings/switches` | swarm-api only | `work_contracts` (`on`/`off`), `contract_review` (`off`/`report`/`enforce`), `set_by/at`, `mac` (§11) |
-| `plugin_intake/{intake_id}` | swarm-api and the intake job | one fetch or upload in flight: requested source, quarantine object, state, refusal reason; deleted a day after it ends |
+| `plugin_intake/{intake_id}` | swarm-api only | one fetch or upload in flight: `scope`, `tenant_id`, `install_id` (an update) or none (a new install), requested source, quarantine and staging names, state, refusal code; `mac` (request P2, kind `intake`); deleted a day after it ends |
 
 **Why install and version are two documents.** Pinning is the owner's rule: a step runs exactly one copy. A version
 is never edited after it is written; an update writes a new version and moves `current_version`, so a step signed
@@ -143,7 +145,7 @@ re-fetching.
 blocks are MAC'd today), so any tenant's worker can write any of these documents. A forged version document could
 swap the digest every workspace's steps would be signed with. swarm-api therefore acts on an install, a version or a
 setting only when its MAC verifies under `swarm-settings-key`, and the worker never reads these documents at all: it
-trusts only the step's signed plugin set and the bytes' sha256. The canonical form of an install and a version needs
+trusts only the step's signed plugin set and the bytes' sha256. The canonical form of an install, a version and an intake needs
 a contract change (request P2, §14).
 
 **Install ids.** `p-<12 hex>` for platform scope and `w-<12 hex>` for workspace scope, random, never derived from a
@@ -203,10 +205,11 @@ plugin is a runtime act. Three places could do it (Q7):
   Run, which already holds the GitHub App's key and reaches GitHub) streams the archive of exactly the resolved
   commit (`GET /repos/{o}/{r}/tarball/{commit}`) into `gs://<plugins bucket>/quarantine/<intake_id>`, stopping at
   the compressed cap, **without unpacking it**. It then starts one execution of the Cloud Run job
-  `swarm-plugin-intake`, whose service account can read `quarantine/`, write the scope's pinned prefix and its own
-  report, and nothing else: no Firestore, no Secret Manager, no GitHub, and **no egress** (the job runs with all
-  traffic through the VPC and no route out except Private Google Access). The untrusted archive is parsed only
-  there.
+  `swarm-plugin-intake`, whose service account can read one named object under `quarantine/`, create objects under
+  `staging/`, and nothing else: no list, no delete, no write to `platform/` or `tenants/`, no Firestore, no Secret
+  Manager, no GitHub, and **no egress** (the job runs with all traffic through the VPC and no route out except
+  Private Google Access). The untrusted archive is parsed only there, and §2.3's last step says why an execution the
+  archive takes over can spoil only its own intake.
 * **B: swarm-api does all of it.** One service fewer, but archive parsing (zip bombs, path tricks, parser bugs) would
   run in the process that holds the settings key, the KMS signing permission and every workspace's data.
 * **C: a SwarmCloud agent job.** Reuses the dispatch machinery, but puts the forge token in a pod and costs a
@@ -218,7 +221,11 @@ minutes, so the bytes never pass through swarm-api and a larger file is refused 
 
 ### 2.3 The intake job's checks
 
-In this order, each refusal naming the entry and the rule, no partial result written:
+In this order, no partial result written. **Every refusal is a fixed code and a fixed sentence** (`entry_escapes_root`:
+"An entry's path leaves the plugin's folder."), with nothing interpolated; the only details it carries are ids the
+platform minted, as separate structured fields (`intake_id`, and the offending entry's index in the archive's own
+order). An upstream string (an entry path, a manifest name or version, a hook command) never enters a refusal, a log
+line or an audit row, because it is the attacker's text; the console renders the plugin by looking up its id.
 
 1. **Size before unpacking:** the compressed object at most 25 MiB (recommended, pending Q8).
 2. **Every entry, read from the archive's index before any byte is written:** a relative path; no `..` segment; no
@@ -236,21 +243,45 @@ In this order, each refusal naming the entry and the rule, no partial result wri
    (§6.3) that declares one.
 6. **The manifest parses** (`plugin.json` is a JSON object; `hooks/hooks.json` and `.mcp.json`, when present, parse
    and use only the documented keys); every path a hook or a server names through `${CLAUDE_PLUGIN_ROOT}` exists in
-   the tree.
+   the tree. `plugin.json` may itself declare `hooks` and `mcpServers` inline, or point `hooks`, `mcpServers`,
+   `commands`, `agents` or `skills` at custom paths: the job reads every such declaration and every file it points
+   to, refuses a path outside the plugin root, and rewrites the commands found there exactly as those in
+   `hooks/hooks.json` and `.mcp.json` (§4.4). A declaration in a shape it does not know is refused
+   (`manifest_component_unknown`), never passed through, so no hook can load outside `swarm-plugin-exec`.
 7. **Dependencies are shipped, never installed:** a `package.json` that lists `dependencies` with no `node_modules`
    beside it is refused with that reason (recommended, pending Q9). The job never runs `npm install`, a build or
    any file from the archive.
 8. **Digests.** `source_sha256` is over the quarantined bytes as fetched or uploaded. The **runnable tree** is the
    normalised tree plus the overlay; it is written as one tar in a canonical order (paths sorted, fixed modes, zeroed
-   owners and times), and `runnable_sha256` is over that tar. The object is `<scope prefix>/<runnable_sha256>.tar`,
-   written with `ifGenerationMatch=0`, so an existing digest is never overwritten.
+   owners and times), and `runnable_sha256` is over that tar. The job writes it to `staging/<intake_id>/runnable.tar`
+   and its report (the parsed manifest, the counts, the digests or the refusal code) to
+   `staging/<intake_id>/report.json`.
 
-The job writes its report (the parsed manifest, the counts, the digests or the refusal) to
-`reports/<intake_id>.json`. The job has no route to swarm-api, so the bucket's finalize notification on `reports/`
+**Why a staging name, and why swarm-api copies.** One job account parses every workspace's and the platform's
+untrusted archives, so it must not be able to write where a pinned copy lives or touch another intake's result.
+`intake_id` is 128 random bits (`secrets.token_hex(16)`) minted by swarm-api and passed to that one execution only;
+the account holds a custom role with `storage.objects.get` and `storage.objects.create`, IAM-conditioned to
+`quarantine/` and `staging/` respectively, and **no `list` and no `delete`** (Cloud Storage needs delete to overwrite),
+so an execution cannot find, guess, overwrite or remove another intake's objects, and cannot write under `platform/`
+or `tenants/` at all. The job has no route to swarm-api, so the bucket's finalize notification on `staging/`
 (Pub/Sub, pushed to swarm-api with an OIDC token, as the deployment's other push subscriptions are) tells swarm-api
 the intake ended; an execution that fails without a report is found by the same notification's absence after the
-job's 10-minute timeout, through Cloud Run's execution state, read once. swarm-api reads the report, checks that the object exists with that size and digest, and only
-then writes the version document. The quarantine object is deleted when the intake ends, either way.
+job's 10-minute timeout, through Cloud Run's execution state, read once. swarm-api then:
+
+1. reads `plugin_intake/{intake_id}` and acts only when its MAC verifies; the **scope and tenant come from that
+   document, never from the report**, and the version is written under that document's install;
+2. parses the report as untrusted data (a closed schema, a size cap, unknown keys refused);
+3. streams `staging/<intake_id>/runnable.tar`, computing its sha256 and size itself, and refuses the intake
+   (`intake_digest_mismatch`) unless both equal the report's;
+4. copies it to `<scope prefix>/<runnable_sha256>.tar` with `ifGenerationMatch=0`. Only swarm-api writes the scope
+   prefixes, and only after hashing, so an object already at that name is the same bytes from an earlier intake in
+   that scope (swarm-api still compares its stored hash), and nobody can pre-plant an object (an empty one, say)
+   under a future digest to make a later intake fail;
+5. writes the version document, then deletes the staging and quarantine objects, as it does on a refusal.
+
+An execution the archive takes over can therefore lie only about its own intake: the bytes the same admin chose to
+install, under the scope that admin's intake document names, which Update's diff and the review of the manifest then
+show. It cannot reach a concurrent intake of another workspace or of the platform.
 
 **Why one canonical tar and not the original archive.** The worker must verify one digest and unpack one format with
 no choice to make; a zip's central directory and a tar's headers can disagree, and the intake job has already proven
@@ -262,11 +293,13 @@ check it against a release.
 * One bucket, `<project>-swarm-plugins`, uniform bucket-level access, no public access, labelled
   `managed-by=swarm-terraform`, in the deployment's region.
 * `platform/<runnable_sha256>.tar` for platform installs; `tenants/<tenant_id>/<runnable_sha256>.tar` for workspace
-  installs; `quarantine/` and `reports/` for intake.
-* **Reads:** each tenant GSA gets `storage.objectViewer` on `platform/` and on its own `tenants/<tenant_id>/` only
-  (IAM conditions on the object name prefix), so a worker of workspace A cannot download workspace B's private
-  plugin even with B's digest in hand. **Writes:** only the intake job's service account, and only to `platform/`,
-  `tenants/` and `reports/`; swarm-api writes `quarantine/` and deletes (§9.3).
+  installs; `quarantine/` and `staging/` for intake.
+* **Reads:** each tenant GSA gets a get-only custom role (`storage.objects.get`, no `list`: an IAM condition on
+  `resource.name` cannot grant listing, and the worker needs only the object it was signed with) on `platform/` and
+  on its own `tenants/<tenant_id>/` only (IAM conditions on the object name prefix), so a worker of workspace A
+  cannot download workspace B's private plugin even with B's digest in hand. **Writes:** `platform/` and `tenants/`
+  only by swarm-api, after it re-hashed the staged tar (§2.3); `quarantine/` by swarm-api and the signed upload URL;
+  `staging/` by the intake job's account, create-only; deletes by swarm-api (§9.3).
 * By digest, so two workspaces installing the same bytes privately each hold a copy in their own prefix (no
   cross-workspace sharing of private objects), while two versions with the same bytes in one scope share one object.
 
@@ -284,8 +317,8 @@ For each plugin, before the agent starts:
 
 1. Download the object as the tenant GSA into `private/plugins/<runnable_sha256>.tar` (private: never checkpointed,
    never uploaded), streaming its sha256.
-2. **Refuse the step** (`PluginUnavailable`, CANNOT_START, the message naming the plugin and the version, never the
-   prompt) when the digest is not the signed one, the object is missing, or it exceeds the version's recorded size.
+2. **Refuse the step** (`PluginUnavailable`, CANNOT_START, a fixed sentence with `install_id` and `version_id` as
+   separate fields, never the plugin's name or version string, never the prompt) when the digest is not the signed one, the object is missing, or it exceeds the version's recorded size.
 3. Unpack into `private/plugins/<install_id>/` with the same entry checks as the intake job (defence in depth: the
    bytes are already proven, the check costs milliseconds), then make the tree read-only.
 4. Write the plugin's data folder, `private/plugin-data/<install_id>/`, for `${CLAUDE_PLUGIN_DATA}`.
@@ -370,7 +403,8 @@ suggestion: a `package.json` `engines.node`, a `.py` hook, a `bun` command):
 `claude_plugins`, `node`, `bun`, `python3` and `bash` on the five claude-code profiles, matching
 `agent-runtime-base`. Until it is accepted, swarm-api keeps the same table beside `CLAUDE_CODE_PROFILES` in
 `plugincatalogue.py`, with a unit test that reads the Dockerfile's `ARG` lines so the table cannot claim a runtime the
-image lacks. Submission refuses a step whose profile lacks a plugin's runtime, naming both. A codex step names no
+image lacks. Submission refuses a step whose profile lacks a plugin's runtime with the fixed code `plugin_runtime_missing`, the
+`install_id`, the profile name and the runtime (from the closed list) as separate fields. A codex step names no
 managed plugin (codex does not load Claude Code plugins).
 
 **Egress** is not narrowed per plugin today: the agent, every plugin and anything in the checkout share the pod's
@@ -420,7 +454,8 @@ because every workspace's agents could read it).
   `swarm-jev-gate.mjs` (the key in that process only, `fetch` replaced by one that sends only to TypeSafe or the shim
   through the outbound filter, the variables that would point it elsewhere removed, and every call recorded in the
   calls file the worker already sends to `state/jev-usage`). So a managed jev-belay sends, and is accounted, exactly
-  as the baked one does. A plugin bound to TypeSafe whose hooks are not `node` commands is refused at the binding,
+  as the baked one does. Replacing `fetch` guards against **accidental** leakage only: a malicious `node` hook can
+  still reach the network through `node:https`, `net` or `child_process`; malicious exfiltration is egress's (Q1). A plugin bound to TypeSafe whose hooks are not `node` commands is refused at the binding,
   with that reason. Adapters are platform code, one per bindable key, never supplied by an admin.
 
 A secret field's name must be in `swarm-tenant-<t>-plg-...`; its consumer kind `plugin` is request P3, because
@@ -452,7 +487,8 @@ its hooks, so what upstream ships is what runs. Variable names are checked again
 A step may override a **non-secret** value of a plugin it loads, through the builder's plugin sheet, as a typed value
 against the same field definitions (invariant 10: values for fields the plugin declares, never a command, path outside
 the checkout, image or resource spec). A secret is never overridden per step: a workflow is shared across members and
-its JSON is visible to them.
+its JSON is visible to them. A **file** setting is not overridden per step either: it is released like a secret
+(§8), so a per-step copy would put its content into the workflow's JSON.
 
 ## 7. Workspace defaults ("on for every step") and how they reach a step
 
@@ -495,7 +531,7 @@ than a member should read in a workflow's JSON), and its sha256 is what is signe
 `capabilities.plugins` for the built-ins (unchanged), and a managed plugin is outside it, so managed plugins **do not
 need `SWARM_WORK_CONTRACTS`**. The worker refuses a set it cannot verify exactly as it refuses an unsigned contract.
 
-What still needs the frozen contract (§14): the workspace block's new fields (P1), the install and version MAC form
+What still needs the frozen contract (§14): the workspace block's new fields (P1), the install, version and intake MAC form
 (P2), the plugin secret name and consumer kind (P3), the profiles' runtime capabilities (P4) and the platform
 switches' MAC form (P5).
 
@@ -524,7 +560,8 @@ new one. There is no automatic update (a malicious push upstream changes nothing
 **Remove** first lists who uses it: workspaces that allow it (platform scope), workspaces where it is a default,
 saved workflows and agents whose steps name it, schedules that run those workflows, and steps queued or running with
 it now. Confirming (typed name) sets `state: removed`: it leaves the catalogue, the Allowed lists and the defaults; a
-saved workflow naming it is refused at submission with a reason naming the plugin (recommended, pending Q5); queued
+saved workflow naming it is refused at submission with the fixed code `plugin_removed` and its `install_id` as a
+field (recommended, pending Q5); queued
 and running steps keep their copy. The plugin's secrets (`-plg-` names for that install) are destroyed when the
 install is removed. A built-in has no Remove.
 
@@ -537,9 +574,9 @@ digest, and it is older than 7 days. The reconciler's existing sweep runs this d
 ## 10. Audit events
 
 Each written to `admin_audit` in the same transaction as the change it records (`{action, by, at, target, detail}`),
-`detail` naming ids, versions, digests, field names and counts, never a value:
+`detail` naming ids, version ids, digests, field names and counts, never a value and never an upstream string:
 
-`plugin_intake_started`, `plugin_intake_refused` (with the rule), `plugin_installed`, `plugin_update_checked`,
+`plugin_intake_started`, `plugin_intake_refused` (the fixed code and the entry's index, §2.3), `plugin_installed`, `plugin_update_checked`,
 `plugin_updated` (old and new version and digest), `plugin_removed`, `plugin_allowed_set` (as today's
 `workspace_plugins_set`), `plugin_defaults_set`, `plugin_config_set` (field names), `plugin_secret_set` and
 `plugin_secret_removed` (field name), `plugin_secret_bound` (field and provider), `platform_switch_set` (switch, old
@@ -574,7 +611,8 @@ the step holds them, its GitHub token, its checkout and the tenant GSA's metadat
 | **A workspace admin installs a platform plugin** | Platform scope needs a platform admin; the route checks the role server-side. |
 | **A platform plugin reads a workspace's secrets** | It runs only inside a workspace's own step container, so it sees what that step sees: the secrets that step's plugins and slots release, its forge token, its tenant GSA. It cannot reach another workspace's secrets (the tenant GSA has no grant on them, and the plugin-secret release checks the step's signed set) or another workspace's objects (IAM conditions per prefix). What it can read in the step is the honest residual: allowing a platform plugin is trusting it with that workspace's steps, which the Allow switch says behind its (i). |
 | **A malicious update upstream** (a compromised maintainer, a moved tag, a force-push) | Nothing updates on its own; a tag is resolved to a commit once, and the copy is ours. Update shows the diff with hooks, servers, hosts and sensitive fields marked, and needs a typed confirmation. A second approver for platform updates is Q4. |
-| **A tampered pinned copy** | Objects are written only by the intake job's account, never overwritten (`ifGenerationMatch=0`), and the worker checks the sha256 against the signed digest before unpacking. |
+| **A tampered pinned copy** | The intake job's account writes only create-only, unlistable `staging/<intake_id>/` names (128 random bits, no list, no delete), so a take-over of one execution cannot plant a copy under `platform/` or `tenants/` or forge a concurrent intake's report. swarm-api binds each report to its MAC'd intake document's scope and tenant, re-hashes the staged tar itself, and alone copies it into the scope prefix, never overwriting (`ifGenerationMatch=0`); the worker checks the sha256 against the signed digest before unpacking. |
+| **Attacker text in a refusal** (an entry path or manifest name crafted to spoof a message or a log line) | Every refusal is a fixed code and sentence; only platform-minted ids (install, version, intake, an entry's index) travel, as separate fields (§2.3). |
 | **A forged catalogue document** (a tenant worker writes a version document with its own digest) | swarm-api acts only on documents whose MAC verifies (P1, P2); the worker reads none of them. |
 | **An archive escaping its folder** (`../`, absolute paths, symlinks out, hard links, devices, zip bombs, case collisions) | §2.3: refused from the index before writing, caps counted on bytes written, unpacked by a job with no network, no secrets and no Firestore; the worker checks the entries again. |
 | **A hook printing a secret** | The launcher scrubs every registered value from the hook's output before the CLI sees it; the worker's existing scrub runs over the transcript and logs at the end. A secret the step never registered (one the hook found on disk) is not caught by a literal scrub: that residual is the same as the agent's own today. |
@@ -583,7 +621,7 @@ the step holds them, its GitHub token, its checkout and the tenant GSA's metadat
 | **A workspace plugin reaching another workspace** | Its object sits under its workspace's prefix (other GSAs cannot read it), its install id is refused at submission for any other tenant, it runs in its own workspace's namespace under that workspace's GSA, and nothing on the platform catalogue lists it. |
 | **A setting redirecting the runtime** (`NODE_OPTIONS=--require ...`, `PATH`, `LD_PRELOAD`) | §6.3's deny list, checked at install and at every settings write and override. |
 | **A plugin hook that blocks a step forever, or answers "ask"** | Every hook has a timeout (the manifest's, capped at 120 s); the step's own wall-clock and turn limits stand. Nobody can answer "ask" in a headless step: lane 2 measures what CLI 2.1.283 does with a plugin hook's "ask" under `-p`, and the launcher rewrites an "ask" decision to "deny" if the CLI would otherwise wait; the result counts it. |
-| **A hook sending a secret or the code out** (in its request to its own API) | Output scrubbing does not cover what a hook sends. For a plugin bound to the TypeSafe key, the Jev adapter (§6.2) applies the baked gates' outbound filter: `fetch` only to TypeSafe or the shim, secret-shaped files sent by name only, the redaction rule families dropped, registered secrets replaced (`swarm-jev-gate.mjs`, "THE OUTBOUND FILTER"; `docs/jev-data-flow.md`). Any other plugin's requests are not filtered: a plugin in another runtime, or one with its own HTTP client, sends what it sends to the hosts it declared, and allowing it is trusting it with that. Q1 decides whether egress is narrowed to those hosts. |
+| **A hook sending a secret or the code out** (in its request to its own API) | Output scrubbing does not cover what a hook sends. For a plugin bound to the TypeSafe key, the Jev adapter (§6.2) applies the baked gates' outbound filter: `fetch` only to TypeSafe or the shim, secret-shaped files sent by name only, the redaction rule families dropped, registered secrets replaced (`swarm-jev-gate.mjs`, "THE OUTBOUND FILTER"; `docs/jev-data-flow.md`). The adapter is not a boundary against a malicious hook (`node:https`, `net`, `child_process` bypass a replaced `fetch`): it stops accidental leakage only, and stopping deliberate exfiltration is Q1's egress. Any other plugin's requests are not filtered: a plugin in another runtime, or one with its own HTTP client, sends what it sends to the hosts it declared, and allowing it is trusting it with that. Q1 decides whether egress is narrowed to those hosts. |
 | **Planting state across attempts** (`${CLAUDE_PLUGIN_DATA}`) | The data folder is in `private/`, not checkpointed; a plugin that needs state across a park says so, and is refused until the question bridge design covers plugin state. |
 
 ## 13. CONTRACT.md invariants
@@ -614,8 +652,9 @@ the step holds them, its GitHub token, its checkout and the tenant GSA's metadat
 * **P1. `specsign.SETTINGS_MAC_FIELDS["plugins"]`** becomes `("allowed", "defaults", "configs_digest")`: the
   workspace's every-step plugins and the digest of its plugin settings are signed with the Allowed list. An absent key
   projects as null, so every block stored today still verifies.
-* **P2. A canonical form for a plugin install and a plugin version** (`specsign.canonical_plugin_record(kind,
-  fields)`, purpose `swarm.plugin-record/v1`, kinds `install` and `version`, with the scope and the tenant id inside
+* **P2. A canonical form for a plugin install, a plugin version and a plugin intake** (`specsign.canonical_plugin_record(kind,
+  fields)`, purpose `swarm.plugin-record/v1`, kinds `install`, `version` and `intake` (§2.3 binds a report to its
+  intake's scope), with the scope and the tenant id inside
   the bytes), MAC'd under `swarm-settings-key` by swarm-api.
 * **P3. A plugin secret:** `Tenant.plugin_secret_name(install_id, field)` returning
   `swarm-tenant-<t>-plg-<16 hex>`, and the secret-consumer kind `plugin` so a released secret's record says which
