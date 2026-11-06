@@ -101,8 +101,8 @@
 .vts-clock {
   display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; cursor: default;
   font: 600 var(--t-micro)/var(--lh-flush) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim);
-  background: conic-gradient(var(--paused) var(--left, 0%), var(--line-soft) 0);
-  -webkit-mask: radial-gradient(circle, #000 55%, transparent 56%), linear-gradient(#000 0 0);
+  /* An opaque disc over the conic fill leaves a ring and keeps the seconds on the surface. */
+  background: radial-gradient(circle, var(--surface) 58%, transparent 59%), conic-gradient(var(--paused) var(--left, 0%), var(--line-soft) 0);
 }
 .vts-clock.is-out { color: var(--text-faint); background: var(--line-soft); }
 .vts-rb-done { margin: 0; display: flex; align-items: center; gap: 6px; font: 600 var(--t-body)/var(--lh-body) var(--font); color: var(--ok-ink); }

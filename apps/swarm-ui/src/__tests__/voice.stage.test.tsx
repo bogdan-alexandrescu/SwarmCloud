@@ -209,6 +209,23 @@ describe('the read-back hold', () => {
     expect(within(card).getByRole('alert').textContent).toBe('That read-back is no longer pending; nothing ran.')
   })
 
+  it('draws the clock as a ring around an opaque disc, so its seconds sit on the surface', async () => {
+    answer(held())
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    const card = await screen.findByRole('region', { name: 'Read-back' })
+    const clock = within(card).getByText(/^\d+s$/)
+    const sheets = [STYLES, STAGE_CSS].join('\n')
+    for (const width of [1280, 390]) {
+      const won = (prop: string | readonly string[]) => cascade(sheets, clock, prop, { width }).winner?.value ?? null
+      // A mask with no composite never cuts the ring's hole, and a mask that
+      // cut it would cut the seconds with it: the clock carries no mask.
+      expect(won(['mask', '-webkit-mask', 'mask-image', '-webkit-mask-image'])).toBeNull()
+      // The disc is the top layer, the conic fill the ring behind it.
+      const bg = won(['background', 'background-image']) ?? ''
+      expect(bg).toMatch(/^radial-gradient\(circle, var\(--surface\) \d+%, transparent \d+%\), conic-gradient\(/)
+    }
+  })
+
   it('asks for no read-back while no session is live', async () => {
     answer(held())
     render(<TalkStage projectId="vp_t" sessionId={null} live={false} />)
@@ -218,7 +235,9 @@ describe('the read-back hold', () => {
 })
 
 describe('on a phone nothing is wider than 390 and nothing pans', () => {
-  const SHEETS = [STYLES, TALK_CSS, STAGE_CSS].join('\n')
+  // The order the bundle loads them: Stage.tsx's import of talk-stage.css comes
+  // before Talk.tsx's own import of talk-pane.css.
+  const SHEETS = [STYLES, STAGE_CSS, TALK_CSS].join('\n')
   const PHONE = { width: 390 }
   const won = (el: Element, prop: string | readonly string[]): string | null => cascade(SHEETS, el, prop, PHONE).winner?.value ?? null
   /** The px a value fixes, summed over a track list ("4ch minmax(0, 1fr) 320px" fixes 320). */
