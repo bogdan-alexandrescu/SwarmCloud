@@ -186,6 +186,13 @@ origin (a separate staging API host) are refused always, as today. This is
 a narrowing of §3, never a widening: it only ever turns a write permission
 off.
 
+**A write the flow did not declare, and a workspace that writes nothing.**
+Two more narrowings, both §6's (BGD, 2026-11-05): a mutating flow with no
+`writes` sentence, and every flow of a workspace whose `writing_flows` QA
+setting is off, are held read-only by the same leg view (`qaspec.leg`'s
+`writing_flows`) the worker route reads, so `mutating` is false for them
+whatever the flow declares. Neither ever turns a write permission on.
+
 ---
 
 ## 2. One dispatch, both legs
@@ -580,6 +587,47 @@ legs whose mark is `non_production` **and** that share no approved origin
 with a production leg (§1.5); a production leg's run renders no mutating
 flow at all. Allowing a mutating flow on production would change
 visual-qa-any-app.md §3 and is the owner's (§9 Q6, recommended no).
+
+**What a writing flow may write: what it declares (BGD, 2026-11-05,
+"declared writes plus a switch, on by default", after AI Studio asked for
+flows that create records on staging).** All of the above stays. On top of
+it:
+
+* **Declared writes.** A flow with `mutating: true` carries `writes`: one
+  plain sentence, one line, at most 300 characters (`qaspec.WRITES_MAX`),
+  saying what the flow writes ("One order for the cheapest plan, in the test
+  catalogue."). A save of a mutating flow with no non-empty `writes` is
+  refused 422 `qa_flow_writes_required`, with a fixed sentence: nothing from
+  the request is interpolated. Why a sentence and not a list of endpoints:
+  the gate cannot tell one POST to a non-production origin from another, and
+  the person reviewing the target can read a sentence. The sentence is the
+  brief's limit: the flow's step is told it may write what that sentence
+  says and nothing else, and its report repeats the sentence word for word
+  under "This flow wrote" (`flow-<id>.json`'s `this_flow_wrote`, and the line
+  heading the flow's section of `flows.md`), so whoever reads the report sees
+  what was meant to be written beside what was.
+* **Older flows read.** A mutating flow stored before `writes` was required
+  renders read-only at run time: no `flow-<id>` step, the flow in a
+  read-only batch, and the worker route answers `mutating: false`. This only
+  ever turns a write off. A change to such a target that does not carry
+  `flows` (a rename, a new base URL) is saved: it saves no flow.
+* **The switch.** A workspace QA setting, `writing_flows`, default **on**
+  (`GET`/`PUT /v1/workspaces/{id}/qa-settings`, its owner or admin, or a
+  platform admin, to change; audited). Off renders every flow of the
+  workspace read-only and refuses a save of a mutating flow, 422
+  `qa_writing_flows_off`. On by default because a mutating flow was already
+  opt-in three times over (a non-production leg, an origin no production leg
+  shares, the flow's own mark) and now a declared sentence too; the switch
+  is for a workspace that wants none at all. A fresh deployment needs
+  nothing: the default is on.
+* **Both refusals have switches** in `refusals.SWITCHES` that **ship on**
+  (`REFUSAL_QA_FLOW_WRITES_REQUIRED`, `REFUSAL_QA_WRITING_FLOWS_OFF`), with
+  `budget_above_limit`'s precedent: off loses no protection, because the
+  flow it would have refused still renders read-only.
+* **The console.** The Visual QA card of Workspace Settings draws
+  `writing_flows` as one toggle, its reason in an (i)'s tooltip; the QA
+  targets page names each writing flow on its target's row, its `writes`
+  sentence behind an (i).
 
 **Production sign-in.** Today the gate refuses MFA and CAPTCHA
 (`qa_sign_in_challenge`). For an MFA-protected production account there are

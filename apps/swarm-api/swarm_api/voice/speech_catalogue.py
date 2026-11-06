@@ -30,6 +30,16 @@ THE ENTRIES, and where each figure came from:
   prices (`modelprices.SEED`), so every pick runs on the pool's accounts and
   is costed like any other turn. Haiku 4.5, the smallest and fastest, is the
   default; the two Sonnets trade a slower first word for a stronger reply.
+* THE PLANNER MODEL (BGD, 2026-11-05: the planner runs the planning class,
+  "make it configurable as well"): the model the planner turns of BOTH
+  engines run, picked by CLASS, never by id. The names are the frozen
+  `swarm_common.profiles.MODEL_CLASSES`, the classes Terraform's
+  `local.runner_models` pins one id each (`WORKER_CLASS_MODELS`, which
+  swarm-api's settings refuse unless it names exactly those classes), so
+  every pick runs on the pool's Claude accounts. `fable`, the planning class,
+  is the default: what voice.tf pins as VOICE_PLANNER_MODEL. A session reads
+  it at its start (`settings.VoiceSettings.session_planner_model`); a change
+  reaches the next session, never one already running.
 * ZONES are the deployment's provisioned speech machines, one each
   (`SWARM_SPEECH_ZONES`, from Terraform's `voice_speech.zones`). One zone
   by default (BGD's answer 1): a stock-out falls back to text mode, and no
@@ -42,6 +52,10 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from swarm_common.profiles import MODEL_CLASSES
+
+from ..settings import parse_worker_class_models
 
 #: The day every price and pin below was read.
 READ_AT = "2026-11-05"
@@ -106,6 +120,13 @@ class ConversationModel:
 
 
 @dataclass(frozen=True)
+class PlannerModel:
+    #: A `MODEL_CLASSES` name; the id is the deployment's pin for it.
+    name: str
+    label: str
+
+
+@dataclass(frozen=True)
 class Idle:
     name: str
     seconds: int
@@ -166,6 +187,21 @@ CONVERSATION_MODELS: tuple[ConversationModel, ...] = (
                       label="Claude Sonnet 4.6"),
 )
 
+#: The planning class (MODEL_CLASSES' docstring: "`fable` is for planning").
+PLANNING_CLASS = "fable"
+_PLANNER_LABELS = {
+    "opus": "Opus class (coding)",
+    "fable": "Fable class (planning)",
+    "sonnet": "Sonnet class",
+    "haiku": "Haiku class (fastest)",
+}
+#: Every class, in MODEL_CLASSES' order; a class added there is listed here
+#: by its name until it is given a label.
+PLANNER_MODELS: tuple[PlannerModel, ...] = tuple(
+    PlannerModel(name, _PLANNER_LABELS.get(name, name)) for name in MODEL_CLASSES)
+#: The variable `model_class_env` sets from `jsonencode(local.runner_models)`.
+CLASS_MODELS_ENV = "WORKER_CLASS_MODELS"
+
 IDLE: tuple[Idle, ...] = (
     Idle("2m", 120),
     #: The default: five minutes without speech or tool activity (pick 1).
@@ -187,6 +223,7 @@ DEFAULTS: dict[str, str] = {
     "tts_model": TTS_MODELS[0].name,
     "tts_voice": TTS_MODELS[0].default_voice,
     "conversation_model": CONVERSATION_MODELS[0].name,
+    "planner_model": PLANNING_CLASS,
     "idle": "5m",
 }
 #: `zone` is a field too; its default is the deployment's first zone.
@@ -198,6 +235,26 @@ def configured_zones(environ: Mapping[str, str] | None = None) -> tuple[str, ...
     raw = (os.environ if environ is None else environ).get(ZONES_ENV, "")
     zones = tuple(dict.fromkeys(z.strip() for z in raw.split(",") if z.strip()))
     return zones or DEFAULT_ZONES
+
+
+def configured_class_models(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """{model class: model id} from WORKER_CLASS_MODELS; empty when unset or
+    refused (swarm-api's start refuses a bad map before this is read)."""
+    raw = (os.environ if environ is None else environ).get(CLASS_MODELS_ENV, "")
+    try:
+        return parse_worker_class_models(raw)
+    except ValueError:
+        return {}
+
+
+def planner_pin(name: str, class_models: Mapping[str, str]) -> str | None:
+    """The model id class `name` runs on this deployment, or None when the
+    class is not listed, has no pin, or its pin is not of the class."""
+    model_class = MODEL_CLASSES.get(name) if name in _names(PLANNER_MODELS) else None
+    model = class_models.get(name)
+    if model_class is None or not isinstance(model, str) or not model_class.admits(model):
+        return None
+    return model
 
 
 def _names(entries: tuple[Any, ...]) -> tuple[str, ...]:
@@ -219,6 +276,8 @@ def choices(field: str, zones: tuple[str, ...], *, tts_model: str | None = None)
         return model.voices if model is not None else ()
     if field == "conversation_model":
         return _names(CONVERSATION_MODELS)
+    if field == "planner_model":
+        return _names(PLANNER_MODELS)
     if field == "idle":
         return _names(IDLE)
     if field == "zone":
@@ -246,8 +305,12 @@ def _files(files: tuple[WeightFile, ...]) -> list[dict[str, str]]:
     return [{"path": f.path, "sha256": f.sha256} for f in files]
 
 
-def view(zones: tuple[str, ...]) -> dict[str, Any]:
-    """The catalogue as `GET /v1/voice/settings/catalogue` serves it."""
+def view(zones: tuple[str, ...],
+         class_models: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The catalogue as `GET /v1/voice/settings/catalogue` serves it. Each
+    planner class shows the id it runs (`class_models`, else
+    WORKER_CLASS_MODELS), None where the deployment pins none."""
+    pins = configured_class_models() if class_models is None else class_models
     return {
         "engines": [{"name": e.name, "label": e.label, "uses_machine": e.uses_machine}
                     for e in ENGINES],
@@ -262,6 +325,8 @@ def view(zones: tuple[str, ...]) -> dict[str, Any]:
                         "default_voice": m.default_voice} for m in TTS_MODELS],
         "conversation_models": [{"name": m.name, "label": m.label, "model": m.model,
                                  "provider": m.provider} for m in CONVERSATION_MODELS],
+        "planner_models": [{"name": m.name, "label": m.label, "model": planner_pin(m.name, pins)}
+                           for m in PLANNER_MODELS],
         "idle": [{"name": i.name, "seconds": i.seconds} for i in IDLE],
         "zones": [{"name": z, "machine": True} for z in zones],
         "defaults": defaults(zones),
@@ -270,6 +335,7 @@ def view(zones: tuple[str, ...]) -> dict[str, Any]:
 
 
 __all__ = [
+    "CLASS_MODELS_ENV",
     "CONVERSATION_MODELS",
     "DEFAULTS",
     "DEFAULT_ZONES",
@@ -279,15 +345,19 @@ __all__ = [
     "FIELDS",
     "IDLE",
     "MACHINES",
+    "PLANNER_MODELS",
+    "PLANNING_CLASS",
     "READ_AT",
     "STT_MODELS",
     "TTS_MODELS",
     "ZONES_ENV",
     "choices",
+    "configured_class_models",
     "configured_zones",
     "defaults",
     "idle_seconds",
     "machine",
+    "planner_pin",
     "tts",
     "view",
 ]

@@ -8938,7 +8938,7 @@ function fixtureCodeIntelligence(): unknown {
 /** `GET /v1/qa-settings` (QA-FLOWS-UI): no value stored, so the default 15; the owner may change it. */
 function fixtureQaSettings(): unknown {
   return {
-    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, defaults: { qa_flows_per_step: 15 },
+    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, writing_flows: true, defaults: { qa_flows_per_step: 15, writing_flows: true },
     bounds: { qa_flows_per_step: { min: 1, max: 30 } }, set_at: null, set_by: null, can_edit: true,
   }
 }
@@ -11417,6 +11417,7 @@ export function budgetRefusalWords(error: ApiError): string | null {
  * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
  * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
  * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
+ * And `writing_flows` (part of #2688; BGD, 2026-11-05): whether the workspace's flows may write at all, on by default.
  */
 export interface QaSettings {
   tenant_id: string
@@ -11426,6 +11427,8 @@ export interface QaSettings {
   default_flows_per_step: number
   min_flows_per_step: number
   max_flows_per_step: number
+  /** Whether a mutating flow, its `writes` declared, may write on a non-production leg; off, every flow reads only. */
+  writing_flows: boolean
   /** The workspace's owner or admin, or a platform admin; the API is the gate. */
   can_edit: boolean
   set_at: string | null
@@ -11447,6 +11450,8 @@ function normQaSettings(raw: unknown): QaSettings {
     default_flows_per_step: fallback,
     min_flows_per_step: qaInt(bound.min, 1),
     max_flows_per_step: qaInt(bound.max, 30),
+    // On unless the API says off: the default is on (`qasettings.WRITING_DEFAULT`).
+    writing_flows: r.writing_flows !== false,
     can_edit: r.can_edit === true,
     set_at: keyField(r.set_at),
     set_by: keyField(r.set_by),
@@ -11465,6 +11470,12 @@ export async function loadQaSettings(): Promise<Result<QaSettings>> {
  */
 export async function putQaSettings(tenantId: string, flowsPerStep: number): Promise<Result<QaSettings>> {
   const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { qa_flows_per_step: flowsPerStep })
+  return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
+}
+
+/** The same PUT with `{writing_flows}` alone: the same gate, the flows-per-step setting untouched. */
+export async function putQaWritingFlows(tenantId: string, on: boolean): Promise<Result<QaSettings>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { writing_flows: on })
   return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
 }
 

@@ -45,22 +45,56 @@ const SNAPS = [
   { pref: 'strip', label: 'full (list folded to its strip)', list: (_app: number) => 64 },
 ] as const
 
+/**
+ * ONE RENDER A SNAP, NOT ONE A TEST (5 November 2026). Mounting <App /> on a
+ * running agent costs about 3 s here and twice that on CI -- the split's focus
+ * effects read `getComputedStyle`, which runs every injected rule through
+ * nwsapi -- and twenty of them made this file 195 s of a CI shard that then
+ * ended on "Timeout calling onTaskUpdate". Nothing here lays out or touches
+ * the DOM: every test reads the header's markup through the sheet, and the
+ * viewport is only the resolver's `env`, so a snap's nine tests read one DOM.
+ * The first test at a snap renders it, as before, and keeps a deep copy of
+ * what was drawn -- the container and `<html>`'s attributes; each later one
+ * attaches a fresh copy where the render put it and reads that.
+ */
+const SHOTS = new Map<string, { host: Node; root: [string, string][] }>()
+let attached: { host: Element; root: [string, string][] } | null = null
+
 afterEach(() => {
+  if (attached !== null) {
+    attached.host.remove()
+    for (const a of [...document.documentElement.attributes]) document.documentElement.removeAttribute(a.name)
+    for (const [name, value] of attached.root) document.documentElement.setAttribute(name, value)
+    attached = null
+  }
   window.location.hash = ''
   window.history.replaceState(null, '', '/')
   localStorage.clear()
 })
 
+const rootAttributes = (): [string, string][] => [...document.documentElement.attributes].map((a) => [a.name, a.value])
+
 async function split(pref: string): Promise<HTMLElement> {
+  const shot = SHOTS.get(pref)
+  if (shot !== undefined) {
+    const host = shot.host.cloneNode(true) as Element
+    attached = { host, root: rootAttributes() }
+    for (const [name, value] of shot.root) document.documentElement.setAttribute(name, value)
+    document.body.appendChild(host)
+    return host.querySelector<HTMLElement>('.ag-split')!
+  }
   localStorage.setItem('swarm.agents.list', pref)
   window.location.hash = `#work/task/${RUNNING}`
-  render(<App />)
-  return waitFor(() => {
+  const { container } = render(<App />)
+  const s = await waitFor(() => {
     const s = document.querySelector<HTMLElement>('.ag-split')
     expect(s?.querySelector('.ag-head-facts')).toBeTruthy()
     expect(s!.querySelector('.ag-head .run-stop-btn'), 'a running agent draws no Stop').not.toBeNull()
     return s!
   })
+  expect(container.contains(s), 'the split is drawn outside the render, where a copy would not keep it').toBe(true)
+  SHOTS.set(pref, { host: container.cloneNode(true), root: rootAttributes() })
+  return s
 }
 
 interface Box {

@@ -829,8 +829,8 @@ calls in a row that read nothing), or the sc plugin's server is not connected.
 workflow spec — the same object `swarm workflow` reads — as an object, as JSON
 text, or as the path of the spec file, relative to the session's checkout and
 inside it (the bridge reads no spec file from outside the checkout). A
-workflow script has no filesystem, so given a path one `sc:workflow` agent
-(label `read spec`) has the bridge read the file with `swarm_workflow_spec`,
+workflow script has no filesystem, so given a path one `sc:spec` agent
+(label `read spec`, holding no submit tool) has the bridge read the file with `swarm_workflow_spec`,
 which checks it as `swarm_workflow` would, submits nothing and returns the spec
 with its digest; the script submits the relayed spec only when it digests to
 what the bridge read. Text that begins like JSON and does not parse is reported
@@ -906,10 +906,10 @@ becomes a row with that state, `state_from: "workflow status"` and the row's
 failure in `row_note`. A step still running, or not named, stays a
 `row_error`, which the Result step re-attaches while the workflow runs on.
 
-All seven agents run on **haiku at low effort** (`model` and `effort` in their
+All eight agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
 need — `sc:remote` dispatch and follow, `sc:step`, `sc:task`, `sc:summary` and `sc:finish` follow,
-`sc:workflow` read a spec file, submit and read — and only through the sc plugin's own server (above).
+`sc:spec` read a spec file and nothing else, `sc:workflow` submit and read — and only through the sc plugin's own server (above).
 `sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
 row whose bridge was not connected or not responding, one `sleep 30` through
 Bash, because a workflow script has no timer of its own. A session that asks
