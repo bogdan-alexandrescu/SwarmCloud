@@ -344,7 +344,7 @@ def acquire_leases_in_transaction(
 ) -> list[Lease | AdmissionDenied]:
     """Admit a batch of tasks in ONE transaction. One outcome per request, in order.
 
-    Contract request 139. `acquire_lease_in_transaction` reads, then writes,
+    Contract request 140. `acquire_lease_in_transaction` reads, then writes,
     so it cannot run twice in one transaction (Firestore refuses a read after
     a write). This is the same admission for many tasks, with every pool
     document the batch needs READ ONCE and WRITTEN ONCE, with the sum of what

@@ -136,6 +136,10 @@ that tracks it. The console's workflow page heads with both, so write them
 for a person who opens the workflow cold. They are sent as
 `metadata.description` and `metadata.feature`; a malformed one is refused
 before anything is sent, and a longer description is refused, never cut.
+A spec should send `about: {purpose, goals, output}` -- why the work exists
+(one sentence, at most 300 characters), up to three goals (at most 120 each)
+and what lands (one sentence, at most 300) -- sent as `metadata.about` and
+checked the same way, each refusal naming the part.
 
 ### Every run is titled after its workflow
 

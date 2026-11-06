@@ -2068,7 +2068,7 @@ class SchedulerStore:
         is ever half-reserved: an abort writes nothing for any of them.
 
         THE ADMISSION IS THE FROZEN `acquire_leases_in_transaction` (contract
-        request 139, the owner's pick on PR 3493), which shares its per-task
+        request 140, the owner's pick on PR 3493), which shares its per-task
         checks, lease document and task write with `acquire_lease_in_transaction`
         rather than this store restating them: the task is re-read and must be
         READY with no cancel requested; the fencing generation is

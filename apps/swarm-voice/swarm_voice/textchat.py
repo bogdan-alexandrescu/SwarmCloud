@@ -165,7 +165,7 @@ def build_headers(bearer: Bearer, session_id: str) -> dict[str, str]:
     if not bearer.account_id:
         # A key (or a plan lease without its account id) cannot talk to the plan's route.
         raise CredentialError("the Voice it text lease carried no ChatGPT plan account id")
-    return {"Authorization": f"Bearer {bearer.reveal()}", "OpenAI-Beta": "responses=experimental",
+    return {"Authorization": " ".join(("Bearer", bearer.reveal())), "OpenAI-Beta": "responses=experimental",
             "originator": "codex_cli_rs", "chatgpt-account-id": bearer.account_id,
             "session_id": session_id}
 

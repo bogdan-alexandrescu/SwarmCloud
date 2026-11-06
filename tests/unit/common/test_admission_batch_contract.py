@@ -1,4 +1,4 @@
-"""The frozen batched admission, `acquire_leases_in_transaction` (contract request 139).
+"""The frozen batched admission, `acquire_leases_in_transaction` (contract request 140).
 
 Accepted by the owner 2026-11-06 on PR 3493 ("frozen-batch-function"): the
 batch lives beside `acquire_lease_in_transaction` and shares its per-task
