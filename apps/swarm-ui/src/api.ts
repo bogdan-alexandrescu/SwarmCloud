@@ -2106,7 +2106,11 @@ async function fixtureWorkflowRead(workflowId: string): Promise<Result<WorkflowR
   const stepTasks = new Set(workflow.steps.map((s) => s.task_id).filter((id): id is string => !!id))
   const tasks =
     page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId || stepTasks.has(t.id)) : []
-  return { status: 'ok', fetchedAt: Date.now(), data: { workflow, tasks } }
+  // EACH STEP'S `task_summary`, needs block included, as the live read serves
+  // it (`step_totals` given, codec.workflow_to_api): without it no fixture
+  // page counted a question, so a finished workflow's quiet tick never drew.
+  const [summarised] = withTaskSummaries([workflow], tasks)
+  return { status: 'ok', fetchedAt: Date.now(), data: { workflow: summarised ?? workflow, tasks } }
 }
 
 /**
@@ -5035,7 +5039,18 @@ const FIXTURE_HELD = [
   { task_id: 'task_wait_asked_fix', step_id: 'fix', question_index: 1, question: 'Rename the views flag in this change or in a follow-up?' },
 ]
 
-/** What each asking task of the fixture's held merge asked: `GET /v1/tasks/{id}/questions`. */
+/** The owner's answer to `wf_quiet_q_01`'s first question, as `metadata.owner_answers` stores it. */
+const FIXTURE_QUIET_ANSWER = {
+  question_index: 0,
+  question: 'Keep the old views address as a redirect?',
+  choice: 'Redirect',
+  text: null,
+  by: 'alice@example.com',
+  at: new Date(FIXTURE_NOW - 40 * 60_000).toISOString(),
+  history: [],
+}
+
+/** What each asking fixture task asked (the held merge's and `wf_quiet_q_01`'s): `GET /v1/tasks/{id}/questions`. */
 function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
   const option = (label: string, description: string) => ({ label, description })
   const asked: Record<string, AgentQuestion[]> = {
@@ -5065,6 +5080,25 @@ function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
           option('This change', 'One pull request; the review re-runs on the rename.'),
           option('Follow-up', 'This merges as reviewed; the rename is its own lane.'),
         ],
+        recommended: 'Follow-up',
+        context: null,
+        answer: null,
+      },
+    ],
+    task_f278adec: [
+      {
+        question: FIXTURE_QUIET_ANSWER.question,
+        options: [
+          option('Redirect', 'Old links keep working.'),
+          option('Remove', 'Old links 404.'),
+        ],
+        recommended: 'Redirect',
+        context: null,
+        answer: FIXTURE_QUIET_ANSWER,
+      },
+      {
+        question: 'Rename the views flag in this change or in a follow-up?',
+        options: [option('This change', 'One pull request.'), option('Follow-up', 'Its own lane.')],
         recommended: 'Follow-up',
         context: null,
         answer: null,
@@ -6102,7 +6136,19 @@ function fixtureTaskRows(): Task[] {
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_bcdc9180e4fb4a209f31 },
     }),
     mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
-    mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
+    // THE FINISHED WORKFLOW'S QUIET TICK (part of #2688): this unnamed row
+    // converted, so every task total stands, into the implement step of
+    // `wf_quiet_q_01`. It asked two questions and the owner answered the
+    // first, so its page draws '? 1' and the list no '?'
+    // (`fixtureHeldQuestions` serves both).
+    mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48, {
+      workflow_id: 'wf_quiet_q_01', step_id: 'implement', depends_on: [],
+      metadata: {
+        title: FIXTURE_WORKFLOW_TITLES.wf_quiet_q_01,
+        owner_answers: [FIXTURE_QUIET_ANSWER],
+      },
+      result_summary: { artifacts: 1, checkpoints: 2, questions: 2 },
+    }),
     // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
     // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
     // no test named, converted rather than a row added so every fixture
@@ -6219,6 +6265,7 @@ const FIXTURE_WORKFLOW_TITLES = {
   wf_audit_01: 'Audit the operator scripts and the Terraform',
   wf_5e5ad3b6f7da4299a839: 'Check the five contract invariants, then write one synthesis',
   wf_bcdc9180e4fb4a209f31: 'Research, draft and review the restore runbook',
+  wf_quiet_q_01: 'Views',
 } as const
 
 async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
@@ -6594,6 +6641,28 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
           step('draft', ['research'], 'task_8e33a3de'),
           step('review', ['draft'], 'task_1beb89a5'),
         ],
+      },
+      {
+        workflow_id: 'wf_quiet_q_01',
+        tenant_id: 'u-bogdan',
+        state: 'SUCCEEDED',
+        stored_state: 'SUCCEEDED',
+        state_source: 'derived',
+        rollup: {
+          state: 'SUCCEEDED',
+          complete: true,
+          reason: 'all_steps_succeeded',
+          counts: {},
+          unreadable_steps: [],
+          unstarted_steps: [],
+          steps_read: 1,
+        },
+        ...spanOf(['task_f278adec']),
+        submitted_by: 'alice@example.com',
+        priority: 0,
+        on_step_failure: 'FAIL_WORKFLOW',
+        cancel_requested: false,
+        steps: [step('implement', [], 'task_f278adec')],
       },
   ]
   // WHAT SWARM-API SERVES ABOUT EACH WORKFLOW (`routes/workflows.py`
