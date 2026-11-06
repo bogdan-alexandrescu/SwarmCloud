@@ -16780,7 +16780,7 @@ itself.
 `issue` input's bound, for the same reason), on claude-code and codex
 (`_CLI_AGENT_PR_INPUTS`) and claude-code-review
 (`_CLI_AGENT_REVIEW_INPUTS`). `pull_request.from_input` reads it only where
-the task's profile declares it; it is read first, before `publish_to_pr`
+the agent's profile declares it; it is read first, before `publish_to_pr`
 and `builds_on`. claude-code-large, claude-code-lightpanda,
 claude-code-browser and indexer do not gain it: the question named the
 three.
@@ -16795,7 +16795,7 @@ profiles. The generated input tables in `docs/workflows.md` and
 
 Invariant 10: the caller names a pull request by number, data, never an
 image, a command or a resource spec; the worker reads it read-only with the
-tenant's own forge credential, in the task's own repository (invariant 9),
+tenant's own forge credential, in the agent's own repository (invariant 9),
 and no token reaches the container.
 
 ### How it is tested
