@@ -1576,6 +1576,41 @@ def test_a_first_red_while_its_run_still_runs_waits_to_retry(red_tick):
     assert "rule 1 (retry once)" in out
 
 
+def _stuck_run(t: RedTick) -> None:
+    """A run at the head left queued (a runner outage, an approval wait)."""
+    t.world["checks"][t.head]["runs"].append(
+        {"id": 990, "check_suite_id": 990, "event": "pull_request",
+         "status": "queued", "conclusion": None})
+
+
+def test_a_first_red_past_the_age_limit_retries_without_waiting_for_a_stuck_run(red_tick):
+    t = red_tick([101, 102])
+    t.state["started"] = str(int(time.time()) - 91 * 60)
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    _stuck_run(t)
+    out = t.run()
+    failing_run = next(r["id"] for r in t.world["checks"][t.head]["runs"]
+                       if r["conclusion"] == "failure")
+    assert t.after.get("reruns") == [failing_run]
+    assert t.recorded("retry") is not None
+    assert "past the 90-minute limit: not waiting" in out
+    assert "re-running the failed jobs" in out
+
+
+def test_a_red_after_the_retry_past_the_age_limit_does_not_wait(red_tick):
+    t = red_tick([101, 102, 103, 104])
+    t.extra = [f"retry={int(time.time()) - 91 * 60}:{t.head}"]
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    _stuck_run(t)
+    out = t.run()
+    assert not t.after.get("reruns"), "the retry is spent"
+    assert TRAIN_PR in t.after.get("closed_now", [])
+    assert "past the 90-minute limit: not waiting" in out
+    assert "rule 3 (bisect)" in out
+
+
 def test_a_train_of_one_is_ejected_after_its_retry(red_tick):
     t = red_tick([101])
     t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]

@@ -1321,11 +1321,11 @@ retry_failed_runs() {
 
 red_rules() {
   # Which rule acts on red train $1 (body $2, head $3, judged into $4, its
-  # identity $5). Sets RED_RULE: `retry` (rule 1 re-ran the failed jobs; the
+  # identity $5, its age in seconds $6). Sets RED_RULE: `retry` (rule 1 re-ran the failed jobs; the
   # train stays open), `wait` (its re-run is still running), `held` (rule 2;
   # RED_HELD names the checks main is red on) or `bisect` (rule 3). Writes
   # the summary line for each rule it passes through.
-  local number="$1" body="$2" head="$3" verdict_file="$4" id="$5" retried="" runs="${WORK}/red-runs.json"
+  local number="$1" body="$2" head="$3" verdict_file="$4" id="$5" age="$6" retried="" runs="${WORK}/red-runs.json"
   RED_RULE=bisect
   RED_HELD=""
   retried="$(cmd_state_get --body "${body}" --key retry 2>/dev/null)" || retried=""
@@ -1333,9 +1333,17 @@ red_rules() {
   # failed jobs of a completed run only, and a shard fails while the rest of
   # its run goes on. After it: GitHub queues the re-run's runs when it accepts
   # the call, before their new check runs exist. Either way a run at the head
-  # not completed is waited for (within the age limit); an unreadable list
-  # goes on, and retry_failed_runs says why it cannot retry.
-  if gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${runs}" 2>/dev/null </dev/null \
+  # not completed is waited for within the age limit (counted from `started`,
+  # or from the retry at this head): past it the rules go on, so a run left
+  # queued (a runner outage, an approval wait) cannot keep a red train open
+  # and stop every other train boarding. An unreadable list goes on, and
+  # retry_failed_runs says why it cannot retry.
+  if [[ "${age}" -gt $((MAX_AGE_MINUTES * 60)) ]]; then
+    if gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${runs}" 2>/dev/null </dev/null \
+      && jq -e 'any((.workflow_runs // [])[]; .status != "completed")' "${runs}" >/dev/null; then
+      summary "train ${id}: rule 1 (retry once): some runs at ${head:0:12} still run after $((age / 60)) minutes, past the ${MAX_AGE_MINUTES}-minute limit: not waiting for them"
+    fi
+  elif gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${runs}" 2>/dev/null </dev/null \
     && jq -e 'any((.workflow_runs // [])[]; .status != "completed")' "${runs}" >/dev/null; then
     if [[ -n "${retried}" && "${retried#*:}" == "${head}" ]]; then
       summary "train ${id}: rule 1 (retry once): its re-run at ${head:0:12} is still running: waiting"
@@ -1532,7 +1540,7 @@ handle_train() {
         return 0
       fi
       # Rules 1 and 2 (red_rules); rule 3 below, as before them.
-      red_rules "${number}" "${body}" "${head}" "${verdict_file}" "${id}"
+      red_rules "${number}" "${body}" "${head}" "${verdict_file}" "${id}" "${age}"
       case "${RED_RULE}" in
         retry | wait) return 0 ;;
         held)
