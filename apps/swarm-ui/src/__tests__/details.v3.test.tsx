@@ -32,7 +32,8 @@ import type { AgentRun } from '../api'
 import type { Result } from '../fetch'
 import type { ResourceClasses } from '../api'
 import type { Task, TaskPage } from '../types'
-import type { CascadeEnv } from './cssgate'
+import SHEET from '../styles.css?raw'
+import { declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { attempt, ev, task as runTask } from './runfixture'
 
@@ -492,12 +493,47 @@ describe('Progress takes the pane; Resources is folded under its row (DETAILS-BU
   })
 })
 
+// The sheets `painted` reads, in its order (marks.ts), so `flatRules` hands
+// back the rules it already parsed for them.
+const STYLES = [
+  ...Object.values(import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })),
+  SHEET,
+].join('\n')
+
+/**
+ * `root` and every node under it that a rule declaring `overflow` or
+ * `overflow-y` selects: no other node can paint a scroller, so only these
+ * need the cascade. Asking `painted` of every node in the split -- a few
+ * thousand cascades over every rule -- outlived the 30 s test timeout on a
+ * starved CI runner (5 November 2026); this is a handful of
+ * `querySelectorAll`s, and the cascade still decides each candidate. A
+ * pseudo-element's branch styles its box, not the node, as `painted` reads
+ * it; a branch the DOM cannot parse keeps every node, as before.
+ */
+function overflowCandidates(root: HTMLElement): HTMLElement[] {
+  const every = [root, ...root.querySelectorAll<HTMLElement>('*')]
+  const hit = new Set<Element>([root])
+  for (const rule of flatRules(STYLES)) {
+    if (!declarations(rule.body).some((d) => d.property === 'overflow' || d.property === 'overflow-y')) continue
+    for (const branch of splitTop(rule.selector)) {
+      if (/::[\w-]+(\([^)]*\))?\s*$/.test(branch)) continue
+      try {
+        if (root.matches(branch)) hit.add(root)
+        for (const n of root.querySelectorAll(branch)) hit.add(n)
+      } catch {
+        return every
+      }
+    }
+  }
+  return every.filter((n) => hit.has(n))
+}
+
 describe('the detail has ONE scroll container', () => {
   it('nothing in the split scrolls but its column', async () => {
     const t = running()
     const el = await detailsOfRunning(t, runOf({ task: t }))
     const split = el.closest<HTMLElement>('.ag-split')!
-    const scrollers = [split, ...split.querySelectorAll<HTMLElement>('*')].filter((n) => {
+    const scrollers = overflowCandidates(split).filter((n) => {
       const v = painted(n, ['overflow-y', 'overflow'], WIDE) ?? 'visible'
       return /\b(auto|scroll)\b/.test(v)
     })
