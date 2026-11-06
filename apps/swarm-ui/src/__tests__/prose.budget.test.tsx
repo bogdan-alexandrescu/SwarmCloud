@@ -1,6 +1,6 @@
-// THE APP-WIDE TABLE IS prose.ceilings.json (proseapp.tsx, BOGDAN'S RULE,
-// 2026-11-05): every page the nav reaches, its words and arrowed links, with
-// ceilings that only go down. This file keeps its own screen-level budget.
+// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// page the nav reaches shows no more words or arrowed links than it did on the
+// change's base. This file keeps its own screen-level budget.
 //
 // THE PROSE BUDGET, AS A NUMBER.
 //
