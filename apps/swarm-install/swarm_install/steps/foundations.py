@@ -218,8 +218,8 @@ def default_budget(ctx: Any) -> int:
 #: minute they run (docs/cost-control.md). The design states no figure, so each
 #: line names its own basis.
 MONTHLY_FLOOR_USD = (
-    ("swarm-api's two always-on instances, 1 vCPU / 1 GiB each (terraform/infra/main.tf, swarm-api's "
-     "min_instances)", 105),
+    ("swarm-api's two always-on instances, 2 vCPU / 2 GiB each (terraform/infra/main.tf, swarm-api's "
+     "min_instances)", 210),
     ("the GKE cluster's management fee, $0.10 an hour (docs/BUILD_PROMPT_V2.md, section 2.1)", 73),
     ("the HTTPS load balancer's forwarding rule, $0.025 an hour", 18),
 )
