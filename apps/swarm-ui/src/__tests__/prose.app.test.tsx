@@ -198,6 +198,12 @@ describe('what the prose meter counts', () => {
     expect(measure(root).words).toBe(3)
   })
 
+  it("does not count the content a page draws, a stage's lines of code", () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<h1>Talk</h1> <code data-prose-content>export function StepFilters({ steps }) {</code>'
+    expect(measure(root).words).toBe(1)
+  })
+
   it('counts a text link with an arrow as an action that should be a button, and a button not', () => {
     const root = document.createElement('div')
     root.innerHTML =
