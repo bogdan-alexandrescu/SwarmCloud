@@ -1,0 +1,142 @@
+[
+  {
+    "name": "brief-top",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "top",
+    "caption": "The first screen: what the plan does, why, its size, estimate and risk, and Approve, Edit, Reject with what each does (Edit opens the run).",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-graph",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "graph",
+    "caption": "The change map with plancontext.py picked: its two callers, the file it uses and its test are lit, the rest stays readable, and its one-line change shows below.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-risk",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "risk",
+    "caption": "The risk card in full: low, no invariant touched, blast radius, factors, mitigations and rollback.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-validation",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "validation",
+    "caption": "Validation to its end: the three red-first tests with what each proves, the QA checks after deploy with who and where, and Done when opened on the four requirements.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-steps",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "steps",
+    "caption": "The plan's one step with its five files, each marked modify or test.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-overlaps",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "overlaps",
+    "caption": "The three pull requests in the merge train that share files, with #3496 opened: the shared file, what this plan does to it and what the PR does.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-raw",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "raw",
+    "caption": "The folded raw step brief, opened at the bottom of the page.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-high-risk",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "high-risk",
+    "caption": "An invented high-risk plan on admission: the red risk level, the two invariants and the frozen contract stand out in the header.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-high-risk-map",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "high-risk",
+    "caption": "The same high-risk plan's map: arcs between changed files each in their own lane, test edges crossing them squarely, the frozen contract in a red dashed area, the risk card in red.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-multi-step",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "multi-step",
+    "caption": "An invented three-step plan: each changed file carries its step number in the map.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-multi-step-order",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "multi-step",
+    "caption": "The same plan's steps by stage: step 1 first, then steps 2 and 3 in parallel, each after step 1.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-decided",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "decided",
+    "caption": "After Approve: who approved and when, and the workflow it started, in place of the buttons.",
+    "viewport": "1440x900"
+  },
+  {
+    "name": "brief-top-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "top",
+    "caption": "The first screen on a phone: purpose, why, the four facts in a grid, and the three decisions side by side.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "brief-graph-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "graph",
+    "caption": "The change map on a phone with plancontext.py picked: callers above each area box, only changed files inside it, tests below, and the picked file's strip opened in the map under it.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "brief-risk-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "risk",
+    "caption": "The risk card on a phone.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "brief-validation-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "validation",
+    "caption": "Validation on a phone: tests, then QA after deploy, then Done when opened.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "brief-steps-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "steps",
+    "caption": "The step and its files on a phone.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "brief-overlaps-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "overlaps",
+    "caption": "The overlaps on a phone with #3496 opened.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "brief-raw-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "raw",
+    "caption": "The raw step brief opened on a phone.",
+    "viewport": "390x844"
+  },
+  {
+    "name": "brief-decided-390",
+    "screen": "automate/approvals (one plan, ?ap=brief)",
+    "state": "decided",
+    "caption": "After Approve on a phone: who, when and the workflow started.",
+    "viewport": "390x844"
+  }
+]

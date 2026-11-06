@@ -1,0 +1,1624 @@
+diff --git a/apps/swarm-ui/src/App.tsx b/apps/swarm-ui/src/App.tsx
+index 5dca046..f6256cb 100644
+--- a/apps/swarm-ui/src/App.tsx
++++ b/apps/swarm-ui/src/App.tsx
+@@ -1310,7 +1310,7 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
+   if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
+   // One inbox item rides on the page's address (`/automate/approvals/<id>`, paths.ts),
+   // and the inbox's kind filter beside it (AUT-15).
+-  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
++  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind', 'ap'] // MOCK-HOOK: ap
+   // GitHub access' Choose repositories tab (GA-MOVE-VIEWS): the page reads
+   // `view` off the bar. People and roles' Members' GitHub was the other; it is
+   // a fold of the workspace page's People tab now.
+diff --git a/apps/swarm-ui/src/ApprovalBrief.tsx b/apps/swarm-ui/src/ApprovalBrief.tsx
+new file mode 100644
+index 0000000..0a9d359
+--- /dev/null
++++ b/apps/swarm-ui/src/ApprovalBrief.tsx
+@@ -0,0 +1,897 @@
++// MOCK-HOOK FILE
++// THE PLAN AS A ONE-PAGE BRIEF (?ap=brief): what the plan does, why, how big
++// and how risky, and the decision, in the first screen; then where it changes
++// as a drawn graph, the risk and the validation side by side, the steps in
++// order, the overlaps, and the raw briefs folded. Reads ApprovalBriefData.ts.
++import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
++import { BRIEFS, type Brief, type BriefEdge, type BriefNode, type ChangeKind, type RiskLevel } from './ApprovalBriefData'
++import { BackToList, when } from './ApprovalDecision'
++import { InfoTip } from './People'
++import { InApp } from './Schedules'
++import { Screen, timeAgo } from './Shell'
++import { useNow } from './useNow'
++import './styles/automate-approvals.css'
++import './styles/approval-brief.css'
++
++const base = (p: string) => p.slice(p.lastIndexOf('/') + 1)
++const dir = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/') + 1) : '')
++const RISK_WORD: Record<RiskLevel, string> = { low: 'Low risk', medium: 'Medium risk', high: 'High risk' }
++const KIND_WORD: Record<ChangeKind, string> = { add: 'add', modify: 'modify', delete: 'delete', test: 'test' }
++
++function sizeOf(b: Brief): { word: string; detail: string } {
++  const files = b.changes.length
++  const word = files <= 6 && b.steps.length === 1 ? 'Small' : files <= 15 ? 'Medium' : 'Large'
++  return { word, detail: `${b.steps.length} ${b.steps.length === 1 ? 'step' : 'steps'} · ${files} files` }
++}
++
++/* ---- the header: purpose, why, size, risk, decision -------------------- */
++
++type Decided = { by: string; at: string } | null
++
++function Head({ b, decided, onApprove, go }: { b: Brief; decided: Decided; onApprove: () => void; go: (to: string) => void }) {
++  const now = useNow()
++  const size = sizeOf(b)
++  const [rejecting, setRejecting] = useState(false)
++  const [reason, setReason] = useState('')
++  const r = b.risk
++  return (
++    <section className="ab-head" data-risk={r.level} aria-label="The plan in brief">
++      <p className="ab-meta">
++        <span className="ad-chip is-kind">run plan</span>
++        <span className={`ad-chip ${decided === null ? 'is-warn' : 'is-ok'}`}>{decided === null ? 'waiting on you' : 'approved'}</span>
++        <a className="ab-issue" href={b.issue.url} target="_blank" rel="noreferrer">
++          #{b.issue.number}
++        </a>
++        <span className="ab-dim" title={b.askedAt}>
++          asked {timeAgo(b.askedAt, now)}
++        </span>
++      </p>
++      <h2 className="ab-purpose">{b.purpose}</h2>
++      <p className="ab-why">
++        <b>Why</b>
++        {b.why.evidence.length > 0 && <InfoTip about="the evidence" tip={b.why.evidence.join(' · ')} />}
++        <span>{b.why.line}</span>
++      </p>
++      <ul className="ab-facts" aria-label="Size, estimate and risk">
++        <li>
++          <span className="ab-fk">Size</span>
++          <b>{size.word}</b>
++          <span className="ab-dim">{size.detail}</span>
++        </li>
++        <li>
++          <span className="ab-fk">Estimate</span>
++          <b>{b.estimateHours} h</b>
++          <span className="ab-dim">agent time</span>
++        </li>
++        <li className={`ab-risk-f is-${r.level}`}>
++          <span className="ab-fk">Risk</span>
++          <b>
++            <RiskMeter level={r.level} /> {RISK_WORD[r.level]}
++          </b>
++          <span className="ab-dim">{r.invariants.length === 0 ? 'no invariant touched' : `${r.invariants.length} invariant${r.invariants.length === 1 ? '' : 's'} touched`}</span>
++        </li>
++        {b.overlaps.length > 0 && (
++          <li>
++            <span className="ab-fk">Overlaps</span>
++            <b>
++              {b.overlaps.length} {b.overlaps.length === 1 ? 'PR' : 'PRs'}
++            </b>
++            <span className="ab-dim">in the merge train</span>
++          </li>
++        )}
++      </ul>
++      {(r.frozen.length > 0 || (r.level === 'high' && r.invariants.length > 0)) && (
++        <p className="ab-alarm" role="note">
++          <b>Touches</b>
++          {r.invariants.map((i) => (
++            <span key={i.n} className="ab-inv is-hot" title={i.words}>
++              Invariant {i.n}
++            </span>
++          ))}
++          {r.frozen.map((f) => (
++            <span key={f} className="ab-inv is-frozen" title={`${f} is frozen: change it only through a contract change request`}>
++              Frozen contract · {base(f)}
++            </span>
++          ))}
++        </p>
++      )}
++      {decided === null ? (
++        <div className="ab-decide">
++          <div className="ab-act">
++            <button type="button" className="c-btn is-primary is-lg" onClick={onApprove}>
++              Approve
++            </button>
++            <span>Starts {b.steps.length === 1 ? 'its step' : `its ${b.steps.length} steps`}</span>
++          </div>
++          <div className="ab-act">
++            <InApp go={go} to={`work/runs?run=${encodeURIComponent(b.runId)}`} className="c-btn is-lg">
++              Edit
++            </InApp>
++            <span>Opens the run</span>
++          </div>
++          <div className="ab-act">
++            <button type="button" className="c-btn is-danger is-lg" aria-expanded={rejecting} onClick={() => setRejecting((v) => !v)}>
++              Reject
++            </button>
++            <span>Ends the run, with a reason</span>
++          </div>
++          <span className="ab-dim ab-exp" title={b.expiresAt}>
++            Expires {when(b.expiresAt)}
++          </span>
++          {rejecting && (
++            <label className="c-field ab-reason">
++              <span className="c-lbl">Reason</span>
++              <textarea className="c-inp" rows={2} value={reason} placeholder="Say why it is rejected" onChange={(e) => setReason(e.target.value)} />
++            </label>
++          )}
++        </div>
++      ) : (
++        <div className="ab-done" role="status" data-testid="ab-decided">
++          <svg viewBox="0 0 24 24" aria-hidden="true" className="ab-done-ic">
++            <path d="M5 12.5l4.5 4.5L19 7.5" />
++          </svg>
++          <div className="ab-done-t">
++            <b>Approved by {decided.by}</b>
++            <span className="ab-dim" title={decided.at}>
++              {when(decided.at)} · {timeAgo(decided.at, now)}
++            </span>
++          </div>
++          <div className="ab-done-w">
++            <span className="ab-fk">Started</span>
++            <InApp go={go} to={`work/runs?run=${encodeURIComponent(b.runId)}`} className="mono">
++              {b.workflowId}
++            </InApp>
++            <span className="ab-dim">
++              step 1 of {b.steps.length} · {b.steps[0]?.id} · starting
++            </span>
++          </div>
++        </div>
++      )}
++    </section>
++  )
++}
++
++function RiskMeter({ level }: { level: RiskLevel }) {
++  const n = level === 'low' ? 1 : level === 'medium' ? 2 : 3
++  return (
++    <span className={`ab-meter is-${level}`} aria-hidden="true">
++      {[1, 2, 3].map((i) => (
++        <i key={i} data-on={i <= n ? 'y' : 'n'} />
++      ))}
++    </span>
++  )
++}
++
++/* ---- the change map ------------------------------------------------------ */
++
++interface Placed extends BriefNode {
++  x: number
++  y: number
++  w: number
++  h: number
++}
++interface Group {
++  area: string
++  x: number
++  y: number
++  w: number
++  h: number
++}
++interface Layout {
++  width: number
++  height: number
++  nodes: Placed[]
++  groups: Group[]
++  tall: boolean
++}
++
++const NH = 50
++const VG = 12
++const AH = 26
++const AP = 10
++
++/** How far each arc between two changed files bulges right: a longer span rides further out, so no two arcs share a lane. */
++function arcLanes(nodes: BriefNode[], edges: BriefEdge[]): Map<number, number> {
++  const changed = new Set(nodes.filter((n) => n.kind === 'changed').map((n) => n.id))
++  const order = nodes.filter((n) => n.kind === 'changed').sort((a, b) => (a.step ?? 0) - (b.step ?? 0)).map((n) => n.id)
++  const arcs = edges
++    .map((e, i) => ({ i, lo: Math.min(order.indexOf(e.from), order.indexOf(e.to)), hi: Math.max(order.indexOf(e.from), order.indexOf(e.to)), ok: changed.has(e.from) && changed.has(e.to) }))
++    .filter((x) => x.ok)
++    .sort((x, y) => x.hi - x.lo - (y.hi - y.lo))
++  const lanes = new Map<number, number>()
++  const used: { lo: number; hi: number }[][] = []
++  for (const a of arcs) {
++    let lane = 0
++    while ((used[lane] ?? []).some((u) => u.lo <= a.hi && a.lo <= u.hi)) lane++
++    ;(used[lane] ??= []).push(a)
++    lanes.set(a.i, lane)
++  }
++  return lanes
++}
++
++const ARC0 = 20
++const ARCW = 24
++
++/** Changed files grouped by area in the middle, callers to the left, tests to the right; one column on a phone. */
++function layout(nodes: BriefNode[], edges: BriefEdge[], width: number, gapAfter: string | null, gapH: number): Layout {
++  const changed = nodes.filter((n) => n.kind === 'changed').sort((a, b) => (a.step ?? 0) - (b.step ?? 0))
++  const areas: string[] = []
++  for (const n of changed) if (!areas.includes(n.area ?? '')) areas.push(n.area ?? '')
++  const neighbours = (id: string) => edges.flatMap((e) => (e.from === id ? [e.to] : e.to === id ? [e.from] : []))
++  const tall = width < 640
++  if (tall) return tallLayout(nodes, changed, areas, neighbours, width, gapAfter, gapH)
++  const pad = 2
++  const gut = Math.max(84, Math.round(width * 0.09))
++  // Arcs between changed files ride lanes to the right of their column: the test column moves over to make room.
++  const lanes = Math.max(-1, ...arcLanes(nodes, edges).values()) + 1
++  const gutR = gut + (lanes === 0 ? 0 : ARC0 + lanes * ARCW)
++  const col = (width - gut - gutR - 2 * pad) / 3
++  const xs = { caller: pad, changed: pad + col + gut, test: pad + 2 * col + gut + gutR }
++  const placed: Placed[] = []
++  const groups: Group[] = []
++  let y = 0
++  for (const area of areas) {
++    const inArea = changed.filter((n) => (n.area ?? '') === area)
++    const h = AH + inArea.length * NH + (inArea.length - 1) * VG + AP
++    groups.push({ area, x: xs.changed, y, w: col, h })
++    inArea.forEach((n, i) => placed.push({ ...n, x: xs.changed + AP, y: y + AH + i * (NH + VG), w: col - 2 * AP, h: NH }))
++    y += h + VG + 4
++  }
++  const side = (kind: 'caller' | 'test', x: number) => {
++    const want = nodes
++      .filter((n) => n.kind === kind)
++      .map((n) => {
++        const ys = neighbours(n.id).flatMap((id) => placed.filter((p) => p.id === id).map((p) => p.y + p.h / 2))
++        return { n, want: ys.length === 0 ? 0 : ys.reduce((a, b) => a + b, 0) / ys.length - NH / 2 }
++      })
++      .sort((a, b) => a.want - b.want)
++    let floor = 0
++    for (const { n, want: w } of want) {
++      const top = Math.max(w, floor)
++      placed.push({ ...n, x, y: top, w: col, h: NH })
++      floor = top + NH + VG
++    }
++  }
++  side('caller', xs.caller)
++  side('test', xs.test)
++  const height = Math.max(...placed.map((p) => p.y + p.h), ...groups.map((g) => g.y + g.h)) + 4
++  return { width, height, nodes: placed, groups, tall: false }
++}
++
++const TH = 46
++const TL = 22
++
++/**
++ * One column, area by area: the callers of the area's changed files, then the
++ * area's box holding only its changed files, then their tests, so nothing
++ * outside a box reads as part of it. Edges run down a gutter on the right. The
++ * picked node opens room under itself for its strip.
++ */
++function tallLayout(nodes: BriefNode[], changed: BriefNode[], areas: string[], neighbours: (id: string) => string[], width: number, gapAfter: string | null, gapH: number): Layout {
++  const gutter = 54
++  const w = width - gutter - 2
++  const seen = new Set<string>()
++  const placed: Placed[] = []
++  const groups: Group[] = []
++  let y = 0
++  const put = (n: BriefNode, x: number, nw: number) => {
++    seen.add(n.id)
++    placed.push({ ...n, x, y, w: nw, h: TH })
++    y += TH + 10
++    if (n.id === gapAfter) y += gapH + 10
++  }
++  const near = (ids: string[], kind: 'caller' | 'test') =>
++    ids.flatMap((id) => neighbours(id)).flatMap((id) => nodes.filter((n) => n.id === id && n.kind === kind && !seen.has(n.id))).filter((n, i, all) => all.findIndex((m) => m.id === n.id) === i)
++  for (const area of areas) {
++    const inArea = changed.filter((n) => (n.area ?? '') === area)
++    const ids = inArea.map((n) => n.id)
++    for (const n of near(ids, 'caller')) put(n, 2, w)
++    const top = y
++    y += TL + 2
++    for (const n of inArea) put(n, 10, w - 16)
++    groups.push({ area, x: 2, y: top, w, h: y - top - 2 })
++    y += 8
++    for (const n of near(ids, 'test')) put(n, 2, w)
++  }
++  for (const n of nodes) if (!seen.has(n.id)) put(n, 2, w)
++  return { width, height: y, nodes: placed, groups, tall: true }
++}
++
++const EDGE_WORD: Record<string, string> = { calls: 'calls', imports: 'imports', tests: 'tests' }
++
++function wideEdge(a: Placed, b: Placed, kind: string, lane: number | undefined, arcRoom: number): { d: string; lx: number; ly: number; rot: boolean } {
++  // Draw left to right: a caller into a changed file, a changed file out to its test.
++  if (kind === 'tests') [a, b] = [b, a]
++  // Arcs attach below a changed file's middle and its test edges above, so the two never leave from one point.
++  const off = arcRoom === 0 ? 0 : 9
++  const ay = a.y + a.h / 2 + (lane !== undefined ? off : kind === 'tests' ? -off : 0)
++  const by = b.y + b.h / 2 + (lane !== undefined ? off : 0)
++  if (lane !== undefined) {
++    // Two changed files: a square arc in its own lane right of the column, its label along the lane.
++    const x = Math.max(a.x + a.w, b.x + b.w)
++    const lx = x + ARC0 + lane * ARCW
++    const s = by > ay ? 1 : -1
++    return { d: `M ${x} ${ay} H ${lx - 6} Q ${lx} ${ay} ${lx} ${ay + 6 * s} V ${by - 6 * s} Q ${lx} ${by} ${lx - 6} ${by} H ${x}`, lx, ly: (ay + by) / 2, rot: true }
++  }
++  const x1 = a.x + a.w
++  const x2 = b.x
++  if (kind === 'tests') {
++    // Out straight across the arc lanes first, then bend: any crossing is square, and the label sits by its test.
++    const xs = x1 + arcRoom + 6
++    const k = Math.min(48, (x2 - xs) / 2)
++    return { d: `M ${x1} ${ay} H ${xs} C ${xs + k} ${ay}, ${xs + k} ${by}, ${xs + 2 * k} ${by} H ${x2}`, lx: x2 - 24, ly: by, rot: false }
++  }
++  const mx = (x1 + x2) / 2
++  return { d: `M ${x1} ${ay} C ${mx} ${ay}, ${mx} ${by}, ${x2} ${by}`, lx: mx, ly: (ay + by) / 2, rot: false }
++}
++
++function tallEdge(a: Placed, b: Placed, lane: number, width: number): { d: string; lx: number; ly: number; rot: boolean } {
++  const ay = a.y + a.h / 2
++  const by = b.y + b.h / 2
++  const x0 = a.x + a.w
++  const x1 = b.x + b.w
++  const lx = width - 46 + Math.min(lane, 3) * 12
++  return { d: `M ${x0} ${ay} H ${lx - 6} Q ${lx} ${ay} ${lx} ${ay + (by > ay ? 6 : -6)} V ${by + (by > ay ? -6 : 6)} Q ${lx} ${by} ${lx - 6} ${by} H ${x1}`, lx, ly: (ay + by) / 2, rot: true }
++}
++
++function trim(s: string, px: number, perChar: number): string {
++  const n = Math.max(4, Math.floor(px / perChar))
++  return s.length <= n ? s : `${s.slice(0, n - 1)}…`
++}
++
++function ChangeMap({ b, selected, onSelect }: { b: Brief; selected: string | null; onSelect: (id: string | null) => void }) {
++  const box = useRef<HTMLDivElement>(null)
++  const [width, setWidth] = useState(960)
++  const pickRef = useRef<HTMLDivElement>(null)
++  const [pickH, setPickH] = useState(0)
++  useLayoutEffect(() => {
++    const el = box.current
++    if (el === null) return
++    setWidth(Math.round(el.getBoundingClientRect().width))
++    const ro = new ResizeObserver(([e]) => e && setWidth(Math.round(e.contentRect.width)))
++    ro.observe(el)
++    return () => ro.disconnect()
++  }, [])
++  const { nodes, edges } = b.graph
++  const tallNow = width < 640
++  const L = useMemo(() => layout(nodes, edges, width, tallNow ? selected : null, pickH), [nodes, edges, width, tallNow, selected, pickH])
++  // On a phone the picked node's strip opens in the map under it, so it covers nothing.
++  useLayoutEffect(() => {
++    const el = pickRef.current
++    if (el === null) {
++      setPickH(0)
++      return
++    }
++    setPickH(Math.round(el.getBoundingClientRect().height))
++    const ro = new ResizeObserver(([e]) => e && setPickH(Math.round(e.borderBoxSize?.[0]?.blockSize ?? e.contentRect.height)))
++    ro.observe(el)
++    return () => ro.disconnect()
++  }, [selected, tallNow])
++  const arcs = useMemo(() => (tallNow ? new Map<number, number>() : arcLanes(nodes, edges)), [nodes, edges, tallNow])
++  const arcRoom = arcs.size === 0 ? 0 : ARC0 + Math.max(...arcs.values()) * ARCW
++  const byId = (id: string) => L.nodes.find((n) => n.id === id)
++  const lit = new Set<string>()
++  if (selected !== null) {
++    lit.add(selected)
++    for (const e of edges) {
++      if (e.from === selected) lit.add(e.to)
++      if (e.to === selected) lit.add(e.from)
++    }
++  }
++  const multi = b.steps.length > 1
++  const sel = selected === null ? null : (byId(selected) ?? null)
++  // On a phone each edge runs down its own lane of the gutter: edges whose
++  // spans overlap never share one, so neither the lines nor the labels meet.
++  const tallLanes = new Map<number, number>()
++  if (L.tall) {
++    const spans = edges
++      .map((e, i) => {
++        const a = byId(e.from)
++        const c = byId(e.to)
++        return a && c ? { i, lo: Math.min(a.y, c.y), hi: Math.max(a.y, c.y) + TH, pref: e.kind === 'tests' ? 0 : 1 } : null
++      })
++      .filter((x): x is { i: number; lo: number; hi: number; pref: number } => x !== null)
++      .sort((x, y) => x.pref - y.pref || x.hi - x.lo - (y.hi - y.lo))
++    const used: { lo: number; hi: number }[][] = []
++    for (const sp of spans) {
++      let lane = 0
++      while ((used[lane] ?? []).some((u) => u.lo < sp.hi && sp.lo < u.hi)) lane++
++      ;(used[lane] ??= []).push(sp)
++      tallLanes.set(sp.i, lane)
++    }
++  }
++  const drawn = edges.flatMap((e, i) => {
++    const a = byId(e.from)
++    const c = byId(e.to)
++    if (!a || !c) return []
++    const lane = tallLanes.get(i) ?? 0
++    const g = L.tall ? tallEdge(a, c, lane, L.width) : wideEdge(a, c, e.kind, arcs.get(i), arcRoom)
++    const on = selected !== null && (e.from === selected || e.to === selected)
++    return [{ e, g, on, key: `${e.from}-${e.to}` }]
++  })
++  const callers = sel === null ? [] : edges.filter((e) => e.to === sel.id && e.kind !== 'tests').map((e) => byId(e.from)).filter((n): n is Placed => n !== undefined)
++  const uses = sel === null ? [] : edges.filter((e) => e.from === sel.id && e.kind !== 'tests').map((e) => byId(e.to)).filter((n): n is Placed => n !== undefined)
++  const tests = sel === null ? [] : edges.filter((e) => (e.to === sel.id && e.kind === 'tests') || (e.from === sel.id && e.kind === 'tests')).map((e) => byId(e.from === sel.id ? e.to : e.from)).filter((n): n is Placed => n !== undefined)
++  const per = L.tall ? 7 : 7.4
++  return (
++    <div className={`ab-map${L.tall ? ' is-tall' : ''}`} ref={box}>
++      {!L.tall && (
++        <div className="ab-cols" aria-hidden="true">
++          <span>Callers</span>
++          <span>Changes</span>
++          <span>Tests</span>
++        </div>
++      )}
++      <svg className={`ab-svg${selected === null ? '' : ' has-sel'}`} width={L.width} height={L.height + 4} viewBox={`0 -2 ${L.width} ${L.height + 4}`} role="img" aria-label={`Change map: ${nodes.filter((n) => n.kind === 'changed').length} changed files, their callers and tests`}>
++        <defs>
++          <marker id="ab-arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
++            <path d="M0 0 L8 4 L0 8 z" className="ab-arrhead" />
++          </marker>
++          <marker id="ab-arr-on" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
++            <path d="M0 0 L8 4 L0 8 z" className="ab-arrhead is-on" />
++          </marker>
++        </defs>
++        {L.groups.map((g) => (
++          <g key={g.area} className={`ab-area${g.area === 'Frozen contract' ? ' is-frozen' : ''}`}>
++            <rect x={g.x} y={g.y} width={g.w} height={g.h} rx={10} />
++            <text x={g.x + (L.tall ? 8 : AP)} y={g.y + 17}>
++              {g.area}
++            </text>
++          </g>
++        ))}
++        {drawn.map(({ e, g, on, key }) => (
++          <path key={key} d={g.d} className={`ab-edge is-${e.kind}${on ? ' is-on' : selected !== null ? ' is-off' : ''}`} markerEnd={e.kind === 'tests' && !L.tall ? undefined : `url(#${on ? 'ab-arr-on' : 'ab-arr'})`} markerStart={e.kind === 'tests' && !L.tall ? `url(#${on ? 'ab-arr-on' : 'ab-arr'})` : undefined} />
++        ))}
++        {L.nodes.map((n) => {
++          const isSel = n.id === selected
++          const dim = selected !== null && !lit.has(n.id)
++          return (
++            <g
++              key={n.id}
++              className={`ab-node is-${n.kind}${n.area === 'Frozen contract' ? ' is-frozen' : ''}${isSel ? ' is-sel' : ''}${lit.has(n.id) && !isSel ? ' is-lit' : ''}${dim ? ' is-dim' : ''}`}
++              transform={`translate(${n.x} ${n.y})`}
++              role="button"
++              tabIndex={0}
++              aria-pressed={isSel}
++              aria-label={`${base(n.file)}, ${n.kind}: ${n.what}`}
++              onClick={() => onSelect(isSel ? null : n.id)}
++              onKeyDown={(ev) => {
++                if (ev.key === 'Enter' || ev.key === ' ') {
++                  ev.preventDefault()
++                  onSelect(isSel ? null : n.id)
++                }
++              }}
++            >
++              <title>{`${n.file}\n${n.what}`}</title>
++              <rect width={n.w} height={n.h} rx={8} />
++              {multi && n.step !== undefined && (
++                <g className="ab-badge" transform={`translate(${n.w - 14} 14)`}>
++                  <circle r={10} />
++                  <text y={4}>{n.step}</text>
++                </g>
++              )}
++              <text className="ab-n-f" x={12} y={20}>
++                {trim(base(n.file), n.w - (multi ? 44 : 24), per)}
++              </text>
++              <text className="ab-n-s" x={12} y={37}>
++                {trim(n.kind === 'changed' ? n.symbol : `${n.symbol}`, n.w - 24, 6.6)}
++              </text>
++            </g>
++          )
++        })}
++        {drawn.map(({ e, g, on, key }) => (
++          <text key={`l-${key}`} x={g.lx} y={g.ly + 4} className={`ab-elabel${on ? ' is-on' : selected !== null ? ' is-off' : ''}`} transform={g.rot ? `rotate(-90 ${g.lx} ${g.ly})` : undefined}>
++            {EDGE_WORD[e.kind]}
++          </text>
++        ))}
++      </svg>
++      {sel !== null ? (
++        <div className="ab-pick" aria-live="polite" data-testid="ab-pick" ref={pickRef} style={L.tall && sel !== null ? { top: sel.y + sel.h + 12, width: L.width - 58 } : undefined}>
++          <p className="ab-pick-h">
++            <span className={`ab-kind is-${sel.kind}`}>{sel.kind === 'changed' ? 'changes' : sel.kind === 'caller' ? 'caller' : sel.added ? 'new test' : 'test'}</span>
++            <b className="mono">{base(sel.file)}</b>
++            <span className="ab-dim mono">{dir(sel.file)}</span>
++            <button type="button" className="c-btn is-ghost is-sm ab-pick-x" aria-label="Clear the selection" onClick={() => onSelect(null)}>
++              ×
++            </button>
++          </p>
++          <p className="ab-pick-w">{sel.what}</p>
++          <dl className="ab-pick-r">
++            {callers.length > 0 && (
++              <div>
++                <dt>{sel.kind === 'changed' ? 'Called by' : 'Uses'}</dt>
++                <dd>{callers.map((n) => `${base(n.file)} · ${n.symbol}`).join(', ')}</dd>
++              </div>
++            )}
++            {uses.length > 0 && (
++              <div>
++                <dt>{sel.kind === 'caller' ? 'Reaches' : 'Uses'}</dt>
++                <dd>{uses.map((n) => `${base(n.file)} · ${n.symbol}`).join(', ')}</dd>
++              </div>
++            )}
++            {tests.length > 0 && (
++              <div>
++                <dt>{sel.kind === 'test' ? 'Tests' : 'Tested by'}</dt>
++                <dd>{tests.map((n) => base(n.file)).join(', ')}</dd>
++              </div>
++            )}
++          </dl>
++        </div>
++      ) : null}
++    </div>
++  )
++}
++
++function Legend({ multi }: { multi: boolean }) {
++  return (
++    <ul className="ab-legend" aria-label="Legend">
++      <li>
++        <i className="is-changed" /> changes
++      </li>
++      <li>
++        <i className="is-caller" /> caller
++      </li>
++      <li>
++        <i className="is-test" /> test
++      </li>
++      {multi && (
++        <li>
++          <i className="is-step">1</i> step
++        </li>
++      )}
++    </ul>
++  )
++}
++
++/* ---- the cards ----------------------------------------------------------- */
++
++function Card({ id, title, aside, tone, children }: { id: string; title: string; aside?: ReactNode; tone?: string; children: ReactNode }) {
++  return (
++    <section className={`ab-card${tone ? ` is-${tone}` : ''}`} id={id} aria-labelledby={`${id}-h`}>
++      <header className="ab-card-h">
++        <h3 id={`${id}-h`}>{title}</h3>
++        {aside}
++      </header>
++      {children}
++    </section>
++  )
++}
++
++function Changes({ b, selected, onSelect }: { b: Brief; selected: string | null; onSelect: (id: string | null) => void }) {
++  const nodeOf = (path: string) => b.graph.nodes.find((n) => n.file === path)
++  return (
++    <ul className="ab-changes" aria-label="Files the plan changes">
++      {b.changes.map((c) => {
++        const n = nodeOf(c.path)
++        const on = n !== undefined && n.id === selected
++        return (
++          <li key={c.path} data-on={on ? 'y' : 'n'}>
++            <span className={`ab-ck is-${c.kind}`}>{KIND_WORD[c.kind]}</span>
++            <button type="button" className="ab-cfile mono" title={c.path} disabled={n === undefined} onClick={() => n && onSelect(on ? null : n.id)}>
++              <span className="ab-dim">{dir(c.path)}</span>
++              {base(c.path)}
++            </button>
++            <span className="ab-cwhat">{c.what}</span>
++          </li>
++        )
++      })}
++    </ul>
++  )
++}
++
++function Risk({ b }: { b: Brief }) {
++  const r = b.risk
++  return (
++    <Card id="ab-risk" title="Risk" tone={r.level} aside={<span className={`ab-lvl is-${r.level}`}><RiskMeter level={r.level} /> {RISK_WORD[r.level]}</span>}>
++      <dl className="ab-kv">
++        <div>
++          <dt>Blast radius</dt>
++          <dd>{r.blast}</dd>
++        </div>
++        <div>
++          <dt>Invariants</dt>
++          <dd>
++            {r.invariants.length === 0 && r.frozen.length === 0 ? (
++              <span className="ab-ok">None of the ten touched</span>
++            ) : (
++              <ul className="ab-invs">
++                {r.invariants.map((i) => (
++                  <li key={i.n} className={r.level === 'high' ? 'is-hot' : ''}>
++                    <b>#{i.n}</b> {i.words}
++                  </li>
++                ))}
++                {r.frozen.map((f) => (
++                  <li key={f} className="is-frozen">
++                    <b>Frozen</b> <span className="mono">{f}</span>
++                  </li>
++                ))}
++              </ul>
++            )}
++          </dd>
++        </div>
++        {r.factors.length > 0 && (
++          <div>
++            <dt>Factors</dt>
++            <dd>
++              <ul className="ab-dots">
++                {r.factors.map((f) => (
++                  <li key={f}>{f}</li>
++                ))}
++              </ul>
++            </dd>
++          </div>
++        )}
++        {r.mitigations.length > 0 && (
++          <div>
++            <dt>Mitigations</dt>
++            <dd>
++              <ul className="ab-ticks">
++                {r.mitigations.map((m) => (
++                  <li key={m}>{m}</li>
++                ))}
++              </ul>
++            </dd>
++          </div>
++        )}
++        <div>
++          <dt>Rollback</dt>
++          <dd>{r.rollback}</dd>
++        </div>
++      </dl>
++    </Card>
++  )
++}
++
++function Validation({ b }: { b: Brief }) {
++  const v = b.validation
++  const tid = (i: number) => `T${i + 1}`
++  return (
++    <Card id="ab-val" title="Validation" aside={<span className="ab-dim">{v.tests.length} red-first tests · {v.qa.length} QA checks</span>}>
++      {v.tests.length > 0 && (
++        <>
++          <h4 className="ab-sub">
++            <span className="ab-num">1</span> Tests
++            <InfoTip about="red-first tests" tip="Each test is written failing first, then the change makes it pass." />
++          </h4>
++          <ol className="ab-tests">
++            {v.tests.map((t, i) => (
++              <li key={`${t.file}-${i}`}>
++                <span className="ab-tid">{tid(i)}</span>
++                <div>
++                  <span className="ab-tw">{t.proves}</span>
++                  <span className="ab-dim mono ab-tf" title={t.file}>
++                    {base(t.file)}
++                  </span>
++                </div>
++                <span className="ab-reqs">
++                  {t.req.map((r) => (
++                    <span key={r} className="ab-req" title={b.requirements.find((q) => q.id === r)?.words}>
++                      {r}
++                    </span>
++                  ))}
++                </span>
++              </li>
++            ))}
++          </ol>
++        </>
++      )}
++      {v.qa.length > 0 && (
++        <>
++          <h4 className="ab-sub">
++            <span className="ab-num">2</span> QA after deploy
++            <InfoTip about="QA after deploy" tip="Run by the named person once the step has deployed; each check is ticked on the run's page, not here." />
++          </h4>
++          <ol className="ab-qa">
++            {v.qa.map((q, i) => (
++              <li key={q.check}>
++                <span className="ab-qid">Q{i + 1}</span>
++                <div>
++                  <span className="ab-tw">{q.check}</span>
++                  <span className="ab-dim">
++                    {q.who} · {q.where}
++                  </span>
++                </div>
++              </li>
++            ))}
++          </ol>
++        </>
++      )}
++      {b.requirements.length > 0 && (
++        <details className="ab-reqlist">
++          <summary>
++            Done when · {b.requirements.length} requirements
++          </summary>
++          <ul>
++            {b.requirements.map((r) => (
++              <li key={r.id}>
++                <span className="ab-req">{r.id}</span> {r.words} <span className="ab-dim">· proved by {r.proofs.join(', ')}</span>
++              </li>
++            ))}
++          </ul>
++        </details>
++      )}
++    </Card>
++  )
++}
++
++/** Steps by stage: a stage holds every step whose dependencies ran in earlier stages. */
++function stages(b: Brief): string[][] {
++  const left = b.steps.map((s) => s.id)
++  const done = new Set<string>()
++  const out: string[][] = []
++  while (left.length > 0) {
++    const ready = left.filter((id) => (b.steps.find((s) => s.id === id)?.after ?? []).every((d) => done.has(d)))
++    const stage = ready.length > 0 ? ready : [left[0]!]
++    out.push(stage)
++    for (const id of stage) {
++      done.add(id)
++      left.splice(left.indexOf(id), 1)
++    }
++  }
++  return out
++}
++
++function Steps({ b }: { b: Brief }) {
++  const st = stages(b)
++  const num = (id: string) => b.steps.findIndex((s) => s.id === id) + 1
++  const multi = b.steps.length > 1
++  return (
++    <Card id="ab-steps" title="Steps" aside={<span className="ab-dim">{b.steps.length === 1 ? 'one step' : `${b.steps.length} steps in ${st.length} stages`} · {b.estimateHours} h</span>}>
++      <ol className="ab-stages">
++        {st.map((stage, i) => (
++          <li key={stage.join()} className="ab-stage">
++            {multi && (
++              <p className="ab-stage-h">
++                Stage {i + 1}
++                {stage.length > 1 && <span className="ab-par">in parallel</span>}
++              </p>
++            )}
++            <div className="ab-stage-row">
++              {stage.map((id) => {
++                const s = b.steps.find((x) => x.id === id)!
++                return (
++                  <article key={id} className="ab-step">
++                    <p className="ab-step-h">
++                      <span className="ab-stepn">{num(id)}</span>
++                      <b>{s.title}</b>
++                      <span className="ab-dim ab-step-hr">{s.hours} h</span>
++                    </p>
++                    <p className="ab-step-m">
++                      <span className="mono ab-dim">{s.id}</span>
++                      {s.after.length > 0 && <span className="ab-after">after {s.after.map((d) => `step ${num(d)}`).join(', ')}</span>}
++                    </p>
++                    <ul className="ab-sfiles">
++                      {s.files.map((f) => {
++                        const c = b.changes.find((x) => x.path === f)
++                        return (
++                          <li key={f} title={f}>
++                            {c && <span className={`ab-ck is-${c.kind}`}>{KIND_WORD[c.kind]}</span>}
++                            <span className="mono">{base(f)}</span>
++                          </li>
++                        )
++                      })}
++                    </ul>
++                  </article>
++                )
++              })}
++            </div>
++          </li>
++        ))}
++      </ol>
++    </Card>
++  )
++}
++
++function Overlaps({ b }: { b: Brief }) {
++  const [open, setOpen] = useState<number | null>(null)
++  if (b.overlaps.length === 0) return null
++  return (
++    <Card id="ab-over" title="Overlaps" aside={<span className="ab-dim">{b.overlaps.length} pull requests in the merge train share files</span>}>
++      <ul className="ab-overs">
++        {b.overlaps.map((o) => {
++          const on = open === o.pr
++          return (
++            <li key={o.pr} data-on={on ? 'y' : 'n'}>
++              <a className="ab-pr" href={`https://github.com/saga-xyz/swarm/pull/${o.pr}`} target="_blank" rel="noreferrer">
++                #{o.pr}
++              </a>
++              <div className="ab-over-t">
++                <b>{o.title}</b>
++                <span className="ab-dim">{o.files.map(base).join(', ')}</span>
++              </div>
++              <span className="ab-where">{o.where}</span>
++              <span className="ab-effect">{o.effect}</span>
++              <button type="button" className="c-btn is-ghost is-sm ab-over-x" aria-expanded={on} aria-label={`${on ? 'Hide' : 'Show'} the shared files with #${o.pr}`} onClick={() => setOpen(on ? null : o.pr)}>
++                {on ? 'Hide' : 'Compare'}
++              </button>
++              {on && (
++                <dl className="ab-over-d">
++                  {o.files.map((f) => (
++                    <div key={f}>
++                      <dt className="mono">{f}</dt>
++                      <dd>
++                        <span className="ab-fk">This plan</span> {b.changes.find((c) => c.path === f)?.what ?? 'reads it'}
++                      </dd>
++                      {o.theirs !== undefined && (
++                        <dd>
++                          <span className="ab-fk">#{o.pr}</span> {o.theirs}
++                        </dd>
++                      )}
++                    </div>
++                  ))}
++                </dl>
++              )}
++            </li>
++          )
++        })}
++      </ul>
++    </Card>
++  )
++}
++
++function Raw({ b }: { b: Brief }) {
++  return (
++    <details className="ab-raw" id="ab-raw">
++      <summary>
++        Raw step briefs <span className="ab-dim">· {b.steps.length}</span>
++        <InfoTip about="raw step briefs" tip="Each step's brief as the planner wrote it, unedited." />
++      </summary>
++      {b.steps.map((s, i) => (
++        <section key={s.id} className="ab-raw-s">
++          <h4>
++            {i + 1}. <span className="mono">{s.id}</span>
++          </h4>
++          <pre>{s.prompt}</pre>
++        </section>
++      ))}
++    </details>
++  )
++}
++
++export function ApprovalBrief({ b, go }: { b: Brief; go: (to: string) => void }) {
++  const [selected, setSelected] = useState<string | null>(null)
++  const [decided, setDecided] = useState<Decided>(null)
++  const multi = b.steps.length > 1
++  return (
++    <div className="ab-page" data-testid="ab-page">
++      <Head b={b} decided={decided} go={go} onApprove={() => setDecided({ by: 'you (alice@example.com)', at: new Date().toISOString() })} />
++      <Card
++        id="ab-map"
++        title="Where it changes"
++        aside={
++          <>
++            <Legend multi={multi} />
++            <InfoTip about="the change map" tip="From the code graph: the files the plan changes, grouped by area, what calls them and what tests them. Pick a file to light its neighbours." end />
++          </>
++        }
++      >
++        <ChangeMap b={b} selected={selected} onSelect={setSelected} />
++        <Changes b={b} selected={selected} onSelect={setSelected} />
++      </Card>
++      <div className="ab-pair">
++        <Risk b={b} />
++        <Validation b={b} />
++      </div>
++      <Steps b={b} />
++      <Overlaps b={b} />
++      <Raw b={b} />
++    </div>
++  )
++}
++
++export function ApprovalBriefScreen({ itemId, kind, go }: { itemId: string; kind: string | null; go: (to: string) => void }) {
++  const b = BRIEFS[itemId] ?? null
++  useEffect(() => {
++    if (b !== null) document.title = `#${b.issue.number} plan · Approvals`
++  }, [b])
++  return (
++    <Screen title="Approvals" load={async () => ({ status: 'ok' as const, data: b, fetchedAt: Date.now() })}>
++      {(data) => (
++        <>
++          <BackToList kind={kind} go={go} />
++          {data === null ? <p className="c-hint">No mock brief for {itemId}.</p> : <ApprovalBrief b={data} go={go} />}
++        </>
++      )}
++    </Screen>
++  )
++}
+diff --git a/apps/swarm-ui/src/ApprovalBriefData.ts b/apps/swarm-ui/src/ApprovalBriefData.ts
+new file mode 100644
+index 0000000..2254a79
+--- /dev/null
++++ b/apps/swarm-ui/src/ApprovalBriefData.ts
+@@ -0,0 +1,362 @@
++// MOCK-HOOK FILE
++// The plan sections a parallel lane adds to the planner (purpose, why,
++// changes, risk, validation, graph), as the brief page reads them. The run
++// behind run:run_9b8af0113faa4165ab8e is the fixture: its issue, its one step,
++// its five files, its estimate, its three overlaps and its four requirements
++// are the run's; every field the planner does not serve yet is invented here.
++// The two other plans are invented outright: a high-risk plan that touches
++// admission and the frozen contract, and a three-step plan with dependencies.
++
++export type ChangeKind = 'add' | 'modify' | 'delete' | 'test'
++export type RiskLevel = 'low' | 'medium' | 'high'
++export type NodeKind = 'changed' | 'caller' | 'test'
++export type EdgeKind = 'calls' | 'imports' | 'tests'
++
++export interface BriefChange {
++  path: string
++  area: string
++  kind: ChangeKind
++  what: string
++  step: number
++}
++export interface BriefNode {
++  id: string
++  file: string
++  symbol: string
++  kind: NodeKind
++  /** A changed node's area: the graph groups changed files by it. */
++  area?: string
++  what: string
++  /** A changed node's step, drawn as its badge on a plan of several steps. */
++  step?: number
++  /** A test the plan adds, rather than one that already covers the file. */
++  added?: boolean
++}
++export interface BriefEdge {
++  from: string
++  to: string
++  kind: EdgeKind
++}
++export interface BriefStep {
++  id: string
++  title: string
++  files: string[]
++  after: string[]
++  hours: number
++  prompt: string
++}
++export interface BriefOverlap {
++  pr: number
++  title: string
++  where: string
++  files: string[]
++  effect: string
++  /** MOCK-HOOK: what the PR itself does to the shared files, one line. */
++  theirs?: string
++}
++export interface BriefInvariant {
++  n: number
++  words: string
++}
++export interface Brief {
++  approvalId: string
++  runId: string
++  issue: { number: number; title: string; url: string }
++  askedAt: string
++  expiresAt: string
++  purpose: string
++  why: { line: string; evidence: string[] }
++  estimateHours: number
++  changes: BriefChange[]
++  risk: {
++    level: RiskLevel
++    factors: string[]
++    blast: string
++    invariants: BriefInvariant[]
++    frozen: string[]
++    mitigations: string[]
++    rollback: string
++  }
++  requirements: { id: string; words: string; proofs: string[] }[]
++  validation: {
++    tests: { file: string; proves: string; req: string[] }[]
++    qa: { check: string; who: string; where: string }[]
++  }
++  graph: { nodes: BriefNode[]; edges: BriefEdge[] }
++  steps: BriefStep[]
++  overlaps: BriefOverlap[]
++  workflowId: string
++}
++
++const API = 'apps/swarm-api/swarm_api'
++const CP = 'tests/unit/control_plane'
++
++const OVERLAP_PROMPT = `Issue #3507: a run lane's plan names no overlap with work already in the merge train.
++
++Add overlap_refs(ctx, tenant_id, files) to ${API}/plancontext.py: read the merge train's open pull requests (mergetrain.train_order), keep those whose changed files share a territory with the step's files (issueruns.territory_overlap), and return, for each, its number, its train position and the shared files. Bound the read to 2 s; on a timeout or an unreadable train return no overlaps and the reason, never fail the planning.
++
++Extend issueruns.PlanOverlap with pr, position and files; PlanSpec.overlaps defaults to [] so a stored plan without it still parses.
++
++Serve plan.overlaps from GET /v1/runs/{run_id} in ${API}/routes/runs.py, [] when there is none.
++
++Red first: ${CP}/test_plancontext_overlap.py and ${CP}/test_runs_overlap_ref.py, committed failing before the change.
++
++Do not touch apps/common/swarm_common/. Do not change the hold logic in _territory_hold: the overlap is read, not enforced.`
++
++/** The fixture: issue 3507, one step over five files. */
++const OVERLAP: Brief = {
++  approvalId: 'run:run_9b8af0113faa4165ab8e',
++  runId: 'run_9b8af0113faa4165ab8e',
++  issue: { number: 3507, title: 'A run lane’s plan names no overlap with work already in the merge train', url: 'https://github.com/saga-xyz/swarm/issues/3507' },
++  askedAt: '2026-11-06T09:12:00Z',
++  expiresAt: '2026-11-08T09:12:00Z',
++  purpose: 'Show, on every run plan, which pull requests already in the merge train change the same files.',
++  why: {
++    line: 'Plans are approved blind to the merge train: run 7c1e clashed with PR #3488 and sat 41 minutes on a merge hold.',
++    evidence: [
++      'Issue #3507: run_7c1e… was approved over PR #3488 touching issueruns.py; it was held at merge for 41 min.',
++      'The planner’s IN FLIGHT section lists live runs but never the train’s pull requests.',
++      'Two of the last ten holds (#3471, #3488) were overlaps a reader could have seen before approving.',
++    ],
++  },
++  estimateHours: 2.5,
++  changes: [
++    { path: `${API}/plancontext.py`, area: 'Planner context', kind: 'modify', what: 'Adds overlap_refs(): train PRs that share the step’s files', step: 1 },
++    { path: `${API}/issueruns.py`, area: 'Issue runs', kind: 'modify', what: 'PlanOverlap gains pr, position and shared files', step: 1 },
++    { path: `${API}/routes/runs.py`, area: 'API routes', kind: 'modify', what: 'GET /v1/runs/{id} serves plan.overlaps, [] when none', step: 1 },
++    { path: `${CP}/test_plancontext_overlap.py`, area: 'Tests', kind: 'test', what: 'Red first: overlap_refs() keeps only PRs that share a file', step: 1 },
++    { path: `${CP}/test_runs_overlap_ref.py`, area: 'Tests', kind: 'test', what: 'Red first: the route serves the overlaps, [] when none', step: 1 },
++  ],
++  risk: {
++    level: 'low',
++    factors: ['Adds one field to a served plan; nothing reads it to decide', 'A new read of the merge train while planning', 'Planner prompt grows by one bounded section'],
++    blast: 'Issue-run planning and GET /v1/runs/{id}. No lease, capacity or dispatch path.',
++    invariants: [],
++    frozen: [],
++    mitigations: ['The train read has a 2 s budget and falls back to no overlaps with a reason', 'The field is additive: an older console ignores it', 'Holds are unchanged: the overlap is read, never enforced'],
++    rollback: 'Revert the pull request. Stored plans keep an ignored overlaps field.',
++  },
++  requirements: [
++    { id: 'R1', words: 'A run’s plan lists each train PR that shares a file with a step', proofs: ['T1', 'T3'] },
++    { id: 'R2', words: 'Each overlap names the PR, its train position and the shared files', proofs: ['T1'] },
++    { id: 'R3', words: 'A run with no overlap serves overlaps: [], never a missing field', proofs: ['T3'] },
++    { id: 'R4', words: 'An unreadable train never fails planning: no overlaps, with the reason', proofs: ['T2'] },
++  ],
++  validation: {
++    tests: [
++      { file: `${CP}/test_plancontext_overlap.py`, proves: 'Only train PRs sharing a file are kept, with position and files', req: ['R1', 'R2'] },
++      { file: `${CP}/test_plancontext_overlap.py`, proves: 'A train read that times out plans on, with no overlaps and a reason', req: ['R4'] },
++      { file: `${CP}/test_runs_overlap_ref.py`, proves: 'GET /v1/runs/{id} serves plan.overlaps, and [] when none', req: ['R1', 'R3'] },
++    ],
++    qa: [
++      { check: 'Open an issue run whose files overlap a PR in the train: its approval lists that PR', who: 'QA lane, browser', where: 'Staging · /automate/approvals' },
++      { check: 'Approve it: the run starts and no new hold is raised', who: 'Owner', where: 'Staging · /work/runs' },
++      { check: 'A run with no overlap serves overlaps: []', who: 'CI smoke', where: 'Staging API' },
++    ],
++  },
++  graph: {
++    nodes: [
++      { id: 'c1', file: `${API}/plancontext.py`, symbol: 'in_flight_section()', kind: 'changed', area: 'Planner context', what: 'Adds overlap_refs(): train PRs that share the step’s files', step: 1 },
++      { id: 'c2', file: `${API}/issueruns.py`, symbol: 'PlanOverlap · territory_overlap()', kind: 'changed', area: 'Issue runs', what: 'PlanOverlap gains pr, position and shared files', step: 1 },
++      { id: 'c3', file: `${API}/routes/runs.py`, symbol: 'GET /v1/runs/{run_id}', kind: 'changed', area: 'API routes', what: 'Serves plan.overlaps beside the steps, [] when none', step: 1 },
++      { id: 'k1', file: `${API}/planner.py`, symbol: 'plan_issue()', kind: 'caller', what: 'Builds the planner prompt; reads the IN FLIGHT section' },
++      { id: 'k2', file: `${API}/mergetrain.py`, symbol: 'train_order()', kind: 'caller', what: 'Orders the merge train; its PRs are what overlap_refs() reads' },
++      { id: 'k3', file: 'apps/swarm-ui/src/ApprovalDecision.tsx', symbol: 'Evidence', kind: 'caller', what: 'The approvals page; reads the run’s plan' },
++      { id: 't1', file: `${CP}/test_plancontext_overlap.py`, symbol: '3 tests · new', kind: 'test', what: 'Red first: overlap_refs() keeps only PRs that share a file', added: true },
++      { id: 't2', file: `${CP}/test_runs_overlap_ref.py`, symbol: '2 tests · new', kind: 'test', what: 'Red first: the route serves the overlaps, [] when none', added: true },
++      { id: 't3', file: `${CP}/test_issueruns.py`, symbol: '41 tests · existing', kind: 'test', what: 'Already covers PlanSpec parsing; must stay green' },
++    ],
++    edges: [
++      { from: 'k1', to: 'c1', kind: 'calls' },
++      { from: 'k2', to: 'c1', kind: 'imports' },
++      { from: 'k3', to: 'c3', kind: 'calls' },
++      { from: 'c1', to: 'c2', kind: 'imports' },
++      { from: 'c3', to: 'c2', kind: 'imports' },
++      { from: 't1', to: 'c1', kind: 'tests' },
++      { from: 't2', to: 'c3', kind: 'tests' },
++      { from: 't3', to: 'c2', kind: 'tests' },
++    ],
++  },
++  steps: [
++    {
++      id: 'overlap-ref-for-run-lanes',
++      title: 'Name the merge train’s overlapping PRs on each run lane’s plan',
++      files: [`${API}/plancontext.py`, `${API}/issueruns.py`, `${API}/routes/runs.py`, `${CP}/test_plancontext_overlap.py`, `${CP}/test_runs_overlap_ref.py`],
++      after: [],
++      hours: 2.5,
++      prompt: OVERLAP_PROMPT,
++    },
++  ],
++  overlaps: [
++    { pr: 3489, title: 'Planner context carries recent merges by territory', where: 'Train · 2nd', files: [`${API}/plancontext.py`], effect: 'Merges first; this run rebases on it', theirs: 'Adds recent_merges() beside in_flight_section(); neither edits the other' },
++    { pr: 3496, title: 'Runs route serves lane progress', where: 'Train · 4th', files: [`${API}/routes/runs.py`], effect: 'Same function edited; held at merge if both green', theirs: 'Adds a lanes field to the run response in the same serializer' },
++    { pr: 3501, title: 'PlanSpec refuses a plan with no steps', where: 'Checks running', files: [`${API}/issueruns.py`], effect: 'Different class; no conflict expected', theirs: 'PlanSpec.validate() refuses steps: []; PlanOverlap is untouched' },
++  ],
++  workflowId: 'wf_issue3507_9b8af011',
++}
++
++/** Invented: a high-risk plan that touches admission and the frozen contract. */
++const HIGH: Brief = {
++  approvalId: 'run:run_mock_admission_multipool',
++  runId: 'run_mock_admission_multipool',
++  issue: { number: 3512, title: 'A profile naming two GPU pools is admitted pool by pool, not all-or-nothing', url: 'https://github.com/saga-xyz/swarm/issues/3512' },
++  askedAt: '2026-11-06T08:40:00Z',
++  expiresAt: '2026-11-08T08:40:00Z',
++  purpose: 'Reserve capacity across two GPU pools in one transaction when a runner profile names both.',
++  why: {
++    line: 'A two-pool profile reserved its first pool and then waited on the second, holding capacity no one could use.',
++    evidence: [
++      'Issue #3512: gpu-l4 was 100% reserved for 3 h by 6 tasks that never started.',
++      'admission.reserve() loops over pools, one transaction each.',
++      'CONTRACT.md invariant 2 says all-or-nothing in one Firestore transaction.',
++    ],
++  },
++  estimateHours: 6,
++  changes: [
++    { path: 'apps/control-plane/control_plane/admission.py', area: 'Admission', kind: 'modify', what: 'reserve() takes every pool in one transaction', step: 1 },
++    { path: 'apps/control-plane/control_plane/capacity.py', area: 'Capacity', kind: 'modify', what: 'Pool ledger gains a multi-pool debit', step: 1 },
++    { path: 'apps/common/swarm_common/contract.py', area: 'Frozen contract', kind: 'modify', what: 'RunnerProfile.pools becomes a list', step: 1 },
++    { path: 'tests/unit/control_plane/test_admission_multipool.py', area: 'Tests', kind: 'test', what: 'Red first: a two-pool reserve is all or nothing', step: 1 },
++    { path: 'tests/race/test_admission_race.py', area: 'Tests', kind: 'test', what: 'Two admitters racing never split a reservation', step: 1 },
++  ],
++  risk: {
++    level: 'high',
++    factors: ['Changes how every task is admitted', 'Edits the frozen contract', 'Concurrency: two admitters racing over the same pools'],
++    blast: 'Every admission in every tenant. A bug leaks capacity or over-admits.',
++    invariants: [
++      { n: 2, words: 'Capacity is reserved all-or-nothing, in one Firestore transaction' },
++      { n: 3, words: 'Concurrency counts from LEASED, not RUNNING' },
++    ],
++    frozen: ['apps/common/swarm_common/contract.py'],
++    mitigations: ['Behind ADMISSION_MULTI_POOL, off by default', 'make race-test and concurrency-test on staging before the flag turns on', 'A contract change request (docs/contract-change-requests.md) before any edit to swarm_common'],
++    rollback: 'Turn ADMISSION_MULTI_POOL off; reservations made since stay valid and release as usual.',
++  },
++  requirements: [
++    { id: 'R1', words: 'A two-pool reserve takes both pools or neither', proofs: ['T1', 'T2'] },
++    { id: 'R2', words: 'A single-pool profile is admitted exactly as today', proofs: ['T1'] },
++    { id: 'R3', words: 'The flag off restores today’s path', proofs: ['T1'] },
++  ],
++  validation: {
++    tests: [
++      { file: 'tests/unit/control_plane/test_admission_multipool.py', proves: 'One pool short: nothing is reserved, the task stays QUEUED', req: ['R1'] },
++      { file: 'tests/race/test_admission_race.py', proves: '50 racing admitters never leave half a reservation', req: ['R1'] },
++      { file: 'tests/unit/control_plane/test_admission_multipool.py', proves: 'Single-pool and flag-off paths are unchanged', req: ['R2', 'R3'] },
++    ],
++    qa: [
++      { check: 'make smoke concurrency-test race-test with the flag on', who: 'Owner', where: 'Staging' },
++      { check: 'Capacity page: no pool held by a task that is not LEASED', who: 'QA lane, browser', where: 'Staging · /capacity/pools' },
++    ],
++  },
++  graph: {
++    nodes: [
++      { id: 'c1', file: 'apps/control-plane/control_plane/admission.py', symbol: 'reserve()', kind: 'changed', area: 'Admission', what: 'Takes every pool in one transaction', step: 1 },
++      { id: 'c2', file: 'apps/control-plane/control_plane/capacity.py', symbol: 'PoolLedger.debit()', kind: 'changed', area: 'Capacity', what: 'Gains a multi-pool debit', step: 1 },
++      { id: 'c3', file: 'apps/common/swarm_common/contract.py', symbol: 'RunnerProfile', kind: 'changed', area: 'Frozen contract', what: 'pools becomes a list: frozen, needs a contract change request', step: 1 },
++      { id: 'k1', file: 'apps/control-plane/control_plane/dispatch.py', symbol: 'dispatch_next()', kind: 'caller', what: 'Admits the next QUEUED task' },
++      { id: 'k2', file: 'apps/control-plane/control_plane/reconciler.py', symbol: 'release_stale()', kind: 'caller', what: 'Releases a stale generation’s capacity' },
++      { id: 'k3', file: 'apps/swarm-api/swarm_api/profiles.py', symbol: 'resolve_profile()', kind: 'caller', what: 'Turns a profile name into its pools' },
++      { id: 't1', file: 'tests/unit/control_plane/test_admission_multipool.py', symbol: '6 tests · new', kind: 'test', what: 'Red first: all-or-nothing across two pools', added: true },
++      { id: 't2', file: 'tests/race/test_admission_race.py', symbol: '1 race · new', kind: 'test', what: 'Racing admitters never split a reservation', added: true },
++    ],
++    edges: [
++      { from: 'k1', to: 'c1', kind: 'calls' },
++      { from: 'k2', to: 'c2', kind: 'calls' },
++      { from: 'k3', to: 'c3', kind: 'imports' },
++      { from: 'c1', to: 'c2', kind: 'calls' },
++      { from: 'c1', to: 'c3', kind: 'imports' },
++      { from: 't1', to: 'c1', kind: 'tests' },
++      { from: 't2', to: 'c1', kind: 'tests' },
++    ],
++  },
++  steps: [
++    {
++      id: 'admission-multipool',
++      title: 'Reserve every pool a profile names in one transaction',
++      files: ['apps/control-plane/control_plane/admission.py', 'apps/control-plane/control_plane/capacity.py', 'apps/common/swarm_common/contract.py', 'tests/unit/control_plane/test_admission_multipool.py', 'tests/race/test_admission_race.py'],
++      after: [],
++      hours: 6,
++      prompt: 'Issue #3512. Make admission.reserve() take every pool the profile names in one Firestore transaction, behind ADMISSION_MULTI_POOL. RunnerProfile.pools becomes a list in apps/common/swarm_common/contract.py. Red first: test_admission_multipool.py and test_admission_race.py.',
++    },
++  ],
++  overlaps: [{ pr: 3478, title: 'Reconciler releases a stale generation sooner', where: 'Train · 1st', files: ['apps/control-plane/control_plane/capacity.py'], effect: 'Same ledger; rebase and re-run the race test', theirs: 'release_stale() frees a pool one tick sooner' }],
++  workflowId: 'wf_issue3512_admission',
++}
++
++const UI = 'apps/swarm-ui/src'
++
++/** Invented: three steps, the second and third after the first. */
++const THREE: Brief = {
++  approvalId: 'run:run_mock_plan_brief_three',
++  runId: 'run_mock_plan_brief_three',
++  issue: { number: 3520, title: 'An approval shows a plan as its raw parts, not as what it will do', url: 'https://github.com/saga-xyz/swarm/issues/3520' },
++  askedAt: '2026-11-06T09:20:00Z',
++  expiresAt: '2026-11-08T09:20:00Z',
++  purpose: 'Have the planner write a brief of each plan and draw it at the top of its approval.',
++  why: {
++    line: 'Owners read three long step briefs to learn what a plan changes; BGD asked for it at a glance.',
++    evidence: ['BGD, 6 Nov: “easy to understand super quickly what the plan wants to do, why, whats going to change, where”.', 'A plan today serves a summary, steps and files only.'],
++  },
++  estimateHours: 7.5,
++  changes: [
++    { path: `${API}/issueruns.py`, area: 'Plan schema', kind: 'modify', what: 'PlanSpec gains purpose, why, changes, risk, validation, graph', step: 1 },
++    { path: `${API}/planner.py`, area: 'Planner', kind: 'modify', what: 'Asks the planner for the brief sections', step: 2 },
++    { path: `${API}/plancontext.py`, area: 'Planner', kind: 'modify', what: 'Adds the code graph slice for the changed files', step: 2 },
++    { path: `${UI}/ApprovalBrief.tsx`, area: 'Console', kind: 'add', what: 'The brief page: header, change map, risk, validation', step: 3 },
++    { path: `${UI}/ApprovalDecision.tsx`, area: 'Console', kind: 'modify', what: 'Opens a plan’s approval on its brief', step: 3 },
++    { path: `${CP}/test_plan_brief.py`, area: 'Tests', kind: 'test', what: 'Red first: a plan without a brief still parses', step: 1 },
++    { path: `${UI}/ApprovalBrief.test.tsx`, area: 'Tests', kind: 'test', what: 'Red first: empty sections are not drawn', step: 3 },
++  ],
++  risk: {
++    level: 'medium',
++    factors: ['Changes the planner’s prompt and output', 'A stored plan must still parse without the new fields'],
++    blast: 'Every new issue-run plan, and the approvals page.',
++    invariants: [{ n: 10, words: 'Callers pick a runner_profile by name; nothing from the plan reaches a worker spec' }],
++    frozen: [],
++    mitigations: ['Every new field is optional; the page draws only what is served', 'Planner output is validated by parse_planner_output'],
++    rollback: 'Revert step 3 to hide the page; steps 1 and 2 are additive.',
++  },
++  requirements: [
++    { id: 'R1', words: 'A plan carries purpose, why, changes, risk, validation and graph', proofs: ['T1'] },
++    { id: 'R2', words: 'An approval draws them at the top; empty sections are not drawn', proofs: ['T2'] },
++  ],
++  validation: {
++    tests: [
++      { file: `${CP}/test_plan_brief.py`, proves: 'A stored plan without a brief still parses', req: ['R1'] },
++      { file: `${UI}/ApprovalBrief.test.tsx`, proves: 'A plan with no risk section draws no Risk card', req: ['R2'] },
++    ],
++    qa: [{ check: 'Open a new plan’s approval at 1440 and 390, light and dark', who: 'QA lane, browser', where: 'Staging · /automate/approvals' }],
++  },
++  graph: {
++    nodes: [
++      { id: 'c1', file: `${API}/issueruns.py`, symbol: 'PlanSpec', kind: 'changed', area: 'Plan schema', what: 'Gains purpose, why, changes, risk, validation, graph', step: 1 },
++      { id: 'c2', file: `${API}/planner.py`, symbol: 'plan_issue()', kind: 'changed', area: 'Planner', what: 'Asks the planner for the brief sections', step: 2 },
++      { id: 'c3', file: `${API}/plancontext.py`, symbol: 'graph_section()', kind: 'changed', area: 'Planner', what: 'Adds the code graph slice for the changed files', step: 2 },
++      { id: 'c4', file: `${UI}/ApprovalBrief.tsx`, symbol: 'ApprovalBrief · ChangeMap', kind: 'changed', area: 'Console', what: 'The brief page: header, change map, risk, validation', step: 3 },
++      { id: 'c5', file: `${UI}/ApprovalDecision.tsx`, symbol: 'ApprovalDecision', kind: 'changed', area: 'Console', what: 'Opens a plan’s approval on its brief', step: 3 },
++      { id: 'k1', file: `${API}/routes/runs.py`, symbol: 'GET /v1/runs/{run_id}', kind: 'caller', what: 'Serves the plan as stored' },
++      { id: 'k2', file: `${API}/issueworker.py`, symbol: 'start_planning()', kind: 'caller', what: 'Runs the planner for an issue run' },
++      { id: 'k3', file: `${UI}/Approvals.tsx`, symbol: 'ApprovalsScreen', kind: 'caller', what: 'Routes an approval to its page' },
++      { id: 't1', file: `${CP}/test_plan_brief.py`, symbol: '4 tests · new', kind: 'test', what: 'A plan without a brief still parses', added: true },
++      { id: 't2', file: `${UI}/ApprovalBrief.test.tsx`, symbol: '5 tests · new', kind: 'test', what: 'Empty sections are not drawn', added: true },
++    ],
++    edges: [
++      { from: 'k1', to: 'c1', kind: 'imports' },
++      { from: 'k2', to: 'c2', kind: 'calls' },
++      { from: 'k3', to: 'c5', kind: 'calls' },
++      { from: 'c2', to: 'c1', kind: 'imports' },
++      { from: 'c2', to: 'c3', kind: 'calls' },
++      { from: 'c5', to: 'c4', kind: 'imports' },
++      { from: 't1', to: 'c1', kind: 'tests' },
++      { from: 't2', to: 'c4', kind: 'tests' },
++    ],
++  },
++  steps: [
++    { id: 'plan-brief-schema', title: 'Add the brief sections to the plan schema', files: [`${API}/issueruns.py`, `${CP}/test_plan_brief.py`], after: [], hours: 1.5, prompt: 'Add optional purpose, why, changes, risk, validation and graph to PlanSpec. Red first: test_plan_brief.py.' },
++    { id: 'planner-writes-brief', title: 'Have the planner write the brief', files: [`${API}/planner.py`, `${API}/plancontext.py`], after: ['plan-brief-schema'], hours: 3, prompt: 'Ask the planner for the brief sections; give it the code graph slice of the files it names.' },
++    { id: 'approvals-draws-brief', title: 'Draw the brief on the approval', files: [`${UI}/ApprovalBrief.tsx`, `${UI}/ApprovalDecision.tsx`, `${UI}/ApprovalBrief.test.tsx`], after: ['plan-brief-schema'], hours: 3, prompt: 'Draw the brief at the top of a plan approval. Empty sections are not drawn. Red first: ApprovalBrief.test.tsx.' },
++  ],
++  overlaps: [],
++  workflowId: 'wf_issue3520_brief',
++}
++
++export const BRIEFS: Readonly<Record<string, Brief>> = { [OVERLAP.approvalId]: OVERLAP, [HIGH.approvalId]: HIGH, [THREE.approvalId]: THREE }
+diff --git a/apps/swarm-ui/src/Approvals.tsx b/apps/swarm-ui/src/Approvals.tsx
+index 2a4e94a..386551b 100644
+--- a/apps/swarm-ui/src/Approvals.tsx
++++ b/apps/swarm-ui/src/Approvals.tsx
+@@ -47,6 +47,7 @@ import {
+ } from './ApprovalDecision'
+ import './styles/schedules.css'
+ import './styles/automate-approvals.css'
++import { ApprovalBriefScreen } from './ApprovalBrief' // MOCK-HOOK
+ 
+ export { APPROVAL_KIND, APPROVALS_ADDRESS, approvalAddress, approvalsAddress } from './ApprovalDecision'
+ 
+@@ -534,6 +535,8 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
+       )}
+       {selected !== null && selected.startsWith(INPUT_PREFIX) ? (
+         <InputScreen itemId={selected} kind={kind} round={round} go={go} />
++      ) : selected !== null && new URLSearchParams(view ?? '').get('ap') === 'brief' ? ( // MOCK-HOOK
++        <ApprovalBriefScreen itemId={selected} kind={kind} go={go} /> // MOCK-HOOK
+       ) : selected !== null ? (
+         <ApprovalDecisionScreen itemId={selected} kind={kind} round={round} go={go} onDecided={decided} />
+       ) : (
+diff --git a/apps/swarm-ui/src/paths.ts b/apps/swarm-ui/src/paths.ts
+index 5b1c78f..b0f140b 100644
+--- a/apps/swarm-ui/src/paths.ts
++++ b/apps/swarm-ui/src/paths.ts
+@@ -684,7 +684,11 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
+     if (id !== null && id !== '') {
+       const kind = q.get('kind')
+       const base = `/automate/approvals/${encodeURIComponent(id)}`
+-      return kind === null || kind === '' ? base : `${base}?${new URLSearchParams({ kind }).toString()}`
++      const keep = new URLSearchParams() // MOCK-HOOK
++      if (kind !== null && kind !== '') keep.set('kind', kind) // MOCK-HOOK
++      const ap = q.get('ap') // MOCK-HOOK
++      if (ap !== null && ap !== '') keep.set('ap', ap) // MOCK-HOOK
++      return keep.toString() === '' ? base : `${base}?${keep.toString()}` // MOCK-HOOK
+     }
+   }
+   // Config › Repositories (repositories.html): the page rides on the tab's query.
+@@ -841,6 +845,8 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
+     const q = new URLSearchParams({ approval: decodeURIComponent(approvalId) })
+     const kind = new URLSearchParams(query).get('kind')
+     if (kind !== null && kind !== '') q.set('kind', kind)
++    const ap = new URLSearchParams(query).get('ap') // MOCK-HOOK
++    if (ap !== null && ap !== '') q.set('ap', ap) // MOCK-HOOK
+     return plain(`automate/approvals?${q.toString()}`)
+   }
+ 
+diff --git a/apps/swarm-ui/src/styles/approval-brief.css b/apps/swarm-ui/src/styles/approval-brief.css
+new file mode 100644
+index 0000000..5b01b9f
+--- /dev/null
++++ b/apps/swarm-ui/src/styles/approval-brief.css
+@@ -0,0 +1,287 @@
++/* MOCK-HOOK FILE
++   The plan as a one-page brief (ApprovalBrief.tsx, ?ap=brief). Every colour
++   is a console token, so light and dark follow the theme. */
++
++.ab-page { display: grid; gap: 14px; min-width: 0; }
++.ab-dim { color: var(--text-dim); }
++.ab-page .mono, .ab-svg .ab-n-f { font-family: var(--mono); }
++/* .mono sets the body size app-wide; here a path is a size below its line. */
++.ab-page .mono { font-size: max(12px, 0.92em); }
++.ab-page .ab-changes .ab-cfile { font-size: 12px; }
++.ab-page .ab-sfiles .mono, .ab-page .ab-tf, .ab-page .ab-over-t .ab-dim, .ab-page .ab-step-m .mono { font-size: 12px; }
++
++/* ---- the header ---------------------------------------------------------- */
++.ab-head {
++  display: grid; gap: 10px; padding: 18px 20px 16px; min-width: 0;
++  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
++  border-top: 4px solid var(--s-ok, var(--ok));
++}
++.ab-head[data-risk='low'] { border-top-color: var(--ok); }
++.ab-head[data-risk='medium'] { border-top-color: var(--warn); }
++.ab-head[data-risk='high'] { border-top-color: var(--bad); }
++.ab-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.ab-issue { color: var(--sk-ac); font-weight: 600; }
++.ab-purpose { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 650; letter-spacing: -0.01em; max-width: 74ch; text-wrap: pretty; }
++.ab-why { display: flex; align-items: baseline; gap: 10px; margin: 0; font-size: var(--t-body); line-height: var(--lh-body); max-width: 120ch; }
++.ab-why > b { flex: none; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; padding: 1px 7px; border: 1px solid var(--line); border-radius: var(--r-pill); }
++.ab-why > span { min-width: 0; }
++
++.ab-facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 0; padding: 0; list-style: none; }
++.ab-facts > li {
++  display: grid; grid-template-columns: auto; gap: 0; min-width: 132px; padding: 8px 12px;
++  background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 10px;
++}
++.ab-fk { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; }
++.ab-facts b { font-size: var(--t-lead); line-height: var(--lh-lead); display: inline-flex; align-items: center; gap: 8px; }
++.ab-facts .ab-dim { font-size: var(--t-micro); line-height: var(--lh-micro); }
++.ab-risk-f.is-low { border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
++.ab-risk-f.is-low b { color: var(--ok-ink); }
++.ab-risk-f.is-medium { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
++.ab-risk-f.is-medium b { color: var(--warn-ink); }
++.ab-risk-f.is-high { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, var(--surface)); }
++.ab-risk-f.is-high b { color: var(--bad-ink); }
++
++.ab-meter { display: inline-flex; gap: 3px; align-items: flex-end; }
++.ab-meter > i { display: block; width: 5px; border-radius: 2px; background: var(--line); }
++.ab-meter > i:nth-child(1) { height: 8px; }
++.ab-meter > i:nth-child(2) { height: 12px; }
++.ab-meter > i:nth-child(3) { height: 16px; }
++.ab-meter.is-low > i[data-on='y'] { background: var(--ok); }
++.ab-meter.is-medium > i[data-on='y'] { background: var(--warn); }
++.ab-meter.is-high > i[data-on='y'] { background: var(--bad); }
++
++.ab-alarm {
++  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0; padding: 8px 12px;
++  border-radius: 10px; background: color-mix(in srgb, var(--bad) 13%, var(--surface)); border: 1px solid var(--bad);
++  font-size: var(--t-meta); line-height: var(--lh-meta);
++}
++.ab-alarm > b { color: var(--bad-ink); }
++.ab-inv { padding: 2px 9px; border-radius: var(--r-pill); font-weight: 600; font-size: var(--t-meta); }
++.ab-inv.is-hot { background: var(--bad); color: var(--ctl-onac); }
++.ab-inv.is-frozen { background: var(--surface); color: var(--bad-ink); border: 1.5px dashed var(--bad); }
++
++.ab-decide {
++  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 14px; margin-top: 4px; padding-top: 14px;
++  border-top: 1px solid var(--line-soft);
++}
++.ab-act { display: grid; justify-items: start; gap: 4px; }
++.ab-act > span { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
++.ab-act .c-btn { min-width: 112px; justify-content: center; }
++.ab-exp { margin-left: auto; align-self: center; font-size: var(--t-meta); }
++.ab-reason { flex: 1 1 100%; max-width: 560px; }
++
++.ab-done {
++  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin-top: 4px; padding: 12px 14px;
++  border-radius: 10px; background: color-mix(in srgb, var(--ok) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--ok) 50%, transparent);
++}
++.ab-done-ic { width: 26px; height: 26px; fill: none; stroke: var(--ok-ink); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
++.ab-done-t { display: grid; }
++.ab-done-t > b { color: var(--ok-ink); font-size: var(--t-lead); line-height: var(--lh-lead); }
++.ab-done-t > span { font-size: var(--t-meta); }
++.ab-done-w { display: grid; gap: 1px; padding-left: 18px; border-left: 1px solid var(--line); font-size: var(--t-meta); line-height: var(--lh-meta); }
++.ab-done-w a { color: var(--sk-ac); font-weight: 600; }
++
++/* ---- cards ----------------------------------------------------------------- */
++.ab-card { min-width: 0; padding: 14px 18px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
++.ab-card.is-high { border-color: var(--bad); box-shadow: inset 0 3px 0 var(--bad); }
++.ab-card-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 0 0 12px; }
++.ab-card-h > h3 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 650; }
++.ab-card-h > .ab-dim { font-size: var(--t-meta); }
++.ab-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
++@media (max-width: 900px) { .ab-pair { grid-template-columns: minmax(0, 1fr); } }
++
++/* ---- the change map --------------------------------------------------------- */
++.ab-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 0 auto; padding: 0; list-style: none; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
++.ab-legend li { display: inline-flex; align-items: center; gap: 5px; }
++.ab-legend i { display: inline-block; width: 14px; height: 10px; border-radius: 3px; border: 1.5px solid var(--line); background: var(--surface); }
++.ab-legend i.is-changed { border-color: var(--sk-ac); background: color-mix(in srgb, var(--sk-ac) 18%, var(--surface)); }
++.ab-legend i.is-test { border-style: dashed; border-color: var(--ok-ink); }
++.ab-legend i.is-step { width: 17px; height: 17px; border-radius: 50%; border: 0; background: var(--sk-ac); color: var(--ctl-onac); font-style: normal; font-size: 12px; line-height: 17px; text-align: center; font-weight: 700; }
++
++.ab-map { position: relative; min-width: 0; }
++.ab-cols { display: grid; grid-template-columns: 1fr 1fr 1fr; column-gap: 9%; margin: 0 0 6px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 600; }
++.ab-cols > span:nth-child(2) { color: var(--sk-ac); }
++.ab-svg { display: block; overflow: visible; max-width: 100%; }
++.ab-svg text { font-family: var(--font); }
++
++.ab-area > rect { fill: color-mix(in srgb, var(--sk-ac) 5%, var(--surface-2)); stroke: color-mix(in srgb, var(--sk-ac) 30%, var(--line)); stroke-width: 1; }
++.ab-area > text, .ab-area-t { fill: var(--text-dim); font-size: 12px; font-weight: 650; }
++.ab-area.is-frozen > rect { fill: color-mix(in srgb, var(--bad) 9%, var(--surface)); stroke: var(--bad); stroke-dasharray: 5 4; stroke-width: 1.5; }
++.ab-area.is-frozen > text { fill: var(--bad-ink); }
++
++.ab-edge { fill: none; stroke: color-mix(in srgb, var(--text-dim) 70%, transparent); stroke-width: 1.4; transition: opacity .15s, stroke .15s; }
++.ab-edge.is-tests { stroke-dasharray: 4 3; stroke: color-mix(in srgb, var(--ok-ink) 70%, transparent); }
++.ab-edge.is-on { stroke: var(--sk-ac); stroke-width: 2.4; stroke-dasharray: none; }
++.ab-edge.is-off { opacity: .45; }
++.ab-arrhead { fill: color-mix(in srgb, var(--text-dim) 80%, transparent); }
++.ab-arrhead.is-on { fill: var(--sk-ac); }
++.ab-elabel {
++  font-size: 12px; fill: var(--text-dim); text-anchor: middle; font-weight: 600;
++  paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round;
++}
++.ab-elabel.is-on { fill: var(--sk-ac); }
++.ab-elabel.is-off { opacity: .6; }
++
++.ab-node { cursor: pointer; outline: none; transition: opacity .15s; }
++.ab-node > rect { fill: var(--surface); stroke: var(--line); stroke-width: 1.2; }
++.ab-node.is-changed > rect { fill: color-mix(in srgb, var(--sk-ac) 14%, var(--surface)); stroke: var(--sk-ac); stroke-width: 1.8; }
++.ab-node.is-changed.is-frozen > rect { fill: color-mix(in srgb, var(--bad) 14%, var(--surface)); stroke: var(--bad); }
++.ab-node.is-test > rect { stroke: color-mix(in srgb, var(--ok-ink) 75%, transparent); stroke-dasharray: 4 3; }
++.ab-node:hover > rect { stroke-width: 2.4; }
++.ab-node:focus-visible > rect { stroke: var(--sk-ac); stroke-width: 3; }
++.ab-node.is-sel > rect { stroke: var(--sk-ac); stroke-width: 3; filter: drop-shadow(0 0 6px color-mix(in srgb, var(--sk-ac) 45%, transparent)); }
++.ab-node.is-lit > rect { stroke: var(--sk-ac); stroke-width: 2; }
++.ab-node.is-dim { opacity: .62; }
++.ab-n-f { font-size: 12.5px; font-weight: 650; fill: var(--text); }
++.ab-n-s { font-size: 12px; fill: var(--text-dim); }
++.ab-node.is-changed .ab-n-s { fill: var(--text); opacity: .78; }
++.ab-badge circle { fill: var(--sk-ac); }
++.ab-badge text { fill: var(--ctl-onac); font-size: 12px; font-weight: 700; text-anchor: middle; }
++
++.ab-pick {
++  margin: 12px 0 0; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--sk-ac);
++  background: color-mix(in srgb, var(--sk-ac) 8%, var(--surface));
++}
++/* On a phone the picked file's strip opens in the map, right under the file: the map makes room, so it covers nothing. */
++.ab-map.is-tall .ab-pick { position: absolute; left: 2px; margin: 0; z-index: 2; box-sizing: border-box; background: color-mix(in srgb, var(--sk-ac) 8%, var(--surface)); }
++.ab-pick-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
++.ab-pick-h .ab-dim { font-size: var(--t-micro); overflow-wrap: anywhere; }
++.ab-pick-x { margin-left: auto; }
++.ab-pick-w { margin: 2px 0 6px; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
++.ab-pick-r { display: grid; gap: 2px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.ab-pick-r > div { display: flex; gap: 8px; }
++.ab-pick-r dt { flex: none; width: 76px; color: var(--text-dim); }
++.ab-pick-r dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
++.ab-kind { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; padding: 1px 8px; border-radius: var(--r-pill); border: 1px solid var(--line); }
++.ab-kind.is-changed { background: var(--sk-ac); color: var(--ctl-onac); border-color: var(--sk-ac); }
++.ab-kind.is-test { color: var(--ok-ink); border-style: dashed; border-color: var(--ok-ink); }
++
++.ab-changes { display: grid; gap: 0; margin: 14px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line-soft); }
++.ab-changes > li {
++  display: grid; grid-template-columns: 58px minmax(0, 1.05fr) minmax(0, 1.4fr); align-items: baseline; gap: 4px 12px;
++  padding: 7px 4px; border-bottom: 1px solid var(--line-soft); font-size: var(--t-meta); line-height: var(--lh-meta);
++}
++.ab-changes > li[data-on='y'] { background: color-mix(in srgb, var(--sk-ac) 9%, transparent); box-shadow: inset 3px 0 0 var(--sk-ac); }
++.ab-cfile { all: unset; cursor: pointer; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; font-weight: 600; }
++.ab-cfile:hover { color: var(--sk-ac); }
++.ab-cfile:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 3px; }
++.ab-cfile .ab-dim { font-weight: 400; }
++.ab-cwhat { min-width: 0; }
++.ab-ck {
++  justify-self: start; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; padding: 1px 7px; border-radius: 6px;
++  border: 1px solid var(--line);
++}
++.ab-ck.is-add { color: var(--ok-ink); border-color: color-mix(in srgb, var(--ok) 60%, transparent); }
++.ab-ck.is-modify { color: var(--sk-ac); border-color: color-mix(in srgb, var(--sk-ac) 60%, transparent); }
++.ab-ck.is-delete { color: var(--bad-ink); border-color: color-mix(in srgb, var(--bad) 60%, transparent); }
++.ab-ck.is-test { color: var(--ok-ink); border-style: dashed; border-color: var(--ok-ink); }
++
++/* ---- risk ----------------------------------------------------------------- */
++.ab-lvl { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font-weight: 650; font-size: var(--t-body); }
++.ab-lvl.is-low { color: var(--ok-ink); }
++.ab-lvl.is-medium { color: var(--warn-ink); }
++.ab-lvl.is-high { color: var(--ctl-onac); background: var(--bad); padding: 2px 10px; border-radius: var(--r-pill); }
++.ab-lvl.is-high .ab-meter > i { background: color-mix(in srgb, var(--ctl-onac) 40%, transparent); }
++.ab-lvl.is-high .ab-meter > i[data-on='y'] { background: var(--ctl-onac); }
++.ab-kv { display: grid; gap: 10px; margin: 0; }
++.ab-kv > div { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 12px; font-size: var(--t-meta); line-height: var(--lh-meta); }
++.ab-kv dt { color: var(--text-dim); font-weight: 600; }
++.ab-kv dd { margin: 0; min-width: 0; }
++.ab-ok { color: var(--ok-ink); font-weight: 600; }
++.ab-invs, .ab-dots, .ab-ticks { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
++.ab-invs > li { padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
++.ab-invs > li.is-hot { background: color-mix(in srgb, var(--bad) 16%, var(--surface)); border-left: 3px solid var(--bad); }
++.ab-invs > li.is-hot > b, .ab-invs > li.is-frozen > b { color: var(--bad-ink); }
++.ab-invs > li.is-frozen { background: none; border: 1.5px dashed var(--bad); overflow-wrap: anywhere; }
++.ab-dots > li::before { content: '•'; color: var(--text-dim); margin-right: 7px; }
++.ab-ticks > li { padding-left: 18px; position: relative; }
++.ab-ticks > li::before { content: '✓'; position: absolute; left: 0; color: var(--ok-ink); font-weight: 700; }
++
++/* ---- validation ---------------------------------------------------------- */
++.ab-sub { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 650; }
++.ab-sub .ab-dim { font-weight: 400; font-size: var(--t-micro); }
++.ab-num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--line); font-size: var(--t-micro); }
++.ab-tests, .ab-qa { display: grid; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
++.ab-tests > li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 7px 10px; border-radius: 8px; background: var(--surface-2); font-size: var(--t-meta); line-height: var(--lh-meta); }
++.ab-tests > li > div, .ab-qa > li > div { display: grid; min-width: 0; }
++.ab-tid { font-weight: 700; color: var(--bad-ink); font-size: var(--t-micro); padding: 1px 6px; border: 1px solid color-mix(in srgb, var(--bad) 55%, transparent); border-radius: 5px; }
++.ab-tw { font-weight: 550; }
++.ab-tf { font-size: 12px; overflow-wrap: anywhere; }
++.ab-reqs { display: inline-flex; gap: 3px; }
++.ab-req { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, var(--sk-ac) 13%, var(--surface)); color: var(--sk-ac); }
++.ab-qa > li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; font-size: var(--t-meta); line-height: var(--lh-meta); padding: 4px 2px; }
++.ab-qa .ab-dim { font-size: var(--t-micro); }
++.ab-qid { font-weight: 700; color: var(--text-dim); font-size: var(--t-micro); padding: 1px 6px; border: 1px solid var(--line); border-radius: 5px; }
++.ab-reqlist { font-size: var(--t-meta); line-height: var(--lh-meta); border-top: 1px solid var(--line-soft); padding-top: 8px; }
++.ab-reqlist > summary { cursor: pointer; font-weight: 600; color: var(--text-dim); }
++.ab-reqlist ul { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
++
++/* ---- steps --------------------------------------------------------------- */
++.ab-stages { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
++.ab-stage { display: grid; gap: 6px; }
++.ab-stage + .ab-stage { position: relative; padding-top: 14px; }
++.ab-stage + .ab-stage::before { content: '↓'; position: absolute; top: -6px; left: 14px; color: var(--sk-ac); font-weight: 700; }
++.ab-stage-h { display: flex; gap: 8px; align-items: center; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; color: var(--text-dim); }
++.ab-par { padding: 0 7px; border-radius: var(--r-pill); border: 1px solid var(--line); font-weight: 600; }
++.ab-stage-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; }
++.ab-step { min-width: 0; padding: 10px 14px; border: 1px solid var(--line); border-left: 3px solid var(--sk-ac); border-radius: 10px; background: var(--surface-2); }
++.ab-step-h { display: flex; align-items: baseline; gap: 10px; margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
++.ab-step-hr { margin-left: auto; flex: none; font-size: var(--t-meta); }
++.ab-stepn { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--sk-ac); color: var(--ctl-onac); font-weight: 700; font-size: var(--t-micro); transform: translateY(-1px); }
++.ab-step-m { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 2px 0 8px 32px; font-size: var(--t-micro); line-height: var(--lh-micro); }
++.ab-after { color: var(--warn-ink); font-weight: 650; }
++.ab-sfiles { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 0 32px; padding: 0; list-style: none; }
++.ab-sfiles .mono { font-size: 12px; }
++.ab-sfiles > li { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 7px; background: var(--surface); border: 1px solid var(--line-soft); font-size: var(--t-micro); line-height: var(--lh-micro); }
++
++/* ---- overlaps ------------------------------------------------------------ */
++.ab-overs { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
++.ab-overs > li {
++  display: grid; grid-template-columns: 64px minmax(0, 1.3fr) 120px minmax(0, 1fr) 84px; gap: 4px 14px; align-items: baseline;
++  padding: 9px 4px; border-bottom: 1px solid var(--line-soft); font-size: var(--t-meta); line-height: var(--lh-meta);
++}
++.ab-overs > li:last-child { border-bottom: 0; }
++.ab-pr { color: var(--sk-ac); font-weight: 700; font-size: var(--t-body); }
++.ab-over-t { display: grid; min-width: 0; }
++.ab-over-t .ab-dim { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
++.ab-where { justify-self: start; font-size: var(--t-micro); font-weight: 650; padding: 1px 8px; border-radius: var(--r-pill); background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; }
++.ab-effect { color: var(--text-dim); }
++.ab-overs > li[data-on='y'] { background: color-mix(in srgb, var(--sk-ac) 6%, transparent); }
++.ab-over-x { align-self: center; justify-self: end; }
++.ab-over-d { grid-column: 2 / -1; display: grid; gap: 8px; margin: 4px 0 2px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line-soft); }
++.ab-over-d dt { font-weight: 600; overflow-wrap: anywhere; }
++.ab-over-d dd { margin: 2px 0 0; display: flex; gap: 8px; align-items: baseline; }
++.ab-over-d .ab-fk { flex: none; width: 72px; }
++
++/* ---- raw ----------------------------------------------------------------- */
++.ab-raw { padding: 12px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
++.ab-raw > summary { cursor: pointer; font-weight: 650; font-size: var(--t-body); line-height: var(--lh-body); }
++.ab-raw > summary .ab-dim { font-weight: 400; font-size: var(--t-meta); }
++.ab-raw-s h4 { margin: 14px 0 6px; font-size: var(--t-meta); }
++.ab-raw-s pre {
++  margin: 0; padding: 12px 14px; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
++  background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: 8px; font-family: var(--mono); font-size: var(--t-micro); line-height: 1.55;
++}
++
++/* ---- phone ---------------------------------------------------------------- */
++@media (max-width: 640px) {
++  .ab-head { padding: 14px 14px 12px; }
++  .ab-purpose { font-size: var(--t-lead); line-height: var(--lh-lead); }
++  .ab-why { font-size: var(--t-meta); line-height: var(--lh-meta); flex-wrap: wrap; gap: 4px 8px; }
++  .ab-facts { display: grid; grid-template-columns: 1fr 1fr; }
++  .ab-facts > li { min-width: 0; padding: 6px 10px; }
++  .ab-decide { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
++  .ab-act .c-btn { min-width: 0; width: 100%; }
++  .ab-exp { grid-column: 1 / -1; margin-left: 0; }
++  .ab-card { padding: 12px 12px 14px; }
++  .ab-legend { margin-left: 0; }
++  .ab-changes > li { grid-template-columns: 52px minmax(0, 1fr); }
++  .ab-cwhat { grid-column: 2; color: var(--text-dim); }
++  .ab-kv > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
++  .ab-overs > li { grid-template-columns: 56px minmax(0, 1fr); }
++  .ab-where, .ab-effect, .ab-over-x { grid-column: 2; justify-self: start; }
++  .ab-over-d { grid-column: 1 / -1; }
++  .ab-stage-row { grid-template-columns: minmax(0, 1fr); }
++  .ab-step-m, .ab-sfiles { margin-left: 0; }
++  .ab-pick-r dt { width: 64px; }
++}
