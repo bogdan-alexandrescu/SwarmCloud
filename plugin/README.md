@@ -974,8 +974,11 @@ pieces do it, and none of them submits anything.
 * **No name carries a workspace; every expanded run and row says whose,
   where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
   here should not have the [Engineering] or [eng@example.com] prefix in front of
-  the names"). Run titles are `SC · <name> · N steps` and `SC · <label> ·
-  task` (the name is cut to 150, never the count); rows inside the run are
+  the names"). Run titles are `SC ∴ <name> · N steps` (`SC ∴ <name>` for a
+  spec launched before it is submitted) and `SC · <label>` — three dots a
+  workflow, one dot a single task, right after `SC` because the panel shows
+  about 28 characters (the name is cut to 150, never the count); every
+  single task is a run of its own, whatever the `rows` setting; rows inside the run are
   `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
   task`. Each run's description starts with its DETAILS, one line, six
   fields in this order: `Workspace: <workspace> (<tenant>) · Started by:

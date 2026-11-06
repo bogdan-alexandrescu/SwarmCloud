@@ -16,12 +16,14 @@ from the one the previous call returned, plus the state transitions since
 `since`. A reply for one unfinished task is a few hundred bytes, and nothing
 in it repeats an earlier reply.
 
-WHAT IS READ, AND WHEN. Each poll reads the task document only. The attempts
+WHAT IS READ, AND WHEN. Each poll reads the task documents only -- the steps
+of one workflow through ONE workflow read, and a step's own task only when it
+changed (`_StepReads`). The attempts
 (spend, tokens) and the newest events (the last checkpoint) are read once, as
 the call returns, and only for a task that has started: a QUEUED, READY or
 PARKED task holds no capacity (invariant 1), has nothing to report but its
-state and why it waits, and is re-read at most every
-`progress.PENDING_POLL_CAP_SECONDS`. A figure that was not recorded is said in
+state and why it waits. While nothing changes, the polls back off to one every
+`IDLE_POLL_CAP_SECONDS`. A figure that was not recorded is said in
 one word (`unrecorded`, `none`), a read that failed in one word
 (`unreadable`); none is ever estimated, and an unrecorded cost is never $0.
 
@@ -54,6 +56,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -64,7 +67,7 @@ from .client import TERMINAL, SwarmClient, SwarmError
 from .follow import console_link, event_type, waiting_brief
 from .progress import (
     _PENDING,
-    PENDING_POLL_CAP_SECONDS,
+    IDLE_POLL_CAP_SECONDS,
     PERMANENT_READ_STATUSES,
     READ_FAILURE_LIMIT,
     SINCE_VERSION,
@@ -120,8 +123,12 @@ MAX_WAIT_SECONDS = 1800
 #: repeats (`plugin/agents/step.md`).
 SILENT_MAX_WAIT_SECONDS = 1200
 
-#: How often a running task is re-read inside a window. One small read.
+#: How often a task is re-read inside a window right after it changed. One
+#: small read. While nothing changes the wait doubles, up to
+#: `progress.IDLE_POLL_CAP_SECONDS` (a minute; why, there), and the first
+#: change resets it.
 POLL_SECONDS = 10.0
+
 
 #: The status a reader that is being rate limited is answered with. A 429 is
 #: NOT a failed read: the API will answer the same read once the reader slows
@@ -200,12 +207,15 @@ _WAITS_FOR = {
 def encode_since(
     states: dict[str, Any], keys: dict[str, str], failures: dict[str, int], llm_said: set[str] | None = None,
     written: dict[str, int] | None = None, fast: list[float] | None = None,
+    workflows: list[str] | None = None,
 ) -> str:
     """States last reported, each task's last line key, the read-failure
     streaks, and the tasks whose `LLM: <account>` was already said; then
     when each task's line was last handed out (`written`, epoch seconds, for
     `REFRESH_SECONDS`) and the streak of holds that came back fast (`fast`,
-    their durations in seconds, for `FAST_RETURNS_WAIT`).
+    their durations in seconds, for `FAST_RETURNS_WAIT`); then the workflows
+    whose one read served the followed steps (`workflows`, `_StepReads`), so
+    the next call reads them first instead of a task by id to find them.
 
     The same envelope as `progress.encode_since` -- base64url JSON, a dot, a
     CRC-32 -- so a relay that changes one character is refused, not resumed
@@ -224,9 +234,20 @@ def encode_since(
         payload["t"] = {k: int(v) for k, v in written.items()}
     if fast:
         payload["q"] = [round(float(v), 1) for v in fast]
+    if workflows:
+        payload["w"] = sorted(workflows)
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return f"{body}.{_checksum(body)}"
+
+
+def workflows_of(token: Any) -> list[str]:
+    """The workflows a token says served its steps (`encode_since`'s
+    `workflows`); empty for no token, one of another format, or an older one."""
+    payload = _payload(token)
+    if payload is None or payload.get("fmt") != _FORMAT or not isinstance(payload.get("w"), list):
+        return []
+    return [str(w) for w in payload["w"] if isinstance(w, str) and w]
 
 
 def decode_since(token: Any) -> tuple[dict[str, Any], dict[str, str], dict[str, int]]:
@@ -496,6 +517,124 @@ def _read(client: SwarmClient, task_id: str) -> dict[str, Any]:
         "read": "ok",
         "terminal": state in TERMINAL,
     }
+
+
+def _change_key(task: dict[str, Any]) -> tuple[Any, Any]:
+    """What makes a step's task worth reading again: its state and park reason."""
+    return task.get("state"), task.get("park_reason")
+
+
+class _StepReads:
+    """One poll's reads of the followed tasks: ONE workflow read for the steps
+    of a workflow, and a task read only for a step that changed.
+
+    `GET /v1/workflows/{id}` serves every step's task document beside the
+    workflow (`tasks`), so a poll of a five-step workflow is one read, not
+    five. A step whose state or park reason (`_change_key`) differs from the
+    last poll's is read by id -- that route serves the richer waiting detail
+    the row's line is built from -- and an unchanged one is answered with the
+    document its last read returned. A task outside any workflow, one the
+    workflow read did not serve, and every task when the workflow read failed
+    other than by a 429, are read by id as before. A single followed task is
+    always read by id: its workflow read would read every sibling for it.
+
+    The workflow a task is in is learnt from its first read by id, or from
+    the `since` token (`hinted`: the workflows that served the last call's
+    steps, read first on this call's first poll). On a call's first poll, a
+    step the workflow read serves in the state the `since` token last
+    reported (`previous`, `(state, wake key)` per task), or one the token
+    never reported, is taken from that read without a read of its own: the
+    workflow route serves the same document with the waiting reason and its
+    one line (`waiting_brief`), which is all a row prints.
+    """
+
+    def __init__(self, client: SwarmClient, task_ids: list[str],
+                 previous: dict[str, tuple[Any, str]], hinted: list[str] | None = None) -> None:
+        self._client = client
+        self._task_ids = task_ids
+        self._previous = previous
+        self._hinted = list(hinted or []) if len(task_ids) >= 2 else []
+        self._workflow_of: dict[str, str] = {}
+        self._keys: dict[str, tuple[Any, Any]] = {}
+        self._docs: dict[str, dict[str, Any]] = {}
+        #: Whether the last poll saw any followed task change from the poll
+        #: before it (the back-off's reset, `IDLE_POLL_CAP_SECONDS`).
+        self.changed = False
+
+    def poll(self) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        before = dict(self._keys)
+        read_workflows: set[str] = set()
+        known = [self._workflow_of[t] for t in self._task_ids if t in self._workflow_of]
+        first = [w for w in dict.fromkeys(known) if known.count(w) >= 2]
+        for workflow_id in dict.fromkeys(self._hinted + first):
+            self._through_workflow(workflow_id, out, read_workflows)
+        self._hinted = []
+        for task_id in self._task_ids:
+            if task_id in out:
+                continue
+            self._by_id(task_id, out)
+            workflow_id = self._workflow_of.get(task_id)
+            if (workflow_id and workflow_id not in read_workflows
+                    and any(t not in out for t in self._task_ids)):
+                self._through_workflow(workflow_id, out, read_workflows)
+        self.changed = any(t in before and self._keys.get(t) != before[t] for t in self._task_ids)
+        return out
+
+    @property
+    def workflows(self) -> list[str]:
+        """The workflows that serve two or more of the followed steps."""
+        known = [self._workflow_of[t] for t in self._task_ids if t in self._workflow_of]
+        return sorted(w for w in set(known) if known.count(w) >= 2)
+
+    def _by_id(self, task_id: str, out: dict[str, dict[str, Any]]) -> None:
+        task = _read(self._client, task_id)
+        out[task_id] = task
+        if task["read"] != "ok":
+            return
+        self._keys[task_id] = _change_key(task)
+        self._docs[task_id] = task
+        workflow_id = task.get("workflow_id")
+        if isinstance(workflow_id, str) and workflow_id:
+            self._workflow_of[task_id] = workflow_id
+
+    def _through_workflow(self, workflow_id: str, out: dict[str, dict[str, Any]],
+                          read_workflows: set[str]) -> None:
+        read_workflows.add(workflow_id)
+        try:
+            envelope = self._client.request(
+                "GET", f"/v1/workflows/{urllib.parse.quote(workflow_id, safe='')}")
+        except SwarmError as exc:
+            if exc.status == RATE_LIMITED_STATUS:
+                # The poll waits the limit out (`RATE_LIMITED_STATUS`) rather
+                # than spend the steps' reads by id on a limited API.
+                for task_id in self._task_ids:
+                    if task_id not in out and self._workflow_of.get(task_id) == workflow_id:
+                        out[task_id] = {"task_id": task_id, "read": "failed",
+                                        "error": str(exc), "http_status": exc.status}
+            return
+        served = envelope.get("tasks") if isinstance(envelope, dict) else None
+        docs = {str(d.get("id") or d.get("task_id")): d for d in served or [] if isinstance(d, dict)}
+        for task_id in self._task_ids:
+            doc = docs.get(task_id)
+            if task_id in out or doc is None:
+                continue
+            self._workflow_of[task_id] = workflow_id
+            key = _change_key(doc)
+            if task_id in self._docs:
+                if key == self._keys.get(task_id):
+                    out[task_id] = self._docs[task_id]
+                else:
+                    self._by_id(task_id, out)
+                continue
+            task = {**doc, "task_id": task_id, "read": "ok", "terminal": doc.get("state") in TERMINAL}
+            said = self._previous.get(task_id, (None, ""))
+            if said[0] is None or said == (doc.get("state"), _wake_key(task)):
+                out[task_id] = task
+                self._keys[task_id] = key
+                self._docs[task_id] = task
+            else:
+                self._by_id(task_id, out)
 
 
 def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
@@ -986,17 +1125,22 @@ def watch_progress(
     read_ok: set[str] = set()
     wake_before = {t: (keys.get(t) or "").rsplit("|", 1)[0] for t in task_ids}
     parent_states: dict[str, Any] = {}
+    parents_before: dict[str, Any] = {}
     backoff = RATE_LIMIT_BACKOFF_SECONDS
+    reads = _StepReads(client, task_ids, {t: (states.get(t), wake_before[t]) for t in task_ids},
+                       workflows_of(since))
 
     while True:
+        polled = reads.poll()
         for task_id in task_ids:
-            task = _read(client, task_id)
+            task = polled[task_id]
             latest[task_id] = task
             if task["read"] == "ok":
                 read_ok.add(task_id)
         held_by_parents = False
         limited = any(_rate_limited(latest[t]) for t in task_ids)
         if parents:
+            parents_before = parent_states
             parent_states = {}
             unfinished = False
             for parent in parents:
@@ -1051,11 +1195,10 @@ def watch_progress(
         remaining = deadline - clock()
         if remaining <= 0:
             break
-        sleep(min(interval, remaining))
-        if all(latest[t].get("state") in _PENDING for t in task_ids):
-            interval = min(interval * 2, PENDING_POLL_CAP_SECONDS)
-        else:
+        if reads.changed or (parents and parents_before and parent_states != parents_before):
             interval = POLL_SECONDS
+        sleep(min(interval, remaining))
+        interval = min(interval * 2, IDLE_POLL_CAP_SECONDS)
 
     stamp = now()
     progress: list[str] = []
@@ -1215,7 +1358,8 @@ def watch_progress(
         "changed": bool(progress),
         "transitions": transitions,
         "stop": stop,
-        "since": encode_since(states, keys, failures, said_llm, written if rows else None, fast),
+        "since": encode_since(states, keys, failures, said_llm, written if rows else None, fast,
+                              reads.workflows),
         "tasks": out_rows,
         "held_s": round(held, 1),
     }
@@ -1394,7 +1538,8 @@ def watch_summary(
             shown.append(prs[task_id])
     line = summary_line(given["noun"], given["total"], counts, shown, given["console"])
     before = last_line if last_line is not None else given["line"]
-    token = encode_since(states, keys, failures, llm_said(reply["since"]))
+    token = encode_since(states, keys, failures, llm_said(reply["since"]),
+                         workflows=workflows_of(reply["since"]))
     # The summary's own memory rides in the same checked envelope: re-sealed
     # with it, so a relay that changes one character is still refused.
     payload = _payload(token) or {}
@@ -1565,7 +1710,7 @@ def watch_stage(
         if first_call or stop or key != before or clock() >= deadline:
             break
     states, keys, failures = decode_since(token)
-    resealed = encode_since(states, keys, failures, llm_said(token))
+    resealed = encode_since(states, keys, failures, llm_said(token), workflows=workflows_of(token))
     payload = _payload(resealed) or {}
     payload["sg"] = key
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")

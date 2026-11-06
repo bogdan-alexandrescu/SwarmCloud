@@ -64,6 +64,37 @@ export function agentMaxWorkers(
   return Math.max(1, Math.floor((memoryLimitBytes - HEADROOM) / PER_WORKER))
 }
 
+/**
+ * HOW MANY VITEST WORKERS A CI SHARD RUNS (part of #2688): half the CPUs this
+ * process may run on, at least one; undefined outside CI and in an agent
+ * container, where agentMaxWorkers above decides.
+ *
+ * WHY. "[vitest-worker]: Timeout calling \"onTaskUpdate\"" failed 20 runs in
+ * which every test passed, on component shards 2, 4 and 6 of 8. vitest 3.2.7's
+ * worker gives every RPC to the main process birpc's fixed 60 s
+ * (DEFAULT_TIMEOUT in node_modules/vitest/dist/chunks/index.*.js; the worker's
+ * createRuntimeRpc passes no timeout and no config option reaches it), and that
+ * one main process answers every worker: each module transform, each console
+ * line, each task update. The self-hosted runner is an e2-standard-8 -- 8 vCPU,
+ * four physical cores -- where vitest's default of `availableParallelism() - 1`
+ * started seven jsdom workers, each a CSS-cascade-bound thread plus V8's GC
+ * helpers, so the main process queued behind them past 60 s. The same shard's
+ * files reported 485 s for spacing.accounts on CI against 38 s alone in an
+ * 8-vCPU agent container: CI was running them about thirteen times slower,
+ * which is contention, not work. One worker a physical core leaves the
+ * hyperthreads to the main process and the collectors. A longer RPC timeout is
+ * not on offer in 3.2.7, and a retry would re-run away the failure this is.
+ *
+ * GitHub sets CI=true on every runner; `--maxWorkers` on the command line
+ * still wins over this, as vitest merges it over the config file.
+ */
+export function ciMaxWorkers(env: Readonly<Record<string, string | undefined>>, cpus: number): number | undefined {
+  if (env.SWARM_TASK_ID) return undefined
+  const ci = (env.CI ?? '').trim().toLowerCase()
+  if (ci === '' || ci === 'false' || ci === '0') return undefined
+  return Math.max(1, Math.floor(cpus / 2))
+}
+
 type Workers = number | string | undefined
 type ForksOptions = { maxForks?: Workers; minForks?: Workers }
 type ThreadsOptions = { maxThreads?: Workers; minThreads?: Workers }

@@ -59,6 +59,14 @@ posts each final utterance GPT-Live heard so the read-back gate can tell a
 note writes the planner draws through (§8.3). Each is classed as heard in
 `voice/readback.py`, and each writes only to the grant's own session.
 
+THE WRITE LIST ALSO HOLDS the planner's one act route (voice-it.md §3.9; BGD's
+pick, 6 November 2026): `POST /v1/tasks/{task_id}/answers`, the answer to an
+agent's question, sent by swarm-voice's `answer_question` act tool with
+`via: voice-it` after a read-back the person confirmed. Who may answer is the
+route's rule, unchanged: the task's submitter or an admin, never a viewer
+(`role_member_required`), and a grant carries none of the person's
+platform-admin powers. It runs as heard (`readback.AS_HEARD_ROUTES`).
+
 THE READ-BACK GATE (voice-it-own-speech.md §7.2). An act route that cancels,
 merges, deploys, deletes or approves (`readback.GATED_ROUTES`) does not run on
 a grant alone: `gate` holds it as a pending read-back and answers 202
@@ -144,6 +152,9 @@ WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # §8.3: the planner's visuals and spoken notes (routes/voice_visuals.py).
     ("POST", "/v1/voice/sessions/{session_id}/visuals"),
     ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
+    # voice-it.md §3.9: the planner's answer act tool (swarm_voice/tools_act.py),
+    # BGD's pick of 6 November 2026. The route's own rule decides who answers.
+    ("POST", "/v1/tasks/{task_id}/answers"),
 })
 
 

@@ -725,8 +725,12 @@ export interface OwnerAnswerVersion {
   session?: string | null
 }
 
-/** `AnswerBody.via` in agent_questions.py: where an answer was given. */
-export type AnswerVia = 'console' | 'claude-code'
+/**
+ * `AnswerBody.via` in agent_questions.py: where an answer was given --
+ * `github-comment` for one taken from the issue's comment, `voice-it` for one
+ * given in a Voice it session (`voice/grant.py`'s `VIA`).
+ */
+export type AnswerVia = 'console' | 'claude-code' | 'github-comment' | 'voice-it'
 
 /**
  * The owner's answer to one question (`codec.owner_answer_to_api`), with the

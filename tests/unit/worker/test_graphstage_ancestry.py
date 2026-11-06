@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -235,6 +236,15 @@ def test_prepare_goes_on_with_the_reason_when_the_fetch_fails(db, store, tmp_pat
         return "the history fetch failed (git exit 128)"
 
     monkeypatch.setattr(gitops, "fetch_base_history", refused)
+    # The commit-only history goes first; refused offline, as the forge would
+    # refuse a private repository, so the fallback is asked too.
+    history_asked: list[dict[str, Any]] = []
+
+    def no_history(**kwargs: Any) -> str:
+        history_asked.append(kwargs)
+        return "the commit history fetch failed (git exit 128)"
+
+    monkeypatch.setattr(gitops, "fetch_commit_history", no_history)
     env = graphstage.prepare(lane.checkout.parent, profile_name="claude-code",
                              runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
                              db=db, store=store, tenant_id=TENANT, repository_url=URL,
@@ -317,3 +327,166 @@ def test_a_token_is_held_in_a_scoped_file_and_no_planted_helper_is_handed_it(tmp
     assert not any(token in p.read_text(errors="replace")
                    for p in private.rglob("*") if p.is_file())
     assert f"--depth={gitops.ANCESTRY_FETCH_DEPTH}" in argv and argv[-1] == "a" * 40
+
+
+# --------------------------------------------------------------------------
+# the commit-only history (lane GRAPH-DELIVERY, BGD 2026-11-06)
+# --------------------------------------------------------------------------
+#
+# AI Studio's graph was not delivered on 213 of 637 steps: the deepen of the
+# checkout brought every blob 200 commits changed and ran past its 20-second
+# limit. The proof reads commits and trees only; `fetch_commit_history`
+# fetches those alone, into a scratch repository.
+
+_REAL_GIT = shutil.which("git") or "/usr/bin/git"
+
+
+def _blob_fetch_is_slow(tmp_path: Path, *, filtered_exit: int | None = None) -> Path:
+    """A git whose fetch WITHOUT `--filter=blob:none` -- the blob-carrying
+    deepen -- outlasts any limit a test sets, as on AI Studio's repository;
+    with `filtered_exit`, the filtered fetch exits that code instead (a forge
+    that refuses the filter)."""
+    wrapper = tmp_path / "bin" / "git"
+    wrapper.parent.mkdir(exist_ok=True)
+    refuse = f"exit {filtered_exit}" if filtered_exit is not None else ":"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'case " $* " in\n'
+        f'  *" fetch "*" --filter=blob:none "*) {refuse} ;;\n'
+        '  *" fetch "*) exec sleep 30 ;;\n'
+        "esac\n"
+        f'exec {_REAL_GIT} "$@"\n')
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    return wrapper
+
+
+def _fetcher(lane: _Lane, monkeypatch: Any, git: Path, limit: float):
+    # `file://` is the offline forge; the production URL check refuses it.
+    monkeypatch.setattr(gitops, "validate_repository_url", lambda url: url)
+    return graphstage.history_fetcher(lane.url, lane.private, timeout_seconds=limit,
+                                      git_binary=str(git))
+
+
+def _filtered_origin(lane: _Lane) -> _Lane:
+    _git(lane.origin, "config", "uploadpack.allowFilter", "true")
+    return lane
+
+
+def test_a_slow_blob_fetch_still_yields_a_proof_by_the_commit_history_within_the_bound(
+        tmp_path, monkeypatch):
+    lane = _filtered_origin(_Lane(tmp_path))
+    fetch = _fetcher(lane, monkeypatch, _blob_fetch_is_slow(tmp_path), limit=6.0)
+    deepen = graphstage._HistoryOnce(fetch, lane.checkout, lane.base)
+
+    proof = graphstage.prove_ancestry(lane.checkout, lane.main[3], lane.base, {},
+                                      deepen=deepen)
+
+    # MUTATION: `history_fetcher` deepening the checkout first (the old path)
+    # waits out the limit and leaves a str here.
+    assert isinstance(proof, graphstage.Ancestry), proof
+    assert (proof.basis, proof.behind_by, proof.changed) == ("git", 2, ["m4.py", "m5.py"])
+    assert deepen.seconds is not None and deepen.seconds < 6.0
+    history = lane.private / gitops.ANCESTRY_HISTORY_DIR
+    kinds = subprocess.run([_REAL_GIT, "-C", str(history), "cat-file", "--batch-all-objects",
+                            "--batch-check=%(objecttype)"], capture_output=True, check=True,
+                           env={**_ENV, "HOME": str(tmp_path)}).stdout.decode().split()
+    # MUTATION: dropping `--filter=blob:none` fetches every file's contents.
+    assert "commit" in kinds and "tree" in kinds and "blob" not in kinds
+    # MUTATION: the history fetched into the checkout deepens the agent's clone.
+    assert _git(lane.checkout, "rev-list", "--count", "HEAD") == "1"
+    # MUTATION: leaving the promisor config lazily fetches what was not brought.
+    assert "promisor" not in (history / "config").read_text().lower()
+    deepen.close()
+    assert not history.exists()
+
+
+def test_the_staging_delivers_the_graph_and_removes_the_scratch_history(
+        db, store, tmp_path, monkeypatch):
+    lane = _filtered_origin(_Lane(tmp_path))
+    _no_ab(db)
+    _promote(db, store, lane.main[4])
+    fetch = _fetcher(lane, monkeypatch, _blob_fetch_is_slow(tmp_path), limit=6.0)
+
+    result = _stage(db, store, lane, fetch)
+
+    assert result.staged, result.reason
+    assert result.history_seconds is not None and result.history_seconds < 6.0
+    # MUTATION: no `close()` after the staging leaves the history on disk.
+    assert not (lane.private / gitops.ANCESTRY_HISTORY_DIR).exists()
+
+
+def test_a_filter_the_forge_refuses_falls_back_to_the_bounded_deepen(tmp_path, monkeypatch):
+    lane = _Lane(tmp_path)
+    real = tmp_path / "bin" / "git"
+    real.parent.mkdir()
+    # The fallback's own fetch runs real git: only the filtered one is refused.
+    real.write_text(f'#!/bin/sh\ncase " $* " in *" --filter=blob:none "*) exit 128 ;; esac\n'
+                    f'exec {_REAL_GIT} "$@"\n')
+    real.chmod(real.stat().st_mode | stat.S_IXUSR)
+    fetch = _fetcher(lane, monkeypatch, real, limit=10.0)
+
+    proof = graphstage.prove_ancestry(lane.checkout, lane.main[3], lane.base, {},
+                                      deepen=lambda: fetch(lane.checkout, lane.base))
+
+    # MUTATION: no fallback after a refused filter loses every proof on such
+    # a forge.
+    assert isinstance(proof, graphstage.Ancestry), proof
+    assert (proof.basis, proof.behind_by) == ("git", 2)
+
+
+def test_a_proof_that_fails_by_the_new_path_still_says_why(tmp_path, monkeypatch):
+    lane = _filtered_origin(_Lane(tmp_path))
+    # Both fetches refused: the reason names each.
+    both = _fetcher(lane, monkeypatch, _blob_fetch_is_slow(tmp_path, filtered_exit=128),
+                    limit=3.0)
+    proof = graphstage.prove_ancestry(lane.checkout, lane.main[3], lane.base, {},
+                                      deepen=lambda: both(lane.checkout, lane.base))
+    assert isinstance(proof, str)
+    # MUTATION: the fallback's reason replacing the first one hides why the
+    # commit history did not land.
+    assert "the commit history fetch failed (git exit 128)" in proof
+    assert "the history fetch timed out" in proof
+    assert "cannot be shown" in proof
+
+    # An index older than the commits fetched is not shown, not guessed.
+    proof = graphstage.prove_ancestry(
+        lane.checkout, lane.main[0], lane.base, {},
+        deepen=lambda: gitops.fetch_commit_history(url=lane.url, base_sha=lane.base,
+                                                   private_dir=lane.private, depth=3))
+    # MUTATION: a missing index commit read as "not an ancestor" (or as one).
+    assert isinstance(proof, str) and "not within the history fetched" in proof
+
+
+def test_the_commit_history_fetch_timing_out_does_not_start_the_fallback(tmp_path,
+                                                                         monkeypatch):
+    lane = _Lane(tmp_path)
+    stalled = tmp_path / "bin" / "git"
+    stalled.parent.mkdir()
+    stalled.write_text(f'#!/bin/sh\ncase " $* " in *" fetch "*) exec sleep 30 ;; esac\n'
+                       f'exec {_REAL_GIT} "$@"\n')
+    stalled.chmod(stalled.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(gitops, "ANCESTRY_FETCH_GRACE_SECONDS", 0.5)
+    fetch = _fetcher(lane, monkeypatch, stalled, limit=1.0)
+
+    why = fetch(lane.checkout, lane.base)
+
+    # MUTATION: a fallback after a timeout doubles the wait past the limit.
+    assert why == "the commit history fetch timed out after 1 s"
+    assert not (lane.private / gitops.ANCESTRY_HISTORY_DIR).exists()
+
+
+def test_a_proof_from_the_scratch_history_without_the_changed_files_is_not_staged(
+        tmp_path, monkeypatch):
+    lane = _filtered_origin(_Lane(tmp_path))
+    unread = graphstage.Ancestry(basis="git", behind_by=2, changed=None)
+    monkeypatch.setattr(graphstage, "_git_ancestry", lambda *_args: unread)
+
+    proof = graphstage.prove_ancestry(
+        lane.checkout, lane.main[3], lane.base, {},
+        deepen=lambda: gitops.fetch_commit_history(url=lane.url, base_sha=lane.base,
+                                                   private_dir=lane.private))
+
+    # MUTATION: staging a proof whose changed files are unknown serves a
+    # stale graph as current (freshness reads "nothing changed").
+    assert isinstance(proof, str)
+    assert "the files changed since the index could not be read" in proof

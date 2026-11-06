@@ -407,9 +407,11 @@ def test_the_mcp_sends_the_callers_identity_and_nothing_that_could_raise_it() ->
     client sets is the caller's own bearer token, the workspace it selects
     (which the API checks against the caller), or content negotiation."""
     # `Accept-Encoding` is content negotiation (API-GZIP, #1822): it asks for a
-    # gzip body and can raise nothing.
+    # gzip body and can raise nothing. `User-Agent` is `swarm-mcp/<version>
+    # (<kind>)` (#2688): it names the client build for the version-skew check
+    # and carries no credential, so it can raise nothing either.
     allowed = {"Authorization", "Accept", "Accept-Encoding", "Content-Type", "Content-Length",
-               "TENANT_HEADER"}
+               "TENANT_HEADER", "User-Agent"}
     seen: dict[str, list[str]] = {}
     for source in _mcp_sources():
         for match in re.finditer(r"add_header\(\s*(?:\"([^\"]+)\"|([A-Za-z_.]+))", source.read_text()):

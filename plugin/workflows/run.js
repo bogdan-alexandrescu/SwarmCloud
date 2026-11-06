@@ -6,7 +6,7 @@ export const meta = {
     { title: 'Submit', detail: 'given a path or a launch\'s spec_handle, one sc:spec agent, which has no submit tool, reads its outline with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
     { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent lists the running workflows and your running single tasks with swarm_workflows and the run returns the attach call for each workflow and one for the tasks; nothing is submitted' },
     { title: 'Tasks', detail: 'given {attach_tasks: [...]}, one sc:task row per single task -- a task in no workflow -- titled from its label, follows it until it finishes; nothing is submitted' },
-    { title: 'Summary', detail: 'given rows: "summary" (the sc plugin\'s default), ONE sc:summary row follows the whole workflow or task batch instead of a row each, writing a count line only when the counts change and naming each step that fails or waits for a person' },
+    { title: 'Summary', detail: 'given rows: "summary" (the sc plugin\'s default), ONE sc:summary row follows the whole workflow instead of a row each (a single task keeps its own sc:task row), writing a count line only when the counts change and naming each step that fails or waits for a person' },
     { title: 'Finish', detail: 'given rows: "pane" (the sc plugin\'s pane layout, /sc layout pane), ONE sc:finish row per workflow notices its finish, writing a stage line only when the workflow\'s stage changes and holding each follow until it does; the SwarmCloud pane browses the stages' },
     { title: 'Result', detail: 'one sc:workflow agent reads the workflow state SwarmCloud derived with one swarm_workflow_status call, and re-attaches once any step whose row ended UNKNOWN while the workflow still runs' },
   ],
@@ -1953,9 +1953,27 @@ function taskPrompt(task) {
   ].join('\n')
 }
 
+// A TASK ROW HOLDS UNTIL ITS TASK ENDS (Product Oracle, 2026-11-06). Run
+// wa0iq1ptb's sc:task row, started from a swarm_dispatch reply (a ref of
+// refs/pull/1309/head, strategy collect), answered after about 7 s while its
+// task was still DISPATCHED, and the run ended FOLLOWED with no row left. A
+// row's answer ends it only when its state is final: one of TERMINAL, PARKED
+// with what a person must do (the bridge's waiting_on_person stop), or the
+// row's own UNKNOWN with its error. Any other answer -- a live state, the
+// turn cap's `running`, no state at all -- starts the row again under the same
+// label, TASK_ROW_RESTARTS times at most; the bridge resumes the follow.
+const TASK_ROW_RESTARTS = 5
+
+function taskRowFinal(result) {
+  if (!result || typeof result.state !== 'string') return false
+  if (TERMINAL.indexOf(result.state) >= 0 || result.state === 'UNKNOWN') return true
+  return result.state === 'PARKED' && !!result.waiting_on_person
+}
+
 // One single task's row, started again under the same label while the bridge
-// is down, exactly as followRow does for a step; the last answer's last_error
-// then ends with the command that gives it a row again.
+// is down, exactly as followRow does for a step, and while it answers before
+// its task ends (taskRowFinal); the last answer's last_error then ends with
+// the command that gives it a row again.
 async function followTaskRow(task, name) {
   const opts = {
     label: rowLabel(name, 'task', task.console),
@@ -1965,11 +1983,25 @@ async function followTaskRow(task, name) {
   }
   let result = null
   let waits = 0
+  let restarts = 0
   for (let tried = 1; tried <= BRIDGE_TRIES; tried++) {
     try {
       result = stepAnswer(await liveAgent(task.task_id, taskPrompt(task), opts))
     } catch (error) {
       return { row_error: failureText(error) }
+    }
+    if (!holdWait(result) && !taskRowFinal(result)) {
+      const said = result && typeof result.state === 'string' && result.state ? result.state : 'no state'
+      if (restarts >= TASK_ROW_RESTARTS) {
+        return Object.assign({}, result, {
+          state: said === 'no state' ? 'UNKNOWN' : result.state,
+          last_error: 'its row answered ' + said + ' before the task ended, ' + (restarts + 1) + ' times · resume: /sc attach --all',
+        })
+      }
+      restarts++
+      log(task.task_id + ' · its row answered ' + said + ' before the task ended · following it again, ' + restarts + ' of ' + TASK_ROW_RESTARTS)
+      tried--
+      continue
     }
     if (holdWait(result)) {
       if (waits >= HOLD_WAITS_MAX) return holdGaveUp(result)
@@ -2297,8 +2329,8 @@ function summaryNotices(name, item) {
 //   Stage 1
 //     implement · RUNNING · console: https://...
 // The row writes them again only when a step's state changes, never for the
-// remote log. `items` carry `stage` (consoleStages); a batch of single tasks
-// has no stages and no step lines.
+// remote log. `items` carry `stage` (consoleStages); a single task is never
+// in a summary row (attachTasks gives it its own sc:task row).
 function stepLines(items) {
   const ordered = items
     .map((item, index) => ({ item: item, index: index }))
