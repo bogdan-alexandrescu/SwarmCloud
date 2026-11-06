@@ -9657,6 +9657,12 @@ env:
     setter: 'internal: read at apps/reconciler/reconciler/config.py:519; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_ENABLE_GKE_EVICTION:
     setter: 'internal: read at apps/reconciler/reconciler/config.py:489; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+  RECONCILER_FULL_SWEEP_EVERY:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:507; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+  RECONCILER_INCREMENTAL_OVERLAP_SECONDS:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:509; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+  RECONCILER_TICK_SECONDS:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:508; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   REGION:
     setter: terraform/infra/locals.tf:682
   REPOSITORY_GRANTS_ENFORCED:
