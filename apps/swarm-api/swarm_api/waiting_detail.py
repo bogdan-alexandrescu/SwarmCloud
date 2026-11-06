@@ -750,9 +750,46 @@ def _question_wait(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     return {"detail": detail, "summary": summary, "resumes_when": resumes, "since": began}
 
 
+#: A merge step's CI wait handed to a person (`agent_worker.merge.CI_WAIT_STUCK`,
+#: part of #2688): `park_phase` names it and the phase's key holds the
+#: evidence and its one `line`. Spelled again: the worker is not installed here.
+CI_STUCK_PHASE = "ci_wait_stuck"
+#: The evidence fields served, each copied by name and type.
+_CI_STUCK_INTS = ("pull_request", "waited_minutes", "re_checks", "fix_rounds_ran", "fix_rounds_asked")
+_CI_STUCK_NAMES = ("failed_checks", "failed_again_after_round", "main_red_on_same")
+
+
+def _ci_stuck(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
+    """A merge step whose CI wait no re-check will end: its one line leads.
+
+    The step re-checked CI for hours, its repair rounds spent or the same
+    check failing after one (BGD, 2026-11-06: 28 attempts over 8 hours, and
+    the page listed them one by one). The summary is the worker's line --
+    how long, how many re-checks, what fails, the rounds, main -- and a
+    person's "I'm ready" re-reads the pull request with a fresh clock."""
+    stuck = _mapping(facts.get(CI_STUCK_PHASE))
+    detail: dict[str, Any] = {"park_phase": CI_STUCK_PHASE, "why": _str(stuck.get("why")),
+                              "head": _str(stuck.get("head")),
+                              "wait_started_at": _as_dt(stuck.get("wait_started_at")),
+                              "fix_rounds_spent": stuck.get("fix_rounds_spent") is True,
+                              "who_may_answer": _who(task),
+                              "answer_route": f"POST /v1/tasks/{task.id}/human-ready"}
+    for key in _CI_STUCK_INTS:
+        detail[key] = _int(stuck.get(key))
+    for key in _CI_STUCK_NAMES:
+        detail[key] = _names(stuck.get(key))
+    line = _str(stuck.get("line"))
+    summary = (line[:600] if line else "CI wait handed to a person: its re-checks would not end it")
+    resumes = "a member of the workspace calls human-ready once CI can pass (the console's Ready button)"
+    return {"detail": detail, "summary": summary, "resumes_when": resumes,
+            "since": detail["wait_started_at"]}
+
+
 def _human(task: Task, facts: dict[str, Any]) -> dict[str, Any]:
     if facts.get("park_phase") == OWNER_QUESTIONS_PHASE:
         return _owner_questions(task, facts)
+    if facts.get("park_phase") == CI_STUCK_PHASE:
+        return _ci_stuck(task, facts)
     if facts.get("park_phase") == QUESTION_WAIT_PHASE:
         return _question_wait(task, facts)
     detail = {
