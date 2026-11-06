@@ -16,8 +16,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from swarm_install.steps import foundations
-
 ROOT = Path(__file__).resolve().parents[3]
 MAIN_TF = ROOT / "terraform" / "infra" / "main.tf"
 DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars"
@@ -63,6 +61,10 @@ def test_dev_runs_at_most_8_swarm_api_instances():
 
 
 def test_the_installer_floor_prices_two_instances_of_the_new_size():
+    # Imported here: swarm_install pulls in pydantic, which collection of
+    # tests/unit/scripts must not pay for (test_collection_stays_cheap.py).
+    from swarm_install.steps import foundations
+
     (api,) = [(what, usd) for what, usd in foundations.MONTHLY_FLOOR_USD if what.startswith("swarm-api")]
     # 2 vCPU x $0.000018 + 2 GiB x $0.000002 a second, CPU always allocated,
     # 730 hours: ~$105 an instance, two of them.
