@@ -2,7 +2,7 @@
 
     voice_settings/platform
         {engine, machine, stt_model, tts_model, tts_voice, conversation_model,
-         idle, zone, version, updated_by, updated_at,
+         planner_model, idle, zone, version, updated_by, updated_at,
          applied: {machine, stt_model, tts_model, idle, zone, image, at}}
 
 ONE DOCUMENT for the deployment: one speech machine serves it. A missing
@@ -25,8 +25,15 @@ PENDING VERSUS APPLIED. `applied` is written by the speech machine's lifecycle
 the boot has the models, §11.4). `pending` is every machine field whose chosen
 value differs from `applied`: what the next start changes. A change made during
 a session is pending and never touches the running machine. `engine`,
-`tts_voice` and `conversation_model` take effect at the next session or
-sentence without touching the machine, so they are never pending.
+`tts_voice`, `conversation_model` and `planner_model` take effect at the next
+session or sentence without touching the machine, so they are never pending.
+
+THE PLANNER MODEL is read once, at a session's start
+(`VoiceSettings.session_planner_model`): the chosen class's pin, which the
+start body hands swarm-voice and swarm-voice keeps for that session. A change
+reaches the next session, never one already running. A document that never
+set it gives None, and swarm-voice keeps VOICE_PLANNER_MODEL (voice.tf's
+`local.runner_models.fable`), which is the same class as the default.
 
 THE OPENAI KEY'S STATUS (§10.3) is `{set, by, at}` and never the key: `set`
 from the quota broker's Voice it pool (an `openai-api` account), `by` and `at`
@@ -178,6 +185,18 @@ class VoiceSettings:
     def read(self) -> dict[str, Any]:
         snap = self._ref().get()
         return view((snap.to_dict() or {}) if snap.exists else {}, self.zones)
+
+    def session_planner_model(self, class_models: Mapping[str, str]) -> str | None:
+        """The model id a session starting now plans on, for its start body:
+        the stored class's pin in `class_models` (swarm-api's
+        `worker_class_models`). None when the setting is unset, names a class
+        the catalogue no longer lists, or the class has no pin of its own
+        class: swarm-voice then keeps VOICE_PLANNER_MODEL."""
+        snap = self._ref().get()
+        stored = (snap.to_dict() or {}).get("planner_model") if snap.exists else None
+        if not isinstance(stored, str):
+            return None
+        return cat.planner_pin(stored, class_models)
 
     def update(self, *, changes: Mapping[str, Any], version: Any, by: str) -> dict[str, Any]:
         """Write `changes` made against `version`, with its audit row, in one
