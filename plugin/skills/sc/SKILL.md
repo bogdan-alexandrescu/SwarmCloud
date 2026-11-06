@@ -136,6 +136,10 @@ that tracks it. The console's workflow page heads with both, so write them
 for a person who opens the workflow cold. They are sent as
 `metadata.description` and `metadata.feature`; a malformed one is refused
 before anything is sent, and a longer description is refused, never cut.
+A spec should send `about: {purpose, goals, output}` -- why the work exists
+(one sentence, at most 300 characters), up to three goals (at most 120 each)
+and what lands (one sentence, at most 300) -- sent as `metadata.about` and
+checked the same way, each refusal naming the part.
 
 ### Every run is titled after its workflow
 
@@ -297,7 +301,8 @@ others; each starts ONE `[SwarmCloud] <label> · task` row, with its workspace
 and the rest of its details shown when the row is expanded, following its
 task until it finishes. That holds whatever the `rows` setting (owner
 2026-11-04: a summary row over a batch read `0/1` and showed counts, not
-lanes); `max_live_rows` caps the total (at most 100 by default) and the rest
+lanes);
+a task row that answers before its task ends (SUCCEEDED, FAILED, CANCELLED, DEAD_LETTERED) or parks for a person is started again at once, so it never ends on a DISPATCHED task; `max_live_rows` caps the total (at most 100 by default) and the rest
 come back in `not_followed`. A copy launched with any task but the one it
 was written for is refused, naming the right call: never reuse one. `single_tasks` says how many there were;
 `single_tasks_error` means they could not be read — say so verbatim.
@@ -429,6 +434,7 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    `launches` is an answer: every running workflow of the project already has
    its rows. `/sc attach <wf_id>` by hand always attaches, whatever was
    attached before -- that is how a row that was closed comes back.
+   Each `rowless_tasks` entry is a running task this session dispatched whose row never started: say its `line` and make its Workflow call (`launch`) now.
 3. When step 2 launched at least one run, the mandatory final step:
    [Arming the watch](#arming-the-watch), with its reply's `arm_watch`.
    `nothing_running` in the check's answer means nothing of the project runs:
@@ -553,7 +559,8 @@ nothing). The verbs: `run` (including a run that ended `SUBMISSION_UNKNOWN`
 or `SUBMITTED_UNVERIFIED` -- work may be running, and the result's own
 `arm_watch` says to arm with `swarm_workflow_launch`'s; only `NOT_SUBMITTED`
 sent nothing), `run --issue` once its workflow exists, every `swarm_dispatch`
-(one task or `tasks`: the reply carries `arm_watch` beside its `rows`),
+(one task or `tasks`: the reply carries `arm_watch` beside its `rows`,
+whose mode is the attach's: its own `rows` argument, else the project's layout, else the plugin's `rows`),
 `attach <wf_id>` even of a workflow that has already finished, `attach
 --all`, and a `check` that attached something.
 Otherwise:

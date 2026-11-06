@@ -26,6 +26,7 @@ import pytest
 
 from agent_worker import inputs as worker_inputs
 
+from swarm_api import wfdescription
 from swarm_api.validation import (
     DEFAULT_INPUT_LAYOUT,
     INPUT_LAYOUT_METADATA_KEY,
@@ -156,7 +157,10 @@ def test_a_non_opted_collision_is_still_refused(client, db, api_context, layout)
     assert api_context.waker.calls == []
 
 
-def test_a_non_opted_step_stores_exactly_what_it_stored_before(client, db):
+def test_a_non_opted_step_stores_exactly_what_it_stored_before(client, db, monkeypatch):
+    # The generated workflow description is written onto every step by a
+    # thread after the submission; this asserts what the submission stores.
+    monkeypatch.setattr(wfdescription, "after_submission", lambda *a, **k: None)
     steps = [_root("research"), {
         "step_id": "write",
         "runner_profile": "mock",

@@ -1,4 +1,4 @@
-// The prose ceilings' pages slice: proseapp.tsx walks it, prose.ceilings.json holds its rows.
+// The prose ratchet's pages slice: proseapp.tsx walks it, the base is its ceiling.
 import { proseGroup } from './proseapp'
 
 proseGroup('pages')

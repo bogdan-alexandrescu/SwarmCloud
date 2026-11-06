@@ -156,7 +156,8 @@ def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has
     have available". Every entry is a Claude model the platform prices, so
     each pick runs on the pool and is costed. The default is the haiku
     class's pin, the model the front runs with no setting (BGD, 6 November
-    2026); every other entry is one the platform's price seed lists."""
+    2026), and it too is one the platform's price seed lists (BGD, 6 November
+    2026: the seed lists claude-haiku-5-5)."""
     from swarm_api import modelprices
 
     body = client.get("/v1/voice/settings/catalogue", headers=_as(ALICE)).json()
@@ -166,7 +167,7 @@ def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has
     assert [m["name"] for m in listed][0] == body["defaults"]["conversation_model"]
     assert body["defaults"]["conversation_model"] == "claude-haiku-5-5"
     assert listed[0]["model"] == _runner_models()["haiku"]
-    for m in listed[1:]:
+    for m in listed:
         assert m["name"] in modelprices.SEED, m
     for m in listed:
         assert m["model"].startswith(m["name"]) and m["label"], m

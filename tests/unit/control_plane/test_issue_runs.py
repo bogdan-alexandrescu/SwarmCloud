@@ -1622,3 +1622,36 @@ def test_a_plan_approval_refused_by_the_workspace_gate_leaves_the_run_planned(
     assert response.json()["code"] == "WORKSPACE_NOT_READY"
     assert _run(client, run["id"], "carol").json()["run"]["state"] == "PLANNED"
     assert not _docs(db, "workflows")
+
+
+# --------------------------------------------------------------------------
+# #3507: an overlap ref that is a run lane the IN FLIGHT section listed
+# --------------------------------------------------------------------------
+
+def test_3507_a_listed_run_id_overlap_ref_is_normalised_and_an_unlisted_one_refused():
+    lane, other = "run_3507a1b2c3d4", "run_3507e5f6a7b8"
+    lane_refs = {lane: "example-org/widgets#9"}
+
+    def with_ref(ref: str) -> dict:
+        return {**FULL_PLAN, "overlaps": [{**FULL_PLAN["overlaps"][0], "ref": ref}]}
+
+    # A listed run id becomes the run's issue, and digests as if written so.
+    kind, plan = issueruns.parse_planner_output(with_ref(f" {lane} "), lane_refs=lane_refs)
+    assert kind == "plan"
+    assert plan == FULL_PLAN
+    assert plan_digest(plan) == plan_digest(issueruns.parse_plan(FULL_PLAN))
+    # A run id the section did not list is still refused, naming where.
+    with pytest.raises(issueruns.InvalidPlan) as refused:
+        issueruns.parse_planner_output(with_ref(other), lane_refs=lane_refs)
+    assert "overlaps.0.ref" in refused.value.message
+    # Without the map, a run id is refused exactly as today.
+    with pytest.raises(issueruns.InvalidPlan) as refused:
+        issueruns.parse_planner_output(with_ref(lane))
+    assert "overlaps.0.ref" in refused.value.message
+    # A plan already in owner/repo#N reads and digests the same either way.
+    assert (issueruns.parse_planner_output(FULL_PLAN, lane_refs=lane_refs)
+            == issueruns.parse_planner_output(FULL_PLAN) == ("plan", FULL_PLAN))
+    # The caller's plan is not rewritten in place.
+    original = with_ref(lane)
+    issueruns.parse_planner_output(original, lane_refs=lane_refs)
+    assert original["overlaps"][0]["ref"] == lane

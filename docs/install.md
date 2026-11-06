@@ -80,10 +80,10 @@ uses it:
 
 | Line | USD a month |
 |---|---|
-| swarm-api's two always-on instances, 1 vCPU / 1 GiB each | 105 |
+| swarm-api's two always-on instances, 2 vCPU / 2 GiB each | 210 |
 | the GKE cluster's management fee, $0.10 an hour | 73 |
 | the HTTPS load balancer's forwarding rule, $0.025 an hour | 18 |
-| **floor, before any agent runs** | **about 196** |
+| **floor, before any agent runs** | **about 301** |
 
 Agent runs are billed on top, by the minute they run
 ([cost-control.md](cost-control.md)).

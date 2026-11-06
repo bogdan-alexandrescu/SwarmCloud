@@ -720,13 +720,20 @@ def _voice_settings(db, **fields) -> None:
     db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set({"version": 1, **fields})
 
 
-def test_the_start_sends_the_settings_planner_and_conversation_models(client, db, voice, monkeypatch):
+@pytest.fixture
+def pinned(db, tokens, group_map, objects, voice) -> TestClient:
+    """`client`, on a deployment whose settings pin the classes to CLASS_PINS."""
+    return _client(db, tokens, group_map, objects, voice,
+                   voice_url="http://voice.internal:8080",
+                   voice_people=("alice@example.com", "bob@example.com"),
+                   worker_class_models=dict(CLASS_PINS))
+
+
+def test_the_start_sends_the_settings_planner_and_conversation_models(pinned, db, voice):
     """BGD, 6 November 2026 ('wire-in-follow-up', 'front-reads-it'): the
     planner class's pin and the conversation model's id, read at the start.
     A change reaches the next session's start, never the one already started."""
-    import json
-
-    monkeypatch.setenv("WORKER_CLASS_MODELS", json.dumps(CLASS_PINS))
+    client = pinned
     _voice_settings(db, planner_model="opus", conversation_model="claude-sonnet-5")
     first = _start(client, "alice")
     assert first.status_code == 200, first.text
@@ -739,10 +746,8 @@ def test_the_start_sends_the_settings_planner_and_conversation_models(client, db
         ("claude-opus-5-5", "claude-sonnet-5"), ("claude-sonnet-5-5", "claude-haiku-5-5")]
 
 
-def test_unset_or_unlisted_models_are_none_so_swarm_voice_keeps_its_pins(client, db, voice, monkeypatch):
-    import json
-
-    monkeypatch.setenv("WORKER_CLASS_MODELS", json.dumps(CLASS_PINS))
+def test_unset_or_unlisted_models_are_none_so_swarm_voice_keeps_its_pins(pinned, db, voice):
+    client = pinned
     first = _start(client, "alice")  # no settings document at all
     assert first.status_code == 200, first.text
     assert _end(client, "alice", first.json()["session_id"]).status_code == 200
@@ -751,6 +756,28 @@ def test_unset_or_unlisted_models_are_none_so_swarm_voice_keeps_its_pins(client,
     assert second.status_code == 200, second.text
 
     assert [(c.planner_model, c.conversation_model) for c in voice.starts] == [(None, None), (None, None)]
+
+
+def test_the_planner_pin_is_swarm_apis_own_class_models_not_the_environment(
+        db, tokens, group_map, objects, voice, monkeypatch):
+    """BGD, 6 November 2026: the voice route builds its sessions with
+    `Settings.worker_class_models`, the map every other swarm-api caller
+    reads, never a second read of WORKER_CLASS_MODELS. The environment here
+    pins `opus` to one model and the settings to another: the settings' wins."""
+    import json
+
+    monkeypatch.setenv("WORKER_CLASS_MODELS", json.dumps(CLASS_PINS))
+    settings_pins = {**CLASS_PINS, "opus": "claude-opus-5"}
+    client = _client(db, tokens, group_map, objects, voice,
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com",),
+                     worker_class_models=settings_pins)
+    _voice_settings(db, planner_model="opus")
+
+    started = _start(client, "alice")
+
+    assert started.status_code == 200, started.text
+    assert [c.planner_model for c in voice.starts] == ["claude-opus-5"]
 
 
 @pytest.mark.parametrize("mode", [vs.MODE_LIVE, vs.MODE_TEXT])

@@ -865,6 +865,21 @@ def test_a_check_red_on_the_default_branch_head_gets_no_round(db, wake_client, g
     assert any(f"commits/{MAIN_HEAD}/check-runs" in url for url in _reads(github))
 
 
+def test_a_check_red_on_the_default_branch_head_is_recorded_on_the_wait(db, wake_client, github):
+    """The evidence a stuck wait is handed to a person with (part of #2688):
+    BGD's 8-hour wait had main red on the same checks, and nothing said so."""
+    fixable_merge(db, github, rounds=2)
+    github.branches["main"] = MAIN_HEAD
+    github.check(MAIN_HEAD, CHECK, "failure")
+
+    _tick(wake_client)
+
+    # MUTATION: log it only (before) -> the merge step and `/sc check` never see it.
+    main = _wait(db)["main_red"]
+    assert main["checks"] == [CHECK] and main["head"] == MAIN_HEAD
+    assert main["read_at"] is not None
+
+
 def test_a_check_red_only_on_the_pull_request_still_gets_a_round(db, wake_client, github):
     fixable_merge(db, github, rounds=2)
     github.require(CHECK, OTHER_CHECK)

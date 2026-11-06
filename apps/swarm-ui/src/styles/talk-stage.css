@@ -1,0 +1,125 @@
+/* VOICE IT, TALK: THE STAGE (direction A, the owner's pick of 5 November 2026).
+   The visual fills the stage between the heads-up edge and the voice; a held
+   read-back takes the right edge. Console tokens only.
+
+   ON A PHONE nothing pans: every line of a visual wraps inside the page's
+   width (no window of its own, no scrollbars), the tabs wrap instead of
+   scrolling with no bar, and the caption strip rests on whole lines. */
+
+/* ---- the stage's place in the Talk page ------------------------------------ */
+.vt.has-stage {
+  grid-template-areas: "hud hud hud" "stage stage stage" "left core right" "subs subs subs" "mic mic mic" "cards cards cards";
+}
+.vts { grid-area: stage; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vts-ic { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ---- the visuals' tabs: they wrap, never scroll ------------------------------ */
+.vts-tabs { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.vts-tab {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-height: 30px; padding: 4px 10px;
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim);
+  border: 1px solid transparent; border-radius: var(--r-pill); background: transparent; cursor: pointer;
+}
+.vts-tab:hover { color: var(--text); background: var(--vt-glass-dim); }
+.vts-tab[aria-pressed='true'] { color: var(--text); border-color: var(--vt-glass-line); background: var(--vt-glass); }
+.vts-tab:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vts-tab-title { min-width: 0; overflow-wrap: anywhere; }
+.vts-tab-pins {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-pill);
+  font: 600 var(--t-micro)/var(--lh-flush) var(--font); font-variant-numeric: tabular-nums; color: var(--bg); background: var(--paused);
+}
+
+/* ---- the visual and the hold beside it ------------------------------------- */
+.vts-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.vts.has-hold .vts-main { grid-template-columns: minmax(0, 1fr) 320px; }
+.vts-frame {
+  margin: 0; min-width: 0; max-height: 62vh; overflow-x: hidden; overflow-y: auto;
+  border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--surface);
+}
+.vts-head {
+  position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft); background: var(--surface);
+}
+.vts-where { min-width: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.vts-range { font: 500 var(--t-meta)/var(--lh-meta) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); }
+
+/* A body's lines: numbered, every one wrapped inside the frame. */
+.vts-lines { margin: 0; padding: 6px 0; list-style: none; min-width: 0; }
+.vts-line {
+  position: relative; display: grid; grid-template-columns: 4ch minmax(0, 1fr) auto; column-gap: 12px; align-items: start;
+  padding: 0 12px; font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.vts-line.is-noted { background: color-mix(in srgb, var(--paused) 14%, transparent); box-shadow: inset 3px 0 0 var(--paused); }
+.vts-line.is-add { background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.vts-line.is-del { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+.vts-n { color: var(--text-faint); text-align: right; font-variant-numeric: tabular-nums; user-select: none; }
+.vts-code { min-width: 0; font: inherit; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.vts-line-pins { display: inline-flex; gap: 4px; }
+
+/* A note's pin, and its words when open. */
+.vts-pin {
+  display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+  font: 700 var(--t-micro)/var(--lh-flush) var(--font); color: var(--bg); background: var(--paused);
+}
+.vts-pin.is-open { outline: 2px solid color-mix(in srgb, var(--paused) 45%, transparent); outline-offset: 2px; }
+.vts-pin:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vts-note {
+  grid-column: 2 / -1; display: flex; flex-direction: column; gap: 4px; margin: 4px 0 6px; padding: 8px 10px; min-width: 0;
+  border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--bg);
+}
+.vts-note-text { font: var(--t-body)/var(--lh-body) var(--font); color: var(--text); overflow-wrap: anywhere; }
+.vts-note-foot { display: flex; align-items: center; gap: 6px; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); }
+.vts-note-foot > :last-child { margin-left: auto; }
+.vts-loose { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-top: 1px solid var(--line-soft); }
+.vts-loose-one { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; min-width: 0; }
+.vts-loose-one > .vts-note { flex: 1 1 16em; margin: 0; }
+
+/* A mock-up: the planner's HTML in a frame that allows nothing. */
+.vts-mockup { aspect-ratio: 16 / 10; min-width: 0; }
+.vts-mockup-frame { display: block; width: 100%; height: 100%; border: 0; background: var(--bg); }
+
+/* ---- the read-back hold ------------------------------------------------------ */
+.vts-holds { display: flex; flex-direction: column; gap: 10px; min-width: 0; align-self: start; }
+.vts-hold {
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; min-width: 0;
+  border: 1px solid var(--vt-glass-line); border-left: 3px solid var(--paused); border-radius: var(--r-card); background: var(--vt-glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+.vts-hold.is-confirmed, .vts-hold.is-used { border-left-color: var(--ok); }
+.vts-hold.is-refused { border-left-color: var(--text-faint); }
+.vts-hold.is-expired, .vts-hold.is-superseded { border-left-color: var(--line); background: var(--bg); }
+.vts-rb { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.vts-rb dt { font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.vts-rb dd { margin: 0 0 8px; min-width: 0; overflow-wrap: anywhere; }
+.vts-rb dd:last-child { margin-bottom: 0; }
+.vts-rb-heard { font: italic var(--t-body)/var(--lh-body) var(--font); color: var(--text-dim); }
+.vts-rb-target { font: 600 var(--t-lead)/var(--lh-lead) var(--font); color: var(--text); }
+.vts-hold.is-expired .vts-rb-target, .vts-hold.is-superseded .vts-rb-target { color: var(--text-faint); }
+.vts-hold-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.vts-hold-acts > .c-tip-host { margin-left: auto; }
+.vts-hold-acts > .c-tip-host .c-tip { left: auto; right: 0; }
+.vts-clock {
+  display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; cursor: default;
+  font: 600 var(--t-micro)/var(--lh-flush) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim);
+  /* An opaque disc over the conic fill leaves a ring and keeps the seconds on the surface. */
+  background: radial-gradient(circle, var(--surface) 58%, transparent 59%), conic-gradient(var(--paused) var(--left, 0%), var(--line-soft) 0);
+}
+.vts-clock.is-out { color: var(--text-faint); background: var(--line-soft); }
+.vts-rb-done { margin: 0; display: flex; align-items: center; gap: 6px; font: 600 var(--t-body)/var(--lh-body) var(--font); color: var(--ok-ink); }
+.vts-rb-done.is-refused { color: var(--text); }
+.vts-rb-done.is-expired { color: var(--text-dim); font-weight: 500; }
+.vts-hold-problem { margin: 0; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); overflow-wrap: anywhere; }
+
+/* ---- phone: one column, nothing pans --------------------------------------- */
+@media (max-width: 760px) {
+  .vt.has-stage { grid-template-areas: "hud" "stage" "core" "subs" "cards" "mic"; }
+  .vts.has-hold .vts-main { grid-template-columns: minmax(0, 1fr); }
+  .vts-holds { order: -1; }
+  .vts-frame { max-height: none; overflow: visible; }
+  .vts-head { position: static; padding: 6px 10px; }
+  .vts-line { grid-template-columns: 3ch minmax(0, 1fr) auto; column-gap: 8px; padding: 0 8px; }
+  /* The caption strip rests on whole lines, each wrapped inside the page. */
+  .vt.has-stage .vt-subs { scroll-snap-type: y proximity; }
+  .vt.has-stage .vt-cap { scroll-snap-align: end; }
+  .vt.has-stage .vt-cap-text { white-space: normal; overflow-wrap: anywhere; }
+}
