@@ -998,14 +998,13 @@ def test_the_train_runs_main_s_scripts_and_no_pull_request_s_code(train_workflow
 
 def test_the_github_token_asks_only_for_what_the_train_does_with_it(train_workflow):
     assert train_workflow["permissions"] == {}
-    # actions: read -- the Actions runs at a train's head, whose events the
-    # judge groups a check's runs by (CHECK-RULE-2). MUTATION: drop it -> the
-    # read 403s and the tick judges each check suite on its own. Or write:
-    # rule 1 re-runs a red train's failed jobs with this token
-    # (MERGE_TRAIN_RERUN_BY=workflow), once the owner applies
-    # merge-train-workflow.diff; refused, the train bisects as before.
+    # actions: write -- read: the Actions runs at a train's head, whose events
+    # the judge groups a check's runs by (CHECK-RULE-2); write: rule 1
+    # re-runs a red train's failed jobs with this token
+    # (MERGE_TRAIN_RERUN_BY=workflow, the owner's pick). MUTATION: set it to
+    # read -> GitHub refuses every re-run and a red train bisects at once.
     permissions = dict(train_workflow["jobs"]["tick"]["permissions"])
-    assert permissions.pop("actions") in ("read", "write")
+    assert permissions.pop("actions") == "write"
     assert permissions == {
         "contents": "read",
         "checks": "read",

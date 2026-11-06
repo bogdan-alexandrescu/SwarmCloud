@@ -216,21 +216,11 @@ order, and every comment and step-summary line names the rule that acted:
    train is held again if it is red on the same checks.
 3. **Bisect**, as before. A train of one is ejected after its retry.
 
-**The re-run needs `actions: write`.** Today the tick's token has
-`actions: read`, so GitHub refuses the re-run. The train then says
-`the retry could not run` and goes on to rules 2 and 3, as it did before the
-retry existed. To turn rule 1 on, apply this change to
-`.github/workflows/merge-train.yml` (agents may not edit workflows):
-
-```diff
-     permissions:
-       contents: read
-       checks: read
--      actions: read
-+      actions: write
-       statuses: write
-       pull-requests: write
-```
+**The re-run needs `actions: write`.** The tick's own token has it
+(`.github/workflows/merge-train.yml`, the owner's pick of 6 November 2026), and
+it makes the re-run by default (`MERGE_TRAIN_RERUN_BY=workflow`). If GitHub
+refuses the re-run anyway, the train says `the retry could not run` and goes on
+to rules 2 and 3, as it did before the retry existed.
 
 Alternatively, set `MERGE_TRAIN_RERUN_BY=app` in the tick's `env:`. The
 merge App's token then makes the re-run instead. That needs the App's
