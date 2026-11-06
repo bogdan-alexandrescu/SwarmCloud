@@ -50,6 +50,13 @@ MAX_INDEX = 99
 
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
+#: The refusals are fixed sentences: the planner returns a refusal outside the
+#: <data> fence, so no option label, may_answer_because or count an agent or
+#: swarm-api wrote may reach it. The planner re-reads the fenced agent_questions.
+NOT_AN_OPTION = "choice is not one of the question's option labels; read agent_questions"
+MAY_NOT_ANSWER = "the person may not answer this agent's questions"
+NO_QUESTION = "question_index names no question; read agent_questions"
+
 READ_BACK_FIRST = "read_back_first"
 RECORDED = "recorded"
 
@@ -116,19 +123,15 @@ async def _question(api: SwarmApi, task_id: str, index: int, choice: str | None)
     body = await api.get(QUESTIONS_ROUTE, path)
     body = body if isinstance(body, dict) else {}
     if body.get("may_answer") is False:
-        why = body.get("may_answer_because")
-        raise BadInput("the person may not answer this agent's questions"
-                       + (f": {why}" if isinstance(why, str) and why else ""))
+        raise BadInput(MAY_NOT_ANSWER)
     questions = body.get("questions") if isinstance(body.get("questions"), list) else []
     if not 0 <= index < len(questions) or not isinstance(questions[index], dict):
-        raise BadInput(f"question_index must be 0 to {len(questions) - 1}: the agent asked "
-                       f"{len(questions)} question(s)")
+        raise BadInput(NO_QUESTION)
     question = questions[index]
     labels = [str(o.get("label")) for o in question.get("options") or []
               if isinstance(o, dict) and o.get("label")]
     if choice is not None and choice not in labels:
-        raise BadInput("choice must be one of the question's options: "
-                       + ", ".join(repr(label) for label in labels))
+        raise BadInput(NOT_AN_OPTION)
     return {"question": str(question.get("question") or ""), "options": labels,
             "answered": question.get("answer") is not None}
 
