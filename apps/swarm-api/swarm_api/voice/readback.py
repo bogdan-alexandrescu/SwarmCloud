@@ -117,12 +117,16 @@ GATED_ROUTES: Mapping[tuple[str, str], str] = {
 }
 
 #: The act routes a grant reaches that run as heard: drawing a card,
-#: answering a read-back, drawing a visual and pinning a note (§8.3).
+#: answering a read-back, drawing a visual, pinning a note (§8.3) and
+#: answering an agent's question.
 AS_HEARD_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/v1/voice/sessions/{session_id}/cards"),
     ("POST", "/v1/voice/sessions/{session_id}/readbacks/answer"),
     ("POST", "/v1/voice/sessions/{session_id}/visuals"),
     ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
+    # The planner's answer to an agent's question (voice-it.md §3.9), read
+    # back by swarm-voice before it is sent (swarm_voice/tools_act.py).
+    ("POST", "/v1/tasks/{task_id}/answers"),
 })
 
 #: A route template whose last step names a gated verb, or a DELETE: what the

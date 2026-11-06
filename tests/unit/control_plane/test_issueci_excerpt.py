@@ -20,7 +20,7 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from swarm_api import issueci
+from swarm_api import forgewrite, issueci
 from swarm_api.forgechecks import RED, CiReading
 from swarm_api.validation import IssueRef
 
@@ -138,12 +138,17 @@ class _Writer:
     def __init__(self, logs: dict[int, bytes]):
         self.logs = logs
         self.limits: list[int] = []
+        self.reads: list[tuple[int, int]] = []
 
     def check_annotations(self, ref: IssueRef, check_id: int, token: str) -> list[dict[str, Any]]:
         return []  # the vitest shard jobs carry none
 
-    def job_log_tail(self, ref: IssueRef, job_id: int, token: str, *, limit: int) -> str | None:
+    def job_log_tail(self, ref: IssueRef, job_id: int, token: str, *, limit: int,
+                     cap: int = forgewrite.MAX_LOG_TAIL_BYTES) -> str | None:
+        # forgewrite's own clamp: `limit` never above `cap` (forgewrite's test holds `cap`'s own).
+        limit = max(1, min(int(limit), int(cap)))
         self.limits.append(limit)
+        self.reads.append((job_id, limit))
         raw = self.logs.get(job_id)
         if not raw:
             return None
@@ -295,8 +300,16 @@ def test_each_checks_log_part_and_the_whole_excerpt_stay_within_their_caps():
         section = _section(excerpt, f"job {i}")
         log_part = section.split(":\n", 1)[1] if ":\n" in section else ""
         assert len(log_part.encode("utf-8")) <= issueci.MAX_LOG_TAIL_BYTES
-    # What is read is bounded too: never more than forgewrite will serve.
-    assert writer.limits and all(limit <= issueci.LOG_READ_BYTES for limit in writer.limits)
+    # What is read is bounded too: never more than forgewrite's full-read cap,
+    # and only a re-read of a job already read once asks for more than
+    # `LOG_READ_BYTES` (#3170).
+    # MUTATION: re-read with no cap, or read past 16 KiB on the first read -> red.
+    assert writer.limits and all(limit <= forgewrite.MAX_LOG_FULL_READ_BYTES for limit in writer.limits)
+    seen: set[int] = set()
+    for job_id, limit in writer.reads:
+        if job_id not in seen:
+            assert limit == issueci.LOG_READ_BYTES
+        seen.add(job_id)
 
 
 def test_a_credential_in_a_failure_line_is_redacted():

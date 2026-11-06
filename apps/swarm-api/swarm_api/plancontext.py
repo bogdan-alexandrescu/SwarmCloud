@@ -705,6 +705,9 @@ def in_flight_section(ctx: Any, tenant_id: str, ref: IssueRef, *, run_id: str,
 
     same_issue: list[tuple[str, str]] = []
     same_files: list[tuple[str, str]] = []
+    # An issue-run lane's id is not an overlap ref (#3507): its line states
+    # the ref, and the run keeps the map to read the planner's plan with.
+    lane_refs: dict[str, str] = {}
     planning_elsewhere = 0
     run_workflows: set[str] = set()
     for run in runs or []:
@@ -714,9 +717,12 @@ def in_flight_section(ctx: Any, tenant_id: str, ref: IssueRef, *, run_id: str,
             run_workflows.add(run.workflow_id)
         pull = (run.pull_request or {}).get("number")
         state = run.state.value if isinstance(run.state, RunState) else str(run.state)
+        lane_ref = f"{repository}#{run.issue.number}"
         if run.issue.number == ref.number:
+            lane_refs[run.id] = lane_ref
             same_issue.append((run.id, (
-                f"- lane `{run.id}`: a live issue run of this same issue, {state}"
+                f"- lane `{run.id}` (overlap ref {lane_ref}): a live issue run of this "
+                f"same issue, {state}"
                 + (f", workflow `{fold(run.workflow_id, 80)}`" if run.workflow_id else "")
                 + (f", pull request {repository}#{pull}" if pull else ""))))
             continue
@@ -726,9 +732,10 @@ def in_flight_section(ctx: Any, tenant_id: str, ref: IssueRef, *, run_id: str,
             continue
         shared = _shared(files, territory)
         if shared:
+            lane_refs[run.id] = lane_ref
             same_files.append((run.id, (
-                f"- lane `{run.id}`: the live issue run of {repository}#{run.issue.number} "
-                f"({state}); its plan declares {_shown(shared)}")))
+                f"- lane `{run.id}` (overlap ref {lane_ref}): the live issue run of "
+                f"{lane_ref} ({state}); its plan declares {_shown(shared)}")))
 
     other_workflows: list[str] = []
     if flight is not None:
@@ -794,6 +801,9 @@ def in_flight_section(ctx: Any, tenant_id: str, ref: IssueRef, *, run_id: str,
     record["same_issue"] = [lane for lane, _line in same_issue]
     record["same_files"] = [lane for lane, _line in same_files]
     record["recent_merges"] = [lane for lane, _line in merges if lane]
+    if lane_refs:
+        # Only when one was listed, so a record with none stores as before.
+        record["lane_refs"] = lane_refs
     if not (same_issue or same_files or merges or unknown):
         return InFlightAnswer(text=None, record=record)
 

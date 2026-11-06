@@ -398,9 +398,139 @@ def test_a_title_a_dependant_declared_is_never_excused(worker_factory):
 def test_a_missing_title_gets_exactly_one_follow_up_turn(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path, {"prompt": "fix it", "expected_outputs": [PR_TITLE_FILE]}, repo=True)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
+    monkeypatch.delenv(cliagent.STEP_PUBLISHES_ENV, raising=False)
     out = claude_code.body(ctx)
     runs = _runs(ctx)
     assert [run["resume"] for run in runs] == [None, SESSION], runs
     assert str(Path(ctx.artifacts_dir).resolve() / PR_TITLE_FILE) in runs[1]["prompt"]
+    # It committed nothing either (#3265): the same one turn asks for both.
+    assert str(Path(ctx.artifacts_dir).resolve() / VERIFICATION_FILE) in runs[1]["prompt"]
     assert out["repair_turns"] == 1
     assert out["repair_unresolved"]["missing_outputs"] == [PR_TITLE_FILE]
+
+
+# ---------------------------------------------------------------------------
+# 5. #3265: a publishing step that committed nothing is told how to end
+# ---------------------------------------------------------------------------
+#
+# wf_3bfea5e9's render step was asked for frames only: it wrote 8 frames,
+# pr-title.txt and handoff.md ("no commits (none asked)"), no verification.md,
+# took repair_turns 0 and failed `published_nothing`. The worker reads "no
+# change plus a non-blank verification.md" as SUCCEEDED no_change
+# (`_verified_no_change`); the runner now gives such a step ONE repair turn
+# saying so, while the session can still write it.
+
+TITLE_ONLY = {"answer": DONE, "write": {"$ARTIFACTS/" + PR_TITLE_FILE: "Render the frames\n"}}
+
+
+def _no_change_ctx(tmp_path, monkeypatch, runs, *, publishes=None, repo=True):
+    ctx = _ctx(tmp_path, {"prompt": "render the frames",
+                          "expected_outputs": [PR_TITLE_FILE]}, repo=repo)
+    _install(tmp_path, monkeypatch, ctx, runs)
+    if publishes is None:
+        monkeypatch.delenv(cliagent.STEP_PUBLISHES_ENV, raising=False)
+    else:
+        monkeypatch.setenv(cliagent.STEP_PUBLISHES_ENV, publishes)
+    return ctx
+
+
+def test_a_publishing_step_that_committed_nothing_without_a_verification_gets_one_repair_turn(
+    tmp_path, monkeypatch,
+):
+    ctx = _no_change_ctx(tmp_path, monkeypatch, [TITLE_ONLY])
+    out = claude_code.body(ctx)
+    runs = _runs(ctx)
+    assert [run["resume"] for run in runs] == [None, SESSION], runs
+    assert out["repair_turns"] == 1
+    prompt = runs[1]["prompt"]
+    assert str(Path(ctx.artifacts_dir).resolve() / VERIFICATION_FILE) in prompt, prompt
+    assert "opens a pull request" in prompt
+    assert "committed nothing" in prompt
+    assert "asks for no change to the repository" in prompt
+    lowered = prompt.lower()
+    markers = (*cliagent._RATE_LIMIT_MARKERS, *cliagent._CREDENTIAL_MARKERS)
+    assert [m for m in markers if m in lowered] == []
+    assert out["repairs"][0]["no_change_asked"] is True
+
+
+@pytest.mark.parametrize("publishes, turns", [("1", 1), ("0", 0)])
+def test_a_step_that_publishes_nothing_gets_no_no_change_turn(
+    tmp_path, monkeypatch, publishes, turns,
+):
+    ctx = _no_change_ctx(tmp_path, monkeypatch, [TITLE_ONLY], publishes=publishes)
+    out = claude_code.body(ctx)
+    assert len(_runs(ctx)) == 1 + turns
+    assert out["repair_turns"] == turns
+    if turns == 0:
+        assert out["repair_unresolved"] is None
+
+
+def test_a_step_without_a_checkout_gets_no_no_change_turn(tmp_path, monkeypatch):
+    ctx = _no_change_ctx(tmp_path, monkeypatch, [TITLE_ONLY], repo=False)
+    out = claude_code.body(ctx)
+    assert len(_runs(ctx)) == 1
+    assert out["repair_turns"] == 0
+
+
+@pytest.mark.parametrize("write, commit, turns", [
+    # A verification the worker reads: nothing to ask.
+    ({"$ARTIFACTS/" + VERIFICATION_FILE: "Rendered 8 frames; nothing to commit.\n"}, None, 0),
+    # A blank one is no verification (`_verified_no_change`'s rule).
+    ({"$ARTIFACTS/" + VERIFICATION_FILE: "  \n\n"}, None, 1),
+    # A commit moved HEAD: the step published something.
+    ({"src/frames.py": "FRAMES = 8\n"}, "render the frames", 0),
+    # An uncommitted change: the worker's harvest commits it.
+    ({"src/frames.py": "FRAMES = 8\n"}, None, 0),
+])
+def test_a_written_verification_or_a_commit_needs_no_no_change_turn(
+    tmp_path, monkeypatch, write, commit, turns,
+):
+    step = {**TITLE_ONLY, "write": {**TITLE_ONLY["write"], **write}}
+    if commit:
+        step["commit"] = commit
+    ctx = _no_change_ctx(tmp_path, monkeypatch, [step])
+    out = claude_code.body(ctx)
+    assert len(_runs(ctx)) == 1 + turns
+    assert out["repair_turns"] == turns
+
+
+def test_the_no_change_turn_is_asked_once_and_beside_a_missing_title_in_one_turn(
+    tmp_path, monkeypatch,
+):
+    # Nothing written on either turn: the title and the no-change ask share
+    # the one turn, neither is asked again, and the worker's check decides.
+    ctx = _no_change_ctx(tmp_path, monkeypatch, [{"answer": DONE}])
+    out = claude_code.body(ctx)
+    runs = _runs(ctx)
+    assert [run["resume"] for run in runs] == [None, SESSION], runs
+    assert out["repair_turns"] == 1
+    directory = Path(ctx.artifacts_dir).resolve()
+    assert str(directory / PR_TITLE_FILE) in runs[1]["prompt"]
+    assert str(directory / VERIFICATION_FILE) in runs[1]["prompt"]
+    assert out["repair_unresolved"]["missing_outputs"] == [PR_TITLE_FILE]
+    assert out["repair_unresolved"]["no_change"] is True
+    assert out["repairs"][0]["no_change_asked"] is True
+    assert out["repairs"][0]["no_change_fixed"] is False
+
+    # The same fake that commits nothing on its first turn and writes the
+    # verification on its repair turn ends resolved.
+    fixed = tmp_path / "fixed"
+    fixed.mkdir()
+    ctx = _no_change_ctx(fixed, monkeypatch, [
+        TITLE_ONLY,
+        {"answer": DONE, "write": {"$ARTIFACTS/" + VERIFICATION_FILE: "Frames only.\n"}},
+    ])
+    out = claude_code.body(ctx)
+    assert out["repair_turns"] == 1
+    assert out["repairs"][0]["no_change_fixed"] is True
+    assert out["repair_unresolved"] is None
+
+
+def test_the_publish_paragraph_offers_verification_when_the_brief_asks_for_no_change():
+    # #3265: the #2140 sentence ("If the work is already done") did not cover
+    # a brief that asks for no repository change, and wf_3bfea5e9 failed.
+    paragraph = cliagent.PUBLISH_PARAGRAPH
+    assert ("If the work is already done, or your brief asks for no change to the "
+            "repository") in paragraph
+    for phrase in ("commit nothing", "$SWARM_ARTIFACTS_DIR/verification.md", "no change"):
+        assert phrase in paragraph

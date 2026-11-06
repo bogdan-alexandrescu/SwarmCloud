@@ -29,7 +29,7 @@
  * named and opened, and its Answer disabled here.
  */
 import { handoffOf, ownerQuestionsHold } from '../Handoff'
-import { stepNeedsOf, summaryTask, type StepNeeds } from '../stepviews'
+import { stepNeedsOf, summaryTask, type StepNeedQuestion, type StepNeeds } from '../stepviews'
 import { TERMINAL_STATES, type Task, type Workflow } from '../types'
 import { pluginAskOf, type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest, type QuestionNeed } from './NeedsYou'
 
@@ -147,9 +147,40 @@ export function questionKey(text: string): string {
 }
 
 /**
+ * The keys of a question's words alone that `codec.step_needs` serves (the
+ * follow-up picked under BGD's overnight grant, 6 November 2026): the worker's
+ * `question_text_digests` of an ended step's artifact questions, by index, and
+ * each open wait question's `text_digest`. An implement and a fix step asking
+ * the same words with other option labels then count once, as the bell counts
+ * them; a step served without them counts as before.
+ */
+type KeyedNeeds = Omit<StepNeeds, 'questions'> & {
+  question_text_digests?: (string | null)[] | null
+  questions?: (StepNeedQuestion & { text_digest?: string | null })[]
+}
+
+const TEXT_DIGEST = /^[0-9a-f]{16}$/
+
+function textDigest(value: unknown): string | null {
+  return typeof value === 'string' && TEXT_DIGEST.test(value) ? value : null
+}
+
+/** One question row's key, null when it cannot be matched (its words unknown here). */
+function questionRowKey(item: QuestionNeed, needs: StepNeeds | null): string | null {
+  const keyed = needs as KeyedNeeds | null
+  if (item.question !== null) {
+    const served = textDigest(keyed?.questions?.find((q) => q.index === item.index)?.text_digest)
+    return served !== null ? `d:${served}` : `t:${questionKey(item.question)}`
+  }
+  const served = textDigest(keyed?.question_text_digests?.[item.index])
+  return served !== null ? `d:${served}` : null
+}
+
+/**
  * The one walk both reads take: every step's rows, a question asked again by
- * a later step in step order dropped (its words matched by `questionKey`;
- * a row whose words are only on its page cannot be matched and stays), and,
+ * a later step in step order dropped (its words matched by `questionRowKey`;
+ * a row whose words are only on its page and served with no key cannot be
+ * matched and stays), and,
  * for a finished workflow with no held merge, its question rows moved to
  * `quiet`.
  */
@@ -174,8 +205,8 @@ function classified(
     }
     if (needs === null && !TERMINAL_STATES.has(task.state)) blindLive = true
     for (const item of stepNeedItems(task, needs, title(step.step_id))) {
-      if (item.kind === 'question' && item.question !== null) {
-        const key = questionKey(item.question)
+      const key = item.kind === 'question' ? questionRowKey(item, needs) : null
+      if (key !== null) {
         if (asked.has(key)) continue
         asked.add(key)
       }

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "probe": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/server.mjs"],
+      "env": { "PROBE_REGION": "${user_config.region}", "PROBE_TOKEN": "${user_config.api_token}" }
+    }
+  }
+}

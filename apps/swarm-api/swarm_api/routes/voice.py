@@ -185,7 +185,8 @@ def _service(ctx: AppContext, client: Any) -> vs.VoiceSessions:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
-                            now=ctx.now)
+                            now=ctx.now,
+                            class_models=ctx.settings.worker_class_models)
 
 
 #: The broker's reasons for "no account" (`GET /v1/voice/pool`); anything

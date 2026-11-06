@@ -465,10 +465,16 @@ class ReconcileReport:
     #: None and a zero-filled report mean different things and are reported as
     #: different things.
     checkpoint_sweep: dict[str, Any] | None = None
+    #: `full` or `incremental`: whether this pass read every live task and
+    #: lease, or what changed since the last pass and what falls due before the
+    #: next (`Reconciler._snapshot`). `tasks_examined` and `leases_examined`
+    #: count what THIS pass read, so they are only comparable within one kind.
+    sweep: str = "full"
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "started_at": self.started_at.isoformat(),
+            "sweep": self.sweep,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "duration_seconds": (
                 round((self.finished_at - self.started_at).total_seconds(), 3)
@@ -582,6 +588,14 @@ class Reconciler:
         #: that is what moves the window past `workflow_scan_limit` (#1822).
         #: Per instance: a cold instance starts from the top.
         self._workflow_cursor: str | None = None
+        #: The `taken_at` of this instance's last COMPLETED pass: the high-water
+        #: mark the next incremental pass reads changes after. None until a pass
+        #: completes, so an instance's first pass is a full sweep (on start).
+        #: Per instance, like `_workflow_cursor`: a second instance keeps its
+        #: own, and an older mark only ever reads more, never less.
+        self._cursor: datetime | None = None
+        #: Incremental passes since the last full sweep (`_sweep_is_full`).
+        self._since_full = 0
         if self._finish is None:
             # Said once, here, for the same reason as the broker below: a
             # deployment missing DISPATCH_TOPIC rings no wake and would
@@ -612,11 +626,20 @@ class Reconciler:
     # ------------------------------------------------------------------
     def run_once(self) -> ReconcileReport:
         report = ReconcileReport(started_at=utcnow(), dry_run=self._config.dry_run)
-        snapshot = self._store.snapshot()
+        snapshot = self._snapshot(report)
+        report.sweep = "full" if snapshot.full else "incremental"
         report.tasks_examined = len(snapshot.tasks)
         report.leases_examined = len(snapshot.leases)
 
         sight = self._look(snapshot, report)
+        # Finished tasks whose attempt never recorded its end (#380). Read
+        # apart from the snapshot, which reaches attempts only through
+        # unreleased leases; read BEFORE an incremental pass scopes the
+        # executions, so a finished task's still-live Job stays in sight and
+        # its attempt is never written ended under it.
+        finished = self._read_finished(snapshot, report)
+        if not snapshot.full:
+            sight.executions = self._in_scope(snapshot, sight.executions, finished)
         report.executions_examined = len(sight.executions)
         # Both AFTER the listing, and in this order: the settled read decides
         # whose task an execution is (and so its tenant), and the progress read
@@ -629,10 +652,6 @@ class Reconciler:
         # How the current attempts' FINISHED executions ended. Only those the
         # cannot-start rule could act on, so an ordinary pass reads nothing.
         self._read_terminations(snapshot, sight, report)
-        # Finished tasks whose attempt never recorded its end (#380). Read
-        # apart from the snapshot, which reaches attempts only through
-        # unreleased leases.
-        finished = self._read_finished(snapshot, report)
 
         findings = [
             *detect_all(
@@ -709,7 +728,10 @@ class Reconciler:
         # now stands. Never fatal: see `_check_workflows`.
         self._check_workflows(snapshot, report)
 
-        if self._config.enable_gc:
+        # The full sweep's alone: garbage is an absence across the whole
+        # platform (no live task uses this Job, this namespace), and an
+        # incremental read is not the whole platform.
+        if self._config.enable_gc and snapshot.full:
             self._collect_garbage(snapshot, sight, report)
 
         try:
@@ -752,7 +774,88 @@ class Reconciler:
             self._log.exception("could not persist the reconciliation pass", exc)
             report.errors.append(f"record_pass: {exc}")
 
+        # Only now, with the pass complete: a pass that raised before here
+        # leaves the mark where it was, and the next pass reads its window again.
+        self._cursor = snapshot.taken_at
+        self._since_full = 0 if snapshot.full else self._since_full + 1
         return report
+
+    # ------------------------------------------------------------------
+    # The incremental pass (BGD, 2026-11-06)
+    # ------------------------------------------------------------------
+    def _sweep_is_full(self) -> bool:
+        """Full on an instance's first pass, then every `full_sweep_every` passes."""
+        every = int(self._config.full_sweep_every)
+        return self._cursor is None or every <= 1 or self._since_full >= every - 1
+
+    def _snapshot(self, report: ReconcileReport) -> ControlSnapshot:
+        """This pass's read: a full sweep, or what changed and what falls due.
+
+        Between full sweeps the read is the changed tasks since this
+        instance's last pass (less `incremental_overlap_seconds`) and the
+        unreleased leases whose `expires_at` falls before the next tick. A
+        lease is judged silent at `heartbeat_grace_seconds`, and its worker
+        writes `expires_at` `lease_timeout_seconds` after its heartbeat, so
+        the window reaches that much further: a lease that goes silent before
+        the next tick is in this one.
+
+        Whatever the incremental read misses -- a writer that changed a task
+        without stamping `updated_at`, a clock skewed past the overlap, a
+        task whose own clock (stuck, cancel overdue) came due untouched --
+        the next full sweep reads, at most `full_sweep_every` ticks later.
+        An incremental read that FAILS falls back to the full one: the pass
+        must not be skipped for want of an index.
+        """
+        cursor = self._cursor
+        if cursor is None or self._sweep_is_full():
+            return self._store.snapshot()
+        now = utcnow()
+        changed_since = cursor - timedelta(
+            seconds=self._config.incremental_overlap_seconds
+        )
+        due_by = now + timedelta(
+            seconds=self._config.tick_seconds
+            + max(0, self._config.lease_timeout_seconds - self._config.heartbeat_grace_seconds)
+        )
+        try:
+            return self._store.incremental_snapshot(changed_since=changed_since, due_by=due_by)
+        except Exception as exc:
+            self._log.exception("the incremental read failed; running a full sweep", exc)
+            report.errors.append(f"incremental_snapshot: {exc}")
+            return self._store.snapshot()
+
+    @staticmethod
+    def _in_scope(
+        snapshot: ControlSnapshot,
+        executions: list[ExecutionView],
+        finished: list[tuple[Any, AttemptView]],
+    ) -> list[ExecutionView]:
+        """The executions an incremental pass may judge: those of what it read.
+
+        An execution whose task this pass did not read is not an orphan, it
+        is out of this pass's sight; judging it would kill healthy work. It is
+        the full sweep's, as is an execution that names no task at all. Kept:
+        an execution naming (once its ids are resolved, as `detect_all`
+        resolves them) a task, lease or attempt this pass read, or a finished
+        task's attempt `_read_finished` returned.
+        """
+        tasks = {
+            *snapshot.tasks,
+            *(lease.task_id for lease in snapshot.leases.values() if lease.task_id),
+            *(task.task_id for task, _ in finished),
+        }
+        attempts = {
+            *snapshot.attempts,
+            *(lease.attempt_id for lease in snapshot.leases.values() if lease.attempt_id),
+            *(attempt.attempt_id for _, attempt in finished),
+        }
+        resolved = normalise_executions(snapshot, executions)
+        return [
+            execution
+            for execution, ids in zip(executions, resolved)
+            if (ids.task_id and ids.task_id in tasks)
+            or (ids.attempt_id and ids.attempt_id in attempts)
+        ]
 
     # ------------------------------------------------------------------
     # Pods that are not starting (F1-POD)
@@ -1322,6 +1425,7 @@ class Reconciler:
                 and lease.task_id not in snapshot.tasks
                 and lease.task_id not in snapshot.settled
                 and lease.task_id not in snapshot.unreadable_tasks
+                and lease.task_id not in snapshot.lease_tasks
             }
         )
         for task_id in wanted:
@@ -1406,9 +1510,22 @@ class Reconciler:
         """
         self._finished = {}
         now = snapshot.taken_at
+        since = now - timedelta(seconds=self._config.lost_after_finish_lookback_seconds)
+        if not snapshot.full and self._cursor is not None:
+            # Incremental: only the tasks that crossed the grace since the last
+            # pass's `until`, less the overlap. The full sweep reads the whole
+            # lookback again, so a task this window misses is judged there.
+            since = max(
+                since,
+                self._cursor
+                - timedelta(
+                    seconds=self._config.lost_after_finish_grace_seconds
+                    + self._config.incremental_overlap_seconds
+                ),
+            )
         try:
             pairs = self._store.finished_attempts(
-                since=now - timedelta(seconds=self._config.lost_after_finish_lookback_seconds),
+                since=since,
                 until=now - timedelta(seconds=self._config.lost_after_finish_grace_seconds),
             )
         except Exception as exc:
