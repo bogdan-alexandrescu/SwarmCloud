@@ -146,6 +146,124 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
 | 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
 | 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
+| 139 | `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"`, so a merge step a person on its pull request pushed over ends `CANCELLED` with a cause of its own instead of `FAILED`/`MERGE_REFUSED` (#2505, epic #2525) | REQUESTED 2026-11-05 by the pull request that adds this line, on the owner's decision of 2026-10-27 (#2505, epic #2525); not applied |
+
+---
+
+## 139. `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH`, a `CANCELLED` end for a merge step a person pushed over (#2505, epic #2525)
+
+**Status:** REQUESTED 2026-11-05 by the pull request that adds this section,
+on the owner's decision of 2026-10-27 (BGD, issue triage, epic #2525): "A
+distinct non-failure end: superseded_by_person_push (not FAILED) when the
+committer is not the platform identity, so failure-review stops filing it; a
+foreign head from an unknown branch-mate still refuses. If the end cause is
+typed in the frozen contract, it goes in as a contract request first." The
+worker side of the decision is on main; this is the contract request the
+decision promised and nobody filed. Not applied.
+
+### What is true today
+
+Read on main (a515b65) on 2026-11-05.
+
+* `EndCause` in `apps/common/swarm_common/models.py` has no member for it.
+* A parked merge step whose pull request a person on it (its author or an
+  assignee) pushed a non-merge commit to, which the platform did not make,
+  ends `FAILED` with `end_cause` `merge_refused` and
+  `result_summary.merge.refusal.code` `superseded_by_person_push`
+  (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, chosen by
+  `merge._person_pusher`, ended by `merge._superseded`). The refusal itself
+  is unchanged: `merge._accept` takes no head a person made of content and
+  nothing merges.
+* `swarm_api.failuredigest._person_push` skips both the refusal code and the
+  string `superseded_by_person_push` as an `end_cause`, so failure-review does
+  not file the step either way.
+* `docs/merge-step.md` (section "Revised 2026-10-27: a person's push
+  supersedes the merge step"), `docs/design/failure-review.md` and the
+  comments on `merge.SUPERSEDED_BY_PERSON_PUSH` and
+  `failuredigest.SUPERSEDED_BY_PERSON_PUSH` all say "until contract request
+  SUPERSEDED_BY_PERSON_PUSH lands"; until this entry, no such request existed.
+
+### Why
+
+`EndCause` is "why a task reached a FAILED or CANCELLED state". A step a person
+took over by pushing to its pull request did not fail: the platform's guarantee
+(a person's content commit is never merged unreviewed) held, and the person
+went on by hand. Ending it `FAILED` puts it in the failed-step counts, the
+outcome ledger's `merge_refused` class and any reader that treats `FAILED` as
+something to look at, and only failure-review's rule, which reads the refusal
+code, tells it apart.
+
+### The change
+
+```python
+class EndCause(str, Enum):
+    ...
+    SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
+```
+
+* The member's value is the string the refusal code already carries, so the
+  two never differ.
+* Its one writer is the worker (`agent_worker.control`), beside
+  `completed_at`, when the merge step ends `CANCELLED` having found a head a
+  person on the pull request made. The `EndCause` docstring's list of the
+  worker's causes gains `SUPERSEDED_BY_PERSON_PUSH`.
+* The worker ends such a step `CANCELLED` (exit code `ExitCode.CANCELLED`)
+  with the refusal still in `result_summary.merge.refusal`, as
+  `merge._outcome` already does for `pull_request_closed`. Nothing merges.
+
+### What empties once it is applied
+
+In the same pull request that applies it:
+
+* `merge._superseded` writes `CANCELLED` with
+  `EndCause.SUPERSEDED_BY_PERSON_PUSH` instead of `FAILED` with
+  `EndCause.MERGE_REFUSED`; the comment on `merge.SUPERSEDED_BY_PERSON_PUSH`
+  loses "until contract request SUPERSEDED_BY_PERSON_PUSH lands".
+* `failuredigest` needs no change: `_person_push` already reads the string as
+  an `end_cause`, and the refusal-code branch stays for steps ended before.
+  Its comment loses "while `EndCause` has no member for it".
+* `swarm_api.outcomes` classifies the new member (`_CANCEL_OF_CAUSE`, a
+  cancel cause of its own), because
+  `test_every_end_cause_has_exactly_one_class` holds the two maps to the
+  enum; the ledger's `DERIVE_VERSION` moves with it.
+* `docs/merge-step.md`'s table row, "`MERGE_REFUSED` `superseded_by_person_push`
+  ... `CANCELLED` once contract request ... lands", and its paragraph "The end
+  cause is frozen" become one statement of the new end; the same line in
+  `docs/design/failure-review.md` is updated.
+* `tests/unit/worker/test_merge_person_push.py` asserts the `CANCELLED` end
+  and the cause.
+
+### What it would break if accepted
+
+A reader that sorts `FAILED` steps by `end_cause` and has no branch for an
+unknown value: `swarm_api.outcomes` is the one in this repository, and its
+parity test names it. A step ended before the change keeps `FAILED`/
+`merge_refused` and its code; every reader that reads the code keeps working.
+
+### If it is declined
+
+The step stays `FAILED`/`MERGE_REFUSED` with the refusal code, which is
+today's state: failure-review skips it by the code, and the failed-step counts
+and the ledger's `merge_refused` class carry a step nobody should look at.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Capacity and fencing are untouched: the
+step is already ended by the worker holding the current generation, and no
+state that creates infrastructure demand changes.
+
+### How it is tested
+
+`tests/unit/worker/test_merge_person_push.py` holds the worker's end and
+the parity of the two modules' constants;
+`tests/unit/control_plane/test_outcomes_classifier_parity.py` and the
+`EndCause` partition test hold the ledger to the enum once it has the member.
+
+### Who decided
+
+The decision is the owner's (BGD), 2026-10-27, epic #2525; this request is
+filed by the pull request that adds it, for #2505, and awaits the owner's
+acceptance.
 
 ---
 
