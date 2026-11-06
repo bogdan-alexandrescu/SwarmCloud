@@ -294,6 +294,8 @@ class LiveSession:
         #: (speaker, text) of the final transcript segments, newest last.
         self.transcript: list[tuple[str, str]] = []
         self._turns: set[asyncio.Task] = set()
+        #: The planner model read at this session's start; None keeps the pin.
+        self.planner_model: str | None = None
 
     @property
     def attached(self) -> bool:
@@ -401,7 +403,7 @@ class LiveSession:
         assert self._planner is not None
         result = await self._planner.delegate(person=self.person, grant=self.grant,
                                               transcript=list(self.transcript),
-                                              delegation_id=delegation_id)
+                                              delegation_id=delegation_id, model=self.planner_model)
         if self.ended or self._socket is None or not result.spoken:
             return
         try:
@@ -503,7 +505,7 @@ class Sessions:
             await asyncio.gather(*list(self._releases), return_exceptions=True)
 
     async def start(self, voice_id: str, *, person: str, offer: str,
-                    grant: SessionGrant | None = None) -> LiveSession:
+                    grant: SessionGrant | None = None, planner_model: str | None = None) -> LiveSession:
         """Lease a Voice it pool account for `person`, create the GPT-Live session for
         `offer` on it, attach its sideband, and hold it. Raises SessionExists,
         accountlease.VoicePoolRefused (nothing started), CredentialError or LiveError;
@@ -525,6 +527,7 @@ class Sessions:
                                   person=person, planner=self._planner, finals=self._finals)
             session.answer = answer
             session.grant = grant
+            session.planner_model = planner_model
             # Attached BEFORE the answer goes back: a session this process cannot end
             # must never be handed to a browser to start talking (and billing) on.
             await session.attach()

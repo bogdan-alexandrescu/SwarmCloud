@@ -187,10 +187,12 @@ class FrontSession:
     mode = MODE
 
     def __init__(self, voice_id: str, *, person: str, grant: SessionGrant | None,
-                 clock: Callable[[], float]) -> None:
+                 clock: Callable[[], float], planner_model: str | None = None) -> None:
         self.voice_id = voice_id
         self.person = person
         self.grant = grant
+        #: The planner model read at this session's start; None keeps the pin.
+        self.planner_model = planner_model
         self._clock = clock
         self.started_at = clock()
         self.last_turn_at = self.started_at
@@ -272,14 +274,16 @@ class FrontSessions:
     # -- start --------------------------------------------------------------
 
     async def start(self, voice_id: str, *, person: str, grant: SessionGrant | None = None,
-                    exists: Callable[[str], bool] = lambda _id: False) -> FrontSession:
+                    exists: Callable[[str], bool] = lambda _id: False,
+                    planner_model: str | None = None) -> FrontSession:
         """Hold one Claude account for the session and start its warm child.
         Raises SessionExists, or FrontRefused with nothing held."""
         if voice_id in self._held or voice_id in self._starting or exists(voice_id):
             raise SessionExists(voice_id)
         self._starting.add(voice_id)
         try:
-            session = FrontSession(voice_id, person=person, grant=grant, clock=self._clock)
+            session = FrontSession(voice_id, person=person, grant=grant, clock=self._clock,
+                                   planner_model=planner_model)
             try:
                 await self._attach(session, exclude=())
             except (PoolFull, CredentialError, OSError) as exc:
@@ -483,7 +487,7 @@ class FrontSessions:
         assert self._planner is not None
         transcript = [*session.turns, ("person", delegation.request)] if delegation.request else list(session.turns)
         return await self._planner.delegate(person=session.person, grant=session.grant, transcript=transcript,
-                                            delegation_id=delegation.delegation_id)
+                                            delegation_id=delegation.delegation_id, model=session.planner_model)
 
     @staticmethod
     def _trim(session: FrontSession) -> None:
