@@ -59,7 +59,7 @@ from typing import Any
 
 import httpx
 
-from . import prompts, tools_read, tools_visual
+from . import actledger, prompts, tools_act, tools_read, tools_visual
 from .accountlease import VoiceBroker, build_broker
 from .claudeturn import ClaudeCode
 from .credential import CredentialError
@@ -101,6 +101,8 @@ class TurnResult:
     #: Tool calls refused: unknown kinds and tools, and cards swarm-api refused.
     refused: list[str] = field(default_factory=list)
     reads: list[str] = field(default_factory=list)
+    #: The acts this turn read back or did (tools_act.py), as the act ledger has them.
+    acts: list[dict[str, Any]] = field(default_factory=list)
     #: The visuals this turn put on screen or annotated (tools_visual.py), by tool.
     visuals: list[dict[str, Any]] = field(default_factory=list)
     #: `speak`'s `point_at` (voice-it-own-speech.md §8.5) as the page got it, or None.
@@ -148,9 +150,15 @@ class Planner:
         self._turn_seconds = turn_seconds
         #: One turn at a time per voice session (§3.8: turns run one at a time).
         self._locks: dict[str, asyncio.Lock] = {}
+        #: Each session's act ledger (actledger.py), for the session's life.
+        self._acts: dict[str, actledger.ActLedger] = {}
 
     def forget(self, session_id: str) -> None:
         self._locks.pop(session_id, None)
+        self._acts.pop(session_id, None)
+
+    def ledger(self, session_id: str) -> actledger.ActLedger:
+        return self._acts.setdefault(session_id, actledger.ActLedger())
 
     async def delegate(self, *, person: str, grant: SessionGrant | None,
                        transcript: list[tuple[str, str]], delegation_id: str | None = None,
@@ -178,6 +186,7 @@ class Planner:
 
     async def _turn(self, api: tools_read.SwarmApi, result: TurnResult, *, person: str,
                     transcript: list[tuple[str, str]], model: str | None) -> TurnResult:
+        self.ledger(api.session_id).begin_turn()
         try:
             catalogue = await api.catalogue()
         except tools_read.ApiRefused as exc:
@@ -188,7 +197,7 @@ class Planner:
                       if isinstance(t, dict) and str(t.get("name", "")).startswith(DRAW_PREFIX)]
         kinds = {str(t["name"])[len(DRAW_PREFIX):] for t in draw_tools}
         tools = [*draw_tools, *tools_read.tool_schemas(), *tools_visual.tool_schemas(),
-                 prompts.speak_tool()]
+                 *tools_act.tool_schemas(), prompts.speak_tool()]
         try:
             async with self._accounts.lease(person=person, voice_session_id=api.session_id) as held:
                 return await self._run(api, result, held.bearer.reveal(), tools, kinds, transcript,
@@ -211,7 +220,7 @@ class Planner:
 
         async def handler(name: str, args: dict) -> tuple[str, bool]:
             text, is_error, spoken_now = await self._tool(api, {"name": name, "input": args}, kinds, known,
-                                                          result)
+                                                          result, transcript=transcript)
             if spoken_now is not None:
                 said.append(spoken_now)
                 done.set()
@@ -243,7 +252,8 @@ class Planner:
         return result
 
     async def _tool(self, api: tools_read.SwarmApi, use: dict, kinds: set[str], known: tuple[str, ...],
-                    result: TurnResult) -> tuple[str, bool, str | None]:
+                    result: TurnResult, *, transcript: list[tuple[str, str]] | None = None,
+                    ) -> tuple[str, bool, str | None]:
         """(the tool_result text, whether it is an error, the spoken summary if `speak`)."""
         name = str(use.get("name") or "")
         args = use.get("input") if isinstance(use.get("input"), dict) else {}
@@ -262,6 +272,17 @@ class Planner:
                 return str(exc), True, None
             result.visuals.append({"tool": name, **{k: body.get(k) for k in (
                 "visual_id", "note_id", "work") if isinstance(body, dict) and body.get(k)}})
+            return prompts.fence(name, prompts.scrub(prompts.as_text(body), known)), False, None
+        if tools_act.is_act_tool(name):
+            try:
+                body = await tools_act.answer_question(api, self.ledger(api.session_id),
+                                                       _scrub_all(args, known),
+                                                       transcript=transcript or ())
+            except (tools_read.BadInput, tools_read.ApiRefused, actledger.ActRefused) as exc:
+                result.refused.append(name)
+                return prompts.scrub(str(exc), known), True, None
+            result.acts.append({"tool": name, **{k: body.get(k) for k in (
+                "status", "task_id", "question_index") if body.get(k) is not None}})
             return prompts.fence(name, prompts.scrub(prompts.as_text(body), known)), False, None
         if tools_read.is_read_tool(name):
             result.reads.append(name)
