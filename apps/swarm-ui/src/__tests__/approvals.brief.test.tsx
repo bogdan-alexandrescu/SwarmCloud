@@ -247,6 +247,17 @@ describe('the change map', () => {
     fireEvent.click(row)
     expect(screen.queryByTestId('ab-pick')).toBeNull()
   })
+
+  it('draws two edges between the same pair without a duplicate key', async () => {
+    const twice = { ...SECTIONS, graph: { ...SECTIONS.graph, edges: [...SECTIONS.graph.edges, { from: 'k1', to: 'c1', kind: 'imports' }] } }
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await mount(routes(LEGACY, twice))
+    await head()
+    await screen.findByRole('button', { name: /^plancontext\.py, changed:/ }, WAIT)
+    // MUTATION: key an edge by its ends alone, and React warns of two children with one key.
+    expect(err.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('same key'))).toEqual([])
+    err.mockRestore()
+  })
 })
 
 describe('a high-risk plan', () => {
@@ -332,6 +343,11 @@ describe('the overlaps', () => {
     // MUTATION: offer Compare on every row, and two of them open nothing.
     const compare = within(over).getAllByRole('button', { name: /^Show the files shared with/ })
     expect(compare.map((b) => b.getAttribute('aria-label'))).toEqual(['Show the files shared with example-org/example-api#3496'])
+    // The ref column draws #N, the whole ref in its title and name, so a long owner/repo never wraps over the note.
+    // MUTATION: draw the whole owner/repo#N as the link's text.
+    const link = within(over).getByRole('link', { name: 'example-org/example-api#3496' })
+    expect(link.textContent).toBe('#3496')
+    expect(link.getAttribute('title')).toBe('example-org/example-api#3496')
     fireEvent.click(compare[0]!)
     const d = within(over).getByTestId('ab-over-d')
     expect(visible(d)).toContain(`${API}/routes/runs.py`)

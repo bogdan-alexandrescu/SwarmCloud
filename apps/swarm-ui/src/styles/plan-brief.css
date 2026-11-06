@@ -222,7 +222,7 @@
   padding: 9px 4px; border-bottom: 1px solid var(--line-soft); font-size: var(--t-meta); line-height: var(--lh-meta);
 }
 .ab-overs > li:last-child { border-bottom: 0; }
-.ab-pr { color: var(--sk-ac); font-weight: 700; font-size: var(--t-body); }
+.ab-pr { min-width: 0; overflow-wrap: anywhere; color: var(--sk-ac); font-weight: 700; font-size: var(--t-body); }
 .ab-over-t { display: grid; min-width: 0; }
 .ab-over-t .ab-dim { font-family: var(--mono); font-size: var(--t-micro); overflow-wrap: anywhere; }
 .ab-where { justify-self: start; font-size: var(--t-micro); font-weight: 650; padding: 1px 8px; border-radius: var(--r-pill); background: var(--surface-2); border: 1px solid var(--line); white-space: nowrap; }

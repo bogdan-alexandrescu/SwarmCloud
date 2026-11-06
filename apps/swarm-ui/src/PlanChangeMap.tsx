@@ -293,7 +293,7 @@ function ChangeMap({ nodes, edges, multi, selected, onSelect }: { nodes: MapNode
     const lane = tallLanes.get(i) ?? 0
     const g = L.tall ? tallEdge(a, c, lane, L.width) : wideEdge(a, c, e.kind, arcs.get(i), arcRoom)
     const on = selected !== null && (e.from === selected || e.to === selected)
-    return [{ e, g, on, key: `${e.from}-${e.to}` }]
+    return [{ e, g, on, key: `${e.from}-${e.to}-${e.kind}-${i}` }]
   })
   const callers = sel === null ? [] : edges.filter((e) => e.to === sel.id && e.kind !== 'tests').map((e) => byId(e.from)).filter((n): n is Placed => n !== undefined)
   const uses = sel === null ? [] : edges.filter((e) => e.from === sel.id && e.kind !== 'tests').map((e) => byId(e.to)).filter((n): n is Placed => n !== undefined)

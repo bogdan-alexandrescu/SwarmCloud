@@ -1189,6 +1189,12 @@ function refUrl(ref: string, kind: string): string | null {
   return m ? `https://github.com/${m[1]}/${kind === 'pull_request' ? 'pull' : 'issues'}/${m[2]}` : null
 }
 
+/** `owner/repo#N` drawn as `#N`, so the overlap's ref column stays narrow. */
+function refShort(ref: string): string {
+  const m = /#(\d+)$/.exec(ref)
+  return m ? `#${m[1]}` : ref
+}
+
 function RiskMeter({ level }: { level: RiskLevel }) {
   const n = level === 'low' ? 1 : level === 'medium' ? 2 : 3
   return (
@@ -1533,10 +1539,10 @@ function OverlapsCard({ overlaps, changes }: { overlaps: PlanBrief['overlaps']; 
           return (
             <li key={o.ref} data-on={open === o.ref ? 'y' : 'n'}>
               {url === null ? (
-                <span className="ab-pr mono">{o.ref}</span>
+                <span className="ab-pr mono" title={o.ref}>{o.ref}</span>
               ) : (
-                <a className="ab-pr" href={url} target="_blank" rel="noreferrer">
-                  {o.ref}
+                <a className="ab-pr" href={url} target="_blank" rel="noreferrer" title={o.ref} aria-label={o.ref}>
+                  {refShort(o.ref)}
                 </a>
               )}
               <div className="ab-over-t">
