@@ -221,7 +221,9 @@ def _role_field(ctx: AppContext, auth: AuthContext) -> dict:
 
 @router.get("/mine")
 def get_mine(
-    request: Request,
+    # Injected by FastAPI on every request; None only for a direct call (a
+    # unit test of the entries), which then applies no loans.
+    request: Request = None,  # type: ignore[assignment]
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> list[dict]:
@@ -305,7 +307,7 @@ def get_mine(
     # lent while it was being made (LOAN-ON-READ), the caller's own and only
     # theirs. Never fails the route (`apply_ready_loans` does not raise).
     for entry in entries:
-        if entry["kind"] == "user":
+        if entry["kind"] == "user" and request is not None:
             apply_ready_loans(request.app, entry["tenant_id"])
     return entries
 
