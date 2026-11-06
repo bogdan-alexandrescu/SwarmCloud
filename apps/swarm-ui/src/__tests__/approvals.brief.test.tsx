@@ -355,11 +355,63 @@ describe('the overlaps', () => {
     expect(visible(d)).not.toContain('docs/runs.md')
   })
 
+  it('compare what the other pull request does to each shared file, from the theirs the overlap serves', async () => {
+    const plan = {
+      ...SECTIONS,
+      overlaps: [
+        { ref: 'example-org/example-api#3489', kind: 'pull_request', action: 'none', note: 'Planner context carries recent merges by territory', theirs: [{ file: `${API}/plancontext.py`, what: 'Adds recent_merges(): the train’s merges by territory' }, { file: 'docs/train.md', what: 'Documents the train' }] },
+        SECTIONS.overlaps[1]!,
+      ],
+    }
+    await mount(routes(LEGACY, plan))
+    await head()
+    const over = screen.getByRole('region', { name: 'Overlaps' })
+    // A served theirs offers Compare with no open work read; a file this plan does not change is not shared.
+    // MUTATION: compare only the files the run's open work lists, and #3489 offers nothing.
+    const compare = within(over).getAllByRole('button', { name: /^Show the files shared with/ })
+    expect(compare.map((b) => b.getAttribute('aria-label'))).toEqual(['Show the files shared with example-org/example-api#3489'])
+    fireEvent.click(compare[0]!)
+    const d = within(over).getByTestId('ab-over-d')
+    // MUTATION: draw only this plan's side, and theirs is lost.
+    expect(visible(d)).toContain('Theirs')
+    expect(visible(d)).toContain('Adds recent_merges(): the train’s merges by territory')
+    expect(visible(d)).toContain('Adds overlap_refs(): train PRs that share the step’s files')
+    expect(visible(d)).not.toContain('docs/train.md')
+  })
+
   it('folds the plan’s requirements under Validation as Done when', async () => {
     await mount(routes(LEGACY, SECTIONS))
     await head()
     const fold = within(screen.getByRole('region', { name: 'Validation' })).getByText(/^Done when/).closest('details')!
     expect(fold.hasAttribute('open')).toBe(false)
     expect(fold.textContent).toContain('A run’s plan lists each train PR that shares a file with a step')
+  })
+})
+
+describe('the validation', () => {
+  it('ties each red-first test to the ids of the requirements it proves', async () => {
+    const plan = {
+      ...SECTIONS,
+      requirements: ['A run’s plan lists each train PR that shares a file with a step', 'GET /v1/runs/{id} serves the overlaps'],
+      validation: {
+        ...SECTIONS.validation,
+        tests: [
+          { file: `${CP}/test_plancontext_overlap.py`, proves: 'Only train PRs sharing a file are kept, with position and files', requirements: ['R1'] },
+          { file: `${CP}/test_plancontext_overlap.py`, proves: 'A train read that times out plans on, with no overlaps and a reason', requirements: [1] },
+          { file: `${CP}/test_runs_overlap_ref.py`, proves: 'GET /v1/runs/{id} serves plan.overlaps, and [] when none', requirements: ['2', 'R7'] },
+        ],
+      },
+    }
+    await mount(routes(LEGACY, plan))
+    await head()
+    const val = screen.getByRole('region', { name: 'Validation' })
+    // R1 is named twice on T1's file and drawn once; R7 names no requirement and is dropped.
+    // MUTATION: draw the tests without their requirement ids.
+    expect(within(val).getByLabelText('T1 proves R1').textContent).toBe('R1')
+    expect(within(val).getByLabelText('T2 proves R2').textContent).toBe('R2')
+    expect(within(val).getByLabelText('T2 proves R2').firstElementChild!.getAttribute('title')).toBe('GET /v1/runs/{id} serves the overlaps')
+    const fold = within(val).getByText(/^Done when/).closest('details')!
+    expect(fold.textContent).toContain('proved by T1')
+    expect(fold.textContent).toContain('proved by T2')
   })
 })
