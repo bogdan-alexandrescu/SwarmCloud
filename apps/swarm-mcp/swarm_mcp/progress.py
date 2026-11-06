@@ -118,15 +118,16 @@ MAX_WAIT_SECONDS = 300
 #: How often a gathering call re-reads the routes.
 POLL_SECONDS = 5.0
 
-#: The longest a gathering call backs off to while every task it follows stays
-#: PENDING (owner decision, 2026-09-26, proxy cost bound). A QUEUED, PARKED or
-#: READY task holds no capacity (invariant 1) and cannot produce a new line
-#: until it leaves that state -- which `started` below already ends the call
-#: for, at once -- so polling it every `POLL_SECONDS` for a whole window is
-#: four routes' worth of reads that can only ever answer "still pending". The
-#: interval doubles each poll while that holds, capped here, and resets to
-#: `POLL_SECONDS` the moment it does not.
-PENDING_POLL_CAP_SECONDS = 30.0
+#: THE QUIET BACK-OFF (BGD's pick, 2026-11-06; it replaces the 30 s cap for
+#: pending tasks, owner decision 2026-09-26, which it keeps as a cost bound).
+#: While a poll brings nothing new -- no line, no state change -- the wait
+#: before the next one doubles from `POLL_SECONDS` up to this, and any new
+#: line resets it. 7-day load analysis: single-task reads were 39% of
+#: swarm-api's requests, nearly all from follows re-reading tasks that had
+#: not moved. A minute is the longest new output or a finish waits to be
+#: noticed inside a window; a row repeats its call, so nothing is lost.
+#: `compact`'s rows back off the same way, to the same figure.
+IDLE_POLL_CAP_SECONDS = 60.0
 
 #: How much of the answer `answer_excerpt` carries -- what a workflow step's
 #: row returns in place of the whole answer (`sc:step`).
@@ -784,7 +785,7 @@ def watch(
     read_ok: set[str] = set()
     #: Tasks that are not the step this row expects: task id -> their step id.
     wrong_step: dict[str, Any] = {}
-    #: The next sleep, backed off while every known task stays PENDING (below).
+    #: The next sleep, backed off while polls bring nothing new (below).
     interval = POLL_SECONDS
 
     def given_up(task_id: str) -> bool:
@@ -800,6 +801,7 @@ def watch(
     while True:
         polls += 1
         truncation = []
+        lines_before = len(lines)
         for report in _poll(
             client, list(task_ids), cursor, groups,
             room=lambda: max(0, budget - spent),
@@ -857,16 +859,13 @@ def watch(
         remaining = deadline - clock()
         if remaining <= 0:
             break
-        sleep(min(interval, remaining))
-        # BACK OFF while every task known so far is still PENDING: nothing has
-        # happened that a poll could report, and `started` above already ends
-        # the call the moment one leaves that state. Reset the instant a known
-        # task is not pending (already terminal, running, or unreadable) --
-        # that case wants the ordinary cadence, not this one.
-        if latest and all(task.get("state") in _PENDING for task in latest.values()):
-            interval = min(interval * 2, PENDING_POLL_CAP_SECONDS)
-        else:
+        # BACK OFF while a poll brings nothing new (`IDLE_POLL_CAP_SECONDS`);
+        # `started` above already ends the call the moment a task leaves its
+        # wait, and a state change or new output is a line, which resets it.
+        if len(lines) > lines_before:
             interval = POLL_SECONDS
+        sleep(min(interval, remaining))
+        interval = min(interval * 2, IDLE_POLL_CAP_SECONDS)
 
     # THE STREAK, per task, carried to the next call in the token: one good
     # read in this call clears it; a call in which every read failed adds one.
