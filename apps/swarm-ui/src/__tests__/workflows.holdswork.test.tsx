@@ -11,7 +11,7 @@
 // drop a held merge's questions; match a repeated question on its options;
 // leave the finished page without its tick, or the tick without the card.
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -112,6 +112,13 @@ describe('a finished workflow holds no work', () => {
     const items = listNeedItems([w], summaryTaskById([w]), () => 'Ship it')
     expect(items.filter((i) => i.kind === 'merge')).toHaveLength(1)
     expect(needsOf(w, summaryTaskById([w]))).toEqual({ failed: 0, questions: 3, held: 1 })
+  })
+
+  it("reads an ended block-less step's questions as none, and a live one's as not known", () => {
+    const ended = workflow('SUCCEEDED', [{ id: 'implement', summary: { state: 'SUCCEEDED' } }])
+    expect(needsOf(ended, summaryTaskById([ended]))).toEqual({ failed: 0, questions: 0, held: 0 })
+    const live = workflow('FAILED', [{ id: 'merge', summary: { state: 'PARKED' }, waiting: parkedHuman }])
+    expect(needsOf(live, summaryTaskById([live]))).toEqual({ failed: 0, questions: null, held: null })
   })
 
   it('a finished workflow keeps a failed step in Needs you', () => {

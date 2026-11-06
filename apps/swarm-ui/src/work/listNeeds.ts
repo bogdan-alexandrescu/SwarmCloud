@@ -30,7 +30,7 @@
  */
 import { handoffOf, ownerQuestionsHold } from '../Handoff'
 import { stepNeedsOf, summaryTask, type StepNeeds } from '../stepviews'
-import { type Task, type Workflow } from '../types'
+import { TERMINAL_STATES, type Task, type Workflow } from '../types'
 import { pluginAskOf, type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest, type QuestionNeed } from './NeedsYou'
 
 function prOf(task: Task): NeedPullRequest | null {
@@ -111,11 +111,12 @@ export function workflowNeedItems(
   taskById: ReadonlyMap<string, Task> | null,
   title: (stepId: string) => string,
 ): NeedItems {
-  const { items, blind, unread } = classified(w, taskById, title)
+  const { items, blind, blindLive, unread } = classified(w, taskById, title)
+  // A FINISHED WORKFLOW's ended step asks nothing that counts, so only a
+  // block-less step that has not ended -- it may be a held merge -- leaves
+  // the block's kinds not known there.
   const ended = workflowFinished(w) && !items.some((i) => i.kind === 'merge')
-  // A FINISHED WORKFLOW holds no work: nothing it can still wait on is not
-  // known, only whether a step it could not read failed.
-  const unknownKinds = unread ? (ended ? (['failed'] as const) : LIST_KINDS) : blind && !ended ? NEEDS_BLOCK_KINDS : []
+  const unknownKinds = unread ? LIST_KINDS : (ended ? blindLive : blind) ? NEEDS_BLOCK_KINDS : []
   return Object.assign(items, { unknownKinds })
 }
 
@@ -156,10 +157,11 @@ function classified(
   w: Workflow,
   taskById: ReadonlyMap<string, Task> | null,
   title: (stepId: string) => string,
-): { items: NeedItem[]; quiet: QuestionNeed[]; blind: boolean; unread: boolean } {
+): { items: NeedItem[]; quiet: QuestionNeed[]; blind: boolean; blindLive: boolean; unread: boolean } {
   const all: NeedItem[] = []
   const asked = new Set<string>()
   let blind = false
+  let blindLive = false
   let unread = false
   for (const step of w.steps) {
     if (!step.task_id) continue
@@ -170,6 +172,7 @@ function classified(
       unread = true
       continue
     }
+    if (needs === null && !TERMINAL_STATES.has(task.state)) blindLive = true
     for (const item of stepNeedItems(task, needs, title(step.step_id))) {
       if (item.kind === 'question' && item.question !== null) {
         const key = questionKey(item.question)
@@ -179,11 +182,12 @@ function classified(
       all.push(item)
     }
   }
-  if (!workflowFinished(w) || all.some((i) => i.kind === 'merge')) return { items: all, quiet: [], blind, unread }
+  if (!workflowFinished(w) || all.some((i) => i.kind === 'merge')) return { items: all, quiet: [], blind, blindLive, unread }
   return {
     items: all.filter((i) => i.kind !== 'question'),
     quiet: all.filter((i): i is QuestionNeed => i.kind === 'question'),
     blind,
+    blindLive,
     unread,
   }
 }
