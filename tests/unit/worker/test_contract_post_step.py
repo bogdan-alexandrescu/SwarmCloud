@@ -304,6 +304,141 @@ def test_a_verdict_on_another_commit_is_posted_as_not_run(tmp_path: Path, checko
     assert len(posted) == 1
 
 
+# -- the cited lines: each cited item's hunk goes to swarm-api, never to Jev --
+
+
+def _citing(evidence: dict[str, str]):
+    """Jev answering `met` for every requirement, resting `v<k>` on
+    `evidence[k]` (an `i<n>` or `none`; `i0` where not named)."""
+    def answer(questions: dict[str, Any]) -> dict[str, Any]:
+        out = {}
+        for name, question in questions.items():
+            pick = {"v": "met", "w": "satisfied",
+                    "e": evidence.get(name[1:], "i0")}[name[0]]
+            assert pick in question["criteria"], (name, pick)
+            out[name] = {"choice": pick, "probabilities": {pick: 0.9}, "confidence": 0.9}
+        return out
+    return answer
+
+
+def _route_body(verdict: dict[str, Any]):
+    from swarm_api.attemptstate import ContractVerdictBody
+
+    return ContractVerdictBody(tenant_id="t", task_id="x", lease_id="l", generation=1,
+                               request_id="r-1", **verdict)
+
+
+def test_a_verdict_that_cites_an_item_carries_its_hunk(tmp_path: Path, checkout) -> None:
+    fake = FakeJev(_citing({"0": "i1", "2": "i1"}))
+    verdict = _judge(tmp_path, checkout, _client(tmp_path, fake))
+    assert verdict["outcome"] == "judged", verdict["reason"]
+    (sent,) = fake.requests
+    rows = sent["state"]["changed"]
+    assert [r["path"] for r in rows] == verdict["changed"] == ["copy.md", "login.py"]
+    # In `changed`'s order: the cited item's hunk as the state sent it, the
+    # uncited one none.
+    assert verdict["hunks"] == [None, rows[1]["hunk"]]
+    assert "return sso()" in verdict["hunks"][1]
+    # Nothing new went to Jev: the state is exactly what it was.
+    assert set(sent["state"]) == {"requirements", "commit", "changed", "mechanical",
+                                  "artifacts", "cut"}
+    assert verdict["state_sha256"] == cr.state_digest(sent["state"])
+    body = _route_body(verdict)
+    verdicts = [cr.checked_verdict(_contract(), v, items=set(verdict["changed"]) | {"i0", "i1"})
+                for v in verdict["verdicts"]]
+    assert cr.cited_hunks([v for v in verdicts if v is not None], body.hunks,
+                          body.changed) == {"i1": body.hunks[1]}
+    assert "return sso()" in body.hunks[1] and body.hunks[0] is None
+    posted: list[dict] = []
+    assert poststeps.deliver_contract_verdict(lambda op, b: posted.append(b), verdict,
+                                              published_head=checkout[2],
+                                              request_id="r-1") == "posted"
+    assert posted[0]["hunks"] == verdict["hunks"]
+
+
+def test_each_cited_item_carries_its_own_hunk(tmp_path: Path, checkout) -> None:
+    fake = FakeJev(_citing({"0": "i1", "2": "i0"}))
+    verdict = _judge(tmp_path, checkout, _client(tmp_path, fake))
+    (sent,) = fake.requests
+    assert verdict["hunks"] == [row["hunk"] for row in sent["state"]["changed"]]
+    assert "company account" in verdict["hunks"][0]
+
+
+def test_an_item_with_no_change_carries_no_hunk(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "worker@example.com")
+    _git(repo, "config", "user.name", "worker")
+    (repo / "login.py").write_text("def login():\n    return None\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "empty.txt").write_text("")
+    (repo / "login.py").write_text("def login():\n    return sso()\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "next")
+    fake = FakeJev(_citing({"0": "i0", "2": "none"}))
+    contract = _contract()
+    verdict = poststeps.contract_post_step(_client(tmp_path, fake), contract.to_document(),
+                                           wc.digest(contract), repo, base=base,
+                                           deadline_left=None)
+    (sent,) = fake.requests
+    assert [r["path"] for r in sent["state"]["changed"]] == ["empty.txt", "login.py"]
+    assert "hunk" not in sent["state"]["changed"][0]
+    # The cited item has no text: it is sent by path alone, with no hunk.
+    assert verdict["verdicts"][0]["evidence_item"] == "i0"
+    assert verdict["hunks"] == [None, None]
+    _route_body(verdict)
+
+
+def test_a_denied_or_credential_shaped_hunk_is_never_sent(tmp_path: Path, checkout) -> None:
+    repo, base, _ = checkout
+    (repo / "config.tfvars").write_text('region = "europe-west1"\n')
+    (repo / "app.py").write_text("KEY = '" + "AKIA" + secrets.token_hex(8).upper() + "'\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "more")
+    head = _git(repo, "rev-parse", "HEAD")
+    fake = FakeJev(_citing({"0": "i0", "2": "i1"}))
+    contract = _contract()
+    verdict = poststeps.contract_post_step(_client(tmp_path, fake), contract.to_document(),
+                                           wc.digest(contract), repo, base=base,
+                                           deadline_left=None)
+    assert verdict["commit"] == head
+    assert verdict["changed"][:2] == ["app.py", "config.tfvars"]
+    assert verdict["hunks"] == [None] * len(verdict["changed"])
+
+
+def test_the_hunks_are_bounded_as_the_state_cuts_them(tmp_path: Path, checkout) -> None:
+    repo, base, _ = checkout
+    for n in range(40):
+        (repo / f"big{n:02d}.py").write_text(
+            "".join(f"value_{n}_{k} = {k}\n" for k in range(400)))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "big")
+    fake = FakeJev(_citing({"0": "i0", "2": "i3"}))
+    contract = _contract()
+    verdict = poststeps.contract_post_step(_client(tmp_path, fake), contract.to_document(),
+                                           wc.digest(contract), repo, base=base,
+                                           deadline_left=None)
+    (sent,) = fake.requests
+    assert len(verdict["hunks"]) == len(verdict["changed"]) <= cj.MAX_CHANGED
+    kept = [h for h in verdict["hunks"] if h is not None]
+    # One hunk per cited item at most, each no longer than the state cuts one.
+    assert len(kept) == 2 and all(len(h) == cj.HUNK_CHARS for h in kept)
+    assert kept == [sent["state"]["changed"][0]["hunk"], sent["state"]["changed"][3]["hunk"]]
+    _route_body(verdict)
+
+
+def test_a_not_run_verdict_carries_no_hunks(tmp_path: Path, checkout) -> None:
+    assert "hunks" not in _judge(tmp_path, checkout, _client(tmp_path, FakeJev(500)))
+    verdict = _judge(tmp_path, checkout, _client(tmp_path, FakeJev(_citing({"0": "i1"}))))
+    posted: list[dict] = []
+    poststeps.deliver_contract_verdict(lambda op, b: posted.append(b), verdict,
+                                       published_head="c" * 40, request_id="r-1")
+    assert posted[0]["outcome"] == "not_run" and "hunks" not in posted[0]
+
+
 # -- the fence: a stale generation posts nothing further ----------------------
 
 
