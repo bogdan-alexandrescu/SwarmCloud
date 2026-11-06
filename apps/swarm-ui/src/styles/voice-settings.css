@@ -1,0 +1,101 @@
+/* VOICE IT, SETTINGS: four cards (the owner's pick of 5 November 2026, "cards
+   and a timeline"). Every colour is a console token, so both themes hold.
+
+   THE PHONE. The picks review found the cards 2px wider than a 390 screen: a
+   select is as wide as its longest option and a tick never wrapped, so the
+   longest model name pushed its card past the screen. Every control here may
+   shrink (`min-width: 0`, `max-width: 100%`), a tick wraps, and under 720px the
+   cards stack and each row puts its label above its value. */
+
+.vset { display: flex; flex-direction: column; gap: 16px; min-width: 0; max-width: 100%; padding-bottom: 32px; }
+.vset-mono { font-family: var(--mono); font-size: var(--t-meta); overflow-wrap: anywhere; }
+.vset-sub { color: var(--text-dim); font-size: var(--t-meta); }
+.vset-headfacts { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; font-size: var(--t-meta); color: var(--text-dim); }
+.vset-fact { overflow-wrap: anywhere; }
+.vset-lock { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); }
+
+.vset-why { all: unset; cursor: help; display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; margin-left: 6px;
+  font: italic 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); box-shadow: inset 0 0 0 1px var(--ctl-bd); vertical-align: 1px; }
+.vset-why:hover, .vset-why:focus-visible { color: var(--text); box-shadow: inset 0 0 0 1.5px var(--text-dim); }
+
+.vset-tick { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.vset-tick i { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.vset-tick.t-ok { color: var(--ok-ink); }
+.vset-tick.t-ok i { background: var(--ok); }
+.vset-tick.t-warn { color: var(--warn-ink); }
+.vset-tick.t-warn i { background: var(--warn-ink); }
+.vset-tick.t-bad { color: var(--bad-ink); }
+.vset-tick.t-bad i { background: var(--bad); }
+.vset-tick.t-info { color: var(--info-ink); }
+.vset-tick.t-info i { background: var(--info); }
+.vset-tick.t-idle i { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-faint); }
+
+.vset-btn { appearance: none; display: inline-flex; align-items: center; height: var(--h-sm); padding: 0 11px; border-radius: var(--r-ctl);
+  border: 1px solid var(--ctl-bd); background: var(--surface); color: var(--text); font: 500 var(--t-meta)/var(--lh-meta) var(--font); cursor: pointer; white-space: nowrap; }
+.vset-btn:hover { background: var(--surface-2); }
+.vset-btn:disabled { cursor: default; opacity: .6; }
+.vset-btn.is-primary { background: var(--info); border-color: var(--info); color: var(--ctl-onac); }
+.vset-btn.is-primary:hover { background: color-mix(in srgb, var(--info) 88%, var(--text)); }
+
+.vset-seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; padding: 3px; gap: 2px; border-radius: var(--r-ctl); background: var(--ctl-q-fill); }
+.vset-seg button { appearance: none; border: 0; background: transparent; color: var(--text-dim); height: 28px; padding: 0 12px; border-radius: 6px; font: 500 var(--t-meta)/var(--lh-meta) var(--font); cursor: pointer; }
+.vset-seg button:hover { color: var(--text); }
+.vset-seg button.is-on { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.vset-seg.is-chips { background: transparent; padding: 0; gap: 6px; }
+.vset-seg.is-chips button { box-shadow: inset 0 0 0 1px var(--ctl-bd); border-radius: var(--r-pill); }
+.vset-seg.is-chips button.is-on { background: var(--text); color: var(--surface); box-shadow: none; }
+.vset-select { min-width: 0; max-width: 100%; height: var(--h-ctl); padding: 0 10px; border-radius: var(--r-ctl); border: 1px solid var(--ctl-bd);
+  background: var(--surface); color: var(--text); font: var(--t-meta)/var(--lh-meta) var(--mono); text-overflow: ellipsis; }
+.vset-ro-val { color: var(--text); overflow-wrap: anywhere; }
+
+.vset-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.vset-card { min-width: 0; box-sizing: border-box; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
+.vset-card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; padding: 14px 18px 4px; }
+.vset-card-head h2 { margin: 0; font-size: var(--t-lead); font-weight: 600; }
+.vset-card-aside { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.vset-card-body { display: flex; flex-direction: column; min-width: 0; padding: 6px 18px 16px; }
+.vset-band { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 8px 18px 4px; padding: 9px 12px;
+  border-radius: var(--r-ctl); font-size: var(--t-meta); }
+.vset-band-text { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.vset-band-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.vset-band.is-bad { background: color-mix(in srgb, var(--bad) 12%, var(--surface)); color: var(--bad-ink); }
+.vset-band.is-warn { background: color-mix(in srgb, var(--warn) 16%, var(--surface)); color: var(--warn-ink); }
+.vset-band strong { font-weight: 600; }
+.vset-band span { color: var(--text); }
+
+.vset-row { display: grid; grid-template-columns: 130px minmax(0, 1fr); align-items: center; gap: 12px; min-height: 44px; border-bottom: 1px solid var(--line-soft); }
+.vset-row:last-child { border-bottom: 0; }
+.vset-row-lbl { color: var(--text-dim); font-size: var(--t-meta); }
+.vset-row-val { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; padding: 6px 0; }
+
+.vset-key { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; margin-top: 10px; padding: 12px 14px;
+  border-radius: var(--r-tile); background: color-mix(in srgb, var(--surface-2) 70%, var(--surface)); }
+.vset-key-name { font-weight: 600; font-size: var(--t-body); }
+
+.vset-mach-cols { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 6px; font-size: var(--t-micro); color: var(--text-dim); }
+.vset-mach-unit { display: inline-flex; align-items: center; }
+.vset-machines { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.vset-mach { appearance: none; box-sizing: border-box; width: 100%; text-align: left; font: inherit; color: var(--text); cursor: pointer;
+  display: grid; grid-template-columns: 16px minmax(0, 1fr) minmax(0, 72px) auto; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: var(--r-ctl); border: 1px solid var(--line-soft); background: transparent; }
+.vset-mach:hover { background: var(--surface-2); }
+.vset-mach.is-on { border-color: var(--text-dim); background: color-mix(in srgb, var(--surface-2) 60%, var(--surface)); }
+div.vset-mach { cursor: default; grid-template-columns: minmax(0, 1fr) minmax(0, 72px) auto; }
+div.vset-mach .vset-radio { display: none; }
+.vset-radio { width: 14px; height: 14px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--ctl-bd); }
+.vset-mach.is-on .vset-radio { box-shadow: inset 0 0 0 4px var(--text); }
+.vset-mach-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vset-mach-spec { color: var(--text-dim); font-size: var(--t-micro); }
+.vset-mach-bar { height: 6px; border-radius: 3px; background: var(--line-soft); overflow: hidden; }
+.vset-mach-bar i { display: block; height: 100%; border-radius: 3px; background: var(--series-1); }
+.vset-mach-price { font-variant-numeric: tabular-nums; text-align: right; font-weight: 500; }
+
+.vset-fail { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 18px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+
+@media (max-width: 720px) {
+  .vset-grid { grid-template-columns: minmax(0, 1fr); }
+  .vset-row { grid-template-columns: minmax(0, 1fr); gap: 2px; padding-top: 8px; }
+  .vset-card-head, .vset-card-body { padding-left: 14px; padding-right: 14px; }
+  .vset-band { margin-left: 14px; margin-right: 14px; }
+  .vset-mach { gap: 8px; padding: 10px; }
+}
