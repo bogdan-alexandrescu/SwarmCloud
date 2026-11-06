@@ -164,7 +164,7 @@ describe('the base a change is compared with', () => {
     expect(() => chooseBase(join(r, 'app'), { PROSE_BASE: 'no-such-ref' })).toThrow(/names no commit/)
   })
 
-  it('copies the base app without its tests, beside the head node_modules', () => {
+  it('copies the base app without its tests into the head node_modules, and removes it', () => {
     const r = repo()
     const one = commit(
       r,
@@ -177,7 +177,8 @@ describe('the base a change is compared with', () => {
     try {
       expect(readFileSync(join(tree.app, 'src/a.ts'), 'utf8')).toBe('one')
       expect(existsSync(join(tree.app, 'src/__tests__'))).toBe(false)
-      expect(existsSync(join(tree.app, 'node_modules'))).toBe(true)
+      expect(dirname(tree.app)).toBe(join(r, 'app/node_modules'))
+      expect(readFileSync(join(tree.app, 'package.json'), 'utf8')).toBe('{}')
     } finally {
       tree.remove()
     }
