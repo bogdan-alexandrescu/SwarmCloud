@@ -38,7 +38,7 @@ import {
 } from './api'
 import { Markdown } from './ArtifactViewer'
 import { InfoTip } from './People'
-import type { ApiError, Result } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, type ApiError, type Result } from './fetch'
 import { Button, Chip } from './components'
 import { FailedPanel, PageHead, Screen } from './Shell'
 import { AUTO_APPROVER, PlanEditor, RejectForm, runStateWord, shortDigest } from './Runs'
@@ -591,9 +591,24 @@ export async function loadPlannerDocuments(served: PlannerDocuments | null | und
 async function diagramSrc(taskId: string, doc: PlannerDocument): Promise<string | null> {
   if (doc.bytes === null || doc.bytes > DIAGRAM_DRAW_BYTES) return null
   try {
-    const r = await fetch(artifactRawUrl(taskId, doc.name, 'inline'))
+    const tenant = chosenTenant()
+    const r = await fetch(artifactRawUrl(taskId, doc.name, 'inline'), {
+      headers: apiHeaders({}),
+    })
+    if (!r.ok) {
+      // A stored tenant the caller is no longer in is forgotten, as read()
+      // and write() do.
+      let code: string | null = null
+      try {
+        const env: unknown = await r.json()
+        const c = typeof env === 'object' && env !== null ? (env as { code?: unknown }).code : null
+        code = typeof c === 'string' ? c : null
+      } catch { code = null }
+      dropRefusedTenant(r.status, code, tenant)
+      return null
+    }
     const type = r.headers.get('content-type') ?? ''
-    if (!r.ok || !/^image\/(png|jpeg|gif|webp)$/.test(type)) return null
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(type)) return null
     const bytes = new Uint8Array(await r.arrayBuffer())
     let bin = ''
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
@@ -603,16 +618,18 @@ async function diagramSrc(taskId: string, doc: PlannerDocument): Promise<string 
   }
 }
 
-const FRAME_STYLE = '<style>body{font:14px/1.5 system-ui,sans-serif;margin:16px;color:#1d1d1f;background:#fff}img{max-width:100%;height:auto}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:2px 6px}</style>'
+// The frame's look rides on its body as an attribute: the console's
+// stylesheets are its only sheets, so no screen injects a style element.
+const FRAME_BODY = '<body style="font:14px/1.5 system-ui,sans-serif;margin:16px;color:#1d1d1f;background:#fff;overflow-wrap:anywhere">'
 
 /** The doc as a frame's document: React's own serialisation of the Markdown renderer's elements. */
 export function docFrame(source: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8">${FRAME_STYLE}</head><body>${renderToStaticMarkup(<Markdown source={source} />)}</body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"></head>${FRAME_BODY}${renderToStaticMarkup(<Markdown source={source} />)}</body></html>`
 }
 
 /** A diagram as a frame's document: one image, its source a `data:` URL the page read itself. */
 export function diagramFrame(src: string, name: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8">${FRAME_STYLE}</head><body>${renderToStaticMarkup(<img src={src} alt={name} />)}</body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"></head>${FRAME_BODY}${renderToStaticMarkup(<img src={src} alt={name} style={{ maxWidth: '100%', height: 'auto' }} />)}</body></html>`
 }
 
 function PlannerDocs({ shown }: { shown: ShownDocuments | null | undefined }) {
