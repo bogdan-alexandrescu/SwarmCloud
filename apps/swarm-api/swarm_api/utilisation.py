@@ -21,6 +21,10 @@ worker's monotonic clock never meets the server's wall clock, only the
 difference between two readings of it does. HEARTBEAT is the one event series
 the platform keeps per task; no new collection, no new write.
 
+`memory_bytes` is the container's WORKING SET, `memory.current` less
+`inactive_file` (`agent_worker.metrics.working_set_bytes`): the memory the
+guard judges, without the page cache the kernel reclaims first.
+
 THE ATTEMPT'S FIGURES. `cpu_limit_cores` is the attempt document's typed field
 (contract request #15). `memory_limit_bytes` and the three throttling figures
 are the attempt's newest HEARTBEAT's: `Attempt` is frozen and has no field for
