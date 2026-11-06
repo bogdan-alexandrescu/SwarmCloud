@@ -86,7 +86,7 @@ def test_the_frozen_bounds_are_the_designs():
     assert (profiles.MEMORY_PER_CPU_MIN, profiles.MEMORY_PER_CPU_MAX) == (1.0, 6.5)
     assert profiles.LIVE_WORKER_MIN == (1, 2)
     assert profiles.LIVE_DISPLAY_MIN == (1, 5)
-    assert profiles.CLASS_ORDER == ("standard", "browser", "large")
+    assert profiles.CLASS_ORDER == ("standard", "browser", "medium", "large")
     assert set(profiles.CLASS_ORDER) == set(RESOURCE_CLASSES)
 
 
@@ -99,7 +99,7 @@ def test_units_for(cpu_request, memory_gib, expected):
     assert units_for(cpu_request, memory_gib) == expected
 
 
-@pytest.mark.parametrize("name,expected", [("standard", 1), ("browser", 1), ("large", 4)])
+@pytest.mark.parametrize("name,expected", [("standard", 1), ("browser", 1), ("medium", 2), ("large", 4)])
 def test_units_for_reproduces_todays_classes(name, expected):
     rc = RESOURCE_CLASSES[name]
     # MUTATION: change a class's `units` and both halves fail; the import-time

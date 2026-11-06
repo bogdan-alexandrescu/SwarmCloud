@@ -132,6 +132,16 @@ def test_with_no_version_written_the_route_serves_the_code_defaults(client):
                for group in body["followers"].values())
 
 
+def test_the_table_lists_the_medium_class_between_browser_and_large(client):
+    """Contract request 139 (BGD, 6 November 2026): the middle size."""
+    body = client.get(ROUTE, headers=auth_header("root")).json()
+    # MUTATION: leave `medium` out of CLASS_ORDER and the table has no row for it.
+    assert list(body["classes"]) == ["standard", "browser", "medium", "large"]
+    medium = body["classes"]["medium"]
+    assert (medium["cpu_request"], medium["cpu_limit"], medium["memory_gib"], medium["units"]) == (6, 12, 16, 2)
+    # A GKE profile on the class follows a resize, as claude-code-large does.
+    assert "claude-code-medium" in body["followers"]["medium"]["follows"]
+
 def test_a_malformed_stored_version_reads_as_the_code_defaults(client, db):
     db.docs[POINTER] = {"current_version": 1, "updated_by": "someone@example.com"}
     bad = {name: {"cpu_request": s.cpu_request, "cpu_limit": s.cpu_limit,

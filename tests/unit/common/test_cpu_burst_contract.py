@@ -42,7 +42,9 @@ CONTRACT = REPO / "CONTRACT.md"
 REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
 #: §4.1, the owner's Q1 answer: requests unchanged, limit twice the request.
-EXPECTED = {"standard": (4, 8), "browser": (4, 8), "large": (8, 16)}
+EXPECTED = {"standard": (4, 8), "browser": (4, 8), "large": (8, 16),
+            # Contract request 139 (owner, 2026-11-06): the middle size, at the same ratio.
+            "medium": (6, 12)}
 
 
 def test_the_burst_ratio_is_two():
@@ -62,7 +64,7 @@ def test_every_class_bursts_to_twice_its_request(name):
     assert rc.cpu <= rc.cpu_limit_cores <= profiles.CPU_BURST_MAX_RATIO * rc.cpu
 
 
-def test_the_catalogue_names_exactly_the_three_classes():
+def test_the_catalogue_names_exactly_the_expected_classes():
     # MUTATION: add a class without a row in EXPECTED and this fails, so a new
     # class cannot skip the burst assertions above.
     assert set(RESOURCE_CLASSES) == set(EXPECTED)
