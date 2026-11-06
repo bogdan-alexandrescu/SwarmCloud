@@ -37,7 +37,7 @@ from typing import Any
 import pytest
 
 from swarm_api import schedulefire
-from swarm_api.issueruns import IssueRuns, RunState
+from swarm_api.issueruns import IssueRuns, RunState, submitting
 from swarm_api.schedtypes import issue_sweep
 from swarm_api.schemas import WorkflowCreate
 
@@ -240,10 +240,14 @@ def _workflow(ctx, schedule: dict[str, Any], *, title: str | None = None,
     if title is not None:
         meta["title"] = title
     owner = schedulefire.schedule_owner_auth(ctx, schedule)
-    result = ctx.submissions.submit_workflow(owner, WorkflowCreate(
+    # Through the issue-run code's own submission, which alone may carry a
+    # `metadata.issue_run` link (reserved, BGD 2026-11-04).
+    spec = WorkflowCreate(
         steps=[{"step_id": "only", "runner_profile": "mock", "input": {"prompt": "build"}}],
         metadata=meta,
-    ))
+    )
+    with submitting(spec):
+        result = ctx.submissions.submit_workflow(owner, spec)
     return result.workflow.workflow_id
 
 

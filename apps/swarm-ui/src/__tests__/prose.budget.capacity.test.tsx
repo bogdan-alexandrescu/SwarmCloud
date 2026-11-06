@@ -1,3 +1,7 @@
+// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// page the nav reaches shows no more words or arrowed links than it did on the
+// change's base. This file keeps its own screen-level budget.
+//
 // SPLIT FROM prose.budget.test.tsx ON MERGE, not authored separately.
 //
 // Two lanes of the design overhaul each wrote a file at that path -- one for

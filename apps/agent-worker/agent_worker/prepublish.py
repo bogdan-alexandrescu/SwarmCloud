@@ -281,6 +281,10 @@ RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
 #: `gitops.EMPTY_CLONE_BASE`, restated for the same reason.
 EMPTY_BASE = "empty"
+#: Set by the worker to the branch the clone left HEAD on (`lifecycle.
+#: START_BRANCH_ENV`, `Worker._start_branch`); unset for a clone at a commit.
+#: The gate's moved-HEAD finding names it (`moved_head`, `moved_prompt`).
+START_BRANCH_ENV = "SWARM_START_BRANCH"
 #: The artifact the worker appends to the pull request's body.
 PR_SECTION_NAME = "prepublish-checks.md"
 PR_SECTION_HEADING = "## Pre-publish checks failed"
@@ -292,6 +296,10 @@ PR_SECTION_HEADING = "## Pre-publish checks failed"
 #: the agent, so it gets one more turn, and only one (`Gate._second_turn`).
 FIX_TURNS = 1
 CONFLICT_TURNS = 1
+#: One turn to bring a moved HEAD back (`Gate._moved_head`; reported by
+#: Product Oracle's session, 5 November 2026): a second moved HEAD ends as the
+#: harvest's rule ends it (#2094), with the line kept as a bundle.
+MOVED_HEAD_TURNS = 1
 #: Below this much of the step's budget the gate does not start: a check set
 #: that cannot finish would only turn a success into a timeout.
 MIN_GATE_SECONDS = 120.0
@@ -2520,6 +2528,67 @@ def conflict_prompt(ref: str, onto: str, conflicts: Sequence[str]) -> str:
     )
 
 
+def moved_head(repo: Path, env: Mapping[str, str], *, runner: Runner = run_command
+               ) -> str | None:
+    """Where HEAD went when it left this step's work, or None (the gate's
+    moved-HEAD finding; reported by Product Oracle's session, 5 November 2026).
+
+    The worker's harvest refuses such a line and publishes nothing
+    (`lifecycle.Worker._head_moved`, #2094); task_884a993427ce44feb7a6's agent
+    merged a train branch into its own, checked out another pull request's
+    branch, and lost the merge that way. The gate runs while the session can
+    still be continued, so it asks the same questions first, of the clone:
+    HEAD is on a branch other than `START_BRANCH_ENV` that has a
+    `refs/remotes/origin/<name>` (one the agent fetched, not made), or
+    detached exactly on an origin tip other than the start's, or it no longer
+    descends from `CLONE_BASE_ENV`. The harvest stays the judge; this only
+    hands the agent its turn before it judges. Returns the branch HEAD is on,
+    or its short sha when detached."""
+    base = (env.get(CLONE_BASE_ENV) or "").strip()
+    start = (env.get(START_BRANCH_ENV) or "").strip() or None
+    on = _git(repo, "symbolic-ref", "-q", "HEAD", runner=runner, env=env)
+    ref = on.output.strip() if on.code == 0 else ""
+    branch = ref.removeprefix("refs/heads/") if ref.startswith("refs/heads/") else None
+    head = _git(repo, "rev-parse", "--verify", "-q", "HEAD", runner=runner, env=env)
+    sha = head.output.strip() if head.code == 0 else ""
+    where = branch if branch is not None else (sha[:12] or "an unborn HEAD")
+    if branch is None:
+        if sha and sha != base:
+            tips = _git(repo, "for-each-ref", "--points-at", "HEAD", "--format=%(refname)",
+                        "refs/remotes/origin", runner=runner, env=env)
+            own = {"refs/remotes/origin/HEAD"} | ({f"refs/remotes/origin/{start}"} if start else set())
+            if tips.code == 0 and set(tips.output.split()) - own:
+                return where
+    elif start is not None and branch != start:
+        fetched = _git(repo, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}",
+                       runner=runner, env=env)
+        if fetched.code == 0:
+            return where
+    if re.fullmatch(r"[0-9a-f]{40}", base):
+        descends = _git(repo, "merge-base", "--is-ancestor", base, "HEAD", runner=runner, env=env)
+        if descends.code == 1:
+            return where
+    return None
+
+
+def moved_prompt(moved: str, branch: str | None, base: str) -> str:
+    """The moved-HEAD turn's one instruction: the step's branch, where HEAD is."""
+    if branch:
+        home, back = f"this step's branch `{branch}`", f"`git checkout {branch}`"
+    else:
+        home = f"the commit this step started on (`{base[:12]}`)"
+        back = f"`git checkout {base[:12]}`, then a branch of your own from there"
+    return (
+        f"Before publishing, the worker found HEAD on `{moved}`, not on {home}. Only "
+        "work on this step's own line is published; a line that is not on it publishes "
+        f"nothing. You have ONE turn: return to it ({back}) and bring your own work "
+        "there -- merge or cherry-pick your own commits onto it, never another branch you "
+        "only looked at -- commit, and end with a short report. If HEAD is still on "
+        "another line after this turn, nothing of this step's is published; its commits "
+        "are kept as a bundle in the step's artifacts."
+    )
+
+
 def pr_section(rebase: Mapping[str, Any] | None, outcomes: Sequence[Outcome],
                secrets: Sequence[str]) -> str | None:
     """The markdown the worker appends to the pull request's body, or None."""
@@ -2743,7 +2812,14 @@ class Gate:
         record.update({"rebase": None, "rounds": [], "fix_turn": False,
                        "second_turn": False, "broken_by_fix_turn": [],
                        "conflict_turn": False, "failed": [], "pr_section": False,
-                       "guards": self._guards, "restored": []})
+                       "guards": self._guards, "restored": [], "moved_head": None})
+        moved = self._moved_head()
+        record["moved_head"] = moved
+        if moved is not None and not moved["returned"]:
+            # Checks over a line the harvest will not publish are spent for
+            # nothing, and a fix turn there would only move it further.
+            record["skipped"] = "moved_head"
+            return record
         if self.remaining() < MIN_GATE_SECONDS:
             record["skipped"] = "budget"
             self.log.warning("too little of the step's budget is left for the pre-publish "
@@ -2819,6 +2895,33 @@ class Gate:
             target.unlink(missing_ok=True)
         self._advise(outcomes)
         return record
+
+    def _moved_head(self) -> dict[str, Any] | None:
+        """A HEAD that left this step's work is handed back ONCE
+        (`MOVED_HEAD_TURNS`, `moved_head`), before anything else runs on it:
+        the rebase and the checks read the line the agent returns to. None
+        when HEAD did not move. The worker names the step's branch to the
+        runner process, not to the agent's whitelisted env the checks run in
+        (`cliagent.run_prepublish_gate`), so it is read from there when the
+        gate's env lacks it, as the runner reads `PREPUBLISH_BASE_ENV`."""
+        env = dict(self.env)
+        if not (env.get(START_BRANCH_ENV) or "").strip():
+            named = os.environ.get(START_BRANCH_ENV, "").strip()
+            if named:
+                env[START_BRANCH_ENV] = named
+        moved = moved_head(self.repo, env, runner=self.runner)
+        if moved is None:
+            return None
+        branch = (env.get(START_BRANCH_ENV) or "").strip() or None
+        base = (env.get(CLONE_BASE_ENV) or "").strip()
+        self.log.warning("HEAD left this step's branch before publishing; one turn to "
+                         "bring the work back", moved=moved, branch=branch)
+        turn = self.resume(moved_prompt(moved, branch, base))
+        again = moved_head(self.repo, env, runner=self.runner) if turn else moved
+        if again is not None:
+            self.log.warning("HEAD is still off this step's branch; the harvest publishes "
+                             "nothing of it", moved=again, branch=branch, turn=turn)
+        return {"moved": moved, "branch": branch, "turn": turn, "returned": again is None}
 
     def _second_turn(self, base: str, before: Mapping[str, str],
                      outcomes: list[Outcome], parts: int) -> list[Outcome]:

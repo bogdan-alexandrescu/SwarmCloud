@@ -125,13 +125,35 @@ plugin's own read tools and work outside a checkout; they are not pre-granted
 here -- this skill grants only the `sc` and `swarm` commands -- so
 the session may ask once before the first read.
 
+### A spec says what it delivers: `description` and `feature`
+
+A workflow spec may carry, at its top level beside `title`, a `description`
+-- two or three sentences of plain text saying what the work delivers, at
+most 600 characters, no HTML or Markdown -- and a `feature`, `{title, url?}`:
+the feature it belongs to, a title of at most 120 characters, and optionally
+the https github.com issue or pull request of the workflow's OWN repository
+that tracks it. The console's workflow page heads with both, so write them
+for a person who opens the workflow cold. They are sent as
+`metadata.description` and `metadata.feature`; a malformed one is refused
+before anything is sent, and a longer description is refused, never cut.
+A spec should send `about: {purpose, goals, output}` -- why the work exists
+(one sentence, at most 300 characters), up to three goals (at most 120 each)
+and what lands (one sentence, at most 300) -- sent as `metadata.about` and
+checked the same way, each refusal naming the part.
+
 ### Every run is titled after its workflow
 
-A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at most
+A SwarmCloud workflow run here is titled `SC ∴ <name> · N steps` (at most
 150 characters), not `swarmcloud`: <name> is the spec's `title`, else its
 `label` cut at a word, else the title or label SwarmCloud stored, else the
-workflow id, cut to fit, never the step count. A run of single tasks is
-titled `SC · <label> · task` (several: `SC · <first label> +N · N tasks`).
+workflow id, cut to fit, never the step count. N is the number of steps
+SwarmCloud runs, read from the served workflow; a spec launched before it is
+submitted is titled `SC ∴ <name>`, with no count, because SwarmCloud may
+still append steps. A single task's run is titled `SC · <label>`: every
+single task has a run of its own. The mark right after `SC` is the run's
+KIND, seen even where Claude Code's panel cuts a title at about 28
+characters: ONE dot for one task, THREE dots (`∴`, a graph of three nodes)
+for a workflow.
 NO NAME CARRIES A WORKSPACE -- not the run's, not a row's (owner,
 2026-10-14: "workflows in here should not have the [Engineering] or
 [eng@example.com] prefix in front of the names"). The run's DESCRIPTION starts
@@ -183,11 +205,16 @@ ONE ROW OR ONE PER STEP (the plugin's `rows` setting, owner 2026-10-21):
 at its default, `summary`, the run follows the whole workflow with ONE
 `[SwarmCloud] <name> · N steps` row whose line -- `18 steps: 6 running · 9
 queued · 3 done · 0 failed · PR #N` and the console link -- changes only when
-the counts do, and a step that fails, waits for a person or asks the owner
-questions is named on its own line. It is the default because it is one agent
+the counts do. Under it the row names EVERY step the platform runs on a line
+of its own, grouped by the console's stages (`Stage 1`, `Stage 2`... in the
+console's order and names), each with its state and console link, written
+again only when a step's state changes; the steps SwarmCloud appends
+(re-review, merge, CI-fix and conflict-fix rounds) join them as they appear.
+A step that fails, waits for a person or asks the owner questions is also
+named on its own line. It is the default because it is one agent
 instead of N, so it never meets Claude Code's limit of min(16, CPU cores - 2)
 agents per run. `per-step` is a row per unfinished step; past that limit the
-reply's `launches` holds several copies, `SC · <name> · N steps · rows 1-8`,
+reply's `launches` holds several copies, `SC ∴ <name> · N steps · rows 1-8`,
 `rows 9-16`..., each a run of its own: launch EVERY entry of `launches`, each
 with its own args. `/sc attach <wf_id> --per-step` (pass `{attach: "<wf_id>",
 rows: "per-step"}`) uses per-step for this one attach, and `--summary` (`rows:
@@ -241,7 +268,7 @@ workflow keeps its own step count, as the console shows it. Call
 `swarm_workflow_launch` once with `{attach: "all"}`. It lists the caller's
 tenant's running workflows once, keeps this session's and, for the 100 closest to finish (the plugin's
 `max_live_rows` option, held to 1-200), grouped by workspace, writes one
-titled script each -- named `SC · <name> · N steps`, its description
+titled script each -- named `SC ∴ <name> · N steps`, its description
 starting with its details, `Workspace: <workspace> (<tenant>) · Started by: ...` -- then make one Workflow call per entry of its `launches`,
 `{scriptPath: <its script_path>, args: <its args>}` — each attaches its
 workflow exactly as `attach <wf_id>` does: finished steps reported once, a
@@ -256,7 +283,8 @@ rows across every workflow, and a workflow with more rows than one Claude
 Code run shows comes back as several entries, `rows 1-8`, `rows 9-16`... —
 launch every entry of `launches`. `/sc attach --all --per-step` passes
 `{attach: "all", rows: "per-step"}` (and `--summary`, `rows: "summary"`) for
-this one attach-all, its single tasks' row included, whatever the setting.
+this one attach-all, whatever the setting; single tasks have one row each in
+every mode.
 
 **SCROLLING IS CLAUDE CODE'S, NOT THE PLUGIN'S.** The /workflows panel is
 Claude Code's own UI: this plugin cannot add scrolling to it, and cannot make
@@ -266,11 +294,16 @@ is ONE compact line (`[SwarmCloud] <name> · stage <n> · <step>
 the current step's age, then the id), grouped by workspace -- so two
 attaches of the same state list the same order. Say this
 plainly when someone asks for scrolling.
-SINGLE TASKS (#830): your running tasks in no workflow get ONE more entry in
-`launches`, whose args are `{attach_tasks: [...]}` — launch it like the
-others; it starts one `[SwarmCloud]` row per task, titled from the task's
-label, with its workspace and the rest of its details shown when the row is expanded, each following its task until it
-finishes -- or, with `rows` at `summary`, ONE row for the whole batch, `N tasks: ... running · ... done` (at most 100, `max_live_rows`; the rest come back in `not_followed`). `single_tasks` says how many there were;
+SINGLE TASKS (#830): each of your running tasks in no workflow gets ONE entry
+of its own in `launches`, whose args are `{attach_tasks: [<that task>]}`, its
+run titled `SC · <label>` from that task alone — launch every one like the
+others; each starts ONE `[SwarmCloud] <label> · task` row, with its workspace
+and the rest of its details shown when the row is expanded, following its
+task until it finishes. That holds whatever the `rows` setting (owner
+2026-11-04: a summary row over a batch read `0/1` and showed counts, not
+lanes); `max_live_rows` caps the total (at most 100 by default) and the rest
+come back in `not_followed`. A copy launched with any task but the one it
+was written for is refused, naming the right call: never reuse one. `single_tasks` says how many there were;
 `single_tasks_error` means they could not be read — say so verbatim.
 `count: 0` and no task launch is an answer: nothing is running. Report each run's `state`
 (`NOT_ATTACHED` with the API's error verbatim) and the `not_followed` list.
@@ -347,6 +380,7 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    | `no_heartbeat` | RUNNING/STARTING with no heartbeat and no event for more than the window | a beat or an event inside it |
    | `waiting_for_capacity` | READY/QUEUED longer than the window, with the pool that binds it | a task that entered the state recently. It holds nothing while it waits (invariant 1): report it as waiting, not as broken |
    | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed | any other park reason: a quota window or a retry backoff is the platform waiting by design |
+   | `merge_train_stalled` | a merge step waiting on the merge train (CI_PENDING, code `merge_train_waiting`) more than 60 min, aged from the train's start the API serves (`waiting.detail.train_since`), else from the first train park of its unbroken run (`evidence.in_state_since`, exact or "at least"; `evidence.age_source` says which); the train boards only pull requests whose checks are all green | a train park under 60 min; a train park never counts toward the CI_PENDING 90 min. Name `evidence.failed_checks` (the PR's failed or cancelled checks at its head, read from GitHub's public API); when it is null, say the checks were NOT read (`checks_unread_because` says why). `next` is the PR link |
    | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed`, and its PR is still open | any other failure, and a PR that has since MERGED or CLOSED (the check reads the PR's state from GitHub's public API). When `pull_request_state` is null, say the PR's state was NOT read (its `pull_request_state_unread_because` says why), and give its link |
    | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
    | `awaiting_input` | STUCK only when an AWAITING_INPUT step is still parked more than two ticks (2 min) past its `expires_at`: the expiry sweep is not running | a wait inside its window, or just past it: listed under `awaiting_input`, below |
@@ -476,6 +510,7 @@ option label, exactly as served, when the person picked one of them; `text`
 is the person's words, or what they chose when it was none of the options.
 The bridge adds `via: claude-code` and this session's id, so the console
 shows the answer as given in Claude Code instead of leaving it unanswered.
+Many answers at once (the person's decision to close finished tasks' questions as moot, or a lane's questions recorded at fold time): ONE `swarm_task_answers {entries: [{task_id, question_index, choice?, text?}]}` call (at most 200; short replies; each refused entry is its own line).
 
 Only the person's own pick, verbatim, from a question this session asked
 them; never an answer the agent chose itself, a recommended option they did
@@ -561,7 +596,7 @@ remembered per project and switches without restarting the session:
   is a model agent that polls for as long as its work runs.
 * **`pane`** -- the **SwarmCloud pane** beside the chat, opened with
   `/sc-pane` (or by `/sc layout pane`), plus ONE quiet `sc:finish` row per
-  workflow in /workflows, labelled `SC · <name>`. At session start the pane
+  workflow in /workflows, labelled `SC ∴ <name>`. At session start the pane
   opens by itself, drawing "not read yet" with Refresh, after ONE
   `swarm_layout` call and no list read (BGD, 2026-10-25: "open it with no
   read"); the engine seats a pane nobody asked for only from 144 terminal
@@ -587,7 +622,7 @@ remembered per project and switches without restarting the session:
   changes (`stage 2 · 1 failed · 3 running · 1 parked`, then `succeeded ·
   3/3 stages`) and holds each `swarm_follow` (`format: "stage"`) until it
   does, so a quiet stage costs one call per half hour, not one per step
-  change. A batch of single tasks keeps its one summary row.
+  change. A single task keeps its own `sc:task` row, one per task.
 * **`band`** -- the same levels in a **strip above the prompt**, with ONE
   summary line **below** the prompt, and **no /workflows row at all** (BGD,
   2026-10-26: in Claude Code's fullscreen layout a pane docks on the right,
@@ -846,6 +881,14 @@ is refused before anything is submitted; a 422 from the API
 reported in its own words, with the offer of the same spec without the
 field. Never choose a class the spec did not: it is the operator's decision,
 made in the spec or on the command line.
+
+A review step's gate is the step's `review_gate`: `false` switches it off,
+so the review runs however small the change (a mock-up review, say), and a
+block of `min_lines`, `risk_paths` and `requirements_check` sets it. It is
+sent as the step's `metadata.review_gate`; a malformed one is refused before
+anything is submitted. A step carrying `metadata` itself is refused, like
+every key outside the accepted list. Never add or drop a gate the spec did
+not name.
 
 ### `runs`
 

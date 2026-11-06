@@ -232,7 +232,7 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
     expect(at(table, 'width')).toBe('100%')
     expect(at(wrap, 'overflow')).toBe('hidden')
     const heads = [...document.querySelectorAll('.wfg-table thead th')]
-    expect(heads.map((h) => h.textContent)).toEqual(['State', 'Workflow', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
+    expect(heads.map((h) => h.textContent)).toEqual(['State', 'Workflow', 'Repository', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
     expect(heads.filter((h) => at(h, 'display') === 'none')).toEqual([])
     // The name's cell takes every pixel the others leave, and is cut there
     // with its whole text in its link's title; no cell wraps.
@@ -339,7 +339,9 @@ describe('the 390px phone form of the graph (workflows.html B, phone frame)', ()
     expect([...impl.querySelectorAll<HTMLElement>('button.wf-ph-step')].map((b) => b.dataset.phStep)).toEqual(['impl-6', 'impl-3'])
     expect(impl.querySelector('.wf-ph-more')!.textContent).toBe('+6 more in this stage')
     fireEvent.click(impl.querySelector<HTMLButtonElement>('button.wf-ph-step[data-ph-step="impl-3"]')!)
-    await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the picked step's card is `StepCard` (`.sc-card`), not the shared `.wf-inspect`.
+    await waitFor(() => expect(document.querySelector('.sc-card')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
     // The shipped sheet shows it only at phone width, and hides the canvas there.
     expect(at(list, 'display', 1440)).toBe('none')
     expect(at(list, 'display', 390)).toBe('flex')
@@ -517,9 +519,13 @@ describe('the picked step opens in the docked inspector, folded below 1366 and d
       expect(d).toBeTruthy()
       return d!
     })
-    expect(within(dock).getByText('Open agent →')).toBeTruthy()
-    // StopRun's own control, in a group named for what it stops (VQ-015: `Stop step`, as workflows.html B draws it).
-    expect(within(within(dock).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'Stop' })).toBeTruthy()
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the bar's first action is a plain "Agent" link, not "Open agent →".
+    expect(within(dock).getByRole('link', { name: 'Agent' })).toBeTruthy()
+    // StopRun's own control (`what` is now `step <id>`, VQ-015): the bar's `Stop` button opens a
+    // confirm scoped by name to this step, rather than sitting in a group already named for it.
+    fireEvent.click(within(dock).getByRole('button', { name: 'Stop' }))
+    expect(within(dock).getByRole('group', { name: 'Stop step core' })).toBeTruthy()
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 
@@ -534,12 +540,16 @@ describe('the picked step opens in the docked inspector, folded below 1366 and d
     }))
     expect(document.querySelector('.wi.is-docked')).toBeTruthy()
     const dock = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step core"]')!
-    expect(within(dock).getByText('Open agent →')).toBeTruthy()
-    expect(within(within(dock).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'Stop' })).toBeTruthy()
+    expect(within(dock).getByRole('link', { name: 'Agent' })).toBeTruthy()
+    fireEvent.click(within(dock).getByRole('button', { name: 'Stop' }))
+    expect(within(dock).getByRole('group', { name: 'Stop step core' })).toBeTruthy()
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 
-  it('keeps the same-step strip inside the dock: at most 15 marks, the rest counted', async () => {
+  // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+  // the dock no longer draws a strip of up to 15 sibling marks with the rest counted in
+  // prose -- the same siblings are a "n / N" pager behind the Details fold instead.
+  it('keeps the same-step siblings as a pager inside the Details fold, counted, not a capped strip', async () => {
     const realWidth = window.innerWidth
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     const many = Array.from({ length: 62 }, (_, i) => {
@@ -554,13 +564,15 @@ describe('the picked step opens in the docked inspector, folded below 1366 and d
       expect(chip).toBeTruthy()
       return chip!
     }))
-    const strip = await waitFor(() => {
-      const s = document.querySelector<HTMLElement>('.wf-scrub-strip')
-      expect(s).toBeTruthy()
-      return s!
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step a"]')
+      expect(d).toBeTruthy()
+      return d!
     })
-    expect(strip.querySelectorAll('li').length).toBeLessThanOrEqual(15)
-    expect(strip.closest('.wf-scrub')!.textContent).toContain('+47')
+    fireEvent.click(within(dock).getByText('Details'))
+    const others = within(dock).getByRole('group', { name: /other workflows/i })
+    expect(others.textContent).toContain('1 / 62')
+    expect(dock.querySelector('.wf-scrub-strip')).toBeNull()
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 })
@@ -580,8 +592,11 @@ describe('state marks in the step table and inspector are the brand marks (#503)
     expect(cell('docs').querySelector('[data-mark="parked"][data-hue="park"]')).toBeTruthy()
     expect(document.querySelector('.wf-table .ctl-dot'), 'a .ctl-dot is still drawn in the step table').toBeNull()
     fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-table button.wf-pick[data-step="core"]')!)
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the card has no head of its own any more, so the picked step's mark is read from
+    // the dock's own head (`.wi-state`), not a `.wf-inspect-head` inside the card.
     const inspect = await waitFor(() => {
-      const i = document.querySelector<HTMLElement>('.wf-inspect-head')
+      const i = document.querySelector<HTMLElement>('.wi-dock[aria-label="Step core"] .wi-state')
       expect(i).toBeTruthy()
       return i!
     })
@@ -684,7 +699,9 @@ describe('a wide stage band: mix bar, slots held, named chips (wide-workflows.ht
     const chips = [...band.querySelectorAll<HTMLButtonElement>('.wf-band-chips > button.c-chip.is-pick')]
     expect(chips.map((c) => c.textContent)).toEqual(['impl-6', 'impl-3', 'impl-4', 'impl-7', 'impl-5'])
     fireEvent.click(chips[1]!)
-    await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the picked step's card is `StepCard` (`.sc-card`), not the shared `.wf-inspect`.
+    await waitFor(() => expect(document.querySelector('.sc-card')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
 
     // The named steps are the canonical pick Chip (#503 swap): a toggle, pressed when picked.
     await waitFor(() => expect(document.querySelector('.wf-band-chips > button.c-chip[aria-pressed="true"]')?.textContent).toBe('impl-3'))
@@ -822,7 +839,9 @@ async function pickNode(id: string): Promise<void> {
     return n!
   })
   if (chip.getAttribute('aria-pressed') !== 'true') fireEvent.click(chip)
-  await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toContain(`Step ${id} `))
+  // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+  // the picked step's card is `StepCard` (`.sc-card`), not the shared `.wf-inspect`.
+  await waitFor(() => expect(document.querySelector('.sc-card')!.getAttribute('aria-label')).toContain(`Step ${id} `))
 }
 
 // ---------------------------------------------------------------------------

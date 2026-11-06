@@ -785,6 +785,32 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} names no object")
         return sha
 
+    def commit_head(self, ref: IssueRef, sha: str, token: str) -> str | None:
+        """The commit `sha` names, or None when GitHub has no such commit (a
+        404, or its 422 "No commit found for SHA"): admission's one look at a
+        full-sha `repository_ref` (#3315).
+
+        task_36c8a894 named a sha GitHub's upload-pack does not serve and
+        failed in the clone with "not our ref". A 200 here is NOT proof the
+        clone will succeed: the commits API can still answer for a dangling
+        object that upload-pack refuses. Any other 422 raises, so admission
+        reads it as "not checked" and admits."""
+        what = f"the commit {sha} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"commits/{quote(sha, safe='')}"), token, what,
+                needs=PULLS_WRITE, ok=(200, 422),
+            )
+        except ForgeWriteNotFound:
+            return None
+        found = data.get("sha") if isinstance(data, dict) else None
+        if isinstance(found, str) and found:
+            return found
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, str) and "no commit found" in message.lower():
+            return None
+        raise ForgeWriteError(f"GitHub's answer for {what} names no commit")
+
     def create_branch(self, ref: IssueRef, branch: str, sha: str, token: str) -> bool:
         """Point a new `branch` at `sha`. True when made, False when it was
         already there at `sha`; any other branch of that name is refused."""

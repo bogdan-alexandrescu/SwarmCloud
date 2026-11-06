@@ -27,7 +27,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen, STAGE_ANY_STATE, stepAgentAt } = await import('../Workflows')
+const { WorkflowsScreen, STAGE_ANY_STATE } = await import('../Workflows')
 
 const T0 = Date.parse('2026-11-03T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
@@ -201,8 +201,9 @@ describe('one workflow as two panes', () => {
     expect(tally.textContent).toContain('1 running')
     expect(tally.textContent).toContain('1 done')
     expect(tally.textContent).toContain('1 failed')
-    // review-search not started and the parked merge both wait.
-    expect(tally.textContent).toContain('2 waiting')
+    // review-search not started waits; the parked merge is counted parked, as its chip draws it.
+    expect(tally.textContent).toContain('1 waiting')
+    expect(tally.textContent).toContain('1 parked')
     expect(tally.textContent).toContain('0 browsers')
   })
 
@@ -223,46 +224,17 @@ describe('one workflow as two panes', () => {
     await waitFor(() => expect(dock()!.getAttribute('aria-label')).toBe('Workflow overview'))
   })
 
-  it("shows a picked step's agent in the inspector -- its header and its tabs -- under the step's card, and its tabs stay on the page", async () => {
-    const grid = await page()
+  it("draws a picked step's card as its action bar, with Agent opening the agent's own page and no agent block under it", async () => {
+    await page()
     fireEvent.click(chip('review-login')!)
     await waitFor(() => expect(dock()!.getAttribute('aria-label')).toBe('Step review-login'))
-    const agent = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.wi .wi-dock .wfp-agent .ag-split')
-      expect(el, "no agent view in the inspector").toBeTruthy()
-      return el!
-    })
-    expect(agent.getAttribute('aria-label')).toBe('Agent t_rl')
-    const tabs = await waitFor(() => {
-      const t = within(agent).getAllByRole('tab')
-      expect(t.length).toBeGreaterThan(2)
-      return t
-    })
-    const names = tabs.map((t) => t.textContent ?? '')
-    expect(names.some((n) => n.startsWith('Details'))).toBe(true)
-    expect(names.some((n) => n.startsWith('Logs'))).toBe(true)
-    expect(names.some((n) => n.startsWith('Attempts'))).toBe(true)
-    // One Stop for the step, the card's: the agent header's own steps aside in the stylesheet.
-    expect(dock()!.querySelector('[aria-label="Stop step"]')).toBeTruthy()
-    expect(STYLES).toMatch(/\.wfp-agent \.ag-head-stop,\s*\.wfp-agent \.ag-head-close \{ display: none; \}/)
-    // A tab opens in the inspector; the address stays the workflow's and the grid stays.
-    const before = window.location.pathname
-    fireEvent.click(tabs.find((t) => (t.textContent ?? '').startsWith('Logs'))!)
-    await waitFor(() => expect(agent.querySelector('.ag-split-pane.is-logs')).toBeTruthy())
-    expect(window.location.pathname).toBe(before)
-    expect(document.querySelector('.wi-main .sg')).toBe(grid)
-    expect(dock()!.getAttribute('aria-label')).toBe('Step review-login')
-  })
-
-  it('reads an address under the agent as the pane it names, and any other as none', () => {
-    const base = 'work/task/t_rl'
-    expect(stepAgentAt(base, base)).toEqual({ pane: 'detail', file: null, artifact: null, theater: false })
-    expect(stepAgentAt(base, `${base}/logs`)?.pane).toBe('logs')
-    expect(stepAgentAt(base, `${base}/changes/src%2Fa.ts`)).toEqual({ pane: 'changes', file: 'src/a.ts', artifact: null, theater: false })
-    expect(stepAgentAt(base, `${base}/artifacts/report.md`)?.artifact).toBe('report.md')
-    expect(stepAgentAt(base, `${base}/browser?theater=1`)?.theater).toBe(true)
-    expect(stepAgentAt(base, 'workflows/wf_build')).toBeNull()
-    expect(stepAgentAt(base, 'work/task/t_rl2')).toBeNull()
+    const bar = await waitFor(() => within(dock()!).getByRole('toolbar', { name: 'Step actions' }))
+    const agent = within(bar).getByRole('link', { name: /Agent/ })
+    expect(agent.getAttribute('href')).toMatch(/t_rl$/)
+    // The card is the step's whole summary: the agent's tabs are behind Agent, not drawn under the card.
+    expect(document.querySelector('.wi .wi-dock .wfp-agent')).toBeNull()
+    // One Stop for the step, on the bar.
+    expect(within(bar).getByRole('button', { name: 'Stop' })).toBeTruthy()
   })
 
   it("names the phone sheet's way back as where it goes: the page, from a chip", async () => {

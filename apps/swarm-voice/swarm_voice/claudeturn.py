@@ -1,7 +1,7 @@
 """One planner turn as headless Claude Code on a leased subscription account
 (docs/design/voice-it.md §3.6; planner.py runs it, plannerlease.py leases it).
 
-THE CHILD. `claude -p` with Claude Opus 5.5, stream-json output, no session
+THE CHILD. `claude -p` with the planner's pin, stream-json output, no session
 persistence, the planner's system prompt in place of Claude Code's, and a
 private temporary HOME (0700, its own cwd and TMPDIR) removed after the turn,
 whatever the turn did. Its environment is BUILT, never inherited: PATH, HOME,
@@ -31,6 +31,22 @@ THE TURN ENDS AT `speak`. Once the planner has said its two sentences the
 child is stopped: the voice has its answer, and a further model round would
 only cost time and the account's window.
 
+THE TWO PINS (docs/design/voice-it-own-speech.md §14.1). The planner runs the
+planning class, `VOICE_PLANNER_MODEL` (Terraform's `local.runner_models.fable`),
+on both engines; own speech's fast front runs the haiku class,
+`VOICE_FRONT_MODEL` (`local.runner_models.haiku`), picked by first-reply
+latency. Both are set on the pod by voice.tf; the defaults below are the same
+pins, for a process started without them. A session may plan on another
+class's pin: Voice it › Settings' `planner_model`, which swarm-api reads at the
+session's start and sends in its start body (`admitted_model` checks it,
+`ClaudeCode.with_model` runs it); a session started without one keeps the pin.
+
+ONE WARM CHILD PER SESSION (`ClaudeCode.converse`, the front's): the same
+rules -- built environment, `--tools ""`, `--strict-mcp-config` with only the
+tools it is handed, private HOME -- with `--input-format stream-json`, so each
+sentence is one user message on the running child's stdin and none pays
+Claude Code's start. `Conversation.close` stops it and removes its HOME.
+
 NOTHING SECRET IN WHAT IS CAPTURED: every stdout event is scrubbed of the
 token and the grant (prompts.scrub, the worker's redaction rule: each known
 value masked wherever it appears) before it is parsed into the transcript;
@@ -41,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hmac
 import json
 import logging
@@ -54,11 +71,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from swarm_common.profiles import MODEL_CLASSES
+
 from . import mcp_server, prompts
 
 log = logging.getLogger("swarm_voice.claudeturn")
 
-MODEL = "claude-opus-5-5"
+#: The planning class's pin (`local.runner_models.fable`), read from
+#: VOICE_PLANNER_MODEL when set.
+MODEL = "claude-fable-5-1"
+#: The haiku class's pin (`local.runner_models.haiku`), read from
+#: VOICE_FRONT_MODEL when set.
+FRONT_MODEL = "claude-haiku-5-5"
+PLANNER_MODEL_ENV = "VOICE_PLANNER_MODEL"
+FRONT_MODEL_ENV = "VOICE_FRONT_MODEL"
 #: The MCP server's name, so its tools are `mcp__planner__<tool>` to the CLI.
 SERVER = mcp_server.SERVER_NAME
 TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -77,6 +103,24 @@ STDERR_TAIL = 4096
 MAX_EVENTS = 400
 #: After SIGTERM, how long the child has before SIGKILL.
 STOP_GRACE_SECONDS = 2.0
+
+
+
+def planner_model() -> str:
+    """The planner's model: VOICE_PLANNER_MODEL, else the planning class's pin."""
+    return os.environ.get(PLANNER_MODEL_ENV, "").strip() or MODEL
+
+
+def front_model() -> str:
+    """The fast front's model: VOICE_FRONT_MODEL, else the haiku class's pin."""
+    return os.environ.get(FRONT_MODEL_ENV, "").strip() or FRONT_MODEL
+
+
+def admitted_model(model: str) -> bool:
+    """Whether `model` is the id of one of the pool's model classes
+    (`MODEL_CLASSES`' own rule): the only ids a start body may name."""
+    return any(c.admits(model) for c in MODEL_CLASSES.values())
+
 
 #: (tool name, arguments) -> (the text the model gets, whether it is an error).
 ToolHandler = Callable[[str, dict], Awaitable[tuple[str, bool]]]
@@ -171,19 +215,33 @@ def _counts(usage: Any) -> dict[str, int]:
 class ClaudeCode:
     """Starts one turn's `claude -p` child (module docstring)."""
 
-    def __init__(self, *, binary: str | None = None, model: str = MODEL, max_turns: int = 8,
+    def __init__(self, *, binary: str | None = None, model: str | None = None, max_turns: int = 8,
                  python: str | None = None, tmp_root: str | None = None) -> None:
         self.binary = binary or os.environ.get("CLAUDE_CODE_BIN", "").strip() or "claude"
-        self.model = model
+        self.model = model or planner_model()
         self.max_turns = max_turns
         self.python = python or sys.executable
         self.tmp_root = tmp_root
+
+    def with_model(self, model: str) -> "ClaudeCode":
+        """This launcher on `model`, for one session's turns; itself when it
+        already runs it."""
+        if model == self.model:
+            return self
+        other = copy.copy(self)
+        other.model = model
+        return other
 
     def args(self, *, system: str, mcp_config: str) -> list[str]:
         return [self.binary, "-p", "--model", self.model, "--output-format", "stream-json", "--verbose",
                 "--no-session-persistence", "--tools", "", "--mcp-config", mcp_config,
                 "--strict-mcp-config", "--allowedTools", f"mcp__{SERVER}", "--permission-mode", "dontAsk",
                 "--disable-slash-commands", "--max-turns", str(self.max_turns), "--system-prompt", system]
+
+    def converse_args(self, *, system: str, mcp_config: str) -> list[str]:
+        """The session-long child's: `args`, reading user messages as stream-json."""
+        argv = self.args(system=system, mcp_config=mcp_config)
+        return [*argv[:4], "--input-format", "stream-json", *argv[4:]]
 
     def env(self, *, home: str, token: str) -> dict[str, str]:
         return {"PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "HOME": home, "TMPDIR": home,
@@ -243,6 +301,32 @@ class ClaudeCode:
             await bridge.close()
             shutil.rmtree(home, ignore_errors=True)
 
+    async def converse(self, *, system: str, token: str, tools: list[dict[str, Any]], handler: ToolHandler,
+                       known: tuple[str, ...]) -> "Conversation":
+        """Start one session-long child (module docstring, "ONE WARM CHILD");
+        the caller closes it. Raises OSError when the CLI cannot start, after
+        removing what it made."""
+        home = tempfile.mkdtemp(prefix="vf-", dir=self.tmp_root)
+        os.chmod(home, 0o700)
+        nonce = secrets.token_hex(16)
+        bridge = ToolBridge(tools, handler, nonce)
+        try:
+            socket_path = os.path.join(home, "tools.sock")
+            await bridge.start(socket_path)
+            config = os.path.join(home, "mcp.json")
+            fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                json.dump(self.mcp_config(socket_path=socket_path, nonce=nonce), fh)
+            process = await asyncio.create_subprocess_exec(
+                *self.converse_args(system=system, mcp_config=config), stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=self.env(home=home, token=token), cwd=home, start_new_session=True, limit=MAX_LINE)
+        except BaseException:
+            await bridge.close()
+            shutil.rmtree(home, ignore_errors=True)
+            raise
+        return Conversation(process, home=home, bridge=bridge, known=known, model=self.model)
+
     @staticmethod
     async def _stop(process: asyncio.subprocess.Process) -> None:
         for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -298,3 +382,118 @@ class ClaudeCode:
         while chunk := await process.stderr.read(65536):
             tail = (tail + chunk)[-STDERR_TAIL * 2:]
         outcome.stderr_tail = prompts.scrub(tail.decode("utf-8", "replace"), known)[-STDERR_TAIL:]
+
+
+class ChildGone(Exception):
+    """The session-long child exited, or was closed, before answering."""
+
+
+class Conversation:
+    """One running `claude -p --input-format stream-json` child: `say` sends
+    one user message and returns that turn's outcome; `close` stops the child
+    and removes its private HOME. Turns run one at a time. Its repr names no
+    token and no text."""
+
+    def __init__(self, process: asyncio.subprocess.Process, *, home: str, bridge: ToolBridge,
+                 known: tuple[str, ...], model: str) -> None:
+        self._process = process
+        self.home = home
+        self._bridge = bridge
+        self._known = known
+        self.model = model
+        self._events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self._stderr = ChildOutcome()
+        self._lock = asyncio.Lock()
+        self.closed = False
+        self._reader = asyncio.create_task(self._read(), name="voice-front-child-out")
+        self._errors = asyncio.create_task(ClaudeCode._stderr(process, self._stderr, known),
+                                           name="voice-front-child-err")
+
+    def __repr__(self) -> str:
+        return f"Conversation(model={self.model!r}, alive={self.alive})"
+
+    @property
+    def alive(self) -> bool:
+        return not self.closed and self._process.returncode is None
+
+    @property
+    def stderr_tail(self) -> str:
+        return self._stderr.stderr_tail
+
+    async def _read(self) -> None:
+        assert self._process.stdout is not None
+        try:
+            while True:
+                try:
+                    raw = await self._process.stdout.readline()
+                except (ValueError, asyncio.LimitOverrunError):
+                    continue
+                if not raw:
+                    break
+                # Scrubbed BEFORE it is parsed, as a planner turn's are.
+                line = prompts.scrub(raw.decode("utf-8", "replace"), self._known).strip()
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict):
+                    self._events.put_nowait(event)
+        finally:
+            self._events.put_nowait(None)
+
+    async def say(self, text: str) -> ChildOutcome:
+        """One user message; the turn's scrubbed outcome. Raises ChildGone."""
+        async with self._lock:
+            if not self.alive:
+                raise ChildGone("the conversation's child is not running")
+            assert self._process.stdin is not None
+            message = {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+            try:
+                self._process.stdin.write(json.dumps(message).encode() + b"\n")
+                await self._process.stdin.drain()
+            except (ConnectionError, RuntimeError) as exc:
+                raise ChildGone(f"the conversation's child stopped reading ({type(exc).__name__})") from None
+            outcome = ChildOutcome()
+            by_message: dict[str, dict[str, int]] = {}
+            while True:
+                event = await self._events.get()
+                if event is None:
+                    # EOF: put it back, so the next say sees it too.
+                    self._events.put_nowait(None)
+                    raise ChildGone("the conversation's child exited before it answered")
+                if len(outcome.events) < MAX_EVENTS:
+                    outcome.events.append(event)
+                kind = event.get("type")
+                message_ = event.get("message") if isinstance(event.get("message"), dict) else {}
+                if kind == "assistant" and message_:
+                    by_message[str(message_.get("id") or len(by_message))] = _counts(message_.get("usage"))
+                elif kind == "result":
+                    outcome.is_error = bool(event.get("is_error"))
+                    result = event.get("result")
+                    outcome.result_text = result if isinstance(result, str) else ""
+                    final = _counts(event.get("usage"))
+                    totals: dict[str, int] = {}
+                    for counts in ([final] if final else by_message.values()):
+                        for name, value in counts.items():
+                            totals[name] = totals.get(name, 0) + value
+                    outcome.usage = totals
+                    return outcome
+
+    async def close(self) -> None:
+        """Stop the child and remove its HOME. Idempotent."""
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            if self._process.stdin is not None:
+                with contextlib.suppress(Exception):
+                    self._process.stdin.close()
+            if self._process.returncode is None:
+                await ClaudeCode._stop(self._process)
+            for task in (self._reader, self._errors):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        finally:
+            await self._bridge.close()
+            shutil.rmtree(self.home, ignore_errors=True)

@@ -331,6 +331,8 @@ def test_a_platform_admin_registers_voice_its_key_into_the_voice_it_pool(
     sent = api.bridge.sent("/v1/accounts")
     assert [b["provider"] for b in sent] == ["openai-api"]
     assert sent[0]["lend_to"] == []
+    # The broker records who added it; swarm-api names the verified caller.
+    assert sent[0]["added_by"] == "root@example.com"
     assert key not in r.text
     assert key not in caplog.text
 

@@ -43,7 +43,9 @@ additive metadata key needs no contract change -- one entry per question:
 Re-answering REPLACES the entry and moves the replaced answer, with its own
 `by`, `at`, `via` and `session`, into `history`, so who changed what is on the task for as long as the task
 is; the write is one Firestore transaction, so two people answering at once
-cannot drop either one's history. `history` is capped at
+cannot drop either one's history, and contention is run again
+(`ANSWER_TRANSACTION_ATTEMPTS`) so answers sent at once are all stored or
+refused by name (503 `answer_contended`). `history` is capped at
 `MAX_ANSWER_CHANGES`, past which a change is refused rather than an earlier
 answer forgotten.
 
@@ -70,7 +72,8 @@ again wherever the task is served.
 WHERE IT WAS ANSWERED (owner decision 2026-10-19, "Plugin records it, marked
 as from Claude Code"; lane ANSWER-SYNC, part of #1644): an answer may say
 `via` -- `console`, or `claude-code` when the person answered in a Claude Code
-session and the sc plugin's `swarm_task_answer` recorded it -- and that
+session and the sc plugin's `swarm_task_answer` recorded it, or `voice-it`
+when they answered by talking in Voice it (BGD, 6 November 2026) -- and that
 session's id (`session`), so the console can say "answered in Claude Code".
 Both are optional, stored with the answer and inside `history`, and served
 beside `choice` and `text`. They are LABELS, NEVER PERMISSIONS: who may answer
@@ -78,6 +81,15 @@ is decided above, from the caller's identity and role, before either is
 read, so no `via` widens or narrows it. A `session` is a UUID or 8-64 of
 `[A-Za-z0-9_-]`, anything else a 422: it is shown to people, so it is held to
 the shape of an id and can carry nothing else.
+
+A DESIGN PREVIEW IS SERVED ON ITS OPTION (BGD's answer on the full-page
+interview lane, 6 November 2026, 'Serve preview'). A plugin step's agent may
+draw each option as HTML (`preview`); the worker keeps it in the wait's bridge
+block, and the read serves it on that option, redacted as the question's text
+is. One over `PREVIEW_MAX_CHARS`, or past its question's
+`PREVIEW_QUESTION_MAX_CHARS`, is dropped whole with a `preview_dropped`
+reason, never cut mid-tag. The console draws it only inside an iframe whose
+`sandbox` attribute is empty. A preview is not part of `question_digest`.
 
 The notification (`notifications.agent_questions`) stops listing a task once
 every question it asked has an answer (`unanswered`).
@@ -139,9 +151,12 @@ admitted all-or-nothing under a new generation (invariants 2, 5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import random
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from collections.abc import Iterator
@@ -164,10 +179,10 @@ from .codec import (
     owner_answers_by_index,
     task_from_dict,
 )
-from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
+from .errors import Conflict, Forbidden, NotFound, RateLimited, RoleMemberRequired, ValidationFailed
 from .handoff import ready_writes
 from .redaction import redact
-from .store import EVENTS, TASKS, Store
+from .store import EVENTS, TASKS, Store, _is_contention
 from .task_input import masking_for
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
@@ -207,6 +222,11 @@ def valid_session(value: str) -> bool:
 #: is not installed in the API image.
 QUESTIONS_NAME = "questions.json"
 QUESTIONS_KEY = "questions"
+#: The worker's short digest of each counted question, in index order
+#: (`agent_worker.questions.DIGESTS_KEY`), and the stored answer's copy of
+#: the one at its index when it was given (`question_digests`).
+QUESTION_DIGESTS_KEY = "question_digests"
+ASKED_DIGEST_KEY = "asked_digest"
 
 #: The worker takes no file larger than this (`agent_worker.questions.MAX_BYTES`);
 #: one byte more says whether the stored object is larger than it took.
@@ -232,6 +252,16 @@ QUESTION_WAIT_MAX_SECONDS = 72 * 3600
 #: is not installed here, so it is spelled again), and how long one waits.
 BRIDGE_KEY = "bridge"
 BRIDGE_WAIT_MAX_SECONDS = 24 * 3600
+#: The most characters of design HTML served as one option's `preview`, and
+#: as all of one question's previews (BGD, 6 November 2026, 'Serve preview').
+#: The largest preview in the tests is a one-line snippet of under 60
+#: characters, so the caps come from the worker instead: the bridge takes a
+#: preview of at most 8 KiB (`question_bridge.MAX_TEXT`), which one option may
+#: show whole, and four such designs per question (a bridged question has up
+#: to 8 options) keep one GET under 8 x 32 KiB at the bridge's 8 questions.
+#: Past either cap a preview is dropped whole with `preview_dropped`.
+PREVIEW_MAX_CHARS = 8 * 1024
+PREVIEW_QUESTION_MAX_CHARS = 4 * PREVIEW_MAX_CHARS
 #: `detail.reason` of the refusal of a second answer to a bridged question.
 ALREADY_ANSWERED = "already_answered"
 #: The dead-letter's `last_error`, which failure-review skips by rule
@@ -283,6 +313,41 @@ MAX_ADVISORY_PICK_ROUNDS = 10
 #: The runner profile of a merge step (`validation.MERGE_STEP_ID`).
 MERGE_PROFILE = "merge"
 
+#: ANSWERS SENT AT ONCE (5 November 2026, part of #2688): four answers to
+#: four questions of one task, sent together, contend for the task document;
+#: one met contention `firestore.transactional` does not retry (`Aborted` on
+#: the transactional read) and answered 500. The answer's transaction is run
+#: again, as the cancel's is (`store._is_contention`: only what cannot have
+#: committed; never `DeadlineExceeded`), each run re-reading the answers it
+#: merges into. How many runs, each itself up to five commit attempts:
+ANSWER_TRANSACTION_ATTEMPTS = 4
+#: The full-jitter pause before run n+1 is uniform in [0, base * 2**n]: at
+#: most 0.1 + 0.2 + 0.4 s, jittered so answers that collided do not again.
+ANSWER_RETRY_BASE_SECONDS = 0.1
+#: The wall-clock budget for the pauses, well inside a request's time, so the
+#: caller hears the named 503 rather than its own client timing out.
+ANSWER_RETRY_BUDGET_SECONDS = 2.0
+#: The 503's `Retry-After`: contention clears in well under a second.
+ANSWER_RETRY_AFTER_SECONDS = 1.0
+#: Replaced by the tests, which record the pauses rather than take them.
+_contention_sleep = time.sleep
+
+
+class AnswerContended(RateLimited):
+    """The answer's transaction stayed contended through every run.
+
+    503, retryable, and nothing was written. A `RateLimited` only so the
+    API's error handler writes its `Retry-After`; its status says it is not
+    a rate limit (as `store.CancelContended`).
+    """
+
+    status_code = 503
+    code = "answer_contended"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, ANSWER_RETRY_AFTER_SECONDS)
+
+
 #: Parks read per page by `parked_human_snapshots`: the sweep pages through
 #: every PARKED(HUMAN_REQUIRED) task, so this bounds one read, not the sweep.
 EXPIRY_SCAN = 200
@@ -321,6 +386,20 @@ def _wait_shape(value: Any) -> dict[str, Any] | None:
 def is_bridged(wait: dict[str, Any] | None) -> bool:
     """Whether a question wait is a plugin step's bridged question."""
     return isinstance(wait, dict) and isinstance(wait.get(BRIDGE_KEY), dict)
+
+
+def asked_by_skill(wait: dict[str, Any], masking: Any) -> str | None:
+    """The skill that asked a bridged question, masked: the worker records the
+    last `Skill` call before the question in the wait's bridge block
+    (`question_bridge.asked_by_skill`, the owner's pick of 4 November 2026).
+    None for a wait that is not bridged, a park recorded before the worker
+    wrote it, or a value that is not a non-empty text: the page then says
+    the skill is not known."""
+    bridge = wait.get(BRIDGE_KEY) if isinstance(wait, dict) else None
+    skill = bridge.get("skill") if isinstance(bridge, dict) else None
+    if not isinstance(skill, str) or not skill.strip():
+        return None
+    return masking.text(skill.strip())[0]
 
 
 def wait_max_seconds(wait: dict[str, Any]) -> int:
@@ -532,6 +611,10 @@ def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, 
                 and doc.get("workflow_id") == merge.get("workflow_id"))
         if not step and not _is_round_of(doc, merge):
             return False
+        # The named task's questions are in its artifact, which this
+        # transaction does not read, so a stored answer is taken as is here;
+        # the woken merge re-reads every answer against the questions before
+        # it merges (`agent_worker.merge._unanswered`).
         if index not in owner_answers_by_index(doc.get("metadata")):
             return False
     return True
@@ -636,8 +719,8 @@ def _record_advisory_round(db: Any, merge_id: str, claim: dict[str, Any],
 
 
 def blocking_unanswered(wait: dict[str, Any], metadata: dict[str, Any] | None) -> list[int]:
-    """The wait's blocking indices with no stored answer."""
-    answered = owner_answers_by_index(metadata)
+    """The wait's blocking indices with no stored answer to THAT question (`answers_to`)."""
+    answered = answers_to([_redacted_question(q)[0] for q in wait["questions"]], metadata)
     return [i for i in wait.get("blocking") or [] if i not in answered]
 
 
@@ -680,9 +763,34 @@ def _redacted_question(entry: dict[str, Any]) -> tuple[dict[str, Any], int]:
     out["context"] = clean(out["context"])
     # Labels too, as the artifact read masks them: an answer's choice is
     # checked against the labels as served, so the two always agree.
-    out["options"] = [{"label": clean(o["label"]), "description": clean(o["description"])}
+    # And a design preview, as the text beside it is (BGD, 6 November 2026).
+    out["options"] = [{**o, "label": clean(o["label"]), "description": clean(o["description"]),
+                       **({"preview": clean(o["preview"])} if "preview" in o else {})}
                       for o in out["options"]]
     return out, masked
+
+
+def _with_previews(wait: dict[str, Any]) -> list[dict[str, Any]]:
+    """The wait's questions, each option with the preview the bridge block
+    records for it (`question_bridge.wait_record` keeps them only there),
+    matched by question index and option label."""
+    bridge = wait.get(BRIDGE_KEY) if isinstance(wait.get(BRIDGE_KEY), dict) else {}
+    asked = bridge.get("questions") if isinstance(bridge.get("questions"), list) else []
+    out: list[dict[str, Any]] = []
+    for i, entry in enumerate(wait["questions"]):
+        source = asked[i] if i < len(asked) and isinstance(asked[i], dict) else {}
+        previews = {
+            o.get("label"): o.get("preview")
+            for o in source.get("options") or [] if isinstance(o, dict) and isinstance(o.get("label"), str)
+        }
+        if not previews:
+            out.append(entry)
+            continue
+        out.append({**entry, "options": [
+            {**o, "preview": previews.get(o.get("label"))} if isinstance(o, dict) and "preview" not in o else o
+            for o in entry.get("options") or []
+        ]})
+    return out
 
 
 def question_count(summary: dict[str, Any] | None) -> int:
@@ -693,17 +801,58 @@ def question_count(summary: dict[str, Any] | None) -> int:
     return count
 
 
+def question_digests(summary: dict[str, Any] | None) -> list[str] | None:
+    """The worker's digest of each counted question, in index order, else None.
+
+    None for a task summarised before the worker wrote them, and for a list
+    that does not hold one non-empty string per counted question: digests
+    that cannot be matched to the count are not read, and the task is
+    counted by index as it always was.
+    """
+    raw = (summary or {}).get(QUESTION_DIGESTS_KEY)
+    if not isinstance(raw, list) or len(raw) != question_count(summary):
+        return None
+    if not all(isinstance(d, str) and d for d in raw):
+        return None
+    return raw
+
+
+def answers_digest(entry: dict[str, Any], index: int, digests: list[str]) -> bool:
+    """Whether the stored answer `entry` at `index` answers the question the
+    worker's `digests` say is asked there now. An answer stored before it was
+    stamped (`ASKED_DIGEST_KEY`) cannot be checked and counts by its index."""
+    stamp = entry.get(ASKED_DIGEST_KEY)
+    if not isinstance(stamp, str):
+        return True
+    return index < len(digests) and stamp == digests[index]
+
+
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
 def _question(entry: dict[str, Any]) -> dict[str, Any]:
-    """One question with exactly its four keys, and each option with its two."""
-    options = [
-        {"label": _text(option.get("label")), "description": _text(option.get("description"))}
-        for option in entry.get("options") or []
-        if isinstance(option, dict)
-    ]
+    """One question with exactly its four keys, and each option with its two,
+    plus `preview` (and `preview_dropped`) on an option the agent drew one for."""
+    options = []
+    total = 0
+    for option in entry.get("options") or []:
+        if not isinstance(option, dict):
+            continue
+        served = {"label": _text(option.get("label")), "description": _text(option.get("description"))}
+        preview = _text(option.get("preview"))
+        if preview:
+            # Dropped whole, never cut: a cut design is HTML broken mid-tag.
+            if len(preview) > PREVIEW_MAX_CHARS:
+                served.update(preview=None, preview_dropped=(
+                    f"the preview is larger than the {PREVIEW_MAX_CHARS} characters one option may show"))
+            elif total + len(preview) > PREVIEW_QUESTION_MAX_CHARS:
+                served.update(preview=None, preview_dropped=(
+                    f"the question's previews pass the {PREVIEW_QUESTION_MAX_CHARS} characters one question may show"))
+            else:
+                total += len(preview)
+                served["preview"] = preview
+        options.append(served)
     return {
         "question": _text(entry.get("question")),
         "options": options,
@@ -712,14 +861,85 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def unanswered(count: int, metadata: dict[str, Any] | None) -> int:
-    """How many of the `count` questions have no stored answer."""
-    return len(unanswered_indices(count, metadata))
+def question_digest(question: dict[str, Any]) -> str:
+    """The digest of one question as it is served: its text and its options.
+
+    Stored with each answer (`question_digest`) so an answer is served only
+    under the question it answered (#3349). Only the text and the options'
+    labels and descriptions are read -- not `recommended`, `context` or a
+    served `answer` -- so the store and every read hash the same thing.
+    """
+    shape = {
+        "question": _text(question.get("question")),
+        "options": [
+            [_text(o.get("label")), _text(o.get("description"))]
+            for o in question.get("options") or [] if isinstance(o, dict)
+        ],
+    }
+    canonical = json.dumps(shape, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def unanswered_indices(count: int, metadata: dict[str, Any] | None) -> list[int]:
-    """The indices of the `count` questions with no stored answer, in order."""
-    answered = owner_answers_by_index(metadata)
+def answers_question(entry: dict[str, Any], question: dict[str, Any]) -> bool:
+    """Whether the stored answer `entry` answers `question` (served form, redacted).
+
+    THE INDEX IS NOT THE QUESTION (#3349). An answer is stored by
+    `question_index`, and a later attempt's file may ask a different
+    question at that index; its answer then belongs to the question it was
+    given for, never to the new one. An answer records the question it
+    answered: `question_digest` (text and options) since #3349, compared
+    whole; an answer stored before that has only the `question` text, which
+    is compared instead. An answer with neither cannot be checked and is
+    served as it always was.
+    """
+    digest = entry.get("question_digest")
+    if isinstance(digest, str):
+        return digest == question_digest(question)
+    text = entry.get("question")
+    if isinstance(text, str):
+        return text == _text(question.get("question"))
+    return True
+
+
+def answers_to(questions: list[dict[str, Any]], metadata: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    """The stored answers by index, only those that answer the question asked there now."""
+    return {
+        index: entry
+        for index, entry in owner_answers_by_index(metadata).items()
+        if index < len(questions) and answers_question(entry, questions[index])
+    }
+
+
+def unanswered(count: int, metadata: dict[str, Any] | None,
+               questions: list[dict[str, Any]] | None = None, *,
+               digests: list[str] | None = None) -> int:
+    """How many of the `count` questions have no stored answer (`unanswered_indices`)."""
+    return len(unanswered_indices(count, metadata, questions, digests=digests))
+
+
+def unanswered_indices(count: int, metadata: dict[str, Any] | None,
+                       questions: list[dict[str, Any]] | None = None, *,
+                       digests: list[str] | None = None) -> list[int]:
+    """The indices of the `count` questions with no stored answer, in order.
+
+    Given the `questions` as served, an answer to a different question at an
+    index leaves it unanswered (`answers_to`). A caller that reads only the
+    task document, not its questions file -- `open_question_tasks`,
+    `codec.step_needs`'s `questions_unread` and the bell's question item --
+    passes the worker's `digests` instead (`question_digests` of the
+    task's result summary): an answer stamped with the digest of another
+    question at its index leaves it unanswered (`answers_digest`), with no
+    read of the questions file per task (the follow-up lane the owner picked
+    on #3355, 2026-11-05). A task summarised before the worker wrote digests
+    (`digests` None), and an answer stored before answers were stamped, are
+    counted by index alone, as they always were.
+    """
+    if questions is not None:
+        answered = answers_to(questions, metadata)
+    else:
+        answered = owner_answers_by_index(metadata)
+        if digests is not None:
+            answered = {i: e for i, e in answered.items() if answers_digest(e, i, digests)}
     return [index for index in range(count) if index not in answered]
 
 
@@ -771,7 +991,10 @@ def open_question_tasks(
             continue
         if claude_session_of(task, masking_for(task, warm=False)) != session:
             continue
-        if unanswered(question_count(task.result_summary), task.metadata) == 0:
+        # The questions file is not read here: the worker's digests say
+        # which question each index asks now (`unanswered_indices`).
+        if unanswered(question_count(task.result_summary), task.metadata,
+                      digests=question_digests(task.result_summary)) == 0:
             continue
         found.append(task)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
@@ -881,17 +1104,18 @@ def read_questions(
                 "it is in the task's artifacts"
             ),
         }
-    answers = owner_answers_by_index(task.metadata)
+    served = [_question(entry) for entry in parsed]
+    answers = answers_to(served, task.metadata)
     masking = masking_for(task)
     return {
         **out,
         "status": "ok",
         "questions": [
             {
-                **_question(entry),
+                **question,
                 "answer": owner_answer_to_api(answers[i], masking) if i in answers else None,
             }
-            for i, entry in enumerate(parsed)
+            for i, question in enumerate(served)
         ],
         "redacted": bool(window.get("redacted")),
         "redaction_count": int(window.get("redaction_count") or 0),
@@ -902,16 +1126,16 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
     """A question wait's questions, as the worker validated them, redacted here.
 
     `waiting` says whether the agent is parked on them now, which block,
-    since when and until when, and where on GitHub they were posted.
+    since when and until when, where on GitHub they were posted, and, for a
+    plugin step's bridged question, the skill that asked (`skill`, or null).
     """
-    answers = owner_answers_by_index(task.metadata) if adopted else {}
     masking = masking_for(task)
     waited = set(wait["blocking"])
+    redacted = [_redacted_question(entry) for entry in _with_previews(wait)]
+    masked = sum(count for _, count in redacted)
+    answers = answers_to([q for q, _ in redacted], task.metadata) if adopted else {}
     served: list[dict[str, Any]] = []
-    masked = 0
-    for i, entry in enumerate(wait["questions"]):
-        question, count = _redacted_question(entry)
-        masked += count
+    for i, (question, _) in enumerate(redacted):
         served.append({
             **question,
             "blocking": i in waited,
@@ -935,6 +1159,7 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
             "expires_at": (began + timedelta(seconds=wait_max_seconds(wait))).isoformat()
             if began else None,
             "issue_comment_url": comment.get("url") if isinstance(comment.get("url"), str) else None,
+            "skill": asked_by_skill(wait, masking),
         },
     }
 
@@ -954,7 +1179,8 @@ class AnswerBody(BaseModel):
     #: `github-comment` is the `/answer` reply on the agent's issue
     #: (`ghapprove.poll_answers`), set by swarm-api, never a caller's word for
     #: who may answer.
-    via: Literal["console", "claude-code", "github-comment"] | None = None
+    #: `voice-it` is an answer given by talking in Voice it (BGD, 6 November 2026).
+    via: Literal["console", "claude-code", "github-comment", "voice-it"] | None = None
     session: str | None = None
 
     @field_validator("session")
@@ -1038,6 +1264,9 @@ def answer_question(
     entry = {
         "question_index": index,
         "question": question.get("question"),
+        # The question this answers, so a later attempt asking another
+        # question at this index does not read it as answered (#3349).
+        "question_digest": question_digest(question),
         "choice": choice,
         "text": text,
         "by": email,
@@ -1045,6 +1274,13 @@ def answer_question(
         "via": body.via,
         "session": body.session,
     }
+
+    # And the worker's digest of it, for the readers that count answers off
+    # the task document alone (`unanswered_indices`). The summary is the
+    # attempt whose file was just read: the read checked its count.
+    digests = question_digests(task.result_summary)
+    if digests is not None and index < len(digests):
+        entry[ASKED_DIGEST_KEY] = digests[index]
 
     promoted: dict[str, Any] = {}
 
@@ -1063,7 +1299,8 @@ def answer_question(
             adopt_wait(metadata, wait)
         current = owner_answers_by_index(metadata)
         previous = current.get(index)
-        if previous is not None and is_bridged(recorded_wait(metadata)):
+        if (previous is not None and is_bridged(recorded_wait(metadata))
+                and answers_question(previous, question)):
             # A bridged question's first answer is the one its session
             # resumes with; a second is refused, never recorded.
             raise Conflict(
@@ -1079,8 +1316,11 @@ def answer_question(
                     f"question {index + 1}'s answer has been changed {MAX_ANSWER_CHANGES} times; "
                     "it is not changed again, so its history stays whole"
                 )
+            # With the question it answered: an answer to another question
+            # asked at this index stays readable with its own (#3349).
             history.append({
-                k: previous.get(k) for k in ("choice", "text", "by", "at", "via", "session")
+                k: previous.get(k)
+                for k in ("question", "question_digest", "choice", "text", "by", "at", "via", "session")
             })
         current[index] = {**entry, "history": history}
         metadata[OWNER_ANSWERS_METADATA_KEY] = [current[i] for i in sorted(current)]
@@ -1124,7 +1364,33 @@ def answer_question(
             promoted.setdefault("claims", []).append((merge, claim))
         return previous is not None
 
-    replaced = _apply(db.transaction())
+    # CONTENTION IS RUN AGAIN, THEN REFUSED BY NAME. A fresh transaction
+    # each run, and each run re-reads the task: an answer another question's
+    # answer committed in between is merged, never overwritten, and a second
+    # answer to the SAME question meets the history rule as it would alone.
+    # Anything that is not contention is raised as is.
+    deadline = time.monotonic() + ANSWER_RETRY_BUDGET_SECONDS
+    last: BaseException | None = None
+    for run in range(ANSWER_TRANSACTION_ATTEMPTS):
+        try:
+            replaced = _apply(db.transaction())
+            break
+        except Exception as exc:
+            if not _is_contention(exc):
+                raise
+            last = exc
+        pause = random.uniform(0, ANSWER_RETRY_BASE_SECONDS * 2**run)
+        if run + 1 == ANSWER_TRANSACTION_ATTEMPTS or time.monotonic() + pause >= deadline:
+            log.warning(
+                "answer to question %d of task %s stayed contended after %d runs: %s",
+                index, task_id, run + 1, type(last).__name__,
+            )
+            raise AnswerContended(
+                f"question {index + 1}'s answer met other writes to task {task_id!r} on every "
+                "attempt, often other answers sent at the same moment; nothing was stored, "
+                "retry the answer"
+            ) from last
+        _contention_sleep(pause)
     started: list[str] = []
     for merge, claim in promoted.get("claims", []):
         # After the transaction: a submission is not a Firestore write. A

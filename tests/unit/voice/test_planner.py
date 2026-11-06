@@ -53,7 +53,7 @@ from swarm_api.voice import cards as vcards  # noqa: E402
 
 from swarm_voice import accountlease, claudeturn, mcp_server, plannerlease  # noqa: E402
 from swarm_voice import planner as pl  # noqa: E402
-from swarm_voice import prompts, tools_read  # noqa: E402
+from swarm_voice import prompts, tools_read, tools_visual  # noqa: E402
 from swarm_voice.grant import GRANT_HEADER, SESSION_HEADER, SessionGrant  # noqa: E402
 
 PERSON = "person@example.com"
@@ -320,7 +320,7 @@ def test_the_child_holds_the_token_and_no_api_key_and_only_the_planners_tools(wo
     assert "ANTHROPIC_API_KEY" not in env and "SWARM_API_URL" not in env
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1" and env["DISABLE_TELEMETRY"] == "1"
     argv = child["argv"]
-    assert argv[argv.index("--model") + 1] == "claude-opus-5-5"
+    assert argv[argv.index("--model") + 1] == "claude-fable-5-1"
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--allowedTools") + 1] == "mcp__planner"
@@ -332,7 +332,8 @@ def test_the_child_holds_the_token_and_no_api_key_and_only_the_planners_tools(wo
     names = {t["name"] for t in child["tools"]}
     draws = {t["name"] for t in vcards.catalogue()["tools"] if t["name"].startswith("draw_")}
     reads = {t["name"] for t in tools_read.tool_schemas()}
-    assert names == draws | reads | {prompts.SPEAK_TOOL}
+    visuals = {t["name"] for t in tools_visual.tool_schemas()}
+    assert names == draws | reads | visuals | {prompts.SPEAK_TOOL}
     assert all("inputSchema" in t for t in child["tools"])
     assert child["init"]["result"]["serverInfo"]["name"] == "planner"
 
@@ -396,7 +397,7 @@ def test_no_secret_reaches_a_log_the_transcript_the_summary_a_card_or_the_prompt
 def test_a_turns_usage_is_a_subscriptions_never_a_price(world):
     world.plan = {"calls": [["speak", {"summary": "Done."}]]}
     result = _delegate(world)
-    assert result.usage["billing"] == "subscription" and result.usage["model"] == "claude-opus-5-5"
+    assert result.usage["billing"] == "subscription" and result.usage["model"] == "claude-fable-5-1"
     assert result.usage["input_tokens"] >= 100 and "cost_usd" not in result.usage
 
 
@@ -493,7 +494,7 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
             h.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=h.app), base_url="http://voice")
             try:
                 body = {**_start_body(voice_id=grant.session_id), "project_id": grant.project_id,
-                        "grant": grant.headers()[GRANT_HEADER]}
+                        "grant": grant.headers()[GRANT_HEADER], "planner_model": "claude-opus-5-5"}
                 r = await h.post("/internal/sessions", body)
                 assert r.status_code == 201, r.text
                 create = openai.creates[0]["session"]
@@ -510,6 +511,8 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
                 assert call["person"] == "bogdan@saga.xyz" and call["grant"] is not None
                 assert call["grant"].session_id == grant.session_id
                 assert call["transcript"] == [("person", "Ask me which repository.")]
+                # The live engine plans on the model the start read from Settings too.
+                assert call["model"] == "claude-opus-5-5"
             finally:
                 await h.sessions.end_all()
                 await h.close()
@@ -520,3 +523,30 @@ def test_the_live_session_delegates_and_speaks_the_planners_result():
         return "swarm-api@voice-test-project.iam.gserviceaccount.com"
 
     asyncio.run(asyncio.wait_for(main(), 20))
+
+
+def test_a_sessions_planner_model_runs_the_child_on_it_and_none_keeps_the_pin(world, monkeypatch):
+    """The Voice it setting's model, read at the session's start, is the
+    child's `--model` for that turn alone; without one the planner keeps its
+    pin (VOICE_PLANNER_MODEL, the planning class)."""
+    monkeypatch.delenv(claudeturn.PLANNER_MODEL_ENV, raising=False)
+    world.plan = {"calls": [["speak", {"summary": "Done."}]]}
+
+    async def main():
+        planner = world.planner()
+        try:
+            picked = await planner.delegate(person=PERSON, grant=world.grant, model="claude-opus-5-5",
+                                            transcript=[("person", "Plan it.")])
+            picked_argv = world.child()["argv"]
+            pinned = await planner.delegate(person=PERSON, grant=world.grant,
+                                            transcript=[("person", "Plan it.")])
+            return picked, picked_argv, pinned, world.child()["argv"]
+        finally:
+            await world.http.aclose()
+
+    picked, picked_argv, pinned, pinned_argv = asyncio.run(main())
+    assert picked.error is None and pinned.error is None
+    assert picked_argv[picked_argv.index("--model") + 1] == "claude-opus-5-5"
+    assert picked.usage["model"] == "claude-opus-5-5"
+    assert pinned_argv[pinned_argv.index("--model") + 1] == claudeturn.MODEL
+    assert pinned.usage["model"] == claudeturn.MODEL

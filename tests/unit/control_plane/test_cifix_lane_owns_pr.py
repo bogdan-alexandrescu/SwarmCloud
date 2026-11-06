@@ -40,7 +40,7 @@ import pytest
 from swarm_api import cifix, refusals
 from swarm_api.issueci import ci_fix_workflow
 from swarm_api.issueruns import TERMINAL_RUN_STATES, IssueRun, IssueRuns, RunState
-from swarm_api.validation import IssueRef
+from swarm_api.validation import IssueRef, issue_run_mark_allowed
 
 from swarm_common.states import TERMINAL_STATES, TaskState
 
@@ -309,7 +309,10 @@ def test_the_issue_runs_own_rounds_are_not_gated(fix_client, db):
     payload["steps"][0]["runner_profile"] = "mock"
     payload["steps"][0]["input"].pop("issue")
     assert "issue_run" in payload["metadata"] and cifix.CI_FIX_METADATA_FIELD not in payload["metadata"]
-    response = fix_client.post("/v1/workflows", headers=FIXER_HEADERS, json=payload)
+    # Inside the issue-run code's exemption, as `issueci` submits it:
+    # `metadata.issue_run` is reserved (BGD, 2026-11-04).
+    with issue_run_mark_allowed(payload["metadata"]["issue_run"]):
+        response = fix_client.post("/v1/workflows", headers=FIXER_HEADERS, json=payload)
     # MUTATION: gate every continuation of a live run's task -- the run's
     # own round is refused and the run FAILS its pull request.
     assert response.status_code == 201, response.text

@@ -148,9 +148,10 @@ describe('a quiet day', () => {
     const items = Object.assign([] as NeedItem[], { unknownKinds: ['question', 'merge', 'handoff'] as NeedKind[] })
     render(<NeedsYou items={items} approvals={null} />)
     expect(screen.queryByText('Nothing waits on you here')).toBeNull()
-    expect(
-      screen.getByText('Nothing this screen read waits on you; Question, Merge waiting, Your turn in a browser not known here'),
-    ).toBeTruthy()
+    // 'Nothing found', the sentence naming the kinds not known as its tooltip.
+    expect(screen.getByText('Nothing found').getAttribute('title')).toBe(
+      'Nothing this screen read waits on you; Question, Merge waiting, Your turn in a browser not known here',
+    )
   })
 
   it('reads the same with approvals read and none waiting', () => {
@@ -244,6 +245,32 @@ describe('Answer', () => {
     })
     expect(screen.getByRole('alert').textContent).toMatch(/^The answer was not saved/)
     expect(screen.queryByText('Answered')).toBeNull()
+  })
+})
+
+// MUTATION: drop the error line whatever step the card shows, or keep it while
+// the card shows this very step; or drop Retry and Open with the line.
+describe("a failed step's row beside the workflow page's step card", () => {
+  const items = [failed('step', { workflow_id: 'wf_one', step_id: 'build' }), failed('other', { workflow_id: 'wf_one', step_id: 'test' })]
+  const rowOf = (name: string) => screen.getByText(name).closest('li') as HTMLElement
+
+  it('drops its error line while the card is open on that step, and keeps Retry and Open', () => {
+    render(<NeedsYou items={items} approvals={null} cardStep="build" />)
+    const row = rowOf('agent step')
+    expect(within(row).queryByText('The tests failed')).toBeNull()
+    expect(within(row).getByRole('button', { name: 'Retry agent step' })).toBeTruthy()
+    expect(within(row).getByRole('link', { name: 'Open agent step' })).toBeTruthy()
+    expect(within(rowOf('agent other')).getByText('The tests failed')).toBeTruthy()
+  })
+
+  it('keeps its error line while the card is on another step, or closed, or on a page with no card', () => {
+    const { rerender } = render(<NeedsYou items={items} approvals={null} cardStep="test" />)
+    expect(within(rowOf('agent step')).getByText('The tests failed')).toBeTruthy()
+    rerender(<NeedsYou items={items} approvals={null} cardStep={null} />)
+    expect(within(rowOf('agent step')).getByText('The tests failed')).toBeTruthy()
+    rerender(<NeedsYou items={items} approvals={null} />)
+    expect(within(rowOf('agent step')).getByText('The tests failed')).toBeTruthy()
+    expect(within(rowOf('agent other')).getByText('The tests failed')).toBeTruthy()
   })
 })
 

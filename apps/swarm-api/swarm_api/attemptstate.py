@@ -435,6 +435,10 @@ class ContractVerdictBody(_Requested):
     call_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     changed: list[str] = Field(default_factory=list, max_length=cj.MAX_CHANGED)
+    #: Each changed item's hunk text as the state sent it, in `changed`'s
+    #: order; None for an item the state sent by path alone. The record keeps
+    #: the text of the cited ones (`contractreask.cited_hunks`).
+    hunks: list[str | None] = Field(default_factory=list, max_length=cj.MAX_CHANGED)
     mechanical: list[MechanicalIn] = Field(default_factory=list, max_length=cj.MAX_MECHANICAL)
     verdicts: list[VerdictIn] = Field(default_factory=list, max_length=cj.MAX_QUESTIONS)
 
@@ -1562,12 +1566,20 @@ class AttemptState:
                 first = now
             elif paused is not None:
                 first, paused = first + max(now - paused, timedelta(0)), None
+            # The train's start, as the direct path keeps it (part of #2688):
+            # set by the first train park of an unbroken run, carried by the
+            # next ones, cleared by any other park. `waiting_detail` serves it
+            # as `train_since`, the start `/sc check` ages a train wait from.
+            train = None
+            if counter == "train_waits":
+                train = last.get("train_entered_at") if last.get("code") == TRAIN_WAITING else None
+                train = train if isinstance(train, datetime) else now
             names = [str(n)[:256] for n in ci.pending]
             metadata[MERGE_WAIT] = {
                 "code": ci.code, "head": ci.head, "pull_request": ci.pull_request,
                 "pending": names, **counts, "updates": _count(last.get("updates")),
                 "first_parked_at": first, "ci_paused_at": paused,
-                "parked_at": now,
+                "train_entered_at": train, "parked_at": now,
             }
             payload["metadata"] = metadata
             payload["next_eligible_at"] = now + timedelta(seconds=CI_FALLBACK_SECONDS)
@@ -1859,6 +1871,10 @@ class AttemptState:
             raise ValidationFailed("a judged verdict carries its verdicts")
         if any(not path or len(path) > 512 for path in body.changed):
             raise ValidationFailed("a changed path is empty or too long")
+        if len(body.hunks) > len(body.changed):
+            raise ValidationFailed("a hunk names no changed item")
+        if any(h is not None and len(h) > cj.HUNK_CHARS for h in body.hunks):
+            raise ValidationFailed("a hunk is longer than the state cuts one")
         if any(m.kind not in wc.VERIFICATION_KINDS or m.kind == wc.VERIFICATION_JUDGMENT
                for m in body.mechanical):
             raise ValidationFailed("a mechanical entry is not a mechanical proof kind")
@@ -1913,6 +1929,7 @@ class AttemptState:
                 "call_id": body.call_id, "state_sha256": body.state_sha256,
                 "verdicts": [v.to_document() for v in verdicts] if judged else [],
                 "changed": list(body.changed),
+                cr.HUNKS_FIELD: cr.cited_hunks(verdicts, body.hunks, body.changed) if judged else {},
                 "mechanical": [m.model_dump() for m in body.mechanical],
                 "reask": None, "at": now,
             }

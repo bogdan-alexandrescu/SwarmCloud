@@ -143,9 +143,16 @@ REQUIRED: tuple[Requirement, ...] = (
     # files and updates its findings.
     Requirement("issues", "write", "issue runs and the observer can't read or comment on issues",
                 ("issues",)),
-    # actions: read -- the ci-flake-hunter and release-health schedules read
-    # workflow runs and their jobs (schedtypes/).
-    Requirement("actions", "read", "ci-flake-hunter and release-health can't read workflow runs",
+    # actions: write -- read: the ci-flake-hunter and release-health
+    # schedules read workflow runs and their jobs (schedtypes/). Write: the
+    # merge step re-runs the failed jobs of a run whose failure was a flake
+    # (mergewake._rerun_first -> forgewrite.GitHubWriter.rerun_failed_jobs,
+    # `POST actions/runs/{id}/rerun-failed-jobs`); GitHub answers a read-only
+    # token 403, and the merge fails `checks_failed` (BGD, 2026-11-05).
+    # Report-only like every row here: nothing refuses work on it.
+    Requirement("actions", "write",
+                "ci-flake-hunter and release-health can't read workflow runs, "
+                "and merges can't re-run a flaky run's failed jobs",
                 ("actions",)),
 )
 
@@ -163,7 +170,7 @@ WORKFLOW_FILES_REQUIREMENT = Requirement(
 #: and write" (docs/runbooks/github-app.md, "Writing GitHub Actions
 #: secrets"), each installation's owner accepts them, and until then every
 #: write is refused with the installation's `review_url`. Reading an
-#: environment's branch rule is Actions: read, already in `REQUIRED`.
+#: environment's branch rule is Actions: read, which `REQUIRED`'s write covers.
 #: Never `administration`: no environment is created or changed (Q4). Not
 #: part of `REQUIRED`, so no repository's existing capabilities change.
 ACTIONS_SECRETS_REQUIREMENTS: tuple[Requirement, ...] = (

@@ -223,7 +223,7 @@ describe('VQ-003: Needs a look says states and park reasons as words', () => {
     // MUTATION: put back `linkLabel: 'Agents · FAILED'` in checks.ts.
     const list = [...lead.querySelectorAll('.ov-att-go')].find((a) => text(a).startsWith('Agents'))
     expect(list, 'the failures card has no list link').toBeDefined()
-    expect(text(list)).toBe('Agents · failed →')
+    expect(text(list)).toBe('Agents · failed')
     // MUTATION: drop `parkProse` from CheckCard.
     expect(text(lead)).toContain('waiting for CI ×2 —')
     // MUTATION: put back `is ${q.state}` in checks.ts's quota check.
@@ -289,13 +289,14 @@ describe('VQ-002: a phone draws a check as one line and an agent as one line', (
         // MUTATION: move the phone rule out of the 560px block, onto every width.
         expect(painted(small, 'display', WIDE)).not.toBe('none')
       }
-      // The arrow stays and its words step aside visually, never from the name.
-      const words = c.querySelector('.ov-att-go-w')
-      if (words !== null) {
-        // MUTATION: drop `.ov-att-go-w` from the 560px block's visually-hidden rule.
-        expect(painted(words, 'clip', PHONE)).toBe('rect(0 0 0 0)')
-        expect(painted(words, 'display', PHONE)).not.toBe('none')
-        expect(painted(words, 'clip', WIDE)).toBeNull()
+      // A one-link card's button steps aside whole on a phone (no arrow is
+      // left to draw since 2026-11-05); the card's accessible name keeps its words.
+      const go = c.classList.contains('is-split') ? null : c.querySelector('.ov-att-go')
+      if (go !== null) {
+        // MUTATION: drop `.ov-att:not(.is-split) .ov-att-go` from the 560px block.
+        expect(painted(go, 'display', PHONE)).toBe('none')
+        expect(painted(go, 'display', WIDE)).not.toBe('none')
+        expect(c.getAttribute('aria-label') ?? '').not.toBe('')
       }
     }
     // A card that names a workflow keeps one way out, the card's cover.

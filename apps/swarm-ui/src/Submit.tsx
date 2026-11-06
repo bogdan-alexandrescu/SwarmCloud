@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { fixtureSubmitTask, loadCapacity, loadModelClasses, loadStats, USE_FIXTURES, type ModelClassOffer } from './api'
+import { fixtureContractRefusal, fixtureSubmitTask, loadCapacity, loadModelClasses, loadStats, USE_FIXTURES, type ModelClassOffer } from './api'
 import {
   CeilingTag,
   blockerVerdict,
@@ -26,6 +26,7 @@ import {
   type TaskReadableList,
 } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
+import { ContractRefusalPanel, contractRefusal, type ContractRefusal } from './ContractJev'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, writeRefused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
@@ -117,7 +118,9 @@ type Outcome =
   /** A 422, on the field that caused it. Never a page-level error. `sent`
    *  tells the API's refusal from this form's own "Not sent": only the first
    *  went anywhere, and only the first is refused again by the same click. */
-  | { kind: 'refused'; sent: boolean; fields: Partial<Record<Field, string>>; unattributed: string | null }
+  | { kind: 'refused'; sent: boolean; fields: Partial<Record<Field, string>>; unattributed: string | null
+      /** Jev's refusal of the step's work contract (jev-contract.md section 4.5): about no field. */
+      contract?: ContractRefusal | null }
   | { kind: 'failed'; error: ApiError }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -134,6 +137,8 @@ function fail(kind: ApiError['kind'], httpStatus: number | null, message: string
 export async function postTask(body: Record<string, unknown>): Promise<Outcome> {
   // The fixture build answers the submit as the 201 does (QA2-FIX-07, runs2-01).
   if (USE_FIXTURES) {
+    const refused = fixtureContractRefusal(body)
+    if (refused !== null) return { kind: 'refused', sent: true, fields: {}, unattributed: null, contract: contractRefusal(refused.detail) }
     const made = await fixtureSubmitTask(body)
     return { kind: 'created', task: made.task, woke: made.scheduler_woken }
   }
@@ -177,7 +182,13 @@ export async function postTask(body: Record<string, unknown>): Promise<Outcome> 
     // `=== true`, not `?? false`: only an explicit true means it was woken.
     return { kind: 'created', task, woke: env.scheduler_woken === true }
   }
-  if (res.status === 422) return { kind: 'refused', sent: true, ...attribute(env, message) }
+  if (res.status === 422) {
+    // JEV'S REFUSAL OF THE WORK CONTRACT names requirements, not a field of
+    // this form: it is drawn per requirement, and never as "did not say which field".
+    const contract = contractRefusal(env.detail)
+    if (contract !== null) return { kind: 'refused', sent: true, fields: {}, unattributed: null, contract }
+    return { kind: 'refused', sent: true, ...attribute(env, message) }
+  }
 
   // THE ONE CLASSIFIER (fetch.ts `classifyFailure`). This used to restate a
   // piece of it and map every 503 to upstream_degraded, so a submit refused
@@ -1981,6 +1992,7 @@ function Refused({ outcome, onField }: {
     // `alert`, as the field's own sentence is: a refusal, not a record of something made.
     <div className="state failed" role="alert">
       <h3>{outcome.sent ? 'The API refused this agent' : 'Not sent'}</h3>
+      {outcome.contract && <ContractRefusalPanel refusal={outcome.contract} />}
       {outcome.unattributed !== null && <p>It did not say which field: {outcome.unattributed}</p>}
       {named.length > 0 && (
         <ul className="sbf-refused">

@@ -26,7 +26,7 @@ from .conftest import auth_header, seed_task, seed_tenant
 T0 = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 NEEDS_KEYS = {
     "park_reason", "next_eligible_at", "updated_at", "human_wait", "owner_questions", "question_wait",
-    "questions", "questions_unread", "pull_request",
+    "questions", "questions_unread", "pull_request", "plugin_ask",
 }
 
 
@@ -65,6 +65,7 @@ def test_a_plain_step_needs_nothing(client, db):
     assert needs["questions"] == []
     assert needs["questions_unread"] == []
     assert needs["pull_request"] is None
+    assert needs["plugin_ask"] is None
 
 
 def test_a_running_hand_off_serves_its_wait_masked(client, db):
@@ -214,3 +215,75 @@ def test_a_running_step_serves_no_unread_artifact_questions(client, db):
     needs = _needs(client, "wf_running")
 
     assert needs["questions_unread"] == []
+
+
+def _plugin_contract(**plugins: object) -> dict:
+    return {"capabilities": {"plugins": plugins}}
+
+
+def test_a_parked_plugin_step_serves_its_plugins_and_its_waits_clock(client, db):
+    """The owner's pick on PR #3262, "Serve them in step_needs": Needs you
+    tells a plugin step's question from the list read, with no task read."""
+    seed_tenant(db, "eng")
+    wait = {"attempt_id": "att_1", "blocking": [0], "questions": [{"question": "Ship it?", "options": []}],
+            "bridge": {"plugin": "gstack"}}
+    secret = "gh" + "p_" + secrets.token_hex(18)
+    _one_step(db, "wf_plugin", state="PARKED", park_reason="HUMAN_REQUIRED", next_eligible_at=T0,
+              updated_at=T0 + timedelta(minutes=5), repository_url="https://github.com/example-org/app",
+              blocked_by=[{"reason": "HUMAN_REQUIRED", "question_wait": wait}],
+              metadata={"title": "The step", "question_wait": wait,
+                        "work_contract": _plugin_contract(
+                            gstack={"mode": "unattended", "skills": ["review"]},
+                            broken={"skills": ["x"]}, leaky={"mode": f"m {secret}"})})
+
+    ask = _needs(client, "wf_plugin")["plugin_ask"]
+
+    assert ask["repository_url"] == "https://github.com/example-org/app"
+    assert ask["plugins"][0] == {"name": "gstack", "mode": "unattended"}
+    # A plugin with no mode is none; every text is masked.
+    assert [p["name"] for p in ask["plugins"]] == ["gstack", "leaky"]
+    assert secret not in json.dumps(ask)
+    # A bridged question waits 24 hours from the earliest instant the park names.
+    assert datetime.fromisoformat(ask["asked_at"]) == T0
+    assert datetime.fromisoformat(ask["expires_at"]) == T0 + timedelta(hours=24)
+    # A park the worker recorded no skill for says so: the row says "not known".
+    assert ask["skill"] is None
+
+
+def test_a_parked_plugin_step_serves_the_skill_that_asked_masked(client, db):
+    """The owner's pick of 4 November 2026: the worker records the last Skill
+    call before the question in the wait's bridge block; the list serves it."""
+    seed_tenant(db, "eng")
+    wait = {"attempt_id": "att_1", "blocking": [0], "questions": [{"question": "Ship it?", "options": []}],
+            "bridge": {"skill": "gstack:office-hours"}}
+    _one_step(db, "wf_skill", state="PARKED", park_reason="HUMAN_REQUIRED", next_eligible_at=T0,
+              blocked_by=[{"reason": "HUMAN_REQUIRED", "question_wait": wait}],
+              metadata={"title": "The step", "question_wait": wait,
+                        "work_contract": _plugin_contract(gstack={"mode": "planner", "skills": ["office-hours"]})})
+
+    ask = _needs(client, "wf_skill")["plugin_ask"]
+
+    assert ask["skill"] == "gstack:office-hours"
+    assert ask["plugins"] == [{"name": "gstack", "mode": "planner"}]
+
+
+def test_a_plugin_step_not_parked_on_a_question_serves_no_ask(client, db):
+    seed_tenant(db, "eng")
+    _one_step(db, "wf_plugin_run", state="RUNNING",
+              metadata={"title": "The step",
+                        "work_contract": _plugin_contract(gstack={"mode": "unattended", "skills": ["review"]})})
+
+    assert _needs(client, "wf_plugin_run")["plugin_ask"] is None
+
+
+def test_a_question_wait_with_no_plugin_serves_no_ask(client, db):
+    seed_tenant(db, "eng")
+    wait = {"attempt_id": "att_1", "blocking": [0], "questions": [{"question": "Which?", "options": []}]}
+    _one_step(db, "wf_plain_ask", state="PARKED", park_reason="HUMAN_REQUIRED",
+              blocked_by=[{"reason": "HUMAN_REQUIRED", "question_wait": wait}],
+              metadata={"title": "The step", "question_wait": wait})
+
+    needs = _needs(client, "wf_plain_ask")
+
+    assert needs["question_wait"] is True
+    assert needs["plugin_ask"] is None

@@ -172,6 +172,12 @@ class GitHubWrites:
         #: token without *Variables: Read* is a 403).
         self.variables: dict[str, str] = {}
         self.variables_answer: int | None = None
+        #: The commits `GET commits/<sha>` serves (#3315). Any other sha
+        #: answers `missing_commit`: 404 by default, which the auto-merge head
+        #: walk reads as "not this run's"; 422 is GitHub's "No commit found
+        #: for SHA".
+        self.commits: set[str] = set()
+        self.missing_commit = 404
 
     def writes(self) -> list[tuple[str, str]]:
         return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
@@ -331,6 +337,12 @@ class GitHubWrites:
             if rest[2] not in self.variables:
                 return 404, json.dumps({"message": "Not Found"}).encode()
             return 200, json.dumps({"name": rest[2], "value": self.variables[rest[2]]}).encode()
+        if rest[:1] == ["commits"] and len(rest) == 2 and method == "GET":
+            if rest[1] not in self.commits:
+                if self.missing_commit == 422:
+                    return 422, json.dumps({"message": f"No commit found for SHA: {rest[1]}"}).encode()
+                return self.missing_commit, b"{}"
+            return 200, json.dumps({"sha": rest[1], "commit": {"message": "a commit"}}).encode()
         if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "check-runs":
             runs = self.check_runs.get(rest[1], [])
             chunk = runs[(page - 1) * per_page: page * per_page]

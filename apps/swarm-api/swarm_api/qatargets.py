@@ -471,6 +471,31 @@ class QaBypassLinkRequired(Forbidden):
     code = "qa_bypass_link_required"
 
 
+class QaFlowWritesRequired(ValidationFailed):
+    """A mutating flow saved with no `writes` (qa-environments.md §6). Raised
+    through `refusals.refuse`, its switch shipping on; off, the save goes
+    through and the flow renders read-only (`qaspec._flows`)."""
+
+    code = "qa_flow_writes_required"
+
+
+class QaWritingFlowsOff(ValidationFailed):
+    """A mutating flow saved while the workspace's `writing_flows` is off
+    (§6). Raised through `refusals.refuse`, its switch shipping on; off, the
+    save goes through and every flow renders read-only (`qaspec.leg`)."""
+
+    code = "qa_writing_flows_off"
+
+
+#: Fixed sentences: nothing from the request or the target is interpolated.
+WRITES_REQUIRED_MESSAGE = (
+    "A flow that writes (mutating: true) must say what it writes in `writes`, one plain sentence. "
+    "Nothing was saved.")
+WRITING_FLOWS_OFF_MESSAGE = (
+    "This workspace's QA settings turn writing flows off, so no flow may be mutating. A workspace "
+    "admin can turn writing flows on. Nothing was saved.")
+
+
 class QaCredentialUnavailable(ApiError):
     """503: the tenant's QA secret cannot be read or written by swarm-api --
     until lane VQ-3 declares it and binds IAM V-1 and V-2, every time."""
@@ -1305,6 +1330,22 @@ class QaTargets:
             check_spec(qaspec.leg(normal, leg["name"]))
         return normal
 
+    def _check_writing_flows(self, tenant_id: str, flows: Any) -> None:
+        """§6: a mutating flow says what it writes, and only a workspace whose
+        `writing_flows` is on saves one. Each through its switch (on). Read
+        for a save that carries `flows`: a change that leaves them as stored
+        is not refused for them, and a stored writes-less one reads only."""
+        mutating = [f for f in flows if isinstance(f, Mapping) and f.get("mutating") is True] \
+            if isinstance(flows, list) else []
+        if not mutating:
+            return
+        if not qasettings.QaSettingsStore(self._db, now=self._now).writing_flows(tenant_id):
+            refusals.refuse(QaWritingFlowsOff(WRITING_FLOWS_OFF_MESSAGE,
+                                              detail={"reason": QaWritingFlowsOff.code}))
+        if any(qaspec.declared_writes(f) is None for f in mutating):
+            refusals.refuse(QaFlowWritesRequired(WRITES_REQUIRED_MESSAGE,
+                                                 detail={"reason": QaFlowWritesRequired.code}))
+
     def _check_room(self, tenant_id: str, count: int, credentials: QaCredentialStore | None) -> None:
         """§1.4: refuse `count` new entries that will hold values when the
         map, at their maxima, would pass `SECRET_MAP_MAX_BYTES`."""
@@ -1322,6 +1363,7 @@ class QaTargets:
         authorized_by = _one_line(values.get("authorized_by"), "authorized_by",
                                   limit=AUTHORIZED_BY_MAX, field="authorized_by")
         doc = self._build(tenant_id, values)
+        self._check_writing_flows(tenant_id, doc.get("flows"))
         if self._name_taken(tenant_id, doc["name"]):
             raise Conflict("a QA target of this workspace already has this name")
         migrated = bool(doc[qaspec.MIGRATED])
@@ -1400,6 +1442,8 @@ class QaTargets:
                 merged[key] = value
         # The repository is stored as its URL; `_repository` reads either.
         doc = self._build(tenant_id, merged)
+        if changes.get("flows") is not None:
+            self._check_writing_flows(tenant_id, doc.get("flows"))
         if doc["name"].lower() != str(current.get("name") or "").lower() \
                 and self._name_taken(tenant_id, doc["name"], besides=target_id):
             raise Conflict("a QA target of this workspace already has this name")
@@ -1855,7 +1899,10 @@ class QaTargets:
 
     def _runnable_view(self, normal: Mapping[str, Any], tenant_id: str, *, file: str,
                        environment: Any) -> dict[str, Any]:
-        target = self._startable(_view(normal, environment), tenant_id, file=file)
+        # §6: the workspace's `writing_flows`, off, renders every flow read-only.
+        writing = qasettings.QaSettingsStore(self._db, now=self._now).writing_flows(tenant_id)
+        target = self._startable(qaspec.leg(normal, _entry_of(normal, environment)["name"], writing_flows=writing),
+                                 tenant_id, file=file)
         if target.get("screens") is None and not target.get("discovered") and target.get("discover") is None:
             # A target that asks to discover runs from its base alone, its
             # capture steps crawling (qa-environments.md §3.1, QAENV-RUN).
@@ -2557,6 +2604,7 @@ def _api_workflow(spec: Mapping[str, Any],
         "repository_url": spec["repository_url"],
         "on_step_failure": spec["on_step_failure"],
         "metadata": {"origin": "qa-target", "unit": spec["label"], "title": spec["title"],
+                     "description": spec["description"], "feature": spec["feature"],
                      "merge": spec["merge"]},
     }
     return workflow, mark, sorted(browser)
@@ -2692,7 +2740,10 @@ class QaTargetIssuer:
         if not self._run_names(tenant_id, task, target_id, attempt.task_id, environment=leg_name,
                                single=len(target["environments"]) == 1):
             raise missing
-        view = qaspec.leg(target, leg_name)
+        # §6: the leg as a run renders it, so a writes-less mutating flow, or
+        # any flow while the workspace's `writing_flows` is off, is never mutating.
+        view = qaspec.leg(target, leg_name,
+                          writing_flows=qasettings.QaSettingsStore(self._db, now=self._now).writing_flows(tenant_id))
         if view.get("host_state") != HOST_APPROVED:
             raise QaTargetHostPending(HOST_PENDING_MESSAGE)
         if target.get("revision") != mark.get("revision"):

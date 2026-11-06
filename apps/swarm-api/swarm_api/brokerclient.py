@@ -203,6 +203,7 @@ class AccountPool(Protocol):
         provider: str,
         lend_to: list[str],
         credential: str,
+        added_by: str | None = None,
     ) -> dict[str, Any]: ...
 
     def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]: ...
@@ -533,11 +534,17 @@ class BrokerClient:
         provider: str,
         lend_to: list[str],
         credential: str,
+        added_by: str | None = None,
     ) -> dict[str, Any]:
+        """`added_by`: for an OpenAI API key alone, the verified email of the
+        platform admin who pasted it; the broker records it on the key's
+        account. Sent only when given, as the broker refuses it elsewhere."""
+        extra = {} if added_by is None else {"added_by": added_by}
         return self._call(
             "POST",
             "/v1/accounts",
             payload={
+                **extra,
                 "owner_tenant": owner_tenant,
                 "label": label,
                 "provider": provider,
