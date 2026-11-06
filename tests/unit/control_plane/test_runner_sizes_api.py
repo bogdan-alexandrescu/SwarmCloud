@@ -133,7 +133,7 @@ def test_with_no_version_written_the_route_serves_the_code_defaults(client):
 
 
 def test_the_table_lists_the_medium_class_between_browser_and_large(client):
-    """Contract request 139 (BGD, 6 November 2026): the middle size."""
+    """Contract request 147 (BGD, 6 November 2026): the middle size."""
     body = client.get(ROUTE, headers=auth_header("root")).json()
     # MUTATION: leave `medium` out of CLASS_ORDER and the table has no row for it.
     assert list(body["classes"]) == ["standard", "browser", "medium", "large"]

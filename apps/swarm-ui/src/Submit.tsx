@@ -363,7 +363,7 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   'claude-code-large': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
-  // claude-code on the medium class, 6 CPU and 16 GiB (contract request 139).
+  // claude-code on the medium class, 6 CPU and 16 GiB (contract request 147).
   'claude-code-medium': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],

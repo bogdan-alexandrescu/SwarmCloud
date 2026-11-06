@@ -3503,7 +3503,7 @@ export interface TaskPage {
 
 /**
  * The frozen catalogue, profiles.py RESOURCE_CLASSES. Bundled client-side
- * because it is frozen and four entries long (medium: contract request 139);
+ * because it is frozen and four entries long (medium: contract request 147);
  * the alternative is a request per render to learn something that cannot
  * change without a contract change.
  */

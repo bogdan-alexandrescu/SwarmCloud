@@ -136,7 +136,7 @@ the 2026-10-21 system analysis found it running (read-only `gcloud` and
   `claude-code-browser`, and `claude-code-large` (contract request 113,
   2026-10-22): `claude-code` on the `large` class, 8 CPU and 32 GiB, with a
   14,400 s timeout, on-demand, for a lane that was OOM-killed or timed out,
-  `claude-code-medium` (contract request 139, 2026-11-06): `claude-code` on
+  `claude-code-medium` (contract request 147, 2026-11-06): `claude-code` on
   the `medium` class, 6 CPU and 16 GiB, on-demand, the size 96% of the large
   attempts fit, and `claude-code-lightpanda` (contract request 127, 2026-10-31):
   `claude-code` on the `agent-runtime-lightpanda` image and the `standard`

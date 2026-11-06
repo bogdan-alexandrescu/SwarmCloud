@@ -344,7 +344,7 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     # Contract request 113: claude-code-large declares what claude-code did,
     # and contract request 127 the same for claude-code-lightpanda: no
     # browser_tool, and no pull_request, which #3470 gave the three alone;
-    # claude-code-medium (contract request 139) declares what claude-code-large does.
+    # claude-code-medium (contract request 147) declares what claude-code-large does.
     for name in ("claude-code-large", "claude-code-lightpanda", "claude-code-medium"):
         assert set(_declared(name)) == {"issue", "mcp_servers"}, (name, _declared(name))
     assert set(_declared("claude-code-browser")) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}

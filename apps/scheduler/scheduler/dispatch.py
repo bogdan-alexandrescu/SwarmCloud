@@ -456,7 +456,7 @@ class GkeDisk:
 #: renders any class it is given, and its disk_gib of 16 alone is past what
 #: Autopilot admits, so a pod sized from it would never start.
 #:
-#: medium: 5 + 3 + 2 = 10, standard's layout (contract request 139, owner
+#: medium: 5 + 3 + 2 = 10, standard's layout (contract request 147, owner
 #: 2026-11-06): claude-code-medium runs claude-code's work, and 10 is
 #: Autopilot's maximum whatever the class.
 GKE_DISK: dict[str, GkeDisk] = {
@@ -815,7 +815,7 @@ class LiveDisplayShare:
 #: large: no live profile can reach it (a step only shrinks), but the manifest
 #:   renders any class it is given; the design's starting sidecar (§8.2, what
 #:   browser's was until contract request 79), the rest to the worker.
-#: medium: as large, no live profile reaches it (contract request 139); the
+#: medium: as large, no live profile reaches it (contract request 147); the
 #:   browser class's display, the rest (4 / 11 GiB) to the worker.
 LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
     "browser": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),

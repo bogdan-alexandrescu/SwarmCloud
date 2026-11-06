@@ -104,7 +104,7 @@ def test_every_available_claude_code_family_profile_accepts_all_four():
     """Q3: claude-code, claude-code-browser and indexer, by the runner they start, and
     claude-code-large (contract request 113), which is claude-code on the large class, and
     claude-code-lightpanda (contract request 127), claude-code on the Lightpanda image, and
-    claude-code-medium (contract request 139), claude-code on the medium class."""
+    claude-code-medium (contract request 147), claude-code on the medium class."""
     family = sorted(
         name
         for name, profile in RUNNER_PROFILES.items()

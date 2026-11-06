@@ -169,7 +169,7 @@ fails when a profile's backend moves and this table does not.
 | `browser` | `GKE_AUTOPILOT` | none: Chromium needs the `/dev/shm` GKE gives it |
 | `claude-code-browser` | `GKE_AUTOPILOT` | none: it runs the browser image, for the same `/dev/shm` (contract request 67) |
 | `claude-code-large` | `GKE_AUTOPILOT` | none: born on GKE (contract request 113, 2026-10-22), `claude-code` on the `large` class (8 CPU, 32 GiB) with a 14,400 s timeout, so it has no rollback Job |
-| `claude-code-medium` | `GKE_AUTOPILOT` | none: born on GKE (contract request 139, 2026-11-06), `claude-code` on the `medium` class (6 CPU, 16 GiB), so it has no rollback Job |
+| `claude-code-medium` | `GKE_AUTOPILOT` | none: born on GKE (contract request 147, 2026-11-06), `claude-code` on the `medium` class (6 CPU, 16 GiB), so it has no rollback Job |
 | `claude-code-lightpanda` | `GKE_AUTOPILOT` | none: born on GKE (contract request 127, 2026-10-31), `claude-code` on the `agent-runtime-lightpanda` image and the `standard` class, so it has no rollback Job |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
 | `generic` | `GKE_AUTOPILOT` | none used: since contract request 64 (2026-10-10, #939 option A); each tenant's old Job (one per tenant, no provider) is kept idle as the rollback |

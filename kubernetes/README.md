@@ -4,7 +4,7 @@ GKE Autopilot runs every agent profile but `mock`, `post-verdict` and
 `claude-code-review`: `browser` and `claude-code-browser` for a `/dev/shm`
 Cloud Run will not let us size, and `claude-code`, `claude-code-large`
 (the `large` class, 14,400 s, contract request 113), `claude-code-medium`
-(the `medium` class, contract request 139), `claude-code-lightpanda`
+(the `medium` class, contract request 147), `claude-code-lightpanda`
 (the Lightpanda image, contract request 127), `codex`, `generic`,
 `indexer` and `merge` for their start time and internet path
 ([docs/architecture.md](../docs/architecture.md) §5). This directory is that

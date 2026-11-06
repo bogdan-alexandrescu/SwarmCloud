@@ -128,7 +128,7 @@ locals {
       model_classes       = ["opus", "fable", "sonnet", "haiku"]
       default_model_class = "opus"
     }
-    # Contract request 139, accepted by the owner 2026-11-06: claude-code on the
+    # Contract request 147, accepted by the owner 2026-11-06: claude-code on the
     # `medium` class, the size 96% of the large attempts fit. A GKE profile, not
     # in `cloud_run_fallback_profiles`; mirrored so the catalogue comparison
     # holds and so its `runner:claude-code-medium` pool exists.
@@ -630,7 +630,7 @@ locals {
 locals {
   # The classes a Cloud Run Job can be made with: those of a Cloud Run profile
   # or a fallback one. A GKE-only class never reaches the module, so its
-  # vCPU need not be one Cloud Run accepts: `medium`'s 6 (contract request 139)
+  # vCPU need not be one Cloud Run accepts: `medium`'s 6 (contract request 147)
   # is not, and the module's 1/2/4/8 validation stays in force for the rest.
   cloud_run_resource_classes = {
     for name, rc in local.resource_classes : name => rc

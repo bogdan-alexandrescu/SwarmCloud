@@ -682,7 +682,7 @@ on-demand (contract request 113). A heavy lane picks it by name when
 `claude-code-medium` is `claude-code` exactly (same image, runner, inputs,
 secret slots, model classes and 7,200 s timeout) on the `medium` resource
 class, 6 CPU and 16 GiB requested (2 units), on GKE Autopilot on-demand
-(contract request 139). Over the 7 days to 6 November 2026, 96% of the
+(contract request 147). Over the 7 days to 6 November 2026, 96% of the
 `claude-code-large` attempts fit it; name it before `claude-code-large`.
 It declares what `claude-code` does:
 

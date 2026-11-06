@@ -66,7 +66,7 @@ REFERENCE_GLOBAL = 180
 REFERENCE_DEFAULT_TENANT = 40
 REFERENCE_PROVIDER_TENANT = 100
 #: The live resource:<class> ceilings, in units (a large task holds
-#: RESOURCE_CLASSES["large"].units of them). medium (contract request 139,
+#: RESOURCE_CLASSES["large"].units of them). medium (contract request 147,
 #: 2026-11-06) takes large's 40 units: the same budget, twice the agents, for
 #: the steps that move down from large; runner:claude-code-medium falls back
 #: to `global`, as runner:claude-code-large does.

@@ -43,7 +43,7 @@ REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
 #: §4.1, the owner's Q1 answer: requests unchanged, limit twice the request.
 EXPECTED = {"standard": (4, 8), "browser": (4, 8), "large": (8, 16),
-            # Contract request 139 (owner, 2026-11-06): the middle size, at the same ratio.
+            # Contract request 147 (owner, 2026-11-06): the middle size, at the same ratio.
             "medium": (6, 12)}
 
 

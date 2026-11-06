@@ -245,7 +245,7 @@ def test_equal_neighbouring_classes_are_accepted():
 
 def test_a_larger_class_smaller_than_the_one_below_is_refused():
     browser = default_sizes()["browser"]
-    # medium is the class above browser since contract request 139.
+    # medium is the class above browser since contract request 147.
     medium = _size(4, 8, 8, 3)  # disk 3 < browser's 4; cpu and memory equal it
     refusals = check_size(_table(medium=medium))
     assert browser.disk_gib == 4

@@ -134,7 +134,7 @@ class ResourceClass:
 # units and Autopilot's bill are unchanged; the limit is what a GKE pod may
 # borrow from its node's idle requests. Cloud Run profiles render `cpu` alone.
 #
-# MEDIUM (contract request 139, accepted by the owner 2026-11-06): over the 7
+# MEDIUM (contract request 147, accepted by the owner 2026-11-06): over the 7
 # days to that date 771 large attempts (4.8% of 16,103) held 46% of all
 # capacity unit-hours and used about a third of what they reserved; measured
 # without page cache 96% fit 6 CPU and 16 GiB. `medium` is that size, 2 units
@@ -2020,7 +2020,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         supports_max_turns=True,   # contract request 133
         runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
-    # CONTRACT REQUEST 139, accepted by the owner 2026-11-06 (BGD's pick after
+    # CONTRACT REQUEST 147, accepted by the owner 2026-11-06 (BGD's pick after
     # the 7-day load analysis): claude-code on the `medium` class (6 CPU
     # requested, 12 limit, 16 GiB, memory request == limit, 2 units), the size
     # 96% of the large attempts fit. Every other field is claude-code's,
@@ -2043,7 +2043,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
     "codex": RunnerProfile(
         name="codex",

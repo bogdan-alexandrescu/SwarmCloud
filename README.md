@@ -68,7 +68,7 @@ rollups. **Execution plane** — Cloud Run Jobs for `mock` (and the disabled
 and `merge` (contract requests 64-66, #939 option A), and `claude-code-large`,
 `claude-code` on the `large` class with a 14,400 s timeout (contract request
 113), `claude-code-medium`, `claude-code` on the `medium` class (contract
-request 139), and `claude-code-lightpanda`, `claude-code` on the Lightpanda image for
+request 147), and `claude-code-lightpanda`, `claude-code` on the Lightpanda image for
 DOM-only browser work (contract request 127). The full picture is in
 [`docs/architecture.md`](docs/architecture.md).
 
@@ -93,7 +93,7 @@ instance's internet path opens about 20 s after start. As the catalogue
 Autopilot runs `browser` and `claude-code-browser` (Chromium needs a large
 `/dev/shm`), `claude-code`, `claude-code-large` (the `large` class, 14,400 s,
 contract request 113 on 2026-10-22), `claude-code-medium` (the `medium` class,
-contract request 139 on 2026-11-06), `claude-code-lightpanda` (the Lightpanda
+contract request 147 on 2026-11-06), `claude-code-lightpanda` (the Lightpanda
 image, contract request 127 on 2026-10-31), `indexer`, `generic`, `codex` and `merge`; Cloud
 Run Jobs runs `mock`, which reaches no internet, and the disabled
 `post-verdict` and `claude-code-review`, each designed to run as an account of

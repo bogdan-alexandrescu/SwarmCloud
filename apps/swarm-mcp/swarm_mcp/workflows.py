@@ -1424,7 +1424,7 @@ def step_rows(
 # --------------------------------------------------------------------------
 
 LARGE_PROFILE = "claude-code-large"
-#: Contract request 139's middle size, the one the warning names instead.
+#: Contract request 147's middle size, the one the warning names instead.
 MEDIUM_PROFILE = "claude-code-medium"
 #: The 7 days to 2026-11-06, measured without page cache: 96% of the large
 #: attempts fit 6 CPU and 16 GiB, and every large request came from a spec

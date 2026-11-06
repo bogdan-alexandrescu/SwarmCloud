@@ -70,7 +70,7 @@ def cli_agent_spec(profile: str) -> Any | None:
     # runs it on agent-runtime-indexer, and claude-code-browser (contract
     # request 67) on agent-runtime-browser, and claude-code-large (contract
     # request 113) on the large class, and claude-code-medium (contract
-    # request 139) on the medium class, and claude-code-lightpanda (contract
+    # request 147) on the medium class, and claude-code-lightpanda (contract
     # request 127) on agent-runtime-lightpanda, so their child is the same CLI.
     if profile in ("claude-code", "claude-code-review", "indexer", "claude-code-browser",
                    "claude-code-large", "claude-code-medium", "claude-code-lightpanda"):

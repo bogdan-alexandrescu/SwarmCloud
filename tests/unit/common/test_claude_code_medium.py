@@ -1,4 +1,4 @@
-"""Contract request 139: the `medium` resource class and `claude-code-medium` (part of #2688).
+"""Contract request 147: the `medium` resource class and `claude-code-medium` (part of #2688).
 
 Accepted by the owner (BGD) on 6 November 2026, after the 7-day load
 analysis: 771 large attempts (4.8% of 16,103) held 46% of all capacity
@@ -15,7 +15,7 @@ measured without page cache, 96% fit 6 CPU and 16 GiB and only 31 needed
     request <= limit <= CPU_BURST_MAX_RATIO x request (invariant 7);
   * a claude-code-medium task is admitted against `resource:medium` and
     `runner:claude-code-medium`, all or nothing, at 2 units per compute pool;
-  * docs/contract-change-requests.md records request 139 as accepted by the
+  * docs/contract-change-requests.md records request 147 as accepted by the
     owner, which is what scripts/lib/check-frozen-contract.sh admits on.
 
 No cloud, no emulator.
@@ -243,9 +243,9 @@ def test_a_claude_code_medium_task_is_admitted_against_the_medium_pool():
         assert db.docs[f"pools/{pool}"]["active"] == 2, pool
 
 
-def test_request_139_is_recorded_as_accepted_by_the_owner():
+def test_request_147_is_recorded_as_accepted_by_the_owner():
     text = REQUESTS.read_text(encoding="utf-8")
-    (row,) = [line for line in text.splitlines() if line.startswith("| 139 |")]
+    (row,) = [line for line in text.splitlines() if line.startswith("| 147 |")]
     assert "claude-code-medium" in row and "`medium`" in row
     # MUTATION: drop "accepted by the owner" and check-frozen-contract.sh
     # refuses this pull request's swarm_common diff.
