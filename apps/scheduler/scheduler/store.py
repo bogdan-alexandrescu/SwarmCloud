@@ -59,6 +59,7 @@ from swarm_common.admission import (
     AdmissionDenied,
     _snapshot,
     acquire_lease_in_transaction,
+    evaluate_capacity,
     release_lease_in_transaction,
 )
 from swarm_common.models import (
@@ -72,6 +73,8 @@ from swarm_common.models import (
     Tenant,
     Workflow,
     new_id,
+    pool_names_for,
+    reserved_pool_units,
     retries_exhausted,
     utcnow,
 )
@@ -196,6 +199,16 @@ def platform_refusal_backoff(parks: int) -> timedelta:
 #: fenced this attempt and the task still points at its lease.
 _RECLAIM_PENDING = "pending"    # lease unreleased: left for the reconciler
 _RECLAIM_FINISHED = "finished"  # lease released, task not returned: finished here
+
+
+@dataclass(frozen=True)
+class AdmissionRequest:
+    """One task of a batched admission (`SchedulerStore.acquire_leases`): the
+    units and backend `acquire_lease` takes as arguments."""
+
+    task: Task
+    units: int
+    backend: str
 
 
 @dataclass(frozen=True)
@@ -2036,6 +2049,255 @@ class SchedulerStore:
                     "tenant_id": task.tenant_id,
                     "lease_id": lease_id,
                     "backend": backend,
+                },
+            )
+
+    def acquire_leases(
+        self,
+        requests: Sequence[AdmissionRequest],
+        *,
+        config: AdmissionConfig,
+    ) -> list[Lease | AdmissionDenied]:
+        """Admit a batch of tasks in ONE transaction. One outcome per request, in order.
+
+        WHY (BGD, 2026-11-06, after the load analysis). `acquire_lease` is one
+        transaction per task, and every one of them writes `pools/global` and
+        the other shared pools: 52 writes in the busiest minute against
+        Firestore's sustained ceiling of about one write per second per
+        document, and ready-to-leased p99 of 476 s overall, 1,680 s for browser
+        and 2,843 s for large, most of it spent losing that document to the
+        next transaction. Here every pool document the batch needs is READ
+        ONCE and WRITTEN ONCE, with the sum of what the admitted tasks take.
+
+        EACH TASK IS STILL ALL-OR-NOTHING (invariant 2). The requests are
+        judged in the order given -- the drain's priority and fairness order
+        -- each against the pools as the tasks before it in this batch left
+        them, by the frozen `evaluate_capacity`. A task that fits takes its
+        share in EVERY pool it needs; one that does not takes nothing, stays
+        READY, and gets its `AdmissionDenied`; the rest of the batch still
+        admits. Firestore commits the batch whole or not at all, so no task
+        is ever half-reserved: an abort writes nothing for any of them.
+
+        THE SAME RULES AS THE FROZEN `acquire_lease_in_transaction`, which
+        reads then writes per task and so cannot run twice in one transaction
+        (Firestore refuses a read after a write): the task is re-read and must
+        be READY with no cancel requested; the pools are `pool_names_for`;
+        the shares are `reserved_pool_units`; a missing pool is unlimited and
+        not written; the fencing generation is `current_generation + 1`
+        (invariant 5); the lease, its documents and the task's write are the
+        frozen function's field for field. Concurrency still counts from the
+        LEASED task (invariant 3). A two-scheduler race is the same race as
+        before: each pool this read is in the read set, so a commit by anyone
+        else aborts this one and Firestore re-runs it against fresh reads.
+
+        A request repeated in one batch is admitted once; its repeat is denied
+        `not_ready`, as it would be by the next transaction.
+
+        One log record and one `admission_observer` call per TRANSACTION,
+        with `admission_batch` (requests) and `admission_leased` beside the
+        fields `acquire_lease` logs: the contention signal is the transaction's
+        re-runs, whatever it admits.
+        """
+        if not requests:
+            return []
+        transaction = self._db.transaction()
+        runs = 0
+
+        @firestore.transactional
+        def _acquire(txn: Any) -> list[Lease | AdmissionDenied]:
+            nonlocal runs
+            runs += 1
+            now = self._now()
+            # EVERY READ BEFORE ANY WRITE: the tasks, each pool once, then the
+            # workflows of what was admitted.
+            task_refs = [self._db.collection(TASKS).document(r.task.id) for r in requests]
+            stored: list[dict[str, Any] | None] = []
+            for ref in task_refs:
+                snap = _snapshot(txn.get(ref))
+                stored.append((snap.to_dict() or {}) if snap.exists else None)
+            required = [
+                pool_names_for(
+                    tenant_id=r.task.tenant_id,
+                    provider=r.task.provider,
+                    resource_class=r.task.resource_class,
+                    runner_profile=r.task.runner_profile,
+                    backend=r.backend,
+                )
+                for r in requests
+            ]
+            pool_refs = {
+                name: self._db.collection(POOLS).document(name)
+                for names in required
+                for name in names
+            }
+            pools: dict[str, SlotPool] = {}
+            for name, ref in pool_refs.items():
+                snap = _snapshot(txn.get(ref))
+                if snap.exists:
+                    d = snap.to_dict() or {}
+                    pools[name] = SlotPool(
+                        name=name,
+                        hard_limit=d.get("hard_limit"),
+                        adaptive_target=d.get("adaptive_target"),
+                        quota_derived_limit=d.get("quota_derived_limit"),
+                        active=d.get("active", 0),
+                        enabled=d.get("enabled", True),
+                    )
+            stored_active = {name: pool.active for name, pool in pools.items()}
+
+            outcomes: list[Lease | AdmissionDenied] = []
+            admitted: list[tuple[int, Lease]] = []
+            seen: set[str] = set()
+            for i, request in enumerate(requests):
+                task, current = request.task, stored[i]
+                if current is None:
+                    outcomes.append(AdmissionDenied([{"reason": "task_missing"}]))
+                    continue
+                if task.id in seen:
+                    outcomes.append(AdmissionDenied(
+                        [{"reason": "not_ready", "state": TaskState.LEASED.value}]))
+                    continue
+                if current.get("state") != TaskState.READY.value:
+                    outcomes.append(AdmissionDenied(
+                        [{"reason": "not_ready", "state": current.get("state")}]))
+                    continue
+                if current.get("cancel_requested"):
+                    outcomes.append(AdmissionDenied([{"reason": "cancel_requested"}]))
+                    continue
+                # Judged against the pools AS THIS BATCH HAS LEFT THEM so far.
+                blockers = evaluate_capacity(pools, required[i], request.units)
+                if blockers:
+                    outcomes.append(AdmissionDenied(blockers))
+                    continue
+                taken = reserved_pool_units(required[i], request.units)
+                for name in required[i]:
+                    pool = pools.get(name)
+                    if pool is not None:
+                        pool.active += taken[name]
+                seen.add(task.id)
+                generation = int(current.get("current_generation", 0)) + 1
+                lease = Lease(
+                    lease_id=new_id("lease"),
+                    task_id=task.id,
+                    attempt_id=new_id("att"),
+                    tenant_id=task.tenant_id,
+                    generation=generation,
+                    pools=required[i],
+                    units=request.units,
+                    pool_units=taken,
+                    state=TaskState.LEASED,
+                    created_at=now,
+                    dispatch_deadline=now + timedelta(seconds=config.dispatch_timeout_seconds),
+                    expires_at=now + timedelta(seconds=config.lease_timeout_seconds),
+                )
+                outcomes.append(lease)
+                admitted.append((i, lease))
+
+            # READY -> LEASED moves each workflow's derived state (#2838), as
+            # `acquire_lease` writes it; one write per workflow, derived with
+            # every step of it this batch admits.
+            changed: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+            for i, _lease in admitted:
+                task = requests[i].task
+                if task.workflow_id:
+                    changed.setdefault((task.tenant_id, task.workflow_id), {})[task.id] = {
+                        "workflow_id": task.workflow_id, "tenant_id": task.tenant_id,
+                        "state": TaskState.LEASED.value,
+                    }
+            workflows = [
+                derived_state_write(
+                    txn, self._db, tenant_id=tenant_id, workflow_id=workflow_id,
+                    now=now, changed=docs,
+                )
+                for (tenant_id, workflow_id), docs in changed.items()
+            ]
+
+            # The writes. Each pool once, with the batch's sum.
+            for name, pool in pools.items():
+                if pool.active != stored_active[name]:
+                    txn.update(pool_refs[name], {"active": pool.active, "updated_at": now})
+            for i, lease in admitted:
+                current = stored[i] or {}
+                txn.set(
+                    self._db.collection(LEASES).document(lease.lease_id),
+                    {
+                        "lease_id": lease.lease_id,
+                        "task_id": lease.task_id,
+                        "attempt_id": lease.attempt_id,
+                        "tenant_id": lease.tenant_id,
+                        "generation": lease.generation,
+                        "pools": lease.pools,
+                        "units": lease.units,
+                        "pool_units": lease.pool_units,
+                        "state": lease.state.value,
+                        "created_at": lease.created_at,
+                        "dispatch_deadline": lease.dispatch_deadline,
+                        "expires_at": lease.expires_at,
+                        "heartbeat_at": None,
+                        "released_at": None,
+                    },
+                )
+                assert_transition(TaskState.READY, TaskState.LEASED)
+                txn.update(
+                    task_refs[i],
+                    {
+                        "state": TaskState.LEASED.value,
+                        "current_lease_id": lease.lease_id,
+                        "current_generation": lease.generation,
+                        "attempt_count": int(current.get("attempt_count", 0)) + 1,
+                        "blocked_by": [],
+                        "updated_at": now,
+                    },
+                )
+            for workflow in workflows:
+                if workflow is not None:
+                    txn.update(*workflow)
+            return outcomes
+
+        started = time.monotonic()
+        outcome = "error"
+        leased = 0
+        try:
+            outcomes = _acquire(transaction)
+            leased = sum(1 for o in outcomes if isinstance(o, Lease))
+            outcome = "leased" if leased else "denied"
+            return outcomes
+        except Aborted:
+            outcome = "aborted"
+            raise
+        except ValueError as exc:
+            if isinstance(exc.__cause__, Aborted):
+                outcome = "aborted"
+            raise
+        finally:
+            latency_ms = (time.monotonic() - started) * 1000.0
+            if self.admission_observer is not None:
+                try:
+                    self.admission_observer(outcome, runs, latency_ms)
+                except Exception:  # noqa: BLE001 -- a metric never decides admission
+                    log.exception("admission observer failed")
+            if outcome == "aborted":
+                level = logging.WARNING
+            elif outcome == "denied" and runs <= 1:
+                level = logging.DEBUG
+            else:
+                level = logging.INFO
+            log.log(
+                level,
+                "admission batch %s requests=%d leased=%d runs=%d latency_ms=%.1f",
+                outcome,
+                len(requests),
+                leased,
+                runs,
+                latency_ms,
+                extra={
+                    "admission_outcome": outcome,
+                    "admission_runs": runs,
+                    "admission_reruns": max(0, runs - 1),
+                    "admission_latency_ms": latency_ms,
+                    "admission_batch": len(requests),
+                    "admission_leased": leased,
+                    "task_ids": [r.task.id for r in requests],
                 },
             )
 

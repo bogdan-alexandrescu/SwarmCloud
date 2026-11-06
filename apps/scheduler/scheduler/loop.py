@@ -67,7 +67,7 @@ from swarm_common.models import (
     pool_names_for,
     utcnow,
 )
-from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
+from swarm_common.profiles import RUNNER_PROFILES, Backend, RunnerProfile, resolve_backend
 from swarm_common.states import (
     PENDING_STATES,
     TERMINAL_STATES,
@@ -104,7 +104,7 @@ from .dispatch import PLATFORM_REFUSAL_CODES, BackendRouter, DispatchError, live
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
-from .store import GuardedWrite, ParentEnd, SchedulerStore
+from .store import AdmissionRequest, GuardedWrite, ParentEnd, SchedulerStore
 
 log = logging.getLogger(__name__)
 
@@ -740,6 +740,19 @@ def _is_contention(exc: BaseException) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class _Prepared:
+    """A task `_prepare_admission` passed, waiting for its batch's reservation:
+    what the transaction charges (`sized.units` on `backend`) and what the
+    dispatch after it renders."""
+
+    task: Task
+    profile: RunnerProfile
+    tenant: Tenant
+    backend: Backend
+    sized: sizes_mod.Sized
+
+
 @dataclass
 class DrainReport:
     passes: int = 0
@@ -1068,15 +1081,28 @@ class Scheduler:
         report.tenants_seen = max(report.tenants_seen, len(tenants))
         self._metrics.tenants_in_rotation.set(len(tenants))
 
+        # IN BATCHES (BGD, 2026-11-06): each task is prepared in this order,
+        # and every `admission_batch_size` prepared tasks are reserved in one
+        # transaction that writes each pool document once, then dispatched in
+        # the same order. A task the batch cannot fit stays READY and the
+        # rest still admit, as a denial never stopped the loop before.
         leased_this_pass = 0
+        batch: list[_Prepared] = []
         for task in ordered:
             report.scanned += 1
-            if report.leased >= self._settings.max_leases_per_run:
+            if report.leased + len(batch) >= self._settings.max_leases_per_run:
                 break
             if self._monotonic() - started >= self._settings.max_run_seconds:
                 break
-            if self._admit_one(task, report):
-                leased_this_pass += 1
+            prepared = self._prepare_admission(task, report)
+            if prepared is None:
+                continue
+            batch.append(prepared)
+            if len(batch) >= self._settings.admission_batch_size:
+                leased_this_pass += self._admit_batch(batch, report)
+                batch = []
+        if batch:
+            leased_this_pass += self._admit_batch(batch, report)
         report.passes += 1
         return leased_this_pass
 
@@ -1519,6 +1545,20 @@ class Scheduler:
 
     def _admit_one(self, task: Task, report: DrainReport) -> bool:
         """Try to admit and dispatch one task. Returns True only if leased."""
+        prepared = self._prepare_admission(task, report)
+        if prepared is None:
+            return False
+        return self._admit_batch([prepared], report) == 1
+
+    def _prepare_admission(self, task: Task, report: DrainReport) -> _Prepared | None:
+        """Everything `_admit_one` decides BEFORE the lease, for one task.
+
+        None when the task was cancelled, parked, failed or skipped here --
+        nothing reserved, nothing leased (invariants 1 to 3). Otherwise what
+        the reservation transaction needs and what the dispatch after it
+        uses, with the pool account `choose()` picked already claimed for
+        this run, so the next task prepared for the same batch counts it.
+        """
         now = self._now()
 
         if task.cancel_requested:
@@ -1530,7 +1570,7 @@ class Scheduler:
                 why="cancel_requested",
                 end_cause=children_mod.cancel_end_cause(task.metadata),
             )
-            return False
+            return None
 
         # THE ADMISSION GATE for `on_step_failure: fail_workflow`. Every step
         # that starts passes through here, and an independent READY sibling of
@@ -1538,7 +1578,7 @@ class Scheduler:
         # check would ever stop it. It sees failures as of this drain's verdict
         # (see `_stop_for_failed_workflow` for the window that leaves).
         if self._stop_for_failed_workflow(task, report):
-            return False
+            return None
 
         # A fix round whose pull request already ended buys nothing (#2524).
         skipped = reviewgate_mod.end_if_noop(self._store, task)
@@ -1548,11 +1588,11 @@ class Scheduler:
                 self._note_ended(task.id)
             else:
                 self._count_stale(skipped, report)
-            return False
+            return None
 
         if task.next_eligible_at is not None and task.next_eligible_at > now:
             report.skipped += 1
-            return False
+            return None
 
         profile = RUNNER_PROFILES.get(task.runner_profile)
         if profile is None:
@@ -1564,7 +1604,7 @@ class Scheduler:
                 report,
                 detail={"error": f"runner_profile {task.runner_profile!r} is not in the catalogue"},
             )
-            return False
+            return None
 
         if task.depends_on:
             parents = self._store.parent_ends(task.depends_on, tenant_id=task.tenant_id)
@@ -1579,7 +1619,7 @@ class Scheduler:
                     detail={"failed_parents": failed},
                     end_cause=_parent_cause(parents, failed),
                 )
-                return False
+                return None
             if any(states.get(tid) is not TaskState.SUCCEEDED for tid in task.depends_on):
                 self._park(
                     task,
@@ -1593,7 +1633,7 @@ class Scheduler:
                         ]
                     },
                 )
-                return False
+                return None
 
         # THE AWAIT-INPUT BACKSTOP (docs/design/human-steps.md §4.4 step 2).
         # A `control_plane` profile is never run, so it is parked here, before
@@ -1603,7 +1643,7 @@ class Scheduler:
         # promotes by hand; the dependency rule parks the rest itself.
         if profile.control_plane:
             self._park_awaiting_input(task, report)
-            return False
+            return None
 
         tenant = self._tenant(task.tenant_id)
         if tenant is None or not tenant.enabled:
@@ -1617,7 +1657,7 @@ class Scheduler:
                 report,
                 detail={"error": "tenant is missing or disabled", **paused},
             )
-            return False
+            return None
 
         # ONE QUESTION, asked here, in the credential sweep and by the Cloud
         # Run Job's secret mount: can this tenant run this profile, on a key of
@@ -1649,7 +1689,7 @@ class Scheduler:
         # `blocked_by` entry says which server and when it expired.
         if credential.terminal:
             self._fail_unrunnable(task, credential, report)
-            return False
+            return None
         if not credential.runnable:
             self._park(
                 task,
@@ -1658,7 +1698,7 @@ class Scheduler:
                 detail=credential.park_detail(),
                 blocked_by=mcp_park_blocked_by(credential, now),
             )
-            return False
+            return None
 
         # ASK THE POOL BEFORE THE LEASE (#2222, BGD 2026-10-24, "Ask the pool
         # before a container"). The worker asks the broker for an account
@@ -1682,7 +1722,7 @@ class Scheduler:
             pool_choice = choose(candidates, task.tenant_id, now, model_class=model_class)
             if pool_choice is None:
                 self._park_on_pool(task, candidates, provider, model_class, now, report)
-                return False
+                return None
 
         backend = resolve_backend(profile)
         # THE SIZE IS PINNED HERE, BEFORE THE LEASE (docs/design/runner-sizes.md
@@ -1696,62 +1736,120 @@ class Scheduler:
             self._size_version(backend), task, backend=backend,
             live=live_display_on(profile, self._settings),
         )
-        units = sized.units
-
-        try:
-            lease = self._store.acquire_lease(
-                task, units=units, backend=backend.value, config=self._admission
+        if pool_choice is not None:
+            # This run's arithmetic only: the broker takes the real hold when
+            # the worker asks, and may pick another account of the same pool.
+            # Claimed HERE, before the lease, so a later task of the same
+            # admission batch is asked with this one counted; `_admit_batch`
+            # drops it again when this task is not leased.
+            self._pool.claim(
+                pool_choice.account_id, task_id=task.id, tenant_id=task.tenant_id, now=now
             )
+        return _Prepared(task=task, profile=profile, tenant=tenant, backend=backend, sized=sized)
+
+    def _admit_batch(self, batch: list[_Prepared], report: DrainReport) -> int:
+        """Reserve capacity for `batch` in ONE transaction, then dispatch each lease.
+
+        Returns how many were leased. The batch is in the pass's priority and
+        fairness order and the store judges it in that order, each task
+        all-or-nothing across every pool it needs (invariant 2); a task that
+        does not fit stays READY and the rest still admit
+        (`SchedulerStore.acquire_leases`, BGD 2026-11-06). A batch of one is
+        the frozen single-task transaction, `acquire_lease`, exactly as before
+        batching (and `admission_batch_size = 1` makes every batch one).
+        """
+        try:
+            if len(batch) == 1:
+                only = batch[0]
+                try:
+                    outcomes: list[Lease | AdmissionDenied] = [self._store.acquire_lease(
+                        only.task, units=only.sized.units, backend=only.backend.value,
+                        config=self._admission,
+                    )]
+                except AdmissionDenied as denied:
+                    outcomes = [denied]
+            else:
+                outcomes = self._store.acquire_leases(
+                    [
+                        AdmissionRequest(
+                            task=item.task, units=item.sized.units, backend=item.backend.value
+                        )
+                        for item in batch
+                    ],
+                    config=self._admission,
+                )
         except (Aborted, ValueError) as exc:
             if not _is_contention(exc):
                 raise
-            # SAFE TO SKIP because an aborted transaction WROTE NOTHING: the
-            # task is still READY, no pool count moved and no lease document
-            # exists, so the all-or-nothing reservation is untouched
-            # (invariant 2) and concurrency, counted from LEASED, is unchanged
-            # (invariant 3). A later pass, the next wake or the 1-minute tick
-            # retries it. Ending the drain here instead answered 503 and
-            # Pub/Sub redelivered the wake into the same contention: 199 such
-            # drains in 48 h (#1822). `_is_contention` admits exactly the two
-            # forms that cannot have committed; a deadline is not one of them.
-            report.contended += 1
+            # SAFE TO SKIP because an aborted transaction WROTE NOTHING: every
+            # task of the batch is still READY, no pool count moved and no
+            # lease document exists, so the all-or-nothing reservation is
+            # untouched (invariant 2) and concurrency, counted from LEASED, is
+            # unchanged (invariant 3). A later pass, the next wake or the
+            # 1-minute tick retries them. Ending the drain here instead
+            # answered 503 and Pub/Sub redelivered the wake into the same
+            # contention: 199 such drains in 48 h (#1822). `_is_contention`
+            # admits exactly the two forms that cannot have committed; a
+            # deadline is not one of them.
+            report.contended += len(batch)
+            for item in batch:
+                self._pool.release_claim(item.task.id)
             log.warning(
-                "admission contended, skipped for this pass task_id=%s tenant_id=%s error=%s",
-                task.id,
-                task.tenant_id,
+                "admission contended, skipped for this pass task_ids=%s error=%s",
+                ",".join(item.task.id for item in batch),
                 type(exc).__name__,
             )
             _sleep(random.uniform(CONTENTION_BACKOFF_MIN_SECONDS, CONTENTION_BACKOFF_MAX_SECONDS))
-            return False
-        except AdmissionDenied as denied:
-            # THE LIMIT APPLIED, RECORDED (#3047). Explained after the refusal,
-            # from reads outside the transaction, so admission's decision --
-            # all-or-nothing, counted from the lease -- is the one it made.
-            reasons = self._limits.explain(denied.reasons)
-            limits_mod.add_to_report(report.limits, reasons)
-            recorded = self._store.record_blockers(task, reasons)
-            if not recorded.applied:
-                # A `not_ready` denial: another scheduler admitted it first.
-                self._count_stale(recorded, report)
-            report.denied += 1
-            first = reasons[0] if reasons else {}
-            reason = str(first.get("reason", "unknown"))
-            report.blockers[reason] = report.blockers.get(reason, 0) + 1
-            self._metrics.denied.labels(reason=reason).inc()
-            # Deliberately NOT a break: the next task is probably another
-            # tenant's, and probably admissible.
-            return False
+            return 0
 
+        leased = 0
+        pending = list(zip(batch, outcomes))
+        while pending:
+            item, outcome = pending.pop(0)
+            if isinstance(outcome, AdmissionDenied):
+                self._pool.release_claim(item.task.id)
+                self._record_denial(item.task, outcome, report)
+                continue
+            try:
+                if self._dispatch_leased(item, outcome, report):
+                    leased += 1
+            except Exception as exc:
+                # The batch committed every lease in it, and only this one's
+                # follow-through blew up (`_dispatch_leased` has given its own
+                # capacity back). The leases after it would otherwise hold
+                # their slots, unseen, until the reconciler's deadline sweep.
+                for _later, later in pending:
+                    if isinstance(later, Lease):
+                        self._rollback_admission(_later.task, later, exc)
+                raise
+        return leased
+
+    def _record_denial(self, task: Task, denied: AdmissionDenied, report: DrainReport) -> None:
+        """THE LIMIT APPLIED, RECORDED (#3047). Explained after the refusal,
+        from reads outside the transaction, so admission's decision --
+        all-or-nothing, counted from the lease -- is the one it made."""
+        reasons = self._limits.explain(denied.reasons)
+        limits_mod.add_to_report(report.limits, reasons)
+        recorded = self._store.record_blockers(task, reasons)
+        if not recorded.applied:
+            # A `not_ready` denial: another scheduler admitted it first.
+            self._count_stale(recorded, report)
+        report.denied += 1
+        first = reasons[0] if reasons else {}
+        reason = str(first.get("reason", "unknown"))
+        report.blockers[reason] = report.blockers.get(reason, 0) + 1
+        self._metrics.denied.labels(reason=reason).inc()
+        # Deliberately NOT a break: the next task is probably another
+        # tenant's, and probably admissible.
+
+    def _dispatch_leased(self, prepared: _Prepared, lease: Lease, report: DrainReport) -> bool:
+        """Dispatch one task admission has leased. True only if it was dispatched."""
+        task, profile, tenant = prepared.task, prepared.profile, prepared.tenant
+        backend, sized = prepared.backend, prepared.sized
         report.leased += 1
         self._metrics.leased.labels(
             tenant=task.tenant_id, runner_profile=task.runner_profile
         ).inc()
-        if pool_choice is not None:
-            # This run's arithmetic only: the broker takes the real hold when
-            # the worker asks, and may pick another account of the same pool.
-            self._pool.claim(
-                pool_choice.account_id, task_id=task.id, tenant_id=task.tenant_id, now=now
-            )
 
         # EVERYTHING FROM HERE IS INSIDE THE GUARD, and the guard catches more
         # than DispatchError. `acquire_lease_in_transaction` has committed: the
