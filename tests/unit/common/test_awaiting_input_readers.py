@@ -67,6 +67,9 @@ MUST_IGNORE: dict[str, str] = {
     "apps/agent-worker/agent_worker/handoff.py":
         "the worker half of the live-browser hand-off; an await-input step has "
         "no worker and no browser",
+    "apps/agent-worker/agent_worker/merge.py":
+        "names the park a stuck CI wait is handed to a person on (part of "
+        "#2688); a merge step runs in a worker, and no worker parks AWAITING_INPUT",
     "apps/agent-worker/agent_worker/lifecycle.py":
         "names the hand-off's park in a docstring; no lifecycle runs an await-input step",
     "apps/scheduler/scheduler/loop.py":

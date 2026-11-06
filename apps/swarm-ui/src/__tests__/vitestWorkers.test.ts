@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { agentMaxWorkers, clampPoolOptions } from '../vitestWorkers'
+import { agentMaxWorkers, ciMaxWorkers, clampPoolOptions } from '../vitestWorkers'
 
 const GIB = 2 ** 30
 const IN_AGENT = { SWARM_TASK_ID: 'task_' + 'a'.repeat(20) }
@@ -33,10 +33,38 @@ describe('agentMaxWorkers (#1641)', () => {
   it('is what vitest.config.ts actually passes as maxWorkers', () => {
     const config = readFileSync(resolve(__dirname, '../../vitest.config.ts'), 'utf8')
     expect(config).toMatch(/const agentCap = agentMaxWorkers\(process\.env, containerMemoryLimit\(\)\)/)
-    expect(config).toMatch(/maxWorkers:\s*agentCap,/)
+    expect(config).toMatch(/maxWorkers:\s*agentCap \?\? ciCap,/)
     // #2508: and clamps the resolved config with it, after the command line.
     expect(config).toMatch(/configureVitest\(\{ vitest \}\) \{\s*Object\.assign\(vitest\.config, clampPoolOptions\(vitest\.config, agentCap\)\)/)
     expect(config).toContain('/sys/fs/cgroup/memory.max')
+    // The CI shard's count, from the CPUs this process may run on.
+    expect(config).toMatch(/const ciCap = ciMaxWorkers\(process\.env, availableParallelism\(\)\)/)
+  })
+})
+
+// "Timeout calling onTaskUpdate" with every test passed (part of #2688): on the
+// 8-vCPU CI runner vitest started seven jsdom workers beside the main process,
+// which must answer every worker's RPC inside vitest's fixed 60 s.
+describe('ciMaxWorkers', () => {
+  const CI = { CI: 'true' }
+
+  it('runs a CI shard on half the CPUs: four on the 8-vCPU runner, two on the 4-vCPU one', () => {
+    expect(ciMaxWorkers(CI, 8)).toBe(4)
+    expect(ciMaxWorkers(CI, 4)).toBe(2)
+    expect(ciMaxWorkers({ CI: '1' }, 8)).toBe(4)
+  })
+
+  it('never goes below one worker', () => {
+    expect(ciMaxWorkers(CI, 1)).toBe(1)
+    expect(ciMaxWorkers(CI, 0)).toBe(1)
+  })
+
+  it('leaves vitest its default outside CI', () => {
+    for (const env of [{}, { CI: '' }, { CI: 'false' }, { CI: '0' }]) expect(ciMaxWorkers(env, 8)).toBeUndefined()
+  })
+
+  it('leaves an agent container to its own memory cap, even with CI set', () => {
+    expect(ciMaxWorkers({ ...CI, ...IN_AGENT }, 8)).toBeUndefined()
   })
 })
 

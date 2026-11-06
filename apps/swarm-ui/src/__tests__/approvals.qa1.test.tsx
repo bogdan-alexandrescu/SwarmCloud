@@ -139,11 +139,14 @@ describe('a plan’s decision page (automate-06, automate-07, automate-08)', () 
     const d = await page()
     // MUTATION: draw only the summary and the files, and the steps are read nowhere.
     const steps = await within(d).findByRole('list', { name: 'The plan’s steps' }, WAIT)
-    const li = [...steps.querySelectorAll('li')]
+    const li = [...steps.children]
     expect(li).toHaveLength(2)
     expect(visible(li[0]!)).toContain('Split the parser')
-    expect(visible(li[0]!)).toContain('Move the tokenizer out of parse.py.')
     expect(steps.tagName).toBe('OL')
+    // The plan as a brief (BGD, 6 November 2026): each step's prompt is its raw brief, folded under the page.
+    const raw = within(d).getByTestId('ab-rawbriefs')
+    expect(raw.tagName).toBe('DETAILS')
+    expect(raw.textContent).toContain('Move the tokenizer out of parse.py.')
   })
 
   it('headlines what became of a decided plan, not the question, and says its card in the past tense', async () => {
@@ -161,18 +164,21 @@ describe('a plan’s decision page (automate-06, automate-07, automate-08)', () 
       expect(visible(d)).not.toContain('Start the run on this plan?')
       // MUTATION: keep "What you approve" and its present tense over a decided item.
       expect(within(d).queryByRole('region', { name: 'What you approve' })).toBeNull()
-      const asked = within(d).getByRole('region', { name: 'What it asked for' })
-      expect(visible(asked)).toContain('It asked to start the run on this plan.')
-      expect(visible(asked)).not.toMatch(/Approve sends back/)
+      // The brief's decision row is the outcome once decided: no Approve, no Edit.
+      expect(within(d).queryByRole('button', { name: 'Approve' })).toBeNull()
+      expect(within(d).queryByRole('link', { name: 'Edit' })).toBeNull()
+      expect(visible(d)).not.toMatch(/Approve sends back/)
       view.unmount()
     }
   })
 
-  it('keeps the question and "What you approve" while the plan waits', async () => {
+  it('keeps the question while the plan waits, and what Approve does behind its (i)', async () => {
     await mount('approval=apr_plan', routes(INBOX, detail()))
     const d = await page()
     await waitFor(() => expect(visible(d.querySelector('.ad-sent'))).toBe('Start the run on this plan?'), WAIT)
-    expect(within(d).getByRole('region', { name: 'What you approve' })).toBeTruthy()
+    // What Approve does rides behind the decision's (i), not as a card of prose (BGD, 5 November 2026).
+    const tip = within(d).getByRole('button', { name: 'About the decision' })
+    expect(document.getElementById(tip.getAttribute('aria-describedby')!)!.textContent).toContain('Approving starts the run on this plan.')
   })
 
   it('says a superseded plan’s plan changed, never a head', async () => {
