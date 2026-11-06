@@ -210,6 +210,11 @@ keep calling past either reply.
 
 ## 3. Answer
 
+Answer ONLY when a reply says `stop: true` or section 2, 2a or 2d sends you
+here. A first reply, a DISPATCHED, QUEUED or RUNNING task, or a quiet reply is never a reason to answer:
+make the next call. The workflow starts a row that answers before its task
+ends again, at once (Product Oracle, 2026-11-06).
+
 When a reply says `stop: true`, it carries `result`: the task's answer, built
 by the bridge from the finished task -- its state, an excerpt of its answer,
 its cost, duration, pull request, artifacts, last error and console link.
