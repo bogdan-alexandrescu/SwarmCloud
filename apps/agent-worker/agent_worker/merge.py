@@ -169,7 +169,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Iterable, Mapping, NamedTuple, Protocol
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Protocol
 from urllib.parse import quote
 
 from swarm_common.models import EndCause, utcnow
@@ -605,6 +605,18 @@ PLATFORM_COMMITTER_EMAILS = frozenset({
 #: the platform made them. A platform head the step did not accept is a
 #: defect for failure-review, never a person's push.
 WORKER_COMMIT_LINE = "Made by the worker for task "
+
+#: The marks a task carries when it is a writer with a gate of its own, not
+#: a person's plain lane: a CI-fix or PR-side fix (`ci_fix`), a round of a
+#: merge step (`merge_fix_round`, `merge_conflict_round`), pr-shepherd's
+#: conflict fix (`pr_shepherd`) and an issue run's step (`issue_run`). What
+#: `cifix.live_plain_continuation` skips (`PR_WRITER_KINDS` and
+#: `ISSUE_RUN_METADATA_KEY`), restated because the worker image does not
+#: load swarm-api (held equal by tests/unit/worker/test_merge_person_push.py).
+#: A head such a task pushed is the platform's, and `head_moved` when not
+#: accepted (`_person_lane`).
+LANE_WRITER_MARKS = ("ci_fix", "merge_fix_round", "merge_conflict_round", "pr_shepherd",
+                     "issue_run")
 
 #: The summary key listing every base merge the walk took that GitHub did not
 #: commit: a person's (or anyone's) clean merge of the base on top of an
@@ -1231,6 +1243,9 @@ class CommitFacts:
     author_login: str | None = None
     #: The message's last line is the worker's (`WORKER_COMMIT_LINE`).
     by_worker: bool = False
+    #: The task that line names, when it names one: the lane a worker
+    #: commit came from (`_person_lane`).
+    worker_task: str | None = None
 
     @property
     def by_github(self) -> bool:
@@ -1605,6 +1620,8 @@ class GitHubMerger:
             committer_login=_user_login(data.get("committer")),
             author_login=_user_login(data.get("author")),
             by_worker=last.startswith(WORKER_COMMIT_LINE),
+            worker_task=(_task_id(last[len(WORKER_COMMIT_LINE):].strip().rstrip("."))
+                         if last.startswith(WORKER_COMMIT_LINE) else None),
         )
 
     def merge_base(self, first: str, second: str) -> str | None:
@@ -3066,6 +3083,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     own = own or {}
     fix_heads = fix_heads or []
     ctx, summary = run.ctx, run.summary
+    # The branch task a person's lane continues (`_person_lane`); none for a
+    # named pull request, which `branch` None marks.
+    lane = _person_lane(ctx, None if branch is None or not branch.startswith(ctx.branch_prefix)
+                        else branch[len(ctx.branch_prefix):])
     if ctx.recheck():
         return cancelled(summary)
     if not merger.can_push():
@@ -3172,8 +3193,9 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if head is None or accepted is None:
         unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
         record = None if head is None else _head_record(
-            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven)
-        person = None if head is None else _person_push(merger, head=head, pr=pr)
+            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven,
+            people=pr.people)
+        person = None if head is None else _person_push(merger, head=head, pr=pr, lane=lane)
         if person is not None:
             return _superseded(run, number=number, head=head, was=pinned, person=person,
                                record=record)
@@ -3355,7 +3377,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         ctx.sleep(MERGEABLE_REREAD_SECONDS)
         pr = merger.pull_request(number)
     if pr.head_sha != head:
-        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr)
+        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr,
+                                                               lane=lane)
         if person is not None:
             return _superseded(run, number=number, head=pr.head_sha, was=head, person=person)
         return run.refuse("head_moved",
@@ -3918,7 +3941,8 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
     return steps, others
 
 
-def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
+def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
+                   lane: Callable[[str], bool] | None = None) -> str | None:
     """The login of the person on `pr` who made `commit`, or None (#2505).
 
     A person's push is a commit that is not a merge (BGD's decision is about
@@ -3930,8 +3954,18 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
     request's author or one of its assignees. GitHub commits a web-UI edit
     itself, so for those the person is the commit's author. Anyone else is
     an unknown branch-mate, and their head is `head_moved` as before.
+
+    One worker commit is a person's push: one whose line names a task
+    `lane` says is a plain lane a person dispatched onto this pull
+    request's branch (`_person_lane`; the recurrence of 2026-11-05, cdcbd71,
+    the owner's `publish_to_pr` lane applying their own pick). The worker
+    publishes as that person (#765), so the person is still the committer
+    GitHub links, held to the pull request's people as any other push is.
     """
-    if len(commit.parents) >= 2 or commit.by_worker:
+    if len(commit.parents) >= 2:
+        return None
+    if commit.by_worker and (lane is None or commit.worker_task is None
+                             or not lane(commit.worker_task)):
         return None
     email = (commit.committer_email or "").lower()
     if email in PLATFORM_COMMITTER_EMAILS:
@@ -3943,13 +3977,57 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
     return login if login.lower() in people else None
 
 
-def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts) -> str | None:
+def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts,
+                 lane: Callable[[str], bool] | None = None) -> str | None:
     """`_person_pusher` of the commit at `head`, read best-effort: a read that
     fails names nobody, and the refusal stays `head_moved`."""
     try:
-        return _person_pusher(merger.commit(head), pr)
+        return _person_pusher(merger.commit(head), pr, lane)
     except (forge_mod.ForgeError, ValueError):
         return None
+
+
+def _person_lane(ctx: ActionContext, root: str | None) -> Callable[[str], bool] | None:
+    """Whether a task is a person's plain lane on `root`'s branch (#2505).
+
+    The 2026-11-05 recurrence: PR 3323's merge step parked
+    `owner_pick_fix_pending`, and the owner applied the pick through a
+    one-step `publish_to_pr` lane (task_568ad862, wf_31277a25) whose worker
+    published cdcbd71 as the owner, ending with the worker's line. That is
+    the person's push the decision means, made through the platform. The
+    task must be read through the tenant-gated upstream read, be this
+    tenant's, verify against its own signed workflow -- never this merge's,
+    whose tasks are this merge's own heads -- and continue `root` by its
+    signed `continues` or `publish_to_pr.task_id`, the two kinds
+    `cifix.live_plain_continuation` reads. It carries no writer's mark
+    (`LANE_WRITER_MARKS`): a round of this merge, a CI fix, pr-shepherd or
+    an issue run is the platform's, and its head the step did not accept
+    stays `head_moved` for failure-review. Anything unread is no lane.
+    None (a named pull request with no branch task): no task is a lane.
+    """
+    if root is None:
+        return None
+
+    def lane(task_id: str) -> bool:
+        if task_id in (root, ctx.task_id):
+            return False
+        try:
+            doc = _mapping(ctx.fetch_upstream(task_id))
+            workflow = _task_id(doc.get("workflow_id"))
+            if (workflow is None or workflow == ctx.workflow_id
+                    or doc.get("tenant_id") != ctx.tenant_id):
+                return False
+            ctx.verify_upstream(task_id, doc, of_workflow=workflow)
+        except Exception:  # noqa: BLE001 - unread or unsigned: not a lane
+            return False
+        metadata = _mapping(doc.get("metadata"))
+        if any(mark in metadata for mark in LANE_WRITER_MARKS):
+            return False
+        block = _mapping(metadata.get("dispatch"))
+        return root in (_task_id(block.get("continues")),
+                        _task_id(_mapping(block.get("publish_to_pr")).get("task_id")))
+
+    return lane
 
 
 def _superseded(run: _Run, *, number: int, head: str, was: str, person: str,
@@ -3975,7 +4053,21 @@ def _named(record: Mapping[str, Any]) -> str:
     parents = ", ".join(str(p)[:12] for p in record.get("parents") or []) or "none"
     signed = "signed" if record.get("verified") else "unsigned"
     return (f"; {record['sha']} was committed by {record.get('committer_email') or 'nobody named'} "
-            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}")
+            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}" + _unnamed(record))
+
+
+def _unnamed(record: Mapping[str, Any]) -> str:
+    """Why `_person_pusher` named nobody, from `_head_record`'s person facts."""
+    if "people" not in record:
+        return ""
+    lane = record.get("worker_task")
+    people = ", ".join(record["people"]) or "nobody"
+    return (f"; GitHub links its committer to {record.get('committer_login') or 'no person'} and "
+            f"its author to {record.get('author_login') or 'no person'}, the pull request's "
+            f"people are {people}"
+            + (f", and its last line says worker task {lane} made it, which is not a "
+               "person's plain lane on this branch" if lane else
+               ", and its last line is the worker's" if record.get("by_worker") else ""))
 
 
 def _commit_record(commit: CommitFacts) -> dict[str, Any]:
@@ -4179,17 +4271,27 @@ def _accept(merger: ForgeMerger, *, head: str, pinned: str,
 
 def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
                  fix_heads: list[tuple[str, str]], base: str,
-                 proven: dict[str, str | None] | None = None) -> dict[str, Any]:
+                 proven: dict[str, str | None] | None = None,
+                 people: Iterable[str] | None = None) -> dict[str, Any]:
     """The commit a `head_moved` refusal names: its parents, who committed it,
     whether it is signed, whether its first parent is an accepted head, and
     the first reason the walk did not take it. Read best-effort: a read that
     fails says so in `unreadable`, and the refusal stands either way.
-    `proven` is the walk's `_merge_impurity` cache, so no tree is proved twice."""
+    `proven` is the walk's `_merge_impurity` cache, so no tree is proved twice.
+
+    Given the pull request's `people`, it also records what `_person_pusher`
+    compared (#2505): the logins GitHub links the committer and the author
+    to, the task a worker line names, and those people -- logins only, so
+    the next refusal of a person's push says why it named nobody."""
     proven = {} if proven is None else proven
     record: dict[str, Any] = {"sha": head}
     try:
         commit = merger.commit(head)
         record.update(_commit_record(commit))
+        if people is not None:
+            record.update(committer_login=commit.committer_login,
+                          author_login=commit.author_login, by_worker=commit.by_worker,
+                          worker_task=commit.worker_task, people=list(people))
         first = commit.parents[0] if commit.parents else None
         accepted = first is not None and _accept(
             merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base,
