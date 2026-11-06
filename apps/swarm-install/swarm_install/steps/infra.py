@@ -9,7 +9,8 @@
 | `bootstrap.pass-2` | 7 | `bootstrap-2` | the IAP programmatic clients and the log view grant |
 | `infra.pass-identity` | 8 | `infra-2` again | none: the admin groups stage 8 recorded, and a version for any platform key pass 2 made (the graph ticket key) |
 | `infra.pass-close` | 14 | `infra-close` | `other.engine-cluster-reach-closed`: the installer's address leaves the control plane's authorised networks, after stage 14's verify steps |
-| `infra.voice-speech` | 0 | none | `other.voice-speech-choice`: the optional question whether to add Voice it's own speech engine |
+| `infra.voice-it` | 0 | none | `other.voice-it-choice`: the optional question whether to turn Voice it on |
+| `infra.voice-speech` | 0 | none | `other.voice-speech-choice`, `other.voice-speech-offered`: for a yes to Voice it only, the optional question whether to add its own speech engine |
 | `infra.voice-speech-zone` | 1 | none | `other.voice-speech-zone`: for a yes, the L4 zone, one NVIDIA_L4_GPUS of quota and the pinned image |
 
 The passes declare no manifest entries as `satisfies`: the manifest's
@@ -66,8 +67,23 @@ closes it again; the verbs close it themselves when they finish
 (`ClusterReach.close`), and a verb that died in between leaves the record for
 the next run's close.
 
+**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). `infra.voice-it`
+asks in stage 0 whether to turn Voice it on, default no, and records
+`outputs["voice_it"]` as `{"enabled": bool}`. A no leaves `voice_it` "off" on
+every pass. A yes walks voice.tf's three steps in the order it needs them
+(`tfvars.voice_it`): the registry pass "off"; infra pass 1 "account" (bootstrap
+pass 1, stage 3, made swarm-voice); infra pass 2 on "on", with the release's
+swarm-voice digest in `image_refs`, once pass 1 has made the cluster whose
+workload pool the binding names; stage 10's `cluster.workloads` then applies
+`swarm_voice_manifest`. voice.tf's middle step, a ChatGPT plan account in the
+Voice it pool, is the console's (Capacity › Accounts): the installer asks for
+no account and reads no secret, and swarm-voice serves once one is added.
+
 **Voice it's own speech engine** (docs/design/voice-it-own-speech.md §15,
-lane L11). `infra.voice-speech` asks in stage 0, beside Voice it, whether to
+lane L11). It is nested under Voice it: `infra.voice-speech` asks only after a
+yes to Voice it (`other.voice-speech-offered` orders it after the Voice it
+question); after a no it asks nothing and is met, and so is
+`infra.voice-speech-zone`. Under a yes it asks in stage 0 whether to
 add the engine: one stopped L4 machine, with the design's cost line and, when
 the project already exists, the zone it would live in; the answer defaults to
 no and is asked once. Stage 0 cannot read the accelerators of a project stage 1
@@ -77,9 +93,9 @@ Engine is on: the first of the region's zones offering `nvidia-l4`
 NVIDIA_L4_GPUS quota of at least 1 (the Quotas page opens, and the step waits
 until it is granted), and the newest Deep Learning VM image of an Ubuntu 22.04
 CUDA family, pinned by name. A region with no L4 zone turns the choice off and
-says why. The engine never starts, stops or makes the machine itself: infra
-pass 1 makes it stopped, once `voice_it` is "on" too, and swarm-api starts it
-for a session.
+says why. The engine never starts, stops or makes the machine itself: the
+first infra pass with `voice_it` "on" (pass 2) makes it stopped, and swarm-api
+starts it for a session.
 """
 
 from __future__ import annotations
@@ -333,6 +349,38 @@ wrote), and the bucket
         self.state = self._save(change)
 
 
+# -- Voice it (terraform/infra/voice.tf) ------------------------------------------
+
+#: The install state's key: `{"enabled": bool}` from stage 0 (tfvars.voice_it
+#: renders infra's `voice_it` from it, pass by pass).
+VOICE_IT = tfvars.VOICE_IT
+VOICE_IT_QUESTION = ("Voice it: talk to the deployment by voice, served by swarm-voice on the cluster. "
+                     "Turn it on? Optional, y or n")
+#: Off unless the person says yes: Terraform's own default is "off".
+VOICE_IT_DEFAULT = "n"
+#: The one line after a yes: what the installer does not ask for, and where it goes.
+VOICE_IT_POOL = "Voice it's ChatGPT plan accounts are added later in the console, on Capacity › Accounts."
+
+
+def _voice_it(ctx: Any) -> bool | None:
+    """Stage 0's Voice it answer, or None while it is not answered."""
+    found = ctx.outputs.get(VOICE_IT)
+    if isinstance(found, Mapping) and isinstance(found.get("enabled"), bool):
+        return bool(found["enabled"])
+    return None
+
+
+def _ask_yes_no(ask: Callable[..., str], ctx: Any, step_id: str, question: str, default: str) -> bool:
+    """y or n, asked again on anything else, up to SPEECH_TRIES answers."""
+    asked = question
+    for _ in range(SPEECH_TRIES):
+        answer = ask(ctx, step_id, asked, default=default).strip().lower()
+        if answer in YES or answer in NO:
+            return answer in YES
+        asked = f"{answer!r} is neither y nor n. {question}"
+    raise ValueError(f"no y or n after {SPEECH_TRIES} answers to: {question}; nothing was recorded")
+
+
 # -- Voice it's own speech engine (design voice-it-own-speech.md §15) -----------
 
 #: The install state's key: `{"enabled": bool}` from stage 0, and for a yes the
@@ -351,7 +399,7 @@ IMAGE_FAMILY = re.compile(r"^common-cu[0-9]+-ubuntu-2204(-[a-z0-9-]+)?$")
 SPEECH_COST = "about $0.71 an hour while used, $15 a month for its disk"
 SPEECH_QUESTION = ("Voice it's own speech engine (one stopped L4 machine in {where}; " + SPEECH_COST
                    + "). Add it? Optional, y or n")
-#: No while Voice it is off (§15): an install leaves `voice_it` at Terraform's "off".
+#: No by default, and never asked while Voice it is off (§15; BGD, 2026-11-05).
 SPEECH_DEFAULT = "n"
 YES = ("y", "yes")
 NO = ("", "n", "no")
@@ -435,15 +483,58 @@ class _SpeechStep:
     _explain = ""
 
 
+class VoiceItChoiceStep(_SpeechStep):
+    """Stage 0's optional choice: turn Voice it on (default no)."""
+
+    id = "infra.voice-it"
+    stage = 0
+    read_only = True
+    satisfies = ("other.voice-it-choice",)
+    _explain = (
+        "Voice it lets a person talk to the deployment; swarm-voice serves it on the cluster, and each session "
+        "leases a ChatGPT plan account from the Voice it pool. It is optional and off unless you say yes. "
+        + VOICE_IT_POOL
+    )
+
+    def __init__(self, deps: Deps = DEPS, *, ask: Callable[..., str] | None = None) -> None:
+        super().__init__(deps)
+        self._ask = ask
+
+    @property
+    def ask(self) -> Callable[..., str]:
+        if self._ask is not None:
+            return self._ask
+        from .preflight import ASK
+
+        return ASK
+
+    def check(self, ctx: Any) -> Observation:
+        voice = _voice_it(ctx)
+        if voice is None:
+            return Observation(UNMET, "whether to turn Voice it on is not answered yet")
+        return Observation(MET, "Voice it: " + ("yes" if voice else "no"))
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("ask whether to turn Voice it on (optional; default no)")
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        from .preflight import remember
+
+        enabled = _ask_yes_no(self.ask, ctx, self.id, VOICE_IT_QUESTION, VOICE_IT_DEFAULT)
+        remember(ctx, outputs={VOICE_IT: {"enabled": enabled}})
+        if enabled:
+            ctx.events.emit("step_apply", step=self.id, message=VOICE_IT_POOL)
+
+
 class VoiceSpeechChoiceStep(_SpeechStep):
     """Stage 0's optional choice: add Voice it's own speech engine (default no)."""
 
     id = "infra.voice-speech"
     stage = 0
     read_only = True
-    satisfies = ("other.voice-speech-choice",)
+    satisfies = ("other.voice-speech-choice", "other.voice-speech-offered")
     _explain = (
-        "Voice it can hear and speak through its own engine on one L4 machine the deployment runs itself, kept "
+        "Asked only when Voice it is on. Voice it can hear and speak through its own engine on one L4 machine the deployment runs itself, kept "
         "stopped between sessions. It is optional and costs " + SPEECH_COST + "; without it Voice it uses "
         "GPT-Live or text."
     )
@@ -461,6 +552,11 @@ class VoiceSpeechChoiceStep(_SpeechStep):
         return ASK
 
     def check(self, ctx: Any) -> Observation:
+        voice = _voice_it(ctx)
+        if voice is None:
+            return Observation(UNMET, "Voice it is not chosen yet (infra.voice-it asks first)")
+        if not voice:
+            return Observation(MET, "Voice it's own speech engine is not offered: Voice it is off")
         chosen = _chosen(ctx)
         if chosen is None:
             return Observation(UNMET, "whether to add Voice it's own speech engine is not answered yet")
@@ -486,18 +582,16 @@ class VoiceSpeechChoiceStep(_SpeechStep):
     def apply(self, ctx: Any, plan: Plan) -> None:
         from .preflight import remember
 
+        voice = _voice_it(ctx)
+        if voice is None:
+            raise LookupError("Voice it is not chosen yet; infra.voice-it asks it before its own speech engine")
+        if not voice:
+            return
         region = str(ctx.state.region)
         zone = self._zone_now(ctx, region)
         where = zone or f"the first zone of {region} that offers the L4, read once stage 1 has enabled Compute Engine"
-        question = SPEECH_QUESTION.format(where=where)
-        asked = question
-        for _ in range(SPEECH_TRIES):
-            answer = self.ask(ctx, self.id, asked, default=SPEECH_DEFAULT).strip().lower()
-            if answer in YES or answer in NO:
-                remember(ctx, outputs={VOICE_SPEECH: {"enabled": answer in YES}})
-                return
-            asked = f"{answer!r} is neither y nor n. {question}"
-        raise ValueError(f"no y or n after {SPEECH_TRIES} answers to: {question}; nothing was recorded")
+        enabled = _ask_yes_no(self.ask, ctx, self.id, SPEECH_QUESTION.format(where=where), SPEECH_DEFAULT)
+        remember(ctx, outputs={VOICE_SPEECH: {"enabled": enabled}})
 
 
 class VoiceSpeechZoneStep(_SpeechStep):
@@ -514,6 +608,8 @@ class VoiceSpeechZoneStep(_SpeechStep):
     )
 
     def check(self, ctx: Any) -> Observation:
+        if _voice_it(ctx) is False:
+            return Observation(MET, "Voice it is off, so its own speech engine needs no zone or image")
         chosen = _chosen(ctx)
         if chosen is None:
             return Observation(UNMET, "Voice it's own speech engine is not chosen yet (infra.voice-speech asks)")
@@ -569,7 +665,7 @@ class VoiceSpeechZoneStep(_SpeechStep):
 
 def build_steps(deps: Deps = DEPS) -> list[Any]:
     return [InfraPass1Step(deps), InfraPass2Step(deps), BootstrapPass2Step(deps), IdentityPassStep(deps),
-            ClosingPassStep(deps), VoiceSpeechChoiceStep(deps), VoiceSpeechZoneStep(deps)]
+            ClosingPassStep(deps), VoiceItChoiceStep(deps), VoiceSpeechChoiceStep(deps), VoiceSpeechZoneStep(deps)]
 
 
 STEPS = build_steps()

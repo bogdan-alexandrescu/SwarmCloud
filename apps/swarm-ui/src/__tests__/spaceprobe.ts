@@ -143,13 +143,24 @@ function closeParen(s: string, open: number): number {
  */
 export function resolveVars(value: string, table: ReadonlyMap<string, string>, depth = 0): string {
   if (depth > 12) throw new Error(`var() nested more than 12 deep resolving ${JSON.stringify(value)}`)
-  let out = value
+  // ONE PASS, LEFT TO RIGHT (5 November 2026). This used to splice each
+  // replacement into the whole string and search again from its start: over
+  // the resolved sheet, about 1 MB with thousands of `var()`, that was 8 s a
+  // theme, held on the worker's event loop while a test file was collected.
+  // A replacement is itself fully resolved and the text before it was already
+  // searched, so the search goes on after it -- the same result, unless the
+  // splice itself spells a new `var(` across a seam, which the old loop
+  // would have read; that case is handed back to a whole rescan below.
+  const done: string[] = []
+  // The last three characters of `done`, the most of a `var(` a seam can hold.
+  let tail = ''
+  let from = 0
   for (;;) {
-    const at = out.indexOf('var(')
-    if (at === -1) return out
-    const end = closeParen(out, at + 3)
-    if (end === -1) throw new Error(`unbalanced var() in ${JSON.stringify(out)}`)
-    const inner = out.slice(at + 4, end)
+    const at = value.indexOf('var(', from)
+    if (at === -1) return done.join('') + value.slice(from)
+    const end = closeParen(value, at + 3)
+    if (end === -1) throw new Error(`unbalanced var() in ${JSON.stringify(done.join('') + value.slice(from))}`)
+    const inner = value.slice(at + 4, end)
     const comma = inner.indexOf(',')
     const name = (comma === -1 ? inner : inner.slice(0, comma)).trim()
     const fallback = comma === -1 ? null : inner.slice(comma + 1).trim()
@@ -157,7 +168,12 @@ export function resolveVars(value: string, table: ReadonlyMap<string, string>, d
     if (declared === undefined && fallback === null)
       throw new Error(`${name} is used and never declared`)
     const replacement = resolveVars(declared ?? fallback!, table, depth + 1)
-    out = out.slice(0, at) + replacement + out.slice(end + 1)
+    const piece = value.slice(from, at) + replacement
+    done.push(piece)
+    from = end + 1
+    const seams = tail + piece + value.slice(from, from + 3)
+    if (seams.includes('var(')) return resolveVars(done.join('') + value.slice(from), table, depth)
+    tail = (tail + piece).slice(-3)
   }
 }
 

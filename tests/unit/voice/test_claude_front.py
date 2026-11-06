@@ -140,20 +140,36 @@ class FakeClaude:
     model = FRONT_PIN
 
     def __init__(self) -> None:
+        #: The model each child was started on.
+        self.models: list[str] = []
         self.started: list[FakeConversation] = []
         self.systems: list[str] = []
         self.tools: list[list[dict]] = []
         self.die_next = 0
         self.fail_start = False
 
-    async def converse(self, *, system, token, tools, handler, known):  # noqa: ANN001
+    def with_model(self, model: str) -> "FakeClaudeOn":
+        return FakeClaudeOn(self, model)
+
+    async def converse(self, *, system, token, tools, handler, known, model=None):  # noqa: ANN001
         if self.fail_start:
             raise FileNotFoundError("claude")
+        self.models.append(model or self.model)
         self.systems.append(system)
         self.tools.append(tools)
         conversation = FakeConversation(handler, token, self)
         self.started.append(conversation)
         return conversation
+
+
+class FakeClaudeOn:
+    """`ClaudeCode.with_model`: the same launcher on another model."""
+
+    def __init__(self, base: FakeClaude, model: str) -> None:
+        self.base, self.model = base, model
+
+    async def converse(self, **kwargs):  # noqa: ANN003
+        return await self.base.converse(**kwargs, model=self.model)
 
 
 class FakePlanner:
@@ -165,10 +181,13 @@ class FakePlanner:
         self.forgotten: list[str] = []
         self.running = 0
         self.most = 0
+        #: The planner model each delegation was asked for (None: the pin).
+        self.models: list[str | None] = []
 
-    async def delegate(self, *, person, grant, transcript, delegation_id=None):  # noqa: ANN001
+    async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None):  # noqa: ANN001
         self.calls.append({"person": person, "grant": grant, "transcript": list(transcript),
                            "delegation_id": delegation_id})
+        self.models.append(model)
         self.running += 1
         self.most = max(self.most, self.running)
         try:
@@ -250,6 +269,72 @@ def test_the_reply_comes_back_before_a_slow_planner_ends():
         assert (await client.get("/delegations/vd_unknown")).status_code == 404
         await client.aclose()
     run(body)
+
+
+def test_each_front_session_delegates_with_the_planner_model_it_started_with():
+    """The Voice it setting is read at a session's start: a session keeps the
+    model it started with, the next one gets the admin's change, and one
+    started with none leaves the planner on its pin."""
+    async def body(w: World):
+        await w.front.start("vs-1", person=PERSON, grant=_grant(), planner_model="claude-opus-5-5")
+        # The admin changes the setting while vs-1 lives; vs-2 starts after it.
+        await w.front.start("vs-2", person=PERSON, grant=_grant(), planner_model="claude-sonnet-5-5")
+        await w.front.start("vs-3", person=PERSON, grant=_grant())
+        w.planner.gate.set()
+        for voice_id in ("vs-1", "vs-2", "vs-3"):
+            answer = await w.front.turn(voice_id, "plan the fix for the login bug")
+            await w.front.delegation(answer.delegation_id).done.wait()
+        assert w.planner.models == ["claude-opus-5-5", "claude-sonnet-5-5", None]
+    run(body)
+
+
+def test_each_front_session_runs_the_conversation_model_it_started_with():
+    """Voice it › Settings' conversation model, read by swarm-api at the start:
+    the warm child runs on it, a re-lease keeps it, the next session gets the
+    admin's change, and one started with none runs the front's pin."""
+    async def body(w: World):
+        first = await w.front.start("vs-1", person=PERSON, grant=_grant(), conversation_model="claude-sonnet-5")
+        await w.front.start("vs-2", person=PERSON, grant=_grant(), conversation_model="claude-sonnet-4-6")
+        await w.front.start("vs-3", person=PERSON, grant=_grant())
+        assert w.claude.models == ["claude-sonnet-5", "claude-sonnet-4-6", FRONT_PIN]
+        assert first.front_model == "claude-sonnet-5"
+        # A dead child re-leases on the session's own model, and usage is counted under it.
+        w.claude.die_next = 1
+        await w.front.turn("vs-1", "hello")
+        assert w.claude.models[-1] == "claude-sonnet-5"
+        assert set(first.usage_report()["by_model"]) == {"claude-sonnet-5"}
+    run(body)
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-haiku-4-5-20251001", "gpt-4o", "",
+                                   "claude-sonnet-5 --dangerously-skip-permissions"])
+def test_a_conversation_model_outside_the_curated_list_is_refused_with_nothing_held(model):
+    async def body(w: World):
+        with pytest.raises(ValueError):
+            await w.front.start("vs-1", person=PERSON, grant=_grant(), conversation_model=model)
+        assert w.broker.calls == [] and w.claude.models == [] and w.front.get("vs-1") is None
+    run(body)
+
+
+def test_the_curated_list_is_swarm_apis_and_its_first_entry_is_the_front_pin():
+    """swarm-voice refuses what Voice it › Settings cannot pick, and the
+    default pick is the model the front runs with no setting at all."""
+    from swarm_api.voice import speech_catalogue as cat
+
+    assert claudefront.FRONT_MODELS == tuple(m.model for m in cat.CONVERSATION_MODELS)
+    assert claudefront.FRONT_MODELS[0] == claudeturn.FRONT_MODEL == FRONT_PIN
+
+
+def test_the_start_request_takes_a_listed_conversation_model_and_refuses_any_other():
+    from pydantic import ValidationError
+    from swarm_voice.main import StartRequest
+
+    base = {"voice_session_id": "vs_" + secrets.token_hex(16), "person": PERSON, "mode": "text"}
+    assert StartRequest(**base).conversation_model is None
+    assert StartRequest(**base, conversation_model="claude-sonnet-5").conversation_model == "claude-sonnet-5"
+    for refused in ("claude-opus-5-5", "gpt-4o", "", "claude-haiku-5-5 --verbose"):
+        with pytest.raises(ValidationError):
+            StartRequest(**base, conversation_model=refused)
 
 
 def test_delegations_run_one_at_a_time_and_at_most_two_wait():

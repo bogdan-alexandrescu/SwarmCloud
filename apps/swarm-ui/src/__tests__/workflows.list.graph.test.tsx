@@ -222,7 +222,7 @@ describe('the list', () => {
     }
     expect((screen.getByLabelText('sort') as HTMLSelectElement).selectedOptions[0]?.textContent).toBe('Needs you first')
     const heads = [...document.querySelectorAll('.wfg-table thead th')].map((th) => th.textContent)
-    expect(heads).toEqual(['State', 'Workflow', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
+    expect(heads).toEqual(['State', 'Workflow', 'Repository', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
   })
 
   it('draws a row with its step bar, done of total, its needs and when it changed', async () => {

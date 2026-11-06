@@ -165,7 +165,7 @@ def build_headers(bearer: Bearer, session_id: str) -> dict[str, str]:
     if not bearer.account_id:
         # A key (or a plan lease without its account id) cannot talk to the plan's route.
         raise CredentialError("the Voice it text lease carried no ChatGPT plan account id")
-    return {"Authorization": f"Bearer {bearer.reveal()}", "OpenAI-Beta": "responses=experimental",
+    return {"Authorization": " ".join(("Bearer", bearer.reveal())), "OpenAI-Beta": "responses=experimental",
             "originator": "codex_cli_rs", "chatgpt-account-id": bearer.account_id,
             "session_id": session_id}
 
@@ -419,10 +419,13 @@ class TextSession:
     mode = "text"
 
     def __init__(self, voice_id: str, *, person: str, credential: LeasedCredential,
-                 grant: SessionGrant | None, clock: Callable[[], float]) -> None:
+                 grant: SessionGrant | None, clock: Callable[[], float],
+                 planner_model: str | None = None) -> None:
         self.voice_id = voice_id
         self.person = person
         self.grant = grant
+        #: The planner model read at this session's start; None keeps the pin.
+        self.planner_model = planner_model
         self._credential = credential
         self._clock = clock
         self.started_at = clock()
@@ -468,7 +471,8 @@ class TextSessions:
         return TEXT_INSTRUCTIONS + (TEXT_DELEGATE_INSTRUCTIONS if self._planner is not None else "")
 
     async def start(self, voice_id: str, *, person: str, grant: SessionGrant | None = None,
-                    exists: Callable[[str], bool] = lambda _id: False) -> TextSession:
+                    exists: Callable[[str], bool] = lambda _id: False,
+                    planner_model: str | None = None) -> TextSession:
         """Lease the Voice it pool's ChatGPT plan for `person` and hold the
         conversation. Raises SessionExists, accountlease.VoicePoolRefused
         (nothing started) or CredentialError."""
@@ -480,7 +484,7 @@ class TextSessions:
                                                   capability=CAPABILITY_TEXT)
             credential.start_renewing()
             session = TextSession(voice_id, person=person, credential=credential, grant=grant,
-                                  clock=self._clock)
+                                  clock=self._clock, planner_model=planner_model)
             self._held[voice_id] = session
             session.idle_task = asyncio.create_task(self._watch_idle(session), name=f"voice-text-idle-{voice_id}")
             log.info("voice session %s: text conversation started on the ChatGPT plan", voice_id)
@@ -545,7 +549,8 @@ class TextSessions:
             cards: list[dict[str, Any]] = []
             if answer.delegation is not None and self._planner is not None:
                 result = await self._planner.delegate(person=session.person, grant=session.grant,
-                                                      transcript=turns, delegation_id=turn_id)
+                                                      transcript=turns, delegation_id=turn_id,
+                                                      model=session.planner_model)
                 reply, cards = result.spoken, list(result.cards)
             else:
                 reply = answer.text

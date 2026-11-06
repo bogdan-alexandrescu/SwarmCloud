@@ -38,6 +38,7 @@ from pydantic import Field
 
 from swarm_common.models import Tenant
 
+from .. import route_scope
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
 from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_scope
@@ -329,6 +330,7 @@ def mint_link(
 
 
 @router.post("/v1/admin/workspace-secrets/rotation-sweep")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def rotation_sweep(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
