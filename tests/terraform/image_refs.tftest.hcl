@@ -135,12 +135,13 @@ run "the_output_records_every_gated_image_it_was_given" {
   variables {
     enable_github_hooks = true
     image_refs = merge(var.image_refs, {
-      "swarm-egress"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-      "swarm-github-hooks" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-      "swarm-graph"        = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-      "swarm-live"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:0000000000000000000000000000000000000000000000000000000000000000"
-      "swarm-typesafe-fwd" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:7777777777777777777777777777777777777777777777777777777777777777"
-      "swarm-voice"        = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-egress"        = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-egress@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      "swarm-github-hooks"  = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      "swarm-graph"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-graph@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      "swarm-live"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      "swarm-plugin-intake" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-plugin-intake@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-typesafe-fwd"  = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      "swarm-voice"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:1111111111111111111111111111111111111111111111111111111111111111"
     })
   }
 
