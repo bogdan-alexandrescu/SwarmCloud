@@ -202,16 +202,21 @@ def test_main_and_a_same_repository_pull_request_look_up_and_everyone_records():
     or let a fork's pull request look a record up."""
     jobs = _jobs()
     (step,) = [s for s in jobs["changes"]["steps"] if s.get("id") == "reuse"]
+    # Not when the `train` step already matched a green merge train (BGD's
+    # pick, 2026-11-06; test_ci_select.py holds that step).
     assert step["if"] == (
+        "steps.train.outputs.train == '' && ("
         "github.event_name == 'push' && github.ref == 'refs/heads/main' || "
         "github.event_name == 'pull_request' && "
-        "github.event.pull_request.head.repo.full_name == github.repository"), (
+        "github.event.pull_request.head.repo.full_name == github.repository)"), (
         f"{step['if']} -- application.yml lacks CI-TREE-REUSE's workflow-lines.patch (#1798)")
     assert "ci_reuse.py find" in step["run"] and '--event "${EVENT}"' in step["run"], step["run"]
     assert step["env"]["EVENT"] == "${{ github.event_name }}", step["env"]
-    assert jobs["changes"]["outputs"]["reused"].replace(" ", "") == "${{steps.reuse.outputs.reused}}"
+    assert jobs["changes"]["outputs"]["reused"].replace(" ", "") == (
+        "${{steps.train.outputs.train!=''&&steps.train.outputs.reused||steps.reuse.outputs.reused}}")
     # MUTATION: drop the output ci-gate cites the reused run from.
-    assert jobs["changes"]["outputs"]["reused_from"].replace(" ", "") == "${{steps.reuse.outputs.reused_from}}"
+    assert jobs["changes"]["outputs"]["reused_from"].replace(" ", "") == (
+        "${{steps.train.outputs.train!=''&&steps.train.outputs.reused_from||steps.reuse.outputs.reused_from}}")
     perms = jobs["changes"]["permissions"]
     assert perms.get("actions") == "read" and "id-token" not in perms, perms
     record = jobs["tested-tree"]

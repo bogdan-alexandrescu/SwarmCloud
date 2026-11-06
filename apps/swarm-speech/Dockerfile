@@ -9,9 +9,10 @@
 # Here, beside its app as swarm-voice's recipe is; `scripts/build-images.sh`
 # `find_recipe()` accepts `apps/<target>/Dockerfile`.
 #
-# Build from the REPOSITORY ROOT, as every service image is:
+# Build from the REPOSITORY ROOT, as every service image is, with BuildKit (a
+# RUN mounts uv from a stage rather than shipping it):
 #
-#     docker build -f apps/swarm-speech/Dockerfile \
+#     DOCKER_BUILDKIT=1 docker build -f apps/swarm-speech/Dockerfile \
 #         -t us-central1-docker.pkg.dev/$PROJECT/swarm-images/swarm-speech:$TAG .
 #
 # THE SAME POSTURE AS swarm-voice: every FROM carries a digest, compilers stay
@@ -50,9 +51,15 @@ ARG MIRROR_GHCR=
 FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
 
 # ---------------------------------------------------------------------------
-# builder: the swarm-speech wheel, then /opt/venv
+# deps: the third-party closure, /opt/venv, from the lock alone
 # ---------------------------------------------------------------------------
-FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS builder
+# LAYER CACHE (scripts/build-images.sh LAYER_CACHED, 2026-11-06). This stage
+# reads pyproject.toml and uv.lock and nothing else, and names no
+# APT_REFRESH, so BuildKit's inline cache from the previous image serves it --
+# and the runtime's copy of it, which comes before that stage's apt layer --
+# whenever the lock is unchanged. Rebuilt, it took most of the 1,717 s build.
+# Nothing here ships but /opt/venv: its compilers stay in this stage.
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS deps
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -60,15 +67,35 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
-# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
-# main build and release), so the upgrade below is never an older build's
-# (owner decision 2026-10-14).
-ARG APT_REFRESH=unset
-RUN echo "apt layer of ${APT_REFRESH}" \
- && apt-get update \
- && apt-get upgrade --no-install-recommends -y \
+RUN apt-get update \
  && apt-get install --no-install-recommends -y build-essential ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+
+COPY --from=uvbin /uv /usr/local/bin/uv
+
+WORKDIR /src
+COPY apps/swarm-speech/pyproject.toml apps/swarm-speech/uv.lock /src/apps/swarm-speech/
+
+# --without-pip: see images/swarm-reconciler/Dockerfile.
+RUN python -m venv --without-pip /opt/venv
+
+# Third-party dependencies, exported from apps/swarm-speech/uv.lock with a hash
+# for every file (en-core-web-sm included, by its URL). `--no-emit-local`
+# leaves swarm-speech out: it comes from /wheels, in the runtime. `--no-hashes`
+# must never be added here.
+RUN uv export --frozen --no-dev --no-emit-local --no-editable \
+      --project /src/apps/swarm-speech > /tmp/requirements.txt
+
+RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /tmp/requirements.txt
+
+# ---------------------------------------------------------------------------
+# builder: the swarm-speech wheel, from the source
+# ---------------------------------------------------------------------------
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy
 
 COPY --from=uvbin /uv /usr/local/bin/uv
 
@@ -76,25 +103,6 @@ WORKDIR /src
 COPY apps/swarm-speech/ /src/apps/swarm-speech/
 
 RUN uv build --wheel --out-dir /wheels /src/apps/swarm-speech
-
-# --without-pip: see images/swarm-reconciler/Dockerfile.
-RUN python -m venv --without-pip /opt/venv
-
-# Third-party dependencies, exported from apps/swarm-speech/uv.lock with a hash
-# for every file (en-core-web-sm included, by its URL). `--no-emit-local`
-# leaves swarm-speech out: it comes from /wheels, below. `--no-hashes` must
-# never be added here.
-RUN uv export --frozen --no-dev --no-emit-local --no-editable \
-      --project /src/apps/swarm-speech > /tmp/requirements.txt
-
-RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /tmp/requirements.txt
-
-# Our own package, from the wheelhouse ONLY: `--no-index`, so no index is ever
-# asked for a name that is ours (dependency confusion, #663).
-RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-speech
-
-RUN uv pip check --python /opt/venv/bin/python
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -123,6 +131,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # model load, and fails with "Failed to find C compiler" without one.
 # `apt-get upgrade` because a pinned base is a frozen set of CVEs, not a safe
 # one (images/swarm-reconciler/Dockerfile).
+# The third-party closure FIRST, before the apt layer and before any source:
+# the layer the inline cache serves while the lock is unchanged (deps, above).
+COPY --from=deps /opt/venv /opt/venv
+
 ARG APT_REFRESH=unset
 RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get update \
@@ -136,7 +148,15 @@ RUN /usr/local/bin/python3 -m pip uninstall --yes setuptools wheel \
  && ! /usr/local/bin/python3 -c "import setuptools" 2>/dev/null \
  && ! /usr/local/bin/python3 -c "import pip" 2>/dev/null
 
-COPY --from=builder /opt/venv /opt/venv
+# Our own package, from the wheelhouse ONLY: `--no-index`, so no index is ever
+# asked for a name that is ours (dependency confusion, #663). uv is mounted
+# for this one RUN, not copied in, so the runtime does not ship it.
+RUN --mount=type=bind,from=uvbin,source=/uv,target=/usr/local/bin/uv \
+    --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    UV_NO_CACHE=1 UV_LINK_MODE=copy UV_COMPILE_BYTECODE=1 \
+      /usr/local/bin/uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
+      swarm-speech \
+ && UV_NO_CACHE=1 /usr/local/bin/uv pip check --python /opt/venv/bin/python
 
 # ABSOLUTE PATHS ON PURPOSE: the runtime PATH omits /usr/sbin. The uid is the
 # one the launcher gives /var/lib/swarm-speech to.

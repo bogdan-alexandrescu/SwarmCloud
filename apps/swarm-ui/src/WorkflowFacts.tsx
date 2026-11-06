@@ -7,11 +7,13 @@
 // WHAT IT READS IS WHAT SWARM-API SERVES (`routes/workflows.py`
 // `workflow_about`), on every workflow read, the full and the summary view
 // alike, at the workflow's root: `repository_url`, `title`, `description`,
-// `description_source`, `feature` (`{title, url?}`) and `started_from`. The
+// `description_source`, `about` (`{purpose, goals, output}`, the description
+// in three labelled parts, BGD 2026-11-06), `feature` (`{title, url?}`) and
+// `started_from`. The
 // frozen `Workflow` (types.ts) does not name them, so they are read here, each
 // checked for its type. The keys are present only when a step task was read:
 // ABSENT means "not read" (`not recorded`), null means "none" (`none`).
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState } from 'react'
 import { PersonName } from './PersonName'
 import { workflowLabel } from './stepviews'
 import { timeAgo, type Task, type Workflow } from './types'
@@ -26,11 +28,20 @@ export const STARTED_FROM_WORDS: Readonly<Record<string, string>> = {
   console: 'Console',
 }
 
+/** The description's three labelled parts, each optional (`schemas.check_about`). */
+export interface AboutParts {
+  readonly purpose: string | null
+  readonly goals: readonly string[]
+  readonly output: string | null
+}
+
 /** What `workflow_about` serves, as read: `undefined` when the key is absent (not read), `null` when it is none. */
 export interface WorkflowAbout {
   readonly repositoryUrl: string | null | undefined
   readonly title: string | null | undefined
   readonly description: string | null | undefined
+  /** `about`, else a bare `description` as its purpose (a server before `about`), else null / undefined. */
+  readonly parts: AboutParts | null | undefined
   readonly generated: boolean
   readonly feature: { readonly title: string; readonly url: string | null } | null | undefined
   readonly startedFrom: string | null | undefined
@@ -42,10 +53,24 @@ function textOrNone(raw: Record<string, unknown>, key: string): string | null | 
   return typeof v === 'string' && v.trim() !== '' ? v.trim() : null
 }
 
+/** `about` as served, each part checked for its type; null when no part holds text. */
+function partsOf(raw: Record<string, unknown>, description: string | null | undefined): AboutParts | null | undefined {
+  const a = raw.about
+  if (a !== null && typeof a === 'object') {
+    const r = a as Record<string, unknown>
+    const goals = Array.isArray(r.goals) ? r.goals.filter((g): g is string => typeof g === 'string' && g.trim() !== '').map((g) => g.trim()).slice(0, 3) : []
+    const parts = { purpose: textOrNone(r, 'purpose') ?? null, goals, output: textOrNone(r, 'output') ?? null }
+    if (parts.purpose !== null || goals.length > 0 || parts.output !== null) return parts
+  }
+  if (typeof description === 'string') return { purpose: description, goals: [], output: null }
+  return 'about' in raw || description === null ? null : undefined
+}
+
 /** The served about-fields of one workflow row, each checked for its type. */
 export function aboutOf(workflow: Workflow): WorkflowAbout {
   const raw = workflow as unknown as Record<string, unknown>
   const description = textOrNone(raw, 'description')
+  const parts = partsOf(raw, description)
   let feature: WorkflowAbout['feature'] = 'feature' in raw ? null : undefined
   const f = raw.feature
   if (f !== null && typeof f === 'object') {
@@ -56,8 +81,9 @@ export function aboutOf(workflow: Workflow): WorkflowAbout {
     repositoryUrl: textOrNone(raw, 'repository_url'),
     title: textOrNone(raw, 'title'),
     description,
-    // A generated description is marked only beside a description (the route serves the source only then).
-    generated: typeof description === 'string' && raw.description_source === 'generated',
+    parts,
+    // A generated description is marked only beside one (the route serves the source only then).
+    generated: parts != null && raw.description_source === 'generated',
     feature,
     startedFrom: textOrNone(raw, 'started_from'),
   }
@@ -94,6 +120,39 @@ export function repoOwnerName(url: string | null | undefined): { owner: string; 
 function safeHref(url: string | null | undefined): string | null {
   return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : null
 }
+
+/** An (i) whose explanation is a tooltip: the card's one note, never a line of prose. */
+function Info({ about, tip }: { about: string; tip: string }) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  return (
+    <span className="c-tip-host wff-info" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button
+        type="button"
+        className="wff-info-btn"
+        aria-label={`About ${about}`}
+        aria-describedby={id}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setOpen(false)
+        }}
+      >
+        <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="12" cy="12" r="8.5" />
+          <path d="M12 11v5.5M12 7.75v.01" />
+        </svg>
+      </button>
+      <span role="tooltip" id={id} className="c-tip" hidden={!open}>
+        {tip}
+      </span>
+    </span>
+  )
+}
+
+/** Why a description is marked generated, behind its (i). */
+export const GENERATED_TIP = "No description was submitted: this one was written from the steps' briefs."
 
 /** A value that was not read: its slot and label stay, and the word says which kind of nothing. */
 function NotRecorded() {
@@ -166,21 +225,23 @@ export function WorkflowFacts({
   now: number
 }) {
   const about = aboutOf(workflow)
-  const description = about.description ?? null
-  const textRef = useRef<HTMLParagraphElement>(null)
+  const parts = about.parts ?? null
+  const partsKey = parts === null ? '' : JSON.stringify(parts)
+  const textRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [clipped, setClipped] = useState(false)
   // SHOW ALL IS DRAWN ONLY WHEN THE CLAMP CUT TEXT: measured, not guessed
-  // from a character count, so it follows the width the card has.
+  // from a character count, so it follows the width the card has. Each part
+  // is clamped on its own, so any one of them cut draws More.
   useLayoutEffect(() => {
     const el = textRef.current
     if (el === null || open) return
-    const measure = () => setClipped(el.scrollHeight > el.clientHeight + 1)
+    const measure = () => setClipped([...el.querySelectorAll<HTMLElement>('.wff-clip')].some((c) => c.scrollHeight > c.clientHeight + 1))
     measure()
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     ro?.observe(el)
     return () => ro?.disconnect()
-  }, [description, open])
+  }, [partsKey, open])
 
   const repo = repoOwnerName(about.repositoryUrl)
   const repoHref = safeHref(about.repositoryUrl)
@@ -190,35 +251,59 @@ export function WorkflowFacts({
   const textId = `wff-d-${workflow.workflow_id}`
 
   return (
-    <section className="wff-card" aria-label="About this workflow">
-      <div className="wff-desc">
-        <p className="wff-label">
-          Description
-          {about.generated && (
-            <span className="c-chip wff-gen" title="No description was submitted; a model wrote this one from the steps' prompts.">
-              generated
-            </span>
-          )}
-        </p>
-        {description === null ? (
-          <p className="wff-text">{about.description === undefined ? <NotRecorded /> : <None>none submitted</None>}</p>
-        ) : (
-          <>
-            <p ref={textRef} id={textId} className={`wff-text${open ? '' : ' is-clamped'}${about.generated ? ' is-generated' : ''}`}>
-              {description}
-            </p>
+    <section className={`wff-card${about.parts === null ? ' is-facts-only' : ''}`} aria-label="About this workflow">
+      {about.parts === undefined ? (
+        <div className="wff-desc">
+          <p className="wff-label">Description</p>
+          <p className="wff-text">
+            <NotRecorded />
+          </p>
+        </div>
+      ) : parts === null ? null : (
+        // NONE SERVED DRAWS NOTHING: the page's title stands alone, nothing invented.
+        <div className="wff-desc">
+          <p className="wff-label">
+            Description
             {about.generated && (
-              // WHO WROTE IT, IN WORDS A TOUCH SCREEN CAN READ: the chip's title is a hover only.
-              <p className="wff-gen-note">A model wrote this from the steps' prompts; no description was submitted.</p>
+              <>
+                <span className="c-chip wff-gen">generated</span>
+                <Info about="the generated description" tip={GENERATED_TIP} />
+              </>
             )}
-            {(clipped || open) && (
-              <button type="button" className="ctl-link wff-more" aria-expanded={open} aria-controls={textId} onClick={() => setOpen(!open)}>
-                {open ? 'Show less' : 'Show all'}
-              </button>
+          </p>
+          <div ref={textRef} id={textId} className={`wff-parts${open ? '' : ' is-clamped'}${about.generated ? ' is-generated' : ''}`}>
+            {parts.purpose !== null && (
+              <p className="wff-part">
+                <span className="wff-part-label">Purpose</span>
+                <span className="wff-text wff-clip">{parts.purpose}</span>
+              </p>
             )}
-          </>
-        )}
-      </div>
+            {parts.goals.length > 0 && (
+              <div className="wff-part">
+                <span className="wff-part-label">Goals</span>
+                <ul className="wff-goals">
+                  {parts.goals.map((g, i) => (
+                    <li key={i}>
+                      <span className="wff-text wff-clip">{g}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {parts.output !== null && (
+              <p className="wff-part">
+                <span className="wff-part-label">Expected output</span>
+                <span className="wff-text wff-clip">{parts.output}</span>
+              </p>
+            )}
+          </div>
+          {(clipped || open) && (
+            <button type="button" className="ctl-link wff-more" aria-expanded={open} aria-controls={textId} onClick={() => setOpen(!open)}>
+              {open ? 'Less' : 'More'}
+            </button>
+          )}
+        </div>
+      )}
       <dl className="wff-facts">
         <div>
           <dt>Repository</dt>
