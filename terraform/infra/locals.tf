@@ -853,6 +853,10 @@ locals {
       # `egress_addresses`; "" serves [], which the console says in words.
       MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
 
+      # Generated workflow descriptions (swarm_api.wfdescription): "off" writes
+      # them extractively; turns to "vertex" once the owner grants Vertex AI.
+      SWARM_WORKFLOW_DESCRIPTION_MODEL = "off"
+
       # The job-made workspaces' Firestore cutover list (variables.tf
       # `worker_firestore_off_tenants`, #1457 design B). swarm_api.settings
       # reads it as worker_firestore_off_tenants and writes the record's
@@ -1007,6 +1011,14 @@ locals {
       # sets another value, and the variable's validation admits only the
       # three values swarm-api reads.
       SWARM_CONTRACT_REVIEW = var.contract_review_mode
+
+      # The work-contract switch (swarm_api.workcontract SWITCH_ENV;
+      # var.work_contracts says what each value does). Until this line
+      # nothing in Terraform set it, so swarm-api ran with contracts off and
+      # refused every step naming a plugin. "off" unless the environment's
+      # tfvars sets "on". swarm-api alone reads it: the worker reads a
+      # contract only through the signed reference swarm-api attaches.
+      SWARM_WORK_CONTRACTS = var.work_contracts
 
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to

@@ -21,7 +21,7 @@ from swarm_common.profiles import (
     resolve_backend,
 )
 
-from .. import runnersizes
+from .. import route_scope, runnersizes
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..served_limits import configured_limits
@@ -149,6 +149,7 @@ def _pool_listing(
 
 
 @router.get("/resource-classes")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def resource_classes(
     # Declared, not used: it gates the route so /v1 has no unauthenticated
     # hole. There is nothing tenant-specific to compute -- this is the same
@@ -188,6 +189,7 @@ def resource_classes(
 
 
 @router.get("/runtimes")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def runtimes(
     # Declared, not used -- the same reason as /v1/resource-classes above: it
     # gates the route so /v1 keeps no unauthenticated hole. Nothing here is

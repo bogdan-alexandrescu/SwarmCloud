@@ -475,6 +475,20 @@ context, so a long session costs roughly the square of its length, and
   nothing, and the last session runs to its end, so a lane stuck in a loop
   cannot restart forever. A stop with less than a minute of the step left
   starts nothing, and the result stands.
+* **No session tail by default (BGD, 2026-11-06).** The handoff also lists
+  the notes files and the last todo list. It does **not** carry the previous
+  session's own last messages unless `SWARM_CEILING_SESSION_TAIL=1`. That
+  text is the previous session's own assistant output fed back in as user
+  input, and the provider's safeguards refused the fresh session's first call
+  on it (`model_refusal_no_fallback`, "safeguards flagged this message ...
+  [reasoning_extraction]"; `task_a27c0b2241d1492492ee`). Every long agent
+  failed at the handoff.
+* **A refused first call is retried once.** If a fresh session started from
+  a handoff ends on its first call with that refusal, the runner starts it
+  once more from a minimal handoff: the first prompt, the note file and the
+  todos only. It logs the retry and records it under `refusal_restarts` in the
+  ceiling record. A second refusal fails the step with a reason that names
+  the refusal.
 * **Resumes follow the same rule.** The runner keeps the last session's
   context and tool calls in `context-ceiling.json` next to the worker's
   session channel (in `private/`). A restart that asks it to `--resume` a
