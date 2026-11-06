@@ -16,7 +16,8 @@ on the `samples` collection group (voice_speech.tf) deletes them.
 
 The same transaction folds the sample into the session's own document,
 `voice_speech_sessions/{session}`: its tenant, person and project, the
-generation, the first and last sample's time, the counts, the raw
+generation, the start's phases (from the lease), the first and last sample's
+time, the counts, the raw
 per-utterance and per-synthesis values (at most MAX_VALUES each) and the peaks
 of the 5 s readings. It carries no `expire_at`, so it is kept when its samples
 expire. No percentile, no day and no total is stored anywhere: a session's
@@ -324,7 +325,12 @@ class Telemetry:
                 "session_id": owner.session_id, "tenant_id": owner.tenant_id,
                 "expire_at": at + SAMPLE_RETENTION, "data": data,
             })
-            txn.set(session_ref, _folded(current, owner, int(generation), kind, data, at))
+            folded = _folded(current, owner, int(generation), kind, data, at)
+            # The start's phases (§4.2 step 5) are the lease's; the session keeps them.
+            phases = lease.get("start_phases")
+            if isinstance(phases, Mapping) and all(_number(v) for v in phases.values()):
+                folded["start_phases"] = dict(phases)
+            txn.set(session_ref, folded)
             return seq
 
         return _record(self._db.transaction())
@@ -457,6 +463,7 @@ def summary(doc: Mapping[str, Any], zone: ZoneInfo) -> dict[str, Any]:
         "percentiles": {name: percentiles(values.get(name) or ())
                         for kind in VALUES for name in VALUES[kind]},
         "peaks": {name: (doc.get("peaks") or {}).get(name) for name in PEAKS},
+        "start_phases": dict(doc.get("start_phases") or {}),
     }
 
 
