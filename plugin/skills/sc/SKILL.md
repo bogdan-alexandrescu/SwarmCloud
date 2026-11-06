@@ -489,6 +489,7 @@ option label, exactly as served, when the person picked one of them; `text`
 is the person's words, or what they chose when it was none of the options.
 The bridge adds `via: claude-code` and this session's id, so the console
 shows the answer as given in Claude Code instead of leaving it unanswered.
+Many answers at once (the person's decision to close finished tasks' questions as moot, or a lane's questions recorded at fold time): ONE `swarm_task_answers {entries: [{task_id, question_index, choice?, text?}]}` call (at most 200; short replies; each refused entry is its own line).
 
 Only the person's own pick, verbatim, from a question this session asked
 them; never an answer the agent chose itself, a recommended option they did
