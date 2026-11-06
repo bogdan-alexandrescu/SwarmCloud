@@ -4215,6 +4215,85 @@ vitest ids its log names. It is read-only. Then:
 2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
    issue to the line; the fix removes the line.
 
+## The full suite runs once per change, in the merge train
+
+**BGD's pick, 2026-11-06 (part of #2688):** *"we really need to fix ci merges
+and streamline the ci part, its the biggest bottleneck we have right now."*
+Measured that morning: one `application.yml` run was 27 jobs and 76
+runner-minutes on a pull request and 34 jobs, all GitHub-hosted, on a push to
+main; about 200 runs a day (145 `pull_request`, merge trains included, and 55
+pushes to main); from about 04:50Z GitHub-hosted jobs waited up to 51 minutes
+(68 waiting, 2 running at 06:55Z) while the own `bogdan-ci` pool (cap 200 VMs)
+had 15 up. Two changes, both in [`scripts/ci-select.sh`](../scripts/ci-select.sh)
+and the `changes` job.
+
+**A. Main skips what its merge train tested.** The train
+([`scripts/merge-train.sh`](../scripts/merge-train.sh),
+[docs/merge-trains.md](merge-trains.md)) tests `main` plus its pull requests
+on a draft pull request from `train/<id>`, then lands each as its own squash.
+Main's commit after the last squash has the train's tested tree but names the
+last pull request, not the train, so
+[the tree record below](#main-reuses-the-tested-tree) never matched it and
+main ran the whole suite again. Main's push run now starts with the `train`
+step (`ci-select.sh train-match`). It skips every test job when it finds a
+pull request that:
+
+* is titled `Merge train <id>: ...`, from `train/<id>` in this repository;
+* has a head whose tree is this commit's tree (`HEAD^{tree}`);
+* has a newest `ci-gate` at that head that concluded `success`;
+* is closed, with the train's own `Green, and landed` comment, posted by a bot.
+
+The squash lands a few seconds before the train closes, so an open train with
+this tree is waited for, at most `TRAIN_WAIT_SECONDS` (300). The step lists
+every job `ci_reuse.py` may skip (`REUSABLE`, read from there) as `reused`,
+and the train's URL as `reused_from`. ci-gate's reuse check then passes those
+skips and names the train. `build images`, the plugin tag and the release
+still run, and the release's test gate reads a skipped job as passed. Any
+other push runs the full suite as before: a direct push, a tree no green train
+tested, a train that closed any other way, or an API it could not read.
+
+**B. A lane's pull request tests what its change reaches.** A pull request
+from a `swarm/**` branch of this repository (the `lane` step,
+`ci-select.sh lane`) still runs shellcheck, actionlint, ruff, the format,
+contract and lock checks, the swarm-ui typecheck and build, the manifests and
+the image check whole. Its tests are narrowed:
+
+* unit shards: the `select` step's selection, as before
+  ([below](#a-pull-request-runs-the-unit-tests-its-change-reaches));
+* component tests: the vitest files whose imports reach a changed swarm-ui
+  module (`related_tests.py`, the selection `scripts/related-tests.sh`
+  prints), plus the stylesheet guards on a `.css` change. They are split into
+  shards by `ui_shards.py`'s weights;
+* integration tests: a changed one, one importing a changed module through
+  any chain, or one naming a changed path.
+
+A shard or the integration job with nothing selected skips its steps rather
+than run an empty `vitest run` or `pytest`, either of which would run the
+whole suite.
+
+**The full suite runs** on a lane whose change touches shared ground: anything
+in `select_unit_tests.py`'s fallback (a workflow or composite action, a
+`conftest.py`, `pyproject.toml`, `uv.lock`, the frozen contract, the
+quarantine, more than 40 paths), any `package.json` or lockfile, `pytest.ini`,
+`setup.cfg` or `tox.ini`, the swarm-ui runner's own files (`RUNNER_WIDE`), or
+a shared helper under `tests/integration/`. It also runs when the selection
+cannot be computed. The step says why in the job summary. A merge train's
+pull request (`train/**`) runs every job, whatever its diff reaches, and so
+does main. A pull request from any other branch is unchanged.
+
+**Every required check keeps its name.** `ci-gate`, `format / unit tests`,
+`swarm-ui typecheck / component tests`, `integration tests (emulator)`,
+`kubernetes manifests` and `shellcheck` still report. A job skipped by its own
+`if:` reads as passed in its fold job and in ci-gate.
+`tests/unit/scripts/test_ci_select.py` holds the selection, the train match
+and the workflow steps.
+
+**What a miss costs.** If a lane's selection misses a test, its pull request
+goes green and the train goes red. The train then bisects and ejects that
+pull request, and main never sees the failure. This is the same bound
+[the unit-test selection](#a-miss-costs-a-red-main-so-the-whole-tree-tests-always-run)
+already accepted, one step earlier.
+
 ## Main reuses the tested tree
 
 **Owner decision 2026-10-14 (the delivery speed plan, B1).** Measured over the
