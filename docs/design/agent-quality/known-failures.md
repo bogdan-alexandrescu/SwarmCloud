@@ -244,6 +244,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_image_sizes.py` | `<module>` | `skipif` | image-sizes.sh needs bash and jq |
 | `tests/unit/scripts/test_install_sh_uv.py` | `<module>` | `skipif` | no pinned uv for this platform |
 | `tests/unit/scripts/test_install_sh_uv.py` | `_run` | `skip_call` | a real uv in /usr/bin or /bin would be found first |
+| `tests/unit/scripts/test_join_acceptance_probe.py` | `<module>` | `skipif` | the probe needs bash, jq and base64 |
 | `tests/unit/scripts/test_lightpanda_build_scripts.py` | `test_target_selection_reaches_the_lightpanda_image_for_its_inputs_and_its_base` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_live_browser_acceptance.py` | `test_the_qa_identity_case_skips_every_check_unless_both_settings_are_set` | `skip_call` | bash is required |
 | `tests/unit/scripts/test_live_browser_acceptance.py` | `_stuck` | `skip_call` | bash and jq are required |

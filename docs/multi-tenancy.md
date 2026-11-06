@@ -151,6 +151,56 @@ project as the consumer, which reads like a permissions problem and is not.
 stay fast, so answers are cached per `(caller, group)` with a short TTL
 (`GROUP_CACHE_TTL_SECONDS`, default 120).
 
+### Membership is the Google group, or a platform membership while `PLATFORM_MEMBERSHIPS` is on
+
+A group workspace's members are its Google group's members. Join requests
+([design/join-requests.md](design/join-requests.md), #2325) add exactly one
+other way in: a **platform membership**, written when that workspace's admin or
+a platform admin approves a person's request. It is a signed, append-only row in
+Firestore's `workspace_memberships` beside the group, never a change to the
+group. So, per workspace, a person is a member when
+
+* the per-group `checkTransitiveMembership` above says so, **or**
+* `PLATFORM_MEMBERSHIPS` is on (swarm-api's `platform_memberships` setting, off
+  by default) **and** their newest valid membership of that workspace is
+  `member`, written for the group the workspace has NOW.
+
+Why beside the group and not in it: the platform cannot write a Google group
+(swarm-api's delegation reads groups only), and a group can carry project-wide
+IAM in this project, so adding a person to it would grant far more than one
+workspace (design §3.2). The membership grants **workspace selection and
+nothing else**.
+
+What the membership row must pass, and why each check:
+
+* **Its MAC verifies** under the settings key. A row written by anything but
+  swarm-api (a worker with a Firestore grant, a hand edit) is skipped and
+  counted (`swarm_api_membership_invalid_total`), so forging one admits nobody.
+* **The newest valid row wins.** A replayed old `member` row loses to a newer
+  `removed` one; removal is a new row, never a delete.
+* **It names the workspace's current group.** When an admin re-registers the
+  workspace onto another group, every membership written for the old one stops
+  counting (`group_changed` in `GET /v1/workspace/members`).
+* **The subject is a person.** A service account, a `u-` workspace and `*`
+  are refused at write and skipped at read.
+
+With the switch off nothing reads the collection: resolution is byte-for-byte
+the Google-group-only path above, and an approval records the decision and
+answers `admitted: false` with the `gcloud identity groups memberships add`
+line the group's owner runs.
+
+A membership reaches resolution only **after** the groups. A workspace the
+person already reaches through the group is not listed twice (the group's answer
+wins), the person's own personal workspace stays first, and groups keep their
+admin order; a membership becomes the default only when the person has no group
+and no ready personal workspace. `GET /v1/tenants/mine` and
+`GET /v1/workspace/roles` say `via: "platform_member"` for it.
+
+A membership read that FAILS never stops a group member: their choices are left
+as they are, and only a header the memberships could have answered (any
+non-`u-` id) is refused, 503 `membership_unavailable`, never
+`tenant_not_member`, because the unread row could have changed the answer.
+
 ### Priority order matters
 
 `TENANT_GROUPS` is ordered, and the **first match wins**. A user in both
@@ -398,6 +448,28 @@ platform bearer token.** A shared secret carries no identity; without identity
 there is no tenant to attribute an agent to, no way to scope a list response, and
 no boundary to enforce. Multi-tenancy that starts after authentication is
 decorative.
+
+### Platform memberships: selection, no IAM, no GSA beyond the tenant's own
+
+A person admitted by a join request (§2) is a member of that one workspace, and
+of nothing else:
+
+* **No IAM is granted.** Approval writes one Firestore row. It adds nobody to a
+  Google group, and so confers none of the IAM a group may carry in this
+  project; the acceptance probe (`scripts/acceptance/groups/join.sh`) checks,
+  read only, that the person is still outside the group after approval.
+* **No GSA access beyond the tenant's own.** The person's work runs as the
+  workspace's own GSA, with its own secrets, GCS prefix and namespace, exactly
+  as a group member's does (invariant 9). Nothing about the tenant's isolation
+  changes; only who may select it does.
+* **It is removable without the group.** An admin's
+  `DELETE /v1/workspace/members/person` writes a `removed` row, and the
+  person's next request is refused `tenant_not_member` (the writing instance
+  evicts its cache at once; another instance within `role_cache_seconds`,
+  15 s by default, the membership cache's lifetime). Removal ends the platform membership only: a person who is also
+  in the group stays a member through the group, which `still_in_group` says.
+* **A personal (`u-`) or service workspace takes no requests**
+  (`join_not_offered`): a personal workspace has one person.
 
 ### Data
 
