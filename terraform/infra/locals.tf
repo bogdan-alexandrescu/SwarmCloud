@@ -1008,6 +1008,14 @@ locals {
       # three values swarm-api reads.
       SWARM_CONTRACT_REVIEW = var.contract_review_mode
 
+      # The work-contract switch (swarm_api.workcontract SWITCH_ENV;
+      # var.work_contracts says what each value does). Until this line
+      # nothing in Terraform set it, so swarm-api ran with contracts off and
+      # refused every step naming a plugin. "off" unless the environment's
+      # tfvars sets "on". swarm-api alone reads it: the worker reads a
+      # contract only through the signed reference swarm-api attaches.
+      SWARM_WORK_CONTRACTS = var.work_contracts
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build

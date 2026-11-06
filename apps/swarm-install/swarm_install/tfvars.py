@@ -157,6 +157,12 @@ SCHEDULED_DOCTOR_SHIPPED = True
 #: carries the same environment as the live one.
 CONTRACT_REVIEW_MODE = "off"
 
+#: swarm-api's SWARM_WORK_CONTRACTS (infra's `work_contracts`): on, so a fresh
+#: deployment's plugins (Config > Plugins) load through a step's signed work
+#: contract, as on the live deployment (BGD, 2026-11-06). Contract review above
+#: stays off: a fresh deployment may have no TypeSafe key or internal route.
+WORK_CONTRACTS = "on"
+
 #: `sizing.mode` (decision 7): one person, or a team of `members` people.
 INDIVIDUAL = "individual"
 TEAM = "team"
@@ -488,6 +494,7 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "workspace_gate": True,
         "groups_auth": groups_auth(outputs),
         "contract_review_mode": CONTRACT_REVIEW_MODE,
+        "work_contracts": WORK_CONTRACTS,
         "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }
