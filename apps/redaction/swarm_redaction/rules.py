@@ -693,9 +693,12 @@ _CLOSED_CALL = (
 #: A shell substitution: `$(command ...)`, `${NAME}`, an empty `${NAME:-}` (a
 #: default VALUE is a literal: `${TOKEN:-<v>}`), or a
 #: GitHub Actions `${{ expression }}` -- never `$` and any character.
+#: A run of `;`, `)`, `]` or `}` with a literal glued after it is not where
+#: `${NAME}` ends (owner's pick 'tighten' on PR #3448): `token=${NAME};<v>`
+#: and `authorization=${NAME})<v>` were served whole, and are masked now.
 _SHELL_SUBSTITUTION = (
     r"\"?\$(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}[ )]"
-    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )"
+    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}(?![;)\]}]++[^\s,\"'`])|\{\{ )"
 )
 _EXPRESSION_PASSWORD = (
     r"(?-i:={1,2}[ \t]|(?:await|new|not)[ \t]"
@@ -786,15 +789,16 @@ _CONTAINER = (
 #: `%(name)s` -- then at most a closing quote, then where a value ends. A
 #: default (`${TOKEN:-<v>}`), a second name, or any character glued to it
 #: (`{TOKEN}<v>`, `<v>{TOKEN}`, `{TOKEN}:<v>`) is not a placeholder, and the
-#: value is masked as before. A `,`, `;`, `)`, `]` or `}` ends the value only
-#: when no value character follows it (`{TOKEN};<v>` is masked). A literal
+#: value is masked as before. A run of `,`, `;`, `)`, `]` or `}` ends the
+#: value only when no value character follows it (`{TOKEN};<v>` and
+#: `{TOKEN}});<v>` are masked). A literal
 #: spelled like a name (`{abc123}`, `$abc123`) is kept: it names a variable.
 #: `$NAME` takes its name possessively: a shell reads `$TOKENabc` as one
 #: longer name, and so does this.
 _PLACEHOLDER = (
     r"(?:\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|\$\{[A-Za-z_][A-Za-z0-9_]{0,63}\}"
     r"|\$[A-Za-z_][A-Za-z0-9_]{0,63}+|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])"
-    r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}](?![^\s,;)\]}\"'`]))"
+    r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}]++(?![^\s\"'`]))"
 )
 _AUTH_SCHEME = r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)"
 #: Under the `authorization` key: an optional string prefix (`f`, `rb`) and
@@ -803,6 +807,11 @@ _AUTH_PLACEHOLDER = (
     r"(?:[bfru]{1,2}(?=\\{0,15}[\"']))?(?:\\{0,15}[\"'])?"
     r"(?:" + _AUTH_SCHEME + r"[ \t]+)?" + _PLACEHOLDER
 )
+#: A PYTHON STRING PREFIX IS NOT THE VALUE (owner's pick 'extend' on PR
+#: #3448), under every key word: `token = f"<v>"`, `api_key = b"<v>"`,
+#: `secret = rb"<v>"` had the prefix masked and the literal served. The
+#: prefix is skipped, and the string after it is masked as an unprefixed one.
+_STRING_PREFIX = r"(?:[bfru]{1,2}(?=\\*\"))?"
 #: Not masked when the value starts with one of these (see above), and does
 #: not itself start a secret run.
 _NOT_A_LITERAL = (
@@ -819,7 +828,7 @@ KEY_VALUE = _rule(
     r"(?:(?P<pw>password|passwd|passphrase)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|(?P<auth>authorization))"
     r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
     r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
-    r"(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
+    r"(?:\[[ \t]*)?" + _STRING_PREFIX + r"(?:(?P<esc>\\+\")|\"?))"
     r"(?(esc)"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"

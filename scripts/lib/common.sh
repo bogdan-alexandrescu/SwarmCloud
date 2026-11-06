@@ -2549,7 +2549,11 @@ redact() {
   local v_argc="[]A-Za-z0-9_.,:=*'\" +/%\\[${keep}-]"
   local v_args="(\\(${v_argc}{0,160}(\\(${v_argc}{0,160}\\)${v_argc}{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}|\"[^\"${secretrun}]{0,128}\"|'[^'${secretrun}]{0,128}')\\])"
   local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
-  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )'
+  # `${NAME}` ends where a value ends: a `;`, `)`, `]` or `}` with a literal
+  # glued after it is not an end (`_SHELL_SUBSTITUTION`; the owner's pick
+  # 'tighten' on PR #3448). The character after it is in the marked span, so
+  # the s command puts it back.
+  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}([^];)}]|[];)}]+([,"'"'"'`[:space:]]|$)|$)|\{\{ )'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -2564,6 +2568,17 @@ redact() {
   # `_CONTAINER` (#2237): an empty `[]`/`{}`/`()` where a value ends, an
   # opening bracket at the end of the line, or `{` and a blank.
   local v_container="(\\[[[:blank:]]*\\]|\\{[[:blank:]]*\\}|\\([[:blank:]]*\\))${v_end}|[[{(][[:blank:]]*\$|\\{[[:blank:]]"
+  # AN `Authorization` VALUE THAT ONLY NAMES A VARIABLE IS CODE
+  # (`swarm_redaction.rules._AUTH_PLACEHOLDER`; the owner's pick 'align' on PR
+  # #3448): after a name holding `authorization`, an optional string prefix
+  # and quote, an optional scheme word, then ONE `{name}`, `${NAME}`, `$NAME`
+  # or `%(name)s`, at most a closing quote, and where a value ends. $keep goes
+  # between the name and its separator, so neither the scheme-word rule nor
+  # the assignment rule takes it. What ends the value is in the marked span.
+  local a_prefix='([bfru]{1,2}\\{0,15}["'"'"']|\\{0,15}["'"'"'])?'
+  local a_scheme='((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:blank:]]+)?'
+  local a_name='(\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|[$]\{[A-Za-z_][A-Za-z0-9_]{0,63}\}|[$][A-Za-z_][A-Za-z0-9_]{0,63}|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])'
+  local a_end='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+(["'"'"'`[:space:]]|$))'
   # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
   # restated move for move -- its comment says why each move is there. The
   # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
@@ -2746,8 +2761,9 @@ redact() {
     -e 's/(xox[abprs]-)[A-Za-z0-9-]{8,}/\1********/g' \
     -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
-    -e "s/(authorization(\\*\")?[[:space:]]*[:=][[:space:]]*)((\\*\")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\3/Ig" \
-    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e "s/(authorization(s|s?[-_](access[-_]?key|key|hash))?(\\\\*\")?)([[:blank:]]*[:=][[:blank:]]*${a_prefix}${a_scheme}${a_name}${a_end})/\\1${keep}\\5/Ig" \
+    -e "s/(authorization(\\\\*\")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\\\*\"|\\\\*\")?)((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\4/Ig" \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\*"|\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
     -e "s/(\\\\{1,15})\"${c_qname}(\\\\{1,15})\"/\\1${c_dq}\\2\\4${c_dq}/g" \
     -e "s/\"${c_qname}\"/${c_dq}\\1${c_dq}/g" \
     -e "s/'${c_qname}'/${c_sq}\\1${c_sq}/g" \
@@ -2784,10 +2800,10 @@ redact() {
     -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
     -e "s/${secretrun}//g" \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[^"\\,[:space:]]+/\1'"${keep}"'\7********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1'"${keep}"'\5********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

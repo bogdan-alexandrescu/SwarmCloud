@@ -982,6 +982,104 @@
       "expected": "pem \u003d \"\\n\".join([begin, body, \"********\u002d----END RSA PRIVATE KEY-----\"])",
       "never": [],
       "count": 1
+    },
+    {
+      "name": "authorization-placeholder-f-string-3448",
+      "text": "headers \u003d {\"Authorization\"\u003a f\"Bearer {TOKEN}\"}",
+      "expected": "headers \u003d {\"Authorization\"\u003a f\"Bearer {TOKEN}\"}",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "authorization-placeholder-shell-3448",
+      "text": "curl -H 'Authorization\u003a Bearer ${TOKEN}' https\u003a//example.invalid",
+      "expected": "curl -H 'Authorization\u003a Bearer ${TOKEN}' https\u003a//example.invalid",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "authorization-placeholder-dollar-name-3448",
+      "text": "curl -H \"Authorization\u003a token $GH_TOKEN\" https\u003a//example.invalid",
+      "expected": "curl -H \"Authorization\u003a token $GH_TOKEN\" https\u003a//example.invalid",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "authorization-placeholder-percent-3448",
+      "text": "headers \u003d {\"Authorization\"\u003a \"Bearer %(token)s\" % values}",
+      "expected": "headers \u003d {\"Authorization\"\u003a \"Bearer %(token)s\" % values}",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "authorization-placeholder-literal-glued-3448",
+      "text": "Authorization\u003a Bearer {TOKEN};otter17walrus",
+      "expected": "Authorization\u003a ******** ********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 2
+    },
+    {
+      "name": "authorization-f-string-literal-3448",
+      "text": "headers \u003d {\"Authorization\"\u003a f\"Bearer\u0020otter17walrus\"}",
+      "expected": "headers \u003d {\"Authorization\"\u003a f\"******** ********\"}",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 2
+    },
+    {
+      "name": "kv-string-prefix-f-3448",
+      "text": "token \u003d f\"otter17walrus\"",
+      "expected": "token \u003d f\"********\"",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-string-prefix-rb-3448",
+      "text": "secret \u003d rb\"otter17walrus\"",
+      "expected": "secret \u003d rb\"********\"",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-string-prefix-escaped-3448",
+      "text": "api_key \u003d b\\\"otter17walrus\\\"",
+      "expected": "api_key \u003d b\\\"********\\\"",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-shell-substitution-literal-glued-3448",
+      "text": "token\u003d${NAME};otter17walrus",
+      "expected": "token\u003d********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-shell-substitution-bracket-glued-3448",
+      "text": "authorization\u003d${NAME})otter17walrus",
+      "expected": "authorization\u003d********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-shell-substitution-alone-3448",
+      "text": "f(token\u003d${NAME})",
+      "expected": "f(token\u003d${NAME})",
+      "never": [],
+      "count": 0
     }
   ]
 }
