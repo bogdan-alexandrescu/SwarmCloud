@@ -106,6 +106,9 @@
 #       The state block a train pull request's body carries.
 #   tell --prs <gh pr list json>
 #       That telling step alone (GH_REPO, GH_TOKEN, RUN_URL).
+#   list-prs --out <file>
+#       The open pull request list the tick reads (list_open_prs) alone,
+#       into <file> (GH_REPO, GH_TOKEN).
 #   hold --train <N> --body <file> [--dry-run]
 #       The deploy-starvation hold alone, for green train <N> whose body is
 #       <file>: `hold\t<why>` or `merge\t<why>` (GH_REPO, GH_TOKEN, RUN_URL).
@@ -168,6 +171,20 @@ RELEASE_LOOK="${MERGE_TRAIN_RELEASE_LOOK:-10}"
 # in a new one: about 40 minutes for one network blip. The waits sum to 40
 # seconds, so a blip passes and a real outage still stops the tick quickly.
 MERGE_RETRY_WAITS="${MERGE_TRAIN_MERGE_RETRY_WAITS:-10 30}"
+# THE OPEN PULL REQUEST LIST (list_open_prs). One `gh pr list` of every open
+# pull request with its body and check rollup took 10.6 s and returned 1.4 MB
+# at 64 open (3,144 rollup entries) on 6 November 2026, at GitHub's 10-second
+# GraphQL limit: from 12:45Z four ticks in a row died on a 504, an i/o timeout
+# or an empty reply, and with no tick to start the next one the train stood
+# still for 75 minutes. So the list reads only the light fields of every open
+# pull request (1.5 s), and the two heavy ones, the body and the rollup, one
+# pull request at a time and only for those a tick acts on: a `ready` one and a
+# train. Every read is retried like a merge (gh_read, MERGE_RETRY_WAITS).
+PR_LIGHT_FIELDS="number,title,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository,mergeable,labels"
+PR_HEAVY_FIELDS="body,statusCheckRollup"
+# Six single reads at once: each takes about a second, so forty `ready` pull
+# requests are read in about seven.
+PR_READS_AT_ONCE="${MERGE_TRAIN_PR_READS_AT_ONCE:-6}"
 
 # The header, up to the first line that is not a comment: a hand-kept line
 # range drifts every time the header grows.
@@ -646,10 +663,78 @@ required_contexts() {
   [[ -s "${out}" ]] || die "main has no required status checks: a train could never be judged green"
 }
 
+gh_read() {
+  # Runs the GitHub read "$3..." (one that is safe to repeat) into file $2,
+  # and runs it again after each wait in MERGE_RETRY_WAITS while it fails
+  # transiently (merge_failure_transient, or gh's "unexpected end of JSON
+  # input" for an empty reply) or exits 0 with something that is not JSON.
+  # $1 names the read in its messages. Returns 1, the reason on stderr, when
+  # it was refused or every attempt failed.
+  local what="$1" out="$2" err="$2.err" attempt=1 wait why
+  shift 2
+  # shellcheck disable=SC2086 # MERGE_RETRY_WAITS is a list of numbers.
+  for wait in ${MERGE_RETRY_WAITS} last; do
+    if "$@" >"${out}" 2>"${err}" </dev/null; then
+      jq -e . "${out}" >/dev/null 2>&1 && return 0
+      printf 'the reply was not JSON\n' >"${err}"
+    elif ! merge_failure_transient "${err}" && ! grep -q 'unexpected end of JSON input' "${err}"; then
+      break
+    fi
+    why="$(head -c 300 "${err}" | tr '\n' ' ')"
+    [[ "${wait}" != "last" ]] || break
+    echo "::warning::reading ${what} failed transiently (attempt ${attempt}): ${why}; retrying in ${wait}s" >&2
+    sleep "${wait}"
+    attempt=$((attempt + 1))
+  done
+  echo "::error::reading ${what} failed (attempt ${attempt}): $(head -c 300 "${err}" | tr '\n' ' ')" >&2
+  return 1
+}
+
 list_open_prs() {
-  gh pr list --repo "${GH_REPO}" --state open --base main --limit 200 \
-    --json number,title,body,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository,mergeable,labels,statusCheckRollup \
-    >"$1"
+  # The open pull requests aimed at main, into file $1 as one JSON array:
+  # each with PR_LIGHT_FIELDS, and a `ready` one or a train with
+  # PR_HEAVY_FIELDS too, read on its own (THE OPEN PULL REQUEST LIST above).
+  # Every other one carries an empty body and rollup, which nothing reads. A
+  # `ready` one whose own read fails is left out of this tick's list (it
+  # boards on a later tick, and is told nothing on a rollup it does not
+  # have); a train's must be read, or the tick fails.
+  local out="$1" dir="$1.reads" n running=0
+  rm -rf "${dir}"
+  mkdir -p "${dir}/full"
+  gh_read "the open pull request list" "${dir}/list.json" \
+    gh pr list --repo "${GH_REPO}" --state open --base main --limit 200 --json "${PR_LIGHT_FIELDS}" \
+    || die "could not read the open pull requests"
+  jq -r --arg prefix "${TRAIN_PREFIX}" '
+    .[] | select(any(.labels[]?; .name == "ready") or (.headRefName | startswith($prefix))) | .number
+  ' "${dir}/list.json" >"${dir}/heavy.txt"
+  while read -r n; do
+    { gh_read "pull request #${n}" "${dir}/${n}.json" \
+        gh pr view "${n}" --repo "${GH_REPO}" --json "${PR_LIGHT_FIELDS},${PR_HEAVY_FIELDS}" \
+        && mv "${dir}/${n}.json" "${dir}/full/${n}.json"; } &
+    running=$((running + 1))
+    if [[ "${running}" -ge "${PR_READS_AT_ONCE}" ]]; then
+      wait
+      running=0
+    fi
+  done <"${dir}/heavy.txt"
+  wait
+  while read -r n; do
+    [[ ! -f "${dir}/full/${n}.json" ]] || continue
+    if jq -e --argjson n "${n}" --arg prefix "${TRAIN_PREFIX}" \
+      'any(.[]; .number == $n and (.headRefName | startswith($prefix)))' "${dir}/list.json" >/dev/null; then
+      die "could not read train #${n}"
+    fi
+    info "#${n} sits this tick out: reading it failed"
+  done <"${dir}/heavy.txt"
+  find "${dir}/full" -name '*.json' -exec cat {} + | jq -s . >"${dir}/full.json"
+  jq --slurpfile full "${dir}/full.json" --arg prefix "${TRAIN_PREFIX}" '
+    ($full[0] | map({key: (.number | tostring), value: .}) | from_entries) as $read
+    | [ .[]
+        | if $read[(.number | tostring)] then $read[(.number | tostring)]
+          elif any(.labels[]?; .name == "ready") or (.headRefName | startswith($prefix)) then empty
+          else . + {body: "", statusCheckRollup: []}
+          end ]
+  ' "${dir}/list.json" >"${out}"
 }
 
 finish_train() {
@@ -1298,6 +1383,22 @@ cmd_tell() {
   tell_skipped "${prs}"
 }
 
+cmd_list_prs() {
+  # The tick's open pull request list alone (list_open_prs), into --out.
+  local out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out) [[ $# -ge 2 ]] || die "--out needs a value"; out="$2"; shift 2 ;;
+      *) die "list-prs: unknown argument: $1" ;;
+    esac
+  done
+  [[ -n "${out}" ]] || die "list-prs: no --out file"
+  : "${GH_REPO:?GH_REPO is required}"
+  retry_knobs_valid
+  is_number "${PR_READS_AT_ONCE}" || die "MERGE_TRAIN_PR_READS_AT_ONCE is not a positive number: ${PR_READS_AT_ONCE}"
+  list_open_prs "${out}"
+}
+
 cmd_hold() {
   # The deploy-starvation hold alone, for one green train (deploy_hold):
   # prints `hold\t<why>` or `merge\t<why>`. Needs GH_REPO, GH_TOKEN (reads,
@@ -1379,6 +1480,7 @@ cmd_tick() {
   is_number "${MAX_AGE_MINUTES}" || die "MERGE_TRAIN_MAX_AGE_MINUTES is not a positive number: ${MAX_AGE_MINUTES}"
   hold_knobs_valid
   retry_knobs_valid
+  is_number "${PR_READS_AT_ONCE}" || die "MERGE_TRAIN_PR_READS_AT_ONCE is not a positive number: ${PR_READS_AT_ONCE}"
   WORK="$(mktemp -d)"
   trap 'rm -rf "${WORK}"' EXIT
 
@@ -1449,6 +1551,7 @@ main() {
     select) cmd_select "$@" ;;
     skips) cmd_skips "$@" ;;
     tell) cmd_tell "$@" ;;
+    list-prs) cmd_list_prs "$@" ;;
     hold) cmd_hold "$@" ;;
     land) cmd_land "$@" ;;
     judge) cmd_judge "$@" ;;
