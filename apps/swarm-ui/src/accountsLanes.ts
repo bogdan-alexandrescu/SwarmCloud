@@ -395,7 +395,8 @@ export function holdDeadlineOf(
   now: number,
 ): { at: number; reason: null } | { at: null; reason: string } {
   if (!('latest_hold_deadline' in a) || a.latest_hold_deadline === undefined)
-    return { at: null, reason: 'not served by this broker' }
+    // PLAIN WORDS (QA2-FIX-14, capacity-21): `not served by this broker`.
+    return { at: null, reason: 'not reported' }
   if (a.latest_hold_deadline === null) return { at: null, reason: 'the broker read no live hold' }
   const at = Date.parse(a.latest_hold_deadline)
   if (!Number.isFinite(at)) return { at: null, reason: 'not an instant the broker served' }

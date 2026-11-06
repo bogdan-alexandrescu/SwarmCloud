@@ -139,6 +139,12 @@ NOT_SWITCHABLE_CODES = frozenset({
     "grant_removed",
     "grant_read_only",
     "credential_unavailable",
+    # The broker's answer for a service submission's run when no installation
+    # token is minted (DAYONE-SERVICE-APP-TOKEN, part of #2688). A credential
+    # route, so never switchable, and there is nothing to continue past to:
+    # report-only would release no token at all. It refuses nobody -- the
+    # worker reads it as "keep the slot", today's service rule.
+    "app_installation_unavailable",
     # The child route's check of its parent's signature (#1041, the security
     # review of PR 1070, 2026-10-18). On an EXISTING route, and still not a
     # switch: a credential route is never switchable, and continuing past it
@@ -504,6 +510,22 @@ NOT_SWITCHABLE_CODES = frozenset({
     "join_requests_daily_limit",
     "join_denied_recently",
     "join_workspace_queue_full",
+    # Admin › Setup's sign-in client (docs/design/day-one-plan.md §5.6, part
+    # of #2964): raised only by POST /v1/admin/setup/sign-in-client, which
+    # that change introduces, so no existing caller can be refused by it.
+    # Continuing past it is the breach itself: an id that is not a Desktop
+    # OAuth client's recorded as the one the installer writes into IAP's
+    # programmatic-clients list, with a secret version added beside it.
+    "client_id_invalid",
+    # Voice it's read-backs (docs/design/voice-it-own-speech.md §7, part of
+    # #2688): raised only by the /v1/voice/sessions/{id}/readbacks routes and
+    # the gate behind them, which that change introduces, so no existing
+    # caller can be refused by them. Continuing past either is the breach
+    # itself: a spoken cancel, merge, deploy, delete or approve run on a
+    # read-back that was never confirmed, was answered, superseded or expired,
+    # or was confirmed for another call or another session.
+    "readback_refused",
+    "readback_not_pending",
 })
 
 #: What the guard lets through without a switch.

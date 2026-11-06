@@ -74,8 +74,9 @@ def test_a_launch_of_a_template_literal_brief_writes_its_handle_byte_identical(_
     assert _ISSUE_TEXT in json.loads(target.read_bytes())["steps"][0]["prompt"]
     # MUTATION: a handle whose digest is not the embedded spec's fails here.
     assert handle["digest"] == workflows.spec_digest(spec)
-    # MUTATION: args that embed a different object from the handle's fail here.
-    assert reply["args"]["spec"] == spec
+    # MUTATION: args that embed the spec beside the handle fail here (#2875:
+    # a 90 KB spec made the reply too long to read).
+    assert "spec" not in reply["args"]
     assert reply["args"]["titled_copy"] == reply["script_path"]
 
 
@@ -83,7 +84,9 @@ def test_the_submit_row_is_handed_the_handle_and_no_spec_text(_launching, tmp_pa
     spec = _spec()
     reply = _launch(spec)
     handle = reply["args"]["spec_handle"]
-    got = _run(tmp_path, reply["args"], _answers(spec), script=Path(reply["script_path"]))
+    read = json.loads(server._call(None, "swarm_workflow_spec",
+                                   {"spec_handle": handle["path"], "spec_digest": handle["digest"]}))
+    got = _run(tmp_path, reply["args"], {**_answers(spec), "READ SPEC": read}, script=Path(reply["script_path"]))
     (submit,) = [c for c in got["calls"] if c["prompt"].startswith("SUBMIT")]
     lines = submit["prompt"].split("\n")
     # MUTATION: a Submit phase that still hands over the spec by value (BEGIN SPEC) fails here.
@@ -95,12 +98,13 @@ def test_the_submit_row_is_handed_the_handle_and_no_spec_text(_launching, tmp_pa
 
 
 def test_args_whose_embedded_spec_was_altered_still_submit_the_launch_bytes(_launching, tmp_path):
-    """The session retypes the args into the Workflow call. An altered copy
-    there shapes rows only: the submission is the handle's bytes, and the
-    run says the two differ."""
+    """Args from before #2875 embed the spec beside the handle, and the session
+    retyped them into the Workflow call. An altered copy there shapes rows
+    only: the submission is the handle's bytes, and the run says the two
+    differ."""
     spec = _spec()
     reply = _launch(spec)
-    args = json.loads(json.dumps(reply["args"]))
+    args = {**json.loads(json.dumps(reply["args"])), "spec": json.loads(json.dumps(spec))}
     args["spec"]["steps"][0]["prompt"] = args["spec"]["steps"][0]["prompt"].replace("${x}", "{x}")
     got = _run(tmp_path, args, _answers(spec), script=Path(reply["script_path"]))
     (submit,) = [c for c in got["calls"] if c["prompt"].startswith("SUBMIT")]

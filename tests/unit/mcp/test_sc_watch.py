@@ -161,6 +161,9 @@ class Api:
             assert query.get("order") == ["desc"]
             return {"task_id": task_id, "events": list(self.events_of.get(task_id, [])),
                     "next_page_token": None}
+        if route == check.OPEN_QUESTIONS_ROUTE:
+            # Owner questions (#2835): no finished task here asked any.
+            return {"tasks": [], "complete": True, "tenant_id": "eng"}
         if route.startswith("/v1/tasks/"):
             task_id = route.split("/")[3]
             found = self.details.get(task_id) or self.tasks.get(task_id) or next(

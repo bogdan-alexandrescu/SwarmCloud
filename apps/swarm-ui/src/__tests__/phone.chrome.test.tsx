@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import AGENTS_CSS from '../styles/agents.css?raw'
 import STYLES from '../styles.css?raw'
+import NEEDS_YOU_CSS from '../work/needs-you.css?raw'
 
 import { App } from '../App'
 import type { Result } from '../fetch'
@@ -103,7 +104,8 @@ async function shellAs(who: Me): Promise<HTMLElement> {
       {null}
     </SkyShell>,
   )
-  await waitFor(() => expect(container.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Phone'))
+  // The caller's own personal workspace, by its one name (admin-shell-21).
+  await waitFor(() => expect(container.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Your workspace'))
   return container
 }
 
@@ -241,9 +243,13 @@ describe('#139 at 390: the header row never widens the page', () => {
   it("cuts a long tenant name with an ellipsis, before the title gives way, and keeps the whole name as its title", async () => {
     // MUTATION: drop `min-width: 0` / `max-width` / `overflow: hidden` from
     // `.sk-pbar .sk-tn`, or let the menu, the mark or the env pill shrink.
+    // A GROUP workspace with a long key and name: the caller's own personal
+    // one is `Your workspace` whatever its document says (admin-shell-21), and
+    // the bar draws a group workspace by its key (VQ-001), whole in the title.
     const long = me(false)
-    const name = 'someone.with.a.rather.long.address' + '@' + 'example.com'
-    ;(long.tenant as { display_name: string }).display_name = name
+    const key = 'someone-with-a-rather-long-workspace-key'
+    const name = 'Someone with a rather long workspace name'
+    Object.assign(long.tenant as object, { tenant_id: key, kind: 'group', display_name: name })
     vi.stubEnv('VITE_LIVE', '1')
     vi.stubEnv('VITE_SWARM_ENV', 'dev')
     vi.resetModules()
@@ -258,7 +264,7 @@ describe('#139 at 390: the header row never widens the page', () => {
     )
     const tn = await waitFor(() => {
       const el = container.querySelector<HTMLElement>('.sk-pbar .sk-tn')
-      expect(el?.textContent).toBe(name)
+      expect(el?.textContent).toBe(key)
       return el!
     })
     expect(tn.getAttribute('title'), 'a cut name has no way to read it whole').toBe(name)
@@ -370,9 +376,16 @@ describe('#139 at 390: the compaction respects prefers-reduced-motion', () => {
 //
 // Everything above `.sk-app` is `body`'s `env(safe-area-inset-top)`, which is
 // 0 in a browser tab -- the 390x844 the issue measured.
+//
+// The Needs-you row's own sheet (work/needs-you.css) is in the cascade too:
+// without it the row was sized as bare blocks, its chips' wrap and its box
+// never counted. Only that one of src/work/*.css, as the spacing sweep does:
+// inspectorShell.css declares `--wi-height` on its own selector, which the
+// resolver cannot evaluate.
 const BUDGET_SHEETS = [
   ...Object.values(import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })),
   STYLES,
+  NEEDS_YOU_CSS,
 ].join('\n')
 /** The glyph allowance per character, in em. */
 const ADVANCE_EM = 0.6
@@ -414,21 +427,22 @@ function borderOf(el: Element, at: 'top' | 'bottom'): number {
   throw new Error(`${label(el)} ${w.property}: ${w.value} names no width`)
 }
 
-/** The inherited font size and line height, px. A `normal` line height throws. */
+/** The inherited font size and line height, px. A `normal` line height throws; `inherit` reads the parent's, as CSS does. */
 function fontOf(el: Element): { size: number; line: number } {
   let size: number | null = null
   let line: string | null = null
+  const inherits = (w: Declared | null): boolean => w !== null && w.value.trim() === 'inherit'
   for (let n: Element | null = el; n !== null && (size === null || line === null); n = n.parentElement) {
     if (size === null) {
       const w = won(n, ['font', 'font-size'])
-      if (w !== null) {
+      if (w !== null && !inherits(w)) {
         const m = w.property === 'font' ? /(\d+(?:\.\d+)?px)\s*(?:\/|\s)/.exec(w.value) : null
         size = len(w.property === 'font' ? (m?.[1] ?? 'none') : w.value, `${label(n)} ${w.property} size`)
       }
     }
     if (line === null) {
       const w = won(n, ['font', 'line-height'])
-      if (w !== null) line = w.property === 'font' ? (/\/\s*(\S+)/.exec(w.value)?.[1] ?? 'normal') : w.value.trim()
+      if (w !== null && !inherits(w)) line = w.property === 'font' ? (/\/\s*(\S+)/.exec(w.value)?.[1] ?? 'normal') : w.value.trim()
     }
   }
   if (size === null || line === null) throw new Error(`${label(el)} inherits no font size or line height`)
@@ -493,10 +507,13 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
 
   it('stacks less than half of an 844px screen above the first row, every block resolved to px and counted', async () => {
     // MUTATION: set `.sk-pbar`'s phone height back to the old header's 100px.
-    // The budget is 368.2px today (measured 2026-10-08); the 56px that adds
-    // takes it to 424.2, past the midpoint. The list toolbar, taken fully
-    // wrapped, is the largest block at 161.4px.
+    // The budget is 409.4px today (measured 2026-11-04, with the Needs-you
+    // row's 34px at rest); the 56px that adds takes it to 465.4, past the
+    // midpoint. The list toolbar, taken fully wrapped, is the largest block
+    // at 160px. MUTATION: drop needs-you.css's phone rest rule (595.8px), or
+    // let its `.ag-pickers` line wrap (461.4px).
     expect(BUDGET_SHEETS.includes(AGENTS_CSS), 'the Agents sheet is not in the cascade').toBe(true)
+    expect(BUDGET_SHEETS.includes(NEEDS_YOU_CSS), 'the Needs-you sheet is not in the cascade').toBe(true)
     const live = task({ id: 'task_phone139000000000000a', state: 'RUNNING', started_at: new Date().toISOString(), attempt_count: 1, max_attempts: 3 })
     const page = { status: 'ok', data: { tasks: [live], tenant_id: 'acme' }, fetchedAt: Date.now() } satisfies Result<TaskPage>
     // The agents read answers this test alone: a scoped mock and a fresh App,
@@ -550,10 +567,22 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // The header bar (#1206, proposal A) is drawn only inside an open object
     // since V178, so a list page stacks no band between the header and the
     // page head; a bar that came back would be counted here.
-    expect(above).toEqual(['.sk-skip', '.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ag-list-tabs', '.ctl-toolbar'])
-    // The row's margin, 7 ancestors' top edges (.rows, its list, .work, .app,
-    // .ctl-scroll, .sk-main, .sk-app) and the 7 boxes above, the skip link's 0px among them.
-    expect(blocks.length, 'the walk did not visit every block above the row').toBe(15)
+    // THE NEEDS-YOU ROW (`.ny`) STACKS ABOVE THE TABS ON PURPOSE (#3146): the
+    // owner's pick is "Graph with a docked inspector, plus the Attention
+    // inbox's row of what needs you", one line of counted chips on top of
+    // every Work screen, the phone included (needs-you.css has its phone
+    // rules). So it is counted here, and the budget below still has to hold:
+    // at rest on a phone it is one line (needs-you.css, on every Work
+    // screen since the owner's pick of 4 November 2026), and the profile and
+    // owner filters share one.
+    expect(above).toEqual(['.sk-skip', '.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ny', '.ag-list-tabs', '.ctl-toolbar'])
+    // The row's margin, 9 ancestors' top edges (.rows, the list's own body,
+    // body, .wi-main, .wi, .work, .app, .ctl-scroll, .sk-main, .sk-app) and
+    // the 8 boxes above, the skip link's 0px among them.
+    expect(blocks.length, 'the walk did not visit every block above the row').toBe(18)
+    for (const what of ['section.ny', 'div.ctl-toolbar.ag-list-head']) {
+      expect(blocks.find((b) => b.what === what)?.px ?? 0, `${what} counted as nothing`).toBeGreaterThan(0)
+    }
     for (const b of blocks) expect(Number.isFinite(b.px) && b.px >= 0, `${b.what} came to ${b.px}`).toBe(true)
     // The ones that carry the budget must have come to something.
     for (const what of ['header.sk-pbar', 'div.c-phead', 'div.ag-list-tabs']) {

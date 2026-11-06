@@ -114,8 +114,10 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     // MUTATION: draw the workflow link anywhere but beside 'Agents · FAILED →'.
     expect(acts).not.toBeNull()
     expect(within(acts as HTMLElement).getAllByRole('link').map((a) => a.getAttribute('href'))).toEqual([`/workflows/${WF_A}`, FAILED_LIST])
-    // MUTATION: drop the arrow, so it no longer reads as a way out of the card.
-    expect(text(wf)).toBe(`Workflow ${WF_A} →`)
+    // A BUTTON, NOT AN ARROW LINK (BGD's standing rule, 2026-11-05).
+    // MUTATION: put the arrow back, or draw the link without the theme's button class.
+    expect(text(wf)).toBe(`Workflow ${WF_A}`)
+    expect(wf.classList.contains('c-btn')).toBe(true)
   })
 
   it('names each link by where it goes', () => {
@@ -138,9 +140,9 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     const acts = container.querySelector('.ov-att-acts')!
     // MUTATION: link only the first workflow from the links column.
     expect(within(acts as HTMLElement).getAllByRole('link').map((a) => text(a))).toEqual([
-      `Workflow ${WF_A} →`,
-      `Workflow ${WF_B} →`,
-      'Agents · failed →',
+      `Workflow ${WF_A}`,
+      `Workflow ${WF_B}`,
+      'Agents · failed',
     ])
   })
 
@@ -148,11 +150,12 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     const { container } = render(<CheckCard problem={failuresProblem(ONE)} />)
     const wf = container.querySelector(`.ov-att-acts a[href="/workflows/${WF_A}"]`)!
     const list = container.querySelector(`.ov-att-acts a[href="${FAILED_LIST}"]`)!
-    // Drawn by the list link's own rule (`.ov-att-go`: its accent, its size,
-    // its arrow). The resolver cannot evaluate `color` over the whole sheet,
+    // Drawn by the list link's own rule (`.ov-att-go`) and the theme's button
+    // (`.c-btn`) since 2026-11-05. The resolver cannot evaluate `color` over the whole sheet,
     // so the shared class is what holds 'alike' here.
     // MUTATION: draw the workflow link with a class of its own only, in the sentence's dim ink.
     expect(wf.classList.contains('ov-att-go')).toBe(true)
+    expect(wf.classList.contains('c-btn') && list.classList.contains('c-btn')).toBe(true)
     expect(painted(wf, 'white-space', WIDE)).toBe(painted(list, 'white-space', WIDE))
     // THE WORKFLOW'S LINK COVERS THE CARD (BGD's decision of 2026-10-23,
     // #1680 box 6343766999): a click on the card's empty space opens the
@@ -171,8 +174,8 @@ describe('5b:wg-dark-D1: the failed-agents card reaches the failed workflow as p
     // MUTATION: let the column shrink, so the links wrap under each other's words.
     expect(painted(acts(container), 'flex-shrink', WIDE)).toBe('0')
     // ON A PHONE THE CARD IS ONE LINE (visual QA VQ-002, 2026-10-26): the
-    // cover's link stays, its words stepped aside visually and its arrow at
-    // the right edge, so a tap anywhere still opens the failed workflow; the
+    // cover's link stays, its words stepped aside visually and its button
+    // chrome dropped (2026-11-05: no arrow is left to draw), so a tap anywhere still opens the failed workflow; the
     // other links are the desktop's.
     // MUTATION: hide the cover's link on a phone, so a tap on the card opens nothing.
     expect(painted(wf, 'display', PHONE)).not.toBe('none')
@@ -222,7 +225,10 @@ describe('5b:QA-014: the decided counts’ range says “now” only for a read 
 
     it('prints the canned Sep 25 read’s end, not now, in the summary', async () => {
       const d = ledgerFixture()
-      render(<TimelineLanesScreen view={null} onView={() => {}} />)
+      // Lanes zoomed to the read's own window: since QA2-FIX-05 (runs2-04) a
+      // read over another window than the lanes' prints no range of its own.
+      const q = new URLSearchParams({ since: new Date(d.since).toISOString(), until: new Date(d.until).toISOString() }).toString()
+      render(<TimelineLanesScreen view={q} onView={() => {}} />)
       const range = await waitFor(() => {
         const el = document.querySelector('.tl-strip-range')
         expect(el).not.toBeNull()

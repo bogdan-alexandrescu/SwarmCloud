@@ -11,26 +11,26 @@ interface ImportMetaEnv {
    */
   readonly VITE_LIVE?: string
   /**
-   * WHICH ENVIRONMENT THIS BUNDLE WAS BUILT FOR. Read by Brand.tsx, and one
-   * of the two things allowed to make the product header say `PROD` or `Dev`.
-   * The other is the API's own declared environment (`/v1/tenants/me`), which
-   * outranks this when it arrives, because it is what the requests reach.
+   * WHICH ENVIRONMENT A DEVELOPER'S OWN BUILD IS FOR, and nothing more. Read
+   * by Brand.tsx (through Spine.tsx) as the third of four sources, below the
+   * API's declared environment (`/v1/tenants/me`) and below the deployment's
+   * `/config.json` (runtimeConfig.ts):
    *
-   *   VITE_SWARM_ENV=dev npm run build
+   *   VITE_SWARM_ENV=dev npm run dev
    *
-   * DECLARED, NEVER INFERRED. Left unset, the header says ENVIRONMENT UNKNOWN
-   * and treats the tab as production -- loudly -- rather than guessing from
-   * the hostname. A hostname table in the app would be a copy of
-   * terraform/environments/<env>/<env>.tfvars kept in a file nothing checks
-   * against it, and a stale copy of it is exactly the "this says dev while
-   * pointed at prod" failure the badge exists to prevent.
+   * THE IMAGE NO LONGER COMPILES IT (DAYONE-UIENV-1). Vite inlines
+   * `import.meta.env.VITE_*` when the bundle is built, so a value set here is
+   * the build machine's, and a release builds one bundle for every
+   * deployment. images/swarm-ui/Dockerfile declares no such ARG; the running
+   * container writes `/config.json` from its ENVIRONMENT variable instead, and
+   * src/__tests__/runtimeConfig.test.ts holds both ends.
    *
-   * THE DEPLOYED BUILD PASSES IT. scripts/build-images.sh (`generate_config`)
-   * gives the swarm-ui image `--build-arg VITE_SWARM_ENV=${ENVIRONMENT}`, and
-   * images/swarm-ui/Dockerfile turns that ARG into an ENV before `npm run
-   * build`; tests/unit/scripts/test_ui_build_declares_its_environment.py holds
-   * both ends. A local `npm run build` with nothing set still says ENVIRONMENT
-   * UNKNOWN, which is the point: nothing here infers it.
+   * DECLARED, NEVER INFERRED. With none of the four set, the header says
+   * ENVIRONMENT UNKNOWN and treats the tab as production -- loudly -- rather
+   * than guessing from the hostname. A hostname table in the app would be a
+   * copy of terraform/environments/<env>/<env>.tfvars kept in a file nothing
+   * checks against it, and a stale copy of it is exactly the "this says dev
+   * while pointed at prod" failure the badge exists to prevent.
    */
   readonly VITE_SWARM_ENV?: string
 }

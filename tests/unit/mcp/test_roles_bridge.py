@@ -421,6 +421,6 @@ def test_the_elicitation_route_and_every_read_tool_send_no_role_write():
 def test_the_surfaces_grant_the_roster_read_and_never_a_role_change(relative):
     text = (_REPO / relative).read_text(encoding="utf-8")
     front = text.split("---", 2)[1]
-    assert "Bash(uv run sc roles)" in front and "Bash(uv run sc roles list:*)" in front, relative
+    assert "Bash(sc roles)" in front and "Bash(sc roles list:*)" in front, relative
     assert not re.search(r"Bash\([^)]*roles(:\*| \*|\s+(set|clear|default))", front), relative
     assert "sc roles set" in text, f"{relative} does not tell the person how to change a role"

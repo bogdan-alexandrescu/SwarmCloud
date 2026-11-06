@@ -185,8 +185,12 @@
    `resul…` -- the one line a reader opened the card to compare with the
    error. Here the strip wraps: the line takes its own row when it has less
    than 12em beside its label, and breaks anywhere rather than running out. */
+/* AND IT TAKES ITS OWN ROW, LEFT-ALIGNED (QA2 ovag2-16): beside its label
+   and `Open logs ›` it was wrapped into a narrow centre column. The label and
+   the link share the first row; the line runs the card's width under them. */
 .dt-fail > .ag-loglast { flex-wrap: wrap; padding-block: 6px; }
-.dt-fail > .ag-loglast > .ag-loglast-line { flex: 1 1 12em; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.dt-fail > .ag-loglast > .ag-loglast-open { order: 1; margin-left: auto; }
+.dt-fail > .ag-loglast > .ag-loglast-line { order: 2; flex: 1 0 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 /* The leading Outcome card keeps the code panel's own blocks flush. */
 .dt-card.run-output > .section,
 .dt-card.run-output > .git-outcome { margin: 0; }
@@ -287,8 +291,13 @@
      there to reconcile the tile with the head's `4 vCPU`. AND PEAK MEMORY'S
      AND COST'S (#1680 comments 6343769495, 6343792637): two lines cut
      `worst 7.20 GiB, attempt…` and `cost 1 of 3 reported · last…` at 1440,
-     so those tiles are `whole` too (`DtStrip`). */
-  .dt-sc.is-whole > .dt-sc-s {
+     so those tiles are `whole` too (`DtStrip`). AND THE RAN TILE'S
+     START → END (TZ-CLOCKTIME, part of #2391): each time carries its zone
+     label, `Oct 19 04:40 PDT → Oct 19 04:47 PDT` needs three lines here, and
+     two cut it to `→ Oct 19 04:47…`. It is the one sub-line whose span is
+     titled `started … · ended …` (`DtStrip`). */
+  .dt-sc.is-whole > .dt-sc-s,
+  .dt-sc-s:has(> span[title*=' · ended ']) {
     display: block;
     -webkit-line-clamp: none;
     line-clamp: none;

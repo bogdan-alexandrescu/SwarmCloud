@@ -193,6 +193,7 @@ module "gke_autopilot" {
   # shows up in a diff rather than as an edit to the rule that guards prod.
   allow_open_master_authorized_network = var.gke_allow_open_master_authorized_network
   deletion_protection                  = var.deletion_protection
+  enable_fqdn_network_policy           = var.gke_enable_fqdn_network_policy
 
   labels = local.labels
 
@@ -290,7 +291,10 @@ module "secret_manager" {
   # The SwarmCloud GitHub App's client secret and private key (#780, OB2):
   # two empty platform slots swarm-api alone reads. github_app.tf says why
   # the user slots' grants are not made here.
-  github_app_secrets_enabled = var.enable_github_app
+  # The App's two secret containers exist under enable_console_app_setup alone
+  # too, so the console's App step has somewhere to store the manifest
+  # exchange's results before any App switch is on (DAYONE-TF-2).
+  github_app_secrets_enabled = var.enable_github_app || var.enable_console_app_setup
   github_app_secret_readers  = [module.iam.service_account_members["swarm-api"]]
 
   labels = local.labels
@@ -306,7 +310,25 @@ data "google_project" "this" {
   project_id = var.project_id
 }
 
-module "cloud_run" {
+# swarm-api ROLLS FIRST (owner's pick, 2026-11-02, #3041). Its own call of the
+# module, and module.cloud_run below `depends_on` it, so one apply of the one
+# reviewed plan brings swarm-api's new revision to Ready before it touches the
+# scheduler, whose WORKER_IMAGE_REFS picks the image of every new dispatch.
+# Without the order the two rolled in parallel (one for_each), and a release
+# that added a state route and its first worker call in one commit could
+# dispatch a new worker that called the route before the serving swarm-api
+# revision had it. The worker's bare-404 retry (agent_worker/statecall.py)
+# still covers a revision's rollout; this removes the window it was the only
+# cover for.
+#
+# Its run.invoker grants are NOT here: they stay in module.cloud_run's
+# `invokers_elsewhere`, at the addresses they always had (the cloud_run
+# module's variables.tf says why). moved.tf moves the service itself.
+#
+# Nothing this call reads comes from module.cloud_run (its environment takes
+# the computed URLs, below), so the ordering is not a cycle. swarm-api's own
+# outputs are read from here: module.cloud_run_api.service_urls["swarm-api"].
+module "cloud_run_api" {
   source = "../modules/cloud_run"
 
   project_id = var.project_id
@@ -381,36 +403,61 @@ module "cloud_run" {
       # told this service's URL-shaped API_AUDIENCE without a cycle. Accepted
       # in addition to the URL; people's clients are unaffected.
       custom_audiences = [local.push_audiences["swarm-api"]]
-      # THE IAP SERVICE AGENT, EXPLICITLY.
-      #
-      # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
-      # answers every request with "The IAP service account is not provisioned"
-      # -- a 500-class failure that looks like the app being broken rather than
-      # a missing grant.
-      #
-      # Not left to `allUsers`, which currently holds run.invoker and would
-      # cover it by accident. That grant exists for a different reason (Cloud
-      # Run's edge IAM consumes the Authorization header, destroying the only
-      # credential that identifies a tenant), and the day it is tightened IAP
-      # would break for a reason nobody would connect to it.
-      #
-      # The AGENT ITSELF is not created here: it is a Google-managed identity
-      # and `google_project_service_identity` lives only in the google-beta
-      # provider, which this repository does not carry for one resource. It is a
-      # once-per-project command, documented in modules/frontend/main.tf beside
-      # the OAuth brand:
-      #
-      #   gcloud beta services identity create \
-      #     --service=iap.googleapis.com --project=<project>
-      #
-      # And each tenant's WORKER, once child tasks are on: the worker-only
-      # child routes are the one thing a worker calls here (child_tasks.tf).
-      invokers = merge(
-        { for member in var.api_invokers : member => member },
-        { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
-        local.child_route_invokers,
-      )
+      # Granted by module.cloud_run's invokers_elsewhere, below.
+      invokers = {}
     }
+  }
+
+  labels = local.labels
+
+  depends_on = [module.project_services]
+}
+
+module "cloud_run" {
+  source = "../modules/cloud_run"
+
+  project_id = var.project_id
+  region     = var.region
+
+  network    = module.network.network_id
+  subnetwork = module.network.subnetwork_id
+
+  deletion_protection = var.deletion_protection
+
+  # swarm-api's run.invoker grants, on the service module.cloud_run_api
+  # creates. THE IAP SERVICE AGENT, EXPLICITLY.
+  #
+  # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
+  # answers every request with "The IAP service account is not provisioned"
+  # -- a 500-class failure that looks like the app being broken rather than
+  # a missing grant.
+  #
+  # Not left to `allUsers`, which currently holds run.invoker and would
+  # cover it by accident. That grant exists for a different reason (Cloud
+  # Run's edge IAM consumes the Authorization header, destroying the only
+  # credential that identifies a tenant), and the day it is tightened IAP
+  # would break for a reason nobody would connect to it.
+  #
+  # The AGENT ITSELF is not created here: it is a Google-managed identity
+  # and `google_project_service_identity` lives only in the google-beta
+  # provider, which this repository does not carry for one resource. It is a
+  # once-per-project command, documented in modules/frontend/main.tf beside
+  # the OAuth brand:
+  #
+  #   gcloud beta services identity create \
+  #     --service=iap.googleapis.com --project=<project>
+  #
+  # And each tenant's WORKER, once child tasks are on: the worker-only
+  # child routes are the one thing a worker calls here (child_tasks.tf).
+  invokers_elsewhere = {
+    "swarm-api" = merge(
+      { for member in var.api_invokers : member => member },
+      { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+      local.child_route_invokers,
+    )
+  }
+
+  services = {
     "swarm-scheduler" = {
       service_account_email = module.iam.service_account_emails["swarm-scheduler"]
       image                 = local.image["swarm-scheduler"]
@@ -505,7 +552,9 @@ module "cloud_run" {
 
   labels = local.labels
 
-  depends_on = [module.project_services]
+  # module.cloud_run_api first: swarm-api's revision is Ready before the
+  # scheduler's rolls (#3041).
+  depends_on = [module.project_services, module.cloud_run_api]
 }
 
 module "cloud_run_jobs" {
@@ -567,7 +616,7 @@ module "scheduler" {
   # `pr_stranded` (redrive false; the monitoring module alerts on it). The
   # issue sweeper's job was deleted on 2026-10-12: the tenant's `issue-sweep`
   # schedule replaced it (modules/scheduler/jobs.tf).
-  api_endpoint      = module.cloud_run.service_urls["swarm-api"]
+  api_endpoint      = module.cloud_run_api.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 
   # D2 (#780, OB2): swarm-forge-refresh, the GitHub user-token refresh sweep,
@@ -655,7 +704,7 @@ resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
   location = var.region
   # `service_names` is a sorted list; take the name from the map-shaped output,
   # as verify_invokes_api does.
-  name   = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  name   = [for k, _ in module.cloud_run_api.service_ids : k if k == "swarm-api"][0]
   role   = "roles/run.invoker"
   member = "serviceAccount:${module.scheduler.rollup_sweeper_email}"
 }
@@ -670,7 +719,7 @@ resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
 resource "google_cloud_run_v2_service_iam_member" "schedule_tick_invokes_api" {
   project  = var.project_id
   location = var.region
-  name     = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  name     = [for k, _ in module.cloud_run_api.service_ids : k if k == "swarm-api"][0]
   role     = "roles/run.invoker"
   member   = "serviceAccount:${module.scheduler.schedule_tick_email}"
 }
@@ -693,9 +742,20 @@ module "frontend" {
   ui_service_name = "swarm-ui"
   hostname        = var.frontend_hostname
 
+  # The unauthenticated /.well-known/swarmcloud backend (discovery.tf); "" when
+  # swarm-discovery is not deployed, which makes no backend and no path rule.
+  discovery_service_name = local.discovery_on ? local.discovery_name : ""
+
   labels = local.labels
 
-  depends_on = [module.project_services, module.cloud_run]
+  # NOT module.cloud_run. Nothing here reads a Cloud Run output: the services
+  # are named by string, and a serverless NEG names its service rather than
+  # needing it to exist. swarm-api's environment reads this module's
+  # iap_audiences (locals.tf IAP_AUDIENCES), so waiting for module.cloud_run
+  # was the cycle that made the audiences a value copied by hand out of
+  # `terraform output` and back into tfvars (docs/design/day-one-install.md
+  # §5.2).
+  depends_on = [module.project_services]
 }
 
 module "monitoring" {
@@ -725,41 +785,49 @@ module "monitoring" {
   # The declared tenants, whose forge slots the workspace job must never bind.
   tenant_ids = local.tenant_ids
 
+  # Release acceptance's tenant and swarm-verify's own: the declared tenant
+  # whose principal is the verify account. Read from var.tenants, which holds
+  # the id swarm_common.identity derived, rather than restating that rule here
+  # or naming one deployment's id (DAYONE-TF-1, plan R9). The account's address
+  # is built from its id, not read off google_service_account.verify, so it is
+  # known at plan on a fresh project too.
+  fencing_alert_excluded_tenants = concat(["smoke"], sort([
+    for t, v in var.tenants : t
+    if lower(v.principal) == "${module.service_account_ids.verify_id}@${var.project_id}.iam.gserviceaccount.com"
+  ]))
+
   labels = local.labels
 
   depends_on = [module.project_services]
 }
 
 # ---------------------------------------------------------------------------
-# The account pool is wired, or terraform says so
+# The account pool's and the child routes' addresses, computed
 # ---------------------------------------------------------------------------
 #
-# The failure this exists to prevent is completely silent at runtime. With
-# QUOTA_BROKER_URL unset on the scheduler, `WorkerConfig.quota_broker_url` is
-# None, `Worker.__init__` builds no AccountBroker, and `_lease_account` returns
-# None on its first branch for every task -- so every agent runs on the one
-# shared per-tenant subscription, which is the exact contention the pool was
-# built to remove. Nothing fails. Nothing logs. The pool's own listing shows a
-# healthy, idle set of accounts, because it is idle.
+# The scheduler hands QUOTA_BROKER_URL and SWARM_API_URL to every worker it
+# dispatches, and swarm-api proxies the account pool to the broker. Those
+# environments are INPUTS to module.cloud_run, and a service's `uri` is an
+# OUTPUT of it, so reading the uri there is a cycle terraform refuses to plan.
+# Until DAYONE-TF-1 the way round was a hand copy: apply, read `terraform
+# output`, paste into tfvars, apply again, with a `check` per value to catch a
+# stale paste.
 #
-# A `check` and not a `precondition`, deliberately: on a fresh project the
-# broker does not exist yet, so the value cannot be known on the first apply
-# and a hard failure would make the configuration unbootstrappable. A check
-# reports on every plan and apply without blocking either, which is the right
-# shape for "apply once, read the output, put it in tfvars" -- the same
-# two-step frontend_iap_audiences already uses.
+# Cloud Run also serves every service at a DETERMINISTIC URL,
+# https://<service>-<project number>.<region>.run.app
+# (https://cloud.google.com/run/docs/triggering/https-request), and the
+# project number is read here already (data.google_project.this). So both are
+# built, and the copy, the second pass and the two checks are gone
+# (docs/design/day-one-install.md §5.2).
 #
-# ONLY THE MISMATCH IS ASSERTED HERE, and the emptiness is not, which is not an
-# oversight. `terraform test` treats a failed check as a failed run, and the
-# suite in tests/terraform plans this root with no tfvars at all -- so an
-# assertion that the variable is set would fail every one of those runs for a
-# value they have no reason to supply. The "this deployment is silently inert"
-# alarm therefore lives where it can tell the difference between "no pool" and
-# "a pool nobody is using": the broker's own sweep warns when accounts are
-# registered and nothing has ever been assigned from them.
-check "quota_broker_url_is_wired" {
-  assert {
-    condition     = var.quota_broker_url == "" || var.quota_broker_url == module.cloud_run.service_urls["swarm-quota-broker"]
-    error_message = "quota_broker_url does not match the deployed swarm-quota-broker URL. A stale value is worse than an empty one: a request to it is refused rather than unanswered, and a worker that is refused PARKS every task rather than falling back. Run `terraform output quota_broker_url` and update tfvars."
-  }
+# Audiences do not move with this: every token minted for these services
+# names a custom audience (local.push_audiences), never the URL.
+#
+# To be proven in P3 on the throwaway project of D22 (the design's own words):
+# that the existing smoke reaches both services at this address, internal
+# ingress included. The fallback is the design's: the engine reads
+# `terraform output quota_broker_url` after pass 1 and writes it for pass 2.
+locals {
+  quota_broker_url = "https://swarm-quota-broker-${data.google_project.this.number}.${var.region}.run.app"
+  swarm_api_url    = "https://swarm-api-${data.google_project.this.number}.${var.region}.run.app"
 }

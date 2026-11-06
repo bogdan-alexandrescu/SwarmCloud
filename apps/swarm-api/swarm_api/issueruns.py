@@ -187,12 +187,15 @@ import binascii
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Any, Callable, Literal, Mapping
+from urllib.parse import quote, urlencode
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -207,14 +210,21 @@ from swarm_common.models import utcnow
 
 from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .redaction import redact_detail
-from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import (
+    DESCRIPTION_MAX_CHARS,
+    FEATURE_TITLE_MAX_CHARS,
+    TaskCreate,
+    WorkflowCreate,
+    WorkflowStepCreate,
+)
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import sessiontag
+from . import sessiontag, workcontract
 from .specsigning import SpecSigningUnavailable
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
+    ISSUE_RUN_METADATA_KEY,
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
@@ -226,6 +236,7 @@ from .validation import (
     RUNTIME_POLICY_PROFILES,
     IssueRef,
     StepSpec,
+    issue_run_mark_allowed,
     rereview_step_for,
 )
 
@@ -269,9 +280,12 @@ REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
 REQUIREMENTS_CHECK_STEP = "requirements-check"
 #: The cheap class: confirming a list against a diff needs no Opus.
 REQUIREMENTS_CHECK_MODEL_CLASS = "sonnet"
-#: Its cap. No profile field caps turns (a contract request on the pull
-#: request that built this); the step's own timeout is the cap it has.
+#: Its time cap.
 REQUIREMENTS_CHECK_TIMEOUT_SECONDS = 900
+#: Its turn cap, a field of the step (contract request 133, accepted by the
+#: owner 2 November 2026): the claude-code runner passes it as
+#: `--max-turns`, so the agent stops at it instead of being asked to.
+REQUIREMENTS_CHECK_MAX_TURNS = 30
 def _check_class(class_models: Mapping[str, str] | None) -> dict[str, Any]:
     """`{"model_class": "sonnet"}` where this deployment pins it, else nothing.
 
@@ -306,6 +320,7 @@ def _requirements_check(
         "runner_profile": STEP_PROFILE,
         **_check_class(class_models),
         "timeout_seconds": REQUIREMENTS_CHECK_TIMEOUT_SECONDS,
+        "max_turns": REQUIREMENTS_CHECK_MAX_TURNS,
         # Read-only: it changes nothing, and no integrator merges it.
         "allow_empty_diff": True,
         "metadata": metadata,
@@ -318,7 +333,7 @@ def _requirements_check(
                 f"Confirm, for GitHub issue {ref.short}, whether the change on this branch "
                 "delivers each requirement of the approved plan. This is a requirements "
                 "check, not a review: do not judge the code, do not write a verdict, do not "
-                "edit, commit or push anything, and use at most 30 turns. Read the issue "
+                "edit, commit or push anything. Read the issue "
                 f"file and the diff ({staged}; the whole change is this branch against the "
                 "default branch).\n\n"
                 "The issue's requirements, as the approved plan lists them:\n"
@@ -383,6 +398,14 @@ FIX_STEP = "fix"
 #: latest verdict from it and submission recognises it.
 REREVIEW_STEP = REREVIEW_STEP_ID
 IMPLEMENT_PREFIX = "impl-"
+#: The optional security review (`IssueRun.security_review`, owner decision
+#: 2026-11-04, docs/design/security-review-step.md): its step id -- ending in
+#: `review`, so the worker holds it to a `verdict.json` -- and the catalogue
+#: plugin its signed work contract loads, unattended, with its one skill. A
+#: plan step never takes the id: implementers are `impl-<id>`.
+SECURITY_REVIEW_STEP = "security-review"
+SECURITY_PLUGIN = "security-audit"
+SECURITY_PLUGIN_MODE = "unattended"
 
 #: How the compiled review is told to write a finding. Objects, each saying
 #: where its blocker is, so the console can pin it beside its line (diff
@@ -1261,12 +1284,19 @@ TENANCY_FUNCTIONS: tuple[str, ...] = ("tenant_scope", "submission_scope", "names
 _TENANCY_NAME = re.compile(r"\b(?:" + "|".join(TENANCY_FUNCTIONS) + r")\b")
 #: The deny-list itself.
 SHARED_PATTERNS: tuple[str, ...] = ("scripts/lib/common.sh",)
+#: The shared project (CLAUDE.md rule 2): the one project whose other teams'
+#: resources `SHARED_DENY_LIST` names. The list is keyed by it (plan R4,
+#: docs/design/day-one-plan.md section 0), as common.sh's is: a deployment in
+#: any other project holds no change for naming them.
+SHARED_PROJECT_ID = "saga-agents-staging"
 #: `SHARED_DENY_LIST` of scripts/lib/common.sh, where it lives once (CLAUDE.md
 #: rule 2). Restated here because swarm-api's image carries no scripts/;
 #: tests/unit/control_plane/test_hold_categories.py fails the day the two
 #: differ. Keep the order of common.sh. oracle-api@ and the bare oracle-api
 #: are off it since 2026-10-27 (#1835, BGD: both entries); common.sh says why.
-SHARED_DENY_LIST: tuple[str, ...] = (
+#: An entry naming the project is written with `{project}`, so the project's
+#: id is stated once, in SHARED_PROJECT_ID.
+_SHARED_DENY_TEMPLATES: tuple[str, ...] = (
     "agents-staging",
     "agents-staging-vpc",
     "agents-staging-subnet",
@@ -1277,39 +1307,65 @@ SHARED_DENY_LIST: tuple[str, ...] = (
     "saga-agents-terraform-state-staging",
     "ai-studio-avatars-staging",
     "promptlab-avatars-staging",
-    "saga-agents-staging_cloudbuild",
-    "api-service@saga-agents-staging.iam.gserviceaccount.com",
-    "publisher@saga-agents-staging.iam.gserviceaccount.com",
+    "{project}_cloudbuild",
+    "api-service@{project}.iam.gserviceaccount.com",
+    "publisher@{project}.iam.gserviceaccount.com",
     "209012342332-compute@developer.gserviceaccount.com",
-    "promptlab-deployer@saga-agents-staging.iam.gserviceaccount.com",
-    "promptlab-runner@saga-agents-staging.iam.gserviceaccount.com",
-    "aipipeline@saga-agents-staging.iam.gserviceaccount.com",
-    "saga-storage-ro@saga-agents-staging.iam.gserviceaccount.com",
-    "saga-storage-rw@saga-agents-staging.iam.gserviceaccount.com",
-    "external-secrets@saga-agents-staging.iam.gserviceaccount.com",
-    "staging-gke-nodes@saga-agents-staging.iam.gserviceaccount.com",
-    "crawler@saga-agents-staging.iam.gserviceaccount.com",
-    "tournament-digest@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-api@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-deployer@saga-agents-staging.iam.gserviceaccount.com",
-    "ai-studio-runner@saga-agents-staging.iam.gserviceaccount.com",
-    "oracle-ticker@saga-agents-staging.iam.gserviceaccount.com",
-    "oracle-web@saga-agents-staging.iam.gserviceaccount.com",
-    "promptlab-api@saga-agents-staging.iam.gserviceaccount.com",
+    "promptlab-deployer@{project}.iam.gserviceaccount.com",
+    "promptlab-runner@{project}.iam.gserviceaccount.com",
+    "aipipeline@{project}.iam.gserviceaccount.com",
+    "saga-storage-ro@{project}.iam.gserviceaccount.com",
+    "saga-storage-rw@{project}.iam.gserviceaccount.com",
+    "external-secrets@{project}.iam.gserviceaccount.com",
+    "staging-gke-nodes@{project}.iam.gserviceaccount.com",
+    "crawler@{project}.iam.gserviceaccount.com",
+    "tournament-digest@{project}.iam.gserviceaccount.com",
+    "ai-studio-api@{project}.iam.gserviceaccount.com",
+    "ai-studio-deployer@{project}.iam.gserviceaccount.com",
+    "ai-studio-runner@{project}.iam.gserviceaccount.com",
+    "oracle-ticker@{project}.iam.gserviceaccount.com",
+    "oracle-web@{project}.iam.gserviceaccount.com",
+    "promptlab-api@{project}.iam.gserviceaccount.com",
     "oracle-web",
 )
+SHARED_DENY_LIST: tuple[str, ...] = tuple(t.format(project=SHARED_PROJECT_ID) for t in _SHARED_DENY_TEMPLATES)
+
+
+def shared_deny_list() -> tuple[str, ...]:
+    """The deny-list for the project this swarm-api runs in: `SHARED_DENY_LIST`
+    in the shared project, empty in any other.
+
+    Keyed by PROJECT_ID, the variable `swarm_common.config.Settings` already
+    reads (`ApiSettings.project_id`), read at call time because the hold
+    functions are pure and their callers hold no settings. An unset project
+    keeps the whole list: an unknown project is not another project, and a
+    hold is cheap (a person decides) where a missed one is not.
+    """
+    project = os.environ.get("PROJECT_ID", "").strip()
+    return SHARED_DENY_LIST if project in ("", SHARED_PROJECT_ID) else ()
+
+
 #: A deny-list name, whole: not inside a longer name (`swarm-agents-staging-x`
 #: is not `agents-staging`). "default" (the shared project's default network)
 #: is also an ordinary word, so it is matched only quoted, as a resource name
 #: is written; every other entry anywhere.
 _NAME_CHAR = r"A-Za-z0-9_@"
-_SHARED_NAME = re.compile(
-    "|".join(
-        rf"""(?<=["'`]){re.escape(name)}(?=["'`])""" if name.isalpha()
-        else rf"(?<![{_NAME_CHAR}.-]){re.escape(name)}(?![{_NAME_CHAR}-])"
-        for name in sorted(SHARED_DENY_LIST, key=len, reverse=True)
+
+
+@lru_cache(maxsize=2)
+def _shared_name(names: tuple[str, ...]) -> re.Pattern[str] | None:
+    """The pattern matching any of `names`, or None for an empty list."""
+    if not names:
+        return None
+    return re.compile(
+        "|".join(
+            rf"""(?<=["'`]){re.escape(name)}(?=["'`])""" if name.isalpha()
+            else rf"(?<![{_NAME_CHAR}.-]){re.escape(name)}(?![{_NAME_CHAR}-])"
+            for name in sorted(names, key=len, reverse=True)
+        )
     )
-)
+
+
 #: Runner sizes and classes: what one agent's cpu and memory cost.
 COST_PATTERNS: tuple[str, ...] = (
     "terraform/environments/**/*.tfvars",
@@ -1396,7 +1452,11 @@ def _category_hits(
     )
     # An ADDED line: removing a reference to the other team's resources is
     # the direction CLAUDE.md rule 2 wants.
-    scan(STOP_SHARED, SHARED_PATTERNS, changed(_SHARED_NAME, removed=False), terms(_SHARED_NAME))
+    shared_name = _shared_name(shared_deny_list())
+    if shared_name is None:
+        scan(STOP_SHARED, SHARED_PATTERNS, lambda patch: False, lambda text: [])
+    else:
+        scan(STOP_SHARED, SHARED_PATTERNS, changed(shared_name, removed=False), terms(shared_name))
     scan(STOP_COST, COST_PATTERNS, changed(_COST_LINE), terms(_COST_LINE))
     return found
 
@@ -2029,7 +2089,7 @@ def planner_task(
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
-        metadata={"issue_run": run_id, **sessiontag.tag(claude_session)},
+        metadata={ISSUE_RUN_METADATA_KEY: run_id, **sessiontag.tag(claude_session)},
         **classed,
     )
 
@@ -2400,8 +2460,8 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        return _workflow(run, _compile_staged(run, plan, review_context,
-                                              class_models=class_models))
+        staged = _compile_staged(run, plan, review_context, class_models=class_models)
+        return _workflow(run, _with_security_review(run, staged))
     ref = run.issue
     steps: list[dict[str, Any]] = []
     previous: str | None = None
@@ -2434,6 +2494,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
         if previous is not None:
             spec["depends_on"] = [previous]
             spec["builds_on"] = previous
+        _attach_plan_contract(spec, run, plan, step)
         steps.append(spec)
         previous = step_id
     last = previous
@@ -2479,7 +2540,7 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             ),
         },
     })
-    return _workflow(run, _with_rereview(steps))
+    return _workflow(run, _with_security_review(run, _with_rereview(steps)))
 
 
 def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2516,6 +2577,72 @@ def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [*steps, rereview]
 
 
+def _with_security_review(run: "IssueRun", steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`steps`, then the security review when the run asked for one (off by default).
+
+    The step runs after the fix, on its pushed head (`builds_on`), beside the
+    re-review: `claude-code`, with a work contract whose capabilities load the
+    `security-audit` plugin in unattended mode. The worker knows the step by
+    that signed contract, tells the agent the owner's run settings (full
+    audit, `quick` profile, the pull request's diff, the sub-agent budget, no
+    sandbox, the output directory under `$SWARM_ARTIFACTS_DIR`), validates the
+    audit and writes its verdict (`agent_worker.security_review`). A plugin
+    loads only through a signed work contract, so with SWARM_WORK_CONTRACTS
+    off the option is refused here rather than compiled into a step that
+    would audit nothing.
+    """
+    if not getattr(run, "security_review", False):
+        return steps
+    if not workcontract.enabled(os.environ):
+        raise InvalidPlan(
+            "this run asked for a security review, which loads the security-audit plugin "
+            "through a signed work contract, and work contracts are off in this "
+            "deployment (SWARM_WORK_CONTRACTS)")
+    ref = run.issue
+    sha = run.index_sha if isinstance(run.index_sha, str) and re.fullmatch(
+        r"[0-9a-f]{40}", run.index_sha) else None
+    try:
+        contract = workcontract.decode({
+            "schema": workcontract.SCHEMA_VERSION,
+            "contract_id": "wc-" + re.sub(
+                r"[^a-z0-9-]+", "-", f"{run.id}-{SECURITY_REVIEW_STEP}".lower())[:62],
+            "tenant_id": run.tenant_id,
+            "revision": 1,
+            "strictness": workcontract.ADVISORY,
+            "requirements": [{
+                "id": "REQ-1",
+                "text": ("Audit this pull request's diff with the security-audit skill and "
+                         "report every finding; change no file."),
+                "verification": ["artifact_present"],
+            }],
+            "repositories": [{"repository_url": ref.repository_url, "ref": None, "commit": sha}],
+            "scope": {"write": []},
+            "capabilities": {"plugins": {SECURITY_PLUGIN: {
+                "mode": SECURITY_PLUGIN_MODE, "skills": [SECURITY_PLUGIN]}}},
+            "limits": {"runner_profile": STEP_PROFILE, "model_class": None},
+            "artifacts": [{"kind": "report"}],
+            "ownership": {"owner": run.approved_by or run.created_by},
+        })
+    except workcontract.WorkContractError as exc:
+        raise InvalidPlan(f"the security review step has no work contract: {exc.message}") from exc
+    return [*steps, {
+        "step_id": SECURITY_REVIEW_STEP,
+        "runner_profile": STEP_PROFILE,
+        "depends_on": [FIX_STEP],
+        "builds_on": FIX_STEP,
+        "allow_empty_diff": True,
+        "metadata": {workcontract.METADATA_KEY: contract.to_document()},
+        "input": {
+            "issue": ref.number,
+            "prompt": (
+                f"Security review of the pull request for GitHub issue {ref.short}. Your "
+                "checkout is the pull request's head. Use the security-audit skill as the "
+                "instructions below say. Do not edit files. " + NO_CLOSING_KEYWORD
+            ),
+        },
+    }]
+
+
 def _step_class(step: Mapping[str, Any]) -> dict[str, Any]:
     """`{"model_class": ...}` when the plan step named one, else nothing (#1435).
 
@@ -2544,6 +2671,34 @@ def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mappi
 def _review_impact(review_context: str | None) -> str:
     """The review's IMPACT block (lane KG6) and a blank line, or nothing."""
     return f"{review_context.rstrip()}\n\n" if review_context else ""
+
+
+def _attach_plan_contract(spec: dict[str, Any], run: "IssueRun", plan: Mapping[str, Any],
+                          step: Mapping[str, Any]) -> None:
+    """An implementer step's advisory work contract (`workcontract.from_plan_step`),
+    in its metadata at `workcontract.METADATA_KEY`, while SWARM_WORK_CONTRACTS
+    is on; nothing while it is off, so the compiled workflow is today's.
+
+    Bound to the commit the plan was made from when the run used an index
+    (`index_sha`), else to the repository alone. The approver owns it: the
+    person whose approval of the plan's digest made this step. A plan step
+    no contract can describe (a file pattern outside the repository) is an
+    invalid plan, refused before anything is submitted."""
+    if not workcontract.enabled(os.environ):
+        return
+    sha = run.index_sha if isinstance(run.index_sha, str) and re.fullmatch(
+        r"[0-9a-f]{40}", run.index_sha) else None
+    try:
+        contract = workcontract.from_plan_step(
+            run_id=run.id, tenant_id=run.tenant_id,
+            owner=run.approved_by or run.created_by, plan=plan, step=step,
+            repository_url=run.issue.repository_url, commit=sha,
+            runner_profile=spec["runner_profile"],
+        )
+    except workcontract.WorkContractError as exc:
+        raise InvalidPlan(f"step {step['step_id']!r} has no work contract: {exc.message}") from exc
+    spec["metadata"] = {**spec.get("metadata", {}),
+                        workcontract.METADATA_KEY: contract.to_document()}
 
 
 def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
@@ -2623,6 +2778,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
                 )
         spec["input"] = {"prompt": _step_prompt(ref, plan, index, step, context),
                          "issue": ref.number}
+        _attach_plan_contract(spec, run, plan, step)
         steps.append(spec)
     impl = [_impl_id(sid) for sid in order]
     last = impl[-1]
@@ -2709,6 +2865,69 @@ def workflow_unit(run: "IssueRun") -> str:
     return f"issue-{run.issue.number}"
 
 
+def submitting(spec: TaskCreate | WorkflowCreate) -> Any:
+    """The block an issue run's submission is made in: inside it, the spec's
+    own `metadata.issue_run` gets past the reserved-key check, and nothing
+    else does (BGD, 2026-11-04). The caller calls
+    `ctx.submissions.submit_tasks`/`submit_workflow` itself inside it, so the
+    signing paths stay the only writers of a task: the planner and the
+    compiled workflow (routes/runs.py), a CI fix round and the merge
+    (issueci.py). A batch of tasks is submitted in its first spec's block,
+    so a spec in it carrying another run's link is refused."""
+    return issue_run_mark_allowed(spec.metadata.get(ISSUE_RUN_METADATA_KEY))
+
+
+def workflow_feature(run: "IssueRun") -> dict[str, str]:
+    """The compiled workflow's `metadata.feature`: the issue, by its title --
+    its reference when the title was not read -- and its URL, the title on one
+    line and at most FEATURE_TITLE_MAX_CHARS (BGD, 2026-11-04)."""
+    issue_read = getattr(run, "issue_read", None)
+    read = issue_read if isinstance(issue_read, Mapping) else {}
+    title = " ".join(str(read.get("title") or "").split()) or run.issue.short
+    if len(title) > FEATURE_TITLE_MAX_CHARS:
+        title = title[: FEATURE_TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return {"title": title, "url": run.issue.url}
+
+
+#: How many of the summary's sentences the description keeps: "two or three
+#: sentences" is what the workflow page heads with (BGD, 2026-11-04).
+DESCRIPTION_SENTENCES = 3
+
+_FENCED = re.compile(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", re.MULTILINE | re.DOTALL)
+_HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s.*$", re.MULTILINE)
+_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_TAG = re.compile(r"<\s*/?\s*[A-Za-z!][^>]*>")
+_LEFTOVER_MARKUP = re.compile(r"```|~~~|\*\*|__|\]\(|[\x00-\x1f\x7f]")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def workflow_description(run: "IssueRun") -> str | None:
+    """The compiled workflow's `metadata.description`: the first
+    DESCRIPTION_SENTENCES sentences of the approved plan's summary, as plain
+    text of at most DESCRIPTION_MAX_CHARS, or None when nothing is left.
+
+    The summary is a paragraph the planner wrote, often in Markdown, and
+    `schemas.check_workflow_about` refuses markup rather than cut it. So
+    fenced code and heading lines are dropped, a link keeps its text, tags
+    and doubled emphasis markers go, and whitespace collapses to one line. A
+    first sentence over the cap is cut at a word, with an ellipsis."""
+    text = str((run.plan or {}).get("summary") or "")
+    text = _HEADING_LINE.sub(" ", _FENCED.sub(" ", text))
+    text = _TAG.sub(" ", _LINK.sub(r"\1", text))
+    text = " ".join(_LEFTOVER_MARKUP.sub(" ", text).split())
+    if not text:
+        return None
+    kept = ""
+    for sentence in _SENTENCE_END.split(text)[:DESCRIPTION_SENTENCES]:
+        joined = f"{kept} {sentence}".strip()
+        if len(joined) > DESCRIPTION_MAX_CHARS:
+            break
+        kept = joined
+    if not kept:
+        kept = text[: DESCRIPTION_MAX_CHARS - 1].rsplit(" ", 1)[0].rstrip() + "…"
+    return kept
+
+
 def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
     """The signed workflow around compiled steps: the same for a chain and for stages."""
     ref = run.issue
@@ -2719,13 +2938,17 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "metadata": {
             "title": workflow_title(run),
             "unit": workflow_unit(run),
+            # What the workflow page heads with (BGD, 2026-11-04): the issue
+            # it works on, and what its approved plan delivers.
+            "feature": workflow_feature(run),
+            **({"description": description} if (description := workflow_description(run)) else {}),
             # Always "off", stated, so the platform default cannot append a
             # merge here: an `auto_merge` run merges from the CI loop, once CI
             # is green and its keyword block is written (`issueci._merge`).
             MERGE_METADATA_KEY: "off",
             # The session that asked for the run (SC-SESSION-SCOPE).
             **sessiontag.tag(getattr(run, "claude_session", None)),
-            "issue_run": {
+            ISSUE_RUN_METADATA_KEY: {
                 "run_id": run.id,
                 "issue": ref.short,
                 "plan_digest": run.plan_digest,
@@ -3172,6 +3395,9 @@ class IssueRun:
     #: `sessiontag`), stored as `metadata.claude_session` beside the
     #: schedule's mark, and copied onto every task and workflow it starts.
     claude_session: str | None = None
+    #: The optional security review step (`_with_security_review`), off unless
+    #: the run asked for it.
+    security_review: bool = False
     #: `sign_owner`'s map, written with the document by `routes.runs.start_run`
     #: and by nothing else: what `owner_refusal` verifies before every
     #: submission. None on a run created before #1569 -- which is refused --
@@ -3191,6 +3417,8 @@ class IssueRun:
             "plan_approval": self.plan_approval,
             "auto_merge": self.auto_merge,
             "fix_rounds": self.fix_rounds,
+            # Written only when asked for: a run without it stores what it did.
+            **({"security_review": True} if self.security_review else {}),
             "planner_task_id": self.planner_task_id,
             "plan": self.plan,
             "plan_digest": self.plan_digest,
@@ -3339,6 +3567,7 @@ class IssueRun:
             ),
             schedule=_schedule_mark(data.get("metadata")),
             claude_session=sessiontag.of(data.get("metadata")),
+            security_review=data.get("security_review") is True,
             owner_signature=(
                 dict(data[OWNER_SIGNATURE]) if isinstance(data.get(OWNER_SIGNATURE), Mapping)
                 else None
@@ -3486,6 +3715,7 @@ class IssueRun:
             "schedule": None if self.schedule is None else dict(self.schedule),
             # SC-SESSION-SCOPE: the Claude Code session that asked, or null.
             "claude_session": self.claude_session,
+            "security_review": self.security_review,
         }
 
 
@@ -3527,6 +3757,63 @@ def run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
             key: value for key, value in pull.items() if key not in PULL_REQUEST_SUMMARY_DROPPED
         }
     return out
+
+
+#: `GET /v1/runs/{id}`'s `planner_documents` (BGD, 6 November 2026, on the
+#: full-page interview lane: "Serve them on the run"): the planner step's
+#: design document and diagrams for the proposal page. A design doc is a
+#: Markdown artifact whose file name holds this word (gstack's planning skills
+#: write `<user>-<branch>-design-<time>.md`); a diagram is an artifact the name
+#: table calls an `image` -- PNG, JPEG, GIF or WebP, which the raw route serves
+#: as an image only when the bytes agree. SVG is text there, so it is no diagram.
+PLANNER_DOC_WORD = "design"
+
+#: At most this many of each, in name order: the page draws every one it is
+#: served, and a planner that wrote hundreds of screenshots is not a proposal.
+MAX_PLANNER_DOCS = 4
+MAX_PLANNER_DIAGRAMS = 12
+
+
+def planner_documents(task_id: str, rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """The planner task's design docs and diagrams out of its artifact listing.
+
+    `rows` are `AgentOutputService.list_artifacts`' entries (each with the name
+    table's `kind`). Each is served by NAME, size and a read link through the
+    planner task's own `/artifacts/raw` route -- never the bytes, never a
+    `gs://` uri or a signed URL -- so whoever follows the link passes that
+    route's tenant check (another tenant's member gets its 404) and its
+    read-time redaction. Pure: nothing is read here.
+    """
+    docs: list[dict[str, Any]] = []
+    diagrams: list[dict[str, Any]] = []
+    for row in rows:
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        kind = row.get("kind")
+        base = name.rsplit("/", 1)[-1].lower()
+        if kind == "markdown" and PLANNER_DOC_WORD in base:
+            docs.append(_planner_entry(task_id, name, row))
+        elif kind == "image":
+            diagrams.append(_planner_entry(task_id, name, row))
+    return {
+        "task_id": task_id,
+        "design_docs": sorted(docs, key=lambda d: d["name"])[:MAX_PLANNER_DOCS],
+        "diagrams": sorted(diagrams, key=lambda d: d["name"])[:MAX_PLANNER_DIAGRAMS],
+    }
+
+
+def _planner_entry(task_id: str, name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    content_type = row.get("content_type")
+    return {
+        "name": name,
+        "bytes": _opt_int(row.get("bytes")),
+        "content_type": content_type if isinstance(content_type, str) else None,
+        "read_url": (
+            f"/v1/tasks/{quote(task_id, safe='')}/artifacts/raw"
+            f"?{urlencode({'name': name, 'disposition': 'inline'}, quote_via=quote)}"
+        ),
+    }
 
 
 def _schedule_mark(metadata: Any) -> dict[str, Any] | None:

@@ -203,8 +203,9 @@ describe('the held first column keeps a readable width at 390 (#222)', () => {
     expect(tables.length, 'the three Timeline tables did not all draw').toBe(3)
     let visited = 0
     for (const t of tables) visited += expectFloored(t, 'the Timeline')
-    // Fourteen day buckets (12-25 Sep) and their head, four profiles and
-    // theirs, three workflows and theirs.
-    expect(visited).toBe(15 + 5 + 4)
+    // Fourteen day buckets (12-25 Sep) and their head, four profiles, the
+    // remainder and the headline (QA2-FIX-16, runs2-23) and theirs, three
+    // workflows and theirs.
+    expect(visited).toBe(15 + 7 + 4)
   })
 })

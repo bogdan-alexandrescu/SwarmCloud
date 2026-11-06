@@ -74,6 +74,8 @@ from typing import Any, Iterable
 
 from swarm_common.profiles import MODEL_CLASSES
 
+from . import openai_api_key
+
 #: Secret Manager holds the credential; Firestore holds everything else. The
 #: secret name is derived, never supplied, for the same reason tenant secret
 #: names are: a caller who could name the secret could name someone else's.
@@ -159,6 +161,7 @@ MAX_AGENTS_BEFORE_READING = 1
 #: resets ONE SECOND apart. A reset is an absolute instant the provider keeps
 #: per subscription, so two subscriptions agree on it only by coincidence;
 #: five seconds allows for the provider's own rounding and nothing more.
+#: It FLAGS a possible duplicate and never withholds one (#3046).
 IDENTICAL_RESET_SKEW = timedelta(seconds=5)
 
 #: How close a window's `resets_at` must be to a recorded 429's reset to be the
@@ -437,6 +440,59 @@ class IdenticalReadings:
         return cls(other, polls, _aware(mine), _aware(theirs))
 
 
+#: The pools an account may belong to (owner, 2026-11-02/03: "A separate
+#: Voice it pool", "We should allow accounts to be in more than one pool at a
+#: time"). An account's pools are a SET:
+#:
+#:   * `workspace` -- every account before this field: its owner's workspace
+#:     and the workspaces in `lend_to` may lease it for a task;
+#:   * `voice-it` -- swarm-voice may lease it for a Voice it session of one of
+#:     the people in `voice_it_people`, and for nothing else.
+#:
+#: An account in `voice-it` ONLY is reserved: `may_serve` refuses every
+#: tenant, so no task lease of any workspace or profile is ever handed it, it
+#: is never lent, and its slots count toward no workspace's capacity. An
+#: account in both is shared: either side leases it, and its `max_agents` and
+#: windows hold across both, because every hold of either kind is counted on
+#: the one document.
+POOL_WORKSPACE = "workspace"
+POOL_VOICE_IT = "voice-it"
+POOLS = (POOL_WORKSPACE, POOL_VOICE_IT)
+#: What a document written before the field reads as: the workspace pool.
+DEFAULT_POOLS = (POOL_WORKSPACE,)
+
+
+def validate_pools(pools: Iterable[Any]) -> tuple[str, ...]:
+    """A non-empty set of known pool names, in `POOLS`' order."""
+    asked = list(pools)
+    unknown = [p for p in asked if p not in POOLS]
+    if unknown:
+        raise AccountError(f"an account's pools are {', '.join(POOLS)}, not {unknown[0]!r}")
+    chosen = tuple(p for p in POOLS if p in asked)
+    if not chosen:
+        raise AccountError("an account keeps at least one pool")
+    return chosen
+
+
+def _pools_from_firestore(raw: Any) -> tuple[str, ...]:
+    """Absent is the workspace pool, as every account was before the field.
+
+    NOT descriptive: a malformed value raises, so the document is unreadable --
+    out of every pool -- rather than read as the workspace pool, which would
+    hand a reserved Voice it account to a task."""
+    if raw is None:
+        return DEFAULT_POOLS
+    if not isinstance(raw, (list, tuple)):
+        raise AccountError(f"pools must be a list, not {type(raw).__name__}")
+    return validate_pools(raw)
+
+
+def _people_from_firestore(raw: Any) -> tuple[str, ...]:
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(p.strip().lower() for p in raw if isinstance(p, str) and p.strip())
+
+
 @dataclass(frozen=True)
 class Hold:
     """One agent's claim on an account, with a deadline.
@@ -472,6 +528,14 @@ class Hold:
     #: account the attempt came from and why it moved. None on every other.
     swapped_from: str | None = None
     swap_reason: str | None = None
+
+    #: Which pool this hold was taken from: `workspace` (a task's, every hold
+    #: before this field) or `voice-it` (a Voice it session's). A Voice it
+    #: hold names its session and person instead of a task and attempt, and
+    #: its `tenant_id` is empty: it is no workspace's.
+    pool: str = POOL_WORKSPACE
+    person: str | None = None
+    voice_session_id: str | None = None
 
     def is_expired(self, now: datetime) -> bool:
         return now >= self.expires_at
@@ -625,8 +689,8 @@ class Account:
     registered_at: datetime | None = None
 
     #: Another account registered on the same SUBSCRIPTION (#2222) -- the same
-    #: organisation and seat, or with no seat recorded the same readings
-    #: (#2282, `duplicates`) -- or None.
+    #: recorded organisation and seat (#2282, #3046, `duplicates`), never a
+    #: reading -- or None.
     #: Both of a pair carry it, each naming the other side; `duplicate_withheld`
     #: is True on the newer one, which `choose()` never hands out -- one
     #: subscription is one account's worth of agents, however many labels it
@@ -654,6 +718,43 @@ class Account:
     #: these fields. See `is_limited` for why this second hold exists.
     limited_until: datetime | None = None
     limited_window: str | None = None
+
+    #: The pools this account belongs to (`POOLS`), never empty; a document
+    #: written before the field is in the workspace pool alone.
+    pools: tuple[str, ...] = DEFAULT_POOLS
+
+    #: Who may use this account through the Voice it pool, lower-cased emails.
+    #: Version one: the platform owner only, written by the broker when the
+    #: pool is added; read-only everywhere else.
+    voice_it_people: tuple[str, ...] = ()
+
+    def in_pool(self, pool: str) -> bool:
+        return pool in self.pools
+
+    @property
+    def measured(self) -> bool:
+        """Whether this account's kind has usage windows to read at all.
+
+        False for an OpenAI developer API key (`openai_api_key`): it is billed
+        per minute and has no plan window, so nothing polls it, its windows
+        read "not measured" rather than 0, and the "one agent before its first
+        reading" rule, which waits for a reading that never comes, does not
+        hold it to one session."""
+        return self.provider != openai_api_key.PROVIDER
+
+    @property
+    def refreshes(self) -> bool:
+        """Whether this account's credential is a pair the sweep exchanges. A
+        developer API key does not rotate: there is no `{base}-refresh`."""
+        return self.provider != openai_api_key.PROVIDER
+
+    def may_serve_voice(self, person: str) -> bool:
+        """Whether a Voice it session of `person` may lease this account."""
+        return (
+            POOL_VOICE_IT in self.pools
+            and bool(person)
+            and person.strip().lower() in self.voice_it_people
+        )
 
     def serves_class(self, model_class: str | None) -> bool:
         """Whether a step of `model_class` may run on this account.
@@ -690,7 +791,8 @@ class Account:
         `max_agents` like any other.
         """
         return (
-            self.observed_at is None
+            self.measured
+            and self.observed_at is None
             and len(self.live_holds(now)) >= MAX_AGENTS_BEFORE_READING
         )
 
@@ -737,6 +839,9 @@ class Account:
         "the same project" or "the same domain": invariant 9 is about which pod
         can reach which credential, and a pod is not made safe by being nearby.
         """
+        if POOL_WORKSPACE not in self.pools:
+            # Reserved for Voice it: no workspace's task, owned or lent.
+            return False
         return tenant_id == self.owner_tenant or tenant_id in self.lend_to
 
     def headroom(
@@ -1042,6 +1147,8 @@ class Account:
             ),
             "limited_until": self.limited_until,
             "limited_window": self.limited_window,
+            "pools": list(self.pools),
+            "voice_it_people": list(self.voice_it_people),
         }
 
     @classmethod
@@ -1120,6 +1227,8 @@ class Account:
             # over a field whose whole job is to take it out for a while.
             limited_until=_optional_instant(data.get("limited_until")),
             limited_window=_optional_text(data.get("limited_window")),
+            pools=_pools_from_firestore(data.get("pools")),
+            voice_it_people=_people_from_firestore(data.get("voice_it_people")),
         )
 
 
@@ -1276,6 +1385,12 @@ def holds_to_firestore(holds: Iterable[Hold]) -> list[dict[str, Any]]:
             item["swapped_from"] = h.swapped_from
         if h.swap_reason:
             item["swap_reason"] = h.swap_reason
+        if h.pool != POOL_WORKSPACE:
+            item["pool"] = h.pool
+        if h.person:
+            item["person"] = h.person
+        if h.voice_session_id:
+            item["voice_session_id"] = h.voice_session_id
         out.append(item)
     return out
 
@@ -1338,6 +1453,8 @@ def hold_log_entry(
         # How it ENDED, when a swap ended it.
         "swapped_to": swapped_to if end == HOLD_END_SWAPPED else None,
         "swapped_to_reason": swap_reason if end == HOLD_END_SWAPPED else None,
+        "pool": hold.pool,
+        "voice_session_id": hold.voice_session_id,
     }
 
 
@@ -1378,6 +1495,9 @@ def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
                 move=_optional_text(item.get("move")),
                 swapped_from=_optional_text(item.get("swapped_from")),
                 swap_reason=_optional_text(item.get("swap_reason")),
+                pool=_optional_text(item.get("pool")) or POOL_WORKSPACE,
+                person=_optional_text(item.get("person")),
+                voice_session_id=_optional_text(item.get("voice_session_id")),
             )
         )
     return tuple(holds)
@@ -1462,71 +1582,185 @@ def _registration_order(account: Account) -> tuple[int, datetime, str]:
     )
 
 
-def one_subscription(a: Account, b: Account) -> bool:
-    """Whether two accounts on ONE organisation are one subscription (#2282).
+#: WHICH IDENTITY A DUPLICATE MATCHED ON (#3046): its KIND, never its value.
+#: The park's `accounts` block and the account listing carry it beside the
+#: reason, so a reader can tell a proven pair from a resemblance. The only
+#: kind there is: the provider's organisation AND seat, both recorded.
+DUPLICATE_MATCHED_ON = "organisation_and_seat"
 
-    ONE SUBSCRIPTION IS ONE SEAT (BGD, 2026-10-25). On a Claude Team
-    organisation every seat has its own limits; on 2026-10-25 four seats of
-    one Team organisation read 59-61% of their week beside the kept one's 97%
-    and were withheld as its duplicates, with 104 tasks queued. So: two
-    recorded seats decide -- the same seat is one subscription whatever the
-    readings say, two seats are two whatever they say. Where either seat is
-    not recorded yet (every account added before #2282, until its next
-    refresh) only identical readings pair them (`readings_identical`, DUP-1's
-    fallback): readings that differ are proof of two quotas.
+#: The reason a withheld duplicate carries, before the other side's name.
+DUPLICATE_REASON = "registered on the same organisation and seat as"
+
+
+def subscription_identity(a: Account) -> tuple[str, str, str] | None:
+    """The identity the provider reports for an account's subscription, or None.
+
+    THE ORGANISATION AND THE SEAT, BOTH RECORDED (#2222, #2282, #3046): the
+    opaque digests of what the provider's own token or profile answer named
+    (`oauth.Organisation`), stable for as long as the sign-in is. None when
+    either is not recorded yet -- every account added before #2282, until its
+    next refresh -- and an account with None is in no pair.
     """
-    seat_a, seat_b = getattr(a, "seat_id", None), getattr(b, "seat_id", None)
-    if seat_a and seat_b:
-        return seat_a == seat_b
-    return readings_identical(a, b)
+    org = getattr(a, "organisation_id", None)
+    seat = getattr(a, "seat_id", None)
+    if not org or not seat:
+        return None
+    return (a.provider, org, seat)
+
+
+def one_subscription(a: Account, b: Account) -> bool:
+    """Whether two accounts are one subscription (#2282, #3046).
+
+    ONLY THE PROVIDER'S IDENTITY DECIDES: the same organisation AND the same
+    seat, both recorded on both. On the night of 24 to 25 October 2026 the
+    organisation alone withheld eng:aieng-claude1, eng:saga-team,
+    eng:ai-eng-3 and eng:devops-main as duplicates of ai-eng-2 (97% of its
+    week) -- four seats of one Team organisation, each with its own limits,
+    two of which ran 15 agents each a few hours later. #2282 added the seat
+    but paired an account whose seat was not recorded by IDENTICAL READINGS;
+    a usage reading is not an identity (BGD, 2026-11-02). So an account
+    whose identity is unknown is never one subscription with another:
+    `identical_reading_pairs` still flags it, and that flag is advisory.
+    """
+    mine = subscription_identity(a)
+    return mine is not None and mine == subscription_identity(b)
 
 
 def duplicates(accounts: Iterable[Account]) -> dict[str, tuple[str, bool]]:
     """Every account sharing a subscription with another: `(other, withheld)`.
 
-    A SUBSCRIPTION IS AN ORGANISATION AND A SEAT (#2222, #2282), whatever the
-    labels or owners: two accounts on one organisation are a pair only when
-    `one_subscription` says so. Of a pair the OLDEST registration is kept: it
-    names the first newer one and is not withheld. Every newer one names the
-    kept one it pairs with and is withheld, so `choose()` hands the
-    subscription out once. An account with no recorded organisation is in no
-    pair here (absence is not sameness; `identical_reading_pairs` flags it).
-    An account in no pair is absent from the answer.
+    A SUBSCRIPTION IS AN ORGANISATION AND A SEAT, BOTH RECORDED (#2222,
+    #2282, #3046; `subscription_identity`), whatever the labels, owners,
+    loans or readings. Of a pair the OLDEST registration is kept: it names the
+    first newer one and is not withheld. Every newer one names the kept one
+    and is withheld, so `choose()` hands the subscription out once. An account
+    with no recorded organisation or seat is in no pair here (absence is not
+    sameness; `identical_reading_pairs` flags it). An account in no pair is
+    absent from the answer.
     """
-    groups: dict[tuple[str, str], list[Account]] = {}
+    groups: dict[tuple[str, str, str], list[Account]] = {}
     for a in accounts:
-        identity = getattr(a, "organisation_id", None)
-        if identity:
-            groups.setdefault((a.provider, identity), []).append(a)
+        identity = subscription_identity(a)
+        if identity is not None:
+            groups.setdefault(identity, []).append(a)
     out: dict[str, tuple[str, bool]] = {}
     for group in groups.values():
         if len(group) < 2:
             continue
-        # Compared with EVERY older account, withheld ones too, and withheld
-        # against the kept account at the root of the chain: a seatless K
-        # paired with B (seat s1) by its readings, and a later C on seat s1,
-        # are one subscription however C's readings compare with K's.
-        seen: list[Account] = []
-        root: dict[str, str] = {}
-        for a in sorted(group, key=_registration_order):
-            older = next((k for k in seen if one_subscription(k, a)), None)
-            seen.append(a)
-            if older is None:
-                continue
-            kept = root.get(older.account_id, older.account_id)
-            root[a.account_id] = kept
-            out[a.account_id] = (kept, True)
-            out.setdefault(kept, (a.account_id, False))
+        kept, *newer = sorted(group, key=_registration_order)
+        out[kept.account_id] = (newer[0].account_id, False)
+        for a in newer:
+            out[a.account_id] = (kept.account_id, True)
     return out
+
+
+def withheld_mark(account: Account, listed: dict[str, Account] | None = None) -> bool:
+    """Whether a STORED `duplicate_withheld` mark still withholds `account` (#3046).
+
+    The sweep (`main.mark_duplicates`) rewrites the marks, but a mark written
+    under an older rule outlives it until that sweep runs. So a mark counts
+    only on an account whose identity is recorded (`subscription_identity`),
+    and, when the side it names is in `listed`, only while the two are still
+    one subscription. A mark whose other side is not listed still counts: a
+    borrower's list may not hold the owner's other registration.
+    """
+    if getattr(account, "duplicate_withheld", False) is not True:
+        return False
+    if subscription_identity(account) is None:
+        return False
+    other = (listed or {}).get(getattr(account, "duplicate_of", None) or "")
+    return other is None or one_subscription(account, other)
+
+
+#: Why a Voice it session got no account (`choose_voice`), as the lease route
+#: says it. `not_in_voice_pool`: no Voice it pool account lists this person.
+VOICE_NOT_IN_POOL = "not_in_voice_pool"
+#: No account of the provider is in the Voice it pool at all.
+VOICE_NONE_REGISTERED = "no_voice_account_registered"
+#: Some are, and none can take a session now: held, paused, or spent.
+VOICE_NONE_AVAILABLE = "no_voice_account_available"
+#: What a Voice it text conversation leases its account for
+#: (swarm_voice.textchat): the ChatGPT plan's Responses wire, which serves text
+#: on the plan. Beside `openai_api_key.CAPABILITY_LIVE`, the only other value
+#: `VoiceLease.capability` accepts.
+VOICE_CAPABILITY_TEXT = "text"
+
+
+def choose_voice(
+    accounts: Iterable[Account],
+    person: str,
+    provider: str,
+    now: datetime,
+    *,
+    capability: str | None = None,
+) -> tuple[Account | None, str]:
+    """The Voice it pool account a session of `person` should lease, or why none.
+
+    ONLY THE VOICE IT POOL (owner, 2026-11-02, "Pool only, wait for it"): an
+    account in the workspace pool alone is never a candidate, and an account
+    in the Voice it pool is a candidate only for the people it lists. The
+    rest is `choose()`'s rule for a task: AVAILABLE, not a withheld
+    duplicate, no window under its floor and no recorded 429
+    (`assignable`), a free slot under `max_agents` -- counted over EVERY live
+    hold, a task's and a session's, so an account in both pools never passes
+    its agent limit -- and one agent before its first reading. Fewest holds
+    first, then most headroom.
+
+    A LIVE SESSION (`capability="live"`) is offered only an account kind that
+    can open one, `openai_api_key.LIVE_PROVIDERS`, whatever `provider` says:
+    OpenAI refused the ChatGPT plan's token for GPT-Live (403 on
+    /v1/live/sessions, 4 November 2026), so a plan in the Voice it pool is
+    never chosen for a session and, with no key beside it, the pool reads as
+    `VOICE_NONE_REGISTERED` -- refused before any hold is taken.
+
+    Any other capability (a text conversation, `VOICE_CAPABILITY_TEXT`) is
+    offered the pool's accounts of `provider` that are NOT Live-capable: a key
+    is the only kind a Live session can use, so a text lease naming the key's
+    provider finds none registered rather than taking a slot Live needs.
+    """
+    if capability == openai_api_key.CAPABILITY_LIVE:
+        listed = [
+            a
+            for a in accounts
+            if openai_api_key.is_live_capable(a.provider) and a.in_pool(POOL_VOICE_IT)
+        ]
+    else:
+        listed = [
+            a
+            for a in accounts
+            if a.provider == provider
+            and not openai_api_key.is_live_capable(a.provider)
+            and a.in_pool(POOL_VOICE_IT)
+        ]
+    if not listed:
+        return None, VOICE_NONE_REGISTERED
+    mine = [a for a in listed if a.may_serve_voice(person)]
+    if not mine:
+        return None, VOICE_NOT_IN_POOL
+    withheld = _withheld(list(accounts))
+    free = [
+        a
+        for a in mine
+        if a.state in ASSIGNABLE_STATES
+        and a.account_id not in withheld
+        and a.assignable(now)
+        and not a.is_full(now)
+        and not a.awaits_first_reading(now)
+    ]
+    if not free:
+        return None, VOICE_NONE_AVAILABLE
+    free.sort(key=lambda a: (len(a.live_holds(now)), -a.headroom(now), a.account_id))
+    return free[0], ""
 
 
 def _withheld(accounts: list[Account]) -> set[str]:
     """Accounts `choose()` must not hand out because an older registration of
-    the same subscription (`duplicates`) is the one in use: the stored mark,
-    or a pair in this very list that the sweep has not marked yet. A stored
-    mark whose pair no longer holds is cleared by the broker's next sweep
-    (`main.mark_duplicates`), which is also what the hold transaction reads."""
-    marked = {a.account_id for a in accounts if getattr(a, "duplicate_withheld", False) is True}
+    the same subscription (`duplicates`) is the one in use: a stored mark that
+    still holds (`withheld_mark`), or a pair in this very list that the sweep
+    has not marked yet. The broker's next sweep (`main.mark_duplicates`)
+    clears a stored mark whose pair no longer holds."""
+    listed = {a.account_id: a for a in accounts}
+    marked = {a.account_id for a in accounts if withheld_mark(a, listed)}
     return marked | {i for i, (_, held) in duplicates(accounts).items() if held}
 
 
@@ -1554,17 +1788,25 @@ def readings_identical(a: Account, b: Account, *, skew: timedelta = IDENTICAL_RE
     return True
 
 
+def _identities_decide(a: Account, b: Account) -> bool:
+    """Whether recorded identities already say if two accounts are one subscription."""
+    if a.organisation_id and b.organisation_id and a.organisation_id != b.organisation_id:
+        return True
+    return subscription_identity(a) is not None and subscription_identity(b) is not None
+
+
 def identical_reading_pairs(
     accounts: Iterable[Account],
 ) -> dict[str, tuple[IdenticalReadings | None, str | None]]:
     """Every account's next identical-readings count and possible duplicate.
 
     THE FALLBACK FOR A MISSING ORGANISATION (#2222, `IDENTICAL_RESET_SKEW`).
-    Two accounts of one provider are compared only when they do not BOTH
-    carry a recorded organisation: two recorded organisations are decided by
-    `duplicates` (the same organisation and seat, or with a seat unrecorded
-    the same readings, #2282), and a recorded organisation that differs
-    always wins over figures that coincide.
+    Two accounts of one provider are compared only when their recorded
+    identities do not already decide them: two recorded organisations that
+    differ are two subscriptions whatever the figures, and two recorded
+    organisations AND seats are decided by `duplicates`. Everything else --
+    an organisation or a seat not recorded on either side -- is compared
+    here, and only ever FLAGGED (#3046): a reading is not an identity.
 
     A count goes up only when BOTH sides carry a reading newer than the ones
     it was last counted on, so a pass that sees the same readings again, or a
@@ -1583,7 +1825,7 @@ def identical_reading_pairs(
             for b in accounts
             if b.account_id != a.account_id
             and b.provider == a.provider
-            and not (a.organisation_id and b.organisation_id)
+            and not _identities_decide(a, b)
             and readings_identical(a, b)
         ]
         if not partners:
@@ -1651,8 +1893,8 @@ def choose(
     however much headroom it has (owner decision R5).
 
     A DUPLICATE IS HANDED OUT ONCE (#2222): of two accounts on one
-    subscription -- one organisation and one seat (#2282) -- only the older
-    registration is a candidate (`duplicates`).
+    subscription -- one recorded organisation and one recorded seat (#2282,
+    #3046) -- only the older registration is a candidate (`duplicates`).
     AND A NEVER-MEASURED ACCOUNT TAKES ONE AGENT (`awaits_first_reading`):
     it is skipped while it holds one and has no reading, and is an ordinary
     candidate from its first reading on.
@@ -1871,10 +2113,21 @@ def due_for_refresh(
     to rediscover that every five minutes would make a broken account into a
     problem for the working ones.
     """
-    return [a for a in accounts if a.state is not AccountState.REAUTH_REQUIRED]
+    return [
+        a for a in accounts if a.state is not AccountState.REAUTH_REQUIRED and a.refreshes
+    ]
 
 
 __all__ = [
+    "VOICE_NONE_AVAILABLE",
+    "VOICE_NONE_REGISTERED",
+    "VOICE_NOT_IN_POOL",
+    "choose_voice",
+    "DEFAULT_POOLS",
+    "POOLS",
+    "POOL_VOICE_IT",
+    "POOL_WORKSPACE",
+    "validate_pools",
     "Account",
     "AccountError",
     "AccountState",
@@ -1912,7 +2165,11 @@ __all__ = [
     "choose",
     "due_for_refresh",
     "duplicates",
+    "DUPLICATE_MATCHED_ON",
+    "DUPLICATE_REASON",
     "one_subscription",
+    "subscription_identity",
+    "withheld_mark",
     "eligibility",
     "holds_from_firestore",
     "identical_reading_pairs",

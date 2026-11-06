@@ -114,6 +114,10 @@ def _spend_written(usage):
         def call_options(self, call=None):
             return {}
 
+        def _store_attempt_totals(self):
+            # Contract request 132's task totals: not what this measures.
+            pass
+
     ControlPlane.record_spend(Double(), usage)
     return written
 

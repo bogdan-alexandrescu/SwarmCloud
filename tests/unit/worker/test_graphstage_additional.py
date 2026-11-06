@@ -34,7 +34,9 @@ from typing import Any
 import pytest
 from test_graph_ticket_worker import Wall, _upkeep, routes  # noqa: F401 - a fixture
 from test_graphmcp_shim import fake_ticket, make_shim
-from test_graphstage import CLAUDE, GKE, SERVICE_URL, _commit, _git, _no_ab, _promote
+from test_graphstage import (
+    CLAUDE, GKE, SERVICE_URL, _code_intelligence, _commit, _git, _no_ab, _promote,
+)
 
 from agent_worker import children as children_mod
 from agent_worker import graph_ticket, graphstage, indexrun
@@ -150,7 +152,8 @@ class _Upkeep:
 
 def _serve_all(db: Any) -> None:
     _no_ab(db)
-    db.seed(f"workspace_settings/{TENANT}", {"code_intelligence": {"graph_delivery": "service"}})
+    # Merged: `context_ab` and `graph_delivery` are one document (2026-11-01).
+    _code_intelligence(db, graph_delivery="service")
 
 
 def _prepare(db: Any, store: Any, lay: SimpleNamespace, entries: Any, *,

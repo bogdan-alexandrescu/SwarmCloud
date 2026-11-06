@@ -137,6 +137,103 @@ def patch_uri(task: dict[str, Any]) -> str | None:
     return None
 
 
+class PatchRefused(SwarmError):
+    """The API served a task's patch, but not as bytes `git apply` may be given."""
+
+
+#: The window `read_patch` asks for: swarm-api's own ceiling for one artifact
+#: window (`InspectionService.max_artifact_bytes`, 4 MiB). The route clamps
+#: whatever is asked into its range, so a deployment with a smaller ceiling
+#: just answers in more windows; this only saves round trips.
+PATCH_WINDOW_BYTES = 4 * 1024 * 1024
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def read_patch(client: SwarmClient, task: dict[str, Any]) -> bytes:
+    """A task's patch, read through swarm-api's artifact route, byte for byte (#2834).
+
+    THROUGH THE API, NOT CLOUD STORAGE. This was `download(patch_uri(task))`,
+    a GCS read with the developer's own gcloud access token, so a stale gcloud
+    login -- one that needs reauthentication, which cannot prompt from a
+    non-interactive bridge -- failed `swarm_apply` on 2026-10-30
+    (task_3ed834efdaa14baab798) while `swarm_artifact` read the same patch
+    through `/artifacts/content` with the bridge's own API credential. Same
+    route, same credential, same tenant check here: the route resolves the
+    NAME the task's `git.patch` records against the task's own manifest.
+
+    EVERY WINDOW, UNTIL THE ROUTE SAYS COMPLETE. One window is at most
+    `max_artifact_bytes`; the next starts at `next_offset`.
+
+    CHECKED BEFORE IT IS APPLIED, because the route serves TEXT that it masks:
+    a patch with a masked span is a different patch, and `git apply --3way`
+    would land the mask in the tree. Each window must be `ok`, carry a
+    `redaction_count` of exactly 0 (a missing count is refused too: nothing
+    says it was not masked), hold no byte that is not UTF-8 (those are served
+    as U+FFFD), start where the last one ended and hold the bytes it says it
+    returned; the whole must be `total_bytes` long. Anything else is a
+    `PatchRefused` naming why, and nothing is applied.
+    """
+    task_id = task_id_of(task)
+    name = ((task.get("result_summary") or {}).get("git") or {}).get("patch")
+    if not task_id or not name:
+        raise PatchRefused("this task document names no task id or no patch, so there is nothing to read")
+    where = f"{name} of {task_id}"
+    out = bytearray()
+    total: int | None = None
+    while True:
+        row = client.artifact_content(task_id, name, offset=len(out), limit_bytes=PATCH_WINDOW_BYTES)
+        status = row.get("status")
+        if status != "ok":
+            raise PatchRefused(
+                f"the API answered `{status}` for {where}, not its text: {row.get('detail') or 'no detail'}"
+            )
+        count = row.get("redaction_count")
+        if not _is_count(count) or count != 0 or row.get("redacted") is True:
+            raise PatchRefused(
+                f"the API redacted {count if _is_count(count) else 'an uncounted number of'} span(s) "
+                f"in {where} at offset {len(out)}, so the bytes it served are not the patch the "
+                "agent wrote; it was not applied. Read the masked text with swarm_artifact to see "
+                "what was masked, and apply it by hand if that is what you want"
+            )
+        if row.get("invalid_utf8_bytes") != 0:
+            raise PatchRefused(
+                f"{row.get('invalid_utf8_bytes')} byte(s) of {where} at offset {len(out)} are not "
+                "UTF-8 and were served as U+FFFD, so the patch cannot be rebuilt byte for byte; "
+                "it was not applied"
+            )
+        if row.get("offset") != len(out):
+            raise PatchRefused(
+                f"the API's window of {where} starts at {row.get('offset')}, not at {len(out)} "
+                "where the last one ended; it was not applied"
+            )
+        content = row.get("content")
+        data = content.encode("utf-8") if isinstance(content, str) else b""
+        if _is_count(row.get("returned_bytes")) and row["returned_bytes"] != len(data):
+            raise PatchRefused(
+                f"the API's window of {where} at offset {len(out)} says {row['returned_bytes']} "
+                f"bytes and holds {len(data)}; it was not applied"
+            )
+        out += data
+        if _is_count(row.get("total_bytes")):
+            total = row["total_bytes"]
+        if not row.get("truncated"):
+            break
+        following = row.get("next_offset")
+        if following != len(out) or not data:
+            raise PatchRefused(
+                f"the API's next_offset for {where} is {following}, but the bytes read end at "
+                f"{len(out)}: the windows do not join end to end; it was not applied"
+            )
+    if total is not None and total != len(out):
+        raise PatchRefused(
+            f"{where} is {total} bytes and {len(out)} were read; it was not applied"
+        )
+    return bytes(out)
+
+
 #: States in which a task is still on its way and a summary is simply not due
 #: yet. From the frozen contract, not written out; PARKED has its own sentence.
 _UNFINISHED = frozenset(
@@ -646,5 +743,12 @@ def integrate(
         if uri is None:
             out.skipped.append((task_id, explain_absence(task)))
             continue
-        out.results.append(apply_patch(download(client, uri), repo, task_id=task_id))
+        # Through the API, as `swarm_apply` reads it (#2834). A refused patch
+        # is a FAILED apply, not a skip: there IS a patch, and it was not used.
+        try:
+            patch = read_patch(client, task)
+        except PatchRefused as exc:
+            out.results.append(ApplyResult(task_id=task_id, applied=False, detail=str(exc)))
+            continue
+        out.results.append(apply_patch(patch, repo, task_id=task_id))
     return out

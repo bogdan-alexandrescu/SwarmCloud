@@ -63,9 +63,10 @@ PLATFORM_AND_RUNNERS = [
     "swarm-verify", "agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer",
 ]
 
+# The receiver has no allUsers binding since DAYONE-TF-2: its invoker check is
+# off on the service itself (Q3), so the service is its one gated address.
 RECEIVER = [
     "google_cloud_run_v2_service.github_hooks[0]",
-    "google_cloud_run_v2_service_iam_member.github_hooks_public[0]",
 ]
 
 
@@ -206,17 +207,85 @@ def test_plan_sh_stops_on_the_refusal_and_never_plans(box: Sandbox) -> None:
     assert not any(re.search(r"(^|\s)plan(\s|$)", c) for c in calls), calls
 
 
-def test_every_image_refs_lookup_in_infra_is_in_the_one_list() -> None:
-    gated = json.loads(IMAGES_JSON.read_text())["gated"]
+def image_refs_lookups(infra: Path) -> set[str]:
+    """Every name a `lookup(var.image_refs, "<name>", ...)` in infra's *.tf asks for."""
     looked_up: set[str] = set()
-    for tf in sorted(INFRA.glob("*.tf")):
+    for tf in sorted(infra.glob("*.tf")):
         code = "\n".join(line for line in tf.read_text().splitlines() if not line.lstrip().startswith("#"))
         looked_up |= set(re.findall(r'lookup\(\s*var\.image_refs\s*,\s*"([^"]+)"', code))
+    return looked_up
+
+
+def unlisted_gated_images(infra: Path) -> str | None:
+    """Why infra's lookups and its images.json gated map disagree, naming each image; None when they agree."""
+    gated = set(json.loads((infra / "images.json").read_text())["gated"])
+    looked_up = image_refs_lookups(infra)
+    if not looked_up:
+        return f"found no lookup(var.image_refs, ...) in {infra}; the scan is broken"
+    problems = []
+    if looked_up - gated:
+        problems.append(
+            "looked up in terraform/infra but missing from images.json's gated map: "
+            + ", ".join(sorted(looked_up - gated))
+        )
+    if gated - looked_up:
+        problems.append("in images.json's gated map but looked up nowhere: " + ", ".join(sorted(gated - looked_up)))
+    return "; ".join(problems) or None
+
+
+def test_every_image_refs_lookup_in_infra_is_in_the_one_list() -> None:
     # MUTATION: remove an image (swarm-github-hooks) from images.json's gated
     # map and this fails, naming it.
-    assert looked_up, "found no lookup(var.image_refs, ...) in terraform/infra; the scan is broken"
-    assert sorted(looked_up - set(gated)) == [], "a gated image is missing from terraform/infra/images.json"
-    assert sorted(set(gated) - looked_up) == [], "images.json names a gated image nothing looks up"
+    problem = unlisted_gated_images(INFRA)
+    assert problem is None, problem
+
+
+def test_a_lookup_with_no_gated_entry_is_refused_naming_it(tmp_path: Path) -> None:
+    # A change that adds a gated service but not its images.json entry. Its
+    # name must be in the failure, so the fix is one entry in one file.
+    (tmp_path / "images.json").write_text(json.dumps({
+        "platform": [],
+        "gated": {"swarm-listed": {"resources": [], "outputs": ["swarm_listed_manifest"]}},
+    }))
+    (tmp_path / "listed.tf").write_text('locals {\n  a = lookup(var.image_refs, "swarm-listed", "")\n}\n')
+    (tmp_path / "unlisted.tf").write_text(
+        'locals {\n'
+        '  # lookup(var.image_refs, "swarm-commented", "") is a comment, not a lookup\n'
+        '  b = lookup(\n    var.image_refs,\n    "swarm-unlisted",\n    "",\n  )\n}\n'
+    )
+    problem = unlisted_gated_images(tmp_path)
+    # MUTATION: report the mismatch without the image's name and this fails.
+    assert problem is not None and "swarm-unlisted" in problem, problem
+    assert "swarm-listed" not in problem.replace("swarm-unlisted", "")
+    # MUTATION: scan comments too and the commented lookup is reported.
+    assert "swarm-commented" not in problem
+
+    gated = json.loads((tmp_path / "images.json").read_text())
+    gated["gated"]["swarm-unlisted"] = {"resources": [], "outputs": ["swarm_unlisted_manifest"]}
+    (tmp_path / "images.json").write_text(json.dumps(gated))
+    # Its one entry is the whole fix.
+    assert unlisted_gated_images(tmp_path) is None
+
+
+IMAGE_REFS_TFTEST = REPO / "tests" / "terraform" / "image_refs.tftest.hcl"
+
+
+def test_the_terraform_test_takes_its_gated_digests_from_images_json() -> None:
+    # The terraform test's gated run hands the plan a digest for every gated
+    # image. A hand-kept list there was a second edit per new gated image, and
+    # two changes adding different gated images each passed alone and failed
+    # together (6 November 2026). The digests are built from images.json.
+    gated = set(json.loads(IMAGES_JSON.read_text())["gated"])
+    source = IMAGE_REFS_TFTEST.read_text()
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+    by_hand = sorted(set(re.findall(r'"([^"]+)"\s*=\s*"[^"]*@sha256:', code)) & gated)
+    # MUTATION: list a gated image's digest by hand in the test and this fails, naming it.
+    assert by_hand == [], f"image_refs.tftest.hcl lists gated digests by hand: {', '.join(by_hand)}"
+    # MUTATION: drop the images.json comprehension and this fails.
+    assert re.search(
+        r'for\s+name\s+in\s+keys\(jsondecode\(file\("\.\./\.\./terraform/infra/images\.json"\)\)\.gated\)\s*:\s*name\s*=>',
+        code,
+    ), "image_refs.tftest.hcl must build its gated digests from terraform/infra/images.json"
 
 
 def test_every_address_and_output_the_list_names_exists() -> None:

@@ -8,26 +8,58 @@
 # `ready` pull requests into a new one. This file only decides WHEN a tick
 # runs and with which credentials.
 #
-# WHEN.
-#   * every five minutes, only while vars.MERGE_TRAIN is `on`. Off, a schedule
-#     run would take a runner every five minutes to find nothing to do;
+# WHEN. The train ticks on the events that can change what it would do,
+# not only on GitHub's schedule: on 2026-11-03 the five-minute schedule ran
+# only every four to seven hours (part of #2688, epic #3179), so a green
+# `ready` pull request waited hours for a train with nothing else wrong.
 #   * when an application or security run finishes on a `train/` branch of
 #     this repository, whatever MERGE_TRAIN says: that is the moment a train
-#     can be judged, so a train lands minutes earlier than the next schedule,
-#     and a dry-run train started by hand is judged with the train off. A run
-#     on any other branch skips the job, and takes no runner;
+#     can be judged, and a dry-run train started by hand is judged with the
+#     train off. Such a tick only judges: with no train open it starts none;
+#   * while vars.MERGE_TRAIN is `on`, when an application or security run
+#     on a pull request from any branch of this repository finishes green:
+#     that is the moment a `ready` pull request can become boardable. Like a
+#     schedule tick, it judges the train in flight, or with none boards the
+#     green `ready` pull requests into a new one. The branch need not be a
+#     `ready` pull request's -- the `if:` cannot see labels, and the tick
+#     reads every open pull request afresh anyway -- because a tick that
+#     finds nothing costs one short job, and a burst costs at most two (ONE
+#     TRAIN AT A TIME below). A red, cancelled or `push` run makes nothing
+#     boardable, so it takes no runner;
+#   * while vars.MERGE_TRAIN is `on`, when `ready` is added to a pull request
+#     from this repository: a tick like a schedule tick. auto-merge.yml's
+#     `pull_request_target` run fires on that label (and on its other pull
+#     request events), and its completion raises a `workflow_run` of
+#     `auto-merge` here, which runs THIS file from main on main's ref, as
+#     every trigger here does. Only a pull request from this repository: the
+#     run's `pull_requests` must be non-empty, which GitHub leaves empty for a
+#     fork's pull request, and its head repository must be this one.
+#     Otherwise anyone who can fork could raise auto-merge runs in a loop
+#     (edit a title) and start self-hosted ticks that mint the merge App's
+#     token and displace a pending dispatch from the group. Not a
+#     `pull_request` trigger of our own: that runs the copy of this file in
+#     the pull request's merge commit, on a ref the `repo-secrets` environment
+#     refuses (so no App token), and it would put a `pull_request` trigger on
+#     a self-hosted job (test_fork_prs_off_self_hosted.py). Not
+#     `pull_request_target` either: auto-merge.yml already carries that risk,
+#     once, and is reviewed for it. auto-merge's own dispatches, schedule and
+#     `workflow_run` runs are filtered out by their event;
+#   * every five minutes, only while vars.MERGE_TRAIN is `on`: the fallback,
+#     for whatever no event above says. Off, a schedule run would take a
+#     runner every five minutes to find nothing to do;
 #   * on demand. A dispatch with the train off, or with dry_run, starts a DRY
 #     RUN train: built, pushed and judged, landing nothing and telling no pull
 #     request anything. That is how the owner sees a train go green before the
 #     ruleset change in docs/runbooks/merge-train.md.
+# Any other `workflow_run` skips the job, and takes no runner.
 #
 # ONE TRAIN AT A TIME. One concurrency group for every tick, never
 # cancelled: a tick cancelled between pushing a train and opening its pull
 # request, or between two merges, would leave the train half done. GitHub
 # keeps one tick pending behind the one running and drops older pending ones,
 # which is right here: a tick reads everything afresh. The group is the JOB's,
-# not the workflow's: every application and security run on any branch
-# raises a `workflow_run` here, and as workflow-level concurrency each of
+# not the workflow's: every application, security and auto-merge run on any
+# branch raises a `workflow_run` here, and as workflow-level concurrency each of
 # those skipped runs would take the pending slot and cancel a real tick
 # waiting in it. A job skipped by its `if:` never joins a job's group.
 #
@@ -55,7 +87,7 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_run:
-    workflows: [application, security]
+    workflows: [application, security, auto-merge]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -71,16 +103,20 @@ jobs:
     name: run the merge train
     # Self-hosted pool, SHORT form (owner decision 2026-10-14; the merge App's
     # key rides the VM as for auto-merge.yml). No fork clause: this workflow
-    # starts only on schedule, workflow_run of a train/ branch, or dispatch,
-    # never `pull_request` (test_fork_prs_off_self_hosted.py checks the
-    # triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
-    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    # starts only on schedule, dispatch, or workflow_run (main's file on
+    # main's ref) of a train/ branch's application or security run, of a
+    # green one on a pull request from this repository, or of auto-merge's
+    # run on a pull request from this repository; never `pull_request`, and
+    # never from a fork's pull request (test_fork_prs_off_self_hosted.py
+    # checks the triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
     # `repo-secrets`, whose deployment branches are `main` only (BGD,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
     # by a workflow on ANY pushed branch, before any review or hold.
     # Every trigger here runs on main's ref -- schedule, workflow_run of a
-    # train/ branch's run (it runs main's file), workflow_dispatch from main --
+    # train's or a pull request's application, security or auto-merge run
+    # (it runs main's file), workflow_dispatch from main --
     # so the rule admits them; a dispatch from another branch is refused, and
     # that is the point. `deployment: false`: no deployment record.
     # test_repo_secrets_environment.py.
@@ -94,20 +130,34 @@ jobs:
     concurrency:
       group: merge-train
       cancel-in-progress: false
+    # The three `workflow_run` clauses are WHEN's first three bullets, in order.
     if: >-
       github.repository == 'bogdan-alexandrescu/SwarmCloud' && (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && vars.MERGE_TRAIN == 'on') ||
         (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.name != 'auto-merge' &&
          startsWith(github.event.workflow_run.head_branch, 'train/') &&
+         github.event.workflow_run.head_repository.full_name == github.repository) ||
+        (github.event_name == 'workflow_run' && vars.MERGE_TRAIN == 'on' &&
+         github.event.workflow_run.name != 'auto-merge' &&
+         github.event.workflow_run.event == 'pull_request' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.head_repository.full_name == github.repository) ||
+        (github.event_name == 'workflow_run' && vars.MERGE_TRAIN == 'on' &&
+         github.event.workflow_run.name == 'auto-merge' &&
+         github.event.workflow_run.event == 'pull_request_target' &&
+         github.event.workflow_run.pull_requests[0] != null &&
          github.event.workflow_run.head_repository.full_name == github.repository)
       )
     # The workflow's own token:
     #   contents: read        fetch main and the pull requests' heads;
     #   checks: read          a train head's check runs;
-    #   actions: read         the Actions runs at a train head where some
-    #                         check ran twice: each check suite's event,
-    #                         which the judge groups runs by (CHECK-RULE-2);
+    #   actions: write        read: the Actions runs at a train head where
+    #                         some check ran twice, each check suite's event
+    #                         the judge groups runs by (CHECK-RULE-2); write:
+    #                         re-run a red train's failed jobs once before it
+    #                         bisects (scripts/merge-train.sh rule 1);
     #   statuses: write       the `merge-train` status on each head it lands
     #                         (and read: the combined status of a train head);
     #   pull-requests: write  the comments, closing the train's pull request,
@@ -115,7 +165,7 @@ jobs:
     permissions:
       contents: read
       checks: read
-      actions: read
+      actions: write
       statuses: write
       pull-requests: write
     steps:
@@ -153,11 +203,20 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EVENT_NAME: ${{ github.event_name }}
+          # The finished run's head branch on `workflow_run` (empty otherwise):
+          # a `train/` branch's run only judges its train; any other starts
+          # one when none is open. Through env:, never into the shell line.
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           MERGE_TRAIN: ${{ vars.MERGE_TRAIN }}
           DRY_RUN_INPUT: ${{ inputs.dry_run }}
           # Unset, the script's defaults: 4 pull requests, 90 minutes.
           MERGE_TRAIN_MAX_PRS: ${{ vars.MERGE_TRAIN_MAX_PRS }}
           MERGE_TRAIN_MAX_AGE_MINUTES: ${{ vars.MERGE_TRAIN_MAX_AGE_MINUTES }}
+          # How long a green train waits for main's image build before it lands
+          # (deploy_hold). Unset, the script's 25 minutes; BGD picked 60 on
+          # 6 November 2026 so each release finishes instead of being cancelled
+          # by the next landing ("deploy every hour").
+          MERGE_TRAIN_DEPLOY_HOLD_MINUTES: ${{ vars.MERGE_TRAIN_DEPLOY_HOLD_MINUTES }}
         run: |
           set -euo pipefail
           scripts/merge-train.sh tick

@@ -261,7 +261,7 @@ def front_door_host() -> str:
                     GET /v1/tenants/me -> 404: an HTML 404 from Google's edge
 
     while the same API answered `GET /v1/runtimes` with 200 and five profiles
-    over the front door at https://swarm.saga.xyz. `resolve_api_url` only ever
+    over the live deployment's front door. `resolve_api_url` only ever
     asked Cloud Run, and Cloud Run's answer for a `team` deployment is the
     *.run.app address, whose ingress is `internal-and-cloud-load-balancing` --
     an address that answers a byte-identical HTML 404 to every path, healthy or
@@ -1338,6 +1338,12 @@ def _retry_after(exc: Any) -> float | None:
     return max(0.0, seconds)
 
 
+def _skew_refetch_statuses() -> tuple[int, ...]:
+    from .discovery import REFETCH_STATUSES
+
+    return REFETCH_STATUSES
+
+
 class SwarmClient:
     """A connection to one SwarmCloud, over whichever tier this machine has.
 
@@ -1407,7 +1413,26 @@ class SwarmClient:
             # that sends people looking at their IAM policy.
             self._audience = os.environ.get("SWARM_IAP_CLIENT_ID", "").strip()
         else:
-            self._audience = audience or os.environ.get("API_AUDIENCE", "").strip() or None
+            # A service account through IAP addresses the API's backend; the
+            # discovery document names it (`iap_audience`), so a one-value
+            # install needs no API_AUDIENCE.
+            self._audience = (
+                audience
+                or os.environ.get("API_AUDIENCE", "").strip()
+                or getattr(deployment, "iap_audience", "")
+                or None
+            )
+
+        #: The plugin/deployment version-skew check (`discovery.Checker`),
+        #: made before every API call. Only a deployment the plugin configured
+        #: carries one (`Deployment.skew`); an explicit `base_url` never does.
+        self.skew: Any = None
+        if self._explicit_url is None and getattr(deployment, "skew", ""):
+            from . import discovery as _discovery
+
+            self.skew = _discovery.Checker(
+                deployment.url, required=deployment.skew == _config.SKEW_REQUIRED
+            )
 
         #: The tenant every request names in `X-Swarm-Tenant`, or None to send
         #: no header and let the API pick (`chosen_tenant`).
@@ -1507,7 +1532,7 @@ class SwarmClient:
 
         -- a sentence that sends a reader to their IAM policy when the problem
         is the KIND of token. Re-measured on 2026-09-24 against the live front
-        door at https://swarm.saga.xyz, as bogdan@saga.xyz:
+        door of the live deployment, as its owner:
 
             user OAuth access token        -> 401, IAP error code 900
             impersonated SA access token   -> 403 "Access denied. For user
@@ -1810,10 +1835,19 @@ class SwarmClient:
         answered 401 with error code 900 -- costs one round trip, as before,
         and not two.
         """
+        skew = self.skew
+        if skew is not None:
+            # Every call answers a skew, by name, before it is sent (plan §6.5).
+            skew.check()
         cached = self._sends_cached_credential()
         try:
             return self._send(method, path, payload=payload, timeout=timeout, raw_limit=raw_limit)
         except SwarmError as exc:
+            if skew is not None and exc.status in _skew_refetch_statuses():
+                # A rotated client (401) or a route the deployment no longer
+                # has (404/410): read the document again, and answer a skew it
+                # now shows instead of the bare status.
+                skew.check(refetch=True)
             if exc.status == 401 and cached and self.forget_credentials():
                 return self._send(method, path, payload=payload, timeout=timeout, raw_limit=raw_limit)
             raise
@@ -2286,6 +2320,7 @@ class SwarmClient:
         auto_merge: bool = False,
         fix_rounds: int | None = None,
         model_class: str | None = None,
+        security_review: bool = False,
     ) -> dict[str, Any]:
         """Plan `issue` (`owner/repo#N` or its URL). DATA only (invariant 10):
         no profile, image or command -- the planner and every step are the
@@ -2295,7 +2330,12 @@ class SwarmClient:
         `model_class` is the PLANNER's class, by name (#1435); each plan step's
         class is the planner's to write (R1). Sent only when named, and a
         deployment that does not take it yet refuses it with a 422 that is
-        passed back as it came."""
+        passed back as it came.
+
+        `security_review` adds the optional security review after the fix
+        (docs/design/security-review-step.md). Sent only when asked, so a
+        run that did not ask sends exactly the body it sent before, and the
+        API's default (off) decides."""
         payload: dict[str, Any] = {
             "issue": issue,
             "plan_approval": plan_approval,
@@ -2303,6 +2343,8 @@ class SwarmClient:
         }
         if fix_rounds is not None:
             payload["fix_rounds"] = fix_rounds
+        if security_review:
+            payload["security_review"] = True
         if model_class:
             payload["model_class"] = model_class
         # The session that asked (SC-SESSION-SCOPE). swarm-api copies it onto

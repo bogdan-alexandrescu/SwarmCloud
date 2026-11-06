@@ -58,6 +58,13 @@ mock_provider "google" {
   }
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id           = "saga-agents-staging"
   frontend_iap_members = ["domain:example.com"]
@@ -198,14 +205,15 @@ run "the_identity_is_usable_only_by_its_job" {
     condition = alltrue([
       google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].image == var.workspace_apply_image,
       slice(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command, 0, 3) == tolist(["python3", "-I", "/opt/swarm/entry.py"]),
-      length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command) == 4,
+      length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command) == 5,
       try(startswith(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command[3], "--spec-verify-keys-sha256="), false),
+      try(startswith(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command[4], "--spec-signing-key=projects/${var.project_id}/"), false),
       try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].args), 0) == 0,
       [for e in google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env : e.name] == ["SPEC_VERIFY_KEYS"],
       length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers) == 1,
       try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].volumes), 0) == 0,
     ])
-    error_message = "the job runs one container: the pinned image by digest, with the command `python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex>` (the scrub, §2.2 step 0, and the pin of its keys), no argument or volume of its own, and SPEC_VERIFY_KEYS as its only variable (tests/terraform/workspace_approval_keys.tftest.hcl)"
+    error_message = "the job runs one container: the pinned image by digest, with the command `python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex> --spec-signing-key=<key>` (the scrub, §2.2 step 0, the pin of its keys and the key it trusts), no argument or volume of its own, and SPEC_VERIFY_KEYS as its only variable (tests/terraform/workspace_approval_keys.tftest.hcl)"
   }
 
   assert {

@@ -96,7 +96,11 @@ work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 answer="${work}/pull.json"
 
-if ! gh api "repos/${repo}/pulls/${pr}" >"${answer}"; then
+# Reads go through gh_api_read_retry: a transient failure (a timeout, a 502,
+# a rate limit) is asked again; one that never clears fails closed as before.
+answer_err="${work}/pull.err"
+if ! gh_api_read_retry "${answer}" "${answer_err}" "repos/${repo}/pulls/${pr}"; then
+  cat "${answer_err}" >&2
   die "could not read #${pr}'s body from ${repo}"
 fi
 # Slurped, so an EMPTY answer is an empty array and fails: jq 1.6's `-e` exits
@@ -159,7 +163,7 @@ while IFS=$'\t' read -r dep_repo number; do
   fi
   item="${work}/item-${visited}.json"
   item_err="${work}/item-${visited}.err"
-  if ! gh api "repos/${dep_repo}/issues/${number}" >"${item}" 2>"${item_err}"; then
+  if ! gh_api_read_retry "${item}" "${item_err}" "repos/${dep_repo}/issues/${number}"; then
     if grep -q "HTTP 404" "${item_err}"; then
       note "* **${ref}: not found**"
       pending+=("${ref}")

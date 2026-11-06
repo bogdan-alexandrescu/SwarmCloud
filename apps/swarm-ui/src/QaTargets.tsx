@@ -1,8 +1,9 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import { loadQaSettings, loadRepositories, type QaSettings } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
 import { UrLink, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
+import { InfoTip } from './People'
 import { useIsAdmin } from './PermissionCards'
 import { useRoleGate } from './Profile'
 import { PageHead } from './Shell'
@@ -34,6 +35,7 @@ import {
   type QaLink,
   type QaRunGroupStart,
   type QaScreen,
+  type QaSignIn,
   type QaTarget,
   type QaTargetSend,
 } from './qaTargetsApi'
@@ -134,6 +136,22 @@ import './styles/repositories.css'
 export const QA_TARGETS_PAGE = 'work/repositories?page=qa-targets'
 
 const LIST_ROUTE = 'GET /v1/qa-targets'
+
+/**
+ * WRITING FLOWS (part of #2688; qa-environments.md §6): a flow marked `mutating` declares in `writes`, one sentence,
+ * what it may write. The target's row names each such flow, its sentence behind an (i). A mutating flow with no
+ * `writes` (saved before it was required) runs read-only, so it is not named here.
+ */
+function writingFlows(raw: unknown): { id: string; writes: string }[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((f) => {
+    if (typeof f !== 'object' || f === null) return []
+    const { id, mutating, writes } = f as Record<string, unknown>
+    return mutating === true && typeof id === 'string' && typeof writes === 'string' && writes.trim() !== ''
+      ? [{ id, writes: writes.trim() }]
+      : []
+  })
+}
 
 /** The run's flows-per-step field width: two digits and the spinner. */
 const FLOWS_INPUT: CSSProperties = { width: '4.5rem' }
@@ -628,6 +646,11 @@ function TargetCard({
           Files in <b>{slug ?? t.repository ?? t.repo_id ?? 'an unnamed repository'}</b>
         </span>
         <span>{screensWords}</span>
+        {writingFlows(t.more.flows).map((f) => (
+          <span key={f.id} className="qa-flow" data-writing-flow={f.id}>
+            <code>{f.id}</code> writes <InfoTip about={`what ${f.id} writes`} tip={f.writes} />
+          </span>
+        ))}
       </div>
       <div className="qa-envs-wrap">
         <table className="qa-envs" aria-label={`${t.name}’s environments`}>
@@ -681,6 +704,7 @@ function TargetCard({
                   </td>
                   <td data-label="Host" className="qa-env-host">
                     {leg.base_url ?? leg.host ?? '—'}
+                    {leg.entry_query !== null && <small data-entry-query="">{` ?${leg.entry_query}`}</small>}
                   </td>
                   <td data-label="Host approval">
                     <span className={leg.host_state === 'approved' ? 'qa-ok' : 'ur-bad'}>{hostWords(leg)}</span>
@@ -1208,13 +1232,8 @@ function screensText(screens: QaScreen[]): string {
   return screens.map((s) => `${s.id} ${s.path}`).join('\n')
 }
 
-interface Draft {
-  name: string
-  base_url: string
-  repository: string
-  authorized_by: string
-  environment: 'production' | 'non_production'
-  flows_browser_tool: FlowBrowserTool
+/** A sign-in as the form edits it (`qatargets._sign_in`): the target's, or one leg's. */
+interface SignInDraft {
   kind: 'none' | 'own_login'
   login_path: string
   signed_in_selector: string
@@ -1223,18 +1242,69 @@ interface Draft {
   submit_selector: string
   /** The sign-in's start clicks, a row each (§2.2); `css` empty is none. */
   start_clicks: { text: string; css: string }[]
-  /** Not drawn here (Approve host names it), but carried so a sign-in change never drops it. */
+  /** A one-origin target's is not drawn (Approve host names it), but carried so a sign-in change never drops it. */
   extra_origin: string
+}
+
+interface Draft {
+  name: string
+  base_url: string
+  repository: string
+  authorized_by: string
+  environment: 'production' | 'non_production'
+  flows_browser_tool: FlowBrowserTool
+  /** A one-origin target's sign-in; a target of entries signs in per entry (`legs`). */
+  sign_in: SignInDraft
   screens: string
   /** `MORE_FIELDS` as one JSON object; empty is none. */
   more: string
   /** The challenge bypass's kind (§2.5), `none` for none, and its header or cookie name. */
   bypass_kind: 'none' | 'header' | 'cookie'
   bypass_name: string
+  /** A one-origin target's entry query (`qaspec.entry_query`): `key=value` pairs every URL it opens carries. */
+  entry_query: string
+  /**
+   * A target of entries: each entry as served, its entry query as typed, and
+   * its sign-in as edited beside the one read (an entry whose sign-in is
+   * unchanged sends the served one back as it was).
+   */
+  legs: { name: string; spec: Record<string, unknown>; entry_query: string; sign_in: SignInDraft; read: SignInDraft }[]
 }
 
 /** `qaspec.MAX_START_CLICKS`: the API refuses a fourth. */
 const MAX_START_CLICKS = 3
+
+function signInDraftOf(s: QaSignIn | null): SignInDraft {
+  return {
+    kind: s?.kind ?? 'none',
+    login_path: s?.login_path ?? '',
+    signed_in_selector: s?.signed_in_selector ?? '',
+    username_selector: s?.username_selector ?? '',
+    password_selector: s?.password_selector ?? '',
+    submit_selector: s?.submit_selector ?? '',
+    start_clicks: (s?.start_clicks ?? []).map((c) => ({ text: c.text, css: c.css ?? '' })),
+    extra_origin: s?.extra_origin ?? '',
+  }
+}
+
+/** A sign-in as the API takes it: `{kind: none}`, or the own login's fields, an empty optional one left out. */
+function signInBody(d: SignInDraft): Record<string, unknown> {
+  const signIn: Record<string, unknown> = { kind: d.kind }
+  if (d.kind === 'own_login') {
+    signIn.login_path = d.login_path.trim()
+    signIn.signed_in_selector = d.signed_in_selector.trim()
+    for (const k of ['username_selector', 'password_selector', 'submit_selector'] as const) {
+      if (d[k].trim() !== '') signIn[k] = d[k].trim()
+    }
+    if (d.extra_origin.trim() !== '') signIn.extra_origin = d.extra_origin.trim()
+    const clicks = d.start_clicks
+      .map((c) => ({ text: c.text.trim(), css: c.css.trim() }))
+      .filter((c) => c.text !== '' || c.css !== '')
+      .map((c) => (c.css === '' ? { text: c.text } : c))
+    if (clicks.length > 0) signIn.start_clicks = clicks
+  }
+  return signIn
+}
 
 function draftOf(t: QaTarget | null): Draft {
   return {
@@ -1244,19 +1314,23 @@ function draftOf(t: QaTarget | null): Draft {
     authorized_by: t?.authorized_by ?? '',
     environment: t?.environment ?? 'production',
     flows_browser_tool: t?.flows_browser_tool ?? 'playwright',
-    kind: t?.sign_in.kind ?? 'none',
-    login_path: t?.sign_in.login_path ?? '',
-    signed_in_selector: t?.sign_in.signed_in_selector ?? '',
-    username_selector: t?.sign_in.username_selector ?? '',
-    password_selector: t?.sign_in.password_selector ?? '',
-    submit_selector: t?.sign_in.submit_selector ?? '',
-    start_clicks: (t?.sign_in.start_clicks ?? []).map((c) => ({ text: c.text, css: c.css ?? '' })),
-    extra_origin: t?.sign_in.extra_origin ?? '',
+    sign_in: signInDraftOf(t?.sign_in ?? null),
     screens: screensText(t?.screens ?? []),
     more: t === null || Object.keys(t.more).length === 0 ? '' : JSON.stringify(t.more, null, 2),
     bypass_kind: t?.challenge_bypass?.kind ?? 'none',
     bypass_name: t?.challenge_bypass?.name ?? '',
+    entry_query: t?.entry_query ?? '',
+    legs: (t?.environments ?? []).flatMap((e) =>
+      e.name === null || e.spec === null
+        ? []
+        : [{ name: e.name, spec: e.spec, entry_query: e.entry_query ?? '', sign_in: signInDraftOf(e.sign_in), read: signInDraftOf(e.sign_in) }],
+    ),
   }
+}
+
+/** An entry query as the API stores it: trimmed, no leading `?`; empty is none. */
+function queryOf(text: string): string {
+  return text.trim().replace(/^\?/, '')
 }
 
 /** The More settings box: an object of `MORE_FIELDS` only, or the refusal in words. */
@@ -1280,32 +1354,34 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
   if (typeof screens === 'string') return screens
   const more = parseMore(d.more)
   if (typeof more === 'string') return more
-  const signIn: Record<string, unknown> = { kind: d.kind }
-  if (d.kind === 'own_login') {
-    signIn.login_path = d.login_path.trim()
-    signIn.signed_in_selector = d.signed_in_selector.trim()
-    for (const k of ['username_selector', 'password_selector', 'submit_selector'] as const) {
-      if (d[k].trim() !== '') signIn[k] = d[k].trim()
-    }
-    if (d.extra_origin !== '') signIn.extra_origin = d.extra_origin
-    const clicks = d.start_clicks
-      .map((c) => ({ text: c.text.trim(), css: c.css.trim() }))
-      .filter((c) => c.text !== '' || c.css !== '')
-      .map((c) => (c.css === '' ? { text: c.text } : c))
-    if (clicks.length > 0) signIn.start_clicks = clicks
-  }
   const full: QaTargetSend = {
     name: d.name.trim(),
     base_url: d.base_url.trim(),
     repository: d.repository,
     authorized_by: d.authorized_by.trim(),
-    sign_in: signIn,
+    // A target of entries has no sign-in of its own: each entry carries one.
+    ...(d.legs.length === 0 ? { sign_in: signInBody(d.sign_in) } : {}),
     screens,
     environment: d.environment,
     ...more,
     flows_browser_tool: d.flows_browser_tool,
   }
   if (d.bypass_kind !== 'none') full.challenge_bypass = { kind: d.bypass_kind, name: d.bypass_name.trim() }
+  if (d.legs.length > 0) {
+    // A target of entries takes a leg's field in `environments` alone (a
+    // `sign_in` beside them is refused): every entry is sent back whole, so
+    // the one that changed is the only change, and an entry whose sign-in was
+    // not touched sends the served one as it was read.
+    full.environments = d.legs.map(({ spec, entry_query, sign_in, read }) => {
+      const rest = { ...spec }
+      if (JSON.stringify(sign_in) !== JSON.stringify(read)) rest.sign_in = signInBody(sign_in)
+      delete rest.entry_query
+      const query = queryOf(entry_query)
+      return query === '' ? rest : { ...rest, entry_query: query }
+    })
+  } else if (queryOf(d.entry_query) !== '') {
+    full.entry_query = queryOf(d.entry_query)
+  }
   if (was === null) return full
   const old = bodyOf(was, null)
   if (typeof old === 'string') return full
@@ -1318,6 +1394,150 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
     if (JSON.stringify(now) !== JSON.stringify((old as Record<string, unknown>)[k] ?? null)) changed[k] = now
   }
   return changed as QaTargetSend
+}
+
+/** How a leg signs in, in the words of the Sign-in select, for its folded row. */
+function signInWords(s: SignInDraft): string {
+  if (s.kind === 'none') return 'Public pages, no sign-in'
+  const selector = s.signed_in_selector.trim()
+  return selector === '' ? 'The app\u2019s own login' : `The app\u2019s own login \u00b7 ${selector}`
+}
+
+/**
+ * One sign-in's rows of the form grid: the one-origin target's (`suffix`
+ * empty, the field names as they always were) or one leg's (`-<leg>` after
+ * each name). A leg's extra origin is drawn too: a target of entries has no
+ * one Approve host to name it, and a change of it asks that leg's host
+ * approval again (`qatargets.patch` resets it).
+ */
+function SignInFields({
+  fid,
+  suffix,
+  value: s,
+  onChange,
+  extraOrigin,
+}: {
+  fid: string
+  suffix: string
+  value: SignInDraft
+  onChange: (next: SignInDraft) => void
+  extraOrigin?: { leg: string; read: string }
+}) {
+  const set = (k: Exclude<keyof SignInDraft, 'start_clicks'>) => (e: { target: { value: string } }) =>
+    onChange({ ...s, [k]: e.target.value })
+  const setClick = (i: number, k: 'text' | 'css') => (e: { target: { value: string } }) =>
+    onChange({ ...s, start_clicks: s.start_clicks.map((c, j) => (j === i ? { ...c, [k]: e.target.value } : c)) })
+  const id = (k: string) => `${fid}-${k}${suffix}`
+  const name = (k: string) => `${k}${suffix}`
+  return (
+    <>
+      <label className="ur-fl" htmlFor={id('kind')}>
+        Sign-in
+      </label>
+      <div>
+        <select id={id('kind')} name={name('kind')} value={s.kind} onChange={set('kind')}>
+          <option value="none">Public pages, no sign-in</option>
+          <option value="own_login">The app&rsquo;s own login</option>
+        </select>
+      </div>
+      {s.kind === 'own_login' && (
+        <>
+          <label className="ur-fl" htmlFor={id('login_path')}>
+            Login path
+          </label>
+          <div>
+            <input id={id('login_path')} name={name('login_path')} value={s.login_path} onChange={set('login_path')} placeholder="/login" />
+          </div>
+          <label className="ur-fl" htmlFor={id('signed_in_selector')}>
+            Signed-in selector<small>required</small>
+          </label>
+          <div>
+            <input id={id('signed_in_selector')} name={name('signed_in_selector')} value={s.signed_in_selector} onChange={set('signed_in_selector')} />
+          </div>
+          <label className="ur-fl" htmlFor={id('username_selector')}>
+            Username selector
+          </label>
+          <div>
+            <input id={id('username_selector')} name={name('username_selector')} value={s.username_selector} onChange={set('username_selector')} />
+          </div>
+          <label className="ur-fl" htmlFor={id('password_selector')}>
+            Password selector
+          </label>
+          <div>
+            <input id={id('password_selector')} name={name('password_selector')} value={s.password_selector} onChange={set('password_selector')} />
+          </div>
+          <label className="ur-fl" htmlFor={id('submit_selector')}>
+            Submit selector
+          </label>
+          <div>
+            <input id={id('submit_selector')} name={name('submit_selector')} value={s.submit_selector} onChange={set('submit_selector')} />
+          </div>
+          {extraOrigin !== undefined && (
+            <>
+              <label className="ur-fl" htmlFor={id('extra_origin')}>
+                Extra origin<small>optional</small>
+              </label>
+              <div>
+                <input
+                  id={id('extra_origin')}
+                  name={name('extra_origin')}
+                  value={s.extra_origin}
+                  onChange={set('extra_origin')}
+                  placeholder="https://id.example.com"
+                  spellCheck={false}
+                />
+                {s.extra_origin.trim() !== extraOrigin.read.trim() && (
+                  <p className="ur-hint" data-extra-origin-reset="">{`${extraOrigin.leg}\u2019s host approval will be asked again.`}</p>
+                )}
+              </div>
+            </>
+          )}
+          <div className="ur-fl">
+            Start clicks
+            <small>
+              What the gate clicks, in order, before the form (a chooser, or a &ldquo;Sign in&rdquo; button before the identity provider).
+              Text is the control&rsquo;s exact visible text; CSS, optional, narrows the candidates (for example button).
+            </small>
+          </div>
+          <div>
+            {s.start_clicks.map((c, i) => (
+              <div key={i} className="qa-start-click" role="group" aria-label={`Start click ${i + 1}`}>
+                <b>Click {i + 1}</b>
+                <label>
+                  Text{' '}
+                  <input
+                    name={name(`start_click_text_${i}`)}
+                    value={c.text}
+                    onChange={setClick(i, 'text')}
+                    maxLength={60}
+                    aria-label={`Click ${i + 1} text`}
+                  />
+                </label>
+                <label>
+                  CSS{' '}
+                  <input
+                    name={name(`start_click_css_${i}`)}
+                    value={c.css}
+                    onChange={setClick(i, 'css')}
+                    maxLength={200}
+                    aria-label={`Click ${i + 1} CSS`}
+                  />
+                </label>
+                <Button size="sm" name={name('remove_start_click')} onClick={() => onChange({ ...s, start_clicks: s.start_clicks.filter((_, j) => j !== i) })}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+            {s.start_clicks.length < MAX_START_CLICKS && (
+              <Button size="sm" onClick={() => onChange({ ...s, start_clicks: [...s.start_clicks, { text: '', css: '' }] })}>
+                Add start click
+              </Button>
+            )}
+          </div>
+        </>
+      )}
+    </>
+  )
 }
 
 /** Register (target null) or change one. The API checks every field and says its own refusal. */
@@ -1339,8 +1559,6 @@ function TargetForm({
   // Each label cell names its control by id (`ur-fl` beside it, not around it).
   const fid = useId()
   const set = (k: keyof Draft) => (e: { target: { value: string } }) => setD((was) => ({ ...was, [k]: e.target.value }))
-  const setClick = (i: number, k: 'text' | 'css') => (e: { target: { value: string } }) =>
-    setD((was) => ({ ...was, start_clicks: was.start_clicks.map((c, j) => (j === i ? { ...c, [k]: e.target.value } : c)) }))
   const slugs = repos.state.status === 'ok' || repos.state.status === 'stale' ? repos.state.data.map((r) => repoName(r)) : []
   if (d.repository !== '' && !slugs.includes(d.repository)) slugs.push(d.repository)
 
@@ -1402,6 +1620,72 @@ function TargetForm({
               <p className="ur-hint">{`Changing the address's host sets ${target.host}'s approval back to pending.`}</p>
             )}
           </div>
+          {d.legs.length === 0 ? (
+            <>
+              <label className="ur-fl" htmlFor={`${fid}-entry_query`}>
+                Entry query<small>optional</small>
+              </label>
+              <div>
+                <input
+                  id={`${fid}-entry_query`}
+                  name="entry_query"
+                  value={d.entry_query}
+                  onChange={set('entry_query')}
+                  placeholder="env=production"
+                  maxLength={257}
+                />
+                <p className="ur-hint">
+                  Plain key=value pairs, joined by &amp;, added to every address the run opens, sign-in included: for an app
+                  that picks its environment from the address. Never a token or a password. Changing it keeps the host&apos;s
+                  approval.
+                </p>
+              </div>
+            </>
+          ) : (
+            d.legs.map((leg, i) => (
+              <Fragment key={leg.name}>
+                <label className="ur-fl" htmlFor={`${fid}-entry_query-${leg.name}`}>
+                  {`Entry query, ${leg.name}`}
+                  <small>optional</small>
+                </label>
+                <div>
+                  <input
+                    id={`${fid}-entry_query-${leg.name}`}
+                    name={`entry_query-${leg.name}`}
+                    value={leg.entry_query}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      setD((was) => ({ ...was, legs: was.legs.map((l, j) => (j === i ? { ...l, entry_query: value } : l)) }))
+                    }}
+                    placeholder="env=production"
+                    maxLength={257}
+                  />
+                  {i === d.legs.length - 1 && (
+                    <p className="ur-hint">
+                      Plain key=value pairs, joined by &amp;, added to every address that environment&apos;s runs open, sign-in
+                      included. Never a token or a password. Changing one keeps its host&apos;s approval.
+                    </p>
+                  )}
+                </div>
+                <div className="ur-fl">{`Sign-in, ${leg.name}`}</div>
+                <div>
+                  {/* Folded, so seven legs keep the form short; the fold names how the leg signs in. */}
+                  <details className="qa-leg-sign-in" data-leg-sign-in={leg.name}>
+                    <summary>{signInWords(leg.sign_in)}</summary>
+                    <div className="ur-fgrid">
+                      <SignInFields
+                        fid={fid}
+                        suffix={`-${leg.name}`}
+                        value={leg.sign_in}
+                        onChange={(next) => setD((was) => ({ ...was, legs: was.legs.map((l, j) => (j === i ? { ...l, sign_in: next } : l)) }))}
+                        extraOrigin={{ leg: leg.name, read: leg.read.extra_origin }}
+                      />
+                    </div>
+                  </details>
+                </div>
+              </Fragment>
+            ))
+          )}
           <label className="ur-fl" htmlFor={`${fid}-repository`}>
             Files findings in
           </label>
@@ -1439,94 +1723,8 @@ function TargetForm({
               <option value="jev">Jev</option>
             </select>
           </div>
-          <label className="ur-fl" htmlFor={`${fid}-kind`}>
-            Sign-in
-          </label>
-          <div>
-            <select id={`${fid}-kind`} name="kind" value={d.kind} onChange={set('kind')}>
-              <option value="none">Public pages, no sign-in</option>
-              <option value="own_login">The app&rsquo;s own login</option>
-            </select>
-          </div>
-          {d.kind === 'own_login' && (
-            <>
-              <label className="ur-fl" htmlFor={`${fid}-login_path`}>
-                Login path
-              </label>
-              <div>
-                <input id={`${fid}-login_path`} name="login_path" value={d.login_path} onChange={set('login_path')} placeholder="/login" />
-              </div>
-              <label className="ur-fl" htmlFor={`${fid}-signed_in_selector`}>
-                Signed-in selector<small>required</small>
-              </label>
-              <div>
-                <input id={`${fid}-signed_in_selector`} name="signed_in_selector" value={d.signed_in_selector} onChange={set('signed_in_selector')} />
-              </div>
-              <label className="ur-fl" htmlFor={`${fid}-username_selector`}>
-                Username selector
-              </label>
-              <div>
-                <input id={`${fid}-username_selector`} name="username_selector" value={d.username_selector} onChange={set('username_selector')} />
-              </div>
-              <label className="ur-fl" htmlFor={`${fid}-password_selector`}>
-                Password selector
-              </label>
-              <div>
-                <input id={`${fid}-password_selector`} name="password_selector" value={d.password_selector} onChange={set('password_selector')} />
-              </div>
-              <label className="ur-fl" htmlFor={`${fid}-submit_selector`}>
-                Submit selector
-              </label>
-              <div>
-                <input id={`${fid}-submit_selector`} name="submit_selector" value={d.submit_selector} onChange={set('submit_selector')} />
-              </div>
-              <div className="ur-fl">
-                Start clicks
-                <small>
-                  What the gate clicks, in order, before the form (a chooser, or a &ldquo;Sign in&rdquo; button before the identity provider).
-                  Text is the control&rsquo;s exact visible text; CSS, optional, narrows the candidates (for example button).
-                </small>
-              </div>
-              <div>
-                {d.start_clicks.map((c, i) => (
-                  <div key={i} className="qa-start-click" role="group" aria-label={`Start click ${i + 1}`}>
-                    <b>Click {i + 1}</b>
-                    <label>
-                      Text{' '}
-                      <input
-                        name={`start_click_text_${i}`}
-                        value={c.text}
-                        onChange={setClick(i, 'text')}
-                        maxLength={60}
-                        aria-label={`Click ${i + 1} text`}
-                      />
-                    </label>
-                    <label>
-                      CSS{' '}
-                      <input
-                        name={`start_click_css_${i}`}
-                        value={c.css}
-                        onChange={setClick(i, 'css')}
-                        maxLength={200}
-                        aria-label={`Click ${i + 1} CSS`}
-                      />
-                    </label>
-                    <Button
-                      size="sm"
-                      name="remove_start_click"
-                      onClick={() => setD((was) => ({ ...was, start_clicks: was.start_clicks.filter((_, j) => j !== i) }))}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                ))}
-                {d.start_clicks.length < MAX_START_CLICKS && (
-                  <Button size="sm" onClick={() => setD((was) => ({ ...was, start_clicks: [...was.start_clicks, { text: '', css: '' }] }))}>
-                    Add start click
-                  </Button>
-                )}
-              </div>
-            </>
+          {d.legs.length === 0 && (
+            <SignInFields fid={fid} suffix="" value={d.sign_in} onChange={(next) => setD((was) => ({ ...was, sign_in: next }))} />
           )}
           <label className="ur-fl" htmlFor={`${fid}-bypass_kind`}>
             Challenge bypass

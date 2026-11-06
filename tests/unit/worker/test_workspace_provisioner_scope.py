@@ -63,7 +63,12 @@ RESOURCES = {
     "NetworkPolicy": ("networking.k8s.io", "networkpolicies"),
     "Role": ("rbac.authorization.k8s.io", "roles"),
     "RoleBinding": ("rbac.authorization.k8s.io", "rolebindings"),
+    "FQDNNetworkPolicy": ("networking.gke.io", "fqdnnetworkpolicies"),
 }
+
+#: The tenant's one hostname policy (render.py TENANT_FQDN_FILES), rendered only
+#: where the cluster serves the kind (docs/runbooks/typesafe-egress.md).
+FQDN_POLICY = "swarm-allow-typesafe-direct"
 
 
 def _load_renderer() -> Any:
@@ -101,9 +106,10 @@ def policy_docs() -> list[dict[str, Any]]:
 def tenant_docs() -> list[dict[str, Any]]:
     """A person's namespace as the deployer will apply it: both worker KSAs
     bound (the older one is rendered only where it is) and the control plane
-    named by uniqueId, as kubernetes/apply.sh renders it."""
+    named by uniqueId, as kubernetes/apply.sh renders it -- on a cluster that
+    serves FQDNNetworkPolicy, so the render holds every object it ever can."""
     return _render(
-        "tenant", "--tenant", PERSON, "--project", PROJECT,
+        "tenant", "--tenant", PERSON, "--project", PROJECT, "--fqdn-network-policy",
         "--bound-ksa", render.DEFAULT_KSA_NAME, "--bound-ksa", render.LEGACY_KSA_NAME,
         "--scheduler-uid", SCHEDULER_UID, "--reconciler-uid", RECONCILER_UID,
     )
@@ -270,7 +276,28 @@ def test_the_cluster_role_is_the_grant_section_2_3_lists(policy_docs):
         ("networking.k8s.io", "networkpolicies"): write,
         ("rbac.authorization.k8s.io", "roles"): write | {"escalate", "bind"},
         ("rbac.authorization.k8s.io", "rolebindings"): write,
+        ("networking.gke.io", "fqdnnetworkpolicies"): write,
     }
+
+
+def test_the_hostname_policy_grant_names_the_one_policy(policy_docs, tenant_docs):
+    """`get` and `patch` on FQDNNetworkPolicies name swarm-allow-typesafe-direct
+    and nothing else; `create`, which RBAC cannot narrow by name, is alone in
+    its rule, and the scope policy admits that one name. MUTATION: drop the
+    resourceNames and the deployer may read and patch every hostname policy
+    in the cluster, swarm-system's forwarder policy included."""
+    role = _one(policy_docs, "ClusterRole", "swarm-workspace-deployer")
+    fqdn = [r for r in role["rules"] if "fqdnnetworkpolicies" in r["resources"]]
+    assert all(r["apiGroups"] == ["networking.gke.io"] and r["resources"] == ["fqdnnetworkpolicies"]
+               for r in fqdn), fqdn
+    named = [r for r in fqdn if "resourceNames" in r]
+    unnamed = [r for r in fqdn if "resourceNames" not in r]
+    assert [(sorted(r["verbs"]), r["resourceNames"]) for r in named] == [(["get", "patch"], [FQDN_POLICY])]
+    assert [r["verbs"] for r in unnamed] == [["create"]], unnamed
+    scope = _one(policy_docs, "ValidatingAdmissionPolicy", "swarm-workspace-deployer-scope")
+    assert _variable(scope, "names")["networking.gke.io/fqdnnetworkpolicies"] == [FQDN_POLICY]
+    rendered = [d["metadata"]["name"] for d in tenant_docs if d["kind"] == "FQDNNetworkPolicy"]
+    assert rendered == [FQDN_POLICY]
 
 
 def test_the_cluster_role_never_deletes_and_never_touches_a_workload_or_secret(policy_docs):
@@ -303,7 +330,14 @@ def test_the_policy_and_the_call_guard_allow_the_same_kinds(policy_docs):
     guard = json.loads(CALLS.read_text())
     plural = {f"{g}/{r}": kind for kind, (g, r) in RESOURCES.items()}
     kinds = {plural[key] for key in _variable(scope, "names")} | {"Namespace"}
+    # The hostname policy included: kubernetes/apply.sh renders it under the
+    # job's call guard where the cluster serves the kind, and the guard admits
+    # it by its one name (kube_kind_names), as the ClusterRole grants get and
+    # patch on that name alone.
     assert kinds == set(guard["kube_kinds"])
+    assert guard["kube_kind_names"] == {"FQDNNetworkPolicy": ["swarm-allow-typesafe-direct"]}
+    apply_sh = (KUBERNETES / "apply.sh").read_text()
+    assert "hostname policy  skipped: the workspace call guard" not in apply_sh
 
 
 def test_the_kube_system_role_reads_two_named_objects_and_nothing_else(policy_docs):
@@ -1094,10 +1128,10 @@ APPLY = KUBERNETES / "apply.sh"
 
 def _apply(*args: str) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "GOOGLE_", "CLOUDSDK_"))}
-    env.update(SWARM_ENV_FILE="/nonexistent/swarm.env", NO_COLOR="1", KUBECONFIG="/nonexistent/kubeconfig")
-    # common.sh has no default project (DAYONE-DESAGA-2): name one, so the
-    # refusal under test is the --workspace-id one, not the missing project.
-    env.setdefault("PROJECT_ID", "swarm-test-project")
+    # apply.sh has no default project (DAYONE-K8S-1) and refuses an unset one
+    # first; these refusals are the next ones, so a project is given.
+    env.update(SWARM_ENV_FILE="/nonexistent/swarm.env", NO_COLOR="1", KUBECONFIG="/nonexistent/kubeconfig",
+               PROJECT_ID=PROJECT)
     return subprocess.run(
         ["bash", str(APPLY), *args], cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False
     )

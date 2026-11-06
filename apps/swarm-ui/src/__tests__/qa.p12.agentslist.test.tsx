@@ -33,9 +33,10 @@ import { attempt, task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
-  loadTasksInState: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadAttempts: vi.fn(),
   loadLiveSession: vi.fn(),
+  loadTaskDigests: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -75,10 +76,14 @@ function page(tasks: Task[], token: string | null): Result<TaskPage> {
   return ok({ tasks, next_page_token: token, tenant_id: 'eng' })
 }
 
-/** Every `?state=` read answers from `all`, whole, as the server would. */
+/**
+ * Every `?state=` read answers from `all`, whole, as the server would: every
+ * state asked for, as one `in` query (#2998).
+ */
 function statesFrom(all: Task[]) {
-  api.loadTasksInState.mockImplementation(async (state: TaskState) => {
-    const tasks = all.filter((t) => t.state === state)
+  api.loadTasksInStates.mockImplementation(async (states: readonly TaskState[]) => {
+    const asked = new Set<TaskState>(states)
+    const tasks = all.filter((t) => asked.has(t.state))
     return tasks.length === 0 ? ({ status: 'empty', fetchedAt: Date.now() } satisfies Result<TaskPage>) : page(tasks, null)
   })
 }
@@ -98,8 +103,8 @@ function session(device: LiveSession['device']): Result<LiveRead> {
 
 const rowEl = (id: string) => document.querySelector<HTMLElement>(`.row.is-compact[data-task-id="${id}"]`)
 
-async function mount(): Promise<void> {
-  render(<AgentsScreen onOpen={() => {}} />)
+async function mount(open: string | null = null): Promise<void> {
+  render(<AgentsScreen onOpen={() => {}} taskId={open} />)
   await waitFor(() => expect(document.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
 }
 
@@ -113,7 +118,8 @@ describe('QA12-12: the row says the attempt the header says', () => {
     api.loadTasks.mockResolvedValue(page([resumed], null))
     statesFrom([resumed])
     api.loadAttempts.mockResolvedValue(ok({ attempts: [attempt(1), attempt(2)] as AttemptRow[] }))
-    await mount()
+    // The OPEN row reads the documents; every other row its own counter.
+    await mount(resumed.id)
     await waitFor(() => expect(rowEl(resumed.id)?.querySelector('.cr-try')?.textContent).toBe('attempt 2 of 3'))
     expect(api.loadAttempts).toHaveBeenCalledWith(resumed.id)
     expect(rowEl(resumed.id)!.textContent).not.toMatch(/try \d/)
@@ -126,7 +132,7 @@ describe('QA12-12: the row says the attempt the header says', () => {
     api.loadTasks.mockResolvedValue(page([first], null))
     statesFrom([first])
     api.loadAttempts.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })
-    await mount()
+    await mount(first.id)
     await waitFor(() => expect(api.loadAttempts).toHaveBeenCalled())
     await waitFor(() => expect(rowEl(first.id)?.querySelector('.cr-try')?.textContent).toBe('attempt 1 of 3'))
   })
@@ -151,8 +157,10 @@ describe('QA12-20: the Live tab says exactly what it holds', () => {
     expect(document.querySelectorAll('.rows .row.is-compact')).toHaveLength(5)
     expect(document.body.textContent).not.toMatch(/more beyond/)
     expect(screen.queryByRole('button', { name: /^Load \d+ more$/ })).toBeNull()
-    // Every live state was read, and the waiting states beside them (VQ-012), nothing else.
-    expect(api.loadTasksInState.mock.calls.map(([s]) => s).sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
+    // Every live state was read, and the waiting states beside them (VQ-012),
+    // nothing else -- as ONE `?state=` list read (load-speed, #2688).
+    expect(api.loadTasksInStates).toHaveBeenCalledTimes(1)
+    expect([...api.loadTasksInStates.mock.calls[0]![0]].sort()).toEqual(['DISPATCHED', 'LEASED', 'PARKED', 'READY', 'RUNNING', 'STARTING'])
 
     // CONTROL: Recent is still a capped page, and still says so.
     fireEvent.click(screen.getByRole('tab', { name: /^Recent/ }))
@@ -162,10 +170,10 @@ describe('QA12-20: the Live tab says exactly what it holds', () => {
 
   it('keeps the lower bound when a live-state read fails', async () => {
     api.loadTasks.mockResolvedValue(page([...live, ...finished], 'next-1'))
-    api.loadTasksInState.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })
+    api.loadTasksInStates.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     await mount()
-    await waitFor(() => expect(api.loadTasksInState).toHaveBeenCalled())
+    await waitFor(() => expect(api.loadTasksInStates).toHaveBeenCalled())
     expect(screen.getByRole('tab', { name: /^Live/ }).querySelector('.badge')?.textContent).toBe('4+')
   })
 })
@@ -182,6 +190,7 @@ describe('QA12-20: the browser switch inside Live', () => {
     statesFrom(rows())
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     api.loadLiveSession.mockResolvedValue(session(null))
+    api.loadTaskDigests.mockResolvedValue(ok({ digests: [], presets: [] }))
     await mount()
     return screen.getByRole('group', { name: /browser agents/i })
   }
@@ -217,7 +226,13 @@ describe('QA12-29: the device outline follows a switch', () => {
     statesFrom([b])
     api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     let device: LiveSession['device'] = { preset: 'iphone-15', orientation: 'portrait', touch: true }
-    api.loadLiveSession.mockImplementation(async () => session(device))
+    // The rows' devices come from ONE digests read per list read (#2688,
+    // WORK-READS-SPEED), not a session read per row.
+    api.loadTaskDigests.mockImplementation(async (ids: readonly string[]) => {
+      const s = session(device)
+      const presets = s.status === 'ok' ? s.data.session!.presets : []
+      return ok({ digests: ids.map((id) => ({ task_id: id, state: 'RUNNING', live: { live_browser: true, session_state: 'open', device } })), presets })
+    })
     render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
     await advance(0)

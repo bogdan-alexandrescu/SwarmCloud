@@ -43,7 +43,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { AdminSettingsScreen, FallbackTokenCard } = await import('../AdminSettings')
+const { AdminSettingsScreen, FallbackTokenCard, poolSpoken } = await import('../AdminSettings')
 const { PlatformCountsScreen, forgetLastRun } = await import('../PlatformCounts')
 const { TenantsScreen } = await import('../Activity')
 
@@ -107,7 +107,7 @@ async function limits(pools: Pool[]): Promise<void> {
 
 function edit(name: string): HTMLElement {
   const row = document.getElementById(`limit-${name}`)!
-  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${name}` }))
+  fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
   const side = document.querySelector<HTMLElement>('aside.adm-side')
   expect(side, 'edit opened no editor').not.toBeNull()
   return side!

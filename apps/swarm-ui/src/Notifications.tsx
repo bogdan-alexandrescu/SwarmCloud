@@ -149,6 +149,12 @@ export function needsSplit(items: readonly NotificationItem[]): string {
     .join(' · ')
 }
 
+/** ONE NEEDS, TWO NEED (QA2 admin2-17): the bell's name, its live line and the
+ * panel's chip all agree the verb with the count. */
+function needVerb(count: number): string {
+  return count === 1 ? 'needs' : 'need'
+}
+
 export function NotificationBell({ go }: { go: (to: string) => void }) {
   const feed = useNotificationFeed()
   const phone = useSyncExternalStore(subscribePhone, phoneNow, () => false)
@@ -177,11 +183,22 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
       if (t !== null && rootRef.current?.contains(t)) return
       close(false)
     }
+    // FOCUS ARRIVING OUTSIDE CLOSES IT TOO (QA2 admin2-09): Tab walked out of
+    // the open dialog onto Help, Profile and the spine's collapse control
+    // with the panel still drawn over them. Where focus LANDS is read, as the
+    // Act-as list reads it; focus stays where Tab put it.
+    const onIn = (e: FocusEvent) => {
+      const t = e.target
+      if (t instanceof Node && rootRef.current?.contains(t)) return
+      close(false)
+    }
     document.addEventListener('keydown', onKey)
     document.addEventListener('mousedown', onDown)
+    document.addEventListener('focusin', onIn)
     return () => {
       document.removeEventListener('keydown', onKey)
       document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('focusin', onIn)
     }
   }, [open, close])
 
@@ -195,7 +212,7 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
 
   const data = feedData(feed)
   const count = data?.unread_needs_you ?? 0
-  const label = count > 0 ? `Notifications, ${count} need you` : 'Notifications'
+  const label = count > 0 ? `Notifications, ${count} ${needVerb(count)} you` : 'Notifications'
   const why = feed.status === 'error' || feed.status === 'stale' ? `Notifications not read: ${errorHeading(feed.error)}` : null
 
   return (
@@ -219,7 +236,8 @@ export function NotificationBell({ go }: { go: (to: string) => void }) {
         )}
       </button>
       <span className="sk-vh" aria-live="polite">
-        {count > 0 ? `${count} notification${count === 1 ? '' : 's'} need you` : ''}
+        {/* ONE NEEDS, TWO NEED (QA2 admin2-17): it read "1 notification need you". */}
+        {count > 0 ? `${count} notification${count === 1 ? '' : 's'} ${needVerb(count)} you` : ''}
       </span>
       {open && (
         <NotificationPanel
@@ -287,7 +305,7 @@ function NotificationPanel({
           </button>
         )}
         <h2 className="nt-h">Notifications</h2>
-        {count > 0 && <span className="nt-chip">{count} need you</span>}
+        {count > 0 && <span className="nt-chip">{count} {needVerb(count)} you</span>}
         <button type="button" className="nt-all" disabled={!unread} onClick={() => void markAllRead()}>
           Mark all read
         </button>

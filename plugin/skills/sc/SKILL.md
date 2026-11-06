@@ -6,23 +6,23 @@ arguments:
   - verb
   - target
 allowed-tools:
-  - Bash(uv run sc)
-  - Bash(uv run sc overview:*)
-  - Bash(uv run sc accounts:*)
-  - Bash(uv run sc agents:*)
-  - Bash(uv run sc capacity:*)
-  - Bash(uv run sc task:*)
-  - Bash(uv run sc trouble:*)
-  - Bash(uv run sc whoami:*)
-  - Bash(uv run sc config:*)
-  - Bash(uv run sc debug:*)
-  - Bash(uv run sc workflows:*)
-  - Bash(uv run sc runs:*)
-  - Bash(uv run sc run show:*)
-  - Bash(uv run sc plan show:*)
-  - Bash(uv run sc roles)
-  - Bash(uv run sc roles --json)
-  - Bash(uv run sc roles list:*)
+  - Bash(sc)
+  - Bash(sc overview:*)
+  - Bash(sc accounts:*)
+  - Bash(sc agents:*)
+  - Bash(sc capacity:*)
+  - Bash(sc task:*)
+  - Bash(sc trouble:*)
+  - Bash(sc whoami:*)
+  - Bash(sc config:*)
+  - Bash(sc debug:*)
+  - Bash(sc workflows:*)
+  - Bash(sc runs:*)
+  - Bash(sc run show:*)
+  - Bash(sc plan show:*)
+  - Bash(sc roles)
+  - Bash(sc roles --json)
+  - Bash(sc roles list:*)
   - Bash(sc)
   - Bash(sc overview:*)
   - Bash(sc accounts:*)
@@ -42,8 +42,8 @@ allowed-tools:
   - Bash(sc roles list:*)
   - Bash(open /*/.claude/build-board/index.html)
   - Bash(xdg-open /*/.claude/build-board/index.html)
-  - Bash(uv run swarm doctor:*)
-  - Bash(uv run swarm profiles:*)
+  - Bash(swarm doctor:*)
+  - Bash(swarm profiles:*)
   - CronCreate
   - CronList
   - CronDelete
@@ -67,7 +67,7 @@ one action — never a second one the developer did not ask for:
 
 | `$ARGUMENTS` | What happens | Writes? |
 |---|---|---|
-| no verb (empty) | today's cluster state: `uv run sc`, read by the rules below | no |
+| no verb (empty) | today's cluster state: `sc`, read by the rules below | no |
 | `status <wf_id\|task_id>` | one status read of that workflow or task | no |
 | `workflows` | lists your tenant's workflows still running in SwarmCloud, marking `[this session]` the ones this Claude Code session started | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
@@ -108,7 +108,7 @@ workspace the reply names, `[<workspace>] <id> · <state>` (the reply's
 from the session's tenant). A waiting task's reply carries `waiting_line` --
 why it waits, in the API's own words, with its next check when known: print
 it after the state, `[<workspace>] <id> · <state> · <waiting_line>`, e.g.
-`[eng@saga.xyz] task_31c3… · PARKED · CI on PR #1779: 5 checks pending; next
+`[eng@example.com] task_31c3… · PARKED · CI on PR #1779: 5 checks pending; next
 check 02:46Z`, and nothing more of `waiting` (its detail and history are the
 console page's). No `waiting_line` -- a task not waiting, or an API older
 than it -- is the line without it. An error is reported verbatim:
@@ -122,19 +122,41 @@ did from a row: make the ONE read, report it, and say what the strip noticed
 (a waiting step: `/sc answer`; owner questions: `swarm_result`'s
 `owner_questions`, put to the person). Both tools are the sc
 plugin's own read tools and work outside a checkout; they are not pre-granted
-here -- this skill's grants mark it as the checkout-bound view surface -- so
+here -- this skill grants only the `sc` and `swarm` commands -- so
 the session may ask once before the first read.
+
+### A spec says what it delivers: `description` and `feature`
+
+A workflow spec may carry, at its top level beside `title`, a `description`
+-- two or three sentences of plain text saying what the work delivers, at
+most 600 characters, no HTML or Markdown -- and a `feature`, `{title, url?}`:
+the feature it belongs to, a title of at most 120 characters, and optionally
+the https github.com issue or pull request of the workflow's OWN repository
+that tracks it. The console's workflow page heads with both, so write them
+for a person who opens the workflow cold. They are sent as
+`metadata.description` and `metadata.feature`; a malformed one is refused
+before anything is sent, and a longer description is refused, never cut.
+A spec should send `about: {purpose, goals, output}` -- why the work exists
+(one sentence, at most 300 characters), up to three goals (at most 120 each)
+and what lands (one sentence, at most 300) -- sent as `metadata.about` and
+checked the same way, each refusal naming the part.
 
 ### Every run is titled after its workflow
 
-A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at most
+A SwarmCloud workflow run here is titled `SC ∴ <name> · N steps` (at most
 150 characters), not `swarmcloud`: <name> is the spec's `title`, else its
 `label` cut at a word, else the title or label SwarmCloud stored, else the
-workflow id, cut to fit, never the step count. A run of single tasks is
-titled `SC · <label> · task` (several: `SC · <first label> +N · N tasks`).
+workflow id, cut to fit, never the step count. N is the number of steps
+SwarmCloud runs, read from the served workflow; a spec launched before it is
+submitted is titled `SC ∴ <name>`, with no count, because SwarmCloud may
+still append steps. A single task's run is titled `SC · <label>`: every
+single task has a run of its own. The mark right after `SC` is the run's
+KIND, seen even where Claude Code's panel cuts a title at about 28
+characters: ONE dot for one task, THREE dots (`∴`, a graph of three nodes)
+for a workflow.
 NO NAME CARRIES A WORKSPACE -- not the run's, not a row's (owner,
 2026-10-14: "workflows in here should not have the [Engineering] or
-[eng@saga.xyz] prefix in front of the names"). The run's DESCRIPTION starts
+[eng@example.com] prefix in front of the names"). The run's DESCRIPTION starts
 with its DETAILS, one line, six fields in this order:
 `Workspace: <workspace> (<tenant>) · Started by: <submitted_by> · Profiles: <runner profiles> · LLM: <pool account> (<provider>), model <model> · Browser tool: <browser_tool> · Session: <claude_session>`
 -- <workspace> is the workspace (tenant) the API's document says it runs in,
@@ -160,11 +182,14 @@ first call `swarm_workflow_launch`, which writes a copy of the
 `/sc:swarmcloud` script with that name and returns its `script_path`, and
 then launch THAT copy with the Workflow tool, `{scriptPath: <script_path>,
 args: <the reply's `args`, as given>}`, `spec_handle` included: the session
-never builds those args itself. If `swarm_workflow_launch` answers an error,
-say so in one line and run the `/sc:swarmcloud` workflow by name with
-`{attach: <wf_id>}` for an attach or `{spec: <the spec object>}` for a run (no
-handle exists then, so the spec goes by value and the digest check still
-refuses one that changed): the rows are the same, only the run's title is the
+never builds those args itself, and never adds the spec to them -- a spec's
+`args` carry its handle, not the spec, so they stay small however large the
+spec is (#2875). If `swarm_workflow_launch` answers an error, say so in one
+line and run the `/sc:swarmcloud` workflow by name with `{attach: <wf_id>}`
+for an attach, or for a run the spec file's path (the bridge reads it and
+answers an outline) or, with no file, `{spec: <the spec object>}` (no handle
+exists then, so the spec goes by value and the digest check still refuses
+one that changed): the rows are the same, only the run's title is the
 generic one.
 
 ### `attach <wf_id>`
@@ -180,11 +205,16 @@ ONE ROW OR ONE PER STEP (the plugin's `rows` setting, owner 2026-10-21):
 at its default, `summary`, the run follows the whole workflow with ONE
 `[SwarmCloud] <name> · N steps` row whose line -- `18 steps: 6 running · 9
 queued · 3 done · 0 failed · PR #N` and the console link -- changes only when
-the counts do, and a step that fails, waits for a person or asks the owner
-questions is named on its own line. It is the default because it is one agent
+the counts do. Under it the row names EVERY step the platform runs on a line
+of its own, grouped by the console's stages (`Stage 1`, `Stage 2`... in the
+console's order and names), each with its state and console link, written
+again only when a step's state changes; the steps SwarmCloud appends
+(re-review, merge, CI-fix and conflict-fix rounds) join them as they appear.
+A step that fails, waits for a person or asks the owner questions is also
+named on its own line. It is the default because it is one agent
 instead of N, so it never meets Claude Code's limit of min(16, CPU cores - 2)
 agents per run. `per-step` is a row per unfinished step; past that limit the
-reply's `launches` holds several copies, `SC · <name> · N steps · rows 1-8`,
+reply's `launches` holds several copies, `SC ∴ <name> · N steps · rows 1-8`,
 `rows 9-16`..., each a run of its own: launch EVERY entry of `launches`, each
 with its own args. `/sc attach <wf_id> --per-step` (pass `{attach: "<wf_id>",
 rows: "per-step"}`) uses per-step for this one attach, and `--summary` (`rows:
@@ -204,7 +234,7 @@ the reply's `arm_watch` -- also when the workflow has already finished.
 ONE read of the caller's tenant's workflows that are not finished — every
 one whose state is not `SUCCEEDED`, `FAILED`, `CANCELLED` or `DEAD_LETTERED`,
 closest to finish first. Call `swarm_workflows` once (the sc plugin's own read tool; it
-works outside a checkout); in a checkout `uv run sc workflows` prints the
+works outside a checkout); in a terminal `sc workflows` prints the
 same list, closest to finish first (steps done of the total, then the
 current step's age) and grouped by workspace. Report each workflow on
 one line that STARTS with its workspace, `[<workspace>] <id> <label>
@@ -238,7 +268,7 @@ workflow keeps its own step count, as the console shows it. Call
 `swarm_workflow_launch` once with `{attach: "all"}`. It lists the caller's
 tenant's running workflows once, keeps this session's and, for the 100 closest to finish (the plugin's
 `max_live_rows` option, held to 1-200), grouped by workspace, writes one
-titled script each -- named `SC · <name> · N steps`, its description
+titled script each -- named `SC ∴ <name> · N steps`, its description
 starting with its details, `Workspace: <workspace> (<tenant>) · Started by: ...` -- then make one Workflow call per entry of its `launches`,
 `{scriptPath: <its script_path>, args: <its args>}` — each attaches its
 workflow exactly as `attach <wf_id>` does: finished steps reported once, a
@@ -253,7 +283,8 @@ rows across every workflow, and a workflow with more rows than one Claude
 Code run shows comes back as several entries, `rows 1-8`, `rows 9-16`... —
 launch every entry of `launches`. `/sc attach --all --per-step` passes
 `{attach: "all", rows: "per-step"}` (and `--summary`, `rows: "summary"`) for
-this one attach-all, its single tasks' row included, whatever the setting.
+this one attach-all, whatever the setting; single tasks have one row each in
+every mode.
 
 **SCROLLING IS CLAUDE CODE'S, NOT THE PLUGIN'S.** The /workflows panel is
 Claude Code's own UI: this plugin cannot add scrolling to it, and cannot make
@@ -263,11 +294,16 @@ is ONE compact line (`[SwarmCloud] <name> · stage <n> · <step>
 the current step's age, then the id), grouped by workspace -- so two
 attaches of the same state list the same order. Say this
 plainly when someone asks for scrolling.
-SINGLE TASKS (#830): your running tasks in no workflow get ONE more entry in
-`launches`, whose args are `{attach_tasks: [...]}` — launch it like the
-others; it starts one `[SwarmCloud]` row per task, titled from the task's
-label, with its workspace and the rest of its details shown when the row is expanded, each following its task until it
-finishes -- or, with `rows` at `summary`, ONE row for the whole batch, `N tasks: ... running · ... done` (at most 100, `max_live_rows`; the rest come back in `not_followed`). `single_tasks` says how many there were;
+SINGLE TASKS (#830): each of your running tasks in no workflow gets ONE entry
+of its own in `launches`, whose args are `{attach_tasks: [<that task>]}`, its
+run titled `SC · <label>` from that task alone — launch every one like the
+others; each starts ONE `[SwarmCloud] <label> · task` row, with its workspace
+and the rest of its details shown when the row is expanded, following its
+task until it finishes. That holds whatever the `rows` setting (owner
+2026-11-04: a summary row over a batch read `0/1` and showed counts, not
+lanes); `max_live_rows` caps the total (at most 100 by default) and the rest
+come back in `not_followed`. A copy launched with any task but the one it
+was written for is refused, naming the right call: never reuse one. `single_tasks` says how many there were;
 `single_tasks_error` means they could not be read — say so verbatim.
 `count: 0` and no task launch is an answer: nothing is running. Report each run's `state`
 (`NOT_ATTACHED` with the API's error verbatim) and the `not_followed` list.
@@ -344,6 +380,7 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    | `no_heartbeat` | RUNNING/STARTING with no heartbeat and no event for more than the window | a beat or an event inside it |
    | `waiting_for_capacity` | READY/QUEUED longer than the window, with the pool that binds it | a task that entered the state recently. It holds nothing while it waits (invariant 1): report it as waiting, not as broken |
    | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed | any other park reason: a quota window or a retry backoff is the platform waiting by design |
+   | `merge_train_stalled` | a merge step waiting on the merge train (CI_PENDING, code `merge_train_waiting`) more than 60 min, aged from the train's start the API serves (`waiting.detail.train_since`), else from the first train park of its unbroken run (`evidence.in_state_since`, exact or "at least"; `evidence.age_source` says which); the train boards only pull requests whose checks are all green | a train park under 60 min; a train park never counts toward the CI_PENDING 90 min. Name `evidence.failed_checks` (the PR's failed or cancelled checks at its head, read from GitHub's public API); when it is null, say the checks were NOT read (`checks_unread_because` says why). `next` is the PR link |
    | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed`, and its PR is still open | any other failure, and a PR that has since MERGED or CLOSED (the check reads the PR's state from GitHub's public API). When `pull_request_state` is null, say the PR's state was NOT read (its `pull_request_state_unread_because` says why), and give its link |
    | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
    | `awaiting_input` | STUCK only when an AWAITING_INPUT step is still parked more than two ticks (2 min) past its `expires_at`: the expiry sweep is not running | a wait inside its window, or just past it: listed under `awaiting_input`, below |
@@ -473,6 +510,7 @@ option label, exactly as served, when the person picked one of them; `text`
 is the person's words, or what they chose when it was none of the options.
 The bridge adds `via: claude-code` and this session's id, so the console
 shows the answer as given in Claude Code instead of leaving it unanswered.
+Many answers at once (the person's decision to close finished tasks' questions as moot, or a lane's questions recorded at fold time): ONE `swarm_task_answers {entries: [{task_id, question_index, choice?, text?}]}` call (at most 200; short replies; each refused entry is its own line).
 
 Only the person's own pick, verbatim, from a question this session asked
 them; never an answer the agent chose itself, a recommended option they did
@@ -558,7 +596,7 @@ remembered per project and switches without restarting the session:
   is a model agent that polls for as long as its work runs.
 * **`pane`** -- the **SwarmCloud pane** beside the chat, opened with
   `/sc-pane` (or by `/sc layout pane`), plus ONE quiet `sc:finish` row per
-  workflow in /workflows, labelled `SC · <name>`. At session start the pane
+  workflow in /workflows, labelled `SC ∴ <name>`. At session start the pane
   opens by itself, drawing "not read yet" with Refresh, after ONE
   `swarm_layout` call and no list read (BGD, 2026-10-25: "open it with no
   read"); the engine seats a pane nobody asked for only from 144 terminal
@@ -584,7 +622,7 @@ remembered per project and switches without restarting the session:
   changes (`stage 2 · 1 failed · 3 running · 1 parked`, then `succeeded ·
   3/3 stages`) and holds each `swarm_follow` (`format: "stage"`) until it
   does, so a quiet stage costs one call per half hour, not one per step
-  change. A batch of single tasks keeps its one summary row.
+  change. A single task keeps its own `sc:task` row, one per task.
 * **`band`** -- the same levels in a **strip above the prompt**, with ONE
   summary line **below** the prompt, and **no /workflows row at all** (BGD,
   2026-10-26: in Claude Code's fullscreen layout a pane docks on the right,
@@ -753,13 +791,16 @@ The one verb that writes: it spends the shared pool, a step at a time.
    file outside it; pass such a file's parsed object as `spec` instead), or
    `{spec: <the spec object>}` given JSON text, and launch
    the `script_path` it returns (see "Every run is titled after its
-   workflow"). Run that script with the reply's `args` AS GIVEN: `{spec,
-   spec_handle, details, rows, titled_copy}`. `spec_handle` is the file the
-   bridge wrote the spec to, `{path, digest}`; the run's submit row hands
-   `swarm_workflow` that handle and never the spec text, so nothing is
+   workflow"). Run that script with the reply's `args` AS GIVEN: `{spec_handle,
+   details, rows, titled_copy}` -- never the spec. `spec_handle` is the file
+   the bridge wrote the spec to, `{path, digest}`; the run reads its outline
+   with `swarm_workflow_spec` (the bridge checks the digest) and its submit
+   row hands `swarm_workflow` that handle, never the spec text, so nothing is
    retyped (SC-LAUNCH-SPEC, #2034: a brief holding backticks around `${...}`
-   came back altered and was refused). Never drop `spec_handle`, never pass a
-   bare path, and never the JSON as a string. `rows` is `summary` (the
+   came back altered and was refused) and a spec of any size launches
+   (#2875: a 90 KB spec's reply was too long to read). Never drop
+   `spec_handle`, never add `spec` beside it, never pass a bare path, and
+   never the JSON as a string. `rows` is `summary` (the
    default), which follows the submitted workflow with ONE summary row, or
    `per-step`, a row per step in this one run (Claude Code queues the rows
    past its per-run limit; `/sc attach <wf_id> --per-step` after the run
@@ -811,7 +852,7 @@ this session supplies.
    developer gave `--plan auto`, `--auto-merge`, `--fix-rounds` or
    `--model-class <class>` (the planner's model class; see "Model classes"
    below). The terminal equivalent,
-   `uv run sc run --issue <owner/repo#N> --follow`, is the developer's to run
+   `sc run --issue <owner/repo#N> --follow`, is the developer's to run
    (this skill is not granted it); it prints one row per step as it moves.
 2. `--auto-merge` merges the run's pull request with the `merge` step (#295,
    enabled by contract request 47). The API refuses it only while the `merge`
@@ -841,15 +882,23 @@ reported in its own words, with the offer of the same spec without the
 field. Never choose a class the spec did not: it is the operator's decision,
 made in the spec or on the command line.
 
+A review step's gate is the step's `review_gate`: `false` switches it off,
+so the review runs however small the change (a mock-up review, say), and a
+block of `min_lines`, `risk_paths` and `requirements_check` sets it. It is
+sent as the step's `metadata.review_gate`; a malformed one is refused before
+anything is submitted. A step carrying `metadata` itself is refused, like
+every key outside the accepted list. Never add or drop a gate the spec did
+not name.
+
 ### `runs`
 
-ONE read: call `swarm_runs` (in a checkout, `uv run sc runs`) and report each
+ONE read: call `swarm_runs` (in a terminal, `sc runs`) and report each
 run's id, issue, state and pull request as served. Never poll.
 
 ### `plan show <run>`
 
 ONE read: call `swarm_run` with `run_id` (in a checkout,
-`uv run sc plan show <run>`), and show the developer the WHOLE plan — summary,
+`sc plan show <run>`), and show the developer the WHOLE plan — summary,
 requirements, overlaps with work in flight, every step's title, files, tests,
 estimate and prompt — and its `plan_digest`. The prompts are what will run with
 the tenant's forge token; they are what is being approved.
@@ -887,7 +936,7 @@ granted it (see the last section).
 
 It reads **the developer's own deployment**, not one this plugin knows about:
 whatever they configured at install (`/plugin configure sc@swarmcloud`), or a
-context they added. `uv run sc whoami` prints which deployment, from where,
+context they added. `sc whoami` prints which deployment, from where,
 and who they are on it. `sc login`, `sc logout` and `sc context` change the
 developer's own sign-in and which cluster every later call reaches — they are
 theirs to run, so **tell them the command; never run it yourself**. `sc login`
@@ -902,18 +951,18 @@ dispatch to another cluster without asking.
 
 | Question | Command |
 |---|---|
-| what is the swarm doing? | `uv run sc` (or `uv run sc overview`) |
-| how much quota is left? which account? | `uv run sc accounts` |
-| why is my task queued? what is running? | `uv run sc agents` |
-| what is the real ceiling? | `uv run sc capacity` |
-| what did this agent produce? | `uv run sc task <id>` |
-| is anything broken? | `uv run sc trouble` |
-| which deployment, and who am I on it? | `uv run sc whoami` |
-| what is my role here, and who holds which? | `uv run sc roles` |
-| which endpoint, tenant, dispatch target and plugin version? | `uv run sc config` |
-| why did this one task fail? | `uv run sc debug <id>` |
-| which of my workflows are still running? | `uv run sc workflows` |
-| what may I actually run? | `uv run swarm profiles` |
+| what is the swarm doing? | `sc` (or `sc overview`) |
+| how much quota is left? which account? | `sc accounts` |
+| why is my task queued? what is running? | `sc agents` |
+| what is the real ceiling? | `sc capacity` |
+| what did this agent produce? | `sc task <id>` |
+| is anything broken? | `sc trouble` |
+| which deployment, and who am I on it? | `sc whoami` |
+| what is my role here, and who holds which? | `sc roles` |
+| which endpoint, tenant, dispatch target and plugin version? | `sc config` |
+| why did this one task fail? | `sc debug <id>` |
+| which of my workflows are still running? | `sc workflows` |
+| what may I actually run? | `swarm profiles` |
 
 `sc config` shows where the dispatching tools send work — the session
 `target` (cloud, local or hybrid) and which setting chose it — beside the
@@ -930,7 +979,7 @@ report is still good.
 
 ## Changing an account is the developer's to do
 
-`uv run sc account pause <label>`, `resume`, `drain`, `remove`,
+`sc account pause <label>`, `resume`, `drain`, `remove`,
 `max-agents <label> <n>` and `add` WRITE to the shared account pool, and this
 skill is not granted them. Tell the developer the command and let them run it:
 `drain` stops new assignments and moves running agents to another account at
@@ -949,11 +998,11 @@ which redacts it at read time; this skill lists and never fetches.
 
 Add `--json` for the numbers, `--width N` to force a column count, `--ascii`
 for a terminal without the bar glyphs. Put them **after** the view's name —
-`uv run sc accounts --json`, `uv run sc overview --json` — because that is
+`sc accounts --json`, `sc overview --json` — because that is
 what this skill is granted. A flag written before the view's name works too,
 but asks the developer first.
 
-`uv run swarm profiles` is the odd one out, listed here because it is read-only
+`swarm profiles` is the odd one out, listed here because it is read-only
 and because it is the question people ask next. It reads the frozen catalogue
 rather than the cluster, so it makes **no network call** and still answers when
 nothing else does — which is exactly when someone is guessing at a profile name
@@ -1041,13 +1090,13 @@ is down, and reporting either as the other sends someone to the wrong place.
 ## When sc cannot connect
 
 `sc` exits 1 and prints nothing to stdout, on purpose: a screen of dashes would
-look like a reading. Run `uv run swarm doctor` — it reports which deployment it
+look like a reading. Run `swarm doctor` — it reports which deployment it
 resolved and from where, which auth tier this machine is on and what that tier
 can reach, which is almost always the real answer.
 
 **`sign-in required for <context>: run sc login`** is the commonest answer on a
 new machine and is not a fault: the deployment takes a signed-in developer and
-none is signed in. Tell the developer to run `uv run sc login` themselves (a
+none is signed in. Tell the developer to run `sc login` themselves (a
 browser window opens), then try again. Do not treat it as the cluster being
 unreachable, and do not look for another credential to use instead.
 
@@ -1055,10 +1104,10 @@ unreachable, and do not look for another credential to use instead.
 
 This is the single most likely wrong report from this plugin, so it is worth
 being exact. On a **team** deployment the API is behind IAP at a load balancer,
-and `uv run swarm doctor` prints which door it used and what it presents:
+and `swarm doctor` prints which door it used and what it presents:
 
 ```
-front door  https://swarm.saga.xyz  (IAP; takes an OAuth ACCESS token)
+front door  https://swarm.example.com  (IAP; takes an OAuth ACCESS token)
 api         UNREACHABLE
             GET /v1/tenants/me -> 401: ... Error code 900
 ```
@@ -1067,7 +1116,7 @@ Read the refusal, because the three of them mean three different things:
 
 | What comes back | What it means |
 |---|---|
-| **401, IAP error code 900** | IAP did not accept the token at all. A gcloud *user* credential cannot pass: the deployment's IAP uses a Google-managed OAuth client, which admits only allowlisted programmatic clients. The developer signs in with `uv run sc login` (the deployment's Desktop OAuth client); CI sets `SWARM_IMPERSONATE_SA`. A 401 **after** `sc login` means the deployment has not allowlisted its own client — an operator's one-time step |
+| **401, IAP error code 900** | IAP did not accept the token at all. A gcloud *user* credential cannot pass: the deployment's IAP uses a Google-managed OAuth client, which admits only allowlisted programmatic clients. The developer signs in with `sc login` (the deployment's Desktop OAuth client); CI sets `SWARM_IMPERSONATE_SA`. A 401 **after** `sc login` means the deployment has not allowlisted its own client — an operator's one-time step |
 | **403 that NAMES the caller** | IAP **authenticated** you and the principal is not on the list. One `roles/iap.httpsResourceAccessor` grant away — `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`, which the owner applies and CI does not |
 | **an HTML 404** | the wrong ADDRESS, not a missing route. Cloud Run's `*.run.app` hostname refuses everyone outside the VPC and renders the refusal as 404 |
 

@@ -1,0 +1,236 @@
+"""A workspace's quality gates: whether its claude-code lanes run jev-belay and jev-enforce (JEV-LANES).
+
+BGD, 2026-10-31: 25% of lane PRs were red on their first CI run (#642), and a
+review's NOT_YET round costs a fix step and a re-review. With
+`quality_gates.jev` on, the claude-code runner registers two Claude Code
+hooks, both checked by TypeSafe's Jev with the workspace's TypeSafe key:
+jev-belay (a Stop hook that blocks an unverified "done") and jev-enforce
+(the final reply and every edit checked against the repository's CLAUDE.md
+rule files). docs/jev-data-flow.md says what each sends.
+
+WHERE IT LIVES. `workspace_settings/{tenant_id}`, field `quality_gates`, a
+map holding `jev` (a bool), beside the workspace's other settings, written
+with `merge=True` so it never touches theirs. Every change writes one
+`admin_audit` entry in the same transaction; a write of the value already
+stored writes nothing.
+
+OFF BY DEFAULT, AND WHO MAY CHANGE IT. Like `code_intelligence.jev` (PR
+1330), the switch decides that a lane's text leaves the platform for
+TypeSafe, so only the owner of a personal workspace, the workspace's
+`admin`, or a platform admin may change it; anyone else in the workspace is
+refused 403 `role_admin_required`, and a caller outside it is answered 404,
+the same as a workspace that does not exist (invariant 9). Nothing here takes
+or returns a credential, an image, a command or a resource spec (invariant
+10): the key stays where `provider_keys` put it, and the worker reads it.
+
+SIGNED (contract request 128, accepted by the owner 2026-10-31). A tenant
+worker can write this document directly, so every write stores
+`quality_gates.mac`, swarm-api's MAC over the block's covered key, `jev`
+(`swarm_api.judgment.block_mac`, block "quality_gates"), exactly as
+`codeintel` signs `code_intelligence` (PR 1330). For a tenant cut over in
+SETTINGS_MAC_TENANTS a block whose MAC does not verify reads as off here.
+Saving the value already stored over a block that does not verify under the
+current key re-signs it without an audit row, so an admin can repair a block
+the re-sign pass has not reached. The tenant id and the block name are inside
+the signed bytes, so a block copied from another workspace's document does
+not verify (invariant 9). Only `jev is True` is ever on for every lane.
+
+ON REQUEST (the owner's pick, 2026-11-01). `jev` may also be the word
+`"on_request"` (`ON_REQUEST`): the gates run only on a step whose signed
+workflow switch says `quality_gates: on` (`validation.DISPATCH_SWITCHES`),
+for the owner's experiment that builds one feature with and without them at
+the same moment. It is signed exactly as `true` and `false` are: the MAC
+covers `jev` whatever its value, because
+`swarm_common.specsign.canonical_settings_block` projects every key
+SETTINGS_MAC_FIELDS lists for the block (`quality_gates: ("jev",)`) as
+stored, a string as much as a bool. A switch never turns the gates on where
+this setting does not allow them: only a workspace admin decides that code
+is sent to TypeSafe.
+
+THE SCHEDULER VOUCHES, BECAUSE THE WORKER CANNOT CHECK. The MAC is an
+HMAC under the one `swarm-settings-key`; a tenant worker that held it could
+sign any tenant's block, so no worker does. The scheduler, which holds the
+key, verifies this block at dispatch (`scheduler.judgment.quality_gates_env`,
+the owner's pick on PR 2955) and hands the worker its verdict in the job's
+environment. That verdict requires the MAC whatever SETTINGS_MAC_TENANTS
+says: a block that says on but carries no MAC, or one that does not verify,
+is off, and the environment says why, so the attempt's summary can.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Callable, Literal, Mapping
+
+from google.cloud import firestore
+from pydantic import StrictBool
+
+from swarm_common.admission import _snapshot
+from swarm_common.models import Tenant
+
+from .admins import AUDIT_COLLECTION
+from .judgment import (
+    MAC_FIELD,
+    SETTINGS_COLLECTION,
+    SettingsMac,
+    block_mac,
+    block_verifies,
+    trusted_block,
+)
+from .auth import AuthContext
+from .errors import RoleAdminRequired
+from .qasettings import authorize_read, can_edit
+from .roles import ADMIN, RoleStore
+from .schemas import StrictModel
+
+COLLECTION = SETTINGS_COLLECTION
+FIELD = "quality_gates"
+JEV = "jev"
+SET_AT = "set_at"
+SET_BY = "set_by"
+AUDIT_ACTION = "workspace_quality_gates_set"
+#: The block's name in `swarm_common.specsign.SETTINGS_MAC_FIELDS`.
+MAC_BLOCK = FIELD
+#: What the block holds besides fields this module does not own.
+OWNED_FIELDS = (JEV, SET_AT, SET_BY, MAC_FIELD)
+#: Off until the workspace's owner or admin turns it on (BGD, 2026-10-31).
+DEFAULT_JEV = False
+#: Only the steps whose signed workflow switch says `quality_gates: on`
+#: (2026-11-01; `agent_worker.qualitygates.ON_REQUEST`).
+ON_REQUEST = "on_request"
+
+
+class QualityGatesPut(StrictModel):
+    #: StrictBool: "true" and 1 are refused, not read as on. Or the one word
+    #: `on_request`; any other string is refused.
+    jev: StrictBool | Literal["on_request"]
+
+
+def stored_jev(doc: Mapping[str, Any] | None, *, tenant_id: str | None = None,
+               mac: SettingsMac | None = None) -> bool | str:
+    """True only when the stored map says `jev: true`, `ON_REQUEST` when it
+    says exactly that; anything else is off. With `mac` and `tenant_id`, the
+    block is read through `judgment.trusted_block`: for a tenant cut over, a
+    block whose MAC does not verify is off."""
+    block = (doc or {}).get(FIELD) if isinstance(doc, Mapping) else None
+    if not isinstance(block, Mapping):
+        return False
+    if mac is not None and tenant_id:
+        block = trusted_block(tenant_id, MAC_BLOCK, block, mac)
+    value = block.get(JEV)
+    return value if value is True or value == ON_REQUEST else False
+
+
+def authorize_write(auth: AuthContext, tenant: Tenant | None, tenant_id: str,
+                    roles: RoleStore | None) -> Tenant:
+    """The workspace, when the caller may change its quality gates: its
+    owner, the group's admin (read fresh) or a platform admin. 404 for one
+    they are not in, 403 for a member who is not its admin."""
+    tenant = authorize_read(auth, tenant, tenant_id)
+    if not can_edit(auth, tenant, roles, fresh=True):
+        raise RoleAdminRequired(
+            "Only the workspace's owner or admin, or a platform admin, may change its quality gates. "
+            "Nothing was changed.", detail={"tenant_id": tenant_id, "required": ADMIN})
+    return tenant
+
+
+class QualityGatesStore:
+    """`workspace_settings/{tenant}.quality_gates`, read and audited write."""
+
+    def __init__(self, db: Any, *, now: Callable[[], datetime],
+                 mac: SettingsMac | None = None) -> None:
+        self._db = db
+        self._now = now
+        self._mac = mac if mac is not None else SettingsMac()
+
+    @property
+    def mac(self) -> SettingsMac:
+        return self._mac
+
+    def _ref(self, tenant_id: str) -> Any:
+        return self._db.collection(COLLECTION).document(tenant_id)
+
+    def document(self, tenant_id: str) -> dict[str, Any]:
+        snap = self._ref(tenant_id).get()
+        return (snap.to_dict() or {}) if snap.exists else {}
+
+    def put(self, tenant_id: str, jev: bool | str, *, by: str) -> None:
+        """Store `jev`, signed, and its audit in one transaction. The same
+        value again writes nothing, unless the stored block does not verify
+        under the current key: then it is re-signed, with no audit row."""
+        ref = self._ref(tenant_id)
+        audit = self._db.collection(AUDIT_COLLECTION).document()
+        now = self._now()
+        transaction = self._db.transaction()
+        keys = self._mac.keys
+
+        @firestore.transactional
+        def _write(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            whole = (snap.to_dict() or {}) if snap.exists else None
+            previous = stored_jev(whole, tenant_id=tenant_id, mac=self._mac)
+            stored = (whole or {}).get(FIELD)
+            stored = dict(stored) if isinstance(stored, Mapping) else {}
+            signed = not keys or block_verifies(tenant_id, MAC_BLOCK, stored, keys[:1])
+            if previous == jev and signed:
+                return
+            block = {k: v for k, v in stored.items() if k not in OWNED_FIELDS}
+            block.update({JEV: jev, SET_AT: now, SET_BY: by})
+            mac = block_mac(tenant_id, MAC_BLOCK, block, keys)
+            if mac is not None:
+                block[MAC_FIELD] = mac
+            if whole is None:
+                txn.set(ref, {"tenant_id": tenant_id, FIELD: block})
+            else:
+                # The whole map, so a MAC made over other values never stays
+                # beside the new ones.
+                txn.update(ref, {FIELD: block})
+            if previous == jev:
+                return
+            txn.set(audit, {
+                "action": AUDIT_ACTION,
+                "target_tenant_id": tenant_id,
+                "by": by,
+                "at": now,
+                "detail": {"tenant_id": tenant_id, "setting": f"{FIELD}.{JEV}",
+                           "from": previous, "to": jev},
+            })
+
+        _write(transaction)
+
+
+def view(tenant_id: str, doc: Mapping[str, Any], *, editable: bool,
+         mac: SettingsMac | None = None) -> dict[str, Any]:
+    """What GET and PUT answer: the switch in force (read as `stored_jev`
+    reads it under `mac`), its default, who set it and whether the caller may
+    change it."""
+    block = doc.get(FIELD) if isinstance(doc.get(FIELD), Mapping) else {}
+    set_at = block.get(SET_AT)
+    set_by = block.get(SET_BY)
+    return {
+        "tenant_id": tenant_id,
+        FIELD: {JEV: stored_jev(doc, tenant_id=tenant_id, mac=mac)},
+        "defaults": {FIELD: {JEV: DEFAULT_JEV}},
+        "set_at": set_at.isoformat() if isinstance(set_at, datetime) else None,
+        "set_by": set_by if isinstance(set_by, str) else None,
+        "can_edit": editable,
+    }
+
+
+__all__ = [
+    "AUDIT_ACTION",
+    "COLLECTION",
+    "DEFAULT_JEV",
+    "FIELD",
+    "JEV",
+    "MAC_BLOCK",
+    "ON_REQUEST",
+    "OWNED_FIELDS",
+    "QualityGatesPut",
+    "QualityGatesStore",
+    "authorize_read",
+    "authorize_write",
+    "can_edit",
+    "stored_jev",
+    "view",
+]

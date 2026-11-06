@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
-import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
+import { fixtureContractRefusal, fixtureSubmitTask, loadCapacity, loadModelClasses, loadStats, USE_FIXTURES, type ModelClassOffer } from './api'
 import {
   CeilingTag,
   blockerVerdict,
@@ -26,7 +26,8 @@ import {
   type TaskReadableList,
 } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
-import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError, type Result } from './fetch'
+import { ContractRefusalPanel, contractRefusal, type ContractRefusal } from './ContractJev'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, writeRefused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { ModelClassSelect, RoomFact, RunnerPicker, UnreadRoom, sentModelClass, useProviderKeys } from './RunnerPicker'
@@ -40,12 +41,14 @@ import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
   consequenceOf,
+  costInWords,
   headroomFor,
   requiredInputKeys,
   type Capacity,
   type Pool,
   type RunnerProfile,
   type Task,
+  type Weight,
 } from './types'
 import './styles/submit.css'
 import { Button } from './components'
@@ -115,7 +118,9 @@ type Outcome =
   /** A 422, on the field that caused it. Never a page-level error. `sent`
    *  tells the API's refusal from this form's own "Not sent": only the first
    *  went anywhere, and only the first is refused again by the same click. */
-  | { kind: 'refused'; sent: boolean; fields: Partial<Record<Field, string>>; unattributed: string | null }
+  | { kind: 'refused'; sent: boolean; fields: Partial<Record<Field, string>>; unattributed: string | null
+      /** Jev's refusal of the step's work contract (jev-contract.md section 4.5): about no field. */
+      contract?: ContractRefusal | null }
   | { kind: 'failed'; error: ApiError }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -130,6 +135,13 @@ function fail(kind: ApiError['kind'], httpStatus: number | null, message: string
 
 /** POST /v1/tasks. Exported for `submit.errors.test.ts`, which hands it real responses. */
 export async function postTask(body: Record<string, unknown>): Promise<Outcome> {
+  // The fixture build answers the submit as the 201 does (QA2-FIX-07, runs2-01).
+  if (USE_FIXTURES) {
+    const refused = fixtureContractRefusal(body)
+    if (refused !== null) return { kind: 'refused', sent: true, fields: {}, unattributed: null, contract: contractRefusal(refused.detail) }
+    const made = await fixtureSubmitTask(body)
+    return { kind: 'created', task: made.task, woke: made.scheduler_woken }
+  }
   const tenant = chosenTenant()
   let res: Response
   try {
@@ -170,7 +182,13 @@ export async function postTask(body: Record<string, unknown>): Promise<Outcome> 
     // `=== true`, not `?? false`: only an explicit true means it was woken.
     return { kind: 'created', task, woke: env.scheduler_woken === true }
   }
-  if (res.status === 422) return { kind: 'refused', sent: true, ...attribute(env, message) }
+  if (res.status === 422) {
+    // JEV'S REFUSAL OF THE WORK CONTRACT names requirements, not a field of
+    // this form: it is drawn per requirement, and never as "did not say which field".
+    const contract = contractRefusal(env.detail)
+    if (contract !== null) return { kind: 'refused', sent: true, fields: {}, unattributed: null, contract }
+    return { kind: 'refused', sent: true, ...attribute(env, message) }
+  }
 
   // THE ONE CLASSIFIER (fetch.ts `classifyFailure`). This used to restate a
   // piece of it and map every 503 to upstream_degraded, so a submit refused
@@ -345,6 +363,11 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   'claude-code-large': [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
+  // claude-code's runner on agent-runtime-lightpanda: a headless browser with
+  // no screen (contract request 127).
+  'claude-code-lightpanda': [
+    { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
+  ],
   // The two worker actions (contract requests 33 and 35, #295) start no
   // runner and take `input: {}`, so they are offered nothing. Listed, empty,
   // so check-contract-parity.sh sees every catalogue profile here.
@@ -389,6 +412,19 @@ const SUGGESTED: Record<string, Suggestion[]> = {
     { name: 'fail', kind: 'flag', note: 'fail deterministically, to exercise the failure path' },
     { name: 'artifact_text', kind: 'text', note: 'written to the artifact upload path' },
   ],
+}
+
+/**
+ * ONE LINE ABOUT WHAT A PROFILE IS FOR, under the chosen runner's facts, where
+ * the name alone does not say it. claude-code-lightpanda's is the design's
+ * wording (docs/design/lightpanda-runtime.md §6.3): the name says "browser"
+ * and a person who reads only that expects the live view and the screenshots
+ * claude-code-browser gives, which this one does not. A profile without a
+ * line here shows none.
+ */
+export const PROFILE_HINTS: Readonly<Record<string, string>> = {
+  'claude-code-lightpanda':
+    'reads and fills web pages without a screen — no live view, no screenshots, no iframes; pages it cannot read go to a live-browser child',
 }
 
 /** `timeout_seconds` (`runners/limits.py`, which a caller may only LOWER) is
@@ -1548,6 +1584,7 @@ function Form({ capacity }: { capacity: Capacity }) {
           {bad.runner_profile && (chosen === '' || outcome.kind !== 'refused' || outcome.sent) && (
             <p id={refusedSayId('runner_profile')} tabIndex={-1} className="warn-text" role="alert">{bad.runner_profile}</p>
           )}
+          {profile && PROFILE_HINTS[chosen] && <p className="muted sbf-profile-hint">{PROFILE_HINTS[chosen]}</p>}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
           {whyAt(1)}
         </Move>
@@ -1696,8 +1733,7 @@ function Form({ capacity }: { capacity: Capacity }) {
             <li className={profile === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>cost</b>
               {profile === null ? <i className="ctl-em">&mdash;</i> : <>
-                {profile.units} unit{profile.units === 1 ? '' : 's'} in each of {profile.pools.length}{' '}
-                pool{profile.pools.length === 1 ? '' : 's'}
+                {costInWords(profile)}
               </>}
             </li>
             <li className={profile === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
@@ -1748,9 +1784,13 @@ function Form({ capacity }: { capacity: Capacity }) {
               valid, and it lands holding nothing (invariant 1) -- and this note
               says what happens next, in the warning ink. A MEASURED zero only:
               an unread room keeps the admits note, and "lands as" says it may
-              wait (N26). It follows `profile`, so each room read re-decides it. */}
+              wait (N26). It follows `profile`, so each room read re-decides it.
+              THE ROOM IS SAID ONCE, IN THE SUMMARY (visual QA pass 2, runs2-07):
+              "Room for 0 now:" here repeated the summary's "room for 0 more"
+              and its "waits for room", so the note keeps c09's what-happens-
+              next and drops the figure. */}
           {waits === 'yes'
-            ? <p className="sb-note sbf-wait">Room for 0 now: it is accepted and waits, holding nothing, until every pool it needs has room.</p>
+            ? <p className="sb-note sbf-wait">It is accepted and waits, holding nothing, until every pool it needs has room.</p>
             : <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>}
           {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
               owner decision Q1 on #1038), as the issue form draws it. It was
@@ -1771,15 +1811,19 @@ function Form({ capacity }: { capacity: Capacity }) {
             {outcome.kind === 'failed' && workspaceRefusal(outcome.error) === null && (
               <>
                 <FailedPanel error={outcome.error} onRetry={() => void submit()} />
+                {/* Only where the failure is ambiguous (QA2-FIX-07, runs2-01): a
+                    definite refusal (4xx) created nothing, and its panel says so. */}
                 {/* A write is not a read: a failure after the request left the browser
                     does not prove nothing was created. */}
                 {/* NO `?` (B7.4). `ambiguous-write` is "a failure after the request
                     left the browser does not prove nothing was created", and the
                     two sentences here ARE that, with the remedy first. */}
+                {!writeRefused(outcome.error) && (
                 <p className="warn-text">
                   <strong>Check Agents before submitting again.</strong> This failed on
                   a write, so the agent may exist anyway.
                 </p>
+                )}
               </>
             )}
           </OutcomeSlot>
@@ -1822,7 +1866,13 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // use" -- wait -- about a task no wait will admit. The weight is the class
   // catalogue's (`/v1/resource-classes`); null until it answers, and then the
   // box reads exactly as it did before.
-  const units = classUnits(useResourceClasses(), profile.resource_class)
+  //
+  // PER POOL (contract request 129, #2950): the class weight is what one agent
+  // takes in a compute pool; the profile's served `pool_units` says what it
+  // takes in each pool, 1 in a provider pool, so a provider limit of 2 is not
+  // "below" a large agent.
+  const classWeight = classUnits(useResourceClasses(), profile.resource_class)
+  const units: Weight = classWeight === null ? null : { units: classWeight, pool_units: profile.pool_units }
   const lead =
     room.blockers.find((b) => verdictNeedsAPerson(blockerVerdict(b, units))) ??
     room.blockers.find((b) => b.pool === room.binding)
@@ -1855,8 +1905,7 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
           The decided phrase at every pool count, one pool included: "in each
           of 1 pool", not a second wording. Each noun agrees with its count. */}
       <p className="sbf-room-h">
-        <span className="mono">{name}</span> right now · {profile.units} unit{profile.units === 1 ? '' : 's'}{' '}
-        in each of {profile.pools.length} pool{profile.pools.length === 1 ? '' : 's'}
+        <span className="mono">{name}</span> right now · {costInWords(profile)}
       </p>
       <p className="muted">
         {room.agents === null ? (
@@ -1943,6 +1992,7 @@ function Refused({ outcome, onField }: {
     // `alert`, as the field's own sentence is: a refusal, not a record of something made.
     <div className="state failed" role="alert">
       <h3>{outcome.sent ? 'The API refused this agent' : 'Not sent'}</h3>
+      {outcome.contract && <ContractRefusalPanel refusal={outcome.contract} />}
       {outcome.unattributed !== null && <p>It did not say which field: {outcome.unattributed}</p>}
       {named.length > 0 && (
         <ul className="sbf-refused">

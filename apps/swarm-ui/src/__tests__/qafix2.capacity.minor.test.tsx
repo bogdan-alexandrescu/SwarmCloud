@@ -185,8 +185,9 @@ describe('capacity-007: `← AUTO` stays with the backend it was resolved to', (
     // reads two items, the second of which wraps to the key's x.
     expect(values).toHaveLength(1)
     const value = values[0] as HTMLElement
-    expect(value.querySelector('.rt-backend')?.textContent).toBe('CLOUD_RUN_JOB')
-    expect(value.querySelector('.rt-declared')?.textContent).toBe('← AUTO')
+    // The words since QA2-FIX-21 (capacity-14, cap2-10).
+    expect(value.querySelector('.rt-backend')?.textContent).toBe('Cloud Run')
+    expect(value.querySelector('.rt-declared')?.textContent).toBe('chosen automatically')
     for (const env of [WIDE, PHONE]) {
       // MUTATION: drop `flex-wrap: wrap` from `.rt-runs-on-value` and
       // backend plus annotation overflow a narrow card; this reads null.

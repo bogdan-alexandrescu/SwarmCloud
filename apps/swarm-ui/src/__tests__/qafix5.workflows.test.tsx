@@ -15,15 +15,12 @@
 //          collected; a selected step still drew all six columns.
 //   5b:wg-dark-D2 (6343767840) the head read 'cost not reported' while the
 //          attempt read was in flight, and the list '—', then '$1.21'.
-//   r3:work-a-010 (6314117148) at 1440 the Cost column wrapped '3 of 4' /
-//          'reported' although c28 sized it for one line: 128px left the
-//          coverage exactly its own width (15 x 0.6em x 12px = 108px in a
-//          108px box), no slack for a rounded glyph advance.
 //
 // Every assertion names the mutation that turns it red.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
@@ -31,7 +28,6 @@ import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { build, painted } from './marks'
 import { attempt } from './runfixture'
-import { cellStyle, lengthPx, textPx } from './tablefit'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -46,7 +42,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard } = await import('../Workflows')
 const { WorkflowChangesTab } = await import('../WorkflowChanges')
 
 const T0 = Date.parse('2026-10-22T12:00:00.000Z')
@@ -162,6 +158,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  atWidth(realWidth)
   for (const h of hosts.splice(0)) h.remove()
 })
 
@@ -170,8 +167,56 @@ async function page(): Promise<void> {
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
-const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const WIDE: CascadeEnv = { width: 1440 }
+
+const realWidth = window.innerWidth
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
+}
+
+/**
+ * THE CANVAS, RENDERED DIRECTLY (the Graph Work redesign, part of #2688): the
+ * arrival pick and the `.wfp-fail-lead` banner are canvas chrome -- the
+ * page's Graph tab is the stage grid now, with no arrival pick and no
+ * banner at all -- so this renders `WorkflowCard` the way the old workflow
+ * page used to, the failed step already picked.
+ */
+function PageCard() {
+  const f = fan()
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  const [picked, setPicked] = useState<string | null>('checkpoints')
+  return (
+    <WorkflowCard
+      workflow={f.w}
+      taskById={f.tasks}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      picked={picked}
+      onPick={(_id, stepId) => setPicked((p) => (p === stepId ? null : stepId))}
+      page
+      reload={() => {}}
+    />
+  )
+}
+
+/** The real page, the checkpoints chip picked from the grid: the inspector
+ *  the page docks once a reader opens a step (there is no arrival pick). */
+async function openOnPage(): Promise<HTMLElement> {
+  atWidth(1440)
+  await page()
+  const chip = await waitFor(() => {
+    const b = document.querySelector<HTMLButtonElement>('.sg [data-step="checkpoints"]')
+    expect(b, 'no checkpoints chip on the stage grid').toBeTruthy()
+    return b!
+  })
+  fireEvent.click(chip)
+  return waitFor(() => {
+    const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step checkpoints"]')
+    expect(d, 'the inspector did not open on checkpoints').toBeTruthy()
+    return d!
+  })
+}
 
 // ---------------------------------------------------------------------------
 // QA-120: the card beside the graph, headed by its step
@@ -194,18 +239,24 @@ describe('QA-120: from 1280 the page docks the step card beside the graph, heade
   })
 
   it('heads the card with the step, not with the workflow the page is already titled by', async () => {
-    await page()
-    await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('checkpoints'))
-    const head = panel()!.querySelector<HTMLElement>('.wf-inspect-head')!
-    // MUTATION: drop the `stepHeading` branch in `StepInspector` -- the head
-    // leads with the workflow's id again and has no heading at all.
-    // Named by the step, then its state: the mark before it is decoration.
-    expect(within(head).getByRole('heading', { level: 3, name: 'checkpoints failed' })).toBeTruthy()
+    // No arrival pick on the page any more: the reader opens checkpoints
+    // themselves, from the stage grid, and the inspector draws its same head.
+    const dock = await openOnPage()
+    const head = dock.querySelector<HTMLElement>('.wi-head')!
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the card itself (`section.sc-card`) draws no head of its
+    // own any more -- the dock's own `.wi-head` already names the step and
+    // its state, in plain text rather than a heading, so the card does not
+    // repeat it.
+    expect(head.querySelector('.wi-title-text')?.textContent).toBe('checkpoints')
+    expect(head.querySelector('.wi-state')?.textContent).toMatch(/failed/)
     expect(head.textContent, 'the card repeats the workflow the page is titled by').not.toContain('wf_fan')
   })
 
   it('says the arrival control opens the card, not that it is "below"', async () => {
-    await page()
+    // The arrival pick and its lead banner are canvas chrome, gone from the
+    // page on purpose; `WorkflowCard` still carries the behaviour.
+    render(<PageCard />)
     const lead = await screen.findByRole('region', { name: 'Why step checkpoints failed' })
     // MUTATION: put back 'Step details below: agent, logs, changes ↓' -- at
     // 1440 the card is beside the graph, and "below" sends the reader down.
@@ -218,57 +269,58 @@ describe('QA-120: from 1280 the page docks the step card beside the graph, heade
 // ---------------------------------------------------------------------------
 
 describe('WG-4, WG-6: the step card says what its figures count', () => {
-  it('says "why it failed" as a heading in the body ink, not a grey caption', async () => {
-    await page()
+  it('says "why it failed" as an accessible group, with the whole error shown, not a grey caption', async () => {
+    const dock = await openOnPage()
     const cause = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('.wf-inspect-cause')
+      const el = dock.querySelector<HTMLElement>('.sc-err')
       expect(el).toBeTruthy()
       return el!
     })
-    // MUTATION: put the `<b>why it failed</b>` caption back -- no heading.
-    const h = within(cause).getByRole('heading', { level: 4, name: 'Why it failed' })
-    // MUTATION: give `.wf-inspect-cause-h` `color: var(--text-dim)` (the
-    // caption's) -- the label reads grey again.
-    expect(painted(h, 'color', WIDE)).toBe('var(--text)')
-    // The failure's ink is the block's left rule, as the lead above the graph.
-    // MUTATION: drop the cause's `border-left`.
-    expect(painted(cause, 'border-left', WIDE)).toBe('2px solid var(--bad)')
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): `.sc-err`'s own `role="group" aria-label="Why it failed"`
+    // names it now, in place of the `<h4>Why it failed</h4>` caption heading.
+    expect(cause.getAttribute('role')).toBe('group')
+    expect(cause.getAttribute('aria-label')).toBe('Why it failed')
+    const text = cause.querySelector<HTMLElement>('.sc-err-text')!
+    expect(text.textContent).toContain(ERROR)
+    // The failure's ink is the body's own, not a dim caption's.
+    expect(painted(text, 'color', WIDE)).toBe('var(--text)')
   })
 
-  it('says the same-step row compares this step across workflows of this shape, and says when there is no other', async () => {
-    await page()
-    const row = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('[data-scrub="workflow"]')
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): the "same step in other workflows" row and its "no other
+  // workflow of this shape" sentence are gone outright when there is nothing
+  // to switch to (siblings.length <= 1) -- `.sc-others` and its pager are
+  // drawn only when there is more than one, not restated as a message.
+  it('drops the "other workflows" row from the Details fold entirely when this is the only one of its shape', async () => {
+    const dock = await openOnPage()
+    const details = await waitFor(() => {
+      const el = dock.querySelector<HTMLElement>('.sc-facts')
       expect(el).toBeTruthy()
       return el!
     })
-    const text = (row.textContent ?? '').replace(/\s+/g, ' ')
-    // MUTATION: print the bare `same step` key again.
-    expect(text).toContain('same step in other workflows')
-    // MUTATION: print `workflow 1 of 1` when the workflow is the only one of
-    // its shape -- a position in a list of one, unexplained.
-    expect(text).not.toContain('workflow 1 of 1')
-    // One sentence since QA1-FIX-29 (overview-agents-67).
-    expect(text).toContain('No other workflow of this shape on this board')
+    expect(details.querySelector('.sc-others')).toBeNull()
+    expect((details.textContent ?? '')).not.toMatch(/other workflow/i)
   })
 
-  it('names the generation as the lease’s and says what it is for, and the cost as this attempt’s', async () => {
-    await page()
-    const facts = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('.wf-inspect-facts')
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): "lease generation 3 · raised by every new lease" and "this
+  // attempt's cost $0.253" are gone -- Generation is a plain dt/dd fact in
+  // the Details fold (its note a title, not body text), and Cost is one of
+  // the bar's own stat tiles, not words beside the head's workflow total.
+  it('shows the generation as a Details fact and the cost as a stat tile', async () => {
+    const dock = await openOnPage()
+    const details = await waitFor(() => {
+      const el = dock.querySelector<HTMLElement>('.sc-facts')
       expect(el).toBeTruthy()
       return el!
     })
-    const text = (facts.textContent ?? '').replace(/\s+/g, ' ')
-    // MUTATION: label `gen` 'generation' again in `FACT_LABEL`.
-    // Folded under More about this attempt since QA1-FIX-29 (overview-agents-66).
-    const more = (facts.parentElement!.querySelector('details.wf-inspect-more')?.textContent ?? '').replace(/\s+/g, ' ')
-    expect(more).toMatch(/lease generation ?3/)
-    // MUTATION: drop the `FACT_HINT` line -- '3' with nothing saying what it counts.
-    expect(more).toContain('raised by every new lease')
-    // MUTATION: label `cost` 'cost' -- '$0.253' read beside the head's
-    // workflow total as a second figure for the same thing (D2).
-    expect(text).toMatch(/this attempt’s cost ?\$0\.253/)
+    const genDt = [...details.querySelectorAll('dt')].find((d) => d.textContent === 'Generation')!
+    const genDd = genDt.nextElementSibling as HTMLElement
+    expect(genDd.textContent).toBe('3')
+    expect(genDd.getAttribute('title')).toMatch(/fencing generation/)
+    const cost = dock.querySelector<HTMLElement>('.sc-tile[data-tile="cost"] .sc-tile-v')!
+    expect(cost.textContent).toBe('$0.253')
   })
 })
 
@@ -302,14 +354,15 @@ describe('WG-7: each Changes scope says what it covers', () => {
   })
 
   it('names the step card’s link for the workflow’s Changes tab it opens', async () => {
-    await page()
-    const link = await waitFor(() => {
-      const a = panel()?.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')
-      expect(a).toBeTruthy()
-      return a!
-    })
-    // MUTATION: drop "in this workflow" -- the link reads like the agent's own Changes.
-    expect(link.textContent).toMatch(/^This step’s changes in this workflow/)
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the step's Changes link is now the bar's compact
+    // "Changes" button, scoped by its `href` to this step's column, with the
+    // sentence that used to be its visible text moved to its `title` (the
+    // reason nothing was counted, when there is one, as here).
+    const dock = await openOnPage()
+    const link = await waitFor(() => within(dock).getByRole('link', { name: /^Changes/ }) as HTMLAnchorElement)
+    expect(link.getAttribute('href')).toBe('/workflows/wf_fan/changes?step=checkpoints')
+    expect(link.getAttribute('title')).toBe('This run wrote no git summary, so what it changed is not known.')
   })
 })
 
@@ -365,24 +418,28 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
   it('heads the page with "reading" while the attempt read is in flight', async () => {
     api.loadWorkflowUsage.mockReturnValue(new Promise(() => {}))
     await page()
-    const cost = document.querySelector<HTMLElement>('.wfp-head .wfp-cost')!
+    // The cost is one of the head's `.wfp-fig`s now, not a dedicated `.wfp-cost`.
+    const figs = [...document.querySelectorAll<HTMLElement>('.wfp-head .wfp-fig')]
+    const cost = figs.find((el) => /reading|not reported|\$/.test(el.textContent ?? ''))!
     // MUTATION: drop the `reading` branch in `WorkflowHead` -- 'cost not
     // reported' while the read is in flight, '$1.21' once it lands.
-    expect(cost.textContent).toMatch(/cost: reading/)
+    expect(cost.textContent).toMatch(/reading/)
     expect(cost.textContent).not.toMatch(/not reported/)
   })
 
-  it('draws "reading" in the list’s Cost cell while the read is in flight, not the "—" of an absence', async () => {
+  // Cost is the Spent column since the redesign (frame graph-workflows-rest).
+  it('the list’s Spent cell waits on no attempt read: its steps’ totals come with the list (console load speed, 2026-11-01)', async () => {
     api.loadWorkflowUsage.mockReturnValue(new Promise(() => {}))
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const cell = await waitFor(() => {
-      const td = document.querySelector<HTMLElement>('.wfl-table tr[data-workflow="wf_fan"] td[data-col="cost"]')
+      const td = document.querySelector<HTMLElement>('.wfg-table tr[data-workflow="wf_fan"] td[data-col="spent"]')
       expect(td).toBeTruthy()
       return td!
     })
-    // MUTATION: drop the `reading` prop from the row's `Spend`.
-    expect(cell.textContent).toBe('reading')
-    expect(within(cell).getByRole('img', { name: /still being read/ })).toBeTruthy()
+    // MUTATION: put the list's `useWorkflowUsage` back -- the cell reads
+    // `reading` while the attempt read the list no longer makes is out.
+    expect(cell.textContent).not.toBe('reading')
+    expect(api.loadWorkflowUsage).not.toHaveBeenCalled()
   })
 
   it('draws reading upright and faint, apart from the italic absence', () => {
@@ -393,33 +450,5 @@ describe('D2: a workflow cost still being read reads "reading", never "not repor
     expect(painted(reading, 'color', WIDE)).toBe('var(--text-faint)')
     expect(painted(absent, 'font-style', WIDE)).toBe('italic')
     expect(painted(reading, 'font-style', WIDE)).toBe('normal')
-  })
-})
-
-// ---------------------------------------------------------------------------
-// work-a-010: c28 with slack
-// ---------------------------------------------------------------------------
-
-describe('work-a-010: at 1440 the Cost column holds "3 of 4 reported" with a glyph to spare', () => {
-  it('leaves at least one character’s advance beyond the coverage', () => {
-    const host = document.createElement('div')
-    host.innerHTML =
-      '<div class="wfl"><div class="table-wrap is-scroll wfl-scroll"><table class="wfl-table"><thead><tr><th data-col="cost">Cost</th></tr></thead>' +
-      '<tbody><tr class="wfl-row"><td class="num" data-col="cost"><span class="wf-spend">$0.518<span class="wf-spend-cov">3 of 4 reported</span></span></td></tr></tbody></table></div></div>'
-    document.body.appendChild(host)
-    hosts.push(host)
-    const th = host.querySelector('th')!
-    const td = host.querySelector('td')!
-    const st = cellStyle(td, WIDE)
-    const room = (lengthPx(painted(th, 'width', WIDE), 0) ?? 0) - st.pl - st.pr
-    // MEASURED IN THE FACE IT IS DRAWN IN: the coverage is `.wf-spend`'s DM
-    // Mono (0.6em), 108px. c28 measured it on the cell, in the sans face
-    // (100.8px), and so found 7px of slack that was never there.
-    const cov = host.querySelector('.wf-spend-cov')!
-    const text = textPx('3 of 4 reported', cov, WIDE)
-    expect(text).toBeCloseTo(108, 5)
-    // MUTATION: put the 1280 head back at 128px -- the room is exactly the
-    // text's 108px, and a browser that rounds one advance up wraps 'reported'.
-    expect(room - text).toBeGreaterThanOrEqual(text / 15)
   })
 })

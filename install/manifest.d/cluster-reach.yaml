@@ -1,0 +1,73 @@
+# Lane DAYONE-CLUSTER-REACH (part of #2688): stage 10 reaches the control plane
+# from the installer's machine (its own kubeconfig, the pinned
+# gke-gcloud-auth-plugin first on PATH, a countdown while installer_cidr
+# propagates) and applies the relay and the graph service from terraform/infra's
+# outputs. The two workload entries, whose apply text changes, are restated
+# with replace: true and name the step that satisfies them.
+version: 1
+entries:
+- id: workload.swarm-graph
+  kind: namespace-object
+  scope: core
+  stage: 10
+  provider: engine
+  check: kubectl --kubeconfig ~/.config/swarmcloud/install/$P.kubeconfig --context $E -n swarm-system get deployment swarm-graph, every replica ready, and kubectl diff -f - of terraform/infra's swarm_graph_manifest output shows no difference
+  apply: steps/cluster.py cluster.workloads reads terraform/infra's swarm_graph_manifest output (terraform output -json as swarm-tf-deployer, terraform.read_outputs), applies it server-side with the pinned kubectl and waits on kubectl rollout status deployment/swarm-graph; a null output (graph_service.serve off) applies nothing
+  verify: kubectl -n swarm-system get pods -l app=swarm-graph shows Running; swarm-api's graph ticket mint+verify round-trips
+  explain: the shared code graph service workload (4 of ~5); the only one with its own PodDisruptionBudget
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - cluster.swarm-system-namespace
+  - secret.swarm-graph-ticket-key.value
+  evidence:
+  - apps/swarm-install/swarm_install/steps/cluster.py
+  - kubernetes/swarm-system/swarm-graph.yaml:62
+  - kubernetes/swarm-system/swarm-graph.yaml:74
+  - kubernetes/swarm-system/swarm-graph.yaml:100
+  - kubernetes/swarm-system/swarm-graph.yaml:145
+  - kubernetes/swarm-system/swarm-graph.yaml:160
+  - kubernetes/swarm-system/swarm-graph.yaml:188
+  - kubernetes/swarm-system/swarm-graph.yaml:212
+  - kubernetes/swarm-system/swarm-graph.yaml:226
+  notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
+  replace: true
+  refs:
+    kubernetes:
+    - swarm-system/swarm-graph.yaml
+    - network-policies/allow-graph-service.yaml
+    terraform:
+    - infra/google_compute_address.graph_stats
+    - infra/google_storage_bucket_iam_member.graph_service_read
+- id: workload.swarm-live
+  kind: namespace-object
+  scope: core
+  stage: 10
+  provider: engine
+  check: kubectl --kubeconfig ~/.config/swarmcloud/install/$P.kubeconfig --context $E -n swarm-system get statefulset swarm-live, every replica ready, and kubectl diff -f - of terraform/infra's swarm_live_manifest output shows no difference
+  apply: steps/cluster.py cluster.workloads reads terraform/infra's swarm_live_manifest output (terraform output -json as swarm-tf-deployer, terraform.read_outputs), applies it server-side with the pinned kubectl and waits on kubectl rollout status statefulset/swarm-live; a null output (enable_live_browser off) applies nothing
+  verify: kubectl -n swarm-system get pods -l app=swarm-live shows Running; a live session reaches it
+  explain: the live-browser relay workload (3 of ~5)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - cluster.swarm-system-namespace
+  - secret.swarm-live-key.value
+  evidence:
+  - apps/swarm-install/swarm_install/steps/cluster.py
+  - kubernetes/swarm-system/swarm-live.yaml:60
+  - kubernetes/swarm-system/swarm-live.yaml:71
+  - kubernetes/swarm-system/swarm-live.yaml:94
+  - kubernetes/swarm-system/swarm-live.yaml:139
+  - kubernetes/swarm-system/swarm-live.yaml:163
+  - kubernetes/swarm-system/swarm-live.yaml:185
+  notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
+  replace: true
+  refs:
+    kubernetes:
+    - swarm-system/swarm-live.yaml
+    terraform:
+    - infra/google_compute_address.live_relay
+    - infra/google_storage_bucket_iam_member.live_relay_records

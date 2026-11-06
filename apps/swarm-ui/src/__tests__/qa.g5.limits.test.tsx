@@ -25,7 +25,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen } = await import('../AdminSettings')
+const { AdminSettingsScreen, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 const WIDE: CascadeEnv = { width: 1440 }
@@ -108,13 +108,13 @@ describe('G5-21: Pool limits shows the configured hard limit beside the effectiv
 
   it('says the hard limit in units, and labels the field with what it prefills', async () => {
     const row = await rowOf(QUOTA_HELD)
-    fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${QUOTA_HELD}` }))
+    fireEvent.click(within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(QUOTA_HELD)}` }))
     const side = document.querySelector<HTMLElement>('aside.adm-side')!
     const facts = [...side.querySelectorAll('.adm-side-facts dt')].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent])
     expect(facts).toContainEqual(['Ceiling', '50 units'])
     // MUTATION: print the bare number again.
     expect(facts).toContainEqual(['Hard limit', '100 units'])
-    const input = within(side).getByLabelText(`Hard limit for ${QUOTA_HELD}`) as HTMLInputElement
+    const input = within(side).getByLabelText(`Hard limit for ${poolSpoken(QUOTA_HELD)}`) as HTMLInputElement
     expect(input.value).toBe('100')
     const label = side.querySelector(`label[for="${input.id}"]`)!
     expect(label.textContent).toBe('New hard limit (now 100)')

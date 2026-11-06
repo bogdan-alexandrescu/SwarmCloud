@@ -152,7 +152,7 @@ describe('the drop-down', () => {
     // Each item says where it leads, from its href: its link's tooltip (VQ-057).
     const first = p.querySelector('.nt-item')!
     expect(first.classList.contains('is-unread')).toBe(true)
-    expect(first.querySelector('.nt-main')!.getAttribute('title')).toMatch(/Admin.*People/)
+    expect(first.querySelector('.nt-main')!.getAttribute('title')).toMatch(/Admin.*Platform people/)
     expect(p.textContent).toContain('Read items clear after 30 days')
   })
 

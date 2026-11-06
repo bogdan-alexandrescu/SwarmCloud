@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from swarm_common import states as _states
+from swarm_common.models import PROVIDER_POOL_UNITS
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
@@ -868,7 +869,19 @@ _ACCOUNT_FIELDS = (
     "duplicate_of",
     "duplicate_reason",
     "possible_duplicate",
+    # Which pools it serves -- the agents' "workspace" pool, the "voice-it"
+    # pool, or both -- and who holds it for Voice it right now
+    # (voice-it-pool). The holder has its own allow-list below.
+    "pools",
 )
+#: The live Voice it hold, as swarm-api serves it to the owner's members: who
+#: and since when. The session id is the voice service's business, not a
+#: listing's, so it is not carried.
+_HOLDER_FIELDS = ("person", "since")
+#: The pools an account can serve (voice-it-pool interface): "workspace", the
+#: agents' pool, and "voice-it", the Voice it pool, in the order swarm-api
+#: serves them. `sc account pool` sends sets in this order too.
+ACCOUNT_POOLS = ("workspace", "voice-it")
 _WINDOW_FIELDS = ("utilization", "resets_at", "reset")
 #: What one `blocked_by` entry may carry: a window under its floor
 #: (`window, used, floor, resets_at, aged_reading`), a full account (`cap,
@@ -974,7 +987,35 @@ def public_account(account: dict[str, Any], tenant: str | None = None) -> dict[s
             for name, entry in windows.items()
             if isinstance(entry, dict)
         }
+    if "pools" in account:
+        out["pools"] = account_pools(account)
+    if "voice_it_holder" in account:
+        holder = account.get("voice_it_holder")
+        out["voice_it_holder"] = (
+            {key: holder[key] for key in _HOLDER_FIELDS if key in holder}
+            if isinstance(holder, dict) else None
+        )
     return out
+
+
+def account_pools(account: dict[str, Any]) -> list[str]:
+    """The pools an account serves, as swarm-api serves them: absent or empty
+    reads as ["workspace"] (the voice-it-pool interface), unknown names are
+    dropped, and the order is always workspace, voice-it."""
+    served = account.get("pools")
+    names = [p for p in served if p in ACCOUNT_POOLS] if isinstance(served, list) else []
+    return [p for p in ACCOUNT_POOLS if p in names] or ["workspace"]
+
+
+def holder_words(account: dict[str, Any], now: datetime, style: Style) -> str | None:
+    """Who holds `account` for Voice it right now, in words, or None."""
+    holder = account.get("voice_it_holder")
+    if not isinstance(holder, dict):
+        return None
+    person = details.shown(holder.get("person")) or "someone"
+    since = format_ago(holder.get("since"), now, style)
+    when = "" if since == style.dash else f", taken {since}"
+    return f"{account.get('account_id')} is held for Voice it by {person}{when}"
 
 
 def render_accounts(
@@ -1027,6 +1068,17 @@ def render_accounts(
             Column("new", "NEW AGENT", drop=3),
             Column("agents", "AGENTS", align="right", drop=4),
         ]
+    # WHICH PROVIDER (#2688): a pool of Claude subscriptions alone needs no
+    # column, so it appears once any account is something else -- a ChatGPT
+    # plan for the codex runner -- and then names every account's.
+    if any(str(a.get("provider") or "anthropic") != "anthropic" for a in accounts):
+        columns.insert(1, Column("provider", "PROVIDER", drop=7))
+    # WHICH POOLS (voice-it-pool): the agents' workspace pool, the Voice it
+    # pool, or both. Only when the API says: an older one serves no `pools`,
+    # and every account then is in the workspace pool, so a column of
+    # "workspace" would say nothing.
+    if any("pools" in a for a in accounts):
+        columns.insert(1, Column("pools", "POOLS", drop=3))
     tenant = listing_tenant(accounts)
 
     rows: list[dict[str, Any]] = []
@@ -1046,6 +1098,8 @@ def render_accounts(
         rows.append(
             {
                 "account": Cell(account_id),
+                "provider": Cell(str(account.get("provider") or "anthropic")),
+                "pools": Cell(",".join(account_pools(account))),
                 "short": format_window(short, style),
                 "long": format_window(long, style),
                 "clears": Cell(
@@ -1074,6 +1128,10 @@ def render_accounts(
         )
         lines += detail(head + "; ".join(said), style, tone="warn" if refused else "dim")
 
+    for account in accounts:
+        held = holder_words(account, now, style)
+        if held:
+            lines += detail(held, style)
     for account in accounts:
         if account.get("lend_to"):
             who = ", ".join(str(t) for t in account["lend_to"])
@@ -1155,8 +1213,17 @@ def binding_pool(
     required: Sequence[str],
     pools: dict[str, dict[str, Any]],
     units: int,
+    pool_units: Any = None,
 ) -> Binding:
     """The pool with the least headroom for one more task of this profile.
+
+    ROOM DIVIDES EACH POOL BY WHAT ONE AGENT TAKES IN IT, read from the
+    profile's served `pool_units` (`/v1/capacity`, contract request 129,
+    #2950): a large agent takes its 4 units in a compute pool and 1 in a
+    provider pool, so dividing a provider pool's room by 4 understated it
+    four times over. An API older than the field sends none, and that API's
+    admission took `units` in every pool, so `units` is then the true share
+    (`pool_share`).
 
     Admission is all-or-nothing across `required`, so the ceiling a profile
     actually feels is the tightest of them -- not the global one, which is the
@@ -1200,7 +1267,7 @@ def binding_pool(
         available = _int_or_none(pool.get("available"))
         if available is None:
             available = max(0, limit - (active or 0))
-        room = available // max(1, units)
+        room = available // max(1, pool_share(name, units, pool_units))
         candidate = Binding(pool=name, room=room, limit=limit, active=active)
         if best is None or room < best.room:
             best = candidate
@@ -1209,6 +1276,22 @@ def binding_pool(
     if best is None:
         return Binding(unconfigured=considered == 0)
     return best
+
+
+def pool_share(name: str, units: int, pool_units: Any) -> int:
+    """What one agent of a profile takes in pool `name`: the served
+    `pool_units` entry when there is one, else `units`.
+
+    Never restated here from the pool's kind: the rule is admission's
+    (`swarm_common.models.pool_units_for`), and the API serves its answer per
+    profile. A profile served without the field came from an API whose
+    admission took `units` in every pool, so `units` is not a guess there.
+    """
+    if isinstance(pool_units, dict):
+        share = _int_or_none(pool_units.get(name))
+        if share is not None and share > 0:
+            return share
+    return units
 
 
 def format_room(binding: Binding, style: Style) -> Cell:
@@ -1293,7 +1376,7 @@ def render_capacity(
             )
             continue
         units = _int_or_none(spec.get("units")) or 1
-        binding = binding_pool(list(spec.get("pools") or []), pools, units)
+        binding = binding_pool(list(spec.get("pools") or []), pools, units, spec.get("pool_units"))
         rows.append(
             {
                 "profile": Cell(name),
@@ -1307,8 +1390,9 @@ def render_capacity(
         )
 
     # UNITS, NOT "USED" (#192). The cell is the binding pool's `active/limit`,
-    # and admission adds a task's `units` to `active` on every pool it takes
-    # (`swarm_common/admission.py`) -- so it counts units, while ROOM beside it
+    # and admission adds a task's share to `active` on every pool it takes --
+    # its `units` in a compute pool, 1 in a provider pool (`pool_units_for`,
+    # contract request 129) -- so it counts units, while ROOM beside it
     # counts agents of the profile. The header says which, and the note under
     # the table says how the two relate.
     lines = render_table(
@@ -1373,6 +1457,7 @@ def render_capacity(
                 ),
                 "free": Cell(style.dash if available is None else str(available),
                              "dim" if available is None else None),
+                "ceiling": ceiling_cell(pool, style),
                 "state": state,
             }
         )
@@ -1386,6 +1471,9 @@ def render_capacity(
                     # the pool's free units, which ROOM divides.
                     Column("used", "UNITS", align="right"),
                     Column("free", "FREE", align="right", drop=2),
+                    # The configured ceiling beside the applied limit UNITS
+                    # divides by, and what lowered it (#3047).
+                    Column("ceiling", "CEILING", align="right", drop=3),
                     Column("state", "STATE", drop=1),
                 ],
                 pool_rows,
@@ -1395,6 +1483,36 @@ def render_capacity(
             + lines
         )
     return lines
+
+
+#: The short word for each input that can hold a pool below its ceiling.
+_LOWERED_WORD = {"adaptive_target": "adaptive", "quota_derived_limit": "quota"}
+
+
+def ceiling_cell(pool: dict[str, Any], style: Style) -> Cell:
+    """A pool's configured ceiling, and the input that holds UNITS' limit below it (#3047).
+
+    `40` when the ceiling applies; `40 adaptive` when the AIMD target holds the
+    applied limit (UNITS' denominator) below it, `40 quota` when the provider
+    quota does. The input is read from the `lowered_by` /v1/capacity serves;
+    an older API without it is read from the pool's own fields the same way.
+    """
+    ceiling = _int_or_none(pool.get("hard_limit"))
+    applied = _int_or_none(pool.get("effective_limit"))
+    if ceiling is None:
+        return Cell(style.dash, "dim")
+    if applied is None or applied >= ceiling:
+        return Cell(str(ceiling), "dim")
+    served = pool.get("lowered_by")
+    if isinstance(served, list):
+        inputs = [str(e.get("input")) for e in served if isinstance(e, dict)]
+    else:
+        inputs = [
+            name for name in ("adaptive_target", "quota_derived_limit")
+            if _int_or_none(pool.get(name)) == applied
+        ]
+    words = [_LOWERED_WORD.get(name, name) for name in inputs]
+    return Cell(" ".join([str(ceiling), *words]), "warn")
 
 
 def units_note(own: str) -> str:
@@ -1410,7 +1528,8 @@ def units_note(own: str) -> str:
     )
     return (
         "UNITS is capacity units in use out of the pool's limit, not agents: an "
-        f"agent takes its resource class's units ({per_class}). On a shared pool "
+        f"agent takes its resource class's units ({per_class}) in a compute pool and "
+        f"{PROVIDER_POOL_UNITS} in a provider pool. On a shared pool "
         f"it counts every tenant's; only {own} counts yours alone. ROOM counts "
         "agents: how many more of that profile fit before the binding pool refuses."
     )
@@ -1452,7 +1571,7 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
             # the subtitle is the line people quote.
             continue
         units = _int_or_none((spec or {}).get("units")) or 1
-        binding = binding_pool(list((spec or {}).get("pools") or []), pools, units)
+        binding = binding_pool(list((spec or {}).get("pools") or []), pools, units, (spec or {}).get("pool_units"))
         if binding.pool is None:
             continue
         if binding.paused:
@@ -1471,6 +1590,234 @@ def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
     return (
         f"tightest: {name}, {_fit_phrase(binding.room or 0)} on {binding.pool} "
         f"({format_used(binding, style).text} units)"
+    )
+
+
+# --------------------------------------------------------------------------
+# Jev usage (part of #2688)
+# --------------------------------------------------------------------------
+
+#: The route the console's Capacity › Jev usage reads, and `sc capacity` with it.
+JEV_USAGE_ROUTE = "/v1/jev-usage"
+
+#: Each kind's group, in the console's words (`swarm-ui/src/jevUsage.ts`
+#: `JEV_GROUP_LABEL`). A worker judgment is named by its question as well.
+JEV_GROUP_LABEL = {
+    "worker_judgment": "Worker judgment",
+    "quality_gate": "Quality gate",
+    "decision_tool": "Agent decision tool",
+    "jev_browser": "Jev browser",
+    "control_plane_reask": "Control-plane re-ask",
+    "contract_review": "Contract review at submission",
+    "unattributed": "Not split by kind",
+    "other": "Other",
+}
+
+#: Why the worker skipped a Jev call, in the console's words
+#: (`swarm-ui/src/jevUsage.ts` `JEV_SKIP_LABEL`); an unknown one is its code's.
+JEV_SKIP_LABEL = {
+    "breaker_open": "Jev unavailable",
+    "budget_calls": "call budget spent",
+    "budget_tokens": "token budget spent",
+    "budget_monthly": "monthly cap reached",
+    "oversize": "question too large",
+    "empty_state": "nothing to ask",
+}
+
+#: What is absent, worded as the console words it: never a zero.
+RATE_NOT_SET = "rate not set"
+NOT_RECORDED = "not recorded"
+
+
+def _count_or_none(value: Any) -> int | None:
+    """A served count, or None when it is absent or not a count."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _rate_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        return None
+    return float(value)
+
+
+def _plain_number(value: float) -> str:
+    """`3` for 3.0 and `0.8` for 0.8, as the console prints a rate."""
+    return f"{value:g}"
+
+
+def jev_dollars(usd: Any, rate_set: bool) -> str:
+    """Dollars as the console prints them, or why there are none: never $0
+    for "not priced" (`JevUsagePage.tsx` `Dollars`)."""
+    value = _rate_or_none(usd)
+    if value is None:
+        return RATE_NOT_SET if not rate_set else "needs the output rate, which is not set"
+    return f"${value:.4f}" if value < 1 else f"${value:.2f}"
+
+
+def jev_tokens(value: Any) -> str:
+    count = _count_or_none(value)
+    return NOT_RECORDED if count is None else f"{count:,}"
+
+
+def jev_outcomes(outcomes: Any, style: Style) -> str:
+    """`2 ok · 1 failed · 3 skipped (call budget spent 1, question too large 2)
+    · 2 not recorded`, or "not recorded" when no row recorded an outcome
+    (`JevUsagePage.tsx` `outcomeText`): never "0 ok · 0 failed"."""
+    if not isinstance(outcomes, dict):
+        return NOT_RECORDED
+    parts = [
+        f"{_count_or_none(outcomes.get('ok')) or 0:,} ok",
+        f"{_count_or_none(outcomes.get('failed')) or 0:,} failed",
+        f"{_count_or_none(outcomes.get('skipped')) or 0:,} skipped",
+    ]
+    text = style.sep.join(parts)
+    by_reason = outcomes.get("skipped_by_reason")
+    reasons = [
+        f"{JEV_SKIP_LABEL.get(str(reason), str(reason).replace('_', ' '))} {n:,}"
+        for reason, n in sorted((by_reason or {}).items() if isinstance(by_reason, dict) else [])
+        if (_count_or_none(n) or 0) > 0
+    ]
+    if reasons:
+        text = f"{text} ({', '.join(reasons)})"
+    unrecorded = _count_or_none(outcomes.get("unrecorded")) or 0
+    if unrecorded:
+        text = f"{text}{style.sep}{unrecorded:,} {NOT_RECORDED}"
+    return text
+
+
+def jev_kind_label(row: dict[str, Any]) -> str:
+    """A kind as the console names it (`JevUsagePage.tsx` `kindLabel`)."""
+    group = row.get("group") if row.get("group") in JEV_GROUP_LABEL else "other"
+    label = JEV_GROUP_LABEL[group]
+    return f"{label} {row.get('kind')}" if group == "worker_judgment" else label
+
+
+def jev_rate_line(rate: Any) -> str:
+    """What the dollars were priced at, as the console says it."""
+    rate = rate if isinstance(rate, dict) else {}
+    given = _rate_or_none(rate.get("input_usd_per_million"))
+    if rate.get("set") is not True or given is None:
+        return (f"Jev's price: {RATE_NOT_SET}. Dollars stay blank until a platform admin "
+                "sets Jev's per-token rate.")
+    out = _rate_or_none(rate.get("output_usd_per_million"))
+    tail = " (output rate not set)" if out is None else f", ${_plain_number(out)} out"
+    return f"Priced at ${_plain_number(given)} per million tokens in{tail}."
+
+
+def jev_month_line(month: Any) -> str:
+    """The month's use against its cap."""
+    month = month if isinstance(month, dict) else {}
+    name = month.get("month") or "this month"
+    used = _count_or_none(month.get("used_tokens"))
+    cap = _count_or_none(month.get("cap_tokens"))
+    used_text = f"{used:,}" if used is not None else NOT_RECORDED
+    if cap is None:
+        return (f"{name}: {used_text} tokens in this month; no monthly cap is set "
+                "for this workspace")
+    share = f" ({round(used * 100 / cap)}%)" if cap and used is not None else ""
+    return f"{name}: {used_text} of {cap:,} tokens in this month{share}"
+
+
+def render_jev_usage(
+    usage: dict[str, Any] | None,
+    style: Style,
+    *,
+    error: str | None = None,
+    absent: bool = False,
+) -> list[str]:
+    """`GET /v1/jev-usage` as Capacity › Jev usage draws it: the 30-day total,
+    by kind, with its outcomes, and the month's use against its cap.
+
+    ABSENT IS ONE LINE. An API older than the route answers 403 or 404, and
+    that is not a broken capacity view: the line says the route is not served
+    and nothing else changes. A route that FAILED says so with its reason.
+    """
+    if usage is None:
+        if absent:
+            return [section("jev usage", "", style),
+                    "  " + style.paint(f"Jev usage: this API does not serve {JEV_USAGE_ROUTE} "
+                                       "(an older swarm-api)", "dim")]
+        return [section("jev usage", "", style),
+                f"  {style.paint(style.dash + ' Jev usage could not be read', 'bad')}"] + \
+            detail(error or "no reason reported", style)
+
+    rate_set = isinstance(usage.get("rate"), dict) and usage["rate"].get("set") is True
+    window = usage.get("window") if isinstance(usage.get("window"), dict) else {}
+    days = _count_or_none(window.get("days")) or 30
+    total = usage.get("total") if isinstance(usage.get("total"), dict) else {}
+    calls = _count_or_none(total.get("calls"))
+    lines = [section("jev usage", f"last {days} days", style)]
+
+    facts = [
+        ("calls", NOT_RECORDED if calls is None else f"{calls:,}"),
+        ("tokens in", jev_tokens(total.get("input_tokens"))),
+        ("tokens out", jev_tokens(total.get("output_tokens"))),
+        ("dollars", jev_dollars(total.get("usd"), rate_set)),
+        ("outcomes", jev_outcomes(total.get("outcomes"), style)),
+        ("monthly cap", jev_month_line(usage.get("month"))),
+    ]
+    label_width = max(len(label) for label, _ in facts)
+    for label, value in facts:
+        head = f"  {style.paint(label.ljust(label_width), 'dim')}  "
+        body = textwrap.wrap(value, width=max(20, style.usable - label_width - 4)) or [""]
+        lines.append(head + body[0])
+        lines += [" " * (label_width + 4) + more for more in body[1:]]
+    lines += detail(jev_rate_line(usage.get("rate")), style, indent=2)
+
+    kinds = [k for k in total.get("by_kind") or [] if isinstance(k, dict)]
+    if not kinds and not calls:
+        lines += detail(f"No Jev calls were recorded for this workspace in the last {days} days.",
+                        style, indent=2)
+    if kinds:
+        # Outcomes are not a column: a skip's reason is never truncated away,
+        # so each kind's outcomes are a wrapped line under the table.
+        lines += [""] + render_table(
+            [
+                Column("kind", "KIND", flex=True),
+                Column("calls", "CALLS", align="right"),
+                Column("in", "TOKENS IN", align="right", drop=3),
+                Column("out", "TOKENS OUT", align="right", drop=2),
+                Column("usd", "DOLLARS", align="right", drop=1),
+            ],
+            [
+                {
+                    "kind": Cell(jev_kind_label(k)),
+                    "calls": Cell(jev_tokens(k.get("calls"))),
+                    "in": Cell(jev_tokens(k.get("input_tokens"))),
+                    "out": Cell(jev_tokens(k.get("output_tokens")),
+                                "dim" if _count_or_none(k.get("output_tokens")) is None else None),
+                    "usd": Cell(jev_dollars(k.get("usd"), rate_set),
+                                "dim" if _rate_or_none(k.get("usd")) is None else None),
+                }
+                for k in kinds
+            ],
+            style,
+        )
+        lines += [f"  {style.paint('outcomes', 'dim')}"]
+        for k in kinds:
+            lines += detail(f"{jev_kind_label(k)}: {jev_outcomes(k.get('outcomes'), style)}",
+                            style, tone=None)
+
+    undated = usage.get("undated")
+    if isinstance(undated, dict):
+        lines += detail(
+            f"Also {jev_tokens(undated.get('calls'))} calls and "
+            f"{jev_tokens(undated.get('input_tokens'))} tokens in whose records carry no day.",
+            style, indent=2)
+    return lines
+
+
+def render_capacity_view(snap: "Snapshot", style: Style) -> list[str]:
+    """`sc capacity` and the bridge's `swarm_capacity`: the pools and
+    profiles, then Jev's usage, from one function so the two cannot drift."""
+    return (
+        [section("capacity", capacity_subtitle(snap.capacity, style), style)]
+        + render_capacity(snap.capacity, style, error=snap.capacity_error)
+        + [""]
+        + render_jev_usage(snap.jev_usage, style, error=snap.jev_usage_error,
+                           absent=snap.jev_usage_absent)
     )
 
 
@@ -2053,6 +2400,14 @@ class Snapshot:
     #: Workflows check reads it (#616). None when not fetched or not read.
     workflows: dict[str, Any] | None = None
     workflows_error: str | None = None
+    #: `GET /v1/jev-usage`, the console's Capacity › Jev usage read, for `sc
+    #: capacity`'s Jev usage block (part of #2688). None when not fetched or
+    #: not read.
+    jev_usage: dict[str, Any] | None = None
+    jev_usage_error: str | None = None
+    #: True when an API older than the route answered 403 or 404: one line on
+    #: screen, never a failed capacity view.
+    jev_usage_absent: bool = False
     api_url: str = ""
     tier: str = ""
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

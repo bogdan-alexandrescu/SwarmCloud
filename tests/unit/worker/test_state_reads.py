@@ -406,7 +406,7 @@ def test_switch_off_inputs_still_read_firestore():
 def test_graph_staging_reads_its_settings_through_the_routes(api_db, opener, tmp_path):
     state = _opened(api_db, opener)
     _register_repository(api_db)
-    api_db.docs[f"tenant_settings/{TENANT}"] = {"code_intelligence": {"context": "off"}}
+    api_db.docs[f"workspace_settings/{TENANT}"] = {"code_intelligence": {"context": "off"}}
     result = graphstage.stage(db=state, store=None, tenant_id=TENANT, repository_url=URL,
                               task_id=TASK, checkout=None, base_sha=_sha(1),
                               context_dir=tmp_path)
@@ -419,7 +419,7 @@ def test_graph_staging_reaches_its_candidates_through_the_routes(api_db, opener,
     promoted version the route served, so the candidates were read."""
     state = _opened(api_db, opener)
     _register_repository(api_db, versions=2, current=2)
-    api_db.docs[f"tenant_settings/{TENANT}"] = {
+    api_db.docs[f"workspace_settings/{TENANT}"] = {
         "code_intelligence": {"context": "on", "context_ab": "on"}}
     result = graphstage.stage(db=state, store=None, tenant_id=TENANT, repository_url=URL,
                               task_id=TASK, checkout=None, base_sha=_sha(50),

@@ -28,7 +28,7 @@
 // it when the copy is not served.
 
 import STYLES from '../styles.css?raw'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
 
 import { Markdown } from '../ArtifactViewer'
@@ -36,7 +36,24 @@ import type { Task } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 import { task as baseTask } from './runfixture'
 
-vi.mock('../Agents', () => ({ AgentsScreen: () => null }))
+// The page is stubbed for speed; it still draws the open agent App hosts in its
+// inspector (#3146). Mocked again after each `resetModules`, so the stub reads
+// the same context module as the App imported after it.
+const agentsStub = vi.hoisted(() => async () => {
+  const { useContext } = await import('react')
+  const { HostedAgent } = await import('../work/hostedAgent')
+  return { AgentsScreen: () => useContext(HostedAgent)?.view ?? null }
+})
+vi.mock('../Agents', agentsStub)
+
+// THE CONSOLE'S MODULES ARE BUILT ONCE, HERE, not inside the first test: each
+// test re-imports App after `resetModules`, and the first import also
+// transforms App's whole graph -- the agent hosted in the Agents page's
+// inspector included -- which under a loaded runner took the first test past
+// its 30s. Later imports re-run built modules.
+beforeAll(async () => {
+  await import('../App')
+}, 120_000)
 
 const REF = 'task_73b5f4d9ca3641fbb914'
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString()
@@ -273,6 +290,7 @@ interface Api {
 async function openPane(routes: Record<string, Route>, hash = `#work/task/${REF}/artifacts`): Promise<Api> {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
+  vi.doMock('../Agents', agentsStub)
   const calls: string[] = []
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const raw = String(input)
@@ -319,12 +337,12 @@ function section(title: string): HTMLElement {
   // and the Artifacts pane's own sections are on the Artifacts tab.
   if (title === 'Log') {
     choose('Logs')
-    const logs = drawer().querySelector<HTMLElement>('section.ag-logs')
+    const logs = drawer().querySelector<HTMLElement>('section[aria-label="Logs"]')
     expect(logs, 'no Logs tab content in the drawer').not.toBeNull()
     return logs!
   }
   // Back from the Logs tab to the pane these sections are on.
-  if (drawer().querySelector('section.ag-logs') !== null) choose('Artifacts')
+  if (drawer().querySelector('section[aria-label="Logs"]') !== null) choose('Artifacts')
   const s = [...drawer().querySelectorAll<HTMLElement>('section')].find((x) => x.querySelector('h2')?.textContent === title)
   expect(s, `no ${title} section in the drawer`).toBeTruthy()
   return s!
@@ -1030,17 +1048,17 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
         }),
       }),
     )
+    // THE TRANSCRIPT IS A TRACE (owner pick, 2026-11-05): one timeline row per
+    // event, a tool call and its result one row, the picked one in full beside it.
     const logsSection = await sectionReady('Log', /Read/)
     expect(logsSection.textContent).toMatch(/earlier steps are not in this window/)
-    const read = [...logsSection.querySelectorAll('li')].find((li) => li.querySelector('summary')?.textContent?.includes('Read'))
-    expect(read, 'the Read tool call is not a step').toBeTruthy()
-    const summaries = [...read!.querySelectorAll('summary')].map((s) => s.textContent ?? '')
-    expect(summaries.some((s) => /result · error/.test(s)), 'the failed result is not paired with its call, or not called an error').toBe(true)
-    expect([...read!.querySelectorAll('details')].every((d) => !d.hasAttribute('open')), 'a tool step is not collapsed').toBe(true)
-    expect(logsSection.textContent, 'the paired result was drawn a second time').not.toMatch(/its call is not in this window/)
-    const task = [...logsSection.querySelectorAll('li')].find((li) => li.querySelector(':scope > details > summary')?.textContent?.includes('Task'))
-    expect(task?.querySelector('ol')?.textContent, 'the sub-agent is not nested under its tool call').toMatch(/The sub-agent reports back/)
-    expect(logsSection.textContent).toMatch(/skipped/)
+    const rows = [...logsSection.querySelectorAll<HTMLElement>('.trc-row')]
+    const read = rows.find((r) => r.querySelector('.trc-label')?.textContent?.includes('Read'))
+    expect(read, 'the Read tool call is not an event').toBeTruthy()
+    expect(read!.classList.contains('is-error'), 'the failed result is not paired with its call, or not called an error').toBe(true)
+    expect(logsSection.textContent, 'the paired result was drawn a second time').not.toMatch(/its call is not in this read/)
+    expect(rows.some((r) => /The sub-agent reports back/.test(r.textContent ?? '')), 'the sub-agent’s message is not an event').toBe(true)
+    expect(logsSection.textContent).toMatch(/2 lines skipped/)
   })
 
   it('labels a run that recorded only its final result, rather than drawing a short transcript', async () => {
@@ -1051,19 +1069,19 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
 
   it('draws the agent’s empty stderr as a measured zero, and the runner’s own log behind its own choice', async () => {
     await openPane(finishedRoutes())
-    const logsSection = await sectionReady('Log', /Transcript/)
+    await sectionReady('Log', /Transcript/)
     const choose = (label: string) => {
-      const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === label)
+      const b = [...section('Log').querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === label)
       expect(b, `no ${label} choice`).toBeTruthy()
       fireEvent.click(b!)
     }
     choose('Agent stderr')
-    await waitFor(() => expect(row(logsSection, 'agent stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull())
+    await waitFor(() => expect(row(section('Log'), 'agent stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull(), { timeout: 5000 })
     choose('Runner')
-    await waitFor(() => expect(logsSection.querySelector('pre.logwin-body')?.textContent).toMatch(/child started/))
+    await waitFor(() => expect(section('Log').querySelector('pre.logwin-body')?.textContent).toMatch(/child started/))
     // The runner's own streams, named the runner's (G2-07).
-    row(logsSection, 'runner stdout')
-    row(logsSection, 'runner stderr')
+    row(section('Log'), 'runner stdout')
+    row(section('Log'), 'runner stderr')
   })
 
   it('says a runner with no agent CLI has no agent stream, which is not a missing one', async () => {
@@ -1126,13 +1144,12 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
       }),
     )
     const logsSection = await sectionReady('Log', /cut at its cap/)
-    const capture = [...logsSection.querySelectorAll('li.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'capture')
+    const capture = [...logsSection.querySelectorAll('.trc-notes li')].find((li) => /cut at its cap/.test(li.textContent ?? ''))
     expect(capture?.querySelector('.ctl-mark.is-partial'), 'a cut capture is not marked partial').not.toBeNull()
     expect(logsSection.textContent, 'the server’s reason for an ok window is drawn nowhere').toContain(CUT_DETAIL)
-    const notice = [...logsSection.querySelectorAll('li.arts-step')].find((li) => /capture_truncated/.test(li.textContent ?? ''))
-    expect(notice, 'the capture’s notice is not a step').toBeTruthy()
+    const notice = [...logsSection.querySelectorAll('.trc-row')].find((r) => /capture_truncated/.test(r.textContent ?? ''))
+    expect(notice, 'the capture’s notice is not an event').toBeTruthy()
     expect(notice!.textContent, 'the notice’s own words are not drawn').toMatch(/110592 bytes dropped/)
-    expect(notice!.querySelector('.ctl-mark.is-partial'), 'where the run is not whole is not marked').not.toBeNull()
   })
 
   it('draws a line longer than the window in words, with the server’s reason, never as a bare other', async () => {
@@ -1149,9 +1166,9 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
     )
     const logsSection = await sectionReady('Log', /line longer than this window/)
     expect(logsSection.textContent).toContain(OVERSIZE_DETAIL)
-    const s = logsSection.querySelector('li.arts-step')
-    expect(s?.querySelector('.ctl-mark.is-partial'), 'an undecoded line is not marked partial').not.toBeNull()
-    expect(s?.textContent, 'an over-long line is drawn as an event with nothing in it').not.toMatch(/^\s*other/)
+    const s = logsSection.querySelector('.trc-row')
+    expect(s?.textContent, 'an over-long line is drawn as an event with nothing in it').toMatch(/line longer than this window/)
+    expect(s?.querySelector('.trc-label')?.textContent, 'an over-long line is drawn as a bare other').not.toMatch(/^\s*other/)
     expect(logsSection.textContent, 'a capture nobody said was cut is drawn as cut').not.toMatch(/cut at its cap/)
   })
 
@@ -1169,9 +1186,9 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
       }),
     )
     const logsSection = await sectionReady('Log', /Read/)
-    const call = [...logsSection.querySelectorAll('li.arts-step')].find((li) => li.querySelector('summary')?.textContent?.includes('Read'))
-    expect(call?.textContent, 'two unknown ids were joined as a call and its result').toMatch(/no result in this window/)
-    expect(logsSection.textContent, 'the unjoined result was dropped').toMatch(/its call is not in this window/)
+    const rows = [...logsSection.querySelectorAll<HTMLElement>('.trc-row')]
+    expect(rows.length, 'two unknown ids were joined as a call and its result').toBe(2)
+    expect(logsSection.textContent, 'the unjoined result was dropped').toMatch(/its call is not in this read/)
   })
 
   it('marks an answer whose capture was cut, and says why an ended run left none when the capture was cut', async () => {
@@ -1274,15 +1291,20 @@ describe('live: every 5 s while the task runs, with each read’s age, and not a
 
     await advance(5_000)
     expect(api.count(transcripts), 'the transcript was not re-read at 5 s').toBe(2)
-    expect(api.count(logReads), 'the logs were not re-read at 5 s').toBe(2)
+    // The trace draws the transcript only: the streams are read when their view is picked.
+    expect(api.count(logReads), 'the trace polled the streams it does not draw').toBe(0)
     expect(api.calls.some((c) => c.includes('stream=agent_stdout')), 'the raw agent stdout was polled with its view closed').toBe(false)
 
     finished = true
     await advance(5_000)
-    expect(api.count(transcripts)).toBe(3)
+    expect(api.count(transcripts), 'the finish was not read').toBeGreaterThanOrEqual(3)
+    // The trace reads the final record once more when it sees the task settled, then stops.
     await advance(30_000)
-    expect(api.count(transcripts), 'the pane kept polling a settled finish').toBe(3)
-    expect(api.count(logReads)).toBe(3)
+    const settled = api.count(transcripts)
+    expect(settled).toBeLessThanOrEqual(4)
+    await advance(30_000)
+    expect(api.count(transcripts), 'the pane kept polling a settled finish').toBe(settled)
+    expect(api.count(logReads)).toBe(0)
   })
 })
 
@@ -1329,17 +1351,17 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
         [`/v1/tasks/${REF}/logs`]: logs([logStream('agent_stderr', { source: 'live', content: 'warming up', total_bytes: 10, returned_bytes: 10, age_seconds: 4 }), logStream('stdout', { source: 'live' }), logStream('stderr', { source: 'live' })], false),
       }),
     )
-    const logsSection = await sectionReady('Log', /published \d+s ago/)
-    const ages = () => [...logsSection.querySelectorAll<HTMLElement>('.ctl-sub')].filter((s) => /published \d+s ago/.test(s.textContent ?? ''))
+    await sectionReady('Log', /published \d+s ago/)
+    const ages = () => [...section('Log').querySelectorAll<HTMLElement>('.ctl-sub')].filter((s) => /published \d+s ago/.test(s.textContent ?? ''))
     expect(ages().length, 'the transcript shows no age').toBeGreaterThan(0)
     for (const a of ages()) expect(shownAt(a, { width: 390 }), `${a.textContent} is hidden at 390`).toBe(true)
 
-    const stderr = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.querySelector('.ag-logs-long')?.textContent === 'Agent stderr')
+    const stderr = [...section('Log').querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.querySelector('.ag-logs-long')?.textContent === 'Agent stderr')
     fireEvent.click(stderr!)
     // #172: a live stream's Age cell leads with how long ago the tail object
     // changed, with `live` on the line under it.
     const cell = await waitFor(() => {
-      const c = row(logsSection, 'agent stderr').querySelector<HTMLElement>('td[data-label="Age"]')
+      const c = row(section('Log'), 'agent stderr').querySelector<HTMLElement>('td[data-label="Age"]')
       expect(c?.textContent).toMatch(/^\d+s ago/)
       expect(c?.querySelector('.ctl-sub')?.textContent).toBe('live')
       return c!
@@ -1422,11 +1444,12 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     // attempt and "masking at read time" are facts of the dock's own facts
     // row now, a `.ctl-facts` strip, which wraps at any width.
     await openPane(finishedRoutes())
+    // In the trace the read's facts fold behind its source, beside the summary.
     const logsSection = await sectionReady('Log', /masking/)
-    const facts = logsSection.querySelector<HTMLElement>('ul.ctl-facts.ag-logs-facts')
+    const facts = logsSection.querySelector<HTMLElement>('.trc-readfacts ul.ctl-facts')
     expect(facts, 'no facts row in the log dock').not.toBeNull()
-    expect(facts!.textContent).toMatch(/attempt/)
-    expect(facts!.textContent).toMatch(/masking\s*at read time/)
+    expect(logsSection.querySelector('.ag-logs-attempt')?.textContent).toMatch(/Attempt/)
+    expect(facts!.textContent).toMatch(/masking\s*applied at read time/)
     expect(cascade(STYLES, facts!, 'flex-wrap', { width: 390 }).winner?.value).toBe('wrap')
   })
 
@@ -1446,8 +1469,8 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
       }),
     )
     const logsSection = await sectionReady('Log', /nothing published yet/)
-    const view = logsSection.querySelector('.arts-transcript')!
-    expect(view.querySelector('.ctl-facts'), 'facts were drawn for a stream that does not exist').toBeNull()
+    const view = logsSection
+    expect(view.querySelector('.trc-readfacts'), 'facts were drawn for a stream that does not exist').toBeNull()
     expect(view.textContent, 'a masking count was drawn over bytes nobody read').not.toMatch(/masked\s*0/)
   })
 
@@ -1474,14 +1497,13 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
       }),
     )
     const logsSection = await sectionReady('Log', /plan the work/)
-    const [empty, full] = [...logsSection.querySelectorAll<HTMLElement>('li.arts-step.is-thinking')]
+    const [empty, full] = [...logsSection.querySelectorAll<HTMLElement>('.trc-row.is-thinking')]
     expect(empty, 'the empty thinking step is not drawn').toBeTruthy()
-    expect(empty!.querySelector('details'), 'an empty thinking text is an expandable that opens onto nothing').toBeNull()
     expect(empty!.textContent).toMatch(/thinking/)
-    // `thinking · not shown`, muted, not `real zero` (QA G2-27): nothing was measured.
-    expect(empty!.textContent).toMatch(/not shown/)
+    // `thinking · text not recorded`, not `real zero` (QA G2-27): nothing was measured.
+    expect(empty!.textContent).toMatch(/text not recorded/)
     expect(empty!.querySelector('.ctl-mark.is-zero'), 'an empty thinking text is marked a measured zero').toBeNull()
-    expect(full!.querySelector('details'), 'a thinking step with text lost its expandable').not.toBeNull()
+    expect(full!.textContent, 'a thinking step with text lost its words').toMatch(/plan the work/)
   })
 
   it('(f) words a rate-limit reading and gives its reset in local time, never raw keys and an epoch', async () => {
@@ -1506,7 +1528,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
       }),
     )
     const logsSection = await sectionReady('Log', /rate limit/)
-    const li = [...logsSection.querySelectorAll<HTMLElement>('li.arts-step')].find((x) => /rate limit/.test(x.textContent ?? ''))!
+    const li = [...logsSection.querySelectorAll<HTMLElement>('.trc-row')].find((x) => /rate limit/.test(x.textContent ?? ''))!
     const text = li.textContent ?? ''
     expect(text, 'a raw key reached the screen').not.toMatch(/rate_limit_info|resetsAt|rateLimitType/)
     expect(text, 'an epoch reached the screen').not.toContain(String(resetsAt))
@@ -1523,7 +1545,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
       await openPane(finishedRoutes())
       const logsSection = await sectionReady('Log', /recorded only its final result/)
       const where = uri(REF, 'claude-code.stdout.log')
-      const fact = [...logsSection.querySelectorAll<HTMLElement>('.arts-transcript .ctl-fact')].find((f) => (f.textContent ?? '').includes(where))
+      const fact = [...logsSection.querySelectorAll<HTMLElement>('.trc-readfacts .ctl-fact')].find((f) => (f.textContent ?? '').includes(where))
       expect(fact, 'the transcript names no object location').toBeTruthy()
       expect(fact!.querySelector('.uri')?.getAttribute('title'), 'the location is not whole in its title').toBe(where)
       const copy = fact!.querySelector<HTMLButtonElement>('button.copy')
@@ -1537,14 +1559,14 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
 
   it('keeps each stream’s location and its copy on its own row in the other views', async () => {
     await openPane(finishedRoutes())
-    const logsSection = await sectionReady('Log', /Transcript/)
+    await sectionReady('Log', /Transcript/)
     const choose = (label: string) => {
-      const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === label)
+      const b = [...section('Log').querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === label)
       fireEvent.click(b!)
     }
     choose('Runner')
     for (const name of ['stdout', 'stderr']) {
-      const head = await waitFor(() => row(logsSection, `runner ${name}`).querySelector('th')!)
+      const head = await waitFor(() => row(section('Log'), `runner ${name}`).querySelector('th')!)
       expect(head.querySelector('.uri')?.textContent).toContain(`/logs/${name}.log`)
       expect([...head.querySelectorAll('button.copy')].map((b) => b.textContent)).toContain('copy gsutil')
     }

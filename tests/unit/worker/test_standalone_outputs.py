@@ -191,6 +191,15 @@ print(json.dumps(out))
 """
 
 
+@pytest.fixture(autouse=True)
+def _no_prompt_notes_from_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A SwarmCloud agent container sets these, and the runner then appends
+    the Playwright and child-task notes to the prompt these tests compare:
+    they failed there and passed in CI (2026-11-02, as #2990 for two others)."""
+    for name in ("PLAYWRIGHT_BROWSERS_PATH", "SWARM_CHILDREN"):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def agent_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     binary = tmp_path / "fake-claude"
@@ -970,7 +979,12 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # way; the "write" check below still reads it.
     notes = (cachedirs.scratch_note(own_volume=True), cachedirs.scratch_note(own_volume=False))
     assert sum(line in notes for line in lines) == 1 and lines[0] in notes, lines
-    after_note = lines[1:]
+    # Then the saved-output line (ONE-PLACE): how to read a big tool result,
+    # never where anything goes.
+    from agent_worker.runners import claude_code as claude_code_runner
+
+    assert lines[1] == claude_code_runner.SAVED_OUTPUT_NOTE, lines
+    after_note = lines[2:]
     context = [line for line in after_note if line.startswith(CONTEXT_LINE_START)]
     assert len(context) <= 1 and (not context or after_note[0] == context[0]), lines
     rest = after_note[len(context):]
@@ -987,12 +1001,15 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # Between them, the context-ceiling note (#2524): a note for the session
     # that may carry the task on, not a destination for the deliverable. The
     # step's time-limit line (#2139) comes just before the publish paragraph.
-    assert len(rest) == 5, appended
+    # This task is `collect` (no dispatch block): its branch is not its
+    # deliverable, so the worker says it publishes nothing
+    # (`SWARM_STEP_PUBLISHES=0`, ONE-PLACE) and the paragraph is left out.
+    assert len(rest) == 4, appended
     assert rest[0].startswith(LINE_START) and rest[0].endswith(LINE_END), rest[0]
     assert rest[1] == QUESTIONS_LINE, rest[1]
     assert rest[2] == ceiling.HANDOFF_NOTE, rest[2]
     assert is_limit_line(rest[3]), rest[3]
-    assert rest[4] == cliagent.PUBLISH_PARAGRAPH, rest[4]
+    assert cliagent.PUBLISH_PARAGRAPH not in prompt, prompt
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 

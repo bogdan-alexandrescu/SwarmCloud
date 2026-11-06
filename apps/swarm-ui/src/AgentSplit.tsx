@@ -4,6 +4,7 @@ import { AgChildrenPane, useChildCount } from './AgentChildren'
 import { AgentDetailScreen, DRAWER_POLL_MS, Mark, timesRun } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { backLabel, type AgentTab } from './agentlist'
+import { agentPanelGone, agentPanelOpening, agentPanelShown } from './agentPanel'
 import { loadAttempts, loadTask } from './api'
 import type { Result } from './fetch'
 import type { TaskPane } from './App'
@@ -119,6 +120,7 @@ export function AgentSplit({
   go,
   onGroup,
   base,
+  hosted = false,
 }: {
   taskId: string
   pane: TaskPane
@@ -148,6 +150,12 @@ export function AgentSplit({
   onGroup?: (tab: AgentTab) => void
   /** This agent's address, `work/task/<id>`: every tab is a segment under it. */
   base: string
+  /**
+   * In the Agents page's docked inspector (work/hostedAgent.ts, the owner's
+   * pick on #3146): the inspector's handle sizes it and folds it, so the
+   * list's divider, its published width and `[` are not this view's.
+   */
+  hosted?: boolean
 }) {
   const close = () => go(closeTo)
   // Opening an output writes its name into the address; closing it takes it out.
@@ -201,11 +209,26 @@ export function AgentSplit({
               : null,
         )
   const headReadAt = head.state.status === 'ok' || head.state.status === 'stale' ? head.state.fetchedAt : null
+  // THE LIST WAITS FOR THIS PANEL (load-speed investigation, the owner's pick
+  // 2026-11-01): opened at its own address, the agent's task, attempts and
+  // events are read first, and the list's first read starts once this panel
+  // has rendered with its task and attempt reads answered (`listMayStart` in
+  // agentPanel.ts). The panes' event reads start on this panel's first render, so
+  // they are under way before it. The list is told a panel is coming during
+  // this render, before any effect runs, and told again when it closes.
+  agentPanelOpening(taskId)
+  const panelDrawn = head.state.status !== 'loading' && runsRead.state.status !== 'loading'
+  useEffect(() => {
+    if (panelDrawn) agentPanelShown(taskId)
+  }, [panelDrawn, taskId])
+  useEffect(() => () => agentPanelGone(taskId), [taskId])
 
-  useListWidth(snap, pane === 'changes')
+  useListWidth(snap, pane === 'changes', !hosted)
 
   // `[` folds the list to the strip and back, as `«`/`»` in the list header does.
+  // Hosted, the list is the inspector's left pane and has no strip to fold to.
   useEffect(() => {
+    if (hosted) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== '[' || e.metaKey || e.ctrlKey || e.altKey) return
       const el = e.target as HTMLElement | null
@@ -214,7 +237,7 @@ export function AgentSplit({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [hosted])
 
   useSplitFocus(panel, close, taskId)
 
@@ -258,6 +281,13 @@ export function AgentSplit({
   })
   const liveSession = liveRead.status === 'ok' ? liveRead.session : null
   const sessionOpen = liveSession !== null && liveSession.state === 'open'
+  // THE TAB SAYS LIVE ON A PICTURE, NOT ON THE READ ALONE (visual QA
+  // ovag2-12, 2026-10-29): with the Browser pane open, an open session whose
+  // screen has drawn no frame (the fixture build mints no ticket) carried
+  // the badge over an empty frame. Off the pane, the session read is all
+  // there is, and it says live as before.
+  const [picture, setPicture] = useState(false)
+  const sessionLive = sessionOpen && (pane !== 'browser' || picture)
   // THE TAB STAYS WHILE THE AGENT IS BETWEEN ATTEMPTS (LB-UX1): a parked
   // hand-off's "I'm ready to sign in" opens it on a READY task, which has no
   // attempt and so no session read, and the tab says the browser is
@@ -285,7 +315,7 @@ export function AgentSplit({
     base,
   })
 
-  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen, childCount, runs, ckpt, ckptCount, pane })
+  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen: sessionLive, childCount, runs, ckpt, ckptCount, pane })
   const selected: TaskPane = pane
   // THE THEATER ASKED FOR IS HELD UNTIL THE BROWSER TAB IS DRAWN (part of
   // #1346, comment 3): the route drops `?theater=1` after arrival, and the
@@ -322,7 +352,7 @@ export function AgentSplit({
 
   return (
     <div
-      className={`drawer ctl-drawer ag-split${selected === 'logs' ? ' on-logs' : ''}${selected === 'changes' ? ' on-changes' : ''}`}
+      className={`drawer ctl-drawer ag-split${hosted ? ' is-hosted' : ''}${selected === 'logs' ? ' on-logs' : ''}${selected === 'changes' ? ' on-changes' : ''}`}
       // A region, not a dialog, once it is laid out under the phone header
       // (QA-116): `useSplitFocus` sets the role from where the panel sits.
       role="dialog"
@@ -349,10 +379,11 @@ export function AgentSplit({
         }
       }}
     >
-      <AgDivider snap={snap} panel={panel} />
+      {!hosted && <AgDivider snap={snap} panel={panel} />}
       {/* THE WAY BACK TO THE LIST: on a phone the list and the agent are two
           pages, and this is the agent page's back link. Shown wherever the
           agent covers the list (below 1100px). */}
+      {/* Hosted in the inspector, it is drawn only on the phone sheet (styles.css). */}
       <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
         ‹ {backLabel(closeTo)}
       </button>
@@ -421,6 +452,7 @@ export function AgentSplit({
               reload={reloadLive}
               theater={theater || theaterAsked.current === taskId}
               onHandoffReady={reload}
+              onPicture={setPicture}
             />
           ) : selected === 'browser' && held ? null : selected === 'logs' && task !== null ? (
             <AgentLogs key={taskId} task={task} />

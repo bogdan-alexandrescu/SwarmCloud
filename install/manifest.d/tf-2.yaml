@@ -1,0 +1,299 @@
+# Lane DAYONE-TF-2 (part of #2688): the front door serves discovery, the GitHub
+# receiver needs no allUsers, swarm-api can store the App's secrets, and the
+# hourly doctor exists (docs/design/day-one-plan.md, design §5.3 and §9.2).
+# The three base entries this lane changes are restated with replace: true;
+# the rest are new. declared-value.groups_auth stays in identity-1.yaml (one
+# id belongs to one fragment): this lane renders it at
+# terraform/infra/locals.tf (local.api_day_one_env).
+version: 1
+entries:
+- id: iam-binding.github-hooks-allusers
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud run services describe ${name_prefix}-github-hooks --project=$P --region=$R --format='value(invokerIamDisabled)'
+    is True, and get-iam-policy on it names no allUsers member
+  apply: terraform/infra/github_hooks.tf google_cloud_run_v2_service.github_hooks, invoker_iam_disabled = true
+    (Q3, DAYONE-TF-2); the allUsers run.invoker binding github_hooks_public is gone
+  verify: an unauthenticated POST from GitHub reaches the service and is refused or accepted by the HMAC check
+    alone; no allUsers member on the service
+  explain: GitHub cannot authenticate as a GCP principal, so the service disables the invoker check instead
+    of granting allUsers; the real authentication is the HMAC signature against swarm-github-app-webhook-secret.
+    The id is kept so references to it keep resolving.
+  guards: the org constraint run.managed.requireInvokerIam must be absent or excepted for the project (design §9.2)
+  depends_on:
+  - cloud-run-service.github-hooks
+  evidence:
+  - terraform/infra/github_hooks.tf
+  refs:
+    terraform:
+    - infra/google_cloud_run_v2_service.github_hooks
+  replace: true
+- id: other.discovery-endpoint
+  kind: other
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: curl -fsS https://$H/.well-known/swarmcloud
+  apply: terraform/infra/discovery.tf google_cloud_run_v2_service.discovery (the swarm-api image, command
+    swarm_api.discovery:create_app, ingress internal-and-cloud-load-balancing, invoker_iam_disabled), served
+    through terraform/modules/frontend/main.tf's discovery NEG and backend without IAP
+  verify: the JSON names the deployment, version, Desktop client id and IAP audience; sc login with only the URL succeeds
+  explain: The plugin needs the deployment's values before it holds any credential; the endpoint makes them
+    one URL (brief B11). swarm-discovery runs as its own account with no role unless discovery_serves_client_secret.
+  depends_on:
+  - oauth-client.desktop-sc
+  - other.url-map
+  - sa.swarm-discovery
+  evidence:
+  - terraform/infra/discovery.tf
+  - terraform/modules/frontend/main.tf
+  refs:
+    terraform:
+    - infra/google_cloud_run_v2_service.discovery
+    - infra/data.google_service_account.discovery
+    - modules/frontend/google_compute_region_network_endpoint_group.discovery
+    - modules/frontend/google_compute_backend_service.discovery
+  replace: true
+- id: cloud-run-service.swarm-discovery
+  kind: cloud-run-service
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud run services describe swarm-discovery --project=$P --region=$R
+  apply: terraform/infra/discovery.tf:53 google_cloud_run_v2_service.discovery
+  verify: ingress is internal-and-cloud-load-balancing and invoker IAM is disabled; it runs as swarm-discovery
+  explain: The unauthenticated /.well-known/swarmcloud service (design §9.2 (c)); reachable only through the
+    load balancer.
+  depends_on:
+  - sa.swarm-discovery
+  - image.swarm-api
+  evidence:
+  - terraform/infra/discovery.tf:53
+- id: iam-binding.discovery-client-secret
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud secrets get-iam-policy swarm-iap-desktop-client-secret --project=$P
+  apply: terraform/infra/discovery.tf:157 google_secret_manager_secret_iam_member.discovery_client_secret,
+    only while discovery_serves_client_secret is true
+  verify: swarm-discovery holds secretAccessor on that one secret, or nothing
+  explain: The discovery account's only possible grant; off by default.
+  depends_on:
+  - sa.swarm-discovery
+  - secret.swarm-iap-desktop-client-secret.container
+  evidence:
+  - terraform/infra/discovery.tf:157
+  refs:
+    terraform:
+    - infra/google_secret_manager_secret_iam_member.discovery_client_secret
+    variable:
+    - infra/discovery_serves_client_secret
+- id: other.url-map
+  kind: other
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud compute url-maps describe ${name_prefix}-urlmap --project=$P
+  apply: terraform/modules/frontend/main.tf google_compute_url_map.this
+  verify: /v1, /v1/*, /healthz, /readyz, /metrics, /docs, /openapi.json route to the API backend;
+    /.well-known/swarmcloud to the discovery backend (no IAP) when swarm-discovery is deployed; everything
+    else to the UI backend
+  explain: Splits traffic between swarm-api, swarm-discovery and swarm-ui behind one hostname/IP; the API's own
+    /healthz must win over the UI's identically-pathed nginx health endpoint.
+  depends_on:
+  - frontend.backend-api
+  - frontend.backend-ui
+  evidence:
+  - terraform/modules/frontend/main.tf
+  refs:
+    terraform:
+    - modules/frontend/google_compute_url_map.this
+    variable:
+    - infra/enable_frontend
+  replace: true
+- id: iam-binding.swarm-api-github-app-secret-writer
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:swarm-api@'
+  apply: terraform/bootstrap/github_app_setup.tf:54 google_project_iam_member.api_github_app_secrets
+    (secretVersionAdder and secretAccessor, conditioned on the three swarm-github-app-* secret names)
+  verify: swarm-api can add a version to each of the three App secrets and to no other secret
+  explain: 'D26: the console registers the GitHub App and swarm-api stores what the manifest exchange returns.'
+  guards: the condition names the three secrets exactly; never a prefix
+  depends_on:
+  - sa.swarm-api
+  evidence:
+  - terraform/bootstrap/github_app_setup.tf:54
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.api_github_app_secrets
+- id: iam-binding.deployer-iap-api-accessor
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iap web get-iam-policy --resource-type=backend-services --service=${name_prefix}-ui-backend --project=$P
+  apply: terraform/bootstrap/github_app_setup.tf:76 google_iap_web_backend_service_iam_member.deployer_api_accessor,
+    once ${name_prefix}-ui-backend is in frontend_iap_backends (bootstrap pass 2)
+  verify: swarm-tf-deployer holds iap.httpsResourceAccessor on the API backend and not on the UI backend
+  explain: The engine calls swarm-api's two engine routes through IAP (design §5.3).
+  depends_on:
+  - sa.swarm-tf-deployer
+  - frontend.backend-api
+  evidence:
+  - terraform/bootstrap/github_app_setup.tf:76
+  refs:
+    terraform:
+    - bootstrap/google_iap_web_backend_service_iam_member.deployer_api_accessor
+- id: switch.enable_console_app_setup
+  kind: switch
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: grep enable_console_app_setup in the infra tfvars the engine writes
+  apply: terraform/infra/variables.tf:1368 enable_console_app_setup (default false; the engine sets it in infra pass 2)
+  verify: the three swarm-github-app-* containers exist with no App switch on
+  explain: Creates the App's three secret containers independently of enable_github_app and enable_github_hooks,
+    so the console's App step has somewhere to store them.
+  depends_on:
+  - iam-binding.swarm-api-github-app-secret-writer
+  evidence:
+  - terraform/infra/variables.tf:1368
+  - terraform/infra/main.tf
+  - terraform/infra/github_hooks.tf
+  refs:
+    variable:
+    - infra/enable_console_app_setup
+- id: cloud-run-job.swarm-doctor
+  kind: cloud-run-job
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud run jobs describe ${name_prefix}-doctor --project=$P --region=$R
+  apply: terraform/infra/doctor.tf:39 google_cloud_run_v2_job.doctor (the swarm-verify image, VPC egress),
+    only while enable_scheduled_doctor is true
+  verify: an execution posts its findings to swarm-api and exits 0
+  explain: 'D27: the hourly read-only doctor; runs as swarm-doctor and may invoke swarm-api and nothing else.'
+  depends_on:
+  - sa.swarm-doctor
+  - image.swarm-verify
+  - cloud-run-service.swarm-api
+  evidence:
+  - terraform/infra/doctor.tf:39
+  refs:
+    terraform:
+    - infra/google_cloud_run_v2_job.doctor
+    - infra/data.google_service_account.doctor
+    - infra/google_cloud_run_v2_service_iam_member.doctor_invokes_api
+- id: sched.doctor-hourly
+  kind: scheduler-job
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud scheduler jobs describe ${name_prefix}-doctor-hourly --project=$P --location=$R
+  apply: terraform/infra/doctor.tf:138 google_cloud_scheduler_job.doctor_hourly, schedule '0 * * * *',
+    only while enable_scheduled_doctor is true
+  verify: the job runs swarm-doctor once an hour
+  explain: Starts the doctor job as swarm-doctor, which holds run.invoker on that job alone.
+  depends_on:
+  - cloud-run-job.swarm-doctor
+  - api.cloudscheduler
+  evidence:
+  - terraform/infra/doctor.tf:128-164
+  refs:
+    terraform:
+    - infra/google_cloud_scheduler_job.doctor_hourly
+    - infra/google_cloud_run_v2_job_iam_member.doctor_scheduler_runs_job
+- id: iam-binding.doctor-read-only
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:swarm-doctor@'
+  apply: terraform/bootstrap/doctor_roles.tf:59 google_project_iam_member.doctor_read_only (roles/viewer,
+    roles/iam.securityReviewer, roles/secretmanager.viewer) and :67 doctor_views_swarm_cluster
+    (roles/container.clusterViewer)
+  verify: every role the doctor holds is in terraform/bootstrap/doctor-role-permissions.json with no write
+    verb outside the listed write-shaped viewer permissions
+  explain: The doctor reads the project to find drift; it never writes.
+  guards: tests/unit/scripts/test_terraform_day_one_edge.py::test_doctor_roles_are_read_only
+  depends_on:
+  - sa.swarm-doctor
+  evidence:
+  - terraform/bootstrap/doctor_roles.tf
+  - terraform/bootstrap/doctor-role-permissions.json
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.doctor_read_only
+    - bootstrap/google_project_iam_member.doctor_views_swarm_cluster
+- id: monitoring.doctor-findings-alert
+  kind: monitoring
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud alpha monitoring policies list --project=$P --filter='displayName~doctor'
+  apply: terraform/infra/doctor.tf:171 google_logging_metric.doctor_findings and :185
+    google_monitoring_alert_policy.doctor_findings, only while enable_scheduled_doctor is true
+  verify: a doctor run with a finding opens an incident
+  explain: The doctor's finding count, alerted on, so a finding reaches someone without opening the console.
+  depends_on:
+  - cloud-run-job.swarm-doctor
+  - api.monitoring
+  evidence:
+  - terraform/infra/doctor.tf:171-218
+  refs:
+    terraform:
+    - infra/google_logging_metric.doctor_findings
+    - infra/google_monitoring_alert_policy.doctor_findings
+- id: switch.enable_scheduled_doctor
+  kind: switch
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: grep enable_scheduled_doctor in the infra tfvars the engine writes
+  apply: terraform/infra/variables.tf:1383 enable_scheduled_doctor (default false; DAYONE-DOCTOR-1 turns it on)
+  verify: the doctor job, its schedule, its invoker grants and its alert exist only while it is true
+  explain: Nothing runs hourly before DOCTOR-1's code ships in the swarm-verify image.
+  depends_on:
+  - cloud-run-job.swarm-doctor
+  evidence:
+  - terraform/infra/variables.tf:1383
+  refs:
+    variable:
+    - infra/enable_scheduled_doctor
+- id: switch.enable_acceptance_fixture
+  kind: switch
+  scope: addon:ci
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud storage buckets describe gs://<acceptance fixture bucket> --project=$P
+  apply: terraform/infra/variables.tf:1394 enable_acceptance_fixture (default false; dev.tfvars and prod.tfvars
+    set it true)
+  verify: an install has no public bucket; the live deployment keeps its fixture bucket unchanged
+  explain: The acceptance suite's public fixture bucket and its allUsers reader are a CI add-on, not part of
+    an install (review finding 4).
+  evidence:
+  - terraform/infra/variables.tf:1394
+  - terraform/infra/acceptance_fixture.tf
+  refs:
+    variable:
+    - infra/enable_acceptance_fixture

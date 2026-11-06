@@ -26,6 +26,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadApprovals } from './api'
 import type { Result } from './fetch'
 import { Button, Dash } from './components'
+import { Explained } from './OverviewRegions'
 import { PersonName } from './PersonName'
 import { Absent as AbsentState } from './primitives'
 import { InApp, untilWords } from './Schedules'
@@ -76,6 +77,8 @@ const EVERY_KIND = (() => {
 
 /** A row the read serves as waiting. A row with no state is one, as every row was before the read served others. */
 const isWaiting = (i: InboxItem) => i.state === 'pending' || i.state === undefined || i.state === null
+/** Approved, rejected, or an await-input step a member answered: the route's decided states. */
+const isDecided = (i: InboxItem) => i.state === 'approved' || i.state === 'rejected' || i.state === 'answered'
 
 /** A stored `approvers` value, short, for a row: the decision page says it in full. */
 function approversShort(a: unknown): string | null {
@@ -93,6 +96,14 @@ function whoCell(item: InboxItem): ReactNode {
     return (
       <>
         any member of this workspace<small>answered on its step</small>
+      </>
+    )
+  }
+  if (item.kind === 'contract') {
+    return (
+      <>
+        {approversShort(item.approvers) ?? 'the step’s owner'}
+        <small>not decided in this inbox</small>
       </>
     )
   }
@@ -240,8 +251,18 @@ function KindFilter({ kind, items, every, go }: { kind: string | null; items: In
 function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: InboxItem[] | null; kind: string | null; go: (to: string) => void }) {
   const now = useNow()
   const waiting = items.filter(isWaiting)
-  const decided = items.filter((i) => i.state === 'approved' || i.state === 'rejected')
-  const ended = items.filter((i) => !isWaiting(i) && i.state !== 'approved' && i.state !== 'rejected')
+  // NEWEST FIRST, AND SAID SO (visual QA pass 2, automate2-08). The note read
+  // `as the read served them`, how the rows arrived rather than their order;
+  // the route serves the inbox by `requested_at`, oldest first, so the card
+  // orders its own rows by when they were decided. One with no decision time
+  // goes last.
+  // AN ANSWERED STEP IS DECIDED (QA2B-E review): `state=all` serves await-input
+  // steps a member answered as `answered`, which the route counts with the
+  // decisions; under "nobody decided these" it contradicted itself.
+  const decided = items
+    .filter(isDecided)
+    .sort((a, b) => (Date.parse(b.decided_at ?? '') || 0) - (Date.parse(a.decided_at ?? '') || 0))
+  const ended = items.filter((i) => !isWaiting(i) && !isDecided(i))
   const at = (iso: string | null | undefined) => (iso ? <span title={iso}>{when(iso)}</span> : <Dash why="not served" />)
   return (
     <>
@@ -277,7 +298,7 @@ function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: 
         </Card>
       )}
       {decided.length > 0 && (
-        <Card title={`Decided · ${decided.length}`} note="as the read served them" testId="apl-decided">
+        <Card title={`Decided · ${decided.length}`} note="newest first" testId="apl-decided">
           <Table
             label="Decided"
             heads={['Kind', 'What', 'Decision', 'By', 'When', 'Reason']}
@@ -291,7 +312,7 @@ function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: 
                 </span>,
                 i.decided_by ? <PersonName email={i.decided_by} name={i.decided_by_name} /> : <Dash why="who decided is not served" />,
                 at(i.decided_at),
-                i.reason ? <q>{i.reason}</q> : <span className="apl-dim">{i.state === 'approved' ? 'an approval carries no reason' : 'no reason served'}</span>,
+                i.reason ? <q>{i.reason}</q> : <span className="apl-dim">{i.state === 'approved' ? 'an approval carries no reason' : i.state === 'answered' ? 'answered on its step' : 'no reason served'}</span>,
               ],
             }))}
           />
@@ -341,7 +362,17 @@ function EmptyInbox({ kind, elsewhere, go }: { kind: string | null; elsewhere: n
       say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
     >
       {kind === null ? (
-        `No ${EVERY_KIND} in this workspace is waiting for a person: the inbox was read and is empty.`
+        // THE KINDS ARE THE TOOLTIP (BGD's standing rule, 5 November 2026: no
+        // explanatory prose on the surface). The list grew a kind (contract
+        // judgment, PR #3255) and took the page past its prose ceiling; it is
+        // the drawn words' hover and accessible description now, still named
+        // from the chips' table (QA-048).
+        <>
+          <Explained className="apl-every" tip={`No ${EVERY_KIND} waits for a person.`}>
+            Nothing of any kind
+          </Explained>{' '}
+          is waiting: the inbox was read and is empty.
+        </>
       ) : elsewhere !== null && elsewhere > 0 ? (
         <span data-testid="apl-elsewhere">
           Nothing of this kind is waiting for a person. {pluralise(elsewhere, 'item')} {elsewhere === 1 ? 'waits' : 'wait'} under other kinds.{' '}
@@ -437,12 +468,15 @@ function InputScreen({ itemId, kind, round, go }: { itemId: string; kind: string
       key={`approval:${itemId}:${round}`}
       title="Approvals"
       load={async () => {
-        const r = await loadApprovals(kind === null ? {} : { kind })
+        // `all` (QA2-FIX-07, automate2-01): the route defaults to pending. The
+        // history it adds holds answered and expired steps, which this page
+        // never draws as waiting: only a waiting row is found below.
+        const r = await loadApprovals(kind === null ? { state: 'all' } : { kind, state: 'all' })
         return r.status === 'empty' ? { status: 'ok' as const, data: { approvals: [] }, fetchedAt: r.fetchedAt } : r
       }}
     >
       {(d) => {
-        const item = (d.approvals as InboxItem[]).find((i) => i.approval_id === itemId)
+        const item = (d.approvals as InboxItem[]).find((i) => i.approval_id === itemId && isWaiting(i))
         return (
           <>
             <BackToList kind={kind} go={go} />
@@ -466,7 +500,8 @@ function InputScreen({ itemId, kind, round, go }: { itemId: string; kind: string
 type ListRead = { approvals: InboxItem[]; every: InboxItem[] | null }
 
 async function readList(kind: string | null): Promise<Result<ListRead>> {
-  const [r, all] = await Promise.all([loadApprovals(kind === null ? {} : { kind }), kind === null ? null : loadApprovals()])
+  // `all` on the list read (automate2-01): the route's default is the inbox only.
+  const [r, all] = await Promise.all([loadApprovals(kind === null ? { state: 'all' } : { kind, state: 'all' }), kind === null ? null : loadApprovals()])
   const every = all === null ? null : all.status === 'ok' ? (all.data.approvals as InboxItem[]) : all.status === 'empty' ? [] : null
   if (r.status === 'empty') return { status: 'ok', data: { approvals: [], every }, fetchedAt: r.fetchedAt }
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: { approvals: r.data.approvals as InboxItem[], every } }

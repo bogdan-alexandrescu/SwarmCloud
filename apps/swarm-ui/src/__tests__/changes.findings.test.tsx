@@ -300,20 +300,22 @@ describe('keyboard access', () => {
     })
     render(<Tab ts={ts} />)
     await waitFor(() => expect(marks()).toHaveLength(2))
-    const note = screen.getByTestId('diff-pin-note')
-    expect(note.textContent).toBe('')
+    // Read fresh each time: a late load can redraw the findings list, and a
+    // node held from before it keeps the text it had when it was replaced.
+    const note = () => screen.getByTestId('diff-pin-note')
+    expect(note().textContent).toBe('')
     const blocker = marks().find((m) => m.getAttribute('aria-label') === 'Blocker finding: the loop never ends')!
     expect(blocker.tagName).toBe('BUTTON')
     expect(blocker.tabIndex).toBe(0)
     fireEvent.focus(blocker)
-    expect(note.textContent).toBe('Blocker · new line 10: the loop never ends')
+    expect(note().textContent).toBe('Blocker · new line 10: the loop never ends')
 
     const list = screen.getByRole('navigation', { name: 'Review findings on this patch' })
     expect(list.textContent).toMatch(/2 of 2 findings pinned/)
     const go = within(list).getByRole('button', { name: /src\/app\/one\.ts · old 1 · Not graded · rename this/ })
     fireEvent.click(go)
     expect(go.getAttribute('aria-pressed')).toBe('true')
-    expect(note.textContent).toBe('Not graded · old line 1: rename this')
+    expect(note().textContent).toBe('Not graded · old line 1: rename this')
   })
 
   it('opens a pinned finding’s file from the findings panel', async () => {
@@ -325,6 +327,32 @@ describe('keyboard access', () => {
     expect(onAt).toHaveBeenLastCalledWith({ step: null, file: 'src/app/two.ts' })
     await waitFor(() => expect(marks()).toHaveLength(1))
     expect(markPlace(marks()[0]!).text).toBe('y')
+  })
+})
+
+describe("Jev's triage on each finding (CLD's Jev report, 2026-11-02)", () => {
+  it('shows "likely real 62%" and "verify before acting" from the review\'s verdict.json, and no chip on a finding Jev did not judge', async () => {
+    const verdict = JSON.stringify({
+      verdict: 'NOT_YET',
+      findings: [
+        { summary: 'the loop never ends', p_real: 0.62 },
+        { summary: 'rename this', p_real: 0.08, triage: 'verify before acting' },
+        'two is wrong',
+      ],
+    })
+    api.loadArtifactContent.mockImplementation(async (id: string, name: string) =>
+      ok(id === 't_rev' && name === 'verdict.json' ? served(id, verdict) : served(id, PATCHES[id] ?? '')),
+    )
+    const mark = '[verify before acting: Jev judged this unlikely to be real] '
+    render(<Tab ts={tasks({ findings: ['the loop never ends', `${mark}rename this`, 'two is wrong'] })} />)
+    await waitFor(() => expect(findingsPanel().textContent).toContain('likely real 62%'))
+    const items = within(findingsPanel()).getAllByRole('listitem')
+    expect(items[0]?.textContent).toContain('likely real 62%')
+    expect(items[1]?.textContent).toContain('verify before acting')
+    expect(items[1]?.textContent).not.toContain('Jev judged this unlikely')
+    expect(items[2]?.querySelector('.triage-chip')).toBeNull()
+    expect(items[2]?.textContent).not.toMatch(/likely real|verify before acting|0%/)
+    expect(api.loadArtifactContent).toHaveBeenCalledWith('t_rev', 'verdict.json')
   })
 })
 

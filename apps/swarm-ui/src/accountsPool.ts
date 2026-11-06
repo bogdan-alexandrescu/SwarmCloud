@@ -58,6 +58,20 @@ export interface FirstReadingBlock {
 export interface DuplicateBlock {
   duplicate_of: string | null
   reason: string | null
+  /** Which identity the pair matched on: its KIND, never its value (#3046). Absent from an older broker. */
+  matched_on?: string | null
+}
+
+/** The broker's identity kinds (`DUPLICATE_MATCHED_ON`), in words. */
+const MATCHED_ON_WORDS: Readonly<Record<string, string>> = {
+  organisation_and_seat: 'organisation and seat',
+}
+
+/** A withheld duplicate's identity kind in words, or null when the broker did not name one. */
+export function matchedOnWords(b: DuplicateBlock): string | null {
+  const kind = b.matched_on
+  if (typeof kind !== 'string' || kind === '') return null
+  return MATCHED_ON_WORDS[kind] ?? kind.replace(/_/g, ' ')
 }
 /** Identical readings on two polls. ADVISORY: `choose()` still hands it out. */
 export interface PossibleDuplicateBlock {
@@ -156,8 +170,15 @@ export function isWithheldDuplicate(a: PoolAccount): boolean {
  * is "for a tenant it serves that has not reported it unreadable", so the
  * per-tenant half (`unreadable_now`) is applied here, as `choose()` applies it.
  * Null: the broker did not say (it predates the field).
+ *
+ * A STATE A PERSON SET WINS OVER THE FLAG (visual QA pass 2, cap2-01; part of
+ * #2694). `choose()` hands out only an AVAILABLE account, so a paused,
+ * draining or signed-out one is a known No whatever the flag says: the flag
+ * read before a Pause (or served by a broker that has not re-read it) kept
+ * the row and the verdict at "Yes · 6 free" after the account was paused.
  */
 export function canTake(a: PoolAccount, scope: string | null): boolean | null {
+  if (a.state !== 'AVAILABLE') return false
   if (typeof a.can_take_new_agent !== 'boolean') return null
   return a.can_take_new_agent && !unreadableFor(a, scope)
 }

@@ -156,13 +156,18 @@ describe('f (6:overview-automate-015, -016 box 6343774039, -019 box 6343758363):
   }, LONG)
 
   it('resets every unreset five-hour window within five hours of the clock', async () => {
-    const accounts = ok(await loadAccountsBoard(), 'GET /v1/accounts').page.accounts
+    const board = ok(await loadAccountsBoard(), 'GET /v1/accounts')
+    const accounts = board.page.accounts
+    // THE LIST'S CLOCK IS THE READ'S (QA2-FIX-07, cap2-06): the Accounts list
+    // measures on the browser's clock, so the fixture serves its times moved
+    // onto it, and the windows are read against `readAt`, not FIXTURE_CLOCK.
+    const clock = board.readAt
     const windows = accounts.map((a) => ({ id: a.account_id, w: a.windows.five_hour })).filter((x) => x.w !== undefined && x.w !== null && !x.w.reset)
     expect(windows.length, 'no account has an open five-hour window').toBeGreaterThan(1)
     for (const { id, w } of windows) {
       // MUTATION: put overflow's five-hour reset back at 19h 43m -> fails on u-bogdan:overflow.
-      expect(ms(w?.resets_at) - CLOCK, `${id}'s five-hour window resets outside five hours`).toBeLessThanOrEqual(5 * 3_600_000)
-      expect(ms(w?.resets_at), `${id}'s open window reset before the clock`).toBeGreaterThan(CLOCK)
+      expect(ms(w?.resets_at) - clock, `${id}'s five-hour window resets outside five hours`).toBeLessThanOrEqual(5 * 3_600_000)
+      expect(ms(w?.resets_at), `${id}'s open window reset before the clock`).toBeGreaterThan(clock)
     }
   }, LONG)
 

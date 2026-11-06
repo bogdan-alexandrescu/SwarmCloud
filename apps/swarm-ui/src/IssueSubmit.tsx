@@ -144,12 +144,21 @@ function issueNumber(ref: string): string | null {
   return m?.[1] ?? null
 }
 
+/** The page head: `6 runners · issue runs use claude-code`. */
+export function issueSubmitHead(n: number): string {
+  return `${n} runner${n === 1 ? '' : 's'} · issue runs use ${ISSUE_RUN_PROFILE}`
+}
+
 export function IssueSubmitScreen({ go }: { go: (to: string) => void }) {
   return (
     <Screen
       title="Submit from a GitHub issue"
       load={loadCapacity}
-      summary={(c) => `${Object.keys(c.runner_profiles).length} runner profiles · ${c.pools.length} pools you are admitted against`}
+      // A PLAIN HEAD, AS THE TASK AND WORKFLOW FORMS HAVE (visual QA runs2-08,
+      // 2026-10-29): "6 runner profiles · 20 pools you are admitted against"
+      // counted pools nobody picks here. The catalogue's size, and the one
+      // runner an issue run takes, since "6 to choose from" would not be true.
+      summary={(c) => issueSubmitHead(Object.keys(c.runner_profiles).length)}
       empty={{
         heading: 'No pools came back',
         body: 'The read of the pools this tenant is admitted against succeeded and returned none. The planner is an agent like any other and needs them, and the runner profiles arrive in that same response, so this page cannot submit.',
@@ -374,12 +383,17 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 
           <div className="in-choice in-merge">
             <span className="in-switch">
-              <input type="checkbox" role="switch" checked={mergeOn} disabled={!mergeOffered}
-                aria-label="Merge the pull request when it is ready" onChange={(e) => setMerge(e.target.checked)} />
+              {/* NAMED BY ITS OWN TEXT (visual QA runs2-34, 2026-10-29): the
+                  switch's name was an aria-label beside a <b> that said the
+                  same and was tied to nothing, so `input.labels` was empty
+                  and a click on the words did not reach the switch. The words
+                  are its <label> now, as the fix-rounds field's are. */}
+              <input id="in-auto-merge" type="checkbox" role="switch" checked={mergeOn} disabled={!mergeOffered}
+                onChange={(e) => setMerge(e.target.checked)} />
               <span className="in-switch-w">{mergeOn ? 'on' : 'off'}</span>
             </span>
             <div className="in-choice-t">
-              <b>Merge the pull request when it is ready</b>
+              <label htmlFor="in-auto-merge"><b>Merge the pull request when it is ready</b></label>
               {mergeOffered ? (
                 <small>
                   {/* "(default)" FOLLOWS THE SERVED DEFAULT, not the word "off". */}
@@ -439,7 +453,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>issue</b>
               {/* THE NUMBER FIRST (live QA SUB-9): the cut fell on the repository
-                  and took the number with it -- "bogdan-alexandrescu/SwarmClou…" --
+                  and took the number with it -- the live deployment's own
+                  repository, drawn as its owner and a cut name with no number --
                   and the number is the one part that tells two issues apart. The
                   repository is the next row; the whole reference is the title. */}
               {/* AN UNPARSEABLE REFERENCE IS NOT "READ ONE FIRST" (runs-submit-23):
@@ -573,10 +588,14 @@ function stateWord(state: IssueRunState): string {
 
 /**
  * THE ISSUE'S OPEN RUNS, BEFORE THE BUTTON (runs-submit-14), so planning it
- * again is a choice and not an accident. Each run is its id, as Work › Runs
- * names it, linked to its page, with its state.
+ * again is a choice and not an accident. Each run is its state and how long
+ * ago it was created -- "Planned 10d ago" -- linked to its page, the id in the
+ * link's title (visual QA runs2-35, 2026-10-29: "run_4c1e09d2 (Planned)" named
+ * a run by its raw id, which tells a reader nothing). A creation instant that
+ * does not parse leaves the state alone: never a made-up age.
  */
 function OpenRunsNote({ state, go }: { state: OpenRuns; go: (to: string) => void }) {
+  const now = useNow()
   if (state.kind === 'none') return null
   if (state.kind === 'unread') {
     return (
@@ -591,12 +610,11 @@ function OpenRunsNote({ state, go }: { state: OpenRuns; go: (to: string) => void
       {state.runs.map((r, i) => (
         <Fragment key={r.id}>
           {i > 0 && ', '}
-          <a href={`/runs/${encodeURIComponent(r.id)}`} className="mono" title={r.id} onClick={(e) => {
+          <a href={`/runs/${encodeURIComponent(r.id)}`} title={r.id} onClick={(e) => {
             if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
             e.preventDefault()
             go(runAddress(r.id))
-          }}>{r.id}</a>{' '}
-          ({stateWord(r.state)})
+          }}>{stateWord(r.state)}{Number.isFinite(Date.parse(r.created_at)) ? ` ${timeAgo(r.created_at, now)}` : ''}</a>
         </Fragment>
       ))}
       . Planning it again starts another run.

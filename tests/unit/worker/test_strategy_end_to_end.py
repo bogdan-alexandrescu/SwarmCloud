@@ -53,6 +53,36 @@ def _the_agent_titles_its_pull_request(monkeypatch):
     )
 
 
+#: What `Worker._own_before_forge_write` names each forge write it reads the
+#: fence before (#2693).
+FORGE_WRITES = frozenset({
+    "branch push", "workflow push", "replacing push",
+    "pull request", "pull request text", "pull request comment",
+})
+
+
+@pytest.fixture(autouse=True)
+def _the_fence_holds(monkeypatch):
+    """The fence read before every forge write holds here (#2693).
+
+    These harnesses write no task document, and `ControlPlane.ensure_owner`
+    refuses an attempt whose task document is gone -- correctly. So the
+    publish's reads (`_own_before_forge_write`) answer "still the owner" in
+    them, exactly as `_fixer` answers the replay's `validate_generation`;
+    every other `ensure_owner` (the carrier push, a checkpoint) is the real
+    one. A test of the fence patches `worker.control.ensure_owner` itself
+    (`test_publish_fenced_before_forge_write.py`).
+    """
+    real = lifecycle.ControlPlane.ensure_owner
+
+    def ensure_owner(self, *, write: str) -> None:
+        if write in FORGE_WRITES:
+            return None
+        return real(self, write=write)
+
+    monkeypatch.setattr(lifecycle.ControlPlane, "ensure_owner", ensure_owner)
+
+
 # -- a real repository, and a real remote to push to ------------------------
 
 
@@ -205,7 +235,7 @@ def run_attempt(
     # `swarm-tenant-<tenant>-git`, and the `eng` tenant registers only
     # anthropic and openai -- which is exactly why no strategy but `collect`
     # has ever run. The runbook says what granting one would take.
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
 
     cloned = worker._maybe_clone(task)
     assert cloned is not None and cloned["commit"], "the clone did not land"
@@ -899,7 +929,7 @@ def test_an_unknown_clone_base_publishes_nothing_rather_than_unchecked_commits(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-no-base", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None
     agent_commits_with_claude_attribution(worker.ws.work / lifecycle.REPO_DIR_NAME)
 
@@ -947,7 +977,7 @@ def _attempt(worker_factory, monkeypatch, origin, *, task_id: str, attempt: int,
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": task_id, "metadata": {"dispatch": dispatch}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     return worker, config, task
 
 

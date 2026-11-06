@@ -46,6 +46,9 @@ steps:
         cp -R tests/acceptance/mcp_echo_server /workspace/verify-ctx/tests/acceptance/mcp_echo_server
         mkdir -p /workspace/verify-ctx/apps/common/swarm_common
         cp apps/common/swarm_common/identity.py /workspace/verify-ctx/apps/common/swarm_common/identity.py
+        mkdir -p /workspace/verify-ctx/apps/swarm-install
+        cp -R apps/swarm-install/swarm_install /workspace/verify-ctx/apps/swarm-install/swarm_install
+        cp -R install /workspace/verify-ctx/install
         cp images/swarm-verify/Dockerfile /workspace/verify-ctx/Dockerfile
         # Fail here, loudly, rather than producing an image whose entrypoint is
         # missing and discovering it at 3am when the gate is finally run.
@@ -59,6 +62,8 @@ steps:
         test -f /workspace/verify-ctx/tests/acceptance/test_caller_mcp.py
         test -f /workspace/verify-ctx/tests/acceptance/mcp_echo_server/server.py
         test -f /workspace/verify-ctx/apps/common/swarm_common/identity.py
+        test -f /workspace/verify-ctx/apps/swarm-install/swarm_install/scheduled_doctor.py
+        test -f /workspace/verify-ctx/install/manifest.yaml
 
   - id: build
     name: gcr.io/cloud-builders/docker
@@ -66,6 +71,12 @@ steps:
       - build
       - -t
       - ${_IMAGE}:${_TAG}
+      # The project's mirrors, which build-images.sh passes as substitutions
+      # (recipe_mirror_subs; the Dockerfile names no project, DAYONE-DESAGA-1).
+      - --build-arg
+      - MIRROR_DOCKER_HUB=${_MIRROR_DOCKER_HUB}
+      - --build-arg
+      - BUILDKIT_SYNTAX=${_BUILDKIT_SYNTAX}
       - /workspace/verify-ctx
 
 images:

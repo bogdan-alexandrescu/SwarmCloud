@@ -25,28 +25,47 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { Checklist } from '../Onboarding'
 import type { OnboardingDoc } from '../types'
 import { serve } from './repofixture'
-import { FLOORS, probe, resolveSheet, type Finding } from './spaceprobe'
+import { expectTwins, reaching, sectionTwins } from './sheetcut'
+import { FLOORS, probeYielding, resolveSheet, type Finding } from './spaceprobe'
 
 type Theme = 'dark' | 'light'
 
 // The sweep's sheet in the sweep's order (spacingsweep.tsx `SECTION_SHEETS`,
 // then `STYLES`): the section sheets load first because main.tsx imports App,
 // and so every screen's sheet, before styles.css.
-const SECTION_SHEETS = Object.values(
-  import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
-)
+const SECTION_SHEET_FILES = import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })
+const SECTION_SHEETS = Object.values(SECTION_SHEET_FILES)
 const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 const RESOLVED: Record<Theme, string> = { dark: resolveSheet(SHEET, 'dark'), light: resolveSheet(SHEET, 'light') }
 const THEMES: readonly Theme[] = ['dark', 'light']
 
-/** Probe `root` under one theme's resolved sheet, as the sweep's dark and light passes do. */
-function measure(root: HTMLElement, theme: Theme): Finding[] {
+/**
+ * Probe `root` under one theme's resolved sheet, as the sweep's dark and light
+ * passes do -- and READ AS THE SWEEP READS IT (5 November 2026). Probing the
+ * whole resolved sheet after its injected twins held the worker's event loop
+ * for 7-13 s a test here and about twice that on CI, and the file once sat
+ * beside the shard that ended on "Timeout calling onTaskUpdate". So, as
+ * `spacingsweep.tsx` does (the reasons are in sheetcut.ts): the twins are held
+ * to their resolved copy and detached while the probe reads, the resolved
+ * sheet is cut to the rules that reach what is attached, and the probe gives
+ * the event loop a turn every few seconds. The same findings, in less time.
+ */
+async function measure(root: HTMLElement, theme: Theme): Promise<Finding[]> {
   const style = document.createElement('style')
   style.textContent = RESOLVED[theme]
   document.head.appendChild(style)
+  const twins = sectionTwins(Object.keys(SECTION_SHEET_FILES))
+  expectTwins(twins, style)
+  const { text, count } = reaching([...style.sheet!.cssRules])
+  style.textContent = text
+  expect(style.sheet!.cssRules.length, 'the cut sheet did not parse back rule for rule').toBe(count)
+  const home = twins.map(({ el }) => ({ el, parent: el.parentNode!, next: el.nextSibling }))
+  for (const { el } of twins) el.remove()
   try {
-    return probe(root).findings
+    return (await probeYielding(root)).findings
   } finally {
+    // Last first, so each one's next sibling is back before it is.
+    for (const { el, parent, next } of home.reverse()) parent.insertBefore(el, next)
     style.remove()
   }
 }
@@ -119,9 +138,9 @@ describe('the checklist with one step left to do', () => {
     // `.c-btn.is-ghost { border-color: transparent }` here, though no browser
     // draws that border. styles.css restates the ghost's border after the
     // `:where` floor ("BORDERLESS BUTTONS IN A SECTION SHEET"), and this holds it.
-    it(`draws no control boundary under 3:1 on the next step's ghost button (${theme})`, () => {
+    it(`draws no control boundary under 3:1 on the next step's ghost button (${theme})`, async () => {
       const root = renderChecklist()
-      const findings = measure(root, theme).filter(
+      const findings = (await measure(root, theme)).filter(
         (f) => f.kind === 'divider-under-floor' && f.where === 'button.c-btn.is-ghost.is-sm',
       )
       // MUTATION: delete `.ob-step.is-next .c-btn.is-ghost` from styles.css and
@@ -131,9 +150,9 @@ describe('the checklist with one step left to do', () => {
   }
 
   for (const theme of THEMES) {
-    it(`holds the stacked steps apart by at least the sweep's gutter (${theme})`, () => {
+    it(`holds the stacked steps apart by at least the sweep's gutter (${theme})`, async () => {
       const root = renderChecklist()
-      const findings = measure(root, theme).filter((f) => f.kind === 'surfaces-touch' && f.where === 'ol.ob-list')
+      const findings = (await measure(root, theme)).filter((f) => f.kind === 'surfaces-touch' && f.where === 'ol.ob-list')
       // MUTATION: remove `gap` from `.ob-list` in styles/onboarding.css and
       // this reports "6 stacked surfaces with a 0px gutter" and fails; set it
       // under the sweep's floor (`FLOORS.boxGutter`, 4px) and it fails too.
@@ -229,7 +248,7 @@ describe('the Access grants grid', () => {
       const root = await renderGrants()
       const grid = root.querySelector('ul.ac-grid')!
       expect(grid.querySelectorAll(':scope > li.ac-grant')).toHaveLength(3)
-      const findings = measure(root, theme).filter((f) => f.kind === 'surfaces-touch' && f.where === 'ul.ac-grid')
+      const findings = (await measure(root, theme)).filter((f) => f.kind === 'surfaces-touch' && f.where === 'ul.ac-grid')
       // MUTATION: remove `gap` from `.ac-grid` in styles/onboarding.css and
       // this reports "2 stacked surfaces with a 0px gutter" and fails.
       expect(said(findings)).toEqual([])

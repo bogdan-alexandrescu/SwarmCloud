@@ -296,7 +296,8 @@ describe('QA-113: the Attempts tab counts once, wraps rather than clips, and exp
     expect(toolbar.textContent).not.toMatch(/\b3\b/)
     // MUTATION: leave the eyebrow `attempts` -- the toolbar is the event page's, and its `?` opens event paging.
     expect(toolbar.querySelector('.ctl-eyebrow')?.firstChild?.textContent).toBe('event history')
-    expect(within(el).getByText('3 attempts · 1 event')).toBeTruthy()
+    // The event count is the toolbar's alone since QA2-FIX-13 (overview-agents-41): the summary counts attempts.
+    expect(within(el).getByText('3 attempts')).toBeTruthy()
   })
 
   it('wraps the toolbar’s tally instead of clipping its `partial` mark', async () => {

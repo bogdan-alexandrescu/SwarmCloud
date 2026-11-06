@@ -4,6 +4,7 @@ import { Mark } from './AgentDetail'
 import { USE_FIXTURES, loadCheckpoints } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { Button, ButtonLink } from './components'
+import { useEscapeLayer } from './escape'
 import { encoded, errorHeading, noteFixtureProbe, read, route, tenantQuery, type ApiError, type Result } from './fetch'
 import { bytesLabel, timeAgo, type ArtifactContent } from './types'
 
@@ -356,6 +357,27 @@ export function CheckpointBrowser({
   // to 457 px and nothing scrolled again, leaving its top at y=666 of 844.
   // Focus moves once, at mount; the scroll follows the panel's size.
   const regionRef = useRef<HTMLDivElement>(null)
+  // ESCAPE CLOSES THIS PANEL FIRST (QA2-FIX-14, overview-agents-48). It was
+  // not a layer, so Escape on the files panel reached the agent pane's own
+  // listener and closed the whole pane. Registered only while it is SHOWN
+  // (QA2-FIX-14 review): the Checkpoints pane stays mounted, `hidden`, on the
+  // agent's other tabs, and a layer registered while mounted closed the
+  // invisible panel on Escape there instead of the agent pane. And not while
+  // a file opened from it (`ArtifactViewer`, its own layer) is open: the
+  // viewer closes first, and the panel registers again once it has, so the
+  // order holds when the panel is hidden and shown again under an open file.
+  const [shown, setShown] = useState(false)
+  const [viewerOpen, setViewerOpen] = useState(false)
+  useEffect(() => {
+    const el = regionRef.current
+    if (el === null) return
+    const check = () => setShown(el.closest('[hidden]') === null)
+    check()
+    const watch = new MutationObserver(check)
+    watch.observe(document.body, { attributes: true, attributeFilter: ['hidden'], subtree: true })
+    return () => watch.disconnect()
+  }, [])
+  useEscapeLayer(shown && !viewerOpen, onClose)
   const settled = state.status !== 'loading'
   useEffect(() => {
     regionRef.current?.focus({ preventScroll: true })
@@ -408,6 +430,7 @@ export function CheckpointBrowser({
         attemptId={attemptId}
         checkpointId={checkpointId}
         loaders={loaders}
+        onViewer={setViewerOpen}
       />
     </div>
   )
@@ -420,6 +443,7 @@ function Body({
   attemptId,
   checkpointId,
   loaders,
+  onViewer,
 }: {
   state: Result<CheckpointFiles>
   onRetry: () => void
@@ -427,6 +451,7 @@ function Body({
   attemptId: string
   checkpointId: string
   loaders: CheckpointLoaders
+  onViewer: (open: boolean) => void
 }) {
   switch (state.status) {
     case 'loading':
@@ -467,6 +492,7 @@ function Body({
           attemptId={attemptId}
           checkpointId={checkpointId}
           loaders={loaders}
+          onViewer={onViewer}
         />
       )
   }
@@ -540,12 +566,15 @@ function Listing({
   attemptId,
   checkpointId,
   loaders,
+  onViewer,
 }: {
   data: CheckpointFiles
   taskId: string
   attemptId: string
   checkpointId: string
   loaders: CheckpointLoaders
+  /** Told when a file's viewer opens and closes: the panel's Escape layer steps aside for it. */
+  onViewer: (open: boolean) => void
 }) {
   const members = data.files
   const tree = useMemo(() => buildTree(members ?? []), [members])
@@ -553,6 +582,11 @@ function Listing({
     (members?.length ?? 0) <= EXPAND_ALL_UNDER ? allDirs(tree.root) : new Set(),
   )
   const [selected, setSelected] = useState<CheckpointMember | null>(null)
+  const viewing = selected !== null
+  useEffect(() => {
+    onViewer(viewing)
+    return () => onViewer(false)
+  }, [onViewer, viewing])
 
   const toggle = useCallback((path: string) => {
     setOpen((cur) => {

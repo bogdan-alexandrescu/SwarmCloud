@@ -70,7 +70,9 @@ describe('the Agents list elapsed figure on a cancelled task', () => {
     expect(cell.getAttribute('title')).toBe(`ran 12m 0s ${LABEL}`)
     const note = cell.closest('.row')!.querySelector('.cr-sub .when-note')!
     expect(note.textContent).toBe(CANCEL_NOTE)
-    expect(note.textContent!.length, 'the mark is the sentence again').toBeLessThan(12)
+    // Visual QA pass 2 (ovag2-10): the mark is a past-tense phrase,
+    // `cancelled by request`, still far shorter than the qualifier.
+    expect(note.textContent!.length, 'the mark is the sentence again').toBeLessThanOrEqual(20)
     expect(note.getAttribute('title')).toBe(LABEL)
     expect(note.getAttribute('aria-label')).toBe(LABEL)
     expect(note.parentElement!.lastElementChild, 'the mark is not the last part of line two').toBe(note)

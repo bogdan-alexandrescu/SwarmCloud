@@ -111,13 +111,19 @@ describe('an empty state carries exactly one `real zero`', () => {
       expect(marks[0]!.classList.contains('is-zero')).toBe(true)
       expect(marks[0]!.getAttribute('aria-label') ?? '', `${c.name}'s mark has no sentence`).not.toBe('')
 
-      // THE WORDS ONCE: the mark's word (`none`, owner 2026-10-11) is the
+      // THE WORDS ONCE. The mark's word (`none`, owner 2026-10-11) is the
       // mark's, and no hand-written copy repeats it or the old "real zero".
+      // Through `Absent` the mark is an icon -- its silhouette and its
+      // sentence, the heading carrying the words (automate2-17,
+      // qa2fix26.test.tsx) -- so it draws no word at all; a screen's own
+      // `.ctl-empty` still draws the worded mark.
+      const icon = marks[0]!.classList.contains('is-icon')
       const word = marks[0]!.textContent ?? ''
-      expect(word, `${c.name}'s mark has no word`).not.toBe('')
+      if (icon) expect(word, `${c.name}'s icon mark draws words before its heading`).toBe('')
+      else expect(word, `${c.name}'s mark has no word`).not.toBe('')
       const rest = (el.textContent ?? '').replace(word, '')
       expect(rest, `${c.name} says "real zero" outside its mark`).not.toMatch(/real zero/i)
-      expect(rest, `${c.name} says its mark's word "${word}" twice`).not.toMatch(new RegExp(`(^|[^a-z])${word}([^a-z]|$)`))
+      expect(rest, `${c.name} says the mark's word "none" by hand`).not.toMatch(/(^|[^a-z])none([^a-z]|$)/)
     })
   }
 })

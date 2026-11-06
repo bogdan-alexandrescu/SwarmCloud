@@ -15,6 +15,7 @@ dependencies = [
     { name = "swarm-agent-worker" },
     { name = "swarm-api" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-mcp" },
     { name = "swarm-quota-broker" },
     { name = "swarm-reconciler" },
@@ -31,6 +32,7 @@ dev = [
     { name = "pytest-xdist" },
     { name = "rfc8785" },
     { name = "ruff" },
+    { name = "swarm-install" },
     { name = "tree-sitter" },
     { name = "tree-sitter-go" },
     { name = "tree-sitter-hcl" },
@@ -44,6 +46,7 @@ requires-dist = [
     { name = "swarm-agent-worker", editable = "apps/agent-worker" },
     { name = "swarm-api", editable = "apps/swarm-api" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-jev", editable = "apps/jev-client" },
     { name = "swarm-mcp", editable = "apps/swarm-mcp" },
     { name = "swarm-quota-broker", editable = "apps/quota-broker" },
     { name = "swarm-reconciler", editable = "apps/reconciler" },
@@ -60,6 +63,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.6" },
     { name = "rfc8785", specifier = ">=0.1.4" },
     { name = "ruff", specifier = "==0.17.0" },
+    { name = "swarm-install", editable = "apps/swarm-install" },
     { name = "tree-sitter", specifier = "==0.25.2" },
     { name = "tree-sitter-go", specifier = "==0.25.0" },
     { name = "tree-sitter-hcl", specifier = "==1.2.0" },
@@ -1354,11 +1358,11 @@ wheels = [
 
 [[package]]
 name = "oauthlib"
-version = "4.0.0"
+version = "4.0.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7a/d8/a1bcc8ba112a627f8ffbdc212a78ce18d3ac07e91a5ca65d27918eee25a1/oauthlib-4.0.0.tar.gz", hash = "sha256:efb274799819440f95b4ab3b818869f1ce9ae26c5beacba0201d1a1b76b54f86", size = 187232, upload-time = "2026-09-28T06:01:18.77Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/33/17/2bb072de0b990303c985f26869fd47bb179024a051f47e7f9d208eb92f8e/oauthlib-4.0.1.tar.gz", hash = "sha256:3d73febdb6faa00f277c81fb04be7b7586fb96fc3b7f0b9c772dada69a25ede7", size = 191219, upload-time = "2026-10-31T09:52:58.008Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/f4/78229a1066068ca14fc60fb26cf7381cabe4382261392b90e5f9552722d4/oauthlib-4.0.0-py3-none-any.whl", hash = "sha256:624c28c13a0a59cabf9747dfa52af63be3e512a7f2714df16e91b5b3a145e6cd", size = 159715, upload-time = "2026-09-28T06:01:17.008Z" },
+    { url = "https://files.pythonhosted.org/packages/df/ef/3b8adde1b32a6f540758bff734d3442c621734c83708e5f02b0ba2f43b84/oauthlib-4.0.1-py3-none-any.whl", hash = "sha256:498a298876e996301950a5b053d12c31628bb7b895db03666430c69ce182eb61", size = 161934, upload-time = "2026-10-31T09:52:56.206Z" },
 ]
 
 [[package]]
@@ -1567,11 +1571,11 @@ wheels = [
 
 [[package]]
 name = "pyasn1"
-version = "0.6.4"
+version = "0.6.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a4/9a/23310166d960def5897e91fe20e5b724601b02a22e84ba1f94232c0b7f67/pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81", size = 151262, upload-time = "2026-07-09T01:12:33.988Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/7e/3c0da41061a2021cac7cd524fd57092adbe5b515e8bf9005702e366802e2/pyasn1-0.6.5.tar.gz", hash = "sha256:6b11616a6bcf3a40e635f082bb232fa57b5e0dd7f517bd7ddd69ec3794508a47", size = 155152, upload-time = "2026-10-27T06:32:49.125Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b", size = 84410, upload-time = "2026-07-09T01:12:32.92Z" },
+    { url = "https://files.pythonhosted.org/packages/19/1f/3eefd5c84c35cae44549ce1c7f7e58f7945b34f5a6bce07a135438522073/pyasn1-0.6.5-py3-none-any.whl", hash = "sha256:4017b0fce125096b8573b39c989fdb1a4b19cf761e683398184550fea0e66587", size = 84807, upload-time = "2026-10-27T06:32:48.045Z" },
 ]
 
 [[package]]
@@ -1969,7 +1973,9 @@ dependencies = [
     { name = "google-cloud-secret-manager" },
     { name = "google-cloud-storage" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-redaction" },
+    { name = "swarm-workflow-rollup" },
 ]
 
 [package.metadata]
@@ -1980,7 +1986,9 @@ requires-dist = [
     { name = "google-cloud-secret-manager", specifier = ">=2.20" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-jev", editable = "apps/jev-client" },
     { name = "swarm-redaction", editable = "apps/redaction" },
+    { name = "swarm-workflow-rollup", editable = "apps/workflow-rollup" },
 ]
 
 [[package]]
@@ -2001,6 +2009,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pynacl" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-redaction" },
     { name = "swarm-workflow-rollup" },
     { name = "uvicorn", extra = ["standard"] },
@@ -2021,6 +2030,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pynacl", specifier = ">=1.5" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-jev", editable = "apps/jev-client" },
     { name = "swarm-redaction", editable = "apps/redaction" },
     { name = "swarm-workflow-rollup", editable = "apps/workflow-rollup" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
@@ -2030,6 +2040,52 @@ requires-dist = [
 name = "swarm-common"
 version = "0.1.0"
 source = { editable = "apps/common" }
+
+[[package]]
+name = "swarm-install"
+version = "0.1.0"
+source = { editable = "apps/swarm-install" }
+dependencies = [
+    { name = "google-auth" },
+    { name = "google-cloud-firestore" },
+    { name = "google-cloud-kms" },
+    { name = "google-cloud-monitoring" },
+    { name = "google-cloud-run" },
+    { name = "google-cloud-secret-manager" },
+    { name = "google-cloud-storage" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "swarm-common" },
+    { name = "swarm-redaction" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "google-auth", specifier = ">=2.30" },
+    { name = "google-cloud-firestore", specifier = ">=2.16" },
+    { name = "google-cloud-kms", specifier = ">=2.21" },
+    { name = "google-cloud-monitoring", specifier = ">=2.21" },
+    { name = "google-cloud-run", specifier = ">=0.10" },
+    { name = "google-cloud-secret-manager", specifier = ">=2.20" },
+    { name = "google-cloud-storage", specifier = ">=2.18" },
+    { name = "pydantic", specifier = ">=2.8" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.32" },
+    { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-redaction", editable = "apps/redaction" },
+]
+
+[[package]]
+name = "swarm-jev"
+version = "0.1.0"
+source = { editable = "apps/jev-client" }
+dependencies = [
+    { name = "swarm-redaction" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "swarm-redaction", editable = "apps/redaction" }]
 
 [[package]]
 name = "swarm-mcp"
@@ -2117,6 +2173,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "swarm-common" },
     { name = "swarm-quota-broker" },
+    { name = "swarm-workflow-rollup" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2131,6 +2188,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.8" },
     { name = "swarm-common", editable = "apps/common" },
     { name = "swarm-quota-broker", editable = "apps/quota-broker" },
+    { name = "swarm-workflow-rollup", editable = "apps/workflow-rollup" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 

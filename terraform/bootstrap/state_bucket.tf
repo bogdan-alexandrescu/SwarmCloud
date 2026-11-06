@@ -44,6 +44,17 @@ resource "google_storage_bucket" "state_logs" {
   labels = merge(local.labels, { "swarm-purpose" = "state-access-logs" })
 }
 
+# The bucket always exists before this root plans: the gcs backend needs it
+# before `terraform init`, so scripts/bootstrap.sh (and the installer's stage
+# 1, docs/design/day-one-install.md section 5.5) creates it with gcloud first.
+# This import adopts it, so a first apply on a new project never tries to
+# create it a second time (a 409). Unconditional: on a project whose state
+# already holds the bucket, an import of the same id is a no-op.
+import {
+  to = google_storage_bucket.state
+  id = "${var.project_id}/${local.state_bucket_name}"
+}
+
 resource "google_storage_bucket" "state" {
   project  = var.project_id
   name     = local.state_bucket_name

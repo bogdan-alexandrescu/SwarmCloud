@@ -516,6 +516,26 @@ def test_the_web_ui_options_are_the_screens_the_nav_reaches(name: str) -> None:
     )
 
 
+#: Voice it's three pages, as the forms must offer them (docs/design/voice-it.md
+#: §10, phase one's first lane). Named here because the comparison above is
+#: driven by SECTIONS: a section that was never added would pass it silently.
+VOICE_IT_OPTIONS = (
+    f"{UI}Voice it › Talk (/voice/talk)",
+    f"{UI}Voice it › Projects (/voice/projects)",
+    f"{UI}Voice it › Preferences (/voice/preferences)",
+)
+
+
+@pytest.mark.parametrize("name", SURFACE_FORMS)
+def test_the_voice_it_pages_are_offered(name: str) -> None:
+    """A reporter on a Voice it page can name it, and the nav reaches each one."""
+    nav = set(_nav_options().values())
+    options = _surface_options(name)
+    for option in VOICE_IT_OPTIONS:
+        assert option in nav, f"the nav reaches no page offered as {option!r}"
+        assert option in options, f"{name}'s `{SURFACE_ID}` dropdown has no {option!r}"
+
+
 @pytest.mark.parametrize("name", SURFACE_FORMS)
 def test_the_web_ui_options_beyond_the_nav_still_exist(name: str) -> None:
     named: dict[str, str] = {}

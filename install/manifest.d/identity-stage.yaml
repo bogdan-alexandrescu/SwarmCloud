@@ -1,0 +1,41 @@
+# Lane DAYONE-IDENTITY-STAGE (part of #2688): stage 8 sets up the
+# organisation's groups and the Groups Reader admin role through the APIs, and
+# opens the Admin console only where no API answers
+# (apps/swarm-install/swarm_install/steps/identity.py).
+version: 1
+entries:
+- id: workspace-group.install-groups
+  kind: workspace-group
+  scope: core
+  stage: 8
+  provider: engine
+  step: identity.groups
+  check: 'Cloud Identity groups:lookup (x-goog-user-project: the install project) finds the platform admins'' group and, for a team, the first team''s group, swarm-admins@ and swarm-team@ the org_domain unless recorded otherwise; with sizing.mode individual (decision 7) there is no team group'
+  apply: 'one optional choice naming the groups: groups.create under customers/<id> (the Directory API''s customers/my_customer), initialGroupConfig WITH_INITIAL_OWNER so the installer owns each; refused or declined, open_page(https://admin.google.com/ac/groups) and poll the lookup'
+  verify: every lookup names a group
+  explain: The admin surface and the first team are governed by groups, never named people; the installer owns each and is its only member, so stage 8's probes name a real member. A one-person install has no team group, and its probe reads the admin group.
+  guards: lesson 20
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - apps/swarm-install/swarm_install/steps/identity.py
+  - docs/design/day-one-install.md
+  notes: added by DAYONE-IDENTITY-STAGE
+- id: workspace-delegation.groups-reader-assignment
+  kind: workspace-delegation
+  scope: core
+  stage: 8
+  provider: engine
+  step: identity.groups-reader-role
+  check: Directory API roleAssignments.list for the predefined Groups Reader role names swarm-api's numeric unique id, organisation-wide; where the list is closed to the installer, swarm-api's own groups probe in admin_role mode passes
+  apply: 'after a typed approval (ASSIGN; it is a grant), roleAssignments.insert {roleId: Groups Reader, assignedTo: swarm-api''s uniqueId, scopeType: CUSTOMER}; refused, open_page(https://admin.google.com/ac/roles) and poll roleAssignments.list. Answering delegation records the domain-wide delegation fallback instead'
+  verify: the assignment is listed, or swarm-api reads the first team's group in admin_role mode
+  explain: 'Q2: the Groups API authorises through Workspace admin roles, not IAM; Groups Reader on swarm-api''s own account lets it read memberships as itself, with no delegation and no impersonated user.'
+  guards: lesson 20
+  secret_entry: null
+  depends_on:
+  - workspace-group.install-groups
+  evidence:
+  - apps/swarm-install/swarm_install/steps/identity.py
+  - docs/design/day-one-install.md
+  notes: added by DAYONE-IDENTITY-STAGE

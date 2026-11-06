@@ -12,6 +12,7 @@ import {
   loadWorkspaceRoles,
   parseBudgetAmount,
   putQaSettings,
+  putQaWritingFlows,
   putWorkspaceBudget,
   renameWorkspace,
   type BudgetLimits,
@@ -21,16 +22,18 @@ import {
 } from './api'
 import { CodeIntelligenceCard } from './CodeIntelligence'
 import { Banner, Button, ButtonLink, Card, Dash, Tabs, routedClick } from './components'
-import { SetupContext, setupCount, useSetupSteps, type SetupStep } from './ConfigSetup'
+import { SetupContext, checklistCount, setupCount, useSetupSteps, type SetupStep } from './ConfigSetup'
 import type { ApiError } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { NewWorkspaceForm, STEP_LABEL as JOB_STEP_LABEL, STEP_ORDER as JOB_STEP_ORDER } from './NewWorkspace'
 import { ACCESS as GITHUB_ACCESS_ADDRESS, OnboardingScreen, STEP_LABEL, countLabel } from './Onboarding'
+import { InfoTip } from './People'
 import { GitHubPermissions } from './PermissionCards'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { notServed } from './RepositoriesData'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
+import { OWN_WORKSPACE_LABEL } from './Spine'
 import { timeAgo, type OnboardingDoc, type Profile, type WorkspaceRoles } from './types'
 import './styles/workspace-settings.css'
 
@@ -153,7 +156,8 @@ function SetupLead({ part, go }: { part: 'settings' | 'setup'; go?: (to: string)
       <Lead
         kicker="Setup’s next step"
         title={title}
-        body={countLabel(d)}
+        // config2-03: the strip beside it counts steps; this names the checklist it counts.
+        body={checklistCount(d) ?? countLabel(d)}
         action={
           <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_SETUP_ADDRESS)} onClick={routed(WORKSPACE_SETUP_ADDRESS, go)}>
             Open Workspace setup
@@ -443,7 +447,10 @@ function ThisWorkspace({ profile, roles, go }: { profile: Profile; roles: UrRead
   const [renaming, setRenaming] = useState(false)
   const read = me.state.status === 'ok' || me.state.status === 'stale' ? me.state.data : null
   const stored = read !== null && ws !== null && read.tenant.tenant_id === ws.tenant_id ? read.tenant.display_name || null : null
-  const name = renamed ?? stored ?? ws?.display_name ?? ''
+  // ONE NAME FOR THE PERSON'S OWN WORKSPACE (visual QA pass 2, admin-shell-21;
+  // part of #2694): the switcher's `Your workspace`, the id on its own row
+  // below, never `Your workspace (u-…)` here and `Bogdan` in the refusal.
+  const name = ws?.kind === 'user' ? OWN_WORKSPACE_LABEL : (renamed ?? stored ?? ws?.display_name ?? '')
   const mayRename = ws !== null && ws.kind === 'group' && role?.name === 'admin'
   return (
     <Card
@@ -522,7 +529,12 @@ function QaSettingsCard() {
   return (
     <Card title="Visual QA" action={servedRefresh(qa)}>
       <UrRegion state={qa.state} route="GET /v1/qa-settings" what="the Visual QA settings" onRetry={qa.reload}>
-        {(d) => <QaFlowsPerStep key={`${d.tenant_id}:${d.qa_flows_per_step}`} read={d} />}
+        {(d) => (
+          <>
+            <QaFlowsPerStep key={`${d.tenant_id}:${d.qa_flows_per_step}`} read={d} />
+            <QaWritingFlows key={`${d.tenant_id}:${String(d.writing_flows)}`} read={d} />
+          </>
+        )}
       </UrRegion>
     </Card>
   )
@@ -553,8 +565,8 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
   return (
     <>
       <p className="ur-hint">
-        A QA run&rsquo;s read-only flows run in batches, one live-browser step to a batch. This is the batch size a run
-        uses when it names none of its own; a run may pick another beside Run on the QA targets page.
+        A QA run&rsquo;s read-only flows run in batches, one live-browser step each. This is the batch size a run
+        uses unless it names its own; a run may pick another beside Run on the QA targets page.
       </p>
       {/* ONE LABELLED FIGURE (visual QA pass 1, config-30; part of #2596): for someone who may edit it, the field
           below is the figure and its hint notes the default, so the read-out above it said both twice. It is
@@ -621,6 +633,53 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
         <p className="ur-small">{`Only the workspace’s owner or admin, or a platform admin, can change this (${bound}).`}</p>
       )}
     </>
+  )
+}
+
+/**
+ * WRITING FLOWS (part of #2688; BGD, 2026-11-05, "declared writes plus a switch, on by default"): the workspace's
+ * `writing_flows`. One toggle, its reason in the (i)'s tooltip and no visible prose. Off, every QA flow of the
+ * workspace reads only and a target with a mutating flow is refused at save (422 `qa_writing_flows_off`). The same
+ * gate as the batch size: its owner or admin, or a platform admin; anyone else sees the toggle disabled.
+ */
+const WRITING_FLOWS_TIP =
+  'On: a flow marked mutating, on a non-production environment, may write what its writes sentence declares, and ' +
+  'nothing else. Off: every flow of this workspace only reads, and a flow marked mutating cannot be saved.'
+
+function QaWritingFlows({ read }: { read: QaSettings }) {
+  const [saved, setSaved] = useState<QaSettings | null>(null)
+  const d = saved ?? read
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const flip = async (on: boolean) => {
+    if (busy || !d.can_edit || on === d.writing_flows) return
+    setBusy(true)
+    setRefused(null)
+    const r = await putQaWritingFlows(d.tenant_id, on)
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'stale') setSaved(r.data)
+    else if (r.status === 'error') setRefused(r.error)
+  }
+  return (
+    <div className="ws-kv" data-qa-writing-flows={d.writing_flows ? 'on' : 'off'}>
+      <label className="c-field">
+        <input
+          type="checkbox"
+          role="switch"
+          name="writing_flows"
+          aria-label="Writing flows"
+          checked={d.writing_flows}
+          disabled={!d.can_edit || busy}
+          onChange={(e) => void flip(e.target.checked)}
+        />{' '}
+        <span className="c-lbl">Writing flows</span> <InfoTip about="writing flows" tip={WRITING_FLOWS_TIP} />
+      </label>
+      {refused !== null && (
+        <p className="ur-small ob-issue" role="alert" data-code={refused.code ?? undefined}>
+          {refused.code !== null && <b className="ur-bad">{refused.code}</b>} {refused.message}
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -894,7 +953,14 @@ function AddWorkspace() {
   )
 }
 
-export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: WorkspacePart; go?: (to: string) => void }) {
+/**
+ * EMBEDDED (lane workspace-admin-page; part of #2688): drawn as a tab of one
+ * workspace's page (WorkspacePage.tsx), which carries the workspace's own
+ * heading and its People, Roles, Settings and Setup tabs, so this screen draws
+ * neither its "Workspace Settings" heading nor its Config tab strip; the
+ * read's refresh stays, right-aligned above the part.
+ */
+export function WorkspaceSettingsScreen({ part = 'settings', go, embedded = false }: { part?: WorkspacePart; go?: (to: string) => void; embedded?: boolean }) {
   const profile = useUrRead(loadProfile, 'profile')
   const roles = useUrRead(loadWorkspaceRoles, 'workspace-roles')
   const read = profile.state.status === 'ok' || profile.state.status === 'stale' ? profile.state.data : null
@@ -906,10 +972,18 @@ export function WorkspaceSettingsScreen({ part = 'settings', go }: { part?: Work
   ]
   return (
     <div className="pk-page ws-page">
-      <PageHead title="Workspace Settings">
-        <UrRefresh reads={part === 'settings' ? [profile, roles] : [profile]} />
-      </PageHead>
-      <Tabs className="cfg-parts" label="Workspace Settings" current={part} onGo={go} tabs={tabs} />
+      {embedded ? (
+        <div className="ws-embed-head">
+          <UrRefresh reads={part === 'settings' ? [profile, roles] : [profile]} />
+        </div>
+      ) : (
+        <>
+          <PageHead title="Workspace Settings">
+            <UrRefresh reads={part === 'settings' ? [profile, roles] : [profile]} />
+          </PageHead>
+          <Tabs className="cfg-parts" label="Workspace Settings" current={part} onGo={go} tabs={tabs} />
+        </>
+      )}
       {part === 'settings' && (
         <>
           <SetupLead part="settings" go={go} />

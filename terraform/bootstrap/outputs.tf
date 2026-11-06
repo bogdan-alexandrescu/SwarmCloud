@@ -49,3 +49,19 @@ output "github_accept_service_account" {
   description = "The account .github/workflows/accept.yml federates as (terraform/bootstrap/acceptance.tf). Set the repository variable GCP_ACCEPT_SA to this value."
   value       = var.enable_github_wif ? google_service_account.acceptance[0].email : ""
 }
+
+output "platform_service_accounts" {
+  description = "account id -> email for every platform service account this root creates (platform_service_accounts.tf, DAYONE-BOOT-2). terraform/infra reads each one as a data source by its id."
+  value = merge(
+    { for id, sa in google_service_account.platform : id => sa.email },
+    {
+      (google_service_account.tick.account_id)           = google_service_account.tick.email
+      (google_service_account.verify.account_id)         = google_service_account.verify.email
+      (google_service_account.schedule_tick.account_id)  = google_service_account.schedule_tick.email
+      (google_service_account.rollup_sweeper.account_id) = google_service_account.rollup_sweeper.email
+      (google_service_account.discovery.account_id)      = google_service_account.discovery.email
+      (google_service_account.doctor.account_id)         = google_service_account.doctor.email
+      (google_service_account.voice.account_id)          = google_service_account.voice.email
+    },
+  )
+}

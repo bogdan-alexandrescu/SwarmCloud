@@ -34,6 +34,13 @@ mock_provider "google" {
   source = "./mocks/google"
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id = "saga-agents-staging"
 
@@ -483,15 +490,16 @@ run "terraform_infra_writes_the_marker_bootstrap_waits_for" {
     # terraform/infra refuses to plan without a digest for every image it
     # deploys. The same fixture infra_guards.tftest.hcl uses.
     image_refs = {
-      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -535,6 +543,57 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     }
   }
 
+  # The same adoption imports the platform service accounts
+  # (platform_service_accounts.tf, DAYONE-BOOT-2); a mock provider cannot
+  # import, so their import targets are overridden too. An override holds one
+  # value for every instance of a for_each, so each platform account reads
+  # swarm-api's address here; bootstrap's IAM members only need it well formed.
+
+  override_resource {
+    target          = google_service_account.platform
+    override_during = plan
+    values = {
+      email  = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.tick
+    override_during = plan
+    values = {
+      email  = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.verify
+    override_during = plan
+    values = {
+      email  = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.schedule_tick
+    override_during = plan
+    values = {
+      email  = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.rollup_sweeper
+    override_during = plan
+    values = {
+      email  = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
   expect_failures = [google_project_iam_custom_role.platform]
 }
 
@@ -568,6 +627,57 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
     override_during = plan
     values = {
       deleted = false
+    }
+  }
+
+  # The same adoption imports the platform service accounts
+  # (platform_service_accounts.tf, DAYONE-BOOT-2); a mock provider cannot
+  # import, so their import targets are overridden too. An override holds one
+  # value for every instance of a for_each, so each platform account reads
+  # swarm-api's address here; bootstrap's IAM members only need it well formed.
+
+  override_resource {
+    target          = google_service_account.platform
+    override_during = plan
+    values = {
+      email  = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.tick
+    override_during = plan
+    values = {
+      email  = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.verify
+    override_during = plan
+    values = {
+      email  = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.schedule_tick
+    override_during = plan
+    values = {
+      email  = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.rollup_sweeper
+    override_during = plan
+    values = {
+      email  = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      member = "serviceAccount:swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
     }
   }
 

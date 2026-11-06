@@ -82,7 +82,7 @@ describe('admin-008 / work-b-008: the page head `?` has an edge in light as in d
 
 describe('a11y-keyboard-004: every `?` draws the app focus ring', () => {
   it("rings HelpCard's `?` (`.help-glyph`) and the head's `?` 2px solid --info", async () => {
-    window.history.replaceState(null, '', '/')
+    window.history.replaceState(null, '', '/overview')
     render(<App />)
     const glyphs = await waitFor(() => {
       const found = [...document.querySelectorAll<HTMLElement>('button.help-glyph')]
@@ -128,7 +128,11 @@ describe('capacity/api-reads', () => {
     await waitFor(() => expect(document.querySelectorAll('main tbody tr').length).toBeGreaterThan(0), WAIT)
     // MUTATION: put "reads nothing" back in `ScreenAge` and this is red.
     expect(age.textContent).not.toMatch(/reads nothing/)
-    expect(age.textContent).toBe('no reads of its own')
+    // QA2 capacity-19: "no reads of its own" over a table of reads still read
+    // as "no reads". The rows are the other screens' reads; the head says so.
+    // MUTATION: put "no reads of its own" back in `ScreenAge` and this is red.
+    expect(age.textContent).not.toMatch(/no reads/)
+    expect(age.textContent).toBe('reads made by other screens')
   })
 
   it('capacity-004: stacks into labelled records at the phone breakpoint, like every Capacity table', async () => {

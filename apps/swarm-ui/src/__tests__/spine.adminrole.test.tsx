@@ -9,10 +9,13 @@
  *     (`/v1/tenants/mine`) sees Admin with only Workspaces you admin, which
  *     lists those workspaces; each link selects the workspace, then opens
  *     the page.
- *   * Anyone else -- a member, or the admin of only their own personal
- *     workspace -- sees no Admin item, flyout or drawer entry, and nothing is
- *     drawn while the reads are in flight. A direct link to an Admin page
- *     still lands on that page's own refusal.
+ *   * A member of a group workspace who administers none sees Admin with
+ *     only Workspaces, their group workspaces read only (admin routes lane,
+ *     part of #2688; BGD 3 November).
+ *   * Anyone else -- the admin of only their own personal workspace -- sees
+ *     no Admin item, flyout or drawer entry, and nothing is drawn while the
+ *     reads are in flight. A direct link to an Admin page still lands on
+ *     that page's own refusal.
  *
  * This replaces spine.adminlock.test.tsx, which held the reversed rule
  * ("Admin is SHOWN to a non-admin, with a lock").
@@ -21,7 +24,7 @@
  * in-flight cases go red; drop `kind === 'group'` from `adminWorkspaces` and
  * the personal-admin case does; return all of PANEL_PAGES.admin from
  * `adminPagesFor` for a workspace admin and the eng case does; drop
- * `chooseTenant` from the page's links and its People and roles case does.
+ * `chooseTenant` from the workspace page's route and its case does.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
@@ -97,19 +100,20 @@ afterEach(() => {
 })
 
 describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
-  it('draws no Admin item, flyout or drawer entry for a member with no admin role', async () => {
+  it('draws a member with no admin role Admin with Workspaces alone, in the spine, its flyout and the drawer', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member'), group('ops', 'viewer')])
     localStorage.setItem('swarm.shell.collapsed', '1')
     await shell('overview', 'now')
     await waitFor(() => expect(document.querySelector('.sk-tenant, .sk-ttile, .sk-spine')).not.toBeNull())
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 30))
-    })
-    expect(adminItem(), 'the collapsed spine drew Admin').toBeNull()
-    // Every other section still opens its flyout; there is none for Admin.
-    fireEvent.focus(document.querySelector<HTMLElement>('.sk-spine a[data-sec="capacity"]')!)
-    expect(document.querySelector('.sk-flyout.is-capacity')).not.toBeNull()
-    expect(document.querySelector('.sk-flyout.is-admin')).toBeNull()
+    // MUTATION: give `adminPagesFor` no member case -> no Admin item and this fails.
+    await waitFor(() => expect(adminItem(), 'the collapsed spine drew no Admin').not.toBeNull())
+    expect(adminItem()!.getAttribute('href')).toBe('/admin/workspaces')
+    fireEvent.focus(adminItem()!)
+    const flyout = document.querySelector('.sk-flyout.is-admin')
+    expect(flyout).not.toBeNull()
+    // MUTATION: hand a member a workspace admin's pages -> Platform people is listed and this fails.
+    expect([...flyout!.querySelectorAll('a')].map((a) => a.textContent)).not.toContain('Platform people')
+    expect(flyout!.textContent).toContain('Workspaces')
     cleanup()
 
     // The phone drawer draws the same spine.
@@ -125,7 +129,14 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(document.querySelector('.sk-app.has-drawer')).not.toBeNull())
     await waitFor(signedIn)
     expect(document.querySelector('.sk-app.has-drawer .sk-spine a[data-sec="capacity"]'), 'the drawer drew no sections').not.toBeNull()
-    expect(document.querySelector('.sk-app.has-drawer a[data-sec="admin"]'), 'the drawer drew Admin').toBeNull()
+    await waitFor(() => expect(document.querySelector('.sk-app.has-drawer a[data-sec="admin"]'), 'the drawer drew no Admin').not.toBeNull())
+  })
+
+  it('opens a member\'s Admin on Workspaces, the one page in its panel', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'member')])
+    await shell('admin', 'workspaces')
+    await waitFor(() => expect(adminItem()).not.toBeNull())
+    expect(panelRows()).toEqual(['Workspaces'])
   })
 
   it('draws no Admin for someone who administers only their personal workspace', async () => {
@@ -149,15 +160,15 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     expect(adminItem()).toBeNull()
   })
 
-  it('shows a workspace admin of eng only People and roles and Workspaces you admin, and Admin opens the second', async () => {
+  it('shows a workspace admin of eng only Platform people and Workspaces, and Admin opens the second', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member')])
     await shell('admin', 'workspaces')
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/workspaces')
     expect(adminItem()!.querySelector('.sk-lkd, .sk-ic.sk-lk')).toBeNull()
-    // ADMIN-PEOPLE-ROLES (part of #2157): People and roles is theirs too,
-    // scoped to the workspaces they administer.
-    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin'])
+    // ADMIN-PEOPLE-ROLES (part of #2157): People and roles -- Platform people
+    // since the admin routes lane -- is theirs too, scoped to the workspaces they administer.
+    expect(panelRows()).toEqual(['Platform people', 'Workspaces'])
   })
 
   it('shows a platform admin the seven Admin pages, their workspaces\' group first and Runner sizes beside Pool limits (SIZES-UI)', async () => {
@@ -166,8 +177,9 @@ describe('who sees Admin (NAV-ADMIN-ROLE)', () => {
     await waitFor(() => expect(adminItem()).not.toBeNull())
     expect(adminItem()!.getAttribute('href')).toBe('/admin/limits')
     // Their workspaces' group first, then the platform's (S1b, CONFIG-PANEL-E).
-    // Platform secrets (SSC-UI, part of #2158) last of the platform's, as proposal E S1b draws it.
-    expect(panelRows()).toEqual(['People and roles', 'Workspaces you admin', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'])
+    // Platform secrets (SSC-UI, part of #2158) after Platform counts, as proposal E S1b draws it;
+    // Setup and Health (DAYONE-SETUP-UI-3, part of #2688) after it, so Admin still opens Pool limits.
+    expect(panelRows()).toEqual(['Platform people', 'Workspaces', 'Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'])
   })
 })
 
@@ -179,48 +191,105 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
     window.history.replaceState(null, '', path)
     render(<App />)
   }
-  const rows = () => [...document.querySelectorAll<HTMLElement>('.wya-row')]
+  // The group workspaces' rows; the caller's own personal workspace leads the list as its own row (HOME-ADMIN).
+  const rows = () => [...document.querySelectorAll<HTMLElement>('.wya-row:not(.is-personal)')]
 
-  it('lists eng, and its People and roles link selects eng and lands on Config › People and roles', async () => {
+  it('lists eng, and its name opens eng\'s own page, which selects eng', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'member')])
     await app('/admin/workspaces')
     await waitFor(() => expect(rows()).toHaveLength(1))
     const eng = rows()[0]!
     expect(eng.getAttribute('data-tenant')).toBe('eng')
     expect(eng.querySelector('.wya-name b')?.textContent).toBe('eng')
-    const links = [...eng.querySelectorAll<HTMLAnchorElement>('.wya-links a')]
-    expect(links.map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
-      // The Config tabs' own names and addresses (S10a, CONFIG-ADMIN-POLISH).
-      ['Workspace Settings', '/config/workspace'],
-      ['MCP servers', '/config/mcp-servers'],
-      ['People and roles', '/config/people'],
-      ['Secrets', '/config/secrets'],
-    ])
+    // The four Config links the row carried until the page was routed are gone (admin routes lane).
+    expect(eng.querySelectorAll('.wya-links a')).toHaveLength(0)
     const { chosenTenant } = await import('../fetch')
     expect(chosenTenant()).toBeNull()
-    fireEvent.click(links.find((a) => a.textContent === 'People and roles')!)
-    expect(chosenTenant(), 'the link did not select eng').toBe('eng')
-    await waitFor(() => expect(window.location.pathname).toBe('/config/people'))
+    fireEvent.click(eng.querySelector<HTMLAnchorElement>('.wya-name a')!)
+    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces/eng'))
+    // MUTATION: drop `chooseTenant` from WorkspacePageRoute -> the switcher keeps the default and this fails.
+    await waitFor(() => expect(chosenTenant(), 'the page did not select eng').toBe('eng'))
   })
 
-  it('lists for a platform admin the group workspaces they are in, marked as a platform admin\'s, not every one they reach', async () => {
+  it('moves the page to the workspace the switcher picks, on the same tab', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin'), group('ops', 'admin')])
+    await app('/admin/workspaces/eng?tab=settings')
+    const fetchMod = await import('../fetch')
+    await waitFor(() => expect(fetchMod.chosenTenant()).toBe('eng'))
+    // What the switcher does (Spine `choose`): it notes the switch, then selects.
+    act(() => {
+      fetchMod.noteTenantSwitch({ from: { id: 'eng', name: 'eng' }, to: { id: 'ops', name: 'ops' }, kept: false })
+      fetchMod.chooseTenant('ops')
+    })
+    // MUTATION: drop the follow-the-switch branch from WorkspacePageRoute -> it selects eng again and this fails.
+    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces/ops'))
+    expect(window.location.search).toBe('?tab=settings')
+    expect(fetchMod.chosenTenant()).toBe('ops')
+  })
+
+  it('opens an old Config › People and roles address on the selected workspace\'s People tab, named in the bar', async () => {
+    serve(ME(false), [PERSONAL, group('eng', 'admin')])
+    const fetchMod = await import('../fetch')
+    fetchMod.chooseTenant('eng')
+    await app('/config/people')
+    // MUTATION: leave the address unnamed (drop the tenant === null branch) -> the bar stays /admin/workspaces?tab=people and this fails.
+    await waitFor(() => expect(window.location.pathname).toBe('/admin/workspaces/eng'))
+    expect(window.location.search).toBe('')
+  })
+
+  // REVIEW (admin routes lane, part of #2688): someone whose only workspace is
+  // their personal one administers no group, so has no Admin pages; the gate
+  // refused the Workspace Settings Config used to give them.
+  it('opens a personal-only person\'s old Config › Workspace Settings address on their workspace\'s Settings tab, not a refusal', async () => {
+    serve(ME(false), [PERSONAL])
+    await app('/config/workspace')
+    await waitFor(() => expect(window.location.search).toBe('?tab=settings'))
+    expect(window.location.pathname.startsWith('/admin/workspaces')).toBe(true)
+    // MUTATION: drop `!ownWorkspacePage` from Spine's `adminRefused` -> the refusal is drawn in place of the page and this fails.
+    await waitFor(() => expect(document.querySelector('.wpg-body[role="tabpanel"]')?.getAttribute('aria-label')).toBe('Settings'))
+    expect(document.querySelector('[data-refused="admin"]'), 'the person was refused their own workspace').toBeNull()
+    expect(adminItem(), 'a personal-only person was drawn an Admin item').toBeNull()
+  })
+
+  it('opens a personal-only person\'s own workspace page by its name, and still refuses them another workspace\'s', async () => {
+    serve(ME(false), [PERSONAL])
+    await app('/admin/workspaces/u-ana?tab=settings')
+    await waitFor(() => expect(document.querySelector('.wpg-body[role="tabpanel"]')?.getAttribute('aria-label')).toBe('Settings'))
+    expect(document.querySelector('[data-refused="admin"]')).toBeNull()
+    cleanup()
+    serve(ME(false), [PERSONAL])
+    await app('/admin/workspaces/eng')
+    await waitFor(() => expect(document.querySelector('[data-refused="admin"]')).not.toBeNull())
+  })
+
+  it('reads a workspace page\'s tenant off its path: named, in hand, or none', async () => {
+    const { workspacePagePathTenant } = await import('../paths')
+    expect(workspacePagePathTenant('/admin/workspaces/u-ana?tab=settings')).toBe('u-ana')
+    expect(workspacePagePathTenant('/admin/workspaces/a%20b')).toBe('a b')
+    expect(workspacePagePathTenant('/admin/workspaces?tab=setup')).toBeNull()
+    expect(workspacePagePathTenant('/admin/workspaces')).toBeUndefined()
+    expect(workspacePagePathTenant('/admin/limits')).toBeUndefined()
+  })
+
+  it('lists for a platform admin every group workspace, the ones they reach too, each marked as a platform admin\'s', async () => {
     serve(ME(true), [
       PERSONAL,
       group('eng', 'admin', { role: { name: 'admin', source: 'platform_admin' } }),
       group('far', 'admin', { via: 'platform_admin', role: { name: 'admin', source: 'platform_admin' } }),
     ])
     await app('/admin/workspaces')
-    await waitFor(() => expect(rows()).toHaveLength(1))
-    expect(rows()[0]!.getAttribute('data-tenant')).toBe('eng')
+    // HOME-ADMIN (the place mock-up, picked 2026-11-03): every group workspace for a platform admin.
+    await waitFor(() => expect(rows()).toHaveLength(2))
+    expect(rows().map((r) => r.getAttribute('data-tenant')).sort()).toEqual(['eng', 'far'])
     // VQ-044: the API resolved this admin as a platform admin, whatever eng stores for them; never "stored role".
-    expect(rows()[0]!.querySelector('[data-via="platform_admin"]')?.textContent).toBe('admin as a platform admin')
+    for (const r of rows()) expect(r.querySelector('[data-via="platform_admin"]')?.textContent).toBe('admin as a platform admin')
     expect(document.querySelector('.wya-page .ur-sub')?.textContent).not.toContain('stored role')
   })
 
-  it('says plainly that you administer no group workspace', async () => {
-    serve(ME(true), [PERSONAL, group('eng', 'member')])
+  it('says plainly that a platform admin has no group workspace yet', async () => {
+    serve(ME(true), [PERSONAL])
     await app('/admin/workspaces')
-    await waitFor(() => expect(document.querySelector('.wya-page .c-emp h3')?.textContent).toContain('You administer no group workspace'))
+    await waitFor(() => expect(document.querySelector('.wya-page .c-emp h3')?.textContent).toContain('No group workspace yet'))
     expect(rows()).toHaveLength(0)
   })
 

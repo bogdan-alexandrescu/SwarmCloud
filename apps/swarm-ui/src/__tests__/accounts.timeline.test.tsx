@@ -402,7 +402,7 @@ describe('the Timeline', () => {
     first.unmount()
     window.history.replaceState(null, '', '/#capacity/accounts?view=timeline')
     await mount(b3(now))
-    expect(lane('eng:devops-team').textContent).toContain('latest hold deadline — not served by this broker')
+    expect(lane('eng:devops-team').textContent).toContain('latest hold deadline — not reported')
     // An account nobody holds draws no holds at all.
     expect(lane('eng:ai-eng-3').querySelector('.acct-tl-holds')).toBeNull()
   })
@@ -416,7 +416,7 @@ describe('the Timeline', () => {
     await mount(accounts)
     const lane = (id: string) => document.querySelector<HTMLElement>(`.acct-tl-lane[data-account="${id}"]`)!
     // No key: a broker older than the field.
-    expect(lane('eng:ai-eng-2').textContent).toContain('latest hold deadline — not served by this broker')
+    expect(lane('eng:ai-eng-2').textContent).toContain('latest hold deadline — not reported')
     // Null: the broker read no live hold on it.
     expect(lane('eng:devops-main').textContent).toContain('latest hold deadline — the broker read no live hold')
     expect(lane('eng:ai-eng-2').querySelector('.acct-tl-holdbar')).toBeNull()

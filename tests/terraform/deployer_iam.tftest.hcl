@@ -31,6 +31,13 @@ mock_provider "google" {
   source = "./mocks/google"
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id = "saga-agents-staging"
 
@@ -909,6 +916,167 @@ run "a_role_the_deployer_does_not_hold_cannot_be_switched" {
 }
 
 # ---------------------------------------------------------------------------
+# THE SPEECH MACHINE (owner's decided follow-up, 2026-11-05). The release
+# deployer makes, stops and deletes Voice it's one speech instance and its boot
+# disk through swarmSpeechDeployer, conditioned from the start to that
+# machine's names (deployer_conditions.tf, its last section).
+# ---------------------------------------------------------------------------
+
+run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  assert {
+    condition = (
+      length(google_project_iam_custom_role.deployer_speech_machine) == 1 &&
+      length(google_project_iam_member.deployer_speech_machine) == 1 &&
+      google_project_iam_member.deployer_speech_machine[0].role == "projects/saga-agents-staging/roles/swarmSpeechDeployer"
+    )
+    # The member is the deployer's email, unknown at plan under the mock;
+    # tests/unit/terraform/test_voice_speech.py reads it from the text.
+    error_message = "the release deployer holds swarmSpeechDeployer through exactly one project binding"
+  }
+
+  # The verbs voice_speech.tf's instance and its instance-level iam_member
+  # use, on an instance and a disk, and nothing else.
+  assert {
+    condition = toset(google_project_iam_custom_role.deployer_speech_machine[0].permissions) == toset([
+      "compute.disks.create",
+      "compute.disks.delete",
+      "compute.disks.get",
+      "compute.disks.setLabels",
+      "compute.instances.create",
+      "compute.instances.delete",
+      "compute.instances.get",
+      "compute.instances.getIamPolicy",
+      "compute.instances.setDeletionProtection",
+      "compute.instances.setIamPolicy",
+      "compute.instances.setLabels",
+      "compute.instances.setMachineType",
+      "compute.instances.setMetadata",
+      "compute.instances.setScheduling",
+      "compute.instances.setServiceAccount",
+      "compute.instances.setTags",
+      "compute.instances.start",
+      "compute.instances.stop",
+      "compute.instances.update",
+      "compute.instances.updateShieldedVmConfig",
+    ])
+    error_message = "swarmSpeechDeployer carries a permission the speech machine's Terraform does not use, or lacks one it does"
+  }
+
+  assert {
+    condition     = length(google_project_iam_custom_role.deployer_speech_machine[0].description) <= 300
+    error_message = "IAM refuses a custom role description over 300 characters, at apply (lesson 10)"
+  }
+
+  # An unconditioned binding of the role is refused: it would let CI create,
+  # delete and stop every VM and disk in the project, their GKE nodes included.
+  assert {
+    condition = (
+      length(google_project_iam_member.deployer_speech_machine[0].condition) == 1 &&
+      google_project_iam_member.deployer_speech_machine[0].condition[0].expression == local.deployer_speech_machine_condition &&
+      local.deployer_speech_machine_condition != ""
+    )
+    error_message = "the release deployer's swarmSpeechDeployer binding carries no condition"
+  }
+
+  # The expression, rendered, exactly: one extract() per kind, nothing else.
+  assert {
+    condition     = local.deployer_speech_machine_condition == "resource.name.extract(\"projects/saga-agents-staging/zones/us-central1-{zone}/instances/swarm-speech-\") != \"\" || resource.name.extract(\"projects/saga-agents-staging/zones/us-central1-{zone}/disks/swarm-speech-\") != \"\""
+    error_message = "the speech machine's condition is not the two extract() tests on its instance and disk names"
+  }
+
+  assert {
+    condition = alltrue([
+      for e in [local.deployer_speech_machine_condition] :
+      length(regexall("&&", e)) + length(regexall("\\|\\|", e)) + length(regexall("![^=]", e)) <= 12 &&
+      length(regexall("matches\\(", e)) == 0 && length(regexall("hasOnly\\(", e)) == 0
+    ])
+    error_message = "the speech machine's condition is over IAM's 12 logical operators or uses a function GCP's linter refuses"
+  }
+
+  # Replayed the way extract("A{zone}B") != "" reads: the name starts with A
+  # (every Compute name starts with projects/, so the first A is at 0), B
+  # follows, and the zone letter between them is not empty.
+  assert {
+    condition = alltrue([
+      for n in [
+        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-speech-a",
+        "projects/saga-agents-staging/zones/us-central1-a/disks/swarm-speech-a",
+        "projects/saga-agents-staging/zones/us-central1-c/instances/swarm-speech-c",
+        "projects/saga-agents-staging/zones/us-central1-c/disks/swarm-speech-c",
+        ] : anytrue([
+          for p in local.deployer_speech_machine_paths :
+          startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""
+      ])
+    ])
+    error_message = "the speech machine's instance or boot disk is refused"
+  }
+
+  assert {
+    condition = !anytrue([
+      for n in [
+        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-h2ug",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-xstq",
+        "projects/saga-agents-staging/zones/us-central1-a/disks/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/saga-agents-staging/regions/us-central1/addresses/swarm-speech",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-speechx",
+        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-ui-a",
+        "projects/saga-agents-staging/zones/us-central1-a/instanceGroups/swarm-speech-a",
+        "projects/saga-agents-staging/global/images/swarm-speech-a",
+        "projects/saga-agents-staging/zones/europe-west1-b/instances/swarm-speech-b",
+        "projects/another-project/zones/us-central1-a/instances/swarm-speech-a",
+        ] : anytrue([
+          for p in local.deployer_speech_machine_paths :
+          startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""
+      ])
+    ])
+    error_message = "the speech machine's condition admits a VM, disk or resource that is not the speech machine"
+  }
+
+  # No project-wide compute role that holds the same verbs rides beside it.
+  assert {
+    condition = length(setintersection(keys(google_project_iam_member.deployer_roles), [
+      "roles/compute.admin",
+      "roles/compute.instanceAdmin",
+      "roles/compute.instanceAdmin.v1",
+    ])) == 0
+    error_message = "a project-wide compute instance role on the deployer makes the speech machine's condition meaningless"
+  }
+}
+
+run "an_unconditioned_instance_admin_role_cannot_be_given_to_ci" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+    deployer_roles = [
+      "roles/artifactregistry.admin",
+      "roles/compute.instanceAdmin.v1",
+    ]
+  }
+
+  # Project-wide it reaches their GKE nodes; the speech machine's verbs come
+  # only through swarmSpeechDeployer's condition.
+  expect_failures = [var.deployer_roles]
+}
+
+# ---------------------------------------------------------------------------
 # PARITY: every project-level role terraform/infra grants must be grantable.
 #
 # The allowlist lives in bootstrap and the grants live in three places in
@@ -994,15 +1162,16 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
     # deploys (main, #24: the precondition on google_cloud_run_v2_job.verify).
     # The same fixture infra_guards.tftest.hcl uses.
     image_refs = {
-      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -1071,16 +1240,17 @@ run "the_github_hooks_firestore_role_is_grantable" {
     # deploys (main, #24: the precondition on google_cloud_run_v2_job.verify).
     # The same fixture infra_guards.tftest.hcl uses.
     image_refs = {
-      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "swarm-github-hooks"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-github-hooks"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -1089,6 +1259,81 @@ run "the_github_hooks_firestore_role_is_grantable" {
       for k, g in google_project_iam_member.github_hooks_firestore : contains(run.the_github_hooks_dedup_role_is_grantable_once_bootstrap_defines_it.deployer_grantable_project_roles, g.role)
     ])
     error_message = "terraform/infra/github_hooks.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+  }
+}
+
+# terraform/infra/voice_speech.tf (Voice it's speech machine, part of #2688)
+# grants swarm-speech its own log and metric writes on the project, only with
+# voice_speech.enabled and voice_it "on" -- so both are planned on here, and
+# the grants are held to exist, not passed over an empty count.
+run "the_speech_machines_project_roles_are_grantable" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # The swarm-voice and swarm-speech accounts terraform/bootstrap made, as a
+  # read returns them (voice.tftest.hcl's fixture).
+  override_data {
+    target          = data.google_service_account.voice
+    override_during = plan
+    values = {
+      email = "swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  override_data {
+    target          = data.google_service_account.speech
+    override_during = plan
+    values = {
+      email = "swarm-speech@saga-agents-staging.iam.gserviceaccount.com"
+      name  = "projects/saga-agents-staging/serviceAccounts/swarm-speech@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  variables {
+    environment = "dev"
+    tenants     = {}
+
+    voice_it = "on"
+    voice_speech = {
+      enabled = true
+      image   = "projects/deeplearning-platform-release/global/images/common-cu124-v20250101-debian-11-py310"
+    }
+
+    # terraform/infra refuses to plan without a digest for every image it
+    # deploys (main, #24: the precondition on google_cloud_run_v2_job.verify).
+    # The same fixture infra_guards.tftest.hcl uses, with swarm-voice's
+    # digest, which voice_it "on" needs (voice.tf's voice_it_has_an_image).
+    image_refs = {
+      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-voice"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }
+
+  assert {
+    condition = length(google_project_iam_member.speech_log_writer) == 1 && alltrue([
+      for k, g in google_project_iam_member.speech_log_writer : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, g.role)
+    ])
+    error_message = "terraform/infra/voice_speech.tf grants swarm-speech a log-write role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+  }
+
+  assert {
+    condition = length(google_project_iam_member.speech_metric_writer) == 1 && alltrue([
+      for k, g in google_project_iam_member.speech_metric_writer : contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, g.role)
+    ])
+    error_message = "terraform/infra/voice_speech.tf grants swarm-speech a metric-write role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
   }
 }
 
@@ -1153,8 +1398,9 @@ run "the_build_can_upload_its_source_and_list_its_bucket" {
   }
 
   variables {
-    enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    deployer_storage_buckets_exact = ["saga-agents-staging_cloudbuild"]
+    enable_github_wif              = true
+    github_repository              = "saga/agent-swarm-infra"
   }
 
   # The source tarball is an OBJECT in the Cloud Build bucket. An equality test

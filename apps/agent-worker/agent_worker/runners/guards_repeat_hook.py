@@ -11,6 +11,9 @@ pre-finish run, about a minute and a long transcript every time. The week's
 transcripts showed lanes running it again with nothing changed in between,
 re-reading the same result and paying for it on every later turn. Its answer
 depends only on the tree, so a second run on the same tree is told so.
+Since 2026-11-01 (#2981) the claude-code runner, the one that registers this
+hook, no longer tells the agent to run the script at all (its pre-publish
+gate runs it after the turn), so the warning says that too.
 
 WARN, NEVER BLOCK. The hook writes `hookSpecificOutput.additionalContext`
 and exits 0 with no permission decision: the command runs as asked. A rerun
@@ -44,8 +47,9 @@ _GIT_SECONDS = 10
 MESSAGE = (
     "scripts/changed-guards.sh already ran on this exact tree: no file has "
     "changed since its last run, so it will report the same result. It runs "
-    "anyway; next time read the earlier run's output instead, and run it again "
-    "only after you change a file."
+    "anyway; next time read the earlier run's output instead. You need not run "
+    "it at all: the worker's pre-publish gate runs it after your turn and hands "
+    "you back what fails."
 )
 
 

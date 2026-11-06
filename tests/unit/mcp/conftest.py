@@ -150,3 +150,18 @@ def _no_automatic_build_board(monkeypatch):
     from swarm_mcp import buildboard
 
     monkeypatch.setattr(buildboard, "AUTO", buildboard.AutoRefresh(start=lambda run: None))
+
+
+@pytest.fixture(autouse=True)
+def _no_discovery_reads(monkeypatch):
+    """`sc whoami` and `sc doctor` read the deployment's discovery document
+    for the version-skew line (DAYONE-PLUGIN-1B, plan §6.5). A unit test reads
+    no network, so the read fails the way an unreachable deployment's does --
+    the line's own "not checked" path -- and the tests about the skew serve
+    their own document through `discovery.CACHE`."""
+    from swarm_mcp import discovery
+
+    def offline(url, timeout):
+        raise discovery.DiscoveryUnreachable(f"cannot read {url} (unit tests read no network)")
+
+    monkeypatch.setattr(discovery, "http_get", offline)

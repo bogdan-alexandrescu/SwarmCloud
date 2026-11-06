@@ -144,6 +144,7 @@ def test_every_item_carries_a_topic_from_topics(db):
     _await_step(db, "t_review", by=ALICE, remind=[ALICE])
     _waiting(db, "task_h")
     _task(db, "task_q", result_summary={"questions": 1}, workflow_id="wf_q")
+    _workflow(db, "wf_q", "RUNNING")  # its questions ring while it still holds work
     _task(db, "task_ok")
     _task(db, "task_bad", state="FAILED")
     _task(db, "task_cancel", state="CANCELLED")

@@ -83,6 +83,8 @@ def test_the_workflows_were_found():
         "security.yml",
         "release.yml",
         "iam-refusal-probe.yml",
+        # Dispatch-only and main-only, like the probe (DAYONE-RELEASE-CI).
+        "publish-release.yml",
         # pull_request_target only; its shape is held in test_auto_merge_workflow.py.
         "auto-merge.yml",
     }

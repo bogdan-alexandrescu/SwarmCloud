@@ -128,10 +128,31 @@ function attempt(taskId: string, costUsd: number | null) {
   }
 }
 
+/** One task's digest as the route serves it: its `attemptsByTask` rows summed, a sum null until a row reported it. */
+function digest(taskId: string) {
+  const rows = attemptsByTask[taskId] as ReturnType<typeof attempt>[]
+  const costs = rows.map((r) => r.cost_usd).filter((c): c is number => c !== null)
+  return {
+    task_id: taskId, state: 'RUNNING', usage_read: 'ok',
+    usage: {
+      attempts: rows.length, attempts_with_cost: costs.length, attempts_with_tokens: 0, checkpoints: 0,
+      cost_usd: costs.length === 0 ? null : costs.reduce((a, b) => a + b, 0),
+      input_tokens: null, output_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null,
+    },
+  }
+}
+
 function serve(body: unknown, workflows: Record<string, unknown> = {}) {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url === `/v1/runs/${RUN_ID}`) return new Response(JSON.stringify({ run: body }), { status: 200, headers: JSON_HEADERS })
+    // The step cost reads every step's attempts at once through the digests
+    // route (#2688): it sums the same rows; a task not named is not in `digests`.
+    if (url.startsWith('/v1/tasks/digests?')) {
+      const ids = (new URL(url, 'http://ui.test').searchParams.get('ids') ?? '').split(',')
+      return new Response(JSON.stringify({ tenant_id: 'eng', digests: ids.filter((id) => id in attemptsByTask).map((id) => digest(id)) }),
+        { status: 200, headers: JSON_HEADERS })
+    }
     for (const [id, rows] of Object.entries(attemptsByTask)) {
       if (url.startsWith(`/v1/tasks/${id}/attempts`)) {
         return new Response(JSON.stringify({ attempts: rows }), { status: 200, headers: JSON_HEADERS })
@@ -182,7 +203,7 @@ describe('1: a running run draws a live Steps card under its status line', () =>
     for (const [step, id, mark, tab] of [['impl', 'task_impl', 'running', 'live'], ['docs', 'task_docs', 'parked', 'waiting'], ['wire', 'task_wire', 'queued', 'waiting']] as const) {
       const row = rowOf(card, step)
       expect(row, step).toBeDefined()
-      const open = within(row).getByRole('link', { name: /Open agent/ })
+      const open = within(row).getByRole('link', { name: /^Agent$/ })
       expect(open.getAttribute('href')).toBe(`/agents/${tab}/${id}`)
       expect(row.querySelector('[data-mark]')?.getAttribute('data-mark'), step).toBe(mark)
       expect(visible(row), step).toMatch(/attempt|no attempt yet/)
@@ -214,7 +235,7 @@ describe('1: a running run draws a live Steps card under its status line', () =>
     const card = await stepsCard(container)
     await waitFor(() => expect(rowOf(card, 'ci-fix')).toBeDefined(), WAIT)
     expect(visible(rowOf(card, 'ci-fix'))).toContain('fix round 1')
-    expect(within(rowOf(card, 'ci-fix')).getByRole('link', { name: /Open agent/ }).getAttribute('href')).toBe('/agents/live/task_fix1')
+    expect(within(rowOf(card, 'ci-fix')).getByRole('link', { name: /^Agent$/ }).getAttribute('href')).toBe('/agents/live/task_fix1')
   })
 
   it('says the workflow could not be read, rather than drawing no steps', async () => {
@@ -241,7 +262,7 @@ describe('2: after approval the plan\'s steps carry their live state and link', 
     const first = plan.querySelectorAll('.rn-step').item(0) as HTMLElement
     await waitFor(() => expect(first.querySelector('[data-mark]')?.getAttribute('data-mark')).toBe('running'), WAIT)
     expect(visible(first)).not.toContain('starts at once')
-    expect(within(first).getByRole('link', { name: /Open agent/ }).getAttribute('href')).toBe('/agents/live/task_impl')
+    expect(within(first).getByRole('link', { name: /^Agent$/ }).getAttribute('href')).toBe('/agents/live/task_impl')
     // A dependent step still says what it waits for, beside its state.
     const third = plan.querySelectorAll('.rn-step').item(2) as HTMLElement
     expect(visible(third)).toContain('after impl, docs')
@@ -269,7 +290,7 @@ describe('3: Progress interleaves the steps\' changes with the run\'s', () => {
     expect(at('docs parked')).toBeGreaterThan(at('impl started'))
     expect(at('docs parked')).toBe(rows.length - 1)
     // Not the Steps card again: no agent links in Progress.
-    expect(within(history).queryByRole('link', { name: /Open agent/ })).toBeNull()
+    expect(within(history).queryByRole('link', { name: /^Agent$/ })).toBeNull()
   })
 })
 

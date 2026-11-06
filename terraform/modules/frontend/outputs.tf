@@ -43,3 +43,13 @@ output "iap_audiences" {
   ])
 }
 
+
+output "api_backend_name" {
+  description = "The API backend's name: the one backend the release deployer may pass IAP on (terraform/bootstrap/github_app_setup.tf)."
+  value       = google_compute_backend_service.this.name
+}
+
+output "api_iap_audience" {
+  description = "The API backend's IAP audience, which the discovery document publishes."
+  value       = "/projects/${var.project_number}/global/backendServices/${google_compute_backend_service.this.generated_id}"
+}

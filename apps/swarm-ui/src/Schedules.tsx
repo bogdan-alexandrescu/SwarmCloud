@@ -22,7 +22,7 @@
  * run, a task, a workflow -- and is listed in Work like any other; this
  * screen lists the thing that makes it, and links each firing to its work.
  */
-import { Fragment, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useRef, useState, type ComponentProps, type MouseEvent, type ReactNode } from 'react'
 import { AllTenantsSchedules } from './AdminSchedules'
 import {
   deleteSchedule,
@@ -229,6 +229,36 @@ export function localTime(iso: string): string {
   return Number.isFinite(d.getTime()) ? `${d.toLocaleString()} (your time) · ${iso}` : iso
 }
 
+const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const
+const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
+const two = (n: number) => String(n).padStart(2, '0')
+
+/**
+ * ONE FORMAT FOR A NEXT FIRING, ON THE FORM AS ON THE SHEET (QA2 automate2-07):
+ * "Fri, Oct 30 09:11", the wall time the schedule's zone gives, read from the
+ * preview's own offset ISO (no zone arithmetic in the browser), with Z when
+ * the zone is UTC. The form drew "2026-10-30 09:11" beside "Fri, Oct 30, 09:11
+ * AM your time" and the sheet "Oct 30 09:11".
+ */
+export function firingWallTime(iso: string, timezone: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso)
+  if (m === null) return iso
+  const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).getUTCDay()
+  return `${WEEKDAY[day]}, ${MONTH[Number(m[2]) - 1] ?? m[2]} ${Number(m[3])} ${m[4]}:${m[5]}${timezone === 'UTC' ? 'Z' : ''}`
+}
+
+/**
+ * The same firing in the reader's own zone, in the same format, or null when
+ * it is the same wall time the schedule's zone gives: "your time" then only
+ * repeats the line it sits beside (QA2 automate2-07).
+ */
+export function firingReaderTime(iso: string): string | null {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return null
+  const yours = `${WEEKDAY[d.getDay()]}, ${MONTH[d.getMonth()]} ${d.getDate()} ${two(d.getHours())}:${two(d.getMinutes())}`
+  return yours === firingWallTime(iso, '') ? null : yours
+}
+
 /**
  * A spend, with what it does not cover (§4.3). `unreported` attempts are not
  * zero: the figure is a floor, and the mark says so.
@@ -304,17 +334,23 @@ export function runSpends(s: Schedule, dryRun: boolean): boolean {
   return !dryRun && s.policy.dry_run !== true && s.gate.run !== 'approve'
 }
 
-/** What a `:run` answer's firing came to, in words; nothing is assumed past the firing as written. */
-export function firedWords(f: ScheduleFiring, dryRun: boolean): string {
+/**
+ * What a `:run` answer's firing came to, as one sentence led by the
+ * schedule's name; nothing is assumed past the firing as written. ONE COLON,
+ * AND THE NAME SAID ONCE (QA2 automate2-09): the caller used to join
+ * `name: ` to a sentence that began `Fired: the firing ...`, which read
+ * "Nightly issue sweep: Fired: the firing created 2 work items."
+ */
+export function firedWords(name: string, f: ScheduleFiring): string {
   if (f.skip !== null) {
-    if (f.skip.code === 'DRY_RUN') return `${dryRun ? 'Dry run' : 'Run'} recorded: nothing was created. What it would create is in History.`
-    if (f.skip.code === 'NOTHING_STARTED') return 'Fired: nothing started. Why is on its row in History.'
-    return `Not run: the firing was skipped, ${f.skip.code}.`
+    if (f.skip.code === 'DRY_RUN') return `${name} recorded a dry run: nothing was created. What it would create is in History.`
+    if (f.skip.code === 'NOTHING_STARTED') return `${name} fired: nothing started. Why is on its row in History.`
+    return `${name} did not run: the firing was skipped, ${f.skip.code}.`
   }
-  if (f.state === 'awaiting_approval') return 'Fired: the firing waits for approval in Approvals, holding no capacity.'
-  if (f.state === 'queued') return 'Fired: the firing is queued behind the live one (the overlap policy).'
-  if (f.work.length > 0) return `Fired: the firing created ${pluralise(f.work.length, 'work item')}.`
-  return `Fired: the firing is ${f.state.replace(/_/g, ' ')}.`
+  if (f.state === 'awaiting_approval') return `${name} fired: it waits for approval in Approvals, holding no capacity.`
+  if (f.state === 'queued') return `${name} fired: it is queued behind the live one (the overlap policy).`
+  if (f.work.length > 0) return `${name} fired: it created ${pluralise(f.work.length, 'work item')}.`
+  return `${name} fired: it is ${f.state.replace(/_/g, ' ')}.`
 }
 
 /** The server's refusal of an action, in the words of the rule that refused it. */
@@ -348,6 +384,24 @@ type ActKind = 'run' | 'dry' | 'pause' | 'resume' | 'delete'
 const PAUSE_REASON_MAX = 500
 
 /**
+ * A PRESSED BUTTON KEEPS FOCUS WHILE ITS REQUEST IS IN FLIGHT (QA2
+ * automate2-16): `Button`'s `busy` disables it, and a browser drops the focus
+ * of a button that turns disabled to <body>, so for the busy window a keyboard
+ * reader was nowhere. Busy here is `aria-disabled` instead, drawn as `Button`
+ * draws busy (the spinner, the busy word, the disabled treatment): the button
+ * stays focusable, a press while busy does nothing, and `Said` takes focus
+ * when the answer arrives.
+ */
+export function HeldButton({ busy, onClick, children, ...rest }: Omit<ComponentProps<typeof Button>, 'busy'> & { busy: false | string }) {
+  const on = busy !== false
+  return (
+    <Button {...rest} className={on ? 'is-busy' : undefined} icon={on ? <span className="c-spin" aria-hidden /> : undefined} aria-disabled={on || undefined} onClick={on ? undefined : onClick}>
+      {on ? busy : children}
+    </Button>
+  )
+}
+
+/**
  * A SCHEDULE'S ACTIONS, at the head of its sheet: Run now, Dry run, Pause or
  * Resume, and Delete. No list row draws them (frame A1), and a phone draws
  * them as the desktop does, wrapped (frame A7b, the picked mock-up: the old
@@ -378,14 +432,24 @@ export function ScheduleActions({
   const roleGate = useRoleGate('member', 'run and change schedules')
   const disabled = roleGate ?? (s.state === 'disabled' ? 'An admin disabled this schedule.' : undefined)
 
+  const inFlight = useRef(false)
   const act = async (kind: ActKind) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    try {
+      await acting(kind)
+    } finally {
+      inFlight.current = false
+    }
+  }
+  const acting = async (kind: ActKind) => {
     setBusy(kind)
     setRefused(null)
     if (kind === 'run' || kind === 'dry') {
       const r = await runSchedule(s.schedule_id, { dry_run: kind === 'dry' })
       setBusy(null)
       setAsking(null)
-      if (r.status === 'ok') return onDone({ tone: 'ok', text: `${s.name}: ${firedWords(r.data.firing, kind === 'dry')}` })
+      if (r.status === 'ok') return onDone({ tone: 'ok', text: firedWords(s.name, r.data.firing) })
       if (r.status === 'error') return onDone({ tone: 'bad', text: `${s.name}: ${actRefusal(r.error)}` })
       return
     }
@@ -420,21 +484,21 @@ export function ScheduleActions({
   const resumable = s.state === 'paused' || s.state === 'auto_paused'
   return (
     <div className="c-acts sc-head-acts" data-testid="sc-acts-head">
-      <Button kind="primary" busy={busy === 'run' ? 'Running…' : false} disabledReason={disabled} onClick={runNow}>
+      <HeldButton kind="primary" busy={busy === 'run' ? 'Running…' : false} disabledReason={disabled} onClick={runNow}>
         Run now
-      </Button>
-      <Button busy={busy === 'dry' ? 'Running dry…' : false} disabledReason={disabled} onClick={() => void act('dry')}>
+      </HeldButton>
+      <HeldButton busy={busy === 'dry' ? 'Running dry…' : false} disabledReason={disabled} onClick={() => void act('dry')}>
         Dry run
-      </Button>
+      </HeldButton>
       {s.state === 'enabled' && (
         <Button disabled={roleGate !== null} onClick={() => { setReason(''); setAsking('pause') }}>
           Pause
         </Button>
       )}
       {resumable && (
-        <Button busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
+        <HeldButton busy={busy === 'resume' ? 'Resuming…' : false} disabled={roleGate !== null} onClick={() => void act('resume')}>
           Resume
-        </Button>
+        </HeldButton>
       )}
       <Button kind="danger" disabled={roleGate !== null} onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
         Delete…
@@ -448,9 +512,9 @@ export function ScheduleActions({
               <Button kind="ghost" onClick={() => setAsking(null)}>
                 Not now
               </Button>
-              <Button kind="primary" busy={busy === 'run' ? 'Running…' : false} onClick={() => void act('run')}>
+              <HeldButton kind="primary" busy={busy === 'run' ? 'Running…' : false} onClick={() => void act('run')}>
                 Run now
-              </Button>
+              </HeldButton>
             </>
           }
         >
@@ -470,9 +534,9 @@ export function ScheduleActions({
               <Button kind="ghost" onClick={() => setAsking(null)}>
                 Keep it running
               </Button>
-              <Button kind="primary" busy={busy === 'pause' ? 'Pausing…' : false} onClick={() => void act('pause')}>
+              <HeldButton kind="primary" busy={busy === 'pause' ? 'Pausing…' : false} onClick={() => void act('pause')}>
                 Pause
-              </Button>
+              </HeldButton>
             </>
           }
         >
@@ -488,19 +552,23 @@ export function ScheduleActions({
           title={`Delete ${s.name}?`}
           onClose={() => setAsking(null)}
           actions={
-            <>
+            // ONE ROW ON A DESK, STACKED FULL WIDTH ON A PHONE (QA2 automate2-21):
+            // the dialog's actions wrapped Keep it alone to the right and the
+            // confirming button with its reason to a second row at the left,
+            // both under the 44px target (automate-sheet.css).
+            <div className="sc-del-acts">
               <Button kind="ghost" onClick={() => setAsking(null)}>
                 Keep it
               </Button>
-              <Button
+              <HeldButton
                 kind="danger-filled"
                 busy={busy === 'delete' ? 'Deleting…' : false}
                 disabledReason={typed.trim() === s.name.trim() ? undefined : 'Type the schedule’s name exactly.'}
                 onClick={() => void act('delete')}
               >
                 Delete schedule
-              </Button>
-            </>
+              </HeldButton>
+            </div>
           }
         >
           <p>
@@ -522,9 +590,9 @@ export function ScheduleActions({
 
 /**
  * What the last action said: a status, or an alert when it was refused.
- * IT TAKES FOCUS WHEN IT ARRIVES (QA1 automate-15): the pressed button is
- * disabled while busy, or gone once the schedule is read again (Pause gives
- * way to Resume), and a browser drops a focused button that turns disabled to
+ * IT TAKES FOCUS WHEN IT ARRIVES (QA1 automate-15): the pressed button holds
+ * focus while busy (`HeldButton`), but may be gone once the schedule is read
+ * again (Pause gives way to Resume, a dialog closes), and focus would drop to
  * <body>, so a keyboard reader started again from the top of the page.
  */
 export function Said({ notice }: { notice: ActNotice | null }) {
@@ -1123,9 +1191,45 @@ interface Landing {
   notServed: boolean
 }
 
+/**
+ * A SCHEDULE'S NAME BY ITS ID, as the list last read it (QA2 automate2-15):
+ * the tab's title and an approval's "What asked for it" named a schedule by
+ * its id ("sch_a · Schedules") though the list under the open sheet had read
+ * its name. The list records every name it reads; `useScheduleName` gives the
+ * name for an id, or null until one is read, and the caller keeps the id then.
+ */
+const SCHEDULE_NAMES = new Map<string, string>()
+export const SCHEDULE_NAMES_EVENT = 'swarm:schedule-names'
+
+export function rememberScheduleNames(rows: readonly Pick<Schedule, 'schedule_id' | 'name'>[]): void {
+  let changed = false
+  for (const r of rows) {
+    if (r.name.trim() === '' || SCHEDULE_NAMES.get(r.schedule_id) === r.name) continue
+    SCHEDULE_NAMES.set(r.schedule_id, r.name)
+    changed = true
+  }
+  if (changed) globalThis.dispatchEvent?.(new Event(SCHEDULE_NAMES_EVENT))
+}
+
+export function scheduleNameOf(id: string): string | null {
+  return SCHEDULE_NAMES.get(id) ?? null
+}
+
+export function useScheduleName(id: string | null): string | null {
+  const [name, setName] = useState<string | null>(() => (id === null ? null : scheduleNameOf(id)))
+  useEffect(() => {
+    const again = () => setName(id === null ? null : scheduleNameOf(id))
+    again()
+    globalThis.addEventListener?.(SCHEDULE_NAMES_EVENT, again)
+    return () => globalThis.removeEventListener?.(SCHEDULE_NAMES_EVENT, again)
+  }, [id])
+  return name
+}
+
 function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: string) => void; scopeSwitch: ReactNode; open: string | null }) {
   const [filter, setFilter] = useState<Filter>('all')
   const rows = d.schedules
+  useEffect(() => rememberScheduleNames(rows), [rows])
   const repos = d.repos
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
   const roleGate = useRoleGate('member', 'create schedules')

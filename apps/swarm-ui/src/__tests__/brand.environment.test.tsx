@@ -111,8 +111,9 @@ describe('the environment pill follows the API when the API declared one', () =>
   it('says PROD, loudly, when a dev-built console is talking to a production API', async () => {
     const h = await shell(json(200, me('prod', true)), 'dev', 'swarm.example.com')
     // The panel's tenant is drawn from the same read, so once it is there the
-    // pill has had its chance to follow the API.
-    await screen.findAllByText('Bogdan', undefined, { timeout: 5000 })
+    // pill has had its chance to follow the API. The caller's own personal
+    // workspace is drawn by its one name, `Your workspace` (admin-shell-21).
+    await screen.findAllByText('Your workspace', undefined, { timeout: 5000 })
     expect(h.name()).toBe('PROD')
     expect(h.mini()).toBe('PROD')
     expect(h.bar(), 'a production API drew no bar').toBe(true)
@@ -124,7 +125,7 @@ describe('the environment pill follows the API when the API declared one', () =>
 
   it('says Dev, not Local, on a laptop whose requests go to a deployed dev API', async () => {
     const h = await shell(json(200, me('dev', true)), '', 'localhost')
-    await screen.findAllByText('Bogdan', undefined, { timeout: 5000 })
+    await screen.findAllByText('Your workspace', undefined, { timeout: 5000 })
     expect(h.name()).toBe('Dev')
     expect(h.mini()).toBe('Dev')
     expect(h.explain()).toMatch(/reported by the API/)
@@ -136,7 +137,7 @@ describe('the environment pill follows the API when the API declared one', () =>
 describe('and does not over-correct', () => {
   it('treats a DEFAULTED dev as no answer: an undeclared API keeps ENVIRONMENT UNKNOWN', async () => {
     const h = await shell(json(200, me('dev', false)), '', 'swarm.example.com')
-    await screen.findAllByText('Bogdan', undefined, { timeout: 5000 })
+    await screen.findAllByText('Your workspace', undefined, { timeout: 5000 })
     expect(h.name()).toBe('ENVIRONMENT UNKNOWN')
     expect(h.mini()).toBe('ENVIRONMENT UNKNOWN')
     expect(h.bar()).toBe(true)
@@ -149,7 +150,7 @@ describe('and does not over-correct', () => {
 
   it('falls back to the build when the API is older than the fields', async () => {
     const h = await shell(json(200, me(undefined, undefined)), 'staging', 'swarm.example.com')
-    await screen.findAllByText('Bogdan', undefined, { timeout: 5000 })
+    await screen.findAllByText('Your workspace', undefined, { timeout: 5000 })
     expect(h.name()).toBe('Staging')
     expect(h.explain()).toMatch(/declared by the build/)
     expect(h.bar()).toBe(false)

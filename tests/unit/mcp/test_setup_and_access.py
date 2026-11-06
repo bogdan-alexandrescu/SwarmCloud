@@ -652,7 +652,7 @@ _CREDENTIAL_INPUT = ("token", "pat", "secret", "password", "credential", "key", 
 def test_setup_md_sends_the_fallback_token_to_the_terminal_and_grants_no_tool_that_takes_one():
     text = _SETUP_MD.read_text()
     front, body = text.split("---", 2)[1:]
-    assert "uv run sc setup token --owner" in body
+    assert "`sc setup token --owner" in body
     assert "CLASSIC_PAT_BLOCKED" in body
     granted = sorted({line.strip()[2:].rsplit("__", 1)[1] for line in front.splitlines()
                       if line.strip().startswith("- mcp__")})

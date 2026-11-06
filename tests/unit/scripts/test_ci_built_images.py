@@ -52,6 +52,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -62,11 +63,17 @@ OWNER_REPO = "owner/swarm"
 REGISTRY = "us-central1-docker.pkg.dev/swarm-test-project/swarm-images"
 SHA = "c0ffee" * 6 + "abcd"
 OTHER_SHA = "0badc0de" * 5
+# The jobs that gate the release, as scripts/lib/common.sh names them
+# (CI_RELEASE_TEST_JOBS); test_the_release_is_gated_on_the_tests_the_build_no_longer_needs
+# holds the list to common.sh and to application.yml.
+TEST_JOBS = ("format / unit tests", "shellcheck", "kubernetes manifests")
 IMAGES = [
     "agent-runtime-base",
     "agent-runtime-base-nocodex",
     "agent-runtime-browser",
     "agent-runtime-indexer",
+    # agent-runtime-base by digest plus Lightpanda (LIGHTPANDA-BUILD-SCRIPTS).
+    "agent-runtime-lightpanda",
     "swarm-api",
     "swarm-scheduler",
     "swarm-quota-broker",
@@ -80,6 +87,12 @@ IMAGES = [
     # The public GitHub push receiver (GS-HOOKS, part of #1384),
     # apps/swarm-github-hooks/Dockerfile.
     "swarm-github-hooks",
+    # Voice it's GPT-Live session holder (VOICE-STATEFULSET, part of #2688),
+    # apps/swarm-voice/Dockerfile.
+    "swarm-voice",
+    # Voice it's own speech server (own speech L3, part of #2688),
+    # apps/swarm-speech/Dockerfile.
+    "swarm-speech",
     "workspace-apply",
 ]
 
@@ -233,7 +246,7 @@ if args[:1] == ["api"]:
                 continue
             status, conclusion = job.get("status", "completed"), job.get("conclusion", "success")
             if n <= job.get("pending_polls", 0):
-                status, conclusion = "in_progress", None
+                status, conclusion = job.get("pending_status", "in_progress"), None
             out.append({"name": job["name"], "status": status, "conclusion": conclusion, "html_url": job_url(run, i)})
         record(event="jobs", run=run["id"], states=[(j["status"], j["conclusion"]) for j in out])
         print(json.dumps({"total_count": len(out), "jobs": out}))
@@ -346,14 +359,19 @@ def ci_run(
     sha: str = SHA,
     job_conclusion: str = "success",
     job_pending: int = 0,
+    job_pending_status: str = "in_progress",
     job_appears_after: int = 0,
     run_pending: int = 0,
     record: dict | None = None,
     environment: str | None = None,
     expired: bool = False,
+    tests_conclusion: str | None = "success",
+    tests_pending: int = 0,
     **fields,
 ) -> dict:
-    """application.yml's run of `sha`, shaped from application.yml itself."""
+    """application.yml's run of `sha`, shaped from application.yml itself.
+    `tests_*` shape the jobs that gate the release (CI_RELEASE_TEST_JOBS):
+    their conclusion, None for not listed, and how many looks they run for."""
     build = application_build()
     env = environment or build["environment"]
     artifacts = []
@@ -370,12 +388,15 @@ def ci_run(
         "conclusion": "success" if job_conclusion == "success" else "failure",
         "pending_polls": run_pending,
         "jobs": [
-            {"name": "shellcheck"},
-            {"name": "format / unit tests"},
+            *(
+                [{"name": name, "conclusion": tests_conclusion, "pending_polls": tests_pending} for name in TEST_JOBS]
+                if tests_conclusion is not None else []
+            ),
             {
                 "name": build["name"],
                 "conclusion": job_conclusion,
                 "pending_polls": job_pending,
+                "pending_status": job_pending_status,
                 "appears_after": job_appears_after,
             },
         ],
@@ -619,11 +640,56 @@ def test_a_transient_api_failure_is_retried(tmp_path):
 
 def test_a_build_that_never_finishes_times_out_naming_the_job(tmp_path):
     world = {"runs": [ci_run(112, job_pending=10_000)]}
-    proc, out, _ = lookup(tmp_path, world, if_absent="build", CI_BUILD_WAIT="2")
+    proc, out, _ = lookup(tmp_path, world, if_absent="build", CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="2")
     assert proc.returncode == 1, proc.stderr[-3000:]
     assert not out.exists()
     summary = _last_line(proc)
     assert "timed out" in summary and "/actions/runs/112/job/" in summary, summary
+
+
+# ---------------------------------------------------------------------------
+# A build IN PROGRESS is waited for past CI_BUILD_WAIT, up to
+# CI_BUILD_WAIT_RUNNING (issue 3336: release 41992304818 gave up at 2700 s on
+# a build that started at 08:53Z and succeeded at 09:12Z). A queued one is not.
+# ---------------------------------------------------------------------------
+def test_a_build_in_progress_past_the_wait_is_still_waited_for(tmp_path):
+    # In progress for 60 looks, well past CI_BUILD_WAIT's one second.
+    world = {"runs": [ci_run(113, job_pending=60)]}
+    proc, out, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="90")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert json.loads(out.read_text()) == record_for()
+
+
+def test_a_queued_build_past_the_wait_times_out_at_the_wait(tmp_path):
+    world = {"runs": [ci_run(114, job_pending=10_000, job_pending_status="queued")]}
+    started = time.monotonic()
+    proc, out, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="90")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert time.monotonic() - started < 60, "a queued build was waited for past CI_BUILD_WAIT"
+    summary = _last_line(proc)
+    assert "timed out after 1s" in summary and "queued" in summary, summary
+
+
+def test_a_run_not_started_past_the_wait_times_out_at_the_wait(tmp_path):
+    world = {"runs": [ci_run(115, run_pending=10_000, pending_status="queued", job_appears_after=10_000)]}
+    proc, _, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="90")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert "timed out after 1s" in _last_line(proc)
+
+
+def test_a_build_in_progress_stops_at_the_hard_ceiling(tmp_path):
+    world = {"runs": [ci_run(116, job_pending=10_000)]}
+    proc, out, _ = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="3")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    summary = _last_line(proc)
+    assert "timed out after 3s" in summary and "in progress" in summary, summary
+
+
+def test_the_running_ceiling_defaults_to_ninety_minutes_and_is_checked():
+    text = (REPO / "scripts" / "lib" / "ci-built-images.sh").read_text()
+    assert 'WAIT_RUNNING="${CI_BUILD_WAIT_RUNNING:-5400}"' in text
+    assert re.search(r"for knob in [^;]*\bWAIT_RUNNING\b", text)
 
 
 def test_the_script_looks_for_what_application_yml_actually_builds_and_uploads():
@@ -931,9 +997,79 @@ def test_previous_takes_no_if_absent(tmp_path):
     assert proc.returncode == 1 and "--if-absent" in proc.stderr
 
 
+# ---------------------------------------------------------------------------
+# THE TESTS GATE THE RELEASE (owner pick on PR 3344, issue 3336: "decouple
+# build, gate the release"). `build images` no longer needs main's test jobs,
+# so its record is handed to a release only once they passed in its run.
+# ---------------------------------------------------------------------------
+def test_a_build_done_while_its_tests_run_is_waited_for_then_reused(tmp_path):
+    world = {"runs": [ci_run(120, tests_pending=4)]}
+    proc, out, events = lookup(tmp_path, world, CI_BUILD_WAIT="1", CI_BUILD_WAIT_RUNNING="90")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    downloads = [i for i, e in enumerate(events) if e["event"] == "download"]
+    last_running = max(
+        i for i, e in enumerate(events)
+        if e["event"] == "jobs" and any(s == "in_progress" for s, _ in e["states"])
+    )
+    assert downloads and min(downloads) > last_running, (
+        "the record was handed to the release while the tests that gate it were still running"
+    )
+    assert "waiting for the tests that gate the release" in proc.stderr, proc.stderr[-3000:]
+    assert json.loads(out.read_text()) == record_for()
+
+
+@pytest.mark.parametrize("if_absent", ["fail", "build"])
+@pytest.mark.parametrize("tests", ["failure", "cancelled"])
+def test_a_build_whose_tests_did_not_pass_is_never_released_nor_rebuilt(tmp_path, tests, if_absent):
+    """MUTATION: drop the gate, or read a cancelled test as "never built" (a
+    dispatched release would then build and ship the untested commit)."""
+    world = {"runs": [ci_run(121, tests_conclusion=tests)]}
+    proc, out, events = lookup(tmp_path, world, if_absent=if_absent)
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    assert not [e for e in events if e["event"] == "download"]
+    summary = _last_line(proc)
+    assert "tests that gate the release did not pass" in summary and tests in summary, summary
+    assert "/actions/runs/121/job/" in summary, f"the last line does not link the failed test: {summary!r}"
+
+
+def test_a_finished_run_without_the_gating_tests_is_refused(tmp_path):
+    world = {"runs": [ci_run(122, tests_conclusion=None)]}
+    proc, out, _ = lookup(tmp_path, world, if_absent="build")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    summary = _last_line(proc)
+    assert "run finished without format / unit tests, shellcheck, kubernetes manifests" in summary, summary
+
+
+def test_gating_tests_skipped_by_their_paths_pass_the_gate(tmp_path):
+    world = {"runs": [ci_run(123, tests_conclusion="skipped")]}
+    proc, out, _ = lookup(tmp_path, world)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert json.loads(out.read_text()) == record_for()
+
+
+def test_the_release_is_gated_on_the_tests_the_build_no_longer_needs():
+    """`build images` starts with its run, and the jobs it used to need --
+    python, shell, manifests -- are the ones CI_RELEASE_TEST_JOBS names, by
+    the names they run under. A rename would leave every release waiting for
+    a job that never comes, so it is held here."""
+    jobs = _workflow("application.yml")["jobs"]
+    build = next(job for job in jobs.values() if job.get("name") == "build images")
+    assert not build.get("needs"), f"`build images` waits for {build.get('needs')} again"
+    common = (REPO / "scripts" / "lib" / "common.sh").read_text()
+    listed = re.search(r"^CI_RELEASE_TEST_JOBS=\(\n(.*?)^\)", common, re.M | re.S)
+    assert listed, "common.sh no longer declares CI_RELEASE_TEST_JOBS=( ... )"
+    names = tuple(re.findall(r'^\s*"([^"]+)"', listed.group(1), re.M))
+    assert names == TEST_JOBS, names
+    assert {jobs[j].get("name", j) for j in ("python", "shell", "manifests")} == set(names)
+
+
 def test_main_builds_even_when_a_needed_check_was_skipped_by_its_paths():
-    """`build images` needs python, shell and manifests, and shell and manifests
-    are skipped on a commit that touches no shell or Kubernetes file. Without
+    """`build images` needed python, shell and manifests until the owner's pick
+    on PR 3344, and shell and manifests are skipped on a commit that touches no
+    shell or Kubernetes file. The guard stays so a need added back cannot
+    bring this back. Without
     `!cancelled() && !failure()` GitHub skips a job whose needs were skipped, so
     on 2026-10-14 main commit adc51c0f built nothing and every release after it
     refused it ("CI never built adc51c0f ... its 'build images' job was

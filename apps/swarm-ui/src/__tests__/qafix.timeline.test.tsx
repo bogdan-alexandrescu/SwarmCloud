@@ -79,7 +79,9 @@ beforeEach(() => {
   api.loadTasks.mockResolvedValue(ok({ tasks: [TASK] } as TaskPage))
   api.loadTask.mockImplementation(async (id: string) => failed(404, `no ${id}`))
   api.loadWorkflow.mockImplementation(async (id: string) => failed(404, `no ${id}`))
-  api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
+  // A ledger over the 24 h span: since QA2-FIX-05 (runs2-04) one over
+  // another window shows no figures.
+  api.loadOutcomes.mockResolvedValue(ok({ ...ledgerFixture(), tz: 'UTC', bucket: 'hour', since: new Date(Date.now() - 86_400_000).toISOString(), until: new Date().toISOString() }))
 })
 
 afterEach(() => {

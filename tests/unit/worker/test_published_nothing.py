@@ -60,7 +60,7 @@ def _run(db, worker_factory, monkeypatch, origin: Path, *, dispatch: dict,
     )
     db.doc("tasks/task_1")["metadata"] = {"dispatch": dict(dispatch)}
     worker, _config, _ = worker_factory(repository_url=f"file://{origin}")
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     return worker
 
 

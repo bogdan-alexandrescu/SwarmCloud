@@ -32,6 +32,7 @@ def credential_broker(ctx: AppContext = Depends(get_context)) -> ForgeCredential
         grant_mode=ctx.submissions._grant_mode,
         tokens=ctx.forge_tokens,
         now=ctx.now,
+        installations=ctx.forge_installations,
     )
 
 

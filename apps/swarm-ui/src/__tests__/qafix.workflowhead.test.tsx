@@ -25,6 +25,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
@@ -44,7 +45,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard } = await import('../Workflows')
 
 const T0 = Date.parse('2026-10-20T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
@@ -186,15 +187,25 @@ describe('QA-119: the workflow page head names its stages and its steps', () => 
   it('keeps the short forms in the list’s narrow cells', async () => {
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const row = await waitFor(() => {
-      const r = document.querySelector<HTMLElement>('.wfl-table tbody tr[data-workflow="wf_fail"]')
+      const r = document.querySelector<HTMLElement>('.wfg-table tbody tr[data-workflow="wf_fail"]')
       expect(r).toBeTruthy()
       return r!
     })
     // MUTATION: apply the head's long forms in `rollupLine` or `Shape` rather
     // than in `pageSummary` -- the list's cells grow `in 2 stages` and `of 6 steps`.
-    await waitFor(() => expect(row.querySelector('.wfl-done small')?.textContent).toBe('4/6'))
-    expect(row.querySelector('.wf-shape-text')?.textContent).toBe('5 → 1')
+    await waitFor(() => expect(row.querySelector('.wfg-bar small')?.textContent).toBe('4/6'))
     expect(row.textContent).not.toContain('stages')
+    // The shape moved from the row into the inspector's summary (the picked
+    // Work redesign, frame graph-workflows-rest), and keeps its short form there.
+    fireEvent.click(row.querySelector<HTMLElement>('[data-col="state"]')!)
+    const sum = await waitFor(() => {
+      const s = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')
+      expect(s).toBeTruthy()
+      return s!
+    })
+    const shape = sum.querySelector<HTMLElement>('.wf-shape-text')
+    expect(shape?.textContent).toBe('5 → 1')
+    expect(shape?.closest('dd')?.textContent).not.toContain('stages')
   })
 })
 
@@ -204,26 +215,75 @@ describe('QA-119: the workflow page head names its stages and its steps', () => 
 
 const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const node = (id: string) => document.querySelector<HTMLButtonElement>(`button.node[data-step="${id}"]`)
+// THE PAGE'S CARD IS StepCard, NOT StepInspector (owner's pick, 2026-11-05):
+// it has no `.wf-inspect-id` heading of its own (the page is in `page` mode
+// throughout this file), so which step is selected is read off the card's
+// own `aria-label` ("Step <id> of <workflowId>") instead.
+const pickedStepId = (): string | null => {
+  const m = /^Step (.+) of /.exec(panel()?.querySelector('section.sc-card')?.getAttribute('aria-label') ?? '')
+  return m?.[1] ?? null
+}
+
+/**
+ * THE CANVAS, RENDERED DIRECTLY (the Graph Work redesign, part of #2688): the
+ * page's Graph tab is the stage grid now, with no arrival pick and no
+ * `.wfp-fail-lead` banner (those are gone from the page on purpose). The
+ * arrival-pick behaviour QA-120 is about still lives in `WorkflowCard`, so
+ * these cases render it the way the old workflow page used to -- `page`,
+ * with the failed step already picked.
+ */
+function PageCard() {
+  const f = failed()
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  const [picked, setPicked] = useState<string | null>('test')
+  return (
+    <WorkflowCard
+      workflow={f.w}
+      taskById={f.tasks}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      picked={picked}
+      onPick={(_id, stepId) => setPicked((p) => (p === stepId ? null : stepId))}
+      page
+      reload={() => {}}
+    />
+  )
+}
+
+async function pageCard(): Promise<void> {
+  render(<PageCard />)
+  await waitFor(() => expect(pickedStepId()).toBe('test'))
+}
 
 describe('QA-120: the failed step’s card opens on the first click', () => {
   it('selects the failed step on arrival, and the first click on it opens and scrolls to its card; a second click closes it', async () => {
-    await page()
+    await pageCard()
     // Arrival: the failed step is the one selected, its card drawn, and the
     // page is not scrolled down to it (QA G3-28 holds).
-    await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('test'))
-    await waitFor(() => expect(node('test')).toBeTruthy())
+    await waitFor(() => expect(pickedStepId()).toBe('test'))
     expect(scroll, 'the arrival pick scrolled the page down to the card').not.toHaveBeenCalled()
+    // ITS STAGE STAYS FOLDED ON ARRIVAL (visual QA pass 2, overview-agents-63,
+    // #2694): the step is the band's pressed chip, not a node on the canvas.
+    const chip = await waitFor(() => {
+      const c = [...document.querySelectorAll<HTMLButtonElement>('.wf-band-chips button')].find((b) => b.textContent?.includes('test'))
+      expect(c?.getAttribute('aria-pressed')).toBe('true')
+      return c!
+    })
+    expect(node('test')).toBeNull()
 
     // The first click: the card stays, and is brought to the reader.
     act(() => {
-      fireEvent.click(node('test')!)
+      fireEvent.click(chip)
     })
     // MUTATION: make `pickStep` in `WorkflowCard` toggle unconditionally, as
     // it did -- the first click closes the arrival card and nothing scrolls.
     await waitFor(() => expect(scroll).toHaveBeenCalled())
     expect(panel(), 'the first click on the arrival pick closed its card').not.toBeNull()
-    expect(panel()!.querySelector('.wf-inspect-id')?.textContent).toBe('test')
+    expect(pickedStepId()).toBe('test')
     expect(panel()!.contains(document.activeElement), 'focus did not move into the card the click opened').toBe(true)
+    // The reader's pick opens its stage.
+    await waitFor(() => expect(node('test')).toBeTruthy())
 
     // The second click: closes it.
     act(() => {
@@ -234,38 +294,50 @@ describe('QA-120: the failed step’s card opens on the first click', () => {
     await waitFor(() => expect(panel(), 'the second click did not close the card').toBeNull())
   })
 
-  it('closes the arrival card at once from its own ×, which is not a node click', async () => {
-    await page()
-    await waitFor(() => expect(panel()).not.toBeNull())
-    // MUTATION: route `closePanel` through the open-first branch -- the ×
-    // would scroll to the card instead of closing it.
-    act(() => {
-      fireEvent.click(panel()!.querySelector<HTMLButtonElement>('.wf-inspect-close')!)
-    })
-    await waitFor(() => expect(panel()).toBeNull())
-  })
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): StepCard draws no `.wf-inspect-close` × of its own -- no
+  // head at all, per its own header comment. The panel's Escape handler
+  // (`.wf-panel`'s own `onKeyDown`, Workflows.tsx) still closes it; a visible
+  // × to click is gone, so there is nothing left of this test's point to
+  // assert on the page.
 
   it('prints the failed step’s whole error on the card, and keeps it whole in the node’s title', async () => {
-    await page()
+    await pageCard()
     const cause = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('.wf-inspect-cause')
-      // MUTATION: drop the `.wf-inspect-cause` block from `InspectorSlot` --
-      // the card says nothing of why the step failed until its attempts land.
+      // THE PAGE'S CARD'S ERROR IS `.sc-err`/`.sc-err-text` (StepCard.tsx),
+      // NOT `.wf-inspect-cause` (StepInspector's, drawn only off the page).
+      const el = panel()?.querySelector<HTMLElement>('.sc-err')
+      // MUTATION: drop the `.sc-err` block from `StepCard` -- the card says
+      // nothing of why the step failed until its attempts land.
       expect(el, 'the card does not state why the step failed').toBeTruthy()
       return el!
     })
-    // In full: every line, nothing cut.
-    expect(cause.querySelector('.wf-inspect-cause-text')?.textContent).toBe(ERROR)
+    // In full: every line, nothing cut (jsdom lays out no CSS line-clamp, so
+    // the whole text is in the DOM regardless of the `is-whole` class).
+    expect(cause.querySelector('.sc-err-text')?.textContent).toBe(ERROR)
     expect(cause.textContent).not.toContain('…')
-    // The node's one line keeps the whole text in its title.
+    // The node's one line keeps the whole text in its title -- on the canvas
+    // once a reader opens its stage (overview-agents-63).
+    const go = await waitFor(() => {
+      const b = document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')
+      expect(b, 'the failure line has no control to open its step').toBeTruthy()
+      return b!
+    })
+    act(() => {
+      fireEvent.click(go)
+    })
+    await waitFor(() => expect(node('test')).toBeTruthy())
     expect(node('test')!.parentElement!.querySelector<HTMLElement>('.node-note')?.getAttribute('title')).toBe(ERROR)
   })
 
   it('wraps the card’s error rather than cutting it', async () => {
-    const CSS = (await import('../styles/workflows.css?raw')).default
-    // MUTATION: drop the `.wf-inspect-cause-text` rule from workflows.css --
-    // the error is one unbroken line running out of the card.
-    const rule = CSS.match(/\.wf-inspect-cause-text\s*\{([^}]*)\}/)
+    // THE PAGE'S CARD'S ERROR IS LAID OUT BY `.sc-err-text` IN step-card.css
+    // (StepCard.tsx), NOT `.wf-inspect-cause-text` in workflows.css
+    // (StepInspector's, drawn only off the page).
+    const CSS = (await import('../styles/step-card.css?raw')).default
+    // MUTATION: drop the `.sc-err-text` rule from step-card.css -- the error
+    // is one unbroken line running out of the card.
+    const rule = CSS.match(/\.sc-err-text\s*\{([^}]*)\}/)
     expect(rule, 'no rule lays out the card’s error').not.toBeNull()
     expect(rule![1]).toMatch(/white-space:\s*pre-wrap/)
     expect(rule![1]).toMatch(/overflow-wrap:\s*anywhere/)
@@ -283,7 +355,7 @@ const lead = () => document.querySelector<HTMLElement>('.wfp-fail-lead')
 
 describe('QA-120 (run 2): the failed step’s reason leads the graph, above the fold', () => {
   it('names the failed step and prints its whole reason above the graph on arrival', async () => {
-    await page()
+    await pageCard()
     // MUTATION: drop the `.wfp-fail-lead` block from `WorkflowCard` and the
     // only reason on screen at 1440x900 is the node's cut line.
     const region = await waitFor(() => screen.getByRole('region', { name: 'Why step test failed' }))
@@ -298,7 +370,7 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
   })
 
   it('brings the step’s card to the reader from the lead, and the lead goes once it has', async () => {
-    await page()
+    await pageCard()
     const region = await waitFor(() => screen.getByRole('region', { name: 'Why step test failed' }))
     // MUTATION: drop the lead's button and nothing on screen points to the card below.
     act(() => {
@@ -315,7 +387,7 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
   })
 
   it('wraps the lead’s reason at every width and inks it as a failure', async () => {
-    await page()
+    await pageCard()
     const text = await waitFor(() => {
       const el = lead()?.querySelector<HTMLElement>('.wfp-fail-lead-text')
       expect(el).toBeTruthy()
@@ -332,13 +404,19 @@ describe('QA-120 (run 2): the failed step’s reason leads the graph, above the 
   })
 
   it('draws no lead once the reader picks another step, nor on a workflow with no failed pick', async () => {
-    await page()
+    await pageCard()
     await waitFor(() => expect(lead()).not.toBeNull())
+    // The stage opens to its toggle, as a reader opens it: the page's own
+    // pick leaves it folded (overview-agents-63).
+    act(() => {
+      fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-band-toggle')!)
+    })
+    await waitFor(() => expect(node('lint')).toBeTruthy())
     act(() => {
       fireEvent.click(node('lint')!)
     })
     // MUTATION: key the lead on `picked` failing alone and it stays over a succeeded step's card.
     await waitFor(() => expect(lead()).toBeNull())
-    expect(panel()!.querySelector('.wf-inspect-id')?.textContent).toBe('lint')
+    expect(pickedStepId()).toBe('lint')
   })
 })

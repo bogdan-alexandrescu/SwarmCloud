@@ -5,6 +5,13 @@
 
 mock_provider "google" {}
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id = "saga-agents-staging"
 
@@ -262,9 +269,10 @@ run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
   }
 
   variables {
-    enable_github_wif    = true
-    github_repository    = "saga/agent-swarm-infra"
-    frontend_iap_members = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
+    frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+    enable_github_wif     = true
+    github_repository     = "saga/agent-swarm-infra"
+    frontend_iap_members  = ["domain:example.com", "serviceAccount:verify@example.iam.gserviceaccount.com"]
   }
 
   assert {
@@ -606,10 +614,10 @@ run "the_deployer_is_bound_to_its_workflow_files_on_main" {
   # Compared whole, as a set: a file added, dropped or widened fails here.
   assert {
     condition = toset([for m in values(google_service_account_iam_member.deployer_wif) : m.member]) == toset([
-      for f in ["application.yml", "hotfix.yml", "iam-refusal-probe.yml", "release.yml", "security.yml", "terraform.yml"] :
+      for f in ["application.yml", "hotfix.yml", "iam-refusal-probe.yml", "publish-release.yml", "release.yml", "security.yml", "terraform.yml"] :
       "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/${f}@refs/heads/main"
     ])
-    error_message = "the deployer must be federated to exactly release.yml, hotfix.yml, application.yml, terraform.yml, security.yml and iam-refusal-probe.yml on refs/heads/main"
+    error_message = "the deployer must be federated to exactly release.yml, hotfix.yml, application.yml, terraform.yml, security.yml, iam-refusal-probe.yml and publish-release.yml on refs/heads/main"
   }
 
   # Said separately from the equality above, so that relaxing it cannot
@@ -653,8 +661,8 @@ run "the_deployer_pin_covers_every_allowed_ref" {
   }
 
   assert {
-    condition     = length(google_service_account_iam_member.deployer_wif) == 12
-    error_message = "one binding per (workflow file, allowed ref): six files on two refs"
+    condition     = length(google_service_account_iam_member.deployer_wif) == 14
+    error_message = "one binding per (workflow file, allowed ref): seven files on two refs"
   }
 
   assert {

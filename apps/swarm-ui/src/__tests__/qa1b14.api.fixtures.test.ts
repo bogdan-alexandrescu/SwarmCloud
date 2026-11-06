@@ -94,7 +94,9 @@ describe('Submit and the runs fixtures (QA1-FIX-12, -22, -24)', () => {
     const runs = ok(await api.loadRuns(), 'the list').runs
     expect(runs.map((r) => r.id)).toContain(made.id)
     const approved = ok(await api.approvePlan('run_4c1e09d2', 'digest'), 'the approval').run
-    expect(approved.workflow_id).toBe('wf_audit_01')
+    // Its own workflow, not wf_audit_01's five steps (QA2-FIX-07, runs2-24).
+    expect(approved.workflow_id).not.toBe('wf_audit_01')
+    expect(ok(await api.loadWorkflow(approved.workflow_id ?? ''), 'its workflow').workflow.steps.map((st) => st.step_id)).toEqual(['api', 'ui'])
     const again = ok(await api.loadRun('run_4c1e09d2'), 'the re-read').run
     // MUTATION: forget the decision -> the re-read is PLANNED again.
     expect(again.state).toBe('RUNNING')

@@ -38,6 +38,7 @@ import { loadRunnerSizes, loadRunnerSizeVersions, previewRunnerSizes, restoreRun
 import { usePhoneTables } from './capacityPoll'
 import { Banner, Button, Card, Dialog, ToneMark, TypedConfirm } from './components'
 import type { ApiError, Result } from './fetch'
+import { InfoTip } from './People'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { poolLabel } from './types'
@@ -74,6 +75,46 @@ type ShareField = (typeof SHARE_FIELDS)[number]
 type Draft = Record<string, Record<string, string>>
 
 const FIELD_WORDS: Record<ShareField, string> = { cpu_request: 'CPU request', cpu_limit: 'CPU limit', memory_gib: 'memory (GiB)' }
+
+/**
+ * A FIELD KEY IN WORDS, AND ITS UNIT (QA2-FIX-20, admin2-05 and admin2-13).
+ * History read `large memory_gib 16 → 32` and the Save line only "A size is
+ * outside its bound.": a wire key in prose, and no field named. A key reads
+ * as its words (`live_split.worker.memory_gib` is `worker memory`), and a
+ * figure carries the unit its last part names.
+ */
+const KEY_WORDS: Record<string, string> = {
+  cpu_request: 'CPU request', cpu_limit: 'CPU limit', memory_gib: 'memory', memory_per_cpu: 'memory per core', live_split: 'split',
+}
+
+export function fieldWords(field: string): string {
+  const parts = field.split('.')
+  const words = parts.filter((p, i) => !(p === 'live_split' && i < parts.length - 1)).map((p) => KEY_WORDS[p] ?? p.replace(/_/g, ' '))
+  return words.join(' ')
+}
+
+export function fieldUnit(field: string): string {
+  const last = field.split('.').pop() ?? field
+  if (last === 'memory_gib') return 'GiB'
+  if (last === 'cpu_request' || last === 'cpu_limit') return 'cores'
+  if (last === 'memory_per_cpu') return 'GiB per core'
+  return ''
+}
+
+/** A figure with its field's unit: `32 GiB`; a dash for no figure, never a 0. */
+function withUnit(value: number | null | undefined, field: string): string {
+  if (value === null || value === undefined) return '—'
+  const unit = fieldUnit(field)
+  return unit === '' ? fmt(value) : `${fmt(value)} ${unit}`
+}
+
+/** One History or banner line: `large memory 16 → 32 GiB`. */
+export function changeLine(cls: string, field: string, from: number | null | undefined, to: number | null | undefined): string {
+  const unit = fieldUnit(field)
+  const a = from === null || from === undefined ? '—' : fmt(from)
+  const c = to === null || to === undefined ? '—' : fmt(to)
+  return `${cls} ${fieldWords(field)} ${a} → ${c}${unit === '' ? '' : ` ${unit}`}`
+}
 
 function keysOf(size: RunnerSize): string[] {
   const out: string[] = [...SHARE_FIELDS]
@@ -216,7 +257,8 @@ export function clientRefusals(doc: RunnerSizesDoc, draft: Draft): RunnerSizeRef
       const a = typedOf(low, key)
       const c = typedOf(high, key)
       if (a !== null && c !== null && a > c) {
-        const bound = `${low} is no larger than ${high} in ${words}: ${fmt(a)} > ${fmt(c)}`
+        // admin2-13: the rule in the sentence, with the figures in their units.
+        const bound = `${low}’s ${words} (${withUnit(a, key)}) must be no larger than ${high}’s (${withUnit(c, key)}).`
         out.push(refusal(low, key, a, bound), refusal(high, key, c, bound))
       }
     }
@@ -298,7 +340,7 @@ function movedBetween(before: RunnerSizesDoc, after: RunnerSizesDoc): string[] {
     for (const key of keysOf(size)) {
       const a = keysOf(old).includes(key) ? valueAt(old, key) : null
       const c = valueAt(size, key)
-      if (a !== c) out.push(`${name} ${key} ${a === null ? '—' : fmt(a)} → ${fmt(c)}`)
+      if (a !== c) out.push(changeLine(name, key, a, c))
     }
   }
   return out
@@ -409,13 +451,19 @@ export function RunnerSizesScreen() {
   const [admits, setAdmits] = useState<Admits | null>(null)
   return (
     <div className="ur-page rs-page">
-      <PageHead title="Runner sizes">
+      {/* BGD's no-prose rule (2026-11-05): what the page edits, and when a save applies, behind the (i) beside the title. */}
+      <PageHead
+        title="Runner sizes"
+        info={
+          <InfoTip
+            about="Runner sizes"
+            tip="Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with."
+          />
+        }
+      >
         <UrRefresh reads={[sizes, versions]} ageOf={[sizes]} />
       </PageHead>
       <SizesLead state={sizes.state} admits={admits} />
-      <p className="ur-sub">
-        Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with.
-      </p>
       <UrRegion state={sizes.state} route="GET /v1/admin/runner-sizes" what="Runner sizes" plural onRetry={sizes.reload} lines={6}>
         {(doc) => (
           <RunnerSizesBody
@@ -518,7 +566,7 @@ function RunnerSizesBody({
   const why = !changed
     ? 'Change a size first.'
     : refusals.length > 0
-      ? 'A size is outside its bound.'
+      ? `${refusals[0]!.class} ${fieldWords(refusals[0]!.field)} is outside its bound.`
       : reason.trim() === ''
         ? 'Say why: every version records a reason.'
         : undefined
@@ -619,9 +667,11 @@ function RunnerSizesBody({
       </Card>
       <div className="rs-save">
         <div className="c-field">
-          <label className="c-lbl" htmlFor={reasonId}>Reason</label>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <label className="c-lbl" htmlFor={reasonId}>Reason</label>
+            <InfoTip about="Reason" tip="Every version records who, when and why." />
+          </span>
           <textarea id={reasonId} className="c-inp" rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
-          <p className="c-hint">Every version records who, when and why.</p>
         </div>
         <Button kind="primary" busy={busy ? 'Saving…' : false} disabledReason={why} onClick={save}>
           Save
@@ -691,10 +741,15 @@ function ClassCard({
           <SizeField key={f} label={`${name} ${FIELD_WORDS[f]}`} value={typed[f] ?? ''} bound={bounds[f]} onChange={(v) => onType(f, v)} refusals={refusals.filter((r) => r.field === f)} />
         ))}
       </div>
-      <p className="rs-disk">Workspace {fmt(size.disk_gib)} GiB, a slice of memory: shown, not edited.</p>
+      <p className="rs-disk">
+        Workspace {fmt(size.disk_gib)} GiB <InfoTip about="Workspace" tip="A slice of memory: shown, not edited." />
+      </p>
       {size.live_split && (
         <div className="rs-split">
-          <h3 className="rs-split-h">Live browser split</h3>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <h3 className="rs-split-h">Live browser split</h3>
+            <InfoTip about="Live browser split" tip="The two requests and memories add up to the class’s, so the live pod’s units and bill are the class’s." />
+          </span>
           {ROLES.map((role) => {
             const sReq = num(typed[`live_split.${role}.cpu_request`]) ?? size.live_split![role].cpu_request
             const minCpu = role === 'worker' ? b.live_split.worker_min_cpu : b.live_split.display_min_cpu
@@ -713,7 +768,6 @@ function ClassCard({
               </div>
             )
           })}
-          <p className="rs-note">The two requests and memories add up to the class’s, so the live pod’s units and bill are the class’s.</p>
         </div>
       )}
       {loose.length > 0 && (
@@ -737,7 +791,8 @@ function ClassCard({
       </p>
       {followers.fixed.length > 0 && (
         <p className="rs-fixed">
-          Cloud Run, does not follow: {followers.fixed.join(', ')}. Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.
+          These Cloud Run profiles do not follow this size: {followers.fixed.join(', ')}.{' '}
+          <InfoTip about="Cloud Run profiles" tip="Cloud Run fixes resources on the Job and bills its limit, so these keep the code default." />
         </p>
       )}
       <RecentUse name={name} use={use} size={size} ratio={ratio} />
@@ -808,6 +863,12 @@ function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecent
       <p className="rs-recent">
         Last 7 days, {use.attempts} attempt{use.attempts === 1 ? '' : 's'}: memory max peak {gib(use.memory_peak_gib_max)}, p95 {gib(use.memory_peak_gib_p95)}
         {use.oom_near_miss > 0 ? `, ${use.oom_near_miss} near-miss${use.oom_near_miss === 1 ? '' : 'es'}` : ''}.
+        {use.attempts < HINT_MIN_ATTEMPTS && (
+          <>
+            {' '}
+            <InfoTip about="the last 7 days’ readings" tip={`Fewer than ${HINT_MIN_ATTEMPTS} attempts in 7 days: the readings are shown without hints.`} />
+          </>
+        )}
       </p>
       <dl className="rs-readings">
         <div data-reading="cpu_mean_cores_median">
@@ -821,9 +882,7 @@ function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecent
           </div>
         ))}
       </dl>
-      {use.attempts < HINT_MIN_ATTEMPTS ? (
-        <p className="rs-hints-few">Fewer than {HINT_MIN_ATTEMPTS} attempts in 7 days: the readings are shown without hints.</p>
-      ) : (
+      {use.attempts >= HINT_MIN_ATTEMPTS && (
         <ul className="rs-hints">
           {hints.length === 0 ? <li className="rs-hint">No pattern in these readings asks for a change.</li> : hints.map((h, i) => <li key={i} className="rs-hint">{h}</li>)}
         </ul>
@@ -857,7 +916,9 @@ function unitsAfter(classes: RunnerSizesPreview['classes'] | null, cls: string):
  * a 4-unit class and nothing else, so a save that left the class unable to
  * start a single agent was silent. The row carries the mark Pools gives the
  * same pool (Capacity.tsx `classifyPool`, `too small`, in the parked tone: no
- * wait clears it) and says so in words. A pool at limit 0 is not too small:
+ * wait clears it), whose tooltip names the class's weight against the pool's
+ * ceiling (the line under it went with BGD's no-prose rule, 2026-11-05). A
+ * pool at limit 0 is not too small:
  * it admits nothing of any class, and Pools marks it `limit 0`.
  */
 export function PoolsTable({
@@ -871,6 +932,9 @@ export function PoolsTable({
   const phone = usePhoneTables()
   if (pools === null) return <p className="rs-note">Reading what the platform-wide pools admit…</p>
   if (pools.length === 0) return <p className="rs-note">No platform-wide pool has a ceiling set, so a resize moves no ceiling.</p>
+  // admin2-05: where every row is a class's own pool admitting that class, the
+  // Class column only repeats the Pool column's name, so it is not drawn.
+  const ownOnly = pools.every((p) => Object.keys(p.admits_before).every((cls) => p.pool === `resource:${cls}`))
   return (
     <div className={phone ? 'rs-pools-wrap is-stacked' : 'rs-pools-wrap'}>
       <table className="rs-pools" role="table" aria-label="What the pools admit">
@@ -878,7 +942,7 @@ export function PoolsTable({
           <tr role="row">
             <th role="columnheader" scope="col">Pool</th>
             <th role="columnheader" scope="col">Ceiling (units)</th>
-            <th role="columnheader" scope="col">Class</th>
+            {!ownOnly && <th role="columnheader" scope="col">Class</th>}
             <th role="columnheader" scope="col">Agents admitted, before → after</th>
           </tr>
         </thead>
@@ -886,9 +950,11 @@ export function PoolsTable({
           {pools.flatMap((p) =>
             Object.entries(p.admits_before).map(([cls, before]) => (
               <tr key={`${p.pool}/${cls}`} role="row" data-pool={p.pool} data-class={cls}>
-                <th role="rowheader" scope="row">{p.pool}</th>
+                <th role="rowheader" scope="row">
+                  <PoolName pool={p.pool} />
+                </th>
                 <td role="cell" data-label="Ceiling (units)">{p.hard_limit}</td>
-                <td role="cell" data-label="Class">{cls}</td>
+                {!ownOnly && <td role="cell" data-label="Class">{cls}</td>}
                 <td role="cell" data-label="Agents admitted, before → after">
                   <AdmitsCell pool={p} cls={cls} before={before} units={unitsAfter(classes, cls)} />
                 </td>
@@ -898,6 +964,22 @@ export function PoolsTable({
         </tbody>
       </table>
     </div>
+  )
+}
+
+/**
+ * THE POOL BY ITS NAME, THE KEY UNDER IT (QA2-FIX-20, admin2-05). The Pool
+ * column read `resource:standard`; Pool limits names the same row `standard`
+ * with the raw key as a mono line under it, the spelling a script takes.
+ */
+function PoolName({ pool }: { pool: string }) {
+  const name = poolLabel(pool)
+  if (name === pool) return <>{pool}</>
+  return (
+    <>
+      {name}
+      <span className="rs-pool-key">{pool}</span>
+    </>
   )
 }
 
@@ -913,7 +995,8 @@ function AdmitsCell({
   units: number | null
 }) {
   const after = pool.admits_after[cls]
-  const figures = `${before} → ${after ?? '—'}`
+  // ONE FIGURE UNTIL A SAVE WOULD MOVE IT (admin2-12), as the cards' `moved`.
+  const figures = moved(String(before), after === undefined ? '—' : String(after))
   // By the units where the preview names them, else by the figure it admits.
   const small = pool.hard_limit > 0 && (units !== null ? units > pool.hard_limit : after === 0)
   if (!small) return <>{figures}</>
@@ -922,10 +1005,10 @@ function AdmitsCell({
   return (
     <span className="rs-admits">
       {figures}{' '}
-      <ToneMark tone="is-paused" title={`This pool's ceiling is ${pool.hard_limit} units, below what one ${cls} agent weighs, so it admits no ${cls} agent. Raise the ceiling or shrink the class.`}>
+      {/* The weight and the ceiling are the mark's tooltip, not a line under it (BGD's no-prose rule, 2026-11-05). */}
+      <ToneMark tone="is-paused" title={`One ${cls} agent weighs ${weighs}, so this pool admits no ${cls} agent. Raise the ceiling or shrink the class.`}>
         too small
       </ToneMark>
-      <span className="rs-admits-none">{`One ${cls} agent weighs ${weighs}: none of it can start.`}</span>
     </span>
   )
 }
@@ -948,7 +1031,7 @@ function VersionList({ rows, current, doc, reload }: { rows: RunnerSizeVersion[]
             {Array.isArray(v.changed) && v.changed.length > 0 && (
               <ul className="rs-version-changes">
                 {v.changed.map((c, i) => (
-                  <li key={i}>{`${c.class} ${c.field} ${c.from ?? '—'} → ${c.to ?? '—'}`}</li>
+                  <li key={i}>{changeLine(c.class, c.field, c.from, c.to)}</li>
                 ))}
               </ul>
             )}
@@ -960,10 +1043,15 @@ function VersionList({ rows, current, doc, reload }: { rows: RunnerSizeVersion[]
           </li>
         ))}
       </ol>
+      {/* ITS OWN BOX, SO IT KEEPS THE BUTTON'S WIDTH (QA2-FIX-20, admin2-10): a
+          direct child of the card's flex column was stretched across the card,
+          the older option drawn as the page's main action. */}
       {current > 0 && (
-        <Button size="sm" onClick={() => setRestoring(0)}>
-          Restore the code defaults
-        </Button>
+        <div className="rs-restore-defaults">
+          <Button size="sm" onClick={() => setRestoring(0)}>
+            Restore the code defaults
+          </Button>
+        </div>
       )}
       {restoring !== null && <RestoreDialog version={restoring} doc={doc} onClose={() => setRestoring(null)} reload={reload} />}
     </>

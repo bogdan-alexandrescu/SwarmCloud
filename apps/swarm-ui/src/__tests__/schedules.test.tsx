@@ -345,7 +345,7 @@ describe("a schedule's page head", () => {
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(1), WAIT)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(posts(calls, '/v1/schedules/sch_a:run')[0]!.body).toEqual({ dry_run: true })
-    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Dry run recorded: nothing was created')
+    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Schedule sch_a recorded a dry run: nothing was created')
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(2), WAIT)
     await screen.findByTestId('sc-acts-head', undefined, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Pause' }))
@@ -512,7 +512,8 @@ describe('one schedule', () => {
     const cost = rows[0]!.querySelector('td[data-label="Cost"]')!
     expect(cost.querySelector('.ctl-mark.is-partial')).not.toBeNull()
     expect(visible(cost)).toContain('1 attempt unreported')
-    expect(visible(rows[1]!)).toContain('OVERLAP')
+    // In words since QA2-FIX-21 (automate2-03), never the raw code.
+    expect(visible(rows[1]!)).toContain('skipped: the last firing was still running')
   })
 
   it('says in plain words why a refused run was not started, under a firing that still succeeded', async () => {

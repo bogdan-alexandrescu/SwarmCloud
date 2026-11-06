@@ -137,17 +137,19 @@ def test_the_measured_case_raises_the_target_and_the_pool_it_caps(db):
     assert _pool_effective(db) == 40
 
 
-def test_a_target_above_the_hard_max_is_clamped_to_it_and_the_hard_max_never_moves(db):
+def test_a_target_above_the_ceiling_is_clamped_to_it_and_the_hard_max_never_moves(db):
+    """The ceiling is the lower of the hard max (50) and the pool's hard limit
+    (40): the owner's clamp-to-pool-ceiling pick, 2026-11-02."""
     _seed(db)
     result = _broker(db).reset_adaptive_target(
         PROVIDER, TENANT, target=10_000, reason="more", requested_by=ADMIN
     )
-    assert result.state.adaptive_target == 50
+    assert result.state.adaptive_target == 40
     assert result.state.configured_hard_max == 50
     assert db.docs[DOC]["configured_hard_max"] == 50
     (audit,) = _audits(db)
     assert audit["requested_target"] == 10_000
-    assert audit["to_target"] == 50
+    assert audit["to_target"] == 40
     assert audit["clamped"] is True
 
 
@@ -298,13 +300,17 @@ def test_the_audit_record_says_who_from_what_to_what_why_and_when(db):
         PROVIDER, TENANT, target=40, reason="lent two more accounts",
         requested_by=ADMIN, caller="swarm-api@example",
     )
-    (audit,) = _audits(db)
-    assert audit["action"] == "adaptive_target_reset"
+    # Two hours after the 429 the time-based climb (one per 300 s quiet,
+    # owner 2026-11-02) has its own record, and the reset reads the target
+    # it earned: 3 + 24.
+    (audit,) = [a for a in _audits(db) if a["action"] == "adaptive_target_reset"]
+    (climb,) = [a for a in _audits(db) if a["action"] == "adaptive_target_recovered"]
+    assert climb["from_target"] == 3 and climb["to_target"] == 27
     assert audit["provider"] == PROVIDER
     assert audit["tenant_id"] == TENANT
     assert audit["requested_by"] == ADMIN
     assert audit["caller"] == "swarm-api@example"
-    assert audit["from_target"] == 3
+    assert audit["from_target"] == 27
     assert audit["to_target"] == 40
     assert audit["configured_hard_max"] == 50
     assert audit["reason"] == "lent two more accounts"

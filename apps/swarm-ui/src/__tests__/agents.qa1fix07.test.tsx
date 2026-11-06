@@ -12,7 +12,7 @@ import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
-  loadTasksInState: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadTask: vi.fn(),
   loadAttempts: vi.fn(),
   loadResourceClasses: vi.fn(),
@@ -70,7 +70,7 @@ const ALL = [flaky, untitled, leased, queued, ready, plan, scan, report, lone, f
 
 function serve(tasks: Task[] = ALL) {
   api.loadTasks.mockResolvedValue(ok({ tasks, next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
-  api.loadTasksInState.mockResolvedValue(ok({ tasks: [], next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
+  api.loadTasksInStates.mockResolvedValue(ok({ tasks: [], next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
   api.loadAttempts.mockResolvedValue(ok({ attempts: [{ generation: 1 }] }))
   api.loadResourceClasses.mockReturnValue(new Promise(() => {}))
   // The workflow's full read never lands: the row must not need it.
@@ -139,7 +139,9 @@ describe('QA1-FIX-07: the Agents list', () => {
     // scheduler recorded no reason this one waits.` -- a count of two before
     // `this one`. The line is the group's as well as one row's.
     // MUTATION: put `this one waits` back in `NO_BLOCKER` -> the group line says `2 … this one`.
-    serve()
+    // Since pass 2 (overview-agents-56) a queued row is under `Not yet
+    // eligible`, apart from the ready one, so two queued rows share the line.
+    serve([...ALL, row(12, 'QUEUED')])
     render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(rowOf(flaky)).not.toBeNull())
     tab(/^Waiting/)

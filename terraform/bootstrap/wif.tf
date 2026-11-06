@@ -12,6 +12,16 @@
 locals {
   wif_enabled = var.enable_github_wif ? 1 : 0
 
+  # The deployer and its grants have their own switch: an install runs every
+  # pass after bootstrap pass 1 as the deployer and has no GitHub pool (N2,
+  # #2688). Only the pool, the provider and workloadIdentityUser stay behind
+  # enable_github_wif. Federating implies the deployer, so a root with
+  # enable_github_wif = true counts exactly what it counted before: the
+  # addresses keep their [0] index, and no `moved` block is needed because
+  # nothing moved.
+  deployer_on      = var.enable_github_wif || var.enable_deployer
+  deployer_enabled = local.deployer_on ? 1 : 0
+
   # The ref pin is enforced in TWO independent places, on purpose.
   #
   # The provider's attribute_condition below decides which tokens the pool will
@@ -53,7 +63,8 @@ locals {
   # infrastructure, infrastructure-iam, deploy; hotfix.yml images,
   # promote, infrastructure, deploy; application.yml
   # build; terraform.yml plan; security.yml images (scheduled);
-  # iam-refusal-probe.yml probe (owner-dispatched).
+  # iam-refusal-probe.yml probe (owner-dispatched); publish-release.yml
+  # publish (dispatched, behind the `release` environment's reviewer).
   deployer_workflows = [
     "release.yml",
     # The hotfix lane (owner decision 2026-10-08, observer proposal H;
@@ -65,6 +76,16 @@ locals {
     "terraform.yml",
     "security.yml",
     "iam-refusal-probe.yml",
+    # Publishing a SwarmCloud release (BGD 2026-10-30, "Move publishing into
+    # CI now"; DAYONE-RELEASE-CI, docs/runbooks/release.md). Dispatch-only and
+    # main-only: its `check` job refuses any other ref. Its `publish` job waits
+    # in the GitHub environment `release`, which has a required reviewer. In
+    # swarmcloud-prod this identity holds only the four roles
+    # `scripts/release-home.sh --ci-publisher` grants (artifactregistry.writer
+    # on the repository, storage.objectAdmin on the bucket, cloudkms
+    # signerVerifier and cloudkms viewer on the cosign key); nothing at
+    # project level.
+    "publish-release.yml",
   ]
 
   github_principals = var.enable_github_wif ? {
@@ -183,7 +204,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 }
 
 resource "google_service_account" "deployer" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   project      = var.project_id
   account_id   = "${var.name_prefix}-tf-deployer"
@@ -205,7 +226,7 @@ resource "google_service_account_iam_member" "deployer_wif" {
 # there is one switch on purpose: a conditioned binding beside an unconditioned
 # one for the same role grants exactly what the unconditioned one does.
 resource "google_project_iam_member" "deployer_roles" {
-  for_each = var.enable_github_wif ? setsubtract(toset(var.deployer_roles), var.deployer_scoped_roles) : toset([])
+  for_each = local.deployer_on ? setsubtract(toset(var.deployer_roles), var.deployer_scoped_roles) : toset([])
 
   project = var.project_id
   role    = each.value
@@ -222,7 +243,7 @@ resource "google_project_iam_member" "deployer_roles" {
 # (modules/secret_manager/main.tf explains why a key in terraform state is a key
 # in a file far more people can read than it was meant for).
 resource "google_project_iam_custom_role" "secret_provisioner" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   project = var.project_id
   role_id = "swarmSecretProvisioner"
@@ -237,7 +258,7 @@ resource "google_project_iam_custom_role" "secret_provisioner" {
 # Replaced by deployer_secrets_scoped (deployer_conditions.tf) once
 # "swarmSecretProvisioner" is in deployer_scoped_roles.
 resource "google_project_iam_member" "deployer_secrets" {
-  count = var.enable_github_wif && !contains(var.deployer_scoped_roles, "swarmSecretProvisioner") ? 1 : 0
+  count = local.deployer_on && !contains(var.deployer_scoped_roles, "swarmSecretProvisioner") ? 1 : 0
 
   project = var.project_id
   role    = "projects/${var.project_id}/roles/${google_project_iam_custom_role.secret_provisioner[0].role_id}"
@@ -304,7 +325,7 @@ locals {
 }
 
 resource "google_project_iam_member" "deployer_storage" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   project = var.project_id
   role    = "roles/storage.admin"
@@ -347,7 +368,7 @@ resource "google_project_iam_member" "deployer_storage" {
 # the evidence for both defects is the SDK source and IAM's documentation, not a
 # failed run.
 resource "google_project_iam_custom_role" "deployer_project_buckets" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   project = var.project_id
   role_id = "swarmDeployerProjectBuckets"
@@ -363,7 +384,7 @@ resource "google_project_iam_custom_role" "deployer_project_buckets" {
 }
 
 resource "google_project_iam_member" "deployer_project_buckets" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   project = var.project_id
   role    = "projects/${var.project_id}/roles/${google_project_iam_custom_role.deployer_project_buckets[0].role_id}"
@@ -454,12 +475,12 @@ resource "google_iap_web_backend_service_iam_member" "frontend_accessors" {
 # is why the project NUMBER is read rather than spelled: the id is
 # saga-agents-staging and the number is not derivable from it.
 data "google_project" "this" {
-  count      = local.wif_enabled
+  count      = local.deployer_enabled
   project_id = var.project_id
 }
 
 resource "google_service_account_iam_member" "deployer_acts_as_cloudbuild" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   service_account_id = "projects/${var.project_id}/serviceAccounts/${data.google_project.this[0].number}-compute@developer.gserviceaccount.com"
   role               = "roles/iam.serviceAccountUser"
@@ -469,7 +490,7 @@ resource "google_service_account_iam_member" "deployer_acts_as_cloudbuild" {
 # State access is granted on the bucket, not on the project, so the deployer
 # cannot reach another team's buckets in this shared project.
 resource "google_storage_bucket_iam_member" "deployer_state" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   bucket = google_storage_bucket.state.name
   role   = "roles/storage.objectAdmin"

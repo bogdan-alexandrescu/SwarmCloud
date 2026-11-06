@@ -219,7 +219,7 @@ class FakePool:
             "observed_at": NOW.isoformat(),
         }
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict[str, Any]:
         self.calls.append(("list_accounts", tenant_id))
         return {"accounts": []}
 

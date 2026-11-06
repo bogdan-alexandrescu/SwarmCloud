@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { loadCapacity, loadModelClasses, loadStats, type ModelClassOffer } from './api'
+import { fixtureSubmitWorkflow, loadCapacity, loadModelClasses, loadStats, USE_FIXTURES, type ModelClassOffer } from './api'
 import {
   AdditionalRepositoriesPicker,
   DispatchChoice,
@@ -32,6 +32,7 @@ import {
 import { workflowHref } from './agentlist'
 import { AWAIT_INPUT_PROFILE, DEFAULT_ARTIFACT, FIRST_AWAIT_DRAFT, MAX_FILES, awaitBlockOf, type AwaitDraft, type AwaitForm } from './awaitInput'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
+import { StepPluginRow, UNREAD_STEP_PLUGINS, stepPluginPlan, useStepPlugins, type StepPlugin, type StepPluginsContext } from './PluginSheet'
 import { ModelClassSelect, RunnerSelect, StepRunnerFacts, sentModelClass, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
@@ -57,6 +58,7 @@ import {
 } from './types'
 import './styles/submit.css'
 import { Button, buttonClass } from './components'
+import { ContractRefusalPanel, REFUSAL_KEYS, contractRefusal } from './ContractJev'
 import { QA_LINK_ADDRESS, addressToPath } from './paths'
 
 /**
@@ -143,7 +145,7 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
 interface StepProblem {
   key: number
   stepId: string
-  kind: 'name' | 'runner' | 'input' | 'required' | 'size'
+  kind: 'name' | 'runner' | 'input' | 'required' | 'size' | 'plugin'
   message: string
   missing?: string[]
 }
@@ -191,6 +193,11 @@ const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string):
 /** POST /v1/workflows. fetch.ts owns reads and has no write half yet.
  *  Exported for `submit.workflow.refusal.test.ts`, which hands it real responses. */
 export async function postWorkflow(body: unknown): Promise<Submission> {
+  // The fixture build answers the submit as the 201 does (QA2-FIX-07, runs2-02).
+  if (USE_FIXTURES) {
+    const made = await fixtureSubmitWorkflow(typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {})
+    return { kind: 'created', workflow: made.workflow, dispatch: made.dispatch }
+  }
   const tenant = chosenTenant()
   let res: Response
   try {
@@ -279,6 +286,9 @@ interface StepDraft {
    *  absent until one is edited, and read as `FIRST_AWAIT_DRAFT` then. Sent
    *  only on a step whose runner is `await-input`. */
   wait?: AwaitDraft
+  /** The plugin picked in the step's sheet (PluginSheet.tsx), by name; absent
+   *  or null is none. Sent as the step's `plugins` field (`stepPluginPlan`). */
+  plugin?: StepPlugin | null
 }
 
 /** A name nothing else in the plan is using. The profile is the stem because
@@ -342,6 +352,7 @@ function planOf(
   inputLimit: number | null,
   mcpNamesOf: (s: StepDraft) => string[],
   classes: Readonly<Record<string, ModelClassOffer>> | null = null,
+  plugins: StepPluginsContext | null = null,
 ): { problems: StepProblem[]; body: Array<Record<string, unknown>> } {
   const problems: StepProblem[] = []
   const body: Array<Record<string, unknown>> = []
@@ -428,6 +439,17 @@ function planOf(
       }
       awaitBlock = built.block
     }
+    // THE STEP'S PLUGIN rides in its own `plugins` field, refused here in
+    // `check_step`'s words before the API refuses it.
+    let pluginField: Record<string, unknown> | null = null
+    if (s.plugin != null) {
+      const planned = stepPluginPlan(s.plugin, { stepId: id, profile: s.profile }, plugins ?? UNREAD_STEP_PLUGINS)
+      if (!planned.ok) {
+        problems.push({ key: s.key, stepId: id, kind: 'plugin', message: planned.message })
+        continue
+      }
+      pluginField = planned.plugins
+    }
     const modelClass = sentModelClass(classes?.[s.profile], s.modelClass)
     body.push({
       step_id: id,
@@ -446,6 +468,7 @@ function planOf(
       // A CLASS NAME, never a model ID (invariant 10), and only one somebody
       // chose over the runner's default (#1435).
       ...(modelClass === undefined ? {} : { model_class: modelClass }),
+      ...(pluginField === null ? {} : { plugins: pluginField }),
     })
   }
   return { problems, body }
@@ -461,6 +484,9 @@ export function SubmitWorkflowScreen() {
     </Screen>
   )
 }
+
+/** The not-ready line under the send button, which the button names as its description. */
+const WF_WHY_ID = 'wf-send-why'
 
 /**
  * WHAT IS WRONG WITH A TYPED PRIORITY, BY CAUSE (QA G4-24), or null when the
@@ -574,6 +600,9 @@ function Form({ sources }: { sources: FormSources }) {
   const [sentKey, setSentKey] = useState<string | null>(null)
   // One providers read for the form, handed to every step's picker.
   const keys = useProviderKeys()
+  // The workspace's plugins and who is signed in, read once, on the first
+  // plugin sheet opened (PluginSheet.tsx), never before.
+  const stepPlugins = useStepPlugins()
   // Read from the payload, never a constant: an unread limit is not a limit of 50,
   // so `maxSteps` stays null and nothing here caps the form.
   const raw = sources.limits === null ? undefined : sources.limits.max_workflow_steps
@@ -703,7 +732,7 @@ function Form({ sources }: { sources: FormSources }) {
   // THE LIVE PLAN. What disables the button, titles the send panel and lists
   // the steps that stop it -- the same pass `send` makes, so what the panel
   // says and what the click does cannot disagree.
-  const plan = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
+  const plan = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes, stepPlugins)
   // THE REPOSITORY THE CLICK PUSHES TO (VQA V139), as on the task form: the
   // trimmed URL, named in the panel whenever the strategy pushes. A push with
   // nowhere to push is refused by the API at either scale
@@ -722,6 +751,19 @@ function Form({ sources }: { sources: FormSources }) {
   // button was disabled by `priorityOk` alone, so "Ready to send" headed a
   // summary whose priority row said "out of range".
   const blocked = plan.problems.length > 0 || noRepo || badRepo || mcpUnfilled.length > 0 || !priorityOk
+  // WHAT ELSE HOLDS THE BUTTON, IN WORDS, UNDER IT (visual QA pass 2,
+  // runs2-31): a priority of 500 disabled "Submit this workflow" with nothing
+  // under it, while the task form says "Not ready: …" and an unready step
+  // reads "1 step not ready: step-1". The steps and the MCP credentials keep
+  // their own lines above the button; these are the terms of `blocked` that
+  // had none, in its order, so the line and the button cannot disagree.
+  const why = [
+    ...(noRepo ? ['give a repository url to push to'] : []),
+    ...(badRepo ? ['give a repository url the API accepts'] : []),
+    ...(priorityWrong === null ? [] : [priorityWrong === 'not a whole number'
+      ? 'priority must be a whole number from \u2212100 to 100'
+      : 'priority must be \u2212100 to 100']),
+  ]
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
@@ -798,7 +840,7 @@ function Form({ sources }: { sources: FormSources }) {
     // button is disabled while a problem stands, so this branch should not be
     // reachable; it stays because "the form refuses before it posts" is the
     // invariant, and a disabled attribute is only one way of keeping it.
-    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes)
+    const { problems, body } = planOf(steps, byName, inputLimit, mcpNamesOf, sources.classes, stepPlugins)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
     // ONE POST PER CLICK (live QA SUB-1, the task form's defect): nothing is
     // sent while a request is in flight, or while the form still says exactly
@@ -895,7 +937,7 @@ function Form({ sources }: { sources: FormSources }) {
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
                     sizeProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'size')?.message ?? null}
                     refused={sub.kind === 'rejected' ? refusal?.byStep[s.id.trim()] ?? null : null}
-                    removable={steps.length > 1} mcp={mcpPicker}
+                    removable={steps.length > 1} mcp={mcpPicker} plugins={stepPlugins}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
                 ))}
                 {/* A FULL TILE AT THE END OF THE ROW (#118): its words say where
@@ -1062,10 +1104,12 @@ function Form({ sources }: { sources: FormSources }) {
           {justSent ? (
             <Button key="another" kind="primary" full onClick={another}>Submit another</Button>
           ) : (
-            <Button key="submit" kind="primary" full disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
+            <Button key="submit" kind="primary" full disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}
+              aria-describedby={why.length > 0 ? WF_WHY_ID : undefined}>
               {sub.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit this workflow' : `Submit as ${submitAs}`}
             </Button>
           )}
+          {!justSent && why.length > 0 && <p id={WF_WHY_ID} className="sb-note sbf-why">Not ready: {why.join('; ')}.</p>}
           {/* THE OUTCOME, BESIDE THE BUTTON (VQA V002, owner decision Q1 on
               #1038), as the task and issue forms draw theirs. */}
           <OutcomeSlot at={sub} shown={sub.kind !== 'idle' && sub.kind !== 'sending'}>
@@ -1089,7 +1133,7 @@ interface StepMcp {
   onLifetime: (name: string, seconds: number) => void
 }
 
-function StepCard({ step, steps, profiles, keys, classes, required, nameProblem, sizeProblem, refused, removable, mcp, onChange, onRemove }: {
+function StepCard({ step, steps, profiles, keys, classes, required, nameProblem, sizeProblem, refused, removable, mcp, plugins, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
@@ -1113,6 +1157,8 @@ function StepCard({ step, steps, profiles, keys, classes, required, nameProblem,
   refused: string | null
   removable: boolean
   mcp: StepMcp
+  /** The form's one read of the workspace's plugins (`useStepPlugins`). */
+  plugins: ReturnType<typeof useStepPlugins>
   onChange: (next: StepDraft) => void
   onRemove: () => void
 }) {
@@ -1169,6 +1215,13 @@ function StepCard({ step, steps, profiles, keys, classes, required, nameProblem,
         <ModelClassSelect id={`wfb-${step.key}-model-class`} label={`${step.id} model class`}
           offer={classes?.[step.profile]} value={step.modelClass ?? null}
           onPick={(modelClass) => onChange({ ...step, modelClass })} />
+      )}
+      {/* THE STEP'S PLUGIN (docs/design/agent-plugins.md): one chip, or
+          "+ Add a plugin", opening the guided sheet. Not on a step that waits
+          for a person: it runs no agent to load one. */}
+      {chosen && step.profile !== AWAIT_INPUT_PROFILE && (
+        <StepPluginRow stepId={step.id.trim() === '' ? 'this step' : step.id} profile={step.profile}
+          pick={step.plugin ?? null} ctx={plugins} onPick={(plugin) => onChange({ ...step, plugin })} />
       )}
 
       {/* A MISSING REQUIRED KEY IS SAID AT ITS FIELD, by `InputFields`, once
@@ -1431,7 +1484,11 @@ export function refusalOf(error: ApiError, sentIds: readonly string[]): {
   const detail = typeof error.detail === 'object' && error.detail !== null && !Array.isArray(error.detail)
     ? (error.detail as Record<string, unknown>) : null
   if (detail === null) return { byStep, facts }
+  // Jev's refusal of a work contract (jev-contract.md section 4.5) is drawn
+  // per requirement by its own panel; its keys are not said again as facts.
+  const jev = contractRefusal(detail) !== null
   for (const [key, value] of Object.entries(detail)) {
+    if (jev && REFUSAL_KEYS.has(key)) continue
     if (key === 'errors' && Array.isArray(value)) {
       for (const e of value) {
         if (typeof e !== 'object' || e === null) continue
@@ -1566,6 +1623,7 @@ function Outcome({ sub, refusal, onStep }: {
       {/* VERBATIM: the cycle the server named is the only part that says where to
           look, and "invalid DAG" would throw it away. */}
       <p>{unserved ? 'This deployment has no route that takes a workflow.' : error.message}</p>
+      {!uncertain && contractRefusal(error.detail) !== null && <ContractRefusalPanel refusal={contractRefusal(error.detail)!} />}
       {/* THE SERVER'S DETAIL, READ (VQA V051): the steps it names, each a way
           to that step's card, which is marked with the same sentence; then
           whatever it said about no step, as facts. It was printed as JSON. */}

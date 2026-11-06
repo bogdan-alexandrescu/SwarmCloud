@@ -1,0 +1,75 @@
+# Lane DAYONE-BOOTSTRAP-DEPLOYER (part of #2688): stage 3 creates the deployer
+# on a fresh install and lets the installer impersonate it (N2, N3).
+# terraform/bootstrap gives the deployer and its grants their own switch,
+# enable_deployer, which the engine renders true; only the GitHub pool, its
+# provider and workloadIdentityUser stay behind enable_github_wif, the CI
+# add-on's switch. So the deployer is core, not the CI add-on's, and is
+# restated here with replace: true. The impersonation binding the base
+# manifest names as NEW is now made by deployer_impersonation.tf, and
+# bootstrap pass 1 polls generateAccessToken until it has spread.
+version: 1
+entries:
+- id: switch.enable_deployer
+  kind: switch
+  scope: core
+  stage: 3
+  provider: engine
+  check: the bootstrap inputs the engine stored at gs://swarm-tfstate-$P/inputs/bootstrap.auto.tfvars.json hold "enable_deployer" true
+  apply: apps/swarm-install/swarm_install/tfvars.py bootstrap_inputs renders enable_deployer = true for both bootstrap passes
+  verify: gcloud iam service-accounts describe swarm-tf-deployer@$P.iam.gserviceaccount.com succeeds after bootstrap pass 1
+  explain: Every install pass after bootstrap pass 1 runs as the deployer (lessons 22, 23), and an install has no GitHub pool unless the CI add-on asks for one, so the deployer and its grants are switched on without enable_github_wif. enable_github_wif implies it, so SwarmCloud's own bootstrap counts every deployer address as before.
+  guards: null
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/variables.tf
+  - terraform/bootstrap/wif.tf
+  - apps/swarm-install/swarm_install/tfvars.py
+  step: bootstrap.pass-1
+  refs:
+    variable:
+    - bootstrap/enable_deployer
+- id: sa.swarm-tf-deployer
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud iam service-accounts describe swarm-tf-deployer@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/wif.tf resource "google_service_account" "deployer", count = enable_github_wif || enable_deployer (local.deployer_enabled); its grants share that count
+  verify: gcloud iam service-accounts keys list --iam-account=swarm-tf-deployer@$P.iam.gserviceaccount.com shows zero keys (no key is ever created for it)
+  explain: The identity every install pass after bootstrap pass 1 runs as, and the one GitHub Actions assumes via WIF when the CI add-on is on. No downloadable key ever exists for it.
+  guards: scripts/bootstrap.sh's BOOTSTRAP_DEPLOYER empty-state guard and the engine's bootstrap-1 empty-state refusal measure this account's existence to detect an already-bootstrapped project (lesson 7)
+  secret_entry: null
+  depends_on:
+  - api.iam
+  - api.iamcredentials
+  - switch.enable_deployer
+  evidence:
+  - terraform/bootstrap/wif.tf
+  step: bootstrap.pass-1
+  replace: true
+  refs:
+    terraform:
+    - bootstrap/google_service_account.deployer
+- id: iam-binding.installer-impersonates-deployer
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  check: gcloud iam service-accounts get-iam-policy swarm-tf-deployer@$P.iam.gserviceaccount.com --format=json | jq '.bindings[] | select(.role=="roles/iam.serviceAccountTokenCreator")' names user:<installer>
+  apply: terraform/bootstrap/deployer_impersonation.tf grants deployer_impersonator (rendered user:<installer> from outputs.installer) roles/iam.serviceAccountTokenCreator on the deployer alone; steps/bootstrap.py then polls generateAccessToken on the deployer until the grant has spread (up to 10 minutes) and records deployer_impersonable
+  verify: gcloud auth print-access-token --impersonate-service-account=swarm-tf-deployer@$P.iam.gserviceaccount.com succeeds
+  explain: 'D20: Terraform applies as the deployer SA, so a grant the deployer lacks fails during install rather than in production; an owner apply hides a missing actAs. The grant is on the deployer, never at the project, where it would let the installer become every service account; swarm uninstall removes exactly this binding.'
+  guards: H23
+  secret_entry: null
+  depends_on:
+  - sa.swarm-tf-deployer
+  evidence:
+  - terraform/bootstrap/deployer_impersonation.tf
+  - apps/swarm-install/swarm_install/steps/bootstrap.py
+  step: bootstrap.pass-1
+  replace: true
+  refs:
+    terraform:
+    - bootstrap/google_service_account_iam_member.deployer_impersonator

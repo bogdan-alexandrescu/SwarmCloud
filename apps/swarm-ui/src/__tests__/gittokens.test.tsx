@@ -72,7 +72,7 @@ const TOKENS = {
 const REPOS = { repositories: [repo(), repo({ repo_id: 'repo_1111111111111111', repo: 'example-web' })] }
 
 const PAT = 'Use a personal access token instead (advanced)'
-const TEAM = 'Team token for eng (admins only)'
+const TEAM = 'Workspace token for eng (admins only)'
 
 async function mount(view: string, go = vi.fn()) {
   vi.stubEnv('VITE_LIVE', '1')
@@ -316,6 +316,11 @@ describe('Git tokens are cards by scope (pick B)', () => {
 
     open(TEAM)
     const team = document.querySelector<HTMLElement>('.ur-reg-team')!
+    // config2-12 (QA2-FIX-19): the credential is the workspace's, so it is the
+    // 'Workspace token' on the button and on the card it opens.
+    // MUTATION: put back 'Team token for' and these fail.
+    expect(visible(team)).toContain('Workspace token for eng: from your terminal')
+    expect(document.body.textContent).not.toMatch(/Team token/)
     expect(within(team).queryByRole('radio')).toBeNull()
     fireEvent.click(within(team).getByRole('button', { name: 'Create the token entry' }))
     await waitFor(() => expect(team.querySelector('pre.ur-term')).not.toBeNull(), WAIT)

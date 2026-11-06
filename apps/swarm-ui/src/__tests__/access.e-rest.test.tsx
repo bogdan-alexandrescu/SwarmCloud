@@ -7,7 +7,7 @@
 //   * S2b: connected, the Connection tab draws "Where the App is installed"
 //     -- Owner / Install / Chosen, from the owners read Choose repositories
 //     makes -- with Request install for an organisation without the App and
-//     "Install on an organisation…" in the card's head;
+//     "Install on another organisation…" in the card's head (config2-22);
 //   * S2c: Choose repositories ends in a foot bar, "N changes saved · <age> ·
 //     Refresh", counted from the grants this visit wrote; Refresh left the
 //     card's head for it.
@@ -181,7 +181,7 @@ describe('S2b: connected, Where the App is installed is on the Connection tab', 
     expect(visible(row('example-labs'))).toContain('not installed')
     expect(visible(row('example-labs'))).toContain('nothing to list until it is')
     // The head offers installing on an organisation, at the App's install page.
-    const install = within(card).getByRole('link', { name: 'Install on an organisation…' })
+    const install = within(card).getByRole('link', { name: 'Install on another organisation…' })
     expect(install.getAttribute('href')).toBe(INSTALL_URL)
   })
 

@@ -68,6 +68,19 @@ class FakeClient:
     def access_token(self):
         return "fake"
 
+    def artifact_content(self, task_id, name, *, offset=0, limit_bytes=None):
+        """The API's artifact route, whole in one window: the manifest entry
+        named `name` on this task, served from `blobs` by its uri (#2834)."""
+        summary = self.task(task_id).get("result_summary") or {}
+        uri = next(a["uri"] for a in summary.get("artifacts") or [] if a.get("name") == name)
+        data = self.blobs[uri][offset:]
+        return {
+            "status": "ok", "content": data.decode("utf-8"), "offset": offset,
+            "returned_bytes": len(data), "total_bytes": offset + len(data),
+            "next_offset": None, "truncated": False, "redacted": False,
+            "redaction_count": 0, "invalid_utf8_bytes": 0,
+        }
+
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):

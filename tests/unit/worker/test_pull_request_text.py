@@ -54,6 +54,7 @@ from swarm_common.states import TaskState
 from worker_seeds import seed_attempt
 
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     assert_no_attribution_in,
     forge,
     local_urls,
@@ -94,7 +95,7 @@ def _publish(
     if step_id is not None:
         task["step_id"] = step_id
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     for value in register:
         worker.log.register_secret(value)
     assert worker._maybe_clone(task) is not None, "the clone did not land"

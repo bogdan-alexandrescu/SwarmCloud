@@ -22,20 +22,22 @@ run "one_identity_per_component_and_no_static_keys" {
     source = "../../terraform/modules/iam"
   }
 
+  # The accounts are terraform/bootstrap's since DAYONE-BOOT-2
+  # (platform_service_accounts.tf); this module reads them by id.
   assert {
     condition = alltrue([
-      for k, sa in google_service_account.platform : startswith(sa.account_id, "swarm-")
+      for k, sa in data.google_service_account.platform : startswith(sa.account_id, "swarm-")
     ])
     error_message = "every platform service account carries the swarm- prefix"
   }
 
   assert {
-    condition     = length(google_service_account.platform) == 4
+    condition     = length(data.google_service_account.platform) == 4
     error_message = "four components, four identities: api, scheduler, quota-broker, reconciler"
   }
 
   assert {
-    condition     = google_service_account.tick.account_id == "swarm-tick"
+    condition     = data.google_service_account.tick.account_id == "swarm-tick"
     error_message = "Cloud Scheduler and Pub/Sub push present their own identity, separate from every component"
   }
 
@@ -283,8 +285,10 @@ run "custom_role_ids_are_legal_and_named_in_this_project" {
     # swarmGithubHooksDedup (terraform/bootstrap/github_hooks_role.tf,
     # HOOKS-ROLE), and swarmQaJwtSigner (terraform/bootstrap/qa_identity.tf,
     # QI-IAM), and swarmFrontDoorReader (terraform/bootstrap/workspace_deployer.tf,
-    # FRONT-DOOR-READ).
-    condition = length(output.ids) == 24 && alltrue([
+    # FRONT-DOOR-READ), and swarmSpeechOperator
+    # (terraform/bootstrap/platform_service_accounts.tf, Voice it's speech
+    # machine).
+    condition = length(output.ids) == 25 && alltrue([
       for id in values(output.ids) : can(regex("^[a-zA-Z0-9_.]{3,64}$", id))
     ])
     error_message = "every custom role id must be 3 to 64 letters, digits, underscores or dots"

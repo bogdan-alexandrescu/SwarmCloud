@@ -355,18 +355,29 @@ function gutterTicks(ranked: readonly GutterTick[]): GutterTick[] {
  * ~260px) has to fit the 320px a 390 viewport leaves beside the 38px scale;
  * `Submitted vs finished · by created_at · max 338` did not.
  */
+/**
+ * A time basis in words (QA1-FIX-13, runs-submit-39; pass 2, runs2-17):
+ * `completed_at` is "finish time" and `created_at` "submit time"; a basis
+ * this console does not know keeps its field name, the route's own word.
+ */
+export function basisWords(field: string): string {
+  return field === 'completed_at' ? 'finish time' : field === 'created_at' ? 'submit time' : field
+}
+
 function laneLabels(d: LedgerDrawn, s: Scales, basis: Outcomes['basis']): string[] {
   const narrow = d.key === 'narrow'
   const max = (n: number) => (s.read === 0 ? '' : ` · max ${n}`)
   // THE BASIS IS THE ROUTE'S WORD (`basis.submitted`), never restated here:
   // the label is the one place the throughput lane says what it is placed by.
+  // In words (visual QA pass 2, runs2-17): `created_at` is "submit time".
+  const by = basisWords(basis.submitted)
   return [
     narrow ? 'Success rate' : 'Success rate · cancels excluded',
     narrow ? 'Decided · ok up, failed down' : 'Decided, by the bucket it ended · succeeded up, failed down',
     `Cancelled · own scale${max(s.cancelled)}`,
     narrow
-      ? `Throughput · by ${basis.submitted}${max(s.flow)}`
-      : `Throughput · submitted (by ${basis.submitted}, the only lane on submission time) vs finished${max(s.flow)}`,
+      ? `Throughput · by ${by}${max(s.flow)}`
+      : `Throughput · submitted (by ${by}, the only lane on submission time) vs finished${max(s.flow)}`,
   ]
 }
 
@@ -1082,7 +1093,9 @@ export function OutcomeLedger({ data, sealGraceS, picked, onPick, onZoom, figure
             </span>
             <span className="ol-li">
               <i className="ol-k is-sub" aria-hidden /> submitted <b className="ol-n">{shown.submitted}</b>{' '}
-              <span className="ol-q">by {data.basis.submitted}</span>
+              <span className="ol-q">
+                by <span title={data.basis.submitted}>{basisWords(data.basis.submitted)}</span>
+              </span>
             </span>
             <span className="ol-li">
               <i className="ol-k is-fin" aria-hidden /> finished <b className="ol-n">{shown.ended}</b>

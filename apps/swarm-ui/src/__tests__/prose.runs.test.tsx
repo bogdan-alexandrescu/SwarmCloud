@@ -1,3 +1,7 @@
+// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// page the nav reaches shows no more words or arrowed links than it did on the
+// change's base. This file keeps its own screen-level budget.
+//
 // THE RUN GROUP'S PROSE BUDGET, AND THE ENCODINGS THAT REPLACED THE PROSE.
 //
 // WHAT THIS FILE IS FOR. `honesty.prose.test.tsx` asks the qualitative
@@ -347,9 +351,22 @@ describe('the run group carries data, not prose', () => {
    * and that has its own ceiling: `detailShown`, every word outside a closed
    * disclosure (its summary kept). Measured on the fixture: 163 before the
    * change, 87 after.
+   *
+   * TZ-CLOCKTIME (part of #2391) left 405 as it was, measuring 378:
+   * `clockTime` prints the person's zone label and an older day by name, so
+   * the head's `since` and `submitted` instants grew from `09-23 10:00` to
+   * `Sep 23 10:00 UTC`, two words each, and the page still fits. A label,
+   * not prose.
+   *
+   * Agents' 30 became 55 with the Work redesign (#3146), which measured 51:
+   * the owner picked the Attention inbox's Needs-you row over the list (its
+   * chip names and empty line, 16 words), an owner filter and a "Most spent
+   * first" box in the tools row, and a cost and a pull-request column on
+   * every row, which say "not known" rather than print $0 or nothing. Labels
+   * and the honest absent mark the owner asked for, not prose growing back.
    */
   const CEILING: Record<string, number> = {
-    agents: 30,
+    agents: 55,
     detail: 405,
     detailShown: 110,
     timeline: 100,
@@ -599,11 +616,13 @@ describe('AgentDetail, with every help card closed', () => {
     expectAllCardsClosed()
     // WHAT MOVED: nothing. The detail sentence IS the fact -- which read failed
     // and how -- and §8.4 keeps it as the empty state's one sentence. What is
-    // asserted is the encoding beside it: the mark says `not read`, and no
-    // figure from the attempt read appears.
+    // asserted is the encoding beside it: the mark is the unread silhouette
+    // with its sentence as its name (an empty state's mark is an icon since
+    // automate2-17), and no figure from the attempt read appears.
     const mark = el.querySelector('.ctl-mark.is-unread')
     expect(mark, 'a failed read is not marked as unread').not.toBeNull()
-    expect(mark!.textContent).toMatch(/not read/i)
+    expect(mark!.getAttribute('role')).toBe('img')
+    expect(mark!.getAttribute('aria-label')).toMatch(/\S/)
     const peak = [...el.querySelectorAll('.dt-sc')].find((t) =>
       (t.textContent ?? '').toLowerCase().includes('peak memory'),
     )

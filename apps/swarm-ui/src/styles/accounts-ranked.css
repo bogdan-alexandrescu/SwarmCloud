@@ -46,12 +46,39 @@
 }
 .acct-verdict-wn { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
 .acct-verdict-wn > small { font-size: var(--t-meta); font-weight: 500; color: var(--text-dim); }
-.acct-verdict-wait > a { font-weight: 600; font-size: var(--t-meta); }
 .acct-verdict-wait > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
-.acct-verdict + .acct-rule { margin-top: -6px; }
-.acct-rule { margin: 0 0 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.acct-rule b { color: var(--text); font-weight: 600; }
+/* THE (i) (`Info`): a sentence that explained a label is its tooltip (no
+   prose on the surface, BGD 2026-11-05). A 16px ring in the dim ink after the
+   label; the ::before widens its target to 24px without moving the line. */
+.acct-i {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  flex: none;
+  align-self: center;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 16px;
+  max-height: 16px;
+  margin-left: 6px;
+  padding: 0;
+  border: 1px solid var(--ctl-bd);
+  border-radius: 50%;
+  background: none;
+  color: var(--text-dim);
+  font: italic 600 var(--t-micro)/var(--lh-flush) var(--font);
+  vertical-align: middle;
+  cursor: help;
+}
+.acct-i::before { content: ''; position: absolute; inset: -4px; }
+.acct-i:hover { color: var(--text); }
+.acct-i:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.acct-i ~ .c-tip { font-weight: 400; font-style: normal; white-space: normal; }
+/* The sign-in callout: one ticked name and its button per row. */
+.acct-callout-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 /* ---- one subscription twice ---- */
 .acct-dup {
@@ -69,7 +96,6 @@
 .acct-dup-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 
 /* ---- the ranked table ---- */
-.acct-rank-note { margin: 0; padding: 8px 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .acct-rank-wrap { padding: 0 0 4px; }
 .acct-rank {
   border-collapse: collapse;
@@ -112,8 +138,6 @@
 /* The muted clauses keep 4.5:1 on the selection (G5-17), as the list's did. */
 .acct-rank-row.is-chosen > td small,
 .acct-rank-row.is-chosen > td .acct-dash { color: var(--text-dim-on-selected); }
-.acct-rank-row.is-stale .acct-fig > .acct-win,
-.acct-card.is-stale .acct-card-w2 { opacity: 0.6; }
 
 /* Borderless: its `border: 0` is also inline (AccountsTable.tsx `OpenName`, why there). */
 .acct-rank-name {
@@ -166,7 +190,10 @@
   overflow-wrap: anywhere;
 }
 .acct-tag.is-dup { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 10%, transparent); }
-.acct-tag.is-unk { color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--line); }
+/* An aged reading (cap2-07) wears the unknown-window tag's look: a reading
+   that may have moved, said at full contrast instead of a dimmed row. */
+.acct-tag.is-unk,
+.acct-tag.is-aged { color: var(--text-dim); background: var(--surface-2); border: 1px dashed var(--line); }
 
 /* A window against its floor: the shared track, and the floor as a tick at
    100% minus the floor. At 560px and below styles.css's phone block hides
@@ -237,6 +264,9 @@
 .acct-split.is-ranked > .acct-pane { border-top: 1px solid var(--line); }
 
 @media (max-width: 560px) {
+  /* An (i) near the right edge would open its tooltip off the screen: on a
+     phone it spans the viewport under the line it explains. */
+  .acct-i ~ .c-tip { position: fixed; top: auto; left: 16px; right: 16px; width: auto; max-width: none; margin-top: 22px; }
   .acct-verdict { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 14px; }
   .acct-verdict-big { font-size: calc(var(--t-figure) * 1.6); }
   .acct-verdict-head { font-size: var(--t-body); line-height: var(--lh-body); }
@@ -252,7 +282,6 @@
     gap: 4px 8px;
   }
   .acct-dup { padding: 10px 12px; }
-  .acct-dup-why { display: none; }
   /* THE FLOOR STAYS ON THE PHONE (mock-up A, P1-P2; rendered 2026-10-25).
      styles.css's phone block hides every `.ctl-util-track` because in a
      `.ctl-util` row the bar only pictures the number beside it. This one does

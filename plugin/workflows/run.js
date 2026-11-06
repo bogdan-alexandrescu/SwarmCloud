@@ -1,9 +1,9 @@
 export const meta = {
   name: 'swarmcloud',
   description: 'SwarmCloud: run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as one [SwarmCloud] row per step, by the console\'s stage, plus at most two setup rows',
-  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the args swarm_workflow_launch returned ({spec, spec_handle}: the spec and the file it was written to, which is what is submitted), the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or list every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} for the {attach: "<workflow_id>"} call that attaches each, one run per workflow. Or show SwarmCloud SINGLE tasks -- dispatched with swarm_dispatch, in no workflow -- as live rows: pass {attach_tasks: [{task_id, title, console}]} for one [SwarmCloud] row per task, titled from its label. The sc plugin launches each run from a copy of this script titled after its workflow or its tasks (swarm_workflow_launch, swarm_dispatch\'s rows). When the result carries owner_questions -- the questions a step\'s or task\'s agent asked the owner, still unanswered -- put EACH one to the person in that turn, before any other report, with AskUserQuestion: the question, its options as given, the recommended one marked; then record each pick with swarm_task_answer {task_id, question_index: its index, choice}. Never pick an answer yourself, and never leave them only in the result or a log line.',
+  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the args swarm_workflow_launch returned, as given ({spec_handle, details, rows}: the file the spec was written to, which is what is read and submitted -- never the spec itself), the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or list every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} for the {attach: "<workflow_id>"} call that attaches each, one run per workflow. Or show SwarmCloud SINGLE tasks -- dispatched with swarm_dispatch, in no workflow -- as live rows: pass {attach_tasks: [{task_id, title, console}]} for one [SwarmCloud] row per task, titled from its label. The sc plugin launches each run from a copy of this script titled after its workflow or its tasks (swarm_workflow_launch, swarm_dispatch\'s rows). When the result carries owner_questions -- the questions a step\'s or task\'s agent asked the owner, still unanswered -- put EACH one to the person in that turn, before any other report, with AskUserQuestion: the question, its options as given, the recommended one marked; then record each pick with swarm_task_answer {task_id, question_index: its index, choice}. Never pick an answer yourself, and never leave them only in the result or a log line.',
   phases: [
-    { title: 'Submit', detail: 'given a path, one sc:workflow agent reads the file with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
+    { title: 'Submit', detail: 'given a path or a launch\'s spec_handle, one sc:spec agent, which has no submit tool, reads its outline with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
     { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent lists the running workflows and your running single tasks with swarm_workflows and the run returns the attach call for each workflow and one for the tasks; nothing is submitted' },
     { title: 'Tasks', detail: 'given {attach_tasks: [...]}, one sc:task row per single task -- a task in no workflow -- titled from its label, follows it until it finishes; nothing is submitted' },
     { title: 'Summary', detail: 'given rows: "summary" (the sc plugin\'s default), ONE sc:summary row follows the whole workflow or task batch instead of a row each, writing a count line only when the counts change and naming each step that fails or waits for a person' },
@@ -41,8 +41,8 @@ export const meta = {
 //
 // THE RUN IS NAMED AFTER THE WORKFLOW. `meta` is a literal and a running
 // script cannot rename its run, so the plugin launches each run from a copy
-// of this script whose meta.name is `SC · <name> · N steps` (`SC · <label> ·
-// task` for single tasks) and whose meta.description starts with its DETAILS
+// of this script whose meta.name is `SC ∴ <name> · N steps` (`SC · <label>`
+// for a single task) and whose meta.description starts with its DETAILS
 // -- `Workspace: <workspace> (<tenant>) · Started by: ... · Profiles: ... ·
 // LLM: ... · Browser tool: ... · Session: ...` (SC-WS-DESC, then
 // SC-DESC-DETAILS, owner 2026-10-14) -- never with the workspace in the name
@@ -140,11 +140,13 @@ export const meta = {
 // one evening). A script cannot call a tool, so whatever reaches
 // swarm_workflow goes through an agent. Given the spec with its file
 // ({spec, spec_path}), the agent is handed the PATH and swarm_workflow reads
-// the bytes itself; given the spec with the handle swarm_workflow_launch wrote
-// ({spec, spec_handle: {path, digest}}, which every launch's args carry,
-// SC-LAUNCH-SPEC #2034: a 23 KB brief holding template-literal text came back
-// altered from the relay on 2026-10-23), the agent is handed the handle and
-// swarm_workflow reads the bytes the launch embedded; given a path alone, the
+// the bytes itself; given the handle swarm_workflow_launch wrote
+// ({spec_handle: {path, digest}}, which every launch's args carry, and only
+// it: SC-LAUNCH-SPEC #2034, a 23 KB brief holding template-literal text came
+// back altered from the relay on 2026-10-23; LAUNCH-LARGE-SPEC #2875, a 90 KB
+// spec made the launch's reply too long to read), one row reads its outline
+// with swarm_workflow_spec, the bridge checking the digest, and the submit
+// agent is handed the handle, so swarm_workflow reads the launch's bytes; given a path alone, the
 // bridge reads the file (swarm_workflow_spec) and hands back a `spec_ref` it
 // holds, which the submit row passes on. Only a spec given as an object or
 // JSON text with no file behind it is still carried inline.
@@ -174,8 +176,8 @@ export const meta = {
 // NOT_SUBMITTED.
 //
 // A SPEC FILE IS READ BY THE BRIDGE. A script has no filesystem, so given a
-// path (anything that is not a spec object or JSON text) one sc:workflow row
-// calls swarm_workflow_spec, which reads and checks the file in the session's
+// path (anything that is not a spec object or JSON text) one sc:spec row --
+// an agent whose only SwarmCloud tool is swarm_workflow_spec -- calls it, which reads and checks the file in the session's
 // checkout and returns its digest, a `spec_ref` and the spec's OUTLINE -- its
 // label, strategy and merge choice and each step's id, depends_on and stage,
 // with the runner profile, verdict gate and input_from `appendable` reads. The row relays those, never
@@ -632,13 +634,21 @@ function ownerQuestions(given) {
     const entry = given[index]
     if (!isObject(entry)) continue
     const options = Array.isArray(entry.options) ? entry.options.filter(isObject).slice(0, OPTIONS_MAX) : []
-    out.push({
-      index: index,
+    // The bridge's own `index` when it served one: it hands on only the open
+    // questions (swarm_mcp.progress.open_owner_questions, 2026-11-05), so a
+    // question's place in this list is no longer its place in questions.json.
+    const served = Number.isInteger(entry.index) && entry.index >= 0 ? entry.index : index
+    const question = {
+      index: served,
       question: text(entry.question, QUESTION_CHARS),
       options: options.map((option) => ({ label: text(option.label, LABEL_TEXT_CHARS), description: text(option.description, OPTION_CHARS) })),
       recommended: text(entry.recommended, LABEL_TEXT_CHARS),
       context: text(entry.context, QUESTION_CHARS),
-    })
+    }
+    // Listed because its stored answer could not be read, never as known open.
+    const unknown = text(entry.answer_unknown_because, LABEL_TEXT_CHARS)
+    if (unknown) question.answer_unknown_because = unknown
+    out.push(question)
   }
   return out
 }
@@ -798,11 +808,17 @@ function readSpec(given) {
       rows: readRows(value.rows), share: readShare(value.row_share),
     }
   }
-  // {spec, spec_handle: {path, digest}}: swarm_workflow_launch's args. The
-  // handle is the file the bridge wrote the embedded spec to; the submit row
-  // passes it, never the spec (SC-LAUNCH-SPEC, #2034).
+  // {spec_handle: {path, digest}, details, rows}: swarm_workflow_launch's
+  // args. The handle is the file the bridge wrote the spec to; the READ SPEC
+  // row reads its outline and the submit row passes it, never the spec
+  // (SC-LAUNCH-SPEC, #2034; LAUNCH-LARGE-SPEC, #2875). Args from before
+  // #2875 also embed the spec, which then shapes the rows with no read.
   if (isObject && Object.prototype.hasOwnProperty.call(value, 'spec_handle')) {
-    return { spec: checkSpec(value.spec), handle: readHandle(value.spec_handle), details: readDetails(value.details), rows: readRows(value.rows) }
+    const handle = readHandle(value.spec_handle)
+    if (value.spec === undefined || value.spec === null) {
+      return { handle: handle, details: readDetails(value.details), rows: readRows(value.rows) }
+    }
+    return { spec: checkSpec(value.spec), handle: handle, details: readDetails(value.details), rows: readRows(value.rows) }
   }
   if (isObject && typeof value.spec_path === 'string' && value.spec_path.trim()) {
     return { spec: checkSpec(value.spec), specPath: value.spec_path.trim(), details: readDetails(value.details), rows: readRows(value.rows) }
@@ -825,7 +841,7 @@ function readHandle(given) {
   const hex = digest.slice('fnv1a32:'.length)
   const isDigest = digest.indexOf('fnv1a32:') === 0 && hex.length === 8 && hex.split('').every((c) => '0123456789abcdef'.indexOf(c) >= 0)
   if (!path || !isDigest) {
-    throw new Error('/sc:swarmcloud {spec, spec_handle} needs the handle swarm_workflow_launch returned, {path, digest}, exactly as given; it was given ' + JSON.stringify(given === undefined ? null : given) + '. Nothing was submitted.')
+    throw new Error('/sc:swarmcloud {spec_handle} needs the handle swarm_workflow_launch returned, {path, digest}, exactly as given; it was given ' + JSON.stringify(given === undefined ? null : given) + '. Nothing was submitted.')
   }
   return { path: path, digest: digest }
 }
@@ -905,6 +921,23 @@ function readTasks(given) {
     throw new Error('/sc:swarmcloud {attach_tasks: [{task_id, title, console}]} needs the id of at least one SwarmCloud task; it was given ' + JSON.stringify(given === undefined ? null : given))
   }
   return tasks
+}
+
+// A copy the bridge titled for single tasks is titled `SC · <label>` from
+// the ONE task it was written for (swarm_mcp.launch.for_tasks). Null when
+// `name` is the plugin's own (`swarmcloud`, launched by name: no title to
+// match) or the title the tasks give; else the refusal, in plain words.
+function titledFor(name, tasks) {
+  if (typeof name !== 'string' || name === 'swarmcloud') return null
+  const wanted = tasks.length === 1 ? taskTitle(titleName([tasks[0].title, tasks[0].task_id])) : null
+  if (wanted === name) return null
+  const ids = tasks.map((task) => task.task_id).join(', ')
+  return 'refused: this run\'s script is titled "' + name + '", and it was written for ' +
+    (name.indexOf('SC ' + TASK_MARK + ' ') === 0 ? 'another task' : 'a workflow') +
+    ', not for ' + (tasks.length === 1 ? 'task ' : 'tasks ') + ids +
+    ', so their row would show under the wrong name. Each single task runs from its own copy, titled from it: ' +
+    'launch the `launches` entry swarm_dispatch\'s `rows` returned for each task, or call swarm_workflow_launch {attach: "all"} ' +
+    'for one copy per running task, or launch /sc:swarmcloud by name with these attach_tasks. Nothing was followed.'
 }
 
 function checkSpec(given) {
@@ -999,19 +1032,27 @@ function stagePhase(stage) {
   return 'Stage ' + stage
 }
 
-// THE RUN'S TITLE: `SC · <name> · N steps`, at most TITLE_CHARS characters,
+// THE RUN'S TITLE: `SC ∴ <name> · N steps`, at most TITLE_CHARS characters,
 // the name cut at the last word that fits, with `…`. Owner 2026-10-04:
 // SwarmCloud prefix, at most 100; owner 2026-10-05: prefix `SC · ` because
 // Claude Code's task panel shows ~28 characters of a name, and at most 150
-// because Enter shows the full name. swarm_mcp.workflows.workflow_title writes
+// because Enter shows the full name. swarm_mcp.launch.workflow_run_title writes
 // the same title into the per-run copy's meta.name, and this Result title is
 // that title: no `[<workspace>] ` in either since SC-DESC-DETAILS (owner
 // 2026-10-14: "workflows in here should not have the [Engineering] or
-// [eng@saga.xyz] prefix in front of the names") -- the copy's
+// [eng@example.com] prefix in front of the names") -- the copy's
 // meta.description leads with the workspace instead -- and the plugin's tests
 // hold the two cuts equal. Counted in code points, as Python counts.
 const TITLE_CHARS = 150
-const TITLE_PREFIX = 'SC · '
+
+// THE RUN'S KIND, right after `SC` (owner 2026-11-04 23:00: the panel cuts a
+// title at about 28 characters, so the kind is seen before the name). ONE dot
+// for one single task, `SC · <label>`; THREE dots, a tiny graph of three
+// nodes, for a workflow, `SC ∴ <name> · N steps`. swarm_mcp.launch holds the
+// same two (TASK_MARK, WORKFLOW_MARK) and a unit test holds them equal: change
+// a mark in both places, nowhere else.
+const TASK_MARK = '\u00b7'
+const WORKFLOW_MARK = '\u2234'
 
 // `text` with every run of whitespace one space and none at either end; null
 // for anything that is not text or holds none.
@@ -1055,11 +1096,11 @@ function workspaceNote(workspace) {
   return flat ? ' · workspace: ' + flat : ''
 }
 
-// `SC · <name> · N steps`: the NAME is cut, never the step count
-// (swarm_mcp.workflows.workflow_title).
-function workflowTitle(name, count) {
-  const tail = ' · ' + stepsText(count)
-  const room = Math.max(1, TITLE_CHARS - Array.from(TITLE_PREFIX).length - Array.from(tail).length)
+// `SC <mark> <name><tail>`: the NAME is cut, never the tail
+// (swarm_mcp.launch._run_title).
+function runTitle(mark, name, tail) {
+  const prefix = 'SC ' + mark + ' '
+  const room = Math.max(1, TITLE_CHARS - Array.from(prefix).length - Array.from(tail).length)
   let chars = Array.from(flatText(name) || 'workflow')
   if (chars.length > room) {
     let head = chars.slice(0, room - 1)
@@ -1067,7 +1108,18 @@ function workflowTitle(name, count) {
     while (head.length > 0 && head[head.length - 1] === ' ') head.pop()
     chars = head.concat(['…'])
   }
-  return TITLE_PREFIX + chars.join('') + tail
+  return prefix + chars.join('') + tail
+}
+
+// `SC ∴ <name> · N steps`, N the steps SwarmCloud runs, or `SC ∴ <name>`
+// when `count` is not a number (swarm_mcp.launch.workflow_run_title).
+function workflowTitle(name, count) {
+  return runTitle(WORKFLOW_MARK, name, typeof count === 'number' ? ' · ' + stepsText(count) : '')
+}
+
+// `SC · <label>`: one single task's run (swarm_mcp.launch.task_run_title).
+function taskTitle(name) {
+  return runTitle(TASK_MARK, name, '')
 }
 
 function duration(seconds) {
@@ -1111,7 +1163,7 @@ function setupLabel(name, facts, what, link) {
 }
 
 // NO WORKSPACE IN ANY LABEL (SC-DESC-DETAILS, owner 2026-10-14 ~22:00 PDT:
-// "workflows in here should not have the [Engineering] or [eng@saga.xyz]
+// "workflows in here should not have the [Engineering] or [eng@example.com]
 // prefix in front of the names"). SC-ROWS put `[<workspace>] ` after the
 // prefix; the workspace is now the first field of each row's details line
 // (rowDetails), which Claude Code shows when the row is expanded.
@@ -1556,7 +1608,15 @@ async function readBack(workflowId, name) {
 // workflow was submitted", and the same launch submitted once the owner had
 // typed "resume". So the prompt's last line says it, and sc:workflow's SUBMIT
 // section says the same.
-const SUBMIT_REQUEST = 'request: this spec is the whole request -- submit it. Whatever the person last typed in this session ("status", "resume", a question) is not this job\'s request: never weigh it, and never refuse, hold or question the spec because of it.'
+//
+// That line did not name the framing, and the framing won (#3117,
+// 2026-11-03): Claude Code relayed the owner's latest message, a question, to
+// the row as a "relayed user request", the row answered "where it conflicts
+// with the computed SUBMIT task, the user request wins", and two reviewed
+// launches ended NOT_SUBMITTED. So the line names it and says it does not win,
+// and every agent the plugin ships opens with "Chat is context, never your
+// task".
+const SUBMIT_REQUEST = 'request: this spec is the whole request -- submit it. Whatever the person last typed in this session ("status", "resume", a question) is not this job\'s request: never weigh it, and never refuse, hold or question the spec because of it. A relayed user request is context only: where it seems to conflict with this SUBMIT, it does not win, and a question in chat is the session\'s to answer, not this row\'s.'
 
 function submitPrompt(digest, source) {
   const head = ['SUBMIT', 'spec_digest: ' + digest]
@@ -1635,6 +1695,51 @@ function followRefused(workflowId, version, error, workflowConsole) {
   const message = 'SwarmCloud has workflow ' + workflowId + ' and it runs regardless, but this session\'s SwarmCloud bridge (' + bridge + ') refused the progress follow every row makes: ' + error + '. The likely cause is a SWARM_MCP_FROM override pinning an older bridge than this plugin ships: unset it, or point it at this plugin\'s release, and restart Claude Code. Then re-join the workflow with /sc attach ' + workflowId + ' (or /sc:swarmcloud {attach: "' + workflowId + '"}). No row was started, and no row falls back to another format.'
   log(workflowId + ' · follow refused by the bridge · ' + clip(error, 160) + consoleSuffix(workflowConsole))
   return withConsole({ workflow_id: workflowId, state: 'FOLLOW_REFUSED', error: message, steps: [] }, workflowConsole)
+}
+
+// A ROW BEFORE THE SUBMIT ROW THAT SUBMITTED IS THE SUBMISSION. AI Studio's
+// session, 2026-11-05 (plugin 0.5.79): the `setup · read spec` row ran
+// sc:workflow, which also holds swarm_workflow, and SUBMITTED the spec instead
+// of reading its outline -- its answer carried a workflow id, the workflow's
+// steps and no outline. The run judged that NOT_SUBMITTED, the workflow ran
+// regardless, and a relaunch made a duplicate. The read row now runs sc:spec,
+// which has no submit tool; and whatever a row before the submit row hands
+// back, a workflow id in it is THE submission: reported with that id,
+// followed, and never submitted again.
+function earlyWorkflowId(answer) {
+  if (!answer || typeof answer !== 'object') return null
+  const id = unquotedId(answer.workflow_id)
+  return typeof id === 'string' && id ? id : null
+}
+
+async function followEarlySubmission(answer, row, nameHint) {
+  const id = earlyWorkflowId(answer)
+  const workflowConsole = consoleLink(answer.console)
+  const workspace = flatText(answer.workspace)
+  log(id + ' submitted by the ' + row + ' row, before the submit row: it is the submission, so it is followed and nothing is submitted again' + workspaceNote(workspace) + consoleSuffix(workflowConsole))
+  if (given.rows === 'band') {
+    log(id + ' · ' + BANDED)
+    const steps = Array.isArray(answer.steps) ? relayedSteps(answer.steps).filter((step) => step && typeof step === 'object') : []
+    return banded(withConsole({
+      workflow_id: id,
+      workspace: workspace,
+      title: titleName([nameHint, id]),
+      state: 'SUBMITTED',
+      submitted_by: row,
+      steps: steps.map((step) => ({ step_id: step.step_id, task_id: step.task_id || null })),
+    }, workflowConsole))
+  }
+  const result = await attachOne(id, titleName([nameHint, id]), workspace, given.details, given.rows, null)
+  result.submitted_by = row
+  if (result.state === 'NOT_ATTACHED') {
+    // Submitted, and not read back: no row follows it, and the session's
+    // watch is what notices it. Never NOT_SUBMITTED: that invites a relaunch.
+    result.state = 'SUBMITTED_UNVERIFIED'
+    result.error = 'SwarmCloud has workflow ' + id + ' -- the ' + row + ' row submitted it -- but reading it back failed (' + result.error + '), so no row follows it. It runs regardless: read it with swarm_workflow_status, or re-join it with /sc attach ' + id + '. Do not run /sc:swarmcloud again, which would submit a second copy.'
+    result.arm_watch = ARM_ANYWAY
+    if (workflowConsole && !result.console) result.console = workflowConsole
+  }
+  return result
 }
 
 function notSubmitted(error) {
@@ -1879,14 +1984,8 @@ async function attachTasks(given, cap, rowMode) {
   const tasks = groupByWorkspace(given)
   const follow = tasks.slice(0, limit)
   const rest = tasks.slice(limit)
-  if (oneRow(rowMode)) {
-    // ONE row for the batch (PLUGIN-ROW-SPLIT) -- the pane layout's too: a
-    // batch of single tasks has no stages; the rest, past the cap, listed.
-    for (const task of rest) log(task.task_id + ' · not followed · swarm_follow it, or /sc status ' + task.task_id + workspaceNote(task.workspace) + consoleSuffix(task.console))
-    const out = await summarizeTasks(follow)
-    out.not_followed = rest.map((task) => withConsole({ task_id: task.task_id, workspace: task.workspace || null, title: task.title || null }, task.console))
-    return out
-  }
+  // ONE ROW PER TASK, whatever the `rows` setting (owner 2026-11-04): a
+  // summary row over a batch read `0/1` and showed counts, never the lanes.
   log(follow.length + ' single task(s) · one row each' + (rest.length ? ' · ' + rest.length + ' listed, not followed (at most ' + limit + ')' : ''))
   for (const task of rest) log(task.task_id + ' · not followed · swarm_follow it, or /sc status ' + task.task_id + workspaceNote(task.workspace) + consoleSuffix(task.console))
   const rows = await pipeline(
@@ -2174,6 +2273,33 @@ function summaryNotices(name, item) {
   return lines
 }
 
+// THE STEP LINES OF A WORKFLOW'S ROW (owner 2026-11-04, 23:05: Claude Code
+// shows a workflow with the SAME STRUCTURE as the console). Every step the
+// platform runs -- the served workflow's, the steps it appends included --
+// grouped by the console's own stages (`Stage N`, levelsOf's depth plus one)
+// in the console's order and names, each with its state and console link:
+//   Stage 1
+//     implement · RUNNING · console: https://...
+// The row writes them again only when a step's state changes, never for the
+// remote log. `items` carry `stage` (consoleStages); a batch of single tasks
+// has no stages and no step lines.
+function stepLines(items) {
+  const ordered = items
+    .map((item, index) => ({ item: item, index: index }))
+    .sort((a, b) => (a.item.stage || 1) - (b.item.stage || 1) || a.index - b.index)
+    .map((entry) => entry.item)
+  const lines = []
+  let stage = null
+  for (const item of ordered) {
+    if ((item.stage || 1) !== stage) {
+      stage = item.stage || 1
+      lines.push(stagePhase(stage))
+    }
+    lines.push('  ' + item.name + ' · ' + (item.state || 'not read yet') + consoleSuffix(item.console))
+  }
+  return lines
+}
+
 // What the row hands swarm_follow's summary format back unchanged
 // (PLUGIN-ROW-SPLIT-2): the items it does not follow, counted in the same
 // buckets, with their pull requests, so the bridge builds the whole line.
@@ -2190,6 +2316,15 @@ function summaryOf(view, items, open, line) {
     console: consoleLink(view.console), line: line }
 }
 
+function stepEntries(items) {
+  const ordered = items
+    .map((item, index) => ({ item: item, index: index }))
+    .sort((a, b) => (a.item.stage || 1) - (b.item.stage || 1) || a.index - b.index)
+    .map((entry) => entry.item)
+  return ordered.map((item) => ['step: ' + (item.task_id || '-'), stagePhase(item.stage || 1), item.name,
+    item.state || 'not read yet', consoleLink(item.console) || 'none'].join(' | '))
+}
+
 function summaryPrompt(view, items, open, line) {
   const finished = items.filter((item) => open.indexOf(item) < 0)
   const done = finished.filter((item) => summaryBucket(item.state) === 'done').length
@@ -2203,6 +2338,10 @@ function summaryPrompt(view, items, open, line) {
     'line: ' + line,
     'summary_of: ' + JSON.stringify(summaryOf(view, items, open, line)),
   ].concat(open.map((item) => 'task: ' + item.task_id + ' ' + item.name))
+    // Every step, followed or not, for the step lines (agents/summary.md
+    // section 2): `step: <task_id or -> | Stage <n> | <name> | <state> |
+    // <console link or none>`, in the console's order.
+    .concat(view.noun === 'step' ? stepEntries(items) : [])
     .concat(['details: ' + (view.details || fallbackDetails(view.workspace, null))])
     .join('\n')
 }
@@ -2225,6 +2364,10 @@ async function followSummary(view, items) {
   }
   let line = summaryLine(view.noun, items, view.console)
   log(line)
+  // The step lines, now and again only when a step's state changed.
+  const steps = () => (view.noun === 'step' ? stepLines(items).join('\n') : '')
+  let board = steps()
+  if (board) log(board)
   notice()
   const byTask = {}
   for (const item of items) if (item.task_id) byTask[item.task_id] = item
@@ -2248,12 +2391,17 @@ async function followSummary(view, items) {
       break
     }
     const moved = absorbAnswer(answer, byTask)
-    notice()
     const now = summaryLine(view.noun, items, view.console)
     if (now !== line) {
       log(now)
       line = now
     }
+    const nowBoard = steps()
+    if (nowBoard !== board) {
+      log(nowBoard)
+      board = nowBoard
+    }
+    notice()
     ended = { state: answer.state, last_error: answer.last_error || null }
     if (answer.state !== 'running' || !moved) break
   }
@@ -2290,7 +2438,7 @@ function absorbAnswer(answer, byTask) {
 // 2026-10-25). With `/sc layout pane` the SwarmCloud pane beside the chat is
 // where stages, agents and details are browsed, with direct MCP calls and no
 // model tokens, so a workflow keeps ONE quiet /workflows row whose only job is
-// to notice the finish: an sc:finish agent labelled `SC · <name>` that writes
+// to notice the finish: an sc:finish agent labelled `SC ∴ <name>` that writes
 // a line only when the workflow's STAGE changes and holds each follow until it
 // does (`swarm_follow` format "stage", compact.watch_stage) -- one call per
 // stage or per half hour, where a summary row takes one per step change.
@@ -2384,7 +2532,7 @@ async function followStage(view, items) {
     let answer = null
     try {
       answer = await agent(finishPrompt(view, items, unfinished(), current.key), {
-        label: clip(TITLE_PREFIX + view.name, LABEL_CHARS),
+        label: clip('SC ' + WORKFLOW_MARK + ' ' + view.name, LABEL_CHARS),
         phase: 'Finish',
         agentType: 'sc:finish',
         schema: SUMMARY,
@@ -2430,6 +2578,48 @@ function summaryAsker(item, where) {
     questions: item.questions, asked: item.asked, answered: item.answered }
 }
 
+// How many times one summary run takes in steps SwarmCloud appended after
+// its row started: each round is one ATTACH read and one more summary row.
+const APPENDED_ROUNDS = 6
+
+// The steps the status read `final` names that `items` do not hold: read
+// whole (task id, parents, console) with one ATTACH read, added to `items`
+// with every item's stage recomputed over the whole served workflow
+// (consoleStages), and returned. [] when none, or when the read failed.
+async function appendedItems(wf, items, final) {
+  const known = {}
+  for (const item of items) known[item.id] = true
+  const named = Object.keys(statusSteps(final)).filter((id) => !known[id])
+  if (named.length === 0) return []
+  let attached = null
+  try {
+    attached = await agent('ATTACH\nworkflow_id: ' + wf.id, {
+      label: setupLabel(wf.name, [], 'appended steps', null),
+      phase: 'Result',
+      agentType: 'sc:workflow',
+      schema: ATTACHED,
+    })
+  } catch (error) {
+    log(wf.id + ' · steps ' + named.join(', ') + ' were appended, and reading them failed: ' + clip(failureText(error), 160))
+    return []
+  }
+  if (!attached || attached.error || !Array.isArray(attached.steps)) return []
+  const served = relayedSteps(attached.steps)
+  const stages = consoleStages(served).stage
+  const added = []
+  for (const step of served) {
+    if (known[step.step_id]) continue
+    const item = {
+      id: step.step_id, name: step.step_id, task_id: step.task_id || null, state: step.state || null,
+      console: step.console || null, finished_before_attach: false, stage: stages[step.step_id] || 1,
+    }
+    items.push(item)
+    added.push(item)
+  }
+  for (const item of items) if (stages[item.id]) item.stage = stages[item.id]
+  return added
+}
+
 // THE SUMMARY OF A WORKFLOW: one row follows every unfinished step, then one
 // status read gives the state SwarmCloud derived, which fills any step the
 // row left unfinished, and the run ends with a line per step.
@@ -2441,10 +2631,23 @@ async function summarizeWorkflow(wf, steps, knownConsole, mode) {
   }))
   const view = { workflowId: wf.id, name: wf.name, noun: 'step', console: knownConsole, workspace: wf.workspace }
   phase(mode === 'pane' ? 'Finish' : 'Summary')
-  const followed = mode === 'pane' ? await followStage(view, items) : await followSummary(view, items)
+  let followed = mode === 'pane' ? await followStage(view, items) : await followSummary(view, items)
 
   phase('Result')
-  const read = await readStatus(wf.id, setupLabel(wf.name, [stepsText(wf.count), wf.id], 'result', knownConsole))
+  let read = await readStatus(wf.id, setupLabel(wf.name, [stepsText(items.length), wf.id], 'result', knownConsole))
+  // THE STEPS SWARMCLOUD APPENDS AS THEY APPEAR (owner 2026-11-04, 23:05): a
+  // re-review, a merge, a CI-fix or conflict-fix round the platform adds
+  // after the row started is a step of the served workflow, so the row's
+  // step lines take it, at its console stage, and the row follows it.
+  for (let round = 1; mode !== 'pane' && round <= APPENDED_ROUNDS && read.final && TERMINAL.indexOf(read.final.state) < 0; round++) {
+    const appended = await appendedItems(wf, items, read.final)
+    if (appended.length === 0) break
+    log(wf.id + ' · SwarmCloud appended ' + appended.map((item) => item.id).join(', '))
+    phase('Summary')
+    followed = await followSummary(view, items)
+    phase('Result')
+    read = await readStatus(wf.id, setupLabel(wf.name, [stepsText(items.length), wf.id], 'result', knownConsole))
+  }
   const statusOf = statusSteps(read.final)
   for (const item of items) {
     if (TERMINAL.indexOf(item.state) < 0 && statusOf[item.id]) item.state = statusOf[item.id]
@@ -2483,35 +2686,6 @@ async function summarizeWorkflow(wf, steps, knownConsole, mode) {
     finished.resume = 'the workflow is ' + (state || 'not read') + ' in SwarmCloud and this row has stopped: /sc attach ' + wf.id + ' follows it again'
   }
   return withOwnerQuestions(withConsole(finished, workflowConsole), items.map((item) => summaryAsker(item, { step_id: item.id })), wf.id)
-}
-
-// THE SUMMARY OF A TASK BATCH: one row follows every task; nothing derives a
-// state for a batch, so the result is each task's.
-async function summarizeTasks(tasks) {
-  const items = tasks.map((task) => ({
-    id: task.task_id, name: titleName([task.title, task.task_id]), title: task.title || null,
-    task_id: task.task_id, state: null, console: task.console || null,
-  }))
-  phase('Summary')
-  const name = items.length === 1 ? items[0].name : items[0].name + ' +' + (items.length - 1)
-  const followed = await followSummary({ workflowId: null, name: name, noun: 'task', console: null, workspace: tasks[0].workspace }, items)
-  for (const item of items) {
-    const parts = [item.name, item.state || 'state not read']
-    const pr = pullRequest(item.pr_url)
-    if (pr) parts.push(pr)
-    if (TERMINAL.indexOf(item.state) >= 0) parts.push(money(item.cost_usd))
-    log(parts.join(' · '))
-  }
-  const out = {
-    attach: 'tasks',
-    rows: 'summary',
-    state: 'FOLLOWED',
-    error: followed.ended.last_error,
-    tasks: items.map((item) => summaryResult(item, 'task_id')),
-    not_followed: [],
-  }
-  if (items.some((item) => TERMINAL.indexOf(item.state) < 0)) out.resume = 'some tasks still run in SwarmCloud and this row has stopped: /sc attach --all follows them again'
-  return withOwnerQuestions(out, items.map((item) => summaryAsker(item, { title: item.title || item.task_id })), null)
 }
 
 // ATTACH one workflow: nothing is submitted. One read, one probe, a row per
@@ -2740,7 +2914,8 @@ const given = readSpec(args)
 
 // THE FALLBACK SAYS WHY (SC-TITLES, #1511). Every launch from the bridge
 // hands its args a `title` (an attach) or `titled_copy` (the copy's path);
-// the copy itself carries `SC · <name> · ...` as its meta.name. So this
+// the copy itself carries `SC ∴ <name> · ...` or `SC · <label>` as its
+// meta.name. So this
 // script running under its own name WITH either argument was launched by
 // name after the titled copy could not be -- and Claude Code labels the run
 // `swarmcloud`. Its first line says so, and where the copy was.
@@ -2749,10 +2924,18 @@ const titledCopy = typeof launchedArgs.titled_copy === 'string' && launchedArgs.
 if (typeof meta !== 'undefined' && meta && meta.name === 'swarmcloud' && (titledCopy || flatText(launchedArgs.title))) {
   log('This run is labelled "swarmcloud" because its titled copy could not be launched' +
     (titledCopy ? ' -- it would have run from ' + titledCopy : ' -- the launch named no copy') +
-    '. Launch that copy (Workflow {scriptPath, args}) for an SC · <name> row title.')
+    '. Launch that copy (Workflow {scriptPath, args}) for an SC ' + WORKFLOW_MARK + ' <name> or SC ' + TASK_MARK + ' <label> row title.')
 }
 
 if (given.attachTasks) {
+  // A titled copy was written for ONE task, and Claude Code shows its title
+  // before this line runs, so other tasks launched from it would run under
+  // the wrong name (owner 2026-11-04): refused, naming the right call.
+  const wrongCopy = titledFor(typeof meta !== 'undefined' && meta ? meta.name : null, given.attachTasks)
+  if (wrongCopy) {
+    log(wrongCopy)
+    return { attach: 'tasks', state: 'REFUSED', error: wrongCopy, tasks: [], not_followed: given.attachTasks.map((task) => withConsole({ task_id: task.task_id, title: task.title || null }, task.console)) }
+  }
   phase('Tasks')
   return await attachTasks(given.attachTasks, given.maxRows, given.rows)
 }
@@ -2774,38 +2957,53 @@ let digest = null
 const source = { spec: given.spec, specPath: given.specPath || null, specRef: null, specHandle: null }
 if (given.handle) {
   // The launch's handle: the bridge submits the bytes it wrote, checked
-  // against the digest it wrote them with. The embedded object only shapes
-  // the rows here, so a copy of it the session altered on the way in changes
-  // no byte that is submitted -- this line says so when it was.
+  // against the digest it wrote them with.
   source.specHandle = given.handle.path
   digest = given.handle.digest
-  if (specDigest(given.spec) !== digest) {
+  if (given.spec && specDigest(given.spec) !== digest) {
+    // Args from before #2875 embed the spec too. It only shapes the rows
+    // here, so a copy the session altered on the way in changes no byte that
+    // is submitted -- this line says so when it was.
     log('the spec in this run\'s args has digest ' + specDigest(given.spec) + ', the launch wrote ' + digest + ': submitting the launch\'s bytes from ' + given.handle.path)
   }
 }
-if (given.path) {
+if (given.path || (given.handle && !given.spec)) {
   // The bridge reads the file and holds it; the row relays its ref, digest and
   // outline -- never the spec -- and nothing is submitted without all three.
+  // A launch's handle is read the same way, with its digest, which the bridge
+  // checks against the bytes it reads (LAUNCH-LARGE-SPEC, #2875).
+  const where = given.path || given.handle.path
+  const prompt = given.path
+    ? 'READ SPEC\npath: ' + given.path
+    : 'READ SPEC\nspec_handle: ' + given.handle.path + '\nspec_digest: ' + given.handle.digest
   let read = null
   let readFailure = null
   try {
-    read = await agent('READ SPEC\npath: ' + given.path, {
-      label: setupLabel(given.path, [], 'read spec'),
+    read = await agent(prompt, {
+      label: setupLabel(where, [], 'read spec'),
       phase: 'Submit',
-      agentType: 'sc:workflow',
+      agentType: 'sc:spec',
       schema: READ,
     })
   } catch (error) {
     readFailure = failureText(error)
   }
+  if (earlyWorkflowId(read)) {
+    return await followEarlySubmission(read, 'read spec', read.outline && typeof read.outline === 'object' ? titleName([read.outline.title, read.outline.label]) : null)
+  }
   if (!read || read.error) {
     if (read && read.error) return notSubmitted(read.error)
-    const why = readFailure ? 'the row reading ' + given.path + ' failed: ' + readFailure : 'the row reading ' + given.path + ' stopped before it answered'
+    const why = readFailure ? 'the row reading ' + where + ' failed: ' + readFailure : 'the row reading ' + where + ' stopped before it answered'
     return notSubmitted(why + '. Nothing was submitted.')
   }
   const outline = read.outline
   if (typeof read.spec_ref !== 'string' || !read.spec_ref || typeof read.spec_digest !== 'string' || !read.spec_digest || !outline || !Array.isArray(outline.steps) || outline.steps.length === 0) {
-    return notSubmitted('the row reading ' + given.path + ' did not hand back the spec_ref, spec_digest and outline the bridge returns, so nothing was submitted. Run /sc:swarmcloud again, or pass the spec object with its spec_path.')
+    return notSubmitted('the row reading ' + where + ' did not hand back the spec_ref, spec_digest and outline the bridge returns, so nothing was submitted. Run /sc:swarmcloud again, or pass the spec object with its spec_path.')
+  }
+  if (given.handle && read.spec_digest !== given.handle.digest) {
+    // The bridge refuses a handle whose bytes changed; a reply that names
+    // another digest is a relay's mistake, and nothing is submitted on it.
+    return notSubmitted('the row reading ' + where + ' handed back digest ' + read.spec_digest + ', and the launch wrote ' + given.handle.digest + ', so nothing was submitted. Launch the spec again.')
   }
   spec = { steps: outline.steps }
   // What decides the merge steps SwarmCloud appends (`appendable`).
@@ -2813,9 +3011,9 @@ if (given.path) {
   if (typeof outline.merge === 'string' && outline.merge) spec.merge = outline.merge
   if (typeof outline.label === 'string' && outline.label.trim()) spec.label = outline.label
   if (typeof outline.title === 'string' && outline.title.trim()) spec.title = outline.title
-  source.specRef = read.spec_ref
+  if (given.path) source.specRef = read.spec_ref
   digest = read.spec_digest
-  log('read the spec from ' + (read.path || given.path) + ' · ' + digest)
+  log('read the spec from ' + (read.path || where) + ' · ' + digest)
 }
 
 if (!digest) digest = specDigest(spec)

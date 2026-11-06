@@ -26,10 +26,10 @@ from fastapi import APIRouter, Body, Depends, Query, Request
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.identity import Principal
-from swarm_common.models import ProviderState, SlotPool, Task, Tenant
+from swarm_common.models import Lease, ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
-from .. import roles, runnersizes
+from .. import roles, route_scope, runnersizes
 from ..attempt_totals import totals_for, with_totals
 from ..browser_logins import CarryReaper
 from ..auth import AuthContext
@@ -210,6 +210,10 @@ def put_platform_settings(
     whole (`{}` clears it). No workspace default may be saved above it in its
     unit, no step may ask for more, and every budgeted attempt's limit is at
     most it (`budget`). Read at every submission and every save.
+
+    `jev_token_rates` (JEV-USAGE-PAGE): `{input, output}`, Jev's price in USD
+    per million tokens, replaced whole (`{}` clears it). No default; until it
+    is set, Capacity › Jev usage shows "rate not set" and no dollars.
     """
     changes = body.model_dump(exclude_none=True)
     if not changes:
@@ -363,6 +367,10 @@ def set_provider_limit(
     return {"pool": pool_to_api(pool)}
 
 
+#: The `admin_audit` action a per-tenant provider pool change is recorded under.
+PROVIDER_TENANT_LIMIT_AUDIT_ACTION = "limit_provider_tenant_set"
+
+
 @router.put("/limits/provider/{provider}/tenant/{tenant_id}")
 def set_provider_tenant_limit(
     provider: str,
@@ -370,6 +378,7 @@ def set_provider_tenant_limit(
     body: LimitRequest,
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
+    broker: AccountPool = Depends(account_pool),
 ) -> dict:
     """The per-tenant slice of a provider's concurrency.
 
@@ -382,6 +391,18 @@ def set_provider_tenant_limit(
     Verified against the tenant document rather than accepted blind: an
     upsert on a misspelt tenant id would silently create a pool that nothing
     ever reads, and it would look like the limit had been set.
+
+    THE BROKER'S MAXIMUM MOVES WITH IT (owner, 2026-11-02). The pool's
+    effective limit is the least of this hard limit, the quota document's
+    `configured_hard_max` and the AIMD target, so raising the pool alone could
+    leave the quota document's maximum lower and the raise would do nothing.
+    The broker's `set_hard_max` is called FIRST with the same number; it
+    writes the quota document and this pool's `hard_limit` in one transaction
+    of its own and clamps a target above a lowered maximum. A broker refusal
+    or an unreachable broker fails this request with the broker's reason and
+    leaves the pool as it was: nothing here is written before the broker has
+    answered. One `admin_audit` row names both values, the pool's limit and
+    the broker's maximum, before and after.
     """
     name = _check_provider(provider)
     # get_tenant returns None rather than raising, so this must be checked
@@ -389,11 +410,43 @@ def set_provider_tenant_limit(
     # silent pass the docstring above claims to prevent.
     if ctx.store.get_tenant(tenant_id) is None:
         raise NotFound(f"tenant {tenant_id!r} not found")
-    pool = ctx.store.upsert_pool(
-        f"provider:{name}:tenant:{tenant_id}", hard_limit=body.limit, by=auth.email
+    pool_name = f"provider:{name}:tenant:{tenant_id}"
+    before_pool = ctx.store.get_pool(pool_name)
+    before_quota = next((q for q in ctx.store.list_quota(tenant_id)
+                         if q.provider == name and q.tenant_id == tenant_id), None)
+    # Raises with the broker's reason on any refusal; the pool is untouched.
+    result = broker.set_hard_max(
+        name, tenant_id, hard_max=body.limit, requested_by=auth.email,
+        reason=f"pool {pool_name} limit set to {body.limit}",
     )
+    pool = ctx.store.upsert_pool(pool_name, hard_limit=body.limit, by=auth.email)
+    after = result.get("quota") if isinstance(result, dict) else None
+    after = after if isinstance(after, dict) else {}
+    from_target = None if before_quota is None else before_quota.adaptive_target
+    to_target = after.get("adaptive_target")
+    change = {
+        "provider": name,
+        "tenant_id": tenant_id,
+        "pool": pool_name,
+        "from_limit": None if before_pool is None else before_pool.hard_limit,
+        "to_limit": pool.hard_limit,
+        "from_hard_max": None if before_quota is None else before_quota.configured_hard_max,
+        "to_hard_max": after.get("configured_hard_max", body.limit),
+        "from_target": from_target,
+        "to_target": to_target,
+        # The broker lowered the target to fit a lowered maximum.
+        "target_clamped": (isinstance(from_target, int) and isinstance(to_target, int)
+                           and to_target < from_target),
+    }
+    ctx.db.collection(AUDIT_COLLECTION).document().set({
+        "action": PROVIDER_TENANT_LIMIT_AUDIT_ACTION,
+        "target_tenant_id": tenant_id,
+        "by": auth.email,
+        "at": ctx.now(),
+        "detail": change,
+    })
     ctx.metrics.admin_actions.labels(action="limit_provider_tenant").inc()
-    return {"pool": pool_to_api(pool)}
+    return {"pool": pool_to_api(pool), "change": change}
 
 
 @router.put("/limits/backend/{backend}")
@@ -682,6 +735,16 @@ def list_pools(
     return {"pools": [{**pool_to_api(p), **pool_attribution(p)} for p in pools]}
 
 
+def units_held_by_pool(leases: list[Lease]) -> dict[str, int]:
+    """Per pool, the units these leases hold, by `Lease.held_units`: the one
+    rule admission reserved and release returns by (#2950)."""
+    held: dict[str, int] = {}
+    for lease in leases:
+        for name, units in lease.held_units().items():
+            held[name] = held.get(name, 0) + units
+    return held
+
+
 @router.get("/leases")
 def list_leases(
     tenant_id: str | None = Query(default=None),
@@ -813,6 +876,11 @@ def list_leases(
         # Weighted UNITS, not agents -- admission increments by the resource
         # class's units, so this and len(leases) are different numbers.
         "units_held": sum(lease.units for lease in leases),
+        # Per pool, what these rows hold: the drift check's input against each
+        # pool's `active`. Not `units_held` in every pool -- a provider pool
+        # holds 1 per lease (contract request 129, #2950), and a lease from
+        # before it holds its `units` there (`Lease.held_units`).
+        "units_held_by_pool": units_held_by_pool(leases),
         # Live leases, under the tenant filter, that are not in these rows.
         # 0 is what makes a units_held / pool.active delta evidence.
         "active_beyond_window": scan.active_beyond_window,
@@ -1138,6 +1206,7 @@ def list_tenants(
 
 
 @router.post("/workflows/rollup")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def rollup_workflows(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1212,6 +1281,7 @@ def rollup_workflows(
 
 
 @router.post("/runs/advance")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def advance_runs(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1260,6 +1330,7 @@ def advance_runs(
 
 
 @router.post("/merges/wake")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def wake_merges(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1369,6 +1440,7 @@ def registration_owner_auth(ctx: AppContext, tenant_id: str):
 
 
 @router.post("/repositories/poll")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def poll_repositories(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1417,6 +1489,7 @@ def poll_repositories(
 
 
 @router.post("/repositories/push")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def push_repository(
     body: RepositoryPush,
     auth: AuthContext = Depends(admin_auth),
@@ -1488,6 +1561,7 @@ def _push_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
 
 
 @router.post("/tasks/finished")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def task_finished_push(
     envelope: dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(admin_auth),

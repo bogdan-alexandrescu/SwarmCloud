@@ -100,18 +100,20 @@ describe('the Agents list draws whether a browser runtime used its browser', () 
     expect(mark!.querySelector('[data-tone]')?.getAttribute('data-tone')).toBe('warn')
   })
 
-  it('a null verdict is a dash with its reason, never "not used"', async () => {
+  it('a null verdict draws nothing on the row, never "not used", and its reason stays in the row’s name', async () => {
     const { container } = await list([CUT(), OLD()])
     for (const [step, reason] of [
-      ['review-cut', /cut short/],
-      ['review-old', /not recorded/],
+      ['review-cut', /browser use: not known: the agent’s output was cut short/],
+      ['review-old', /browser use: not recorded/],
     ] as const) {
-      const mark = rowOf(container, step).querySelector<HTMLElement>('[data-browser-use]')
+      const row = rowOf(container, step)
+      // Visual QA pass 2 (overview-agents-27): "browser —" between the model
+      // and the owner said nothing. MUTATION: draw the unknown mark again.
+      expect(row.querySelector('[data-browser-use]'), step).toBeNull()
+      expect(row.querySelector('.cr-sub')!.textContent, step).not.toMatch(/browser —|browser use/)
       // MUTATION: read a null as false.
-      expect(mark?.getAttribute('data-browser-use'), step).toBe('unknown')
-      expect(mark!.textContent, step).not.toMatch(/not used/)
-      expect(mark!.textContent, step).toContain('—')
-      expect(mark!.getAttribute('title'), step).toMatch(reason)
+      expect(row.querySelector('.cr-open')!.getAttribute('aria-label'), step).not.toMatch(/not used/)
+      expect(row.querySelector('.cr-open')!.getAttribute('aria-label'), step).toMatch(reason)
     }
   })
 

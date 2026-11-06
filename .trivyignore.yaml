@@ -64,19 +64,47 @@ vulnerabilities:
   # vendors release rebuilt binaries. The expiry is short on purpose.
   # Extended one week, 2026-10-24 -> 2026-10-31, by the owner on 2026-10-21:
   # the same three ids below and in the next block, statements unchanged.
+  #
+  # NARROWED AND RE-DATED 2026-10-31 -> 2026-11-07 (lane IMAGE-SCAN-NOV, part
+  # of #2688; PROPOSED for the owner's review in that PR). The expiry refused
+  # agent-runtime-browser in PR 2877's build (job 124436228578). Every tool
+  # with a fixed vendor build is now PINNED to it instead, measured on
+  # 2026-10-31 with `go version -m` and `trivy rootfs` over each vendor's own
+  # download after a checksum match: gh 2.103.3 (go1.27.3, x/net v0.60.0),
+  # docker 29.9.2 (go1.26.10), terraform 1.17.1 (go1.26.10, x/net v0.62.0),
+  # trivy 0.76.1 (go1.27.3, x/net v0.60.0), gcloud-crc32c in google-cloud-cli
+  # 591.0.0 (go1.27.2), and the indexer's Go toolchain 1.27.3, which links
+  # gopls and terraform-ls. What is left has NO fixed vendor build:
+  #   * Google's gke-gcloud-auth-plugin (agent-runtime-base, -nocodex,
+  #     -browser, -indexer, workspace-apply): the newest, 591.0.0 in
+  #     packages.cloud.google.com's apt index, is go1.27.1 with x/net v0.59.0,
+  #     below the fixed go1.27.2 and x/net 0.60.0 -- all three ids;
+  #   * kubectl (the same images): 1.36.6 is go1.26.10 (stdlib fixed) but
+  #     links x/net v0.56.0, and the newest release, 1.37.2
+  #     (dl.k8s.io/release/stable.txt), links v0.57.0 -- CVE-2026-78669 only.
+  # Same bound as above. Revisit on or before 2026-11-07: re-read
+  # packages.cloud.google.com's Packages index and dl.k8s.io's stable.txt,
+  # run `go version -m` on the newest plugin and kubectl, bump GCLOUD_VERSION
+  # (with both pool ids and checksums) and KUBECTL_VERSION in
+  # images/agent-runtime-base/Dockerfile and images/workspace-apply/Dockerfile
+  # to the first fixed build, and delete the entry its tool no longer needs.
   - id: CVE-2026-78667
-    statement: "Go stdlib net/http DoS inside vendor-built Go binaries (docker, gcloud helpers, gh, kubectl, terraform, trivy, gopls); needs vendor rebuilds."
-    expired_at: 2026-10-31
+    statement: "Go stdlib net/http DoS inside Google's prebuilt gke-gcloud-auth-plugin (591.0.0 is go1.27.1); no fixed Google build yet. Every other tool is pinned to a fixed vendor build."
+    expired_at: 2026-11-07
   - id: CVE-2026-78669
-    statement: "golang.org/x/net http2 DoS inside the same vendor-built Go binaries; needs vendor rebuilds."
-    expired_at: 2026-10-31
+    statement: "golang.org/x/net http2 DoS inside gke-gcloud-auth-plugin (591.0.0: go1.27.1, x/net v0.59.0) and kubectl (every release links x/net < 0.60.0; 1.37.2 has v0.57.0); no fixed vendor build yet."
+    expired_at: 2026-11-07
   # Same class, added the same night (owner, 2026-10-10): the next release after
   # PR 992 was refused on this id alone, in the same vendor binaries and images,
   # fixed by the same Go 1.26.9 / 1.27.2. Same bound: a crafted TLS peer can at
   # worst fail one retried attempt in a sandboxed client container.
+  # Narrowed and re-dated 2026-10-31 -> 2026-11-07 with the two ids above,
+  # same measurement: only gke-gcloud-auth-plugin 591.0.0 (go1.27.1) still
+  # carries it; gcloud-crc32c (go1.27.2) and the other tools are fixed by
+  # their pins. Same revisit instruction as above.
   - id: CVE-2026-97031
-    statement: "Go stdlib crypto/tls DoS (ECH extensions) inside the same vendor-built Go binaries; needs vendor rebuilds."
-    expired_at: 2026-10-31
+    statement: "Go stdlib crypto/tls DoS (ECH extensions) inside Google's prebuilt gke-gcloud-auth-plugin (591.0.0 is go1.27.1); no fixed Google build yet."
+    expired_at: 2026-11-07
   # Same class again (owner, 2026-10-17): golang.org/x/text's precis Nickname
   # profile can panic on an out-of-bounds slice. It is in two vendor-built
   # binaries: kubectl (agent-runtime-base, -nocodex, -browser, -indexer and
@@ -129,9 +157,28 @@ vulnerabilities:
   # (fixed), but gke-gcloud-auth-plugin has no fixed build -- 587.0.0 is
   # go1.26.6 and the newest, 590.0.1 and 591.0.0, are go1.27.1 (fixed in
   # 1.27.3) -- so the entry is still needed for at least that tool.
+  #
+  # Re-measured 2026-11-01 ~04:00Z (owner: take every fixed build, extend one
+  # week only for what is still unfixed). Each pin downloaded as its
+  # Dockerfile does, checksum-verified, Go read with `go version -m`:
+  #
+  #   binary                   pinned build               Go        newest release        its Go
+  #   kubectl                  1.36.6                     go1.26.10 1.36.6 (1.37.2)       go1.26.10 fixed
+  #   terraform                1.17.1                     go1.26.10 1.17.1                same      fixed
+  #   trivy                    0.76.1                     go1.27.3  0.76.1                same      fixed
+  #   gh                       2.103.3                    go1.27.3  2.103.3               same      fixed
+  #   docker (docker-ce-cli)   29.9.2                     go1.26.10 29.9.2                same      fixed
+  #   gcloud-crc32c            google-cloud-cli 591.0.0   go1.27.2  591.0.0               same      NOT fixed
+  #   gke-gcloud-auth-plugin   google-cloud-cli 591.0.0   go1.27.1  591.0.0               same      NOT fixed
+  #
+  # gcloud-crc32c is also the only Go binary in workspace-apply's base,
+  # google-cloud-cli:591.0.0-stable (go1.27.2). 591.0.0 is still the newest in
+  # Google's apt index, the rapid channel's components-2.json (build
+  # 20261016073856) and the image's tags, so no pin moves; the other five are
+  # already fixed at their pins. Re-check Google's index on 2026-11-11.
   - id: CVE-2026-111943
-    statement: "Go stdlib crypto/x509 inside vendor-built Go binaries (docker, gcloud helpers, gh, kubectl, terraform, trivy); needs vendor rebuilds."
-    expired_at: 2026-11-04
+    statement: "Go stdlib crypto/x509 inside Google-built gcloud-crc32c (go1.27.2) and gke-gcloud-auth-plugin (go1.27.1) from google-cloud-cli 591.0.0; no Google build on go1.27.3 yet."
+    expired_at: 2026-11-11
 
   # Same class again (PROPOSED 2026-10-28 ~10:00Z by CLD for the owner's decision;
   # this entry is not accepted until BGD merges it): go-jose v4 DoS when parsing
@@ -160,9 +207,15 @@ vulnerabilities:
   # measured with `trivy rootfs --scanners vuln --severity HIGH,CRITICAL
   # --ignore-unfixed` over the pinned vendor downloads. (tofu also carries it,
   # but INSTALL_TOFU is 0.)
+  #
+  # 2026-10-31 (IMAGE-SCAN-NOV): terraform is now 1.17.1, which links go-jose
+  # 4.1.6, so only trivy (0.76.1, the newest, still go-jose 4.1.5) carries it.
   - id: CVE-2026-116587
     statement: "go-jose v4 JWK parsing DoS inside vendor-built terraform and trivy; no vendor release carries go-jose 4.1.6 yet."
-    expired_at: 2026-11-04
+    # 2026-11-01 (BGD, extended one week): trivy 0.76.1 (2026-10-21) is
+    # still the newest release and still links go-jose 4.1.5, so there is
+    # no release to move to. Re-check trivy's releases on 2026-11-11.
+    expired_at: 2026-11-11
   # Same class again (owner, 2026-10-28 ~21:00Z UTC): a Go standard library
   # os.Root fix (CVE-2026-56857, CRITICAL, fixed in Go 1.26.9 / 1.27.2): on
   # WINDOWS, Root.Mkdir and Root.MkdirAll can follow an NTFS junction out of the
@@ -190,3 +243,542 @@ vulnerabilities:
   - id: CVE-2026-56857
     statement: "Go os.Root junction escape, Windows-only; in Google's gcloud-crc32c and gke-gcloud-auth-plugin, no fixed vendor build yet; kubectl is bumped to 1.36.6 (go1.26.10) instead; our images are Linux."
     expired_at: 2026-11-28
+
+  # swarm-speech's lockfile (apps/swarm-speech/uv.lock), scoped to that path.
+  # Every one is held by an exact upstream pin we cannot move without leaving
+  # the speech stack: qwen-asr 0.0.6, the newest release and the only one with
+  # the streaming API engines.py calls, pins vllm==0.14.0 and
+  # transformers==4.57.6; vllm 0.14.0 pins torch==2.9.1 and xgrammar==0.1.29;
+  # gradio (qwen-asr's demo UI, never imported by the server) caps pillow<13.
+  # Overriding those pins would run qwen-asr against a vLLM 10+ minors newer
+  # than it was written for, unverifiable without the L4.
+  #
+  # What bounds them: the server is one container on a stopped-by-default VM
+  # that swarm-api starts for a voice session; its only listener is the
+  # /v1/stream WebSocket (and tokenless /healthz), behind a Google ID-token
+  # check for swarm-api's identity. vLLM is used as an in-process library, so
+  # its OpenAI-compatible server (the auth bypass, SSRF, /v1/completions,
+  # structured-output and video-frame bugs) is never started. The models are
+  # fixed by a 40-hex Hugging Face revision with every file sha256-checked
+  # (models.py), which is what bounds the malicious-checkpoint, trust_remote_code
+  # and malicious-model bugs. Audio arrives as raw PCM; no image is decoded.
+  #
+  # Revisit by bumping qwen-asr once it releases on a newer vllm/transformers.
+  - id: CVE-2026-114053
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-114055
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-115912
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-115915
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-22778
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-24779
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-27893
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-41523
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-48746
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-5497
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-55514
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-55574
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-4372
+    statement: "transformers 4.57.6, pinned exactly by qwen-asr 0.0.6 (its newest release); the fix is the 5.x major. The server loads only a revision-pinned, sha256-checked model and never calls save_pretrained."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-5241
+    statement: "transformers 4.57.6, pinned exactly by qwen-asr 0.0.6 (its newest release); the fix is the 5.x major. The server loads only a revision-pinned, sha256-checked model and never calls save_pretrained."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-9856
+    statement: "transformers 4.57.6, pinned exactly by qwen-asr 0.0.6 (its newest release); the fix is the 5.x major. The server loads only a revision-pinned, sha256-checked model and never calls save_pretrained."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-24747
+    statement: "torch 2.9.1, pinned exactly by vllm 0.14.0 (itself pinned by qwen-asr 0.0.6); the server loads only revision-pinned, sha256-checked checkpoints."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-25048
+    statement: "xgrammar 0.1.29, pinned exactly by vllm 0.14.0 (itself pinned by qwen-asr 0.0.6); the server takes no grammar or structured-output request from anyone."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112390
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112392
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112393
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112397
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112398
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112399
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112400
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112402
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112403
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112404
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112405
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112406
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112892
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112893
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112894
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112895
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112896
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112897
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112900
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-112902
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-96637
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-96639
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-96640
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-96642
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-96643
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-96644
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: CVE-2026-96778
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+  - id: GHSA-78g4-xqwv-q3g8
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    paths:
+      - apps/swarm-speech/uv.lock
+    expired_at: 2026-12-17
+
+  # The same 45 acceptances, for the swarm-speech IMAGE. The entries above are
+  # scoped to apps/swarm-speech/uv.lock, the path the repository gate scans
+  # (scripts/trivy-new-findings.sh copies only those). The image scans --
+  # build-check's scripts/scan-image-layout.sh and the release's
+  # push-images.sh --scan -- find these same packages at
+  # /opt/venv/lib/python3.11/site-packages, where that path never matches, so
+  # they refused swarm-speech on every finding above (PR 3524's build-check).
+  # Each entry is scoped by purl to the exact pinned package version instead:
+  # same id, statement and expiry as its lockfile twin, so a bump past the pin
+  # stops matching, and the dates move together. No `paths`, so the repository
+  # gate never reads them.
+  - id: CVE-2026-114053
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-114055
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-115912
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-115915
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-22778
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-24779
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-27893
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-41523
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-48746
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-5497
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-55514
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-55574
+    statement: "vLLM 0.14.0, pinned exactly by qwen-asr 0.0.6 (its newest release); the server runs vLLM in-process through qwen-asr, never vLLM's HTTP API server, and loads only a revision-pinned, sha256-checked model."
+    purls:
+      - pkg:pypi/vllm@0.14.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-4372
+    statement: "transformers 4.57.6, pinned exactly by qwen-asr 0.0.6 (its newest release); the fix is the 5.x major. The server loads only a revision-pinned, sha256-checked model and never calls save_pretrained."
+    purls:
+      - pkg:pypi/transformers@4.57.6
+    expired_at: 2026-12-17
+  - id: CVE-2026-5241
+    statement: "transformers 4.57.6, pinned exactly by qwen-asr 0.0.6 (its newest release); the fix is the 5.x major. The server loads only a revision-pinned, sha256-checked model and never calls save_pretrained."
+    purls:
+      - pkg:pypi/transformers@4.57.6
+    expired_at: 2026-12-17
+  - id: CVE-2026-9856
+    statement: "transformers 4.57.6, pinned exactly by qwen-asr 0.0.6 (its newest release); the fix is the 5.x major. The server loads only a revision-pinned, sha256-checked model and never calls save_pretrained."
+    purls:
+      - pkg:pypi/transformers@4.57.6
+    expired_at: 2026-12-17
+  - id: CVE-2026-24747
+    statement: "torch 2.9.1, pinned exactly by vllm 0.14.0 (itself pinned by qwen-asr 0.0.6); the server loads only revision-pinned, sha256-checked checkpoints."
+    purls:
+      - pkg:pypi/torch@2.9.1
+    expired_at: 2026-12-17
+  - id: CVE-2026-25048
+    statement: "xgrammar 0.1.29, pinned exactly by vllm 0.14.0 (itself pinned by qwen-asr 0.0.6); the server takes no grammar or structured-output request from anyone."
+    purls:
+      - pkg:pypi/xgrammar@0.1.29
+    expired_at: 2026-12-17
+  - id: CVE-2026-112390
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112392
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112393
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112397
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112398
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112399
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112400
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112402
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112403
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112404
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112405
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112406
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112892
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112893
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112894
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112895
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112896
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112897
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112900
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-112902
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-96637
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-96639
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-96640
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-96642
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-96643
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-96644
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: CVE-2026-96778
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+  - id: GHSA-78g4-xqwv-q3g8
+    statement: "Pillow 12.3.0, capped below 13 by gradio (every release), a qwen-asr dependency; the speech server decodes PCM audio only and never opens an image."
+    purls:
+      - pkg:pypi/pillow@12.3.0
+    expired_at: 2026-12-17
+
+  # Vendored non-Python content inside two of those wheels, found by the same
+  # image scans and not by the purls above: ray 2.60.0 (a vLLM dependency)
+  # ships a Java jar with jackson 2.18.8 and guava 32.0.1, and gradio 6.17.3
+  # (a qwen-asr dependency) ships a Node build with follow-redirects 1.16.0.
+  # Neither has a fixed release we can take without leaving qwen-asr's pins.
+  # Scoped by path to the one file each was found in, so no other image's
+  # jackson, guava or follow-redirects is accepted, and the repository gate
+  # (which copies only apps/swarm-speech/uv.lock entries) never reads them.
+  # Measured 2026-11-06 with trivy 0.76.1 over the lock installed into
+  # /opt/venv: these 9 findings without the entries, none with them.
+  - id: CVE-2026-89407
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-89425
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-68497
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-91776
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-91777
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-102554
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-111755
+    statement: "follow-redirects 1.16.0 in gradio 6.17.3's bundled Node build, a qwen-asr dependency; the speech server never launches gradio or Node, so nothing runs it."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/gradio/templates/node/build/node_modules/follow-redirects/package.json
+    expired_at: 2026-12-17
+  - id: CVE-2026-111756
+    statement: "follow-redirects 1.16.0 in gradio 6.17.3's bundled Node build, a qwen-asr dependency; the speech server never launches gradio or Node, so nothing runs it."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/gradio/templates/node/build/node_modules/follow-redirects/package.json
+    expired_at: 2026-12-17
+  - id: CVE-2026-116689
+    statement: "follow-redirects 1.16.0 in gradio 6.17.3's bundled Node build, a qwen-asr dependency; the speech server never launches gradio or Node, so nothing runs it."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/gradio/templates/node/build/node_modules/follow-redirects/package.json
+    expired_at: 2026-12-17

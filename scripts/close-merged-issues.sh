@@ -98,8 +98,13 @@ work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 answer="${work}/answer.json"
 
-if ! gh api graphql -f query="${QUERY}" -f owner="${repo%%/*}" -f name="${repo#*/}" \
-    -F number="${pr}" >"${answer}"; then
+# Reads go through gh_api_read_retry: a transient failure (a timeout, a 502,
+# a rate limit) is asked again; one that never clears fails closed as before.
+# The closes and comments are writes and are never retried.
+answer_err="${work}/answer.err"
+if ! gh_api_read_retry "${answer}" "${answer_err}" graphql -f query="${QUERY}" \
+    -f owner="${repo%%/*}" -f name="${repo#*/}" -F number="${pr}"; then
+  cat "${answer_err}" >&2
   die "could not read #${pr}'s closing references from ${repo}"
 fi
 
@@ -164,8 +169,9 @@ while read -r verdict ref; do
   if [[ "${verdict}" == "close" ]]; then
     # The GraphQL node is typed Issue even for a pull request; REST knows.
     kind="${work}/kind-${ref}"
-    if ! gh api "repos/${repo}/issues/${ref}" --jq 'if .pull_request then "pull" else "issue" end' \
-        >"${kind}" </dev/null; then
+    if ! gh_api_read_retry "${kind}" "${kind}.err" "repos/${repo}/issues/${ref}" \
+        --jq 'if .pull_request then "pull" else "issue" end'; then
+      cat "${kind}.err" >&2
       err "could not tell whether #${ref} is a pull request; not closed"
       note "* **could not tell whether #${ref} is a pull request; not closed**"
       failed+=("#${ref}")

@@ -105,7 +105,9 @@ def test_the_profile_is_claude_code_on_the_browser_image():
     extra = dict(profile.inputs)
     assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
     assert extra.pop("qa_identity").choices == ("console",)
-    assert extra == dict(claude.inputs)
+    # pull_request is the owner's pick on #3470 for claude-code, codex and
+    # claude-code-review alone.
+    assert extra == {k: v for k, v in claude.inputs.items() if k != "pull_request"}
     assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
     assert profile.image == RUNNER_PROFILES["browser"].image
@@ -212,12 +214,18 @@ def _no_live_browser_from_the_host(monkeypatch):
     refused as `live_browser_unavailable` (2026-10-25, POOL-LIMITS-QUOTA).
     The rest of a live-browser container's variables go too, so no case is a
     live attempt unless it sets its variables itself, after this has run.
+
+    `SWARM_CHILDREN` goes too: a SwarmCloud container sets it, and inherited
+    it appended the exploration note to the prompt these tests compare
+    exactly (2026-11-01, LOAD-SPEED-WORKFLOWS-LIST's pre-publish gate).
     """
     from agent_worker import handoff
+    from agent_worker.children import CHILDREN_ENV
     from agent_worker.runners import claude_code
 
     monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
     monkeypatch.delenv(handoff.HANDOFF_ENV, raising=False)
+    monkeypatch.delenv(CHILDREN_ENV, raising=False)
     for name in ("SWARM_BROWSER_UPLOADS", "SWARM_TEST_BROWSERS_PATH", "SWARM_JEV_BACKEND"):
         monkeypatch.delenv(name, raising=False)
 

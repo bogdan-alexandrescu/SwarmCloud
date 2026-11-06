@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -38,12 +39,18 @@ from pydantic import BaseModel, ConfigDict
 from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
-from .. import sessiontag
+from .. import route_scope, sessiontag
 from ..auth import AuthContext
 from .tasks import require_member
-from ..attempt_totals import totals_for, with_totals
+from ..attempt_totals import IN_LIMIT, totals_for, with_totals
 from ..children import PARENT_CANCELLED, ChildService
-from ..codec import task_to_api, workflow_claude_session, workflow_dispatch, workflow_to_api
+from ..codec import (
+    masking_for,
+    task_to_api,
+    workflow_claude_session,
+    workflow_dispatch,
+    workflow_to_api,
+)
 from ..waiting_detail import build_waiting, waiting_row
 from ..task_accounts import accounts_for
 from ..errors import ApiError, Conflict, Forbidden, ValidationFailed
@@ -69,9 +76,18 @@ from ..deps import (
     tenant_scope,
 )
 from ..rollup import RollupResult, SweepReport
-from ..schemas import McpCredentialCreate, WorkflowCreate, _mcp_credentials_field
+from ..schemas import (
+    ABOUT_GOALS_MAX,
+    ABOUT_KEY,
+    DESCRIPTION_SOURCE_KEY,
+    McpCredentialCreate,
+    WorkflowCreate,
+    _mcp_credentials_field,
+)
 from ..stalls import stalled_workflows
+from ..steprerun import RERUN_OF_METADATA_KEY
 from ..store import CancelContended, workflow_listing_token
+from ..validation import ISSUE_RUN_METADATA_KEY, QA_TARGET_METADATA_KEY, SCHEDULE_METADATA_KEY
 from ..waker import ring
 
 log = logging.getLogger(__name__)
@@ -147,7 +163,95 @@ def repository_key(value: Any) -> str | None:
     return f"{host}/{owner}/{repo}".lower() if owner and repo else None
 
 
+#: Where a workflow was started from, the one value the console words
+#: (`started_from` on every workflow read; BGD, 2026-11-04). Read off what the
+#: platform already writes on the step tasks, first match wins:
+#:
+#: * `schedule`: `metadata.schedule`, written only by `schedulefire`
+#:   (reserved: a caller's is refused at submission);
+#: * `quality_check`: `metadata.qa_target` on a browser step, written only by
+#:   `qatargets.render_run` (reserved likewise);
+#: * `issue_run`: `metadata.issue_run`, written by `issueruns` and `issueci`;
+#: * `claude_code`: the `claude_session` tag (`sessiontag`) or
+#:   `metadata.origin == "swarm-mcp"`, both written by the sc plugin's bridge;
+#: * `console`: none of these -- the console's own submissions, and any other
+#:   API caller's.
+#:
+#: Nothing new is accepted from a caller to decide it.
+STARTED_FROM: tuple[str, ...] = ("schedule", "quality_check", "issue_run", "claude_code", "console")
+#: `metadata.origin` the sc plugin's bridge writes on every submission.
+CLAUDE_CODE_ORIGIN = "swarm-mcp"
+
+
+def _started_from(tasks: list[Task]) -> str:
+    stored = [t.metadata or {} for t in tasks]
+    if any(m.get(SCHEDULE_METADATA_KEY) for m in stored):
+        return "schedule"
+    if any(m.get(QA_TARGET_METADATA_KEY) for m in stored):
+        return "quality_check"
+    if any(m.get(ISSUE_RUN_METADATA_KEY) for m in stored):
+        return "issue_run"
+    if any(sessiontag.of(m) or m.get("origin") == CLAUDE_CODE_ORIGIN for m in stored):
+        return "claude_code"
+    return "console"
+
+
+def workflow_about(workflow: Any, step_tasks: dict[str, Task] | None) -> dict[str, Any]:
+    """What the workflow is about and where it came from, off its step tasks
+    (the frozen `Workflow` has no metadata; every step task carries the
+    workflow's): `repository_url`, `title`, `description`,
+    `description_source`, `about` (`{purpose, goals, output}`: the spec's
+    `metadata.about`, else its description as the purpose, else null),
+    `feature` (`{title, url?}`) and `started_from`
+    (`STARTED_FROM`). Served on every workflow read, the full and the summary
+    view and every `GET /v1/workflows` row alike.
+
+    The keys only when a step task was read, as `claude_session`, so a reader
+    tells "none" (null) from "not read" (absent). Each caller-written string
+    is masked by its task's own masker, as a step's input is."""
+    tasks = list((step_tasks or {}).values())
+    if not tasks:
+        return {}
+    first = next((step_tasks[s.task_id] for s in workflow.steps if s.task_id in step_tasks), tasks[0])
+    stored = first.metadata or {}
+    masking = masking_for(first, warm=False)
+
+    def text(value: Any) -> str | None:
+        return masking.text(value)[0] if isinstance(value, str) and value.strip() else None
+
+    raw_feature = stored.get("feature")
+    feature = None
+    if isinstance(raw_feature, dict) and text(raw_feature.get("title")):
+        feature = {"title": text(raw_feature.get("title"))}
+        if text(raw_feature.get("url")):
+            feature["url"] = text(raw_feature.get("url"))
+    description = text(stored.get("description"))
+    raw_about = stored.get(ABOUT_KEY) if isinstance(stored.get(ABOUT_KEY), dict) else {}
+    goals = [g for g in (text(goal) for goal in raw_about.get("goals") or [] if isinstance(goal, str)) if g]
+    about = {"purpose": text(raw_about.get("purpose")) or description,
+             "goals": goals[:ABOUT_GOALS_MAX], "output": text(raw_about.get("output"))}
+    # A bare description is the purpose; nothing served is null, not {}.
+    about = about if about["purpose"] or about["goals"] or about["output"] else None
+    return {
+        "repository_url": masking.repository_url(first.repository_url)[0],
+        "title": text(stored.get("title")),
+        "description": description,
+        "description_source": text(stored.get(DESCRIPTION_SOURCE_KEY)) if description or about else None,
+        "about": about,
+        "feature": feature,
+        "started_from": _started_from(tasks),
+    }
+
+
+def _workflow_api(workflow: Any, *args: Any, step_tasks: dict[str, Task] | None = None,
+                  **kwargs: Any) -> dict[str, Any]:
+    """`workflow_to_api` and `workflow_about`, one row."""
+    return {**workflow_to_api(workflow, *args, step_tasks=step_tasks, **kwargs),
+            **workflow_about(workflow, step_tasks)}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def create_workflow(
     body: WorkflowCreate,
     response: Response,
@@ -169,7 +273,7 @@ def create_workflow(
         # Each step's input is masked by its own task's masker (the PR #229
         # review): the tasks this request just built carry the workflow's
         # metadata, and the step copy must mask what the task copy masks.
-        "workflow": workflow_to_api(
+        "workflow": _workflow_api(
             workflow,
             step_tasks={task.id: task for task in submission.tasks},
             console_url=ctx.settings.console_url,
@@ -193,6 +297,7 @@ def create_workflow(
 
 
 @router.get("")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_workflows(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
@@ -307,18 +412,23 @@ def list_workflows(
             session=session, repo=repo,
         )
         scope = {"claude_session": session, "repository": repo, "left_out": left_out}
+    # The summary view is the Workflows board's one read: each step carries
+    # what the board draws (`codec.step_task_summary`), its attempt totals
+    # read here in batches. The full view reads no attempts, as before.
+    step_totals = _results_totals(ctx, tenant_id, results, submitted_by) if summary else None
     payload = {
         # Each step's input is masked by its own task's masker, from the step
         # tasks the rollup already read (the PR #229 review); a step whose task
         # the read budget left unread borrows a sibling's, and a workflow none
         # of whose tasks were read serves its step inputs as null.
         "workflows": [
-            workflow_to_api(
+            _workflow_api(
                 r.workflow,
                 r.to_api(),
                 step_tasks=r.step_tasks,
                 console_url=ctx.settings.console_url,
                 summary=summary,
+                step_totals=step_totals,
             )
             for r in results
         ],
@@ -440,6 +550,54 @@ def _scoped_page(
     return matched, report, token, left_out
 
 
+#: Attempts queries a workflow read runs at once. Each is one `in` query of
+#: `IN_LIMIT` step tasks; a page of 100 workflows of 5 steps is 17 of them.
+TOTALS_WORKERS = 8
+
+
+def _step_totals(ctx: AppContext, tenant_id: str, task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """`totals_for` over these step tasks, its `IN_LIMIT` chunks run CONCURRENTLY.
+
+    WHY (console load speed, owner's pick 2026-11-01). swarm-api's time per
+    request was serial Firestore round trips, not CPU (Cloud Monitoring,
+    2026-11-01: 47-68% CPU on 4-8 instances), and `totals_for` runs its
+    chunks one after another. Each chunk is the same one query it always
+    was, and each answers for its own tasks alone, so running them at once
+    changes no figure: a page's attempts cost one round trip of wall time,
+    not one per 30 step tasks.
+    """
+    wanted = list(dict.fromkeys(t for t in task_ids if t))
+    chunks = [wanted[i : i + IN_LIMIT] for i in range(0, len(wanted), IN_LIMIT)]
+    if len(chunks) <= 1:
+        return totals_for(ctx.db, tenant_id, wanted)
+    out: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=min(TOTALS_WORKERS, len(chunks)),
+                            thread_name_prefix="step-totals") as pool:
+        for part in pool.map(lambda chunk: totals_for(ctx.db, tenant_id, chunk), chunks):
+            out.update(part)
+    return out
+
+
+def _results_totals(
+    ctx: AppContext, tenant_id: str, results: list[RollupResult], submitted_by: str | None
+) -> dict[str, dict[str, Any]]:
+    """The attempt totals of every step task the rollup read for these rows.
+
+    The tasks are the ones the rollup's `get_all` already returned
+    (`RollupResult.step_tasks`); no task document is read again. Filtered by
+    submitter as `_by_ids` filters its `tasks`: a step task that is not a
+    continuation-scoped caller's gets no entry, so its step's `task_summary`
+    is null whatever workflow it claims to belong to.
+    """
+    ids = [
+        task.id
+        for r in results
+        for task in r.step_tasks.values()
+        if submitted_by is None or task.submitted_by == submitted_by
+    ]
+    return _step_totals(ctx, tenant_id, ids)
+
+
 def _named(ctx: AppContext, workflows: list[dict], tasks: list[dict]) -> None:
     """`submitted_by_name` on every workflow and step task served, from ONE
     lookup for the whole response."""
@@ -482,16 +640,19 @@ def _by_ids(
                 tasks.setdefault(task.id, task)
     step_tasks = list(tasks.values())
     accounts = accounts_for(ctx.db, tenant_id, step_tasks)
-    totals = totals_for(ctx.db, tenant_id, [t.id for t in step_tasks])
+    totals = _step_totals(ctx, tenant_id, [t.id for t in step_tasks])
     served = {w.workflow_id for w in found}
     payload = {
         "workflows": [
-            workflow_to_api(
+            _workflow_api(
                 r.workflow,
                 r.to_api(),
                 step_tasks=r.step_tasks,
                 console_url=ctx.settings.console_url,
                 summary=summary,
+                # Only the step tasks this read serves: a row that is not the
+                # caller's carries a null block, as it is left out of `tasks`.
+                step_totals=totals,
             )
             for r in results
         ],
@@ -521,7 +682,27 @@ def _by_ids(
     return payload
 
 
+def _without_rerun_replaced(workflow: Any, tasks: list[Task]) -> list[Task]:
+    """`tasks` less each task a step re-run replaced: one naming this
+    workflow and a step whose task is now another one that was re-run
+    (`metadata.rerun_of`). Every other task is kept as it was."""
+    pointers = {s.step_id: s.task_id for s in workflow.steps}
+    by_id = {t.id: t for t in tasks}
+    rerun_steps = {
+        step_id for step_id, task_id in pointers.items()
+        if task_id in by_id and (by_id[task_id].metadata or {}).get(RERUN_OF_METADATA_KEY)
+    }
+    return [
+        t for t in tasks
+        if not (
+            t.workflow_id == workflow.workflow_id and t.step_id in rerun_steps
+            and pointers.get(t.step_id) != t.id
+        )
+    ]
+
+
 @router.get("/{workflow_id}")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def get_workflow(
     workflow_id: str,
     tenant_id: str = Depends(tenant_scope),
@@ -554,21 +735,28 @@ def get_workflow(
             found[i] for i in dict.fromkeys(named)
             if i in found and (submitted_by is None or found[i].submitted_by == submitted_by)
         ]
+    # A STEP RE-RUN'S OLD TASK IS NOT SERVED AS A STEP (`swarm_api.steprerun`).
+    # It still names this workflow, so the query returns it beside the task
+    # that replaced it, and a reader would show the step twice -- once still
+    # FAILED, asking to be retried again. Only for a step whose task records
+    # `rerun_of`; the old task is still read by id.
+    tasks = _without_rerun_replaced(workflow, tasks)
     # Derived from the tasks this route already loaded rather than from a second
     # read of the same documents.
     result = ctx.rollups.for_workflow_from_tasks(workflow, tasks, complete=True)
     accounts = accounts_for(ctx.db, tenant_id, tasks)
-    totals = totals_for(ctx.db, tenant_id, [t.id for t in tasks])
+    totals = _step_totals(ctx, tenant_id, [t.id for t in tasks])
 
     payload = {
         # The step copies of each input are masked by the tasks' own maskers,
         # so `workflow.steps[i].input` and `tasks[i].input` agree (the PR #229
         # review), from the tasks this route already loaded.
-        "workflow": workflow_to_api(
+        "workflow": _workflow_api(
             workflow,
             result.to_api(),
             step_tasks={t.id: t for t in tasks},
             console_url=ctx.settings.console_url,
+            step_totals=totals,
         ),
         # Read back off the tasks, which is where the options are stored; the
         # frozen `Workflow` dataclass has no metadata field to hold them. The
@@ -669,6 +857,35 @@ def cancel_workflow(
             headers={"Retry-After": str(max(1, int(refused.retry_after_seconds) + 1))},
         )
     return result
+
+
+@router.post("/{workflow_id}/steps/{step_id}/rerun")
+def rerun_workflow_step(
+    workflow_id: str,
+    step_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Re-run a failed step inside its workflow (`swarm_api.steprerun`; the
+    owner's pick on PR #3123). The body is empty: the caller names a step,
+    and the step's runner profile and spec are the ones swarm-api resolved at
+    submission (invariant 10).
+
+    A `member` or above, as cancel is (Q8): re-running spends what the steps
+    spend. Refused 409 `conflict` with `detail.reason` `workflow_still_running`
+    until every step has finished, `step_not_failed` for a step that did not
+    fail, `workflow_cancelled`, and `step_rerun_raced` when another re-run or
+    a cancel landed first; 404 `not_found` (`step_not_found`) for a step the
+    workflow has not. Established codes: a new code ships behind a switch.
+    Answers each re-run step's old and new task id."""
+    require_member(ctx, auth)
+    result = ctx.submissions.rerun_workflow_step(auth, tenant_id, workflow_id, step_id)
+    return {
+        "workflow_id": result.workflow_id,
+        "step_id": result.step_id,
+        "replaced": result.replaced,
+    }
 
 
 # --------------------------------------------------------------------------

@@ -264,14 +264,15 @@ run "critical_and_error_reach_the_urgent_channels_and_warning_does_not" {
   }
 
   variables {
-    service_names                = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"]
-    wake_subscription            = "swarm-scheduler-wake-sub"
-    dead_letter_subscription     = "swarm-scheduler-wake-dlq-sub"
-    safety_tick_job              = "swarm-scheduler-tick"
-    tenant_ids                   = ["eng"]
-    extra_notification_channels  = ["projects/saga-agents-staging/notificationChannels/1111111111"]
-    urgent_notification_channels = ["projects/saga-agents-staging/notificationChannels/2222222222"]
-    require_alert_channels       = true
+    fencing_alert_excluded_tenants = ["smoke", "u-sw-c90291"]
+    service_names                  = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"]
+    wake_subscription              = "swarm-scheduler-wake-sub"
+    dead_letter_subscription       = "swarm-scheduler-wake-dlq-sub"
+    safety_tick_job                = "swarm-scheduler-tick"
+    tenant_ids                     = ["eng"]
+    extra_notification_channels    = ["projects/saga-agents-staging/notificationChannels/1111111111"]
+    urgent_notification_channels   = ["projects/saga-agents-staging/notificationChannels/2222222222"]
+    require_alert_channels         = true
   }
 
   # Every policy the module creates, by severity. The routing assertions below

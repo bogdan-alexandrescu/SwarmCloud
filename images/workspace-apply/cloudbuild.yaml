@@ -81,6 +81,12 @@ steps:
       # APT_REFRESH), which the Dockerfile's apt RUN line names.
       - --build-arg
       - APT_REFRESH=${_APT_REFRESH}
+      # The project's mirrors, which build-images.sh passes as substitutions
+      # (recipe_mirror_subs; the Dockerfile names no project, DAYONE-DESAGA-1).
+      - --build-arg
+      - MIRROR_GHCR=${_MIRROR_GHCR}
+      - --build-arg
+      - BUILDKIT_SYNTAX=${_BUILDKIT_SYNTAX}
       - /workspace/workspace-apply-ctx
 
 images:

@@ -220,8 +220,10 @@ run "the_workflow_rollup_runs_per_tenant_as_its_own_identity" {
     error_message = "the root hands this address to swarm-api as ROLLUP_SWEEPER_USERS; it must be the account the jobs present"
   }
 
+  # The account is terraform/bootstrap's since DAYONE-BOOT-2; this module
+  # reads it by the id modules/service_account_ids spells.
   assert {
-    condition     = google_service_account.rollup_sweeper.account_id == "swarm-rollup-sweeper"
+    condition     = data.google_service_account.rollup_sweeper.account_id == "swarm-rollup-sweeper"
     error_message = "the account id is spelled in modules/service_account_ids so bootstrap grants the deployer on it"
   }
 
@@ -240,11 +242,6 @@ run "the_workflow_rollup_runs_per_tenant_as_its_own_identity" {
       startswith(job.description, "managed-by=swarm-terraform;")
     ])
     error_message = "every rollup job carries managed-by=swarm-terraform in its description"
-  }
-
-  assert {
-    condition     = startswith(google_service_account.rollup_sweeper.description, "managed-by=swarm-terraform;")
-    error_message = "the sweeper account carries managed-by=swarm-terraform in its description"
   }
 
   assert {
@@ -344,11 +341,6 @@ run "the_issue_sweep_job_no_longer_exists" {
     condition     = contains(output.scheduler_job_names, "swarm-issue-run-advance-eng") && contains(output.scheduler_job_names, "swarm-stranded-pr-sweep-research")
     error_message = "the control: the per-tenant ticks that remain are still listed, so the absence above proves something"
   }
-
-  assert {
-    condition     = !strcontains(google_service_account.rollup_sweeper.description, "issue-sweep")
-    error_message = "the sweeper account's description names only the jobs that present it, and no issue-sweep job does"
-  }
 }
 
 # The stranded-PR sweep (part of #295): one job per registered tenant, every
@@ -413,11 +405,6 @@ run "the_stranded_pr_sweep_runs_per_tenant_every_half_hour_as_the_sweeper_withou
       && job.attempt_deadline == "300s" && job.retry_config[0].retry_count == 0
     ])
     error_message = "every stranded-PR sweep carries managed-by=swarm-terraform, answers inside 300 s and is not retried"
-  }
-
-  assert {
-    condition     = strcontains(google_service_account.rollup_sweeper.description, "stranded-pr-sweep")
-    error_message = "the sweeper account's description names every job that presents it"
   }
 
   assert {
@@ -527,11 +514,6 @@ run "the_repo_index_poll_runs_per_tenant_every_five_minutes_as_the_sweeper" {
   }
 
   assert {
-    condition     = strcontains(google_service_account.rollup_sweeper.description, "repo-index-poll")
-    error_message = "the sweeper account's description names every job that presents it"
-  }
-
-  assert {
     condition     = contains(output.scheduler_job_names, "swarm-repo-index-poll-eng") && contains(output.scheduler_job_names, "swarm-repo-index-poll-research")
     error_message = "scheduler_job_names must list every repo_index_poll job"
   }
@@ -612,11 +594,6 @@ run "the_merge_wake_runs_per_tenant_every_minute_as_the_sweeper" {
       startswith(job.description, "managed-by=swarm-terraform;")
     ])
     error_message = "every merge_wake job carries managed-by=swarm-terraform in its description"
-  }
-
-  assert {
-    condition     = strcontains(google_service_account.rollup_sweeper.description, "merge-wake")
-    error_message = "the sweeper account's description names every job that presents it"
   }
 
   assert {
@@ -798,5 +775,50 @@ run "no_api_endpoint_no_task_finished_push" {
   assert {
     condition     = length(google_pubsub_subscription.api_task_finished) == 0
     error_message = "the push subscription is off unless the root enables it"
+  }
+}
+
+# The rollup sweeper account itself is terraform/bootstrap's since
+# DAYONE-BOOT-2 (platform_service_accounts.tf); modules/scheduler only reads it.
+# Its description -- what the runs above used to read off the module's own
+# resource -- is held here, on the root that now writes it.
+run "the_rollup_sweeper_account_names_every_job_that_presents_it" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  # terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1);
+  # a mock provider cannot import.
+  override_resource {
+    target = google_storage_bucket.state
+  }
+
+  variables {
+    frontend_iap_members = ["domain:example.com"]
+  }
+
+  assert {
+    condition     = google_service_account.rollup_sweeper.account_id == "swarm-rollup-sweeper"
+    error_message = "the account id is spelled in modules/service_account_ids so bootstrap grants the deployer on it"
+  }
+
+  assert {
+    condition     = startswith(google_service_account.rollup_sweeper.description, "managed-by=swarm-terraform;")
+    error_message = "the sweeper account carries managed-by=swarm-terraform in its description"
+  }
+
+  assert {
+    condition = alltrue([
+      for job in ["workflow-rollup", "stranded-pr-sweep", "repo-index-poll", "merge-wake"] :
+      strcontains(google_service_account.rollup_sweeper.description, job)
+    ])
+    error_message = "the sweeper account's description names every job that presents it"
+  }
+
+  assert {
+    condition     = !strcontains(google_service_account.rollup_sweeper.description, "issue-sweep")
+    error_message = "the sweeper account's description names only the jobs that present it, and no issue-sweep job does"
   }
 }

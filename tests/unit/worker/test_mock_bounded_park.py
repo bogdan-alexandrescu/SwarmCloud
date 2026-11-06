@@ -96,6 +96,48 @@ def test_the_attempt_after_a_mock_park_finishes_instead_of_parking_again(db, wor
     assert output["was_resumed"] is True, "the second attempt ran from the park's checkpoint"
 
 
+def test_the_attempt_after_a_refunded_quota_park_resumes_and_finishes(db, worker_factory):
+    """#2650, dev acceptance. A provider-quota park REFUNDS its attempt: the park
+    takes one off `attempt_count` and counts it in `quota_park_resumes`, so the
+    admission after it writes the same 1 the first lease read. The worker counts
+    the refund back: the mock sees 2 and runs, and the park's checkpoint is
+    restored. On main the attempt read 1, parked again and restored nothing, so
+    the acceptance task stayed PARKED for its 900 s."""
+    seed_attempt(db, attempt_id="att_1", lease_id="lease_1", generation=1, task_input=QUOTA_RUN)
+    first, _, _ = worker_factory(attempt_id="att_1", lease_id="lease_1", generation=1)
+
+    assert first.run() == ExitCode.PARKED
+    parked = db.doc("tasks/task_1")
+    assert parked["attempt_count"] == 0, "the quota park refunded its attempt"
+    metadata = dict(parked["metadata"])
+    assert metadata["quota_park_resumes"] == 1
+    checkpoint = parked["latest_checkpoint"]
+
+    # Admission after `next_eligible_at`: a new lease, a new generation, and
+    # the REFUNDED count plus one, the task's metadata unchanged.
+    seed_attempt(
+        db,
+        attempt_id="att_2",
+        lease_id="lease_2",
+        generation=2,
+        attempt_count=parked["attempt_count"] + 1,
+        latest_checkpoint=checkpoint,
+        task_input=QUOTA_RUN,
+    )
+    db.doc("tasks/task_1")["metadata"] = metadata
+    second, _, _ = worker_factory(attempt_id="att_2", lease_id="lease_2", generation=2)
+
+    # MUTATION: write `attempt_count` alone into the runner's input: exit 75.
+    assert second.run() == ExitCode.OK, "the attempt after a refunded quota park parked again"
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.SUCCEEDED.value
+    assert len(_parks(db)) == 1
+    output = task["result_summary"]["runner"]["output"]
+    # MUTATION: leave `quota_park_resumes` out of `_recorded_checkpoint`: the
+    # attempt is taken for the task's first and restores nothing.
+    assert output["was_resumed"] is True, "the park's checkpoint was not restored"
+
+
 def test_the_bound_holds_when_the_parks_checkpoint_fails(db, worker_factory, monkeypatch):
     """THE REVIEW OF #213. A checkpoint that fails to upload is logged and the
     park goes ahead -- the provider really is refusing, so parking is still

@@ -50,3 +50,23 @@ terraform leaves a null output out of state, so the named read fails "not
 found": the script tells that apart with one unnamed `terraform output -json`,
 prints a notice and exits 0 without asking gcloud or the cluster anything. A
 state terraform cannot read at all is still a failure.
+
+**swarm-voice rolls the same way** (lane VOICE-ROLL, part of #2688; Voice
+it's phase one, docs/design/voice-it.md §3.4). `scripts/roll-voice.sh` does
+for the one-replica StatefulSet `swarm-system/swarm-voice` what
+`scripts/roll-graph.sh` does for `swarm-graph`: it applies `terraform output
+-raw swarm_voice_manifest` (terraform/infra/voice.tf) through
+`kubernetes/apply.sh --swarm-voice`, which refuses an unfilled
+`__PLACEHOLDER__`, Kubernetes RBAC, a Secret and any namespace but
+`swarm-system`, then waits for `rollout status statefulset/swarm-voice` and
+fails unless its pod runs the manifest's digest. Same flags, same
+`agents-staging` refusal, and one more: it applies to `swarm-autopilot`
+(`GKE_CLUSTER`) only, because only that cluster's workload pool holds the
+binding that lets the swarm-voice KSA act as `swarm-voice@`; any other
+`swarm-` cluster is refused before its credentials are fetched. The release
+and hotfix run it after the swarm-typesafe-fwd roll. One replica means a roll
+replaces the pod: a live voice session loses the turn in flight, not the
+conversation. Until `voice_it = "on"` with a swarm-voice digest the output is
+null, and the script and `apply.sh --swarm-voice` each print a notice and exit
+0 without asking gcloud or the cluster anything; a state terraform cannot read
+is still a failure.

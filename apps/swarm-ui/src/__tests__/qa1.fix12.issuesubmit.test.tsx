@@ -157,12 +157,13 @@ describe('runs-submit-14: an issue with open runs says so before the button', ()
       expect(el, 'nothing says the issue already has open runs').not.toBeNull()
       return el as HTMLElement
     }, WAIT)
-    expect(visible(open)).toContain('Open runs for this issue: run_4c1e09d2 (Planned), run_19ab77e0 (Running)')
+    // By state and age since QA2-FIX-16 (runs2-35); the id is the link's title.
+    expect(visible(open)).toMatch(/^Open runs for this issue: Planned \S+ ago, Running \S+ ago\./)
     expect(visible(open)).not.toContain('run_0ld0ne00')
     expect(visible(open)).not.toContain('run_e1sewhere')
     // Before the button, in reading order.
     expect(open.compareDocumentPosition(planButton()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    const link = [...open.querySelectorAll('a')].find((a) => a.textContent === 'run_4c1e09d2')!
+    const link = [...open.querySelectorAll('a')].find((a) => a.getAttribute('title') === 'run_4c1e09d2')!
     expect(link.getAttribute('href')).toBe('/runs/run_4c1e09d2')
     fireEvent.click(link, { button: 0 })
     expect(go).toHaveBeenCalledWith('work/runs?run=run_4c1e09d2')

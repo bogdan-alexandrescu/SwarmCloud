@@ -15,6 +15,7 @@ import {
   type ResourceClassSpec,
   type Runtime,
 } from './types'
+import { backendWord } from './words'
 
 /**
  * THE RUNTIME TOPOLOGY -- what kinds of agent this platform can run, where each
@@ -397,11 +398,12 @@ function BackendRow({
   return (
     <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : unset ? 'is-paused limit-unset' : full || shut ? 'is-warn full' : undefined}>
       <th role="rowheader" scope="row">
-        {/* The identifier the API sent, verbatim. A prettified display name
-            would be a two-entry table keyed on a frozen enum, and a backend
-            this UI has never heard of would render as a blank instead of
-            naming itself. */}
-        <span className="mono">{backend}</span>
+        {/* THE BACKEND IN WORDS (QA2 capacity-14, cap2-10): Pools, Holders
+            and By runner profile name it `Cloud Run`, and this table printed
+            the API's enum beside them. `backendWord` is the console's one map;
+            a backend it has never heard of still names itself, in lower case,
+            and the identifier the API sent stays the cell's title. */}
+        <span title={backend}>{backendWord(backend)}</span>
       </th>
       {/* `data-label` is the column name, repeated nowhere else and rendered
           only by §B6.3's `::before` below 900px. It adds no DOM and no text
@@ -631,6 +633,12 @@ function RuntimeCard({
   // when they agree there is only one question to answer.
   const platformChose = runtime.backend !== runtime.resolved_backend
   const spec = runtime.resources
+  // THE AGENT'S SHARE, when the pod runs a display beside it (#3118): the
+  // class's figure is both containers, and a step sized by it was killed at
+  // the agent's.
+  const display = typeof runtime.display_memory_gib === 'number' ? runtime.display_memory_gib : null
+  const agent = typeof runtime.agent_memory_gib === 'number' ? runtime.agent_memory_gib : null
+  const pod = typeof runtime.pod_memory_gib === 'number' ? runtime.pod_memory_gib : spec.memory_gib
   const left = spec.memory_gib - spec.disk_gib
   const coherent = Number.isFinite(left) && left >= 0
   const off = runtime.available === false
@@ -691,13 +699,16 @@ function RuntimeCard({
           <li className="ctl-fact rt-runs-on">
             <b>runs on</b>
             <span className="rt-runs-on-value">
-              <span className="mono rt-backend">{runtime.resolved_backend}</span>
+              <span className="rt-backend" title={runtime.resolved_backend}>{backendWord(runtime.resolved_backend)}</span>
+              {/* CHOSEN AUTOMATICALLY, IN WORDS (QA2 cap2-10): `← ` and the
+                  declared token read as a code, not as "the profile left the
+                  choice to the platform". The declared value stays the title. */}
               {platformChose && (
                 <span
                   className="rt-declared"
                   title={`The profile declares ${runtime.backend}; resolve_backend turned it into ${runtime.resolved_backend}.`}
                 >
-                  ← {runtime.backend}
+                  chosen automatically
                 </span>
               )}
             </span>
@@ -727,7 +738,14 @@ function RuntimeCard({
                 an estimate, not a measurement: no test reads the key's
                 rendered width. */}
             <b>memory</b>
-            {spec.memory_gib} GiB
+            {display !== null && agent !== null ? (
+              <span>
+                {agent} GiB for the agent
+                <span className="muted"> · display {display} GiB · pod {pod} GiB</span>
+              </span>
+            ) : (
+              <>{spec.memory_gib} GiB</>
+            )}
           </li>
           <li className={`ctl-fact${coherent ? '' : ' is-absent'}`}>
             {/* THE WORKSPACE IS A SLICE OF THE MEMORY BESIDE IT, not storage
@@ -1127,8 +1145,14 @@ function Sizing({
                            no runtime resolves to this class, so no caller can
                            reach it. `--info` is this sheet's tone for a fact
                            that is not a verdict. */
-                        <ToneMark tone="is-info"
-                          title="No runtime in this catalogue resolves to this class, so no caller can reach it.">unreachable</ToneMark>
+                        /* THE REASON IS ON THE PAGE (QA2 cap2-10): it was
+                           the mark's title alone, so `unreachable` read as a
+                           fault with no cause. */
+                        <span className="rt-unreachable">
+                          <ToneMark tone="is-info"
+                            title="No runtime in this catalogue resolves to this class, so no caller can reach it.">unreachable</ToneMark>
+                          <span className="muted"> no runtime uses this size</span>
+                        </span>
                       ) : (
                         /* ONE UNBROKEN SPAN PER RUNTIME (visual QA V194,
                            2026-10-27): one span joined with ", " broke a name

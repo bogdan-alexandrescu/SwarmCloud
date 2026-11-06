@@ -80,7 +80,7 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
 from urllib.parse import quote, urlparse
 
@@ -103,6 +103,7 @@ from swarm_common.states import (
     assert_transition,
 )
 from swarm_redaction import redact as redact_text
+from swarm_rollup import derived_state_write
 
 from .accountlease import Assignment, fetch_identity_token
 from .errors import (
@@ -187,6 +188,20 @@ RELEASE_WAIT_MAX_RESUMES = 4
 #: the bound, and on the routes' path swarm-api's own value decides.
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
+
+#: A continuation at the time limit (BGD, 2026-11-02): a SCHEDULED_RETRY park
+#: whose detail carries a `TIME_LIMIT_DETAIL_KEY` block, written by
+#: `lifecycle._continue_at_time_limit`. Such a park refunds its attempt, and
+#: adds one to `metadata.time_limit_continuations`, while fewer than
+#: TIME_LIMIT_MAX_CONTINUATIONS were; past it the park spends an attempt. Restated as
+#: `swarm_api.attemptstate.TIME_LIMIT_CONTINUATIONS` and
+#: `TIME_LIMIT_MAX_CONTINUATIONS`, which say why 2, and reserved from callers
+#: by `swarm_api.validation`; tests/unit/worker/test_time_limit_continuation.py
+#: holds them equal. The lifecycle continues no further than the bound: the
+#: third stop at the limit fails the task.
+TIME_LIMIT_DETAIL_KEY = "time_limit"
+TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
+TIME_LIMIT_MAX_CONTINUATIONS = 2
 
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
@@ -361,9 +376,143 @@ def _as_state(value: Any) -> TaskState:
         raise ControlPlaneError(f"task document holds an unknown state {value!r}") from exc
 
 
+def time_limit_attempt_error(continuation: int) -> str:
+    """A continued attempt's `error`, as the attempt list shows it; the same
+    words as `swarm_api.attemptstate.park_attempt_error`."""
+    return (f"{ParkReason.SCHEDULED_RETRY.value}: continued at the time limit "
+            f"({continuation} of {TIME_LIMIT_MAX_CONTINUATIONS})")
+
+
 def _count(value: Any) -> int:
     """A non-negative count from the tenant-writable task document, else 0."""
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+# ---------------------------------------------------------------------------
+# The task's read-side views (contract request 132, accepted 2026-11-01)
+# ---------------------------------------------------------------------------
+#
+# `Task.attempt_totals` and `Task.current_account` are READ-SIDE VIEWS ONLY:
+# copies, on the task document, of what its attempt documents and its account
+# events already say, so `GET /v1/tasks` serves a page without reading either.
+# NOTHING that admits, leases or counts capacity reads them (invariants 2, 3).
+# The rules are swarm-api's (`swarm_api.attempt_totals.attempt_totals`,
+# `swarm_api.task_accounts.account_after`), restated here because the worker
+# is a separate image; tests/unit/worker/test_stored_task_totals.py holds the
+# stored copy equal to swarm-api's derivation on both write paths. A view that
+# cannot be computed is not written, and never fails the write it rides on.
+
+ATTEMPT_TOTALS_FIELD = "attempt_totals"
+CURRENT_ACCOUNT_FIELD = "current_account"
+#: Attempt documents read for one task's totals; at it, nothing is stored
+#: rather than a total summed short (swarm-api's `PER_TASK_CAP`).
+TOTALS_READ_CAP = 50
+_ACCOUNT_ASSIGNED = "account_assigned"
+_SWAP_CAUSE = {"account_unreadable": "unreadable"}
+_VIEW_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _attempt_seconds(doc: Mapping[str, Any]) -> float | None:
+    started = _as_datetime(doc.get("started_at"))
+    completed = _as_datetime(doc.get("completed_at"))
+    if started is None or completed is None or completed < started:
+        return None
+    return (completed - started).total_seconds()
+
+
+def _cost(doc: Mapping[str, Any]) -> float | None:
+    value = doc.get("cost_usd")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return None
+
+
+def stored_attempt_totals(
+    docs: Sequence[Mapping[str, Any]],
+    *,
+    attempt_id: str,
+    generation: int,
+    own: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`Task.attempt_totals`: swarm-api's `attempt_totals` over `docs`, with
+    `own` (what this write puts on this attempt's document) merged over it,
+    plus `as_of`, the attempt that stored it. NULL IS NOT ZERO, as there."""
+    rows: dict[str, dict[str, Any]] = {str(d.get("attempt_id")): dict(d) for d in docs}
+    if own is not None:
+        rows[attempt_id] = {"attempt_id": attempt_id, "generation": generation,
+                            **rows.get(attempt_id, {}), **dict(own)}
+    attempts = list(rows.values())
+    costs = [c for c in (_cost(a) for a in attempts) if c is not None]
+    measured = [s for s in (_attempt_seconds(a) for a in attempts) if s is not None]
+    starts = [t for t in (_as_datetime(a.get("started_at")) for a in attempts) if t is not None]
+    last = max(
+        attempts,
+        key=lambda a: (_count(a.get("generation")),
+                       _as_datetime(a.get("created_at")) or _VIEW_EPOCH),
+        default=None,
+    )
+    last_seconds = _attempt_seconds(last) if last is not None else None
+    return {
+        "attempts": len(attempts),
+        "attempts_with_cost": len(costs),
+        "cost_usd_total": round(sum(costs), 6) if costs else None,
+        "cost_incomplete": len(costs) < len(attempts),
+        "duration_s_total": round(sum(measured), 1) if measured else None,
+        "duration_incomplete": len(measured) < len(attempts),
+        "first_started_at": min(starts) if starts else None,
+        "last_attempt_cost_usd": _cost(last) if last is not None else None,
+        "last_attempt_duration_s": round(last_seconds, 1) if last_seconds is not None else None,
+        "as_of": {"attempt_id": attempt_id, "generation": generation},
+    }
+
+
+def _account_view(status: str, *, account_id: Any = None, provider: Any = None,
+                  attempt_id: Any = None, generation: Any = None,
+                  swaps: Sequence[Mapping[str, str]] = ()) -> dict[str, Any]:
+    """swarm-api's served account shape (`task_accounts._account`)."""
+    return {
+        "status": status,
+        "account_id": account_id,
+        "provider": provider,
+        "attempt_id": attempt_id,
+        "generation": generation,
+        "swapped_from": swaps[-1]["account_id"] if swaps and account_id else None,
+        "swaps": [dict(s) for s in swaps],
+    }
+
+
+def account_after(prev: Any, event: Mapping[str, Any]) -> dict[str, Any] | None:
+    """`Task.current_account` once `event` is written over `prev`, or None
+    when it is not an account event. swarm-api's `task_accounts.account_after`."""
+    detail = event.get("detail") or {}
+    cause = detail.get("cause")
+    account_id = detail.get("account_id")
+    if (cause != _ACCOUNT_ASSIGNED and cause not in _SWAP_CAUSE) or not (
+        isinstance(account_id, str) and account_id
+    ):
+        return None
+    generation = event.get("generation")
+    same = isinstance(prev, Mapping) and prev.get("generation") == generation
+    swaps = [
+        {"account_id": s["account_id"], "cause": s["cause"]}
+        for s in ((prev.get("swaps") or []) if same else [])
+        if isinstance(s, Mapping) and isinstance(s.get("account_id"), str)
+        and isinstance(s.get("cause"), str)
+    ]
+    if cause == _ACCOUNT_ASSIGNED:
+        provider = detail.get("provider")
+        return _account_view("assigned", account_id=account_id,
+                             provider=provider if isinstance(provider, str) else None,
+                             attempt_id=event.get("attempt_id"), generation=generation,
+                             swaps=swaps)
+    swaps.append({"account_id": account_id, "cause": _SWAP_CAUSE[cause]})
+    if same and prev.get("status") == "assigned" and prev.get("account_id") != account_id:
+        return _account_view("assigned", account_id=prev.get("account_id"),
+                             provider=prev.get("provider"), attempt_id=prev.get("attempt_id"),
+                             generation=generation, swaps=swaps)
+    return _account_view("not_assigned_yet",
+                         attempt_id=prev.get("attempt_id") if same else event.get("attempt_id"),
+                         generation=generation, swaps=swaps)
 
 
 # ---------------------------------------------------------------------------
@@ -814,6 +963,10 @@ class ControlPlane:
         # True inside `startup_budget()`. Read by `call_options`, which every
         # call this class makes goes through.
         self._budgeted = False
+        # Contract request 132: an attempt write made inside `startup_budget()`
+        # whose task totals wait for the window to close
+        # (`store_pending_attempt_totals`).
+        self._totals_pending = False
         # Where provider outcomes go: the quota broker, which the entrypoint
         # builds from `WorkerConfig` (`BrokerQuotaReporter.for_broker`). None
         # means this deployment has no broker; outcomes are then logged and
@@ -1383,11 +1536,107 @@ class ControlPlane:
         at: datetime | None = None,
     ) -> None:
         ref, document = self._event_write(event_type, detail, at=at)
-        # A retry after a DEADLINE_EXCEEDED that had landed rewrites the same
-        # event id with the same bytes, so the read budget's predicate is safe.
-        ref.set(document, **self.call_options("event"))
+        if not self._emit_with_account(ref, document):
+            # A retry after a DEADLINE_EXCEEDED that had landed rewrites the same
+            # event id with the same bytes, so the read budget's predicate is safe.
+            ref.set(document, **self.call_options("event"))
         self._log.info("event", event_type=event_type.value, detail=document["detail"],
                        **self._fence_fields(event_type))
+
+    def _emit_with_account(self, ref: Any, document: Mapping[str, Any]) -> bool:
+        """An account event and the task's `current_account` (contract
+        request 132), in ONE transaction; True when that wrote the event.
+
+        Only for `account_assigned` / `account_unreadable`, and the view only
+        while this attempt is the task's current one. False -- the caller
+        writes the event alone, as before -- for any other event, or when the
+        transaction failed: the event is the record and the view is a copy,
+        and the same event id makes a second write of it harmless.
+        """
+        if account_after(None, document) is None:
+            return False
+
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(self._task_ref(), **self.call_options("event")))
+            task = (snap.to_dict() or {}) if snap.exists else {}
+            txn.set(ref, dict(document))
+            if (task.get("tenant_id") == self.tenant_id
+                    and task.get("current_generation") == self.generation):
+                account = account_after(task.get(CURRENT_ACCOUNT_FIELD), document)
+                txn.update(self._task_ref(), {CURRENT_ACCOUNT_FIELD: account})
+
+        try:
+            self._run_transaction(_apply, call="event")
+        except Exception as exc:  # the view never costs the event
+            self._log.warning("current account not stored", error_type=type(exc).__name__)
+            return False
+        return True
+
+    def _attempt_docs(self) -> list[dict[str, Any]]:
+        """This task's attempt documents, in its tenant: one bounded query."""
+        from google.cloud.firestore_v1.base_query import FieldFilter  # lazy: grpc
+
+        query = (
+            self._db.collection("attempts")
+            .where(filter=FieldFilter("tenant_id", "==", self.tenant_id))
+            .where(filter=FieldFilter("task_id", "==", self.task_id))
+            .limit(TOTALS_READ_CAP)
+        )
+        docs = [snap.to_dict() or {} for snap in query.stream(**self.call_options("attempt"))]
+        if len(docs) >= TOTALS_READ_CAP:
+            raise OverflowError(f"{len(docs)} attempt documents for one task")
+        return [d for d in docs
+                if d.get("tenant_id") == self.tenant_id and d.get("task_id") == self.task_id]
+
+    def _attempt_totals(self, own: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+        """`Task.attempt_totals` (contract request 132), with `own` -- what
+        the caller's write puts on this attempt's document -- counted; None
+        when the attempts cannot be read, so nothing is stored short."""
+        try:
+            docs = self._attempt_docs()
+        except Exception as exc:  # a view never fails the write it rides on
+            self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
+            return None
+        return stored_attempt_totals(docs, attempt_id=self.attempt_id,
+                                     generation=self.generation, own=own)
+
+    def _store_attempt_totals(self) -> None:
+        """After an attempt write made outside the end's commit (the start,
+        the spend, a bare end): the task's totals, only while this attempt is
+        still its current one. Never raises.
+
+        NOT INSIDE THE STARTUP WINDOW. There the attempt's own document is
+        the only write a start or a SIGTERM exit makes, under the startup
+        budget (`lifecycle._exit_interrupted_before_runner`), so the task's
+        totals wait for `store_pending_attempt_totals`, which the lifecycle
+        calls once the runner child has started.
+        """
+        if self._budgeted:
+            self._totals_pending = True
+            return
+        self._totals_pending = False
+
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(self._task_ref(), **self.call_options("attempt")))
+            task = (snap.to_dict() or {}) if snap.exists else {}
+            if (task.get("tenant_id") != self.tenant_id
+                    or task.get("current_generation") != self.generation):
+                return
+            totals = self._attempt_totals()
+            if totals is not None:
+                txn.update(self._task_ref(), {ATTEMPT_TOTALS_FIELD: totals})
+
+        try:
+            self._run_transaction(_apply, call="attempt")
+        except Exception as exc:
+            self._log.warning("attempt totals not stored", error_type=type(exc).__name__)
+
+    def store_pending_attempt_totals(self) -> None:
+        """The task's totals deferred by an attempt write made inside the
+        startup window (`_store_attempt_totals`), once the runner has started.
+        Nothing when none is pending. Never raises."""
+        if self._totals_pending and not self._budgeted:
+            self._store_attempt_totals()
 
     def _fence_fields(self, event_type: EventType) -> dict[str, Any]:
         """`submitter_service` for a `generation_fenced` event line, else nothing.
@@ -1449,15 +1698,28 @@ class ControlPlane:
             current = _as_state(task.get("state"))
             if current is not to_state:
                 assert_transition(current, to_state)
-            for ref, document in announced:
-                txn.set(ref, document)
             if current is to_state:
+                for ref, document in announced:
+                    txn.set(ref, document)
                 if fields:
                     txn.update(self._task_ref(), {**fields, "updated_at": utcnow()})
                 return
             payload: dict[str, Any] = {"state": to_state.value, "updated_at": utcnow()}
             payload.update(fields or {})
+            # Between two capacity-holding states the derived state is RUNNING
+            # before and after (`derive()` reports all four as RUNNING), so
+            # the startup window's transitions read nothing more. Any other
+            # move writes the workflow's derived state with it (#2838), read
+            # here, after the fence and before the first write.
+            workflow = (
+                None if current in CONCURRENCY_STATES and to_state in CONCURRENCY_STATES
+                else self._workflow_write(txn, task, payload)
+            )
+            for ref, document in announced:
+                txn.set(ref, document)
             txn.update(self._task_ref(), payload)
+            if workflow is not None:
+                txn.update(*workflow)
 
         self._run_transaction(_apply)
         for _, document in announced:
@@ -1561,6 +1823,8 @@ class ControlPlane:
             # inside `startup_budget()`, like the reads before it.
             **self.call_options(),
         )
+        # Contract request 132: the running attempt counted on the task.
+        self._store_attempt_totals()
 
     def record_checkpoint(
         self,
@@ -1721,6 +1985,9 @@ class ControlPlane:
             return
         doc["tenant_id"] = self.tenant_id
         self._attempt_ref().set(doc, merge=True, **self.call_options("attempt"))
+        # Contract request 132: spend lands after the end's commit (the
+        # teardown's `_record_spend`), so the stored totals follow it.
+        self._store_attempt_totals()
 
     def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
         self._attempt_ref().set(
@@ -1733,6 +2000,14 @@ class ControlPlane:
             merge=True,
             **self.call_options("attempt"),
         )
+        if self._budgeted:
+            # An exit taken from the startup window writes this attempt's own
+            # document and nothing else: the task is the reconciler's to
+            # requeue, and a start's deferred totals are dropped with it.
+            self._totals_pending = False
+            return
+        # Contract request 132: the end counted on the task.
+        self._store_attempt_totals()
 
     # -- heartbeat ---------------------------------------------------------
     def heartbeat(self) -> bool:
@@ -2013,11 +2288,31 @@ class ControlPlane:
         ref, document = slot
         return ref, {**document, "type": event_type.value, "detail": dict(detail)}
 
+    def _workflow_write(
+        self, txn: Any, task: Mapping[str, Any] | None, payload: Mapping[str, Any]
+    ) -> tuple[Any, dict[str, Any]] | None:
+        """The task's workflow's derived state, for THIS transaction to write (#2838).
+
+        The rule is `swarm_rollup.derive`, the one swarm-api writes by on the
+        attempt-state path and the reconciler checks against. Reads only, under
+        this control plane's call budget, so a caller calls it after its fence
+        read and before its first write.
+        """
+        if task is None:
+            snap = _snapshot(txn.get(self._task_ref(), **self.call_options()))
+            task = (snap.to_dict() or {}) if snap.exists else {}
+        return derived_state_write(
+            txn, self._db, tenant_id=self.tenant_id, workflow_id=task.get("workflow_id"),
+            now=utcnow(), changed={self.task_id: {**task, **payload}},
+            call_options=self.call_options(),
+        )
+
     def _end_in_transaction(
         self,
         txn: Any,
         *,
         payload: dict[str, Any],
+        task: Mapping[str, Any] | None = None,
         release: str,
         exit_code: int | None,
         error: str | None,
@@ -2050,7 +2345,24 @@ class ControlPlane:
         once the commit has landed. `events` are the ones that announce or
         record the end; LEASE_RELEASED is added from `released_slot` when the
         release decremented the pools.
+
+        THE WORKFLOW'S STATE COMMITS WITH IT (#2838). `task` is the document
+        `_fenced_task` read (read again through `txn` when a caller does not
+        pass it, still before any write); the step's workflow's derived state over `payload`
+        is read here, before the release's first write, and written beside the
+        task's own. So a park, a finish or a retry on this direct-Firestore
+        path leaves the workflow's stored state equal to `derive()`, and a
+        fenced attempt -- refused in `_fenced_task`, before this runs --
+        writes neither.
         """
+        # Contract request 132: the end counted in the task's totals, in the
+        # end's own commit. Read here, before the release's first write.
+        totals = self._attempt_totals(
+            {"completed_at": now, "exit_code": exit_code, "error": error}
+        )
+        if totals is not None:
+            payload = {**payload, ATTEMPT_TOTALS_FIELD: totals}
+        workflow = self._workflow_write(txn, task, payload)
         released = release_lease_in_transaction(
             txn, db=self._db, lease_id=self.lease_id, reason=release, now=now
         )
@@ -2062,6 +2374,8 @@ class ControlPlane:
         for ref, document in written:
             txn.set(ref, document)
         txn.update(self._task_ref(), payload)
+        if workflow is not None:
+            txn.update(*workflow)
         txn.set(
             self._attempt_ref(),
             {
@@ -2139,6 +2453,8 @@ class ControlPlane:
         uploads = uploads if isinstance(uploads, list) else None
         announced = [self._event_write(kind, d) for kind, d in announce]
         quota = reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED
+        time_limit = (reason is ParkReason.SCHEDULED_RETRY
+                      and isinstance((detail or {}).get(TIME_LIMIT_DETAIL_KEY), Mapping))
         parked = self._event_write(
             EventType.PARKED,
             {"reason": reason.value, "next_eligible_at": next_eligible_at, **(detail or {})},
@@ -2160,6 +2476,29 @@ class ControlPlane:
             }
             refund = False
             event = parked
+            error = reason.value
+            if time_limit:
+                metadata = dict(task.get("metadata") or {})
+                used = _count(metadata.get(TIME_LIMIT_CONTINUATIONS_METADATA_KEY))
+                attempt_count = _count(task.get("attempt_count"))
+                refund = used < TIME_LIMIT_MAX_CONTINUATIONS and attempt_count > 0
+                if refund:
+                    metadata[TIME_LIMIT_CONTINUATIONS_METADATA_KEY] = used + 1
+                    payload["metadata"] = metadata
+                    payload["attempt_count"] = attempt_count - 1
+                error = time_limit_attempt_error(used + 1)
+                event = self._filled(
+                    parked,
+                    EventType.PARKED,
+                    {
+                        "reason": reason.value,
+                        "next_eligible_at": next_eligible_at,
+                        "attempt_refunded": refund,
+                        TIME_LIMIT_CONTINUATIONS_METADATA_KEY: used + (1 if refund else 0),
+                        "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS,
+                        **(detail or {}),
+                    },
+                )
             if quota:
                 metadata = dict(task.get("metadata") or {})
                 used = _count(metadata.get(QUOTA_PARK_RESUMES_METADATA_KEY))
@@ -2182,10 +2521,11 @@ class ControlPlane:
                 )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=release,
                 exit_code=ExitCode.PARKED,
-                error=reason.value,
+                error=error,
                 events=[*announced, event],
                 released_slot=released_slot,
                 now=now,
@@ -2274,6 +2614,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=f"parked:{reason.value}",
                 exit_code=ExitCode.PARKED,
@@ -2362,6 +2703,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=f"parked:{reason.value}",
                 exit_code=ExitCode.PARKED,
@@ -2423,9 +2765,28 @@ class ControlPlane:
 
         A wait for the repository's merge slot (`mergeslot.MERGE_SLOT_WAIT`,
         merge race #295) is refunded on its own `counter`, `slot_waits`,
-        with its own `max_wakes`, and stops the CI clock (`ci_clock` False):
-        its `first_parked_at` is cleared, so the next CI wait starts it
-        afresh and a long queue never reads as `checks_timeout`.
+        with its own `max_wakes`, and PAUSES the CI clock (`ci_clock` False).
+
+        THE CI CLOCK (#3033). `first_parked_at` is set by the first CI park
+        of a wait and carried by every park after it at the same head. It
+        restarts only when the wait truly ended: the last record is at
+        another head (a fix round or a branch update moved it), or there is
+        no record. A slot or train wait PAUSES it rather than clearing it:
+        `ci_paused_at` records the pause, `merge._ci_wait_age` counts only to
+        it, and the next CI park moves `first_parked_at` on by the pause, so
+        a long queue never reads as `checks_timeout` AND a slot wait between
+        two CI parks never restarts the 6 h. Pause, not reset, because a
+        reset let a step that alternates the two wait for CI without bound;
+        pause, not run, because a queue for the slot is not slow CI.
+        swarm-api's park (`attemptstate`, the state routes) keeps the same
+        clock.
+
+        THE TRAIN'S START (part of #2688). `train_entered_at` is set by the
+        first train park (`counter` "train_waits") of an unbroken run of
+        them and carried by every train park after it; any other park
+        clears it. The CI clock cannot age a train wait (the train pauses
+        it), so swarm-api serves this as `waiting.detail.train_since` and
+        `/sc check` ages the wait from it exactly.
 
         There is no checkpoint and no upload: a worker action keeps no
         workspace (invariant 8's exception, CR 36), and its durable state is
@@ -2461,7 +2822,27 @@ class ControlPlane:
             if refund:
                 counts[counter] += 1
             wakes = counts[counter]
+            # The CI clock (#3033, the docstring): a record at another head
+            # is a wait that ended, so its clock and pause go with it.
             first = last.get("first_parked_at")
+            paused = last.get("ci_paused_at")
+            if not isinstance(first, datetime) or (last.get("head") or head) != head:
+                first, paused = None, None
+            if not isinstance(paused, datetime):
+                paused = None
+            if not ci_clock:
+                # Paused at the first queue park; a clock never started stays off.
+                paused = (paused or now) if first is not None else None
+            elif first is None:
+                first = now
+            elif paused is not None:
+                first, paused = first + max(now - paused, timedelta(0)), None
+            # The train's start (the docstring): carried while the parks stay
+            # train parks, cleared by any other.
+            train = None
+            if counter == "train_waits":
+                train = last.get("train_entered_at") if last.get("code") == code else None
+                train = train if isinstance(train, datetime) else now
             metadata[MERGE_WAIT_METADATA_KEY] = {
                 "code": code,
                 "head": head,
@@ -2469,9 +2850,9 @@ class ControlPlane:
                 "pending": names,
                 **counts,
                 "updates": _count(last.get("updates")),
-                "first_parked_at": (
-                    (first if isinstance(first, datetime) else now) if ci_clock else None
-                ),
+                "first_parked_at": first,
+                "ci_paused_at": paused,
+                "train_entered_at": train,
                 "parked_at": now,
                 **recorded,
             }
@@ -2505,6 +2886,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=f"parked:{reason.value}",
                 exit_code=ExitCode.PARKED,
@@ -2571,6 +2953,7 @@ class ControlPlane:
             assert_transition(_as_state(task.get("state")), state)
             return self._end_in_transaction(
                 txn,
+                task=task,
                 payload={"state": state.value, "updated_at": now, **fields},
                 release=f"terminal:{state.value}",
                 exit_code=exit_code,
@@ -2740,6 +3123,7 @@ class ControlPlane:
             )
             written = self._end_in_transaction(
                 txn,
+                task=task,
                 payload=payload,
                 release=(
                     f"retry:{cause}" if target is TaskState.READY else f"terminal:{target.value}"
@@ -3398,6 +3782,11 @@ class RemoteControlPlane(ControlPlane):
     def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
         self._post("attempt-end", {"exit_code": exit_code, "error": _bounded_error(error)},
                    call="attempt")
+
+    def store_pending_attempt_totals(self) -> None:
+        """Nothing: this worker writes through swarm-api's routes, and its
+        `record_attempt_start` defers no task totals (contract request 132),
+        so there is none to store and no Firestore transaction to make."""
 
     # -- heartbeat -----------------------------------------------------------------
 

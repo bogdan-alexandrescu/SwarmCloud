@@ -114,7 +114,9 @@ beforeEach(() => {
   api.loadTasks.mockResolvedValue(ok({ tasks: TASKS } as TaskPage))
   api.loadTask.mockImplementation(async (id: string) => failed(404, `no ${id}`))
   api.loadWorkflow.mockResolvedValue(ok({ workflow: { workflow_id: 'wf_7c1e', state: 'FAILED', steps: [{}, {}, {}] }, tasks: [TASKS[1]!, TASKS[2]!, NEVER_RAN] } as unknown as WorkflowRead))
-  api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
+  // A ledger over the 24 h span: since QA2-FIX-05 (runs2-04) one over
+  // another window shows no figures.
+  api.loadOutcomes.mockResolvedValue(ok({ ...ledgerFixture(), tz: 'UTC', bucket: 'hour', since: new Date(Date.now() - 86_400_000).toISOString(), until: new Date().toISOString() }))
 })
 
 afterEach(() => {
@@ -301,7 +303,7 @@ describe('Lanes: every honest state', () => {
 
 describe('Lanes: the outcome strip', () => {
   it('says no agent was decided when the span has no rate (VOCAB-AGENTS, QA-109)', async () => {
-    const d = ledgerFixture()
+    const d = { ...ledgerFixture(), tz: 'UTC', bucket: 'hour' as const, since: new Date(Date.now() - 86_400_000).toISOString(), until: new Date().toISOString() }
     d.totals = { ...d.totals, rate: null }
     api.loadOutcomes.mockResolvedValue(ok(d))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
@@ -358,7 +360,7 @@ describe('Lanes: the outcome strip', () => {
   // no total, so the reader had to add them up to know what they were parts of.
   // MUTATION: drop the finished figure, or print FAILED without DEAD_LETTERED.
   it('splits the span’s finished tasks into succeeded, failed and cancelled, which add up to it (#123)', async () => {
-    const d = ledgerFixture()
+    const d = { ...ledgerFixture(), tz: 'UTC', bucket: 'hour' as const, since: new Date(Date.now() - 86_400_000).toISOString(), until: new Date().toISOString() }
     d.totals = { ...d.totals, failed: d.totals.failed - 3, dead_lettered: 3 }
     api.loadOutcomes.mockResolvedValue(ok(d))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
@@ -498,7 +500,8 @@ describe('walkthrough G: a lane label leads with its name, state and duration', 
     expect(row.querySelector('.tl-lab small')!.textContent).not.toContain('task_plan')
     // A lone task is named from what it is, not by its id.
     const solo = document.querySelector<HTMLElement>('.tl-row[data-lane="task_solo"] .tl-name')!
-    expect(solo.textContent).toBe('claude-code agent · solo')
+    // Its profile in full, not 'claude-code agent' (QA2-FIX-05, runs2-27).
+    expect(solo.textContent).toBe('claude-code · solo')
     // A lane that never ran has no duration: there is nothing it held.
     const never = document.querySelector<HTMLElement>('.tl-row[data-lane="task_publish"]')
     if (never !== null) expect(never.querySelector('.tl-dur')).toBeNull()
@@ -682,10 +685,11 @@ describe('VQA2-R9: the bars at now and the standalone lane names', () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(lane('task_solo')?.querySelector('.tl-name')).toBeTruthy())
     const name = lane('task_solo').querySelector<HTMLElement>('.tl-name')!
-    expect(name.textContent).toBe('claude-code agent · solo')
+    // Its profile in full, not 'claude-code agent' (QA2-FIX-05, runs2-27).
+    expect(name.textContent).toBe('claude-code · solo')
     const kind = name.querySelector('.tl-name-k')
     const id = name.querySelector('.tl-name-id')
-    expect(kind?.textContent).toBe('claude-code agent')
+    expect(kind?.textContent).toBe('claude-code')
     expect(id?.textContent, 'the id is not a part of its own').toBe(' · solo')
     expect(painted(name, 'display', { width: 1440 })).toBe('inline-flex')
     expect(painted(id!, 'flex', { width: 1440 }), 'the id can shrink').toBe('none')
@@ -744,7 +748,11 @@ describe('VQ-025: a workflow group row names the workflow, its id and steps, and
     // ago, to the end marks at the tasks' completed_at, 100 minutes ago, in a
     // 24-hour window ending now.
     const left = Number.parseFloat(br!.style.left)
-    const width = Number.parseFloat(br!.style.width)
+    // `min(<width>%, calc(<to the edge>% - 4px))`: it stops short of the
+    // track's edge at now (QA2-FIX-05, runs2-16).
+    // (jsdom's style parser pads the comma, which a browser does not.)
+    expect(br!.style.width).toMatch(/^min\([\d.]+%.*calc\([\d.]+% - 4px\)\)$/)
+    const width = Number.parseFloat(br!.style.width.slice('min('.length))
     const drawn = [...document.querySelectorAll<HTMLElement>('[data-lane="task_plan"] .tl-seg, [data-lane="task_test"] .tl-seg')]
     expect(Math.min(...drawn.map((e) => Number.parseFloat(e.style.left))), 'the bracket starts where the first bar does').toBeCloseTo(left, 0)
     expect(left).toBeCloseTo(((1440 - 300) / 1440) * 100, 0)

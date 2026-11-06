@@ -1,0 +1,426 @@
+# Lane DAYONE-BOOT-2 (part of #2688): every platform service account moves into
+# terraform/bootstrap (terraform/bootstrap/platform_service_accounts.tf), for
+# installs and for the live deployment, with zero destroys (design §5.3, plan
+# §8, Q7). The eight existing sa.* entries are restated with the bootstrap
+# resource and the infra data source that replaced the infra resource; the two
+# accounts this lane adds (swarm-discovery, swarm-doctor) are new entries; the
+# grants and switches the move changes are restated with the new facts.
+version: 1
+entries:
+- id: sa.swarm-api
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-api@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-api"],
+    applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
+    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
+    by terraform/infra/removed.tf (destroy = false).
+  verify: account exists with managed-by=swarm-terraform in its description
+  explain: 'Created by terraform/infra applying modules/iam (in this agent''s territory because terraform/modules/iam
+    is in scope), named/used throughout terraform/bootstrap by string (module.service_account_ids.platform),
+    never by a cross-root reference. Nearly every bootstrap grant in this inventory targets it. ALSO:
+    Authenticates callers, resolves tenants, writes tasks. Also runs swarm-ui (reused, since the UI is
+    static files and calls nothing Google).'
+  guards: '#334: bootstrap grants roles/iam.serviceAccountAdmin on this account to the deployer PER-ACCOUNT,
+    never project-wide ALSO: no create_ignore_already_exists: a release that meets a 409 on this account
+    fails rather than silently adopting someone else''s account (#334 security review)'
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:50
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  refs:
+    terraform:
+    - bootstrap/google_service_account.platform
+    - modules/iam/data.google_service_account.platform
+  replace: true
+- id: sa.swarm-quota-broker
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-quota-broker@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-quota-broker"],
+    applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
+    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
+    by terraform/infra/removed.tf (destroy = false).
+  verify: account exists; holds swarmSecretLister only once grant_broker_secret_lister is applied from
+    this root
+  explain: 'Owns provider quota state; the target of platform_roles.tf''s broker_secret_lister grant.
+    ALSO: Owns provider quota state (the account pool); control-plane data only.'
+  guards: '#69'
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:50
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  refs:
+    terraform:
+    - bootstrap/google_service_account.platform
+    - modules/iam/data.google_service_account.platform
+  replace: true
+- id: sa.swarm-reconciler
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-reconciler@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-reconciler"],
+    applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
+    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
+    by terraform/infra/removed.tf (destroy = false).
+  verify: account exists
+  explain: 'The only identity permitted to delete executions and GC Job resources (CONTRACT.md). Holds
+    swarmJobReaper/swarmGkeReaper, granted by terraform/infra using role ids this root defines. ALSO:
+    THE ONLY identity in the system permitted to delete executions and garbage-collect Job resources --
+    enforced by giving it a dedicated identity nothing else runs as, not by convention.'
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:50
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  refs:
+    terraform:
+    - bootstrap/google_service_account.platform
+    - modules/iam/data.google_service_account.platform
+  replace: true
+- id: sa.swarm-scheduler
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-scheduler@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/platform_service_accounts.tf:50 google_service_account.platform["swarm-scheduler"],
+    applied by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam).
+    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
+    by terraform/infra/removed.tf (destroy = false).
+  verify: account exists
+  explain: 'Admits work and dispatches executions; cannot delete infrastructure (CONTRACT.md invariant
+    3: concurrency counts from LEASED, enforced by role design not by this account alone). ALSO: Admits
+    work and dispatches executions; cannot delete infrastructure.'
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:50
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  refs:
+    terraform:
+    - bootstrap/google_service_account.platform
+    - modules/iam/data.google_service_account.platform
+  replace: true
+- id: sa.swarm-tick
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-tick@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/platform_service_accounts.tf:62 google_service_account.tick, applied by terraform/bootstrap
+    (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/iam). On the live deployment
+    it is adopted by the import block gated on adopt_from_infra_states and forgotten by terraform/infra/removed.tf
+    (destroy = false).
+  verify: holds NO project role at all; its only authority is run.invoker on two specific Cloud Run services,
+    granted at the service resource (not visible in this root)
+  explain: 'Separate OIDC identity Cloud Scheduler/Pub/Sub push present when calling the control plane.
+    A compromised tick can only ''ring the doorbell''. ALSO: The identity Cloud Scheduler/Pub/Sub push
+    presents to call the control plane. Holds zero project roles; its entire authority is run.invoker
+    on two specific services, granted at the service resource. A compromised tick can ring the doorbell
+    and nothing else.'
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:62
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  refs:
+    terraform:
+    - bootstrap/google_service_account.tick
+    - modules/iam/data.google_service_account.tick
+  replace: true
+- id: sa.swarm-verify
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-verify@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf:71 google_service_account.verify, applied by
+    terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (infra). On the
+    live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten by
+    terraform/infra/removed.tf (destroy = false).
+  verify: the verify Cloud Run job runs as this identity and can call swarm-api, read Firestore, read
+    Cloud Run, read the artifacts bucket
+  explain: Runs the in-VPC verification gate (acceptance/smoke) as a non-domain identity; ALLOWED_USERS
+    exists in swarm-api's auth specifically so this non-saga.xyz identity is admitted (locals.tf:1012-1015).
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:71
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account.verify
+    - infra/data.google_service_account.verify
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  replace: true
+- id: sa.swarm-schedule-tick
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-schedule-tick@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf:80 google_service_account.schedule_tick, applied
+    by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/scheduler).
+    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
+    by terraform/infra/removed.tf (destroy = false).
+  verify: the schedule-tick scheduler job's call to POST /v1/admin/schedules/tick succeeds as this identity
+  explain: Its own identity (not the rollup sweeper's) because it reads due schedules across every tenant,
+    a different reach than the sweeper's per-tenant routes; swarm-api admits it to SCHEDULE_TICK_ROUTES
+    alone.
+  guards: SD10, owner decision 2026-10-08
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:80
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account.schedule_tick
+    - modules/scheduler/data.google_service_account.schedule_tick
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  replace: true
+- id: sa.swarm-rollup-sweeper
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-rollup-sweeper@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf:90 google_service_account.rollup_sweeper, applied
+    by terraform/bootstrap (DAYONE-BOOT-2, Q7); terraform/infra reads it as a data source (modules/scheduler).
+    On the live deployment it is adopted by the import block gated on adopt_from_infra_states and forgotten
+    by terraform/infra/removed.tf (destroy = false).
+  verify: a workflow-rollup scheduler job's call to swarm-api succeeds as this identity
+  explain: Separate from swarm-tick so swarm-api can admit this identity to the rollup/issue-run/stranded-pr/repo-index/merge-wake
+    routes alone (auth.ROLLUP_SWEEPER_ROUTES), without widening the tick's reach.
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:90
+  - terraform/infra/removed.tf
+  - terraform/modules/service_account_ids/main.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account.rollup_sweeper
+    - modules/scheduler/data.google_service_account.rollup_sweeper
+  notes: 'Created by terraform/bootstrap since DAYONE-BOOT-2, so every bootstrap grant on it is made in
+    the same apply as the account; no "later" switch. Migration: zero destroys, the email and unique id
+    do not change (plan §8).'
+  replace: true
+- id: sa.swarm-discovery
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-discovery@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf:101 google_service_account.discovery, applied
+    by terraform/bootstrap (DAYONE-BOOT-2)
+  verify: account exists with managed-by=swarm-terraform in its description
+  explain: Runs swarm-discovery, the unauthenticated /.well-known/swarmcloud service behind the load balancer
+    (design §9.2 (c)). Holds no role unless discovery_serves_client_secret is set, when it holds secretAccessor
+    on swarm-iap-desktop-client-secret alone.
+  guards: 'no create_ignore_already_exists (#334): a 409 fails the apply rather than adopting someone
+    else''s account'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:101
+  - terraform/modules/service_account_ids/main.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account.discovery
+- id: sa.swarm-doctor
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-doctor@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf:111 google_service_account.doctor, applied by
+    terraform/bootstrap (DAYONE-BOOT-2)
+  verify: account exists with managed-by=swarm-terraform in its description
+  explain: 'Runs the hourly read-only swarm-doctor job (D27): read-only project roles from terraform/bootstrap/doctor_roles.tf
+    and run.invoker on swarm-api to post its findings.'
+  guards: 'no create_ignore_already_exists (#334): a 409 fails the apply rather than adopting someone
+    else''s account'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf:111
+  - terraform/modules/service_account_ids/main.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account.doctor
+- id: iam-binding.swarm-api-spec-signer
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  step: bootstrap.pass-2
+  check: gcloud kms keys get-iam-policy step-spec --keyring=swarm-dev-specs --location=$R --project=$P
+  apply: terraform/bootstrap/spec_signing.tf resource "google_kms_crypto_key_iam_member" "swarm_api_signer",
+    role=roles/cloudkms.signer, member=swarm-api
+  verify: policy shows roles/cloudkms.signer for serviceAccount:swarm-api@$P.iam.gserviceaccount.com and
+    no one else, on the key only (not the ring, not the project)
+  explain: The ONE identity that can sign (useToSign, never signerVerifier). swarm-api's account is this
+    root's own since DAYONE-BOOT-2, and the grant depends on it, so a fresh project's first bootstrap
+    apply makes both.
+  guards: 'accepted residual (owner, 2026-09-29): a project Owner/Editor could still redeploy swarm-api
+    to sign through this key -- this grant stops tenant agents, not a compromised platform owner'
+  depends_on:
+  - kms-key.step-spec-key
+  - sa.swarm-api
+  evidence:
+  - terraform/bootstrap/spec_signing.tf
+  - terraform/bootstrap/platform_service_accounts.tf
+  refs:
+    terraform:
+    - bootstrap/google_kms_crypto_key_iam_member.swarm_api_signer
+  replace: true
+- id: iam-binding.verify-cluster-viewer
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  step: bootstrap.pass-2
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-verify@*
+    AND bindings.role=roles/container.clusterViewer'
+  apply: terraform/bootstrap/verify_cluster_read.tf resource "google_project_iam_member" "verify_views_swarm_cluster"
+  verify: condition pins resource.name to exactly projects/$P/locations/$R/clusters/swarm-autopilot (and
+    sub-paths); agents-staging (the other team's cluster) cannot match a bare startsWith either, since
+    its name does not start with ours
+  explain: Lets scripts/e2e-test.sh's check [10] ('no task holding capacity against a GKE execution that
+    is gone') read the swarm cluster's endpoint/CA. clusterViewer, not container.viewer, so it carries
+    no Kubernetes object read at all -- only what verify-rbac.yaml's Role binds inside the cluster.
+  guards: '#1754, owner decision 2026-10-20; VERIFY-GKE-READ-2 (owner decision 2026-10-21): must live
+    here, never in terraform/infra, because CI''s scoped projectIamAdmin would otherwise need clusterViewer
+    on its grantable list and could then grant it to anyone, reaching agents-staging'
+  evidence:
+  - terraform/bootstrap/verify_cluster_read.tf:46-65
+  notes: Target account swarm-verify is created by terraform/bootstrap (platform_service_accounts.tf,
+    DAYONE-BOOT-2); the grant depends on it, so it needs no later apply.
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.verify_views_swarm_cluster
+  depends_on:
+  - sa.swarm-verify
+  replace: true
+- id: iam-binding.broker-secret-lister
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  step: bootstrap.pass-2
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-quota-broker@*
+    AND bindings.role:swarmSecretLister'
+  apply: terraform/bootstrap/platform_roles.tf resource "google_project_iam_member" "broker_secret_lister",
+    for_each gated by switch.grant_broker_secret_lister
+  verify: swarm-quota-broker is created by terraform/bootstrap (DAYONE-BOOT-2), so the grant names an
+    account the same root makes
+  explain: 'Project-wide secrets.list/create/getIamPolicy/setIamPolicy/versions.list/destroy(+add while
+    the legacy switch is on), unconditioned by design -- bounded in CODE (quota_broker.secretstore.owned_by_this_platform
+    regex) rather than IAM, an owner-accepted trade from #69.'
+  guards: '#69, 2026-09-25; precondition requires every state in adopt_from_infra_states to show custom_roles_owner
+    == terraform/bootstrap'
+  depends_on:
+  - sa.swarm-quota-broker
+  - role.custom.swarmSecretLister
+  - switch.grant_broker_secret_lister
+  evidence:
+  - terraform/bootstrap/platform_roles.tf:361-386
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.broker_secret_lister
+  notes: The grant's member is still a string in platform_roles.tf (outside DAYONE-BOOT-2's files), so
+    on a fresh project it is not ordered after the account; asked in the BOOT-2 PR. A failed first apply
+    converges on the next.
+  replace: true
+- id: switch.grant_broker_secret_lister
+  kind: switch
+  scope: core
+  stage: 7
+  provider: engine
+  step: bootstrap.pass-2
+  check: grep -n grant_broker_secret_lister terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars
+  apply: terraform/bootstrap/variables.tf:591-601, default TRUE; not set in terraform.tfvars
+  verify: false in bootstrap pass 1 and true from bootstrap pass 2 (tfvars.py renders it from the second
+    pass), since platform_roles.tf names swarm-quota-broker by a string (DAYONE-MANIFEST-STEPS-2)
+  explain: Default true. Since DAYONE-BOOT-2 terraform/bootstrap creates swarm-quota-broker, so the switch
+    no longer waits for terraform/infra; it is retired once platform_roles.tf orders the grant after the
+    account (asked in the BOOT-2 PR).
+  evidence:
+  - terraform/bootstrap/variables.tf:591-601
+  notes: 'The FIRST-APPLY TRAP this entry described is gone with DAYONE-BOOT-2: the account and the grant
+    are in one root.'
+  refs:
+    variable:
+    - bootstrap/grant_broker_secret_lister
+  replace: true
+- id: switch.swarm_workers_log_view_exists
+  kind: switch
+  scope: core
+  stage: 7
+  provider: engine
+  step: bootstrap.pass-2
+  check: grep -n swarm_workers_log_view_exists terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars
+  apply: terraform/bootstrap/variables.tf:898-912, default TRUE; not overridden in terraform.tfvars
+  verify: gcloud logging views describe swarm-workers --bucket=swarm-worker-logs --location=$R --project=$P
+    exists before this is true
+  explain: Gates log_view_read.tf's IAM row L-1 (swarm-api's read of the swarm-workers log view).
+  guards: 'BGD, 2026-10-23, #1960, lane LOG-VIEW-BOOT; moved here from terraform/infra after a release
+    failed with a 403 setting IAM on a view CI could not touch'
+  evidence:
+  - terraform/bootstrap/variables.tf:898-912
+  notes: 'Stays a bootstrap pass 2 input (design §5.3, ''The log view''): the VIEW, not an account, is
+    terraform/infra''s (log_view.tf). The engine sets it true only after infra pass 1; DAYONE-BOOT-2 moved
+    the accounts, not the view.'
+  refs:
+    variable:
+    - bootstrap/swarm_workers_log_view_exists
+    - infra/swarm_workers_log_view_enabled
+  replace: true

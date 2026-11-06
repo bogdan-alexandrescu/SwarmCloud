@@ -26,7 +26,7 @@ from swarm_common.states import EventType, ParkReason, TaskState
 
 from worker_seeds import seed_attempt
 
-from merge_world import API, NUMBER, OPENER, TENANT, WORKFLOW, MergeWorld
+from merge_world import API, MERGED, NUMBER, OPENER, TASK, TENANT, WORKFLOW, MergeWorld
 
 IMPLEMENT = "task_impl"
 
@@ -231,3 +231,85 @@ def test_the_owner_wait_parks_human_required_releases_the_lease_and_names_the_qu
     assert blocked["owner_questions"]["questions"] == held
     parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
     assert parked and parked[-1]["detail"]["reason"] == ParkReason.HUMAN_REQUIRED.value
+
+
+# -- a NOT_YET verdict that names needs_owner holds too (#2764) --
+
+
+def test_a_not_yet_verdict_whose_needs_owner_is_unanswered_parks_for_the_owner(tmp_path):
+    world = MergeWorld(tmp_path)
+    _implement(world)
+    world.verdict = {"verdict": "NOT_YET", "findings": ["waits on the owner"],
+                     "needs_owner": [_ref(1, "Does the route join UNCAPTURED_ROUTES?")]}
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: refuse every non-MERGE verdict first (the #2764 bug) and this is
+    # FAILED verdict_not_merge, a lane dead on an answer the owner has not given.
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.exit_code == ExitCode.PARKED
+    assert "refusal" not in outcome.summary
+    assert world.merge_calls() == []
+    assert outcome.owner_wait is not None and outcome.ci_wait is None
+    # The same hold as a MERGE verdict's: swarm-api's answer route reads it.
+    assert outcome.owner_wait["questions"] == [
+        {"task_id": IMPLEMENT, "step_id": "implement", "question_index": 1,
+         "question": "Does the route join UNCAPTURED_ROUTES?"}]
+    assert "implement" in outcome.message and "question 1" in outcome.message
+    assert world.token_reads == 0
+
+
+def test_a_not_yet_verdict_with_an_unreadable_needs_owner_entry_holds(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.verdict = {"verdict": "NOT_YET", "findings": ["waits on the owner"],
+                     "needs_owner": ["not an entry at all"]}
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: hold a NOT_YET only for readable entries and this refuses.
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.owner_wait["unreadable"] == 1
+    assert world.merge_calls() == []
+
+
+def test_a_not_yet_verdict_answered_with_the_built_pick_still_refuses_verdict_not_merge(
+        tmp_path):
+    world = MergeWorld(tmp_path)
+    _implement(world, answers=[{"question_index": 1, "choice": "yes", "text": None}])
+    world.verdict = {"verdict": "NOT_YET", "findings": ["waits on the owner"],
+                     "needs_owner": [_ref(1, "Does the route join UNCAPTURED_ROUTES?")]}
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: treat an answered NOT_YET as a MERGE and this merges a head no
+    # review passed.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.summary["refusal"]["code"] == "verdict_not_merge"
+    assert outcome.owner_wait is None
+    assert world.merge_calls() == []
+    message = outcome.summary["refusal"]["message"]
+    assert "NOT_YET" in message and "1 finding(s)" in message
+    assert "answered" in message and "re-review" in message
+
+
+def test_a_not_yet_hold_whose_pull_request_merged_outside_ends(tmp_path):
+    world = MergeWorld(tmp_path)
+    _implement(world)
+    world.verdict = {"verdict": "NOT_YET", "findings": ["waits on the owner"],
+                     "needs_owner": [_ref(1, "Does the route join UNCAPTURED_ROUTES?")]}
+    hold: dict[str, Any] = {"parked_at": "2026-10-26T01:52:00+00:00", "pull_request": 41,
+                            "wake_requested_at": "2026-10-26T07:26:00+00:00",
+                            "wake_reason": merge.PULL_REQUEST_MERGED}
+    world.docs[TASK]["metadata"] = {"merge_wait": {
+        "wake_requested_at": hold["wake_requested_at"], "wake_reason": hold["wake_reason"],
+        merge.OWNER_HOLD_KEY: hold}}
+    world.pr.update(state="closed", merged=True, merge_commit_sha=MERGED,
+                    merged_by={"login": "bogdan-alexandrescu"},
+                    merged_at="2026-10-26T07:25:00Z")
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: refuse a NOT_YET before `_ended_outside` and this is FAILED.
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["merged_outside_workflow"] is True
+    assert world.merge_calls() == []

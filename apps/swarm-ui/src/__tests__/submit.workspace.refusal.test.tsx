@@ -17,6 +17,10 @@
 // (tests/unit/control_plane/test_workspaces.py). Nothing here is token-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// These hand the submit real responses, so the fixture build's answer to the
+// submit (QA2-FIX-07, runs2-01 and runs2-02) is turned off here.
+vi.mock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), USE_FIXTURES: false }))
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { SubmitScreen } from '../Submit'
@@ -170,6 +174,8 @@ describe('the issue screen', () => {
     it(`draws a 403 ${c.name} as the banner, with the form live before it`, async () => {
       const posts = serveIssue(c.body)
       vi.stubEnv('VITE_LIVE', '1')
+      // A mock outlives resetModules: the live api is the real module, read afresh.
+      vi.doUnmock('../api')
       vi.resetModules()
       const { IssueSubmitScreen } = await import('../IssueSubmit')
       const { container } = render(<IssueSubmitScreen go={vi.fn()} />)
@@ -194,9 +200,9 @@ describe('the link is the API\'s, or this console\'s Setup page', () => {
   })
 
   it('falls back to the Setup page at the code\'s anchor for anything else', () => {
-    expect(workspaceRefusal(error({ setup_url: 'javascript:alert(1)' }))?.setupUrl).toBe('/config/workspace/setup#workspace')
-    expect(workspaceRefusal(error({ setup_url: '//elsewhere.example.com/x' }))?.setupUrl).toBe('/config/workspace/setup#workspace')
-    expect(workspaceRefusal(error(undefined, 'NO_CLAUDE_ACCOUNT'))?.setupUrl).toBe('/config/workspace/setup#claude-account')
+    expect(workspaceRefusal(error({ setup_url: 'javascript:alert(1)' }))?.setupUrl).toBe('/admin/workspaces?tab=setup#workspace')
+    expect(workspaceRefusal(error({ setup_url: '//elsewhere.example.com/x' }))?.setupUrl).toBe('/admin/workspaces?tab=setup#workspace')
+    expect(workspaceRefusal(error(undefined, 'NO_CLAUDE_ACCOUNT'))?.setupUrl).toBe('/admin/workspaces?tab=setup#claude-account')
   })
 
   it('is no refusal of the gate\'s on another status or code', () => {

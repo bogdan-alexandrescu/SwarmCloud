@@ -18,6 +18,7 @@ at run time, it is caught only after every upstream step has spent its compute.
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
@@ -45,7 +46,7 @@ from swarm_common.profiles import (
     step_model_class,
 )
 
-from . import laneterritory, refusals
+from . import laneterritory, refusals, workcontract
 from .errors import Forbidden, ValidationFailed
 
 #: Fields a caller may never set, no matter how they spell it. The request
@@ -1143,6 +1144,33 @@ MERGE_STEP_MAX_ATTEMPTS = 10
 #: The step id an appended merge step takes, suffixed when a step already has it.
 MERGE_STEP_ID = "merge"
 
+#: The optional security review (docs/design/security-review-step.md, owner
+#: decisions of 4 November 2026). A step IS one when its work contract loads
+#: the catalogue plugin `security-audit` (`capabilities.plugins`) while
+#: SWARM_WORK_CONTRACTS is on -- the mark the worker reads from the signed
+#: contract (`agent_worker.security_review.applies`), never a step id ending
+#: in `review`. It comes after the integrator, on its pushed head, beside the
+#: re-review: a verdict source for the merge, not a second final step
+#: (`resolve_integrator_step`, `merge_sources`). The worker writes its verdict
+#: under `SECURITY_VERDICT_FILE` too, so the merge stages it by that name
+#: beside the re-review's `verdict.json` (`agent_worker.merge._security_hold`).
+SECURITY_REVIEW_PLUGIN = "security-audit"
+SECURITY_VERDICT_FILE = "security-verdict.json"
+
+
+def is_security_review(metadata: Mapping[str, Any] | None,
+                       environ: Mapping[str, str]) -> bool:
+    """Whether a step's `metadata` makes it the security review (see above).
+
+    Off while work contracts are off: the plugin then never loads, the
+    worker writes no security verdict, and a merge staging one would fail."""
+    if not workcontract.enabled(environ):
+        return False
+    contract = (metadata or {}).get(workcontract.METADATA_KEY)
+    capabilities = contract.get("capabilities") if isinstance(contract, Mapping) else None
+    plugins = capabilities.get("plugins") if isinstance(capabilities, Mapping) else None
+    return isinstance(plugins, Mapping) and SECURITY_REVIEW_PLUGIN in plugins
+
 # --- the merge step's knobs (lane MS1, docs/merge-step.md "Revised 2026-10-06") ---
 
 #: The key inside a workflow's `metadata` that asks for CI-fix rounds: how
@@ -1209,6 +1237,8 @@ LANE_FIX_ROUNDS_DEFAULT = 2
 #: red CI with its own loop (`--fix-rounds`, `issueci._start_round`) before it
 #: submits its merge, so its merge step keeps no rounds of its own unless
 #: asked: two loops on one pull request would race each other's pushes.
+#: Reserved (BGD, 2026-11-04): the issue-run code alone writes it, through
+#: `issue_run_mark_allowed`, so no caller's work reads as an issue run's.
 ISSUE_RUN_METADATA_KEY = "issue_run"
 
 
@@ -1331,6 +1361,57 @@ DISPATCH_CARRIERS = ("checkpoints", "branches")
 DEFAULT_STRATEGY = "collect"
 DEFAULT_CARRIER = "checkpoints"
 
+#: The workflow switches (the owner's experiment, 2026-11-01): a spec's
+#: `dispatch` map may set any of these to `on` or `off`, and every step of the
+#: dispatch obeys them. They are on/off words that name no image, command,
+#: resource spec or backend (invariant 10), and they only NARROW what the
+#: workspace's and repository's stored settings allow, save that
+#: `code_intelligence: on` takes the step out of the graph-context A/B and
+#: `jev_judgments: on` runs the worker's Jev judgments outside a live-browser
+#: attempt, both only where the stored settings say on. Written inside the
+#: signed `dispatch` block (`swarm_common.specsign.SIGNED_METADATA_KEYS`),
+#: and only the keys the spec set: an absent map stores exactly the block it
+#: stored before. The worker spells them in `agent_worker.graphstage`
+#: (`SWITCH_CODE_INTELLIGENCE`), `agent_worker.qualitygates` (`SWITCH`) and
+#: `agent_worker.judge.attempt` (`SWITCH`).
+#:
+#: `graph_shape` (SKILL-ON-DEMAND, the owner's pick of 3 November 2026, part
+#: of #2688) is the one switch that is not on/off: it says which shape a
+#: graph-on step's code graph takes, so the experiment can compare them --
+#: `skill` (the code-graph skill over one slice query, with a grep nudge),
+#: `tools` (the ten graph tools loaded on every turn) or `off` (no graph).
+#: Three words naming no image, command or backend (invariant 10); it
+#: chooses a shape and never turns a graph on where the stored settings and
+#: `code_intelligence` leave it off. The worker spells it
+#: `agent_worker.graphstage.SWITCH_GRAPH_SHAPE` and its words `SHAPES`.
+#:
+#: `contract_jev` (CONTRACT-JEV-EXPERIMENT, docs/design/agent-quality/
+#: jev-contract.md section 11, part of #2688) is the arm of the Jev
+#: work-contract experiment: `on` lets Jev's review at submission (JC1) and its
+#: judgment at the end of a step (JC2) run where the workspace's own settings
+#: (`contract_review`, `code_intelligence.jev`) and `SWARM_CONTRACT_REVIEW`
+#: already allow them; `off` skips both, recorded as `skipped:arm`, so arm off
+#: is today's behaviour. On/off only, and it only narrows: it never turns a
+#: review or a judgment on that the stored settings leave off. The arm is read
+#: back from each attempt's `result_summary.switches` by
+#: `scripts/benchstat.py contract-jev` (experiment-protocol.md section 8),
+#: which excludes as `arm_unrecorded` every item whose attempts do not record
+#: it. `swarm_api.contractreview` (JC1), the worker's post-step
+#: (`agent_worker.judge.poststeps`, JC2) and the control plane's re-ask
+#: (`swarm_api.contractreask`) obey it, and
+#: `agent_worker.graphstage.switches_summary` records it.
+DISPATCH_SWITCHES = ("code_intelligence", "quality_gates", "jev_judgments", "graph_shape",
+                     "contract_jev")
+DISPATCH_SWITCH_VALUES = ("on", "off")
+#: The accepted words of each switch that is not on/off.
+DISPATCH_SWITCH_CHOICES: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {"graph_shape": ("skill", "tools", "off")})
+
+
+def dispatch_switch_values(name: str) -> tuple[str, ...]:
+    """The words switch `name` accepts: its own choices, else on/off."""
+    return DISPATCH_SWITCH_CHOICES.get(name, DISPATCH_SWITCH_VALUES)
+
 #: The single key inside `task.metadata` this feature owns. One nested key
 #: rather than two flat ones because `metadata` is caller-supplied and free
 #: form: a caller who already sends `metadata.strategy` for their own purposes
@@ -1437,15 +1518,21 @@ START_PROBLEM_METADATA_KEY = "start_problem"
 OWNER_ANSWERS_METADATA_KEY = "owner_answers"
 
 #: Whose slot a service submission's task runs with (INDEX-CRED, part of
-#: #1041): `tenant` (the tenant's `-git` token) or `owner` (a personal
-#: tenant's owner's GitHub connection, `forge.service_slot`). Written only by
+#: #1041): `tenant` (the tenant's `-git` token), `owner` (a personal
+#: tenant's owner's GitHub connection, `forge.service_slot`) or
+#: `app_installation` (a platform service account's run on a repository whose
+#: owner has the GitHub App installed: the broker mints an installation token
+#: for it, SERVICE-APP-TOKEN). Written only by
 #: `SubmissionService._resolve_forge`, before the spec is signed, and read by
 #: `codec.forge_credential_source`: the slot name alone (`git-u-<hex>`) cannot
 #: tell the owner's connection run on the tenant's behalf from a person's
 #: own task, and a caller who set it would mislabel whose credential ran.
-#: Not signed (`swarm_common.specsign.SIGNED_METADATA_KEYS` is frozen): it is
-#: a label no worker acts on, and it says `owner` only beside a `git-u-`
-#: `forge_credential`, which IS signed.
+#: Not signed itself (`swarm_common.specsign.SIGNED_METADATA_KEYS` is
+#: frozen), and reserved from callers. The worker acts on it -- an
+#: `app_installation` run asks for an installation token -- but only once the
+#: task's spec signature has verified, so only a task the platform submitted
+#: and signed carries a label a worker obeys; `owner` appears only beside a
+#: `git-u-` `forge_credential`, which IS signed.
 FORGE_SOURCE_METADATA_KEY = "forge_credential_source"
 
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
@@ -1507,6 +1594,13 @@ RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
 #: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`).
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 
+#: The continuations at the time limit whose attempt was refunded (BGD,
+#: 2026-11-02), counted against `attemptstate.TIME_LIMIT_MAX_CONTINUATIONS`.
+#: A caller who set it would choose how many more time limits the task may
+#: run past. The worker restates it
+#: (`control.TIME_LIMIT_CONTINUATIONS_METADATA_KEY`).
+TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
+
 #: The pull requests a workflow's root step waits for before it may start
 #: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
 #: from the spec's `after` and then only by the wake tick. A caller who set
@@ -1557,6 +1651,8 @@ RESERVED_METADATA_KEYS = (
     QA_TARGET_METADATA_KEY,
     RELEASE_WAIT_RESUMES_METADATA_KEY,
     QUOTA_PARK_RESUMES_METADATA_KEY,
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
+    ISSUE_RUN_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -1567,7 +1663,11 @@ RESERVED_METADATA_KEYS = (
 #: written by no one yet: the lane that writes it (HW-API-ANSWER) decides how
 #: it is served, and moves it into that tuple with the parity test's entry.
 #: Until then nothing a caller sends can reach the store under it.
-REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY,)
+#: `timeout_seconds_asked` (contract request 131) is a top-level `Task`
+#: field written only by swarm-api, never a metadata key; it is refused here
+#: so a caller cannot plant a look-alike record under `metadata`.
+TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
+REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY, TIMEOUT_ASKED_FIELD)
 
 #: An agent's blocking question (lane AU-7, docs/design/agent-autonomy.md
 #: §3.9): the wait swarm-api adopts from the worker's park into
@@ -1764,7 +1864,10 @@ def check_repository_ref(value: str | None) -> str | None:
     F4). The worker treats 7-40 lowercase hex as a sha and only a full one can
     be fetched, so 7-39 is refused here, before anything holds capacity. A
     branch or tag name -- anything the worker passes to `--branch` -- and a
-    full sha are accepted unchanged.
+    full sha are accepted unchanged here. Whether a branch or tag name, or a
+    full sha's commit (#3315), exists is asked of the forge once per
+    submission afterwards (`SubmissionService._check_ref_exists`, #2726),
+    which refuses it with `RepositoryRefNotFound` and fails open.
     """
     if not value:
         return value
@@ -1776,6 +1879,95 @@ def check_repository_ref(value: str | None) -> str | None:
             detail={"field": "repository_ref", "repository_ref": value},
         )
     return value
+
+
+class RepositoryRefNotFound(ValidationFailed):
+    """422 `repository_ref_not_found`: the forge has neither a branch nor a tag
+    of that name (#2726), or no commit of that full sha (#3315), in a
+    repository it can read."""
+
+    code = "repository_ref_not_found"
+
+
+#: `swarm/<task id>`: the branch a `direct-pr` task or an integrator pushed
+#: (`continuation.TASK_ID_RE`, restated: continuation imports this module).
+_SWARM_TASK_BRANCH_RE = re.compile(r"^swarm/(?P<task_id>task_[0-9a-f]{20})$")
+
+
+def is_full_sha(value: str | None) -> bool:
+    """Whether `repository_ref` is a full commit sha, which the worker fetches
+    by sha rather than as a branch or tag."""
+    if not value:
+        return False
+    return bool(_WORKER_SHA_RE.match(value)) and len(value) == _FULL_SHA_LENGTH
+
+
+def ref_needs_lookup(value: str | None) -> bool:
+    """Whether `repository_ref` is asked about at the forge: a branch or tag
+    name (#2726), or a full sha, asked as a commit (#3315).
+
+    Not when absent (the default branch is cloned). An abbreviated sha never
+    gets here: `check_repository_ref` refused it first.
+    """
+    return bool(value)
+
+
+def swarm_task_of_ref(value: str) -> str | None:
+    """The task id a `swarm/<task id>` branch names, else None."""
+    match = _SWARM_TASK_BRANCH_RE.match(value)
+    return match.group("task_id") if match else None
+
+
+def repository_ref_not_found(
+    value: str,
+    repository: str,
+    *,
+    task_id: str | None = None,
+    pull_request: int | None = None,
+    pull_state: str | None = None,
+    default_branch: str | None = None,
+) -> RepositoryRefNotFound:
+    """The refusal of a `repository_ref` the forge does not have.
+
+    `task_id` only for a task of the CALLER's tenant (the caller checks):
+    another tenant's task is never named, so a guess at its id learns only the
+    generic sentence. `pull_state` is "merged", "closed" or "open" when the
+    pull request was read, None when it was not.
+    """
+    base = default_branch or "the default branch"
+    detail: dict[str, Any] = {"field": "repository_ref", "repository_ref": value,
+                              "repository": repository}
+    if is_full_sha(value):
+        # #3315: a sha names no task and no pull request.
+        return RepositoryRefNotFound(
+            f"repository_ref {value} is not a commit of {repository} that GitHub serves; "
+            f"send a pushed commit's full sha, a branch or tag name, or no repository_ref "
+            f"to start from {base}.",
+            detail=detail,
+        )
+    if task_id is None:
+        return RepositoryRefNotFound(
+            f"repository_ref {value!r} is neither a branch nor a tag of {repository}; "
+            f"it may have been deleted. Send an existing branch or tag, a full "
+            f"{_FULL_SHA_LENGTH}-character sha, or no repository_ref to start from {base}.",
+            detail=detail,
+        )
+    detail["task_id"] = task_id
+    if pull_request is None:
+        what = f"the branch task {task_id!r} published"
+    else:
+        detail["pull_request"] = pull_request
+        state = {"merged": "was merged", "closed": "was closed"}.get(pull_state or "")
+        what = (f"the branch of task {task_id!r}'s pull request #{pull_request}"
+                + (f", which {state}" if state else ""))
+    return RepositoryRefNotFound(
+        f"repository_ref {value!r} is {what}, and it is no longer a branch of "
+        f"{repository} (GitHub deletes a merged pull request's branch when the "
+        f"repository is set to). To add to that work, send continues_task: "
+        f"{task_id!r} instead of repository_ref; to build on what was merged, "
+        f"start from {base} (no repository_ref).",
+        detail=detail,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2020,6 +2212,17 @@ class DispatchOptions:
     #: `publishtopr.resolve` read it from GitHub at submission; empty on every
     #: other dispatch. The worker derives the branch from the task id.
     publish_to_pr: tuple[tuple[str, Any], ...] = ()
+    #: `(switch, word)` for each `DISPATCH_SWITCHES` key the spec's `dispatch`
+    #: map set, in that order (2026-11-01); empty when it set none. The word is
+    #: `on` or `off`, or one of `DISPATCH_SWITCH_CHOICES` for its switch.
+    switches: tuple[tuple[str, str], ...] = ()
+    #: The work contract reference (`swarm_api.workcontract`, the agent
+    #: quality program, 2026-11-03): id, revision, digest, strictness and
+    #: requirement ids, written at `work_contract` inside the signed block so
+    #: a rewritten reference fails the step-spec signature. Set only by
+    #: `workcontract.attach`, which does nothing while SWARM_WORK_CONTRACTS
+    #: is off. Not hashed: a map.
+    work_contract: Mapping[str, Any] | None = field(default=None, hash=False)
 
     @property
     def needs_repository(self) -> bool:
@@ -2062,6 +2265,10 @@ class DispatchOptions:
     def with_await_input(self, block: Mapping[str, Any] | None) -> "DispatchOptions":
         """This `await-input` step's normalised declaration; None on every other step."""
         return replace(self, await_input=block)
+
+    def with_work_contract(self, reference: Mapping[str, Any]) -> "DispatchOptions":
+        """This step's signed work contract reference (`workcontract.attach`)."""
+        return replace(self, work_contract=dict(reference))
 
     def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
         """This step's `{upstream task id: upstream step id}`, for a `by_parent` step."""
@@ -2209,6 +2416,14 @@ class DispatchOptions:
         # spells the key `agent_worker.publishpr.FIELD`.
         if self.publish_to_pr:
             block["publish_to_pr"] = dict(self.publish_to_pr)
+        # Only the switches the spec set (2026-11-01), so a spec without a
+        # `dispatch` map stores exactly the block it stored before.
+        for name, value in self.switches:
+            block[name] = value
+        # Absent unless a work contract was attached, so every other step
+        # stores exactly the block it stored before.
+        if self.work_contract is not None:
+            block["work_contract"] = json.loads(json.dumps(self.work_contract))
         return block
 
 
@@ -2345,6 +2560,11 @@ _RESERVED_BECAUSE = {
         "by the worker's quota park, to count the provider-quota parks whose "
         "attempt was refunded. Drop the key from metadata."
     ),
+    TIME_LIMIT_CONTINUATIONS_METADATA_KEY: (
+        f"metadata.{TIME_LIMIT_CONTINUATIONS_METADATA_KEY} is reserved: it is set "
+        "only by the worker's park at the time limit, to count the continuations "
+        "whose attempt was refunded. Drop the key from metadata."
+    ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
         "answers to the agent's questions, written only by "
@@ -2371,6 +2591,13 @@ _RESERVED_BECAUSE = {
         "the platform. Declare the wait as the step's own `await_input` field "
         "(POST /v1/workflows) instead."
     ),
+    TIMEOUT_ASKED_FIELD: (
+        f"metadata.{TIMEOUT_ASKED_FIELD} is reserved: the task's "
+        f"`{TIMEOUT_ASKED_FIELD}` records the timeout a spec asked for when this "
+        "service stored a lower one, written only by the platform. Ask with the "
+        "top-level `timeout_seconds` instead; it may only shorten the runner "
+        "profile's own."
+    ),
     AFTER_PRS_METADATA_KEY: (
         f"metadata.{AFTER_PRS_METADATA_KEY} is reserved: it records the pull "
         "requests a workflow waits for, written from the spec's `after` and then "
@@ -2381,6 +2608,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{QA_TARGET_METADATA_KEY} is reserved: it names the QA target a "
         "browser step drives, written only by the platform when a target is run. "
         "Start the run with POST /v1/qa-targets/{id}:run instead."
+    ),
+    ISSUE_RUN_METADATA_KEY: (
+        f"metadata.{ISSUE_RUN_METADATA_KEY} is reserved: it links work to the issue run "
+        "that started it, and only the platform writes it. Start an issue run with "
+        "POST /v1/runs instead."
     ),
 }
 
@@ -2445,6 +2677,31 @@ def qa_target_mark_allowed(mark: Mapping[str, Any]) -> Iterator[None]:
         _QA_TARGET_MARK.reset(token)
 
 
+#: The one `metadata.issue_run` value the CURRENT submission may carry, set
+#: only by `issue_run_mark_allowed`. Its own variable, so neither the
+#: schedule's nor the QA target's exemption admits it.
+_ISSUE_RUN_MARK: ContextVar[Any] = ContextVar("issue_run_mark", default=None)
+
+
+@contextmanager
+def issue_run_mark_allowed(mark: Any) -> Iterator[None]:
+    """Let THIS submission carry `metadata.issue_run == mark`, and nothing else.
+
+    The same scoped exemption as `schedule_mark_allowed`, for the same
+    reason: an issue run submits its planner, its compiled workflow, a CI
+    fix round and its merge through the service methods a person uses, so
+    the link travels in the spec's metadata. The mark is the run's id on the
+    planner and `{run_id, issue, ...}` on a workflow. Only
+    `issueruns.submitting` enters this block, which routes/runs.py and
+    issueci.py wrap around their own submissions (BGD, 2026-11-04).
+    """
+    token = _ISSUE_RUN_MARK.set(copy.deepcopy(mark))
+    try:
+        yield
+    finally:
+        _ISSUE_RUN_MARK.reset(token)
+
+
 def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     """Refuse a caller's metadata that names a key this service writes.
 
@@ -2485,7 +2742,8 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
         if key in metadata
     ]
     for key, exempt in ((SCHEDULE_METADATA_KEY, _SCHEDULE_MARK),
-                        (QA_TARGET_METADATA_KEY, _QA_TARGET_MARK)):
+                        (QA_TARGET_METADATA_KEY, _QA_TARGET_MARK),
+                        (ISSUE_RUN_METADATA_KEY, _ISSUE_RUN_MARK)):
         allowed = exempt.get()
         if allowed is not None and key in metadata and metadata[key] == allowed:
             present.remove(key)
@@ -2497,12 +2755,40 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     )
 
 
+def resolve_dispatch_switches(value: Any) -> tuple[tuple[str, str], ...]:
+    """A spec's `dispatch` map as `DispatchOptions.switches`, or a refusal
+    naming the accepted switches and values. None (no map) is no switch."""
+    if value is None:
+        return ()
+    if not isinstance(value, Mapping):
+        raise DispatchOptionError(
+            "dispatch is a map of switches, each `on` or `off` (graph_shape: skill, "
+            "tools or off); accepted switches are "
+            + ", ".join(DISPATCH_SWITCHES),
+            detail={"accepted_switches": list(DISPATCH_SWITCHES),
+                    "accepted_switch_values": list(DISPATCH_SWITCH_VALUES)},
+        )
+    unknown = sorted(str(key) for key in value if key not in DISPATCH_SWITCHES)
+    if unknown:
+        raise DispatchOptionError(
+            f"unknown dispatch switch {unknown[0]!r}; accepted switches are "
+            + ", ".join(DISPATCH_SWITCHES),
+            detail={"accepted_switches": list(DISPATCH_SWITCHES), "unknown": unknown},
+        )
+    return tuple(
+        (name, _accepted_value(f"dispatch.{name}", value[name], dispatch_switch_values(name),
+                               "accepted_switch_values"))
+        for name in DISPATCH_SWITCHES if name in value
+    )
+
+
 def resolve_dispatch_options(
     *,
     strategy: Any,
     carrier: Any,
     scale: str,
     repository_url: str | None,
+    switches: Any = None,
 ) -> DispatchOptions:
     """Validate the pair and return it, or refuse with the accepted values named.
 
@@ -2524,6 +2810,7 @@ def resolve_dispatch_options(
                                  "accepted_strategies"),
         carrier=_accepted_value("carrier", carrier, DISPATCH_CARRIERS,
                                 "accepted_carriers"),
+        switches=resolve_dispatch_switches(switches),
     )
     if options.strategy == SINGLE_PR and scale != "workflow":
         raise DispatchOptionError(
@@ -2575,6 +2862,15 @@ def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = No
     `metadata.merge` "on_merge_verdict" (`rereview_step_for`), by id: it
     reviews the integrator's pushed head, so it comes after the integrator
     and is not one of the steps the integrator integrates.
+
+    The security review (`StepSpec.security_review`, docs/design/security-
+    review-step.md) is not one either: a final step that builds on the
+    integrator's pushed head and judges it, beside the re-review, so the
+    integrator is the sink of the steps without it. It must build on that
+    integrator -- a security review of any other head would let the merge
+    read a verdict on code it does not merge -- and there is at most one,
+    because the merge stages its verdict under one file name. A security
+    review something else depends on is an ordinary step.
     """
     # A `merge` step (contract request 47) comes after the integrator and
     # integrates nothing: the integrator is the sink of the OTHER steps.
@@ -2583,6 +2879,15 @@ def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = No
         step for step in steps
         if _worker_action(step) is not WorkerAction.MERGE and step.step_id != rereview
     ]
+    security = _final_security_reviews(steps)
+    if len(security) > 1:
+        raise DispatchOptionError(
+            "a workflow has at most one security review: the merge reads its verdict "
+            f"from one {SECURITY_VERDICT_FILE}, and this one has {len(security)}: "
+            + ", ".join(step.step_id for step in security) + ".",
+            detail={"security_review_steps": [step.step_id for step in security]},
+        )
+    steps = [step for step in steps if step not in security]
     if len(steps) < 2:
         raise DispatchOptionError(
             "strategy 'integrate' needs something to integrate: it names a final "
@@ -2601,7 +2906,24 @@ def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = No
             + ". Make the integrating step depend on them.",
             detail={"terminal_steps": terminals},
         )
-    return terminals[0]
+    integrator = terminals[0]
+    for step in security:
+        if step.builds_on != integrator:
+            raise DispatchOptionError(
+                f"step {step.step_id!r} is the security review, which judges the pull "
+                f"request's head, so it builds on the integrating step {integrator!r}: "
+                f'`"depends_on": ["{integrator}"], "builds_on": "{integrator}"`. It '
+                + (f"builds on {step.builds_on!r}." if step.builds_on else "builds on no step."),
+                detail={"step_id": step.step_id, "builds_on": step.builds_on,
+                        "integrator_step_id": integrator},
+            )
+    return integrator
+
+
+def _final_security_reviews(steps: Sequence[StepSpec]) -> list[StepSpec]:
+    """The security reviews among `steps` that no other of them depends on."""
+    depended_on = {dep for step in steps for dep in step.depends_on}
+    return [step for step in steps if step.security_review and step.step_id not in depended_on]
 
 
 def _ancestors(steps: Sequence[StepSpec]) -> dict[str, set[str]]:
@@ -3171,14 +3493,22 @@ class MergeSources:
     #: True for a `merge_pr` workflow (#352): no task opened the pull
     #: request, `pull_request` is "", and the step depends on nothing.
     named: bool = False
+    #: The security review that judged the integrator's head, when the
+    #: workflow has one: the merge stages its `SECURITY_VERDICT_FILE` beside
+    #: the review's verdict, and the worker requires both.
+    security_review: str | None = None
 
     def depends_on(self) -> list[str]:
         if self.continued or self.named:
             return []
-        return [self.pull_request] + ([self.review] if self.review else [])
+        return ([self.pull_request] + ([self.review] if self.review else [])
+                + ([self.security_review] if self.security_review else []))
 
     def input_from(self) -> dict[str, str]:
-        return {self.review: self.verdict_file} if self.review and self.verdict_file else {}
+        staged = {self.review: self.verdict_file} if self.review and self.verdict_file else {}
+        if self.security_review:
+            staged[self.security_review] = SECURITY_VERDICT_FILE
+        return staged
 
 
 @dataclass(frozen=True)
@@ -3216,6 +3546,12 @@ def merge_sources(
     (`rereview_step_for`), by id. It is not the integrator -- it comes after
     it -- and it IS the review the merge reads: the latest verdict, written
     under the same file name the gate's review wrote.
+
+    Under `integrate` the security review (`StepSpec.security_review`), a
+    final step building on the integrator, is a second verdict source: it is
+    not the integrator, and the merge depends on it and stages its
+    `SECURITY_VERDICT_FILE`. Two, or one building on another head, is not
+    ONE pull request's merge (`resolve_integrator_step` says why).
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
     if rereview is not None:
@@ -3226,24 +3562,35 @@ def merge_sources(
         )
         if rest is None or rest.review is None or not rest.verdict_file:
             return None
-        return MergeSources(rest.pull_request, rereview, rest.verdict_file)
+        return MergeSources(rest.pull_request, rereview, rest.verdict_file,
+                            security_review=rest.security_review)
     if named_pull:
         return MergeSources("", named=True) if strategy == "direct-pr" and not agents else None
     if strategy == "direct-pr" and continued_task is not None and not agents:
         return MergeSources(continued_task, continued=True)
     if strategy == "direct-pr":
         return MergeSources(agents[0].step_id) if len(agents) == 1 else None
-    if strategy != "integrate" or len(agents) < 2:
+    if strategy != "integrate":
+        return None
+    security = _final_security_reviews(agents)
+    if len(security) > 1:
+        return None
+    agents = [step for step in agents if step not in security]
+    if len(agents) < 2:
         return None
     depended_on = {dep for step in agents for dep in step.depends_on}
     sinks = [step for step in agents if step.step_id not in depended_on]
     if len(sinks) != 1:
         return None
     integrator = sinks[0]
+    if security and security[0].builds_on != integrator.step_id:
+        return None
+    security_review = security[0].step_id if security else None
     review = integrator.when_step
     if review is None:
-        return MergeSources(integrator.step_id)
-    return MergeSources(integrator.step_id, review, integrator.input_from.get(review))
+        return MergeSources(integrator.step_id, security_review=security_review)
+    return MergeSources(integrator.step_id, review, integrator.input_from.get(review),
+                        security_review=security_review)
 
 
 def merge_step_for(
@@ -3380,7 +3727,8 @@ def plan_merge(
       and clones nothing;
     * it depends directly on the step that opens the pull request and on the
       review, so neither can still be running when it reads them;
-    * it stages exactly the review's verdict file and nothing else.
+    * it stages exactly the review's verdict file, and the security review's
+      `SECURITY_VERDICT_FILE` when there is one, and nothing else.
     """
     if strategy == SINGLE_PR:
         return None
@@ -3433,6 +3781,8 @@ def plan_merge(
             + ", ".join(repr(m) for m in missing)
             + ": the step that opens the pull request"
             + (" and the review whose verdict it requires" if sources.review else "")
+            + (" and the security review whose verdict it requires"
+               if sources.security_review else "")
             + f". Add them to its depends_on, or omit the step and set metadata."
             f"{MERGE_METADATA_KEY} 'on' to have it derived.",
             detail={"merge_step_id": merge.step_id, "missing": missing,
@@ -3441,8 +3791,12 @@ def plan_merge(
     if dict(merge.input_from) != sources.input_from():
         raise DagError(
             f"the merge step {merge.step_id!r} stages "
-            + (f"exactly {sources.input_from()!r}, the review's verdict file"
-               if sources.review else "nothing")
+            + (f"exactly {sources.input_from()!r}, the "
+               + ("review's and the security review's verdict files"
+                  if sources.review and sources.security_review else
+                  "security review's verdict file" if sources.security_review else
+                  "review's verdict file")
+               if sources.input_from() else "nothing")
             + f", not {dict(merge.input_from)!r}.",
             detail={"merge_step_id": merge.step_id, "input_from": dict(merge.input_from),
                     "derived_input_from": sources.input_from()},
@@ -3498,6 +3852,62 @@ def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     if requested <= 0:
         raise ValidationFailed("timeout_seconds must be positive")
     return min(int(requested), profile.timeout_seconds)
+
+
+def validate_max_turns(
+    profile: RunnerProfile, requested: int | None, *, step_id: str | None = None,
+) -> int | None:
+    """`Task.max_turns` (contract request 133): the step's turn cap, resolved.
+
+    A step may LOWER its profile's `max_turns`, never raise it, as
+    `validate_timeout` holds a timeout: min(ask, ceiling), the ceiling when
+    the step asks none, and None (no cap, today's behaviour) when neither
+    sets one. Refused for a profile whose runner passes no cap to its agent
+    CLI (`supports_max_turns=False`): a cap nothing enforces is a promise
+    nothing keeps. A limit on the step, never an execution detail
+    (invariant 10)."""
+    where = {"step_id": step_id} if step_id is not None else {}
+    if requested is not None:
+        if isinstance(requested, bool) or not isinstance(requested, int) or requested < 1:
+            raise ValidationFailed("max_turns must be a positive integer",
+                                   detail={"max_turns": requested, **where})
+        if not profile.supports_max_turns:
+            raise ValidationFailed(
+                f"runner_profile {profile.name!r} does not cap an agent's turns, so a "
+                "step on it names no max_turns",
+                detail={"runner_profile": profile.name, "max_turns": requested,
+                        "supports_max_turns": False, **where},
+            )
+    if not profile.supports_max_turns:
+        return None
+    ceiling = profile.max_turns
+    if requested is None:
+        return ceiling
+    return int(requested) if ceiling is None else min(int(requested), ceiling)
+
+
+def lower_turn_cap(*caps: int | None) -> int | None:
+    """The lowest of the turn caps that are set; None when none is.
+
+    A `browser_if_ui` step's one cap against its two profiles', and a
+    child's against its parent's (contract request 133): None is no cap, so
+    it never wins over a set one."""
+    set_caps = [int(cap) for cap in caps if cap is not None]
+    return min(set_caps) if set_caps else None
+
+
+def timeout_asked(asked: int | None, *granted: int) -> int | None:
+    """`Task.timeout_seconds_asked` (contract request 131, "API records the ask").
+
+    The timeout the spec asked for when it is above any timeout this service
+    stores for the step (`granted`: its own, and its `code` alternate's on a
+    `browser_if_ui` step), else None. A RECORD ONLY: `validate_timeout` stays
+    the limit, and nothing reads this value as one (invariant 10); the worker
+    compares it with the timeout it runs under and reports the clamp.
+    """
+    if asked is None or not granted:
+        return None
+    return int(asked) if int(asked) > min(granted) else None
 
 
 
@@ -3712,6 +4122,10 @@ class StepSpec:
     #: them to task ids.
     pr_role: str | None = None
     merges: Mapping[str, str] | None = field(default=None, hash=False)
+    #: Whether the step is the security review (`is_security_review`, read
+    #: from its work contract at submission): under `integrate` a verdict
+    #: source after the integrator, not a second final step.
+    security_review: bool = False
 
 
 class DagError(ValidationFailed):

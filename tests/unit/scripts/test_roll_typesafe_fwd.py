@@ -102,6 +102,11 @@ case "$*" in
   *"version --client"*) printf 'Client Version: v1.36.3\n' ;;
   *"config current-context"*) cat "${d}/context" ;;
   *"config view"*) cat "${d}/cluster-entry" ;;
+  # Discovery: the networking.gke.io resources the cluster serves, one per
+  # line (kubernetes/apply.sh asks before it renders a hostname policy).
+  # None, unless the test wrote them.
+  *"api-resources --api-group=networking.gke.io -o name"*)
+    if [[ -f "${d}/api-resources" ]]; then cat "${d}/api-resources"; fi ;;
   *"get deployment swarm-typesafe-fwd"*)
     [[ -f "${d}/applied.yaml" ]] || { echo 'Error from server (NotFound): deployments.apps "swarm-typesafe-fwd" not found' >&2; exit 1; }
     deployment ;;
@@ -203,6 +208,8 @@ class Cluster:
             SWARM_TERRAFORM=str(self.bin / "terraform"),
             TF_DATA_DIR=str(self.tmp / "tfdata"),
             SWARM_ENV_FILE=str(self.tmp / "no.env"),
+            # apply.sh has no default project (DAYONE-K8S-1): the one this fake
+            # cluster's context and identities name is given, as an operator would.
             PROJECT_ID=PROJECT,
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             HOME=str(self.tmp),

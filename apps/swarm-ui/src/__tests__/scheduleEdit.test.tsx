@@ -23,7 +23,7 @@
 // The bodies are `routes/schedules.py` and `routes/approvals.py`'s shapes.
 // Placeholders only; nothing is token-shaped.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
@@ -180,7 +180,33 @@ describe('the create form', () => {
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=new')
   })
 
+  it('draws a next firing once when the reader’s zone gives the same wall time (QA2 automate2-07)', async () => {
+    // MUTATION: draw `.sc-yours` whatever the reader's zone and "09:00 your time" repeats the line.
+    const was = process.env.TZ
+    process.env.TZ = 'Europe/London'
+    try {
+      await mount('schedule=new', routes(() => null))
+      const preview = await waitFor(() => {
+        const el = screen.getByTestId('sc-preview')
+        expect(within(el).getAllByRole('listitem')).toHaveLength(5)
+        return el
+      }, WAIT)
+      const first = within(preview).getAllByRole('listitem')[0]!
+      expect(visible(first)).toBe('Mon, Oct 12 09:00')
+      expect(first.querySelector('.sc-yours')).toBeNull()
+    } finally {
+      if (was === undefined) delete process.env.TZ
+      else process.env.TZ = was
+    }
+  })
+
   it('shows the cron in words and the next five, in the schedule zone and the viewer’s, from the preview route', async () => {
+    const was = process.env.TZ
+    process.env.TZ = 'UTC'
+    onTestFinished(() => {
+      if (was === undefined) delete process.env.TZ
+      else process.env.TZ = was
+    })
     const { calls } = await mount('schedule=new', routes(() => null))
     await screen.findByRole('heading', { name: 'New schedule', level: 1 }, WAIT)
     const preview = await waitFor(() => {
@@ -190,8 +216,12 @@ describe('the create form', () => {
     }, WAIT)
     const next = within(preview).getAllByRole('listitem')
     expect(next).toHaveLength(5)
-    expect(visible(next[0]!)).toContain('2026-10-12 09:00')
-    expect(visible(next[0]!)).toContain('your time')
+    // One format, as the sheet's chips (QA2 automate2-07), and the reader's
+    // time beside it when it is a different wall time (this runner reads UTC
+    // or is pinned to it below).
+    expect(visible(next[0]!)).toContain('Mon, Oct 12 09:00')
+    expect(visible(next[0]!)).not.toContain('2026-10-12')
+    expect(visible(next[0]!)).toContain('Mon, Oct 12 08:00 your time')
     // MUTATION: parse the cron in the browser and the route is never asked.
     expect(sent(calls, 'POST', '/v1/schedules:preview').at(-1)?.body).toMatchObject({ cron: '0 9 * * 1-5', type: 'issue-sweep' })
     fireEvent.click(screen.getByRole('button', { name: 'Every hour' }))

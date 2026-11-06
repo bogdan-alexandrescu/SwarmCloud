@@ -20,14 +20,15 @@ import re
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Body, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from prometheus_client import CollectorRegistry, Counter, Gauge, generate_latest
 from prometheus_client.exposition import CONTENT_TYPE_LATEST
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from swarm_common.identity import tenant_id_for_user
 from swarm_common.logging_setup import configure_logging
 from swarm_common.models import ProviderState, QuotaState
 from swarm_common.profiles import RUNNER_PROFILES, step_model_class
@@ -52,6 +53,8 @@ from .usagepoll import UsagePoller
 from .accounts import (
     ASSIGNABLE_STATES,
     DEFAULT_HOLD_TTL,
+    DUPLICATE_MATCHED_ON,
+    DUPLICATE_REASON,
     DEFAULT_STALE_AFTER,
     HOLD_END_ACCOUNT_REMOVED,
     HOLD_END_EXPIRED,
@@ -65,9 +68,15 @@ from .accounts import (
     SWAP_DRAIN,
     SWAP_REASONS,
     SWAP_UNUSABLE,
+    DEFAULT_POOLS,
+    POOL_VOICE_IT,
+    POOL_WORKSPACE,
+    VOICE_NONE_AVAILABLE,
     AccountError,
     AccountState,
     Hold,
+    choose_voice,
+    validate_pools,
     Unavailable,
     WindowReading,
     accounts_serving,
@@ -81,11 +90,13 @@ from .accounts import (
     hold_log_entry,
     max_agents_from_firestore,
     secret_name,
+    subscription_identity,
     validate_label,
     validate_display_name,
     validate_max_agents,
     validate_model_classes,
     window_floor,
+    withheld_mark,
 )
 from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
 from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
@@ -106,6 +117,7 @@ from .accountstore import (
 )
 from .credentials import REFRESH_SUFFIX, CredentialRefresher
 from .oauth import HttpTokenEndpoint
+from . import openai_api_key, openai_plan
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
@@ -212,6 +224,12 @@ class AccountRegister(StrictModel):
     #: Write-only. No response model in this service contains it and no route
     #: returns it -- the same rule tenants.py states for provider keys.
     credential: str = Field(min_length=8, max_length=16384)
+    #: For an OpenAI API key (`openai-api`) alone, and required there: the
+    #: verified email of the platform admin who pasted it, which swarm-api
+    #: takes from the caller's token. The broker writes it, with the time it
+    #: stored the key, on the key account's document
+    #: (`openai_api_key.added_fields`; the owner, 5 November 2026).
+    added_by: str | None = Field(default=None, max_length=254)
 
 
 class AccountAuthorize(StrictModel):
@@ -313,6 +331,61 @@ class AccountAssign(StrictModel):
     task_id: str | None = Field(default=None, min_length=1, max_length=128)
     attempt_id: str | None = Field(default=None, min_length=1, max_length=128)
 
+    #: A VOICE IT SESSION'S HOLD (docs/design/voice-it-own-speech.md §14.1):
+    #: swarm-voice's fast Claude front (`voice-front`, held for the session)
+    #: or its planner (`voice-planner`, held per delegation), for `person` in
+    #: `voice_session_id`. All three or none, and never beside a task id. Still
+    #: no tenant: the route answers it only for a caller in
+    #: VOICE_SERVICE_ACCOUNTS and takes the tenant from `person` -- the
+    #: person's own workspace (`tenant_id_for_user`) -- so the body cannot
+    #: name one, and `may_serve` decides what that workspace is offered.
+    holder: Literal["voice-front", "voice-planner"] | None = None
+    person: str | None = Field(default=None, min_length=3, max_length=320)
+    voice_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def _one_kind_of_hold(self) -> "AccountAssign":
+        voice = (self.holder, self.person, self.voice_session_id)
+        if any(v is not None for v in voice):
+            if any(v is None for v in voice):
+                raise ValueError("a voice hold names its holder, person and voice_session_id together")
+            if self.task_id is not None or self.attempt_id is not None:
+                raise ValueError("a voice hold is not a task's: it carries no task_id or attempt_id")
+        return self
+
+
+class AccountPools(StrictModel):
+    """The pools an account belongs to, and its label typed back.
+
+    REQUIRED, both: a pool change moves an account between Voice it and every
+    workspace, so it is confirmed by the label like a removal is."""
+
+    pools: list[str] = Field(max_length=4)
+    confirm_label: str = Field(max_length=128)
+
+
+class VoiceLease(StrictModel):
+    """A Voice it session asking for a Voice it pool account."""
+
+    person: str = Field(min_length=3, max_length=320)
+    voice_session_id: str = Field(min_length=1, max_length=128)
+    provider: str = Field(default="openai", max_length=32)
+    #: What the session will do with the account. `live` (a GPT-Live session,
+    #: every Voice it session today) is offered only an OpenAI developer API
+    #: key: OpenAI refused the ChatGPT plan for Live on 4 November 2026. The
+    #: default, so a swarm-voice that predates the field is never handed a
+    #: plan either. `text` (a text conversation, swarm_voice.textchat) is
+    #: offered the pool's ChatGPT plan and never a key (`choose_voice`); no
+    #: other value is accepted.
+    capability: Literal["live", "text"] = openai_api_key.CAPABILITY_LIVE
+
+
+class VoiceHold(StrictModel):
+    """A Voice it session naming the hold it was issued."""
+
+    assignment_id: str = Field(min_length=1, max_length=64)
+    voice_session_id: str = Field(min_length=1, max_length=128)
+
 
 class AccountRelease(StrictModel):
     """Give back one named assignment.
@@ -379,6 +452,17 @@ class AccountReadingIn(_AttemptHold):
     Figures and instants and nothing else: `extra="forbid"` refuses any other
     field, so a reading cannot carry a token, a header or a session id.
     """
+
+    windows: dict[str, WindowIn] = Field(min_length=1, max_length=8)
+
+
+class VoiceReadingIn(VoiceHold):
+    """A Voice it session's reading of the plan it holds: the `x-codex-*`
+    windows swarm_voice.textchat reads off each answer.
+
+    Figures and instants and nothing else, as `AccountReadingIn`: the
+    hold's proof and the windows, and `extra="forbid"` refuses any other
+    field, so a reading cannot carry a token or a header."""
 
     windows: dict[str, WindowIn] = Field(min_length=1, max_length=8)
 
@@ -609,6 +693,12 @@ def _flag(name: str, default: bool) -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+#: How long a Voice it session's hold lives without a renewal. swarm-voice
+#: renews every four minutes; a swarm-voice that dies stops renewing, and the
+#: hold lapses on its own within this.
+VOICE_HOLD_TTL = timedelta(minutes=10)
+
+
 #: The retired #295 GitHub App keys (owner decision MS0-Q4, 2026-10-06).
 #: The frozen catalogue still names `git-review` on its disabled post-verdict
 #: entry, but nothing reads either key and neither has a quota to keep: a
@@ -616,6 +706,29 @@ def _flag(name: str, default: bool) -> bool:
 #: keeps the same pair in `validation.APP_CREDENTIAL_PROVIDERS`; the broker
 #: does not import swarm-api.
 RETIRED_APP_PROVIDERS: frozenset[str] = frozenset({"git-merge", "git-review"})
+
+
+#: The providers a pool account may be of: Claude subscriptions and, since
+#: 2026-11-01 (#2688, BGD: codex runs on ChatGPT plans from a shared pool),
+#: ChatGPT plans. Each is a credential pair this service can refresh; a
+#: provider outside this list has no refresh path, so filing one would be a
+#: pool entry that dies at its first expiry.
+ACCOUNT_PROVIDERS = ("anthropic", openai_plan.PROVIDER)
+#: Account kinds only the Voice it pool holds: `openai-api`, an OpenAI
+#: developer API key (`openai_api_key`). Apart from `ACCOUNT_PROVIDERS`, the
+#: pairs the sweep refreshes and swarm-api's `schemas.ACCOUNT_PROVIDERS`
+#: restates, because no workspace's sign-in or task ever names one.
+VOICE_ONLY_PROVIDERS = (openai_api_key.PROVIDER,)
+
+
+def _account_provider(provider: str) -> str:
+    name = (provider or "").strip().lower()
+    known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS
+    if name not in known:
+        raise BrokerValidationError(
+            f"a pool account is one of {', '.join(known)}, not {provider!r}"
+        )
+    return name
 
 
 def _known_provider(provider: str) -> str:
@@ -703,6 +816,17 @@ def _health_row(raw: Any, account: Any, now: datetime, *, readable: bool = True)
         "health_24h": health_counts(data, now)["last_24h"],
         "health_status": health_status(account, data, now),
     }
+
+
+def _voice_holder_to_api(account: Any, now: datetime) -> dict[str, Any] | None:
+    for hold in getattr(account, "holds", ()) or ():
+        if getattr(hold, "pool", POOL_WORKSPACE) == POOL_VOICE_IT and not hold.is_expired(now):
+            return {
+                "voice_session_id": hold.voice_session_id,
+                "person": hold.person,
+                "since": _iso(hold.assigned_at),
+            }
+    return None
 
 
 def account_to_api(
@@ -810,22 +934,29 @@ def account_to_api(
             "assigned": len(live_holds(now)) if callable(live_holds) else account.assigned,
             "max_before_reading": MAX_AGENTS_BEFORE_READING,
         })
-    # A LATER REGISTRATION OF AN ORGANISATION ANOTHER ACCOUNT HOLDS (#2222):
+    # A LATER REGISTRATION OF A SUBSCRIPTION ANOTHER ACCOUNT HOLDS (#2222):
     # one subscription, handed out once, through the older registration.
     # NAMED ONLY TO ITS OWN TENANT (BGD, Q2): another workspace's account
     # reads as "already registered in another workspace", and nothing else.
+    # ONLY ON A RECORDED IDENTITY (#3046): a stored mark on an account whose
+    # organisation or seat is not recorded is one an older rule wrote, which
+    # `choose()` no longer honours (`withheld_mark`) and the next sweep
+    # clears, so it is not shown. `matched_on` is the identity's KIND, never
+    # its value.
     reader = viewer if viewer is not None else account.owner_tenant
-    proven = getattr(account, "duplicate_of", None)
+    proven = (getattr(account, "duplicate_of", None)
+              if subscription_identity(account) is not None else None)
     duplicate_of = proven if _names(proven, reader, platform_wide) else None
     duplicate_reason = None
     if proven is not None:
         duplicate_reason = (
-            f"registered on the same organisation as {duplicate_of}"
+            f"{DUPLICATE_REASON} {duplicate_of}"
             if duplicate_of is not None
             else ANOTHER_WORKSPACE
         )
-    if getattr(account, "duplicate_withheld", False) is True:
-        blocked_by.append({"duplicate_of": duplicate_of, "reason": duplicate_reason})
+    if proven is not None and withheld_mark(account):
+        blocked_by.append({"duplicate_of": duplicate_of, "reason": duplicate_reason,
+                           "matched_on": DUPLICATE_MATCHED_ON})
     # IDENTICAL READINGS ON TWO POLLS (#2222, BGD Q1): an inferred pair,
     # shown here and in `blocked_by` the way a proven one is, but ADVISORY --
     # `choose()` still hands it out, so it does not make `can_take_new_agent`
@@ -884,13 +1015,16 @@ def account_to_api(
         #: (#2222): its display name and plan as the provider gave them, or
         #: null when the provider has not said. NEVER the identity itself.
         "organisation": _organisation_to_api(account),
-        #: The other account registered on the same organisation, or null.
+        #: The other account registered on the same organisation and seat, or null.
         #: Both of a pair carry it; the newer one is also in `blocked_by`.
         #: NULL ALSO WHEN THE OTHER SIDE IS ANOTHER TENANT'S, unless this is
         #: the platform-wide listing: `duplicate_reason` then says so in words.
         "duplicate_of": duplicate_of,
         #: Why this account is one of a pair, in words, or null for none.
         "duplicate_reason": duplicate_reason,
+        #: Which identity the pair matched on -- its kind, never its value
+        #: (#3046): "organisation_and_seat", or null for no pair.
+        "duplicate_matched_on": DUPLICATE_MATCHED_ON if proven is not None else None,
         #: `{of, reason}` when this account read identically to another on
         #: two consecutive polls and no pair of organisations tells them
         #: apart, else null. `of` is null for another tenant's account.
@@ -898,6 +1032,19 @@ def account_to_api(
         "assigned": account.assigned,
         #: How many agents may hold it at once (#2222).
         "max_agents": max_agents,
+        #: The pools it belongs to (`accounts.POOLS`): ["workspace"] for every
+        #: account before the Voice it pool, ["voice-it"] for one reserved for
+        #: Voice it, or both. `getattr` for the same reason as `model_classes`.
+        "pools": list(getattr(account, "pools", DEFAULT_POOLS) or DEFAULT_POOLS),
+        #: Who may use it through the Voice it pool; [] outside that pool.
+        "voice_it_people": (
+            list(getattr(account, "voice_it_people", ()) or ())
+            if POOL_VOICE_IT in (getattr(account, "pools", ()) or ())
+            else []
+        ),
+        #: The Voice it session holding it now, or null: its id, its person
+        #: and since when. Never the credential.
+        "voice_it_holder": _voice_holder_to_api(account, now),
         #: Whether `choose()` would hand it a new agent now, for a tenant it
         #: serves that has not reported it unreadable: AVAILABLE, no window
         #: under its floor, and a free slot.
@@ -917,6 +1064,10 @@ def account_to_api(
         #: then whether or not its agent is still running.
         "latest_hold_deadline": _iso(latest_hold),
         "windows": windows,
+        #: False for a kind with no usage window to read at all (an OpenAI
+        #: developer API key, `Account.measured`): its windows are "not
+        #: measured", never 0, and no reading will ever arrive.
+        "measured": bool(getattr(account, "measured", True)),
         "observed_at": observed_at.isoformat() if observed_at else None,
         #: True when no reading has arrived recently enough to be trusted.
         #: Distinct from "utilisation is zero", which is a measurement.
@@ -1003,10 +1154,11 @@ def refuse_duplicate_organisation(
     ONLY THE SAME SEAT (BGD, 2026-10-25): a second seat of a Team
     organisation has its own limits and registers normally. A sign-in whose
     seat the provider did not name, or an existing account whose seat is not
-    recorded yet, is never refused on the organisation alone: the broker's
-    sweep pairs such accounts by identical readings (`accounts.duplicates`)
-    and withholds the newer, so a true double registration is still handed
-    out once.
+    recorded yet, is never refused on the organisation alone, and is never
+    withheld either (#3046): an unknown identity is not a duplicate. Its seat
+    is recorded at its next refresh, and from then on the sweep pairs it
+    (`accounts.duplicates`) if it is one; until then identical readings only
+    flag it (`possible_duplicate`).
 
     THE EXISTING ACCOUNT IS NAMED ONLY WITHIN `owner_tenant` (BGD, 2026-10-24
     17:26Z, "Name it only within the same tenant"). Another tenant's is
@@ -1256,6 +1408,16 @@ def _raw_account(db: Any, account_id: str) -> dict[str, Any] | None:
     return snap.to_dict() or {}
 
 
+def _raw_in_pool(data: dict[str, Any], pool: str) -> bool:
+    """Whether a raw document is in `pool`. Absent `pools` is the workspace
+    pool alone; anything but a list is in NO pool, so a malformed document is
+    never read as one a task may lease."""
+    raw = data.get("pools")
+    if raw is None:
+        return pool in DEFAULT_POOLS
+    return isinstance(raw, (list, tuple)) and pool in raw
+
+
 def _raw_may_serve(data: dict[str, Any], tenant_id: str) -> bool:
     """`Account.may_serve`, over the raw fields of a document.
 
@@ -1265,6 +1427,9 @@ def _raw_may_serve(data: dict[str, Any], tenant_id: str) -> bool:
     substring test, and a malformed document must not lend itself to every
     tenant whose id happens to be inside another's.
     """
+    if not _raw_in_pool(data, POOL_WORKSPACE):
+        # Reserved for Voice it (`Account.may_serve`): no tenant's task.
+        return False
     owner = data.get("owner_tenant")
     if isinstance(owner, str) and owner and tenant_id == owner:
         return True
@@ -1283,8 +1448,22 @@ def acquire_hold(
     ttl: timedelta = DEFAULT_HOLD_TTL,
     task_id: str | None = None,
     attempt_id: str | None = None,
+    person: str | None = None,
+    voice_session_id: str | None = None,
 ) -> tuple[str, int] | None:
     """Record one agent's claim on an account. Returns (assignment_id, assigned).
+
+    A VOICE IT SESSION'S CLAIM when `person` is given with no tenant:
+    re-checked against the Voice it pool (`_raw_voice_assignable`) instead of a
+    tenant's, recorded with `pool: voice-it`, its person and its session, and
+    no tenant. It is counted on the same `holds` as every task's, so an account
+    in both pools never passes its `max_agents` across the two.
+
+    A VOICE SESSION'S WORKSPACE CLAIM when `person` comes WITH the person's
+    own tenant (the front's and the planner's Claude account, §14.1): checked
+    as a task's is (`_raw_assignable`), recorded in the workspace pool under
+    that tenant with its person and session, and renewed and released by the
+    voice hold routes, which match the session.
 
     A TRANSACTION AND NOT A READ-MODIFY-WRITE, for the reason `accountstore`
     states: several processes move this at once, and a lost write makes an
@@ -1320,6 +1499,7 @@ def acquire_hold(
     ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
     transaction = db.transaction()
     assignment_id = uuid.uuid4().hex
+    voice_it = person is not None and not tenant_id
 
     @firestore.transactional
     def _apply(txn: Any) -> int | None:
@@ -1327,7 +1507,10 @@ def acquire_hold(
         if not getattr(snap, "exists", False):
             return None
         data = snap.to_dict() or {}
-        if not _raw_assignable(data, tenant_id):
+        if voice_it:
+            if not _raw_voice_assignable(data, person or ""):
+                return None
+        elif not _raw_assignable(data, tenant_id):
             return None
         holds, expired = _split_holds(data, now)
         if not _raw_has_room(data, holds):
@@ -1341,6 +1524,9 @@ def acquire_hold(
             task_id=task_id or None,
             attempt_id=attempt_id or None,
             assigned_at=now,
+            pool=POOL_VOICE_IT if voice_it else POOL_WORKSPACE,
+            person=person,
+            voice_session_id=voice_session_id,
         )
         holds.append(hold)
         txn.update(ref, {**_hold_payload(holds), "last_assigned_at": now})
@@ -1360,6 +1546,7 @@ def release_hold(
     tenant_id: str | None,
     now: datetime,
     unusable: str = "",
+    voice_session_id: str | None = None,
 ) -> tuple[int | None, bool]:
     """Give one named assignment back. Returns (assigned, whether it was held).
 
@@ -1408,6 +1595,10 @@ def release_hold(
             # a worker must match both, or a forged id would let one tenant
             # release another's hold.
             and (tenant_id is None or h.tenant_id == tenant_id)
+            # A Voice it session releases only its own session's hold: one
+            # of the Voice it pool's, or its front's or planner's in a
+            # workspace pool (`acquire_hold`). A task's hold has no session.
+            and (voice_session_id is None or _is_voice_hold_of(h, voice_session_id))
         ]
         remaining = [h for h in holds if h not in held]
         if not held and not expired:
@@ -1665,15 +1856,201 @@ def _attempt_hold(
     return None
 
 
+def _voice_hold(
+    data: dict[str, Any],
+    now: datetime,
+    *,
+    assignment_id: str,
+    voice_session_id: str,
+) -> Hold | None:
+    """A Voice it session's LIVE hold on this account document, or None.
+
+    Matched as `renew_voice_hold` matches one: the assignment id the broker
+    issued, the Voice it pool, and the session the hold was taken for. A
+    task's hold carries no session, so its id never passes here."""
+    for hold in _live_holds(data, now):
+        if (
+            hold.assignment_id == assignment_id
+            and hold.pool == POOL_VOICE_IT
+            and hold.voice_session_id == voice_session_id
+        ):
+            return hold
+    return None
+
+
+def _reading_windows(windows: dict[str, WindowIn], now: datetime) -> dict[str, WindowReading]:
+    """A reading's windows as `record_reading` takes them, or a 422.
+
+    REFUSED: a window name that is not one, a reset without an offset, and a
+    reset in the past -- a reading that has already expired would be stored
+    as a fresh one. A utilization outside 0..1 the model refuses first."""
+    readings: dict[str, WindowReading] = {}
+    for name, window in windows.items():
+        if not _WINDOW_NAME.match(name):
+            raise BrokerValidationError(f"{name!r} is not a rate-limit window name")
+        if window.resets_at.tzinfo is None:
+            raise BrokerValidationError(f"window {name!r}: resets_at must carry an offset")
+        resets = window.resets_at.astimezone(timezone.utc)
+        if resets <= now:
+            raise BrokerValidationError(
+                f"window {name!r} reset at {resets.isoformat()}, which has passed; "
+                "a reading of an expired window is not a reading"
+            )
+        readings[name] = WindowReading(utilization=window.utilization, resets_at=resets)
+    return readings
+
+
 def _raw_assignable(data: dict[str, Any], tenant_id: str) -> bool:
     """Whether a raw document may take a NEW agent for this tenant right now."""
     return (
         data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value
         and _raw_may_serve(data, tenant_id)
-        # A later registration of an organisation another account holds
-        # (#2222): never handed out, re-checked where the hold commits.
-        and data.get("duplicate_withheld") is not True
+        # A later registration of a subscription another account holds
+        # (#2222): never handed out, re-checked where the hold commits. Only
+        # on a recorded organisation AND seat (#3046, `withheld_mark`): a mark
+        # on an account whose identity is unknown is an older rule's.
+        and not (
+            data.get("duplicate_withheld") is True
+            and bool(data.get("organisation_id"))
+            and bool(data.get("seat_id"))
+        )
     )
+
+
+def _raw_voice_assignable(data: dict[str, Any], person: str) -> bool:
+    """`_raw_assignable` for a Voice it session: AVAILABLE, in the Voice it
+    pool, listing `person`, and not a withheld duplicate. Re-checked where the
+    hold commits, so a pool removed between the listing and the hold hands
+    the session nothing."""
+    people = data.get("voice_it_people")
+    listed = isinstance(people, (list, tuple)) and person.strip().lower() in [
+        p.strip().lower() for p in people if isinstance(p, str)
+    ]
+    return (
+        data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value
+        and _raw_in_pool(data, POOL_VOICE_IT)
+        and listed
+        and not (
+            data.get("duplicate_withheld") is True
+            and bool(data.get("organisation_id"))
+            and bool(data.get("seat_id"))
+        )
+    )
+
+
+def _is_voice_hold_of(hold: Hold, voice_session_id: str) -> bool:
+    """Whether `hold` is a voice session's, of this session: the Voice it
+    pool's, or a workspace pool's taken for the session's front or planner
+    (`acquire_hold` with a person and a tenant). A task's hold carries no
+    session and no person, so it never matches."""
+    return (
+        bool(voice_session_id)
+        and hold.voice_session_id == voice_session_id
+        and (hold.pool == POOL_VOICE_IT or bool(hold.person))
+    )
+
+
+def renew_voice_hold(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    voice_session_id: str,
+    now: datetime,
+    ttl: timedelta,
+) -> datetime | None:
+    """Push a live Voice it hold's deadline to `now + ttl`. The new deadline,
+    or None when the session holds no live hold there (expired, released, or
+    the account removed): a session that lost its hold leases again."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> datetime | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        holds = list(holds_from_firestore(data.get("holds")))
+        for i, h in enumerate(holds):
+            if (
+                h.assignment_id == assignment_id
+                and _is_voice_hold_of(h, voice_session_id)
+                and not h.is_expired(now)
+            ):
+                holds[i] = replace(h, expires_at=now + ttl)
+                txn.update(ref, _hold_payload(holds))
+                return now + ttl
+        return None
+
+    return _apply(transaction)
+
+
+class PoolInUse(Exception):
+    """A pool cannot be removed while the account holds a lease of it."""
+
+
+class PoolLent(Exception):
+    """An account cannot be reserved for Voice it while it is lent: its
+    borrowers' workers can read its secret until the loan is ended."""
+
+
+def set_account_pools(
+    db: Any,
+    account_id: str,
+    *,
+    pools: tuple[str, ...],
+    voice_it_people: tuple[str, ...],
+    now: datetime,
+) -> tuple[list[str], list[str]] | None:
+    """Move an account between pools in ONE transaction. (before, after), or
+    None when the account does not exist.
+
+    REFUSES (`PoolInUse`) to remove a pool while the account holds a live
+    lease of it: the hold would keep a slot of a pool the account is no
+    longer in, and a release from that side would then be refused
+    (`_raw_may_serve`). The caller waits for the lease to end, or drains."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[list[str], list[str]] | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        before = [p for p in (data.get("pools") or list(DEFAULT_POOLS)) if isinstance(p, str)]
+        live, _expired = _split_holds(data, now)
+        for pool in before:
+            if pool not in pools and any(h.pool == pool for h in live):
+                raise PoolInUse(
+                    f"{account_id} holds a lease from the {pool} pool; it can leave "
+                    "that pool when the lease ends"
+                )
+        lent = [t for t in (data.get("lend_to") or []) if isinstance(t, str) and t]
+        if POOL_WORKSPACE not in pools and lent:
+            # Reserved for Voice it means never lent: a borrower's worker
+            # keeps read of the account's secret while the loan stands
+            # (`_sync_lending`), so the loan ends first, through the lending
+            # route that revokes those grants.
+            raise PoolLent(
+                f"{account_id} is lent to {len(lent)} other workspace(s); stop lending "
+                "it first, then reserve it for Voice it"
+            )
+        txn.update(
+            ref,
+            {
+                "pools": list(pools),
+                "voice_it_people": list(voice_it_people) if POOL_VOICE_IT in pools else [],
+            },
+        )
+        return before, list(pools)
+
+    return _apply(transaction)
 
 
 def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
@@ -1689,9 +2066,11 @@ def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
         cap = max_agents_from_firestore(data.get("max_agents"))
     except ValueError:
         return False
-    if data.get("observed_at") is None:
+    if data.get("observed_at") is None and data.get("provider") != openai_api_key.PROVIDER:
         # ONE UNTIL MEASURED (#2222), re-checked here for the reason the cap
-        # is: two assigns racing for a never-observed account's one slot.
+        # is: two assigns racing for a never-observed account's one slot. An
+        # OpenAI API key is never measured (`Account.measured`), so its
+        # `max_agents` is the cap.
         cap = min(cap, MAX_AGENTS_BEFORE_READING)
     return len(live) < cap
 
@@ -2541,6 +2920,7 @@ def create_app(
     subscription_tenants: Any | None = None,
     account_store: AccountStore | None = None,
     token_endpoint: Any | None = None,
+    plan_token_endpoint: Any | None = None,
 ) -> FastAPI:
     # The other three services do this and the broker did not, so every
     # `extra={...}` field it logged was discarded and its records arrived as
@@ -2564,6 +2944,35 @@ def create_app(
         not in {"0", "false", "no", "off"},
         project_id=os.environ.get("PROJECT_ID", ""),
         hardened=environment not in {"dev", "test", "local"},
+    )
+
+    # THE VOICE IT POOL'S CALLER (owner, 2026-11-02): swarm-voice's service
+    # account, the only identity the /v1/voice/ lease routes answer. Named by
+    # VOICE_SERVICE_ACCOUNTS when set, else the account terraform/bootstrap
+    # creates for it in this project (`service_account_ids.voice_id`).
+    project_for_voice = os.environ.get("PROJECT_ID", "").strip()
+    app.state.voice_callers = frozenset(
+        a.strip().lower()
+        for a in (
+            os.environ.get("VOICE_SERVICE_ACCOUNTS", "").split(",")
+            if os.environ.get("VOICE_SERVICE_ACCOUNTS", "").strip()
+            else ([f"swarm-voice@{project_for_voice}.iam.gserviceaccount.com"]
+                  if project_for_voice else [])
+        )
+        if a.strip()
+    )
+    # Who a Voice it pool account lists when the pool is added. Version one:
+    # the platform owner only (owner, 2026-11-02): VOICE_IT_PEOPLE when set,
+    # else PLATFORM_OWNER, which terraform/infra renders from
+    # var.platform_owner. Never a literal in the code: a new deployment has
+    # its own owner, and with neither set the pool lists nobody.
+    app.state.voice_it_people = tuple(
+        p.strip().lower()
+        for p in (
+            os.environ.get("VOICE_IT_PEOPLE", "")
+            or os.environ.get("PLATFORM_OWNER", "")
+        ).split(",")
+        if p.strip()
     )
 
     # This service is the platform's single writer of subscription credentials.
@@ -2653,6 +3062,9 @@ def create_app(
     # that reaches the real endpoint is a test that needs the network and a
     # real authorization code.
     app.state.token_endpoint = token_endpoint or HttpTokenEndpoint()
+    # The ChatGPT token endpoint, for an `openai` account's sign-in (#2688);
+    # injected for the same reason as the Claude one above.
+    app.state.plan_token_endpoint = plan_token_endpoint or openai_plan.HttpPlanTokenEndpoint()
     app.state.subscription_tenants = tenants or (lambda: [])
     # Registering an account writes two secrets, so the account routes need the
     # same store the refresher and the poller use. Exposed on app.state rather
@@ -3211,6 +3623,7 @@ def create_app(
     def list_accounts(
         request: Request,
         tenant_id: str | None = Query(default=None),
+        include_reserved: bool = Query(default=False),
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
         caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
@@ -3229,7 +3642,18 @@ def create_app(
         if scope:
             # `may_serve` is what `for_tenant` applies: owned AND lent-to, which
             # is the set a tenant may actually run on, not the set it owns.
-            accounts = [a for a in listing.accounts if a.may_serve(scope)]
+            accounts = [
+                a for a in listing.accounts
+                if a.may_serve(scope)
+                # `include_reserved`: the scope's OWN accounts that are in the
+                # Voice it pool only, which `may_serve` refuses to every
+                # tenant. Capacity › Accounts and the pool move read them
+                # (the owner, 2026-11-02), or a reserved account could never
+                # be seen or moved back. Ownership only, never a loan, and
+                # every other caller's listing (admission, capacity, setup)
+                # leaves them out.
+                or (include_reserved and a.owner_tenant == scope)
+            ]
         else:
             accounts = listing.accounts
         # Each row's 24 h health counts and status (#2302), so a list can draw
@@ -3417,6 +3841,15 @@ def create_app(
         refuse_duplicate_organisation(
             store.list(), organisation, f"{owner_tenant}:{label}", owner_tenant
         )
+        # A KEY'S LABEL IS NEVER RE-REGISTERED AS A PLAN: it would rewrite the
+        # provider and bind the owner's worker to `{base}`, whose older
+        # version still holds the key the broker alone may read.
+        existing = store.get(f"{owner_tenant}:{label}")
+        if existing is not None and existing.provider == openai_api_key.PROVIDER:
+            raise BrokerValidationError(
+                f"{existing.account_id} is an OpenAI API key; a {provider} account "
+                "needs a label of its own"
+            )
         labels = {
             "managed-by": "swarm-secrets",
             "component": "swarm-account",
@@ -3528,6 +3961,118 @@ def create_app(
         mark_duplicates(store)
         return store.get(account.account_id) or account
 
+    def _register_api_key(
+        request: Request,
+        body: AccountRegister,
+        authorization: str | None,
+        *,
+        store: Any,
+        secrets: Any,
+    ) -> dict[str, Any]:
+        """File an OpenAI developer API key into the Voice it pool, and ONLY
+        there (`openai_api_key`; the owner, 4 November 2026, after OpenAI
+        refused the ChatGPT plan for GPT-Live).
+
+        PLATFORM ONLY, like a pool move: the account serves the Voice it
+        people the broker names (`VOICE_IT_PEOPLE`), which no one workspace
+        decides. Never lent. ONE secret, `{base}`, the broker its only
+        accessor and writer: no worker service account is bound (no agent
+        ever runs on it) and no `{base}-refresh` exists (a key does not
+        rotate). Parsed before anything is written, so a refusal leaves no
+        secret and no document; the key is never logged or answered.
+        """
+        _platform_only(
+            request,
+            authorization,
+            "only a platform admin may add an OpenAI API key to the Voice it pool",
+        )
+        if body.lend_to:
+            raise BrokerValidationError(
+                "an OpenAI API key serves Voice it alone and is never lent; send no lend_to"
+            )
+        try:
+            validate_label(body.label)
+            base = secret_name(body.owner_tenant, body.label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        try:
+            key = openai_api_key.parse_api_key(body.credential)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        # WHO ADDED IT, checked before anything is written, like the key.
+        if body.added_by is None:
+            raise BrokerValidationError(
+                "an OpenAI API key is recorded with the platform admin who added it; "
+                "send added_by"
+            )
+        try:
+            added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        existing = store.get(f"{body.owner_tenant}:{body.label}")
+        if existing is not None and existing.provider != openai_api_key.PROVIDER:
+            raise BrokerValidationError(
+                f"{existing.account_id} is a {existing.provider} account; an OpenAI API key "
+                "needs a label of its own"
+            )
+        broker_sa = request.app.state.broker_service_account
+        if broker_sa and not broker_sa.startswith("serviceAccount:"):
+            broker_sa = f"serviceAccount:{broker_sa}"
+        labels = {
+            "managed-by": "swarm-secrets",
+            "component": "swarm-account",
+            "tenant": body.owner_tenant,
+            "account": body.label,
+            "provider": openai_api_key.PROVIDER,
+            "environment": request.app.state.environment,
+        }
+        try:
+            secrets.ensure_secret(
+                base,
+                labels=labels,
+                accessors=[broker_sa] if broker_sa else [],
+                region=request.app.state.region,
+            )
+            secrets.add_version(base, openai_api_key.serialise(key))
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
+            log.error(
+                "could not store an OpenAI API key account's secret",
+                extra={"tenant_id": body.owner_tenant, "label": body.label,
+                       "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"could not store the key for {body.owner_tenant}:{body.label}: "
+                f"{type(exc).__name__}. No account was registered."
+            ) from None
+        account = store.register(
+            body.owner_tenant, body.label, provider=openai_api_key.PROVIDER, lend_to=()
+        )
+        set_account_pools(
+            request.app.state.broker.db,
+            account.account_id,
+            pools=(POOL_VOICE_IT,),
+            voice_it_people=request.app.state.voice_it_people,
+            now=datetime.now(timezone.utc),
+        )
+        if account.state is AccountState.REAUTH_REQUIRED:
+            store.clear_reauth_required(account.account_id)
+        # A replacement overwrites both fields; `registered_at` keeps the first.
+        request.app.state.broker.db.collection(ACCOUNTS_COLLECTION).document(
+            account.account_id
+        ).update(added)
+        log.info(
+            "audit: an OpenAI API key was added to the Voice it pool",
+            extra={"audit": True, "account_id": account.account_id, "pool": POOL_VOICE_IT},
+        )
+        registered = store.get(account.account_id) or account
+        return {
+            "account": account_to_api(registered, platform_wide=True),
+            "registered": f"{registered.account_id}: an OpenAI API key, in the Voice it pool only",
+            "organisation": None,
+            "expires_at": None,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
     # ------------------------------------------------------------------
     # Adding an account from a browser
     # ------------------------------------------------------------------
@@ -3542,6 +4087,54 @@ def create_app(
     # verifier the client holds is a PKCE flow that proves nothing.
 
     PENDING_AUTH = "account_auth"
+
+    def _finish_plan_sign_in(
+        request: Request,
+        *,
+        ref: Any,
+        pending: dict[str, Any],
+        owner: str,
+        code: str,
+        store: Any,
+        secrets_store: Any,
+    ) -> dict[str, Any]:
+        """Redeem a ChatGPT plan's code and file the plan as an `openai` account.
+
+        The same order as a Claude sign-in: the caller was proven to be the
+        pending record's owner before this runs, the code is redeemed with the
+        verifier that record holds, both secrets are written before the
+        account document exists, and the pending record is deleted last.
+        """
+        try:
+            payload = request.app.state.plan_token_endpoint.redeem(
+                code=code,
+                verifier=str(pending.get("verifier") or ""),
+                redirect_uri=openai_plan.REDIRECT_URI,
+                state=str(pending.get("state") or ""),
+            )
+            credential = openai_plan.credential_from_sign_in(payload)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        account = _provision_and_register(
+            request,
+            store=store,
+            secrets=secrets_store,
+            owner_tenant=owner,
+            label=str(pending.get("label") or ""),
+            provider=openai_plan.PROVIDER,
+            lend_to=list(pending.get("lend_to") or ()),
+            credential_payload=openai_plan.serialise_plan(credential),
+            access_token=openai_plan.published_value(credential),
+            organisation=credential.organisation,
+        )
+        ref.delete()
+        return {
+            "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, credential.organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": credential.expires_at.isoformat(),
+            "note": "stored write-only; no route in this service returns key material",
+        }
     #: The 403 code for "the caller is not the tenant that started this
     #: sign-in". swarm-api's BrokerClient matches this exact string.
     SIGN_IN_OWNER_MISMATCH = "sign_in_owner_mismatch"
@@ -3563,9 +4156,25 @@ def create_app(
         except AccountError as exc:
             raise BrokerValidationError(str(exc)) from None
 
+        provider = _account_provider(body.provider)
+        if provider == openai_api_key.PROVIDER:
+            raise BrokerValidationError(
+                "an OpenAI API key has no sign-in: it is pasted once, through the console's "
+                "one-time link, and stored by this broker"
+            )
         verifier = new_verifier()
         state = new_state()
-        url = build_authorize_url(state=state, code_challenge=challenge_for(verifier))
+        if provider == openai_plan.PROVIDER:
+            # A ChatGPT plan (#2688): its client's one registered redirect is
+            # the person's OWN machine (`localhost:1455`, measured), where
+            # `sc account add --provider openai` listens and catches the code.
+            url = openai_plan.build_authorize_url(
+                state=state, code_challenge=challenge_for(verifier)
+            )
+            redirect_uri = openai_plan.REDIRECT_URI
+        else:
+            url = build_authorize_url(state=state, code_challenge=challenge_for(verifier))
+            redirect_uri = OAUTH_REDIRECT_URI
 
         request.app.state.broker.db.collection(PENDING_AUTH).document(state).set(
             {
@@ -3573,7 +4182,7 @@ def create_app(
                 "verifier": verifier,
                 "owner_tenant": body.owner_tenant,
                 "label": body.label,
-                "provider": body.provider,
+                "provider": provider,
                 "lend_to": list(body.lend_to),
                 "created_at": datetime.now(timezone.utc),
             }
@@ -3582,6 +4191,11 @@ def create_app(
             "authorize_url": url,
             "state": state,
             "expires_in_seconds": int(PENDING_TTL.total_seconds()),
+            # Which sign-in this is and where its browser lands, so a client
+            # can tell a Claude sign-in from a plan's -- and refuse to wait on
+            # a localhost callback a Claude page will never make.
+            "provider": provider,
+            "redirect_uri": redirect_uri,
         }
 
     @app.post("/v1/accounts/exchange", status_code=201)
@@ -3696,6 +4310,12 @@ def create_app(
         # The pending record decides the tenant, never the request: `owner`
         # above is read off it, and the caller has just been proven to be it.
 
+        if str(pending.get("provider") or "") == openai_plan.PROVIDER:
+            return _finish_plan_sign_in(
+                request, ref=ref, pending=pending, owner=owner, code=code,
+                store=store, secrets_store=secrets_store,
+            )
+
         try:
             payload = request.app.state.token_endpoint.redeem(
                 code=code,
@@ -3770,6 +4390,40 @@ def create_app(
         # the operator logs in once. Refusing it here costs them one error
         # message; accepting it costs them a pool entry that looks healthy and
         # dies silently at its first expiry.
+        provider = _account_provider(body.provider)
+        if provider == openai_api_key.PROVIDER:
+            return _register_api_key(request, body, authorization, store=store, secrets=secrets)
+        if body.added_by is not None:
+            raise BrokerValidationError(
+                "added_by is recorded for an OpenAI API key alone; send none for this provider"
+            )
+        if provider == openai_plan.PROVIDER:
+            # A ChatGPT plan's pair, or codex's own auth.json (#2688). Its
+            # organisation is what the pasted id_token says, when it carries one.
+            try:
+                plan = openai_plan.parse_plan_credential(body.credential)
+            except CredentialError as exc:
+                raise BrokerValidationError(str(exc)) from None
+            account = _provision_and_register(
+                request,
+                store=store,
+                secrets=secrets,
+                owner_tenant=body.owner_tenant,
+                label=body.label,
+                provider=provider,
+                lend_to=body.lend_to,
+                credential_payload=openai_plan.serialise_plan(plan),
+                access_token=openai_plan.published_value(plan),
+                organisation=plan.organisation,
+            )
+            return {
+                "account": account_to_api(account),
+                "registered": organisation_line(account.account_id, plan.organisation),
+                "organisation": _organisation_to_api(account),
+                "expires_at": plan.expires_at.isoformat(),
+                "note": "stored write-only; no route in this service returns key material",
+            }
+
         try:
             credential = parse_credential(body.credential)
         except CredentialError as exc:
@@ -3816,6 +4470,21 @@ def create_app(
         if account is None:
             raise BrokerValidationError(f"no account {account_id!r}")
         _authorize(request, authorization, account.owner_tenant)
+        if account.provider == openai_api_key.PROVIDER:
+            # Even `lend_to: []` would bind the owner's worker as a reader of
+            # `{base}` (`_sync_lending`): the key's secret stays the broker's
+            # alone, so a key account has no lending to change.
+            raise BrokerValidationError(
+                f"{account_id} is an OpenAI API key, which serves Voice it alone; it "
+                "is never lent and no worker reads its secret"
+            )
+        if body.lend_to and POOL_WORKSPACE not in account.pools:
+            # Reserved for Voice it: never lent, and no borrower is granted
+            # read of its secret.
+            raise BrokerValidationError(
+                f"{account_id} is in the Voice it pool only, and an account reserved "
+                "for Voice it is never lent"
+            )
         secrets = getattr(request.app.state, "secret_store", None)
         secret = store.secret_for(account)
         if secrets is not None:
@@ -4131,6 +4800,469 @@ def create_app(
             )
         return caller_tenant
 
+    # -- the Voice it pool (owner, 2026-11-02) --------------------------------
+
+    @app.put("/v1/accounts/{account_id}/pools")
+    def set_pools(
+        request: Request,
+        account_id: str,
+        body: AccountPools,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        """Move an account into or out of the workspace and Voice it pools.
+
+        PLATFORM ONLY: a pool change takes an account away from every
+        workspace it serves, or gives the platform owner's Voice it a
+        workspace's plan, which no one workspace may decide. Confirmed by the
+        label typed back, keeps at least one pool, refuses (409 `pool_in_use`)
+        to remove a pool the account holds a lease of, and is audited in the
+        log with the caller.
+        """
+        from fastapi.responses import JSONResponse
+
+        _platform_only(request, authorization, "only a platform admin may change an account's pools")
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        if body.confirm_label.strip() != account.label:
+            raise BrokerValidationError(
+                f"type the account's label, {account.label!r}, to change its pools"
+            )
+        try:
+            pools = validate_pools(body.pools)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if account.provider == openai_api_key.PROVIDER and pools != (POOL_VOICE_IT,):
+            # Never lent to any agent or workspace: a key in the workspace
+            # pool would be one `may_serve` hands a task.
+            raise BrokerValidationError(
+                f"{account_id} is an OpenAI API key, which serves Voice it alone; it "
+                "stays in the Voice it pool only"
+            )
+        try:
+            moved = set_account_pools(
+                request.app.state.broker.db,
+                account_id,
+                pools=pools,
+                voice_it_people=request.app.state.voice_it_people,
+                now=datetime.now(timezone.utc),
+            )
+        except PoolInUse as exc:
+            return JSONResponse(status_code=409, content={"code": "pool_in_use", "message": str(exc)})
+        except PoolLent as exc:
+            return JSONResponse(status_code=409, content={"code": "pool_lent", "message": str(exc)})
+        if moved is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        before, after = moved
+        log.info(
+            "audit: an account's pools changed",
+            extra={
+                "audit": True,
+                "account_id": account_id,
+                "from_pools": before,
+                "to_pools": after,
+                "caller": request.app.state.identity.verified_email(authorization),
+            },
+        )
+        updated = store.get(account_id)
+        return {"account": account_to_api(updated, platform_wide=True)}
+
+    def _voice_caller(request: Request, authorization: str | None) -> None:
+        """Only swarm-voice leases from the Voice it pool. OIDC off is local
+        development, where every caller is the platform."""
+        identity = request.app.state.identity
+        try:
+            email = identity.verified_email(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not identity.required:
+            return
+        if email not in request.app.state.voice_callers:
+            request.app.state.metrics.auth_failures.labels(kind="not_voice").inc()
+            raise BrokerAuthError("only swarm-voice may lease from the Voice it pool")
+
+    def _voice_credential(request: Request, account: Any) -> dict[str, str]:
+        """The plan's published access token and account id, read by the
+        broker and handed to swarm-voice's process alone (no secret binding
+        for swarm-voice at all). Never logged."""
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this broker has no secret store, so it cannot lend a plan to Voice it")
+        if account.provider == "anthropic":
+            # A voice session's front or planner renewing its Claude hold.
+            return _voice_claude_credential(request, account)
+        if account.provider == openai_api_key.PROVIDER:
+            # The key alone: `kind` tells swarm-voice to send `Authorization`
+            # and no `ChatGPT-Account-Id`, which names a plan's account.
+            try:
+                key = openai_api_key.read_key(
+                    secrets.access(_accounts(request).secret_for(account))
+                )
+            except Exception as exc:  # noqa: BLE001 -- the name only, never the value
+                log.error(
+                    "could not read a Voice it pool account's API key",
+                    extra={"account_id": account.account_id, "error": type(exc).__name__},
+                )
+                raise BrokerValidationError(
+                    f"the API key of {account.account_id} could not be read ({type(exc).__name__})"
+                ) from None
+            return {"access_token": key, "kind": openai_api_key.CREDENTIAL_KIND}
+        try:
+            published = json.loads(secrets.access(_accounts(request).secret_for(account)))
+            token = published["access_token"]
+            plan_account = published.get("account_id") or ""
+        except Exception as exc:  # noqa: BLE001 -- the name only, never the value
+            log.error(
+                "could not read a Voice it pool account's plan token",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"the plan of {account.account_id} could not be read ({type(exc).__name__})"
+            ) from None
+        if not isinstance(token, str) or not token:
+            raise BrokerValidationError(f"the plan of {account.account_id} has no access token yet")
+        return {"access_token": token, "account_id": str(plan_account)}
+
+    def _voice_claude_credential(request: Request, account: Any) -> dict[str, str]:
+        """A Claude subscription's token, as its secret holds it (the worker's
+        one shape: the bare OAuth token), for a voice session's front or
+        planner. Handed to swarm-voice's process alone; never logged."""
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this broker has no secret store, so it cannot lend an account to Voice it")
+        try:
+            token = str(secrets.access(_accounts(request).secret_for(account)) or "").strip()
+        except Exception as exc:  # noqa: BLE001 -- the name only, never the value
+            log.error(
+                "could not read a Claude account's token for a voice hold",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"the token of {account.account_id} could not be read ({type(exc).__name__})"
+            ) from None
+        if not token:
+            raise BrokerValidationError(f"the account {account.account_id} has no token")
+        return {"access_token": token}
+
+    @app.post("/v1/voice/lease")
+    def voice_lease(
+        request: Request,
+        body: VoiceLease,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Lease a Voice it pool account for one session of `person`.
+
+        THE VOICE IT POOL ONLY: `choose_voice` never offers an account outside
+        it, nor one that does not list the person. None free is a 200 with a
+        reason, as `assign` answers, and swarm-voice refuses the session with
+        a spoken reason. The hold carries no tenant, so it counts toward no
+        workspace's capacity; it is counted on the account, so the account's
+        `max_agents` holds across both pools.
+        """
+        _voice_caller(request, authorization)
+        provider = _account_provider(body.provider)
+        person = body.person.strip().lower()
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        listing = store.list()
+        chosen, reason = choose_voice(listing, person, provider, now, capability=body.capability)
+        refused = {
+            "account_id": None,
+            "assignment_id": None,
+            "credential": None,
+            "reason": reason,
+            "next_reset_at": None,
+        }
+        if chosen is None:
+            return refused
+        # A hold that loses a race for the chosen account's last slot tries
+        # the next free one, so a session is refused only when none is left.
+        held = None
+        tried: set[str] = set()
+        while chosen is not None:
+            tried.add(chosen.account_id)
+            held = acquire_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                tenant_id="",
+                now=now,
+                ttl=VOICE_HOLD_TTL,
+                person=person,
+                voice_session_id=body.voice_session_id,
+            )
+            if held is not None:
+                break
+            chosen, _ = choose_voice(
+                [a for a in listing if a.account_id not in tried],
+                person,
+                provider,
+                now,
+                capability=body.capability,
+            )
+        if held is None or chosen is None:
+            return {**refused, "reason": VOICE_NONE_AVAILABLE}
+        assignment_id, _assigned = held
+        try:
+            credential = _voice_credential(request, chosen)
+        except BrokerValidationError:
+            # Nothing is handed out, so nothing stays held.
+            release_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                assignment_id=assignment_id,
+                tenant_id=None,
+                now=now,
+                voice_session_id=body.voice_session_id,
+            )
+            raise
+        log.info(
+            "leased a Voice it pool account",
+            extra={
+                "account_id": chosen.account_id,
+                "assignment_id": assignment_id,
+                "voice_session_id": body.voice_session_id,
+                "pool": POOL_VOICE_IT,
+            },
+        )
+        return {
+            "account_id": chosen.account_id,
+            "assignment_id": assignment_id,
+            "label": chosen.label,
+            "display_name": chosen.display_name,
+            "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
+            "credential": credential,
+            "reason": "",
+        }
+
+    @app.post("/v1/voice/lease/{account_id}/renew")
+    def voice_renew(
+        request: Request,
+        account_id: str,
+        body: VoiceHold,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        """Keep a session's hold, and hand back the plan's current token (the
+        broker's refresh sweep keeps it fresh). 409 when the hold is gone."""
+        from fastapi.responses import JSONResponse
+
+        _voice_caller(request, authorization)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        expires = renew_voice_hold(
+            request.app.state.broker.db,
+            account_id,
+            assignment_id=body.assignment_id,
+            voice_session_id=body.voice_session_id,
+            now=now,
+            ttl=VOICE_HOLD_TTL,
+        )
+        account = store.get(account_id) if expires is not None else None
+        if expires is None or account is None:
+            return JSONResponse(
+                status_code=409,
+                content={"code": "not_held", "message": "this session holds no live lease on that account"},
+            )
+        return {"expires_at": expires.isoformat(), "credential": _voice_credential(request, account)}
+
+    @app.post("/v1/voice/lease/{account_id}/release")
+    def voice_release(
+        request: Request,
+        account_id: str,
+        body: VoiceHold,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Give a session's hold back. Idempotent: a second release, or one of
+        a hold that already lapsed, is `released: false`."""
+        _voice_caller(request, authorization)
+        _accounts(request)
+        _assigned, was_held = release_hold(
+            request.app.state.broker.db,
+            account_id,
+            assignment_id=body.assignment_id,
+            tenant_id=None,
+            now=datetime.now(timezone.utc),
+            voice_session_id=body.voice_session_id,
+        )
+        return {"account_id": account_id, "released": bool(was_held)}
+
+    @app.post("/v1/voice/lease/{account_id}/readings")
+    def voice_reading(
+        request: Request,
+        account_id: str,
+        body: VoiceReadingIn,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        """A Voice it text session's reading of the plan it holds: the
+        `x-codex-*` windows swarm_voice.textchat reads off each answer.
+
+        Recorded exactly as a holding worker's reading is
+        (`AccountStore.record_reading`, merged per window, the windows checked
+        by `_reading_windows`), so `choose()` and `choose_voice` see a plan's
+        spend from Voice it as they see it from a task's run.
+
+        ONLY SWARM-VOICE, and only for a LIVE Voice it hold of THIS account,
+        with this assignment id, taken for this session: a reading moves
+        `choose()`, so anything less could steer tasks onto or off a plan.
+        Otherwise 409 `not_held`, as a renewal of a lost hold answers, and
+        nothing is written."""
+        from fastapi.responses import JSONResponse
+
+        _voice_caller(request, authorization)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        windows = _reading_windows(body.windows, now)
+        data = _raw_account(request.app.state.broker.db, account_id)
+        hold = (
+            _voice_hold(
+                data,
+                now,
+                assignment_id=body.assignment_id,
+                voice_session_id=body.voice_session_id,
+            )
+            if data is not None
+            else None
+        )
+        if hold is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            return JSONResponse(
+                status_code=409,
+                content={"code": "not_held", "message": "this session holds no live lease on that account"},
+            )
+        updated = store.record_reading(account_id, windows, now)
+        return {
+            "account_id": account_id,
+            "recorded": updated is not None,
+            "windows": sorted(windows),
+        }
+
+    @app.get("/v1/voice/pool")
+    def voice_pool(
+        request: Request,
+        person: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Which account `person`'s NEXT Voice it session would lease, without
+        leasing it, for Voice it › Preferences. Platform (swarm-api) only."""
+        _platform_only(request, authorization, "only the platform may ask about the Voice it pool")
+        store = _accounts(request)
+        chosen, reason = choose_voice(
+            store.list(),
+            person.strip().lower(),
+            "openai",
+            datetime.now(timezone.utc),
+            capability=openai_api_key.CAPABILITY_LIVE,
+        )
+        if chosen is None:
+            return {"account": None, "reason": reason}
+        answer: dict[str, Any] = {
+            "account_id": chosen.account_id,
+            "label": chosen.label,
+            "display_name": chosen.display_name,
+            "provider": chosen.provider,
+        }
+        if chosen.provider == openai_api_key.PROVIDER:
+            # Who added the key and when, never the key (Voice it › Settings).
+            added = openai_api_key.added_from(
+                _raw_account(request.app.state.broker.db, chosen.account_id) or {}
+            )
+            answer["key_added_by"] = added["by"]
+            answer["key_added_at"] = added["at"].isoformat() if added["at"] else None
+        return {"account": answer, "reason": reason}
+
+    def _assign_voice_hold(request: Request, authorization: str | None, asked: AccountAssign) -> dict[str, Any]:
+        """A voice session's hold on a Claude account of the person's own
+        workspace (`AccountAssign.holder`; voice-it-own-speech.md §14.1).
+
+        ONLY swarm-voice (`_voice_caller`), and the tenant is `person`'s own
+        workspace, never the body's. NO TASK, so no step class: the class is
+        None, served only by an account that serves every class (R5), exactly
+        as a worker that sends no task id is. Counted on the account's `holds`
+        like a task's, for VOICE_HOLD_TTL at a time: the front renews it every
+        four minutes for the session's life and the planner for its turn,
+        through `/v1/voice/lease/{account_id}/renew`, and both give it back
+        through `.../release` (invariant 3: one agent while it is held). None
+        free is a 200 with the reason, as a task's is; the credential is the
+        account's token, handed to swarm-voice's process and never logged.
+        """
+        _voice_caller(request, authorization)
+        person = (asked.person or "").strip().lower()
+        voice_session_id = asked.voice_session_id or ""
+        try:
+            tenant_id = tenant_id_for_user(person)
+        except ValueError as exc:
+            raise BrokerValidationError(f"{exc}") from None
+        provider = _known_provider(asked.provider)
+        exclude = tuple(a for a in asked.exclude if a)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        refused: dict[str, Any] = {
+            "account_id": None,
+            "assignment_id": None,
+            "credential": None,
+            "reason": "",
+            "next_reset_at": None,
+        }
+        listing = store.list()
+        candidates = accounts_serving(listing, tenant_id, provider, model_class=None)
+        tried: set[str] = set(exclude)
+        while True:
+            chosen = choose(candidates, tenant_id, now, exclude=tuple(tried), model_class=None)
+            if chosen is None:
+                if tried == set(exclude):
+                    reason, next_reset = eligibility(
+                        candidates, tenant_id, now, exclude=exclude, model_class=None
+                    )
+                    return {**refused, "reason": reason.value,
+                            "next_reset_at": next_reset.isoformat() if next_reset else None}
+                return {**refused, "reason": Unavailable.NO_ACCOUNT_AVAILABLE.value}
+            tried.add(chosen.account_id)
+            held = acquire_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                tenant_id=tenant_id,
+                now=now,
+                ttl=VOICE_HOLD_TTL,
+                person=person,
+                voice_session_id=voice_session_id,
+            )
+            if held is not None:
+                break
+        assignment_id, assigned = held
+        try:
+            credential = _voice_claude_credential(request, chosen)
+        except BrokerValidationError:
+            # Nothing is handed out, so nothing stays held.
+            release_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                assignment_id=assignment_id,
+                tenant_id=None,
+                now=now,
+                voice_session_id=voice_session_id,
+            )
+            raise
+        log.info(
+            "held an account for a voice session",
+            extra={
+                "account_id": chosen.account_id,
+                "assignment_id": assignment_id,
+                "tenant_id": tenant_id,
+                "voice_session_id": voice_session_id,
+                "holder": asked.holder,
+                "assigned": assigned,
+            },
+        )
+        return {
+            "account_id": chosen.account_id,
+            "assignment_id": assignment_id,
+            "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
+            "credential": credential,
+            "reason": "",
+            "next_reset_at": None,
+        }
+
     @app.post("/v1/accounts/assign")
     def assign_account(
         request: Request,
@@ -4182,10 +5314,12 @@ def create_app(
         that poll, and may then carry an instant too: a window that clears
         sooner than the poll. The worker parks until the sooner of the two.
         """
-        tenant_id = _assignment_tenant(request, authorization)
         # Built per call rather than as a default argument: a model instance in
         # a signature default is shared by every request that omits the body.
         asked = body or AccountAssign()
+        if asked.holder is not None:
+            return _assign_voice_hold(request, authorization, asked)
+        tenant_id = _assignment_tenant(request, authorization)
         provider = _known_provider(asked.provider)
         exclude = tuple(a for a in asked.exclude if a)
         store = _accounts(request)
@@ -4450,19 +5584,7 @@ def create_app(
         """
         _holder(request, authorization, account_id, body)
         now = datetime.now(timezone.utc)
-        windows: dict[str, WindowReading] = {}
-        for name, window in body.windows.items():
-            if not _WINDOW_NAME.match(name):
-                raise BrokerValidationError(f"{name!r} is not a rate-limit window name")
-            if window.resets_at.tzinfo is None:
-                raise BrokerValidationError(f"window {name!r}: resets_at must carry an offset")
-            resets = window.resets_at.astimezone(timezone.utc)
-            if resets <= now:
-                raise BrokerValidationError(
-                    f"window {name!r} reset at {resets.isoformat()}, which has passed; "
-                    "a reading of an expired window is not a reading"
-                )
-            windows[name] = WindowReading(utilization=window.utilization, resets_at=resets)
+        windows = _reading_windows(body.windows, now)
         updated = _accounts(request).record_reading(account_id, windows, now)
         return {
             "account_id": account_id,

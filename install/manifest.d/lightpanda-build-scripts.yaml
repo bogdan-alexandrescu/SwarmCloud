@@ -1,0 +1,34 @@
+# Lane LIGHTPANDA-BUILD-SCRIPTS (part of #2688; docs/design/lightpanda-runtime.md
+# sections 5.D and 6.4, lane L3): agent-runtime-lightpanda is in the target
+# lists of scripts/build-images.sh and scripts/push-images.sh and in
+# scripts/warm-jobs.sh's RUNNER_IMAGES, so a release builds, promotes and warms
+# it by name. The image itself is lane LIGHTPANDA-IMAGE's entry
+# (lightpanda-image.yaml, image.agent-runtime-lightpanda), which refs its
+# Dockerfile; this entry refs the name the scripts list, as
+# image.agent-runtime-indexer's refs do in the base manifest.
+version: 1
+entries:
+- id: image.agent-runtime-lightpanda.release
+  kind: image
+  scope: core
+  stage: 4
+  provider: engine
+  check: gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/agent-runtime-lightpanda --limit=5
+  apply: scripts/build-images.sh builds it after agent-runtime-base, and scripts/push-images.sh promotes it
+  verify: the release's build record and promotion manifest carry an agent-runtime-lightpanda digest
+  explain: The release builds the Lightpanda runner image with every other runner image, from the same commit,
+    so the install copies it by digest like the rest.
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - image.agent-runtime-lightpanda
+  evidence:
+  - scripts/build-images.sh:179
+  - scripts/push-images.sh:78
+  - scripts/warm-jobs.sh:114
+  notes: The tag's source archive, which the image's SOURCE notice names under the release home, is staged by
+    scripts/lib/build-mirror.sh lightpanda_source_stage; publishing it with the release is scripts/release/'s.
+  step: images.copy
+  refs:
+    image:
+    - agent-runtime-lightpanda

@@ -22,7 +22,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen } = await import('../AdminSettings')
+const { AdminSettingsScreen, poolSpoken } = await import('../AdminSettings')
 
 const WAIT = { timeout: 5000 } as const
 
@@ -68,7 +68,7 @@ async function open(name: string): Promise<{ side: HTMLElement; edit: HTMLElemen
     expect(r).not.toBeNull()
     return r as HTMLElement
   }, WAIT)
-  const edit = within(row).getByRole('button', { name: `Edit ceiling for ${name}` })
+  const edit = within(row).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` })
   fireEvent.click(edit)
   const side = document.querySelector<HTMLElement>('aside.adm-side')
   expect(side, 'edit opened no side editor').not.toBeNull()
@@ -86,7 +86,7 @@ describe('closing the side editor hands focus back to the row', () => {
   it('on a saved write, focuses the pool row\'s Edit control', async () => {
     api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
     const { side, edit } = await open('tenant:eng')
-    fireEvent.change(within(side).getByLabelText('Hard limit for tenant:eng'), { target: { value: '20' } })
+    fireEvent.change(within(side).getByLabelText('Hard limit for eng (workspace)'), { target: { value: '20' } })
     fireEvent.click(within(side).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.setPoolLimit).toHaveBeenCalledWith('tenant:eng', 20), WAIT)
     await waitFor(() => expect(document.querySelector('aside.adm-side')).toBeNull(), WAIT)
@@ -97,7 +97,7 @@ describe('closing the side editor hands focus back to the row', () => {
 describe('Escape in the side editor', () => {
   it('closes it and returns focus to the Edit control', async () => {
     const { side, edit } = await open('tenant:eng')
-    fireEvent.keyDown(within(side).getByLabelText('Hard limit for tenant:eng'), { key: 'Escape' })
+    fireEvent.keyDown(within(side).getByLabelText('Hard limit for eng (workspace)'), { key: 'Escape' })
     await waitFor(() => expect(document.querySelector('aside.adm-side')).toBeNull(), WAIT)
     expect(document.activeElement).toBe(edit)
   })
@@ -105,7 +105,7 @@ describe('Escape in the side editor', () => {
   it('does nothing while a write is in flight', async () => {
     api.setPoolLimit.mockReturnValue(new Promise(() => {}))
     const { side } = await open('tenant:eng')
-    const field = within(side).getByLabelText('Hard limit for tenant:eng')
+    const field = within(side).getByLabelText('Hard limit for eng (workspace)')
     fireEvent.change(field, { target: { value: '20' } })
     fireEvent.click(within(side).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(within(side).getByRole('button', { name: 'Saving…' })).toBeTruthy(), WAIT)

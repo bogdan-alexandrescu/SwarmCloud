@@ -3,6 +3,8 @@
 // the copy that has to follow, and there is no check that notices. Keep the
 // comment references so the next person can find the source.
 
+import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
+
 /** `pool_to_api` in codec.py. */
 export interface Pool {
   name: string
@@ -29,6 +31,34 @@ export interface Pool {
   available: number | null
   enabled: boolean
   updated_at: string
+  /**
+   * Which input holds `effective_limit` (the applied value) below `hard_limit`
+   * (the ceiling), and what dates it (#3047). Empty when the ceiling applies.
+   * Served by /v1/capacity only.
+   */
+  lowered_by?: PoolLoweredBy[]
+}
+
+/** One input that lowers a pool's applied limit (#3047). */
+export interface PoolLoweredBy {
+  input: 'adaptive_target' | 'quota_derived_limit' | 'override'
+  value: number
+  /**
+   * When the value was set: the adaptive target's last change
+   * (`target_changed_at`), else the override's audit instant or the rate limit
+   * that last cut it; `set_by` says which made it, `climb` for a target that
+   * rose after the last cut. Null where no record dates it.
+   */
+  set_at: string | null
+  set_by?: 'override' | 'rate_limit' | 'climb' | null
+  /** The broker's quota document's last write: any success bumps it. */
+  quota_written_at?: string | null
+  /** The override's audit action (`adaptive_target_reset`, `hard_max_set`). */
+  action?: string
+  /** The adaptive target's last rate limit, the instant that cut it. */
+  last_rate_limited_at?: string | null
+  /** The provider state behind a quota-derived value. */
+  provider_state?: string
 }
 
 /** One field of a pool's last admin change: the value before and after (#133). */
@@ -77,6 +107,17 @@ export interface RunnerProfile {
   provider: string | null
   units: number
   pools: string[]
+  /**
+   * What one agent of this profile takes in each of `pools`: `units` in a
+   * compute pool, 1 in a provider pool (contract request 129, #2950). Read
+   * it through `unitsIn`, never `units` in every pool -- that divides a
+   * provider pool's room by 4 for a large agent.
+   *
+   * OPTIONAL because an API older than the field does not send it, and that
+   * API's admission took `units` in every pool, so `unitsIn` falls back to
+   * `units` -- the true share there, not a guess.
+   */
+  pool_units?: Record<string, number>
   /**
    * Whether this profile may be dispatched at all.
    *
@@ -354,6 +395,93 @@ export function headroomFor(profile: RunnerProfile): Headroom {
 }
 
 /**
+ * A task's weight, PER POOL (contract request 129, #2950): a large agent
+ * takes its 4 resource units in a compute pool and 1 in a provider pool.
+ *
+ *  - a number: the resource units, with nothing served per pool. Taken in
+ *    every pool, which is what an API older than the request admitted by.
+ *  - `{ units, pool_units }`: a `RunnerProfile` as `/v1/capacity` serves it,
+ *    or a task's served `waiting_for` rows (`taskWeight`). `pool_units` names
+ *    the share in each pool; a pool it does not name takes `units`.
+ *
+ * The share is never worked out here from the pool's kind: the rule is
+ * admission's (`swarm_common.models.pool_units_for`), and the API serves its
+ * answer. A copy of it here would be the drift check-contract-parity.sh exists
+ * to catch, one layer further out.
+ */
+export interface PoolWeight {
+  units: number
+  pool_units?: Record<string, number> | null
+}
+export type Weight = number | PoolWeight | null
+
+/** What `weight` takes in `pool`, or null when the weight is unknown. */
+export function unitsIn(weight: Weight, pool: string | undefined): number | null {
+  if (weight === null) return null
+  if (typeof weight === 'number') return weight
+  const share = pool === undefined ? undefined : weight.pool_units?.[pool]
+  if (typeof share === 'number' && Number.isFinite(share) && share > 0) return share
+  return typeof weight.units === 'number' && weight.units > 0 ? weight.units : null
+}
+
+/**
+ * What one agent of `profile` costs, in words: "4 units in each of 5 pools",
+ * or, where the served shares differ (contract request 129, #2950), one
+ * clause per share, largest first -- "4 units in each of 4 pools, 1 unit in
+ * each of 2 pools". "In each of", never "x", which reads as a total; each
+ * noun agrees with its count.
+ */
+export function costInWords(profile: Pick<RunnerProfile, 'units' | 'pools' | 'pool_units'>): string {
+  const counts = new Map<number, number>()
+  for (const p of profile.pools) {
+    const share = unitsIn(profile, p) ?? profile.units
+    counts.set(share, (counts.get(share) ?? 0) + 1)
+  }
+  if (counts.size === 0) counts.set(profile.units, 0)
+  return Array.from(counts.entries())
+    .sort((a, b) => b[0] - a[0])
+    .map(([u, n]) => `${u} unit${u === 1 ? '' : 's'} in each of ${n} pool${n === 1 ? '' : 's'}`)
+    .join(', ')
+}
+
+/**
+ * A waiting task's weight per pool: its class `units` (`classUnits`), and the
+ * share in each pool its served `waiting_for` rows name -- each row's `units`
+ * is what the task takes in THAT pool (swarm_api/waiting.py). With no rows
+ * served it is `units` as it was, in every pool.
+ */
+export function taskWeight(task: Pick<Task, 'waiting_for'>, units: Weight): Weight {
+  if (units === null || typeof units !== 'number') return units
+  const rows = task.waiting_for?.pools
+  if (!Array.isArray(rows) || rows.length === 0) return units
+  const pool_units: Record<string, number> = {}
+  for (const r of rows) {
+    if (r && typeof r.pool === 'string' && typeof r.units === 'number') pool_units[r.pool] = r.units
+  }
+  return { units, pool_units }
+}
+
+/**
+ * Per pool, what one lease holds: its served `pool_units` (contract request
+ * 129), else `units` in each of its pools -- what a lease reserved before the
+ * request, or served by an API older than it, took and gives back. Null for a
+ * row with no pools or no usable units, which holds nothing this can count.
+ */
+export function leaseHeld(lease: Pick<LeaseRow, 'pools' | 'units' | 'pool_units'>): Record<string, number> | null {
+  if (!Array.isArray(lease.pools)) return null
+  const units = typeof lease.units === 'number' && Number.isFinite(lease.units) ? lease.units : null
+  const served = lease.pool_units !== null && typeof lease.pool_units === 'object' ? lease.pool_units : null
+  const held: Record<string, number> = {}
+  for (const p of lease.pools) {
+    const share = served?.[p]
+    if (typeof share === 'number' && Number.isFinite(share)) held[p] = share
+    else if (units !== null) held[p] = units
+    else return null
+  }
+  return held
+}
+
+/**
  * The two groups, split by REMEDY: somebody must act, versus waiting is a
  * valid answer. Read off the response when the server sent it.
  *
@@ -377,7 +505,7 @@ export function blockerGroup(
   // and the served `group` only when one was sent.
   blocker: { reason: string; pool?: string; limit?: unknown; active?: unknown; group?: unknown },
   groups: Record<string, string[]> | undefined,
-  units: number | null = null,
+  units: Weight = null,
 ): 'needs_action' | 'no_room' | null {
   // OWNER DECISION 2026-10-01: a pool with no limit set (`limit-unset`) and a
   // pool whose limit is above 0 but below the task's units (`below-units`,
@@ -415,7 +543,7 @@ export function blockerGroup(
  * waiting is the answer there. A provider pool at zero is not either: its
  * quota can zero it and a cooldown ends by itself (`blockerCeiling`).
  */
-export function poolGroup(pool: Pool, units: number | null = null): 'needs_action' | 'no_room' | null {
+export function poolGroup(pool: Pool, units: Weight = null): 'needs_action' | 'no_room' | null {
   const reason = pool.enabled === false ? 'MANUAL_PAUSE' : pool.effective_limit === null ? POOL_LIMIT_UNSET : ''
   return blockerGroup({ pool: pool.name, reason, limit: pool.effective_limit, active: pool.active }, undefined, units)
 }
@@ -428,7 +556,9 @@ export function poolGroup(pool: Pool, units: number | null = null): 'needs_actio
  * no timer ends, a credential to sign in). Everything else is `no_room`:
  * waiting is a valid answer.
  */
-export function taskGroup(task: Task, units: number | null = null): 'needs_action' | 'no_room' {
+export function taskGroup(task: Task, units: Weight = null): 'needs_action' | 'no_room' {
+  // Each blocker is weighed by the task's share in ITS pool (`taskWeight`).
+  units = taskWeight(task, units)
   if (whyNeedsAction(task, units)) return 'needs_action'
   for (const b of task.blocked_by ?? []) {
     if (blockerGroup(b, undefined, units) === 'needs_action') return 'needs_action'
@@ -526,8 +656,11 @@ export function setBy(pool: Pool): { term: string; detail: string } {
   // cap configured at 0) rather than claiming which it was.
   if (quota_derived_limit === 0 && effective_limit === 0 && hard_limit > 0) {
     return {
-      term: 'quota state',
-      detail: `The provider's quota state (EXHAUSTED, DISABLED or COOLDOWN, or a cooldown still running) forces this to 0 until it clears; configured is ${hard_limit}. Provider quota shows the state, and the one other way to this 0: a quota cap set to 0.`,
+      // PLAIN WORDS (QA2-FIX-14, capacity-21): the term was `quota state`,
+      // the broker's own name for the document, and the detail spelled the
+      // three states in capitals. The term says what happened to the quota.
+      term: 'provider quota closed',
+      detail: `The provider's quota is used up, turned off or cooling down, which holds this at 0 until it clears; configured is ${hard_limit}. Provider quota shows which, and the one other way to this 0: a quota cap set to 0.`,
     }
   }
   if (quota_derived_limit !== null && quota_derived_limit === effective_limit && quota_derived_limit < hard_limit) {
@@ -771,6 +904,19 @@ export interface Task {
   model_class?: string | null
   model_class_defaulted?: boolean
   timeout_seconds: number | null
+  /**
+   * Contract request 131: the `timeout_seconds` the spec asked for when the
+   * API stored a lower one (the profile's cap, or a child's parent's), else
+   * null. A record only: the limit is `timeout_seconds`. OPTIONAL: an older
+   * API does not send it.
+   */
+  timeout_seconds_asked?: number | null
+  /**
+   * Contract request 133: the task's resolved turn cap, which the worker
+   * passes to the agent CLI, or null for none. OPTIONAL: an older API does
+   * not send it.
+   */
+  max_turns?: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
   /**
@@ -951,6 +1097,13 @@ export interface Task {
    * task reads `collect`, an old API reads "not reported".
    */
   dispatch?: TaskDispatch | null
+
+  /**
+   * The step's `contract_acceptance` (jev-contract.md sections 5.4 and 8.2),
+   * served on the detail only and only where Jev judged the step's work
+   * contract: read by `ContractJev.contractAcceptance`, drawn as Jev's.
+   */
+  contract_acceptance?: unknown
 }
 
 /**
@@ -1731,6 +1884,14 @@ export interface LeaseRow {
   generation: number
   pools: string[]
   units: number
+  /**
+   * What the lease holds in each of `pools` (contract request 129, #2950):
+   * what release gives back, the provider pools at 1 for a lease reserved
+   * since the request and at `units` for one reserved before it. Read it
+   * through `leaseHeld`. Optional for a console beside an older API, whose
+   * leases all hold `units` in every pool.
+   */
+  pool_units?: Record<string, number>
   dispatch_state: 'LEASED' | 'DISPATCHED' | string
   created_at: string
   dispatch_deadline: string
@@ -1767,6 +1928,14 @@ export interface LeasePage {
   tenant_id: string | null
   /** Weighted units, not agents. Summed over `leases` -- the rows served. */
   units_held: number
+  /**
+   * Per pool, what the served rows' leases hold (contract request 129,
+   * #2950): the drift check's per-pool input against each pool's `active`.
+   * NOT `units_held` in every pool -- a provider pool holds 1 per new lease.
+   * Optional for a console beside an older API; Holders.tsx then sums the
+   * rows by `leaseHeld`.
+   */
+  units_held_by_pool?: Record<string, number>
   /**
    * LIVE LEASES, UNDER THE SAME TENANT FILTER, THAT THESE ROWS LEFT OUT.
    *
@@ -2255,6 +2424,17 @@ export interface Runtime {
    * second one declared that could drift from it.
    */
   resources: ResourceClassSpec
+  /**
+   * WHAT THE AGENT'S CONTAINER GETS (#3118), beside `resources` and not in it:
+   * `resources` is the class, and a live-browser pod splits it between the
+   * agent and the display. Null when the platform cannot say; absent from a
+   * platform from before the split was served.
+   */
+  agent_memory_gib?: number | null
+  /** The display container's share; null on a pod with no display. */
+  display_memory_gib?: number | null
+  /** The pod's total, which `resources.memory_gib` is too. */
+  pod_memory_gib?: number | null
 }
 
 /** GiB, binary. The ceilings are GiB, so a GB (1e9) denominator would overstate
@@ -2783,7 +2963,11 @@ export interface WaitingPool {
   state: WaitingState
   active: number | null
   limit: number | null
-  /** The task's weight -- `RESOURCE_CLASSES[task.resource_class].units`. */
+  /**
+   * What the task takes in THIS pool (contract request 129, #2950): its
+   * resource units in a compute pool, 1 in a provider pool. Not the task's
+   * size applied to every pool.
+   */
   units: number
   /** `evaluate_capacity`'s reason for a refusing pool; null when open or unknown. */
   reason: string | null
@@ -2848,7 +3032,8 @@ export interface Waiting extends WaitingRow {
   /**
    * Per reason (docs/api.md "Why a task is waiting"). CI_PENDING:
    * pull_request {number, url}, head, code, pending, failed, wakes,
-   * attempts_counted, last_checked_at, wake_requested_at. READY_CAPACITY:
+   * attempts_counted, last_checked_at, wake_requested_at, train_since.
+   * READY_CAPACITY:
    * waiting_for, pool, pool_state, active, limit, units, place_in_line,
    * place_in_line_unavailable, last_pass. Provider parks: provider, account,
    * provider_state, source, account_pool_reason, wait_seconds, until.
@@ -3187,12 +3372,15 @@ export const POOL_LIMIT_UNSET = 'POOL_LIMIT_UNSET'
 
 export function blockerCeiling(
   b: { reason: string; pool?: string; limit?: unknown },
-  units: number | null = null,
+  units: Weight = null,
 ): Ceiling {
   if (b.reason === 'MANUAL_PAUSE') return 'paused'
   if (b.reason === POOL_LIMIT_UNSET) return 'limit-unset'
   if (b.limit !== 0) {
-    if (units !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < units) {
+    // What the task takes in THIS pool, not its size in every pool: a
+    // provider pool's limit of 2 is not below a large agent (#2950).
+    const share = unitsIn(units, b.pool)
+    if (share !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < share) {
       return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
     }
     return 'full'
@@ -3218,10 +3406,11 @@ export function needsAPerson(c: Ceiling): boolean {
 export function ceilingCopy(
   b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
   subject: string = b.pool ?? 'This pool',
-  units: number | null = null,
+  units: Weight = null,
 ): string | null {
   const c = blockerCeiling(b, units)
   if (c === 'full') return null
+  const share = unitsIn(units, b.pool)
   // WHAT IS STILL HELD. A pool lowered to zero under running work keeps the
   // units it already leased until they are released; admission never admits
   // past a ceiling, so they were admitted before it came down.
@@ -3245,11 +3434,11 @@ export function ceilingCopy(
     case 'below-units-quota': {
       const limit = b.limit as number
       const fact =
-        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one agent ` +
-        'of this profile weighs, so the agent can never be admitted at this limit.'
+        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${share} units one agent ` +
+        'of this profile takes in it, so the agent can never be admitted at this limit.'
       return c === 'below-units'
-        ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${units}.${held}`
-        : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${units}.${held}`
+        ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${share}.${held}`
+        : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${share}.${held}`
     }
   }
 }
@@ -3266,7 +3455,7 @@ export function ceilingCopy(
  */
 function leadBlocker(
   list: readonly BlockedEntry[] | null | undefined,
-  units: number | null = null,
+  units: Weight = null,
 ): BlockedEntry | undefined {
   if (!list || list.length === 0) return undefined
   return list.find((b) => needsAPerson(blockerCeiling(b, units))) ?? list[0]
@@ -3386,9 +3575,10 @@ function taskName(t: Task): string {
  */
 export function whyAgent(
   task: Task,
-  units: number | null = null,
+  units: Weight = null,
   taskById: ReadonlyMap<string, Task> | null = null,
 ): string {
+  units = taskWeight(task, units)
   if (task.state === 'PARKED') {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
     const again = eligibleAgain(task.next_eligible_at)
@@ -3460,7 +3650,8 @@ export function whyAgent(
  * -- none admits the task again until somebody acts. "Sign-in needed" is
  * CREDENTIAL_MISSING.
  */
-export function whyNeedsAction(task: Task, units: number | null = null): boolean {
+export function whyNeedsAction(task: Task, units: Weight = null): boolean {
+  units = taskWeight(task, units)
   if (task.state === 'FAILED') return true
   if (task.state === 'PARKED') {
     return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
@@ -4282,7 +4473,10 @@ export function timeAgo(when: Date | string | number, now: number = Date.now()):
   // being the readable unit.
   const h = Math.round(s / 3600)
   if (h < 48) return `${h}h ago`
-  return `${Math.round(h / 24)}d ago`
+  // WHOLE DAYS, FLOORED, as `formatDuration` floors them (visual QA pass 2
+  // overview-agents-42, part of #2694): rounded, an agent submitted 9d 21h
+  // ago read `submitted 10d ago` under a head that said `9d 21h`.
+  return `${Math.floor(h / 24)}d ago`
 }
 
 /**
@@ -4299,7 +4493,7 @@ export function ageSpan(ms: number): string {
   if (s < 3600) return `${Math.round(s / 60)}m`
   const h = Math.round(s / 3600)
   if (h < 48) return `${h}h`
-  return `${Math.round(h / 24)}d`
+  return `${Math.floor(h / 24)}d`
 }
 
 // --------------------------------------------------------------------------
@@ -4307,30 +4501,40 @@ export function ageSpan(ms: number): string {
 // --------------------------------------------------------------------------
 
 /**
- * An instant as a reader scans a list for it: LOCAL wall-clock time,
- * `HH:MM:SS` when it is today and `MM-DD HH:MM` when it is older, with the
- * full ISO UTC timestamp and its age (`timeAgo`) for the hover.
+ * An instant as a reader scans a list for it, in THE PERSON'S ZONE
+ * (`timezone.ts`; UTC until they pick one in Profile), labelled:
+ * `14:05:09 PDT` when it is today there and `Oct 24 14:05 PDT` when it is
+ * older, with the full ISO UTC timestamp and its age (`timeAgo`) for the
+ * hover.
  *
  * ONE FORMATTER for every start and submit time on the Agents list, the agent
  * inspector, the workflow board and the step inspector (#376), so a row and
  * the drawer beside it can never print the same instant two ways. Null for a
  * missing or unparseable value: the caller says what the absence means
  * ("never started"), this never invents a time.
+ *
+ * THE ZONE, NOT THE BROWSER'S CLOCK (VQ-023; BGD, 2026-10-26, lane
+ * TZ-CLOCKTIME, part of #2391). This read `getHours()` until then: the
+ * browser's zone, unlabelled, beside an Overview and a Timeline that say UTC
+ * or the person's zone, so one instant read as two times a page apart.
+ * "Today" is the zone's day (`isToday`, from `startOfDay`), the same day
+ * Overview counts. The words are `timezone.ts`'s own: today keeps the
+ * second, as it always did, and an older instant is `formatDateTime`'s date
+ * before `formatClock`'s time -- the month by name, so `10-24` is never read
+ * the American way round. `zone` is for a caller that holds one (a test);
+ * every other caller follows the setting.
  */
 export function clockTime(
   iso: string | null | undefined,
   now: number = Date.now(),
+  zone: string = currentZone(),
 ): { text: string; title: string } | null {
   if (!iso) return null
   const t = new Date(iso)
   if (!Number.isFinite(t.getTime())) return null
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const today = new Date(now)
-  const sameDay =
-    t.getFullYear() === today.getFullYear() && t.getMonth() === today.getMonth() && t.getDate() === today.getDate()
-  const text = sameDay
-    ? `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`
-    : `${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+  // "Oct 24 14:05:09 PDT": the date, the time to the second, then the label.
+  const [month, day, hms, ...label] = formatDateTime(t, zone).split(' ')
+  const text = isToday(t, now, zone) ? `${hms} ${label.join(' ')}` : `${month} ${day} ${formatClock(t, zone)}`
   return { text, title: `${t.toISOString()} (${timeAgo(t.getTime(), now)})` }
 }
 
@@ -4346,11 +4550,12 @@ export function clockTime(
 export function startedOf(
   task: Pick<Task, 'started_at' | 'created_at' | 'attempt_count'>,
   now: number = Date.now(),
+  zone: string = currentZone(),
 ): { text: string; title: string; never: boolean; submitted: string; submittedTitle: string } {
-  const sub = clockTime(task.created_at, now)
+  const sub = clockTime(task.created_at, now, zone)
   const submitted = sub?.text ?? 'not recorded'
   const submittedTitle = sub ? `submitted ${sub.title}` : 'no submit time was recorded'
-  const start = clockTime(task.started_at, now)
+  const start = clockTime(task.started_at, now, zone)
   if (start === null) {
     return { text: 'never started', title: `never started; ${submittedTitle}`, never: true, submitted, submittedTitle }
   }
@@ -6767,4 +6972,45 @@ export interface QaIdentityGrantDoc extends QaIdentityGrant {
   identity: string
   revoked_by: string | null
   revoked_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Agent plugins (docs/design/agent-plugins.md): the closed catalogue and a
+// workspace's allowed plugins, as `GET /v1/plugins` and
+// `GET`/`PUT /v1/workspaces/{tenant_id}/plugins` answer them
+// (swarm_api.plugins.view). Names only: no route serves a path, a command, a
+// URL or a version a caller could choose (invariant 10).
+// ---------------------------------------------------------------------------
+
+/** The modes a step may name, in the catalogue's order. */
+export const PLUGIN_MODES = ['unattended', 'planner', 'designer'] as const
+export type PluginMode = (typeof PLUGIN_MODES)[number]
+
+/** One mode of a catalogue plugin: its skills, and whether a step may run it today. */
+export interface PluginModeOffer {
+  skills: string[]
+  available: boolean
+  /** Why not, in the API's words (`BRIDGE_REASON`); null when it runs. */
+  reason: string | null
+}
+
+export interface CataloguePlugin {
+  name: string
+  /** Pinned, built into the agent images; never a caller's to choose. */
+  version: string
+  runner_profiles: string[]
+  /** Only the modes the plugin offers skills in; a missing mode offers none. */
+  modes: Partial<Record<PluginMode, PluginModeOffer>>
+}
+
+export interface WorkspacePlugins {
+  tenant_id: string
+  /** The plugins in force: read only from a block whose signature verifies. */
+  allowed: string[]
+  /** What a workspace nobody has chosen for allows; null when not served. */
+  default_allowed: string[] | null
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+  catalogue: CataloguePlugin[]
 }

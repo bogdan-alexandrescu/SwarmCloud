@@ -14,7 +14,9 @@
 // paying for. The console only COUNTS the words and sorts by them.
 
 import { incidentsOf } from './accountHealth'
-import type { PoolAccount } from './accountsPool'
+import { accountName } from './accountName'
+import { isWithheldDuplicate, type PoolAccount } from './accountsPool'
+import { unreadableFor } from './types'
 import type { AccountHealthEvent } from './api'
 
 /** `HEALTH_KINDS` in quota_broker/accountstore.py, and nothing else. */
@@ -81,9 +83,15 @@ export const STATUS_WORD: Readonly<Record<HealthStatus, string>> = {
   reauth_needed: 'Needs re-auth',
 }
 
-/** What each word costs the pool, under its tile (proposal B, F1). */
+/**
+ * What each word costs the pool, under its tile (proposal B, F1). Healthy is
+ * the health record's word, not the pool's: an account skipped here or
+ * withheld as a second registration is Healthy and still takes no agent, so
+ * its hint says what the word means rather than "nothing to do" (visual QA
+ * pass 2, capacity-04), and `healthyWithheld` names the ones the pool holds.
+ */
 export const STATUS_HINT: Readonly<Record<HealthStatus, string>> = {
-  healthy: 'nothing to do',
+  healthy: 'no limit, error or sign-in trouble',
   limited: 'withheld until their windows reset',
   erroring: 'still assigned; errors do not withhold',
   reauth_needed: 'withheld until someone signs in',
@@ -208,6 +216,37 @@ export function tally(accounts: readonly HealthAccount[], records: ReadonlyMap<s
     else t[s.status] += 1
   }
   return t
+}
+
+/**
+ * THE HEALTHY ACCOUNTS THE POOL STILL WITHHOLDS (visual QA pass 2,
+ * capacity-04; part of #2694). The broker's word stays the status -- the
+ * tiles count what the list draws -- but "Healthy 5" over a pool where
+ * Accounts says two of them cannot take an agent read as five to hand out.
+ * Withheld is what a person or the pool's own rule holds, not a clock or a
+ * cap: a state someone set (paused, draining), an account this workspace
+ * could not read (skipped here), or the later registration of one
+ * subscription. A full account is not here: it frees when an agent finishes.
+ */
+export function healthyWithheld(
+  accounts: readonly HealthAccount[],
+  records: ReadonlyMap<string, AccountHealthRecord>,
+  scope: string | null,
+): HealthAccount[] {
+  return accounts.filter(
+    (a) =>
+      statusOf(a, records.get(a.account_id)).status === 'healthy' &&
+      (a.state !== 'AVAILABLE' || unreadableFor(a, scope) || isWithheldDuplicate(a)),
+  )
+}
+
+/** The line under the Healthy tile naming them, or null when none is withheld. */
+export function healthyWithheldLine(withheld: readonly HealthAccount[]): string | null {
+  if (withheld.length === 0) return null
+  const names = withheld.map(accountName).join(', ')
+  return withheld.length === 1
+    ? `1 of them cannot take an agent: ${names}`
+    : `${withheld.length} of them cannot take an agent: ${names}`
 }
 
 /** Whether ANY account's health is served on this deployment. */

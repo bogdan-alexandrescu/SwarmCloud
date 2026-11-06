@@ -86,16 +86,26 @@ def test_once_the_live_fix_has_ended_the_same_failure_may_be_fixed_again(fix_cli
     assert len(_ci_fix_tasks(db)) == 2
 
 
-def test_another_run_or_another_head_is_another_failure(fix_client, db):
+def test_another_pull_request_is_another_failure(fix_client, db):
+    """Another pull request's failure gets its own fix beside a live one.
+
+    Another run (or head) of the same pull request no longer does (#2763):
+    on PR #2730 attempt 2 at a new head was admitted while attempt 1 was
+    RUNNING, pushed first, and attempt 1's publish conflicted. One writer per
+    pull request, so it is refused `ci_fix_lane_owns_pr` naming the live fix
+    (test_cifix_one_fix_per_pr.py), not answered `ci_fix_in_flight`."""
     original = _original(fix_client)
-    assert _submit(fix_client, _red_run_payload(original, attempt=1)).status_code == 201
+    first = _submit(fix_client, _red_run_payload(original, attempt=1))
+    assert first.status_code == 201
     other_run = _submit(fix_client, _red_run_payload(original, attempt=2, run_id=RUN_ID + 1))
-    assert other_run.status_code == 201, other_run.text
+    assert other_run.status_code == 409, other_run.text
+    assert other_run.json()["code"] == cifix.CiFixLaneOwnsPr.code
+    assert other_run.json()["detail"]["task_id"] == _fix_task(db, first)["id"]
 
     other = _original(fix_client)
     other_pr = _submit(fix_client, _red_run_payload(other, pull_request=PR + 1))
     assert other_pr.status_code == 201, other_pr.text
-    assert len(_ci_fix_tasks(db)) == 3
+    assert len(_ci_fix_tasks(db)) == 2
 
 
 def test_the_claim_rides_on_the_fix_task_and_a_caller_cannot_send_one(fix_client, db):

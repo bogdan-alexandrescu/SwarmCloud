@@ -34,6 +34,7 @@ from swarm_common.states import TaskState
 
 from worker_seeds import TENANT
 from test_strategy_end_to_end import (  # noqa: F401  (pytest fixtures)
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     contributor_edit,
     forge,

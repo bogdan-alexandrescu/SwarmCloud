@@ -33,6 +33,16 @@
 // Nothing here is credential-shaped.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// `answerWrite` hands the submit a real response, so it turns the fixture
+// build's answer to the submit (QA2-FIX-07, runs2-01 and runs2-02) off for that
+// case alone; the issue form's cases keep the fixture reads they measure.
+const fixtures = vi.hoisted(() => ({ on: true }))
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return Object.defineProperty({ ...actual }, 'USE_FIXTURES', { get: () => fixtures.on, enumerable: true })
+})
+
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { SubmitScreen } from '../Submit'
@@ -59,6 +69,7 @@ const realFetch = globalThis.fetch
 /** Answer the one write with `reply`; every read goes to the development fixture as before. */
 function answerWrite(path: string, reply: { status: number; body: unknown }) {
   const posts: unknown[] = []
+  fixtures.on = false
   const prior = globalThis.fetch
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
@@ -72,6 +83,7 @@ function answerWrite(path: string, reply: { status: number; body: unknown }) {
 }
 
 afterEach(() => {
+  fixtures.on = true
   globalThis.fetch = realFetch
   document.body.innerHTML = ''
   vi.restoreAllMocks()
@@ -219,6 +231,8 @@ async function issueForm(answers: { preview: { status: number; body: unknown }; 
     return reply({ status: 404, body: { code: 'not_found', message: `no stub for ${url}` } })
   }) as unknown as typeof fetch
   vi.stubEnv('VITE_LIVE', '1')
+  // A mock outlives resetModules: the live api is the real module, read afresh.
+  vi.doUnmock('../api')
   vi.resetModules()
   const { IssueSubmitScreen } = await import('../IssueSubmit')
   const r = render(<IssueSubmitScreen go={vi.fn()} />)

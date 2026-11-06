@@ -363,6 +363,9 @@ class _FencedMidCall(Exception):
 _EXEC_STATUS = {
     "bad_ref": 422, "bad_bundle": 422, "too_large": 422, "non_fast_forward": 422,
     "remote_rejected": 422, "busy": 503, "timed_out": 504, "bad_remote": 502, "failed": 502,
+    # A bundle's base the remote did not answer for, twice: the worker asks
+    # again on a 5xx, and a forge outage heals (AI Studio's report, 2026-11-06).
+    "remote_unavailable": 503,
 }
 
 
@@ -1294,7 +1297,8 @@ class GitTools:
         call.fields["resolved_sha"] = pull.head_sha
         rules = self.writer.branch_rules(ref, pull.base_ref, token) if pull.base_ref else []
         required = required_status_checks(rules)
-        runs, source = self._check_runs(call, ref, pull.head_sha, token)
+        runs, source = self._check_runs(call, ref, pull.head_sha, token,
+                                        head_ref=pull.head_ref)
         statuses = self.writer.commit_statuses(ref, pull.head_sha, token)
         reading = evaluate(required, runs, statuses)
         needed = {check.context for check in required}
@@ -1322,9 +1326,11 @@ class GitTools:
         return {"pr": pull.number, "head_sha": pull.head_sha, "state": reading.state,
                 "rows": rows, "source": source}
 
-    def _check_runs(self, call: _Call, ref: IssueRef, sha: str,
-                    token: str) -> tuple[list[dict[str, Any]], str]:
-        """The check runs at `sha`, and where they were read.
+    def _check_runs(self, call: _Call, ref: IssueRef, sha: str, token: str, *,
+                    head_ref: str | None = None) -> tuple[list[dict[str, Any]], str]:
+        """The check runs at `sha` for the pull request whose head branch is
+        `head_ref` (another branch's push suites dropped, #2946), and where
+        they were read.
 
         #1188: every git-tools acceptance run from 2026-10-23 to 2026-10-27
         answered `pr_checks` forge_refused on the private sandbox, whose slot
@@ -1336,10 +1342,11 @@ class GitTools:
         with the check-runs read's own sentence.
         """
         try:
-            return self.writer.check_runs(ref, sha, token), CHECKS_FROM_CHECK_RUNS
+            return (self.writer.check_runs(ref, sha, token, head_ref=head_ref),
+                    CHECKS_FROM_CHECK_RUNS)
         except ChecksForbidden as refused:
             try:
-                runs = self.writer.actions_check_runs(ref, sha, token)
+                runs = self.writer.actions_check_runs(ref, sha, token, head_ref=head_ref)
             except (ForgeWriteForbidden, ForgeWriteNotFound, ForgeWriteUnauthorized):
                 raise refused from None
         call.fields["source"] = CHECKS_FROM_ACTIONS_JOBS
@@ -1380,13 +1387,7 @@ class GitTools:
                 source.chmod(0o600)
             repo = gx._init(scratch)
             with gx._credential(scratch, host, token) as cred:
-                for sha in header.prerequisites:
-                    run = gx._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
-                                                  "--no-write-fetch-head", "--depth=1", "--",
-                                                  url, sha], token=token, credential=cred)
-                    if run.code != 0:
-                        raise GitExecError("bad_bundle", f"the bundle is built on {sha}, which "
-                                                         "the remote does not have; fetch again")
+                gx._fetch_prerequisites(scratch, repo, url, header.prerequisites, token, cred)
             gx._must(gx._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
                                              "--no-write-fetch-head", "--", str(source),
                                              f"{header.ref}:refs/swarm/inspect"],

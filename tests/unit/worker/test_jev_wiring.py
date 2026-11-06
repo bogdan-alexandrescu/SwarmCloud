@@ -527,11 +527,22 @@ def test_j2_flags_uncovered_requirements_and_j5_holds_a_likely_duplicate(tmp_pat
     assert len(fake.requests) == 2
     written = json.loads((artifacts / poststeps.PLAN_ADVISORY_FILE).read_text())
     assert written == advisory
-    assert written["coverage"]["flagged"] == [{"index": 1, "requirement": "keep the header accessible"}]
+    assert written["coverage"]["flagged"] == [
+        {"index": 1, "requirement": "keep the header accessible", "coverage": "none"}]
     assert written["duplicate"]["ref"] == "swarm/sort" and written["hold_for_human"] is True
     assert (artifacts / "plan.json").read_bytes() == before
     # §5.4: in-flight lanes go as titles and files; never an author.
     assert "someone@example.com" not in json.dumps(fake.requests)
+
+
+def test_j2_records_a_weakly_covered_requirement_as_weak(tmp_path):
+    artifacts, context = _planner(tmp_path, lanes=False)
+
+    def answer(name, q, state):
+        return _choice(list(q["criteria"]), "sort-key", 0.9 if name == "r0" else 0.3)
+    advisory = poststeps.plan_post_step(_judge(tmp_path, FakeJev(answer)), artifacts, context)
+    assert advisory["coverage"]["flagged"] == [
+        {"index": 1, "requirement": "keep the header accessible", "coverage": "weak"}]
 
 
 def test_j5_under_085_does_not_hold(tmp_path):
@@ -595,7 +606,9 @@ def _setup(tmp_path: Path, workspace: dict | None, environ: dict | None = None) 
     docs = {} if workspace is None else {"workspace_settings/acme": workspace}
     return attempt.setup(work=work, db=_Db(docs), tenant_id="acme", repository_url=URL,
                          environ=environ if environ is not None
-                         else {settings.INTERNAL_URL_ENV: INTERNAL_URL})
+                         else {settings.INTERNAL_URL_ENV: INTERNAL_URL,
+                               # The scheduler vouched for the signed block.
+                               attempt.VERDICT_ENV: "true"})
 
 
 @pytest.mark.parametrize("workspace", [
@@ -609,7 +622,7 @@ def test_the_setting_off_writes_nothing_and_loads_no_client(tmp_path, workspace)
 
 def test_no_backend_url_or_no_typesafe_key_is_off(tmp_path):
     on = {"code_intelligence": {"jev": True}}
-    assert _setup(tmp_path / "a", on, environ={}) == {}
+    assert _setup(tmp_path / "a", on, environ={attempt.VERDICT_ENV: "true"}) == {}
     typesafe = {"code_intelligence": {"jev": True}, "judgment_backend": "typesafe"}
     assert _setup(tmp_path / "b", typesafe) == {}
 
@@ -733,3 +746,167 @@ def test_cli_runner_review_post_step_writes_report_only_when_jev_answered(tmp_pa
     answering = _judge(tmp_path / "ok", FakeJev(lambda n, q, s: {"noul": 0.7}))
     out = cliagent._jev_post_steps(ctx, answering, checkout, _log())
     assert out["review"]["asked"] == 1
+
+
+# ---------------------------------------------------------------------------
+# J3 on a re-review: its own verdict is triaged, the earlier one is not touched
+# ---------------------------------------------------------------------------
+
+
+def _rereview(tmp_path: Path, findings: list) -> tuple[Path, Path, Path, dict]:
+    """A re-review step: the patch and the EARLIER verdict staged, its own
+    verdict.json written into the artifacts, and owed by its step id."""
+    from agent_worker import expected_outputs
+
+    work, checkout, artifacts, payload = _review(tmp_path, findings)
+    (work / "inputs" / "verdict.json").write_text(json.dumps(
+        {"verdict": "NOT_YET", "findings": ["the earlier review's finding"]}))
+    payload = {"prompt": "Re-review the change after the fix; write verdict.json",
+               "staged_inputs": [{"path": "inputs/swarm-work.patch"},
+                                 {"path": "inputs/verdict.json"}],
+               "expected_outputs": list(expected_outputs.declared_outputs(
+                   {}, step_id="dod-data-rereview").names)}
+    return work, checkout, artifacts, payload
+
+
+def test_cli_runner_triages_a_re_review_s_own_verdict(tmp_path):
+    from agent_worker.runners import cliagent
+    from agent_worker.runners.base import RunnerContext
+
+    work, checkout, artifacts, payload = _rereview(tmp_path, FINDINGS[:2])
+    earlier = (work / "inputs" / "verdict.json").read_bytes()
+    ctx = RunnerContext(work_dir=work, artifacts_dir=artifacts, input_path=work / "in.json",
+                        result_path=work / "r.json", quota_path=work / "q.json", payload=payload,
+                        repo_dir=checkout)
+    fake = FakeJev(_j3_answer([0.8, 0.05]))
+    out = cliagent._jev_post_steps(ctx, _judge(tmp_path, fake), checkout, _log())
+    assert out["review"] == {
+        "asked": 2,
+        "files": {"verdict.json": {"findings": 2, "scored": 2,
+                                   "p_real": {"findings[0]": 0.8, "findings[1]": 0.05}}},
+        "unreadable": {},
+    }
+    doc = json.loads((artifacts / "verdict.json").read_text())
+    assert doc["verdict"] == "NOT_YET"
+    assert doc["findings"][0]["p_real"] == 0.8
+    assert doc["findings"][1]["triage"] == verdict_mod.VERIFY_BEFORE_ACTING
+    # The diff hunk J3 reads is the staged patch's, and the earlier verdict
+    # (an input) is never written.
+    assert "return 3" in fake.states()[0]["diff_hunk"]
+    assert (work / "inputs" / "verdict.json").read_bytes() == earlier
+
+
+@pytest.mark.parametrize("failure", sorted(FAILURES))
+def test_a_re_review_s_j3_failure_leaves_its_verdict_byte_identical(tmp_path, failure):
+    from agent_worker.runners import cliagent
+    from agent_worker.runners.base import RunnerContext
+
+    work, checkout, artifacts, payload = _rereview(tmp_path, FINDINGS[:2])
+    before = (artifacts / "verdict.json").read_bytes()
+    ctx = RunnerContext(work_dir=work, artifacts_dir=artifacts, input_path=work / "in.json",
+                        result_path=work / "r.json", quota_path=work / "q.json", payload=payload,
+                        repo_dir=checkout)
+    assert cliagent._jev_post_steps(ctx, FAILURES[failure](tmp_path), checkout, _log()) \
+        == {"review": None}
+    assert (artifacts / "verdict.json").read_bytes() == before
+
+
+def test_a_fix_that_stages_a_verdict_gets_no_triage(tmp_path):
+    from agent_worker.runners import cliagent
+    from agent_worker.runners.base import RunnerContext
+
+    work, checkout, artifacts, payload = _rereview(tmp_path, FINDINGS[:1])
+    payload = {**payload, "prompt": "Fix every finding in verdict.json.", "expected_outputs": []}
+    before = (artifacts / "verdict.json").read_bytes()
+    ctx = RunnerContext(work_dir=work, artifacts_dir=artifacts, input_path=work / "in.json",
+                        result_path=work / "r.json", quota_path=work / "q.json", payload=payload,
+                        repo_dir=checkout)
+    fake = FakeJev(_j3_answer([0.8]))
+    assert cliagent._jev_post_steps(ctx, _judge(tmp_path, fake), checkout, _log()) == {}
+    assert fake.requests == []
+    assert (artifacts / "verdict.json").read_bytes() == before
+
+
+# ---------------------------------------------------------------------------
+# J0: the task type, asked only where the local rules fall back to implement
+# ---------------------------------------------------------------------------
+
+
+def _j0_answering(role: str, confidence: float) -> FakeJev:
+    """J0 picks `role`; every J1 row gets 0.9."""
+    def answer(name, q, state):
+        if name == "role":
+            return _choice(list(q["criteria"]), role, confidence)
+        return {"noul": 0.9}
+    return FakeJev(answer)
+
+
+def _prepared(work: Path, tmp_path: Path, payload: dict, judge: Any) -> dict:
+    from test_contextpack import _ctx
+
+    assert contextpack.prepare(_ctx(work, tmp_path, payload), work / "repo", judge=judge)
+    return json.loads((tmp_path / "artifacts" / contextpack.ARTIFACT_NAME).read_text())
+
+
+def _ledger_kinds(tmp_path: Path) -> list[str]:
+    return [row["kind"] for row in budget.Ledger(tmp_path / "judge-ledger.json").read()["audit"]]
+
+
+AD_HOC = {"prompt": "Make fetch in src/pkg/store.py return a copy."}
+
+
+@pytest.mark.parametrize("role", ["test", "design"])
+def test_j0_types_an_ad_hoc_step_the_local_rules_left_implement(work, tmp_path, monkeypatch,  # noqa: F811
+                                                                 role):
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    fake = _j0_answering(role, 0.9)
+    pack = _prepared(work, tmp_path, AD_HOC, _judge(tmp_path, fake))
+    assert pack["task_type"] == role
+    assert fake.states()[0] == {"task": {"brief": AD_HOC["prompt"]}}
+    # Recorded in the attempt's one ledger, J0 before J1.
+    assert _ledger_kinds(tmp_path) == ["J0", "J1"]
+
+
+@pytest.mark.parametrize("role,confidence", [
+    ("test", 0.59),      # under CLASSIFY_MIN_CONFIDENCE: the local answer stands
+    ("review", 0.95),    # review, fix and plan seed from what this step has not staged
+    ("fix", 0.95),
+    ("plan", 0.95),
+    ("implement", 0.95),
+])
+def test_j0_keeps_implement_below_confidence_or_for_a_pipeline_the_step_cannot_feed(
+        work, tmp_path, monkeypatch, role, confidence):  # noqa: F811
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    pack = _prepared(work, tmp_path, AD_HOC, _judge(tmp_path, _j0_answering(role, confidence)))
+    assert pack["task_type"] == "implement"
+    assert _ledger_kinds(tmp_path)[0] == "J0"
+
+
+@pytest.mark.parametrize("payload", [
+    {"prompt": "Write tests for load_user."},
+    {"prompt": "Plan the work for GitHub issue o/r#7 (https://x/7)."},
+    {"prompt": "Review it; write verdict.json", "staged_inputs": [{"path": "swarm-work.patch"}]},
+])
+def test_j0_is_never_asked_when_the_role_is_known(work, tmp_path, monkeypatch, payload):  # noqa: F811
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    fake = _j0_answering("design", 0.99)
+    pack = _prepared(work, tmp_path, payload, _judge(tmp_path, fake))
+    assert pack["task_type"] != "design"
+    # The type was known, so J0 was not asked: its one row is the skip, which
+    # the usage page counts as skipped, never as a call (owner, 2026-11-04).
+    audit = budget.Ledger(tmp_path / "judge-ledger.json").read()["audit"]
+    assert [r["outcome"] for r in audit if r["kind"] == "J0"] == ["skipped:known_type"]
+    assert all("role" not in r["questions"] for r in fake.requests)
+
+
+@pytest.mark.parametrize("failure", sorted(FAILURES))
+def test_j0_failure_leaves_the_pack_byte_identical_to_local_only(work, tmp_path, monkeypatch,  # noqa: F811
+                                                                 failure):
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
+    local = _prepared(work, tmp_path, AD_HOC, None)
+    local_bytes = _pack_bytes(work)
+    jev = _prepared(work, tmp_path, AD_HOC, FAILURES[failure](tmp_path))
+    # The artifact's `seconds` is the pack's wall time (lane
+    # REVIEW-STARTUP-WAIT): a timing, never the same twice.
+    assert isinstance(jev.pop("seconds"), float) and isinstance(local.pop("seconds"), float)
+    assert _pack_bytes(work) == local_bytes and jev == local

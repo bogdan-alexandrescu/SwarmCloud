@@ -119,6 +119,21 @@
   .ag-split > .ag-split-pane.is-changes { display: block; overflow: visible; }
   .ag-split-pane.is-changes .chg-diff { height: 80vh; }
   .chg-mx-bar > .chg-sum { margin-left: 0; }
-  .chg-mx-chips { flex-wrap: nowrap; overflow-x: auto; }
   .chg-mx-diff { height: 80vh; }
+  /* THE STRIP WRAPS AND THE TABLE STACKS (visual QA pass 2, overview-agents-78).
+     The chips were one scrolling row cut at 390, and the matrix needed a second
+     sideways scroll inside the page's. Each chip stays one line (`nowrap` above),
+     so whole chips wrap. The table is blocks: each step's head is its own line
+     -- its facts and its agent's link kept -- then each file is a block with one
+     line per step, named by the cell's `data-label`. The File header leaves the
+     layout and stays in the accessibility tree. */
+  .chg-mx-chips { flex-wrap: wrap; }
+  .chg-mx-table, .chg-mx-table > thead, .chg-mx-table > tbody, .chg-mx-table tr,
+  .chg-mx-table th, .chg-mx-table td { display: block; min-width: 0; }
+  .chg-mx-table thead th { position: static; white-space: normal; }
+  .chg-mx-table thead th:first-child { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .chg-mx-table tbody tr { border-bottom: 1px solid var(--line-soft); padding: 4px 0; }
+  .chg-mx-table tbody th, .chg-mx-table tbody td { border-bottom: 0; padding: 2px 10px; }
+  .chg-mx-table tbody td { display: flex; gap: 12px; justify-content: space-between; }
+  .chg-mx-table tbody td[data-label]::before { content: attr(data-label); color: var(--text-dim); font-family: var(--mono); overflow-wrap: anywhere; }
 }

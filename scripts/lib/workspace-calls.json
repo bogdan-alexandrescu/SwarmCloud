@@ -44,7 +44,9 @@
       "config_why": "fs_request hands curl its bearer header on stdin (-K -) so the token is never an argument. The guard reads that config in memory and allows exactly one kind of line, the Authorization header; a url, request or data line there would be a call the arguments do not show."
     }
   },
-  "kube_kinds": ["Namespace", "ServiceAccount", "ResourceQuota", "LimitRange", "NetworkPolicy", "Role", "RoleBinding"],
+  "kube_kinds": ["Namespace", "ServiceAccount", "ResourceQuota", "LimitRange", "NetworkPolicy", "Role", "RoleBinding", "FQDNNetworkPolicy"],
+  "kube_kind_names_why": "A kind a tenant namespace holds under one fixed name only. FQDNNetworkPolicy is the tenant's TypeSafe hostname policy (kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml, docs/runbooks/typesafe-egress.md), which kubernetes/apply.sh renders only on a cluster that serves fqdnnetworkpolicies.networking.gke.io: a hostname policy under any other name could open the namespace's egress to any host, so the guard refuses it. kubernetes/rbac/provisioner-rbac.yaml grants get and patch on the same one name.",
+  "kube_kind_names": {"FQDNNetworkPolicy": ["swarm-allow-typesafe-direct"]},
   "kube_kind_words_why": "The namespaced kinds a tenant namespace holds, as kubectl spells them. Namespace is not among them: it is cluster-scoped, so -n would not confine it, and its own shapes name it.",
   "kube_kind_words": ["serviceaccount", "serviceaccounts", "sa", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol", "role", "roles", "rolebinding", "rolebindings"],
   "kube_role_names": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
@@ -92,6 +94,7 @@
         {"tool": "kubectl", "command": ["config", "current-context"], "args": [], "local": true},
         {"tool": "kubectl", "command": ["config", "view"], "args": [], "flags": {"-o": "*", "--output": "*", "--minify": true}, "local": true},
         {"tool": "kubectl", "command": ["get"], "args": [], "flags": {"--raw": ["/readyz", "/livez", "/healthz"]}, "require": ["--raw"]},
+        {"tool": "kubectl", "command": ["api-resources"], "args": [], "flags": {"--api-group": "networking.gke.io", "-o": "name", "--output": "name"}, "require": ["--api-group"], "require_one": ["-o", "--output"], "why": "kubernetes/apply.sh --tenant asks whether the cluster serves fqdnnetworkpolicies.networking.gke.io before it renders the tenant's TypeSafe hostname policy (docs/runbooks/typesafe-egress.md). Discovery of that one API group, which every authenticated caller may read (GKE's system:discovery), on the swarm cluster's context only"},
         {"tool": "kubectl", "command": ["get"], "args": [["service", "services", "svc"], "kube-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
         {"tool": "kubectl", "command": ["get"], "args": [["daemonset", "daemonsets", "ds"], "node-local-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
         {"tool": "kubectl", "command": ["get"], "args": [["namespace", "namespaces", "ns"], "{namespace}"], "flags": {"-o": "*", "--output": "*"}},

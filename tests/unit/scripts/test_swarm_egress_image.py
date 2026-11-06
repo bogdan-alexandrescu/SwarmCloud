@@ -114,7 +114,9 @@ def test_a_promoted_forwarder_digest_becomes_its_image_refs_entry(tmp_path):
     names = _targets("push-images.sh")
     images = []
     for i, name in enumerate(names):
-        digest = "sha256:" + format(i, "x") * 64
+        # 64 hex digits whatever the count of images (seventeen since
+        # LIGHTPANDA-BUILD-SCRIPTS: a repeated digit is two digits from 16 on).
+        digest = f"sha256:{i:064x}"
         images.append({"name": name, "ref": f"{REGISTRY}/{name}@{digest}"})
     manifest = tmp_path / "deployed-images-dev.json"
     manifest.write_text(json.dumps({"tag": "abc", "environment": "dev", "images": images}))

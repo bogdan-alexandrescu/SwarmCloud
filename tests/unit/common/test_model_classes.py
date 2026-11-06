@@ -102,13 +102,16 @@ def test_a_value_that_is_not_a_string_is_never_admitted():
 
 def test_every_available_claude_code_family_profile_accepts_all_four():
     """Q3: claude-code, claude-code-browser and indexer, by the runner they start, and
-    claude-code-large (contract request 113), which is claude-code on the large class."""
+    claude-code-large (contract request 113), which is claude-code on the large class, and
+    claude-code-lightpanda (contract request 127), claude-code on the Lightpanda image."""
     family = sorted(
         name
         for name, profile in RUNNER_PROFILES.items()
         if profile.runner_argv == CLAUDE_CODE_RUNNER and profile.available
     )
-    assert family == ["claude-code", "claude-code-browser", "claude-code-large", "indexer"]
+    assert family == [
+        "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda", "indexer",
+    ]
     for name in family:
         assert RUNNER_PROFILES[name].model_classes == ALL_CLASSES, name
         assert RUNNER_PROFILES[name].default_model_class == "opus", name
@@ -121,7 +124,10 @@ def test_the_retired_review_profile_keeps_only_the_pin_it_has():
 
 
 def test_a_profile_that_runs_no_claude_model_has_no_classes():
-    classed = {"claude-code", "claude-code-browser", "claude-code-large", "indexer", "claude-code-review"}
+    classed = {
+        "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda", "indexer",
+        "claude-code-review",
+    }
     unclassed = sorted(set(RUNNER_PROFILES) - classed)
     # The control: the profiles this statement is about exist.
     assert {"codex", "mock", "generic", "browser", "merge", "post-verdict"} <= set(unclassed)
@@ -239,10 +245,17 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
     """Every field before them keeps its position."""
     # Contract request 120 (#2459) appends `budget` after `model_class`.
     # Contract request 123 (#1820) appends `platform_refusals` after `budget`.
+    # Contract request 131 (#2688) appends `timeout_seconds_asked` after
+    # `platform_refusals`.
+    # Contract request 132 appends `attempt_totals` and `current_account`.
+    # Contract request 133 appends `max_turns` to both classes.
     # MUTATION: inserting it before `budget` moves budget's position and
     # turns this red.
-    assert [f.name for f in fields(Task)][-3:] == ["model_class", "budget", "platform_refusals"]
-    assert [f.name for f in fields(WorkflowStep)][-2:] == ["model_class", "budget"]
+    assert [f.name for f in fields(Task)][-7:] == [
+        "model_class", "budget", "platform_refusals", "timeout_seconds_asked",
+        "attempt_totals", "current_account", "max_turns",
+    ]
+    assert [f.name for f in fields(WorkflowStep)][-3:] == ["model_class", "budget", "max_turns"]
     # RS-4 (contract request 111) appends the sized_* record after `model`;
     # `model` keeps its position and only RS-4's six fields follow it.
     # MUTATION: inserting an RS-4 field before `model`, or any other field
@@ -258,4 +271,7 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
         "sized_live_split",
     ]
     names = [f.name for f in fields(profiles.RunnerProfile)]
-    assert names[-2:] == ["model_classes", "default_model_class"]
+    # Contract request 133 appends `supports_max_turns` and `max_turns`, and
+    # contract request 136 `runtime_capabilities`.
+    assert names[-5:] == ["model_classes", "default_model_class",
+                          "supports_max_turns", "max_turns", "runtime_capabilities"]

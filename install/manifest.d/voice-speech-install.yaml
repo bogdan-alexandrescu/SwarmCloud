@@ -1,0 +1,56 @@
+# Lane L11 of Voice it's own speech engine (docs/design/voice-it-own-speech.md
+# sections 14 and 15, "The installer offers own speech"; part of #2688). Stage 0
+# asks, beside Voice it, whether to add the engine (one stopped L4 machine,
+# with the design's cost line), default no; for a yes, stage 1 picks the first
+# of the region's zones offering the L4, waits for an NVIDIA_L4_GPUS quota of
+# at least 1 and pins the newest Ubuntu 22.04 CUDA Deep Learning VM image by
+# name. Every infra pass then renders voice_speech.enabled, .zone and .image
+# (swarm_install/tfvars.py voice_speech); the machine itself, its address,
+# firewall pair and grants are voice-speech-machine.yaml's entries, made by
+# infra.pass-1 once voice_it is "on" as well. No secret slot: the engine reads
+# no OpenAI key, and the front's and planner's Claude accounts are the pool's.
+version: 1
+entries:
+- id: other.voice-speech-choice
+  kind: other
+  scope: core
+  stage: 0
+  provider: human-in-terminal
+  check: 'state.outputs.voice_speech is {"enabled": true or false}'
+  apply: 'infra.voice-speech asks "Voice it''s own speech engine (one stopped L4 machine in <zone>; about $0.71
+    an hour while used, $15 a month for its disk). Add it? Optional, y or n" with the default n, the zone read
+    when the project already has Compute Engine on, and records the answer; an empty answer is no'
+  verify: infra.voice-speech re-check is MET
+  explain: the speech machine costs money while it runs and its disk costs money while it is stopped, so a
+    deployment has it only when the person says yes
+  guards: asked once; the answer is never a secret
+  secret_entry: null
+  depends_on:
+  - other.deployment-sizing
+  evidence:
+  - apps/swarm-install/swarm_install/steps/infra.py
+  step: infra.voice-speech
+- id: other.voice-speech-zone
+  kind: other
+  scope: core
+  stage: 1
+  provider: engine
+  check: 'for a yes, state.outputs.voice_speech has zone (one zone of the region, offering nvidia-l4) and image
+    (projects/deeplearning-platform-release/global/images/<name>); MET for a no'
+  apply: infra.voice-speech-zone reads acceleratorTypes.aggregatedList for nvidia-l4 and takes the first zone of
+    the region; reads regions.get's NVIDIA_L4_GPUS and, below 1, opens the Quotas page on that metric and waits
+    for the increase; lists deeplearning-platform-release's images and pins the newest READY, undeprecated
+    common-cu*-ubuntu-2204 one by name. A region with no L4 zone records the choice off and says why
+  verify: infra.voice-speech-zone re-check is MET
+  explain: a new project's accelerators and quotas can be read only once stage 1 has made it and enabled Compute
+    Engine; one zone, one machine (owner, 2026-11-05), and an image by name so a plan never replaces the stopped
+    machine
+  guards: reads only; never starts, stops or makes the machine
+  secret_entry: null
+  depends_on:
+  - other.voice-speech-choice
+  - api.compute
+  evidence:
+  - apps/swarm-install/swarm_install/steps/infra.py
+  - apps/swarm-install/swarm_install/tfvars.py
+  step: infra.voice-speech-zone

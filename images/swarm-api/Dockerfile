@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-api -- the FastAPI service that authenticates callers, resolves tenants and writes tasks.
 #
@@ -41,8 +41,13 @@ ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
-ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
+ARG MIRROR_GHCR=
 
 FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
 
@@ -80,6 +85,9 @@ COPY apps/common/ /src/apps/common/
 COPY apps/redaction/ /src/apps/redaction/
 # The workflow state derivation the API and the reconciler share (#616).
 COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
+# The Jev client the worker's judge.client and judge.sanitize re-export, shared
+# with swarm-api (docs/design/agent-quality/jev-contract.md, answer 10).
+COPY apps/jev-client/ /src/apps/jev-client/
 COPY apps/swarm-api/ /src/apps/swarm-api/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
@@ -88,6 +96,7 @@ COPY apps/swarm-api/ /src/apps/swarm-api/
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
+ && uv build --wheel --out-dir /wheels /src/apps/jev-client \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-api
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
@@ -99,13 +108,13 @@ RUN python -m venv --without-pip /opt/venv
 
 # Third-party dependencies, exported from uv.lock for this service alone. The
 # root project depends on every app, so the export prunes the internal packages
-# swarm-api does not depend on (`swarm-agent-worker`, `swarm-mcp`,
-# `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`), and the
-# third-party packages only they need go with them. `--no-emit-local` leaves
-# our own packages out of the file: they come from /wheels, below. The export
-# carries a hash for every file; `--no-hashes` must never be added here.
+# swarm-api does not depend on (`swarm-agent-worker`, `swarm-install`,
+# `swarm-mcp`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`),
+# and the third-party packages only they need go with them. `--no-emit-local`
+# leaves our own packages out of the file: they come from /wheels, below. The
+# export carries a hash for every file; `--no-hashes` must never be added here.
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
-      --prune swarm-agent-worker --prune swarm-mcp \
+      --prune swarm-agent-worker --prune swarm-install --prune swarm-mcp \
       --prune swarm-quota-broker --prune swarm-reconciler \
       --prune swarm-scheduler \
       > /tmp/requirements.txt
@@ -127,7 +136,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # is ever asked for them; `--no-deps` because their third-party dependencies
 # are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-workflow-rollup swarm-api
+      swarm-common swarm-redaction swarm-workflow-rollup swarm-jev swarm-api
 
 # With `--no-deps` on both installs nothing above notices a dependency the
 # export left out. `uv pip check` does, here, instead of an ImportError at the

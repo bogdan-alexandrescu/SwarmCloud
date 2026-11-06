@@ -37,7 +37,11 @@ are restated here and held to the same rules:
     `cancelled` is read as `cancelled` when a newer run of its workflow and
     event is at the sha or another event passed the check
     (`cancelled_by_its_workflow`, #2582). The Actions run's conclusion is
-    what `mark_workflow_runs` puts on each check run.
+    what `mark_workflow_runs` puts on each check run;
+  * a required check NO check run reports is red, not pending, once every
+    Actions run at the sha that is not superseded has concluded and one
+    concluded failed: it ended without the check, which will never come, and
+    its failing jobs are what is red (`unreported_failure`, #2999).
 
 WHERE THIS IS DELIBERATELY WIDER than the merge step:
 
@@ -65,6 +69,7 @@ unchanged (a `cancelled` run counts as skipped here and pending there, #1778).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -188,6 +193,55 @@ def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+#: What an Actions run may conclude and not have FAILED: a run that passed
+#: produced every check it would, and a cancelled one waits for its re-run
+#: (#1778).
+_RUN_NOT_FAILED = OTHER_TOLERATED | {CANCELLED_CONCLUSION}
+
+
+def unreported_failure(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]] | None:
+    """For a required check NO check run at the head reports: the failing jobs
+    of the finished Actions runs that would have reported it, or None while
+    it may still report (#2999).
+
+    PR #2959 at 5a5d673b7: both `application` runs concluded `failure` on a
+    red shard and ended without a `ci-gate` check run, so the absent check
+    read pending and the merge step parked 13 hours on a check no run would
+    produce. Which workflow produces a check is not named anywhere a reader
+    can see, so it is read from the runs: the Actions runs at the head are
+    the ones the check runs carry (`mark_workflow_runs`: `workflow_run_id`,
+    `workflow_conclusion`, `workflow_superseded`). A run superseded by a
+    newer run of its workflow, event and branch decides nothing. While any
+    other run has no conclusion (queued, in progress, or a re-run's attempt
+    under way) it may still report the check: None. Once every one has
+    concluded, those that concluded other than `success`, `skipped`,
+    `neutral` or `cancelled` are the runs that would have produced it, and
+    their finished jobs not green are returned, each carrying its run's id
+    (so a free re-run asks for exactly that run). None when no run failed,
+    when no check run carries an Actions run (they were not read: nothing
+    at the head finished red), or when a failed run left no failing job to
+    name. The worker's `merge.unreported_failure` is the same rule, held equal
+    by tests/unit/control_plane/test_unreported_required_check.py.
+    """
+    by_run: dict[int, list[Mapping[str, Any]]] = {}
+    for run in runs:
+        workflow_run = _int(run.get("workflow_run_id"))
+        if workflow_run is not None:
+            by_run.setdefault(workflow_run, []).append(run)
+    failing: list[Mapping[str, Any]] = []
+    for jobs in by_run.values():
+        if any(job.get("workflow_superseded") is True for job in jobs):
+            continue
+        conclusion = jobs[0].get("workflow_conclusion")
+        if not conclusion:
+            return None
+        if conclusion in _RUN_NOT_FAILED:
+            continue
+        failing += [job for job in jobs if check_run_finished(job) and not cancelled_run(job)
+                    and (job.get("conclusion") or "") not in OTHER_TOLERATED]
+    return failing or None
+
+
 def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
                        workflow_runs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Copies of `runs` (check runs), each whose check suite an Actions run
@@ -196,10 +250,13 @@ def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
     run at the sha has the same `workflow_id`, event and head branch and a
     larger id -- the run a concurrency group cancelled this one for, which
     may not have created this check yet (#2582). The worker's
-    `merge.actions_suites` reads Actions runs the same way.
+    `merge.actions_suites` reads Actions runs the same way. Each also carries
+    the run's `id` as `workflow_run_id`, the run whose failed jobs the merge
+    wake tick's free re-run asks GitHub to re-run (#2841); no reader here
+    judges a check by it.
     """
     rows = [row for row in workflow_runs if isinstance(row, Mapping)]
-    marks: dict[int, tuple[Any, bool]] = {}
+    marks: dict[int, tuple[Any, bool, int | None]] = {}
     for row in rows:
         suite, workflow, run_id = (_int(row.get("check_suite_id")), _int(row.get("workflow_id")),
                                    _int(row.get("id")))
@@ -211,14 +268,43 @@ def mark_workflow_runs(runs: Sequence[Mapping[str, Any]],
             and other.get("head_branch") == row.get("head_branch")
             and (_int(other.get("id")) or 0) > run_id
             for other in rows)
-        marks[suite] = (row.get("conclusion"), superseded)
+        marks[suite] = (row.get("conclusion"), superseded, run_id)
     out: list[dict[str, Any]] = []
     for run in runs:
         suite = run.get("check_suite")
         mark = marks.get(_int(suite.get("id"))) if isinstance(suite, Mapping) else None
         out.append(dict(run) if mark is None else
-                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1]})
+                   {**run, "workflow_conclusion": mark[0], "workflow_superseded": mark[1],
+                    **({"workflow_run_id": mark[2]} if mark[2] is not None else {})})
     return out
+
+
+#: An Actions check run's page, `.../actions/runs/<run id>/job/<job id>`:
+#: only the digits are read, and only when the job is the check run itself.
+_ACTIONS_JOB_URL = re.compile(r"/actions/runs/(\d{1,20})/job/(\d{1,20})/?$")
+
+
+def workflow_run_of(run: Mapping[str, Any]) -> int | None:
+    """The Actions workflow run a failing Actions check run is a job of, or None.
+
+    The merge wake tick re-runs its failed jobs through it (#2841); the CI
+    excerpt reads a red gate's failed leaf jobs from it (`issueci`, #2937).
+
+    `workflow_run_id` when the reading stamped it from the Actions runs it
+    read; else the run id in the check's `details_url` or `html_url`, an int
+    and nothing more, and only when the URL's job is this very check run.
+    """
+    stamped = run.get("workflow_run_id")
+    if isinstance(stamped, int) and not isinstance(stamped, bool) and stamped > 0:
+        return stamped
+    for key in ("details_url", "html_url"):
+        url = run.get(key)
+        if not isinstance(url, str):
+            continue
+        found = _ACTIONS_JOB_URL.search(url.partition("?")[0].partition("#")[0])
+        if found is not None and int(found.group(2)) == run.get("id") and int(found.group(1)) > 0:
+            return int(found.group(1))
+    return None
 
 
 def check_run_finished(run: Mapping[str, Any]) -> bool:
@@ -338,6 +424,10 @@ class CiReading:
     failing_statuses: list[Mapping[str, Any]] = field(default_factory=list)
     #: Names of what is still pending.
     pending: list[str] = field(default_factory=list)
+    #: Required checks no run reported, read red because the Actions runs at
+    #: the sha finished and one failed without them (`unreported_failure`):
+    #: their failing jobs are in `failing_runs`.
+    unreported: list[str] = field(default_factory=list)
     #: One `{name, state, url}` per check evaluated, `state` a display bucket
     #: (`COUNT_BUCKETS`) and `url` None when GitHub gave none. Display only.
     checks: list[dict[str, Any]] = field(default_factory=list)
@@ -395,6 +485,14 @@ def evaluate(
                 if check.app_id is None else []
             )
             state = status_state(reported[0]) if reported else PENDING
+            # Reported by nothing at all: red once every Actions run at the
+            # head has finished and one that failed ended without it (#2999).
+            jobs = None if reported else unreported_failure(runs)
+            if jobs is not None:
+                reading.checks.append({"name": check.context, "state": FAILED, "url": None})
+                reading.unreported.append(check.context)
+                reading.failing_runs += [job for job in jobs if job not in reading.failing_runs]
+                continue
             reading.checks.append(
                 status_entry(reported[0]) if reported
                 else {"name": check.context, "state": PENDING, "url": None}

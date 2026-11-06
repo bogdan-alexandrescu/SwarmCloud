@@ -37,9 +37,9 @@
 # cluster whose name began with ours (swarm-autopilot2). Neither form can
 # match agents-staging, whose name does not start with ours.
 #
-# The account is terraform/infra's (verify.tf), spelled by
-# modules/service_account_ids -- the one spelling both roots read. It exists
-# before this is applied: every release since #334 has created it. An IAM
+# The account is this root's own (platform_service_accounts.tf, DAYONE-BOOT-2),
+# spelled by modules/service_account_ids -- the one spelling both roots read --
+# and made before this grant in the same apply (depends_on below). An IAM
 # member takes no labels, so managed-by=swarm-terraform opens the condition's
 # description, as the workspace deployer's grants carry it.
 
@@ -62,4 +62,6 @@ resource "google_project_iam_member" "verify_views_swarm_cluster" {
       "resource.name.startsWith(\"${local.verify_swarm_cluster}/\")",
     ])
   }
+
+  depends_on = [google_service_account.verify]
 }

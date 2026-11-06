@@ -112,6 +112,10 @@ def test_every_build_arg_the_config_passes_is_declared():
     passed = set(re.findall(r'--build-arg "?(\w+)=', build))
     assert passed >= {"BASE_IMAGE", "GIT_SHA"}, passed
     declared = set(re.findall(r"^ARG (\w+)", _code(INDEXER), re.M))
+    # BUILDKIT_SYNTAX is BuildKit's own: it selects the frontend in place of
+    # the `# syntax=` line, which names no project (DAYONE-DESAGA-1), and is
+    # never declared.
+    passed -= {"BUILDKIT_SYNTAX"}
     assert passed <= declared, f"passed but never declared: {sorted(passed - declared)}"
 
 

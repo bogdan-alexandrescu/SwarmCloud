@@ -16,7 +16,7 @@
 //   * §4.9's pattern hints appear with 30 attempts and not with 29, and a
 //     share the API reports as null reads "no data", never 0%;
 //   * `disk_gib` is shown and never an input (owner Q5); Cloud Run profiles
-//     are listed as "does not follow" (owner Q3).
+//     are listed as not following this size (owner Q3).
 //
 // The bodies are `swarm_api.runnersizes`' shapes (`served`, `preview`,
 // `versions`; tests/unit/control_plane/test_runner_sizes_api.py). Nothing
@@ -145,6 +145,18 @@ async function mount(routes: Routes = {}) {
 }
 
 const card = (name: string) => document.querySelector<HTMLElement>(`.rs-class[data-class="${name}"]`)
+/** What a reader sees without opening an (i): the words, less every hidden tooltip. */
+function seen(el: Element | null): string {
+  if (el === null) return ''
+  const copy = el.cloneNode(true) as Element
+  copy.querySelectorAll('[role="tooltip"]').forEach((t) => t.remove())
+  return visible(copy)
+}
+/** The sentence behind the (i) named `name` inside `el`. */
+function tipOf(el: Element, name: string): string {
+  const info = within(el as HTMLElement).getByRole('button', { name })
+  return visible(document.getElementById(info.getAttribute('aria-describedby')!))
+}
 const field = (label: string) => screen.getByLabelText(label) as HTMLInputElement
 const type = (label: string, value: string) => fireEvent.change(field(label), { target: { value } })
 const saveButton = () => screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement
@@ -271,6 +283,34 @@ describe('editing a class', () => {
     expect(put).toEqual({ base_version: 2, reason: 'memory is idle', classes: { standard: { memory_gib: 4 } }, confirm_below_recent_peak: true })
   })
 
+  it('carries its explanations behind (i)s beside their labels, never as lines (BGD, 2026-11-05)', async () => {
+    await mount()
+    await waitFor(() => expect(card('standard')).not.toBeNull(), WAIT)
+    const page = document.querySelector<HTMLElement>('.rs-page')!
+    // MUTATION: draw any of these as a line again.
+    expect(page.querySelector(':scope > .ur-sub')).toBeNull()
+    for (const line of [
+      'A save is a new version',
+      'a slice of memory',
+      'add up to the class',
+      'Cloud Run fixes resources',
+      'Every version records who, when and why',
+    ]) {
+      expect(seen(page), line).not.toContain(line)
+    }
+    // The owner's pick on #3303: the page's (i) sits beside the title, not among the actions. MUTATION: pass it as a child of PageHead.
+    expect(page.querySelector('.c-phead > .c-acts [aria-label="About Runner sizes"]')).toBeNull()
+    expect(tipOf(page.querySelector('.c-phead > .head')!, 'About Runner sizes')).toBe(
+      'Each class’s CPU request, CPU limit and memory. A save is a new version: the next admission takes it, and a running agent keeps the size it was admitted with.',
+    )
+    const standard = card('standard')!
+    expect(tipOf(standard, 'About Workspace')).toBe('A slice of memory: shown, not edited.')
+    expect(tipOf(standard, 'About Cloud Run profiles')).toBe('Cloud Run fixes resources on the Job and bills its limit, so these keep the code default.')
+    expect(tipOf(page, 'About Reason')).toBe('Every version records who, when and why.')
+    const split = document.querySelector<HTMLElement>('.rs-split')!
+    expect(tipOf(split, 'About Live browser split')).toBe('The two requests and memories add up to the class’s, so the live pod’s units and bill are the class’s.')
+  })
+
   it('shows disk as a figure, never an input, and lists Cloud Run profiles as not following', async () => {
     await mount()
     // MUTATION: draw disk_gib as an input (owner Q5: shown, not edited).
@@ -278,7 +318,7 @@ describe('editing a class', () => {
     expect(visible(card('standard')!.querySelector('.rs-disk'))).toContain('4 GiB')
     // MUTATION: drop the fixed list (owner Q3).
     const fixed = card('standard')!.querySelector<HTMLElement>('.rs-fixed')
-    expect(visible(fixed)).toContain('does not follow')
+    expect(visible(fixed)).toContain('do not follow this size')
     expect(visible(fixed)).toContain('claude-code-review')
   })
 })
@@ -295,7 +335,8 @@ describe('history', () => {
     // MUTATION: drop the reason or the changes from a row.
     expect(visible(row)).toContain('root@example.com')
     expect(visible(row)).toContain('first version')
-    expect(visible(row)).toContain('large memory_gib 32 → 24')
+    // The field in words with its unit (QA2-FIX-20, admin2-05), not `memory_gib`.
+    expect(visible(row)).toContain('large memory 32 → 24 GiB')
     // The current version is not offered as a restore.
     const current = document.querySelector<HTMLElement>('.rs-version[data-version="2"]')!
     expect(within(current).queryByRole('button', { name: /Restore/ })).toBeNull()
@@ -325,7 +366,10 @@ describe('the readings and their hints (§4.9)', () => {
     await waitFor(() => expect(visible(card('standard')!.querySelector('.rs-recent'))).toContain('29 attempts'), WAIT)
     // MUTATION: compare with `>= 29`, or drop the threshold.
     expect(card('standard')!.querySelector('.rs-hint')).toBeNull()
-    expect(visible(card('standard'))).toContain('Fewer than 30 attempts')
+    // BGD's no-prose rule (2026-11-05): the why is the readings' (i), not a line.
+    // MUTATION: draw `.rs-hints-few` again.
+    expect(seen(card('standard'))).not.toContain('Fewer than 30 attempts')
+    expect(tipOf(card('standard')!, 'About the last 7 days’ readings')).toBe('Fewer than 30 attempts in 7 days: the readings are shown without hints.')
   })
 
   it('reads a null share as "no data", never 0%', async () => {

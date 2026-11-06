@@ -51,7 +51,7 @@ Otherwise, in this order, skipping a step the checklist already shows done:
 3. **Claude account**, unless the `claude_account` step is done. A ready
    workspace runs nothing until it has one. Offer the two ways: they add
    their own in the console (Capacity › Accounts) or with
-   `uv run sc account add --label <name>` in a terminal, or they ask an admin
+   `sc account add --label <name>` in a terminal, or they ask an admin
    to lend one. Only if they ask for a loan, call `swarm_setup_workspace` with
    `action: loan`, and say an admin sees the request in Admin › People.
 4. **Connect GitHub**, when `connected_as_you` is null. Say first that
@@ -77,7 +77,7 @@ Otherwise, in this order, skipping a step the checklist already shows done:
    reports `CLASSIC_PAT_BLOCKED`, or the person says an org will not install
    the App, the fallback is a fine-grained personal access token whose
    resource owner is that org. They store it **themselves, in a terminal**:
-   tell them to run `uv run sc setup token --owner <org>`, which reads the
+   tell them to run `sc setup token --owner <org>`, which reads the
    token from stdin with no echo and never prints it. Never ask for the
    token here, never accept it in chat, and never offer to run the command
    for them: no tool here takes a token. When they say it is stored, call
@@ -120,14 +120,14 @@ token, tell them to revoke it at GitHub: it is now in this session's
 transcript.
 
 **Not run here.** Storing a fallback token
-(`uv run sc setup token --owner <org>`) is theirs to type, because the token
-must reach SwarmCloud without passing through this session. Disabling an org (`uv run sc access remove-org <owner>`)
+(`sc setup token --owner <org>`) is theirs to type, because the token
+must reach SwarmCloud without passing through this session. Disabling an org (`sc access remove-org <owner>`)
 deletes every grant under it, and disconnecting
-(`uv run sc access disconnect`) revokes SwarmCloud's access as them at
+(`sc access disconnect`) revokes SwarmCloud's access as them at
 GitHub. Both are theirs to type, in a terminal, where each asks for a typed
 confirmation; tell them the command and stop. The same wizard runs in a
-terminal without Claude Code as `uv run sc setup`, and
-`uv run sc setup status` prints the checklist.
+terminal without Claude Code as `sc setup`, and
+`sc setup status` prints the checklist.
 
 If a tool answers that the person is not signed in, tell them to run
-`uv run sc login` themselves (it opens a browser and waits for them) and stop.
+`sc login` themselves (it opens a browser and waits for them) and stop.

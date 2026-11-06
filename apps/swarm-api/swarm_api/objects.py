@@ -71,6 +71,38 @@ def safe_segment(value: str, *, what: str) -> str:
     return value
 
 
+#: What an artifact-name segment may not contain: a C0 control character, DEL
+#: or a backslash. The listing serves any printable name the worker uploaded
+#: (`attemptreads._ARTIFACT_NAME`), so the segments of a NAME are checked by
+#: what can escape the attempt's artifacts prefix, not by `_SEGMENT`'s shape.
+_ARTIFACT_NAME_UNSAFE = re.compile(r"[\x00-\x1f\x7f\\]")
+
+
+def safe_artifact_name(value: str, *, what: str = "artifact name") -> str:
+    """Return `value` if every `/`-separated segment of it stays where it is put.
+
+    For the NAME part of an artifact key only -- the tail after
+    `tenants/<t>/tasks/<id>/attempts/<a>/artifacts/`. The prefix in front of it
+    is the isolation boundary (invariant 9) and is still built from ids that
+    passed `safe_segment`, which is unchanged and stays as strict as it is.
+
+    A name is what `_upload_outputs` recorded for a file the agent wrote, as a
+    POSIX relative path: `_export.yaml`, `a b.txt`, `résumé.md` and
+    `dir/_x.json` are all names the listing serves, and refusing them here
+    made the read routes 422 on an artifact the listing had just offered. So
+    this refuses only what could leave the prefix or rewrite the key: an empty
+    segment (a leading, trailing or doubled slash), `.`, `..`, a control
+    character and a backslash (a separator in any store that maps keys onto a
+    Windows path).
+    """
+    if not isinstance(value, str) or not value:
+        raise UnsafeKeySegment(f"{what} is not a usable artifact name")
+    for part in value.split("/"):
+        if part in ("", ".", "..") or _ARTIFACT_NAME_UNSAFE.search(part):
+            raise UnsafeKeySegment(f"{what} has a segment that is not a usable path segment")
+    return value
+
+
 class ObjectAbsent(Exception):
     """The object is not there. A fact about the world.
 

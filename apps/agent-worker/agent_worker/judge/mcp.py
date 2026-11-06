@@ -8,7 +8,10 @@ and breaker, and the one per-task ledger -- under the kind `agent`.
 Transport: newline-delimited JSON-RPC 2.0 on stdio, the four methods
 `agent_worker.graphmcp.server` answers. A call Jev could not answer is a tool
 RESULT with `isError: true` and the reason, so the agent carries on with its
-own judgement; only a malformed request is a protocol error.
+own judgement; only a malformed request is a protocol error. A malformed
+ANSWER is read leniently where it is unambiguous and otherwise asked again
+once; a second is `decided: false`, "Jev could not decide", never an
+exception, and the ledger keeps a row for each call.
 """
 
 from __future__ import annotations
@@ -29,11 +32,18 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = ("Jev answers typed questions about a state you pass; it never writes text. "
                 "Advisory only, shared budget of 8 calls per task.")
 ADVISORY = "Jev is advisory: no answer this time; continue with your own judgement."
+#: A malformed answer is asked again once (BGD's pick of 6 November 2026,
+#: after 4 of 529 answers were recorded malformed); a second one is this.
+UNDECIDED = "Jev could not decide"
+MALFORMED_RETRIES = 1
 
 TOOL = {
     "name": TOOL_NAME,
     "description": (
-        "Ask Jev, a fast judgement model, typed questions about `state`. Each question is "
+        "Ask Jev, a fast judgement model, typed questions about `state`. Call it when "
+        "choosing between options the brief leaves open, for the acceptance check of each "
+        "stated requirement before finishing, and when a check fails and it is unclear "
+        "whether the code or the test is wrong; not for facts you can check. Each question is "
         "{type, instructions, criteria}: `noul` answers p(yes); `choice` picks one option and "
         "needs criteria as {option: description-or-null} (at most 255); `score` needs criteria "
         "as a list of strings. Refer to parts of state by name in backticks. Credential-shaped "
@@ -80,7 +90,8 @@ class JevServer:
             key = Path(key_file).read_text().strip() if key_file else None
             backend = Backend(str(spec["name"]), str(spec["url"]), str(spec["model"]),
                               stringify_state=bool(spec["stringify_state"]), key=key or None)
-            ledger = budget.Ledger(Path(config["ledger"]))
+            ledger = budget.Ledger(Path(config["ledger"]),
+                                   authority=budget.Grant.from_mapping(config.get("grant")))
             stops = tuple(p for p in config.get("hard_stop_paths") or [] if isinstance(p, str))
             names = [n for n in config.get("secret_env_names") or [] if isinstance(n, str)]
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -96,13 +107,20 @@ class JevServer:
                 or "questions" not in arguments:
             return {"error": "jev_decide takes {state, questions}"}, True
         try:
-            decision = self.client.decide("agent", arguments["state"], arguments["questions"])
+            decision = self.client.decide("agent", arguments["state"], arguments["questions"],
+                                          lenient=True, malformed_retries=MALFORMED_RETRIES)
         except client.QuestionError as exc:
             return {"error": str(exc)}, True
         removed = {"dropped_strings": decision.dropped, "denied_paths": decision.denied}
         if decision.ok:
             return {"answers": decision.answers, "input_tokens": decision.input_tokens,
                     "removed": removed}, False
+        if decision.outcome == "malformed":
+            return {"decided": False, "result": UNDECIDED, "outcome": decision.outcome,
+                    "reason": decision.reason,
+                    "note": ("Jev's answer was not one option and a confidence, twice. "
+                             + ADVISORY),
+                    "removed": removed}, True
         return {"outcome": decision.outcome, "reason": decision.reason, "note": ADVISORY,
                 "removed": removed}, True
 

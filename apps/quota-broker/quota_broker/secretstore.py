@@ -461,8 +461,8 @@ class SecretManagerStore:
             # this file that must be impossible to mistake for an outage.
             log.error(
                 "refusing to expire versions of a secret this platform does "
-                "not own; saga-agents-staging is shared and retention never "
-                "leaves the swarm-tenant-*/swarm-account-* names",
+                "not own; the project may be shared with another team, and "
+                "retention never leaves the swarm-tenant-*/swarm-account-* names",
                 extra={"secret": secret},
             )
             return

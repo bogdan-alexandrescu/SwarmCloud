@@ -22,7 +22,7 @@
 // ever allowed to say something that was actually measured.
 //
 // WHERE THE ENVIRONMENT COMES FROM, AND WHAT IT DOES WHEN IT DOES NOT KNOW.
-// Three honest sources, in the order they are believed:
+// Four honest sources, in the order they are believed:
 //
 //   1. THE API DECLARES IT -- `GET /v1/tenants/me` serves `environment` and
 //      `environment_declared` (PR #19; ui-audit §B9.S5). That is the
@@ -31,29 +31,38 @@
 //      actually reach. Only when `environment_declared` is true: the frozen
 //      `Settings.from_env` fills in "dev" when ENVIRONMENT is unset, and a
 //      defaulted dev is the badge this file exists not to draw.
-//   2. THE BUILD DECLARES IT -- `VITE_SWARM_ENV`, baked into the bundle by
-//      whoever built it (scripts/build-images.sh passes it). Declared, not
-//      inferred.
-//   3. THE BROWSER IS ON A LOOPBACK HOST -- which is a fact about this tab,
+//   2. THE DEPLOYMENT DECLARES IT -- `/config.json`, which the swarm-ui
+//      container writes from its own ENVIRONMENT variable when it starts
+//      (runtimeConfig.ts; images/swarm-ui/Dockerfile). Read at run time, so
+//      one image serves every deployment and nothing about the environment is
+//      compiled into it (DAYONE-UIENV-1). Declared, not inferred.
+//   3. THE BUILD DECLARES IT -- `VITE_SWARM_ENV`, which only a developer's own
+//      `npm run dev` or `npm run build` sets now: the image compiles none.
+//   4. THE BROWSER IS ON A LOOPBACK HOST -- which is a fact about this tab,
 //      not a guess about a deployment.
 //
-// WHY THE API OUTRANKS THE BUILD AND THE HOST. The build says what the bundle
-// was built for and the host says where the tab is; neither says where the
-// requests go. `SWARM_API_ORIGIN=… VITE_LIVE=1 npm run dev` serves a console
+// WHY THE DEPLOYMENT OUTRANKS THE BUILD. The bundle a deployment serves is the
+// release's one bundle, built once for every deployment, so a name compiled
+// into it would be the build machine's, not this deployment's.
+//
+// WHY THE API OUTRANKS THE REST. The deployment and the build say where the
+// console is served from and the host says where the tab is; none of them
+// says where the requests go. `SWARM_API_ORIGIN=… VITE_LIVE=1 npm run dev` serves a console
 // from localhost that proxies every /v1 call to a deployed API, and before
 // this the badge there said `Local` -- quiet, dashed -- over a console whose
 // pool ceilings were a deployed environment's. The API's own answer is the one
-// source that cannot be pointed somewhere else. When the build disagrees with
-// it, the badge follows the API and the tooltip names both.
+// source that cannot be pointed somewhere else. When the deployment or the
+// build disagrees with it, the badge follows the API and the tooltip names
+// both.
 //
 // Until `/v1/tenants/me` lands, or when it fails, or when the API did not
-// declare, the badge is exactly what it was: the build, then the host.
+// declare, the badge is the deployment, then the build, then the host.
 //
 // And when none of them answers, the badge says ENVIRONMENT UNKNOWN and prints
 // the host, LOUDLY -- the same treatment production gets. Not knowing which
 // environment you are in is not permission to relax; it is the one case where
 // a quiet badge would be actively dangerous. A `swarm.example.com -> dev` table
-// in this file was the obvious fourth option and is deliberately NOT here: it
+// in this file was the obvious fifth option and is deliberately NOT here: it
 // would be a TypeScript restatement of
 // terraform/environments/dev/dev.tfvars:339, in a file nothing checks against
 // it, and every restatement of another track's value in this repository has
@@ -62,6 +71,7 @@
 // variable.
 
 import { useId } from 'react'
+import { deployedEnvironment } from './runtimeConfig'
 import { Id } from './Shell'
 import type { Me } from './types'
 
@@ -202,9 +212,12 @@ export function SwarmMark({
  * `production` and `unknown` are the two LOUD kinds and they are loud for the
  * same reason: both mean "assume a mistake here is expensive".
  */
+/** Who declared a name: the API, this deployment's /config.json, or the build. */
+export type DeclaredBy = 'api' | 'deployment' | 'build'
+
 export type Environment =
-  | { kind: 'production'; name: string; source: 'build' | 'api'; build?: string }
-  | { kind: 'nonprod'; name: string; source: 'build' | 'api'; build?: string }
+  | { kind: 'production'; name: string; source: DeclaredBy; deployment?: string; build?: string }
+  | { kind: 'nonprod'; name: string; source: DeclaredBy; deployment?: string; build?: string }
   | { kind: 'local'; name: string; source: 'host'; host: string }
   | { kind: 'unknown'; host: string }
 
@@ -248,19 +261,25 @@ const LOCAL_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]'] as con
 type DeclaredEnvironment = Extract<Environment, { kind: 'production' | 'nonprod' }>
 
 /** A declared name as production or not, by its leading word. */
-function named(name: string, source: 'build' | 'api'): DeclaredEnvironment {
+function named(name: string, source: DeclaredBy): DeclaredEnvironment {
   // The leading word, so `prod-eu` and `production_2` are still production.
   const head = name.split(/[-_.\s]/)[0] ?? name
   const loud = PRODUCTION_NAMES.some((p) => head === p)
   return loud ? { kind: 'production', name, source } : { kind: 'nonprod', name, source }
 }
 
+/**
+ * `declared` is the build's `VITE_SWARM_ENV`; `deployed` is this deployment's
+ * `/config.json` (runtimeConfig.ts), read here unless a caller passes it.
+ */
 export function classifyEnvironment(
   declared: string | undefined,
   host: string,
   served: ServedEnvironment | null = null,
+  deployed: string | undefined = deployedEnvironment(),
 ): Environment {
-  const name = (declared ?? '').trim().toLowerCase()
+  const built = (declared ?? '').trim().toLowerCase()
+  const deployment = (deployed ?? '').trim().toLowerCase()
 
   // THE API'S OWN ANSWER FIRST, and only a DECLARED one: a defaulted "dev" is
   // an absence wearing a name. See the header of this file for why it
@@ -268,12 +287,18 @@ export function classifyEnvironment(
   const api = served !== null && served.declared ? served.name.trim().toLowerCase() : ''
   if (api !== '') {
     const env = named(api, 'api')
-    // A build that said something else is kept, for the tooltip. It does not
-    // change the badge: the API is what the requests reach.
-    return name !== '' && name !== api ? { ...env, build: name } : env
+    // A deployment or build that said something else is kept, for the
+    // tooltip. It does not change the badge: the API is what the requests
+    // reach.
+    return {
+      ...env,
+      ...(deployment !== '' && deployment !== api ? { deployment } : {}),
+      ...(built !== '' && built !== api ? { build: built } : {}),
+    }
   }
 
-  if (name !== '') return named(name, 'build')
+  if (deployment !== '') return named(deployment, 'deployment')
+  if (built !== '') return named(built, 'build')
 
   const h = host.trim().toLowerCase()
   const local =
@@ -343,7 +368,12 @@ function sentenceCase(s: string): string {
  */
 function declaredBy(env: DeclaredEnvironment): string {
   if (env.source === 'build') return `Environment ${env.name}, declared by the build.`
-  const also = env.build === undefined ? '' : ` The build declared ${env.build}; the API is what these requests reach.`
+  if (env.source === 'deployment') return `Environment ${env.name}, declared by this deployment.`
+  const told = [
+    env.deployment === undefined ? '' : ` This deployment declared ${env.deployment}.`,
+    env.build === undefined ? '' : ` The build declared ${env.build}.`,
+  ].join('')
+  const also = told === '' ? '' : `${told} The API is what these requests reach.`
   return `Environment ${env.name}, reported by the API this console is talking to.${also}`
 }
 
@@ -380,7 +410,7 @@ export function envTreatment(env: Environment): EnvTreatment {
         // Named rather than vague: someone has to be able to act on it.
         explain:
           `Nothing told this console which environment it is. The API has not ` +
-          `declared one, the build did not declare VITE_SWARM_ENV, and ` +
+          `declared one, this deployment's /config.json declares none, and ` +
           `${env.host || 'the host'} is not this machine, so treat it as ` +
           `production until you know otherwise.`,
         bar: true,

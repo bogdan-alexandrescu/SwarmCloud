@@ -134,6 +134,18 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 124 | `profiles.py`: a `fix-loop` catalogue profile, `control_plane: true`, shipped unavailable until FL-ACCEPT passes, as `await-input` was (FL-CONTRACT, fix loop request A, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT): mirrored in `terraform/infra/locals.tf` and listed in `profiles_without_a_job` |
 | 125 | `states.py`: `ParkReason.FIX_ROUNDS_RUNNING`, a fix loop's step while its rounds run: never promoted by the scheduler, in no capacity set, ended by swarm-api (FL-CONTRACT, fix loop request B, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 (Q1, Q2, Q10 of docs/design/fix-loop.md §9) and APPLIED by the pull request that adds this line (lane FL-CONTRACT), with the console's and swarm-mcp's park-reason lists |
 | 126 | `models.py`: `EndCause.FIX_LOOP_EXHAUSTED`, a fix loop that ended without a MERGE (FL-CONTRACT, fix loop request C, part of #2509) | ACCEPTED by the owner (BGD) 2026-10-27 ('accept-126', answering FL-CONTRACT's question on PR 2570; requested by lane FL-CONTRACT the same day, Q3 (c) needs an end cause). APPLIED 2026-10-28 by the pull request that adds this line (lane FL-CONTRACT-126): appended to `EndCause`; the outcome ledger classes it `fix_loop_exhausted`, its own failure class (DERIVE_VERSION 12), and the console's `EndCause`, `END_CAUSES` and `END_CAUSE_SAY` carry it |
+| 127 | `profiles.py`: a `claude-code-lightpanda` catalogue profile, claude-code's runner on image `agent-runtime-lightpanda` and the `standard` class, no live browser, for DOM-only browser work (LIGHTPANDA-ANALYSIS, part of #2688; docs/design/lightpanda-runtime.md) | ACCEPTED by the owner 2026-10-31 and APPLIED by the pull request that adds this line (lane LIGHTPANDA-CONTRACT, part of #2688; BGD: "go with the recommended options", accept contract request 127). Its `terraform/infra/locals.tf` mirror lands in the same pull request once `agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing image digest (CLD for BGD, 2026-10-31) |
+| 128 | `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS`, `("jev",)`, so the workspace's switch for the claude-code lanes' TypeSafe quality checks is signed (JEV-LANES, PR 2905; QUALITY-GATES-SETTINGS-MAC, part of #2688) | ACCEPTED by the owner 2026-10-31 ('Add it (contract request)', answering PR 2905's first question) and APPLIED by the pull request that adds this line (lane QUALITY-GATES-SETTINGS-MAC): swarm-api's `qualitygates.QualityGatesStore` signs the block it writes, and `judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)` so the re-sign pass signs stored blocks |
+| 129 | `admission.py` / `models.py`: a lease takes 1 unit in each `provider:*` pool and its resource units in every other pool, records what it took per pool (`Lease.pool_units`), and release returns exactly that (LARGE-ONE-PROVIDER-SLOT, part of #2950) | ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the expected behaviour #2950 states) and APPLIED by the pull request that adds this line (lane LARGE-ONE-PROVIDER-SLOT, part of #2950): `pool_units_for` is the one rule; a lease from before it has no `pool_units` and releases its `units` from every pool |
+| 130 | `profiles.py`: `codex` becomes available, and runs on either the tenant's `OPENAI_API_KEY` or a pool ChatGPT plan (`CODEX_PLAN_ACCESS_TOKEN`, `CODEX_PLAN_ACCOUNT_ID`), `secrets_any_of=True` (CODEX-PLAN-CONTRACT, part of #2688) | ACCEPTED, APPLIED IN FULL: accepted by the owner (BGD) 2026-11-01 with one change, "Accept, but keep codex unavailable until the pool lanes land", and applied in part then (lane CODEX-CONTRACT-APPLY: the three secret names, `secrets_any_of=True` and the `terraform/infra/locals.tf` `secret_env` mirror). The owner chose on 2026-11-02 to turn codex on once every pool lane had merged (the codex runner on a plan, the worker leasing an openai plan, the quota broker leasing and refreshing openai accounts, swarm-api forwarding a sign-in's provider), and the pull request that adds this line (lane CODEX-AVAILABLE) applies the rest: `available=True` with no `disabled_reason`, the console fixture's availability, the delegate skill's sentence, the tests that pinned codex refused, and the scheduler's pool rule keyed to each provider's plan names (item 6) |
+| 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
+| 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
+| 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
+| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
+| 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
+| 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
+| 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
+| 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
 
 ---
 
@@ -15085,3 +15097,1715 @@ accepted to end.
 ### Invariants
 
 None is touched: an end cause records why, it decides nothing.
+
+## 127. `profiles.py`: a `claude-code-lightpanda` catalogue profile, DOM-only browser work on `standard` with no live browser (LIGHTPANDA-ANALYSIS)
+
+**Status:** ACCEPTED by the owner 2026-10-31 and APPLIED by lane
+LIGHTPANDA-CONTRACT (part of #2688), in the pull request that rewrote row 127
+of the index above: one literal entry in `RUNNER_PROFILES`, right after
+`claude-code-browser`, exactly as below, held equal to `claude-code` in every
+field but its name and image by
+`tests/unit/common/test_claude_code_lightpanda.py`. Its `terraform/infra/locals.tf`
+mirror waits for the image: it lands in the same pull request once
+`agent-runtime-lightpanda` is built and pinned, so no plan fails on a missing
+image digest (CLD for BGD, 2026-10-31). Requested 2026-10-31 by
+lane LIGHTPANDA-ANALYSIS (part of #2688), answering BGD's ask of the same day
+to analyse Lightpanda as a runtime for browser agents and, if it adds value,
+design and build it. BGD said to go with the recommended options. This is
+decision B (2) of
+[`docs/design/lightpanda-runtime.md`](design/lightpanda-runtime.md) §5.
+
+### What is true today
+
+`claude-code-browser` (`RUNNER_PROFILES` in `profiles.py`) is the only profile with a
+browser. It is `live_browser=True` on the `browser` class, so every browser
+agent is one pod with a worker and a `display` sidecar (Xvfb and a headed
+Chromium, 2 CPU / 5 GiB of the class). Each agent leases a unit from
+`resource:browser`, which is 20 in prod against 100 for `standard`
+(`pool_limits.resource_classes` in the prod tfvars). That holds even when the
+work needs no pixels: reading pages, scraping, link checks, form flows.
+
+Measured on 2026-10-31 (§3 of the design;
+`docs/design/lightpanda-runtime/results.json`), Lightpanda 1.0.2 on 17 real
+pages returned the same links as headless Chromium on 16 of 17. Its medians
+against Chromium's were:
+
+* proportional memory: 48 against 454 MiB;
+* CPU: 0.30 against 4.61 s;
+* time to DOM ready: 253 against 470 ms.
+
+Ten pages at once took 183 MiB and 3.0 CPU-s, against 1,831 MiB and
+37.3 CPU-s. Lightpanda draws no pixels and loaded no iframe content, so it
+cannot replace the live browser. It can carry DOM-only work outside the
+`browser` pool.
+
+### The change
+
+```python
+# profiles.py, RUNNER_PROFILES, immediately after "claude-code-browser"
+    # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
+    # docs/design/lightpanda-runtime.md): claude-code's runner on
+    # agent-runtime-lightpanda, a headless browser that runs JavaScript and
+    # draws no pixels, for DOM-only browser work: reading, scraping, link
+    # checks, form flows. The `standard` class and one container: no display
+    # sidecar, no live view, no take-control, so `live_browser` stays False
+    # and the task leases `resource:standard`, not the scarce
+    # `resource:browser`. A page it cannot read goes to a claude-code-browser
+    # child the agent submits. A literal, not `replace()`, so
+    # tests/terraform/catalogue_mirror sees it (request 113's reason).
+    # GKE Autopilot, on-demand only (invariant 6).
+    "claude-code-lightpanda": RunnerProfile(
+        name="claude-code-lightpanda",
+        image="agent-runtime-lightpanda",
+        resource_class="standard",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+    ),
+```
+
+Nothing else in `apps/common/swarm_common/` changes:
+
+* no new resource class (a smaller class would still be 1 unit, because of
+  the `units_for` floor);
+* no new `browser_tool` choice;
+* no `RUNTIME_TOOLS` entry (that table is keyed by `browser_tool` choices,
+  and this profile declares none);
+* no state, end cause or model field.
+
+### What it would break if accepted
+
+Nothing at once. A new profile with no Job and no pool is never dispatched.
+These mirrors must follow it, all listed with their lanes in §6 and §7 of the
+design:
+
+* `terraform/infra/locals.tf` `runner_profiles` (and so the
+  `runner:claude-code-lightpanda` pool);
+* the environments' `runner_profiles` pool limits;
+* the stream-file tuples in `runners/streams.py` and `agent_streams.py`;
+* the console's `Submit.tsx` and `api.ts` mirrors;
+* the parity section in `scripts/lib/check-contract-parity.sh`.
+
+`tests/terraform/catalogue.tftest.hcl` fails until `locals.tf` mirrors it,
+and so does the parity script's catalogue comparison. They are to land in
+the same wave.
+
+### If it is declined
+
+DOM-only browser work stays on `claude-code-browser`. It queues on the 20
+`browser` units and pays for a display it never shows. An agent that needs
+tens of pages at once pays Chromium's measured ~180 MiB and 3.7 CPU-s a page
+inside the display's 3-CPU limit.
+
+The alternatives are both worse:
+
+* a fifth `browser_tool` would change the frozen `browser_tool` choices
+  instead and save no capacity;
+* a `claude-code` input would put an AGPL binary in every claude-code image.
+
+### Invariants
+
+* **2 and 3:** the lease takes `runner:claude-code-lightpanda` with the
+  other pools, all or nothing, counted from LEASED.
+* **6:** GKE on-demand, no Spot.
+* **7:** the `standard` class already holds it (memory request = limit, CPU
+  4 ≤ 8 ≤ 2 × 4). There is one container, so no split.
+* **9:** the tenant's own GSA, secrets, prefix and namespace, as `claude-code`.
+* **10:** a caller names the profile. The image, the command and Lightpanda's
+  flags come from the catalogue and the runner.
+* **1, 4, 5, 8:** unchanged; the claude-code runner's checkpointing and
+  fencing are reused as they are.
+
+## 128. `specsign.py`: a `"quality_gates"` block in `SETTINGS_MAC_FIELDS` (JEV-LANES, QUALITY-GATES-SETTINGS-MAC, part of #2688)
+
+**Status:** ACCEPTED by the owner 2026-10-31 and APPLIED by lane
+QUALITY-GATES-SETTINGS-MAC (part of #2688), in the pull request that adds
+row 128 of the index above. Requested 2026-10-31 by lane JEV-LANES in the
+body of PR 2905 (merged 2026-10-31T22:37Z), whose first question the owner
+answered 'Add it (contract request)'. "What is true today" below is the
+state before it was applied.
+
+### What is true today
+
+`workspace_settings/{tenant_id}.quality_gates: {jev, set_at, set_by}` is
+written by `apps/swarm-api/swarm_api/qualitygates.py::QualityGatesStore`
+(owner, workspace admin or platform admin only, audited). With `jev` true
+the worker's `qualitygates.prepare` registers jev-belay and jev-enforce on
+a claude-code lane, keyed with the workspace's own TypeSafe key. No block of
+`SETTINGS_MAC_FIELDS` covers it, so it is not signed, and the worker acts on
+a stored `jev: true` whoever wrote it.
+
+### Why
+
+[tenant-settings-integrity.md](design/tenant-settings-integrity.md) §1.3:
+any tenant worker can write `workspace_settings/<B>`. A forged "on" sends
+B's lane text (the final reply, the edits, the CLAUDE.md rule files) to
+TypeSafe under B's own key, a key B's admin set for TypeSafe, without B's
+admin having chosen it for the lanes. Bounded -- nothing goes anywhere B's
+admin had not already pointed a key at -- but it is the same kind of write
+`code_intelligence.jev` is signed against.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "quality_gates": ("jev",),
+})
+```
+
+Only `jev` is covered: `set_at` and `set_by` are a record of who changed it,
+not something any reader acts on. Nothing else in `specsign.py` changes.
+`tests/unit/common/test_settings_block.py` gains the entry.
+
+### The follow-up once it is applied
+
+In the same pull request: `QualityGatesStore.put` stores
+`quality_gates.mac` (`judgment.block_mac`) whenever it writes the block, and
+reads the stored block through `judgment.trusted_block`, as
+`codeintel.CodeIntelligenceStore` does (PR 1330's `code_intelligence.jev`);
+`judgment.WRITER_FIELDS` gains `"quality_gates": ("jev",)`, so
+`scripts/resign-workspace-settings.sh` signs the blocks stored before it.
+The worker cannot check an HMAC whose key would let it sign any tenant's
+block, so the scheduler, which holds the key, vouches for it (the owner's
+pick on PR 2955, "Scheduler hands a verdict"): at each claude-code dispatch
+`scheduler.judgment.read_quality_gates_env` reads the attempt's own tenant's
+block, and both dispatchers write `SWARM_QUALITY_GATES_JEV` ("true" only for
+a block that says on and whose MAC verifies, "false" otherwise) and, for a
+refused "on", `SWARM_QUALITY_GATES_REFUSED` into the job's environment. The
+MAC is required whatever SETTINGS_MAC_TENANTS says, and the verdict is
+given only while SETTINGS_MAC_REQUIRED is on. The worker's
+`qualitygates.GatesVerdict` acts on "true" alone, and only while the stored
+block still says on. Unsigned, mismatched, no key or the switch off is off,
+and the attempt's summary says why.
+
+### What it would break if accepted
+
+Nothing at once: a new block changes no other block's bytes. A reader that
+requires the MAC reads a stored `quality_gates` block written before the
+re-sign pass as off until the pass signs it.
+
+### If it is declined
+
+The switch stays unsigned, and a forged "on" is acted on.
+
+### Invariants
+
+**9** is what this protects: the tenant id and the block name are inside
+the signed bytes, so a block copied from another tenant's document does not
+verify. **10** holds either way: one bool, never an image, a command or a
+resource. **1-8** are untouched.
+## 129. `admission.py` / `models.py`: a lease takes 1 unit in each provider pool, whatever its size (LARGE-ONE-PROVIDER-SLOT, part of #2950)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 (~03:55Z, choosing the
+expected behaviour #2950 states) and APPLIED by lane LARGE-ONE-PROVIDER-SLOT
+(part of #2950), in the pull request that adds row 129 of the index above.
+
+### What is true today
+
+`acquire_lease_in_transaction` reserves the same `units` -- the resource
+class's: standard 1, browser 1, large 4 -- in every pool `pool_names_for`
+lists, and `release_lease_in_transaction` subtracts the lease's `units` from
+each. Two of those pools, `provider:<p>` and `provider:<p>:tenant:<t>`, stand
+for concurrent LLM sessions against the provider's accounts, and a
+claude-code-large agent runs one Claude session, like a standard one.
+
+Measured 2026-11-01 03:46Z with `swarm capacity`: ten claude-code-large agents
+in Engineering held 40 of `provider:anthropic:tenant:eng`'s 50 slots for ten
+sessions; every other Engineering agent shared the last 3.
+
+### The change
+
+* `models.pool_units_for(pool, units)`: THE rule. A `provider:*` pool takes
+  `PROVIDER_POOL_UNITS` (1); every other pool takes the resource units.
+  `reserved_pool_units` applies it to a lease's pools.
+* `Lease.pool_units: dict[str, int] | None`, written at reserve: what the
+  lease took in each pool. `held_pool_units` (and `Lease.held_units()`) reads
+  a stored lease: its `pool_units`, or -- for a lease reserved before this
+  change, which has none -- `units` in every pool, the rule it was reserved
+  under.
+* `evaluate_capacity(pools, required, units, tasks=1)` checks each pool for
+  `tasks * pool_units_for(name, units)`; `acquire_lease_in_transaction`
+  increments each pool by its share and stores `pool_units` on the lease;
+  `release_lease_in_transaction` subtracts `held_pool_units` from each pool.
+
+Each pool, and what it bounds:
+
+* `provider:<p>`, `provider:<p>:tenant:<t>`: LLM sessions against the
+  provider (the subscription accounts' concurrency, a tenant's own key's).
+  One agent is one session: **1**.
+* `resource:<c>`: the class's compute. **Units**, unchanged.
+* `global`: the platform's compute: every agent's CPU and memory land on the
+  same backends. **Units**, unchanged.
+* `tenant:<t>`: a tenant's share of compute (its namespace's quota, its
+  Cloud Run instances). **Units**, unchanged.
+* `backend:<b>`: a backend's compute capacity (Autopilot nodes, Cloud Run Job
+  quota). **Units**, unchanged.
+* `runner:<p>`: a profile's concurrency. Every agent of a profile has one
+  class, so units and agents differ by a constant factor; the configured
+  limits are written in units (`runner:claude-code-large` 100 is 25 agents),
+  so changing it would silently quadruple them. **Units**, unchanged.
+
+### Who else applies the rule
+
+Through the frozen functions: the scheduler (`acquire_lease`), the worker,
+the reconciler and swarm-api (every release goes through
+`release_lease_in_transaction`; nothing else writes `active`). Restated and
+changed in the same pull request: swarm-api's `headroom` (n agents need
+`n * pool_units_for` per pool), `waiting` (a row's `units` and the
+below-units verdict), the `/v1/capacity` profile's `pool_units`, the admin
+leases listing's per-row `pool_units` and `units_held_by_pool`;
+`scripts/lib/concurrency-judge.jq` (invariant 3's exact check) and
+`scripts/lib/pool-units.jq` (read by make pool-check). The console and
+swarm-mcp read the served per-pool figures in the same pull request (the
+owner's pick, 2026-11-01): `types.ts` weighs an agent per pool (`unitsIn`,
+`taskWeight`, `leaseHeld`) for `blockerCeiling`, `ProfileMatrix`'s `fitsIn`,
+`AdminSettings`' ceiling arithmetic, `Submit`'s cost and verdicts and
+`Holders.tsx`'s drift card; swarm-mcp's `binding_pool` divides each pool's
+room by the profile's served share. None of them restates the rule: each
+reads what the API serves, and falls back to `units` in every pool only for an
+API older than the fields, whose admission charged exactly that.
+
+### What it would break if accepted
+
+Nothing at once: an old lease releases by the old rule, and the console and
+swarm-mcp read each lease's and each profile's served share.
+
+### If it is declined
+
+Large work holds four provider slots per session and starves the workspace's
+other agents; the only relief is raising the provider caps, which over-admits
+standard work against the provider's real session limit.
+
+### Invariants
+
+* **2:** every pool's increment and the lease, with its `pool_units`, are
+  written in the one admission transaction, all or nothing, as before; release
+  is one transaction that reads every pool before any write.
+* **3:** counted from LEASED, as before: the shares are taken at reserve.
+  `concurrency-judge.jq` sums each lease's held share per pool, so its exact
+  `active == held` check stays exact across old and new leases.
+* **1, 4-10:** unchanged.
+
+---
+
+## 130. `profiles.py`: `codex` becomes available, on the tenant's key or a pool ChatGPT plan (CODEX-PLAN-CONTRACT, part of #2688)
+
+**Status:** ACCEPTED and APPLIED IN FULL. Accepted by the owner (BGD) on
+2026-11-01 with one change: "Accept, but keep codex unavailable until the pool
+lanes land". The secrets change below was applied then (lane
+CODEX-CONTRACT-APPLY), with its `secret_env` mirror, and `available=False`
+stayed. On 2026-11-02, once every pool lane had merged (the codex runner on a
+plan, the worker leasing an openai plan, the quota broker leasing and
+refreshing openai accounts, swarm-api forwarding a sign-in's provider), the
+owner chose to turn codex on, and lane CODEX-AVAILABLE applied the rest:
+`available=True` with no `disabled_reason` and the re-enabling comment, the
+console's fixture availability, the delegate skill's sentence (with the
+plugin's version moved so the bridge's catalogue reaches a session), the tests
+that pinned codex refused (item 5), and the scheduler's half of item 6 (its
+pool rule keyed to each provider's plan names, as the worker's is). Requested 2026-11-01 by lane CODEX-PLAN-CONTRACT. The owner (BGD) asked on 2026-11-01 for the
+codex runner to run on ChatGPT plans from a shared pool, the way claude-code
+runs on the pool of Claude subscriptions, and accepted that this needs a
+contract request.
+
+### What is true today
+
+In `apps/common/swarm_common/profiles.py`, `RUNNER_PROFILES["codex"]`:
+
+* `available=False`, with the `disabled_reason` "codex is disabled on this
+  platform. The provider refused the registered credential and the platform
+  is focused on Claude. Use claude-code." It was turned off by request 11
+  (2026-09-23): four codex steps of a twenty-step load test failed with
+  "openai refused the credential", because the tenant's
+  `swarm-tenant-eng-openai` held one rejected version.
+* `provider="openai"`, `secrets=("OPENAI_API_KEY",)`, and `secrets_any_of`
+  left at its default, `False`.
+
+So codex authenticates only with a metered OpenAI API key, and nothing in the
+catalogue lets it name a plan's credential. claude-code already has the shape
+this needs: `secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")`,
+`secrets_any_of=True`, either one sufficing.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/profiles.py
++++ b/apps/common/swarm_common/profiles.py
+@@ "codex": RunnerProfile(
+         runner_argv=("python", "-m", "agent_worker.runners.codex"),
+         provider="openai",
+-        secrets=("OPENAI_API_KEY",),
++        # INTERCHANGEABLE, as claude-code's are (contract request 130, owner
++        # 2026-11-01): the tenant's metered key, or a ChatGPT plan leased from
++        # the pool. The plan arrives as an access token (about an hour) and the
++        # plan's account id; the quota broker alone holds and refreshes the
++        # refresh token, which never reaches a worker.
++        secrets=("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
++        secrets_any_of=True,
+         timeout_seconds=7200,
+         inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
+-        # DISABLED 2026-09-23 by the owner's decision: ...
+-        # ...
+-        available=False,
+-        disabled_reason=(
+-            "codex is disabled on this platform. The provider refused the "
+-            "registered credential and the platform is focused on Claude. Use "
+-            "claude-code."
+-        ),
++        # Re-enabled by contract request 130 (owner, 2026-11-01): disabled
++        # 2026-09-23 by request 11 when the one registered key was refused;
++        # it now runs on a pool ChatGPT plan as well as a tenant's key.
+         secret_slots={"files": _FILES_SLOT},   # contract request 80
+     ),
+```
+
+The exact patch against main is in the pull request's body. Nothing else in
+the catalogue changes: same image, class, backend (GKE Autopilot, request 65),
+provider, timeout, inputs and slots.
+
+`secrets_any_of=True` is what makes the three names one credential among
+alternatives: a step runs if it has `OPENAI_API_KEY`, or if it has the plan's
+pair. The pair is not two independent alternatives -- an access token without
+its account id does not reach the Codex backend -- and the flag cannot say so;
+the codex runner is what refuses a plan token without its account id
+(`agent_worker.runners.codex`, in the runner lane), exactly as claude-code's
+runner picks one of its two names.
+
+**The interface the three lanes share** (owner's brief, 2026-11-01; recorded
+here because the names are the contract's): a pool account with
+`provider: "openai"` holds a ChatGPT plan's sign-in (refresh token, account
+id). The quota broker is its ONLY writer and refreshes it serialised per
+account, because each refresh replaces the refresh token. `POST
+/v1/accounts/assign {provider: "openai", ...}` returns as `secret` a current
+access token plus the plan's `account_id`, never the refresh token, and the
+worker hands them to codex as `CODEX_PLAN_ACCESS_TOKEN` and
+`CODEX_PLAN_ACCOUNT_ID`. The sign-in is "Sign in with ChatGPT": OAuth with PKCE
+at `https://auth.openai.com`, the Codex CLI's public client; the plan's traffic
+goes to the Codex backend on the Responses wire and refuses some model names
+(measured by sagaxyz/ai-studio on a live ChatGPT Plus login, 2026-08-10).
+Measured here 2026-11-01: the codex CLI in the runtime image (`codex-cli
+0.154.0`) offers `codex login --with-api-key` and `codex login
+--with-access-token` (its help names `CODEX_ACCESS_TOKEN`), each reading stdin.
+`CODEX_PLAN_*` are the platform's names, between the broker, the worker and
+the runner; the runner turns them into whatever the CLI reads.
+
+### Who else applies the rule (every mirror, read 2026-11-01 on `bf5ca60`)
+
+Each must change with it, in the pull request that applies it unless noted:
+
+1. **`terraform/infra/locals.tf` `runner_profiles["codex"]`**:
+   `secret_env = { OPENAI_API_KEY = "openai" }` becomes the three names, each
+   mapped to `"openai"` (`{ for name in [...] : name => "openai" }`, as
+   claude-code-large writes its two). `tests/terraform/catalogue.tftest.hcl`,
+   run `the_terraform_mirror_matches_the_python_catalogue`, compares
+   `secret_env_names` to the catalogue (parsed by
+   `tests/terraform/catalogue_mirror/main.tf`) and reddens until it does.
+   Nothing in Terraform states availability. The `runner:codex` and
+   `provider:openai` pool limits (dev 20 and 100, prod 40 and 40) already exist
+   and need no change for the request; their sizing for a plan pool is the
+   pool lane's to propose.
+2. **`scripts/lib/check-contract-parity.sh`**: compares no profile's
+   `secrets`, `secrets_any_of` or `available` (its catalogue checks cover
+   inputs, model classes, image/class/backend and provider/class/backend for
+   pool units). It needs no change; it is listed because the brief named it,
+   and checked.
+3. **The console's profile list** (`apps/swarm-ui`): the live console reads
+   `available` and `disabled_reason` from `/v1/capacity` (`RunnerPicker`,
+   `ProfileMatrix`, `Submit`), so it follows the catalogue. The DEV FIXTURE
+   restates it: `src/api.ts`, `FIXTURE_AVAILABILITY`'s `"codex"` entry
+   (`available: false` and the reason), which
+   `tests/unit/control_plane/test_capacity_serves_availability.py::test_the_ui_fixture_table_is_the_catalogues_availability`
+   holds to the catalogue. Vitest files that render that fixture and expect
+   codex refused change with it: `__tests__/submit.picks.test.tsx` ("Not
+   enabled yet. Use claude-code") and `__tests__/submit.picker.test.tsx`
+   (`option('codex').disabled`).
+4. **The MCP bridge's profile list** (`apps/swarm-mcp/swarm_mcp/profiles.py`):
+   reads the BUNDLED `swarm_common.RUNNER_PROFILES`, not the API, and refuses
+   an unavailable profile in `check()`, so an installed plugin keeps refusing
+   codex until it is upgraded to a release carrying this change. No list of its
+   own to edit; comments at `profiles.py`, `workflows.py` and `cli.py` that
+   recount the 2026-09-23 disabling stay true as history.
+   `plugin/skills/delegate/SKILL.md` says "**`codex` is DISABLED.**" and
+   `tests/unit/mcp/test_profiles.py::test_the_delegation_skill_never_recommends_a_profile_the_platform_refuses`
+   holds it to `available`: the sentence changes with it.
+5. **Tests that pin codex refused**, which redden when it is applied (request
+   11's guards, doing their job):
+   `tests/unit/control_plane/test_guards.py::test_unknown_runner_profile_is_rejected`
+   (`"codex" not in known_runner_profiles`) and
+   `::test_a_disabled_profile_is_refused_as_disabled_not_as_unknown` move to a
+   profile that stays disabled (`post-verdict`, `claude-code-review`,
+   `fix-loop`); `tests/unit/docs/test_counts_mockups.py::test_the_fixture_names_a_profile_the_catalogue_marks_unavailable`
+   (`_CODEX in UNAVAILABLE`) is re-pointed the same way.
+6. **The pool's eligibility, stated in three places, all keyed to
+   `CLAUDE_CODE_OAUTH_TOKEN`** (the duplication request 22 names): the
+   scheduler's `credentials.SUBSCRIPTION_TOKEN_ENV`
+   (`PROFILE_TAKES_NO_SUBSCRIPTION`), the worker's
+   `accountlease.ACCOUNT_TOKEN_ENV` (and `lifecycle`'s "does this profile take
+   a pool account"), and swarm-api's `task_accounts.ACCOUNT_TOKEN_ENV` and
+   `service`'s pooled-profile listing. swarm-api's `SUBSCRIPTION_PROVIDER =
+   "anthropic"` refuses an openai pool account at `POST /v1/accounts`. These
+   are the broker and worker lanes' changes (a profile is pool-eligible when it
+   declares its provider's plan name: `CLAUDE_CODE_OAUTH_TOKEN` for
+   anthropic, `CODEX_PLAN_ACCESS_TOKEN` for openai); until they land, codex
+   accepted by this request runs on a tenant key only, and
+   `tests/unit/worker/test_pool_credential_parity.py` keeps the scheduler and
+   the worker agreeing either way.
+7. **The worker's credential shaping** (`agent_worker/secrets.py`,
+   `resolve_credentials`): a BARE-string tenant payload is copied into every
+   declared name. For claude-code that is harmless (the runner tells a key from
+   a token by prefix); for codex it would put an API key into
+   `CODEX_PLAN_ACCESS_TOKEN` and `CODEX_PLAN_ACCOUNT_ID`. The runner lane must
+   treat a bare payload as `OPENAI_API_KEY` only, and take the plan names from
+   a pool lease (or a JSON payload naming them), never from a copied string.
+   Likewise the scheduler's GKE/Cloud Run env (`dispatch.py`) wires every
+   declared name to `swarm-tenant-<t>-openai`, so the same rule applies to
+   what arrives through it. `agent_worker/cliagent.py` reads only `key_env`
+   and `alt_key_envs` (and registers only those for redaction), and refuses a
+   codex step that has no `OPENAI_API_KEY`: `runners/codex.py` must declare the plan
+   names so they are both handed to the child and redacted.
+8. **`/v1/runtimes` and `/v1/capacity`** (`routes/platform.py`) serve
+   `secrets`, `secrets_any_of`, `available` and `disabled_reason` straight from
+   the catalogue: no change, and `types.ts` already carries every field.
+9. **Docs** that say codex is disabled (`docs/provider-keys.md`,
+   `execution-backends.md`, `architecture.md`, `workflows.md`,
+   `worker-images.md`, `plugin/README.md`, the web-ui mockups) are corrected in
+   the applying pull request; request 11 above stays as history.
+
+### What it would break if accepted
+
+* **A tenant holding a dead key is dispatched again.** `swarm-tenant-eng-openai`
+  was the rejected key of 2026-09-23; a codex step for that tenant, with no
+  plan pool leased, fails at the provider as it did then, now as a refusal
+  against a profile that admits it. The applying lane checks each tenant's
+  registered `openai` secret (that it exists and is current, never its value)
+  or the owner rotates it first.
+* **Old plugins refuse, new API admits**, until the bridge is upgraded (item 4).
+* **Tests listed in item 5 redden** until re-pointed; that is the intended
+  signal.
+* Nothing in Firestore changes shape: the four task documents that name codex
+  still read; no lease, pool or attempt field is added.
+
+### If it is declined
+
+codex stays refused, and the owner's ChatGPT-plan pool has no runner to serve:
+the broker and worker lanes can hold and lease plan credentials, but no
+profile may name them, and the only way to run an OpenAI agent stays a metered
+key the platform cannot dispatch either.
+
+### Invariants
+
+* **3 (concurrency counts from LEASED):** unchanged. A codex step reserves
+  `provider:openai`, `provider:openai:tenant:<t>`, `runner:codex` and the
+  compute pools at LEASED in the one admission transaction (**2**), whichever
+  credential it ends up using; the pool-account lease the worker takes from
+  the broker is a separate, per-account claim that bounds a plan's own
+  concurrency and is released with the attempt, as claude-code's is.
+* **9 (per-tenant isolation):** a tenant key stays the tenant's own
+  `swarm-tenant-<t>-openai`, read by the tenant's own GSA. A pool plan is
+  served to a tenant only through the broker's assign, under the pool's
+  existing rule (`quota_broker/accounts.py`: an account belongs to exactly one
+  tenant and serves another only where its owner named it, per account), now
+  applied to `provider: "openai"` accounts too; the refresh token never leaves the
+  broker, and the access token handed to a worker lives about an hour and is
+  registered for redaction.
+* **5 (fencing):** unchanged; the worker's fencing check is its step 1, before it
+  asks the broker for an account.
+* **10:** the caller still names `codex` by name and supplies no credential,
+  image or command; which credential runs is the platform's choice.
+* **6, 7, 8:** unchanged (on-demand GKE Autopilot, the standard class,
+  periodic checkpoints). **1, 4:** unchanged.
+
+---
+
+## 131. `models.py`: `Task.timeout_seconds_asked`, the timeout a spec asked for when swarm-api stored a lower one (TIMEOUT-ASKED-CONTRACT, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 -- "API records the ask"
+-- and APPLIED by the pull request that adds this line (lane
+TIMEOUT-ASKED-APPLY, part of #2688), exactly as below: the field in
+`models.py`, `validation.timeout_asked` and the refused metadata key,
+`service._build_task`, the child's `replace` in `children.py`, the codec's
+`task_from_dict` and `task_to_api`, the console's `Task` type
+(`apps/swarm-ui/src/types.ts`), docs/workflows.md's step table and the three
+tests of item 9; pinned by `tests/unit/control_plane/test_timeout_seconds_asked.py`.
+Requested 2026-11-01 by lane TIMEOUT-ASKED-CONTRACT; that request's pull
+request edited nothing under `apps/common/swarm_common/`. The pre-publish gate lane (#2981, PR 2986, merged
+2026-11-01) asked who records a lowered timeout; the owner (BGD) answered "API
+records the ask". This entry is that answer as a contract change.
+
+### What is true today
+
+Read 2026-11-01 on `9cc20f0`.
+
+* `apps/swarm-api/swarm_api/validation.py`, `validate_timeout(profile,
+  requested)`, returns `min(requested, profile.timeout_seconds)`, and
+  `service.py` `_build_task` stores only that as `Task.timeout_seconds`. Every
+  submission goes through `_build_task`: an agent, a batch entry
+  (`submit_tasks`), a workflow step (`submit_workflow`, which passes the
+  step's own `timeout_seconds`) and a child (`children.py`). A spec asking
+  10,800 s of `claude-code` (cap 7,200 s) runs under 7,200 s, and the task
+  document says nothing of the 10,800.
+* A child is lowered twice more, in `children.py`: to its parent's
+  `timeout_seconds` before `_build_task`, and again by the `replace` after it.
+  What the child's spec asked is not kept either.
+* A `browser_if_ui` step (#2322) stores its `code` alternate's timeout in
+  `metadata.runtime.alternate.timeout_seconds` (`_runtime_alternate`), also
+  through `validate_timeout`, and the scheduler swaps it onto the task document at
+  dispatch (`scheduler/runtime.py`, `RUNTIME_SWAP_FIELDS`).
+* The workflow document's step (`WorkflowStep.timeout_seconds`) keeps what
+  the caller wrote, unlowered. The worker never reads the workflow document
+  for its limit, and a lone agent, a batch entry and a child have no such
+  record anywhere.
+* The worker already reads the record this entry asks for:
+  `apps/agent-worker/agent_worker/lifecycle.py` `TIMEOUT_ASKED_FIELD =
+  "timeout_seconds_asked"`. `Worker._timeout_asked_env` reads it from the task
+  document and, only when it is an int above the attempt's
+  `cfg.timeout_seconds`, hands it to the runner as
+  `SWARM_TIMEOUT_ASKED_SECONDS`; `runners/cliagent.py` records it in the
+  runner's `limits.clamped` and `limits.timeout_seconds_asked`
+  (`tests/unit/worker/test_prepublish_deadline.py`). No writer sets the field,
+  so today that path never fires.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/models.py
++++ b/apps/common/swarm_common/models.py
+@@ class Task:
+     #: construction of a task changes meaning; absent on every older
+     #: document, which decodes as 0.
+     platform_refusals: int = 0
++    #: Contract request 131 (TIMEOUT-ASKED-CONTRACT, part of #2688), the
++    #: owner's "API records the ask" (2026-11-01): the `timeout_seconds` the
++    #: spec asked for, written by swarm-api at submission ONLY when it stored
++    #: a lower `timeout_seconds` (the profile's cap, or a child's parent's).
++    #: A RECORD ONLY: the limit is `timeout_seconds` alone, and nothing reads
++    #: this as one (invariant 10); the worker reports it in the runner's
++    #: `limits.clamped`. Unsigned: written at submission, it chooses nothing.
++    #: None on a task that was not lowered and on every older document. Last
++    #: in the class, after `platform_refusals`, so no positional construction
++    #: of a task changes meaning.
++    timeout_seconds_asked: int | None = None
+```
+
+That is the whole frozen change: one field, appended. No new enum member, no
+state edge, no spec format. The exact patches, against `9cc20f0`, are in the
+pull request's body: the one above, and swarm-api's.
+
+The rule swarm-api applies (its patch, outside the frozen package):
+
+* `validation.timeout_asked(requested, *granted)`: the asked value when it is
+  above ANY timeout this service stores for the step, else None.
+  `validate_timeout` is unchanged and stays the limit.
+* `service._build_task` collects every timeout it grants the step -- its own,
+  and its `code` alternate's on a `browser_if_ui` step -- and writes
+  `timeout_seconds_asked=timeout_asked(spec.timeout_seconds, *granted)`. One
+  place, so an agent, a batch entry and a workflow step are covered alike. The
+  worker compares the record with the timeout it actually runs under, so a
+  step whose primary profile was lowered and whose alternate was not reports
+  nothing when it runs as the alternate.
+* `children.py` sets it again in its `replace`, from the CHILD's spec, against
+  the final `min(task.timeout_seconds, parent.timeout_seconds)`: the
+  `TaskCreate` it hands `_build_task` is already lowered to the parent's.
+* The name is refused in a caller's metadata like every platform-written key:
+  `TIMEOUT_ASKED_FIELD` joins `REFUSED_UNWRITTEN_METADATA_KEYS` with its
+  sentence in `_RESERVED_BECAUSE` (it is a top-level field, so no one writes
+  `metadata.timeout_seconds_asked`, and it is not added to
+  `RESERVED_METADATA_KEYS`, whose members are signed or served as platform
+  metadata). As a top-level key it is refused already: `TaskCreate`, the
+  batch entry, the workflow step and the child spec are `extra="forbid"`
+  (`schemas.py`, `children.py`). In `input` it is refused already: an input
+  key the profile does not declare is refused (`validate_runner_input`,
+  contract request 25).
+
+### Who else applies the rule (every mirror, read 2026-11-01 on `9cc20f0`)
+
+1. **The store's task document codec, swarm-api** (`apps/swarm-api/swarm_api/codec.py`
+   `task_from_dict`): MUST change. `task_to_api` serves a DECODED `Task`, so
+   without the read the API can never serve the record; and swarm-api writes
+   whole task documents (`store.create_tasks`, the child's `txn.set`, both
+   through `task_to_firestore`), so any task document it builds from a decoded one
+   would drop it. It reads an int above 0, anything else as None.
+2. **The API's response codec** (`codec.task_to_api`): MUST change, to serve
+   `timeout_seconds_asked` beside `timeout_seconds`, so a caller can tell a
+   lowered step from one that asked for nothing more. **The API's schemas**
+   (`schemas.py`): no change. Responses are the codec's dicts, not a response
+   model; every request model is already `extra="forbid"`.
+3. **The scheduler's task document codec** (`apps/scheduler/scheduler/codec.py`): no
+   change. It decodes for admission and dispatch and patches a task document with
+   `txn.update` (`store.py`), never writing a whole decoded task document, so a field
+   it does not read survives. The runtime swap does not touch the field.
+4. **The worker** (`lifecycle.TIMEOUT_ASKED_FIELD`, `_timeout_asked_env`;
+   `cliagent.TIMEOUT_ASKED_ENV`): no change. It already reads the raw task
+   document and treats the value as a record. The comment above
+   `TIMEOUT_ASKED_FIELD` ("requested of swarm-api in #2981") may name this
+   request when it is applied.
+5. **The console's `Task` type** (`apps/swarm-ui/src/types.ts`, `export
+   interface Task`): SHOULD change, `timeout_seconds_asked?: number | null`,
+   optional because an older API does not serve it. Showing it (a "lowered
+   from 10,800 s" beside the timeout) is a console change of its own, not
+   required by this request. `scripts/lib/check-contract-parity.sh` section 9
+   compares only `parent_task_id` and `parent_attempt_id` of `Task`: no change.
+6. **The MCP bridge's task record rendering** (`apps/swarm-mcp/swarm_mcp/render.py`
+   `render_task`): no change required. It renders no timeout today; it passes
+   the served task record through, so the field is there for a later line. Its
+   workflow builder (`workflows.py`) forwards a step's `timeout_seconds` as
+   written and must not forward `timeout_seconds_asked` (it does not).
+7. **The Firestore-shape notes:** `docs/architecture.md` §4 lists collections,
+   not task fields: no change. `docs/workflows.md`'s step table
+   ("`timeout_seconds`: optional; may only shorten the profile's own
+   default") SHOULD add that a longer ask is lowered and recorded as
+   `timeout_seconds_asked`. `docs/web-ui/03-agents-and-workflows.md` quotes
+   an older `task_to_api` key list as a dated snapshot: no change.
+8. **The spec signature** (`specsign.canonical_step_spec`): no change, and no
+   format bump. The field is UNSIGNED: it limits nothing and selects nothing,
+   so a forged value can only add a line to the runner's report.
+9. **Tests that pin the class's tail**, which redden when it is applied and
+   change with it (each measured red with both patches applied, 2026-11-01):
+   `tests/unit/common/test_budget_contract.py`
+   (`test_120_the_fields_default_to_none_and_come_last`: the last two fields
+   are `budget` and `platform_refusals`),
+   `tests/unit/common/test_model_classes.py`
+   (`test_the_new_fields_come_last_so_no_positional_construction_moves`: the
+   last three end at `platform_refusals`), and
+   `tests/unit/common/test_specsign_covers.py`
+   (`test_every_task_field_is_signed_or_named_unsigned`: the field joins
+   `UNSIGNED_TASK_FIELDS` with its reason).
+
+### What it would break if accepted
+
+* **Nothing that reads a limit.** No reader takes the field as a timeout; the
+  worker already compares it with the timeout it runs under.
+* **The three tail and signature tests in item 9 redden** until updated in
+  the applying pull request; that is their job.
+* **Firestore shape:** one optional field on `tasks/{id}`, absent on every
+  older document and on every agent not lowered. No index, no rule, no
+  migration.
+* **An old API with a new worker, or the reverse:** no record, no report;
+  the same as today.
+
+### If it is declined
+
+A lowered timeout stays silent: a spec asking 10,800 s runs under 7,200 s,
+and neither the task document, the API nor the runner's `limits.clamped` says so. The
+worker's reader stays dead code, and an agent killed at 7,200 s looks like one
+that ran past a limit it chose. The only record left is the workflow
+document's unlowered step, and only for workflow steps.
+
+### Invariants
+
+* **10 (callers pick a profile by name; never a resource spec):** held. The
+  caller may still only SHORTEN a timeout; the ask is recorded, never
+  honoured. The field is written by swarm-api alone and refused from a caller
+  as a top-level key, a metadata key and an input key.
+* **5 (fencing):** unchanged; the worker's fencing check runs before it reads
+  the task document's timeout record.
+* **8 (periodic checkpoints):** unchanged; the attempt still ends at
+  `timeout_seconds`, checkpointed as before.
+* **1, 2, 3 (capacity):** unchanged. The field adds no state and no demand,
+  and admission never reads it.
+* **4, 6, 7, 9:** unchanged; no backend, class, resource or tenant boundary is
+  touched.
+
+## 132. `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and current account (STORED-TASK-TOTALS, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-01 ("Accept") and APPLIED by
+lane STORED-TASK-TOTALS (part of #2688), in the pull request that adds row
+132 of the index above. Drafted by lane LOAD-SPEED-TASKS-LIST as request 131;
+that number was taken the same day by `Task.timeout_seconds_asked`
+(TIMEOUT-ASKED-CONTRACT), so it is 132 here.
+
+### What is true today
+
+Read 2026-11-01 on `f676500`.
+
+`Task` (`apps/common/swarm_common/models.py`) has no field for the totals of
+its attempts or for the account its current attempt runs on.
+`swarm_api.attempt_totals.totals_for` and `swarm_api.task_accounts.accounts_for`
+derive both on every `GET /v1/tasks`, one query per 30 rows each: 7 attempt
+queries and up to 7 collection-group event queries for a 200-row page, run
+concurrently since part of #2688 but still made. Measured live 2026-11-01:
+Work > Agents 5.3 s on first load and 1.1-2.1 s per poll, almost all server
+time. Requests 13 (`Attempt` does not record its pool account) and 44 are the
+same gap on the attempt and the event.
+
+### The change
+
+```diff
+--- a/apps/common/swarm_common/models.py
++++ b/apps/common/swarm_common/models.py
+@@ class Task:
+     platform_refusals: int = 0
++    attempt_totals: dict[str, Any] | None = None
++    current_account: dict[str, Any] | None = None
+```
+
+Both optional, None by default, last in the class, so every existing
+document decodes as it does and no positional construction moves. Each carries
+a comment that it is a READ-SIDE VIEW ONLY.
+
+* `attempt_totals`: exactly `swarm_api.attempt_totals.attempt_totals()`'s keys
+  (`attempts`, `attempts_with_cost`, `cost_usd_total`, `cost_incomplete`,
+  `duration_s_total`, `duration_incomplete`, `first_started_at`,
+  `last_attempt_cost_usd`, `last_attempt_duration_s`) plus `as_of`
+  (`{attempt_id, generation}` of the attempt that wrote it).
+* `current_account`: the shape `task_accounts._account()` serves (`status`,
+  `account_id`, `provider`, `attempt_id`, `generation`, `swapped_from`,
+  `swaps`). Never a token or a secret name.
+
+### Who writes them
+
+* **The worker's direct path** (`apps/agent-worker/agent_worker/control.py`):
+  the totals in the same transaction as the attempt's end (`finish`, `park`,
+  `retry`), and after its start, its spend and a bare `record_attempt_end`;
+  the account in the same transaction as each `account_assigned` /
+  `account_unreadable` event (`emit`, which `lifecycle._lease_account`, the
+  swap and `_reject_account` all go through). The rules are swarm-api's,
+  restated in the worker's separate image, and a parity test holds the two
+  equal. Only while the writer's attempt is the task document's current
+  generation, in its own tenant (invariant 5).
+* **swarm-api's state routes** (`attemptstate.py`, for workers on
+  `SWARM_STATE_VIA_API`): the same writes on start, spend, attempt end, park,
+  finish, retry and the account events.
+* **Once, for older agents:** `scripts/backfill-task-views.sh` (dry run by
+  default, the project id typed to apply, ignores `SWARM_ASSUME_YES`) runs
+  `task_accounts.backfill_task_views`, which writes only an absent field, in
+  a transaction that re-reads the task document.
+
+### Who reads them
+
+`GET /v1/tasks` only (`attempt_totals.totals_for_page`,
+`task_accounts.served_account`): a stored copy is served when its generation
+is the document's `current_generation`; an agent with none, a malformed one
+or one from an earlier attempt is derived as before. The stored maps are never served
+raw: a row carries the same `attempts*`, `cost_*`, `duration_*` and `account`
+keys it carried before, so the console's `Task` type does not change. A
+200-row page whose agents carry both is the page, the leases and the pools:
+three round trips.
+
+### What it would break if accepted
+
+Nothing reads them but the list. The three tests that pin the class's tail
+(`test_budget_contract.py`, `test_model_classes.py`,
+`test_specsign_covers.py`) change with it; both fields are unsigned (they
+choose nothing). swarm-api's codec reads both back, so a document it decodes
+and writes whole keeps them; the scheduler only patches task documents.
+
+### If it is declined
+
+`GET /v1/tasks` keeps deriving both per request.
+
+### Invariants
+
+* **1, 2, 3:** neither field is read by admission, leasing, the scheduler,
+  the reconciler, the quota broker or capacity; they create no demand and
+  count nothing. Capacity is still reserved all-or-nothing from the pool
+  documents and concurrency still counts from LEASED.
+  `tests/unit/common/test_stored_task_totals_contract.py` greps those modules
+  for both names.
+* **5:** written only by the attempt at the document's current generation.
+* **9:** per agent, read and written in the agent's own tenant.
+* **4, 6, 7, 8, 10:** untouched.
+
+## 133. `profiles.py` / `models.py` / `specsign.py`: a turn cap, `RunnerProfile.max_turns` and `WorkflowStep.max_turns`, that the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524)
+
+**Status:** ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build";
+owner accepted 2 November 2026) and APPLIED 2026-11-02 by the pull request
+that adds this line (lane TURN-CAP-APPLIED, part of #2688), in the shape
+below: spec format 7, the four fields, swarm-api's resolution at every door,
+the worker's `--max-turns` from the verified agent document, and the requirements
+check's 30-turn cap as a field instead of a prompt line. Before that: open,
+REQUESTED 2026-10-28 by lane CONTRACT-MAXTURNS (PR 2682,
+filed there as 127). On 2026-11-02 the owner chose to finish that pull
+request, and lane CARRY-TURN-CAP carried it onto main and renumbered it:
+127 to 131 had been taken on main, and the open `Task.attempt_totals`
+request (stored agent totals) takes 132. BGD decided on 2026-10-28 (~22:20Z,
+answering question 2 of lane REVIEW-GATE-DEFAULT on PR 2678) that the cheap
+requirements check's turn cap is a field in the frozen runner-profile
+contract, not only a timeout and a prompt instruction. Not applied:
+`apps/common/swarm_common/` is frozen, and the shape below is BGD's to
+accept. PR 2678 has merged, so main runs the interim: the issue run's
+`requirements-check` step (`swarm_api.issueruns._requirements_check`) runs
+on `claude-code` with `REQUIREMENTS_CHECK_TIMEOUT_SECONDS = 900` and a "use
+at most 30 turns" instruction in its prompt, which the agent may ignore.
+
+### What is true today
+
+Read on main on 2026-11-02. Nothing in the contract caps an agent's turns. A
+step's spend is limited by `timeout_seconds` (the profile's, lowered by the
+step, `swarm_api.validation.validate_timeout`, with the ask recorded by
+request 131's `Task.timeout_seconds_asked` when it was lowered) and by its
+budget (requests 118-121), and both stop an agent only after it has spent
+the time or the money. The claude-code runner can already pass a cap:
+`agent_worker.runners.claude_code.body` adds `--max-turns N` when the
+agent's `input` carries `max_turns` (`ctx.payload.get("max_turns")`). That
+path is unreachable: every claude-code profile declares its inputs
+(request 25), `max_turns` is not one of them, and swarm-api refuses the key
+at every door (`tests/unit/control_plane/test_runner_inputs_by_declaration.py`,
+`test_claude_code_refuses_every_key_but_its_declared_issue`). So a step that
+should end in about 30 turns -- the requirements check, which reads an issue
+and a diff and writes one `requirements.json` -- can only be asked to, and
+pays for the turns until its timeout if it does not listen.
+
+### The change
+
+Two fields on the profile and one on the step and its agent (`Task`), the
+same shape as `timeout_seconds`: the profile sets the ceiling, the step only
+lowers it.
+
+```python
+# profiles.py, class RunnerProfile
+#: Whether this profile's runner passes a turn cap to its agent CLI
+#: (claude_code: `--max-turns`). False: swarm-api refuses a step's
+#: `max_turns` for it, because a cap the runner ignores is a promise
+#: nothing keeps.
+supports_max_turns: bool = False
+#: The most turns an attempt on this profile may run, and the cap for a
+#: step that names none. None: no cap (today's behaviour). Only read when
+#: `supports_max_turns`.
+max_turns: int | None = None
+
+# models.py, class WorkflowStep -- the cap the step ASKED for, as submitted
+max_turns: int | None = None
+# models.py, class Task -- the RESOLVED cap: min(step, profile), or the
+# profile's when the step names none; None: no cap
+max_turns: int | None = None
+```
+
+* **Profile and step, and why both.** The requirements check runs on the
+  shared `claude-code` profile, whose implement steps legitimately run
+  hundreds of turns, so a cap on the profile alone would cap every
+  implementer or need a new catalogue profile (and a Job per tenant) for one
+  step. The cap belongs to the STEP, as `timeout_seconds` and `budget` do.
+  The profile carries what only it can say: whether its runner honours a
+  cap (`supports_max_turns`) and, optionally, a ceiling no step may raise.
+  `supports_max_turns=True` on the six profiles whose `runner_argv` is
+  `agent_worker.runners.claude_code` on main today (`claude-code`,
+  `claude-code-large`, `claude-code-review`, `indexer`,
+  `claude-code-browser` and request 127's `claude-code-lightpanda`);
+  `max_turns` stays None on every profile in this request, so no running
+  agent changes.
+* **swarm-api** resolves the cap at submission, beside `validate_timeout`:
+  `max_turns` joins `timeout_seconds` on the request schemas
+  (`swarm_api.schemas`: `TaskCreate`, the workflow step and the child spec,
+  `Field(default=None, ge=1)`); it is refused for a profile with
+  `supports_max_turns=False`; it is lowered to the profile's `max_turns`
+  when that is set. A `browser_if_ui` step resolves it against both its
+  browser profile and its `code` alternate, as its timeout is (both run
+  the claude-code runner). A child's cap is never above its parent's
+  resolved cap, as `children.py` already keeps a child's timeout at or
+  below its parent's. `WorkflowStep.max_turns` records what was asked and
+  `Task.max_turns` what was resolved. `input.max_turns` stays refused: the
+  cap is a field, never a caller input to the runner.
+* **Signed.** Spec format 7 (main's `SPEC_FORMATS` is still 1 to 6) is
+  format 6's fields plus `max_turns`, and a `Task` is signed at it only when
+  the field is set, as request 120 did for `budget`: an agent whose cap was
+  raised or removed after submission fails its worker's check.
+* **The worker** reads `Task.max_turns` only from the verified document and
+  passes it to the agent CLI: the claude-code runner's `--max-turns N`,
+  taken from the verified `Task` instead of `input`. None passes no flag,
+  which is today's behaviour exactly. An attempt that ends on the cap ends
+  as the CLI's `error_max_turns` result already ends one.
+
+### What reads it
+
+swarm-api's submission (`validation`, beside `validate_timeout`, and
+`children.py` for a child) and the issue-run compiler that writes the
+`requirements-check` step (`issueruns._requirements_check`, which sets
+`max_turns=30` and drops the prompt's "use at most 30 turns"); `specsign`
+(format 7); the worker's claude-code runner; and, read-only, the console's
+step detail and `/sc check`, which can show the cap beside the timeout.
+`scripts/lib/check-contract-parity.sh` gains nothing: no enum moves.
+
+### What it would break if accepted
+
+Nothing at once. Every new field defaults to None or False, so every
+existing profile, step and stored agent means what it means today, and an
+agent without `max_turns` is still signed at format 6. A reader that lists a
+step's fields shows one more. Rollout order is the one formats 2 to 6 used:
+workers first, then swarm-api.
+
+### If it is declined
+
+The interim on main stays: a 900 s timeout and a 30-turn instruction the
+agent may ignore. The smaller alternative is to declare `max_turns` as a
+`RunnerInput` (integer, 1 to a ceiling) on the claude-code profiles' inputs,
+which the runner already reads; it is signed with `input` (format 3) but
+lives in the caller's input rather than a typed field, and no profile can
+carry a ceiling or say that its runner ignores a cap.
+
+### Invariants
+
+**10** holds: a step asks for a cap by number, and a cap only lowers a
+limit, as `timeout_seconds` does; it chooses no image, command, resource
+spec or backend, and `input.max_turns` stays refused. **5** holds: the
+field is in the signed spec from format 7, so a tampered cap fails the
+worker's check before the agent runs. **8** holds: an attempt that ends on
+its cap ends like any other, after its checkpoints. **1-4**, **6**, **7**
+and **9** are untouched: no capacity, lease, pod shape or tenant boundary
+moves.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first:
+`tests/unit/control_plane/test_runner_inputs_by_declaration.py` keeps
+refusing `input.max_turns`; new swarm-api tests that a step's `max_turns` is
+stored on the step and resolved on the agent's `Task`, lowered to a profile
+ceiling and, for a child, to its parent's cap, and refused for a profile
+with `supports_max_turns=False` or a value below 1; a `specsign` test that
+an agent with `max_turns` is signed at format 7 and fails verification when
+the cap is raised or removed, and that an agent without it still signs at
+format 6; and a worker test in `tests/unit/worker/test_runners.py` that the
+claude-code runner passes `--max-turns` from the verified `Task.max_turns`
+and passes none for None.
+
+### Who decided
+
+BGD, 2026-10-28 (~22:20Z): the turn cap is a contract field (question 2 of
+PR 2678, REVIEW-GATE-DEFAULT). The shape -- step field resolved against the
+profile, rather than a profile field alone -- is this request's proposal
+and BGD's to accept. The owner chose on 2026-11-02 to carry PR 2682 onto
+main rather than drop it.
+
+---
+
+## 134. `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688)
+
+**Status:** open, REQUESTED 2026-11-03 by the builder lane of PR 3095
+(task_98b46c02fd214e56a012) at the owner's instruction. BGD answered that
+pull request's question 0 the same day: *merge this pull request as built,
+on the current builder class*, and file a frozen-contract change request for
+a 12-CPU, 16 GiB builder class (about +$0.31 per builder hour). PR 3095
+merges on `standard`; this request is the class change, and nothing in it is
+applied. `apps/common/swarm_common/` is frozen.
+
+### What is true today
+
+Read on main on 2026-11-03. Builder steps run on their profile's class, and
+every coding profile's is `standard`: a 4-CPU request, an 8-CPU limit on GKE
+(request 108) and 8 GiB of memory, 4 of it workspace tmpfs. PR 3095 makes the
+pre-publish gate run the changed-guards check as parts of about 40
+CI-seconds, side by side, as many as the pod has CPUs (`pod_cpus`), inside a
+600 s budget (`GUARDS_BUDGET_SECONDS`), and leaves what does not fit to CI.
+Measured in a 6-CPU SwarmCloud container on 2026-11-03, that ran about 1.78
+CI-seconds a second: roughly a third of a 3,365 CI-second selection in the
+budget, related parts first. More CPUs run more parts in the same budget,
+with no code change.
+
+The class cannot be made 12 CPUs by an admin size today. `ResourceClass.__post_init__`
+refuses a request above 8 CPUs ("exceeds the Cloud Run Jobs ceiling") and
+`CPU_REQUEST_MAX = 8` bounds every admin size (requests 109-110), because
+every class can be reached by a Cloud Run profile's step or fallback Job.
+`CLASS_ORDER` names three classes and no fourth.
+
+### The change
+
+A fourth class, GKE only, between `browser` and `large`:
+
+```python
+# profiles.py
+RESOURCE_CLASSES["builder"] = ResourceClass(
+    "builder", cpu=12, memory_gib=16, disk_gib=8, units=3, cpu_limit=12,
+)
+CLASS_ORDER = ("standard", "browser", "builder", "large")
+```
+
+with the ceiling check moved from "every class" to "every class a Cloud Run
+profile can reach": a class above 8 CPUs is refused on a profile whose
+backend, or fallback, is Cloud Run, and `CPU_REQUEST_MAX` becomes a GKE bound
+(the GKE Autopilot general-purpose maximum) with the Cloud Run ceiling of 8
+kept for Cloud Run profiles. 16 GiB over 12 CPUs is 1.33 GiB a core, inside
+`MEMORY_PER_CPU_MIN`..`MEMORY_PER_CPU_MAX`. `units_for(12, 16)` is 3. The
+CPU limit equals the request, so the class adds no burst. The coding profiles
+that run builder steps would name `builder`, or a workflow's builder step
+would name it as its `resource_class` (a larger class than the profile's,
+which `validate_resource_class_override` refuses today, so the profile's
+class is the place).
+
+The smaller alternative, which needs no contract change: an admin size
+(requests 109-110) of a 6-CPU request with a 12-CPU limit and 16 GiB on
+`standard`. It fits every bound today, bursts only onto idle requested CPU,
+and charges 2 units instead of 1; it does not guarantee the 12 CPUs.
+
+### What it would break if accepted
+
+Cost and capacity, not code. At list Autopilot prices (quoted by PR 3095, not
+re-checked on 2026-11-03) a builder hour costs about $0.31 more, and each
+builder charges 3 capacity units instead of 1, so a pool fits a third as many
+builders at once. Every reader of `CLASS_ORDER` and `RESOURCE_CLASSES` (the
+admin sizes route, the console's class list, admission's unit charge, the
+scheduler's pod rendering) sees one more class; the tests that pin three
+classes change with it. A Cloud Run runtime cannot run the class, so a
+builder step whose GKE runtime is down waits instead of falling back.
+
+### If it is declined
+
+PR 3095's gate runs on `standard` as merged: it reads the CPUs the pod has
+and runs that many parts, and what does not fit the 600 s budget is left to
+CI, never reported as passed. The gate stays at about ten minutes on a large
+selection and covers less of it before CI does.
+
+### Invariants
+
+**7** holds: memory and ephemeral storage stay request equal to limit, and
+the CPU limit equals the request, inside `CPU_BURST_MAX_RATIO`. **10** holds:
+a caller still names a profile, and the class comes from the profile, never
+from the caller. **2** and **3** hold: admission charges the class's units in
+the same all-or-nothing transaction, counted from `LEASED`. **6** holds: no
+Spot. **1**, **4**, **5**, **8** and **9** are untouched.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first:
+`tests/unit/common/test_runner_size_bounds.py` for the class, its units and
+the Cloud Run refusal of a class above 8 CPUs; the admin sizes and
+admission-follows-size tests for the fourth class; and a scheduler test that
+a builder pod renders a 12-CPU request and limit and 16 GiB.
+
+### Who decided
+
+BGD, 2026-11-03, on PR 3095: merge on the current class and file this
+request. Whether to accept it, and in which shape (the class, or the admin
+size alternative), is BGD's.
+
+---
+
+## 135. `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688)
+
+**Status:** REQUESTED 2026-11-03 by lane contract-request-builder-cpus (part
+of #2688). Not applied: `apps/common/swarm_common/` is frozen, and which of
+the two shapes below is built is the owner's choice. The owner chose on
+3 November 2026, answering the publish check lane's question on builder
+machine size (after his earlier note to time-box the guard run and to use
+faster guard machines), to merge the time-boxed, parallel guard check as
+built and to request a 12-CPU, 16 GiB builder class as a frozen-contract
+change. This entry is that request. Drafted as 134 and renumbered 135 when
+main took 134 for BUILDER-CLASS-12CPU (PR 3095, issue #3100), the same
+owner answer filed from another lane; which of the two, if either, is
+accepted is the owner's.
+
+### What is true today
+
+Read on main (ff447a8) on 2026-11-03.
+
+* **The classes** (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`):
+  `standard` and `browser` are 4 CPU requested, 8 CPU limit, 8 GiB memory,
+  4 GiB workspace, 1 unit; `large` is 8 CPU requested, 16 limit, 32 GiB,
+  16 GiB workspace, 4 units. The workspace is a tmpfs slice of the memory
+  (the "WORKSPACE SIZES ARE MEMORY, NOT DISK" comment above `RESOURCE_CLASSES`), and memory and workspace are
+  request and limit both.
+* **Which profiles use which** (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`):
+  `standard` -- `claude-code` (GKE Autopilot), `codex`, `generic`, `merge`,
+  `indexer`, `claude-code-lightpanda`, and on Cloud Run `mock`,
+  `post-verdict` and `claude-code-review`; `await-input` and `fix-loop`
+  name it but are control-plane steps and never reserve. `browser` --
+  `browser` and `claude-code-browser`. `large` -- `claude-code-large`,
+  picked by name for a lane whose cause was an out-of-memory kill or a
+  timeout (request 113).
+* **Every step that builds runs on `claude-code`, so on `standard`.** The
+  issue-run compiler writes its `implement-<id>` steps and its `fix` step on
+  `apps/swarm-api/swarm_api/issueruns.py::STEP_PROFILE` (`"claude-code"`;
+  the step ids are `apps/swarm-api/swarm_api/issueruns.py::_impl_id` and
+  `apps/swarm-api/swarm_api/issueruns.py::FIX_STEP`), and its review on
+  `apps/swarm-api/swarm_api/issueruns.py::REVIEW_PROFILE`, the runtime
+  policy's profile: `claude-code` for a change without UI. A review, a requirements
+  check and a merge therefore weigh exactly what an implement step weighs.
+* **The bounds a class must keep:** `ResourceClass.__post_init__` (`apps/common/swarm_common/profiles.py::ResourceClass.__post_init__`)
+  refuses a request above 8 CPU or 32 GiB, Cloud Run's ceiling, and a
+  limit outside request to `CPU_BURST_MAX_RATIO` (2) x request; an admin's
+  size (`apps/common/swarm_common/profiles.py::check_size`) must keep
+  `CPU_REQUEST_MAX = 8`, `MEMORY_PER_CPU_MIN` to `MEMORY_PER_CPU_MAX`
+  (1.0 to 6.5 GiB per requested core) and `CLASS_ORDER`: standard <=
+  browser <= large in CPU request, memory and workspace.
+* **How units count:** `apps/common/swarm_common/profiles.py::units_for` charges one unit per
+  4 requested cores or per 8 GiB, whichever is more, and every class's
+  `units` must equal it (checked when the module loads). Admission reserves
+  a lease's units in each of the pools
+  `apps/common/swarm_common/models.py::pool_names_for` lists (`global`,
+  `tenant:<t>`, `resource:<class>`, `runner:<profile>`, `backend:<b>`)
+  all at once, and 1 in each `provider:*` pool whatever the size (request
+  129, `apps/common/swarm_common/models.py::pool_units_for`, checked in
+  `apps/common/swarm_common/admission.py::evaluate_capacity`).
+* **What a 2-unit builder does to how many fit.** At the numbers
+  `terraform/environments/dev/dev.tfvars` states in its `pool_limits` block (the live pools are
+  set by `scripts/pool-limit.sh` and were not read for this request):
+  `runner:claude-code` 80 units is 80 one-unit steps today and 40 two-unit
+  builders; `default_tenant` 40 is 40 one-unit steps per workspace and 20
+  builders; `global` 180 is 90 builders. The provider pools are unchanged,
+  since a lease takes 1 there whatever its class. A request of 12 CPU would
+  not be 2 units but 3 (`units_for(12, 16) = max(3, 2)`), and is refused by
+  `ResourceClass.__post_init__` in any case.
+* **Where the class sets the gate's parallel parts:**
+  `apps/agent-worker/agent_worker/runners/cliagent.py::agent_resource_budget`
+  sets `PYTEST_XDIST_AUTO_NUM_WORKERS` (`XDIST_WORKERS_ENV`), which `-n auto`
+  uses, to the container's CPU limit (cgroup `cpu.max`) capped at (memory
+  limit - `AGENT_MEMORY_HEADROOM_BYTES`, 2 GiB) / `XDIST_WORKER_BYTES`
+  (1 GiB per xdist worker). On `standard`
+  that is min(8, (8 - 2) / 1) = **6**: today's cap is the memory, not the
+  CPU. It rises with the class and needs no code change: at 16 GiB with a
+  12-CPU limit it is min(12, 14) = **12**. `scripts/changed-guards.sh`
+  runs its selection in one `pytest -n auto` call inside a 540 s pytest
+  budget (`scripts/changed-guards.sh` (`PYTEST_SECONDS=540`)), so the guard check's parallelism is this number.
+* **The publish check lane's measurements** (reported by that lane, not
+  re-measured here): on the current 6 usable CPUs about a third of a
+  343-file guard selection runs inside the 10-minute budget; the selection
+  ran 1.06 CI-seconds of tests a second one part after another against 1.78
+  side by side; on 12 CPUs about two thirds would fit.
+* **The cost** (the same lane's estimate, at list Autopilot prices that this
+  request did not re-read): about +6 vCPU and +8 GiB for the step's length,
+  about +$0.31 per 60-minute builder step. Autopilot bills the request, so
+  the shape proposed below, which raises the request by 4 vCPU and the
+  memory by 8 GiB, bills less than that figure; the extra 4 cores to the
+  limit are borrowed from idle requests on the node and are not billed.
+
+### The change
+
+The owner's 12 CPUs, as the frozen bounds allow: the request cannot pass 8
+(`ResourceClass.__post_init__`, `CPU_REQUEST_MAX`), so the 12 is the GKE limit and 8 is what is
+guaranteed. One size for both shapes: **8 CPU requested, 12 CPU limit,
+16 GiB memory, 8 GiB workspace**, which is `units_for(8, 16)` = **2 units**,
+2 GiB per core, a limit of 1.5 x the request, and gives
+`PYTEST_XDIST_AUTO_NUM_WORKERS` = 12 on GKE.
+
+Two shapes; both keep invariant 10 (a caller picks a `runner_profile` by
+name and never a resource spec):
+
+* **A. Raise the class `claude-code` already uses.** `standard` becomes
+  8/12/16 GiB/8 GiB, 2 units. Every `standard` step pays it: every
+  `claude-code` step, reviews and requirements checks included, and
+  `codex`, `generic`, `merge`, `indexer` and `claude-code-lightpanda`.
+  `CLASS_ORDER` forces `browser` up to at least 8 CPU and 16 GiB too, so
+  live-browser work doubles as well. (The same numbers could be set on GKE
+  without a contract change, as an admin size version through requests
+  109-110's route (`apps/common/swarm_common/profiles.py::effective_size`), with the same
+  blast radius.) Concurrency halves for every profile in the list:
+  `runner:claude-code` 80 is 40 agents of any kind.
+* **B. A `builder` class used only by the steps that build.** This request
+  proposes B:
+  * `RESOURCE_CLASSES["builder"] = ResourceClass("builder", cpu=8,
+    memory_gib=16, disk_gib=8, units=2, cpu_limit=12)`, and `CLASS_ORDER =
+    ("standard", "browser", "builder", "large")`: builder sits between browser
+    and large in CPU request (4 <= 8 <= 8), memory (8 <= 16 <= 32) and
+    workspace (4 <= 8 <= 16), so `check_size` holds the order.
+  * `BUILD_STAGES = ("implement", "build", "fix")` and
+    `RunnerProfile.build_resource_class: str | None = None`, set to
+    `"builder"` on `claude-code` only, and one frozen function,
+    `resource_class_for_stage(profile, stage) -> str`, which returns the
+    profile's `build_resource_class` for a stage in `BUILD_STAGES` and its
+    `resource_class` otherwise.
+  * **The platform chooses it, never a caller.** swarm-api's compilers call
+    it with the stage they are writing (the issue run's `implement-<id>`
+    and `fix` steps, a lane's build step) and store the class on the step;
+    the stage is the compiler's own argument, never read from a step id, an
+    input or anything else a caller sends. A caller's own `resource_class`
+    still goes through `validate_resource_class_override`
+    (`apps/swarm-api/swarm_api/validation.py::validate_resource_class_override`), unchanged: it may only
+    shrink, so `builder` on `claude-code` from a caller is refused as larger.
+  * Reviews, requirements checks, merges, `codex`, `generic` and the
+    browser profiles keep their classes and their concurrency.
+
+B is proposed because the guard check runs in the steps that build: a
+review or a requirements check gains nothing from 12 cores and, under A,
+would take two units of every compute pool for it. B is the larger contract
+edit (a class, a field, a function), A the smaller one (three numbers) with
+the larger bill and the larger loss of concurrency. The choice is the
+owner's.
+
+### What reads it
+
+Under B: the scheduler's admission (`pool_names_for` gains
+`resource:builder`, which needs a `pool_limits.resource_classes.builder`
+in `terraform/infra` and each environment's tfvars, set live by
+`scripts/pool-limit.sh`), the GKE pod renderer and its manifest guards
+(`tests/unit/control_plane/test_dispatch_manifests.py`,
+`test_gke_workspace_fits.py`), swarm-api's compilers and its admin sizes
+route (`check_size` judges four classes), the console's capacity views and
+`/v1/capacity` (which read the served classes), and `specsign`, which
+already signs `resource_class`. The worker reads
+nothing new: `agent_resource_budget` reads the cgroup. Under A: the same
+readers, with no new pool.
+
+### What it would break if accepted
+
+Nothing at once under B: no stored lease or step names `builder`, and an
+attempt reserved before the change releases its own units. What changes is
+the room: each builder takes 2 units of `global`, `tenant:<t>`,
+`runner:claude-code` and `backend:GKE_AUTOPILOT`, so a workspace runs half
+as many concurrent builders as it runs implement steps today unless its
+limits are raised. Until `resource:builder` has a stated limit it is
+whatever an unconfigured pool gets, so the applying lane states one. Under
+A every `standard` and `browser` profile halves at once, and the pod of a
+live-browser step changes size.
+
+### If it is declined
+
+The time-boxed, parallel guard check on main stays the gate: on 6 workers
+about a third of a 343-file selection fits the 10-minute budget, and the
+rest is CI's. `claude-code-large` (8 requested, 16 limit, 32 GiB) already
+gives 16 xdist workers today, but it is picked by name for an
+out-of-memory or timeout lane and costs 4 units of every compute pool. An
+admin size version for `standard` on GKE is shape A without the contract
+change.
+
+### Invariants
+
+* **1:** demand is still created only by `LEASED`, `DISPATCHED`, `STARTING`
+  and `RUNNING`: a builder is an ordinary lease with a larger class, and a
+  queued builder costs nothing.
+* **2:** the builder's 2 units in each compute pool, and 1 in each provider
+  pool, are reserved in the one admission transaction across every pool,
+  all or nothing, as every class's are; release is unchanged.
+* **3:** concurrency is counted from `LEASED`: the units are taken at
+  reserve, and `concurrency-judge.jq` sums each lease's held share, so a
+  2-unit lease is counted as 2 the moment it is leased.
+* **7:** memory 16 GiB and workspace 8 GiB are request and limit both; CPU
+  is 8 requested <= 12 limit <= `CPU_BURST_MAX_RATIO` (2) x 8 = 16, on GKE
+  only. Cloud Run renders the request, 8, as its one limit, which is within
+  Cloud Run's ceiling, so `ResourceClass.__post_init__` accepts it. The
+  pod's QoS class stays Burstable.
+* **10:** a caller still names a profile and never a size; under B the
+  class is the platform's choice from the stage, and a caller's
+  `resource_class` may still only shrink.
+* **5:** the class is in the signed spec, so a changed class fails the
+  worker's check before the agent runs. **4**, **6**, **8** and **9** are
+  untouched: no checkpointing, Spot, park or tenant boundary moves.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first: the class table's own
+module-load check (`units` equals `units_for`) and a test in
+`tests/unit/common/test_runner_size_shape.py` that `builder` is 8/12/16/8
+with 2 units and keeps `CLASS_ORDER` under `check_size`; a swarm-api test
+that an issue run's `implement-<id>` and `fix` steps are stored with
+`builder` and its review with `standard`, and that a caller-sent
+`resource_class: builder` on `claude-code` is refused as larger; an
+admission test that a builder lease takes 2 units in each compute pool and
+1 in each provider pool; a manifest test that the builder pod renders
+requests 8 CPU and 16 GiB with limits 12 CPU and 16 GiB; and a case in
+`tests/unit/worker/test_agent_env_resource_budget.py` that a 16 GiB
+container with a 12-core `cpu.max` sets `PYTEST_XDIST_AUTO_NUM_WORKERS` to
+12.
+
+### Who decided
+
+BGD, 3 November 2026: merge the time-boxed, parallel guard check as built
+and request a 12-CPU, 16 GiB builder class as a frozen-contract change
+(answering the publish check lane's question on builder machine size). The
+8-requested, 12-limit reading of "12 CPU", forced by Cloud Run's ceiling on
+the request, and the proposal of shape B over shape A are this request's;
+both are the owner's to accept.
+
+## 136. A shared `workcontract.py`, a `"plugins"` settings block and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by
+the pull request that adds this status (lane
+apply-contract-request-work-contract-plugins, part of #2688). Requested
+2026-11-03 by lane aq-work-contract, the work contract package of the owner's
+agent quality program (BGD, 3 November 2026). What reads it is listed under
+"What reads it"; none of those readers is built by the applying change.
+
+Applied exactly as worded:
+
+* **A.** `apps/common/swarm_common/workcontract.py` holds `CONTRACT_PURPOSE`,
+  `SCHEMA_VERSION`, the limit keys, `Requirement`, `WorkContract` with its
+  `to_document` projection, `canonical_bytes(document)` and
+  `contract_digest(document) -> str`. `swarm_api.workcontract` imports them
+  (its `WorkContract` subclasses the shared one and adds only
+  `requirement_ids` and `components`) and keeps the schema validation and the
+  amendment protocol. The digest of every existing test vector is pinned
+  before and after the move
+  (`tests/unit/control_plane/test_work_contract_common.py`), and the
+  pinned-bytes test in `tests/unit/control_plane/test_work_contract.py` is
+  unchanged and green.
+* **B.** `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`. Every other block's
+  canonical bytes are pinned unchanged (`tests/unit/common/test_settings_block.py`),
+  so every stored MAC still verifies. `swarm_api.judgment.WRITER_FIELDS`
+  gains `"plugins": ()` beside it: no route writes the block yet, so the
+  re-sign pass holds a stored `plugins.allowed`, never signs it, and does not
+  fail on it.
+* **C.** `RunnerProfile.runtime_capabilities: tuple[str, ...] = ()`, last in
+  the class, refused when it is not a tuple of distinct capability names, and
+  stated as `()` on every catalogue profile until the routing package fills
+  them in (`tests/unit/common/test_runtime_capabilities_contract.py`).
+
+### What is true today
+
+Read on main (3e3a987) on 2026-11-03.
+
+* `swarm_api.workcontract` (added by the pull request that adds this entry)
+  decodes a versioned work contract, digests it as RFC 8785 under the purpose
+  `swarm.work-contract/v1` through the frozen `swarm_common.specsign.jcs`, and
+  compiles it into today's step fields plus a reference
+  (`id`, `revision`, `digest`, `strictness`, `requirements`) written at
+  `metadata.dispatch.work_contract`. `dispatch` is in
+  `swarm_common.specsign.SIGNED_METADATA_KEYS`, so the step-spec signature
+  already covers the reference: no spec format bump is needed to sign it.
+* The digest function lives in swarm-api only. A worker that wanted to check
+  a stored contract body against the signed reference would need a second
+  copy of it, and two copies are two opinions about what is signed (the
+  reason `canonical_step_spec` is in `swarm_common`).
+* `swarm_api.workcontract.WORKER_ENFORCED_TODAY` is the repository binding
+  and the limits only, because those compile into signed task fields the
+  worker already acts on. `compile_contract` refuses
+  (`work_contract_not_enforceable`) a strict contract that sets a write or
+  read scope, protected paths, runtime capabilities, plugins, verification or
+  artifacts.
+* `swarm_common.specsign.SETTINGS_MAC_FIELDS` has no block saying which
+  catalogue plugins a workspace may use, and `RunnerProfile` has no field
+  naming the runtime capabilities a runner provides
+  (`dom_automation`, `screenshots`, `write_isolation` ...), so swarm-api
+  cannot check a contract's capabilities against the profile it names.
+
+### The change
+
+* **A.** `apps/common/swarm_common/workcontract.py`: `CONTRACT_PURPOSE`,
+  `SCHEMA_VERSION`, the canonical projection (`WorkContract.to_document` as
+  built in swarm-api) and `contract_digest(document) -> str`, moved from
+  `swarm_api.workcontract` unchanged in bytes (the pinned-bytes test in
+  `tests/unit/control_plane/test_work_contract.py` holds that). swarm-api then
+  imports them and keeps the schema validation and amendment protocol.
+* **B.** `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`: the workspace's
+  admin-only, signed list of catalogue plugins its steps may name
+  (docs/design/agent-plugins.md, "A closed plugin catalogue").
+* **C.** `RunnerProfile.runtime_capabilities: tuple[str, ...] = ()`, each a
+  name from `swarm_api.workcontract.RUNTIME_CAPABILITIES`, empty on every
+  profile until the routing package fills them in.
+
+### What reads it
+
+* A: the worker, verifying a contract body it fetched against the reference
+  inside its verified spec before it enforces anything of it.
+* B: swarm-api, refusing a contract that names a plugin its workspace has not
+  allowed; the worker, loading only allowed plugins.
+* C: swarm-api, refusing a strict contract whose runtime capabilities its
+  profile does not provide; the routing package.
+
+### What it would break if accepted
+
+Nothing stored: no task document carries a contract while
+`SWARM_WORK_CONTRACTS` is off, and none of A-C changes a spec's signed bytes.
+B adds a block every reader of `SETTINGS_MAC_FIELDS` must re-sign in the
+rollout that adds it (empty on every workspace, so nothing to re-sign).
+
+### If it is declined
+
+Strict contracts stay refused for every component but the repository binding
+and the limits, and advisory contracts carry the rest as text the agent reads
+and the platform does not enforce. The plugins plan's per-step selection has
+no signed workspace allow-list.
+
+### Invariants
+
+No capacity, lease, fencing or tenant-isolation rule changes. Invariant 10
+holds: a contract names a runner profile, model class, plugins, skills and
+capabilities by name only, never an image, command, path or resource spec.
+
+### How it is tested
+
+`tests/unit/control_plane/test_work_contract.py` pins schema 1's bytes, so
+moving A into `swarm_common` must leave that test green unchanged.
+
+### Who decided
+
+Nobody yet: this is a request. The program's rule that a strict contract never
+silently degrades to advisory is the owner's (BGD, 3 November 2026).
+
+## 137. `specsign.py`: the stored work contract is signed with the step, spec format 8 (WORK-CONTRACT-SIGNED, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key") and
+APPLIED 2026-11-04 by the pull request that adds this section (lane
+work-contract-signed-metadata-key, part of #2688), on the plugins catalogue's
+pull request (PR 3156). Requested the same day by that pull request's red
+cover test, `tests/unit/common/test_specsign_covers.py::
+test_every_metadata_key_the_worker_reads_is_signed`.
+
+### What is true today
+
+Read on the plugins catalogue's branch (c9c4c43) on 2026-11-04.
+
+* With `SWARM_WORK_CONTRACTS` on, swarm-api decodes the contract a caller
+  sends at `metadata.work_contract`, stores its canonical document under the
+  same key, and writes its reference (`id`, `revision`, `digest`,
+  `strictness`, `requirements`) into the signed dispatch block at
+  `metadata.dispatch.work_contract` (`swarm_api.workcontract.prepare` and
+  `attach`).
+* The worker reads the step's plugins from `metadata.work_contract.
+  capabilities.plugins` (`agent_worker.plugins.selected`), and only when
+  `swarm_common.workcontract.contract_digest` of the stored document is the
+  digest in the signed reference.
+* `SIGNED_METADATA_KEYS` is `("dispatch", "input_from", "expected_outputs")`,
+  so the stored document itself is outside the step-spec signature and the
+  cover test is red: the worker reads a metadata key the signature does not
+  cover.
+
+### The change
+
+* `SIGNED_METADATA_KEYS` gains `"work_contract"`, and `SPEC_FORMAT` becomes 8
+  (`SPEC_FORMATS` gains 8), in the shape of formats 2-7: format 8's
+  projection is format 7's with `work_contract` in its `metadata` map.
+* Formats 1-7 keep exactly the `metadata` map they had (`dispatch`,
+  `input_from`, `expected_outputs`), so every signature stored before the
+  change still verifies. A document at one of them that sets
+  `metadata.work_contract` (non-None) has no canonical form, as a set
+  `max_turns` below format 7: a contract added to an agent signed without one
+  fails its worker's check.
+* `signing_format` returns 8 only for an agent whose metadata carries a
+  contract, so every other agent keeps the format and bytes it had. Rollout
+  order: workers first, then swarm-api, as for formats 2-7; a worker built
+  before format 8 refuses an agent signed at 8 (`SPEC_SIGNATURE_INVALID`), and
+  only an agent with a contract is signed at 8, which needs
+  `SWARM_WORK_CONTRACTS` on.
+* The worker's digest check stays as a second guard: a document whose digest
+  is not the signed reference's still loads no plugin.
+
+The alternative the owner rejected: leave the key unsigned and list it in
+the cover test as a digest-verified allowance list. Rejected because it gives
+"signed" a second, weaker meaning: the cover test would then pass for a key
+the signature does not cover.
+
+### What reads it
+
+swarm-api's spec signer (`signing_format`, `canonical_step_spec`), every
+verifier through `SPEC_FORMATS` (the worker's `specverify`, the upstream
+check, the forge broker's and the verdict publisher's format checks), and
+the worker's plugins selection, which acts on the verified document.
+
+### What it would break if accepted
+
+An agent signed at format 1-7 that carries a caller's free-form
+`metadata.work_contract` (written while `SWARM_WORK_CONTRACTS` was off,
+before this change) is refused by a worker built after it, on its next
+attempt: the key is now refused below format 8. swarm-api signs a new
+submission of the same agent at format 8.
+
+The brief also asked to add the key to swarm-api's
+`validation.RESERVED_METADATA_KEYS`. Not applied, and asked of the owner in
+the pull request: a caller SENDS its contract at `metadata.work_contract`
+(`swarm_api.workcontract.METADATA_KEY`), and `reject_reserved_metadata` runs
+on that metadata, so reserving the key would refuse every contract at
+submission; and the reserved tuple is `task_input.PLATFORM_METADATA_KEYS`,
+served unmasked, which would serve the caller's contract text unmasked. The
+cover test's parity check names the key as signed and caller-sent
+(`CALLER_SENT_SIGNED_KEYS`) instead.
+
+### If it is declined
+
+The cover test stays red and the plugins catalogue's pull request cannot
+merge; the worker trusts the stored contract by its digest alone.
+
+### Invariants
+
+Invariant 5 (fencing): unchanged. The spec check runs before the agent and
+refuses a stale or rewritten spec without touching the lease; the fencing
+generation is checked as before. Invariant 10 (callers name, never supply):
+a contract names plugins, skills, a runner profile and limits by name only,
+and the worker checks every plugin name against its own catalogue; signing
+the document adds no field a caller can use to supply an image, a command or
+a resource spec.
+
+### How it is tested
+
+`tests/unit/common/test_work_contract_signed_contract.py` pins each of
+formats 1-7's digests from before the change, signs a contract at 8 only,
+and refuses a contract below 8; `tests/unit/common/test_specsign_covers.py`
+is green; `tests/unit/common/test_specsign.py` and
+`tests/unit/common/test_max_turns_contract.py` pin the new format;
+`tests/unit/worker/test_work_contract_signed_worker.py` refuses a rewritten
+contract before the agent runs.
+
+### Who decided
+
+The owner (BGD), 4 November 2026: "Sign the key".
+
+## 138. `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED
+2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)" (lane
+contract-review-signed-settings-applied): `SETTINGS_MAC_FIELDS` lists
+`"contract_review": ("enabled",)`, and everything under "What empties in
+swarm-api once it is applied" is done in that pull request. Requested
+4 November 2026 by the pull request that added this section (swarm-api's Jev
+review of a work contract at submission, part of #2688), on the owner's
+answer to that lane's second question: the block goes into the frozen
+contract's signed settings fields by a contract change request.
+
+### What is true today
+
+Read on that pull request's branch on 2026-11-04.
+
+* `workspace_settings/{tenant_id}.contract_review: {enabled, set_at, set_by,
+  mac}` is written by `apps/swarm-api/swarm_api/contractreview.py::
+  ContractReviewStore.put` (`PUT /v1/workspaces/{tenant_id}/contract-review`:
+  the workspace's owner, its admin or a platform admin, audited as
+  `workspace_contract_review_set`). With `enabled` true, and the platform's
+  `SWARM_CONTRACT_REVIEW` at `report` or `enforce`, swarm-api sends the
+  workspace's work contracts' requirement texts to the workspace's Jev
+  backend at submission (docs/design/agent-quality/jev-contract.md section
+  4, the owner's answer 9 of 3 November 2026).
+* `swarm_common.specsign.SETTINGS_MAC_FIELDS` does not list the block, so
+  `canonical_settings_block` refuses it (`SpecNotCanonical`). swarm-api signs
+  it anyway through a list of its own, `judgment.API_SETTINGS_MAC_FIELDS =
+  {"contract_review": ("enabled",)}`, and `judgment._canonical_block`, which
+  builds the SAME bytes `canonical_settings_block` would: JCS of
+  `{"purpose": SETTINGS_PURPOSE, "tenant_id", "block": "contract_review",
+  "fields": {"enabled": ...}}`.
+* The re-sign pass (`judgment.resign_workspace_settings`,
+  `scripts/resign-workspace-settings.sh`) covers the block through
+  `judgment._covered_by_block`, which adds `API_SETTINGS_MAC_FIELDS` to the
+  frozen list, and treats `enabled` as written by its writer
+  (`judgment._unowned` answers `()` for a block outside the frozen list).
+* Only swarm-api reads the block. No scheduler, worker or other service
+  verifies it.
+
+### Why
+
+Two lists now say which settings blocks are signed and which keys each
+covers. Every other signed block is named once, in the frozen module, so
+the settings-integrity design's one statement of "what a MAC covers"
+(design/tenant-settings-integrity.md) has an exception only swarm-api knows
+about. A service that later needs to verify the opt-in (the scheduler
+vouching for it, as it does for `quality_gates`) would have to copy
+swarm-api's list, or could not verify it at all, because
+`canonical_settings_block` refuses the name.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "plugins": ("allowed",),
+    "contract_review": ("enabled",),
+})
+```
+
+Only `enabled` is covered: `set_at` and `set_by` record who changed it and
+no reader acts on them. A comment beside the entry names this request, as
+the other entries name theirs. Nothing else in `specsign.py` changes;
+`tests/unit/common/test_settings_block.py` gains the entry.
+
+### What empties in swarm-api once it is applied
+
+In the same pull request that applies it:
+
+* `judgment.API_SETTINGS_MAC_FIELDS` loses `contract_review` and, empty, is
+  removed with `judgment._canonical_block` (whose only job was building the
+  frozen bytes for a name the frozen list refused): `_sig` calls
+  `canonical_settings_block` directly again.
+* `judgment._covered_by_block` and `judgment._unowned` collapse to
+  `SETTINGS_MAC_FIELDS` and `unowned_covered_keys`.
+* `judgment.WRITER_FIELDS` gains `"contract_review": ("enabled",)`
+  (`ContractReviewStore.put` writes it), so
+  `tests/unit/control_plane/test_settings_mac.py::
+  test_each_writers_fields_are_the_ones_the_module_writes` (which holds
+  `WRITER_FIELDS` and `SETTINGS_MAC_FIELDS` to the same block names) stays
+  green.
+* `contractreview.py`'s docstring drops "until the frozen
+  `SETTINGS_MAC_FIELDS` lists it", and
+  `tests/unit/control_plane/test_contract_review_submission.py::
+  test_the_signing_list_names_the_new_block_only` asserts the frozen list
+  names the block instead of swarm-api's.
+
+### How the re-sign pass then covers the block
+
+Through the frozen list, as every other block: `_blocks` walks
+`SETTINGS_MAC_FIELDS`, and `unowned_covered_keys("contract_review")` is `()`
+because `WRITER_FIELDS` lists `enabled`, so a stored block is never `held`.
+The bytes do not change -- `_canonical_block` already built exactly
+`canonical_settings_block`'s bytes for the name -- so every MAC swarm-api
+stored before the change still verifies after it: the first pass after
+applying finds those blocks `signed` and writes nothing. A block stored
+without a MAC (written before this deployment had a key) is signed as it is
+stored, never turned on.
+
+### What it would break if accepted
+
+Nothing: a new block changes no other block's bytes, and the block's own
+bytes are the ones already signed. A service built before the change that
+calls `canonical_settings_block(block="contract_review")` would have raised
+`SpecNotCanonical`; none does.
+
+### If it is declined
+
+swarm-api keeps `API_SETTINGS_MAC_FIELDS` and the re-sign pass keeps
+covering it through `_covered_by_block`. The block stays signed and
+verified by swarm-api; the cost is the second list, and that no other
+service can verify the opt-in without copying it.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Invariant 9 (per-tenant isolation): the
+tenant and the block are inside the signed bytes, so a block copied onto
+another workspace's document, or into another block, does not verify; a
+tenant worker's direct write of `enabled: true` reads as off for a tenant
+cut over in SETTINGS_MAC_TENANTS, and nothing is sent to Jev.
+
+### How it is tested
+
+`tests/unit/common/test_settings_block.py` pins the entry;
+`tests/unit/control_plane/test_contract_review_submission.py` signs a block
+with `ContractReviewStore.put`, reads a forged and a copied block as off,
+and re-signs a block after a key rotation through the pass; its MAC made
+before the change verifies after it.
+
+### Who decided
+
+Requested by the pull request that adds this section, on the owner's
+(BGD) answer of 4 November 2026 to its second question.
+
+## 139. `profiles.py`: `pull_request` declared as a runner input of claude-code, codex and claude-code-review (PR-CONTEXT-INPUT, pull request #3470, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026, picking "declare"
+on pull request #3470's question, and APPLIED by that pull request.
+
+### What is true today
+
+Read on that pull request's branch on 2026-11-06. The worker stages the
+pull request a step works on as `work/pull_request.md`
+(`agent_worker/pull_request.py`) and finds its number from the signed
+`publish_to_pr`, or the pull request its `builds_on` (or, for a single-pr
+reader or amender, its `pr_author`) step recorded opening. Before this
+change no profile declared `input.pull_request`, so swarm-api refused it
+with 422 `invalid_input` and a caller could not name the pull request
+itself.
+
+### The change
+
+`_PULL_REQUEST_INPUTS` declares `pull_request`, an integer 1..999999 (the
+`issue` input's bound, for the same reason), on claude-code and codex
+(`_CLI_AGENT_PR_INPUTS`) and claude-code-review
+(`_CLI_AGENT_REVIEW_INPUTS`). `pull_request.from_input` reads it only where
+the agent's profile declares it; it is read first, before `publish_to_pr`
+and `builds_on`. claude-code-large, claude-code-lightpanda,
+claude-code-browser and indexer do not gain it: the question named the
+three.
+
+### What it would break if accepted
+
+Nothing: a key a caller could not send before is now accepted on three
+profiles. The generated input tables in `docs/workflows.md` and
+`plugin/README.md` and the UI fixture's input contracts gain the row.
+
+### Invariants
+
+Invariant 10: the caller names a pull request by number, data, never an
+image, a command or a resource spec; the worker reads it read-only with the
+tenant's own forge credential, in the agent's own repository (invariant 9),
+and no token reaches the container.
+
+### How it is tested
+
+`tests/unit/mcp/test_runner_inputs.py` pins which profiles declare it and
+holds the key to the worker module that reads it;
+`tests/unit/worker/test_pull_request_context.py` reads it through
+`from_input` on the three and not on the others;
+`tests/unit/mcp/test_runner_input_prose.py` holds the generated tables.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, answering pull request #3470's question.

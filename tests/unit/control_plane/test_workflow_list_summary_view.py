@@ -71,12 +71,18 @@ def test_summary_steps_carry_no_input_and_the_rest_is_the_full_view(client, db):
         for step in row["steps"]:
             for key in STEP_INPUT_KEYS:
                 assert key not in step, f"{key} is in a summary step"
-    # Everything else is the full view's, field for field.
+    # Everything else is the full view's, field for field, beside each
+    # step's `task_summary`, which only the summary reads (the Workflows
+    # board's one read, 2026-11-01; test_workflow_step_board.py).
     stripped = [
         {**w, "steps": [{k: v for k, v in s.items() if k not in STEP_INPUT_KEYS} for s in w["steps"]]}
         for w in full["workflows"]
     ]
-    assert summary["workflows"] == stripped
+    unboarded = [
+        {**w, "steps": [{k: v for k, v in s.items() if k != "task_summary"} for s in w["steps"]]}
+        for w in summary["workflows"]
+    ]
+    assert unboarded == stripped
     assert summary["rollup_report"] == full["rollup_report"]
     assert [w["state"] for w in summary["workflows"]] == ["SUCCEEDED"] * 3
 

@@ -491,6 +491,49 @@ describe('G3-13: the Timeline draws a key, a visible run and a park', () => {
   })
 })
 
+describe('ovag2-09 (visual QA pass 2): a running step is drawn as a run, and the key names it', () => {
+  function running() {
+    const tasks = new Map<string, Task>([
+      ['t_a', task('t_a', 'SUCCEEDED', { started_at: iso(-590), completed_at: iso(-500) })],
+      ['t_b', task('t_b', 'RUNNING', { started_at: iso(-480) })],
+    ])
+    const w = workflow([step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' })], 'RUNNING')
+    const usage: WorkflowUsage = { byTaskId: new Map(), notSampled: new Set(), failed: new Map(), sampleLimit: 12, tasksRequested: 2 }
+    return card(w, tasks, usage, 'timeline')
+  }
+
+  it('gives the running span a solid core in the live hue, 3:1 on the card, unlike a wait', () => {
+    const { container } = running()
+    const run = container.querySelector<HTMLElement>('.wf-tl-track[data-step="b"] .wf-tl-span.is-running')!
+    expect(run).not.toBeNull()
+    for (const theme of THEMES) {
+      // MUTATION: drop `.wf-tl-span.is-running::after` (styles/workflow-views.css)
+      // and the run is the pale tint and outline the key calls `waited`.
+      const fill = painted(run, ['background', 'background-color'], { width: 1440, theme }, 'after')
+      expect(fill, `${theme}: a running span has no core`).not.toBeNull()
+      const core = resolveColour(fill!, theme)
+      for (const surface of ['var(--surface)', 'var(--surface-2)']) {
+        expect(contrast(core, resolveColour(surface, theme)), `${theme}: core on ${surface}`).toBeGreaterThanOrEqual(3)
+      }
+    }
+  })
+
+  it('names running in the key, with a swatch drawn as a run with an open end', () => {
+    const { container } = running()
+    const key = container.querySelector<HTMLElement>('.wf-timeline > .wf-tl-key')!
+    // MUTATION: drop the `running` entry from TIMELINE_KEY and the key has no word for the bar.
+    const item = within(key).getAllByRole('listitem').find((li) => li.textContent === 'running')
+    expect(item, 'the key names no running bar').toBeTruthy()
+    const swatch = item!.querySelector<HTMLElement>('.wf-tl-swatch.is-running')!
+    expect(swatch).not.toBeNull()
+    for (const theme of THEMES) {
+      // MUTATION: drop `.wf-tl-swatch.is-running` and the swatch is an empty box.
+      expect(painted(swatch, 'background-image', { width: 1440, theme })).toMatch(/linear-gradient/)
+      expect(painted(swatch, 'border-right', { width: 1440, theme })).toMatch(/dashed/)
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // G3-19, G3-25, G3-28: the page's head and drawer
 // ---------------------------------------------------------------------------

@@ -12,8 +12,9 @@ the same week.
 BGD, 2026-10-25, "Seat-level fix lane, top priority":
 
   * two pool accounts are one subscription only when they share the
-    organisation AND the login seat, or -- for an account whose seat is not
-    recorded yet -- when their readings are identical (`readings_identical`);
+    organisation AND the login seat. (Its fallback -- an account whose seat is
+    not recorded yet paired by identical readings -- was removed by #3046: a
+    reading is not an identity, and identical readings only flag a pair.)
   * readings that differ are proof of two quotas, and never withhold;
   * a second Team seat registers; the same seat again is refused;
   * the seat identity is recorded from the sign-in, at add and at every
@@ -208,33 +209,30 @@ def test_no_seat_recorded_and_different_readings_withholds_neither():
     assert duplicates([a, b]) == {}
 
 
-def test_no_seat_recorded_and_identical_readings_withholds_the_newer():
-    """DUP-1's fallback (BGD 2026-10-24), unchanged."""
+def test_no_seat_recorded_and_identical_readings_withholds_neither():
+    """DUP-1's fallback paired these and withheld the newer; a reading is not
+    an identity (#3046, BGD 2026-11-02), so it now only flags them."""
     team = organisation_identity(_uuid())
     a = _acct("saga-personal", org=team, registered=NOW - timedelta(days=5))
     b = _acct("team", org=team, registered=NOW - timedelta(days=1))
-    assert duplicates([a, b]) == {
-        "eng:saga-personal": ("eng:team", False), "eng:team": ("eng:saga-personal", True)}
-    # One side's seat recorded, the other not yet: the readings still decide.
+    # MUTATION: pairing a seatless account by `readings_identical` withholds team.
+    assert duplicates([a, b]) == {}
+    # One side's seat recorded, the other not yet: still no pair.
     c = _acct("team", org=team, seat=seat_identity(_uuid()), registered=NOW - timedelta(days=1))
-    assert duplicates([a, c])["eng:team"] == ("eng:saga-personal", True)
-    d = _acct("team", org=team, seat=seat_identity(_uuid()), registered=NOW - timedelta(days=1),
-              week=0.12)
-    assert duplicates([a, d]) == {}
+    assert duplicates([a, c]) == {}
 
 
-def test_a_seat_registered_again_behind_a_readings_pair_is_withheld_against_its_root():
-    """Over-admission guard: K (no seat) pairs with B (seat s1) by readings; a
-    later C on seat s1 reads differently from K, and is still one subscription
-    with B, so it is withheld against K, the one handed out."""
+def test_a_seat_registered_again_is_withheld_against_its_own_seat_never_a_seatless_one():
+    """Over-admission guard: B and C share seat s1 and are one subscription;
+    K, whose seat is not recorded, is in no pair whatever its readings."""
     team, seat = organisation_identity(_uuid()), seat_identity(_uuid())
     k = _acct("k", org=team, registered=NOW - timedelta(days=3))
     b = _acct("b", org=team, seat=seat, registered=NOW - timedelta(days=2))
     c = _acct("c", org=team, seat=seat, registered=NOW - timedelta(days=1), week=0.12)
-    # MUTATION: comparing a newer account only with kept ones hands out K and C both.
     assert duplicates([k, b, c]) == {
-        "eng:k": ("eng:b", False), "eng:b": ("eng:k", True), "eng:c": ("eng:k", True)}
-    assert choose([k, b, c], ENG, NOW, exclude=["eng:k"]) is None
+        "eng:b": ("eng:c", False), "eng:c": ("eng:b", True)}
+    assert choose([k, b, c], ENG, NOW, exclude=["eng:k", "eng:b"]) is None
+    assert choose([k, b, c], ENG, NOW, exclude=["eng:b"]).label == "k"
 
 
 def test_two_idle_seatless_accounts_on_one_organisation_are_not_a_pair():
@@ -257,7 +255,10 @@ def test_pool_blockers_stops_naming_an_unpaired_seat_withheld():
     # A real pair is still named, as today.
     again = _acct("again", org=team, seat=kept.seat_id, registered=NOW - timedelta(hours=1))
     blockers = {b["account"]: b for b in pool_blockers([kept, again], NOW, ENG)}
-    assert blockers["again"]["withheld"] == {"same_subscription_as": "ai-eng-2"}
+    assert blockers["again"]["withheld"] == {
+        "same_subscription_as": "ai-eng-2",
+        "reason": "registered on the same organisation and seat as another account",
+        "matched_on": "organisation_and_seat"}
 
 
 # --------------------------------------------------------------------------

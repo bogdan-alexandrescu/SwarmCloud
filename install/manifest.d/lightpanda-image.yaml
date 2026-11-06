@@ -1,0 +1,33 @@
+# Lane LIGHTPANDA-IMAGE (part of #2688; docs/design/lightpanda-runtime.md
+# sections 5.D and 6.4, lane L2): the agent-runtime-lightpanda runner image.
+# Its shape is agent-runtime-indexer's entry in the base manifest: an image
+# the release builds and the install copies by digest (`images.copy`). No
+# profile names it until contract request 127 is applied (lane L1), so until
+# then it is built but never dispatched; build-images.sh's ALL_TARGETS gains it
+# in lane L3.
+version: 1
+entries:
+- id: image.agent-runtime-lightpanda
+  kind: image
+  scope: core
+  stage: 4
+  provider: engine
+  check: gcloud artifacts docker images list $R-docker.pkg.dev/$P/swarm-images/agent-runtime-lightpanda --limit=5
+  apply: images/agent-runtime-lightpanda/Dockerfile
+  verify: the image's build-time self-test (selftest.py) passed, so `lightpanda version` printed LIGHTPANDA_VERSION
+    and no Chromium is in the image
+  explain: agent-runtime-base plus the Lightpanda 1.0.2 binary, its AGPL-3.0 licence and SOURCE notice, for the
+    claude-code-lightpanda profile. Its own image so the AGPL binary and its source obligation reach only the
+    agents that run it.
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - registry.swarm
+  evidence:
+  - images/agent-runtime-lightpanda/Dockerfile:1
+  - images/agent-runtime-base/tool-mirror.sha256:1
+  notes: 'null'
+  step: images.copy
+  refs:
+    image:
+    - dockerfile:images/agent-runtime-lightpanda/Dockerfile

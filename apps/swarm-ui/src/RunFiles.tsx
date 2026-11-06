@@ -833,21 +833,22 @@ function CheckpointRow({
           {record.label !== null && ` · ${record.label}`}
           {' · '}
           {/* FROM THE MANIFEST, so a manifest that did not parse has no count:
-              the em dash, never a 0 -- and the dash carries its reason, as
-              the Age cell's does (QA1-FIX-09, overview-agents-49: `— files`
-              sat bare beside the other row's `184 files`). */}
+              the em dash, never a 0 -- and the dash carries its reason
+              (QA1-FIX-09, overview-agents-49: `— files` sat bare beside the
+              other row's `184 files`). The reason is words in parentheses,
+              not a `not read` mark (QA2-FIX-14 as CLD adapted it, QA2B-C:
+              the row read `— files · not read`); the sentence is the title. */}
           {record.file_count === null ? (
-            <>
-              <Em /> files{' '}
-              <Mark
-                kind={record.manifest === 'unreadable' ? 'unread' : 'absent'}
-                say={
-                  record.manifest === 'unreadable'
-                    ? 'The manifest carries how many files this checkpoint holds, and it could not be read, so the count is unknown.'
-                    : 'No file count was recorded for this checkpoint, so how many files it holds is unknown.'
-                }
-              />
-            </>
+            <span
+              className="rf-count-unknown"
+              title={
+                record.manifest === 'unreadable'
+                  ? 'The manifest carries how many files this checkpoint holds, and it could not be read, so the count is unknown.'
+                  : 'No file count was recorded for this checkpoint, so how many files it holds is unknown.'
+              }
+            >
+              <Em /> files ({record.manifest === 'unreadable' ? 'manifest unreadable' : 'not recorded'})
+            </span>
           ) : (
             `${record.file_count} files`
           )}

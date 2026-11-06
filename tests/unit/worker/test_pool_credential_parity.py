@@ -28,7 +28,7 @@ from __future__ import annotations
 import io
 
 from agent_worker import workspace as workspace_mod
-from agent_worker.accountlease import ACCOUNT_TOKEN_ENV, Assignment
+from agent_worker.accountlease import ACCOUNT_TOKEN_ENV, Assignment, NoAccountAvailable
 from agent_worker.secrets import CredentialMissing
 from quota_broker.accounts import Account
 from swarm_common.models import Tenant, utcnow
@@ -82,6 +82,11 @@ def worker_asks_the_pool(profile_name: str, store, tmp_path) -> bool:
     except CredentialMissing:
         # No key and no account asked for: the worker's own CREDENTIAL_MISSING.
         pass
+    except NoAccountAvailable:
+        # Asked, and the stand-in account's secret is not the provider's shape
+        # (codex reads a ChatGPT plan's JSON): it still asked, which is all
+        # this measures.
+        pass
     return bool(broker.asked)
 
 
@@ -134,6 +139,16 @@ def test_the_scheduler_expects_the_pool_exactly_where_the_worker_asks_it(store, 
     # Every profile was asked, not one (CLAUDE.md: a loop that ran once
     # reports a clean sweep over a single item).
     assert visited == sorted(RUNNER_PROFILES), visited
+    # codex names a ChatGPT plan since contract request 130 (owner, 2026-11-01)
+    # and the worker leases one, but the scheduler's pool rule still keys on
+    # CLAUDE_CODE_OAUTH_TOKEN alone (request 130, item 6, the broker lane's).
+    # The disagreement is harmless only while codex is refused at submission,
+    # before any credential is looked at ("keep codex unavailable until the
+    # pool lanes land"), so it is excused only then: the follow-up that turns
+    # codex on reddens here until the scheduler expects the openai pool too.
+    if not RUNNER_PROFILES["codex"].available:
+        worker_side.discard("codex")
+        scheduler_side.discard("codex")
     assert scheduler_side == worker_side, (
         f"the scheduler expects a pool account for {sorted(scheduler_side)}, "
         f"the worker asks for one for {sorted(worker_side)}"

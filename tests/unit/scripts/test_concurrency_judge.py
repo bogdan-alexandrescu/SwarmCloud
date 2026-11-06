@@ -123,6 +123,33 @@ def test_units_are_weighted_by_the_lease_not_counted_per_lease() -> None:
     ]
 
 
+def test_a_lease_counts_what_it_recorded_in_each_pool() -> None:
+    """#2950: a large lease holds 4 in compute pools and 1 in a provider pool."""
+    held = {"global": 4, "resource:large": 4, "provider:anthropic": 1}
+    sample = {
+        "at": "2026-11-01T04:00:00Z",
+        "pools": [pool("global", 4), pool("resource:large", 4), pool("provider:anthropic", 1)],
+        "leases": [{**lease("ll", "tl", units=4, pools=tuple(held)), "pool_units": held}],
+        "tasks": [task("tl", "RUNNING", "ll")],
+    }
+    assert judge(sample)["pool_mismatches"] == []
+    sample["pools"][2]["active"] = 4
+    assert judge(sample)["pool_mismatches"] == [
+        {"pool": "provider:anthropic", "active": 4, "lease_units": 1}
+    ]
+
+
+def test_a_lease_from_before_pool_units_holds_its_units_in_every_pool() -> None:
+    """Reserved under the old rule: no `pool_units`, `units` in every pool."""
+    sample = {
+        "at": "2026-11-01T04:00:00Z",
+        "pools": [pool("global", 4), pool("provider:anthropic", 4)],
+        "leases": [lease("lo", "to", units=4, pools=("global", "provider:anthropic"))],
+        "tasks": [task("to", "RUNNING", "lo")],
+    }
+    assert judge(sample)["pool_mismatches"] == []
+
+
 def test_capacity_held_with_no_lease_behind_it_is_a_mismatch() -> None:
     sample = three_held()
     sample["pools"][2]["active"] = 2  # resource:browser, which no lease names

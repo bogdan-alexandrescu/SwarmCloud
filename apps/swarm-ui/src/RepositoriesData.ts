@@ -198,11 +198,16 @@ function normIndexCredential(v: unknown): IndexCredential | null {
   return { source, secret_name: str(v.secret_name), login: login !== null && LOGIN.test(login) ? login : null }
 }
 
-/** "Indexing uses: ..." in words: what the card and Try it both say. */
+/**
+ * "Indexing uses: ..." in words: what the card and Try it both say. The
+ * tenant's token is named by its scope, the workspace (console visual QA
+ * pass 2, config2-12; part of #2694): "the team token" was said in a
+ * personal workspace, which has no team.
+ */
 export function indexCredentialWords(c: IndexCredential | null): string | null {
   if (c === null) return null
   if (c.source === 'owner') return c.login === null ? 'your GitHub connection' : `your GitHub connection (@${c.login})`
-  if (c.source === 'tenant') return 'the team token'
+  if (c.source === 'tenant') return 'the workspace token'
   return 'none \u2014 connect GitHub'
 }
 

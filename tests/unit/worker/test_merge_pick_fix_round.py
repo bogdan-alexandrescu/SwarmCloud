@@ -212,11 +212,12 @@ def test_a_round_that_built_the_pick_and_pushed_is_merged_at_its_head(tmp_path):
     assert (ROUND_TASK, ROUND_WORKFLOW) in world.verified
 
 
-def test_a_round_that_pushed_nothing_refuses_and_never_loops(tmp_path):
+@pytest.mark.parametrize("report", [None, _built_report(builds=False)])
+def test_a_round_that_pushed_nothing_and_built_nothing_refuses_and_never_loops(tmp_path, report):
     world = MergeWorld(tmp_path)
     _unbuilt(world)
     _round(world)
-    _round_task(world, pushed=None, report=_built_report())
+    _round_task(world, pushed=None, report=report)
 
     message = _refused(merge.run_merge(world.context()))
 
@@ -229,9 +230,45 @@ def test_a_round_that_pushed_the_head_it_started_from_changed_nothing(tmp_path):
     world = MergeWorld(tmp_path)
     _unbuilt(world)
     _round(world)
-    _round_task(world, pushed=PINNED, report=_built_report())
+    _round_task(world, pushed=PINNED, report=[])
 
     assert "changed nothing" in _refused(merge.run_merge(world.context()))
+
+
+@pytest.mark.parametrize("pushed", [None, PINNED])
+def test_a_round_that_found_its_pick_already_built_merges_at_the_head_it_started_from(
+        tmp_path, pushed):
+    """#2858: PR 2855's pick-fix round found 'apply' already built (a fix step
+    had built it after the question recorded 'follow-up') and pushed nothing;
+    the merge refused `owner_pick_not_built` and the workflow ended FAILED."""
+    world = MergeWorld(tmp_path)
+    _unbuilt(world)
+    _round(world)
+    _round_task(world, pushed=pushed, report=_built_report())
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: count only a round that pushed and this refuses "changed nothing".
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    (call,) = world.merge_calls()
+    assert call.body["sha"] == PINNED
+    assert outcome.summary["picks_already_built"] == [
+        {"task_id": IMPLEMENT, "question_index": 0, "picked": "Needs a look"}]
+    assert outcome.summary["picks_built_by_rounds"] == []
+
+
+def test_a_round_that_pushed_nothing_counts_only_for_the_picks_it_was_sent_for(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unbuilt(world)
+    _round(world, picks=[{"task_id": IMPLEMENT, "question_index": 5}])
+    _round_task(world, pushed=None, report=_built_report())
+
+    message = _refused(merge.run_merge(world.context()))
+
+    # MUTATION: take a no-push round's word on a pick it was not sent for and
+    # this merges a pick nobody was asked to look at.
+    assert "changed nothing" in message
+    assert world.merge_calls() == []
 
 
 @pytest.mark.parametrize("report", [
@@ -315,6 +352,59 @@ def test_a_new_pick_after_a_round_gets_the_next_round_and_the_budget_bounds_it(t
 # 3. every answered question that names `built`
 # --------------------------------------------------------------------------
 
+FIX = "task_fix"
+
+
+def _fix_asked_again(world: MergeWorld, built: str) -> None:
+    """A fix step after implement asked the same question again, recording `built`.
+
+    The graph becomes merge <- review <- fix <- implement, so the fix is the
+    latest step that recorded what the branch builds.
+    """
+    question = _question(built=built)
+    question["question"] = "  which TILE does a full pool show? "  # spacing and case differ
+    key = f"tenants/{TENANT}/tasks/{FIX}/attempts/att_f/artifacts/questions.json"
+    data = json.dumps([question]).encode("utf-8")
+    world.store.upload_bytes(key, data)
+    world.docs[FIX] = {
+        "tenant_id": TENANT, "workflow_id": WORKFLOW, "step_id": "fix",
+        "state": TaskState.SUCCEEDED.value, "depends_on": [IMPLEMENT],
+        "result_summary": {"questions": 1, "artifacts": [
+            {"name": "questions.json", "uri": world.store.uri(key), "bytes": len(data)}]},
+        "metadata": {},
+    }
+    world.docs[REVIEW]["depends_on"] = [FIX]
+
+
+def test_a_pick_a_later_fix_step_built_merges(tmp_path):
+    """#2858, PR 2855: implement recorded 'follow-up', the fix step built
+    'apply', the owner picked 'apply'; the merge read implement's stale
+    `built` and refused."""
+    world = MergeWorld(tmp_path)
+    _unbuilt(world)
+    _fix_asked_again(world, built="Needs a look")
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: read only the asking step's `built` and this parks for a round.
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert len(world.merge_calls()) == 1
+    assert "unbuilt_picks" not in outcome.summary
+
+
+def test_a_pick_the_later_fix_step_still_does_not_build_starts_a_round(tmp_path):
+    world = MergeWorld(tmp_path)
+    _asked(world, _question(built="Needs a look"), {"choice": "Needs a look", "text": None})
+    # The fix step moved the branch to the other option after the question.
+    _fix_asked_again(world, built="Needs action")
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: keep the asking step's `built` and this merges the option the
+    # branch no longer builds.
+    _parked(outcome, PENDING)
+    assert outcome.summary["unbuilt_picks"][0]["built"] == "Needs action"
+
 def test_a_question_answered_before_the_review_is_compared_too(tmp_path):
     world = MergeWorld(tmp_path)
     _unbuilt(world, needs_owner=False)
@@ -347,6 +437,48 @@ def test_an_unanswered_question_the_review_let_pass_holds_nothing(tmp_path):
     outcome = merge.run_merge(world.context())
 
     assert outcome.state is TaskState.SUCCEEDED, outcome.message
+
+
+# --------------------------------------------------------------------------
+# 3b. a NOT_YET verdict that names needs_owner gets the round too (#2764)
+# --------------------------------------------------------------------------
+
+def _not_yet(world: MergeWorld) -> None:
+    world.verdict = {**world.verdict, "verdict": "NOT_YET", "findings": ["waits on the owner"]}
+
+
+def test_a_not_yet_verdict_answered_with_an_unbuilt_pick_parks_for_a_pick_fix_round(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unbuilt(world)
+    _not_yet(world)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: refuse a NOT_YET before the pick check (the #2764 bug) and the
+    # owner's pick is never built.
+    _parked(outcome, PENDING)
+    assert world.merge_calls() == []
+    (line,) = outcome.ci_wait["pending"]
+    assert line.startswith(f"pick {IMPLEMENT} question 0 ")
+    assert "'Needs a look'" in line and "'Needs action'" in line
+
+
+def test_a_not_yet_verdict_whose_pick_round_built_the_pick_refuses_verdict_not_merge(tmp_path):
+    world = MergeWorld(tmp_path)
+    _unbuilt(world)
+    _not_yet(world)
+    _round(world)
+    _round_task(world, report=_built_report())
+    world.pr["head"]["sha"] = BUILT
+    world.serve_checks(BUILT)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: merge once the pick is built and a NOT_YET head merges unreviewed.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "verdict_not_merge", outcome.summary
+    assert world.merge_calls() == []
 
 
 # --------------------------------------------------------------------------

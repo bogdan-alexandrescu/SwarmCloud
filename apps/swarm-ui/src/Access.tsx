@@ -10,7 +10,10 @@ import { ConnectButton, Refusal } from './GitHubConnect'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { notServed, type CapCell } from './RepositoriesData'
+import { githubTokenState } from './githubTokenState'
 import { PageHead } from './Shell'
+import { InfoTip } from './People'
+import { WorkspaceTabWords } from './Profile'
 import { usePhoneTables } from './capacityPoll'
 import type {
   AccessDisableResponse, AccessGrant, AccessMode, AccessOverview, AccessOwner, AccessRepository, GitHubConnection,
@@ -302,11 +305,16 @@ export function AccessRefusal({ error, title, onRetry }: { error: ApiError; titl
 // What SwarmCloud may do as you: the owner's decisions, stated (D6, D8, D9)
 // ---------------------------------------------------------------------------
 
-/** The owner's three rules: each one's headline, S2b's short line, and the sentences that say how it is held. */
+/**
+ * The owner's three rules: each one's headline and the sentences that say how
+ * it is held. Each rule's short line is not drawn (BGD's no-prose rule,
+ * 2026-11-05): `POLICY_TIP` carries them, behind the (i) beside the card's
+ * title.
+ */
 const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; line: string; body: ReactNode }> = [
   {
     rule: 'D9',
-    head: 'Read means read, and SwarmCloud enforces it.',
+    head: 'Read means read.',
     line: 'A read grant never pushes, whatever GitHub would allow.',
     body: (
       <>
@@ -342,21 +350,24 @@ const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; line: string; bo
   },
 ]
 
+/** What the policy card's (i) says: D9's enforcement, then every rule's line. */
+export const POLICY_TIP = ['Read means read, and SwarmCloud enforces it.', ...POLICY_RULES.map((r) => r.line)].join(' ')
+
 /**
  * ON A PHONE THE RULES OPEN FOLDED (visual QA V122): each is its headline, a
  * summary that opens its sentences, so the card is three lines rather than
  * the first screen of every visit.
  *
  * WIDER, THE RULES ARE S2B'S CHECKLIST (VQ-038, GITHUB-ACCESS-S2B): the
- * right-hand column beside the GitHub card, each rule a check, its headline
- * and one short line. Three bulleted paragraphs at full width were the page's
- * longest block; how each rule is held stays one fold away ("How"), so no
- * sentence leaves the page.
+ * right-hand column beside the GitHub card, each rule a check and its
+ * headline; the short lines sit behind the (i) beside the card's title. Three
+ * bulleted paragraphs at full width were the page's longest block; how each
+ * rule is held stays one fold away ("How"), so no sentence leaves the page.
  */
 export function AccessPolicy() {
   const phone = usePhoneTables()
   return (
-    <Card className="ac-policy" title="What SwarmCloud may do as you" level={2}>
+    <Card className="ac-policy" title="What SwarmCloud may do as you" level={2} action={<InfoTip about="what SwarmCloud may do as you" tip={POLICY_TIP} />}>
       {phone ? (
         <ul className="ac-rules is-folded">
           {POLICY_RULES.map((r) => (
@@ -377,7 +388,6 @@ export function AccessPolicy() {
               <ToneMark tone="ok" />
               <span className="ac-rule-t">
                 <b>{r.head}</b>
-                <small>{r.line}</small>
                 <details className="ac-rule-how">
                   <summary>How</summary>
                   <p>{r.body}</p>
@@ -424,6 +434,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
   const expiresAt = connection?.access_expires_at ?? null
   const expiresMs = expiresAt === null ? NaN : new Date(expiresAt).getTime()
   const expired = Number.isFinite(expiresMs) && expiresMs <= now
+  const tokenState = connection === null ? null : githubTokenState(connection.state, expiresAt, now)
   return (
     <Card className="ac-conn" title="GitHub" action={<Chip>acts as you</Chip>}>
       {said !== null && (
@@ -450,7 +461,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
             </span>
             <span>{connection.method === 'app_user' ? 'GitHub App · user token' : (connection.method ?? 'connection')}</span>
             <span>
-              <ToneMark tone={active ? 'ok' : 'bad'}>{active ? 'active' : (connection.state ?? 'unknown')}</ToneMark>
+              <ToneMark tone={tokenState?.tone ?? 'bad'}>{tokenState?.word ?? 'unknown'}</ToneMark>
             </span>
           </p>
           <p className="ur-cmeta">
@@ -464,7 +475,8 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
                 <b>{tokenExpiry(connection.access_expires_at, now)}</b>
               )}
             </span>
-            <span>{expired ? 'the next use renews it' : 'renewed automatically'}</span>
+            {/* An expired token's renewal is said once, in the state above. */}
+            {!expired && <span>renewed automatically</span>}
             {connection.refreshed_at !== null && <span>last renewed {timeAgo(connection.refreshed_at)}</span>}
           </p>
           {!active && (
@@ -473,7 +485,7 @@ function Connection({ connection, quota, onChange }: { connection: GitHubConnect
               {connection.failure !== null ? ` (${connection.failure})` : ''}, so SwarmCloud cannot act as you until you
               reconnect: Reconnect is above.{' '}
               {/* The address CONFIG-NAV's SECTIONS spell, linked at its own path rather than `/setup`'s redirect. */}
-              <a href={addressToPath(WORKSPACE_SETUP_ADDRESS)}>Config › Workspace Settings › Workspace setup</a> carries the
+              <a href={addressToPath(WORKSPACE_SETUP_ADDRESS)}><WorkspaceTabWords tab="Setup" /></a> carries the
               recovery steps.
             </p>
           )}
@@ -1460,13 +1472,21 @@ function GitHubQuotaLines({ quota }: { quota: GitHubQuota[] }) {
  * over the sentence on the left, the one button at the right, which wraps
  * under the words when the row is too narrow for both.
  */
-function Lead({ kicker, title, actions, children }: { kicker?: string; title: string; actions?: ReactNode; children: ReactNode }) {
+function Lead({ kicker, title, info, actions, children }: { kicker?: string; title: string; info?: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <section className="ac-lead" aria-label="Next step">
       <Card className="ac-lead-c">
         <div className="ac-lead-t">
           {kicker !== undefined && <b className="ac-lead-k">{kicker}</b>}
-          <h2>{title}</h2>
+          {info === undefined ? (
+            <h2>{title}</h2>
+          ) : (
+            // `.ac-lead-t > h2` (onboarding.css) does not reach through the row, so its face is restated inline.
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <h2 style={{ margin: 0, fontSize: 'var(--t-lead)', lineHeight: 'var(--lh-lead)', fontWeight: 600 }}>{title}</h2>
+              <InfoTip about={title} tip={info} />
+            </span>
+          )}
           <p className="ur-small">{children}</p>
         </div>
         {actions !== undefined && <div className="ac-lead-a">{actions}</div>}
@@ -1507,8 +1527,8 @@ function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overvie
   const c = overview.connection
   const chosen = overview.grants.length
   const login = c?.forge_login != null ? `@${c.forge_login}` : null
-  const lead = (kicker: string, title: string, sentence: ReactNode, actions?: ReactNode) => (
-    <Lead kicker={kicker} title={title} actions={actions}>
+  const lead = (kicker: string, title: string, sentence: ReactNode, actions?: ReactNode, info?: string) => (
+    <Lead kicker={kicker} title={title} info={info} actions={actions}>
       {sentence}
     </Lead>
   )
@@ -1543,10 +1563,12 @@ function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overvie
     return lead(
       `Step ${steps.indexOf(github) + 1} of ${of} · needs you.`,
       github.line,
-      `${as}, but Workspace setup's checklist says ${github.line}; its fix is on this page. Workspace setup names what to do.`,
+      `${as}.`,
       <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_SETUP_ADDRESS)}>
         Open Workspace setup
       </ButtonLink>,
+      // BGD's no-prose rule (2026-11-05): why the step reads failed, behind its title.
+      `Workspace setup's checklist says ${github.line}; its fix is on this page. Workspace setup names what to do.`,
     )
   }
   const repos = steps.find((s) => s.key === 'repositories') ?? null
@@ -1684,8 +1706,11 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
       title="Where the App is installed"
       action={
         isGitHubUrl(installUrl) ? (
+          // ANOTHER organisation (visual QA pass 2 config2-22): every owner
+          // listed has its own row's button; this one is for an owner the list
+          // does not name yet.
           <ButtonLink size="sm" href={installUrl} target="_blank" rel="noreferrer">
-            Install on an organisation…
+            Install on another organisation…
           </ButtonLink>
         ) : undefined
       }
@@ -1762,8 +1787,10 @@ function Installs({ grants, open }: { grants: AccessGrant[]; open: Open }) {
                             Request install
                           </Button>
                         ) : (
+                          // Says whose (config2-22): a bare `Install` on the
+                          // person's own row did not say it was their account.
                           <ButtonLink size="sm" href={o.install_url} target="_blank" rel="noreferrer">
-                            Install
+                            Install on your account
                           </ButtonLink>
                         )}
                       </td>
@@ -1850,7 +1877,8 @@ function ChooseTab({ overview, reloadOverview, open, startOwner }: { overview: A
 /**
  * THE LEDE SAYS WHAT THE TAB SHOWS (visual QA V232). Since GITHUB-ACCESS-PAGE
  * the reach-as-you list is on Config › Repositories, so the two tabs say what
- * they hold instead.
+ * they hold instead. It is the (i) in the page's head, after Refresh, not a
+ * line under it (BGD's no-prose rule, 2026-11-05).
  */
 function accessLede(view: View, tenant: string | null): string {
   const inTenant = tenant !== null ? ` in workspace ${tenant}` : ''
@@ -1881,14 +1909,13 @@ export function AccessScreen() {
           the head with GITHUB-ACCESS-PAGE (the setup strip over every Config
           page links Workspace setup); Members and Browser logins left it with
           GA-MOVE-VIEWS for People and roles and Secrets. */}
-      <PageHead title="GitHub access">
+      <PageHead title="GitHub access" info={<InfoTip about="GitHub access" tip={accessLede(view, tenant)} />}>
         <UrRefresh reads={[overview]} />
       </PageHead>
       {/* `cfg-parts` (config.css, imported with the setup strip) is the Config
           pages' tab strip layout: never shrunk, never a vertical scroller --
           the underline's -1px margin made a bare strip draw a scroll arrow. */}
       <Tabs tabs={GITHUB_TABS} current={view} label="GitHub access" className="cfg-parts" onSelect={(k) => open(k === 'choose' ? 'choose' : 'mine')} />
-      <p className="ur-sub">{accessLede(view, tenant)}</p>
       <UrRegion state={overview.state} route="GET /v1/access" what="Your access" onRetry={overview.reload} lines={4}>
         {(o) =>
           view === 'choose' ? (

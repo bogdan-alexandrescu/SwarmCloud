@@ -18,145 +18,8 @@
    are scoped one class deeper than the rule they replace.
    ======================================================================== */
 
-/* ---- The list, full width, with no sideways scroll at 1440 (#503) ------- */
+/* ---- The list's row pieces ------------------------------------------- */
 
-/* BELOW 900 THE LIST SCROLLS SIDEWAYS, AND SAYS SO (VQA V109). At 400 its
-   columns were cut at the card's edge mid-word with nothing saying more lay
-   to the right (a headless scrollbar paints nothing, and a phone's is
-   transient). The right edge fades while columns are off it -- `MoreRight`,
-   the step table's #109 cue -- and only then, so the last column in view is
-   never dimmed. */
-.wfl-scroll.has-more {
-  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
-  mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
-}
-
-/* AT 900 AND UP THE TABLE IS LAID OUT FIXED AT ITS WRAPPER'S WIDTH, every
-   column a share of it. It was 1448px of content in a 1054px wrapper: most of
-   Owner, and all of Started and Duration, behind a horizontal scroll, and the
-   whole owner address made Owner alone 369px. Below 900 the phone form keeps
-   the sideways scroll and the one-line summary (`.wfl-phone`). */
-@media (min-width: 900px) {
-  .wfl > .table-wrap.wfl-scroll { overflow-x: visible; }
-  .wfl .wfl-table { table-layout: fixed; width: 100%; }
-  /* THREE COLUMNS ARE SIZED TO WHAT THEY HOLD (browser QA D8, 2026-10-04):
-     at 9% each, "9/10" was clipped behind its bar, a state read "succeeded…"
-     and a duration "4h 12m so …". State fits "dead-lettered" beside its mark,
-     Steps done a 24px bar and "10/10", Duration "23h 59m so far"; the name
-     takes what is left and is cut with its title, as the shape is. */
-  .wfl .wfl-table th[data-col="state"] { width: 136px; }
-  .wfl .wfl-table th[data-col="shape"] { width: 84px; }
-  .wfl .wfl-table th[data-col="done"] { width: 92px; }
-  /* Runners holds one whole "claude-code ×20" chip (browser QA N7: at 11%
-     it held 96px, so a one-profile workflow folded to a bare "+1"). */
-  .wfl .wfl-table th[data-col="runners"] { width: 148px; }
-  /* COST AND OWNER HOLD WHAT THEY SHOW (owner QA R10, 2026-10-04): at 8%
-     '$0.6024 1/3' was clipped by 3px, and at 7% (74px) an owner read
-     'swarm-…'. Cost holds '$12.92 10/12' in the one money format
-     (`measure.usd`); Owner holds a 14-character name, the whole address in
-     its title. Shape and Started give up their shares for px (each cut with
-     its title, as before), so the name keeps the most room of any column
-     (168px at 1056), cut with its title. */
-  .wfl .wfl-table th[data-col="cost"] { width: 100px; }
-  .wfl .wfl-table th[data-col="owner"] { width: 116px; }
-  /* Submitted holds "10-05 14:44", an older day's submit time (QA G3-20). */
-  .wfl .wfl-table th[data-col="submitted"] { width: 96px; }
-  .wfl .wfl-table th[data-col="duration"] { width: 124px; }
-  .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
-  .wfl .wfl-table td[data-col="state"],
-  .wfl .wfl-table td[data-col="done"],
-  .wfl .wfl-table td[data-col="duration"] { text-overflow: clip; white-space: nowrap; }
-  .wfl .wfl-table td[data-col="shape"] { white-space: nowrap; }
-  .wfl .wfl-done { display: flex; }
-  .wfl .wfl-done > .c-bar { flex: 1 1 auto; min-width: 24px; }
-  .wfl .wfl-done > small { flex: none; }
-  /* A COST IS NEVER CUT (visual QA Q9): "not re…" was a cut word. The
-     column holds "$12.3456 3/5"; an unreported cost is a dash. */
-  .wfl .wfl-table td[data-col="cost"] { text-overflow: clip; white-space: nowrap; }
-  /* THE COVERAGE IS ITS OWN LINE UNDER THE FIGURE (V163, #1427). On the
-     figure's line, "$0.426 3 of 4 reported" was 172-179px in a 100px cell
-     and the clip took "reported" -- the word that says the figure is a
-     floor, the one part that must not go. The figure stays one line; the
-     coverage wraps at its spaces ("3 of 4" / "reported") before anything of
-     it is cut. The column stays 100px: the name's floors at 1056 (D8, R10)
-     have nothing to give, and the row is already three lines tall. */
-  .wfl .wfl-table td[data-col="cost"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; }
-  /* FROM 1280 THE COVERAGE IS ONE LINE (owner decision c28, 2026-10-22, box
-     comment 6314117148 on #1680). At 1440 the cell read three lines, '$0.426'
-     / '3 of 4' / 'reported'. '3 of 4 reported' is 15 characters of 12px
-     mono (108px) inside the cell's 10px a side; the width that holds it is
-     below. The name pays for it: at 1280 with the nav open the list is 896px
-     and the name keeps 196px, over the 168px D8 and R10 hold. Below 1280 the
-     column stays 100px and V163's wrap stands.
-     The width alone makes it one line: the coverage keeps V163's
-     `white-space: normal` here too. A nowrap would hand a longer coverage to
-     the cell's clip -- '10 of 12 reported' is 122px, and R10 sizes this
-     column for 12 steps -- and the clip takes "reported" again; with normal
-     it wraps at its spaces instead. */
-  /* 136px, NOT 128 (visual QA r3:work-a-010, run 5b, #1680 comment
-     6314117148): c28's 128px still wrapped at 1440. The coverage is drawn in
-     `.wf-spend`'s DM Mono, whose advance is exactly 600/1000 em, so '3 of 4
-     reported' is 108.0px -- and 128px left a content box of exactly 108px.
-     c28 measured the text in the cell's sans face (100.8px) and saw slack
-     that was not there; a browser rounding one glyph advance up wraps
-     'reported'. 136px leaves one character's advance (7.2px) to spare, and
-     the name still keeps 196px at 1280 with the nav open, over D8's 168. */
-  @media (min-width: 1280px) {
-    .wfl .wfl-table th[data-col="cost"] { width: 136px; }
-  }
-  .wfl .wfl-table td[data-col="owner"] { white-space: nowrap; }
-  /* At the micro size, as the row's other secondary facts are: it is what
-     lets both hold their longest value and the name keep 168px at 1056. */
-  .wfl .wfl-table td[data-col="cost"],
-  .wfl .wfl-table td[data-col="owner"] { font-size: var(--t-micro); }
-  .wfl .wfl-name { min-width: 0; }
-  /* ONE LINE (VQ-013): the name is cut, and the runner mix keeps room for one whole chip. At 1440 a basis of 0
-     and a 56px floor left the mix 56px beside a 247px name, and every row's
-     'claude-code · 5 steps' drew as 'clau…' (VQ-013 review) -- in the band
-     where the mix is the only place the runners are shown. 11rem (176px) is
-     one folded chip as `Mix` measures it: 'claude-code · 5 steps' is 169px
-     (dag.ts `mixChipW` plus `STEPS_WORD_W`). The basis is a length, not
-     `auto`: the mix measures its own width to fold its chips, so its width
-     comes from the line, never from what it draws. */
-  .wfl .wfl-line > a { flex: 0 1 auto; min-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wfl .wfl-line > .wfl-mix { flex: 1 0 11rem; min-width: 11rem; }
-  /* The current step is the row's one second line, cut with its title. */
-  .wfl .wfl-name > .wfl-why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  /* THE RUNNERS UNDER THE NAME (VQ-013 re-review). Where the name would keep
-     less than 200px beside the mix -- at 1440 with the nav open the line is
-     319px, and the name kept 127px ('Audit the operator s…') -- the row draws
-     the mix on its second line, before the current step (`mixGoesUnder`,
-     Workflows.tsx). The mix keeps its one whole chip there and does not give
-     way.
-     THE STEP TAKES THE LINE UNDER IT (#2391 comment 58): beside the mix's
-     11rem the step kept ~135px at 1440 and read 'failed at checkpoints: e…'.
-     The second line wraps and the step is a line of its own, the column's
-     whole width, so the failing step and the start of its cause read; still
-     one line, cut with its title. */
-  .wfl .wfl-name > .wfl-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--ctl-s2); min-width: 0; }
-  .wfl .wfl-sub > .wfl-mix { flex: 0 0 11rem; min-width: 0; }
-  .wfl .wfl-sub > .wfl-why { flex: 1 1 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wfl .wfl-table th[data-col="workflow"] { min-width: 280px; }
-}
-/* THE LIST'S NOTE IS ONE MUTED LINE UNDER THE HEAD (VQ-013): the list's
-   column gap spaces it, and its own bottom margin (`.c-count-note`) is not
-   added on top. */
-.wfl > .c-count-note { margin: 0; }
-/* THE NAME'S LINE (VQ-013): the name, its id muted beside it, the runner
-   mix where the Runners column is not drawn, and a row's tags. A flex row,
-   so the id and the chips sit on the name's line; a table holds it to one
-   line, a phone card lets it wrap (below). */
-.wfl .wfl-name > .wfl-line { display: flex; flex-wrap: nowrap; align-items: center; gap: 2px var(--ctl-s2); min-width: 0; }
-.wfl .wfl-line > a { color: var(--text); font-weight: 600; text-decoration: none; }
-.wfl .wfl-line > a:hover,
-.wfl .wfl-line > a:focus-visible { text-decoration: underline; }
-/* THE ID UNDER THE NAME, AT EVERY WIDTH (visual QA pass 1 overview-agents-61,
-   #2596). Beside the name it took a 10ch cut of the line, and every 45-character
-   title read `Audit the operator scripts and the Terr…` at 1440. It is the
-   name's second line now, small and muted, one line cut with its whole value
-   in its title, as the phone card already drew it (QA G3-09: never broken
-   across lines). */
-.wfl .wfl-name > .id { display: block; font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* THE PROFILE GIVES WAY, THE STEP COUNT DOES NOT (visual QA pass 1 C-11,
    #2596): the chip was one block cut at its end, so a lone long profile read
    `claude-code-browser …` and lost `· 1 step`. The profile is cut inside the
@@ -164,109 +27,16 @@
 span.wf-mix > .c-chip { display: flex; }
 .wf-mix > .c-chip > .wf-mix-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-mix > .c-chip > .wf-mix-n { flex: none; white-space: nowrap; }
-.wfl .wfl-line > .tag { flex: none; }
-/* THE NAME GETS ITS ROOM BELOW 1680 (QA G3-09, 2026-10-07). At 1440 the nine
-   columns left the name 166px of a 1054px table: titles cut at ~20
-   characters and the Shape cell at `1 → 1 →…`. Shape repeats what Steps done
-   says and Runners moves onto the name's line (`.wfl-mix`; VQ-013), so the name
-   holds about 390px. 1680 is where the table is wide enough (~1290px) for all
-   nine with the name still over 280px. */
-.wfl .wfl-line > .wfl-mix,
-.wfl .wfl-sub > .wfl-mix { display: none; }
-@media (min-width: 900px) and (max-width: 1679px) {
-  .wfl .wfl-table th[data-col="shape"],
-  .wfl .wfl-table td[data-col="shape"],
-  .wfl .wfl-table th[data-col="runners"],
-  .wfl .wfl-table td[data-col="runners"] { display: none; }
-  .wfl .wfl-line > .wfl-mix,
-  .wfl .wfl-sub > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
-}
-.wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
 /* WHAT BECAME OF THE OTHER STEPS, UNDER THE FRACTION (visual QA run 6, F3,
-   #1680). '4/6' keeps its line and the column its 92px; '1 failed · 1
-   cancelled' is a line of its own that wraps at its spaces rather than being
-   clipped with the cell. The separator that joins the two in the cell's text
-   is not drawn: the line break is the separation. */
-.wfl .wfl-table td[data-col="done"] > .wfl-done-ends,
+   #1680). '4/6' keeps its line; '1 failed · 1 cancelled' is a line of its
+   own that wraps at its spaces rather than being clipped with the cell. The
+   separator that joins the two in the cell's text is not drawn: the line
+   break is the separation. */
 .wfl-done-ends {
   display: block; white-space: normal;
   font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim);
 }
 .wfl-done-ends > .wfl-done-sep { display: none; }
-
-/* AT 640 AND BELOW, A CARD PER ROW (live QA WF-8, 2026-10-11). The phone drew
-   the 1086px desktop table in a sideways scroller: the held State column took
-   about 40% of 400px, ids broke mid-string, and Steps done, Cost, Owner,
-   Submitted and Duration were all off the right edge. Each row is now a card
-   -- the name across the top, then state and duration, steps done and cost,
-   owner and submitted -- with every cell's column named before its value.
-   Shape and Runners stay off: the runner mix is the name's second line, and
-   Steps done says what the shape would. The selectors are a class deeper than
-   the shared `.is-scroll` held-first-column rule (styles.css), which they
-   undo. */
-@media (max-width: 640px) {
-  .wfl > .table-wrap.wfl-scroll { overflow-x: visible; -webkit-mask-image: none; mask-image: none; }
-  .wfl > .wfl-scroll > .wfl-table,
-  .wfl > .wfl-scroll > .wfl-table > tbody { display: block; width: 100%; }
-  .wfl > .wfl-scroll > .wfl-table > thead { display: none; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
-    grid-template-areas: "name name" "state duration" "done cost" "owner submitted";
-    gap: var(--ctl-s1) var(--ctl-s3);
-    padding: var(--ctl-s3) var(--ctl-s3);
-    border-bottom: 1px solid var(--line-soft);
-  }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td {
-    display: block;
-    position: static;
-    width: auto;
-    min-width: 0;
-    max-width: none;
-    padding: 0;
-    border: 0;
-    background: none;
-  }
-  /* A FAILED CARD IS RED ACROSS THE WHOLE CARD (V101, #1427). The cells'
-     `background: none` above lost the first cell to the held-column failed
-     rule in styles.css (`.is-scroll > ... tr.wfl-row.is-failed > td:first-child`,
-     a class more), so the State cell alone was tinted: a red bar behind
-     "failed" that stopped short of the card's edge. A card is one box, so
-     the ROW takes the tint -- across the gaps and the padding too -- and no
-     cell paints one, the held one included (`.is-scroll` and `:not([colspan])`
-     are what out-rank that rule). */
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row.is-failed { background: var(--s-badb); }
-  .wfl > .wfl-scroll.is-scroll > .wfl-table > tbody > tr.wfl-row.is-failed > td:not([colspan]) { background: none; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] { grid-area: name; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"] { grid-area: state; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"] { grid-area: duration; text-align: right; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="done"] { grid-area: done; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="cost"] { grid-area: cost; text-align: right; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="owner"] { grid-area: owner; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="submitted"] { grid-area: submitted; text-align: right; }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="shape"],
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="runners"] { display: none; }
-  /* The column's name, as the hidden head would have said it. */
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"]::before,
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="cost"]::before,
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="owner"]::before,
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="submitted"]::before {
-    content: attr(data-col) " ";
-    color: var(--text-dim);
-    font-size: var(--t-micro);
-  }
-  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] > .id { overflow-wrap: normal; word-break: keep-all; }
-  .wfl .wfl-name > .wfl-line { flex-wrap: wrap; }
-  .wfl .wfl-line > .wfl-mix { display: block; flex: 1 0 100%; overflow: hidden; white-space: nowrap; }
-  /* The cells say what the one-line phone summary carried. */
-  .wfl .wfl-name > .wfl-phone { display: none; }
-  .wfl .wfl-done { display: flex; gap: var(--ctl-s2); align-items: center; }
-  .wfl .wfl-done > .c-bar { flex: 1 1 auto; min-width: 24px; }
-}
-.wfl-shape { white-space: nowrap; }
-/* "partial": some step depends on part of the level above (§6), which the
-   text shape cannot say. A fact chip (the canonical `Chip`), not a state. */
-.wfl-shape > .c-chip { margin-left: 6px; }
 
 /* THE STAGE-SHAPE GLYPH (wide-workflows.html §6): one 7px column per stage,
    its height log-scaled from the stage's width (`stageGlyph`), filled bottom
@@ -848,6 +618,7 @@ span.wf-mix > .c-chip { display: flex; }
   position: absolute; z-index: 1;
   box-sizing: border-box;
   display: flex; flex-direction: column; gap: 4px;
+  /* 12px a side is `BAND_PAD_X` in Workflows.tsx, which adds the on-screen inset to it. */
   margin: 0; padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--line);

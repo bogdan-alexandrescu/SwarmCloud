@@ -1,6 +1,8 @@
-"""Every main build and every release rebuilds each image that upgrades OS
-packages (owner decision 2026-10-14: "force a fresh apt layer", on every
-release).
+"""Every release rebuilds each image that upgrades OS packages (owner decision
+2026-10-14: "force a fresh apt layer", on every release). Main's own build
+reuses such a digest while its inputs are unchanged (BGD, 2026-11-06): the
+release rebuilds every one of them whatever main did, so main's refresh was
+never promoted and only made the release wait (test_build_images_fast.py).
 
 THE FAILURE THIS PREVENTS. Releases 38535875750 (2c7bbea5) and 38540997006
 (cc6353d0) refused to promote workspace-apply over curl and libcurl4t64
@@ -13,15 +15,17 @@ change, and nothing in the tree changes when Debian ships a fix.
 The properties asserted here, against the REAL script in the incremental
 tests' git sandbox:
 
-  * a digest of an image whose Dockerfile upgrades OS packages, made by
-    another build (its recorded `apt_refresh` is not this build's
-    APT_REFRESH), is rebuilt though no input changed; an image built FROM one
-    is rebuilt with it; an image that upgrades nothing (swarm-verify) is still
-    reused -- the rule is not "rebuild all";
+  * on main, a digest of an image whose Dockerfile upgrades OS packages, made
+    by another build (its recorded `apt_refresh` is not this build's
+    APT_REFRESH), is reused while no input changed, and keeps the
+    apt_refresh it was made with;
   * without BUILD_APT_REFRESH, APT_REFRESH names the GitHub run, so two runs
-    never share one, and the manifest records it as each image's apt_refresh;
+    never share one, and the manifest records it as the apt_refresh of each
+    image this run upgraded;
   * a release rebuilds them even from a record CI built whole for this very
-    commit, and still re-tags swarm-verify;
+    commit, and from a record main reused them in; an image built FROM one is
+    rebuilt with it; an image that upgrades nothing (swarm-verify) is still
+    re-tagged -- the rule is not "rebuild all";
   * every build of such an image is passed APT_REFRESH: the generated configs
     as `--build-arg APT_REFRESH=<it>`, workspace-apply's checked-in recipe as
     the `_APT_REFRESH` substitution its build step passes on. CI run
@@ -32,8 +36,9 @@ tests' git sandbox:
   * workspace-apply's apt RUN fails its own build when a simulated
     dist-upgrade still has something to install.
 
-MUTATION: drop the apt_refresh clause from plan_incremental (the rebuild
-tests go red), restore the early exit for a whole CI record (the release test
+MUTATION: drop the apt_refresh clause from plan_incremental (the release
+tests go red), ask it of main's build too (the main test goes red), restore
+the early exit for a whole CI record (the release test
 goes red), stop calling apt_build_args or adding _APT_REFRESH to the subs (the
 config test goes red), or remove `${APT_REFRESH}` from any apt RUN (the
 Dockerfile test goes red).
@@ -61,13 +66,16 @@ from .test_release_rebuilds_stale_images import Release
 REPO = Path(__file__).resolve().parents[3]
 
 # The images whose recipe Dockerfile runs `apt-get upgrade` or `apk upgrade`,
-# and the two built FROM a base, which are rebuilt with it.
+# and the three built FROM a base, which are rebuilt with it.
 UPGRADES = {
     "agent-runtime-base", "agent-runtime-base-nocodex", "swarm-api", "swarm-scheduler",
     "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-live", "swarm-egress",
-    "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks", "workspace-apply",
+    "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks", "swarm-voice",
+    "swarm-speech", "workspace-apply",
 }
-BUILT_FROM_A_BASE = {"agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
+# by digest, as the indexer is.
+BUILT_FROM_A_BASE = {"agent-runtime-browser", "agent-runtime-indexer", "agent-runtime-lightpanda"}
 NO_UPGRADE = set(IMAGES) - UPGRADES - BUILT_FROM_A_BASE
 REBUILT = UPGRADES | BUILT_FROM_A_BASE
 
@@ -119,25 +127,21 @@ def box(tmp_path: Path) -> Recording:
     return Recording(tmp_path)
 
 
-def test_a_digest_another_build_upgraded_is_rebuilt_though_no_input_changed(box):
-    """The release failure: no input of workspace-apply changed, and its
-    digest is another build's. It is rebuilt, with every other image that
-    upgrades OS packages; swarm-verify is re-tagged."""
+def test_on_main_a_digest_another_build_upgraded_is_reused_while_no_input_changed(box):
+    """Main's build: no input changed, and every digest's OS upgrade is
+    another build's. Nothing is rebuilt -- the release refreshes them -- and
+    each reused entry says whose upgrade it carries, so the release's check
+    sees it is not its own."""
     head = box.commit("docs", {"docs/ci.md": "words\n"})
     proc, manifest, events = box.build(box.record(box.first), BUILD_APT_REFRESH="this-build")
     assert proc.returncode == 0, proc.stderr[-4000:]
-    assert _submitted(events) == REBUILT, f"submitted {_submitted(events)}"
-    assert NO_UPGRADE, "the control needs an image that upgrades nothing"
-    assert _retagged(events) == NO_UPGRADE, (
-        "an image whose Dockerfile upgrades no OS package has no apt layer to refresh; "
-        "rebuilding it too would make this rule 'rebuild everything'"
-    )
-    assert "every build and release refreshes them" in proc.stderr, proc.stderr[-4000:]
+    assert _submitted(events) == set(), f"submitted {_submitted(events)}"
+    assert _retagged(events) == set(IMAGES)
     _assert_whole(manifest, head)
     by_name = {i["name"]: i for i in manifest["images"]}
-    assert by_name["workspace-apply"]["reused"] is False and by_name["workspace-apply"]["built_from"] == head
     for name in UPGRADES:
-        assert by_name[name]["apt_refresh"] == "this-build", by_name[name]
+        assert by_name[name]["reused"] is True, by_name[name]
+        assert by_name[name]["apt_refresh"] == APT_PIN, by_name[name]
     for name in NO_UPGRADE:
         assert by_name[name]["apt_refresh"] is None, by_name[name]
 
@@ -153,12 +157,13 @@ def test_a_digest_this_build_made_is_reused(box):
 
 
 def test_without_an_override_apt_refresh_names_the_github_run(box):
-    head = box.commit("docs", {"docs/ci.md": "words\n"})
+    # workspace-apply's recipe directory is its input, so main rebuilds it.
+    head = box.commit("ws", box.append("images/workspace-apply/Dockerfile"))
     env = {k: v for k, v in box.env.items() if k != "BUILD_APT_REFRESH"}
     box.env = {**env, "GITHUB_RUN_ID": "4242", "GITHUB_RUN_ATTEMPT": "2"}
     proc, manifest, events = box.build(box.record(box.first))
     assert proc.returncode == 0, proc.stderr[-4000:]
-    assert _submitted(events) == REBUILT, f"submitted {_submitted(events)}"
+    assert "workspace-apply" in _submitted(events), f"submitted {_submitted(events)}"
     expected = f"{head[:12]}-run4242-2"
     ws = {i["name"]: i for i in manifest["images"]}["workspace-apply"]
     assert ws["apt_refresh"] == expected, ws
@@ -189,6 +194,29 @@ def test_a_release_rebuilds_them_even_from_a_record_ci_built_whole_for_this_comm
         assert by_name[name]["reused"] is True, by_name[name]
     for name in REBUILT:
         assert by_name[name]["reused"] is False and by_name[name]["built_from"] == head, by_name[name]
+
+
+def test_a_release_rebuilds_them_from_a_record_main_reused_them_in(tmp_path):
+    """Main's build reused every digest from an earlier commit's build, OS
+    upgrades included (test_build_images_fast.py). The release promotes none
+    of those upgrades: it rebuilds every OS-upgrading image, and the images
+    built FROM one, and keeps swarm-verify as main reused it."""
+    box = Release(tmp_path)
+    head = box.commit("docs", {"docs/ci.md": "words\n"})
+    record = json.loads(box.record(head).read_text())
+    for entry in record["images"]:
+        entry.update(box.reused_from(entry["name"], box.first), apt_refresh="an-earlier-main-run")
+
+    box.env["BUILD_APT_REFRESH"] = "the-release-run"
+    proc, manifest, events = box.release(record)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert _submitted(events) == REBUILT, f"the release submitted {_submitted(events)}"
+    by_name = {i["name"]: i for i in manifest["images"]}
+    for name in NO_UPGRADE:
+        assert by_name[name]["reused"] is True and by_name[name]["built_from"] == box.first, by_name[name]
+    for name in UPGRADES:
+        assert by_name[name]["built_from"] == head, by_name[name]
+        assert by_name[name]["apt_refresh"] == "the-release-run", by_name[name]
 
 
 def test_every_build_of_an_upgrading_image_is_passed_apt_refresh(box):

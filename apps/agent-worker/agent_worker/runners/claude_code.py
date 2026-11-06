@@ -257,9 +257,14 @@ checkout carries `scripts/related-tests.sh` the prompt gains the standing rule
 (`RELATED_TESTS_NOTE`): run the related tests through that script, never
 vitest without file arguments, never pytest over a whole directory or with
 `-n auto` across the suite, never parallel shards or background batches
-polled with sleep, and `scripts/changed-guards.sh` once at the end. Keyed on
-the script being in the checkout, so another tenant's repository is never
-told to run a script it does not have.
+polled with sleep. Keyed on the script being in the checkout, so another
+tenant's repository is never told to run a script it does not have. The note
+once ended "run `scripts/changed-guards.sh` once at the end"; since the owner's
+decision of 2026-11-01 (#2981) it says the opposite: this runner has the
+pre-publish gate (`prepublish=True`), which runs that script after the turn
+and hands back what fails, and on a large patch the agent's own run hit its
+10-minute command limit (about ten minutes a step) only for the gate to run
+the same guards again.
 
 WHY A SCRATCH NOTE (issue #2436). task_73850f24085447368991 was evicted twice
 with `EmptyDir volume "tmp" exceeds 3Gi`: its agent wrote a Postgres data dir,
@@ -283,6 +288,16 @@ last one is warned, never blocked (`guards_repeat_hook.py`). And the prompt
 gains one line (`exploration_note`): the graph's `search` and `call_graph`
 before a `grep -rn` across the tree, and broad exploration sent to a sonnet
 or haiku child, each clause only when the attempt has that tool.
+
+LIGHTPANDA (docs/design/lightpanda-runtime.md §6.2, contract request 127).
+On `claude-code-lightpanda` (SWARM_RUNNER_PROFILE, which the worker sets) this
+runner starts and supervises `lightpanda serve` on 127.0.0.1:9223 under
+`env -i`, sets SWARM_LIGHTPANDA_CDP and never SWARM_CDP_ENDPOINT, registers the
+`lightpanda` MCP server and no `playwright` one, denies three of its tools and
+adds `lightpanda.lightpanda_note` to the prompt. There is no live view, so no
+`browser.json`. Checkpointing and fencing are this runner's, unchanged: the
+child starts inside `body`, after the worker's fencing check, and stops with
+it (`agent_worker.lightpanda`).
 """
 
 from __future__ import annotations
@@ -291,8 +306,11 @@ import dataclasses
 import json
 import os
 import shlex
+import shutil
 import re
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -301,11 +319,12 @@ from swarm_common.models import (
     RESERVED_MCP_SERVER_NAMES,
     RESERVED_MCP_SERVER_PREFIX,
 )
+from swarm_rollup.agentimage import QA_TOOL_MODULE, VENV_BIN, VENV_PYTHON, runs_qa_tool
 
-from .. import browser_tools, graphstage
+from .. import browser_tools, graphstage, lightpanda, stepservers
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
 from ..cachedirs import image_browsers_path, scratch_note
-from ..children import CHILDREN_ENV, git_shim_argv, search_shim_argv
+from ..children import CHILDREN_ENV, SCREEN_REVIEW_GUIDE_NAME, git_shim_argv, search_shim_argv
 from ..mcp_attach import MAX_SERVERS as MAX_MCP_SERVERS
 from ..mcp_attach import RELAY_ENV as MCP_RELAY_ENV
 from ..mcp_relay import LOOPBACK as MCP_RELAY_HOST
@@ -321,13 +340,24 @@ from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RE
 from ..jevkey import BACKEND_ENV as JEV_BACKEND_ENV
 from ..jevkey import INTERNAL_BACKENDS as JEV_INTERNAL_BACKENDS
 from ..jevkey import KEY_FILE_ENV as JEV_KEY_FILE_ENV
+from ..judge.attempt import CONFIG_ENV as JUDGE_CONFIG_ENV
+from ..judge.mcp import SERVER_NAME as JEV_DECIDE_SERVER_NAME
+from ..judge.mcp import TOOL_NAME as JEV_DECIDE_TOOL
+from ..judge.register import server_entry as jev_decide_entry
 from ..logs import StructuredLogger
 from ..qa_identity import NOTICE_NAME as _QA_NOTICE_NAME
 from ..qa_identity import requested as qa_identity_requested
 from ..qa_target import NOTICE_NAME as QA_TARGET_NOTICE_NAME
 from .base import RunnerContext, RunnerFailure, run_runner
 from ..livegate.presets import PRESETS as DEVICE_PRESETS
-from .cliagent import CliAgentSpec, agent_working_directory, cli_stream_files, run_cli_agent
+from . import ceiling, question_bridge
+from .cliagent import (
+    CliAgentSpec,
+    agent_working_directory,
+    ceiling_state_file,
+    cli_stream_files,
+    run_cli_agent,
+)
 
 #: The CLI's documented switch for every background-task feature: the Bash and
 #: subagent `run_in_background` parameter, auto-backgrounding and Ctrl+B.
@@ -362,6 +392,11 @@ BUDGET_NOTE_HOOK = Path(__file__).resolve().parent / "budget_note_hook.py"
 #: file beside the settings, reset each time the settings are written.
 GUARDS_REPEAT_HOOK = Path(__file__).resolve().parent / "guards_repeat_hook.py"
 GUARDS_STATE_NAME = "guards-state.json"
+#: The PreToolUse hook of the `skill` graph shape: the grep nudge and the
+#: subagent line (SKILL-ON-DEMAND; the why is in its docstring). Its state,
+#: the names already hinted, beside the settings file.
+GRAPH_HINT_HOOK = Path(__file__).resolve().parent / "graph_hint_hook.py"
+GRAPH_HINT_STATE_NAME = "graph-hint-state.json"
 #: The repository `.mcp.json` servers a lane does not load (LANE CAPS).
 REPO_MCP_SERVERS_OFF = ("swarmcloud",)
 #: The most characters of one Bash result the CLI keeps (LANE CAPS). A
@@ -387,18 +422,22 @@ BROWSER_NOTE = (
 #: The helper whose presence in the checkout turns the note below on.
 RELATED_TESTS_SCRIPT = "scripts/related-tests.sh"
 
-#: The standing test rule, once, after the prompt (module docstring).
+#: The standing test rule, once, after the prompt (module docstring). The ONE
+#: place a first message says which tests to run (ONE-PLACE, 2026-11-03: the
+#: rule was said four times); the background-and-sleep rule is the time-limit
+#: line's (`cliagent.time_limit_line`), not restated here.
 RELATED_TESTS_NOTE = (
     "Run tests narrowly: only the tests related to what you change. "
     "`scripts/related-tests.sh` prints the related test files and the runs of "
     "named files that test them; `scripts/related-tests.sh --run` runs those "
     "one after another in the foreground. You must never run vitest without "
     "file arguments, never run pytest over a whole directory or with `-n auto` "
-    "across the suite, and never start parallel shards or background test "
-    "batches polled with sleep: whole-suite runs cost lanes hours and parallel "
-    "shards are what ran containers out of memory. Run "
-    "scripts/changed-guards.sh once at the end and fix what it reports; CI "
-    "runs everything else."
+    "across the suite, and never start parallel test shards: whole-suite runs "
+    "cost lanes hours and parallel shards are what ran containers out of "
+    "memory. Do not run "
+    "scripts/changed-guards.sh yourself: the worker's pre-publish gate runs it "
+    "after your turn and hands you back what fails, to fix in a further turn; "
+    "CI runs everything else."
 )
 
 #: Where to explore first (LANE CAPS, #2524 item 8), once, after the prompt;
@@ -407,11 +446,204 @@ EXPLORATION_GRAPH_CLAUSE = (
     "use the swarm-graph `search` and `call_graph` tools before a `grep -rn` "
     "across the tree"
 )
+#: The children clause names no path: the child path's own line
+#: (`children.prompt_line`) names it, once (ONE-PLACE, 2026-11-03).
 EXPLORATION_CHILDREN_CLAUSE = (
-    "send broad exploration to a child task through .swarm-children "
-    "($SWARM_CHILDREN) with `model_class` \"sonnet\" or \"haiku\" rather "
-    "than reading the tree yourself"
+    "send broad exploration to a child task with `model_class` \"sonnet\" or "
+    "\"haiku\" rather than reading the tree yourself"
 )
+
+#: AGENTS-USE-TOOLS (owner's choice, 2026-11-02; part of #2688). The first
+#: experiment batch offered `swarm-graph` in all 42 steps with code
+#: intelligence on and no agent called it: its tools sat behind the CLI's
+#: tool search and nothing said when to use them. Now its `--mcp-config`
+#: entry carries `alwaysLoad` (`ALWAYS_LOAD`) and the prompt this line, only
+#: when the graph is registered.
+GRAPH_FIRST_NOTE = (
+    "Code graph: the swarm-graph tools are loaded for this task and answer "
+    "who calls a function, where a symbol is defined and what a change touches "
+    "(callers, tests, docs) better than a text search: use them first for those "
+    "questions (`search`, `call_graph`, `impact`, `tests_for`)."
+)
+#: Claude Code's per-server `--mcp-config` field: "all tools from this server
+#: are always included in the prompt and never deferred behind tool search"
+#: (the CLI's schema, 2.1.283). Set on the servers a step is told to use
+#: first: swarm-graph, jev-browser and swarm-jev.
+ALWAYS_LOAD = "alwaysLoad"
+#: The agent's own `jev_decide` (`judge/mcp.py`), registered only on a step
+#: whose workspace opted in to Jev judgments (`judge.attempt.CONFIG_ENV`).
+JEV_DECIDE_NOTE = (
+    f"Jev decision: the `{JEV_DECIDE_TOOL}` tool is loaded for this task: for a "
+    "judgement call (which option fits, whether something meets criteria), ask it "
+    "typed questions first and weigh its advisory answer; it shares this task's "
+    "Jev budget, and credential-shaped text is removed before anything is sent."
+)
+
+#: AGENTS-USE-TOOLS-WHEN (part of #2688). Experiment batch two was stopped on
+#: 2 November 2026: graph-on build steps called the graph 1, 0, 0, 0, 0 and 0
+#: times against 200-560 built-in calls, and Jev-on steps never called
+#: `jev_decide`. Their transcripts show both servers `connected` and their
+#: tools listed: loaded, not chosen. The one line naming them sat after the
+#: whole brief while CLAUDE.md, in the system context, says "`grep -n` or
+#: `rg` first", and nothing named a moment for either tool. So the moments go
+#: in `--append-system-prompt` (`system_note`), at CLAUDE.md's weight and in
+#: every session of the attempt -- a resumed one, and a fresh one after a
+#: context handoff whose prompt is only the handoff -- and only when the
+#: switch is on. Each names where the tool beats grep or a solo call, and
+#: when to skip it, so no call is forced where it adds nothing.
+GRAPH_SYSTEM_NOTE = (
+    "Code intelligence is on for this step: the swarm-graph tools hold this "
+    "repository's symbols, call edges, covering tests and history. A text search "
+    "misses calls through imports, aliases and methods and cannot tell a call from "
+    "a mention, so use the graph at these three moments:\n"
+    "1. Before you edit an existing function, class or file, call `context` on the "
+    "symbol (callers, callees and covering tests in one call) or `impact` on the "
+    "file: those callers are what your change must keep working.\n"
+    "2. Before you run tests, call `tests_for` with the files you changed (`files`, "
+    "repo-relative paths) and run what it lists beside the tests you chose.\n"
+    "3. Before you finish, call `impact` on each existing file you changed and "
+    "check every caller it lists still holds.\n"
+    "Skip them for a file you created in this step and for a docs-only change. A "
+    "row marked `stale` is on a path changed since the index, and zero callers or "
+    "tests is unknown, not none: then grep. A repository rule to grep first and "
+    "read big files by window is about reading files; it is not a reason to skip "
+    "these calls."
+)
+JEV_SYSTEM_NOTE = (
+    f"Jev is on for this step: the `{JEV_DECIDE_TOOL}` tool gives an independent "
+    "second judgement on a state you pass. Call it where you would otherwise "
+    "decide alone:\n"
+    "1. a choice the brief leaves open between designs, wordings or approaches: "
+    "ask which option fits, with the options as criteria;\n"
+    "2. before you finish, the acceptance check: ask whether each requirement the "
+    "brief states is met, giving your evidence for each;\n"
+    "3. when a test or check fails and it is unclear whether the code or the test "
+    "is wrong.\n"
+    "Do not call it for a fact you can check yourself. Its answer is advisory: "
+    "weigh it. It shares this task's Jev budget, and credential-shaped text is "
+    "removed before anything is sent."
+)
+#: The CLI flag carrying `system_note` (Claude Code 2.1.283: "Append a custom
+#: system prompt to the default system prompt", print mode included).
+APPEND_SYSTEM_PROMPT_FLAG = "--append-system-prompt"
+
+
+#: SKILL-ON-DEMAND (the owner's pick of 3 November 2026, "Skill on demand,
+#: with a nudge"; part of #2688). Batch one deferred the ten graph tools
+#: behind tool search: 0 calls in 45 steps. Batch two loaded them on every
+#: turn, about 1,900 tokens, for 2 calls in 12 steps, the first an ambiguity
+#: error after which that agent never came back; subagents, a third to two
+#: thirds of all calls, were never told. So a step's graph takes one of two
+#: SHAPES, chosen by the workflow switch `graph_shape` (`graphstage
+#: .shape_of`), `skill` unless it says otherwise:
+#:
+#:   skill  the code-graph skill (`write_graph_skill`): its description,
+#:          about 100 tokens, names the three moments it pays off; its body,
+#:          read only when invoked, gives the one `slice` query, the only
+#:          tool the server lists, deferred like any other until asked for.
+#:          A PreToolUse hook nudges a grep for an identifier and passes the
+#:          skill's line on to every subagent prompt (`graph_hint_hook.py`).
+#:   tools  batch two exactly: the ten tools loaded (`ALWAYS_LOAD`),
+#:          `GRAPH_FIRST_NOTE` and `GRAPH_SYSTEM_NOTE`, for the comparison.
+GRAPH_SHAPE_SKILL = graphstage.SHAPE_SKILL
+GRAPH_SHAPE_TOOLS = graphstage.SHAPE_TOOLS
+#: The skill's directory under the CLI's HOME (`work/`, cliagent): the CLI
+#: reads a personal skill from `~/.claude/skills/<name>/SKILL.md`. Never the
+#: checkout, so nothing of it reaches a commit.
+GRAPH_SKILL_NAME = "code-graph"
+GRAPH_SKILL_DIR = Path(".claude") / "skills" / GRAPH_SKILL_NAME
+#: The MCP name of the slice tool: server `swarm-graph`, tool `slice`.
+GRAPH_SLICE_TOOL = f"mcp__{graphstage.SERVER_NAME}__slice"
+#: The description is what the session pays for on every turn: the three
+#: moments, nothing about how (the body says how).
+GRAPH_SKILL_DESCRIPTION = (
+    "This repository's code graph in one query. Use it before changing an "
+    "existing function (who calls it), before finishing (which tests cover the "
+    "files you changed) and when a change spans modules (what it touches); it "
+    "sees calls through imports and methods that grep misses."
+)
+GRAPH_SKILL_BODY = f"""\
+# Code graph
+
+One tool answers: `{GRAPH_SLICE_TOOL}`. It is deferred: load it once with the
+ToolSearch tool, query `select:{GRAPH_SLICE_TOOL}`, then call it.
+
+Arguments: `files` (repo-relative paths) and/or `symbols` (a name or an id
+`path#name`), `depth` 1-3 hops (default 1), `include` any of `callers`,
+`callees`, `tests`, `docs` (default callers and tests). The answer is one JSON
+page of at most 4 KiB; pass its `next_cursor` back as `cursor` for the next.
+
+When:
+1. Before changing an existing function or class: `{{"symbols": ["name"]}}`.
+   Every caller listed must keep working after your change.
+2. Before finishing: `{{"files": [<each existing file you changed>],
+   "include": ["tests"]}}`, and run the tests it lists beside your own.
+3. A change across modules: `{{"files": [...], "depth": 2,
+   "include": ["callers", "callees", "docs"]}}` for what it touches.
+
+Reading it: a name several symbols share answers the best match and lists the
+rest under `also_matched`: pass the id you meant to ask again. A row marked
+`stale` is on a path changed since the index. Zero callers or tests is
+UNKNOWN, not none: then grep. Skip it for a file you created in this step.
+
+When you write a prompt for a subagent, tell it the code graph is there and
+that this skill answers callers and covering tests.
+"""
+#: The `skill` shape's system-prompt line: CLAUDE.md, in the same system
+#: context, says grep first; this says when the skill is the better first move.
+GRAPH_SKILL_SYSTEM_NOTE = (
+    f"Code intelligence is on for this step: invoke the `{GRAPH_SKILL_NAME}` skill "
+    "before changing an existing function, before finishing and when a change "
+    "spans modules. A rule to grep first is about reading files, not a reason to "
+    "skip it."
+)
+#: The exploration line's clause in the `skill` shape (`exploration_note`).
+EXPLORATION_SKILL_CLAUSE = (
+    f"invoke the `{GRAPH_SKILL_NAME}` skill before a `grep -rn` for a symbol "
+    "across the tree"
+)
+
+
+def graph_shape(environ: Mapping[str, str]) -> str:
+    """The step's graph shape from the worker (`graphstage.SHAPE_ENV`):
+    `tools` only when it says so, else `skill`, the owner's pick."""
+    value = (environ.get(graphstage.SHAPE_ENV) or "").strip()
+    return GRAPH_SHAPE_TOOLS if value == GRAPH_SHAPE_TOOLS else GRAPH_SHAPE_SKILL
+
+
+def write_graph_skill(home: Path, *, on: bool) -> Path | None:
+    """Write the code-graph skill under `home` when `on`, else remove what an
+    earlier attempt left there (`work/` travels in checkpoints); return the
+    SKILL.md written, or None."""
+    directory = home / GRAPH_SKILL_DIR
+    if directory.is_symlink() or directory.is_file():
+        directory.unlink()
+    elif directory.exists():
+        for child in directory.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        directory.rmdir()
+    if not on:
+        return None
+    for parent in (home / ".claude", home / ".claude" / "skills"):
+        if parent.is_symlink():
+            parent.unlink()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / "SKILL.md"
+    _write_private(path, f"---\nname: {GRAPH_SKILL_NAME}\ndescription: "
+                         f"{GRAPH_SKILL_DESCRIPTION}\n---\n\n{GRAPH_SKILL_BODY}")
+    return path
+
+
+def system_note(*, graph: bool, jev: bool, shape: str = GRAPH_SHAPE_TOOLS) -> str | None:
+    """The system-prompt block for the switched-on tools, or None with both off.
+    The graph's block is its `shape`'s: the moments for the loaded tools, the
+    one line for the skill."""
+    graph_note = GRAPH_SKILL_SYSTEM_NOTE if shape == GRAPH_SHAPE_SKILL else GRAPH_SYSTEM_NOTE
+    blocks = [note for on, note in ((graph, graph_note), (jev, JEV_SYSTEM_NOTE)) if on]
+    return "\n\n".join(blocks) or None
 
 #: Set by the dispatcher on the worker container only with the live browser's
 #: display sidecar (scheduler/dispatch.py); the lifecycle passes it on.
@@ -456,12 +688,23 @@ MCP_CONFIG_NAME = "mcp.json"
 #: directory for automatically named output files"); a screenshot given a
 #: filename is resolved against the workspace root instead -- the checkout --
 #: and, read off 0.0.83's own code, is then NOT returned to the model as an
-#: image, which is why the note asks for no filename. Nothing here sets
-#: `--image-responses`, whose default ("allow") returns the image; and no
+#: image, which is why the note asks for no filename. No
 #: `--output-max-size`, so nothing is evicted before the upload. Other
 #: auto-named files (a page's download, a console log the server writes) land
 #: here too, in the tenant's own artifacts.
 SCREENSHOTS_DIR_NAME = "screenshots"
+#: TOKEN-RENDER (BGD 2026-10-27, #2524 item 2): every session this runner
+#: starts registers Playwright MCP with `--image-responses omit`, so a
+#: screenshot is saved (under SCREENSHOTS_DIR_NAME) and its bytes never return
+#: into the session's context. An image in a tool result stays in context for
+#: every later turn: up to 15.7 MB of tool results in one lane, browser
+#: implement steps at ~159 turns, render lanes at a 164-382k mean context. A
+#: frame is judged instead in one Sonnet child per screen
+#: (`children.screen_review_request`), whose verdict comes back as text, and
+#: the parent reads only the crop `swarm-handoff compare` writes for a frame
+#: over its threshold. The child runs this same runner, so it too gets no
+#: inline image: it reads its own shots with Read, in its own context.
+IMAGE_RESPONSES = ("--image-responses", "omit")
 #: The tool whose results `screenshot_images` reads, as the CLI names it.
 SCREENSHOT_TOOL = f"mcp__{MCP_SERVER_NAME}__browser_take_screenshot"
 
@@ -477,20 +720,29 @@ SCREENSHOT_TOOL = f"mcp__{MCP_SERVER_NAME}__browser_take_screenshot"
 #: build without it.
 LIVE_BROWSER_UNAVAILABLE = "live_browser_unavailable"
 
-#: The image's venv, first on the agent's PATH on the browser image.
-VENV_BIN = "/opt/venv/bin"
+#: The image's venv, first on the agent's PATH on the browser image, is
+#: `VENV_BIN`, imported above from `swarm_rollup.agentimage`: the one constant
+#: the visual-check brief's interpreter path (`swarm_api.qaspec`) is built from.
+
+#: How long the venv's interpreter has to import the capture tool before a
+#: visual-check step is failed (`qa_tool_refusal`). An import of one module
+#: from site-packages takes well under a second; this bounds a hung start.
+QA_TOOL_CHECK_SECONDS = 30
 
 #: What an agent is told, once, after its prompt, when the live browser exists.
+#: ONE-PLACE (the owner's ask of 2026-11-03): each rule once, in as few words
+#: as hold it -- the note was 4,754 characters with every lead and strength
+#: line, and said the CAPTCHA rule, the hand-off wait and where captures go
+#: twice each. What `swarm-handoff wait` prints on return (`handoff.NEXT`)
+#: says the rest of how to read the page again, so the note does not.
 LIVE_BROWSER_NOTE = (
-    "This task has a live browser that a person watches on the console. It is "
-    "the only browser here: starting your own Chromium (`chromium.launch()`, "
-    "headless or not) fails by design. Drive it with the browser_* tools "
-    "(browser_navigate, browser_snapshot, browser_click, browser_tabs, "
-    "browser_take_screenshot), which are already connected to it. From Python, "
-    "`from swarm_browser import live; playwright, browser, context = live()` "
-    "connects over CDP to $SWARM_CDP_ENDPOINT; call `playwright.stop()` when "
-    "done, never `browser.close()`. Open each new page in its own tab so the "
-    "person sees it. "
+    "This task has a live browser that a person watches on the console, the "
+    "only browser here: your own `chromium.launch()` fails by design. Drive it "
+    "with the browser_* tools (browser_navigate, browser_snapshot, "
+    "browser_click, browser_tabs, browser_take_screenshot), or from Python "
+    "with `from swarm_browser import live; playwright, browser, context = "
+    "live()` (CDP to $SWARM_CDP_ENDPOINT; `playwright.stop()` when done, never "
+    "`browser.close()`). Open each new page in its own tab. "
     # CAPTCHA-AVOID (BGD, 2026-10-23; part of #2058): do not provoke the
     # challenges below. The 2026-10-15 benchmark met 11 to 21 Google 429s a
     # batch from searches typed into google.com in this browser. WebSearch is
@@ -504,45 +756,37 @@ LIVE_BROWSER_NOTE = (
     # CAPTCHA-HANDOFF (BGD, 2026-10-23; part of #2058): the gate raises the
     # hand-off itself when it sees a challenge on the agent's page.
     "Never try to solve or get around a CAPTCHA yourself: the platform asks a "
-    "person to solve it, so when the browser stops answering on one, run "
-    "`swarm-handoff wait` and carry on once it returns. "
-    "When a site shows a CAPTCHA, a bot check, a consent wall "
-    "or a sign-in, do not try to get around it and do not switch to a "
-    "different site than the one asked for: run `swarm-handoff request "
-    "--reason \"<what the person should do>\" --expect <domain>`, then "
-    "`swarm-handoff wait`, and carry on once control comes back -- reading the "
-    "page again from the tab the person left (in Python a fresh `live()` and "
-    "`swarm_browser.handoff_page(context)`; with the tools, browser_tabs to "
-    "select it, then browser_snapshot), never from a handle, snapshot or value "
-    "taken before the hand-off. Until then: "
-    "wait, do not poll the browser -- run `swarm-handoff wait` "
-    "in the foreground and nothing else (no `curl /json/version`, no "
-    "snapshots in a loop); on exit 75 run it again, on exit 3 (nobody came) "
-    "write where you stopped into $SWARM_HANDOFF/notes.md and stop -- the task "
-    "parks until the person is ready. Only if the hand-off is refused (exit "
-    "5), say so in your answer and then use an alternative, naming it. Save "
-    "screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
-    "they are uploaded. "
+    "person to solve it. On a CAPTCHA, a bot check, a consent wall or a "
+    "sign-in, do not switch to a different site: run `swarm-handoff request "
+    "--reason \"<what the person should do>\" --expect <domain>` (when the "
+    "browser has stopped answering on one, the gate has asked already), then "
+    "wait, do not poll the browser: run `swarm-handoff wait` in the foreground "
+    "and nothing else; on exit 75 run it again, on exit 3 (nobody came) write "
+    "where you stopped into $SWARM_HANDOFF/notes.md and stop, on exit 5 (refused) "
+    "say so and name the alternative you use. Then read the page again from the "
+    "tab the person left (`swarm_browser.handoff_page(context)` on a fresh "
+    "`live()`, or browser_tabs then browser_snapshot), never from a handle "
+    "taken before the hand-off. "
     # QA-KIT (owner decision 2026-10-19): one line each, built from the
     # gate's own list so a preset added there is named here.
-    "Device: `swarm-handoff device <preset>` makes the browser one of "
-    + ", ".join(f"{p.name} ({p.width}x{p.height})" for p in DEVICE_PRESETS.values())
-    + ". Theme: `swarm-handoff theme dark|light|system` sets the colour scheme "
-    "every page is told to prefer (prefers-color-scheme); it holds across "
-    "navigation and new tabs, and system lifts it. browser_resize is refused: "
-    "the gate owns the browser's size, so the person watching sees the device "
-    "the page is laid out for; pick a preset instead. Take screenshots with "
+    "Read a page with browser_snapshot; take screenshots with "
     "browser_take_screenshot without a filename: each is saved under "
-    "$SWARM_ARTIFACTS_DIR/screenshots and comes back to you as an image; with a "
-    "filename it lands in the checkout and you do not see it. "
+    "$SWARM_ARTIFACTS_DIR/screenshots and does not come back to you as an image. "
+    # TOKEN-RENDER (BGD 2026-10-27, #2524 item 2): IMAGE_RESPONSES.
+    "To judge rendered frames, send them to one Sonnet child per screen, as "
+    f"$SWARM_CHILDREN/{SCREEN_REVIEW_GUIDE_NAME} says, and keep its text verdict; "
+    "`swarm-handoff compare` writes a crop of a frame over threshold and you "
+    "Read only the crop (a child itself reads its own shots). "
+    "`swarm-handoff device <preset>` makes the browser one of "
+    + ", ".join(f"{p.name} ({p.width}x{p.height})" for p in DEVICE_PRESETS.values())
+    + "; browser_resize is refused, as the gate owns the browser's size. "
+    "`swarm-handoff theme dark|light|system` sets prefers-color-scheme. "
     # QA-FLOWS (owner decision 2026-10-19, part of #1649): one line each.
-    "Flow GIFs: `swarm-handoff record start <name>`, do the flow, then "
-    "`swarm-handoff record stop` saves $SWARM_ARTIFACTS_DIR/flows/<name>.gif (a "
-    "frame at each navigation and every second; it stops itself at 200 frames, "
-    "8 MiB or 15 minutes). "
-    "Mockups: `swarm-handoff serve <dir>` serves that directory at the "
-    "http://127.0.0.1:<port>/ it prints, for the live browser to open in a tab "
-    "of its own beside the app (file:// is blocked)."
+    "`swarm-handoff record start <name>`, the flow, then `swarm-handoff record "
+    "stop` saves $SWARM_ARTIFACTS_DIR/flows/<name>.gif (a frame at each "
+    "navigation and every second, up to 200 frames, 8 MiB or 15 minutes). "
+    "`swarm-handoff serve <dir>` serves a mockup at the http://127.0.0.1:<port>/ "
+    "it prints (file:// is blocked)."
 )
 
 #: dev-browser (DEVB-INSTALL, owner decision 2026-10-14, part of #1030): the
@@ -616,6 +860,46 @@ JEV_LAUNCH = Path(__file__).resolve().parent / "jev_launch.py"
 #: jev-browser's own switch: never download a Chromium on first use.
 JEV_NO_INSTALL_ENV = "JEV_BROWSER_NO_INSTALL"
 
+#: THE LANE QUALITY GATES (JEV-LANES, BGD 2026-10-31; `agent_worker.qualitygates`).
+#: jev-belay 0.2.0 (a Stop hook that blocks an unverified "done") and
+#: jev-enforce 1.1.1 (the final reply and every edit against the repository's
+#: CLAUDE.md rule files, `JEV_ENFORCE_MODE=end`: edits recorded, checked once
+#: at the Stop), installed by images/agent-runtime-base beside this launcher,
+#: which every hook command names with the gates' config PATH. The launcher
+#: reads the workspace key into its own process alone, sends only to
+#: TypeSafe's API (or the worker's shim), and scrubs the registered secrets
+#: from what it sends (docs/jev-data-flow.md, "The lane hooks").
+JEV_GATES_LAUNCHER = "/opt/swarm/jev-gates/bin/swarm-jev-gate.mjs"
+#: `qualitygates.CONFIG_ENV`, restated so the runner never imports the key
+#: code; tests/unit/worker/test_quality_gates.py holds them equal.
+JEV_GATES_CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
+JEV_GATES_NODE = "/usr/local/bin/node"
+JEV_ENFORCE_MODE_ENV = "JEV_ENFORCE_MODE"
+#: The tools' own hook timeouts (their hooks/hooks.json), in seconds.
+JEV_BELAY_TIMEOUT = 25
+JEV_ENFORCE_TIMEOUT = 30
+#: jev-enforce's PostToolUse matcher (its hooks/hooks.json).
+JEV_ENFORCE_EDIT_MATCHER = "Edit|Write|MultiEdit"
+
+
+def jev_gates_config() -> str | None:
+    """The gates' config PATH when the worker handed one and the image has
+    the launcher, else None: the hooks are not registered and nothing leaves."""
+    config = os.environ.get(JEV_GATES_CONFIG_ENV, "").strip()
+    if not config or not Path(config).is_file() or not Path(JEV_GATES_LAUNCHER).is_file():
+        return None
+    return config
+
+
+def _jev_gate_hook(config: str, mode: str, timeout: int) -> dict[str, Any]:
+    node = JEV_GATES_NODE if Path(JEV_GATES_NODE).is_file() else "node"
+    return {
+        "type": "command",
+        "command": " ".join(shlex.quote(part) for part in (node, JEV_GATES_LAUNCHER, config, mode)),
+        "timeout": timeout,
+    }
+
+
 #: The first sentence of the live-browser note, per selection.
 BROWSER_TOOL_LEAD = {
     "auto": (
@@ -635,6 +919,16 @@ BROWSER_TOOL_LEAD = {
         "tools. Use them first; the browser_* tools are the fallback."
     ),
 }
+
+#: The `auto` lead when jev is ready (AGENTS-USE-TOOLS, owner's choice
+#: 2026-11-02): the first batch offered jev on every rendered step of the Jev
+#: groups and Playwright did every call. jev's tools load up front
+#: (`ALWAYS_LOAD`); Playwright stays registered as the fallback.
+BROWSER_TOOL_LEAD_JEV_FIRST = (
+    "Browser tools for this task (auto, chosen at submission): jev is ready, so "
+    "use the jev MCP tools first on every rendered page; the browser_* tools "
+    "(Playwright) are the fallback, for what jev cannot do."
+)
 
 #: Each tool's strength, appended in the choice's order.
 BROWSER_TOOL_STRENGTH = {
@@ -760,11 +1054,13 @@ def scratch_note_for(environ: Mapping[str, str]) -> str | None:
     return scratch_note(own_volume=not Path(tmpdir).is_relative_to(workspace))
 
 
-def exploration_note(*, graph: bool, children: str) -> str | None:
+def exploration_note(*, graph: bool, children: str,
+                     shape: str = GRAPH_SHAPE_TOOLS) -> str | None:
     """The one exploration line, naming only what this attempt has, or None."""
     clauses = []
     if graph:
-        clauses.append(EXPLORATION_GRAPH_CLAUSE)
+        clauses.append(EXPLORATION_SKILL_CLAUSE if shape == GRAPH_SHAPE_SKILL
+                       else EXPLORATION_GRAPH_CLAUSE)
     if children:
         clauses.append(EXPLORATION_CHILDREN_CLAUSE)
     if not clauses:
@@ -772,11 +1068,76 @@ def exploration_note(*, graph: bool, children: str) -> str | None:
     return f"Explore cheaply: {'; and '.join(clauses)}."
 
 
+#: A tool result too big for the session is saved to a file and the agent is
+#: handed its path and a preview (Claude Code's persisted output). Measured in
+#: batches one and two: 37 such files read back whole, about 175,000 tokens --
+#: the size the CLI had just kept out of the context. Once, after the prompt,
+#: on every claude-code start with a repository.
+SAVED_OUTPUT_NOTE = (
+    "A tool result too large to show is saved to a file whose path you are "
+    "given: read that file by window (`grep -n` it, then Read with an offset "
+    "and a limit), never whole."
+)
+
+#: SERVERS ONLY FOR THE STEPS THAT USE THEM (ONE-PLACE, the owner's ask of
+#: 2026-11-03). Measured in batches one and two: swarm-git and swarm-state, 22
+#: tools, were registered in 91 steps and never called, and Lightpanda's 29
+#: tools on build steps that never rendered a page; every registered server
+#: costs its tool names and its instructions in every turn. Which steps get
+#: swarm-git and swarm-state is the worker's list (`stepservers`). The spools
+#: stay exported either way: the runner's own pre-publish rebase and the
+#: `swarm-git` CLI in the Bash tool read `$SWARM_GIT`, not the MCP config.
+_RENDERS = re.compile(
+    r"https?://|\brender|\bbrows(?:er|ers|e|ing)\b|\bscreenshot|\bnavigat|"
+    r"\blightpanda\b|\bweb ?pages?\b|\bpages\b|\bweb ?sites?\b|\bscrap(?:e|es|ing)\b|\bcrawl",
+    re.IGNORECASE)
+
+
+def step_renders(payload: Mapping[str, Any]) -> bool:
+    """Whether the step renders pages: its brief names a URL, a browser, a
+    page, a screenshot or a render, or the task named a browser tool. Read
+    wide on purpose: a step read as rendering keeps every tool it had."""
+    if payload.get("browser_tool"):
+        return True
+    prompt = payload.get("prompt")
+    return isinstance(prompt, str) and bool(_RENDERS.search(prompt))
+
+
 def egress_notice(spool: str) -> str | None:
     """EGRESS-GATE: the worker's notice that this attempt's proxied browser has
     no egress (`handoff.EGRESS_NOTICE_NAME`, written by `HandoffPath.prepare`
     before this runner starts, and absent otherwise), or None."""
     return _spool_text(spool, EGRESS_NOTICE_NAME)
+
+
+def qa_tool_refusal() -> str | None:
+    """Why the venv's Python cannot run the capture tool, or None when it can.
+
+    A visual-check brief runs `swarm_rollup.agentimage.QA_TOOL` (the venv's
+    interpreter by its full path, `-m swarm_qa`). On 3 November 2026 a capture
+    leg's agent found "No module named swarm_qa" mid-run; this asks the same
+    interpreter to import the module before the agent starts, so the step
+    fails at once with a message naming both. `-I` (isolated): no PYTHONPATH,
+    no user site and no working directory on the path, so only the venv's own
+    site-packages can satisfy it, as the image installs it. The environment is
+    the PATH alone: nothing of the worker's reaches the child.
+    """
+    argv = [VENV_PYTHON, "-I", "-c", f"import {QA_TOOL_MODULE}"]
+    try:
+        done = subprocess.run(argv, env={"PATH": f"{VENV_BIN}:/usr/local/bin:/usr/bin:/bin"},
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=QA_TOOL_CHECK_SECONDS, check=False)
+    except FileNotFoundError:
+        return f"{VENV_PYTHON} does not exist, so it cannot import {QA_TOOL_MODULE}"
+    except subprocess.TimeoutExpired:
+        return f"{VENV_PYTHON} did not import {QA_TOOL_MODULE} within {QA_TOOL_CHECK_SECONDS} s"
+    except OSError as exc:
+        return f"{VENV_PYTHON} could not be started to import {QA_TOOL_MODULE} ({type(exc).__name__})"
+    if done.returncode == 0:
+        return None
+    lines = (done.stderr or "").strip().splitlines()
+    why = f": {lines[-1].strip()[:200]}" if lines else ""
+    return f"{VENV_PYTHON} cannot import {QA_TOOL_MODULE} (exit {done.returncode}){why}"
 
 
 def qa_target_notice(spool: str) -> str | None:
@@ -810,7 +1171,7 @@ def resume_summary(spool: str) -> str | None:
     return text or None
 
 
-def write_headless_settings(directory: Path) -> Path:
+def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Path:
     """Write the CLI's `--settings` file and its hook into `directory`; return the file.
 
     On a live-browser attempt -- the one kind the lifecycle sets SWARM_HANDOFF
@@ -819,6 +1180,10 @@ def write_headless_settings(directory: Path) -> Path:
     next tool result says when the gate has asked a person to solve a CAPTCHA
     (CAPTCHA-HANDOFF-2, BGD 2026-10-23; part of #2058). Any other attempt has
     no spool for it to read, and gets no hook.
+
+    With `graph_hint` (a step whose graph takes the `skill` shape), it also
+    registers `graph_hint_hook.py` before a search and a subagent's launch:
+    the grep nudge and the subagent line (SKILL-ON-DEMAND).
     """
     if directory.is_symlink():
         directory.unlink()
@@ -901,6 +1266,23 @@ def write_headless_settings(directory: Path) -> Path:
             ]
         },
     }
+    hint_state = directory / GRAPH_HINT_STATE_NAME
+    if hint_state.is_symlink() or hint_state.exists():
+        hint_state.unlink()
+    if graph_hint:
+        # Hints, never blocks: additionalContext or updatedInput, exit 0,
+        # and fails open (graph_hint_hook.py).
+        settings["hooks"]["PreToolUse"].append({
+            "matcher": "Bash|Grep|Task|Agent",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(GRAPH_HINT_HOOK))} "
+                               f"{shlex.quote(str(hint_state))}",
+                    "timeout": 10,
+                }
+            ],
+        })
     post_tool_use: list[dict[str, Any]] = []
     spool = os.environ.get(HANDOFF_ENV, "").strip()
     if spool:
@@ -935,6 +1317,30 @@ def write_headless_settings(directory: Path) -> Path:
                 }
             ],
         })
+    gates = jev_gates_config()
+    if gates:
+        # JEV-LANES: the workspace turned `quality_gates.jev` on and the worker
+        # read its key. Both Stop hooks in one entry, so both run on every
+        # stop; jev-enforce's edit hook only records the edit (`end` mode).
+        settings["env"][JEV_ENFORCE_MODE_ENV] = "end"
+        settings["hooks"]["Stop"] = [{"hooks": [
+            _jev_gate_hook(gates, "belay", JEV_BELAY_TIMEOUT),
+            _jev_gate_hook(gates, "enforce-stop", JEV_ENFORCE_TIMEOUT),
+        ]}]
+        post_tool_use.append({
+            "matcher": JEV_ENFORCE_EDIT_MATCHER,
+            "hooks": [_jev_gate_hook(gates, "enforce-edit", JEV_ENFORCE_TIMEOUT)],
+        })
+    if question_bridge.enabled(os.environ):
+        # The question bridge, behind its switch, which the worker sets for
+        # a plugin step alone (`question_bridge`;
+        # docs/design/agent-plugins-question-bridge.md): a question tool
+        # call is recorded beside these settings and stops the turn, and the
+        # worker parks the step on it. A new settings file is a new run: an
+        # earlier one's question is not this one's.
+        question_bridge.clear_pending(directory / question_bridge.PENDING_NAME)
+        settings["hooks"]["PreToolUse"].append(
+            question_bridge.hook_entry(directory / question_bridge.PENDING_NAME))
     if post_tool_use:
         settings["hooks"]["PostToolUse"] = post_tool_use
     path = directory / "settings.json"
@@ -1036,6 +1442,9 @@ def write_mcp_config(
     graph_served: tuple[str, str, str] | None = None,
     relay: tuple[str, list[RelayServer]] | None = None,
     screenshots_dir: str | None = None,
+    lightpanda_server: dict[str, Any] | None = None,
+    judge_config: str | None = None,
+    graph_shape: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given (writing what it names itself into
@@ -1049,7 +1458,19 @@ def write_mcp_config(
     `graph_served` (`graphstage.served_env`: pin, ticket file, URL) is, and
     each of the caller's registered servers when `relay` (`relay_servers`) is:
     an `http` entry at the relay's loopback URL whose one header carries the
-    LOCAL token, never the caller's credential (module docstring).
+    LOCAL token, never the caller's credential (module docstring), and
+    `lightpanda_server` (`lightpanda.mcp_server`) as the `lightpanda` server
+    when it is given: claude-code-lightpanda's, which has no `endpoint` and so
+    no `playwright` server (docs/design/lightpanda-runtime.md §6.2), and
+    `swarm-jev`, the agent's `jev_decide`, when `judge_config` (the worker's
+    `judge/config.json`, `judge.register.server_entry`) is.
+
+    swarm-graph, jev and swarm-jev carry `ALWAYS_LOAD`: their tools are in
+    the prompt from the session's start, never behind tool search, because
+    the agent is told to use them first (AGENTS-USE-TOOLS). Playwright and
+    the rest load as the CLI chooses. In the `skill` `graph_shape`, swarm-graph
+    lists the slice alone and does not carry it: the code-graph skill says
+    when to load it (SKILL-ON-DEMAND).
 
     Playwright MCP connects with its client tag on the endpoint
     (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
@@ -1065,7 +1486,8 @@ def write_mcp_config(
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     servers: dict[str, Any] = {}
     if endpoint:
-        playwright_args = ["--cdp-endpoint", browser_tools.tag_endpoint(endpoint, "playwright")]
+        playwright_args = ["--cdp-endpoint", browser_tools.tag_endpoint(endpoint, "playwright"),
+                           *IMAGE_RESPONSES]
         if screenshots_dir:
             playwright_args += ["--output-dir", screenshots_dir]
         servers[MCP_SERVER_NAME] = {
@@ -1082,9 +1504,13 @@ def write_mcp_config(
                     "command": sys.executable,
                     "args": ["-I", str(JEV_LAUNCH), jev_key_file, JEV_MCP_BIN],
                     "env": {CDP_ENDPOINT_ENV: endpoint, JEV_NO_INSTALL_ENV: "1"},
+                    ALWAYS_LOAD: True,
                 }
             else:
-                servers[JEV_MCP_SERVER_NAME] = {"type": "stdio", "command": JEV_MCP_BIN, "args": []}
+                servers[JEV_MCP_SERVER_NAME] = {"type": "stdio", "command": JEV_MCP_BIN, "args": [],
+                                                ALWAYS_LOAD: True}
+    if lightpanda_server:
+        servers[lightpanda.MCP_SERVER_NAME] = lightpanda_server
     if git_spool:
         command, *args = git_shim_argv(git_spool)
         servers[GIT_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
@@ -1094,14 +1520,21 @@ def write_mcp_config(
     if state_spool:
         command, *args = state_shim_argv(state_spool)
         servers[STATE_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    skill = graph_shape == GRAPH_SHAPE_SKILL
+    graph_load = {} if skill else {ALWAYS_LOAD: True}
     if graph_served:
         pin, ticket_file, url = graph_served
-        command, *args = graphstage.shim_argv(pin, ticket_file, graph_workdir)
+        command, *args = graphstage.shim_argv(pin, ticket_file, graph_workdir,
+                                              GRAPH_SHAPE_SKILL if skill else None)
         servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args,
-                                           "env": {graphstage.URL_ENV: url}}
+                                           "env": {graphstage.URL_ENV: url}, **graph_load}
     elif graph_snapshot:
-        command, *args = graphstage.server_argv(graph_snapshot, graph_workdir)
-        servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+        command, *args = graphstage.server_argv(graph_snapshot, graph_workdir,
+                                                GRAPH_SHAPE_SKILL if skill else None)
+        servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args,
+                                           **graph_load}
+    if judge_config:
+        servers[JEV_DECIDE_SERVER_NAME] = jev_decide_entry(Path(judge_config))
     if relay:
         token, attached = relay
         for server in attached:
@@ -1216,12 +1649,16 @@ SPEC = CliAgentSpec(
 def live_browser_note(choice: browser_tools.Choice, *, search: bool,
                       jev_internal: bool = False, qa_identity: str | None = None) -> str:
     """The note an agent with the live browser is given: the selected tool
-    first, then the live browser's rules, the QA identity's when the task
+    first (jev under `auto` when it is ready), then the live browser's rules, the QA identity's when the task
     named one, then each tool's strength."""
-    parts = [BROWSER_TOOL_LEAD[choice.selected], LIVE_BROWSER_NOTE]
+    jev_first = choice.selected == browser_tools.AUTO and choice.jev_enabled
+    lead = BROWSER_TOOL_LEAD_JEV_FIRST if jev_first else BROWSER_TOOL_LEAD[choice.selected]
+    parts = [lead, LIVE_BROWSER_NOTE]
     if qa_identity:
         parts.append(QA_IDENTITY_NOTE)
-    for tool in choice.tools:
+    # jev's strength first when it is first (AGENTS-USE-TOOLS).
+    tools = (("jev", *(t for t in choice.tools if t != "jev")) if jev_first else choice.tools)
+    for tool in tools:
         if tool == "jev" and jev_internal:
             parts.append(BROWSER_TOOL_STRENGTH_JEV_INTERNAL)
         else:
@@ -1326,6 +1763,63 @@ def browser_calls(events: Any) -> dict[str, int]:
     return {"tool": tool, "command": command}
 
 
+#: AGENTS-USE-TOOLS (part of #2688): the families a session's tool calls are
+#: counted by, so an experiment reads whether the agent used the tools
+#: switched on for it without parsing transcripts. A `tool_use` name is
+#: `mcp__<server>__<tool>` for an MCP tool; anything else is the CLI's own.
+TOOL_FAMILIES = ("code_graph", "jev_browser", "playwright", "jev_decision", "built_in", "other_mcp")
+_FAMILY_OF_SERVER = {
+    graphstage.SERVER_NAME: "code_graph",
+    JEV_MCP_SERVER_NAME: "jev_browser",
+    MCP_SERVER_NAME: "playwright",
+    JEV_DECIDE_SERVER_NAME: "jev_decision",
+}
+#: Where the runner reports them: the CLI's `metrics`, which the worker
+#: copies whole into the attempt's `result_summary.runner.metrics`.
+TOOL_CALLS_METRIC = "tool_calls"
+
+
+def tool_family(name: str) -> str:
+    """The `TOOL_FAMILIES` member a `tool_use` named `name` counts under."""
+    if not name.startswith("mcp__"):
+        return "built_in"
+    server = name[len("mcp__"):].split("__", 1)[0]
+    return _FAMILY_OF_SERVER.get(server, "other_mcp")
+
+
+def tool_calls_by_family(events: Any) -> dict[str, int]:
+    """How many `tool_use` blocks the CLI's stream-json carries per family.
+    Counts only, never a name's input."""
+    counts = dict.fromkeys(TOOL_FAMILIES, 0)
+    for event in events if isinstance(events, list) else []:
+        for block in _blocks(event):
+            if block.get("type") == "tool_use":
+                counts[tool_family(str(block.get("name") or ""))] += 1
+    return counts
+
+
+def tool_use(stream: Path, *, complete: bool = True) -> dict[str, Any]:
+    """The session's calls per family, as the runner reports them
+    (`TOOL_CALLS_METRIC`). `families` is None when the stream could not be
+    read -- not a session with no calls -- and a lower bound when `complete`
+    is false (the capture was cut)."""
+    events = _stream_events(stream)
+    return {"read": events is not None, "complete": complete,
+            "families": tool_calls_by_family(events) if events is not None else None}
+
+
+def attempt_tool_use(stream: Path, state: Path | None, *, complete: bool = True) -> dict[str, Any]:
+    """`tool_use` over every session of the attempt (COST-ACROSS-SESSIONS):
+    this runner process's capture holds the sessions it ran, and the counts of
+    the attempt's earlier runner processes come from its ceiling state
+    (`ceiling.carry_tool_calls`), which this adds to and writes back. Only
+    the last runner's metrics reach the summary, so without the carry a
+    runner restarted inside the attempt reported its own sessions alone."""
+    mine = tool_use(stream, complete=complete)
+    total = ceiling.carry_tool_calls(state, mine["families"])
+    return {**mine, "families": total} if total is not None else mine
+
+
 def produced_images(directory: Path) -> int:
     """How many image files (`IMAGE_SUFFIXES`) are under `directory`, the
     task's artifacts: screenshots, flow GIFs and anything a script rendered.
@@ -1404,15 +1898,47 @@ def live_browser_refusal(env: dict[str, str], browsers: str, endpoint: str) -> s
     return None
 
 
+#: The verified task's resolved turn cap (contract request 133), exported by
+#: the worker from `Task.max_turns` (`lifecycle.MAX_TURNS_ENV`, held equal by
+#: tests/unit/worker/test_runners.py). Never `input.max_turns`: a caller
+#: writes the input, and swarm-api refuses that key at every door.
+MAX_TURNS_ENV = "SWARM_MAX_TURNS"
+
+
+def step_max_turns(env: Mapping[str, str]) -> int | None:
+    """The cap from `MAX_TURNS_ENV`, or None: unset or unusable, no cap."""
+    raw = str(env.get(MAX_TURNS_ENV, "")).strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+
 def body(ctx: RunnerContext) -> dict[str, Any]:
     extra: list[str] = []
-    max_turns = ctx.payload.get("max_turns")
+    max_turns = step_max_turns(os.environ)
     if max_turns is not None:
-        extra += ["--max-turns", str(int(max_turns))]
+        extra += ["--max-turns", str(max_turns)]
+    # claude-code-lightpanda (docs/design/lightpanda-runtime.md §6.2): the
+    # profile the worker named, never input. Its three denied tools go before
+    # `--settings`, because the CLI's flag is variadic.
+    # Only on a step that renders a page (`step_renders`): a build step on
+    # this profile is a plain claude-code step, with no `serve` child, no
+    # 29 Lightpanda tools and no note about them.
+    on_lightpanda = lightpanda.is_lightpanda(os.environ) and step_renders(ctx.payload)
+    if on_lightpanda:
+        extra += lightpanda.disallowed_tools_args()
     # After the platform's flags, so a deployment's CLAUDE_CODE_ARGS cannot
     # leave background commands switched on by replacing the flag set.
-    settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME)
+    # The graph's shape (SKILL-ON-DEMAND): the skill and its hook only on a
+    # step whose graph is staged or served below.
+    graph_on = bool(os.environ.get(graphstage.SNAPSHOT_ENV, "").strip()
+                    or graphstage.served_env(os.environ))
+    shape = graph_shape(os.environ)
+    write_graph_skill(Path(ctx.work_dir), on=graph_on and shape == GRAPH_SHAPE_SKILL)
+    settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME,
+                                       graph_hint=graph_on and shape == GRAPH_SHAPE_SKILL)
     extra += ["--settings", str(settings)]
+    # The question bridge spike's flags, only while its switch is on: print
+    # mode offers the question tool only with a permission prompt tool.
+    extra += question_bridge.cli_args(os.environ)
     # HOME is `work/` (cliagent), so `work/.claude.json` is the config the CLI
     # reads. Only a checkout is trusted: with none the agent starts in HOME,
     # where there are no repository settings to apply.
@@ -1432,6 +1958,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     git_spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
     if git_spool:
         env[GIT_SPOOL_ENV] = git_spool
+    # The child path's spool, likewise: the worker sets it only for an attempt
+    # with the child path (`children.ChildPath.prepare`), never for a child,
+    # which may not submit children. Without it the agent's shell had no
+    # $SWARM_CHILDREN while the notes below named it (measured 2026-10-31).
+    children_spool = os.environ.get(CHILDREN_ENV, "").strip()
+    if children_spool:
+        env[CHILDREN_ENV] = children_spool
     # The search tool's spool, likewise: set only for an attempt offered it.
     search_spool = os.environ.get(SEARCH_SPOOL_ENV, "").strip()
     if search_spool:
@@ -1459,6 +1992,23 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if cache_browsers:
         env[BROWSERS_PATH_ENV] = cache_browsers
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
+    lightpanda_env: dict[str, str] = {}
+    lightpanda_refused: list[int] = []
+    if on_lightpanda:
+        # Lightpanda, never Chromium and never the live browser: no
+        # SWARM_CDP_ENDPOINT, no browser note, no `browser.json`
+        # (`browser_tools.write_state` is in the endpoint branch below), and
+        # the agent's CDP is the `serve` child's, on 9223.
+        endpoint = ""
+        browsers = ""
+        env.pop(CDP_ENDPOINT_ENV, None)
+        env[lightpanda.CDP_ENV] = lightpanda.CDP_URL
+        cache_home = os.environ.get(CACHE_HOME_ENV, "").strip()
+        lightpanda_env = lightpanda.child_env(
+            os.environ, Path(cache_home) if cache_home else Path(ctx.work_dir) / ".cache")
+        # What listens on loopback now is the platform's (the TypeSafe shim,
+        # the MCP relay): the CLI has not started. Both commands refuse it.
+        lightpanda_refused = lightpanda.loopback_listeners()
     prompt = ctx.payload.get("prompt")
     spec = SPEC
     unstaged = graphstage.unstaged_note(os.environ)
@@ -1476,9 +2026,30 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if scratch and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{scratch}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    # Saved oversized outputs, by window: every repository step, after the
+    # scratch note (a task with no repository keeps the prompt it had).
+    if ctx.repo_dir is not None and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{SAVED_OUTPUT_NOTE}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # The graph, loaded up front, and what to ask it first (AGENTS-USE-TOOLS):
+    # only when it is registered below.
+    if (graph_snapshot or graph_served) and shape == GRAPH_SHAPE_TOOLS \
+            and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{GRAPH_FIRST_NOTE}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # The agent's own `jev_decide` (AGENTS-USE-TOOLS): the worker writes this
+    # config only for a workspace opted in to Jev judgments, under the signed
+    # setting and the step's switch (`judge.attempt.setup`). Registered over
+    # the SAME config, so its calls and the worker's share one ledger.
+    judge_config = os.environ.get(JUDGE_CONFIG_ENV, "").strip()
+    if judge_config and not Path(judge_config).is_file():
+        judge_config = ""
+    if judge_config and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{JEV_DECIDE_NOTE}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     # Where to explore first, naming only the tools this attempt has (LANE CAPS).
     explore = exploration_note(graph=bool(graph_snapshot or graph_served),
-                               children=os.environ.get(CHILDREN_ENV, "").strip())
+                               children=env.get(CHILDREN_ENV, ""), shape=shape)
     if explore and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{explore}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
@@ -1510,6 +2081,18 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     refusal = live_browser_refusal(env, browsers, endpoint)
     if refusal:
         raise RunnerFailure(f"{refusal}; the agent was not started")
+    # A visual-check step on the browser image: its brief runs the capture or
+    # discovery tool with the venv's Python, so that Python must import it
+    # before the agent spends a turn (`qa_tool_refusal`).
+    if browsers and runs_qa_tool(prompt):
+        missing = qa_tool_refusal()
+        if missing:
+            raise RunnerFailure(f"{missing}; the visual-check step's agent was not started")
+    if on_lightpanda and isinstance(prompt, str) and prompt.strip():
+        # A child has no child path: it lists failing pages for its parent.
+        lp_note = lightpanda.lightpanda_note(children=bool(env.get(CHILDREN_ENV)))
+        prompt = f"{prompt.rstrip()}\n\n{lp_note}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
         spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))
         note = BROWSER_NOTE
@@ -1559,9 +2142,20 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
+    # swarm-git and swarm-state only where the step uses them: the worker's
+    # per-step list names them (`stepservers`), or (swarm-git) the step renders
+    # with the live browser, whose screen review pushes the branch first
+    # (`children` SCREEN_REVIEW guide). No list -- a worker that predates it --
+    # keeps every server the attempt was offered.
+    handed = stepservers.parse(os.environ)
+    if handed is not None:
+        if not (live_endpoint or GIT_MCP_SERVER_NAME in handed):
+            git_spool = ""
+        if STATE_MCP_SERVER_NAME not in handed:
+            state_spool = ""
     # ONE `--mcp-config` for every server this attempt has (module docstring).
     if (live_endpoint or git_spool or search_spool or state_spool or graph_snapshot
-            or graph_served or relay[1]):
+            or graph_served or relay[1] or lightpanda_env or judge_config):
         mcp = write_mcp_config(
             Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
             git_spool=git_spool or None, search_spool=search_spool or None,
@@ -1572,15 +2166,61 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                            else None),
             graph_served=graph_served, relay=relay if relay[1] else None,
             screenshots_dir=(str(Path(ctx.artifacts_dir) / SCREENSHOTS_DIR_NAME)
-                             if live_endpoint else None))
+                             if live_endpoint else None),
+            lightpanda_server=(lightpanda.mcp_server(lightpanda_env, refused_ports=lightpanda_refused)
+                               if lightpanda_env else None),
+            judge_config=judge_config or None, graph_shape=shape)
         # BROWSER-START: the live browser's tool is in the config the CLI
         # reads, or the agent does not start.
         if env.get(HANDOFF_ENV) and MCP_SERVER_NAME not in json.loads(mcp.read_text())["mcpServers"]:
             raise RunnerFailure(f"{LIVE_BROWSER_UNAVAILABLE}: Playwright MCP is not registered; "
                                 "the agent was not started")
         extra += ["--mcp-config", str(mcp)]
+    # When each switched-on tool helps, at the system prompt's weight and in
+    # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
+    moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config),
+                          shape=shape)
+    if moments:
+        extra += [APPEND_SYSTEM_PROMPT_FLAG, moments]
+    supervisor: lightpanda.Supervisor | None = None
+    agent_stream = Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout
+    cli_started: float | None = None
+    calls_carried = False
     try:
+        if lightpanda_env:
+            # Started here, in the runner the worker starts only after its
+            # fencing check, and in the runner's process group, so it ends with
+            # the attempt; stopped below whatever the CLI did.
+            supervisor = lightpanda.Supervisor(
+                lightpanda.serve_argv(lightpanda_env, refused_ports=lightpanda_refused),
+                lightpanda_env,
+                log=StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning)
+            supervisor.start()
+        cli_started = time.time()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
+        if question_bridge.enabled(os.environ):
+            # A run that stopped on a recorded question ends cleanly, and the
+            # worker parks the step on it (`question_bridge`); `cliagent`
+            # took no turn after the stop. A question the stream and the
+            # record disagree on is missing evidence, never a normal end.
+            events = question_bridge.read_stream(agent_stream)
+            pending_path = settings.parent / question_bridge.PENDING_NAME
+            outcome, _ = question_bridge.classify(events, pending_path)
+            if outcome == question_bridge.BRIDGE_FAILED:
+                raise RunnerFailure(question_bridge.unanswered(events, pending_path)
+                                    or "question_bridge_failed: the run and its record disagree")
+            if outcome == question_bridge.PARKED and isinstance(result, dict):
+                result["question_parked"] = True
+        if isinstance(result, dict):
+            # AGENTS-USE-TOOLS: the calls per tool family of every session of
+            # the attempt, in the metrics the worker copies whole into the
+            # summary.
+            metrics = result.get("metrics")
+            calls_carried = True
+            result["metrics"] = {**(metrics if isinstance(metrics, dict) else {}),
+                                 TOOL_CALLS_METRIC: attempt_tool_use(
+                                     agent_stream, ceiling_state_file(),
+                                     complete=not result.get("stdout_truncated"))}
         if live_endpoint and isinstance(result, dict):
             # QA-KIT: what the model was given of its screenshots, read off the
             # stream, so a report can say what it saw. `complete` is false when
@@ -1594,9 +2234,26 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
                 stream, Path(ctx.artifacts_dir), complete=not result.get("stdout_truncated"))
         return result
     finally:
+        if supervisor is not None:
+            supervisor.stop()
+        if not calls_carried and cli_started is not None:
+            _carry_unreported_calls(agent_stream, cli_started)
         # The worker's key file, whether or not jev was registered: the agent
         # is done, so nothing reads it again (`jev_launch.py`).
         _remove_jev_key_file()
+
+
+def _carry_unreported_calls(stream: Path, cli_started: float) -> None:
+    """A runner that ended without a result -- a swap, a park, a failure --
+    still carries its sessions' tool calls to the next runner of the attempt,
+    which reports them. Only a capture this runner wrote: one older than its
+    start is an earlier runner's, already carried. Never raises."""
+    try:
+        if stream.stat().st_mtime < cli_started:
+            return
+    except OSError:
+        return
+    attempt_tool_use(stream, ceiling_state_file())
 
 
 def _jev_backend_key() -> tuple[str, bool]:

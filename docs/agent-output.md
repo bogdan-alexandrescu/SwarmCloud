@@ -475,6 +475,20 @@ context, so a long session costs roughly the square of its length, and
   nothing, and the last session runs to its end, so a lane stuck in a loop
   cannot restart forever. A stop with less than a minute of the step left
   starts nothing, and the result stands.
+* **No session tail by default (BGD, 2026-11-06).** The handoff also lists
+  the notes files and the last todo list. It does **not** carry the previous
+  session's own last messages unless `SWARM_CEILING_SESSION_TAIL=1`. That
+  text is the previous session's own assistant output fed back in as user
+  input, and the provider's safeguards refused the fresh session's first call
+  on it (`model_refusal_no_fallback`, "safeguards flagged this message ...
+  [reasoning_extraction]"; `task_a27c0b2241d1492492ee`). Every long agent
+  failed at the handoff.
+* **A refused first call is retried once.** If a fresh session started from
+  a handoff ends on its first call with that refusal, the runner starts it
+  once more from a minimal handoff: the first prompt, the note file and the
+  todos only. It logs the retry and records it under `refusal_restarts` in the
+  ceiling record. A second refusal fails the step with a reason that names
+  the refusal.
 * **Resumes follow the same rule.** The runner keeps the last session's
   context and tool calls in `context-ceiling.json` next to the worker's
   session channel (in `private/`). A restart that asks it to `--resume` a
@@ -535,7 +549,7 @@ the repair turns, while the session can still be continued
    | `*.sh` | `shellcheck -x <files>` |
    | `*.py`, where the repository configures ruff | `ruff format --check` and `ruff check` on the files |
    | an image's `Dockerfile` or `tool-mirror.sha256` | the build mirror's manifest-vs-Dockerfile tests |
-   | a file the graph's `tests` layer, a changed test or a sibling `X.test.tsx` covers (CTXQ-G) | `graph-pytest`: those Python test files `changed-guards.sh --list` did not already select, with `pytest -n auto`; `vitest`: the JavaScript ones, with the package's own `node_modules/.bin/vitest run`, from the package |
+   | a file the graph's `tests` layer, a changed test or a sibling `X.test.tsx` covers (CTXQ-G) | `graph-pytest`: those Python test files `changed-guards.sh --list` did not already select, with `pytest -n auto`. When the staged graph's manifest lists `symbol_test_map` or `file_test_map` as `truncated`, the graph names only part of a module's tests, so `scripts/related-tests.sh`'s import pick is added (up to 60 files) and the check says how many it added (owner's pick, PR #3105); `vitest`: the JavaScript ones, with the package's own `node_modules/.bin/vitest run`, from the package |
    | a `.ts`/`.tsx` file of a package with a `tsconfig.json` | `tsc` with the package's own `typecheck` arguments |
    | any file of a package whose `package.json` declares a `test:node` script (apps/swarm-ui) | `node-tests`: `npm run test:node`, from the package. Its node:test `.mjs` files run nowhere else before publish -- the `vitest` selection drops `.mjs`/`.cjs` -- and four lanes (#2429, #2430, #2433, #2437) went red in CI's ui-build on `no-company-name.test.mjs` (#2455) |
    | `*.tf` anywhere | `terraform fmt -check -diff <files>` |

@@ -55,3 +55,9 @@ variable "project_number" {
 variable "labels" {
   type = map(string)
 }
+
+variable "discovery_service_name" {
+  description = "The Cloud Run service that serves /.well-known/swarmcloud (terraform/infra/discovery.tf), behind a backend with no IAP. Empty: no discovery backend and no path rule."
+  type        = string
+  default     = ""
+}

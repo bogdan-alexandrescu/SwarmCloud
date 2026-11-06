@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
@@ -409,8 +410,18 @@ class ApiSettings:
     #:
     #: Empty disables delegation, which is correct for local development where
     #: google.auth.default() returns user credentials that cannot delegate
-    #: anyway.
+    #: anyway. Always empty under `groups_auth = "admin_role"`.
     groups_impersonate_user: str = ""
+
+    #: `GROUPS_AUTH`: how swarm-api is authorised to read groups
+    #: (`swarm_api.groups.GROUPS_AUTH_MODES`; docs/design/day-one-install.md
+    #: section 8). `admin_role`: the Workspace "Groups Reader" admin role on
+    #: this service account, which asks as itself, so `groups_impersonate_user`
+    #: is cleared and no request delegates. `delegation`: acts as
+    #: `groups_impersonate_user`. Default `delegation`, because that is the mode
+    #: the live deployment is set up for; installs set `admin_role` (Q2). An
+    #: unknown value is refused at start.
+    groups_auth: str = "delegation"
 
     #: Cloud Identity membership checks are a network round trip on the request
     #: path, so answers are cached briefly per (caller, group).
@@ -540,6 +551,25 @@ class ApiSettings:
     #: a link that does not open.
     console_url: str = ""
 
+    #: ADMIN › SETUP (docs/design/day-one-plan.md §5.3, lane DAYONE-SETUP-API-1).
+    #: The GitHub organisation the console's App manifest form posts to, from
+    #: SETUP_GITHUB_ORG. EMPTY BY DEFAULT, and empty means the manifest route
+    #: answers 409 `setup_unconfigured`: a guessed org would register the App
+    #: under someone else's account.
+    setup_github_org: str = ""
+    #: The deployment's hostname `<H>`, from SWARM_HOSTNAME; empty falls back
+    #: to `console_url`'s host (`install_hostname`), never a run.app guess.
+    setup_hostname: str = ""
+    #: The `swarm-github-hooks` receiver's public URL, from GITHUB_HOOKS_URL:
+    #: the App manifest's `hook_attributes.url`. Empty means the manifest has
+    #: no hook URL and the hook route answers 409 `setup_unconfigured`.
+    setup_github_hooks_url: str = ""
+    #: The `swarm-doctor` job's account, the one caller of
+    #: `PUT /v1/admin/setup/health`, from SWARM_DOCTOR_ACCOUNT. Empty means
+    #: `swarm-doctor@<project>.iam.gserviceaccount.com` (`doctor_identity`), the
+    #: name the install's Terraform gives it, so no deployment has to set it.
+    doctor_account: str = ""
+
     #: THE QA IDENTITY (docs/design/qa-identity.md §4.1, lane QI-API, part of
     #: #1649): the address of the QA service account whose IAP JWT swarm-api
     #: signs for a live attempt of a granted tenant (`swarm_api.qa_identity`).
@@ -613,6 +643,20 @@ class ApiSettings:
     #: How long a controller's console has to renew before control lapses
     #: (§4.2): a closed tab stops renewing, and its control ends within this.
     live_control_renew_seconds: int = 60
+    #: Voice it (docs/design/voice-it.md §3.2, §10 phase 1): where swarm-api
+    #: makes swarm-voice's internal start and end calls, from SWARM_VOICE_URL
+    #: (`http://<address>:<port>`, no trailing path). Empty means swarm-voice
+    #: is not deployed, and every Voice it session route answers 503
+    #: `voice_unavailable` before it writes anything.
+    voice_url: str = ""
+    #: The audience of the Google ID token swarm-api presents to swarm-voice,
+    #: from SWARM_VOICE_AUDIENCE; empty means the URL itself.
+    voice_audience: str = ""
+    #: Who may talk to Voice it (lower-cased emails), from VOICE_IT_PEOPLE.
+    #: Version one is BGD's only (voice-it.md §1, "Who uses it"), so unset
+    #: means exactly the platform owner (PLATFORM_OWNER), and with neither
+    #: set nobody may start a session.
+    voice_people: tuple[str, ...] = ()
     #: How long a controller may send no input before control ends (§4.2), and
     #: how far each input moves the hold's deadline (§4.3). 300 is the design's
     #: default: long enough to find a password, short enough that a person who
@@ -881,6 +925,15 @@ class ApiSettings:
     #: of searches each, so 200 is room for dozens of tasks.
     search_daily_queries_per_tenant: int = 200
 
+    # --- generated workflow descriptions (swarm_api.wfdescription, #2688) ---
+    #: SWARM_WORKFLOW_DESCRIPTION_MODEL: "vertex" asks Claude Haiku on Vertex
+    #: AI; "off" (what Terraform ships, terraform/infra/locals.tf) writes the
+    #: extractive fallback alone; empty, the default here and for a variable
+    #: that is absent (a unit test, a local run), writes nothing. The model is
+    #: off unless this says "vertex": it turns on once the owner grants Vertex
+    #: AI (#3346). Any other value is refused at start, not at a submission.
+    workflow_description_model: str = ""
+
     # --- model classes (docs/design/model-per-step.md §4.4, #1435) ---------
     #: Model class -> the ID a step of that class runs (WORKER_CLASS_MODELS,
     #: `parse_worker_class_models`). Empty: no class but a profile's default
@@ -895,6 +948,24 @@ class ApiSettings:
     @property
     def project_id(self) -> str:
         return self.core.project_id
+
+    @property
+    def install_hostname(self) -> str:
+        """`<H>`: SWARM_HOSTNAME, else `console_url`'s host, else empty."""
+        if self.setup_hostname:
+            return self.setup_hostname
+        return (urlsplit(self.console_url).hostname or "") if self.console_url else ""
+
+    @property
+    def deployer_identity(self) -> str:
+        """The engine's caller (`swarm-tf-deployer`), derived from the project id
+        (docs/design/day-one-plan.md §5.3, review-fix finding 2)."""
+        return f"swarm-tf-deployer@{self.project_id}.iam.gserviceaccount.com".lower()
+
+    @property
+    def doctor_identity(self) -> str:
+        return (self.doctor_account
+                or f"swarm-doctor@{self.project_id}.iam.gserviceaccount.com").lower()
 
     @property
     def hardened(self) -> bool:
@@ -944,6 +1015,23 @@ class ApiSettings:
                 f"SEARCH_PROVIDER must be one of {', '.join(sorted(SEARCH_PROVIDERS))}, "
                 f"got {search_provider!r}"
             )
+        from .wfdescription import MODEL_SWITCHES
+
+        workflow_description_model = os.environ.get(
+            "SWARM_WORKFLOW_DESCRIPTION_MODEL", "").strip().lower()
+        if workflow_description_model and workflow_description_model not in MODEL_SWITCHES:
+            raise ValueError(
+                "SWARM_WORKFLOW_DESCRIPTION_MODEL must be one of "
+                f"{', '.join(MODEL_SWITCHES)} or unset, got {workflow_description_model!r}"
+            )
+        from .groups import GROUPS_AUTH_ADMIN_ROLE, parse_groups_auth
+
+        groups_auth = parse_groups_auth(os.environ.get("GROUPS_AUTH"))
+        groups_impersonate_user = os.environ.get("GROUPS_IMPERSONATE_USER", "").strip()
+        if groups_auth == GROUPS_AUTH_ADMIN_ROLE:
+            # The admin role needs no subject; one still rendered beside it
+            # must not quietly turn delegation back on.
+            groups_impersonate_user = ""
         sweepers = {u.lower() for u in rollup_sweeper_users}
         for name, values in (
             ("PLATFORM_OWNER", (platform_owner,) if platform_owner else ()),
@@ -990,7 +1078,8 @@ class ApiSettings:
             schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
             allowed_users=allowed_users,
             secret_admin_principals=secret_admin_principals,
-            groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
+            groups_impersonate_user=groups_impersonate_user,
+            groups_auth=groups_auth,
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             workspace_registry_cache_seconds=float(
                 _int("WORKSPACE_REGISTRY_CACHE_SECONDS", 60)),
@@ -1031,6 +1120,10 @@ class ApiSettings:
             # variable that exists and says nothing has declared nothing.
             environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
+            setup_github_org=os.environ.get("SETUP_GITHUB_ORG", "").strip(),
+            setup_hostname=os.environ.get("SWARM_HOSTNAME", "").strip().lower(),
+            setup_github_hooks_url=os.environ.get("GITHUB_HOOKS_URL", "").strip(),
+            doctor_account=os.environ.get("SWARM_DOCTOR_ACCOUNT", "").strip().lower(),
             qa_identity_console_account=os.environ.get(
                 "QA_IDENTITY_CONSOLE_ACCOUNT", "").strip().lower(),
             qa_identity_lifetime_seconds=_int("QA_IDENTITY_LIFETIME_SECONDS", 900),
@@ -1046,6 +1139,10 @@ class ApiSettings:
             live_tunnel_ticket_seconds=_int("LIVE_TUNNEL_TICKET_SECONDS", 60),
             live_viewer_ticket_seconds=_int("LIVE_VIEWER_TICKET_SECONDS", 30),
             live_control_renew_seconds=_int("LIVE_CONTROL_RENEW_SECONDS", 60),
+            voice_url=os.environ.get("SWARM_VOICE_URL", "").strip(),
+            voice_audience=os.environ.get("SWARM_VOICE_AUDIENCE", "").strip(),
+            voice_people=tuple(
+                person.lower() for person in _csv("VOICE_IT_PEOPLE", platform_owner)),
             control_idle_seconds=_int("CONTROL_IDLE_SECONDS", 300),
             live_membership_recheck_seconds=float(
                 _int("LIVE_MEMBERSHIP_RECHECK_SECONDS", 300)),
@@ -1087,6 +1184,7 @@ class ApiSettings:
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
             or "swarm-search-api-key",
             search_daily_queries_per_tenant=_int("SEARCH_DAILY_QUERIES_PER_TENANT", 200),
+            workflow_description_model=workflow_description_model,
             worker_class_models=parse_worker_class_models(
                 os.environ.get("WORKER_CLASS_MODELS", "")
             ),

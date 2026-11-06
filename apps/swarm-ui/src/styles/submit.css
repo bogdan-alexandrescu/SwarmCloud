@@ -245,6 +245,16 @@ input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: ins
    the task is accepted and waits, so it is not a refusal (`--warn`) and not a
    footnote (`--text-dim`); `--warn-ink` is the runner card's "key missing". */
 .sb-note.sbf-wait { color: var(--warn-ink); }
+/* NOT CHOSEN YET IS NOT A WARNING (QA2-FIX-27, runs2-33, part of #2694).
+   Start an agent's summary draws runner, input, cost and room as a dash until
+   a runner is picked. `.ctl-fact.is-absent` and `.ctl-em` (styles.css) take
+   `--ctl-absent`, the warm hue for a value nothing READ, and on an untouched
+   form four warm dashes read as amber before anything was wrong. Here
+   nothing has been decided, so the row and its dash keep the neutral muted
+   ink at the same luminance; a value that is wrong is `.sbf-bad`, unchanged.
+   The issue form (`.in-form`) is not this: its dashes are reads not served. */
+form.sbf:not(.in-form) .sbf-send > .ctl-facts > .ctl-fact.is-absent,
+form.sbf:not(.in-form) .sbf-send > .ctl-facts > .ctl-fact.is-absent > .ctl-em { color: var(--text-faint); }
 /* THE REASON AT ITS STEP (visual QA run 4, N27). Below 1080 the send panel is
    the last thing on the page, and at 390 its "Not ready" line sat about three
    screens below the field it was about; each step now says its own clause.

@@ -655,7 +655,9 @@ def test_the_shipped_cli_specs_name_the_credential_the_frozen_catalogue_declares
         assert callable(module.main)
 
 
-def test_the_claude_code_runner_passes_max_turns_through_as_a_flag(tmp_path, monkeypatch):
+def test_the_claude_code_runner_passes_the_verified_tasks_max_turns_as_a_flag(tmp_path, monkeypatch):
+    """Contract request 133: the cap comes from the verified `Task.max_turns`,
+    which the worker exports as `MAX_TURNS_ENV`, never from `input`."""
     from agent_worker.runners import claude_code
 
     captured: dict = {}
@@ -664,22 +666,39 @@ def test_the_claude_code_runner_passes_max_turns_through_as_a_flag(tmp_path, mon
         # The generated `--settings` file (background commands refused) is
         # always last; what comes before it is what this test is about.
         assert list(extra_args)[-2] == "--settings"
-        assert extra_env == {claude_code.NO_BACKGROUND_ENV: "1"}
         captured["extra"] = list(extra_args)[:-2]
         return {"summary": "ok"}
 
     monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
-    # Run inside a SwarmCloud browser attempt, this process has the hand-off's
-    # variables, which the runner passes on; this test is about the flags.
-    for name in (claude_code.HANDOFF_ENV, *claude_code.AGENT_PASSTHROUGH_ENV):
+    # Run inside a SwarmCloud attempt, this process may carry the worker's own
+    # cap; this test sets it.
+    for name in (claude_code.HANDOFF_ENV, *claude_code.AGENT_PASSTHROUGH_ENV,
+                 claude_code.MAX_TURNS_ENV):
         monkeypatch.delenv(name, raising=False)
 
+    # No cap: no flag, so every running agent is unchanged.
     claude_code.body(make_ctx(tmp_path, {"prompt": "hi"}))
     assert captured["extra"] == []
 
-    claude_code.body(make_ctx(tmp_path, {"prompt": "hi", "max_turns": "12"}))
-    assert captured["extra"] == ["--max-turns", "12"]
+    monkeypatch.setenv(claude_code.MAX_TURNS_ENV, "30")
+    claude_code.body(make_ctx(tmp_path, {"prompt": "hi"}))
+    assert captured["extra"] == ["--max-turns", "30"]
 
-    # A non-numeric value is refused by int() rather than concatenated into argv.
-    with pytest.raises(ValueError):
-        claude_code.body(make_ctx(tmp_path, {"prompt": "hi", "max_turns": "3; id"}))
+    # The caller's input is never the cap: swarm-api refuses the key, and a
+    # stored one the runner ignores.
+    monkeypatch.delenv(claude_code.MAX_TURNS_ENV)
+    claude_code.body(make_ctx(tmp_path, {"prompt": "hi", "max_turns": "12"}))
+    assert captured["extra"] == []
+
+    # An unusable value is no cap, never concatenated into argv.
+    for bad in ("3; id", "0", "-4", ""):
+        monkeypatch.setenv(claude_code.MAX_TURNS_ENV, bad)
+        claude_code.body(make_ctx(tmp_path, {"prompt": "hi"}))
+        assert captured["extra"] == [], bad
+
+
+def test_the_worker_and_the_claude_code_runner_name_the_turn_cap_alike():
+    from agent_worker import lifecycle
+    from agent_worker.runners import claude_code
+
+    assert lifecycle.MAX_TURNS_ENV == claude_code.MAX_TURNS_ENV

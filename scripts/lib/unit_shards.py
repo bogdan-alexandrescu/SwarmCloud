@@ -64,9 +64,13 @@ SHARD_TARGET_SECONDS = 600
 # against a 900 s bound), and test_unit_shards.py went red on every pull
 # request. Nine keeps the owner's 1.5x tail (~800 s a shard) for one more
 # runner a full run; relaxing the 1.5x instead would drop the owner's rule.
-# More would add a runner apiece to the queue when a dozen pull requests
-# arrive together; fewer puts a full run's shard back over the bound.
-MAX_SHARDS = 9
+# On 2026-10-29 the weights reached ~8,100 s (1,514 files on a pull request's
+# merge with main) and nine shards carried 900.1-900.2 s again, red on pull
+# request #2752: ten puts a full run's shard back at ~810 s, under the bound
+# with room for the next ~900 s of new tests. More would add a runner apiece to
+# the queue when a dozen pull requests arrive together; fewer puts a full
+# run's shard back over the bound.
+MAX_SHARDS = 10
 
 # Below this share of the run's test files with a stored weight, `count`
 # warns that the weights are worth refreshing -- and only warns (#2364). It

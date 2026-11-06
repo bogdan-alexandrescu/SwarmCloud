@@ -41,7 +41,11 @@ describe('the shell mounts the frame it was built with', () => {
 
   it('offers the help affordance from the frame', () => {
     render(<App />)
-    const help = document.querySelector('[href*="#help"], [aria-label*="elp"]')
+    // The frame's own Help is the spine foot's link, path-routed (`/help`).
+    // The root used to be Overview, whose page question matched the older
+    // `#help` / aria-label spellings; Home is the root now (#2688) and carries
+    // none, so the foot's link is what this must find.
+    const help = document.querySelector('.sk-foot a[href="/help"], [href*="#help"], [aria-label*="elp"]')
     expect(help, 'the Help destination must be reachable from the shell').not.toBeNull()
   })
 })

@@ -24,7 +24,7 @@ import type { WorkflowBoard } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
-import { cellStyle, fixedColumns, textPx } from './tablefit'
+import { cellStyle, fontPx, nowrap, textPx } from './tablefit'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -183,33 +183,39 @@ describe('R10: one money format, and Cost and Owner hold what they show', () => 
     expect(usd(0.009999)).toBe('$0.01')
   })
 
-  it('fits "$12.92 10/12" in Cost and a 14-character owner in Owner at 1440, the name keeping room', async () => {
+  // THE REDESIGN (frame graph-workflows-rest): Cost is now Spent, and the
+  // list is an auto-layout table, so a column with no width is as wide as
+  // what it holds; the old fixed shares of the table are gone. Owner is the
+  // one capped column besides the name.
+  it('fits "$12.92 10/12" in Spent and a 14-character owner in Owner at 1440, the name keeping room', async () => {
     vi.resetModules()
     const { App } = await import('../App')
     window.history.replaceState(null, '', '/workflows')
     render(<App />)
     const t = await waitFor(() => {
-      const el = document.querySelector<HTMLTableElement>('.wfl .wfl-table')
-      expect(el!.querySelectorAll('tbody tr.wfl-row:not(.is-skel)').length).toBeGreaterThan(0)
+      const el = document.querySelector<HTMLTableElement>('.wfg .wfg-table')
+      expect(el!.querySelectorAll('tbody tr.wfg-row:not(.is-skel)').length).toBeGreaterThan(0)
       return el!
     })
-    const { cols } = fixedColumns(t, 1440 - 84 - 236 - 64, WIDE)
-    const row = t.querySelector('tbody tr.wfl-row')!
-    const room = (col: string) => {
-      const box = cols.find((c) => c.col === col)!
-      const st = cellStyle(row.querySelector(`td[data-col="${col}"]`)!, WIDE)
-      return box.end - box.start - st.pl - st.pr
+    expect(painted(t, 'table-layout', WIDE)).toBe('auto')
+    const row = t.querySelector('tbody tr.wfg-row')!
+    const em = (v: string | null, el: Element): number => {
+      const m = /^([\d.]+)em$/.exec(v ?? '')
+      expect(m, `${v} is not an em length`).not.toBeNull()
+      return Number(m![1]) * fontPx(el, WIDE)
     }
-    const cost = row.querySelector('td[data-col="cost"]')!
-    // The figure, its coverage and the 5px between them.
-    expect(room('cost')).toBeGreaterThanOrEqual(textPx('$12.92', cost, WIDE) + 5 + textPx('10/12', cost, WIDE))
-    expect(room('owner')).toBeGreaterThanOrEqual(textPx('swarm-pipeline', row.querySelector('td[data-col="owner"]')!, WIDE))
-    // A head the cascade hides (Shape and Runners below 1680, G3-09) draws
-    // no column; `fixedColumns` counts every head, so its width goes back to
-    // the name, the one column with no width (from 1280 Cost is 136px, c28 and QAFIX5 work-a-010).
-    const hidden = cols.filter((c) => painted(t.querySelector(`thead th[data-col="${c.col}"]`)!, 'display', WIDE) === 'none')
-    expect(hidden.map((c) => c.col)).toEqual(['shape', 'runners'])
-    expect(room('workflow') + hidden.reduce((a, c) => a + c.end - c.start, 0), 'the name').toBeGreaterThanOrEqual(128)
+    // Spent: no width and no cap, on one line, so the figure and its
+    // coverage are never cut.
+    const spent = row.querySelector('td[data-col="spent"]')!
+    expect(painted(spent, 'width', WIDE)).toBeNull()
+    expect(painted(spent, 'max-width', WIDE)).toBeNull()
+    expect(nowrap(spent, WIDE)).toBe(true)
+    // Owner is capped, and the cap holds a 14-character owner whole.
+    const owner = row.querySelector('td[data-col="owner"]')!
+    expect(em(painted(owner, 'max-width', WIDE), owner)).toBeGreaterThanOrEqual(textPx('swarm-pipeline', owner, WIDE))
+    // The name keeps a floor whatever the other columns take.
+    const name = row.querySelector('td[data-col="workflow"]')!
+    expect(em(painted(name, 'min-width', WIDE), name), 'the name').toBeGreaterThanOrEqual(110)
   })
 })
 

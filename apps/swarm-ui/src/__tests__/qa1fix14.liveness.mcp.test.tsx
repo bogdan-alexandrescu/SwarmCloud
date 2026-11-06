@@ -164,8 +164,8 @@ describe('config-26: State never breaks mid-word, and the row actions keep one l
     const actions = table.querySelector('tbody td[data-label="Actions"] > .pk-form-row')!
     // MUTATION: drop keys.css' `.pk-form-row { flex-wrap: nowrap }` for the Actions cell -> Edit over Disable: red.
     expect(painted(actions, 'flex-wrap', WIDE)).toBe('nowrap')
-    // The URL still gives up the width: it breaks anywhere.
-    expect(painted(table.querySelector('tbody td[data-label="URL"]')!, 'overflow-wrap', WIDE)).toBe('anywhere')
+    // The URL still gives up the width, at its '/' and '.' breaks (QA2 config2-19), never mid-word.
+    expect(painted(table.querySelector('tbody td[data-label="URL"]')!, 'overflow-wrap', WIDE)).toBe('break-word')
   })
 })
 

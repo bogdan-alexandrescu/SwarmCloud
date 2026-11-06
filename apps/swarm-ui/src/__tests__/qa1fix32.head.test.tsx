@@ -62,10 +62,18 @@ describe('overview-agents-20: the head names the agent as its Agents row does', 
     expect(renderHook(() => useAgentName(ID)).result.current).toBe('Fix flaky lease heartbeat test')
   })
 
-  it('keeps a step’s name, which is what its row leads with', () => {
+  it('names a step `<workflow title> · <step>`, as its row does (QA2 ovag2-14)', () => {
     const { container } = head(row({ id: 'task_step0123456789abcd', step_id: 'review', workflow_id: 'wf_0123456789abcdef0123', metadata: { title: 'Release notes' } }))
+    // MUTATION: name a step by `ownTitle` alone and the head, the breadcrumb
+    // and the document title read `review` while the row reads `Release notes · review`.
+    expect(container.querySelector('.ag-head-title')?.textContent).toBe('Release notes · review')
+    expect(renderHook(() => useAgentName('task_step0123456789abcd')).result.current).toBe('Release notes · review')
+  })
+
+  it('keeps a step’s name alone when its workflow has no title, as its row does', () => {
+    const { container } = head(row({ id: 'task_step1123456789abcd', step_id: 'review', workflow_id: 'wf_0123456789abcdef0123', metadata: { title: '  ' } }))
     expect(container.querySelector('.ag-head-title')?.textContent).toBe('review')
-    expect(renderHook(() => useAgentName('task_step0123456789abcd')).result.current).toBe('review')
+    expect(renderHook(() => useAgentName('task_step1123456789abcd')).result.current).toBe('review')
   })
 
   it('keeps `agentName`’s words for an agent with no title', () => {

@@ -116,8 +116,11 @@ beforeEach(() => {
   const board: WorkflowBoard = {
     workflows: [workflow()],
     taskById: new Map([
-      ['t_plan', task('t_plan', 'SUCCEEDED', 1)],
-      ['t_build', task('t_build', 'SUCCEEDED', 1)],
+      // The list read's step blocks carry each step's total over every
+      // attempt (console load speed, 2026-11-01): the sums the attempt read
+      // below gives the page.
+      ['t_plan', { ...task('t_plan', 'SUCCEEDED', 1), attempts: 2, attempts_with_cost: 2, cost_usd_total: 3, cost_incomplete: false, attempts_read: 'ok' }],
+      ['t_build', { ...task('t_build', 'SUCCEEDED', 1), attempts: 2, attempts_with_cost: 2, cost_usd_total: 4, cost_incomplete: false, attempts_read: 'ok' }],
     ]),
     statesDetail: null,
   }
@@ -140,7 +143,7 @@ beforeEach(() => {
 })
 
 describe('one workflow, one total (WF-5)', () => {
-  it('draws the attempt-read total in the list row, the page head and the step table alike', async () => {
+  it('draws one total in the list row (the step blocks’ totals), the page head and the step table (the attempt read) alike', async () => {
     const list = render(<WorkflowsScreen view="" />)
     const rowTotal = await waitFor(() => {
       const el = document.querySelector('tr[data-workflow="wf_spend"] .wf-spend')
@@ -156,8 +159,10 @@ describe('one workflow, one total (WF-5)', () => {
       return el!.textContent ?? ''
     })
     const head = await waitFor(() => {
-      // The head's cost chip (the meta line moved to the shell's sub-line, #503).
-      const el = document.querySelector('.wfp-head .wfp-cost')
+      // The head's spend figure (now a `.wfp-fig` holding the `Spend` component,
+      // not a `.wfp-cost` chip: the Overview redesign moved the cost chip off
+      // the head, but the same total is still on the head's own line).
+      const el = document.querySelector('.wfp-head .wf-spend')
       expect(el?.textContent ?? '').toContain('$7.00')
       return el!.textContent ?? ''
     })

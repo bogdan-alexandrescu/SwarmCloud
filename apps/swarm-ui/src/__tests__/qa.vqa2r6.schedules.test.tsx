@@ -10,7 +10,7 @@
 //
 // The bodies are `routes/schedules.py::schedule_to_api`'s and
 // `approvals.to_api`'s shapes. Placeholders only; nothing is token-shaped.
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { Routed } from './screenroute'
@@ -355,6 +355,13 @@ describe('the create and edit forms (V170, V244, V245, V246, V247)', () => {
 
   it('V246: names the zone once above the next five, and keeps "… your time" whole', async () => {
     // MUTATION: the zone back in each line, or `.sc-yours` without nowrap.
+    // A reader whose zone gives another wall time, so "… your time" is drawn (QA2 automate2-07).
+    const was = process.env.TZ
+    process.env.TZ = 'Pacific/Auckland'
+    onTestFinished(() => {
+      if (was === undefined) delete process.env.TZ
+      else process.env.TZ = was
+    })
     await mountSchedules('schedule=new', schedulesRoutes())
     const f = await form()
     const list = await waitFor(() => {

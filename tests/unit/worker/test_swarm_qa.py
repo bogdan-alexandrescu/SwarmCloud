@@ -784,7 +784,7 @@ def test_a_page_whose_content_scrolls_inside_a_nested_div_is_captured_in_segment
     code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
     assert code == 0
     (entry,) = _manifest(bundle)["routes"]
-    # 3000 px of content in an 840 px scroller is four segments (the default cap).
+    # 3000 px of content in an 840 px scroller is four segments, to its end.
     assert entry["images"] == [f"work-a/runs--desktop--light--s{i}.png" for i in (1, 2, 3, 4)], entry
     assert entry["scroller"] == "div.ctl-scroll", entry
     scrolls = [e[1] for e in world.page.log if e[0] == "scroll"]
@@ -1001,37 +1001,41 @@ def test_a_phone_capture_runs_to_the_scrollers_end_whatever_the_routes_budget(qa
 def test_a_phone_capture_cut_at_max_segments_says_so(qa, world, capsys):
     _one_route(world, segments=4)
     page = world.page
-    page.scroll_height, page.viewport_height = 15 * 844, 844
+    cap = qa.MAX_SEGMENTS
+    page.scroll_height, page.viewport_height = (cap + 3) * 844, 844
     code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
     assert code == 0
     manifest = _manifest(bundle)
     (entry,) = manifest["routes"]
     # MUTATION: drop MAX_SEGMENTS from the phone budget (scroll until the end
-    # with no bound) and this fails: fifteen images.
-    assert len(entry["images"]) == qa.MAX_SEGMENTS == 12, entry["images"]
+    # with no bound) and this fails: three images more.
+    assert len(entry["images"]) == cap, len(entry["images"])
     # MUTATION: leave the entry as it was (no `truncated`) and this fails: a
     # cut capture recorded as complete.
-    assert entry["truncated"] is True and entry["reached"] == 12 * 844 and entry["total"] == 15 * 844, entry
+    assert entry["truncated"] is True and entry["reached"] == cap * 844 and entry["total"] == (cap + 3) * 844, entry
     # MUTATION: record the cut only in the entry and this fails: the summary
     # lists it, as it lists an unsettled route.
     (failed,) = manifest["failed"]
-    assert failed["id"] == "runs" and "cut" in failed["error"] and "10128 of 12660 px" in failed["error"], failed
+    assert failed["id"] == "runs" and "cut" in failed["error"], failed
+    assert f"{cap * 844} of {(cap + 3) * 844} px" in failed["error"], failed
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["truncated"] == 1
 
 
-def test_a_desktop_capture_keeps_its_routes_budget_and_says_when_it_cut(qa, world):
+def test_a_desktop_capture_keeps_a_budget_its_route_names_and_says_when_it_cut(qa, world):
     _one_route(world, segments=4)
     page = world.page
     page.scroll_height, page.viewport_height = 9 * 900, 900
     code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
     assert code == 0
     (entry,) = _manifest(bundle)["routes"]
-    # MUTATION: give every preset MAX_SEGMENTS and this fails: nine images.
+    # MUTATION: ignore a route's own `segments` at the desktop and this fails: nine images.
     assert len(entry["images"]) == 4, entry["images"]
     # MUTATION: set `truncated` only for phone-390 and this fails.
     assert entry["truncated"] is True and entry["reached"] == 4 * 900 and entry["total"] == 9 * 900, entry
     assert qa.segment_budget({"segments": 4}, "desktop") == 4
-    assert qa.segment_budget({}, "desktop") == qa.DEFAULT_SEGMENTS
+    # QA-CAPTURE-REVIEWABLE-TALL: a route that names no budget is captured to
+    # its end at the desktop too (AI Studio's /docs, about 49,600 px there).
+    assert qa.segment_budget({}, "desktop") == qa.MAX_SEGMENTS
     assert qa.segment_budget({"segments": 3}, "phone-390") == qa.MAX_SEGMENTS
 
 
@@ -2197,3 +2201,137 @@ def test_a_shot_at_a_scale_of_one_is_still_checked_against_the_viewport(qa):
     # MUTATION: keep a shot that matches neither size of the reading and
     # this 980x2121 one at scale 1 is neither retaken nor listed.
     assert len(reshot) == qa.SHOT_RETRIES and off is not None and "980x2121" in off and "390x844" in off
+
+
+# --------------------------------------------------------------------------
+# QA-CAPTURE-REVIEWABLE-TALL (part of #2688): AI Studio's staging run of
+# 2026-11-04 captured only the sign-in chooser on one leg and read reviewable,
+# and cut its /docs page (about 49,600 px at the desktop, 65,300 px at 390 px)
+# at the segment cap
+# --------------------------------------------------------------------------
+
+#: What the run's chooser read: a choice shown before any login form.
+CHOOSER = "Sign in to AI Studio\nChoose where to sign in\nStaging\nProduction"
+
+
+def _gate_sign_in(qa, world, monkeypatch, state: str, cause: str | None) -> None:
+    spool = world.tmp / "handoff"
+    spool.mkdir(exist_ok=True)
+    (spool / qa.QA_TARGET_STATUS_NAME).write_text(json.dumps({"state": state, "cause": cause}),
+                                                  encoding="utf-8")
+    monkeypatch.setenv(qa.HANDOFF_ENV, str(spool))
+
+
+def test_a_capture_of_the_sign_in_chooser_alone_is_not_reviewable(qa, world, monkeypatch, capsys):
+    # One route, so no two routes to compare: the page itself reads as a
+    # sign-in or choice screen at every preset and theme.
+    monkeypatch.setattr(world.page, "inner_text", lambda *_a, **_kw: CHOOSER)
+    code, _out, bundle = _capture(qa, world, group="other")
+    assert code == 0
+    manifest = _manifest(bundle)
+    # MUTATION: read `same_screen` only across two routes and the chooser reads as the app.
+    assert manifest["reviewable"] is False
+    blocked = manifest["sign_in_blocked"]
+    assert blocked["same_screen"] is True and "sign-in or choice screen" in blocked["why"], blocked
+    verdict = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert verdict["reviewable"] is False and verdict["not_reviewable"] == blocked["why"]
+
+
+def test_routes_that_each_show_a_sign_in_screen_are_not_reviewable_though_their_text_differs(qa, world,
+                                                                                            monkeypatch):
+    # The chooser names where it returns to: no two texts are equal, every one is the chooser.
+    monkeypatch.setattr(world.page, "inner_text",
+                        lambda *_a, **_kw: f"{CHOOSER}\nYou will return to {world.page.url}")
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: require one text across every route and the chooser reads as the app.
+    assert _manifest(bundle)["reviewable"] is False
+
+
+def test_a_route_that_is_itself_the_login_page_stays_reviewable(qa, world, monkeypatch):
+    routes = json.loads(world.routes.read_text(encoding="utf-8"))
+    routes["groups"]["other"] = [{"id": "login", "address": "login", "path": "/login", "ready": "main h1"}]
+    world.routes.write_text(json.dumps(routes), encoding="utf-8")
+    monkeypatch.setattr(world.page, "inner_text", lambda *_a, **_kw: "Sign in\nEmail\nPassword\nSign in")
+    code, _out, bundle = _capture(qa, world, group="other", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: drop the sign-in path exception and a review of the login page itself is skipped.
+    assert _manifest(bundle)["reviewable"] is True
+
+
+def test_a_long_page_with_a_sign_in_link_stays_reviewable(qa, world, monkeypatch):
+    page_text = "Sign in\n" + " ".join(f"word{i}" for i in range(400))
+    monkeypatch.setattr(world.page, "inner_text", lambda *_a, **_kw: page_text)
+    code, _out, bundle = _capture(qa, world, group="other", presets="desktop", themes="light")
+    assert code == 0
+    # MUTATION: read any page that names sign-in as the sign-in screen and the app's pages are dropped.
+    assert _manifest(bundle)["reviewable"] is True
+
+
+def test_the_gates_own_sign_in_refusal_makes_the_capture_not_reviewable(qa, world, monkeypatch, capsys):
+    _gate_sign_in(qa, world, monkeypatch, "failed", "qa_sign_in_no_form")
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    assert manifest["gate_refusals"]["sign_in"] == {"state": "failed", "cause": "qa_sign_in_no_form"}
+    # MUTATION: read only the token refusals and the routes' text, and a leg the gate never signed in reads green.
+    assert manifest["reviewable"] is False
+    blocked = manifest["sign_in_blocked"]
+    assert blocked["gate_sign_in"] == {"state": "failed", "cause": "qa_sign_in_no_form"}, blocked
+    assert blocked["same_screen"] is False and "qa_sign_in_no_form" in blocked["why"], blocked
+    verdict = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert verdict["reviewable"] is False and "qa_sign_in_no_form" in verdict["not_reviewable"]
+
+
+def test_a_sign_in_the_gate_submitted_but_could_not_confirm_stays_reviewable(qa, world, monkeypatch):
+    # The stg-moderator leg: `qa_sign_in_failed` on every step, every screen signed in.
+    _gate_sign_in(qa, world, monkeypatch, "failed", "qa_sign_in_failed")
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    # MUTATION: count every failed sign-in as a refusal and a leg that shows the app is dropped.
+    assert manifest["reviewable"] is True and manifest["sign_in_blocked"] is None
+
+
+def test_a_50000_px_page_at_the_desktop_is_captured_whole(qa, world):
+    _one_route(world)
+    world.page.scroll_height, world.page.viewport_height = 50_000, 900
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    # MUTATION: keep DEFAULT_SEGMENTS (4) as the desktop budget, or MAX_SEGMENTS at 12, and this is cut.
+    assert len(entry["images"]) == 56, len(entry["images"])
+    assert entry["truncated"] is False and entry["reached"] == entry["total"] == 50_000, entry
+    assert manifest["truncated"] == [] and manifest["failed"] == []
+
+
+def test_a_65000_px_page_at_390_is_captured_whole(qa, world):
+    _one_route(world)
+    world.page.scroll_height, world.page.viewport_height = 65_000, 844
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    # MUTATION: MAX_SEGMENTS back at 12 and this is cut at 10,128 px.
+    assert len(entry["images"]) == 78, len(entry["images"])
+    assert entry["truncated"] is False and entry["reached"] == entry["total"] == 65_000, entry
+    assert manifest["truncated"] == []
+
+
+def test_a_page_taller_than_the_bound_is_marked_truncated_with_its_height(qa, world, capsys):
+    _one_route(world)
+    total = (qa.MAX_SEGMENTS + 5) * 844
+    world.page.scroll_height, world.page.viewport_height = total, 844
+    code, _out, bundle = _capture(qa, world, presets="phone-390", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    (entry,) = manifest["routes"]
+    assert len(entry["images"]) == qa.MAX_SEGMENTS and entry["truncated"] is True, entry
+    # MUTATION: leave the cut in the entry only and the manifest's summary says nothing.
+    assert manifest["truncated"] == [{"id": "runs", "preset": "phone-390", "theme": "light", "height": total,
+                                      "reached": qa.MAX_SEGMENTS * 844, "segments": qa.MAX_SEGMENTS}]
+    verdict = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    # MUTATION: keep the verdict line's bare count and the cut page is not named there.
+    assert verdict["truncated"] == 1
+    assert verdict["truncated_pages"] == [f"runs phone-390 light: {qa.MAX_SEGMENTS} segments of {total} px"]

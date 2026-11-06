@@ -221,10 +221,10 @@ describe('an account state is not a task state (brand §3, #503)', () => {
     expect(mark('s2').textContent).toBe('paused')
   })
 
-  it('draws reauth required as the amber warning triangle, in words', async () => {
+  it('draws REAUTH_REQUIRED as the amber warning triangle, as needs sign-in', async () => {
     await mount(STATES)
     expect(mark('s4').getAttribute('data-mark')).toBe('warn')
-    expect(mark('s4').textContent).toBe('reauth required')
+    expect(mark('s4').textContent).toBe('needs sign-in')
   })
 
   it('says a sign-in is needed in a warning callout that opens the account', async () => {

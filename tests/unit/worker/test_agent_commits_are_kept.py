@@ -36,6 +36,7 @@ from swarm_common.states import TaskState
 
 from worker_seeds import seed_attempt
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _commit_as_claude,
     assert_only_the_worker_wrote,
     empty_origin,
@@ -110,7 +111,7 @@ def _attempt(worker_factory, monkeypatch, remote: Path, *, task_id: str, edit, r
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": task_id, "metadata": {"dispatch": {"strategy": "direct-pr"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     for value in register:
         worker.log.register_secret(value)
     assert worker._maybe_clone(task) is not None, "the clone did not land"
@@ -311,7 +312,7 @@ def test_an_empty_repository_keeps_the_agents_commits_from_a_parentless_first(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-empty-kept", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     cloned = worker._maybe_clone(task)
     assert cloned is not None and cloned["commit"] is None, "the repository was not empty"
     edit(worker.ws.work / lifecycle.REPO_DIR_NAME)

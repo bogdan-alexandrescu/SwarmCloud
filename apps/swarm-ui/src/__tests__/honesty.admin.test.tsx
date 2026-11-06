@@ -33,7 +33,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => api)
 
-const { AdminSettingsScreen } = await import('../AdminSettings')
+const { AdminSettingsScreen, poolSpoken } = await import('../AdminSettings')
 const { QuotaDetailScreen } = await import('../QuotaDetail')
 
 const WAIT = { timeout: 5000 } as const
@@ -108,10 +108,10 @@ function side(): HTMLElement {
  * so this opens that row's editor first when it is not already open.
  */
 function input(name: string): HTMLInputElement {
-  const open = screen.queryByLabelText(`Hard limit for ${name}`, { exact: false })
+  const open = screen.queryByLabelText(`Hard limit for ${poolSpoken(name)}`, { exact: false })
   if (open !== null) return open as HTMLInputElement
-  fireEvent.click(within(editorRow(name)).getByRole('button', { name: `Edit ceiling for ${name}` }))
-  return screen.getByLabelText(`Hard limit for ${name}`, { exact: false }) as HTMLInputElement
+  fireEvent.click(within(editorRow(name)).getByRole('button', { name: `Edit ceiling for ${poolSpoken(name)}` }))
+  return screen.getByLabelText(`Hard limit for ${poolSpoken(name)}`, { exact: false }) as HTMLInputElement
 }
 
 describe('Pool limits draws no per-profile card (owner decision 2026-10-01)', () => {
@@ -364,7 +364,7 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     render(<AdminSettingsScreen />)
     await limitsDrawn()
     fireEvent.change(input('global'), { target: { value: '7' } })
-    const other = within(editorRow('tenant:eng')).getByRole('button', { name: /^Edit ceiling for tenant:eng/ })
+    const other = within(editorRow('tenant:eng')).getByRole('button', { name: /^Edit ceiling for eng \(workspace\)/ })
     // aria-disabled, not `disabled` (QA-037): the reason stays reachable by keyboard.
     expect(other.getAttribute('aria-disabled'), 'a click elsewhere would drop the typed 7').toBe('true')
     fireEvent.click(other)
@@ -372,7 +372,7 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     expect(other.getAttribute('aria-label')).toMatch(/unsaved value/)
     // Typed back to the pool's own value, nothing is held: the others open again.
     fireEvent.change(input('global'), { target: { value: '10' } })
-    expect(within(editorRow('tenant:eng')).getByRole('button', { name: 'Edit ceiling for tenant:eng' }).getAttribute('aria-disabled')).toBeNull()
+    expect(within(editorRow('tenant:eng')).getByRole('button', { name: 'Edit ceiling for eng (workspace)' }).getAttribute('aria-disabled')).toBeNull()
   })
 
   it('says lowering evicts nothing beside the open editor, not in the caption', async () => {

@@ -27,6 +27,7 @@ import type { Task, TaskPage, TaskState } from '../types'
 // are read (visual QA QA-026); qa.p12.agentslist.test.tsx covers the read.
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadAttempts: vi.fn(async () => ({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'no' } })),
 }))
 
@@ -387,9 +388,11 @@ describe('the list re-reads, and its row clock runs with the shared clock (AG-1,
 
   /**
    * AG-1. THE LIST RE-READS, at §2.5's cadence: 5s while Live holds a row,
-   * 30s when it does not. It read once and never again.
+   * 30s when it does not. It read once and never again. A 5 s poll is the
+   * live and waiting states' one read (`loadTasksInStates`); the page is
+   * re-read when it falls due.
    *
-   * BREAK IT: drop `pollMs` from AgentsScreen. `loadTasks` is called once.
+   * BREAK IT: drop `pollMs` from AgentsScreen. Neither read is made again.
    */
   it('re-reads every 5s while Live holds a row, and every 30s when it does not', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
@@ -405,20 +408,23 @@ describe('the list re-reads, and its row clock runs with the shared clock (AG-1,
     })
 
     api.loadTasks.mockImplementation(page('RUNNING'))
+    api.loadTasksInStates.mockImplementation(page('RUNNING'))
     const live = render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
     expect(api.loadTasks).toHaveBeenCalledTimes(1)
     await advance(LIVE_POLL_MS)
-    expect(api.loadTasks, 'a Live row did not bring a re-read at 5s').toHaveBeenCalledTimes(2)
+    expect(api.loadTasksInStates, 'a Live row did not bring a re-read at 5s').toHaveBeenCalledTimes(1)
     live.unmount()
 
     api.loadTasks.mockReset()
+    api.loadTasksInStates.mockReset()
     api.loadTasks.mockImplementation(page('SUCCEEDED'))
     render(<AgentsScreen onOpen={() => {}} />)
     await advance(0)
     expect(api.loadTasks).toHaveBeenCalledTimes(1)
     await advance(LIVE_POLL_MS)
     expect(api.loadTasks, 'an idle list re-read at the Live cadence').toHaveBeenCalledTimes(1)
+    expect(api.loadTasksInStates, 'an idle list re-read at the Live cadence').not.toHaveBeenCalled()
     await advance(IDLE_POLL_MS - LIVE_POLL_MS)
     expect(api.loadTasks, 'an idle list never re-read').toHaveBeenCalledTimes(2)
   })

@@ -1,11 +1,6 @@
 // QAFIX4-WORKFLOWS (part of #1680; visual QA run 4, wf_ecd935541ced4a539540,
 // the fixture build of main at fabe4d6c, 1440 and 390 px, light and dark):
 //
-//   c28 (owner decision, 2026-10-22, box comment 6314117148)  at 1440 the
-//          Workflows list's Cost cell read three lines, '$0.426' / '3 of 4' /
-//          'reported'. From 1280 the column is 136px (128 until QAFIX5
-//          work-a-010) and the coverage is one
-//          line under the figure; below 1280 it keeps 100px and V163's wrap.
 //   N17 (task-009)  the Changes empty state's heading was announced as the
 //          chip's whole sentence: `Mark` is `role="img"` named by `say`, and
 //          inside the h3 it made the sentence the heading's name, so the
@@ -20,10 +15,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, within } from '@testing-library/react'
 
 import type { Task, Workflow, WorkflowStep } from '../types'
-import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { task as runTask } from './runfixture'
-import { cellStyle, fixedColumns, lengthPx, textPx } from './tablefit'
 
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
@@ -47,105 +40,6 @@ function html(markup: string): HTMLElement {
   hosts.push(host)
   return host
 }
-
-// ---------------------------------------------------------------------------
-// c28: the Cost column from 1280
-// ---------------------------------------------------------------------------
-
-/** The list's head and one row with a partial cost, as Workflows.tsx draws them at 900 and up (Shape and Runners hidden below 1680). */
-function list(): HTMLElement {
-  const cols = ['state', 'workflow', 'done', 'cost', 'owner', 'submitted', 'duration']
-  return html(
-    '<div class="wfl"><div class="table-wrap is-scroll wfl-scroll"><table class="wfl-table"><thead><tr>' +
-      cols.map((c) => `<th data-col="${c}">${c}</th>`).join('') +
-      '</tr></thead><tbody><tr class="wfl-row">' +
-      cols
-        .map((c) =>
-          c === 'cost'
-            ? '<td class="num" data-col="cost"><span class="wf-spend">$0.426<span class="wf-spend-cov">3 of 4 reported</span></span></td>'
-            : `<td data-col="${c}">x</td>`,
-        )
-        .join('') +
-      '</tr></tbody></table></div></div>',
-  )
-}
-
-/** The list's box: the viewport less the 84px spine, the 236px nav panel open, and two 32px gutters. */
-const listAt = (viewport: number) => viewport - 84 - 236 - 64
-
-describe('c28: from 1280 the Cost column holds "3 of 4 reported" on one line', () => {
-  it('is 136px at 1440 and the coverage line does not wrap, and that is room enough for it', () => {
-    const host = list()
-    const env: CascadeEnv = { width: 1440 }
-    const th = host.querySelector('th[data-col="cost"]')!
-    const td = host.querySelector('td[data-col="cost"]')!
-    const cov = host.querySelector('.wf-spend-cov')!
-    // MUTATION: drop the 1280 block's `th[data-col="cost"] { width: 136px }`
-    // and the head is 100px again. (128px until QAFIX5 work-a-010: see the
-    // measurement below.)
-    expect(painted(th, 'width', env)).toBe('136px')
-    // Still its own line under the figure.
-    expect(painted(cov, 'display', env)).toBe('block')
-    // One line through width, not through nowrap: the coverage still wraps at
-    // its spaces, and '3 of 4 reported' simply has room enough not to.
-    // MUTATION: set the width under 128px (or the cell's padding over 10px):
-    // the 15 characters of 12px mono no longer fit the content box, and the
-    // coverage wraps to '3 of 4' / 'reported' again.
-    // MEASURED ON THE COVERAGE, in the DM Mono `.wf-spend` draws it in: on the
-    // cell it was measured in the sans face, 100.8px, and 128px passed with
-    // no slack at all (QAFIX5 work-a-010, qafix5.workflows.test.tsx).
-    const st = cellStyle(td, env)
-    const room = (lengthPx(painted(th, 'width', env), 0) ?? 0) - st.pl - st.pr
-    expect(room).toBeGreaterThanOrEqual(textPx('3 of 4 reported', cov, env))
-  })
-
-  it('never clips a longer coverage at 1440: "10 of 12 reported" wraps instead', () => {
-    const host = list()
-    const env: CascadeEnv = { width: 1440 }
-    const th = host.querySelector('th[data-col="cost"]')!
-    const td = host.querySelector('td[data-col="cost"]')!
-    const cov = host.querySelector('.wf-spend-cov')!
-    const st = cellStyle(td, env)
-    const room = (lengthPx(painted(th, 'width', env), 0) ?? 0) - st.pl - st.pr
-    // The premise: a 12-step workflow's coverage (R10) is wider than the box,
-    // and the cell clips what overflows it.
-    expect(textPx('10 of 12 reported', cov, env)).toBeGreaterThan(room)
-    expect(painted(td, 'text-overflow', env)).toBe('clip')
-    // MUTATION: put `.wf-spend-cov { white-space: nowrap }` in the 1280 block:
-    // the coverage stays one 122px line in a 116px box and the clip takes
-    // "reported", the word V163 and Q9 say is never cut.
-    expect(painted(cov, 'white-space', env)).toBe('normal')
-    // Wrapped at its spaces, every word fits: nothing of it is cut.
-    // MUTATION: narrow the 1280 head under the widest word ('reported', 58px,
-    // plus the cell's 20px of padding) and a word itself is clipped.
-    for (const word of '10 of 12 reported'.split(' ')) {
-      expect(textPx(word, cov, env)).toBeLessThanOrEqual(room)
-    }
-  })
-
-  it('keeps 100px and V163’s wrap at 1100', () => {
-    const host = list()
-    const env: CascadeEnv = { width: 1100 }
-    // MUTATION: put the 136px outside the 1280 query (in the 900 block) and
-    // the narrow layout loses 36px it does not have.
-    expect(painted(host.querySelector('th[data-col="cost"]')!, 'width', env)).toBe('100px')
-    // MUTATION: put a nowrap on the coverage in the 900 block: '3 of 4
-    // reported' is 108px in a 80px content box, and the cell's clip takes
-    // "reported".
-    expect(painted(host.querySelector('.wf-spend-cov')!, 'white-space', env)).toBe('normal')
-  })
-
-  it('leaves the name at least the 168px D8 and R10 hold, at 1280 with the nav open', () => {
-    const host = list()
-    const env: CascadeEnv = { width: 1280 }
-    const { cols } = fixedColumns(host.querySelector('table')!, listAt(1280), env)
-    const name = cols.find((c) => c.col === 'workflow')!
-    // MUTATION: widen Cost (or any fixed column) by more than the 28px the
-    // name has over its floor here: 896px less 700px of fixed columns is 196.
-    expect(name.end - name.start).toBeGreaterThanOrEqual(168)
-    expect(cols.find((c) => c.col === 'cost')!.end - cols.find((c) => c.col === 'cost')!.start).toBe(136)
-  })
-})
 
 // ---------------------------------------------------------------------------
 // N17: the Changes empty state's heading

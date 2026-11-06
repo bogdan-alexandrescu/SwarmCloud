@@ -921,6 +921,7 @@ def _verify_answerer(ctx: Any, item: QuestionItem, comment: Comment, own_logins:
 def answer_from_comment(ctx: Any, item: QuestionItem, comment: Comment, own_logins: set[str]) -> bool:
     """One reply: True when it answered; False when it is no `/answer`; Refused otherwise."""
     from .agent_questions import AnswerBody, _redacted_question, answer_question
+    from . import mergewake
     from .agent_output import AgentOutputService
 
     parsed = parse_answer(comment.body)
@@ -944,6 +945,8 @@ def answer_from_comment(ctx: Any, item: QuestionItem, comment: Comment, own_logi
             ctx.store, AgentOutputService(ctx.inspection), ctx.db, item.tenant_id, item.task_id,
             AnswerBody(question_index=number - 1, choice=option, via=ANSWER_VIA),
             submitted_by=None, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
+            start_pick_fix=lambda merge, claim: mergewake.advisory_pick_fix(
+                ctx, auth, merge, claim),
         )
     except UpstreamUnavailable:
         raise Refused("the answer could not be stored now", retry=True) from None

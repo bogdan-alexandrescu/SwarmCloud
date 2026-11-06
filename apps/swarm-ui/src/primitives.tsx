@@ -2,6 +2,7 @@ import { useId, type ReactNode } from 'react'
 import type { TopicId } from './help'
 import { HelpNote } from './HelpCard'
 import { UsageTrack } from './components'
+import './styles/primitives.css'
 
 /**
  * THE REACT HALF OF THE DESIGN SYSTEM'S PRIMITIVES, WRITTEN ONCE.
@@ -73,10 +74,10 @@ const MARK_WORD: Readonly<Record<MarkKind, string>> = {
  * the element's default italic never reaches it, and every screen that already
  * imported the mark drew it as an `<i>`.
  */
-export function Mark({ kind, say }: { kind: MarkKind; say: string }) {
+export function Mark({ kind, say, icon = false }: { kind: MarkKind; say: string; icon?: boolean }) {
   return (
-    <i className={`ctl-mark is-${kind}`} role="img" aria-label={say}>
-      {MARK_WORD[kind]}
+    <i className={`ctl-mark is-${kind}${icon ? ' is-icon' : ''}`} role="img" aria-label={say}>
+      {icon ? null : MARK_WORD[kind]}
     </i>
   )
 }
@@ -225,11 +226,18 @@ export function UtilRow({
  * facts and which this platform's defining bug was drawing alike.
  *
  * THE MARK IS THE MARKER. `is-failed`, `is-partial` and `is-admin` are colour,
- * and colour is not a distinction a greyscale screenshot keeps; the mark is two
- * words, a border style and a fill, and it survives both. It sits INSIDE the
- * heading, beside the fact it qualifies, so the two cannot be separated by a
- * layout that wraps. The heading is the fact, three or four words of it; `say`
- * is the sentence, on the mark's accessible name.
+ * and colour is not a distinction a greyscale screenshot keeps; the mark is a
+ * border style and a fill, and it survives both. It sits INSIDE the heading,
+ * beside the fact it qualifies, so the two cannot be separated by a layout
+ * that wraps. The heading is the fact, three or four words of it; `say` is the
+ * sentence, on the mark's accessible name.
+ *
+ * HERE THE MARK IS AN ICON, NOT ITS TWO WORDS (visual QA pass 2 automate2-17,
+ * was automate-19, part of #2694). Worded, every box led with a chip that
+ * restated its own heading -- `none Never fired`, `not read Not found` -- so
+ * the heading alone carries the words and the mark keeps its silhouette and
+ * its sentence (styles/primitives.css). A mark beside a FIGURE keeps its
+ * words: there the figure is a number and the words are the whole fact.
  *
  * The shape is fixed (§6.9): mark, heading, at most one sentence, a link out.
  * A panel whose heading already carries the fact passes no children and
@@ -292,7 +300,7 @@ export function Absent({
       role={kind === 'zero' ? undefined : 'status'}
     >
       <h3 aria-describedby={explain === undefined ? undefined : descId}>
-        <Mark kind={EMPTY_MARK[kind]} say={say} />{' '}
+        <Mark kind={EMPTY_MARK[kind]} say={say} icon />{' '}
         {heading}
         {explain !== undefined && <HelpNote topic={explain} id={descId} />}
       </h3>

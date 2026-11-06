@@ -1,0 +1,33 @@
+# Lane DAYONE-DOCTOR-1 (part of #2688): `swarm doctor` runs every entry's
+# probe (apps/swarm-install/swarm_install/doctor.py), the hourly swarm-doctor
+# job runs the same checks and posts them to swarm-api
+# (apps/swarm-install/swarm_install/scheduled_doctor.py), and `swarm install
+# --repair <id>` re-runs the entry's step (apps/swarm-install/swarm_install/
+# repair.py). The base's other.doctor-findings is restated to depend on the
+# job that posts the findings, as its notes said this lane would.
+version: 1
+entries:
+- id: other.doctor-findings
+  replace: true
+  kind: other
+  scope: core
+  stage: 15
+  provider: engine
+  check: GET /v1/admin/setup/health returns run_at under 70 minutes old
+  apply: python -m swarm_install.scheduled_doctor in the swarm-doctor job (terraform/infra/doctor.tf) posts
+    PUT /v1/admin/setup/health; DAYONE-SETUP-API-1 stores it, DAYONE-SETUP-UI-1 draws it
+  verify: a finding shows on Admin > Setup > Health with its repair command (swarm install --repair <id>)
+  explain: 'D27: Admin > Setup > Health. The hourly doctor runs every manifest probe as swarm-doctor and invokes
+    swarm-api and nothing else; until enable_scheduled_doctor is on, swarm doctor says the hourly doctor is off.'
+  depends_on:
+  - other.install-record-firestore
+  - cloud-run-job.swarm-doctor
+  evidence:
+  - apps/swarm-install/swarm_install/scheduled_doctor.py
+  - terraform/infra/doctor.tf
+  - docs/design/day-one-plan.md
+  notes: added by DAYONE-P2; depends_on cloud-run-job.swarm-doctor added by DAYONE-DOCTOR-1
+  step: handoff.ready
+env:
+  API_URL:
+    setter: terraform/infra/doctor.tf:80

@@ -187,6 +187,19 @@ def test_a_graph_the_extractor_would_not_carry_forces_full(record, why):
     assert why in choice.reason
 
 
+@pytest.mark.parametrize("cut", [["symbol_test_map"], ["file_test_map"],
+                                 ["file_test_map", "symbol_test_map"]])
+def test_a_graph_cut_only_in_its_test_maps_is_carried(cut):
+    """2026-11-03: every SwarmCloud run of a week was full, refused on
+    "truncated (symbol_test_map)". An incremental run recomputes both test
+    maps from the carried edges, so a cut there is no reason to rebuild."""
+    version = {"commit_sha": ONE, "graph_digest": GRAPH,
+               "graph_extractor": dict(CARRIED, truncated=cut)}
+    # MUTATION: refuse any `truncated` entry and this is a ~42-minute full run.
+    assert repoindex.graph_carry_refusal(version["graph_extractor"]) is None
+    assert _choose(version=version) == repoindex.KindChoice("incremental", base_sha=ONE)
+
+
 def test_the_graph_extractor_record_is_read_from_the_manifest():
     version = repoindex.INDEXER_EXTRACTOR_VERSION
     manifest = {"extractor": {"version": version, "blob_ids": True, "files_not_listed": 0},
@@ -388,3 +401,90 @@ def test_runs_serve_their_kind_and_base():
                                    "kind_reason": None})
     assert served["kind"] == "incremental" and served["base_sha"] == ONE
     assert "kind_reason" in served
+
+
+# --------------------------------------------------------------------------
+# The weekly full run builds on the servers' answers (part of #2991, owner
+# 2026-11-01): it is given the last promoted index as a base by its own
+# prompt line, so it re-asks the language servers only about the changed
+# and never-covered files and still rebuilds the tree-sitter half whole.
+# --------------------------------------------------------------------------
+
+def test_the_weekly_full_run_is_given_the_promoted_index_for_the_servers_answers():
+    choice = _choose(_state(last_indexed_at=NOW - timedelta(days=7)))
+    # MUTATION: give the weekly run no base and it starts over every week,
+    # reaching the same quarter of pyright's files.
+    assert choice == repoindex.KindChoice(
+        "full", base_sha=None, reason=choice.reason, lsp_base_sha=ONE)
+    assert "due every 7" in choice.reason
+
+
+@pytest.mark.parametrize("make,why", [
+    (lambda: _choose(changes={"status": "diverged", "files": ["src/a.py"]}), "not an ancestor"),
+    (lambda: _choose(changes={"status": "ahead", "files": [
+        f"src/f{n}.py" for n in range(repoindex.MAX_INCREMENTAL_CHANGES)]}), "300"),
+    (lambda: repoindex.choose_kind(
+        _state(), TWO, requested="incremental",
+        version={"commit_sha": ONE, "graph_digest": GRAPH, "graph_extractor": dict(CARRIED)},
+        changes=None, now=NOW), "GitHub could not say"),
+    (lambda: _choose(_state(last_kind="incremental", last_indexed_at=NOW)), "no full run"),
+], ids=["not_ancestor", "too_many_changes", "relation_unknown", "no_full_recorded"])
+def test_every_full_run_on_a_carriable_graph_keeps_the_servers_answers(make, why):
+    """Not only the weekly one: the extractor keeps each unchanged file's
+    answers whatever the diff's size or shape, and re-asks what changed."""
+    choice = make()
+    # MUTATION: return before the weekly branch and pyright starts over.
+    assert choice.kind == "full" and why in choice.reason
+    assert choice.base_sha is None and choice.lsp_base_sha == ONE
+
+
+@pytest.mark.parametrize("make", [
+    lambda: _choose(requested="full"),
+    lambda: _choose(changes={"status": "ahead", "files": ["src/a.py", "pyproject.toml"]}),
+    lambda: _choose(_state(last_indexed_at=NOW - timedelta(days=7)),
+                    version={"commit_sha": ONE, "graph_digest": None}),
+    lambda: _choose(_state(last_indexed_at=NOW - timedelta(days=7)),
+                    version={"commit_sha": ONE, "graph_digest": GRAPH,
+                             "graph_extractor": dict(CARRIED, version="1")}),
+], ids=["asked_for", "configuration", "no_graph", "other_extractor"])
+def test_no_other_full_run_carries_answers(make):
+    # An explicit request rebuilds everything; a configuration change changes
+    # what every answer means; a graph the extractor would not carry is none.
+    choice = make()
+    assert choice.kind == "full" and choice.lsp_base_sha is None
+
+
+def test_a_full_runs_prompt_names_its_lsp_base_and_no_incremental_base():
+    task = repoindex.indexer_task(
+        {"owner": "acme", "repo": "app", "default_branch": "main", "tenant_id": "t1",
+         "repo_id": "repo_1", "repository_url": "https://github.com/acme/app"},
+        TWO, "full", lsp_base_sha=ONE)
+    prompt = task.input["prompt"]
+    assert f"\n{repoindex.LSP_BASE_LINE}{ONE}\n" in prompt
+    assert repoindex.BASE_LINE not in prompt
+    # The agent is told it is still a full run.
+    assert 'Write "kind": "full", no "base_sha"' in prompt
+    assert task.metadata == {"repo_index": "repo_1", "commit_sha": TWO, "index_kind": "full",
+                             "lsp_base_sha": ONE}
+    # An incremental run never names one.
+    with pytest.raises(ValueError):
+        repoindex.indexer_task(
+            {"owner": "acme", "repo": "app", "default_branch": "main", "tenant_id": "t1",
+             "repo_id": "repo_1", "repository_url": "https://github.com/acme/app"},
+            TWO, "incremental", base_sha=ONE, lsp_base_sha=ONE)
+
+
+def test_a_weekly_full_run_is_submitted_with_its_lsp_base(client, db, objects, repo_id, github):
+    _promote_one_with_a_graph(client, db, objects, repo_id)
+    index = db.docs[f"repositories/{repo_id}"]["index"]
+    index["last_full_at"] = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    github.heads["main"] = TWO
+    github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 1, "files": ["src/a.py"]}
+
+    run = _index_now(client, repo_id, kind="incremental").json()["run"]
+
+    assert run["kind"] == "full" and run["base_sha"] is None
+    task = db.docs[f"tasks/{run['task_id']}"]
+    assert task["timeout_seconds"] == repoindex.FULL_TIMEOUT_SECONDS
+    assert task["metadata"]["lsp_base_sha"] == ONE
+    assert f"\n{repoindex.LSP_BASE_LINE}{ONE}\n" in task["input"]["prompt"]

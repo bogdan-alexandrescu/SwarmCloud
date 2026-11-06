@@ -170,6 +170,14 @@ case "$*" in
   *"config current-context"*) cat "${d}/context" ;;
   *"config view"*) cat "${d}/cluster-ref" ;;
   *"get service kube-dns"*) cat "${d}/kube-dns-ip" ;;
+  # Discovery: the networking.gke.io resources the cluster serves, one per
+  # line (kubernetes/apply.sh asks before it renders a hostname policy).
+  # None, unless the test wrote them.
+  *"api-resources --api-group=networking.gke.io -o name"*)
+    if [[ -f "${d}/api-resources-fails" ]]; then
+      printf 'error: unable to retrieve the complete list of server APIs\n' >&2; exit 1
+    fi
+    if [[ -f "${d}/api-resources" ]]; then cat "${d}/api-resources"; fi ;;
   *"get daemonset node-local-dns"*) cat "${d}/node-local-dns.json" ;;
   # Scoped, the parity check reads the one policy by name: the object, or
   # NotFound -- never the list document.
@@ -377,6 +385,9 @@ class Cluster:
             ),
             SWARM_KUBECTL=str(self.bin / "kubectl"),
             SWARM_ENV_FILE=str(self.tmp / "no-such.env"),
+            # apply.sh has no default project (DAYONE-K8S-1): the one this fake
+            # cluster's context and identities name is given, as an operator would.
+            PROJECT_ID="saga-agents-staging",
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             PYTHON_BIN=sys.executable,
             FAKE_CLUSTER_DIR=str(self.dir),
@@ -421,11 +432,24 @@ def _ip_peers(policy: dict[str, Any]) -> set[str]:
     }
 
 
+#: What render.py takes only from its caller once it is given the cluster
+#: network (DAYONE-K8S-1): the project, both control-plane uniqueIds and the
+#: tenant's quota. kubernetes/apply.sh passes them; this stands in for it.
+CLUSTER_INPUTS = (
+    "--project", "saga-agents-staging",
+    "--scheduler-uid", "100000000000000000011",
+    "--reconciler-uid", "100000000000000000022",
+    "--quota-pods", "100", "--quota-jobs", "200", "--quota-cpu", "400",
+    "--quota-memory", "800Gi", "--quota-ephemeral", "1000Gi",
+)
+
+
 def _render(network: dict[str, str], tenant: str = "eng") -> dict[str, Any]:
     """The egress policy the real renderer produces for `network`."""
     out = subprocess.run(
         [
             sys.executable, str(REPO / "kubernetes" / "render.py"), "tenant", "--tenant", tenant,
+            *CLUSTER_INPUTS,
             "--pod-cidr", network["pod_cidr"],
             "--service-cidr", network["service_cidr"],
             "--cluster-dns-ip", network["cluster_dns_ip"],

@@ -86,7 +86,8 @@ def _all_text(spec: dict[str, Any]) -> str:
         _target(
             environment="non_production",
             flows=[
-                {"id": "checkout", "goal": "buy the cheapest plan", "start_path": "/pricing", "mutating": True},
+                {"id": "checkout", "goal": "buy the cheapest plan", "start_path": "/pricing", "mutating": True,
+                 "writes": "One order for the cheapest plan."},
                 {"id": "find-docs", "goal": "find the API reference", "start_path": "/"},
             ],
         ),
@@ -384,7 +385,8 @@ def test_a_subset_of_screens_runs_only_those() -> None:
 
 
 def test_a_mutating_flow_on_a_production_target_is_refused() -> None:
-    flow = {"id": "checkout", "goal": "buy a plan", "start_path": "/pricing", "mutating": True}
+    flow = {"id": "checkout", "goal": "buy a plan", "start_path": "/pricing", "mutating": True,
+            "writes": "One order for a plan."}
     # MUTATION: check `environment != "production"` against the wrong field,
     # or default `environment` to non_production, and this renders.
     with pytest.raises(qaspec.QaSpecError) as err:
@@ -456,7 +458,7 @@ def test_a_base_url_that_is_not_a_plain_https_origin_is_refused(base_url: str) -
         {"id": "x", "path": "/a`b`"},
         {"id": "Bad Id", "path": "/"},
         {"id": "a--b", "path": "/"},
-        {"id": "x", "path": "/", "segments": 13},
+        {"id": "x", "path": "/", "segments": qaspec.MAX_SEGMENTS + 1},
         {"id": "x", "path": "/", "ready": "a\nb"},
     ],
 )
@@ -511,7 +513,7 @@ def test_the_preset_names_are_the_gates() -> None:
 
 def test_no_steps_input_carries_a_target_field() -> None:
     target = _target(sign_in=_own_login(), environment="non_production",
-                     flows=[{"id": "f", "goal": "g", "start_path": "/", "mutating": True}])
+                     flows=[{"id": "f", "goal": "g", "start_path": "/", "mutating": True, "writes": "w."}])
     spec = qaspec.render(target)
     built = read_spec(spec_without_model_classes(spec))
     for raw, step in zip(spec["steps"], built["steps"]):
@@ -905,7 +907,8 @@ def test_a_flow_opens_its_start_path_under_the_base(base: str, start: str, opens
     assert "//" not in prompt.split("open https://", 1)[1].split(";", 1)[0]
     # A mutating flow, on its own step (QA-FLOWS-CAP), opens through the same join.
     own = qaspec.render(_target(base_url=base, environment="non_production",
-                                flows=[{"id": "f", "goal": "g", "start_path": start, "mutating": True}]))
+                                flows=[{"id": "f", "goal": "g", "start_path": start, "mutating": True,
+                                        "writes": "w."}]))
     assert f"Open {opens} in the live browser" in _steps(own)["flow-f"]["prompt"]
     # MUTATION: make `screen_url` anything but the one join `_flow_prompt` uses and this differs.
     assert qaspec.screen_url(qaspec.base_url({"base_url": base}), start) == opens
@@ -920,3 +923,15 @@ def test_a_flow_starting_on_an_excluded_path_under_the_base_is_refused() -> None
     with pytest.raises(qaspec.QaSpecError) as refused:
         qaspec.render(target)
     assert refused.value.code == "qa_screen_excluded"
+
+
+def test_the_review_keeps_a_text_verdict_per_image_and_opens_each_once() -> None:
+    """TOKEN-RENDER (part of #2524): an image a step opens stays in its context
+    for every later turn, so the review opens each capture image once, writes
+    its verdict as text before the next, and never opens an image or a crop
+    again."""
+    prompt = _steps(qaspec.render(_target()))["review-g1"]["prompt"]
+    # MUTATION: drop the sentence and this fails.
+    assert "open the image with the Read tool once" in prompt
+    assert "verdict as text" in prompt
+    assert "never open an image or a crop a second time" in prompt

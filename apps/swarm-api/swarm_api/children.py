@@ -93,8 +93,10 @@ from .store import EVENTS, LEASES, TASKS, WORKFLOWS, Store, first_cancel_target
 from .validation import (
     CHILD_CASCADE_METADATA_KEY,
     CHILD_REQUEST_ID_METADATA_KEY,
+    lower_turn_cap,
     mcp_server_names,
     resolve_dispatch_options,
+    timeout_asked,
 )
 
 log = logging.getLogger(__name__)
@@ -287,6 +289,10 @@ class ChildSpec(_Strict):
     provider: str | None = Field(default=None, max_length=64)
     model: str | None = Field(default=None, max_length=128)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: The child's turn cap, as `TaskCreate.max_turns` (contract request 133):
+    #: refused on a profile that does not cap turns, and never above the
+    #: parent's resolved cap.
+    max_turns: int | None = Field(default=None, ge=1)
     repository_ref: str | None = Field(default=None, max_length=256)
     #: The child's model class, by name, as `TaskCreate.model_class` (#1435).
     #: None: the CHILD profile's default, never the parent's class (R3).
@@ -1376,6 +1382,7 @@ class ChildService:
             model=spec.model,
             model_class=spec.model_class,
             timeout_seconds=timeout,
+            max_turns=spec.max_turns,
         )
         repository_ref = spec.repository_ref or parent.repository_ref
         # Q7 of #1433 (docs/design/registered-mcp-servers.md §4.3): a child
@@ -1409,9 +1416,24 @@ class ChildService:
             mcp_inherited=mcp_inherited,
         )
         # A child's timeout is never above its parent's, whatever the profile.
+        child_timeout = min(task.timeout_seconds, parent.timeout_seconds)
         task = replace(
             task,
-            timeout_seconds=min(task.timeout_seconds, parent.timeout_seconds),
+            timeout_seconds=child_timeout,
+            # Contract request 131: the CHILD's own ask, against its final
+            # timeout. `create` was already lowered to the parent's, so what
+            # `_build_task` recorded from it is not what the child asked. A
+            # record only; nothing reads it as a limit (invariant 10).
+            timeout_seconds_asked=timeout_asked(spec.timeout_seconds, child_timeout),
+            # Contract request 133: a child's cap is never above its parent's
+            # resolved cap, as its timeout is never above its parent's. Only
+            # on a profile whose runner passes a cap (`_build_task` refused an
+            # ask on any other, and resolved None there).
+            max_turns=(
+                lower_turn_cap(task.max_turns, parent.max_turns)
+                if profile.supports_max_turns
+                else None
+            ),
             parent_task_id=parent.id,
             parent_attempt_id=body.attempt_id,
             # The parent's GitHub credential and access mode (#780 OB7): the

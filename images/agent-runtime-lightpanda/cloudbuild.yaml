@@ -1,0 +1,114 @@
+# Checked-in build config for agent-runtime-lightpanda (docs/design/
+# lightpanda-runtime.md section 6.4; LIGHTPANDA-IMAGE, part of #2688).
+#
+# The shape is agent-runtime-browser's, with agent-runtime-indexer's base:
+#
+#   0. stage the tool mirror -- the Dockerfile reads the pinned Lightpanda
+#      binary and the tag's source archive from build/tool-mirror, as
+#      agent-runtime-base reads its release files (docs/runbooks/build-mirror.md);
+#   1. pull agent-runtime-base:<the same tag> and read its digest back;
+#   2. build FROM that digest.
+#
+# `find_recipe()` prefers this file over the Dockerfile, and a checked-in
+# recipe is submitted as it is, so the mirror step is here rather than
+# generated. It copies EVERY row of the manifest -- the same reading
+# agent-runtime-browser's recipe does -- so it restates none of them; the
+# Dockerfile checks each Lightpanda file against its sha256 again.
+#
+# ORDERING: step 1 pulls `agent-runtime-base:${_TAG}`, so that base must be
+# pushed first. scripts/build-images.sh's build_after() says so, and
+# tests/unit/scripts/test_build_images_concurrency.py reads this file for the
+# image it pulls and fails if build_after() disagrees.
+#
+# `$$` is a literal dollar for the shell; `${_VAR}` is a Cloud Build
+# substitution. Every shell variable below is spelled `$$name`.
+timeout: 3600s
+options:
+  machineType: E2_HIGHCPU_8
+  # CLOUD_LOGGING_ONLY keeps builds working when the legacy Cloud Build bucket
+  # is absent and when a user-specified build service account is in use.
+  logging: CLOUD_LOGGING_ONLY
+  # build-images.sh passes `_TARGET` to every config it submits, and this one
+  # has no use for it.
+  substitution_option: ALLOW_LOOSE
+
+substitutions:
+  _IMAGE: ""
+  _TAG: ""
+  _DOCKERFILE: images/agent-runtime-lightpanda/Dockerfile
+
+steps:
+  # 0. Stage the tool mirror. A missing object fails here, named, and the fix
+  #    is `scripts/refresh-build-mirror.sh`.
+  - id: tool-mirror
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bucket='swarm-build-mirror-${PROJECT_ID}'
+        manifest=images/agent-runtime-base/tool-mirror.sha256
+        rm -rf build/tool-mirror
+        while read -r sha obj; do
+          [ -n "$${obj}" ] || continue
+          mkdir -p "build/tool-mirror/$$(dirname "$${obj}")"
+          gcloud storage cp "gs://$${bucket}/$${obj}" "build/tool-mirror/$${obj}" || {
+            echo "build mirror object gs://$${bucket}/$${obj} is missing or unreadable: run scripts/refresh-build-mirror.sh (docs/runbooks/build-mirror.md)" >&2
+            exit 1
+          }
+        done < "$${manifest}"
+        (cd build/tool-mirror && sha256sum -c --strict -) < "$${manifest}" || {
+          echo "a build mirror object does not match its sha256 in $${manifest}: run scripts/refresh-build-mirror.sh --force" >&2
+          exit 1
+        }
+
+  # 1. Resolve the base image to a digest. Pulling first turns "the base for
+  #    this tag was never built" into a clear failure here rather than a
+  #    confusing `FROM` error inside the build.
+  - id: resolve-base
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -eu
+      - -c
+      - |
+        image='${_IMAGE}'
+        tag='${_TAG}'
+        registry="$${image%/*}"
+        base="$${registry}/agent-runtime-base:$${tag}"
+        echo "resolving base image $${base}"
+        docker pull "$${base}"
+        digest="$$(docker image inspect --format '{{index .RepoDigests 0}}' "$${base}")"
+        echo "base resolved to $${digest}"
+        printf '%s' "$${digest}" > /workspace/base-image-ref
+
+  # 2. Build the image on that exact digest. BuildKit is required: the
+  #    Dockerfile declares `# syntax=docker/dockerfile:1.7`, bind-mounts the
+  #    mirror with RUN --mount and reads TARGETARCH, none of which the legacy
+  #    builder supports.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - -eu
+      - -c
+      - |
+        base="$$(cat /workspace/base-image-ref)"
+        # The frontend through the project's mirror, which build-images.sh
+        # passes as a substitution (recipe_mirror_subs; the Dockerfile names
+        # no project, DAYONE-DESAGA-1). The Dockerfile declares no MIRROR_*
+        # argument: its one FROM is the base digest.
+        docker build \
+          --platform linux/amd64 \
+          -f '${_DOCKERFILE}' \
+          -t '${_IMAGE}:${_TAG}' \
+          --build-arg "BASE_IMAGE=$${base}" \
+          --build-arg "GIT_SHA=${_TAG}" \
+          --build-arg "BUILDKIT_SYNTAX=${_BUILDKIT_SYNTAX}" \
+          .
+
+images:
+  - ${_IMAGE}:${_TAG}

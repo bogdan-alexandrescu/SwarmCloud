@@ -260,12 +260,14 @@ def test_a_browser_pod_has_the_owners_cache_pvc_disk_layout(tenant):
 
 
 def test_the_tenant_jobs_quota_defaults_to_200():
-    """Owner decision 2026-10-07: 100 running pods plus an hour of finished Jobs."""
+    """Owner decision 2026-10-07: 100 running pods plus an hour of finished Jobs.
+    Since DAYONE-K8S-1 the flag has no default; the Terraform tenant quota,
+    which kubernetes/apply.sh passes where no workspace record exists, holds it."""
     import re
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[3] / "kubernetes" / "render.py").read_text()
-    assert re.search(r'"--quota-jobs",\s*type=int,\s*default=200\)', src)
+    assert re.search(r'^TERRAFORM_TENANT_QUOTA = \{.*?"quota_jobs": 200,', src, flags=re.M | re.S)
 
 
 def test_a_claude_code_pod_has_the_layout_of_cache_pvc(tenant):

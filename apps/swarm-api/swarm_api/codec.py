@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from urllib.parse import quote
 
@@ -178,6 +178,18 @@ def task_to_firestore(task: Task) -> dict[str, Any]:
     return task.to_firestore()
 
 
+def _timeout_asked(value: Any) -> int | None:
+    """A stored `timeout_seconds_asked`: an int above 0, anything else None."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _stored_max_turns(value: Any) -> int | None:
+    """A stored `max_turns` (contract request 133): an int above 0, else None."""
+    return _timeout_asked(value)
+
+
 def task_from_dict(data: dict[str, Any]) -> Task:
     park = data.get("park_reason")
     return Task(
@@ -201,6 +213,12 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         attempt_count=int(data.get("attempt_count", 0)),
         # Contract request 123: absent on every older document, which is 0.
         platform_refusals=int(data.get("platform_refusals") or 0),
+        # Contract request 131: absent on every older document and on a task
+        # not lowered. A record only, never a limit (invariant 10).
+        timeout_seconds_asked=_timeout_asked(data.get("timeout_seconds_asked")),
+        # Contract request 133: the resolved turn cap, absent on every older
+        # document and on a task without one (no cap). Signed at format 7.
+        max_turns=_stored_max_turns(data.get("max_turns")),
         next_eligible_at=as_datetime(data.get("next_eligible_at")),
         park_reason=ParkReason(park) if park else None,
         blocked_by=list(data.get("blocked_by") or []),
@@ -243,7 +261,18 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # decodes and writes again keeps the signed budget it was submitted
         # with. Anything but a map is no budget.
         budget=_budget_map(data.get("budget")),
+        # Contract request 132: read-side views, read back so a task this
+        # service decodes and writes again keeps them, and so `GET /v1/tasks`
+        # serves them (`attempt_totals.served_totals`,
+        # `task_accounts.served_account`). Anything but a map is none.
+        attempt_totals=_view_map(data.get("attempt_totals")),
+        current_account=_view_map(data.get("current_account")),
     )
+
+
+def _view_map(value: Any) -> dict[str, Any] | None:
+    """A stored read-side view (contract request 132), or None when it is not a map."""
+    return dict(value) if isinstance(value, Mapping) else None
 
 
 def _budget_map(value: Any) -> dict[str, Any] | None:
@@ -358,6 +387,9 @@ def additional_repositories_to_api(value: Any) -> list[dict[str, Any]] | None:
 #: `git` is only ever a service submission's (`SubmissionService._resolve_forge`);
 #: so, in a personal tenant with no `-git` slot, is its owner's `git-u-` slot,
 #: which `metadata.forge_credential_source` = `owner` tells apart (INDEX-CRED).
+#: `app_installation` is a service run the broker mints a GitHub App
+#: installation token for (SERVICE-APP-TOKEN): whatever slot it names, the
+#: installation's token is what runs (DAYONE-CODEC-LABEL).
 _FORGE_SOURCES = (
     ("git-u-", "the submitter's GitHub credential"),
     ("git-r-", "the repository's token"),
@@ -368,9 +400,13 @@ def forge_credential_source(value: str | None, source: Any = None) -> str | None
     """The words for a task's forge credential, or None when it names none
     (no repository, not GitHub, or submitted before #780). `source` is the
     task's `metadata.forge_credential_source`: `owner` on a user slot is the
-    owner's connection run on the tenant's behalf, not the submitter's own."""
+    owner's connection run on the tenant's behalf, not the submitter's own;
+    `app_installation` is a run whose token the broker mints from the GitHub
+    App installation."""
     if value is None:
         return None
+    if source == "app_installation":
+        return "GitHub App installation token, minted for the run"
     if value == "git":
         return "tenant token, service submission"
     if source == "owner" and value.startswith("git-u-"):
@@ -508,7 +544,10 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     The free text was redacted before it was stored; it is masked again here
     as every collected text is (`task_input.COLLECTED_METADATA_KEYS`). `via`
     and `session` say where it was answered (ANSWER-SYNC), null on an answer
-    stored before they were.
+    stored before they were. Each `history` entry carries the `question` it
+    answered (#3349): a later attempt may ask another question at the same
+    index, and the earlier answer is read with its own; null on an entry
+    moved to history before it was kept.
     """
 
     def text(value: Any) -> str | None:
@@ -517,6 +556,7 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     def one(e: dict[str, Any]) -> dict[str, Any]:
         at = e.get("at")
         return {
+            "question": text(e.get("question")),
             "choice": text(e.get("choice")),
             "text": text(e.get("text")),
             "by": text(e.get("by")),
@@ -529,7 +569,6 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     masked, _ = masking.leaves(
         {
             "question_index": entry.get("question_index"),
-            "question": text(entry.get("question")),
             **one(entry),
             "history": [one(h) for h in history if isinstance(h, dict)],
         }
@@ -666,6 +705,12 @@ def task_to_api(
         # resets it). Past PLATFORM_REFUSED_MAX_PARKS the task is trouble.
         "platform_refusals": task.platform_refusals,
         "timeout_seconds": task.timeout_seconds,
+        # Contract request 131: what the spec asked when swarm-api stored a
+        # lower `timeout_seconds`, else null. A record only: the limit is
+        # `timeout_seconds` (invariant 10).
+        "timeout_seconds_asked": task.timeout_seconds_asked,
+        # Contract request 133: the resolved turn cap, or null for none.
+        "max_turns": task.max_turns,
         # Contract request 120 (#2459): the attempt's resolved budget, or
         # null for none. A task stored before the field serves what its
         # dispatch block pinned (`served_budget`).
@@ -1062,7 +1107,16 @@ def lease_from_dict(data: dict[str, Any]) -> Lease:
         heartbeat_at=as_datetime(data.get("heartbeat_at")),
         released_at=as_datetime(data.get("released_at")),
         release_reason=data.get("release_reason"),
+        # Absent on a lease reserved before contract request 129 (#2950):
+        # None, and `Lease.held_units` then reads the old rule.
+        pool_units=_pool_units(data.get("pool_units")),
     )
+
+
+def _pool_units(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    return {str(name): int(units) for name, units in value.items()}
 
 
 # --------------------------------------------------------------------------
@@ -1241,6 +1295,10 @@ def lease_to_api(
         "generation": lease.generation,
         "pools": lease.pools,
         "units": lease.units,
+        # What the lease holds in each pool, the provider pools at 1 since
+        # contract request 129 (#2950): the per-pool figure a drift check
+        # sums against `pool.active`, never `units` times the pools.
+        "pool_units": lease.held_units(),
         # Only ever LEASED or DISPATCHED. The worker advances the TASK through
         # STARTING and RUNNING and never touches this field, so a UI must not
         # label this column "state" -- see docs/web-ui/02, trap B.
@@ -1497,6 +1555,7 @@ def workflow_from_dict(data: dict[str, Any]) -> Workflow:
                 resource_class=s.get("resource_class"),
                 input_from=dict(s.get("input_from") or {}),
                 timeout_seconds=s.get("timeout_seconds"),
+                max_turns=_stored_max_turns(s.get("max_turns")),
                 task_id=s.get("task_id"),
                 model_class=s.get("model_class") or None,
                 budget=_budget_map(s.get("budget")),
@@ -1516,6 +1575,7 @@ def workflow_to_api(
     step_tasks: Mapping[str, Task] | None = None,
     console_url: str | None = None,
     summary: bool = False,
+    step_totals: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Public JSON shape for a workflow.
 
@@ -1550,6 +1610,13 @@ def workflow_to_api(
 
     `rollup` is None only on a path that did not read the steps. The field then
     reports the stored value and says so, rather than implying it was confirmed.
+
+    `step_totals` (console load speed, owner's pick 2026-11-01) is
+    `attempt_totals.totals_for` over the step tasks the route read; given, each
+    step carries `task_summary` (`step_task_summary`), what the Workflows board
+    draws for it, so the board needs no task list, per-workflow read or
+    per-task attempts read of its own. Absent, the key is absent: the full list
+    reads no attempts.
     """
     served = dict(rollup or {})
     state = served.pop("state", None) or workflow.state.value
@@ -1582,10 +1649,231 @@ def workflow_to_api(
                 console_url,
                 summary=summary,
                 waiting=_step_waiting(s, step_tasks or {}),
+                task_summary=(
+                    {"task_summary": step_task_summary(s, step_tasks or {}, step_totals)}
+                    if step_totals is not None else {}
+                ),
             )
             for s in workflow.steps
         ],
         "links": {"console": workflow_console_url(console_url, workflow.workflow_id)},
+    }
+
+
+#: The `metadata` keys a step's `task_summary` serves: what the Workflows
+#: board names a step by -- the lane's `unit` (`swarm_mcp.workflows`
+#: `stored_names`), then its `title`. Strings only, each masked.
+STEP_SUMMARY_METADATA_KEYS: tuple[str, ...] = ("title", "unit")
+
+
+def step_task_summary(
+    step: WorkflowStep,
+    step_tasks: Mapping[str, Task],
+    step_totals: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """What the Workflows board draws for one step, off its task: never its input.
+
+    The task's `state`, its `title` and `unit`, `started_at` and
+    `completed_at` (the last attempt's, as the task serves them), the totals
+    across every attempt `attempt_totals.totals_for` read (null figures with
+    `attempts_read: "failed"` when that read failed), and `last_error_line`: the first line of `last_error`, the line the
+    board's failure cause reads. The whole `last_error` is masked by the task's
+    own masker BEFORE it is cut, so a credential that spans lines is masked as
+    `GET /v1/tasks/{id}` masks it.
+
+    Null for a step whose task was not read, and for one whose task has no
+    entry in `step_totals`: `totals_for` gives every task it was asked about
+    one, so a task left out is one the route chose not to serve (the `?ids=`
+    batch's submitter filter), and its state and title are not served here
+    either.
+    """
+    task = step_tasks.get(step.task_id) if step.task_id else None
+    totals = step_totals.get(task.id) if task is not None else None
+    if task is None or totals is None:
+        return None
+    masking = masking_for(task, warm=False)
+    stored = task.metadata or {}
+    names: dict[str, Any] = {}
+    for key in STEP_SUMMARY_METADATA_KEYS:
+        value = stored.get(key)
+        names[key] = masking.text(value)[0] if isinstance(value, str) else None
+    error, _ = masking.text(task.last_error)
+    line = error.splitlines()[0] if error else None
+    return {
+        "state": task.state.value,
+        **names,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        **totals,
+        "last_error_line": line or None,
+        "needs": step_needs(task, masking),
+    }
+
+
+def _iso(value: Any) -> str | None:
+    """A served instant: a datetime as ISO 8601, a string as stored, else None."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value if isinstance(value, str) else None
+
+
+#: The most questions one `questions.json` holds: the worker refuses a file
+#: with more (`agent_worker.questions.MAX_QUESTIONS`, which swarm-api does not
+#: import), so a larger `result_summary.questions` on the tenant-writable task
+#: document is never served as that many indices. A test pins the two equal.
+MAX_ARTIFACT_QUESTIONS = 20
+
+
+def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
+    """What the Workflows list's Needs-you bar draws for one step, off its task
+    document alone (the owner's pick on PR #3147, "Widen view=summary").
+
+    No artifact, event or approval is read, so the list costs no read more for
+    it. Every text an agent or a worker wrote is masked by the task's masker:
+
+    * `park_reason`, and the hand-off's clock: `next_eligible_at` and
+      `updated_at`, the instants the parked hand-off's deadline counts from.
+    * `human_wait`: a RUNNING task's browser hand-off, `{reason, expect,
+      deadline}`; null for every other task.
+    * `owner_questions`: a merge held by the owner's questions (#2313), its
+      park's `owner_questions` record, `{questions, unreadable}`, each
+      question `{task_id, step_id, question_index, question}`; else null.
+    * `question_wait`: whether the task is PARKED on a question wait, which
+      is HUMAN_REQUIRED as a browser hand-off is, and is not one.
+    * `questions`: the open questions of the wait the task is PARKED on, each
+      `{index, question, options, recommended}` -- the blocking indices with
+      no answer of that wait's own -- and empty for every other task: a wait
+      it parked on once is not one it waits on now.
+    * `questions_unread`: for an ended task only, as the bell counts them,
+      the indices of the questions in the agent's `questions.json` (the count
+      the worker validated, `result_summary.questions`, at most
+      `MAX_ARTIFACT_QUESTIONS`) with no stored answer, whose words are in
+      that artifact and not served here; the task's page reads them
+      (`GET /v1/tasks/{id}/questions`). The artifact is not read here: an
+      answer counts only while the worker's digest of the question at its
+      index (`result_summary.question_digests`) is the one it was given for
+      (`agent_questions.unanswered_indices`); a task summarised before the
+      digests counts by index.
+    * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
+    * `plugin_ask`: for a plugin step PARKED on a question wait only (its work
+      contract's `capabilities.plugins` names at least one plugin with a
+      mode), `{plugins, repository_url, asked_at, expires_at, skill}`: each
+      plugin `{name, mode}`, the repository it runs on, the wait's clock as
+      `GET /v1/tasks/{id}/questions` serves it (`agent_questions.asked_at`,
+      `wait_max_seconds`), and the skill that asked as the worker recorded it
+      (`agent_questions.asked_by_skill`; null when not known); else null. Needs you tells a plugin step's question
+      from it, with no read of the task or its questions (the owner's pick on
+      PR #3262, "Serve them in step_needs").
+    """
+    from swarm_common.states import TERMINAL_STATES
+
+    from .agent_questions import (
+        asked_at,
+        asked_by_skill,
+        blocking_unanswered,
+        current_wait,
+        parked_wait,
+        question_count,
+        question_digests,
+        unanswered_indices,
+        wait_max_seconds,
+    )
+
+    def masked(value: Any) -> str | None:
+        return masking.text(value)[0] if isinstance(value, str) else None
+
+    wait = task.human_wait if isinstance(task.human_wait, dict) else None
+    human_wait = (
+        {"reason": masked(wait.get("reason")), "expect": masked(wait.get("expect")),
+         "deadline": _iso(wait.get("deadline"))}
+        if wait is not None and task.state == TaskState.RUNNING else None
+    )
+    hold: dict[str, Any] | None = None
+    if task.state == TaskState.PARKED and task.park_reason == ParkReason.HUMAN_REQUIRED:
+        for entry in task.blocked_by or ():
+            if (not isinstance(entry, dict) or entry.get("reason") != ParkReason.HUMAN_REQUIRED.value
+                    or entry.get("park_phase") != "owner_questions"):
+                continue
+            record = entry.get("owner_questions") if isinstance(entry.get("owner_questions"), dict) else {}
+            questions = []
+            for q in record.get("questions") or ():
+                if not isinstance(q, dict):
+                    # Served as null, which the console counts as unreadable:
+                    # never the stored value, which no masker has read.
+                    questions.append(None)
+                    continue
+                questions.append({
+                    "task_id": q.get("task_id") if isinstance(q.get("task_id"), str) else None,
+                    "step_id": q.get("step_id") if isinstance(q.get("step_id"), str) else None,
+                    "question_index": q.get("question_index") if isinstance(q.get("question_index"), int) else None,
+                    "question": masked(q.get("question")),
+                })
+            unreadable = record.get("unreadable")
+            hold = {"questions": questions,
+                    "unreadable": unreadable if isinstance(unreadable, int) and not isinstance(unreadable, bool) else None}
+            break
+    open_questions: list[dict[str, Any]] = []
+    question_wait = parked_wait(task)
+    if question_wait is not None:
+        # The stored answers are this wait's only once swarm-api adopted it
+        # (the same attempt); an earlier wait's answers never hide its
+        # questions. notifications._asked_item reads them the same way.
+        _, adopted = current_wait(task)
+        asked = question_wait["questions"]
+        for index in blocking_unanswered(question_wait, task.metadata if adopted else None):
+            entry = asked[index]
+            options = [
+                {"label": masked(o.get("label")), "description": masked(o.get("description"))}
+                for o in entry.get("options") or () if isinstance(o, dict)
+            ]
+            open_questions.append({
+                "index": index,
+                "question": masked(entry.get("question")),
+                "options": options,
+                "recommended": masked(entry.get("recommended")),
+            })
+    plugin_ask: dict[str, Any] | None = None
+    if question_wait is not None:
+        contract = (task.metadata or {}).get("work_contract")
+        caps = contract.get("capabilities") if isinstance(contract, dict) else None
+        stored = caps.get("plugins") if isinstance(caps, dict) else None
+        plugins = [
+            {"name": masked(name), "mode": masked(p.get("mode"))}
+            for name, p in (stored.items() if isinstance(stored, dict) else ())
+            if isinstance(name, str) and isinstance(p, dict) and isinstance(p.get("mode"), str) and p["mode"]
+        ]
+        if plugins:
+            began = asked_at(task, question_wait)
+            plugin_ask = {
+                "plugins": plugins,
+                "repository_url": masked(task.repository_url),
+                "asked_at": began.isoformat() if began else None,
+                "expires_at": (began + timedelta(seconds=wait_max_seconds(question_wait))).isoformat()
+                if began else None,
+                "skill": asked_by_skill(question_wait, masking),
+            }
+    git = (task.result_summary or {}).get("git") if isinstance(task.result_summary, dict) else None
+    pr = git.get("pull_request") if isinstance(git, dict) else None
+    number = pr.get("number") if isinstance(pr, dict) else None
+    pull_request = (
+        {"number": number, "url": pr.get("url") if isinstance(pr.get("url"), str) else None}
+        if isinstance(number, int) and not isinstance(number, bool) else None
+    )
+    return {
+        "park_reason": task.park_reason.value if task.park_reason else None,
+        "next_eligible_at": _iso(task.next_eligible_at),
+        "updated_at": _iso(task.updated_at),
+        "human_wait": human_wait,
+        "owner_questions": hold,
+        "question_wait": question_wait is not None,
+        "questions": open_questions,
+        "questions_unread": (
+            unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata,
+                               digests=question_digests(task.result_summary))
+            if task.state in TERMINAL_STATES else []
+        ),
+        "pull_request": pull_request,
+        "plugin_ask": plugin_ask,
     }
 
 
@@ -1626,6 +1914,7 @@ def _step_to_api(
     *,
     summary: bool = False,
     waiting: dict[str, Any] | None = None,
+    task_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One workflow step. Its `input` is served MASKED, with its count.
 
@@ -1653,6 +1942,9 @@ def _step_to_api(
         "depends_on": step.depends_on,
         "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
+        # Contract request 133: the turn cap the step asked for; its task's
+        # `max_turns` is what that resolved to. Null: it asked for none.
+        "max_turns": step.max_turns,
         "task_id": step.task_id,
         # Contract request 102: the class the step runs, resolved as its
         # task's is (`served_model_class`).
@@ -1663,6 +1955,8 @@ def _step_to_api(
         "links": {"console": agent_console_url(console_url, step.task_id)},
         # #1782: why a waiting step waits, in one line (`_step_waiting`).
         "waiting": waiting,
+        # `{"task_summary": ...}` when the route read the attempt totals.
+        **(task_summary or {}),
     }
     if summary:
         return base

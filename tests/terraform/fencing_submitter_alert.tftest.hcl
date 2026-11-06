@@ -30,6 +30,10 @@ run "the_fence_metric_extracts_the_submitter_and_the_alert_drops_swarm_verify" {
     source = "../../terraform/modules/monitoring"
   }
 
+  variables {
+    fencing_alert_excluded_tenants = ["smoke", "u-sw-c90291"]
+  }
+
   # MUTATION: drop `submitter_service` from the generation_fenced labels in
   # metrics.tf and the metric counts every fence but groups by no submitter,
   # so the policy's clause below filters on a label that is always empty.
@@ -90,6 +94,7 @@ run "an_empty_submitter_list_adds_no_clause" {
   }
 
   variables {
+    fencing_alert_excluded_tenants    = ["smoke", "u-sw-c90291"]
     fencing_alert_excluded_submitters = []
   }
 

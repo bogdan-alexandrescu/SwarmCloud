@@ -19,6 +19,13 @@
 
 mock_provider "google" {}
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 variables {
   project_id           = "saga-agents-staging"
   frontend_iap_members = ["domain:example.com"]
@@ -69,6 +76,9 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
         "swarm-verify",
         "swarm-rollup-sweeper",
         "swarm-schedule-tick",
+        "swarm-discovery",
+        "swarm-doctor",
+        "swarm-voice",
         "swarm-agent-worker-eng",
         "swarm-agent-worker-smoke",
       ] : contains(keys(google_service_account_iam_member.deployer_admin), id)
@@ -85,12 +95,15 @@ run "service_account_admin_is_granted_per_account_and_never_project_wide" {
     error_message = "a per-account grant names another role, or another account than its key"
   }
 
-  # Nothing outside what infra manages: the platform accounts, the four
-  # singletons, and tenant workers.
+  # Nothing outside what infra manages: the platform accounts, the
+  # singletons (swarm-discovery and swarm-doctor joined them with
+  # DAYONE-BOOT-2: terraform/bootstrap creates them, infra deploys as them;
+  # swarm-voice joined on 2026-11-01: bootstrap creates it for Voice it's
+  # StatefulSet, which no infra file deploys yet), and tenant workers.
   assert {
     condition = alltrue([
       for id in keys(google_service_account_iam_member.deployer_admin) :
-      contains(["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-tick", "swarm-verify", "swarm-rollup-sweeper", "swarm-schedule-tick"], id) || startswith(id, "swarm-agent-worker-")
+      contains(["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-tick", "swarm-verify", "swarm-rollup-sweeper", "swarm-schedule-tick", "swarm-discovery", "swarm-doctor", "swarm-voice"], id) || startswith(id, "swarm-agent-worker-")
     ])
     error_message = "the deployer is granted serviceAccountAdmin on an account terraform/infra does not manage"
   }

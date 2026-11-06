@@ -199,7 +199,7 @@ describe('F1: the tiles and the list', () => {
     const tile = container.querySelector<HTMLElement>('[data-tile="verdict"]')!
     expect(tile.textContent).toContain('Can the pool take work now?')
     expect(tile.textContent).toMatch(/Yes · 4 accounts/)
-    expect(within(tile).getByRole('link', { name: 'Accounts ›' }).getAttribute('href')).toBe('#capacity/accounts')
+    expect(within(tile).getByRole('link', { name: 'Accounts' }).getAttribute('href')).toBe('#capacity/accounts')
   })
 
   it('opens a row on the account’s side sheet on Accounts, and shows its last event', () => {
@@ -410,10 +410,10 @@ describe('review fixes: the phone, the swimlane, the list and the development po
     expect(msg.textContent).toBe(long)
   })
 
-  it('lets a Limited row’s reset time wrap under its word, so the table fits its card and keeps "Sign in again ›"', () => {
+  it('lets a Limited row’s reset time wrap under its word, so the table fits its card and keeps "Sign in again"', () => {
     // At 1440 the table was 1049 px in a 1037 px scroller: "Limited · 7-day
     // until …" sat in the nowrap status chip, and the overflow cut the
-    // re-auth row's "Sign in again ›" at the card's edge. jsdom lays nothing
+    // re-auth row's "Sign in again" at the card's edge. jsdom lays nothing
     // out, so this pins the rule that lets the column give way: the chip
     // holds the word alone, the reset time is a sibling that may wrap.
     const css = readFileSync(join(__dirname, '..', 'styles', 'account-health.css'), 'utf8')
@@ -603,7 +603,7 @@ describe('fourth review: the marks in their lanes, the phone’s switch and the 
     expect(within(callout).getByRole('link', { name: 'Sign in again' })).toBeTruthy()
     const row = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-3"]')!
     expect(row.dataset.status).toBe('reauth_needed')
-    expect(within(row).getByRole('link', { name: 'Sign in again ›' })).toBeTruthy()
+    expect(within(row).getByRole('link', { name: 'Sign in again' })).toBeTruthy()
     const nums = [...row.querySelectorAll<HTMLElement>('td.ah-num')]
     expect(nums).toHaveLength(3)
     for (const c of nums) {
@@ -666,5 +666,105 @@ describe('REAUTH-MODEL: the re-auth fallback from the row’s state is the model
     expect(Number(container.querySelector('[data-tile="reauth_needed"] .ah-tile-n')!.textContent)).toBe(1)
     expect(rows.filter((r) => r.dataset.status === 'reauth_needed')).toHaveLength(1)
     expect(container.querySelectorAll('[data-state="reauth"]')).toHaveLength(1)
+  })
+})
+
+// THE NO-PROSE RULE (BGD, 5 November 2026): every explanation on this page
+// moved behind the label it explained -- a tooltip on a status word or a
+// legend key, an (i) beside a column or a heading, a tick on the re-auth
+// callout -- and every arrow link became a button with the same target.
+// MUTATION: put any of these sentences back on the surface, or an arrow back
+// on a link, and a case below turns red.
+describe('the page carries its explanations behind its labels, not on its surface', () => {
+  /** What a reader sees: the text with every (hidden) tooltip taken out. */
+  function shown(el: Element): string {
+    const c = el.cloneNode(true) as Element
+    for (const t of c.querySelectorAll('[role="tooltip"]')) t.remove()
+    return c.textContent ?? ''
+  }
+  /** The tooltip that describes `el`'s tooltip host. */
+  function tipOf(el: Element): string {
+    const host = el.closest('.c-tip-host')!
+    expect(host).not.toBeNull()
+    return document.getElementById(host.getAttribute('aria-describedby')!)!.textContent ?? ''
+  }
+
+  it('draws no arrow on any link and makes each action a button with its target', () => {
+    const { accounts, events } = pool()
+    const { container } = desktop(board(accounts, events))
+
+    expect(container.textContent).not.toContain('›')
+    const verdict = container.querySelector<HTMLElement>('[data-tile="verdict"]')!
+    const acc = within(verdict).getByRole('link', { name: 'Accounts' })
+    expect(acc.getAttribute('href')).toBe('#capacity/accounts')
+    expect(acc.classList.contains('c-btn')).toBe(true)
+
+    const dead = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-3"]')!
+    const sign = within(dead).getAllByRole('link', { name: 'Sign in again' })
+    expect(sign).toHaveLength(1)
+    expect(sign[0]!.classList.contains('c-btn')).toBe(true)
+    expect(sign[0]!.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Aai-eng-3')
+
+    const ok = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-2"]')!
+    const open = within(ok).getByRole('link', { name: 'Open' })
+    expect(open.classList.contains('c-btn')).toBe(true)
+    expect(open.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Aai-eng-2')
+  })
+
+  it('puts the re-auth reason on a status tick, not in a paragraph', () => {
+    const { accounts, events } = pool()
+    const { container } = desktop(board(accounts, events))
+    const callout = container.querySelector<HTMLElement>('[data-state="reauth"]')!
+    expect(shown(callout)).not.toContain('The provider refused its credential')
+    expect(callout.querySelector('p')).toBeNull()
+    const tick = callout.querySelector<HTMLElement>('[data-tick="reauth_needed"]')!
+    expect(tick.tabIndex).toBe(0)
+    expect(tipOf(tick)).toMatch(/^The provider refused its credential\. The broker assigns this account nothing until someone signs in again/)
+  })
+
+  it('puts what each status word costs the pool in a tooltip on the tile’s word', () => {
+    const { accounts, events } = pool()
+    const { container } = desktop(board(accounts, events))
+    const want: Array<[string, string]> = [
+      ['healthy', 'no limit, error or sign-in trouble'],
+      ['limited', 'withheld until their windows reset'],
+      ['erroring', 'still assigned; errors do not withhold'],
+      ['reauth_needed', 'withheld until someone signs in'],
+    ]
+    for (const [s, hint] of want) {
+      const tile = container.querySelector<HTMLElement>(`[data-tile="${s}"]`)!
+      expect(shown(tile)).not.toContain(hint)
+      const chip = tile.querySelector<HTMLElement>('.ah-tile-w .ah-st')!
+      expect(tipOf(chip).toLowerCase()).toContain(hint)
+    }
+  })
+
+  it('moves the column definitions to an (i) beside each column and drops the row-opens sentence', () => {
+    const { accounts, events } = pool()
+    const { container } = desktop(board(accounts, events))
+    const list = container.querySelector<HTMLElement>('.ah-list')!
+    expect(shown(list)).not.toMatch(/Limits are rate-limit hits|A row opens the account/)
+    const want: Array<[string, RegExp]> = [
+      ['Limits', /rate-limit hits, exhausted reports and refusals at assignment/i],
+      ['Provider errors', /529s, 5xx and network failures/i],
+      ['Credential', /401s, failed refreshes and re-auth marks/i],
+    ]
+    for (const [col, re] of want) {
+      const i = within(list).getByRole('button', { name: `About ${col}` })
+      expect(i.closest('th')!.textContent).toContain(col)
+      expect(tipOf(i)).toMatch(re)
+    }
+  })
+
+  it('moves the swimlane’s how-to to an (i) beside its heading and the band’s meaning to the legend key', () => {
+    const { accounts, events } = pool()
+    const { container } = desktop(board(accounts, events))
+    const tl = container.querySelector<HTMLElement>('.ah-timeline')!
+    expect(shown(tl)).not.toMatch(/One lane per account|from the hit to the window’s reset/)
+    const i = within(tl).getByRole('button', { name: 'About Hits and errors over time' })
+    expect(tipOf(i)).toMatch(/^One lane per account\. A mark is one event/)
+    const key = tl.querySelector<HTMLElement>('.ah-legend [data-key="limited"]')!
+    expect(shown(key).trim()).toBe('limited')
+    expect(tipOf(key)).toBe('From the hit to the window’s reset.')
   })
 })

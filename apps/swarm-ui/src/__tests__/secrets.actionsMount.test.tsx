@@ -417,7 +417,7 @@ describe('VQ-041: the page agrees with the strip and with its own Keys table', (
     expect(visible(lead)).toContain('Nothing eng needs is missing')
     expect(visible(lead)).toContain('1 key is set; no secret for agents is stored yet.')
     // The strip's next step is the lead's one button.
-    expect(within(lead).getByRole('link', { name: 'Next: People invited' }).getAttribute('href')).toBe('/config/people')
+    expect(within(lead).getByRole('link', { name: 'Next: People invited' }).getAttribute('href')).toBe('/admin/workspaces?tab=people')
     // The head draws Add a secret, since this lead does not.
     expect(screen.getAllByRole('button', { name: /^add a secret$/i })).toHaveLength(1)
   })

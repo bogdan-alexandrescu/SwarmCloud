@@ -25,6 +25,15 @@ TWO ASSERTIONS PER ROUTE.
     is driven at one that a DIFFERENT `eng` member submitted, and must answer
     exactly what a missing task answers. That catches a `submitted_by`
     thread-through missed in any service layer, on the day a route is added.
+
+WHERE THE DECIDED SET COMES FROM. Each route states which narrow callers may
+reach it where it is declared (`swarm_api.route_scope`: a router default, or
+a `reachable_by` line on the handler), and the decided set is read from those
+declarations. It used to be a literal here; two changes that each passed
+against their own base then failed together on it (BGD's pick, 6 November
+2026: a whole-tree check two green changes must pass together). Opening a
+route to this scope is still a decision visible in review: a declaration line
+on the route AND an entry in `auth.CONTINUATION_ROUTES`, held equal here.
 """
 
 from __future__ import annotations
@@ -35,13 +44,20 @@ import re
 from typing import Any, Iterator
 
 import pytest
+from fastapi import APIRouter, Depends
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 import swarm_api.routes as routes_package
 from swarm_common.identity import TenantMember
 
-from swarm_api.auth import CONTINUATION_ROUTES, StaticTokenVerifier
+from swarm_api import route_scope
+from swarm_api.auth import (
+    CONTINUATION_ROUTES,
+    ROLLUP_SWEEPER_ROUTES,
+    SCHEDULE_TICK_ROUTES,
+    StaticTokenVerifier,
+)
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import AppContext, build_context, current_auth
 from swarm_api.groups import StaticGroups
@@ -56,32 +72,14 @@ FIXER_UID = "104857600000000000001"
 FIXER_HEADERS = {"Authorization": "Bearer token-fixer"}
 ALICE = auth_header("alice")
 
-#: THE OWNER'S DECISION, 2026-09-29, as a closed set. A literal, not read from
-#: the implementation: if it were derived from CONTINUATION_ROUTES, widening
-#: that set would widen what a stolen fixer token reaches and every test here
-#: would still pass. Widening it is a new decision; this is where it is written.
-DECIDED = frozenset({
-    ("POST", "/v1/workflows"),
-    ("GET", "/v1/tasks"),
-    ("GET", "/v1/tasks/{task_id}"),
-    ("GET", "/v1/tasks/{task_id}/events"),
-    ("GET", "/v1/tasks/{task_id}/attempts"),
-    ("GET", "/v1/tasks/{task_id}/artifacts"),
-    ("GET", "/v1/tasks/{task_id}/artifacts/content"),
-    ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
-    ("GET", "/v1/tasks/{task_id}/checkpoints"),
-    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files"),
-    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}"),
-    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
-    ("GET", "/v1/tasks/{task_id}/logs"),
-    ("GET", "/v1/tasks/{task_id}/transcript"),
-    ("GET", "/v1/tasks/{task_id}/answer"),
-    ("GET", "/v1/tasks/{task_id}/input"),
-    ("GET", "/v1/workflows"),
-    ("GET", "/v1/workflows/{workflow_id}"),
-    ("GET", "/v1/resource-classes"),
-    ("GET", "/v1/runtimes"),
-})
+#: THE OWNER'S DECISION, 2026-09-29, as the routes declare it
+#: (`route_scope.CONTINUATION`). Before the declarations it was a literal of
+#: twenty routes: POST /v1/workflows, GET /v1/tasks and /v1/workflows and
+#: their single reads, every task read under /v1/tasks/{task_id} (events,
+#: attempts, artifacts, checkpoints and their files, logs, transcript, answer,
+#: input) and the two static catalogues; the declarations name the same
+#: twenty (shown in the pull request that moved them).
+DECIDED = route_scope.declared(route_scope.CONTINUATION)
 
 #: Named by re-review as missed by the first draft; each must be in the refused
 #: sweep, so a router rename cannot quietly take one out of it.
@@ -206,6 +204,84 @@ def _send(client: TestClient, method: str, path: str, headers: dict[str, str], *
     if method in ("GET", "DELETE"):
         return client.request(method, url, headers=headers, params=params)
     return client.request(method, url, headers=headers, params=params, json={})
+
+
+# ---------------------------------------------------------------------------
+# Fixture routers: a change adding a route, as the guards see it
+# ---------------------------------------------------------------------------
+
+def fixture_router(path: str, *callers: str, declared: bool = True) -> APIRouter:
+    """One authenticated POST route at `path`, the way a change adds one:
+    declared for `callers` with `route_scope.reachable_by`, or with no
+    declaration at all when `declared` is False."""
+    router = APIRouter()
+
+    def handler(auth: Any = Depends(current_auth)) -> dict[str, bool]:
+        return {"reached": True}
+
+    if declared:
+        handler = route_scope.reachable_by(*callers)(handler)
+    router.post(path)(handler)
+    return router
+
+
+def guard_holds(caller: str, gate: frozenset[tuple[str, str]], routers: list[Any]) -> bool:
+    """The comparison each guard makes (`test_the_allow_list_is_the_decided_one`
+    here and in the sweeper's and the tick's files): the gate equals what the
+    routes declare."""
+    return set(gate) == route_scope.declared(caller, routers)
+
+
+def test_a_router_default_admits_its_routes_and_a_route_exception_narrows_it():
+    router = APIRouter()
+    route_scope.router_default(router, route_scope.CONTINUATION)
+
+    @router.get("/v1/fixture/read")
+    def read(auth: Any = Depends(current_auth)) -> dict[str, bool]:
+        return {"reached": True}
+
+    @router.post("/v1/fixture/write")
+    @route_scope.reachable_by()
+    def write(auth: Any = Depends(current_auth)) -> dict[str, bool]:
+        return {"reached": True}
+
+    assert route_scope.declared(route_scope.CONTINUATION, [router]) == {("GET", "/v1/fixture/read")}
+    assert route_scope.declared(route_scope.ROLLUP_SWEEPER, [router]) == frozenset()
+
+
+def test_a_route_with_no_declaration_is_reachable_by_no_narrow_caller():
+    router = fixture_router("/v1/fixture/undeclared", declared=False)
+    for caller in sorted(route_scope.NARROW_CALLERS):
+        assert route_scope.declared(caller, [router]) == frozenset(), caller
+
+
+def test_a_misspelt_caller_is_refused_where_it_is_declared():
+    with pytest.raises(ValueError, match="unknown narrow caller"):
+        route_scope.reachable_by("rollup-sweeper")
+
+
+@pytest.mark.parametrize("caller,gate", [
+    (route_scope.CONTINUATION, CONTINUATION_ROUTES),
+    (route_scope.ROLLUP_SWEEPER, ROLLUP_SWEEPER_ROUTES),
+    (route_scope.SCHEDULE_TICK, SCHEDULE_TICK_ROUTES),
+], ids=["continuation", "rollup_sweeper", "schedule_tick"])
+def test_two_changes_that_each_add_a_declared_route_pass_together(caller, gate):
+    """THE MERGE-SAFE RULE (BGD, 6 November 2026): two changes that each pass
+    against their own base also pass together. Each change adds one route
+    with its declaration and its gate entry; the base, each change alone and
+    the two merged all hold."""
+    base = route_scope.route_routers()
+    assert guard_holds(caller, gate, base)
+    change_a = fixture_router("/v1/admin/fixture-a/sweep", caller)
+    change_b = fixture_router("/v1/admin/fixture-b/sweep", caller)
+    gate_a = gate | {("POST", "/v1/admin/fixture-a/sweep")}
+    gate_b = gate | {("POST", "/v1/admin/fixture-b/sweep")}
+    assert guard_holds(caller, gate_a, [*base, change_a])
+    assert guard_holds(caller, gate_b, [*base, change_b])
+    assert guard_holds(caller, gate_a | gate_b, [*base, change_a, change_b])
+    # And a change that opens the gate without declaring the route is red on
+    # its own, before it can meet any other change.
+    assert not guard_holds(caller, gate_a, base)
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +605,9 @@ def test_the_listed_accounts_integrator_fix_is_capped_and_stamped_for_the_post_b
         assert response.status_code == 201, response.text
         fix_task_id = response.json()["workflow"]["steps"][0]["task_id"]
         assert db.docs[f"tasks/{fix_task_id}"]["metadata"]["ci_fix"]["postback"] == "pending"
+        # Ended before the next: a live CI fix of the pull request refuses
+        # another at any head or run (#2763, test_cifix_one_fix_per_pr.py).
+        db.docs[f"tasks/{fix_task_id}"]["state"] = "FAILED"
     # Numbered 2 again: only the API's own count of the pull request's fix
     # workflows can refuse it, not the record's attempt <= max_attempts check.
     third = fixer_client.post("/v1/workflows", headers=FIXER_HEADERS, json=red_run(2, run_id=3))

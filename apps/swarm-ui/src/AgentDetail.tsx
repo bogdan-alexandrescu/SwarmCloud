@@ -1,4 +1,4 @@
-import { Banner, Button, CIcon, Count, ToneMark } from './components'
+import { Button, ButtonLink, CIcon, Chip, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -6,7 +6,9 @@ import {
   loadArtifactContent,
   loadTaskInputOnce,
   loadWorkflow,
+  qualityGatesOf,
   type AgentRun,
+  type QualityGates,
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
@@ -21,6 +23,7 @@ import { UtilisationPanel } from './UtilisationPanel'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
+import { ContractAcceptanceCard } from './ContractJev'
 import { DecisionCard } from './DecisionCard'
 import { AdditionalRepositoryRows } from './Dispatch'
 import { PersonName } from './PersonName'
@@ -30,7 +33,8 @@ import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { backendWord, eventWord, parkWord, stateWord } from './words'
-import { chooseTenant, num, type ApiError, type Result } from './fetch'
+import { num, route, type Result } from './fetch'
+import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { addressToPath } from './paths'
@@ -39,6 +43,7 @@ import { tokenCount } from './measure'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
 import { checkpointsLine, checkpointsSay, type CheckpointCount } from './CheckpointsPane'
 import { useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
+import { prefillTask } from './submitPrefill'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
@@ -67,6 +72,7 @@ import {
   startedOf,
   usageOf,
   modelMismatch,
+  poolLabel,
   waitingLine,
   whyAgent,
   whyNeedsAction,
@@ -198,22 +204,24 @@ export function AgentDetailScreen({
       mounted.current = false
     }
   }, [])
-  // THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS TASK (#1194 c15):
-  // set from a 404 whose probe found it (`taskElsewhere`), cleared by any
-  // other answer. Offered under the failed panel, never switched to unasked.
-  const [elsewhere, setElsewhere] = useState<NonNullable<ApiError['elsewhere']> | null>(null)
-  useEffect(() => setElsewhere(null), [taskId])
+  // A 404 FOR THIS TASK ASKS THE PERSON'S OTHER WORKSPACES (#1194 c15; the
+  // owner's pick of 2026-11-04, elsewhere.tsx): set from a read that answered
+  // 404, cleared by any other answer. What they answer is offered under the
+  // failed panel, never switched to unasked.
+  const [missing, setMissing] = useState(false)
+  useEffect(() => setMissing(false), [taskId])
   const load = useCallback(
     () =>
       loadAgentRun(taskId).then((r) => {
         if (mounted.current && shown.current === taskId) {
           if (r.status === 'ok' || r.status === 'stale') setName(agentName(r.data.task))
-          if (r.status !== 'loading') setElsewhere(r.status === 'error' ? (r.error.elsewhere ?? null) : null)
+          if (r.status !== 'loading') setMissing(r.status === 'error' && r.error.kind === 'not_found')
         }
         return r
       }),
     [taskId],
   )
+  const elsewhere = useElsewhere(missing ? route('/v1/tasks/{id}', { id: taskId }) : null)
   // `Screen` owns its own retry nonce and does not expose it to children, so
   // the stop control needs one of its own: bumping this re-keys `Screen`,
   // which remounts it and re-runs the load. It is in the key rather than in a
@@ -266,34 +274,23 @@ export function AgentDetailScreen({
         {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} links={links} lastLine={lastLine} />}
       </Screen>
   )
-  // THE SWITCH IS OFFERED, NOT MADE: the person chose the tenant they are in,
-  // and a link must not move them out of it. Pressing it makes the choice
-  // (`chooseTenant`) and reads the task again under it. Its own top margin
-  // keeps it a separate notice: flush under the failed panel, the two
-  // bordered boxes read as one.
+  // THE SWITCH IS OFFERED, NOT MADE: the person chose the workspace they are
+  // in, and a link must not move them out of it. Pressing it makes the choice
+  // as the switcher does and reads the task again under it. The notice keeps
+  // its own top margin: flush under the failed panel, the two bordered boxes
+  // read as one. The failed panel above is the page's own 404, unchanged.
   const switchEl =
     elsewhere === null ? null : (
-      <div className="tenant-switch-offer" style={{ marginTop: 'var(--ctl-s3)' }}>
-      <Banner
-        tone="info"
-        role="status"
-        title={`This task is in ${elsewhere.display_name}`}
-        actions={
-          <Button
-            kind="primary"
-            onClick={() => {
-              setElsewhere(null)
-              chooseTenant(elsewhere.tenant_id)
-              reload()
-            }}
-          >
-            {`Switch to ${elsewhere.display_name}`}
-          </Button>
-        }
-      >
-        It is one of your workspaces, so it can be read there. This one answers as it would for a task that does not exist.
-      </Banner>
-      </div>
+      <ElsewhereNotice
+        found={elsewhere}
+        what="agent"
+        back={{ onClick: onClose }}
+        notFound={null}
+        onSwitched={() => {
+          setMissing(false)
+          reload()
+        }}
+      />
     )
   if (headed) {
     return (
@@ -485,7 +482,7 @@ export function Run({
       <div className="dt-top">
         <Alerts task={task} />
         <WaitPanel task={task} now={now} />
-        <Why task={task} events={events} now={now} classes={run.classes} />
+        <Why task={task} classes={run.classes} />
       </div>
       {/* WHY THE AGENT RAN OR DID NOT (owner request 2026-10-07): a step with
           a verdict gate, or the review that gated one, leads with the rule,
@@ -512,6 +509,14 @@ export function Run({
           from, what it used, when it was warned, and for a stop that the work
           was kept. Nothing for an agent with no budget. */}
       <BudgetCard task={task} events={events} now={now} />
+      {/* THE QUALITY GATES, ONE LINE (CLD's Jev report, owner's choice
+          2026-11-02): what jev-belay and jev-enforce did, or why they did not
+          run. Nothing for an attempt whose summary has no `quality_gates`. */}
+      <QualityGatesLine task={task} />
+      {/* JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4; the
+          owner's pick on PR #3255): the record the approval screen draws,
+          served on the task detail too. Nothing for a step never judged. */}
+      <ContractAcceptanceCard raw={task.contract_acceptance} />
       {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one
@@ -623,6 +628,74 @@ function endCauseOf(task: Task): EndCause | null {
  * jump between Now, Progress, Resources and Input, while Attempts and
  * Children are `h2`. styles/details.css draws it exactly as the `<b>` was.
  */
+/** The scheduler's and the worker's refusal codes (agent_worker/qualitygates.py), in words. */
+const GATES_REFUSED: Readonly<Record<string, string>> = {
+  unsigned: "the workspace's setting is not signed",
+  mac_mismatch: "the workspace's setting does not match its signature",
+  no_settings_key: 'no settings key was there to check the setting with',
+  settings_mac_off: 'settings signing is off',
+  settings_unreadable: "the workspace's setting could not be read",
+  no_verdict: 'the scheduler gave no verdict on the setting',
+  off_at_dispatch: 'the setting was off when this attempt was dispatched',
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+/**
+ * THE QUALITY GATES LINE: stops blocked, rules flagged and Jev calls when the
+ * gates ran; why they did not when a stored "on" was refused or they were
+ * off. Counts only, never the hooks' text. Null when the attempt's summary
+ * has no `quality_gates`.
+ */
+export function QualityGatesLine({ task }: { task: Task }) {
+  const gates: QualityGates | null = qualityGatesOf(task)
+  if (gates === null) return null
+  let body: ReactNode
+  if (gates.kind === 'ran') {
+    body =
+      gates.counts === null ? (
+        <span className="dt-note">on · no hook ran in this attempt</span>
+      ) : (
+        <>
+          <Chip tone={gates.counts.stopsBlocked > 0 ? 'park' : undefined}>
+            {plural(gates.counts.stopsBlocked, 'stop blocked', 'stops blocked')}
+          </Chip>
+          <Chip tone={gates.counts.rulesFlagged > 0 ? 'park' : undefined}>
+            {plural(gates.counts.rulesFlagged, 'rule flagged', 'rules flagged')}
+          </Chip>
+          <Chip faint>{plural(gates.counts.jevCalls, 'Jev call', 'Jev calls')}</Chip>
+        </>
+      )
+  } else if (gates.kind === 'refused') {
+    const words = GATES_REFUSED[gates.refused]
+    body = (
+      <span className="dt-note">
+        <ToneMark tone="warn">did not run</ToneMark> · refused: {words ?? <code className="mono">{gates.refused}</code>}
+      </span>
+    )
+  } else {
+    body = (
+      <span className="dt-note">
+        <ToneMark tone="unknown">off</ToneMark>
+        {gates.reason !== null && <> · {gates.reason}</>}
+      </span>
+    )
+  }
+  return (
+    <section className="dt-card dt-gates" aria-label="Quality gates" data-testid="quality-gates">
+      <DtCardHead title="Quality gates" />
+      {/* A wrapping row of its own, not the head's inline slot (`.dt-card-r`
+          does not wrap): on a phone the three chips go to a second line
+          instead of pushing the page sideways. */}
+      <div className="dt-phases" data-testid="quality-gates-body">
+        {body}
+      </div>
+    </section>
+  )
+}
+
 function DtCardHead({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
     <div className="dt-card-head">
@@ -933,6 +1006,19 @@ export function buildingOf(
   return { text, facts, hover }
 }
 
+/**
+ * THE TICKER'S VERB FOLLOWS THE STATE (QA2 overview-agents-26): `Building`
+ * stood over a ready agent that had not started, a failed one and a finished
+ * one. A parked agent that ran is still building; one that never started has
+ * not begun.
+ */
+export function buildingWord(task: Pick<Task, 'state' | 'started_at'>): string {
+  if (task.state === 'SUCCEEDED') return 'Built'
+  if (TERMINAL_STATES.has(task.state)) return 'Was building'
+  if (CONCURRENCY_STATES.has(task.state) || (task.state === 'PARKED' && task.started_at !== null)) return 'Building'
+  return 'To build'
+}
+
 function DtBuilding({ task, readAt }: { task: Task; readAt: number | null }) {
   // THE SAME READ AS Input's (same loader, task and key), so one request.
   const { state: copy } = useRead<TaskInputCopy>(() => loadTaskInputOnce(task.id), task.id, `input:${readAt ?? ''}`, null)
@@ -940,7 +1026,7 @@ function DtBuilding({ task, readAt }: { task: Task; readAt: number | null }) {
   const facts = b.facts.join(' · ')
   return (
     <p className="dt-building">
-      <span className="dt-building-l">Building</span>
+      <span className="dt-building-l">{buildingWord(task)}</span>
       <span className={`dt-building-v${b.text === null ? ' is-none' : ''}`} title={b.hover ?? undefined}>
         {b.text === null
           ? facts !== ''
@@ -1048,6 +1134,32 @@ function DtNow({
 }
 
 /**
+ * RUN IT AGAIN (QA2 overview-agents-52): a failed agent offered no way back
+ * but to retype it. This opens Submit with the same runner profile, by name
+ * (invariant 10), the prompt from the masked copy Input draws (never
+ * `task.input`) and the repository, through `prefillTask`; the person reads
+ * the form and presses Submit there, so nothing is sent from here. A workflow
+ * step is not offered it: its prompt alone, submitted as a lone agent, is not
+ * the step it was.
+ */
+function RunAgain({ task }: { task: Task }) {
+  const { state: copy } = useRead<TaskInputCopy>(() => loadTaskInputOnce(task.id), task.id, 'input:', null)
+  if (task.workflow_id !== null && task.workflow_id !== undefined) return null
+  const prompt = copy.status === 'ok' || copy.status === 'stale' ? (copy.data.prompt?.text ?? '') : ''
+  return (
+    <ButtonLink
+      size="sm"
+      href={addressToPath('work/new')}
+      data-run-again=""
+      title={`Open Submit with ${task.runner_profile}, this agent's prompt and its repository filled in.`}
+      onClick={() => prefillTask({ profile: task.runner_profile, prompt, repositoryUrl: task.repository_url ?? '' })}
+    >
+      Run again
+    </ButtonLink>
+  )
+}
+
+/**
  * THE FAILURE CARD, which leads a failed agent: a plain sentence for its end
  * cause, the cause itself verbatim, who wrote the error (`errorWriter`) and
  * the whole error -- never truncated, it is the reason the page was opened --
@@ -1083,6 +1195,7 @@ function DtFailure({ run, lastLine }: { run: AgentRun; lastLine: ReactNode }) {
       {/* NO `Attempts ›` HERE (QA-115). The Progress card under the strip
           links the same tab, so the page offered two links to one place. */}
       <DtCardHead title={heading}>
+        {task.state !== 'CANCELLED' && <RunAgain task={task} />}
         <HelpCard topic="attempt-documents" />
       </DtCardHead>
       <p className="dt-nfs">
@@ -1883,7 +1996,7 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               className="dt-note"
               aria-label={`One page, as served. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
             >
-              newest first · one page, cap unknown
+              Newest first · first page only
             </p>
           )}
           {events.length > 5 && (
@@ -2075,7 +2188,10 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
             : `Figures written at exit by attempt ${attempts.length}.`
   return (
     <section className="dt-card dt-resources">
-      <DtCardHead title="Resources">
+      {/* NOT `Resources` AGAIN (QA2 overview-agents-25): this card sits inside
+          the Resources row's fold, under its title; what it adds is each
+          figure against its limit, and over time. */}
+      <DtCardHead title="Against each limit">
         {cls === null && <span className="dt-note">{unknownLimit}</span>}
         <HelpCard topic="requests-are-ceilings" />
       </DtCardHead>
@@ -2140,11 +2256,15 @@ export function resourceFigures(run: AgentRun): ResFigure[] {
         : { text: `${n(req)}/${n(lim)} cores`, title: 'Cores the attempt was guaranteed / the most it could burst to.' }
       : latest !== null && finite(recorded)
         ? {
-            text: `${n(recorded)} cores`,
+            // ONE CPU FIGURE WITH ITS BASIS (QA2 overview-agents-24): the
+            // head prints the class (`4 vCPU`), so a bare `2 cores` here read
+            // as a contradiction. The limit is named a limit, and the class
+            // beside it in the head's own unit when the two differ.
+            text: `${n(recorded)}-core limit${cls !== null && cls.cpu !== recorded ? ` · ${cls.cpu} vCPU class` : ''}`,
             title: `The limit the attempt recorded${limitWords === null ? '' : `: ${limitWords}`}; no request was recorded.`,
           }
         : cls !== null
-          ? { text: `${cores(cls.cpu)} cores (class)`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
+          ? { text: `${cores(cls.cpu)} vCPU class`, title: `The ${task.resource_class} class's cores; the attempt recorded no size or limit.` }
           : { text: '— cores', title: 'No size was recorded and the class was not read.', absent: true }
   const memFig: ResFigure =
     cls !== null
@@ -2239,6 +2359,27 @@ export function parkedOutcome(a: AttemptRow): { label: string; tone: ChipTone } 
   return { label: a.error ? `parked · ${a.error}` : 'parked', tone: 'info' }
 }
 
+
+/**
+ * THE WAIT LINE, WITH THE POOL NAMED AS HEADROOM NAMES IT (QA2 ovag2-06):
+ * `waiting for: anthropic · u-bogdan  5/5 units`, the raw key in the
+ * name's title. `waitingLine` (types.ts) is the line every other screen
+ * compares against, so it stays as it is; only the drawing names the pool.
+ */
+function WaitingLead({ task }: { task: Task }) {
+  const line = waitingLine(task)
+  const pool = task.waiting_for?.lead?.pool
+  if (line === null) return null
+  const at = typeof pool === 'string' && pool !== '' ? line.indexOf(pool) : -1
+  if (at === -1) return <span data-waiting-lead="">{line}</span>
+  return (
+    <span data-waiting-lead="">
+      {line.slice(0, at)}
+      <span title={pool}>{poolLabel(pool!)}</span>
+      {line.slice(at + pool!.length)}
+    </span>
+  )
+}
 
 /** The em dash, as a token rather than a bare character, so "not measured" is
  *  styleable as a class of thing and never mistaken for a digit.
@@ -2732,9 +2873,14 @@ function Alerts({ task }: { task: Task }) {
           the same rule as the why line. */}
       {waitingLine(task) !== null && !paneled && (
         <div className={`bar${whyNeedsAction(task) ? ' amber' : ''}`} data-waiting-for="">
-          <span data-waiting-lead="">{waitingLine(task)}</span>
+          <WaitingLead task={task} />
+          {/* A SPACE BEFORE THE ASIDE (QA2 ovag2-06): the margin drew one, the
+              text did not, so a copy or a reader said `units(holds`. */}
           {task.waiting_for?.holds_capacity === false && (
-            <span className="blocker-copy">(holds no capacity)</span>
+            <>
+              {' '}
+              <span className="blocker-copy">(holds no capacity)</span>
+            </>
           )}
         </div>
       )}
@@ -2865,13 +3011,9 @@ function reasonText(reason: string): string {
  */
 function Why({
   task,
-  events,
-  now,
   classes,
 }: {
   task: Task
-  events: TaskEvent[] | null
-  now: number
   /**
    * The catalogue `Run` already read alongside this task (`loadAgentRun`,
    * api.ts) -- not a second fetch of `/v1/resource-classes`. `classUnits`
@@ -2885,15 +3027,18 @@ function Why({
   classes: ResourceClasses | null
 }) {
   // ONCE, IN THE BANNER (LB-V4, U1): a parked hand-off's sentence is the
-  // banner's, so it is not repeated here. See `Alerts`. This also skips
-  // `SilentWorker`, which is right: a PARKED task has no live worker.
+  // banner's, so it is not repeated here. See `Alerts`.
   if (handoffOf(task)?.phase === 'parked') return null
   // The wait panel's summary is this sentence, made from what was recorded
   // rather than a table of reasons (#1782); once is enough.
   if (fullWaiting(task) !== null) return null
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
-  if (!why) return <SilentWorker task={task} events={events} now={now} />
+  // A SILENT WORKER IS SAID ONCE, IN THE NOW CARD (QA2 overview-agents-23):
+  // `No event for 9d 20h…` stood here, above Now, and again inside it. A
+  // silent worker holds a slot, so it is never terminal and Now always leads
+  // its page (`leadOf`); the card's `--warn` line is the one that stays.
+  if (!why) return null
   // #362: the "waiting for" bar in `Alerts` already prints this line, with
   // "(holds no capacity)" beside it; once is enough, as for `last_error`.
   if (why === waitingLine(task)) return null
@@ -2908,41 +3053,6 @@ function Why({
   return (
     <section className="section">
       <p className={`why-full${whyNeedsAction(task, units) ? ' is-warn' : ''}`}>{why}</p>
-    </section>
-  )
-}
-
-/**
- * AG-14'S FOURTH KIND: A STUCK OR SILENT WORKER, which had no line to colour.
- *
- * The owner's decision names "stuck/silent workers" among the why lines that
- * need a person and so take `--warn`. `whyAgent` writes nothing for a task
- * that holds a slot -- it answers "why is this not running", and a leased or
- * running task is -- so the first pass had no line here and coloured none.
- *
- * The inspector reads the task's events, and `livenessOf` (Liveness.tsx)
- * already derives the answer the badge in the heading draws: a task in a
- * concurrency state with no event for seven minutes is `silent`, "the worker
- * may be gone". That sentence is the why line, in `--warn`, and nothing else
- * is -- not `quiet` (heartbeats are ~150s apart, so three to seven minutes is
- * not yet alarming), and not an event read that failed or a re-read that
- * stopped vouching (`now` stops with it, `rowClock` in `Run`): "could not
- * look" is never drawn as "nothing happened".
- *
- * NOT ON THE AGENTS LIST. A list row is a task document, and a worker's
- * heartbeat is written to its LEASE (control.py `heartbeat`), which no
- * tenant-scoped route serves; the admin leases route is the only reader. The
- * list half is a backend change, #179, rather than a guess from
- * `updated_at`, which a heartbeat does not move.
- */
-function SilentWorker({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
-  const live = livenessOf(task, events, now)
-  if (live.kind !== 'silent') return null
-  return (
-    <section className="section">
-      <p className="why-full is-warn" data-why="silent">
-        {live.say}
-      </p>
     </section>
   )
 }
@@ -5432,6 +5542,20 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * failed read is asked again with each re-read of the drawer (`readAt`), so a
  * copy that failed once is not `input not read` until the drawer is reopened.
  */
+/**
+ * HOW FAR A RUN IS PAST ITS TIMEOUT, in ms, or null when it is not (QA2
+ * overview-agents-28): `timeout 3600s` stood beside a run of 9d 20h with
+ * nothing reconciling the two. The run is its last start to its end, or to
+ * the read while it runs; a run never started has none.
+ */
+export function overTimeout(task: Pick<Task, 'timeout_seconds' | 'started_at' | 'completed_at'>, now: number): number | null {
+  if (task.timeout_seconds === null || task.started_at === null) return null
+  const started = Date.parse(task.started_at)
+  const ended = task.completed_at === null ? now : Date.parse(task.completed_at)
+  const over = ended - started - task.timeout_seconds * 1000
+  return Number.isFinite(over) && over >= 1000 ? over : null
+}
+
 function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   const { task } = run
   const { state: copy } = useRead<TaskInputCopy>(
@@ -5442,6 +5566,7 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   )
   const served = copy.status === 'ok' || copy.status === 'stale' ? copy.data : null
   const prompt = served?.prompt ?? null
+  const over = overTimeout(task, readAt ?? Date.now())
   const keys = served?.metadata === null || served?.metadata === undefined ? null : Object.keys(served.metadata.value).length
 
   // FOLDED (agent-details-v3.html A): a facts line, a three-line preview of
@@ -5489,22 +5614,29 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
         <li className={`ctl-fact${task.timeout_seconds === null ? ' is-absent' : ''}`}>
           <b>timeout</b>
           {task.timeout_seconds !== null ? `${task.timeout_seconds}s` : <Em />}
+          {over !== null && (
+            <span title="The run has lasted longer than this timeout; the timeout did not end it.">
+              {` · over by ${formatDuration(over)}`}
+            </span>
+          )}
         </li>
       </ul>
 
       {served === null ? (
         <InputNotRead copy={copy} />
       ) : prompt === null ? (
-        <p className="att-none">
-          <Mark
-            kind="zero"
-            say={
-              served.prompt_key === 'other'
-                ? "This agent's input has a prompt key whose value is not text, so there is no prompt to show. The full input is under Metadata."
-                : "This agent's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is under Metadata."
-            }
-          />{' '}
-          {served.prompt_key === 'other' ? 'prompt is not text' : 'no prompt key'}
+        // A SENTENCE, NOT `none · no prompt key` (QA2 overview-agents-29):
+        // the mark's `none` before the words read as two labels. Why there is
+        // none stays the line's title.
+        <p
+          className="att-none"
+          title={
+            served.prompt_key === 'other'
+              ? "This agent's input has a prompt key whose value is not text, so there is no prompt to show. The full input is under Metadata."
+              : "This agent's input has no prompt string. That is legitimate — the field is a convention of the CLI and mock runners, not part of the submission schema. The full input is under Metadata."
+          }
+        >
+          {served.prompt_key === 'other' ? 'The prompt is not text' : 'No prompt was recorded'}
         </p>
       ) : prompt.text === '' ? (
         <p className="att-none">

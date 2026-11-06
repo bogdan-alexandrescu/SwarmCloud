@@ -127,6 +127,10 @@ def test_a_second_guard_run_with_no_edit_between_is_warned(tmp_path, command):
     warned = _warning(_hook(state, repo, command))
     assert "changed-guards.sh" in warned
     assert "no file" in warned
+    # MUTATION: tell the agent to run it again after an edit -> this fails
+    # (#2981: the worker's pre-publish gate runs it after the turn).
+    assert "pre-publish gate runs it after your turn" in warned
+    assert "run it again only after" not in warned
 
 
 @pytest.mark.parametrize("edit", ["tracked", "untracked", "commit"])
@@ -181,8 +185,10 @@ def test_the_note_names_the_graph_tools_and_a_cheap_child():
     note = claude_code.exploration_note(graph=True, children="/w/.swarm-children")
     # MUTATION: drop either clause -> this fails.
     for phrase in ("swarm-graph", "`search`", "`call_graph`", "grep -rn",
-                   ".swarm-children", "model_class", "sonnet", "haiku"):
+                   "child task", "model_class", "sonnet", "haiku"):
         assert phrase in note
+    # The path is the child path's own line (`children.prompt_line`), once.
+    assert ".swarm-children" not in note and "$SWARM_CHILDREN" not in note
     assert "\n" not in note
 
 

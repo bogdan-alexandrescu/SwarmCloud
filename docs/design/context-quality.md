@@ -549,6 +549,123 @@ silently cut. That follows graphmcp's "never a silent truncation".
 same server through `-c mcp_servers.swarm-graph.*`, as `codex.py` registers
 `swarm-git`.
 
+**Loaded up front, and asked first (built, lane AGENTS-USE-TOOLS, 2026-11-02).**
+The first experiment batch (2 November 2026, eight workflows, 56 steps) had
+`swarm-graph` connected in all 42 steps with code intelligence on, and no
+agent called it: Claude Code deferred its tools behind tool search, and
+nothing told the agent they existed or when to use them, so one build step
+made 97 shell calls, mostly searches. Since then, on claude-code and
+claude-code-browser steps with the graph registered, the `swarm-graph` entry
+in the `--mcp-config` carries Claude Code's per-server `alwaysLoad: true`
+("all tools from this server are always included in the prompt and never
+deferred behind tool search"), and the prompt carries one line
+(`claude_code.GRAPH_FIRST_NOTE`): the graph answers callers, definitions and
+what a change touches better than a text search, so use it first for those.
+A step with code intelligence off gets neither. Whether the agent then used
+it is in the attempt's `result_summary.runner.metrics.tool_calls`
+(`families.code_graph`, beside `jev_browser`, `playwright`, `jev_decision`,
+`built_in` and `other_mcp`), counted from the session's stream, so an
+experiment reads it without parsing transcripts.
+
+**Told when, at the system prompt's weight (built, lane AGENTS-USE-TOOLS-WHEN,
+2026-11-03).** That was not enough. The owner stopped experiment batch two
+on 2 November 2026 ("Stop everything"). Its graph-on build steps called the
+graph 1, 0, 0, 0, 0 and 0 times, against 200-560 built-in calls each, and its
+Jev-on steps never called `jev_decide`. Batch three had the fix above
+deployed and did no better: two graph calls across four graph-on steps, and
+none to `jev_decide`. In both batches every session's init listed the tools
+with the servers `connected`, so the tools were loaded and the agents did
+not choose them. Three things outweighed the one line:
+- The line came after the whole brief, while the repository's CLAUDE.md sits
+  in the system context and says "`grep -n` or `rg` first". The agents
+  quoted that rule to their helpers word for word.
+- Nothing named a moment for either tool.
+- Both graph calls that were made asked `tests_for` by bare or
+  `Class.method` names and got back `unknown` and zero rows.
+
+So a step with the switch on now gets `--append-system-prompt`, carrying
+`claude_code.GRAPH_SYSTEM_NOTE` and/or `JEV_SYSTEM_NOTE`:
+- The graph block names three moments: `context` or `impact` before editing
+  an existing symbol, `tests_for` on the changed *files* before running
+  tests, and `impact` before finishing. It says when to skip them (new files,
+  docs-only changes, and an unknown answer, where grep takes over), and it
+  answers the grep-first rule directly.
+- The Jev block names three moments too: an open choice, the acceptance
+  check before finishing, and a failure whose cause is unclear. It never
+  covers a fact the agent can check itself.
+
+The system prompt reaches every session of the attempt, including a fresh
+one after a context handoff, whose own prompt is only the handoff. The graph
+and `jev_decide` tool descriptions say the same moments in a clause each,
+inside the schema budget. A step with both switches off gets no system-prompt
+block, as before.
+
+**A skill on demand, with a nudge (built, lane GRAPH-SKILL-ON-DEMAND,
+2026-11-03; the owner's pick).** The two batches measured both ends.
+- With the ten tools deferred behind tool search (batch one), agents never
+  fetched them: 0 calls in 45 steps.
+- With the ten loaded up front (batch two), every turn paid about 1,900
+  tokens for 2 calls in 12 steps. The first of those calls was an ambiguity
+  error ("2 symbols match 'cancel_workflow'; pass one id"), and that agent
+  never asked the graph again.
+- Subagents made a third to two thirds of all calls, and nothing told them
+  the graph existed.
+
+So a claude-code step's graph now takes one of two **shapes**. The signed
+workflow switch `graph_shape` picks it (`skill`, `tools` or `off`;
+`swarm_api.validation.DISPATCH_SWITCH_CHOICES`, `graphstage.shape_of`). With
+no switch the shape is `skill`.
+
+- **`skill`.** The runner writes a `code-graph` skill under the CLI's HOME
+  (`work/.claude/skills/code-graph/SKILL.md`), never in the checkout. Until
+  the skill is invoked, its description is all the session pays for: about
+  70 tokens, naming the three moments it pays off. Those are before changing
+  a function (who calls it), before finishing (which tests cover the change)
+  and when a change spans modules (what it touches). The skill's body names
+  one tool, `slice`, and the server lists only that tool, without
+  `alwaysLoad`. `slice` takes `files` and/or `symbols`, a `depth` of 1 to 3
+  hops and an `include` list (`callers`, `callees`, `tests`, `docs`). Its
+  answer is bounded like `call_graph` and paged at 4 KiB like every answer.
+  A PreToolUse hook (`runners/graph_hint_hook.py`) adds the nudge and the
+  subagent line:
+  - When the agent greps (the Grep tool, or `grep`, `rg`, `git grep` or `ag`
+    in Bash) for an identifier-shaped name, such as `cancel_workflow`,
+    `GraphServer` or `def handle_row(`, the result gets one line naming the
+    exact `slice` call. This happens at most three times a step and never
+    twice for one name. A plain word, a regex, an all-caps constant or a
+    phrase gets nothing.
+  - Every prompt the agent writes for a subagent (the `Task` or `Agent` tool) gets the
+    skill's line, once, through `updatedInput`.
+
+  The system prompt carries one line, `GRAPH_SKILL_SYSTEM_NOTE`, which
+  answers the grep-first rule.
+- **`tools`.** Batch two exactly: the ten tools loaded, `GRAPH_FIRST_NOTE`
+  and `GRAPH_SYSTEM_NOTE`, kept so the experiment can compare the shapes.
+- **`off`.** No graph. Staging reads it as `code_intelligence: off`.
+
+The shape never turns a graph on. Whether a step is staged is still decided
+by the stored setting, the A/B and `code_intelligence`. `stage.json` and the
+attempt's `result_summary.switches` record the shape when the switch chose
+one.
+
+Every symbol tool now answers an ambiguous name with its best match and lists
+the others under `also_matched` (`tools.resolve_best`), never with an error.
+The best match is an exact `name` or `module.name` over a dotted suffix, an
+application symbol over a test and a definition over a local; ties keep the
+search's order. `tools.resolve` still refuses an ambiguous name, because the
+context pack's seeds skip one. `TOOLS_VERSION` is `2`.
+
+First-turn cost of the graph, in bytes of what the session carries on every
+turn (`tests/unit/worker/test_graph_skill_on_demand.py` holds the ratio):
+
+| Shape | What the session carries every turn | Bytes | Tokens at 3 B/token |
+|---|---|---|---|
+| `tools` | ten schemas, instructions, prompt line, system block, exploration clause | 5,830 | about 1,940 |
+| `skill` | skill name and description, short instructions, system line, exploration clause, deferred tool name | 730 | about 240 |
+
+The skill's body (1.3 KB) and the `slice` schema (0.6 KB) are paid once, when
+the agent invokes the skill.
+
 **The tools the brief names, against the KG4 tools.** No aliases, because the
 schema budget is under 2k tokens:
 
@@ -759,7 +876,7 @@ them. `state` is JSON, and every string in it has passed §5.4.
 
 | ID | When | `state` sent | `questions` | Used for |
 |---|---|---|---|---|
-| **J0** classify | intake, only when the role is unknown | `{task: {brief ≤ 4,000 chars}}` | `type: choice` over `implement, review, fix, test, design, plan` | pick the pipeline; below 0.6 confidence, keep `implement` |
+| **J0** classify | intake, only when the role is unknown: the local rules (`contextpack/tasktype.py`) fell back to `implement` | `{task: {brief ≤ 4,000 chars}}` | `type: choice` over `implement, review, fix, test, design, plan` | pick the pipeline: `test` or `design` at 0.6 confidence or more; anything else keeps `implement`, because review, fix and plan seed from a staged patch, verdict, failing-check fence or issue file that such a step does not have |
 | **J1** rerank | staging | `{task: {type, brief ≤ 4,000 chars}, candidates: [{i, kind, path, symbol, signature, excerpt ≤ 600 chars, why}] ≤ 60}` | one `noul` per candidate, `c<i>`: "Would an engineer doing `task` need to read candidate i to get it right?" | §4.3 final order |
 | **J2** plan coverage | after the planner writes `plan.json` | `{requirements: [...], steps: [{step_id, title, files, tests, prompt ≤ 1,500 chars}]}` | one `choice` per requirement, over the `step_id`s plus `none` | flag a requirement whose best step has p < 0.5, or that picks `none`; shown on the plan approval screen and in `swarm_runs` |
 | **J3** finding triage | after the reviewer writes `verdict.json` | `{finding: {summary, file, line}, code: {path, window ±40 lines}, diff_hunk}` per finding | `noul`: "Is this finding a real defect in this diff, as stated?" | annotate each finding `p_real`; findings under 0.15 reach the fixer marked "verify before acting", never dropped |
@@ -793,7 +910,9 @@ exists.
 ### 5.4 What is sent, and what never is, even when opted in
 
 Applied in this order. Every step is code, and each is tested with fakes
-built at runtime.
+built at runtime. For each string, the check that decides a drop
+(`swarm_jev.sanitize.is_flagged`) asks the registered secrets (step 4) first,
+then the credential check (step 2), then the redaction rules (step 3).
 
 1. **Path deny.** No content is read from:
    * `.env*`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate*`;
@@ -802,8 +921,11 @@ built at runtime.
 
    Only the path name may be sent.
 2. **Credential scan, then drop.** Every excerpt goes through the publish
-   scan's detector (`agent_worker.publish_scan`, which wraps the worker's
-   `_DiffLeakScanner` and `_credential_in`). A hit **drops the excerpt
+   gate's credential check, `swarm_redaction.credentials` (`is_credential`,
+   its `credential_in` at the strictest tier: the check
+   `agent_worker.publish_scan` runs, and the worker's `_credential_in`).
+   Every Jev call runs it, in the worker and in swarm-api alike, because the
+   shared `swarm_jev.sanitize` imports it. A hit **drops the excerpt
    entirely**. The candidate is sent as path and symbol only. Masking is not
    used, because a masked key's neighbourhood can still identify it.
 3. **Redaction rules.** Every string goes through `swarm_redaction.rules.redact`
@@ -884,7 +1006,8 @@ or before it, and all share the attempt's one ledger:
 |---|---|---|
 | J1 | `contextpack.prepare` → `build_pack` → `rank.rerank` | The sent rows (the top 60 local rows; in-flight and cannot-push never) score `0.5 · local/best + 0.5 · p`. A row under p 0.15 goes after every other row and fills no quota minimum: it is paged, never deleted. The header says `jev: on`, and `jev_calls` / `jev_input_tokens` count the call |
 | J4 | `prepublish.Gate._advise` → `jev_test_gap` | "Advisory signals (Jev, not a gate)" in the advisory section, listing the changed symbols for which Jev chose `none`. Also `jev_test_gap` in the gate's record |
-| J3 | `runners/cliagent._jev_post_steps` → `judge.poststeps.review_post_step`, for a review step | `p_real` on each finding in `verdict.json` (`verdict.annotate_findings`). Under 0.15 the finding also carries `"triage": "verify before acting"`, and `verdict.read_verdict` prefixes its text with that mark. It still reaches the fixer, because nothing is dropped. At most 5 findings are asked about |
+| J0 | `contextpack.prepare` → `tasktype.classify_with_jev`, before `build_pack`, only for a step the local rules type `implement` | The pack's `task_type` becomes `test` or `design` when J0 picks one at confidence 0.6 or more: seeds as for implement, that type's emphasis, quotas and checklist. Any other answer, or a failed call, leaves `implement` and the local-only pack. One ledger row, `kind` J0 (built 2026-11-02, CLD's Jev report) |
+| J3 | `runners/cliagent._jev_post_steps` → `judge.poststeps.review_post_step`, for a review or a re-review step (one that stages the patch and the earlier verdict and owes its own `verdict.json` by its step id, `expected_outputs.is_review_step`; a fix, which stages a verdict and owes none, gets no J3) | `p_real` on each finding in `verdict.json` (`verdict.annotate_findings`). Under 0.15 the finding also carries `"triage": "verify before acting"`, and `verdict.read_verdict` prefixes its text with that mark. It still reaches the fixer, because nothing is dropped. At most 5 findings are asked about |
 | J2, J5 | the same post-step → `plan_post_step`, for a planner step | `plan-advisory.json` beside `plan.json`, which is never touched. It holds the requirements whose best step is under p 0.5 or `none`, and the in-flight lane J5 picked at p ≥ 0.85. swarm-api's planner post-step (`routes/runs.py::_from_planner`) reads the file. On a hold, it sets an `auto` run's `plan_approval` to `required`, so a person approves the plan (§8 Q5 A) |
 
 **§5.4 at the call site, not only in the client.** The client's sanitizer

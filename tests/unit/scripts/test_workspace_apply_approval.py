@@ -73,6 +73,7 @@ EXECUTION = "swarm-workspace-apply-x7k2p"
 PROJECT = "fixture-project-1"
 REGION = "us-central1"
 PIN_PREFIX = "--spec-verify-keys-sha256="
+SIGNING_PREFIX = "--spec-signing-key="
 KEY = f"projects/{PROJECT}/locations/{REGION}/keyRings/swarm-dev-specs/cryptoKeys/step-spec"
 VERSION = KEY + "/cryptoKeyVersions/1"
 OWNER = "owner@example.com"
@@ -89,10 +90,8 @@ def _load():
 
 
 @pytest.fixture()
-def entry(monkeypatch):
-    module = _load()
-    monkeypatch.setattr(module, "SIGNING_KEYS", {PROJECT: (KEY,)})
-    return module
+def entry():
+    return _load()
 
 
 class KmsKey:
@@ -217,9 +216,11 @@ def _pin(raw: str) -> str:
 
 
 def _main(entry, tmp_path: Path, cloud: FakeCloud, keys: str, mode: str = "create", *,
-          pinned: str | None = None, environ: dict[str, str] | None = None) -> tuple[int, Run]:
-    """One execution: the command's pin of PINNED (default KEYS), then the
-    two arguments; SPEC_VERIFY_KEYS=KEYS in its environment."""
+          pinned: str | None = None, environ: dict[str, str] | None = None,
+          signing_key: str = KEY) -> tuple[int, Run]:
+    """One execution: the command's pin of PINNED (default KEYS) and its
+    SIGNING_KEY (DAYONE-BOOT-1), then the two arguments; SPEC_VERIFY_KEYS=KEYS
+    in its environment."""
     run = Run()
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
@@ -227,7 +228,8 @@ def _main(entry, tmp_path: Path, cloud: FakeCloud, keys: str, mode: str = "creat
         environ = {"CLOUD_RUN_EXECUTION": EXECUTION, "CLOUD_RUN_TASK_COUNT": "1",
                    "CLOUD_RUN_TASK_INDEX": "0", "SPEC_VERIFY_KEYS": keys}
     answers = {"project/project-id": PROJECT, "instance/region": f"projects/1/regions/{REGION}"}
-    rc = entry.main([_pin(keys if pinned is None else pinned), WORKSPACE, mode], environ,
+    rc = entry.main([_pin(keys if pinned is None else pinned), SIGNING_PREFIX + signing_key, WORKSPACE, mode],
+                    environ,
                     metadata=answers.__getitem__, scratch_root=str(scratch),
                     target=Path("/opt/swarm/scripts/workspace-apply.sh"), execve=run.execve, cloud=cloud)
     return rc, run
@@ -408,8 +410,8 @@ def test_the_control_the_same_version_held_verifies(entry, tmp_path):
     pytest.param(KEY, id="no-version"),
 ])
 def test_a_key_version_the_image_does_not_trust_is_refused_even_when_held(entry, tmp_path, version):
-    """SIGNING_KEYS still bounds which key's versions count: a version of
-    another key is refused even if SPEC_VERIFY_KEYS carried it."""
+    """The command's signing key still bounds which key's versions count: a
+    version of another key is refused even if SPEC_VERIFY_KEYS carried it."""
     key = KmsKey(version=version)
     cloud = FakeCloud(entry, [_signed(key, _record())])
     rc, run = _main(entry, tmp_path, cloud, _keys(key))
@@ -481,11 +483,13 @@ def test_no_single_record_runs_nothing(entry, tmp_path, count):
     assert rc == 1 and run.execs == [] and cloud.commits == []
 
 
-def test_an_unknown_project_trusts_no_key(entry, tmp_path, monkeypatch):
-    monkeypatch.setattr(entry, "SIGNING_KEYS", {"another-project-1": (KEY,)})
+def test_a_key_the_command_does_not_name_is_not_trusted(entry, tmp_path):
+    """The command names prod's ring: a version of dev's key, held in
+    SPEC_VERIFY_KEYS and signing correctly, still stops for the owner."""
     key = KmsKey()
     cloud = FakeCloud(entry, [_signed(key, _record())])
-    rc, run = _main(entry, tmp_path, cloud, _keys(key))
+    rc, run = _main(entry, tmp_path, cloud, _keys(key),
+                    signing_key=KEY.replace("swarm-dev-specs", "swarm-prod-specs"))
     _refused_unsigned(rc, run, cloud)
 
 
@@ -584,14 +588,19 @@ def test_a_public_key_that_is_not_p256_is_refused(entry):
 
 
 def test_the_trusted_key_is_the_one_terraform_names():
-    """`<name_prefix>-<environment>-specs` / `step-spec`, name_prefix swarm, in
-    dev, the environment the job runs as."""
+    """`<name_prefix>-<environment>-specs` / `step-spec`, in dev, the
+    environment the job runs as: the job's command names the key of the
+    module its verify keys come from (DAYONE-BOOT-1), and the image names no
+    project's key of its own."""
     module = _load()
     text = SPEC_KEY_MODULE.read_text()
     assert 'key_ring_name   = "${var.name_prefix}-${var.environment}-specs"' in text
     assert 'crypto_key_name = "step-spec"' in text
-    assert module.SIGNING_KEYS == {"saga-agents-staging": (
-        "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec",)}
+    deployer = (REPO / "terraform" / "bootstrap" / "workspace_deployer.tf").read_text()
+    assert ("workspace_spec_signing_key = var.enable_workspace_deployer ? "
+            "module.workspace_spec_keys[0].crypto_key_id : \"\"") in deployer
+    assert module.SIGNING_KEY_RE.fullmatch(SIGNING_PREFIX + KEY)
+    assert not hasattr(module, "SIGNING_KEYS"), "the image trusts a key of its own again"
 
 
 def test_entry_imports_the_standard_library_and_the_frozen_specsign_only():

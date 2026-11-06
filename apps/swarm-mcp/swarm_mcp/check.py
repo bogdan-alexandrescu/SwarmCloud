@@ -35,10 +35,14 @@ THE RULES, each with the control that is NOT flagged:
     shows). A READY task is invariant 1 working -- it holds nothing -- and is
     flagged only for its age, never as a fault.
 (c) `parked` (STUCK): PARKED with HUMAN_REQUIRED (only a person promotes it),
-    CI_PENDING for longer than 90 minutes, or DEPENDENCY_INCOMPLETE whose
+    CI_PENDING for longer than 90 minutes (the CI wait's age across its
+    re-parks, `_ci_entered`, #2999; its last reading is the evidence), or
+    DEPENDENCY_INCOMPLETE whose
     dependency FAILED, was CANCELLED or DEAD_LETTERED. Any other park reason
     -- a provider quota window, a retry backoff -- is the platform waiting by
-    design, and is not flagged.
+    design, and is not flagged. A HUMAN_REQUIRED park whose `park_phase` is
+    `question_wait` (its agent's blocking questions) says so, and points at
+    `owner_questions`, never at the hand-off's sign-in (#2860).
     Both (b) and (c) carry `waiting_summary` in their evidence: the API's one
     line on why the task waits (#1782) -- the pull request and the checks
     still pending, the pool that binds -- left out when the API serves none.
@@ -66,6 +70,24 @@ THE RULES, each with the control that is NOT flagged:
     schedule tick ends an overdue wait within one, so a wait still parked
     after two means the sweep is not running. HUMAN_REQUIRED stays STUCK
     under (c), as before.
+(h) `merge_train_stalled` (STUCK): a merge step parked on the repository's
+    merge train (CI_PENDING with the code `merge_train_waiting`) for more
+    than 60 minutes, aged from the FIRST train park of the unbroken run of
+    train parks (`_train_entered`). A train park stops the CI clock by
+    design, so (c) never ages it: on 2026-11-04 a pull request whose
+    `queue for auto-merge` check had failed waited eight hours, the train
+    passing over it on every tick because it boards only pull requests
+    whose checks are all green, and nothing flagged it. The API serves the
+    train's start, `waiting.detail.train_since` (the park's
+    `merge_wait.train_entered_at`; its `waiting.since` is the paused CI
+    clock), read from the task route when a listing served no detail, and
+    the age is then exact. Where it serves none -- an older deployment, a
+    park recorded before it was kept -- the parked events age it, read back
+    up to `TRAIN_EVENT_PAGES` pages. The evidence
+    names the pull request's failed or cancelled checks at its head, from
+    GitHub's public API (`github_failed_checks`, unauthenticated, as (d)
+    reads the state), or says why they were not read; `next` is the pull
+    request. A train park under the bound is not flagged.
 (g) `owner_questions` (PLUGIN-OWNER-QUESTIONS, part of #1904): this
     session's tasks in this project, finished in the last
     `OWNER_QUESTIONS_DAYS`, whose agent asked the owner questions (its
@@ -77,7 +99,14 @@ THE RULES, each with the control that is NOT flagged:
     `progress.owner_questions` (redacted, by name) -- once per task while
     the bridge lives, since a finished task's questions never change. A
     read that fails is under `unchecked` with its reason, and tried again
-    on the next check.
+    on the next check. The tasks come from ONE server-side read,
+    `GET /v1/tasks/open-questions` (#2835), whatever the session's volume;
+    paging the session's finished tasks is only the fallback for a
+    deployment that does not serve it, and says so under `unchecked`.
+    FIRST, marked `blocking: true` (#2860): this session's tasks PARKED on
+    their agent's blocking questions (`park_phase` `question_wait`), read
+    from `GET /v1/tasks/{id}/questions` on every check, an answered question
+    left out; the finished ones carry `blocking: false`.
 
 Every age is measured from evidence and says which: the event that entered
 the state when the newest page of events holds it, else a LOWER BOUND from
@@ -109,6 +138,19 @@ from .sc import WORKFLOW_PAGE_SIZE
 DEFAULT_STALE_MINUTES = 20
 #: (c): a merge step's CI wait is flagged past this many minutes.
 CI_PENDING_MINUTES = 90
+#: (h): a merge step's wait on the merge train is flagged past this many
+#: minutes. 60 BECAUSE a healthy train lands a ready pull request within a
+#: few of its ticks, and a wait past an hour is one the train keeps passing
+#: over (a red or missing check), which only a person ends.
+MERGE_TRAIN_MINUTES = 60
+#: The CI-park code of a wait on the merge train (`agent_worker.mergetrain.
+#: TRAIN_WAITING`, `swarm_api.attemptstate.TRAIN_WAITING`). Spelled again:
+#: neither is installed with the bridge.
+TRAIN_WAITING = "merge_train_waiting"
+#: Event pages (of EVENT_PAGE) read back for (h)'s first train park, the
+#: newest included: each re-park is about six events, so five pages hold
+#: about sixteen re-parks. Past them the age is a lower bound.
+TRAIN_EVENT_PAGES = 5
 
 #: How many of a task's newest events one read asks for: enough to hold the
 #: event that entered its state, past a few heartbeats.
@@ -155,7 +197,7 @@ EXPIRY_TICK_SECONDS = 60
 EXPIRY_TICKS = 2
 
 #: The order flagged items are reported in: what needs a person first.
-_RULE_ORDER = {"merge_refused": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
+_RULE_ORDER = {"merge_refused": 0, "merge_train_stalled": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
                "waiting_for_capacity": 4}
 
 ALL = ("all", "*")
@@ -296,6 +338,72 @@ class _PullStates:
             return self.seen[(key, number)]
 
 
+#: The check-run conclusions (h) names: a failed or cancelled check, which
+#: keeps the train from boarding the pull request.
+FAILED_CONCLUSIONS = ("failure", "cancelled", "timed_out", "startup_failure")
+#: Check runs one read asks GitHub for (its maximum page).
+CHECK_RUNS_PAGE = 100
+
+
+def _github_get(url: str) -> Any:
+    """One unauthenticated GET of GitHub's public REST API (as
+    `github_pull_state`): no token is ever sent. Raises SwarmError."""
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                                   "User-Agent": "swarm-mcp-check"})
+    try:
+        with urllib.request.urlopen(request, timeout=PULL_STATE_TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise SwarmError(f"GitHub answered HTTP {exc.code} for {url}") from None
+    except (OSError, ValueError) as exc:
+        raise SwarmError(f"GitHub could not be read for {url}: {type(exc).__name__}") from None
+
+
+def github_failed_checks(key: str, number: int, head: str | None) -> list[dict[str, Any]]:
+    """The failed or cancelled check runs of pull request `number` at `head`
+    (its current head when the park named none), from GitHub's public REST
+    API, unauthenticated: `[{name, conclusion}]`, empty when none is red.
+    Raises SwarmError when they could not be read."""
+    host, _, path = str(key).partition("/")
+    owner, _, repo = path.partition("/")
+    if host != "github.com" or not owner or not repo:
+        raise SwarmError(f"{key} is not a GitHub repository, and GitHub is the only forge read")
+    base = f"{GITHUB_API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+    if not head:
+        pull = _github_get(f"{base}/pulls/{int(number)}")
+        head = (pull.get("head") or {}).get("sha") if isinstance(pull, dict) else None
+        if not isinstance(head, str) or not head:
+            raise SwarmError(f"GitHub served no head for pull request #{number}")
+    query = urllib.parse.urlencode({"filter": "latest", "per_page": CHECK_RUNS_PAGE})
+    data = _github_get(f"{base}/commits/{urllib.parse.quote(head)}/check-runs?{query}")
+    runs = data.get("check_runs") if isinstance(data, dict) else None
+    if not isinstance(runs, list):
+        raise SwarmError(f"GitHub served no check runs for {head[:12]}")
+    return [{"name": str(run.get("name")), "conclusion": run.get("conclusion")}
+            for run in runs if isinstance(run, dict) and run.get("conclusion") in FAILED_CONCLUSIONS]
+
+
+class _PullChecks:
+    """The failed checks one check reads: each `(repository, number, head)`
+    at most once, whatever its outcome. Thread-safe."""
+
+    def __init__(self, reader: Callable[[str, int, str | None], list[dict[str, Any]]] | None = None) -> None:
+        self.reader = reader
+        self.lock = threading.Lock()
+        self.seen: dict[tuple[str, int, str | None], tuple[list[dict[str, Any]] | None, str | None]] = {}
+
+    def read(self, key: str, number: int, head: str | None) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """`(failed, None)`, or `(None, why they were not read)`."""
+        with self.lock:
+            if (key, number, head) not in self.seen:
+                reader = self.reader or github_failed_checks
+                try:
+                    self.seen[(key, number, head)] = (reader(key, number, head), None)
+                except SwarmError as exc:
+                    self.seen[(key, number, head)] = (None, str(exc))
+            return self.seen[(key, number, head)]
+
+
 # --------------------------------------------------------------------------
 # Reading, under one budget
 # --------------------------------------------------------------------------
@@ -312,6 +420,9 @@ class _Reads:
         self._capacity: dict[str, Any] | None = None
         self._capacity_error: str | None = None
         self._capacity_read = False
+        #: Each task's next older page of events: its token, None when the
+        #: history ended, absent when the API served no token.
+        self._older: dict[str, str | None] = {}
 
     def _take(self) -> bool:
         with self.lock:
@@ -333,8 +444,32 @@ class _Reads:
             return None
         query = urllib.parse.urlencode({"order": "desc", "limit": EVENT_PAGE})
         data = self.client.request("GET", f"/v1/tasks/{task_id}/events?{query}")
+        return self._page(task_id, data)
+
+    def _page(self, task_id: str, data: Any) -> list[dict[str, Any]]:
+        with self.lock:
+            if isinstance(data, dict) and "next_page_token" in data:
+                token = data.get("next_page_token")
+                self._older[task_id] = str(token) if token else None
+            else:
+                self._older.pop(task_id, None)
         events = data.get("events") if isinstance(data, dict) else None
         return [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
+
+    def older_events(self, task_id: str) -> list[dict[str, Any]] | None:
+        """The page of events older than the last one read for the task,
+        newest first: `[]` when the history ended, None when it could not be
+        read (the API served no page token, or the budget is spent)."""
+        with self.lock:
+            if task_id not in self._older:
+                return None
+            token = self._older[task_id]
+        if token is None:
+            return []
+        if not self._take():
+            return None
+        query = urllib.parse.urlencode({"order": "desc", "limit": EVENT_PAGE, "page_token": token})
+        return self._page(task_id, self.client.request("GET", f"/v1/tasks/{task_id}/events?{query}"))
 
     def capacity(self) -> tuple[dict[str, Any] | None, str | None]:
         """`/v1/capacity`, read at most once per check."""
@@ -391,6 +526,147 @@ def _entered(events: list[dict[str, Any]], state: str, created: datetime | None)
             return {"since": oldest, "exact": False,
                     "source": f"the oldest of its newest {EVENT_PAGE} events (the `{wanted}` event is older)"}
     return {"since": created, "exact": False, "source": "its creation (no later event entered the state)"}
+
+
+def _ci_entered(task: dict[str, Any], events: list[dict[str, Any]],
+                created: datetime | None) -> dict[str, Any]:
+    """When a CI_PENDING park's CI wait began, across its re-parks (#2999).
+
+    Every re-check of a merge step's CI is a promotion, an attempt and a new
+    `parked` event, so the newest `parked` event (`_entered`) is never more
+    than one re-check old: PR #2959's merge step parked 13 hours, re-checked
+    56 times, and never aged past 90 minutes here. The wait's start is the
+    EARLIER of:
+
+      * the API's `waiting.since` for a CI_PENDING wait: the park's own
+        `merge_wait.first_parked_at`, carried over every re-park and cleared
+        only when a merge-slot wait stops the CI clock;
+      * the oldest `parked` event of the unbroken run of CI_PENDING parks
+        (the event's `detail.reason`) on the newest events: exact when a park
+        for another reason, or the end of the history, bounds it; a lower
+        bound when the page was full.
+
+    `_entered` when neither says: an API that serves no `waiting` and events
+    that name no reason.
+    """
+    found: list[dict[str, Any]] = []
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    since = render.parse_time(waiting.get("since")) if waiting.get("reason") == "CI_PENDING" else None
+    if since is not None:
+        found.append({"since": since, "exact": True,
+                      "source": "its CI wait's first park (the API's `waiting.since`)"})
+    start: datetime | None = None
+    bounded = False
+    for event in events:
+        if str(event.get("type") or "").lower() != "parked":
+            continue
+        detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+        at = render.parse_time(event.get("at"))
+        # A train park stops the CI clock (h): it ends the CI run as a park
+        # for another reason does.
+        if detail.get("reason") != "CI_PENDING" or detail.get("code") == TRAIN_WAITING or at is None:
+            bounded = True
+            break
+        start = at
+    if start is not None:
+        full = len(events) >= EVENT_PAGE and not bounded
+        found.append({"since": start, "exact": not full,
+                      "source": "the first of its unbroken CI_PENDING parks"
+                                + (f" on its newest {EVENT_PAGE} events" if full else "")})
+    if not found:
+        return _entered(events, "PARKED", created)
+    return min(found, key=lambda entry: entry["since"])
+
+
+def _train_park(event: dict[str, Any]) -> bool:
+    detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+    return (str(event.get("type") or "").lower() == "parked" and detail.get("reason") == "CI_PENDING"
+            and detail.get("code") == TRAIN_WAITING)
+
+
+def on_train(task: dict[str, Any], events: list[dict[str, Any]]) -> bool:
+    """Whether a CI_PENDING park is a wait on the merge train: the API's
+    `waiting.detail.code`, else the park's `blocked_by` code, else its
+    newest `parked` event's."""
+    if task.get("park_reason") != "CI_PENDING":
+        return False
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if detail.get("code"):
+        return detail.get("code") == TRAIN_WAITING
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("reason") == "CI_PENDING" and block.get("code"):
+            return block.get("code") == TRAIN_WAITING
+    newest = next((e for e in events if str(e.get("type") or "").lower() == "parked"), None)
+    return newest is not None and _train_park(newest)
+
+
+def served_train_start(task: dict[str, Any]) -> datetime | None:
+    """The API's start of a merge-train wait, `waiting.detail.train_since`
+    of a CI_PENDING wait, or None when it serves none."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if waiting.get("reason") != "CI_PENDING":
+        return None
+    return render.parse_time(detail.get("train_since"))
+
+
+def serves_wait_detail(task: dict[str, Any]) -> bool:
+    """Whether the task was read with its `waiting.detail` (the task route);
+    a listing serves a row without it."""
+    waiting = task.get("waiting")
+    return isinstance(waiting, dict) and isinstance(waiting.get("detail"), dict)
+
+
+def _train_entered(task: dict[str, Any], events: list[dict[str, Any]],
+                   older: Callable[[], list[dict[str, Any]] | None]) -> dict[str, Any]:
+    """When a merge step's wait on the merge train began: the API's
+    `waiting.detail.train_since` when served, exact; else the oldest train
+    park of the unbroken run of them, newest first, reading older pages
+    (`older`) while the run reaches the oldest event read, up to
+    TRAIN_EVENT_PAGES pages in all.
+
+    From the events, exact when a park for anything else (a CI park, a slot
+    wait) bounds the run, or the history ended; else a LOWER bound, from the
+    oldest train park read. The API's `waiting.since` is not used: for a
+    train park it is the CI clock the train paused, never the train's
+    start."""
+    served = served_train_start(task)
+    if served is not None:
+        return {"since": served, "exact": True,
+                "source": "its first merge-train park (the API's `waiting.detail.train_since`)"}
+    created = render.parse_time(task.get("created_at"))
+    start: datetime | None = None
+    page, pages = events, 1
+    while True:
+        for event in page:
+            if str(event.get("type") or "").lower() != "parked":
+                continue
+            at = render.parse_time(event.get("at"))
+            if not _train_park(event) or at is None:
+                return {"since": start, "exact": True,
+                        "source": "the first of its unbroken merge-train parks"}
+            start = at
+        if len(page) < EVENT_PAGE:
+            return {"since": start or created, "exact": start is not None,
+                    "source": ("the first of its unbroken merge-train parks (its whole history read)"
+                               if start is not None else "its creation (no train park was read)")}
+        if pages >= TRAIN_EVENT_PAGES:
+            break
+        got = older()
+        if got is None:
+            break
+        if not got:
+            return {"since": start or created, "exact": start is not None,
+                    "source": "the first of its unbroken merge-train parks (its whole history read)"}
+        page, pages = got, pages + 1
+    if start is None:
+        oldest = render.parse_time(page[-1].get("at")) if page else None
+        return {"since": oldest or created, "exact": False,
+                "source": "the oldest event read (no train park among them)"}
+    return {"since": start, "exact": False,
+            "source": f"the oldest of its merge-train parks on its newest {pages} page(s) of events "
+                      "(the run goes back further)"}
 
 
 def _age_evidence(entered: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -499,7 +775,7 @@ def _binding(task: dict[str, Any], reads: _Reads) -> dict[str, Any]:
     if not isinstance(spec, dict):
         return {"pool": None, "source": "/v1/capacity", "note": f"the capacity read names no profile {profile!r}"}
     units = render._int_or_none(spec.get("units")) or 1
-    bound = render.binding_pool(list(spec.get("pools") or []), pools, units)
+    bound = render.binding_pool(list(spec.get("pools") or []), pools, units, spec.get("pool_units"))
     out = {"pool": bound.pool, "active": bound.active, "limit": bound.limit, "room": bound.room,
            "source": f"/v1/capacity: the pool that binds profile {profile!r} now"}
     if bound.paused:
@@ -550,10 +826,35 @@ def _waiting(task: dict[str, Any], reads: _Reads, now: datetime, window: int) ->
     }
 
 
+#: The park of a step whose agent asked the owner blocking questions
+#: (`agent_worker.lifecycle._park_for_answers`): `blocked_by[].park_phase`,
+#: and the key its validated questions ride under. Spelled again: the worker
+#: is not installed with the bridge.
+QUESTION_WAIT_PHASE = "question_wait"
+
+
+def _question_wait(task: dict[str, Any]) -> dict[str, Any] | None:
+    """The question wait a task is PARKED on, from its park's `blocked_by`
+    record (`{}` when the record carries none readable), else None."""
+    if task.get("state") != "PARKED" or task.get("park_reason") != "HUMAN_REQUIRED":
+        return None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("park_phase") == QUESTION_WAIT_PHASE:
+            wait = block.get(QUESTION_WAIT_PHASE)
+            return wait if isinstance(wait, dict) else {}
+    return None
+
+
+def _answer_with(task: dict[str, Any]) -> str:
+    return (f"AskUserQuestion, then swarm_task_answer {{task_id: {task_id_of(task)!r}, "
+            "question_index: <its index>, choice: <the option the person picked>}")
+
+
 def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
-            dependencies: dict[str, Any] | None) -> dict[str, Any] | None:
+            dependencies: dict[str, Any] | None, checks: _PullChecks | None = None) -> dict[str, Any] | None:
     """(c): HUMAN_REQUIRED, CI_PENDING past 90 min, or a dependency that failed.
-    (f): AWAITING_INPUT, as information, or STUCK once its sweep is overdue."""
+    (f): AWAITING_INPUT, as information, or STUCK once its sweep is overdue.
+    (h): a wait on the merge train past 60 min."""
     reason = task.get("park_reason")
     if reason == "AWAITING_INPUT":
         return _awaiting(task, now)
@@ -570,7 +871,11 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
     if reason not in ("HUMAN_REQUIRED", "CI_PENDING"):
         return None
     created = render.parse_time(task.get("created_at"))
-    entered = _entered(_need(reads.events(str(task_id_of(task)))), "PARKED", created)
+    events = _need(reads.events(str(task_id_of(task))))
+    if reason == "CI_PENDING" and on_train(task, events):
+        return _train_wait(task, reads, events, now, checks)
+    entered = (_ci_entered(task, events, created) if reason == "CI_PENDING"
+               else _entered(events, "PARKED", created))
     evidence = _age_evidence(entered, now)
     evidence["park_reason"] = reason
     age = evidence["age_minutes"]
@@ -578,8 +883,22 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         if age is None or age <= CI_PENDING_MINUTES:
             return None
         evidence["window_minutes"] = CI_PENDING_MINUTES
+        evidence.update(_ci_reading(task))
         text = (f"PARKED on CI_PENDING for {evidence['age_is']} {age} min (over {CI_PENDING_MINUTES}): "
                 "its pull request's checks have not finished")
+    elif _question_wait(task) is not None:
+        # ITS AGENT'S BLOCKING QUESTIONS (#2860): the question, not a generic
+        # wait. The API's line for this park is the hand-off's sign-in
+        # sentence, so it is not carried; (g) lists the questions first.
+        wait = _question_wait(task) or {}
+        blocking = len([i for i in wait.get("blocking") or [] if isinstance(i, int)])
+        evidence["park_phase"] = QUESTION_WAIT_PHASE
+        evidence["blocking_questions"] = blocking
+        text = (f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: its agent asked the owner "
+                f"{blocking} blocking question(s) and waits for the answer; they are listed first under "
+                "owner_questions")
+        return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": evidence,
+                "next": _answer_with(task)}
     else:
         # IN THE API'S OWN WORDS when it served them (#2313): a merge step held
         # by the owner's questions parks HUMAN_REQUIRED too, and "take control"
@@ -590,6 +909,83 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
                else "only a person promotes it -- open its console and take control")
         text = f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: {why}"
     return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": _with_summary(evidence, task)}
+
+
+def _train_facts(task: dict[str, Any], events: list[dict[str, Any]]) -> tuple[int | None, str | None]:
+    """The pull request and the head a train park waits at: the API's
+    `waiting.detail`, else the newest train park's event."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    pull = detail.get("pull_request")
+    number = pull.get("number") if isinstance(pull, dict) else pull
+    head = detail.get("head")
+    newest = next((e for e in events if _train_park(e)), None)
+    parked = newest.get("detail") if newest is not None and isinstance(newest.get("detail"), dict) else {}
+    if not isinstance(number, int) or isinstance(number, bool):
+        number = parked.get("pull_request")
+    if not isinstance(number, int) or isinstance(number, bool):
+        summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
+        number = summary.get("pull_request")
+    head = head or parked.get("head")
+    return (number if isinstance(number, int) and not isinstance(number, bool) else None,
+            str(head) if head else None)
+
+
+def _train_wait(task: dict[str, Any], reads: _Reads, events: list[dict[str, Any]], now: datetime,
+                checks: _PullChecks | None) -> dict[str, Any] | None:
+    """(h): a merge step on the merge train for more than MERGE_TRAIN_MINUTES."""
+    task_id = str(task_id_of(task))
+    if not serves_wait_detail(task):
+        # A listing's row: the task route serves the train's start.
+        task = {**task, **_need(reads.task(task_id))}
+    entered = _train_entered(task, events, lambda: reads.older_events(task_id))
+    evidence = _age_evidence(entered, now)
+    age = evidence["age_minutes"]
+    if age is None or age <= MERGE_TRAIN_MINUTES:
+        return None
+    number, head = _train_facts(task, events)
+    link = pull_request_link(task.get("repository_url"), number)
+    evidence.update({"park_reason": "CI_PENDING", "code": TRAIN_WAITING,
+                     "window_minutes": MERGE_TRAIN_MINUTES, "pull_request": number,
+                     "pull_request_url": link, "head": head})
+    failed: list[dict[str, Any]] | None = None
+    if link is None:
+        why = "the step names no pull request they could be read for"
+    else:
+        failed, why = (checks or _PullChecks()).read(str(repo_key(task.get("repository_url"))), number, head)
+    evidence["failed_checks"] = failed
+    if failed is None:
+        evidence["checks_unread_because"] = (
+            f"checks not read: {why}. Whether a check is red is unknown: open the link to see"
+        )
+        said = "its checks not read"
+    elif failed:
+        said = "red at its head: " + ", ".join(f"{c['name']} ({c['conclusion']})" for c in failed)
+    else:
+        said = "no failed or cancelled check at its head"
+    on = f"PR #{number}" if number else "its pull request"
+    text = (f"{on} has waited on the merge train for {evidence['age_is']} {age} min "
+            f"(over {MERGE_TRAIN_MINUTES}); the train boards only pull requests whose checks are "
+            f"all green; {said}")
+    flag = {"kind": STUCK, "rule": "merge_train_stalled", "reason": text,
+            "evidence": _with_summary(evidence, task)}
+    if link:
+        flag["next"] = link
+    return flag
+
+
+def _ci_reading(task: dict[str, Any]) -> dict[str, Any]:
+    """What the CI wait last read, as evidence: the API's `waiting.detail` for
+    a CI_PENDING wait -- the head, the checks pending and failed, the
+    re-checks so far and when the checks were last read. Only what was
+    served; nothing when the API served no detail."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if waiting.get("reason") != "CI_PENDING":
+        return {}
+    keys = {"head": "head", "pending": "checks_pending", "failed": "checks_failed",
+            "wakes": "re_checks", "last_checked_at": "checks_read_at"}
+    return {name: detail[key] for key, name in keys.items() if detail.get(key) is not None}
 
 
 def _clock(value: datetime | None) -> str:
@@ -697,15 +1093,16 @@ def _merge(task: dict[str, Any], step: dict[str, Any],
 
 
 def classify_task(task: dict[str, Any], reads: _Reads, *, now: datetime, window: int,
-                  dependencies: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """The one flag rules (a)-(c) raise on `task`, or None (not flagged)."""
+                  dependencies: dict[str, Any] | None = None,
+                  checks: _PullChecks | None = None) -> dict[str, Any] | None:
+    """The one flag rules (a)-(c), (f) and (h) raise on `task`, or None (not flagged)."""
     state = task.get("state")
     if state in QUIET_STATES:
         return _quiet(task, reads, now, window)
     if state in WAITING_STATES:
         return _waiting(task, reads, now, window)
     if state == "PARKED":
-        return _parked(task, reads, now, dependencies)
+        return _parked(task, reads, now, dependencies, checks)
     return None
 
 
@@ -832,8 +1229,9 @@ def _single_tasks(
 #: console's to show.
 OWNER_QUESTIONS_DAYS = 7
 
-#: One page of finished tasks per request, and at most this many pages per
-#: terminal state: a session's own finished work in a week, newest first.
+#: The FALLBACK walk only (`_finished_tasks`, for a deployment without
+#: `OPEN_QUESTIONS_ROUTE`): one page of finished tasks per request, and at
+#: most this many pages per terminal state, newest first.
 OWNER_QUESTIONS_PAGE = 50
 OWNER_QUESTIONS_MAX_PAGES = 10
 
@@ -910,15 +1308,58 @@ def _finished_tasks(client: SwarmClient, sid: str, since: datetime) -> tuple[lis
     return list(found.values()), failures
 
 
+#: The one read (g) makes (#2835): this session's finished tasks with an
+#: owner question that has no answer, filtered on the server.
+OPEN_QUESTIONS_ROUTE = "/v1/tasks/open-questions"
+
+#: (g)'s `unchecked` line when the API does not serve `OPEN_QUESTIONS_ROUTE`
+#: and the questions were found by `_finished_tasks`' bounded walk instead.
+OPEN_QUESTIONS_FALLBACK = (f"this deployment does not serve GET {OPEN_QUESTIONS_ROUTE}, so the owner's "
+                           f"questions were found by paging this session's finished tasks, at most "
+                           f"{OWNER_QUESTIONS_MAX_PAGES} pages per state; an older task's may not be listed")
+
+
+def _asked_tasks(client: SwarmClient, sid: str, since: datetime) -> tuple[list[dict[str, Any]], list[str]]:
+    """`(tasks, failures)`: this session's tasks that ended since `since` with
+    an owner question no answer covers, from ONE server-side query (#2835).
+
+    It used to page every finished task of the session, newest first, and
+    stopped after `OWNER_QUESTIONS_MAX_PAGES`: a busy session passed that in
+    hours, and an older task's questions were never listed. That walk is
+    kept only for a deployment that does not serve the route (a 404 from the
+    API itself, not from the edge), and `failures` names it."""
+    params = urllib.parse.urlencode([("claude_session", sid), ("since", _iso(since))])
+    try:
+        data = client.request("GET", f"{OPEN_QUESTIONS_ROUTE}?{params}")
+    except SwarmError as exc:
+        if exc.status == 404 and not exc.edge:
+            tasks, failures = _finished_tasks(client, sid, since)
+            return tasks, [OPEN_QUESTIONS_FALLBACK, *failures]
+        return [], [f"reading this session's tasks with open questions failed ({exc}); "
+                    "their questions for the owner are not listed"]
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        return [], [f"GET {OPEN_QUESTIONS_ROUTE} answered without a `tasks` list; "
+                    "this session's questions for the owner are not listed"]
+    failures = []
+    if data.get("complete") is False:
+        failures.append(f"GET {OPEN_QUESTIONS_ROUTE} reached its read bound; "
+                        "some of this session's questions for the owner may not be listed")
+    return [t for t in data["tasks"] if isinstance(t, dict)], failures
+
+
 def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, record: session.Record,
-                     now: datetime, names: dict[str, str], tenant: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """`(entries, unchecked)`: (g), this session's finished tasks in this
-    project whose questions for the owner have an index with no answer."""
+                     now: datetime, names: dict[str, str], tenant: Any,
+                     parked: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(entries, unchecked)`: (g), this session's tasks in this project
+    whose questions for the owner have an index with no answer: first the
+    ones of `parked` (its own tasks PARKED on them, `_parked_questions`),
+    marked blocking, then the finished ones, newest end first."""
+    parked = parked or []
     if not sid:
         # No session, no candidate (`session.UNKNOWN_NOTE`): nothing is read.
         return [], []
     since = now - timedelta(days=OWNER_QUESTIONS_DAYS)
-    tasks, failures = _finished_tasks(client, sid, since)
+    tasks, failures = _asked_tasks(client, sid, since)
     unchecked: list[dict[str, Any]] = [{"task_id": None, "workflow_id": None, "section": "owner_questions",
                                         "why": why} for why in failures]
     wanted: list[tuple[dict[str, Any], set[int]]] = []
@@ -967,19 +1408,85 @@ def _owner_questions(client: SwarmClient, scope: str | None, sid: str | None, re
                 "finished_at": _iso(render.parse_time(task.get("completed_at"))),
                 "open": len(open_),
                 "questions": open_,
-                "answer_with": (f"AskUserQuestion, then swarm_task_answer {{task_id: {task_id_of(task)!r}, "
-                                "question_index: <its index>, choice: <the option the person picked>}"),
+                "blocking": False,
+                "answer_with": _answer_with(task),
             })
             entries.append(entry)
     entries.sort(key=lambda e: str(e.get("finished_at") or ""), reverse=True)
+    waiting, waiting_unchecked = _parked_questions(client, parked, names, tenant)
+    unchecked.extend(waiting_unchecked)
+    return waiting + entries, unchecked
+
+
+def _parked_questions(client: SwarmClient, parked: list[dict[str, Any]], names: dict[str, str],
+                      tenant: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(entries, unchecked)`: (g)'s BLOCKING entries (#2860), this session's
+    tasks PARKED on their agent's questions (`QUESTION_WAIT_PHASE`) with one
+    still unanswered, longest-waiting first.
+
+    The open-questions route reads finished tasks only, and a parked task has
+    uploaded no `questions.json` yet: its questions ride on the park, and
+    `GET /v1/tasks/{id}/questions` serves them -- redacted, each with its
+    `blocking` flag and the stored `answer` -- so that route is read, once per
+    parked task per check and never cached, since an answer can come at any
+    time. `parked` is the caller's own tasks, already scoped."""
+    def read(task: dict[str, Any]) -> tuple[dict[str, Any], Any, str | None]:
+        tid = urllib.parse.quote(str(task_id_of(task) or ""), safe="")
+        try:
+            return task, client.request("GET", f"/v1/tasks/{tid}/questions"), None
+        except SwarmError as exc:
+            return task, None, f"its questions could not be read: {exc}"
+
+    entries: list[dict[str, Any]] = []
+    unchecked: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(parked)))) as pool:
+        for task, served, why in pool.map(read, parked):
+            where = {"task_id": task_id_of(task), "workflow_id": task.get("workflow_id")}
+            if why is None and (not isinstance(served, dict) or served.get("status") != "ok"
+                                or not isinstance(served.get("questions"), list)):
+                status = served.get("status") if isinstance(served, dict) else None
+                why = (f"its questions could not be read: the questions route says {status}"
+                       + (f" ({served.get('unavailable_because')})"
+                          if isinstance(served, dict) and served.get("unavailable_because") else ""))
+            if why is not None:
+                unchecked.append({**where, "section": "owner_questions", "why": why})
+                continue
+            open_ = [{"index": i, **{k: v for k, v in q.items() if k != "answer"}}
+                     for i, q in enumerate(served["questions"])
+                     if isinstance(q, dict) and q.get("answer") is None]
+            if not open_:
+                continue
+            metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+            name = metadata.get("title") or metadata.get("unit")
+            entry: dict[str, Any] = {"workspace": workflows.workspace_of(task, names, fallback=tenant), **where}
+            if task.get("workflow_id"):
+                entry["workflow"] = name or task.get("workflow_id")
+                entry["step_id"] = task.get("step_id")
+            else:
+                entry["title"] = name or task_id_of(task)
+            link = console_link(task)
+            if link:
+                entry["console"] = link
+            waiting = served.get("waiting") if isinstance(served.get("waiting"), dict) else {}
+            entry.update({
+                "state": task.get("state"),
+                "asked_at": waiting.get("asked_at"),
+                "open": len(open_),
+                "questions": open_,
+                "blocking": True,
+                "answer_with": _answer_with(task),
+            })
+            entries.append(entry)
+    entries.sort(key=lambda e: str(e.get("asked_at") or ""))
     return entries, unchecked
 
 
 def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: datetime,
                   names: dict[str, str], sid: str | None = None,
-                  pulls: _PullStates | None = None) -> dict[str, Any]:
+                  pulls: _PullStates | None = None, checks: _PullChecks | None = None) -> dict[str, Any]:
     reads = _Reads(client, MAX_TASK_READS)
     pulls = pulls or _PullStates()
+    checks = checks or _PullChecks()
     record = session.project_record()
     running, recent, notes = _workflow_lists(client, server_scope(scope, sid, record))
     # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
@@ -1131,7 +1638,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
     def run(job: tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]) -> Any:
         task, where, deps = job
         try:
-            flag = classify_task(task, reads, now=now, window=window, dependencies=deps)
+            flag = classify_task(task, reads, now=now, window=window, dependencies=deps, checks=checks)
         except _Budget:
             return ("unchecked", {"task_id": task_id_of(task), "workflow_id": where.get("workflow_id"),
                                   "why": f"the check's read budget ({MAX_TASK_READS} task reads) was spent"})
@@ -1141,13 +1648,16 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
         if flag is None:
             return None
         item = _item(flag["kind"], flag["rule"], flag["reason"], flag["evidence"], task, where)
+        if flag.get("next"):
+            item["next"] = flag["next"]
         if flag["kind"] == AWAITING_INPUT:
             item["next"] = (f"swarm_workflow_input {{workflow_id: {where.get('workflow_id')!r}, "
                             f"step_id: {where.get('step_id')!r}}}, or its console link")
             return (AWAITING_INPUT, item)
         return ("flagged", item)
 
-    asked, asked_unchecked = _owner_questions(client, scope, sid, record, now, names, tenant)
+    asked, asked_unchecked = _owner_questions(client, scope, sid, record, now, names, tenant,
+                                              parked=[job[0] for job in jobs if _question_wait(job[0]) is not None])
     unchecked.extend(asked_unchecked)
 
     awaiting: list[dict[str, Any]] = []
@@ -1220,8 +1730,9 @@ def run(
     seen_tenants: list[Any] = []
     per_tenant: list[dict[str, Any]] = []
     pulls = _PullStates()  # one cache for the whole check, across tenants
+    checks = _PullChecks()  # the same, for (h)'s failed checks
     for reader in _readers(client, tenants):
-        result = _check_tenant(reader, scope["key"], window, now, shown, sid, pulls)
+        result = _check_tenant(reader, scope["key"], window, now, shown, sid, pulls, checks)
         if result["tenant_id"] in seen_tenants:
             continue
         seen_tenants.append(result["tenant_id"])

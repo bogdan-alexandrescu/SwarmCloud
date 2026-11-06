@@ -27,7 +27,6 @@ import STYLES from '../styles.css?raw'
 
 import { TENANT_HEADER, TENANT_PREF, apiHeaders, chooseTenant, chosenTenant, read, route, write, type Result } from '../fetch'
 import { artifactRawUrl } from '../api'
-import { postWorkflow } from '../SubmitWorkflow'
 import { checkpointDownloadHref } from '../CheckpointBrowser'
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
@@ -601,12 +600,25 @@ describe('a URL the browser fetches by itself', () => {
   })
 })
 
+/** The live `postWorkflow`: these hand it real responses, so the fixture build's
+ *  answer to the submit (QA2-FIX-07, runs2-02) is off for it alone; the rest of
+ *  this file keeps the fixture reads it measures. */
+async function livePostWorkflow(): Promise<typeof import('../SubmitWorkflow').postWorkflow> {
+  vi.doMock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), USE_FIXTURES: false }))
+  vi.resetModules()
+  try {
+    return (await import('../SubmitWorkflow')).postWorkflow
+  } finally {
+    vi.doUnmock('../api')
+  }
+}
+
 describe('a direct submit path refused for its tenant', () => {
   it('drops the stored tenant, is not retried, and is not an admin refusal', async () => {
     chooseTenant('research')
     const f = vi.fn(async () => refused('tenant_not_member', 'X-Swarm-Tenant names a tenant you are not a verified member of.'))
     globalThis.fetch = f as unknown as typeof fetch
-    const r = await postWorkflow({ tasks: [] })
+    const r = await (await livePostWorkflow())({ tasks: [] })
     expect(f).toHaveBeenCalledTimes(1)
     expect(sentTenants(f)).toEqual(['research'])
     expect(chosenTenant()).toBeNull()
@@ -618,7 +630,7 @@ describe('a direct submit path refused for its tenant', () => {
     chooseTenant('research')
     const f = vi.fn(async () => refused('forbidden', 'admin group membership is required for this operation'))
     globalThis.fetch = f as unknown as typeof fetch
-    await postWorkflow({ tasks: [] })
+    await (await livePostWorkflow())({ tasks: [] })
     expect(chosenTenant()).toBe('research')
   })
 })

@@ -37,7 +37,7 @@ import { SaveAsLoginOffer } from './BrowserLogins'
 import { BrowserBadges, browserStatusOf } from './BrowserBadges'
 import { qaIdentityOf } from './QaIdentityGrants'
 import { usePhoneTables } from './capacityPoll'
-import { Button, buttonClass } from './components'
+import { Button, EmptyState, buttonClass } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
 import { agentPath } from './OverviewRegions'
@@ -266,8 +266,37 @@ const LIVE_POLL_MAX_MS = 30_000
  * a poll, doubling per failure, never past `LIVE_POLL_MAX_MS`. A failure
  * slows the reads; it never ends them.
  */
-export function liveRereadDelay(failures: number): number {
-  return Math.min(LIVE_POLL_MAX_MS, LIVE_POLL_MS * 2 ** Math.min(Math.max(failures, 0), 4))
+export function liveRereadDelay(failures: number, streaming = false): number {
+  const base = streaming ? LIVE_STREAMING_POLL_MS : LIVE_POLL_MS
+  return Math.min(Math.max(LIVE_POLL_MAX_MS, base), base * 2 ** Math.min(Math.max(failures, 0), 4))
+}
+
+/**
+ * How often the session is read again WHILE THIS TAB'S VIEWER SOCKET IS
+ * CONNECTED (LIVE-STREAM-SPEED, part of #2688). MEASURED 2026-11-02 in the
+ * owner's Chrome: a 3 s full session read per open viewer, on an API whose
+ * reads ran at p95 16.67 s, beside the stream itself. While connected,
+ * swarm-api's status frames on the socket already say at once when control
+ * moves or the session closes (`onControlChange`, which reads again), and a
+ * device the person asked for is read on `DEVICE_CONFIRM_MS`; what is left
+ * to this read is the page's address, the device the agent chose and the
+ * hand-off, which a 10 s read still shows before the person looks for them.
+ * Without a connected socket the read stays at `LIVE_POLL_MS`.
+ */
+export const LIVE_STREAMING_POLL_MS = 10_000
+
+/** Connected viewer sockets, per task: set by `LiveScreen` on noVNC's connect, cleared on its disconnect. */
+const streamingSockets = new Map<string, number>()
+
+/** Whether a viewer socket of this task's live browser is connected in this tab. */
+export function liveStreaming(taskId: string): boolean {
+  return (streamingSockets.get(taskId) ?? 0) > 0
+}
+
+function markStreaming(taskId: string, on: boolean): void {
+  const n = (streamingSockets.get(taskId) ?? 0) + (on ? 1 : -1)
+  if (n > 0) streamingSockets.set(taskId, n)
+  else streamingSockets.delete(taskId)
 }
 
 function pageHidden(): boolean {
@@ -374,7 +403,7 @@ export function useLiveSession(
         if (!stopped) draw(r)
       }
       busy = false
-      if (!stopped) timer = setTimeout(() => void run(), liveRereadDelay(failures.current))
+      if (!stopped) timer = setTimeout(() => void run(), liveRereadDelay(failures.current, inFlight && liveStreaming(taskId)))
     }
     const onVisible = () => {
       if (pageHidden() || busy) return
@@ -761,10 +790,17 @@ export function LiveBrowserPane({
   reload,
   theater: openTheater = false,
   onHandoffReady,
+  onPicture,
 }: {
   task: Task
   live: LiveState
   reload: LiveReload
+  /**
+   * Told whether the screen has a picture: true once noVNC reports a frame,
+   * false while it has none (ovag2-12). The tab strip says live on this, not
+   * on the session read alone, which an empty frame also has.
+   */
+  onPicture?: (shown: boolean) => void
   /** Open in the theater (`/browser?theater=1`): the graph card, the banner and a shared link land here. */
   theater?: boolean
   /** "I'm ready to sign in" was accepted: the agent's view reads the task again. */
@@ -784,6 +820,13 @@ export function LiveBrowserPane({
   const [lastFrame, setLastFrame] = useState<string | null>(null)
   // The logs column's share of the body, in percent (`LogSplit`).
   const [split, setSplit] = useState(readSplit)
+  const pictureRef = useRef(onPicture)
+  pictureRef.current = onPicture
+  const shown = frame !== null
+  useEffect(() => {
+    pictureRef.current?.(shown)
+  }, [shown])
+  useEffect(() => () => pictureRef.current?.(false), [])
   const session = live.status === 'ok' ? live.session : null
   const open = session !== null && session.state === 'open' ? session : null
   // A CHANGE IS WAITED ON UNTIL THE GATE REPORTS IT (LIVE-POLL, #1343): read
@@ -1872,6 +1915,8 @@ function LiveScreen({
   lastRef.current = onLastFrame
   // noVNC has reported a frame of some size: the canvas holds a picture worth keeping.
   const drew = useRef(false)
+  // The same, as state: until it is true a failed connection is said IN the frame.
+  const [framed, setFramed] = useState(false)
 
   // THE LAST FRAME OUTLIVES THE SCREEN (BT-006). Declared before the
   // connection's effect, so this cleanup reads the canvas before noVNC's
@@ -2012,6 +2057,14 @@ function LiveScreen({
     let stopped = false
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
+    // This canvas's socket is connected: the session re-read slows to
+    // `LIVE_STREAMING_POLL_MS` while it is (`liveStreaming`).
+    let streaming = false
+    const stream = (on: boolean) => {
+      if (on === streaming) return
+      streaming = on
+      markStreaming(taskId, on)
+    }
     // swarm-api's status frames (LB-STREAM): never noVNC's, which reads only
     // the binary RFB stream. A change of controller, of whether this viewer
     // holds control, or of the session closing re-reads the session.
@@ -2127,7 +2180,10 @@ function LiveScreen({
           const sized = () => {
             const [width, height] = [r._fbWidth, r._fbHeight]
             if (!stopped && typeof width === 'number' && typeof height === 'number') {
-              if (width > 0 && height > 0) drew.current = true
+              if (width > 0 && height > 0) {
+                drew.current = true
+                setFramed(true)
+              }
               frameRef.current?.(width > 0 && height > 0 ? { width, height } : null)
             }
           }
@@ -2154,6 +2210,7 @@ function LiveScreen({
             noVncClose?.call(ws, ev)
           }
           r.addEventListener('connect', () => {
+            if (!stopped) stream(true)
             tries = 0
             restarting = false
             setWhy(null)
@@ -2167,6 +2224,7 @@ function LiveScreen({
             if (!stopped) saysRef.current?.(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
           })
           r.addEventListener('disconnect', () => {
+            stream(false)
             setHasFocus(typing())
             if (rfb.current === r) rfb.current = null
             if (!stopped) saysRef.current?.(null)
@@ -2182,6 +2240,7 @@ function LiveScreen({
     void connect()
     return () => {
       stopped = true
+      stream(false)
       if (timer !== null) clearTimeout(timer)
       const r = rfb.current
       rfb.current = null
@@ -2193,6 +2252,13 @@ function LiveScreen({
     }
   }, [taskId, sessionId, applyInput, focusCanvas, typing])
 
+  // NO PICTURE YET AND NONE COMING NOW: SAID IN THE FRAME (visual QA
+  // ovag2-12, 2026-10-29). A ticket the API would not mint -- the fixture
+  // build serves none -- left a large empty frame, the reason in small text
+  // in the caption under it. Until a first frame, a connection that is
+  // retrying or has given up puts its reason in the frame's middle; once a
+  // picture has drawn, a reconnect keeps it and says so in the caption.
+  const blank = !framed && (conn === 'reconnecting' || conn === 'failed') && why !== null
   const onFocus = () => {
     keysHere.current = true
     setHasFocus(true)
@@ -2248,7 +2314,7 @@ function LiveScreen({
           // inside it, so wherever the screen is not drawn whole -- borrowed
           // by the theater, or not yet connected -- the frame lost its box.
           // `is-bordered` draws it on the frame (styles/live.css).
-          className={`live-frame is-${kind} is-bordered`}
+          className={`live-frame is-${kind} is-bordered${blank ? ' has-empty' : ''}`}
           data-device={kind}
           style={fit === null ? undefined : { width: `${fit.width + 2 * HAIRLINE}px`, height: `${fit.height + 2 * HAIRLINE}px` }}
         >
@@ -2285,6 +2351,13 @@ function LiveScreen({
               </span>
             )}
           </div>
+          {blank && (
+            <div className="live-frame-empty" data-testid="live-frame-empty">
+              <EmptyState kind={conn === 'failed' ? 'failed' : 'empty'} heading="No picture from the agent’s browser">
+                {conn === 'failed' ? `The live connection keeps failing: ${why}` : `${why} Trying again.`}
+              </EmptyState>
+            </div>
+          )}
         </div>
         {/* The caption and the connection's state share one line under the
             frame (BT-003): a line of its own below the stage was one more
@@ -2292,7 +2365,10 @@ function LiveScreen({
         <div ref={below} className="live-stage-caption">
           {caption}
           <span className="live-screen-say" role="status">
-            {conn === 'connecting'
+            {/* Said once: in the frame while it has no picture (`blank`). */}
+            {blank
+              ? null
+              : conn === 'connecting'
               ? 'Connecting to the agent’s browser.'
               : conn === 'connected'
                 ? control && refused !== null

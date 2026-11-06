@@ -119,7 +119,7 @@ async function mount(body: Json, writes: Record<string, (body: unknown) => { sta
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   const utils = render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'Platform people', level: 1 }, WAIT)
   return { ...utils, calls }
 }
 
@@ -172,7 +172,7 @@ describe('the tab', () => {
   it('is in the Admin section, admin only', () => {
     const admin = SECTIONS.find((s) => s.id === 'admin')!
     const tab = admin.tabs.find((t) => t.id === 'people')
-    expect(tab).toEqual({ id: 'people', label: 'People and roles', admin: true })
+    expect(tab).toEqual({ id: 'people', label: 'Platform people', admin: true })
   })
 
   // A tab and a route are not enough: the panel draws PANEL_PAGES, and a page
@@ -198,8 +198,8 @@ describe('the tab', () => {
     )
     await waitFor(() => expect(document.querySelectorAll('.sk-panel .sk-pk').length).toBeGreaterThan(0), WAIT)
     const labels = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((el) => el.textContent)
-    expect(labels).toContain('People and roles')
-    expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('People and roles')
+    expect(labels).toContain('Platform people')
+    expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('Platform people')
   })
 })
 
@@ -419,7 +419,8 @@ describe('live QA admin: nothing writes on the first click', () => {
     choose(row, 'acct-eng-2')
     fireEvent.click(within(row).getByRole('button', { name: 'Lend' }))
     const dialog = await screen.findByRole('dialog', { name: 'Lend this account' }, WAIT)
-    expect(within(dialog).getByTestId('pp-loan-idle').textContent).toContain('PAUSED')
+    // In words, not the broker's enum (QA2-FIX-18, admin2-04).
+    expect(within(dialog).getByTestId('pp-loan-idle').textContent).toContain('This account is paused:')
   })
 
   it('ADM-3: a ceiling Save asks first with old → new and the change, and an unchanged value has nothing to save', async () => {
@@ -762,7 +763,7 @@ describe('visual QA (VQA-L06)', () => {
     }
     const titles = [...document.querySelectorAll('.pp-page .c-card h2, .pp-page .c-card h3')].map((h) => h.textContent?.trim())
     expect(titles.length, 'no card title was drawn').toBeGreaterThan(0)
-    expect(titles).not.toContain('People and roles')
+    expect(titles).not.toContain('Platform people')
   })
 
   it('V082: the typed Remove admin of an unread list is bordered too', async () => {

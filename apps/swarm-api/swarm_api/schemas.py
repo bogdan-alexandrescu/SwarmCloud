@@ -9,6 +9,7 @@ a field for any of those things in the first place.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -156,6 +157,26 @@ class StepBudget(StrictModel):
         return self
 
 
+class StepPluginCreate(StrictModel):
+    """One plugin a step loads, under its catalogue name in `plugins`
+    (docs/design/agent-plugins.md, "Per-step selection"): a mode and skills,
+    by name only (invariant 10). Checked against the catalogue, the step's
+    runner profile and the workspace's signed setting by
+    `plugins.check_step`, which names what it accepts in its refusal."""
+
+    mode: str = Field(min_length=1, max_length=32)
+    skills: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(max_length=64)
+
+
+def _plugins_field() -> Any:
+    # A step's plugins, `{name: {mode, skills}}`, owner's pick of 5 November
+    # 2026 (PR #3264): a field of the step, not a contract the caller
+    # writes. swarm-api carries them in the step's work contract
+    # (`plugins.with_step_plugins`), whose digest the signed dispatch block
+    # holds, so the worker trusts only what was signed with the step.
+    return Field(default=None, max_length=8)
+
+
 class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
@@ -167,6 +188,9 @@ class TaskCreate(StrictModel):
     repository_ref: str | None = Field(default=None, max_length=256)
     #: May only SHORTEN the profile's timeout; a longer value is clamped.
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: May only LOWER the profile's turn cap (contract request 133): refused
+    #: on a profile without `supports_max_turns`, lowered to its `max_turns`.
+    max_turns: int | None = Field(default=None, ge=1)
     #: May only LOWER the attempt's spend limit (#2459): see `StepBudget`.
     budget: StepBudget | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=10)
@@ -183,6 +207,8 @@ class TaskCreate(StrictModel):
     #: classes in its refusal, rather than declared as a `Literal` here, for
     #: the same reason as `strategy` below.
     model_class: str | None = Field(default=None, max_length=32)
+    #: The plugins this task loads, by name (`StepPluginCreate`). None: none.
+    plugins: dict[str, StepPluginCreate] | None = _plugins_field()
     #: How this dispatch's work gets merged, and what carries it between steps.
     #: Validated in `validation.resolve_dispatch_options`, which names the
     #: accepted values in its refusal, rather than declared as a `Literal` here:
@@ -193,6 +219,12 @@ class TaskCreate(StrictModel):
     #: gets exactly the dispatch they got before this feature existed.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The workflow switches (2026-11-01): `{code_intelligence, quality_gates,
+    #: jev_judgments}`, each `on` or `off`, stored inside the signed dispatch
+    #: block. Checked in `validation.resolve_dispatch_switches`, which names
+    #: the accepted switches and values in its refusal, for the reason
+    #: `strategy` is. Absent: today's dispatch exactly.
+    dispatch: dict[str, Any] | None = None
     #: Per-run credentials for the `dispatch` servers `input.mcp_servers`
     #: names, by server name (docs/design/registered-mcp-servers.md §4.3):
     #: beside the task, never in it. Checked and stored by `SubmissionService`.
@@ -253,9 +285,14 @@ class WorkflowStepCreate(StrictModel):
     #: (#1435). Stored on `WorkflowStep.model_class` and on its task only when
     #: it differs from the profile's default.
     model_class: str | None = Field(default=None, max_length=32)
+    #: The plugins this step loads, by name, as `TaskCreate.plugins`.
+    plugins: dict[str, StepPluginCreate] | None = _plugins_field()
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: This step's turn cap, as `TaskCreate.max_turns` (contract request 133).
+    #: Stored as asked on `WorkflowStep.max_turns`, resolved on its task.
+    max_turns: int | None = Field(default=None, ge=1)
     #: This step's spend limit, which may only LOWER the workspace's (#2459):
     #: see `StepBudget`. Pinned, resolved, in the step task's signed
     #: `metadata.dispatch.budget`.
@@ -331,6 +368,192 @@ class MergePullRequest(StrictModel):
 MAX_AFTER_PRS = 10
 
 
+#: What a workflow is about (BGD, 2026-11-04): `metadata.description`, two or
+#: three sentences of plain text saying what the work is meant to deliver,
+#: and `metadata.feature`, `{title, url?}`, the feature it belongs to. The
+#: console's workflow page heads with both; `routes.workflows.workflow_about`
+#: serves them. Checked by `check_workflow_about`, which refuses rather than
+#: cuts: a description silently shortened says something its author did not.
+DESCRIPTION_MAX_CHARS = 600
+FEATURE_TITLE_MAX_CHARS = 120
+#: Who wrote `metadata.description`. Written by swarm-api, never taken from
+#: a caller: `submitter` when the submission carried one. A later lane's small-model
+#: fallback writes its own value, so the console can mark a generated one.
+DESCRIPTION_SOURCE_KEY = "description_source"
+DESCRIPTION_SOURCE_SUBMITTER = "submitter"
+#: The description in three labelled parts (BGD, 2026-11-06), each optional:
+#: `purpose`, one sentence saying why the work exists; `goals`, up to three
+#: short items it must achieve; `output`, one sentence saying what lands (a
+#: pull request, mock-up frames, a report). The console draws them as three
+#: short lines, so each is capped well under the 600 of a free description.
+#: A spec's bare `description` is served as the purpose.
+ABOUT_KEY = "about"
+ABOUT_PURPOSE_MAX_CHARS = 300
+ABOUT_GOAL_MAX_CHARS = 120
+ABOUT_GOALS_MAX = 3
+ABOUT_OUTPUT_MAX_CHARS = 300
+ABOUT_PARTS = ("purpose", "goals", "output")
+ABOUT_METADATA_KEYS = ("description", "feature", DESCRIPTION_SOURCE_KEY, ABOUT_KEY)
+
+#: Markup a plain-text description may not hold: an HTML tag or comment, a
+#: Markdown link or image, a code fence, a heading, bold or emphasis by
+#: doubled markers. The console shows the text as text; markup would read
+#: as noise there, or, rendered anywhere else, as something the author did
+#: not write.
+_MARKUP = re.compile(
+    r"<\s*/?\s*[A-Za-z!][^>]*>"      # <b>, </p>, <!-- ... -->
+    r"|\]\("                          # [text](url), ![alt](src)
+    r"|```|~~~"                        # code fences
+    r"|^\s{0,3}#{1,6}\s"               # # heading
+    r"|\*\*|__",                      # **bold**, __bold__
+    re.MULTILINE,
+)
+#: Control characters but the line break and the tab.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+#: An issue or pull request page of one GitHub repository.
+_FEATURE_URL = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+)"
+    r"/(?:issues|pull)/[1-9][0-9]{0,9}/?$"
+)
+#: `owner/repo` out of a GitHub repository URL in each spelling
+#: `check_repository_url` accepts: https://, ssh:// and git@host:.
+_GITHUB_REPOSITORY = re.compile(
+    r"^(?:https://|ssh://git@|git@)github\.com[/:](?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/?$",
+    re.IGNORECASE,
+)
+
+
+def _github_repository(url: str | None) -> str | None:
+    """`owner/repo`, lower-cased, of a github.com repository URL, else None."""
+    found = _GITHUB_REPOSITORY.match(url or "")
+    return f"{found['owner']}/{found['repo']}".lower() if found else None
+
+
+def _description(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("metadata.description must be text: two or three sentences saying what the work delivers")
+    text = value.strip()
+    if not text:
+        raise ValueError("metadata.description is empty: write what the work delivers, or leave it out")
+    if len(text) > DESCRIPTION_MAX_CHARS:
+        raise ValueError(
+            f"metadata.description is {len(text)} characters and holds at most {DESCRIPTION_MAX_CHARS}: "
+            "two or three sentences saying what the work delivers")
+    if _CONTROL.search(text):
+        raise ValueError("metadata.description holds a control character: send plain text")
+    if _MARKUP.search(text):
+        raise ValueError(
+            "metadata.description holds markup (HTML, a Markdown link, heading, code fence or bold): "
+            "send plain text, which the console shows as written")
+    return text
+
+
+def _about_line(field: str, value: Any, cap: int) -> str:
+    """One part of `metadata.about`: one line of plain text, at most `cap`."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be non-empty text, or left out")
+    text = value.strip()
+    if len(text) > cap:
+        raise ValueError(f"{field} is {len(text)} characters and holds at most {cap}")
+    if "\n" in text or _CONTROL.search(text):
+        raise ValueError(f"{field} must be one line of plain text")
+    if _MARKUP.search(text):
+        raise ValueError(
+            f"{field} holds markup (HTML, a Markdown link, heading, code fence or bold): send plain text")
+    return text
+
+
+def check_about(value: Any) -> dict[str, Any]:
+    """`metadata.about` checked and tidied: `{purpose?, goals?, output?}`,
+    at least one part, each held to `_about_line`. Raises ValueError naming
+    the field (`metadata.about.goals[2]`)."""
+    if not isinstance(value, dict) or not value or not set(value) <= set(ABOUT_PARTS):
+        raise ValueError("metadata.about must be {purpose?, goals?, output?} with at least one of them")
+    about: dict[str, Any] = {}
+    if "purpose" in value:
+        about["purpose"] = _about_line("metadata.about.purpose", value["purpose"], ABOUT_PURPOSE_MAX_CHARS)
+    if "goals" in value:
+        goals = value["goals"]
+        if not isinstance(goals, list) or not goals or len(goals) > ABOUT_GOALS_MAX:
+            raise ValueError(f"metadata.about.goals must be a list of 1 to {ABOUT_GOALS_MAX} short items")
+        about["goals"] = [_about_line(f"metadata.about.goals[{n}]", goal, ABOUT_GOAL_MAX_CHARS)
+                          for n, goal in enumerate(goals)]
+    if "output" in value:
+        about["output"] = _about_line("metadata.about.output", value["output"], ABOUT_OUTPUT_MAX_CHARS)
+    return about
+
+
+def _feature(value: Any, repository_url: str | None) -> dict[str, str]:
+    if not isinstance(value, dict) or not set(value) <= {"title", "url"} or "title" not in value:
+        raise ValueError("metadata.feature must be {title, url?}: the feature the work belongs to")
+    title = value["title"]
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("metadata.feature.title must be non-empty text: the feature's name")
+    title = title.strip()
+    if len(title) > FEATURE_TITLE_MAX_CHARS:
+        raise ValueError(
+            f"metadata.feature.title is {len(title)} characters and holds at most {FEATURE_TITLE_MAX_CHARS}")
+    if "\n" in title or _CONTROL.search(title):
+        raise ValueError("metadata.feature.title must be one line of plain text")
+    feature = {"title": title}
+    url = value.get("url")
+    if url is None:
+        return feature
+    found = _FEATURE_URL.match(url.strip()) if isinstance(url, str) else None
+    if found is None:
+        raise ValueError(
+            "metadata.feature.url must be an https://github.com/<owner>/<repo>/issues/<n> "
+            "or .../pull/<n> URL")
+    own = _github_repository(repository_url)
+    named = f"{found['owner']}/{found['repo']}".lower()
+    if own is None or own != named:
+        raise ValueError(
+            f"metadata.feature.url names an issue or pull request of {named}, and this workflow's "
+            f"repository is {own or 'not a GitHub repository'}: a feature link names the workflow's own "
+            "repository")
+    feature["url"] = url.strip()
+    return feature
+
+
+def check_workflow_about(
+    metadata: dict[str, Any], repository_url: str | None, steps: list[Any],
+) -> dict[str, Any]:
+    """`metadata` with its `description`, `about` and `feature` checked and
+    tidied, and `description_source: "submitter"` beside a description or an
+    about (`check_about`, whose refusals name the part). Raises ValueError
+    (a 422 naming the rule) for a description over 600 characters, empty, or
+    holding markup; a feature title over 120 characters or empty; a feature
+    URL that is not an https github.com issue or pull request of the
+    workflow's own `repository_url`; and any of the three keys in a step's
+    metadata, which would be merged over the workflow's onto that step's task
+    unchecked.
+
+    A caller's own `description_source` is never kept: it is set to
+    `submitter` beside a description and dropped without one. Overwritten,
+    not refused, because a validated spec is stored as its dump and validated
+    again (a custom-prompt schedule's `params.spec`), and that dump carries
+    the value this function wrote."""
+    for step in steps:
+        named = sorted(set(getattr(step, "metadata", None) or {}) & set(ABOUT_METADATA_KEYS))
+        if named:
+            raise ValueError(
+                f"step {getattr(step, 'step_id', '?')} sets metadata {', '.join(named)}: a workflow's "
+                "description and feature are the workflow's, sent in its own metadata")
+    if not set(metadata) & set(ABOUT_METADATA_KEYS):
+        return metadata
+    checked = {k: v for k, v in metadata.items() if k != DESCRIPTION_SOURCE_KEY}
+    if "description" in metadata:
+        checked["description"] = _description(metadata["description"])
+        checked[DESCRIPTION_SOURCE_KEY] = DESCRIPTION_SOURCE_SUBMITTER
+    if ABOUT_KEY in metadata:
+        checked[ABOUT_KEY] = check_about(metadata[ABOUT_KEY])
+        checked[DESCRIPTION_SOURCE_KEY] = DESCRIPTION_SOURCE_SUBMITTER
+    if "feature" in metadata:
+        checked["feature"] = _feature(metadata["feature"], repository_url)
+    return checked
+
+
 class AfterPullRequest(StrictModel):
     """One pull request a workflow waits for before its steps start (SPEED-D3).
 
@@ -366,6 +589,12 @@ class WorkflowCreate(StrictModel):
     #: Same accepted values and same defaults as `TaskCreate`.
     strategy: str = Field(default=DEFAULT_STRATEGY, max_length=32)
     carrier: str = Field(default=DEFAULT_CARRIER, max_length=32)
+    #: The workflow switches (2026-11-01): `{code_intelligence, quality_gates,
+    #: jev_judgments}`, each `on` or `off`, stored inside the signed dispatch
+    #: block. Checked in `validation.resolve_dispatch_switches`, which names
+    #: the accepted switches and values in its refusal, for the reason
+    #: `strategy` is. Absent: today's dispatch exactly.
+    dispatch: dict[str, Any] | None = None
     #: The repository every step of this workflow clones, and the one an
     #: `integrate` step opens its pull request against.
     #:
@@ -430,6 +659,13 @@ class WorkflowCreate(StrictModel):
         # Task.repository_url without passing through TaskCreate.
         return check_repository_url(value)
 
+    @model_validator(mode="after")
+    def _about(self) -> "WorkflowCreate":
+        # After the fields, because a feature's link is held to the
+        # workflow's own `repository_url`.
+        self.metadata = check_workflow_about(self.metadata, self.repository_url, self.steps)
+        return self
+
 
 # --------------------------------------------------------------------------
 # Issue runs (#454)
@@ -466,6 +702,13 @@ class RunCreate(StrictModel):
     #: the platform's `merge_by_default`; the run records what was resolved.
     auto_merge: bool | None = None
     fix_rounds: int = Field(default=DEFAULT_FIX_ROUNDS, ge=MIN_FIX_ROUNDS, le=MAX_FIX_ROUNDS)
+    #: Add the optional security review after the fix (owner decision
+    #: 2026-11-04, docs/design/security-review-step.md): `IssueRun.security_review`,
+    #: compiled by `issueruns._with_security_review`. Off by default: an audit
+    #: costs more than a code review, and the run's caller opts in. A yes/no,
+    #: never a profile or a plugin: the step's profile and plugin are swarm-api's
+    #: (invariant 10). Refused while work contracts are off (`start_run`).
+    security_review: bool = False
     #: The Claude Code session that asked (SC-SESSION-SCOPE, `sessiontag`):
     #: stored on the run and copied onto its planner task and every workflow
     #: it starts, so the sc plugin counts the run as that session's own. A
@@ -600,6 +843,14 @@ class BudgetCeilingRequest(StrictModel):
     tokens: StrictInt | None = Field(default=None, ge=1, le=BUDGET_MAX_TOKENS)
 
 
+class JevTokenRatesRequest(StrictModel):
+    """`jev_token_rates` (JEV-USAGE-PAGE): Jev's price in USD per million
+    tokens, per direction. A direction left out has no rate, so `{}` clears it."""
+
+    input: StrictFloat | StrictInt | None = Field(default=None, ge=0, le=1_000_000)
+    output: StrictFloat | StrictInt | None = Field(default=None, ge=0, le=1_000_000)
+
+
 class PlatformSettingsRequest(StrictModel):
     """`PUT /v1/admin/settings`: the settings to change; one omitted is left as it is."""
 
@@ -626,6 +877,9 @@ class PlatformSettingsRequest(StrictModel):
     #: workspace default above it in its unit is refused on save, and every
     #: budgeted attempt's limit is at most it. Off by default.
     agent_budget_ceiling: BudgetCeilingRequest | None = None
+    #: Jev's per-token rate (JEV-USAGE-PAGE), replaced whole. No default:
+    #: Capacity › Jev usage shows "rate not set" and no dollars until it is set.
+    jev_token_rates: JevTokenRatesRequest | None = None
 
 
 #: A runner-size change, by class then field (docs/design/runner-sizes.md
@@ -764,32 +1018,60 @@ class TenantFindingsEpicRequest(StrictModel):
 # The account pool (proxied to the quota broker)
 # --------------------------------------------------------------------------
 
-#: The one kind of credential the account pool handles.
+#: The kinds of account the pool holds (#2688).
 #:
-#: An account in this pool is a CLAUDE SUBSCRIPTION: a rotating OAuth pair the
-#: quota broker refreshes on a timer, where refreshing REVOKES the token it
-#: replaces. There is no API-key account and no credential-kind selector --
-#: nothing in the pool's write path, the broker's refresher or the worker's
-#: lease would know what to do with one. A tenant's own provider API key is a
-#: different thing entirely and has a different route
-#: (`POST /v1/tenants/me/credentials`), which this constant does not touch.
+#: Every account in this pool is a ROTATING OAUTH PAIR the quota broker
+#: refreshes on a timer, where refreshing REVOKES the token it replaces: a
+#: Claude subscription (`anthropic`) or, since the owner's choice of
+#: 2026-11-01, a ChatGPT plan (`openai`, which codex runs on). There is no
+#: API-key account and no credential-kind selector -- nothing in the pool's
+#: write path, the broker's refresher or the worker's lease would know what to
+#: do with one. The broker keeps the same pair as `ACCOUNT_PROVIDERS` in
+#: `quota_broker.main` and refuses anything else; this service does not import
+#: the broker, so the pair is restated here and checked against it by test.
+#: A tenant's own provider API key is a different thing entirely and has a
+#: different route (`POST /v1/tenants/me/credentials`), which this does not
+#: touch.
 SUBSCRIPTION_PROVIDER = "anthropic"
+PLAN_PROVIDER = "openai"
+ACCOUNT_PROVIDERS = (SUBSCRIPTION_PROVIDER, PLAN_PROVIDER)
+AccountProvider = Literal["anthropic", "openai"]
+#: Account kinds only the Voice it pool holds, kept apart from
+#: `ACCOUNT_PROVIDERS` exactly as the broker keeps its `VOICE_ONLY_PROVIDERS`
+#: (checked against it by test): `openai-api`, an OpenAI developer API key
+#: (the owner, 4 November 2026; docs/design/voice-it.md). It is not a pair and
+#: is never refreshed, no workspace's sign-in or task names it, and only a
+#: PLATFORM admin may register one (`routes/accounts.register_account`), with
+#: no `lend_to`. The broker files it into the Voice it pool alone.
+VOICE_API_KEY_PROVIDER = "openai-api"
+VOICE_ONLY_PROVIDERS = (VOICE_API_KEY_PROVIDER,)
 
 
 class AccountSignInStart(StrictModel):
-    """Begin adding an account by signing in to Claude in a browser.
+    """Begin adding an account by signing in to its provider in a browser.
 
     No credential here, which is the whole point: the person signs in with
-    Anthropic and we never see anything but the short code their callback page
-    displays afterwards.
+    Anthropic or OpenAI and we never see anything but the code the provider
+    hands back afterwards.
+
+    `provider` defaults to `anthropic`, so a Claude sign-in sends nothing new
+    and behaves exactly as it did before ChatGPT plans existed. It is forwarded
+    to the broker unchanged; the broker picks the authorize page and the
+    redirect from it and echoes both in its answer.
     """
 
     label: str = Field(min_length=1, max_length=64)
+    provider: AccountProvider = SUBSCRIPTION_PROVIDER
     lend_to: list[str] = Field(default_factory=list, max_length=50)
 
 
 class AccountSignInFinish(StrictModel):
-    """Finish it, with what the callback page showed."""
+    """Finish it, with what the callback page showed.
+
+    No `provider` field: the broker's exchange takes none. The PENDING sign-in
+    the broker keyed by `state` records which provider started it, so the
+    finish cannot disagree with the start.
+    """
 
     state: str = Field(min_length=8, max_length=256)
     #: Taken as pasted. The callback renders the code followed by a hash and
@@ -798,11 +1080,11 @@ class AccountSignInFinish(StrictModel):
 
 
 class AccountCreate(StrictModel):
-    """Register a Claude subscription into the CALLER's pool.
+    """Register a Claude subscription or a ChatGPT plan into the CALLER's pool.
 
-    A SUBSCRIPTION, and nothing else: see `SUBSCRIPTION_PROVIDER` above. There
-    is no `api_key` field here and no kind selector, because the pool has one
-    kind of member.
+    A rotating OAuth pair, and nothing else: see `ACCOUNT_PROVIDERS` above.
+    There is no `api_key` field here and no kind selector beyond `provider`,
+    because every member of the pool is a pair the broker refreshes.
 
     THE OWNER IS THE TENANT ON THE VERIFIED TOKEN, always. `owner_tenant` below
     is read for one purpose only -- to be compared against it -- and its value
@@ -819,10 +1101,11 @@ class AccountCreate(StrictModel):
     #: Optional, and only ever equal to the caller's own tenant. See above.
     owner_tenant: str | None = Field(default=None, max_length=64)
     label: str = Field(min_length=1, max_length=64)
-    #: Not a choice: `SUBSCRIPTION_PROVIDER` is the only accepted value. The
-    #: field survives so a caller naming anything else gets a 422 that says why
-    #: rather than a bare `extra_forbidden`, and so the body still mirrors the
-    #: broker's own contract. `routes/accounts.py` does the comparison.
+    #: One of `ACCOUNT_PROVIDERS` (or, for a platform admin, one of
+    #: `VOICE_ONLY_PROVIDERS`), defaulting to a Claude subscription. A plain
+    #: string rather than a Literal so it is compared case-insensitively and a
+    #: caller naming anything else gets a 422 that names it and lists the known
+    #: providers. `routes/accounts.py` does the comparison.
     provider: str = Field(default=SUBSCRIPTION_PROVIDER, max_length=64)
     #: Tenants this account will lend spare capacity to. Isolation is the
     #: default (CONTRACT.md invariant 9); this is the narrowing, with a name on

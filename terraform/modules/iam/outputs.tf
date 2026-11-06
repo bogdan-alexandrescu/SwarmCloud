@@ -45,15 +45,16 @@ output "gke_role_condition" {
   value       = length(local.gke_condition) > 0 ? local.gke_condition[0].expression : ""
 }
 
+# Built from the account id, as sa_email is (bindings.tf).
 output "tick_service_account" {
-  value = google_service_account.tick.email
+  value = "${data.google_service_account.tick.account_id}@${var.project_id}.iam.gserviceaccount.com"
 }
 
 output "tick_member" {
-  value = "serviceAccount:${google_service_account.tick.email}"
+  value = "serviceAccount:${data.google_service_account.tick.account_id}@${var.project_id}.iam.gserviceaccount.com"
 }
 
 output "quota_broker_account_id" {
   description = "The quota broker's account id, known at plan. terraform/bootstrap grants the broker swarmSecretLister by this id (#69); tests/terraform/platform_roles.tftest.hcl holds the two to each other."
-  value       = google_service_account.platform["swarm-quota-broker"].account_id
+  value       = data.google_service_account.platform["swarm-quota-broker"].account_id
 }

@@ -39,7 +39,7 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the one to eight `swarm-ui component tests (k/N)` shards, sized by measured weight — [below](#the-component-test-shards-are-sized-by-measured-weight)) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | **every** push to `main` (no path filter since 2026-10-26: only the newest commit is released, and a release whose commit `main` has moved past ends green, superseded — [below](#only-the-newest-commit-on-main-is-built-and-released)); or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
@@ -48,6 +48,7 @@ Three reasons, in the order they cost the most:
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
+| `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded (BGD 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -575,7 +576,7 @@ commit and more. It asks twice:
 
 A superseded release ends **green**, says so in its summary and a notice, and
 outputs `superseded=true`; `approval` — and so promote, both applies and the
-deploy — and the plugin tag do not run. A dispatch is never superseded: it
+deploy — does not run. A dispatch is never superseded: it
 ships `main`'s head by construction.
 
 **A pending release is replaced; a running one is never cancelled.**
@@ -605,6 +606,60 @@ stopping `gcloud builds submit` does not stop it (`build-images.sh`,
 `hotfix`-labelled commit is still released by its own lane, which waits for
 the same build: if a newer push cancels that build, the hotfix run fails and
 the newer commit's normal release ships the fix.
+
+**When merges come faster than a build: the merge train holds (issue 3336).**
+Cancelling assumes a merge lull long enough for the newest build to finish.
+On 5 November 2026 there was none: no release had deployed since 21:04Z on 4
+November. `build images` then needed main's test jobs, which queue behind the merge
+train's and the pull requests' CI, so it started 18 to 44 minutes after its
+push and then took about 19; the train landed a batch every 20 to 40
+minutes, so each merge cancelled the build before it and every release ended
+superseded. And release 41992304818 (08:09Z) failed `timed out after 2700s`
+on a build that started at 08:53Z and succeeded at 09:12Z.
+
+So, before a green train merges, `scripts/merge-train.sh` (`deploy_hold`)
+reads `release.yml`'s runs on `main` and `main`'s newest `application` push
+run. When no release ran its deploy job successfully in the last 60 minutes
+**and** that run's `build images` job is in progress, the train does not
+merge on that tick: it stays open and green, says once in its own comments
+`holding the merge so main's build of <sha> can finish and deploy; nothing
+has deployed since <time>`, and records when the hold began, and for which
+build, in its state block (`hold=<epoch>:<sha>`), so the bound survives
+ticks. It merges on a later tick once that job has finished, either way, or
+25 minutes after the hold began, whichever comes first. It never holds for a
+build that has not started (cancelling that one costs nothing), never while
+deploys are recent, and never twice for one train; an API it cannot read, or
+a hold it cannot record, merges as before. A dry run says what it would have
+held. The cost is at most 12 API reads per green train and 2 per held tick.
+
+#2438's cancelling stays: the hold only spaces merges out while a build is
+already running, so the build that is running is the one that ships, and a
+burst of merges still costs one build, not one per commit.
+
+**The build no longer waits for main's tests; the tests gate the release
+(owner pick on PR 3344).** The hold above spaces merges out; it does not
+remove the 18 to 44 minutes `build images` spent queued behind main's test
+jobs. So `build images` has no `needs:` any more and starts with its run,
+building while `format / unit tests`, `shellcheck` and `kubernetes manifests`
+run beside it. Those three -- exactly the jobs it used to need -- now gate the
+release instead: `scripts/lib/ci-built-images.sh` hands release.yml and
+hotfix.yml the build's record only once each of them, in the same run,
+concluded success or was skipped by its own paths (the list is
+`CI_RELEASE_TEST_JOBS`, once, in `scripts/lib/common.sh`). While they still
+run, the release waits as for a build in progress (`CI_BUILD_WAIT_RUNNING`).
+When one failed or was cancelled, or the run finished without it, the release
+refuses the commit and, even when dispatched with `or-build`, builds nothing:
+a commit whose tests did not pass is never released. A newer push that
+cancelled those tests after the build succeeded is a supersession, as a
+cancelled build is (`scripts/lib/build-superseded.sh`). What it costs: a
+commit whose tests fail is still built -- one Cloud Build of the images it
+changed, which before was never spent.
+
+The release's wait, `scripts/lib/ci-built-images.sh`, keeps 2700 s
+(`CI_BUILD_WAIT`) as its bound for a build that is queued or not started,
+but waits for one whose job is **in progress** until it ends, up to
+`CI_BUILD_WAIT_RUNNING` (5400 s). A run a newer push cancelled still ends the
+wait at once, "never built".
 
 **What a pull request cannot prove about this.**
 `tests/unit/scripts/test_release_newest_only.py` holds the groups, the
@@ -1398,8 +1453,9 @@ held the lock, and every later push queued behind it. `release-dev` is
   included. Each job that needs `verify` states one rule: `verify` succeeded,
   or a push skipped it. `test_release_prod_gate.py` holds that a dispatch
   whose `verify` did not succeed starts nothing that promotes, applies or
-  deploys. On a push, the plugin tag waits for `images and scan`, which found
-  CI's record.
+  deploys. (The plugin tag no longer waits for any of this: since
+  2026-11-04 `application.yml` makes it once `format / unit tests` passed,
+  [below](#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass).)
 * **C. The groups run in parallel**, as matrix jobs with `fail-fast:
   false`, one swarm-verify execution each. There were five when this was
   measured; six run now (git-tools joined, and live-browser left for its own
@@ -1757,8 +1813,10 @@ the job that runs it (`_workflow` in
   manifests]`, so CI's image record for this SHA cannot exist unless its unit
   tests, shellcheck and manifests passed -- and the images stage refuses to
   build anything itself.
-* **Warming the worker jobs, acceptance, the GKE proof and the plugin tag.**
-  The same push still starts the normal release, which tags the plugin. When
+* **Warming the worker jobs, acceptance and the GKE proof.** The plugin tag
+  is not the release's to skip: `application.yml` makes it on the same push
+  ([below](#the-plugins-bridge-tag-is-made-once-the-unit-tests-pass)). The
+  same push still starts the normal release. When
   that release completes, `accept.yml` warms, smokes, proves GKE and accepts
   what dev then runs ([above](#the-release-timeline)). Acceptance is
   **delayed, not dropped**: a defect the hotfix put on dev is filed as the
@@ -1851,7 +1909,7 @@ generation precondition is atomic (it is documented to be), or that the
 deployer admits `hotfix.yml` before the owner applies the bootstrap root. The
 first labelled merge after that apply is the proof.
 
-## The plugin's bridge tag is made by the release
+## The plugin's bridge tag is made once the unit tests pass
 
 [`plugin/.claude-plugin/plugin.json`](../plugin/.claude-plugin/plugin.json)
 names its version twice. One is `version`, which decides which skills a user
@@ -1862,19 +1920,32 @@ holds the two equal. But the tag itself used to be made by hand, so it could
 be missing. sc-v0.5.6 was: main pinned it before anyone had tagged it, every
 fresh install of 0.5.6 failed to fetch its bridge, and no check said so (#272).
 
-**Who tags, and when.** `release.yml`'s `plugin-tag` job creates the annotated
-tag `sc-v<version>` on the commit being released (`github.sha`). It reads the
-version from `plugin.json` with `jq` at run time, so the workflow never names
-a version. It refuses anything that is not `X.Y.Z`.
+**Who tags, and when.** `application.yml`'s `plugin-tag` job creates the
+annotated tag `sc-v<version>` on the commit main was pushed to (`github.sha`).
+It reads the version from `plugin.json` with `jq` at run time, so the workflow
+never names a version. It refuses anything that is not `X.Y.Z`.
 
-* **After `verify`.** A tag is what users' installs resolve, so a commit whose
-  unit tests failed is not one to hand them.
-* **On main only.** A `workflow_dispatch` can name another branch, and a tag
-  made from it would pin users to a commit main never had. The condition sits
-  on each step, not on the job. The release-gate model in
-  `test_release_prod_gate.py` cannot evaluate a job-level `github.ref`, and a
-  condition it cannot evaluate is one it cannot hold. Off main, the job starts,
-  runs nothing and ends green.
+* **After `format / unit tests`** (the `python` job), the earliest point that
+  proves the commit. A tag is what users' installs resolve, so a commit whose
+  unit tests failed is not one to hand them. `format / unit tests` passes only
+  when the unit shards and the lock / contract / bridge-install checks passed
+  on this commit, or were skipped by their own `if:`: a tree main reuses was
+  proven job by job on its pull request ([Main reuses the tested
+  tree](#main-reuses-the-tested-tree)). The job's `if:` names
+  `needs.python.result == 'success'` and no status function.
+* **Why not the release any more** (owner decision, BGD, 2026-11-04: "Tag
+  once tests pass"; part of #2688). Until then `release.yml` made the tag, and
+  on a push it waited for `images and scan`, which waits for CI's whole image
+  build. On 2026-11-04 plugin.json reached 0.5.79 at 21:04Z; that job ran
+  about an hour, and for that hour every session that reloaded the plugin
+  installed its bridge from a tag that did not exist and lost every swarm
+  tool, until sc-v0.5.79 was pushed by hand at about 22:00Z. The images prove
+  nothing about the bridge that the unit tests do not.
+* **On a push to main only** (`github.event_name == 'push' && github.ref ==
+  'refs/heads/main'`, on the job). A pull request, a merge-queue entry or a
+  dispatch on another branch would pin users to a commit main never had. A
+  dispatch on main re-tests a commit its push already tagged. Everywhere else
+  the job is skipped, which `ci-gate` reads as passed.
 * **Only when origin does not have the tag** (`git ls-remote --exit-code`).
   If the remote cannot be read, the job fails. That is never treated as
   "absent".
@@ -1884,55 +1955,67 @@ caches what it fetched. A moved tag would give two users of the same version
 two different bridges, and neither of them could tell. So nothing in the job
 forces. When the tag exists, the job prints a `::notice`, also naming the
 commit the tag points at if that is not this one, and leaves it where it is.
-If two releases tag at once (a dev push and a prod dispatch), the second push
-is rejected. The job then reads the remote again, and counts the tag being
-there as success.
+If the push is rejected because the tag appeared meanwhile, the job reads the
+remote again and counts the tag being there as success.
 
 **`contents: write` is granted on that job, not on the workflow.** The workflow
-default stays `contents: read`. The jobs that build, plan and deploy run a lot
-of code, and none of it needs to write to the repository. `plugin-tag` runs
-only checkout, `jq` and `git`. (`acceptance` held the same grant for its own
+default stays `contents: read`. Every other job runs the repository's own code,
+and none of it needs to write to the repository. `plugin-tag` runs only
+checkout, `gh`, `jq` and `git`. (`acceptance` held the same grant for its own
 sweep until #628 moved its pull requests to the private sandbox; it is
 `contents: read` now, and the sweep uses the sandbox's own token.)
 
-**A release a newer commit superseded tags nothing** (2026-10-26): it may
-never have found CI's record, which is the tag's proof on a push. The newer
-commit's release tags the same version on the commit it ships, whose
-`plugin.json` says the same version. (Until 2026-10-26 a bump that touched only
-`plugin/` started no release at all, because `release.yml` had a path filter.)
+**A commit a newer one superseded tags nothing.** A newer push to main cancels
+the older run (the workflow's `concurrency:`), and the job's first step asks
+GitHub's compare of the commit with main: `ahead` means main has moved past
+it, and the job ends green without tagging. The newer commit's run tags the
+same version on the commit main now holds, whose `plugin.json` says the same
+version. An unreadable compare is not "superseded": the commit passed its unit
+tests, so it is tagged.
+
+`ci-gate` needs `plugin-tag`, like every other job of the workflow, so a tag
+that failed on main shows on main's `ci-gate`.
 
 **The check.** On a push to main, `application.yml`'s `shell` job asks whether
 origin has `sc-v<version>`.
 
 * **Passes** when the tag exists.
-* **Fails** when the tag is missing and a completed `release.yml` run on main
-  whose `verify` job passed already descends from the commit that last changed
-  the version line. `plugin-tag` runs exactly when `verify` passed, so that
-  release should have tagged it and did not. The error names the tag, the bump
-  commit, that run and its `plugin-tag` job's conclusion.
-  **The run's own conclusion is not read.** A `plugin-tag` that failed (a
-  rejected push, a ruleset on `sc-v*`), or any later build or deploy job that
+* **Fails** when the tag is missing and a completed push run of
+  `application.yml` on main whose `format / unit tests` passed already
+  descends from the commit that last changed the version line, and that run's
+  `plugin-tag` job failed or never ran. `plugin-tag` runs exactly when
+  `format / unit tests` passed, so that run should have tagged it and did not.
+  The error names the tag, the bump commit, that run and its `plugin-tag`
+  job's conclusion. **The run's own conclusion is not read.** A `plugin-tag`
+  that failed (a rejected push, a ruleset on `sc-v*`), or any other job that
   failed, makes the whole run `failure`. Counting only successful runs would
   warn forever in exactly the case this check exists for.
-* **Only warns** when no release on main has passed `verify` since the bump
-  (the plugin-only case above, a release still in flight, or one whose
-  `verify` failed and so never tried to tag). The next release tags it.
+* **Says so and goes on** for a run whose `plugin-tag` succeeded or was
+  cancelled without the tag: a newer commit superseded it, and the newer run
+  tags it.
+* **Only warns** when no such run has finished since the bump (the check's
+  own run is still in progress, so the bump's first run always warns, as does
+  a run whose unit tests failed and so never tried to tag). The next run whose
+  unit tests pass tags it.
 * **Fails** if `gh run list`, `gh run view` or `git ls-remote` fails. A check that could not
-  be made is not "no releases".
+  be made is not "no runs".
 
-It prints how many release runs it examined. A release head missing from the
-clone counts as not descended, and the check says so. It is gated to main
-because a pull request that bumps the version is expected to have no tag yet.
-It deepens the shallow checkout only on the path where the tag is missing. For
-`gh`, the `shell` job holds `actions: read` along with the `contents: read`
-that job-level permissions would otherwise drop.
+It prints how many runs it examined. A run head missing from the clone counts
+as not descended, and the check says so. It is gated to main because a pull
+request that bumps the version is expected to have no tag yet. It deepens the
+shallow checkout only on the path where the tag is missing. For `gh`, the
+`shell` job holds `actions: read` along with the `contents: read` that
+job-level permissions would otherwise drop.
 
 [`tests/unit/scripts/test_plugin_tag.py`](../tests/unit/scripts/test_plugin_tag.py)
-runs both steps' `run:` text, read out of the workflow files, against stub
+runs both steps' `run:` text, read out of the workflow file, against stub
 `git` and `gh`. It covers the tag being created and pushed, the tag never being
-moved, nothing ever being forced, a bad version being refused, and each of the
-check's outcomes. It cannot show that GITHUB_TOKEN may push an `sc-v*` tag in
-this repository. The first release after this lands is that proof.
+moved, nothing ever being forced, a bad version being refused, a superseded
+commit tagging nothing, the job's place behind `format / unit tests` and not
+the image build, and each of the check's outcomes. It cannot show that
+GITHUB_TOKEN may push an `sc-v*` tag in this repository; release.yml's job
+pushed sc-v* tags with the same grant, and the first version bump after this
+lands is the proof for this job.
 
 ## The UI job's Node is read from the image, not pinned
 
@@ -2530,7 +2613,11 @@ fixer by hand and push the fix-up from a laptop.
    restates other jobs, comes last. The whole is 16 KiB at most
    (`LOG_EXCERPT_MAX_BYTES`). The merge step's own fix rounds build their
    excerpt by the same rules in Python (`swarm_api/issueci.py`,
-   `_check_section`; CIFIX-EXCERPT, part of #1914). `redact` is a pattern list
+   `_check_section`; CIFIX-EXCERPT, part of #1914), and go further: a red
+   gate's workflow run is read and its failed leaf jobs are excerpted ahead
+   of it, each section names the events it failed on, and a job red on push
+   but green on pull_request at one sha is called out as a branch behind a
+   fix on main: merge main (#2937). `redact` is a pattern list
    and not a boundary (its own header says so); what makes a leak survivable
    is that the excerpt is stored as an agent's input, which the API serves
    masked.
@@ -2623,6 +2710,28 @@ workflow with no merge step and a merge step that has finished are admitted
 as before. A `publish_to_pr` workflow is not read here: its branch's agent is
 known only after `stamp`. The same switch turns it off
 (`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
+
+**A CI fix waits for another live CI fix of its pull request** (#2763). The
+claim (`ci_fix_in_flight`) keys a failure by head and run, so a red run at
+another head, or another red run at the same head, counted as another failure
+and got a second fix beside the first. On PR #2730 this fixer's attempt 1
+(task_f11210cf) was RUNNING on bb31584 when attempt 2 (task_af11c3ba) was
+admitted at 62a6fbac. Attempt 2 pushed 9e193de0 first, and attempt 1's publish
+conflicted. Why: a pull request has one writer at a time, and two CI fixes on
+one branch race exactly as a fix and a lane's round do. So `cifix.stamp`
+answers 409 `ci_fix_lane_owns_pr` while another CI fix of the same pull
+request is live -- a non-terminal agent continuing the same branch agent, or a
+claim still inside its two-minute grace whose agent is not written yet -- at
+any head and from any run, before the cap and the claim, so nothing is
+written. The detail names the live fix's `task_id`, `workflow_id` and
+`head_sha`, with `ci_fix: true`. When that fix pushes, CI runs again at its
+head, and a red run there gets its own fix. It is this refusal, not
+`ci_fix_in_flight`, because this one ships on and the script reads it as a
+skip, while `ci_fix_in_flight` is report-only and refuses nothing in
+production. A re-delivery of the very failure the live fix is on is still
+answered `ci_fix_in_flight` by the claim, as before. A finished fix, a fix of
+another pull request and another tenant's fix are passed over. The same
+switch turns it off (`REFUSAL_CI_FIX_LANE_OWNS_PR=off`).
 
 **A request that pushes to a pull request waits while a fix holds it**
 (#2535). The gates above read only a request that carries `metadata.ci_fix`.
@@ -3632,13 +3741,15 @@ the frozen-contract check, the format pass, the bridge install, the
 destroy-guard self-test — is `lock / contract / format / bridge install`,
 beside the shards rather than in front of them.
 
-**2. The vitest suite runs in four shards** — `swarm-ui component tests
-(k/4)`, vitest's own `--shard=k/4`, through the new `test:components` script
-(`vitest run` alone, so the flag reaches vitest and not the last of the three
-runners `npm test` chains). The typecheck, the two node:test runners
-(`test:node`) and the production build are one job beside them, `swarm-ui
-typecheck / build`. Measured 2026-10-07: shard 4/4 ran 60 of 246 files in
-108 s on 5 cores.
+**2. The vitest suite runs in shards** — `swarm-ui component tests (k/N)`,
+through the `test:components` script (`vitest run` alone, so the arguments
+reach vitest and not the last of the three runners `npm test` chains). The
+typecheck, the two node:test runners (`test:node`) and the production build
+are one job beside them, `swarm-ui typecheck / build`. As built on 2026-10-07
+they were four shards of vitest's own `--shard=k/4` (measured then: shard 4/4
+ran 60 of 246 files in 108 s on 5 cores). Since 2026-11-03 the `changes` job
+sizes the matrix by measured weight and each shard is handed its files by
+name ([below](#the-component-test-shards-are-sized-by-measured-weight)).
 
 **3. The check names are kept.** `format / unit tests` and `swarm-ui typecheck
 / component tests` are now jobs that `needs:` their shards, run `if: always()`
@@ -3865,54 +3976,66 @@ run going from **935 s to ~835 s**. By class:
 The first runs after this lands are the measurement: re-read them with the
 same two calls and correct this table.
 
-## CI starts when the implement step pushes
+## A lane head runs CI once, on its pull request
 
-**Why (LANE CI-EARLY, part of #1694, owner decision 2026-10-20).** A read of
-117 workflows found the merge step spending 40 % of a workflow waiting for CI
-— 20.5 h in the sample — because nothing was tested until the fix step opened
-the pull request. Under the integrate strategy the implement step is a
-`contributor`: it pushes `swarm/<task id>` and opens no pull request
-(`agent_worker/lifecycle.py`, the contributor's early return); the
-`integrator` (the fix step) pushes its own branch and opens the pull request
-after review. Measured CI then took a median 14.5 min (p90 20.9).
+**Owner decision, 2 November 2026 (part of #2688).** A lane branch
+(`swarm/**`) no longer runs `application.yml`, `security.yml` or
+`terraform.yml` on `push`. A lane head is tested once, by its pull request's
+run; `main` keeps its own push runs (they build the images, record the tested
+tree and start the release), and a merge-queue entry keeps `merge_group`.
 
-**What runs.** `application.yml`, `security.yml` and `terraform.yml` — every
-workflow behind a required check, `terraform.yml` because `ci-gate` waits for
-it — also run on a push to `swarm/**`. A lane push runs the whole of each, as
-`main` does: the `changes` job treats any event but `pull_request` as "run
-everything". It never builds or pushes an image (`build images` is held to
-`main` and dispatch by its `if:`), never plans (`plan` likewise;
-`plan-not-run` says so in the run), and never releases (`release.yml` is
-`main`-only). `trivy (repo)` compares a lane push with `main`'s tip, the base
-its pull request will have; with no base every finding `main` already carries
-would fail it. The CI fixer acts only on a pull request's run, so one red
-head does not start two fixers.
+**Why.** Measured on 2 November 2026 over the 14 days before, in the
+Engineering workspace: 1,126 agents finished after 2 hours or more. Along each
+workflow's slowest chain, 352 hours went to merge steps parked on
+`CI_PENDING`, 265 to waiting for the owner, and 75 to runs killed at their 1
+or 2 hour limit (46 agents, ending 37 workflows). A lane head ran about 100
+checks, nearly all twice -- once on `push` and once on `pull_request` -- and
+the merge step held both (`required_check_state`: every event's latest run
+must be green). On 28 October, with 23 to 28 merges queued, one head's checks
+took 1.5 to 4 hours although no job ran over about 20 minutes: the queue for
+the runners, not the jobs, was the wait, and half of what was queued was the
+second copy.
 
-**Why push triggers and not an early draft pull request.** The owner offered
-both; the merge step's rule — every required check green at the head — is
-exact only under push triggers:
+**What a lane head runs.** Before (CI-EARLY, 2026-10-20): every job of
+`application.yml` (17, the whole suite on the push, the selection on the pull
+request) and of `security.yml` (6) on both events, and `terraform.yml` (6) on
+the push always and on the pull request when its paths matched -- two runs of
+every required check at the head. After: each of those workflows once, on
+`pull_request`; `terraform.yml` only when the pull request's paths reach it,
+which `ci-gate` already models (`scripts/ci-gate.sh expected`). A lane branch
+with no pull request yet runs nothing until the pull request opens.
 
-* `agent_worker/merge.py` reads every check run at the head commit, from any
-  event, and holds a required check green only when **all** its runs are
-  (`required_check_state`: any run in progress is pending, any red one is
-  red). A push run at the head is one more run that must be green. Nothing is
-  relaxed, and the pull request's own run still happens on every head.
-* A draft opened at implement would be a *different* pull request from the
-  one merged: the integrator pushes `swarm/<its own task id>`, merging the
-  contributors' branches. Keeping one pull request would mean changing which
-  branch the integrator publishes to, in the worker and in swarm-api.
-* The merge step refuses a draft (`merge.py`, refusal `draft`), so the fix
-  step would have to mark it ready, and a red draft would start `ci-fix.yml`
-  on a branch the fix step is about to write.
+**What still holds.**
 
-**What it costs.** A lane branch's runs, cancelled by the next push to the same
-branch (the concurrency group is the ref everywhere but `main`). The
-integrator's head is pushed *and* opened as a pull request, so it carries two
-runs, and the merge step waits for both: the pull request's selected run and
-the push's full one. Whether the push run should narrow to what the pull
-request would select, or the pull request's run reuse a lane push of the
-identical tree (as `main` does, below), was put to the owner in the lane's
-pull request.
+* Every check the ruleset requires (`secret scan`, `trivy (repo)`,
+  `checkov (terraform + kubernetes)`, `platform policy assertions`,
+  `ci-gate`) is a job of a workflow that runs on every pull request with no
+  path filter and on `synchronize`, so under the up-to-date rule a pull
+  request brought up to date with a moved `main` is re-tested at its new head.
+* The merge step (`agent_worker/merge.py`) and swarm-api's check reading
+  (`swarm_api/forgechecks.py`) never required a push run: they decide each
+  required check by the latest run of each event present at the head, so a
+  head with only `pull_request` runs is decided by those. A stale push run at
+  a shared sha still counts by the same rule, unchanged.
+* The CI fixer already acted only on a pull request's run (`ci-fix.yml`).
+* `ci_reuse.py`'s pull-request reuse of a lane push of the same tree
+  ([below](#a-pull-request-reuses-its-lane-push-of-the-same-tree)) now finds
+  no lane push and runs the selection itself; `main`'s reuse of a pull
+  request's tested tree is unchanged.
+
+**What it costs.** CI no longer starts while review and fix run on the
+implement step's branch (the reason CI-EARLY added the push triggers: 40 % of
+a workflow waited for CI in its sample). It starts when the pull request
+opens, and each head is then tested once, not twice, behind half the queue.
+
+`tests/unit/scripts/test_ci_once_per_head.py` reads every workflow and holds
+that no workflow a lane head's pull request runs is also triggered by a push
+to that lane branch, that `main` keeps its push runs, that every required
+check (read from the ruleset body [above](#owner-step-require-ci-gate-once-it-is-on-main))
+is produced on every pull request, and that both readers decide a head with
+only `pull_request` runs. The workflow change itself is held for the owner
+(the platform may not push `.github/workflows/`); the operator applies it
+from the pull request's quoted patch.
 
 ### shellcheck runs in parallel, and on a pull request over what it reaches
 
@@ -3942,6 +4065,84 @@ the run will test: about 600 s a shard, at most eight. A full run gets eight,
 ~875 s each (at most ~1.5x the target); a selection worth one target gets one
 runner instead of four. `pick` splits with the same code, so the matrix and
 the split never disagree on what runs.
+
+### The component-test shards are sized by measured weight
+
+**Why (owner request 2026-11-03, part of #2688).** The `ui-tests` job ran
+vitest's own `--shard=k/4`, which splits by file **count**. The suite is
+hundreds of ~3 s files and eight `spacing.*.test.tsx` slices of 259-485 s
+each, so whichever shard drew two or three slices set the pace: on eight pull
+request runs the slowest shard took 15-25 minutes while the others took
+10-14. With `main` required up to date, every merge waits for its run's
+slowest shard, so one fixed shard set was setting the merge queue's pace. The
+fix is the one the unit shards already had
+([above](#the-unit-shards-are-sized-by-measured-weight)): count and split by
+measured seconds, not by files.
+
+**The weights** are `tests/unit/scripts/ui_test_durations.json`: vitest's
+per-file seconds, the same file `related-tests.sh` cuts its vitest runs by
+([below](#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)),
+so there is one store and one default. Only files over
+`ui_weights.THRESHOLD_SECONDS` (20 s) are recorded — today the eight spacing
+slices. Every other file weighs `related_tests.VITEST_DEFAULT_SECONDS`, 2.9 s.
+
+**The count.** The `changes` job's `how many swarm-ui component-test shards
+this run needs` step runs `scripts/lib/ui_shards.py count`. It lists exactly
+the files vitest runs (the `include` globs of `apps/swarm-ui/vitest.config.ts`,
+read from that file, under vitest's default directory excludes), sums their
+weights, and writes `ui_shards=[1, ..., N]`: about `SHARD_TARGET_SECONDS` =
+600 s of vitest's reported time a shard, at most `MAX_SHARDS` = 8, and never
+more shards than units to hand out. 600 s is ~200 s of wall time on the
+4-vCPU runner, where vitest runs three workers. Eight is the ceiling because
+each shard is a runner and an `npm ci` (~60 s), and when a dozen pull requests
+arrive together every extra shard is one more runner in the queue. On
+2026-11-04 the suite was 869 files, ~5,041 s: nine at the target, so eight,
+~630 s each. The suite is not narrowed by what a pull request changes, so
+every run that runs the UI gets the same count from the same checkout.
+
+**The split.** Each shard's `pick this shard's test files` step in `ui-tests`
+runs `ui_shards.py pick` with its own `SHARD` and `SHARDS`
+(`strategy.job-total`): every unit, longest first, onto the currently lightest
+shard (LPT), ties broken by shard number and path. It is deterministic, so
+every shard computes the same split and keeps its own part — every file runs
+in exactly one shard — and `count` and `pick` share the code, so the matrix and
+the split never disagree. The shard's files are written one a line, relative
+to `apps/swarm-ui`, and the `component tests` step runs `npm run
+test:components -- $(cat "${SHARD_FILES}")`. Three guards follow from that:
+
+* vitest reads a file argument as a case-insensitive **substring** filter, so
+  `src/a.test.ts` would also run `src/a.test.tsx`. Files where one path
+  contains another are one unit and always land in the same shard, so no
+  shard's filter reaches a file another shard runs;
+* the unquoted `$(cat ...)` splits on whitespace and expands globs, so a test
+  path holding whitespace, a glob or a quote character fails both steps by
+  name instead of running the wrong files;
+* `pick` never writes an empty list and refuses a shard count above the
+  number of units: `vitest run` with no file argument runs the whole suite.
+
+The floor any split has is the heaviest unit: a shard holding the 485 s
+`spacing.accounts` slice takes about that slice's time whatever else it holds.
+
+**A new test file** needs nothing: `count` and `pick` find it through
+`vitest.config.ts`'s globs, it weighs 2.9 s, and LPT places it, after every
+heavier unit, on whichever shard is lightest at that point (light files can
+move between shards when one is added; that is harmless, since all shards
+compute the same split from the same commit). A file that is really heavy —
+another spacing slice, say — is under-weighted at 2.9 s until it is recorded,
+and would make its shard the slow one: add its figure to
+`ui_test_durations.json` in the same pull request, or refresh the weights once
+`main` has run it.
+
+**Refreshing the weights.** Run `scripts/refresh-ui-weights.sh` and commit
+the diff ([below](#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)
+says what it reads). It reads the vitest per-file lines from the
+`swarm-ui component tests` jobs of `main`'s newest successful
+`application.yml` run, whatever the run's shard count, keeps files over 20 s,
+and by default never lowers a recorded figure; `--replace` writes the measured
+figures alone. A shard's balance only moves when a heavy file's weight moves,
+so a refresh is due when a slice is added, split or made faster, or when the
+`pick` lines in a run's log (`shard k runs n, ~s s of measured test time
+(shards: ...)`) stop matching the shards' real test times.
 
 ## Flaky tests and the quarantine
 
@@ -4013,6 +4214,85 @@ vitest ids its log names. It is read-only. Then:
 1. fix the cause if it can be found now -- that is the default;
 2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
    issue to the line; the fix removes the line.
+
+## The full suite runs once per change, in the merge train
+
+**BGD's pick, 2026-11-06 (part of #2688):** *"we really need to fix ci merges
+and streamline the ci part, its the biggest bottleneck we have right now."*
+Measured that morning: one `application.yml` run was 27 jobs and 76
+runner-minutes on a pull request and 34 jobs, all GitHub-hosted, on a push to
+main; about 200 runs a day (145 `pull_request`, merge trains included, and 55
+pushes to main); from about 04:50Z GitHub-hosted jobs waited up to 51 minutes
+(68 waiting, 2 running at 06:55Z) while the own `bogdan-ci` pool (cap 200 VMs)
+had 15 up. Two changes, both in [`scripts/ci-select.sh`](../scripts/ci-select.sh)
+and the `changes` job.
+
+**A. Main skips what its merge train tested.** The train
+([`scripts/merge-train.sh`](../scripts/merge-train.sh),
+[docs/merge-trains.md](merge-trains.md)) tests `main` plus its pull requests
+on a draft pull request from `train/<id>`, then lands each as its own squash.
+Main's commit after the last squash has the train's tested tree but names the
+last pull request, not the train, so
+[the tree record below](#main-reuses-the-tested-tree) never matched it and
+main ran the whole suite again. Main's push run now starts with the `train`
+step (`ci-select.sh train-match`). It skips every test job when it finds a
+pull request that:
+
+* is titled `Merge train <id>: ...`, from `train/<id>` in this repository;
+* has a head whose tree is this commit's tree (`HEAD^{tree}`);
+* has a newest `ci-gate` at that head that concluded `success`;
+* is closed, with the train's own `Green, and landed` comment, posted by a bot.
+
+The squash lands a few seconds before the train closes, so an open train with
+this tree is waited for, at most `TRAIN_WAIT_SECONDS` (300). The step lists
+every job `ci_reuse.py` may skip (`REUSABLE`, read from there) as `reused`,
+and the train's URL as `reused_from`. ci-gate's reuse check then passes those
+skips and names the train. `build images`, the plugin tag and the release
+still run, and the release's test gate reads a skipped job as passed. Any
+other push runs the full suite as before: a direct push, a tree no green train
+tested, a train that closed any other way, or an API it could not read.
+
+**B. A lane's pull request tests what its change reaches.** A pull request
+from a `swarm/**` branch of this repository (the `lane` step,
+`ci-select.sh lane`) still runs shellcheck, actionlint, ruff, the format,
+contract and lock checks, the swarm-ui typecheck and build, the manifests and
+the image check whole. Its tests are narrowed:
+
+* unit shards: the `select` step's selection, as before
+  ([below](#a-pull-request-runs-the-unit-tests-its-change-reaches));
+* component tests: the vitest files whose imports reach a changed swarm-ui
+  module (`related_tests.py`, the selection `scripts/related-tests.sh`
+  prints), plus the stylesheet guards on a `.css` change. They are split into
+  shards by `ui_shards.py`'s weights;
+* integration tests: a changed one, one importing a changed module through
+  any chain, or one naming a changed path.
+
+A shard or the integration job with nothing selected skips its steps rather
+than run an empty `vitest run` or `pytest`, either of which would run the
+whole suite.
+
+**The full suite runs** on a lane whose change touches shared ground: anything
+in `select_unit_tests.py`'s fallback (a workflow or composite action, a
+`conftest.py`, `pyproject.toml`, `uv.lock`, the frozen contract, the
+quarantine, more than 40 paths), any `package.json` or lockfile, `pytest.ini`,
+`setup.cfg` or `tox.ini`, the swarm-ui runner's own files (`RUNNER_WIDE`), or
+a shared helper under `tests/integration/`. It also runs when the selection
+cannot be computed. The step says why in the job summary. A merge train's
+pull request (`train/**`) runs every job, whatever its diff reaches, and so
+does main. A pull request from any other branch is unchanged.
+
+**Every required check keeps its name.** `ci-gate`, `format / unit tests`,
+`swarm-ui typecheck / component tests`, `integration tests (emulator)`,
+`kubernetes manifests` and `shellcheck` still report. A job skipped by its own
+`if:` reads as passed in its fold job and in ci-gate.
+`tests/unit/scripts/test_ci_select.py` holds the selection, the train match
+and the workflow steps.
+
+**What a miss costs.** If a lane's selection misses a test, its pull request
+goes green and the train goes red. The train then bisects and ejects that
+pull request, and main never sees the failure. This is the same bound
+[the unit-test selection](#a-miss-costs-a-red-main-so-the-whole-tree-tests-always-run)
+already accepted, one step earlier.
 
 ## Main reuses the tested tree
 
@@ -4962,6 +5242,58 @@ section below), no `terraform test` and nothing needing credentials, and a
 green run proves nothing CI has not. `tests/unit/scripts/test_changed_guards.py` holds its
 selection against fixture diffs.
 
+### The gate time-boxes the guard run and runs its parts side by side
+
+Owner decision, 3 November 2026 ("1+3"), after a full-day re-measure of the
+worker's pre-publish gate (`agent_worker/prepublish.py`, each agent's final
+attempt, 72 hours before the gate change against 22.5 hours after): builder
+steps (implement, build, fix) went from 8.5 to 15.6 minutes of gate a run on
+average, the slowest tenth from 36.8 to 64.3 minutes. 96% of that was the
+`changed-guards` check, which ran in 46% of builder runs (28% before), its
+`--shard` parts one after another (90th percentile 79.5 minutes).
+
+**What the gate does now** (`timeboxed_guards`):
+
+* It asks the script for the selection (`--list`) and `scripts/related-tests.sh`
+  for the tests related to the files the step changed, and cuts both into
+  parts of about 40 CI-seconds (`GUARDS_PART_WEIGHT`), in the listing's order,
+  so the fixed guards lead the rest.
+* The contract-parity check and the stylesheet guards are the first part,
+  then every related part, then the rest. Each part is one
+  `changed-guards.sh --only <list> --workers <n>` command: `--only` runs just
+  the selection entries it names (no record, no self-split), `--workers` sets
+  pytest's `-n`.
+* The parts run **side by side**, as many as the pod has CPUs (`pod_cpus`:
+  the CPUs the process may use, bounded by the cgroup CPU limit and the
+  platform's `PYTEST_XDIST_AUTO_NUM_WORKERS`), each on its share of them. A
+  larger runtime runs more parts at once with no change to the gate.
+* A part starts only while the **budget** lasts: `GUARDS_BUDGET_SECONDS`, 600
+  s of wall time for the whole check, never past the step's own deadline.
+  A part not started, or stopped at the budget with no failure of its own, is
+  **left to CI**: listed on the round's record (`left_to_ci`) and in the pull
+  request's advisory section, never counted as passed. CI runs the whole
+  selection anyway.
+* A failing part still fails the check, and its output, placed last, goes to
+  the fix turn. A failure printed before a budget stop counts too: the stop's
+  timeout marker is reworded so the gate never reads a stopped part as a
+  timeout nobody can fix.
+
+**Measured on this change's own selection** (2026-11-03, a 6-CPU container,
+343 test files, 3,365 CI-seconds; `related-tests.sh` related 326 of them,
+because the gate module is widely imported). One after another, the old way,
+part 1 of 7 (38 files, 481 CI-seconds) took 454 s at `-n auto`: about 1.06
+CI-seconds a second, so the seven parts are about 53 minutes of gate. Side by
+side, six parts at a time at one worker each, 97 files (891 CI-seconds)
+passed in 500 s: about 1.78 CI-seconds a second. With the 600 s budget the
+check ends at about 10 minutes, a third of the selection run (related parts
+first) and the rest left to CI. The first try ran the related set as ONE
+command; it was killed at the budget and every file was left to CI, which is
+why the related set is cut into parts like the rest.
+
+The contract-parity check took 66 s alone in that container, past the
+script's own 60 s `PARITY_SECONDS`, so it failed in some of these runs whichever way the
+guards ran; that limit predates this change and is not changed by it.
+
 ### While it works, a SwarmCloud agent runs only the related tests
 
 ```bash
@@ -4979,7 +5311,16 @@ is given (CLAUDE.md, and the claude-code runner's `RELATED_TESTS_NOTE` when the
 checkout carries this script): related tests through this script; never vitest
 without file arguments; never pytest over a whole directory or with `-n auto`
 across the suite; never parallel shards or background batches polled with
-sleep; `scripts/changed-guards.sh` once at the end.
+sleep. It used to end "`scripts/changed-guards.sh` once at the end". Since
+2026-11-01 (owner decision, #2981) an agent on a runner with the worker's
+pre-publish gate (claude-code, `claude-code-lightpanda` included) does not run
+`scripts/changed-guards.sh`: the gate runs it after the agent's turn and hands
+back what fails, and the note says so. Measured on the code intelligence
+experiment: on a 33-file patch the script selected 645-681 test files, the
+agents' own runs hit their 10-minute command limit (about ten minutes a
+step), and the gate then ran the same guards again for 65-77 minutes. A
+runner without the gate (codex) keeps `scripts/changed-guards.sh` once at the
+end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
 
 **What is related** (`scripts/lib/related_tests.py`, standard library only).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the
@@ -4994,6 +5335,68 @@ changed module through relative imports (`import ... from`, `export ... from`,
 `node_modules` and can be cut into runs. A change to what every component test
 runs under (`vitest.config.ts`, `src/__tests__/setup.ts`, `package.json`, ...)
 is related to no file by import: it is named in a warning and CI runs the suite.
+
+**Why one route no longer selects the suite** (RELATED-NARROW, part of #2688).
+Agents reported about 1,972 files selected for a change to a handful, and
+hand-picked tests instead. Measured on main at 0409b8d (2026-11-03), a change
+to one swarm-api route, `routes/budget_settings.py`, reached 1,428 of 1,707
+pytest files by import, through three false or overbroad edges:
+
+* **every suffix of a module's dotted name counted as a way to import it**, so
+  `agent_worker/startup.py`'s `import platform` (the standard library) read as
+  an import of `swarm_api/routes/platform.py`, and `main`, `config`, `errors`
+  likewise. Python finds `platform` there only if `swarm_api/routes` itself
+  is on `sys.path`, and nothing puts a package directory there, so an
+  absolute name now reaches a module only through a directory that is not a
+  package (`apps/<app>`, `tests/unit`, `scripts/lib`) or the repository root;
+* **a lazy import counted as an eager one**: `swarm_api/__init__.py` imports
+  `.main` (every route) only inside `create_app()`, yet
+  `from swarm_api import forgeapp` read as loading every route. An import in a
+  function body now passes the change on only to importers whose code (not a
+  docstring) names that function;
+* **`main.py` mounts every router**, so every test that builds the app reached
+  every route. A router module reached through an app that mounts it
+  (`include_router(budget_settings.router)`) now reaches only the tests that
+  request one of its URLs (its `APIRouter` prefix, literals, module
+  constants and f-strings; `{param}` is any one segment), and the guards that
+  walk every route the app mounts (`app.routes`, `.openapi()` ...). A router
+  with a path the selector cannot read is not gated: a partial URL list would
+  drop the tests of the paths it missed. A test that builds the URL from a
+  constant in a helper module (`BASE = "/v1/admin"`, then `f"{BASE}/x"`) does
+  not match and is dropped; main's push run still runs it.
+
+The same change now selects 13 files: the two that request its URLs and eleven
+route walkers (credentials, the admin surface ...), and no worker test. A
+`conftest.py` that is changed, or reached, also reaches every test under its
+directory: tests use its fixtures without importing it, which the old closure
+missed. Swarm-ui: a type-only `import type` / `export type ... from` is no
+edge, since vitest transpiles without running it (tsc, in CI, reads it).
+
+These rules live in `select_unit_tests.py`'s `import_closure`, so pull-request
+CI selects by them too; main's push run and a merge-train run still run the
+whole suite, so a miss there costs a red main, never an untested release.
+
+**Where the code graph is staged, its `tests_for` is added to the import
+map.** With a snapshot beside the checkout (`$SWARM_CONTEXT_DIR/snapshot`, else
+`../.swarm-context/snapshot`, where the pre-publish gate reads it), a changed
+file the graph knows a covering test for also selects the graph's tests for it:
+the file's own test rows and its symbols', as `swarm-graph`'s `tests_for`
+answers. They are added to what its imports select, never put in its place
+(owner decision on PR 3099, 2026-11-03: union, not replace). The graph catches
+a test no import reaches (a fixture, a subprocess, a URL), and the import map
+keeps a test the graph's coverage run missed: no coverage on record is not no
+coverage. So the graph widens a selection, never narrows it. The snapshot is
+read with the standard library, each blob checked against its digest name; one
+that cannot be read is named in a warning and the import map selects alone.
+
+**Wide by design.** What CI runs the whole suite for (the frozen contract
+`apps/common/swarm_common/`, which every component imports; a `conftest.py`;
+`pyproject.toml`; `uv.lock` ...) still selects every test that imports or reads
+it here, about 1,500 files for `swarm_common/models.py`, and a warning says it
+is wide by design and that CI runs the whole suite. A staged graph never
+adds to these: they select by imports alone, so the warning's count is exact.
+Other modules many components import (`swarm_api/store.py`, the worker's
+runners) still select hundreds by import.
 
 **A stylesheet change also selects the stylesheet guards** (RELATED-CSS-GUARDS,
 part of #1914, owner decision 2026-10-22). Any `.css` under `apps/swarm-ui/`
@@ -5075,8 +5478,10 @@ measured (the highest of each one's readings); the other six slices are an
 estimate of 300 s, the low end of the 300-485 s one lane measured for them, which
 also keeps any two slices over 540 s together.
 
-To refresh the weights, run `scripts/refresh-ui-weights.sh` and commit the
-diff. It finds main's newest successful `application.yml` run whose
+The same file sizes and splits CI's component-test shards
+([above](#the-component-test-shards-are-sized-by-measured-weight)), so a
+refresh moves both. To refresh the weights, run `scripts/refresh-ui-weights.sh`
+and commit the diff. It finds main's newest successful `application.yml` run whose
 `swarm-ui component tests` jobs all ran, reads their logs with `gh run view
 --job <id> --log`, and has `scripts/lib/ui_weights.py` parse vitest's
 per-file lines (`✓ src/__tests__/x.test.tsx (1 test) 259018ms`). It keeps only

@@ -181,6 +181,33 @@ def test_a_hand_off_stops_with_the_console_and_the_human_ready_route():
     assert "] WAITING ON A PERSON since 03:05Z · hand-off" in got["progress"][-1]
 
 
+def test_a_question_wait_stops_with_its_own_questions_not_a_sign_in():
+    # #2859: the agent's own blocking question, parked HUMAN_REQUIRED `question_wait`.
+    fake = Fake()
+    fake.docs["task_q"] = {
+        "task_id": "task_q", "step_id": "implement", "workflow_id": "wf_v", "state": "PARKED",
+        "park_reason": "HUMAN_REQUIRED", "updated_at": PARKED_AT.isoformat(),
+        "links": {"console": CONSOLE},
+        "blocked_by": [{"reason": "HUMAN_REQUIRED", "park_phase": "question_wait", "question_wait": {
+            "questions": [{"question": "Refuse or warn?"}, {"question": "Not blocking"},
+                          {"question": "Keep the route?"}],
+            "blocking": [0, 2], "attempt_id": "att_ask"}}],
+    }
+
+    got = _follow(fake, ["task_q"], step_id="implement", wait_seconds=1800)
+
+    assert got["stop"] is True and got["stop_reason"] == "waiting_on_person"
+    wait = got["result"]["waiting_on_person"]
+    # MUTATION: reading a question wait as a hand-off turns this red.
+    assert wait["kind"] == "owner_questions" and wait["park_phase"] == "question_wait"
+    assert [(q["task_id"], q["question_index"]) for q in wait["questions"]] == [("task_q", 0), ("task_q", 2)]
+    # MUTATION: offering human-ready, which resumes it unanswered, turns this red.
+    assert "human_ready_route" not in wait
+    assert "sign in" not in got["result"]["last_error"]
+    assert "answer the 2 blocking questions its agent asked" in got["result"]["last_error"]
+    assert "] WAITING ON A PERSON since 03:05Z · 2 owner questions" in got["progress"][-1]
+
+
 def test_the_bridge_remembers_a_row_that_ended_waiting_on_a_person():
     fake = Fake()
     _merge_held_by_owner_questions(fake)

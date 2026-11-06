@@ -254,12 +254,13 @@ describe('Resources: one row, the prose behind “details”', () => {
     } as Parameters<typeof attempt>[1])
     const dt = host(runOf({ classes: four, attempts: [legacy] }))
     const cpu = dt.querySelector('details.dt-res > summary .dt-res-f')!
-    expect(text(cpu)).toBe('2 cores')
+    // Named a limit, beside the class the head prints (QA2 overview-agents-24).
+    expect(text(cpu)).toBe('2-core limit · 4 vCPU class')
     expect(cpu.getAttribute('title')).toContain('cgroup limit (class 4 vCPU)')
     // With no attempt figure at all, the class's cores say whose they are.
     const bare = attempt(1, { backend: 'GKE_JOB', completed_at: null, exit_code: null } as Parameters<typeof attempt>[1])
     const dt2 = host(runOf({ classes: four, attempts: [bare] }))
-    expect(text(dt2.querySelector('details.dt-res > summary .dt-res-f'))).toBe('4 cores (class)')
+    expect(text(dt2.querySelector('details.dt-res > summary .dt-res-f'))).toBe('4 vCPU class')
   })
 
   it('names what it could not read with a dash, never a 0', () => {

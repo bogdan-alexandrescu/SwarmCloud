@@ -22,17 +22,25 @@ is a label; the submitter filter and every check here keep using the email.
 
 from __future__ import annotations
 
+import logging
+import math
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from google.cloud.firestore_v1.base_query import FieldFilter
 from starlette.concurrency import run_in_threadpool
 
+from swarm_common.models import Attempt, Task
 from swarm_common.states import TaskState
 
-from .. import agent_questions, roles
+from .. import agent_questions, contractreask, mergewake, roles, route_scope
 from ..agent_output import AgentOutputService
-from ..attempt_totals import totals_for, with_totals
+from ..attempt_totals import IN_LIMIT as ATTEMPTS_IN_LIMIT
+from ..attempt_totals import PER_TASK_CAP as ATTEMPTS_PER_TASK_CAP
+from ..attempt_totals import totals_for, totals_for_page, with_totals
 from ..children import (
     PARENT_CANCELLED,
     PROOF_HEADER,
@@ -42,7 +50,7 @@ from ..children import (
 )
 from ..auth import AuthContext
 from .. import sessiontag
-from ..codec import attempt_to_api, claude_session_of, task_to_api
+from ..codec import attempt_from_dict, attempt_to_api, claude_session_of, task_to_api
 from ..deps import (
     AppContext,
     current_auth,
@@ -55,9 +63,10 @@ from ..errors import Forbidden, ValidationFailed
 from ..handoff import HandoffService
 from .children import child_service
 from ..heartbeats import heartbeats_for_page
+from ..live import LIVE_PRESETS, LIVE_SESSIONS, clean_device, profile_is_live, session_id_for
 from ..people import add_names, name_lookup
 from ..schemas import TaskBatchCreate, TaskCreate
-from ..store import Page, task_listing_token
+from ..store import ATTEMPTS, LEASES, STATE_IN_MAX, TASK_SUMMARY_FIELDS, Page, task_listing_token
 from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
@@ -66,6 +75,8 @@ from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
 from ..waiting_detail import build_waiting, read_inputs, waiting_row
 from ..waker import TASK_FINISHED, ring
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -211,8 +222,12 @@ def _owner_filter(requested: str | None, auth: AuthContext, forced: str | None) 
 
 
 @router.get("")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_tasks(
-    state: str | None = Query(default=None),
+    state: list[str] | None = Query(
+        default=None,
+        description="one state, or several: repeated (`state=A&state=B`) or comma-separated",
+    ),
     workflow_id: str | None = Query(default=None),
     runner_profile: str | None = Query(default=None),
     # A parent's children (docs/design/child-tasks.md §6.3), in this tenant.
@@ -248,7 +263,27 @@ def list_tasks(
     page's current leases (`swarm_api.heartbeats`).
 
     Every row, in both views, carries its task's attempt totals
-    (`swarm_api.attempt_totals`), from one batched attempts read per 30 rows.
+    (`swarm_api.attempt_totals`) and its account (`swarm_api.task_accounts`):
+    the task document's STORED copies where they are its current attempt's
+    (contract request 132, accepted 2026-11-01), so a page whose rows carry
+    them costs the page, its leases and its pools -- three round trips for
+    200 rows, where it was about sixteen. A row without one (written before
+    the fields, or a retry not yet started) is derived as before: one
+    batched attempts read and one account-event read per 30 such rows.
+
+    `state` names one state or several (#2688, LOAD-SPEED): `state=A&state=B`
+    or `state=A,B`, at most `STATE_IN_MAX`, is ONE `state IN [...]` query, so
+    the console reads the six live and waiting states in one request instead
+    of six. An unknown state is a 422 naming the known ones.
+
+    THE PAGE'S READS RUN AT ONCE (#2688, LOAD-SPEED). The pools, the accounts,
+    the leases, the attempt totals and the submitters' names each depend only
+    on the page, never on one another, so `_enrich` starts them together and
+    a request waits for the slowest of them, not their sum: measured on the
+    live deployment on 2026-11-01, the Agents page's 200-row summary poll
+    spent its 1.1-5.3 s in these serial round trips, not in CPU. `view=summary`
+    also reads only `store.TASK_SUMMARY_FIELDS` (of `result_summary`, only
+    its two browser-use keys).
 
     `claude_session` (CHECK-FILTER-TASKS, #1749, as CHECK-FILTER did for
     `GET /v1/workflows`) keeps only the tasks tagged with that Claude Code
@@ -264,15 +299,7 @@ def list_tasks(
     why, and `filter.left_out_single` the part of them in no workflow and
     with no parent -- the rows a single-task reader would have counted.
     """
-    parsed_state: TaskState | None = None
-    if state is not None:
-        try:
-            parsed_state = TaskState(state)
-        except ValueError:
-            raise ValidationFailed(
-                f"unknown state {state!r}",
-                detail={"known_states": [s.value for s in TaskState]},
-            ) from None
+    parsed_state = _parse_states(state)
     if view is not None and view not in TASK_VIEWS:
         raise ValidationFailed(
             f"unknown view {view!r}",
@@ -294,6 +321,9 @@ def list_tasks(
         "runner_profile": runner_profile,
         "submitted_by": owner,
         "parent_task_id": parent_task_id,
+        # `view=summary` reads only the fields a summary row serves or masks
+        # with (`store.TASK_SUMMARY_FIELDS`), on the session filter's pages too.
+        "fields": TASK_SUMMARY_FIELDS if summary else None,
     }
     scope: dict | None = None
     if session is None:
@@ -310,21 +340,7 @@ def list_tasks(
             "left_out": left_out,
             "left_out_single": left_out_single,
         }
-    # One read of the page's READY tasks' pools, de-duplicated (#362).
-    waiting = waiting_for_page(ctx.db, page.items, as_of=ctx.now())
-    # #379: each row's account, from ONE bounded collection-group query per 30
-    # rows of the page (Firestore's `in` cap) -- two for the 50-row phone page,
-    # seven for a full 200 -- capped at 64 event documents per task, and none
-    # for a row whose profile calls no model, never asks the pool, or was never
-    # admitted. A finished task's answer is cached per process. See
-    # `swarm_api.task_accounts`.
-    accounts = accounts_for(ctx.db, tenant_id, page.items)
-    # #179: the lease-holding rows' current leases, one `get_all` per 100.
-    beats = heartbeats_for_page(ctx.db, tenant_id, page.items, core=ctx.settings.core)
-    # EVERY ATTEMPT'S SPEND AND TIME on each row, both views (owner decision
-    # 2026-10-05, P1 follow-up): one batched attempts query per 30 rows of the
-    # page, never one per task (`swarm_api.attempt_totals.totals_for`).
-    totals = totals_for(ctx.db, tenant_id, [task.id for task in page.items])
+    waiting, accounts, beats, totals, names = _enrich(ctx, tenant_id, page.items)
     # #1782: each row's one-line reason, from the row's own document and the
     # pool reading above -- no event, pool or related read per row.
     now = ctx.now()
@@ -351,10 +367,86 @@ def list_tasks(
     }
     if scope is not None:
         payload["filter"] = scope
-    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
+    add_names(lambda _emails: names, payload["tasks"], ("submitted_by",))
     if summary:
         payload["view"] = "summary"
     return payload
+
+
+def _parse_states(values: list[str] | None) -> TaskState | list[TaskState] | None:
+    """`?state=`: None, one `TaskState` (the `==` query) or several (`in`).
+
+    Each value may be comma-separated; repeats are dropped. Any unknown value
+    is a 422 naming the known states, and more than `STATE_IN_MAX` is a 422
+    (Firestore refuses a larger `in`)."""
+    if not values:
+        return None
+    names = list(dict.fromkeys(
+        part.strip() for value in values for part in value.split(",") if part.strip()
+    ))
+    if not names:
+        return None
+    parsed: list[TaskState] = []
+    for name in names:
+        try:
+            parsed.append(TaskState(name))
+        except ValueError:
+            raise ValidationFailed(
+                f"unknown state {name!r}",
+                detail={"known_states": [s.value for s in TaskState]},
+            ) from None
+    if len(parsed) > STATE_IN_MAX:
+        raise ValidationFailed(
+            f"at most {STATE_IN_MAX} states in one request, not {len(parsed)}",
+            detail={"max_states": STATE_IN_MAX},
+        )
+    return parsed[0] if len(parsed) == 1 else parsed
+
+
+#: The page reads `_enrich` runs at once: one thread each.
+ENRICH_READS = 5
+
+
+def _enrich(ctx: AppContext, tenant_id: str, tasks: list) -> tuple[dict, dict, dict, dict, dict]:
+    """`(waiting, accounts, beats, totals, names)` for one page, read CONCURRENTLY.
+
+    The five reads are independent -- each takes the page and nothing another
+    returns -- so they start together and the request waits for the slowest
+    (#2688, LOAD-SPEED). Each keeps its own bound and its own failure rule:
+
+      * one read of the page's READY tasks' pools, de-duplicated (#362);
+      * #379: each row's account, from ONE bounded collection-group query per
+        30 rows (Firestore's `in` cap), capped at 64 event documents per task,
+        and none for a row whose profile calls no model, never asks the pool,
+        or was never admitted; a finished task's answer is cached per process
+        (`swarm_api.task_accounts`); a row whose stored `current_account`
+        is its current attempt's (contract request 132) costs no read;
+      * #179: the lease-holding rows' current leases, one `get_all` per 100;
+      * EVERY ATTEMPT'S SPEND AND TIME (owner decision 2026-10-05): the
+        task's stored copy where current (contract request 132), else one
+        batched attempts query per 30 rows, never one per task
+        (`swarm_api.attempt_totals.totals_for_page`);
+      * the submitters' display names, from one lookup (`people.add_names`).
+
+    The Firestore client is safe to share across threads. A read that raises
+    raises here, exactly as it did when the reads ran one after another.
+    """
+    emails = list(dict.fromkeys(t.submitted_by for t in tasks if "@" in (t.submitted_by or "")))
+    lookup = name_lookup(ctx)
+    now = ctx.now()
+    with ThreadPoolExecutor(max_workers=ENRICH_READS, thread_name_prefix="tasks-enrich") as pool:
+        waiting = pool.submit(waiting_for_page, ctx.db, tasks, as_of=now)
+        accounts = pool.submit(accounts_for, ctx.db, tenant_id, tasks)
+        beats = pool.submit(heartbeats_for_page, ctx.db, tenant_id, tasks, core=ctx.settings.core)
+        totals = pool.submit(totals_for_page, ctx.db, tenant_id, tasks)
+        names = pool.submit(lookup, emails) if emails else None
+        return (
+            waiting.result(),
+            accounts.result(),
+            beats.result(),
+            totals.result(),
+            names.result() if names is not None else {},
+        )
 
 
 def _session_page(
@@ -404,7 +496,306 @@ def _session_page(
     return Page(items=matched, next_page_token=token), left_out, left_out_single
 
 
+@router.get("/open-questions")
+def list_open_questions(
+    claude_session: str = Query(...),
+    since: datetime | None = Query(default=None),
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The caller's finished tasks of one Claude Code session that ended at or
+    after `since` (default 7 days ago, at most 31) and have at least one
+    owner question without an answer, newest end first, in ONE call (#2835).
+
+    The sc plugin's check (`owner_questions`) paged the session's SUCCEEDED
+    tasks for these and gave up after 10 pages, so a busy session's older
+    questions were never listed. This route asks the store for the tasks
+    whose agent asked questions (`agent_questions.open_question_tasks`) and
+    filters the session and the answers itself. Always the caller's OWN
+    tasks: the questions are the submitter's to answer. Each row is the row
+    `GET /v1/tasks` serves; `filter` echoes the session and the window, and
+    `complete` is false only when the read hit its bound.
+    """
+    session = sessiontag.valid(claude_session)
+    if session is None:
+        raise ValidationFailed(
+            f"claude_session {claude_session!r} is not a Claude Code session id",
+            detail={"pattern": sessiontag.PATTERN},
+        )
+    now = ctx.now()
+    earliest = now - timedelta(days=agent_questions.OPEN_QUESTIONS_MAX_DAYS)
+    if since is None:
+        since = now - timedelta(days=agent_questions.OPEN_QUESTIONS_DEFAULT_DAYS)
+    elif since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    if since < earliest:
+        raise ValidationFailed(
+            f"since may reach back at most {agent_questions.OPEN_QUESTIONS_MAX_DAYS} days",
+            detail={"earliest": earliest.isoformat()},
+        )
+    tasks, complete = agent_questions.open_question_tasks(
+        ctx.db, tenant_id, auth.email, session, since
+    )
+    payload: dict = {
+        "tasks": [task_to_api(task, console_url=ctx.settings.console_url) for task in tasks],
+        "complete": complete,
+        "filter": {"claude_session": session, "since": since.isoformat(), "open_questions": True},
+        "tenant_id": tenant_id,
+    }
+    add_names(name_lookup(ctx), payload["tasks"], ("submitted_by",))
+    return payload
+
+
+#: The most task ids one `GET /v1/tasks/digests` serves: a workflow's steps
+#: and an Agents list page fit (the list's browser rows are a subset of its
+#: page), and a bound keeps one read from becoming a scan.
+DIGEST_MAX_IDS = 100
+#: The newest events read per waiting task: the page the console's
+#: `stateEnteredAt` was given by each per-step read (`EVENT_PAGE_LIMIT`).
+DIGEST_EVENT_PAGE = 200
+#: Per-task event reads in flight at once.
+DIGEST_EVENT_READS = 8
+#: What `include` may name. `live` is opt-in: it costs a lease and a session
+#: read per browser task, which a workflow page's poll does not draw.
+DIGEST_PARTS: tuple[str, ...] = ("entered", "usage", "live")
+#: The event each clocked wait is entered by (the console's `ENTRY_EVENT`).
+ENTRY_EVENT: dict[TaskState, str] = {
+    TaskState.PARKED: "parked",
+    TaskState.LEASED: "lease_acquired",
+    TaskState.DISPATCHED: "dispatched",
+}
+#: The events that move a task between states; heartbeats and checkpoints do not.
+TRANSITION_EVENTS: frozenset[str] = frozenset({
+    "submitted", "queued", "parked", "ready", "lease_acquired", "lease_released", "dispatched",
+    "starting", "running", "retrying", "succeeded", "failed", "cancelled", "dead_lettered",
+})
+#: The token figures a `usage` sums, as the attempt rows name them.
+USAGE_TOKENS: tuple[str, ...] = (
+    "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+)
+
+
+def entered_at(state: TaskState, events: list) -> datetime | None:
+    """When the task entered `state`, from its newest events, or None.
+
+    The console's rule (`stepviews.stateEnteredAt`), made where the events
+    are: newest first, skip what is not a transition, take the run of entry
+    events at the head -- a re-park while parked keeps the first park's time
+    -- and stop at the first other transition. A head whose newest transition
+    is something else describes an older state than the record's, and gives
+    no time rather than an earlier one.
+    """
+    entry = ENTRY_EVENT.get(state)
+    if entry is None:
+        return None
+    found: datetime | None = None
+    for event in sorted(events, key=lambda e: e.at, reverse=True):
+        kind = event.type.value
+        if kind not in TRANSITION_EVENTS:
+            continue
+        if kind != entry:
+            break
+        found = event.at
+    return found
+
+
+def _finite(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def step_usage(attempts: list[Attempt]) -> dict:
+    """The console's `StepUsage` over one task's attempts.
+
+    Each figure is summed SEPARATELY and stays null until some attempt carried
+    it: `record_spend` writes only the keys the runner reported, so a missing
+    half is unmeasured, not zero. `attempts` and `checkpoints` are counts.
+    """
+
+    def total(field: str) -> float | int | None:
+        seen = [getattr(a, field) for a in attempts if _finite(getattr(a, field, None))]
+        return sum(seen) if seen else None
+
+    cost = total("cost_usd")
+    return {
+        "attempts": len(attempts),
+        "attempts_with_cost": sum(1 for a in attempts if _finite(a.cost_usd)),
+        "attempts_with_tokens": sum(
+            1 for a in attempts if any(_finite(getattr(a, f, None)) for f in USAGE_TOKENS)
+        ),
+        "checkpoints": sum(len(a.checkpoints or []) for a in attempts),
+        "cost_usd": round(cost, 6) if cost is not None else None,
+        **{field: total(field) for field in USAGE_TOKENS},
+    }
+
+
+def _usage_chunk(ctx: AppContext, tenant_id: str, chunk: list[str]) -> dict[str, list[Attempt] | None]:
+    """One `in` query for at most 30 tasks' attempts; every task None when it fails."""
+    limit = ATTEMPTS_PER_TASK_CAP * len(chunk)
+    try:
+        query = (
+            ctx.db.collection(ATTEMPTS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("task_id", "in", chunk))
+            .limit(limit)
+        )
+        docs = [snap.to_dict() or {} for snap in query.stream()]
+        if len(docs) >= limit:
+            raise OverflowError(f"{len(docs)} attempt documents for {len(chunk)} task(s)")
+        members = set(chunk)
+        by_task: dict[str, list[Attempt] | None] = {t: [] for t in chunk}
+        for doc in docs:
+            # The query filters both; restated so a fake or an index mistake
+            # cannot move the tenant boundary.
+            if doc.get("tenant_id") != tenant_id or doc.get("task_id") not in members:
+                continue
+            by_task[doc["task_id"]].append(attempt_from_dict(doc))  # type: ignore[union-attr]
+        return by_task
+    except Exception as exc:  # the tasks were read; only their attempts were not
+        log.warning("digest attempt read failed: %s", type(exc).__name__)
+        return {t: None for t in chunk}
+
+
+def _live_states(ctx: AppContext, tasks: list[Task]) -> dict[str, dict]:
+    """Each task's current-attempt live session, as a list row draws it.
+
+    The lease names the attempt and the attempt names the session
+    (`live.session_id_for`), as `LiveSessionService._load` resolves it -- two
+    batched reads for the whole page instead of one transaction per row.
+    State and device only: who may control, and the viewer's ticket, stay
+    the open viewer's own `GET /v1/tasks/{id}/live/session`.
+    """
+    out: dict[str, dict] = {
+        t.id: {"live_browser": profile_is_live(t.runner_profile), "session_state": None, "device": None}
+        for t in tasks
+    }
+    holding = [t for t in tasks if out[t.id]["live_browser"] and t.current_lease_id]
+    if not holding:
+        return out
+    leases = {
+        snap.id: snap.to_dict() or {}
+        for snap in ctx.db.get_all([ctx.db.collection(LEASES).document(t.current_lease_id) for t in holding])
+        if snap.exists
+    }
+    session_of: dict[str, str] = {}
+    for t in holding:
+        lease = leases.get(str(t.current_lease_id)) or {}
+        if lease.get("task_id") not in (None, t.id) or not lease.get("attempt_id"):
+            continue
+        session_of[t.id] = session_id_for(str(lease["attempt_id"]))
+    if not session_of:
+        return out
+    sessions = {
+        snap.id: snap.to_dict() or {}
+        for snap in ctx.db.get_all(
+            [ctx.db.collection(LIVE_SESSIONS).document(sid) for sid in dict.fromkeys(session_of.values())]
+        )
+        if snap.exists
+    }
+    by_id = {t.id: t for t in holding}
+    for task_id, sid in session_of.items():
+        session = sessions.get(sid)
+        if session is None or session.get("tenant_id") not in (None, by_id[task_id].tenant_id):
+            continue
+        out[task_id] = {
+            "live_browser": True,
+            "session_state": "open" if session.get("state") == "open" else "closed",
+            "device": clean_device(session.get("device")),
+        }
+    return out
+
+
+@router.get("/digests")
+def list_digests(
+    ids: str = Query(..., description="Comma-separated task ids, at most 100"),
+    include: str = Query(default="entered,usage", description="Any of entered, usage, live"),
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """What a page draws for MANY tasks, in ONE read (#2688, WORK-READS-SPEED).
+
+    The owner's workflow page (40 browser steps, 2026-11-02) made 61 requests
+    on load: 24 `GET /v1/tasks/{id}/events` pages to time each waiting step
+    from its entry event, and 12 `GET /v1/tasks/{id}/attempts` reads to sum
+    each step's tokens and cost; the Agents list read one live session per
+    browser row on every refresh. Each row here carries, per `include`:
+
+      * `entered`: `entered_at`, when a PARKED, LEASED or DISPATCHED task
+        entered that state (`entered_at`), else null;
+      * `usage`: the task's attempts rolled up (`step_usage`), with
+        `usage_read` `"ok"` or `"failed"` -- a failed read is null figures,
+        never a zero;
+      * `live`: the current attempt's live session state and device, and the
+        gate's `presets` once beside the rows.
+
+    Tenant-scoped as `GET /v1/tasks/{id}`: a task of another tenant, a
+    missing one, and one a continuation-scoped caller did not submit are all
+    simply absent -- the same absence, so the answer confirms no id. Reads
+    only: nothing here writes, leases or admits.
+    """
+    wanted = list(dict.fromkeys(i.strip() for i in ids.split(",") if i.strip()))
+    if len(wanted) > DIGEST_MAX_IDS:
+        raise ValidationFailed(
+            f"at most {DIGEST_MAX_IDS} task ids per digest read",
+            detail={"ids": len(wanted), "max": DIGEST_MAX_IDS},
+        )
+    parts = {p.strip() for p in include.split(",") if p.strip()}
+    unknown = parts - set(DIGEST_PARTS)
+    if unknown:
+        raise ValidationFailed(
+            f"include names {sorted(unknown)!r}; it may name {list(DIGEST_PARTS)!r}",
+            detail={"allowed": list(DIGEST_PARTS)},
+        )
+    found = ctx.store.tasks_by_id(tenant_id, wanted)
+    tasks = [
+        found[i] for i in wanted
+        if i in found and (submitted_by is None or found[i].submitted_by == submitted_by)
+    ]
+    rows: dict[str, dict] = {t.id: {"task_id": t.id, "state": t.state.value} for t in tasks}
+
+    if "entered" in parts:
+        waiting = [t for t in tasks if t.state in ENTRY_EVENT]
+        for t in tasks:
+            rows[t.id]["entered_at"] = None
+
+        def head(task: Task) -> datetime | None:
+            try:
+                return entered_at(task.state, ctx.store.newest_events(task, limit=DIGEST_EVENT_PAGE))
+            except Exception as exc:  # one task's events unread: its lower bound stays
+                log.warning("digest event read failed: %s", type(exc).__name__)
+                return None
+
+        if waiting:
+            with ThreadPoolExecutor(max_workers=min(len(waiting), DIGEST_EVENT_READS)) as pool:
+                for task, at in zip(waiting, pool.map(head, waiting)):
+                    rows[task.id]["entered_at"] = at
+
+    if "usage" in parts:
+        chunks = [
+            [t.id for t in tasks[start : start + ATTEMPTS_IN_LIMIT]]
+            for start in range(0, len(tasks), ATTEMPTS_IN_LIMIT)
+        ]
+        read: dict[str, list[Attempt] | None] = {}
+        if chunks:
+            with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+                for got in pool.map(lambda chunk: _usage_chunk(ctx, tenant_id, chunk), chunks):
+                    read.update(got)
+        for t in tasks:
+            attempts = read.get(t.id)
+            rows[t.id]["usage"] = step_usage(attempts) if attempts is not None else None
+            rows[t.id]["usage_read"] = "ok" if attempts is not None else "failed"
+
+    payload: dict = {"tenant_id": tenant_id, "read_at": ctx.now(), "digests": list(rows.values())}
+    if "live" in parts:
+        for task_id, live in _live_states(ctx, tasks).items():
+            rows[task_id]["live"] = live
+        payload["presets"] = [dict(p) for p in LIVE_PRESETS]
+    return payload
+
+
 @router.get("/{task_id}")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def get_task(
     task_id: str,
     tenant_id: str = Depends(tenant_scope),
@@ -443,6 +834,14 @@ def get_task(
         ),
         totals,
     )
+    # JEV'S JUDGMENT OF THE STEP'S WORK CONTRACT (jev-contract.md section 5.4;
+    # the owner's pick on PR #3255): the stored `contract_acceptance`, served
+    # on the detail beside the approval inbox's, so the person deciding reads
+    # it wherever they open the step. The Task model does not carry the field,
+    # so it is one read of the task's own document; absent when never judged.
+    acceptance = contractreask.acceptance_of(ctx.db, tenant_id, task.id)
+    if acceptance is not None:
+        served["contract_acceptance"] = acceptance
     add_names(name_lookup(ctx), [served], ("submitted_by",))
     return {"task": served}
 
@@ -621,6 +1020,7 @@ def human_ready(
 
 
 @router.get("/{task_id}/events")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_events(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -644,16 +1044,22 @@ def list_events(
     `Store._keyset_page` for why events that share a timestamp are neither
     dropped nor repeated at a page boundary.
 
-    Each `detail` is masked by the task's masker, so the task is read first --
-    which `Store.list_events` does anyway for its tenant check.
+    Each `detail` is masked by the task's masker, so the task is read first,
+    and ONCE: `Store.list_events` makes its tenant check on the task read
+    here rather than reading the document again. The masker is built cold
+    (`warm=False`): this page serves no input and no metadata, and warming
+    masked both whole on every first read of a task -- a long prompt's
+    redaction pass on a route that never shows it (#2688, WORK-READS-SPEED).
     """
-    masking = masking_for(ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by))
+    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+    masking = masking_for(task, warm=False)
     page = ctx.store.list_events(
         tenant_id,
         task_id,
         limit=paged_limit(ctx, limit),
         page_token=page_token,
         descending=order == "desc",
+        task=task,
     )
     return {
         "task_id": task_id,
@@ -702,6 +1108,7 @@ def read_utilisation(
 
 
 @router.get("/{task_id}/attempts")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_attempts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -757,6 +1164,7 @@ def list_attempts(
 
 
 @router.get("/{task_id}/artifacts")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_artifacts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -794,6 +1202,7 @@ def list_artifacts(
 
 
 @router.get("/{task_id}/artifacts/content")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_artifact(
     task_id: str,
     name: str = Query(..., min_length=1, max_length=512),
@@ -846,6 +1255,7 @@ def read_artifact(
 
 
 @router.get("/{task_id}/artifacts/raw", response_class=StreamingResponse)
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_artifact_raw(
     task_id: str,
     name: str = Query(..., min_length=1, max_length=512),
@@ -912,6 +1322,7 @@ def read_artifact_raw(
 
 
 @router.get("/{task_id}/checkpoints")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_checkpoints(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -960,6 +1371,7 @@ def list_checkpoints(
 
 
 @router.get("/{task_id}/logs")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_logs(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -1027,6 +1439,7 @@ def read_logs(
 
 
 @router.get("/{task_id}/transcript")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_transcript(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -1062,6 +1475,7 @@ def read_transcript(
 
 
 @router.get("/{task_id}/answer")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_answer(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -1113,6 +1527,7 @@ def read_questions(
 def answer_question(
     task_id: str,
     body: agent_questions.AnswerBody,
+    reply: Literal["full", "short"] = Query("full"),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
@@ -1129,6 +1544,11 @@ def answer_question(
     `history`. Stored as `metadata.owner_answers`; answers with the questions
     as `GET /questions` now serves them. See `swarm_api.agent_questions`.
 
+    Answers to different questions of one task, sent at once, are all
+    stored: each is merged in its own transaction that re-reads the others,
+    and contention is run again; contention that outlasts it answers 503
+    `answer_contended` with a `Retry-After`, nothing stored (part of #2688).
+
     `via` (`console` | `claude-code`) and `session` (a Claude Code session id:
     a UUID or 8-64 of `[A-Za-z0-9_-]`, else 422) say where it was answered;
     the sc plugin's `swarm_task_answer` sends `claude-code` and its session.
@@ -1138,15 +1558,43 @@ def answer_question(
     A `viewer` answers nothing (`role_member_required`, through its switch),
     their own task's agent included: the submitter's rule is on top of the
     role, never instead of it (workspace-roles.md §4.8).
+
+    `?reply=short` answers only `{status: "recorded", task_id,
+    question_index, recorded_at, by}`, no question text: a whole task's
+    questions are about 4,000 tokens, and closing ~400 finished tasks'
+    questions one by one cost ~1.6 million (AI Studio, 6 November 2026,
+    part of #2688). The answer is checked and stored exactly as with the
+    default `reply=full`, which is unchanged.
     """
     require_member(ctx, auth, fresh=True)
-    return agent_questions.answer_question(
+    now = ctx.now()
+    served = agent_questions.answer_question(
         ctx.store, service, ctx.db, tenant_id, task_id, body,
-        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
+        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=now,
+        # A pick other than the one a merge went past starts a pick-fix
+        # round against the default branch, as the answering member.
+        start_pick_fix=lambda merge, claim: mergewake.advisory_pick_fix(ctx, auth, merge, claim),
     )
+    if reply == "full":
+        return served
+    # The stored answer as served; the moment and the caller this request
+    # stored it with when the read no longer shows it (a later attempt's
+    # question at that index).
+    questions = served.get("questions") or []
+    index = body.question_index
+    stored = questions[index].get("answer") if 0 <= index < len(questions) else None
+    stored = stored if isinstance(stored, dict) else {}
+    return {
+        "status": "recorded",
+        "task_id": task_id,
+        "question_index": index,
+        "recorded_at": stored.get("at") or now.isoformat(),
+        "by": stored.get("by") or auth.email,
+    }
 
 
 @router.get("/{task_id}/input")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_input(
     task_id: str,
     tenant_id: str = Depends(tenant_scope),

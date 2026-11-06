@@ -13,7 +13,8 @@ Three places have to agree for that to hold, and each is checked here:
     terraform/bootstrap/terraform.tfvars, which the owner applies himself --
     the committed line is the record of that apply);
   * swarm-api: ALLOWED_USERS admits the account past the saga.xyz domain
-    check (terraform/infra/locals.tf);
+    check (terraform/infra/locals.tf appends var.allowed_users, which
+    dev.tfvars sets to the account since DAYONE-TF-1);
   * the tenant: dev.tfvars declares the id the frozen identity module gives
     the account, so the tenant has a worker account, a namespace and a prefix
     behind it -- and no group tenant lists the account.
@@ -147,10 +148,20 @@ def test_the_bootstrap_admits_the_account_at_the_front_door() -> None:
 
 def test_swarm_api_admits_the_account_beside_swarm_verify() -> None:
     expression = _allowed_users_expression()
-    assert "google_service_account.verify.email" in expression, expression
-    assert f'"{ORACLE_API}"' in expression, (
-        f"ALLOWED_USERS is `{expression}`; swarm-api answers {ORACLE_API} 403 "
-        "on the saga.xyz domain check until it is listed"
+    # local.verify_email since DAYONE-BOOT-2 (the account is bootstrap's).
+    assert "local.verify_email" in expression, expression
+    # Since DAYONE-TF-1 the address is an install input, var.allowed_users,
+    # rather than a literal in locals.tf: the expression must append it, and
+    # dev.tfvars must name the account there.
+    assert re.search(r"\bvar\.allowed_users\b", expression), (
+        f"ALLOWED_USERS is `{expression}`; it no longer appends var.allowed_users"
     )
-    # One literal, the account: nothing else rides in with it.
-    assert set(_strings(expression)) <= {ORACLE_API, ","}, expression
+    allowed = _string_list(DEV_TFVARS, "allowed_users")
+    assert ORACLE_API in allowed, (
+        f"dev.tfvars allowed_users is {allowed}; swarm-api answers {ORACLE_API} "
+        "403 on the saga.xyz domain check until it is listed"
+    )
+    # The account alone: nothing else rides in with it.
+    assert allowed == [ORACLE_API], allowed
+    # No literal address left in the expression itself.
+    assert set(_strings(expression)) <= {","}, expression

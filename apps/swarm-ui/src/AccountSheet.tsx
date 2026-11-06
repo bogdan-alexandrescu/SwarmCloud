@@ -229,6 +229,16 @@ export function AgentCap({ a, owned, reload }: { a: PoolAccount; owned: boolean;
       {owned && editing && (
         <form
           className="acct-cap-edit"
+          // ESCAPE IS THE EDITOR'S FIRST (visual QA pass 2 cap2-04): it reached
+          // the sheet's document handler and closed the whole sheet. Here it
+          // closes only the editor, focus back on `Change the cap`; a second
+          // Escape is the sheet's.
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape' || busy) return
+            e.preventDefault()
+            e.stopPropagation()
+            close()
+          }}
           onSubmit={(e) => {
             e.preventDefault()
             if (valid && !busy) void save()
@@ -419,11 +429,22 @@ export function SheetDuplicate({
 /** This account's own forecast, from today's reading (BGD, "From today's readings"). */
 export function SheetForecast({ a, now }: { a: PoolAccount; now: number }) {
   const p = accountPaceOf(a, now)
+  // A RESET ALREADY PAST (visual QA pass 2 cap2-05): the reading is from the
+  // week before it, so no pace can be taken to that reset. The forecast says
+  // the window should have reset, in the Windows block's `passed` words.
+  const passed = p !== null && p.read && p.resetsAt <= now
   let say: ReactNode
   if (p === null) {
     say = (
       <>
         <span className="acct-dash">&mdash;</span> no 7-day reading to take a pace from.
+      </>
+    )
+  } else if (passed) {
+    say = (
+      <>
+        Its week should have reset: <b>reset {utcAt(p.resetsAt, now)} passed</b>, and nothing has been read since. The
+        forecast waits for a fresh reading.
       </>
     )
   } else if (p.underNow) {
@@ -457,7 +478,7 @@ export function SheetForecast({ a, now }: { a: PoolAccount; now: number }) {
     <section className="acct-ss" aria-label="Forecast">
       <h4>Forecast</h4>
       <p>{say}</p>
-      {p !== null && p.read && (
+      {p !== null && p.read && !passed && (
         <p className="acct-ss-note">
           Pace: {pct(p.perHour * 24)} of the week a day, its 7-day share used over the hours since its week opened.
         </p>
@@ -735,7 +756,9 @@ export function HealthSeries({ h, now, width }: { h: AccountHealth; now: number;
           const dx = x(d)
           const dt = new Date(d)
           const show = !narrow || i % 2 === 0
-          const word = narrow ? String(dt.getUTCDate()) : `${MONTH_SHORT[dt.getUTCMonth()]} ${dt.getUTCDate()}`
+          // The month on every tick (visual QA pass 2 cap2-15): at 390 a bare
+          // `23 25 27` named no month; a phone shows every other day instead.
+          const word = `${MONTH_SHORT[dt.getUTCMonth()]} ${dt.getUTCDate()}`
           const edge = dx + 3 + word.length * 7 > W
           return (
             <g key={d}>

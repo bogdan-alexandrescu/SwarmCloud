@@ -58,6 +58,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from swarm_redaction import MASK as REDACTION_MASK
+from swarm_redaction import RULES as REDACTION_RULES
+
 from . import artifact_manifest
 from .errors import CheckpointError
 from .objectstore import ObjectStore
@@ -219,6 +222,46 @@ def _is_tool_cache(rel: str) -> bool:
         elif rel == entry:
             return True
     return False
+
+
+#: Where the checkpoint MASKS CREDENTIAL VALUES in the archived copy (#1333):
+#: paths relative to HOME (`work/`), each a file or a directory and all below
+#: it. MEASURED 2026-10-31 and 2026-11-01 (accept runs 41234694248 and
+#: 41256718065): the QA identity's task had a JWT's shape in its first
+#: checkpoint while its transcript, logs and outputs were clean. The CLIs keep
+#: their sessions here -- every tool result, unredacted -- and the archive
+#: holds them by the owner's decision on #244 and is downloaded as stored;
+#: the uploaded transcript is redacted, these copies were not. The hand-off
+#: spool (`handoff.SPOOL_DIR_NAME`, restated: this module never imports the
+#: hand-off) is the worker's own, and carries tab URLs across a park.
+#:
+#: The agent's own files are NOT masked: a token-shaped fixture in its
+#: checkout is its work, and a resume must restore the tree it left.
+MASKED_STORES: tuple[str, ...] = (".claude", ".claude.json", ".codex", ".swarm-handoff")
+
+#: The redaction filter's own rules for a credential VALUE: any JWT, and a
+#: `Bearer`/`Basic` value. Only these two: each matches no quote, backslash or
+#: newline, so a masked JSON line is still valid JSON (a resumed session
+#: reads it). The whole filter is not bounded so (a private key is masked as a
+#: block), and its key/value rule would rewrite lines that hold no token.
+_MASK_RULES = tuple(rule for rule in REDACTION_RULES if rule.name in ("jwt", "http_authorization"))
+
+
+def _is_masked_store(rel: str) -> bool:
+    """True when `rel`, relative to `work/`, is in one of `MASKED_STORES`."""
+    return any(rel == entry or rel.startswith(entry + "/") for entry in MASKED_STORES)
+
+
+def _mask_credentials(source: Any, sink: Any) -> int:
+    """Copy `source` to `sink` line by line, every credential value masked; how many."""
+    masked = 0
+    for line in source:
+        text = line.decode("utf-8", "surrogateescape")
+        for rule in _MASK_RULES:
+            text, found = rule.pattern.subn(r"\1" + REDACTION_MASK, text)
+            masked += found
+        sink.write(text.encode("utf-8", "surrogateescape"))
+    return masked
 
 
 #: Dependency and build directories left out of every checkpoint, wherever in
@@ -1397,6 +1440,8 @@ class CheckpointManager:
         unreadable: list[str] = []
         #: Files shaped like a browser session, left out (LB-L4b): `_add_entry`.
         browser_state: list[str] = []
+        #: Files archived with credential values masked (#1333), and how many.
+        masked: list[tuple[str, int]] = []
         #: File content archived so far, against `CHECKPOINT_EXPANSION_RATIO`.
         expanded = [0]
         stack: list[tuple[int, str, list[str]]] = []
@@ -1433,6 +1478,7 @@ class CheckpointManager:
                         expanded=expanded,
                         expanded_cap=self._max_bytes * CHECKPOINT_EXPANSION_RATIO,
                         browser_state=browser_state,
+                        masked=masked,
                     )
                 except (FileNotFoundError, NotADirectoryError):
                     continue  # gone, or no longer a directory
@@ -1478,6 +1524,20 @@ class CheckpointManager:
                 paths=[scrub_paths(rel) for rel in browser_state[:SKIPPED_LINKS_NAMED]],
                 not_named=max(0, len(browser_state) - SKIPPED_LINKS_NAMED),
             )
+        if masked and tar is not None:
+            # By path and count, never a value: the paths are the CLIs' own
+            # session files and the spool's, scrubbed as every path here is.
+            scrub_masked: Callable[[str], str] = getattr(self._log, "scrub_text", None) or (
+                lambda text: text
+            )
+            self._log.warning(
+                "credential values were masked in the archived copies of these files",
+                event="checkpoint_credentials_masked",
+                files=len(masked),
+                masked=sum(count for _, count in masked),
+                paths=[scrub_masked(rel) for rel, _ in masked[:SKIPPED_LINKS_NAMED]],
+                not_named=max(0, len(masked) - SKIPPED_LINKS_NAMED),
+            )
         if unreadable and tar is not None:
             # The path only, never the OS error's text, and through the
             # worker's scrub: a path is the agent's text, as a link's is
@@ -1507,6 +1567,7 @@ class CheckpointManager:
         expanded: list[int] | None = None,
         expanded_cap: int | None = None,
         browser_state: list[str] | None = None,
+        masked: list[tuple[str, int]] | None = None,
     ) -> int:
         """Add one entry of the directory open as `dir_fd`; 1 when it counts.
 
@@ -1544,6 +1605,14 @@ class CheckpointManager:
         file's inode is taken back out of `tar.inodes`: `gettarinfo`
         registered it, and a second name of it would otherwise become a link
         member pointing at a member the archive does not hold.
+
+        A CREDENTIAL VALUE IN A CLI'S SESSION OR THE SPOOL IS MASKED (#1333):
+        a file under `MASKED_STORES` is archived with every JWT and `Bearer`
+        value replaced by the redaction filter's mask, and the member is the
+        size of what was written. The file in `work/` is not touched. A file
+        that held one goes into `masked` with the count, which the walk
+        records; its signature is the stat's, so an unchanged file is not
+        read again.
         """
         st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
 
@@ -1631,7 +1700,16 @@ class CheckpointManager:
                         browser_state.append(rel)
                     return 0
                 spool.seek(0)
-                tar.addfile(info, spool)
+                if not _is_masked_store(rel):
+                    tar.addfile(info, spool)
+                    return 1
+                with tempfile.SpooledTemporaryFile(max_size=CHECKPOINT_SPOOL_BYTES) as clean:
+                    found = _mask_credentials(spool, clean)
+                    info.size = clean.tell()
+                    clean.seek(0)
+                    tar.addfile(info, clean)
+                if found and masked is not None:
+                    masked.append((rel, found))
         return 1
 
     # -- ownership ---------------------------------------------------------

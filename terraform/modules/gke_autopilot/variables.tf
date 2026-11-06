@@ -189,6 +189,23 @@ variable "enable_cilium_clusterwide_network_policy" {
   default     = false
 }
 
+variable "enable_fqdn_network_policy" {
+  description = <<-EOT
+    Admit hostname-based egress policy (FQDNNetworkPolicy) on Dataplane V2.
+    kubernetes/network-policies/ holds swarm-voice's, which fails closed until
+    this is on: swarm-voice then reaches only DNS and the metadata server.
+
+    Default false, today's value, so an environment that does not ask plans no
+    change. No charge: GKE's release note of 2025-09-02 includes FQDN Network
+    Policy "in the GKE offering at no additional cost". false -> true is an
+    in-place cluster update; true -> false REPLACES the cluster (the google
+    provider's ForceNewIfChange on this field), so never turn it off again
+    without planning a cluster rebuild.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "labels" {
   type = map(string)
 }

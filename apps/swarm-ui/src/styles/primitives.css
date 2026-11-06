@@ -1,0 +1,19 @@
+/* THE SHARED PRIMITIVES' OWN RULES (primitives.tsx). The mark itself is
+   styles.css's (`.ctl-mark`); this sheet holds only what a primitive adds.
+
+   THE MARK AS AN ICON (visual QA pass 2 automate2-17, was automate-19, part
+   of #2694). An empty state's heading already says what kind of nothing it
+   is, so its mark drops the two words and keeps the silhouette: the kind's
+   border style -- solid, dashed or dotted -- and its colour,
+   on a square one line of the heading's text tall. The sentence stays the
+   mark's accessible name, so a screen reader hears what the word used to say.
+   `:root` lifts these over styles.css's `.ctl-mark.is-*`, which loads after
+   this sheet and would otherwise put the word mark's padding back. */
+:root .ctl-mark.is-icon {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  gap: 0;
+  vertical-align: -1px;
+}

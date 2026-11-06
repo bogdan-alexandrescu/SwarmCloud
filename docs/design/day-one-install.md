@@ -1,5 +1,7 @@
 # SwarmCloud Day One: the install design (P0)
 
+**For a company installing SwarmCloud, the page is [docs/install.md](../install.md)**, written from the code and the manifest; this document is the design behind it.
+
 **Status:** P0 design, for BGD's approval (GATE 0b). Part of #2688.
 **Written:** 2026-10-29, against `main` at `17e2ec1`.
 **Inputs:** the Day One brief that BGD approved on 2026-10-28 (GATE 0), with its decisions D1 to D24 kept as they are; the dependency inventory in [`day-one/manifest.draft.yaml`](day-one/manifest.draft.yaml); this repository's code, Terraform, runbooks and history; Google's and GitHub's documentation, cited by URL.
@@ -443,9 +445,9 @@ Whether the live deployment's Terraform tenants should move to the same single w
 
 ### 6.1 The release home
 
-**D25 (BGD, 2026-10-28):** the release home exists. BGD created GCP project `swarmcloud` under the Saga org, and its id was free; billing is linked. Paths: Artifact Registry under project `swarmcloud`, bundles in `gs://swarmcloud`.
+**D25 (BGD, 2026-10-28):** the release home exists. It is GCP project `swarmcloud-prod` under the Saga org (its display name is `swarmcloud`; the id `swarmcloud` was taken, so the D23 fallback `swarmcloud-releases` was not needed either; PR 2769); billing is linked. Paths: Artifact Registry `us-docker.pkg.dev/swarmcloud-prod/swarmcloud`, bundles in `gs://swarmcloud`.
 
-The project id is `swarmcloud` if BGD's creation succeeds, else `swarmcloud-releases` (D23). It holds three things.
+It holds three things.
 
 **`gs://swarmcloud`**, free as of 2026-10-28 (D16). Layout:
 
@@ -463,7 +465,7 @@ gs://swarmcloud/
   install.sh              a 20-line POSIX script: checks uv, then `uv tool install <wheel URL>`
 ```
 
-**An Artifact Registry repository `swarmcloud`** in the same project, holding images by digest, signed with a KMS key in that project.
+**An Artifact Registry repository `swarmcloud`** in `swarmcloud-prod`, holding images by digest, signed with a KMS key in that project.
 
 **A public verification key** at `releases/<V>/cosign.pub`, also pinned in the wheel, so a tampered bucket cannot also replace the key.
 

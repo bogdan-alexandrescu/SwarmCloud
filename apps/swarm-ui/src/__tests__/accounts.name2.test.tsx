@@ -98,7 +98,7 @@ async function mountPeople(body: Json) {
   vi.resetModules()
   const { PeopleScreen } = await import('../People')
   render(<PeopleScreen />)
-  await screen.findByRole('heading', { name: 'People and roles', level: 1 }, WAIT)
+  await screen.findByRole('heading', { name: 'Platform people', level: 1 }, WAIT)
   await waitFor(() => expect(document.querySelector('.pp-people tbody tr')).not.toBeNull(), WAIT)
 }
 
@@ -137,7 +137,7 @@ describe('Admin › People names each account by its Name', () => {
     const select = within(section).getByLabelText('Account to lend to bob@example.com')
     const options = [...select.querySelectorAll('option')]
     // MUTATION: the `<option>` back to `a.label ?? a.account_id`.
-    expect(options.map((o) => o.textContent)).toEqual(['choose…', 'AI Eng 2 · eng · AVAILABLE', 'plain · eng · AVAILABLE'])
+    expect(options.map((o) => o.textContent)).toEqual(['choose…', 'AI Eng 2 · eng · available', 'plain · eng · available'])
     // The id is still what the option selects.
     expect(options.map((o) => o.getAttribute('value'))).toEqual(['', 'eng:ai-eng-2', 'eng:plain'])
     fireEvent.change(select, { target: { value: 'eng:ai-eng-2' } })

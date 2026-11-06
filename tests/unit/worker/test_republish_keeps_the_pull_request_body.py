@@ -38,6 +38,7 @@ from agent_worker import forge as forge_mod
 from agent_worker import lifecycle, workspace as workspace_mod
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
 
+from test_strategy_end_to_end import _the_fence_holds  # noqa: F401 -- fixture
 from test_continue_swarm_branch import (  # noqa: F401 - fixtures are used by name
     FIX,
     ROOT,
@@ -149,7 +150,7 @@ def _publish(
     if task_input is not None:
         task["input"] = task_input
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-" + "token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-" + "token")
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     if edit:
         (worker.ws.work / lifecycle.REPO_DIR_NAME / "fix.txt").write_text(f"{task_id}\n")

@@ -28,28 +28,41 @@ import {
   type TaskState,
   type Workflow,
 } from './types'
+import { workflowNeedItems } from './work/listNeeds'
+import { type NeedKind } from './work/NeedsYou'
 
-/** The three buckets every workflow is in exactly one of. */
+/** The three buckets every workflow is in exactly one of: what polls, and what runs to now. */
 export type WorkflowBucket = 'running' | 'finished' | 'failed'
-/** The segment: a bucket, or all of them. */
-export type BucketFilter = WorkflowBucket | 'all'
 
-export const BUCKET_FILTERS: readonly BucketFilter[] = ['running', 'finished', 'failed', 'all']
+/**
+ * THE LIST'S BUCKETS (the picked Work redesign, frame graph-workflows-rest):
+ * Running, Parked, Failed and Done, each by the state the read derived
+ * (`listBucketOf`). A workflow whose state the read could not derive is in
+ * none of them -- only All counts it -- so no bucket's count claims a state
+ * nobody read (QA-036).
+ */
+export type ListBucket = 'running' | 'parked' | 'failed' | 'done'
+/** The segment: a bucket, or all of them. */
+export type BucketFilter = ListBucket | 'all'
+
+export const BUCKET_FILTERS: readonly BucketFilter[] = ['all', 'running', 'parked', 'failed', 'done']
 
 export const BUCKET_LABEL: Readonly<Record<BucketFilter, string>> = {
-  running: 'Running',
-  finished: 'Finished',
-  failed: 'Failed',
   all: 'All',
+  running: 'Running',
+  parked: 'Parked',
+  failed: 'Failed',
+  done: 'Done',
 }
 
 /**
- * THE LIST'S ORDER (#111). `state` is the default, so it is never written: the
- * V2 grouping (workflows.html frame 0, #503) -- what is running first, then
- * what waits, then what finished, failures after the successes -- newest first
- * in each group (`stateGroupOf`). `failed` puts the workflows with the most
- * failed steps first, which is the triage order; `newest` and `oldest` are by
- * submission.
+ * THE LIST'S ORDER (#111). `state` is the default, so it is never written:
+ * NEEDS YOU FIRST (the picked Work redesign) -- the workflows with the most
+ * steps waiting on the person (`needsOf`) first, then the V2 grouping
+ * (workflows.html frame 0, #503: running, then what waits, then what
+ * finished, failures after the successes), newest first in each group
+ * (`stateGroupOf`). `failed` puts the workflows with the most failed steps
+ * first, which is the triage order; `newest` and `oldest` are by submission.
  */
 export type WorkflowSort = 'state' | 'newest' | 'oldest' | 'failed'
 
@@ -57,7 +70,7 @@ export const WORKFLOW_SORTS: readonly WorkflowSort[] = ['state', 'newest', 'olde
 
 /** The sort control's words, and the list foot's description of the order. */
 export const SORT_LABEL: Readonly<Record<WorkflowSort, string>> = {
-  state: 'grouped by state, newest first in each group',
+  state: 'needs you first',
   newest: 'newest first',
   oldest: 'oldest first',
   failed: 'most failed steps first',
@@ -112,7 +125,8 @@ export function parseWorkflowQuery(view: string | null | undefined): WorkflowQue
   return {
     wf: wf === null || wf === '' ? null : wf,
     tab: tab !== null && (WORKFLOW_TABS as readonly string[]).includes(tab) ? (tab as WorkflowView) : 'graph',
-    state: state !== null && (BUCKET_FILTERS as readonly string[]).includes(state) ? (state as BucketFilter) : 'all',
+    // `finished` was Done's name before the redesign: an old link still opens Done.
+    state: state === 'finished' ? 'done' : state !== null && (BUCKET_FILTERS as readonly string[]).includes(state) ? (state as BucketFilter) : 'all',
     q: p.get('q') ?? '',
     owner: p.get('owner') ?? '',
     profile: p.get('profile') ?? '',
@@ -219,11 +233,82 @@ export function matchesFilters(w: Workflow, label: string | null, q: WorkflowQue
   return true
 }
 
+/**
+ * The list bucket a workflow is in, by its derived state; null when the read
+ * could not derive one (All counts it, no bucket does). Running is every
+ * state that has not ended and is not parked: live work, and work waiting its
+ * turn (ready, queued), which the tab's title says.
+ */
+export function listBucketOf(w: Workflow): ListBucket | null {
+  const s = derivedStateOf(w)
+  if (s === null) return null
+  if (s === 'FAILED' || s === 'DEAD_LETTERED') return 'failed'
+  if (TERMINAL_STATES.has(s)) return 'done'
+  if (s === 'PARKED') return 'parked'
+  return 'running'
+}
+
 /** The segment's counts over the rows the other filters leave. */
 export function bucketCounts(rows: readonly Workflow[]): Record<BucketFilter, number> {
-  const out: Record<BucketFilter, number> = { running: 0, finished: 0, failed: 0, all: rows.length }
-  for (const w of rows) out[bucketOf(w)] += 1
+  const out: Record<BucketFilter, number> = { all: rows.length, running: 0, parked: 0, failed: 0, done: 0 }
+  for (const w of rows) {
+    const b = listBucketOf(w)
+    if (b !== null) out[b] += 1
+  }
   return out
+}
+
+/**
+ * WHAT WAITS ON THE PERSON IN ONE WORKFLOW, from the list read alone (the
+ * Needs-you column), counted off the very rows and unknown kinds the
+ * Needs-you bar takes for it (`workflowNeedItems`, one classifier for both):
+ * `failed`, the steps that failed or were dead-lettered; `questions`, every
+ * open question -- a question wait's, a finished step's unanswered artifact
+ * questions, an await-input step's input -- while the workflow has not
+ * finished or a merge is held on them, the same words asked by two steps
+ * once (`workflowFinished`, `questionKey`); `held`, the merges held by the
+ * owner's questions and the turns in a browser. A count is null -- "not
+ * known", never 0 -- for a kind the bar cannot count either: questions and
+ * held when a step was served no needs block, every kind when a step's task
+ * is not in the read. Null as a whole when nothing is known: the steps were
+ * not read. A workflow whose state could not be derived still counts what its
+ * steps' read says, as the bar does.
+ */
+export interface WorkflowNeeds {
+  readonly failed: number | null
+  readonly questions: number | null
+  readonly held: number | null
+}
+
+export function needsOf(w: Workflow, taskById: ReadonlyMap<string, Task> | null): WorkflowNeeds | null {
+  if (!stepsRead(w, taskById)) return null
+  const items = workflowNeedItems(w, taskById, (stepId) => stepId)
+  const unknown = items.unknownKinds ?? []
+  const count = (...kinds: NeedKind[]): number | null =>
+    kinds.some((k) => unknown.includes(k)) ? null : items.filter((i) => kinds.includes(i.kind)).length
+  const needs = { failed: count('failed'), questions: count('question'), held: count('merge', 'handoff') }
+  return needs.failed === null && needs.questions === null && needs.held === null ? null : needs
+}
+
+/**
+ * How many things wait on the person in `w`, for "needs you first": what is
+ * counted, and null when a kind is not known and nothing is counted -- an
+ * unknown is never ranked as 0 (`sortWorkflows`).
+ */
+export function needsTotal(w: Workflow, taskById: ReadonlyMap<string, Task> | null): number | null {
+  const n = needsOf(w, taskById)
+  if (n === null) return null
+  const known = (n.failed ?? 0) + (n.questions ?? 0) + (n.held ?? 0)
+  return known === 0 && (n.failed === null || n.questions === null || n.held === null) ? null : known
+}
+
+/**
+ * "Needs you first"'s rank: a workflow with something counted first, by how
+ * many, then one whose needs are not known (it may have some), then one known
+ * to need nothing.
+ */
+function needsRank(n: number | null): number {
+  return n === null ? 0.5 : n === 0 ? 0 : n + 1
 }
 
 /** The owners and profiles the filters offer, from the rows read, sorted. */
@@ -308,8 +393,13 @@ export function sortWorkflows(
   const newest = (a: Workflow, b: Workflow) => submittedMs(b) - submittedMs(a)
   const out = rows.slice()
   switch (sort) {
-    case 'state':
-      return out.sort((a, b) => stateGroupOf(a) - stateGroupOf(b) || newest(a, b))
+    case 'state': {
+      const needs = new Map(out.map((w) => [w.workflow_id, needsRank(needsTotal(w, taskById))] as const))
+      return out.sort(
+        (a, b) =>
+          (needs.get(b.workflow_id) ?? 0) - (needs.get(a.workflow_id) ?? 0) || stateGroupOf(a) - stateGroupOf(b) || newest(a, b),
+      )
+    }
     case 'newest':
       return out.sort(newest)
     case 'oldest':

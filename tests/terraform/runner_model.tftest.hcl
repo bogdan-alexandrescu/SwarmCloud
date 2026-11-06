@@ -50,15 +50,16 @@ variables {
   }
 
   image_refs = {
-    "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -111,13 +112,14 @@ run "the_scheduler_hands_the_same_model_to_the_jobs_it_creates" {
   # (#1435) must not move a single profile's model.
   assert {
     condition = output.worker_models == {
-      "claude-code"         = "claude-opus-5-5"
-      "claude-code-review"  = "claude-opus-5-5"
-      "indexer"             = "claude-opus-5-5"
-      "claude-code-browser" = "claude-opus-5-5"
-      "claude-code-large"   = "claude-opus-5-5"
+      "claude-code"            = "claude-opus-5-5"
+      "claude-code-review"     = "claude-opus-5-5"
+      "indexer"                = "claude-opus-5-5"
+      "claude-code-browser"    = "claude-opus-5-5"
+      "claude-code-large"      = "claude-opus-5-5"
+      "claude-code-lightpanda" = "claude-opus-5-5"
     }
-    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's, indexer's, claude-code-browser's and claude-code-large's (the same: claude-code under its own account, #295; on the indexer image, contract request 48; on the browser image, contract request 67; on the large class, contract request 113). claude-code, indexer, claude-code-browser and claude-code-large run on GKE Autopilot (contract requests 53, 62, 67 and 113), so WORKER_MODELS is the only way their MODEL reaches a pod"
+    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's, indexer's, claude-code-browser's, claude-code-large's and claude-code-lightpanda's (the same: claude-code under its own account, #295; on the indexer image, contract request 48; on the browser image, contract request 67; on the large class, contract request 113; on the Lightpanda image, contract request 127). claude-code, indexer, claude-code-browser, claude-code-large and claude-code-lightpanda run on GKE Autopilot (contract requests 53, 62, 67, 113 and 127), so WORKER_MODELS is the only way their MODEL reaches a pod"
   }
 }
 

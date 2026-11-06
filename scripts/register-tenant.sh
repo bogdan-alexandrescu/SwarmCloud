@@ -23,8 +23,10 @@
 # prompt and no warning.
 #
 # NOR IS A RE-RUN THE WAY TO ADD A PROVIDER. It writes the whole tenant record:
-# `--providers` REPLACES `credentials`, and max_active, capacity_units and
-# display_name go back to their defaults unless they are typed again. Use
+# max_active, capacity_units and display_name go back to their defaults unless
+# they are typed again. `--providers` on an existing tenant ADDS to
+# `credentials` and never removes one (lesson 40, DAYONE-TEAM-1; it used to
+# replace the list). Use
 # `--add-provider`, which makes the two changes adding one needs and nothing
 # else -- see section A below.
 #
@@ -3696,11 +3698,25 @@ MASK="tenant_id,kind,principal,display_name,created_at,max_active,capacity_units
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   dim "  would write tenants/${TENANT_ID}"
 else
-  EXISTING="$(fs_get "tenants/${TENANT_ID}" | jq -r 'if .fields then "yes" else "no" end')"
+  EXISTING_DOC="$(fs_get "tenants/${TENANT_ID}")"
+  EXISTING="$(jq -r 'if .fields then "yes" else "no" end' <<<"${EXISTING_DOC}")"
   if [[ "${EXISTING}" == "yes" ]]; then
     # Preserve created_at on an update; only limits and wiring change.
     MASK="${MASK//created_at,/}"
     TENANT_FIELDS="$(jq -c 'del(.created_at)' <<<"${TENANT_FIELDS}")"
+    # A re-run ADDS the providers it names and never takes one away (lesson
+    # 40, DAYONE-TEAM-1): it used to write `credentials` as exactly this run's
+    # --providers, so a re-run naming one provider silently dropped every
+    # other the tenant had, and its workers failed CANNOT_START on the next
+    # task. The list is the document's, in its order, then each new name.
+    # Removing a provider is an explicit edit of the document, never a
+    # side effect of a re-run.
+    CREDENTIALS_JSON="$(jq -c --argjson add "${CREDENTIALS_JSON}" "${FS_JQ}"'
+      reduce ([(doc.credentials // [])[] | tostring] + [$add[].stringValue])[] as $p
+        ([]; if any(.[]; . == $p) then . else . + [$p] end)
+      | map({stringValue: .})' <<<"${EXISTING_DOC}")"
+    TENANT_FIELDS="$(jq -c --argjson creds "${CREDENTIALS_JSON}" '.credentials = {arrayValue: {values: $creds}}' <<<"${TENANT_FIELDS}")"
+    ok "tenants/${TENANT_ID} credentials: $(jq -r '[.[].stringValue] | join(", ")' <<<"${CREDENTIALS_JSON}") (a re-run adds providers; it never removes one)"
     fs_patch "tenants/${TENANT_ID}" "${MASK}" "${TENANT_FIELDS}"
     ok "updated tenants/${TENANT_ID}"
   else
@@ -3735,8 +3751,8 @@ hr
 ok "tenant ${TENANT_ID} registered"
 # "then add it", NOT "then re-run this". This line used to print
 # `--${KIND} ${PRINCIPAL} --providers anthropic`: a full re-run, whose
-# --providers REPLACES `credentials` and whose defaults reset the limits, so
-# following it dropped every other provider the tenant had. --add-provider is
+# --providers then REPLACED `credentials` (it adds now, lesson 40) and whose
+# defaults reset the limits. --add-provider is
 # section A; tests/integration/test_register_tenant_add_provider.py runs this
 # line as printed and reads what it wrote.
 cat >&2 <<EOF

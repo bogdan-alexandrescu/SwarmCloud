@@ -43,6 +43,14 @@
 #                         # is applied (docs/design/workspace-secrets.md §3.5).
 #                         # scripts/roll-typesafe-fwd.sh drives it and waits
 #                         # for the rollout
+#   kubernetes/apply.sh --swarm-voice --confirm      # Voice it's swarm-voice:
+#                         # `terraform output -raw swarm_voice_manifest`
+#                         # (terraform/infra/voice.tf), alone, to the swarm's
+#                         # Autopilot cluster (GKE_CLUSTER, swarm-autopilot)
+#                         # and no other; null until voice_it = "on", and then
+#                         # nothing is applied (docs/design/voice-it.md §3.4,
+#                         # section 10 phase one). scripts/roll-voice.sh drives
+#                         # it and waits for the StatefulSet's rollout
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -133,6 +141,15 @@ REPO="$(cd -- "${HERE}/.." && pwd)"
 # defines functions and arrays when sourced -- it reads no .env and contacts
 # nothing -- so sourcing it costs nothing and buys `kubectl_bin` as well.
 COMMON="${REPO}/scripts/lib/common.sh"
+# THE PROJECT IS THE CALLER'S, NEVER A DEFAULT (DAYONE-K8S-1, design §7).
+# common.sh's load_env fills an unset PROJECT_ID with the live project, so a
+# caller in any other project that forgot it would read that project's cluster
+# context check, uniqueIds and network, and render its identities. Marked here,
+# before load_env runs: the environment or the env file replaces the mark, and
+# a mark that survives is a project nobody gave, refused below once --help has
+# had its chance. "(none given)" is no project id, so load_env's `:-` keeps it.
+PROJECT_NOT_GIVEN="(none given)"
+[[ -n "${PROJECT_ID:-}" ]] || PROJECT_ID="${PROJECT_NOT_GIVEN}"
 [[ -f "${COMMON}" ]] || { printf 'error: %s is missing; the shared deny-list lives there\n' "${COMMON}" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
@@ -187,6 +204,19 @@ LIVE_FLAGS=(--swarm-api-egress-cidr --swarm-api-egress-source)
 # eng and smoke namespaces' Job read.
 VERIFY_FLAGS=(--verify-uid)
 
+# WHETHER THE CLUSTER ADMITS HOSTNAME POLICY IS READ, NOT PASSED
+# (docs/runbooks/typesafe-egress.md). `--fqdn-network-policy` makes render.py
+# add the tenant's FQDNNetworkPolicy; this script passes it only when the
+# cluster's API serves the kind. Typed by hand it would send a kind the cluster
+# refuses, and refuse the tenant's whole apply with it.
+FQDN_FLAGS=(--fqdn-network-policy)
+
+# THE PROJECT IS PROJECT_ID, NOT PASSED: every render below is given
+# `--project "${PROJECT_ID}"`, the project whose cluster, uniqueIds and network
+# this script reads. A forwarded `--project` would come after it and win, and
+# render another project's identities into this cluster.
+PROJECT_FLAGS=(--project)
+
 # derived_flag_for ARG FLAG... -- print the FLAG that ARG spells, and succeed,
 # when ARG (the part before any `=`) is one of the FLAGs or ANY PREFIX of one.
 #
@@ -219,6 +249,7 @@ while [[ $# -gt 0 ]]; do
     --swarm-system) MODE="swarm-system"; shift ;;
     --swarm-graph) MODE="swarm-graph"; shift ;;
     --swarm-typesafe-fwd) MODE="swarm-typesafe-fwd"; shift ;;
+    --swarm-voice) MODE="swarm-voice"; shift ;;
     --confirm|-y) CONFIRM=1; shift ;;
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
@@ -261,6 +292,16 @@ while [[ $# -gt 0 ]]; do
        the tenant GSA's IAM policy (its roles/iam.workloadIdentityUser members); it cannot
        be passed, in full or abbreviated. Bind the KSA in IAM and re-run."
       fi
+      if PROJECT_FLAG="$(derived_flag_for "$1" "${PROJECT_FLAGS[@]}")"; then
+        die "'${1%%=*}' would reach the renderer as ${PROJECT_FLAG}; the project is PROJECT_ID
+       (${PROJECT_ID}), the one whose cluster and identities this script reads. Set
+       PROJECT_ID instead."
+      fi
+      if FQDN_FLAG="$(derived_flag_for "$1" "${FQDN_FLAGS[@]}")"; then
+        die "'${1%%=*}' would reach the renderer as ${FQDN_FLAG}, which this script decides
+       from the cluster itself (whether its API serves FQDNNetworkPolicy); it cannot be
+       passed, in full or abbreviated."
+      fi
       if VERIFY_FLAG="$(derived_flag_for "$1" "${VERIFY_FLAGS[@]}")"; then
         die "'${1%%=*}' would reach the renderer as ${VERIFY_FLAG}, which this script resolves
        itself (swarm-verify's uniqueId, by uid_of, for the eng and smoke renders); it
@@ -269,6 +310,12 @@ while [[ $# -gt 0 ]]; do
       RENDER_ARGS+=("$1"); shift ;;
   esac
 done
+
+# --- 0. the project, before anything is contacted ------------------------------
+[[ "${PROJECT_ID}" != "${PROJECT_NOT_GIVEN}" ]] \
+  || die "PROJECT_ID is not set (in the environment or ${SWARM_ENV_FILE:-.env}); refusing to render.
+       Every object here names its project's identities, and there is no default project.
+       Run: PROJECT_ID=<your project> $0 ..."
 
 # --- 0. the workspace label, before anything is contacted ---------------------
 # Checked here as well as in render.py so a refused id costs no cluster read,
@@ -315,6 +362,23 @@ if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
   [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
   [[ -z "${RENDER_ARGS[*]+x}" ]] \
     || die "--swarm-typesafe-fwd takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
+  tf_initialised \
+    || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
+fi
+# --swarm-voice likewise, and to ONE cluster: voice.tf's output says "apply to
+# swarm-autopilot only". The swarm's Autopilot cluster is GKE_CLUSTER
+# (common.sh, default swarm-autopilot); any other `swarm-` cluster -- an old
+# one, a second one -- holds no swarm-voice KSA binding in its workload pool,
+# so a pod there could not act as swarm-voice@ and is refused here, before
+# anything is contacted. The deny-list refusals below still apply first-class.
+VOICE_CLUSTER="${GKE_CLUSTER:-swarm-autopilot}"
+if [[ "${MODE}" == "swarm-voice" ]]; then
+  [[ -z "${TENANT}" ]] || die "--swarm-voice applies swarm-system's swarm-voice, not a tenant's; drop --tenant"
+  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
+  [[ -z "${RENDER_ARGS[*]+x}" ]] \
+    || die "--swarm-voice takes no render arguments (got: ${RENDER_ARGS[*]}); terraform renders its manifest"
+  [[ "${CLUSTER}" == "${VOICE_CLUSTER}" ]] \
+    || die "--swarm-voice applies to ${VOICE_CLUSTER} only, not cluster '${CLUSTER}'; nothing was applied."
   tf_initialised \
     || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
 fi
@@ -894,11 +958,97 @@ elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
     redact <"${TSF_WORK}/fwd-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
     die "the swarm-typesafe-fwd manifest names a namespace other than swarm-system (above); nothing was applied."
   fi
+  # THE EGRESS POLICY RIDES WITH THE FORWARDER where terraform/infra was told
+  # the cluster admits hostname policy (gke_enable_fqdn_network_policy;
+  # docs/runbooks/typesafe-egress.md): a NetworkPolicy that isolates the
+  # forwarder and an FQDNNetworkPolicy that admits its two hosts. A cluster
+  # that does not serve the kind would refuse the second and keep the first,
+  # and every forwarded Jev call would fail at the forwarder. So that render
+  # goes only to a cluster whose API serves the kind, and is refused whole
+  # anywhere else.
+  if grep -Eq '^kind:[[:space:]]*FQDNNetworkPolicy[[:space:]]*$' "${TSF_WORK}/fwd.yaml"; then
+    FQDN_RESOURCE="$("${PYTHON}" "${HERE}/render.py" fqdn-resource)" \
+      || die "could not ask render.py which resource the hostname policy needs (above)"
+    if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
+        --api-group=networking.gke.io -o name >"${TSF_WORK}/resources" 2>"${TSF_WORK}/resources.err"; then
+      redact <"${TSF_WORK}/resources.err" | sed -n '1,3p' | sed 's/^/     /' >&2
+      die "could not read whether the cluster serves ${FQDN_RESOURCE} (above), which the forwarder's
+       egress policy needs; nothing was applied."
+    fi
+    grep -Fxq "${FQDN_RESOURCE}" "${TSF_WORK}/resources" \
+      || die "the swarm-typesafe-fwd manifest carries its hostname egress policy, but this cluster does
+       not serve ${FQDN_RESOURCE}: the forwarder would be isolated with no host to reach.
+       Set gke_enable_fqdn_network_policy only where the cluster has FQDN network policy
+       (terraform/environments/<env>/<env>.tfvars). Nothing was applied."
+    info "hostname policy  the cluster serves ${FQDN_RESOURCE}: the forwarder's egress policy is applied with it"
+  fi
   MANIFEST="$(cat "${TSF_WORK}/fwd.yaml")"
   rm -rf "${TSF_WORK}"
   info "rendering the TypeSafe forwarder  terraform output swarm_typesafe_fwd_manifest"
+elif [[ "${MODE}" == "swarm-voice" ]]; then
+  # --tenant, --spec-verify-keys, render arguments and any cluster but
+  # ${VOICE_CLUSTER} were refused at 0.
+
+  # VOICE IT'S swarm-voice, FROM TERRAFORM, ALONE (lane VOICE-ROLL, part of
+  # #2688; docs/design/voice-it.md §3.4, section 10 phase one). terraform/
+  # infra/voice.tf's `swarm_voice_manifest`: kubernetes/swarm-system/
+  # swarm-voice.yaml (its Namespace, KSA, two Services and the one-replica
+  # StatefulSet) followed by kubernetes/network-policies/
+  # swarm-system-voice.yaml, with the digest, the GSA, the internal address,
+  # the audience, the caller and swarm-api's range filled in. Its own mode,
+  # as --swarm-graph is: it needs neither the live relay's manifest nor
+  # anything --swarm-system applies.
+  #
+  # NULL UNTIL voice_it = "on" with an image (every environment today), and
+  # then nothing is applied and this exits 0 with a notice. Terraform leaves a
+  # null output OUT of state, so the named read fails 'Output "..." not found'
+  # exactly as an unreadable state does (PR 1402); one unnamed `output -json`
+  # tells them apart. Neither read asks gcloud or the cluster anything. Read
+  # here, AFTER the context checks above, so nothing below can send it to
+  # agents-staging. To files, not $(...): the status and the error are kept.
+  VOICE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-voice-apply.XXXXXX")"
+  trap 'rm -rf "${VOICE_WORK}"' EXIT
+  TF_DIR="$(tf_root)"
+  if ! tf -chdir="${TF_DIR}" output -raw swarm_voice_manifest >"${VOICE_WORK}/voice.yaml" 2>"${VOICE_WORK}/voice.err" \
+      || [[ ! -s "${VOICE_WORK}/voice.yaml" ]]; then
+    if tf -chdir="${TF_DIR}" output -json >"${VOICE_WORK}/outputs.json" 2>>"${VOICE_WORK}/voice.err" \
+        && jq -e --arg k swarm_voice_manifest \
+          'type == "object" and ((.[$k].value // null) == null or .[$k].value == "")' \
+          "${VOICE_WORK}/outputs.json" >/dev/null 2>&1; then
+      if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+        printf '::notice title=swarm-voice not applied::%s\n' "voice_it is not on for ${ENVIRONMENT}: terraform rendered no swarm_voice_manifest."
+      fi
+      info "no swarm-voice manifest (voice_it is not on, or no swarm-voice digest); swarm-voice is not served and nothing about it is applied"
+      exit 0
+    fi
+    redact <"${VOICE_WORK}/voice.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "could not read terraform's swarm_voice_manifest output (above); nothing was applied."
+  fi
+  # The graph service's checks: no placeholder left unfilled, no Kubernetes
+  # RBAC (swarm-voice calls no Kubernetes API and mounts no token), no Secret
+  # (the platform owner's OpenAI credential is read from Secret Manager by the
+  # pod's own identity and held in memory, never shipped in a manifest that is
+  # previewed and diffed), and nothing outside swarm-system.
+  if grep -Eo '__[A-Z0-9_]+__' "${VOICE_WORK}/voice.yaml" >"${VOICE_WORK}/voice-placeholders"; then
+    PLACEHOLDER="$(head -n 1 "${VOICE_WORK}/voice-placeholders")"
+    die "the swarm-voice manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${VOICE_WORK}/voice.yaml"; then
+    die "the swarm-voice manifest carries Kubernetes RBAC; swarm-voice holds none. Nothing was applied."
+  fi
+  if grep -Eq '^kind:[[:space:]]*Secret[[:space:]]*$' "${VOICE_WORK}/voice.yaml"; then
+    die "the swarm-voice manifest carries a Secret; the OpenAI credential is read from Secret Manager, never shipped in a manifest. Nothing was applied."
+  fi
+  if grep -E '^[[:space:]]+namespace:[[:space:]]' "${VOICE_WORK}/voice.yaml" \
+      | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${VOICE_WORK}/voice-foreign"; then
+    redact <"${VOICE_WORK}/voice-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "the swarm-voice manifest names a namespace other than swarm-system (above); nothing was applied."
+  fi
+  MANIFEST="$(cat "${VOICE_WORK}/voice.yaml")"
+  rm -rf "${VOICE_WORK}"
+  info "rendering swarm-voice  terraform output swarm_voice_manifest"
 else
-  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph or --swarm-typesafe-fwd)"
+  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, --swarm-system, --swarm-graph, --swarm-typesafe-fwd or --swarm-voice)"
 
   # A WORKSPACE TENANT'S QUOTA IS ITS RECORD'S (QUOTA-ONE, #2039; BGD's
   # decision, 2026-10-23). The workspace job's A7 renders the namespace with
@@ -910,17 +1060,30 @@ else
   #   * all five --quota-* flags given (the job's A7, under a call guard that
   #     admits no call to swarm-api): rendered as given, nothing is read;
   #   * a Terraform tenant -- named in this environment's tfvars, eng or smoke
-  #     -- has no workspace record: render.py's defaults, nothing is read, and
+  #     -- has no workspace record: render.py's Terraform tenant quota
+  #     (`terraform-quota`, passed as flags), nothing is read, and
   #     the release, whose account is no swarm-api admin, applies it as before;
   #   * any other tenant: its record is read from swarm-api with the
   #     operator's own credentials (--workspace-id names it; else the admin
   #     list, matched by the tenant its principal derives), and render.py's
   #     `workspace-quota` turns its limits into the five flags with the job's
-  #     formula. No record names it: the defaults, said so. An unreadable
+  #     formula. No record names it: the Terraform tenant quota, said so. An unreadable
   #     answer renders nothing -- falling back to the defaults is the defect.
   # A --quota-* flag on the command line still wins over the record's: the
   # record's flags are passed first, and render.py takes the last of a flag.
   QUOTA_ARGS=()
+  # render.py's tenant render has no quota default (DAYONE-K8S-1): where no
+  # record exists, the Terraform tenant quota is passed by name, as flags, from
+  # `render.py terraform-quota`, before any flag given on the command line.
+  terraform_quota_args() {
+    local line
+    QUOTA_ARGS=()
+    while IFS= read -r line; do
+      if [[ -n "${line}" ]]; then QUOTA_ARGS+=("${line}"); fi
+    done < <("${PYTHON}" "${HERE}/render.py" terraform-quota)
+    [[ "${#QUOTA_ARGS[@]}" -eq 10 ]] \
+      || die "render.py terraform-quota printed ${#QUOTA_ARGS[@]} values, not five flags and their numbers"
+  }
   QUOTA_SEEN=" "
   for arg in ${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}; do
     case "${arg%%=*}" in
@@ -938,7 +1101,8 @@ else
   if [[ "${#QUOTA_GIVEN[@]}" -eq 5 ]]; then
     info "quota  as given: all five --quota-* flags are on the command line; no workspace record is read"
   elif [[ $'\n'"${TF_TENANTS}"$'\n' == *$'\n'"${TENANT}"$'\n'* ]]; then
-    info "quota  render.py's defaults: ${TENANT} is a Terraform tenant (${ENVIRONMENT}.tfvars), which has no workspace record"
+    terraform_quota_args
+    info "quota  render.py's Terraform tenant quota: ${TENANT} is a Terraform tenant (${ENVIRONMENT}.tfvars), which has no workspace record"
   else
     QUOTA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-quota.XXXXXX")"
     QUOTA_PATH="/admin/workspaces${WORKSPACE_ID:+/${WORKSPACE_ID}}"
@@ -963,7 +1127,8 @@ else
     done <"${QUOTA_WORK}/args"
     rm -rf "${QUOTA_WORK}"
     if [[ -z "${QUOTA_ID}" ]]; then
-      info "quota  render.py's defaults: no workspace record names ${TENANT}"
+      terraform_quota_args
+      info "quota  render.py's Terraform tenant quota: no workspace record names ${TENANT}"
     else
       [[ "${QUOTA_ID}" =~ ^w-[0-9a-f]{6}$ ]] || QUOTA_ID="(an unrecognised id)"
       [[ "${#QUOTA_ARGS[@]}" -eq 10 ]] \
@@ -984,7 +1149,7 @@ else
   # deployer, which runs this script for those, gains no lookup. Where the read
   # is rendered, a missing account is as FATAL as a missing scheduler: an eng
   # render without it applies cleanly and leaves e2e [10] failing on a 403.
-  VERIFY_GSA="$("${PYTHON}" "${HERE}/render.py" verify-read --tenant "${TENANT}" \
+  VERIFY_GSA="$("${PYTHON}" "${HERE}/render.py" verify-read --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")" \
     || die "could not ask render.py whether tenant ${TENANT}'s render binds swarm-verify (above);
@@ -1041,7 +1206,7 @@ else
   # would drop a bound account's RoleBinding subject. A GSA that does not exist
   # yet (register-tenant.sh --dry-run previews a new tenant whose GSA it has not
   # created) binds nothing, and says so.
-  IDENTITY="$("${PYTHON}" "${HERE}/render.py" identity --tenant "${TENANT}" \
+  IDENTITY="$("${PYTHON}" "${HERE}/render.py" identity --tenant "${TENANT}" --project "${PROJECT_ID}" \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")" \
     || die "could not resolve tenant ${TENANT}'s namespace and service account (above);
        nothing was rendered or applied."
@@ -1113,8 +1278,47 @@ else
     dim "  no --spec-verify-keys: swarm-spec-verify-keys is not rendered; an existing one is left as it is"
   fi
 
-  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" \
+  # THE TENANT'S HOSTNAME POLICY, ONLY WHERE THE CLUSTER SERVES THE KIND
+  # (docs/runbooks/typesafe-egress.md; owner's pick "Wire behind a cluster
+  # check", 2026-11-02). swarm-allow-typesafe-direct is a GKE
+  # FQDNNetworkPolicy, which a cluster without FQDN network policy refuses --
+  # and with it the whole apply. So render.py renders it only with
+  # --fqdn-network-policy, passed here only when this cluster's API serves
+  # fqdnnetworkpolicies.networking.gke.io (dev.tfvars turns it on; no other
+  # environment does). Discovery, which every authenticated caller may read
+  # (GKE's system:discovery): no grant is needed to ask.
+  #
+  # Asked the same way under the workspace job's call guard (SWARM_CALL_GUARD):
+  # scripts/lib/workspace-calls.json admits this one discovery read on the
+  # swarm cluster's context, and the kind under the name
+  # swarm-allow-typesafe-direct alone, in the tenant's own namespace (C1, C7,
+  # kube_kind_names). Skipped, with a line saying so, when the cluster does not
+  # serve it and when the question cannot be answered. The policy only names a
+  # host rule 4 of allow-egress.yaml already admits, so a namespace without it
+  # loses nothing a packet notices today; onboarding never waits on it.
+  FQDN_ARGS=()
+  FQDN_RESOURCE="$("${PYTHON}" "${HERE}/render.py" fqdn-resource)" \
+    || die "could not ask render.py which resource the hostname policy needs (above)"
+  FQDN_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-fqdn-probe.XXXXXX")"
+  # To files, not $(...): the status and the error are both kept.
+  if "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
+      --api-group=networking.gke.io -o name >"${FQDN_WORK}/resources" 2>"${FQDN_WORK}/err"; then
+    if grep -Fxq "${FQDN_RESOURCE}" "${FQDN_WORK}/resources"; then
+      FQDN_ARGS=(--fqdn-network-policy)
+      info "hostname policy  the cluster serves ${FQDN_RESOURCE}: rendering swarm-allow-typesafe-direct"
+    else
+      info "hostname policy  skipped: the cluster does not serve ${FQDN_RESOURCE} (FQDN network policy is off); swarm-allow-typesafe-direct is not rendered"
+    fi
+  else
+    warn "hostname policy  skipped: could not read whether the cluster serves ${FQDN_RESOURCE}:"
+    redact <"${FQDN_WORK}/err" | sed -n '1,3p' | sed 's/^/     /' >&2
+    dim "  swarm-allow-typesafe-direct is not rendered; re-run once the cluster answers discovery."
+  fi
+  rm -rf "${FQDN_WORK}"
+
+  MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
+    ${FQDN_ARGS[@]+"${FQDN_ARGS[@]}"} \
     --scheduler-uid "${SCHEDULER_UID}" \
     --reconciler-uid "${RECONCILER_UID}" \
     ${VERIFY_ARGS[@]+"${VERIFY_ARGS[@]}"} \
@@ -1223,6 +1427,8 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
     dim "  --confirm then compares swarm-system's policies with ${SWARM_API_EGRESS_CIDR}"
     dim "    (kubernetes/network_parity.py --live-ingress)"
     if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+      dim "  --confirm then compares swarm-system/decision-api-egress-ingress with ${SWARM_API_EGRESS_CIDR}"
+      dim "    (kubernetes/network_parity.py --jev-egress-ingress)"
       dim "  --confirm then copies Secret Manager ${TAILSCALE_OAUTH_GSM_NAME} into swarm-system/${TAILSCALE_K8S_OBJECT}"
       dim "    (never printed; a dry run does not read it)"
     fi
@@ -1236,6 +1442,10 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
   if [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
     dim "  --confirm applies it; scripts/roll-typesafe-fwd.sh --confirm also waits for deploy/swarm-typesafe-fwd"
     dim "    and checks its pods run the manifest's digest"
+  fi
+  if [[ "${MODE}" == "swarm-voice" ]]; then
+    dim "  --confirm applies it; scripts/roll-voice.sh --confirm also waits for statefulset/swarm-voice"
+    dim "    and checks its pod runs the manifest's digest"
   fi
   ok "dry run only. Re-run with --confirm to apply."
   exit 0
@@ -1345,6 +1555,28 @@ if [[ "${MODE}" == "swarm-system" ]]; then
       --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
     rm -rf "${LIVE_WORK}"
     die "applied, but swarm-system's ingress does not match what was rendered (above)."
+  fi
+  # THE JEV TAILNET EGRESS (the owner's choice, 4 November 2026; part of
+  # #2688). decision-api-egress-ingress admits swarm-api's range on 8443, and
+  # terraform rendered that range from local.decision_api_swarm_api_cidr, its
+  # own copy of the subnet: judged here, as the API server now holds it,
+  # against the range just READ from swarm-api's service. A stale range or a
+  # second port fails the apply with both values named; a range nothing
+  # compares closes swarm-api's route to the Jev backend silently. Only when
+  # this run applied the tailnet egress: with enable_tailscale_egress off the
+  # policy does not exist and there is nothing to compare.
+  if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+    info "comparing swarm-system/decision-api-egress-ingress with swarm-api's ${SWARM_API_EGRESS_CIDR}"
+    if ! "${PYTHON}" "${HERE}/network_parity.py" --jev-egress-ingress \
+        --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
+      # policies.json is swarm-system's alone (`get networkpolicies -n`, above).
+      JEV_ADMITTED="$(jq -r '[.items[]? | select(.metadata.name == "decision-api-egress-ingress")
+          | .spec.ingress[]?.from[]?.ipBlock.cidr // empty] | join(", ")' "${LIVE_WORK}/policies.json" 2>/dev/null || true)"
+      rm -rf "${LIVE_WORK}"
+      die "applied, but swarm-system/decision-api-egress-ingress admits swarm-api's range as '${JEV_ADMITTED:-nothing}',
+       but swarm-api egresses from ${SWARM_API_EGRESS_CIDR} (${SWARM_API_EGRESS_SOURCE}); the rule must admit exactly
+       that range, on TCP 8443 alone (above). terraform's local.decision_api_swarm_api_cidr is stale, or the rule was widened."
+    fi
   fi
   rm -rf "${LIVE_WORK}"
 fi

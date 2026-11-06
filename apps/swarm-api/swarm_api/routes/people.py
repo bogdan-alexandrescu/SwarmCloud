@@ -73,6 +73,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
+from .. import route_scope
 from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
@@ -485,6 +486,7 @@ def admin_holders(ctx: AppContext) -> tuple[list[dict[str, Any]] | None, str | N
 
 
 @router.post("/workspaces/sweep")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def sweep_workspaces(
     request: Request,
     auth: AuthContext = Depends(admin_auth),

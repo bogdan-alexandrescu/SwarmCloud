@@ -8,3 +8,9 @@
    mono it read as a value. Only the face moves: size, colour and rule are the
    foot's own. */
 .c-card.ac-grants > .c-card-foot { font-family: var(--font); }
+
+/* A CHECK A READ GRANT DOES NOT NEED (console visual QA pass 2, config2-07):
+   the dash and "read grant" beside it, as config-e.html S3a draws it -- dim,
+   at the 12px floor, on one line in its 84px column. */
+.ac-why { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; color: var(--text-dim); }
+.ac-why > small { font-size: var(--t-micro); color: var(--text-dim); }

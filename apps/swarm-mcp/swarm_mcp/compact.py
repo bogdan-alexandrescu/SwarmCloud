@@ -528,6 +528,9 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
     if full.get("console"):
         # The API's link, so the row's answer can say where the whole of it is.
         out["console"] = full["console"]
+    if full.get("browser_unused"):
+        # A live-browser run that never used its browser (`progress.browser_unused_line`).
+        out["browser_unused"] = full["browser_unused"]
     return out
 
 
@@ -652,6 +655,11 @@ _PERSON_PARK = "HUMAN_REQUIRED"
 #: swarm-api's `waiting_detail.OWNER_QUESTIONS_PHASE`). Spelled again: the
 #: worker is not installed with the bridge.
 _OWNER_QUESTIONS_PHASE = "owner_questions"
+#: The park of a task whose own agent asked blocking questions
+#: (`agent_worker.lifecycle._park_for_answers`; swarm-api's
+#: `waiting_detail.QUESTION_WAIT_PHASE`): `blocked_by[].question_wait` holds
+#: them. Spelled again for the same reason.
+_QUESTION_WAIT_PHASE = "question_wait"
 
 
 def _parked_for_person(task: dict[str, Any]) -> bool:
@@ -691,6 +699,37 @@ def _hold_questions(task: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
     return hold, entries
 
 
+def _own_questions(task_id: str, task: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
+    """`(question_wait, entries)`: whether the task is parked on its own
+    agent's blocking questions (#2859), and those still unanswered -- in the
+    hold's entry shape, the task itself the asking one. From the API's
+    `waiting.detail` (which knows the answers stored), else every blocking
+    question of `blocked_by[].question_wait`."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    record: dict[str, Any] | None = None
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("park_phase") == _QUESTION_WAIT_PHASE:
+            named = block.get(_QUESTION_WAIT_PHASE)
+            record = named if isinstance(named, dict) else {}
+    if detail.get("park_phase") != _QUESTION_WAIT_PHASE and record is None:
+        return False, []
+    step = _text(task.get("step_id"))
+    if detail.get("park_phase") == _QUESTION_WAIT_PHASE and isinstance(detail.get("questions"), list):
+        pairs = [(q.get("question_index"), q.get("question"))
+                 for q in detail["questions"] if isinstance(q, dict)]
+    else:
+        asked = (record or {}).get("questions")
+        asked = asked if isinstance(asked, list) else []
+        blocking = (record or {}).get("blocking")
+        pairs = [(i, asked[i].get("question") if isinstance(asked[i], dict) else None)
+                 for i in blocking if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(asked)
+                 ] if isinstance(blocking, list) else []
+    entries = [{"task_id": task_id, "step_id": step, "question_index": i, "question": _text(q)}
+               for i, q in pairs if isinstance(i, int) and not isinstance(i, bool) and i >= 0]
+    return True, entries
+
+
 def _asked(client: SwarmClient, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each named question with its own text, options, recommendation and
     context, read from the ASKING task's questions (`progress.owner_questions`,
@@ -725,18 +764,27 @@ def person_wait(client: SwarmClient, task_id: str, task: dict[str, Any], link: s
                 now: datetime) -> dict[str, Any]:
     """What a person must do for a task PARKED on HUMAN_REQUIRED (#2441).
 
-    `kind` is `owner_questions` for the merge's owner-question hold, else
-    `hand_off`. `questions` are the hold's, each with the asking task, step
-    and index and the question's own text; `console` the API's link, as
-    served; `human_ready_route` the route that returns a hand-off (or a hold
-    whose entries an answer cannot clear) -- the one the API served, else
-    the documented route. `since` is when the wait began."""
+    `kind` is `owner_questions` for the merge's owner-question hold and for
+    a task parked on its own agent's blocking questions (`park_phase`
+    `question_wait`, #2859: an answer resumes it, nobody signs in), else
+    `hand_off`. `questions` are the hold's, or the task's own still
+    unanswered, each with the asking task, step and index and the
+    question's own text; `console` the API's link, as served;
+    `human_ready_route` the route that returns a hand-off (or a hold whose
+    entries an answer cannot clear) -- the one the API served, else the
+    documented route; a question wait has none. `since` is when the wait
+    began."""
     hold, entries = _hold_questions(task)
+    asked = False
+    if not hold:
+        asked, entries = _own_questions(task_id, task)
     began = wait_began(task)
     waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
     detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
     out: dict[str, Any] = {
-        "kind": "owner_questions" if hold else "hand_off",
+        "kind": "owner_questions" if hold or asked else "hand_off",
+        "park_phase": (_OWNER_QUESTIONS_PHASE if hold else _QUESTION_WAIT_PHASE if asked
+                       else _text(detail.get("park_phase"))),
         "since": began.isoformat() if began else "",
         "since_clock": clock_at(began, now) if began else "",
         "workflow_id": _text(task.get("workflow_id")),
@@ -747,6 +795,8 @@ def person_wait(client: SwarmClient, task_id: str, task: dict[str, Any], link: s
     brief = waiting_brief(task)
     if brief is not None:
         out["summary"] = brief["summary"]
+    if asked:
+        return out
     route = detail.get("answer_route")
     if isinstance(route, str) and route.strip():
         out["human_ready_route"] = route.strip()
@@ -777,7 +827,12 @@ def person_wait_result(task_id: str, wait: dict[str, Any]) -> dict[str, Any]:
     each, because the follow answered `stop: false` for it. Nothing a row does
     moves a person; the task holds no capacity (invariant 1), and `/sc check`
     attaches a new row once the step leaves PARKED."""
-    if wait["kind"] == "owner_questions":
+    if wait.get("park_phase") == _QUESTION_WAIT_PHASE:
+        n = len(wait["questions"])
+        what = (f"answer the {n} blocking question{'' if n == 1 else 's'} its agent asked"
+                if n else "answer the blocking questions its agent asked")
+        what += " on its console page or with /sc check; it resumes on its own"
+    elif wait["kind"] == "owner_questions":
         n = len(wait["questions"])
         what = (f"answer the {n} owner question{'' if n == 1 else 's'} its hold names; it resumes on its own"
                 if n else "answer the owner questions its hold names")
@@ -825,8 +880,16 @@ def hold_result(task_id: str, fast: list[float], link: str | None, *, end: bool)
 
 
 def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
-    """One of `progress.owner_questions`' questions, every missing text as ""."""
-    return {
+    """One of `progress.owner_questions`' questions, every missing text as "".
+
+    An open one (`progress.open_owner_questions`) keeps its `index`, its place
+    in questions.json that swarm_task_answer records the pick under, and its
+    `answer_unknown_because` when its stored answer could not be read."""
+    out: dict[str, Any] = {}
+    index = question.get("index")
+    if isinstance(index, int) and not isinstance(index, bool):
+        out["index"] = index
+    out.update({
         "question": _text(question.get("question")),
         "options": [
             {"label": _text(option.get("label")), "description": _text(option.get("description"))}
@@ -835,7 +898,10 @@ def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
         ],
         "recommended": _text(question.get("recommended")),
         "context": _text(question.get("context")),
-    }
+    })
+    if question.get("answer_unknown_because"):
+        out["answer_unknown_because"] = _text(question["answer_unknown_because"])
+    return out
 
 
 def _answer_index(answer: Any) -> int | None:
@@ -1098,6 +1164,11 @@ def watch_progress(
             if task["read"] == "ok" and task.get("terminal"):
                 try:
                     row["outcome"] = _slim_outcome(outcome(client, client.task(task_id)))
+                    unused = row["outcome"].get("browser_unused")
+                    if unused and news:
+                        # Under the finish line, on the call that writes it:
+                        # once, as the line itself is.
+                        progress.append(f"[{label}] {unused}")
                 except SwarmError as exc:
                     row["outcome"] = None
                     row["outcome_unavailable_because"] = clip(f"the finished task could not be re-read: {exc}", 200)
@@ -1330,7 +1401,7 @@ def watch_summary(
     payload["sm"] = {"p": {t: prs[t] for t in task_ids if t in prs}, "ln": line}
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    return {
+    out = {
         "line": line,
         "line_changed": line != before,
         "transitions": reply["transitions"],
@@ -1338,6 +1409,14 @@ def watch_summary(
         "since": f"{body}.{_checksum(body)}",
         "tasks": reply["tasks"],
     }
+    # A task that ran on a live browser and never used it, on the call it
+    # finished -- the only call that returns its row, so once each
+    # (`progress.browser_unused_line`, 2026-11-05). No key when none did.
+    unused = [str((row.get("outcome") or {}).get("browser_unused")) for row in reply["tasks"]
+              if row.get("terminal") and (row.get("outcome") or {}).get("browser_unused")]
+    if unused:
+        out["browser_unused"] = unused
+    return out
 
 
 # --------------------------------------------------------------------------

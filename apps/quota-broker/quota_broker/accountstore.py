@@ -728,6 +728,11 @@ class AccountStore:
                 # a new reading, so it neither restarts nor clears it.
                 possible_duplicate_of=current.possible_duplicate_of,
                 identical_readings=current.identical_readings,
+                # CARRIED OVER, for the reason the classes are: a lending
+                # change or a re-sign-in must never put a reserved Voice it
+                # account back in the workspace pool.
+                pools=current.pools,
+                voice_it_people=current.voice_it_people,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -1034,8 +1039,8 @@ class AccountStore:
 
         A NEW SIGN-IN WRITES ITS SEAT EVEN WHEN IT IS None: the credential was
         replaced, possibly by another login, so the old seat no longer says
-        anything about it. A seatless account pairs only by identical
-        readings (`accounts.one_subscription`).
+        anything about it. A seatless account is in no pair until a refresh
+        records its seat (#3046, `accounts.one_subscription`).
         """
         ref = self._db.collection(COLLECTION).document(account_id)
         if not getattr(ref.get(), "exists", False):

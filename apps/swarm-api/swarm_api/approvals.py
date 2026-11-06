@@ -68,7 +68,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -125,10 +125,13 @@ SPEC = "spec"
 HOLD = "hold"
 #: A workflow step waiting for a member's answer: projected, never a record.
 INPUT = "input"
+#: A step whose work-contract acceptance waits on its owner
+#: (`contract_acceptance.waiting_on == "owner"`): projected, never a record.
+CONTRACT = "contract"
 #: The kinds a record of this collection is made with.
 RECORD_KINDS = (RUN, PLAN, MERGE, PROPOSAL, SPEC, HOLD)
 #: The kinds the inbox serves and filters on.
-KINDS = RECORD_KINDS + (INPUT,)
+KINDS = RECORD_KINDS + (INPUT, CONTRACT)
 
 PENDING = "pending"
 APPROVED = "approved"
@@ -141,6 +144,9 @@ STATES = (PENDING, APPROVED, REJECTED, EXPIRED, SUPERSEDED)
 PROJECTED_PREFIX = "run:"
 #: A projected await-input step's id in the inbox (human-steps.md §4.5).
 INPUT_PREFIX = "input:"
+#: A projected owner-waiting contract step's id in the inbox (jev-contract.md
+#: section 5.4).
+CONTRACT_PREFIX = "contract:"
 #: What the expiry and an inbox write record as the actor.
 EXPIRY_ACTOR = "approval-expiry"
 
@@ -757,8 +763,17 @@ def awaiting_input(store: Any, tenant_id: str, now: datetime, *, limit: int = IN
     """
     page = store.list_tasks(tenant_id, state=TaskState.PARKED, limit=limit,
                             submitted_by=submitted_by)
+    return open_input_steps(page.items, tenant_id, now)
+
+
+def open_input_steps(parked: Iterable[Any], tenant_id: str, now: datetime) -> list[Any]:
+    """`awaiting_input`'s filter over PARKED tasks already read, in their
+    order: the notification feed reads PARKED once per request and shares it
+    between this and its hand-offs (lane LOAD-SPEED-NOTIFICATIONS). Checks
+    the tenant and the state again, so a task read elsewhere is held to the
+    same rule (invariant 9)."""
     open_steps = []
-    for task in page.items:
+    for task in parked:
         if task.tenant_id != tenant_id or task.state != TaskState.PARKED \
                 or task.park_reason != ParkReason.AWAITING_INPUT \
                 or task.cancel_requested or not await_input_declaration(task):
@@ -803,6 +818,75 @@ def project_input(task: Any) -> dict[str, Any]:
     }
 
 
+def project_contract(task: Mapping[str, Any]) -> dict[str, Any]:
+    """A step whose work-contract acceptance waits on its owner, as an inbox
+    item (jev-contract.md sections 5.4 and 8.2; the owner's pick on PR #3255).
+
+    Jev's judgment is evidence, never the decision (section 1, rule 1), so the
+    item is projected from the task's `contract_acceptance` on each read and
+    is never a record: no decide path takes the id, as an await-input step's
+    is not taken (`get` answers it 404), and `may_decide` is absent. The
+    detail (`GET /v1/approvals/contract:<task_id>`) serves the record."""
+    acc = task.get("contract_acceptance") or {}
+    task_id = str(task.get("id"))
+    prompt = (task.get("input") or {}).get("prompt") if isinstance(task.get("input"), Mapping) else None
+    # Whose it is: the contract's own `ownership.owner` (work-contract.md),
+    # else the step's submitter -- the person the record waits on.
+    contract = (task.get("metadata") or {}).get("work_contract") if isinstance(task.get("metadata"), Mapping) else None
+    ownership = contract.get("ownership") if isinstance(contract, Mapping) else None
+    owner = ownership.get("owner") if isinstance(ownership, Mapping) else None
+    owner = owner if isinstance(owner, str) and owner else task.get("submitted_by") or None
+    return {
+        "approval_id": CONTRACT_PREFIX + task_id,
+        "tenant_id": task.get("tenant_id"),
+        "kind": CONTRACT,
+        "subject": {
+            "task_id": task_id,
+            "workflow_id": task.get("workflow_id"),
+            "step_id": task.get("step_id"),
+            "contract_id": acc.get("contract_id"),
+            "revision": acc.get("revision"),
+            "commit": acc.get("commit"),
+            "owner_reason": acc.get("owner_reason"),
+        },
+        "digest": acc.get("digest"),
+        "summary": summary_text(f"{task.get('step_id') or task_id}: {prompt or ''}"),
+        "approvers": [owner] if owner else "members",
+        "state": PENDING,
+        "requested_at": _moment(acc.get("at")) or _moment(task.get("updated_at")),
+        "expires_at": None,
+        "submitted_by": task.get("submitted_by"),
+        "projected": True,
+    }
+
+
+def owner_waiting_contracts(db: Any, tenant_id: str, *, limit: int = INBOX_SCAN) -> list[dict[str, Any]]:
+    """`project_contract` of each of the tenant's owner-waiting steps."""
+    from . import contractreask
+
+    return [project_contract(t) for t in contractreask.owner_waiting(db, tenant_id, limit=limit)]
+
+
+def contract_item(db: Any, tenant_id: str, item_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """`contract:<task_id>`'s item and its served `contract_acceptance`, or
+    404 when the step is missing, another tenant's, or no longer waits on its
+    owner (judged since, superseded by a newer attempt, or never judged)."""
+    from . import contractreask
+
+    task_id = item_id[len(CONTRACT_PREFIX):]
+    if not task_id:
+        raise _not_found(item_id)
+    snap = db.collection(contractreask.TASKS).document(task_id).get()
+    task = (snap.to_dict() or {}) if snap.exists else {}
+    acc = task.get(contractreask.ACCEPTANCE_FIELD) or {}
+    if task.get("tenant_id") != tenant_id or acc.get("status") != contractreask.STATUS_PENDING \
+            or acc.get("waiting_on") != contractreask.WAITING_OWNER \
+            or task.get("current_generation", acc.get("generation")) != acc.get("generation"):
+        raise _not_found(item_id)
+    return (project_contract({**task, "id": task.get("id") or task_id}),
+            contractreask.served_acceptance(acc) or {})
+
+
 def sync_run_approvals(db: Any, now: datetime, tenant_id: str) -> int:
     """A `run` record for each of the tenant's `awaiting_approval` firings that has none.
 
@@ -844,7 +928,27 @@ def _live_merge(db: Any, doc: Mapping[str, Any]) -> bool:
     """Whether a pending merge record still has a run waiting at its head."""
     subject = doc.get("subject") or {}
     snap = db.collection(RUNS_COLLECTION).document(str(subject.get("run_id"))).get()
-    data = snap.to_dict() if snap.exists else None
+    return _merge_run_waits(doc, snap.to_dict() if snap.exists else None)
+
+
+def live_merges(db: Any, docs: Iterable[Mapping[str, Any]]) -> set[str]:
+    """The approval ids among pending merge `docs` that `_live_merge` keeps,
+    their runs read in one batched `get_all` rather than one read per record
+    (the notification feed, lane LOAD-SPEED-NOTIFICATIONS). Reads only."""
+    merges = [d for d in docs if d.get("kind") == MERGE]
+    if not merges:
+        return set()
+    runs = db.collection(RUNS_COLLECTION)
+    found: dict[str, dict[str, Any]] = {}
+    for snap in db.get_all([runs.document(str((d.get("subject") or {}).get("run_id")))
+                            for d in merges]):
+        if snap.exists:
+            found[snap.id] = snap.to_dict() or {}
+    return {str(d.get("approval_id")) for d in merges
+            if _merge_run_waits(d, found.get(str((d.get("subject") or {}).get("run_id"))))}
+
+
+def _merge_run_waits(doc: Mapping[str, Any], data: Mapping[str, Any] | None) -> bool:
     if not data or data.get("tenant_id") != doc.get("tenant_id"):
         return False
     head = ((data.get("pull_request") or {}).get("head_sha"))
@@ -852,8 +956,9 @@ def _live_merge(db: Any, doc: Mapping[str, Any]) -> bool:
 
 
 def inbox(ctx: Any, tenant_id: str, *, kind: str | None = None) -> list[dict[str, Any]]:
-    """§4.5's inbox: pending records beside projected PLANNED runs and open
-    await-input steps, oldest first."""
+    """§4.5's inbox: pending records beside projected PLANNED runs, open
+    await-input steps and steps whose contract acceptance waits on the owner,
+    oldest first."""
     now = ctx.now()
     sync_run_approvals(ctx.db, now, tenant_id)
     items: list[dict[str, Any]] = []
@@ -871,6 +976,7 @@ def inbox(ctx: Any, tenant_id: str, *, kind: str | None = None) -> list[dict[str
             schedules_seen[sid] = read_schedule(ctx.db, tenant_id, sid)
         items.append(project_run(run, schedules_seen.get(sid) if sid else None))
     items.extend(project_input(task) for task in awaiting_input(ctx.store, tenant_id, now))
+    items.extend(owner_waiting_contracts(ctx.db, tenant_id))
     if kind is not None:
         items = [i for i in items if i.get("kind") == kind]
     items.sort(key=lambda i: (_aware(i.get("requested_at")) or _EPOCH, str(i.get("approval_id"))))

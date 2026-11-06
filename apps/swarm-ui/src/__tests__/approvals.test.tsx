@@ -166,8 +166,10 @@ describe('the Approvals page', () => {
     // word no chip carries, and three chips the sentence leaves out.
     expect(said).not.toMatch(/firing/i)
     for (const c of chips) expect(said, `the empty sentence leaves out "${c}"`).toContain(c.toLowerCase())
-    // MUTATION: join the list with commas only ("spec, answer is waiting").
-    expect(said).toMatch(/, spec or answer in this workspace is waiting for a person/)
+    // MUTATION: join the list with commas only ("answer, contract judgment is
+    // waiting"). The last kind is a step waiting on its owner's contract
+    // judgment (PR #3255).
+    expect(said).toMatch(/, spec, answer or contract judgment waits for a person/)
   })
 
   it('lists every kind oldest first, each row opening the item’s own page', async () => {
@@ -285,7 +287,8 @@ describe('one item', () => {
       }),
     )
     const detail = await loaded()
-    await waitFor(() => expect(visible(detail)).toContain('Held NEEDS_SECOND_MEMBER'), WAIT)
+    // Visual QA automate2-05: the hold leads with its words, not its code.
+    await waitFor(() => expect(visible(detail)).toContain('Held for a second member.'), WAIT)
     expect(visible(detail)).toContain('terraform/iam.tf')
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
     const field = await within(detail).findByRole('textbox', { name: /approve it yourself/ }, WAIT)
@@ -522,7 +525,8 @@ describe('live QA: automate, approvals', () => {
     // MUTATION: leave `kind` out of keptKeys and the filter is dropped from the URL.
     expect(canonical(fromAddress('automate/approvals?kind=merge'))).toBe('automate/approvals?kind=merge')
     const { calls, go } = await mount('kind=merge', routes(() => null))
-    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge')).toBe(true), WAIT)
+    // The list asks the inbox and its history (`state=all`, QA2-FIX-07 automate2-01).
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge&state=all')).toBe(true), WAIT)
     const group = screen.getByRole('group', { name: 'Kind' })
     // The chosen chip carries its count ("Merge · 2", #2417 A4).
     expect(within(group).getByRole('button', { name: /^Merge/ }).getAttribute('aria-pressed')).toBe('true')
@@ -538,7 +542,7 @@ describe('live QA: automate, approvals', () => {
 
   it('asks for the whole inbox when no kind is named', async () => {
     const { calls } = await mount('', routes(() => null))
-    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals')).toBe(true), WAIT)
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?state=all')).toBe(true), WAIT)
     expect(calls.some((c) => c.url.startsWith('/v1/approvals?kind'))).toBe(false)
   })
 })

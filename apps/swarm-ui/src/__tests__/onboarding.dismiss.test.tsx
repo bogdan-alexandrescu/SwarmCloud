@@ -92,6 +92,30 @@ describe('Hide on the Overview card', () => {
   })
 })
 
+// THE OLD MENU WORDING (admin routes lane follow-up, part of #2688): the
+// card's hint names where the steps still are, the selected workspace's own
+// Setup tab by the workspace's name, never Config › Workspace Settings.
+describe("the Overview card's hint", () => {
+  it("says Hide keeps the steps on the selected workspace's Setup tab, by its name", async () => {
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: doc() }
+      if (m === 'GET' && url === '/v1/tenants/me') return { status: 200, body: { tenant: { tenant_id: 'u-dev', kind: 'user', display_name: 'Dev' } } }
+      return null
+    })
+    const { SetupCard } = await load()
+    const { container } = render(<SetupCard />)
+    await waitFor(() => expect(container.textContent).toContain('Admin › Workspaces › Your workspace › Setup still shows them.'))
+    expect(container.textContent).not.toContain('Workspace Settings')
+  })
+
+  it('says "this workspace" while the workspace\'s name is not known', async () => {
+    serve((m, url) => (m === 'GET' && url === '/v1/onboarding' ? { status: 200, body: doc() } : null))
+    const { SetupCard } = await load()
+    const { container } = render(<SetupCard />)
+    await waitFor(() => expect(container.textContent).toContain('Admin › Workspaces › this workspace › Setup still shows them.'))
+  })
+})
+
 describe('Work › Setup and a dismissed checklist', () => {
   it('still shows every step, and Show on Overview posts dismissed: false', async () => {
     const calls = serve((m, url) => {

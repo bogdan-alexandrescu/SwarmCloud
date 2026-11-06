@@ -25,7 +25,7 @@
 //      in the next workflow, from the keyboard as well as the pointer.
 
 import STYLES from '../styles.css?raw'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
@@ -262,8 +262,14 @@ const PLAN_ATTEMPTS: AttemptRow[] = [
   attempt(1, { exit_code: 1, error: 'lease lost' }),
 ]
 
+// The step inspector is the docked inspector now, a sibling of the page's own
+// pane, which starts folded below 1366px (jsdom's default innerWidth is
+// 1024): widen the page so picking a step actually shows it.
+const realWidth = window.innerWidth
+
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
   const { board: b, usage } = board()
   api.loadWorkflowBoard.mockResolvedValue({ status: 'ok', data: b, fetchedAt: T0 } satisfies Result<WorkflowBoard>)
   // The page reads its own workflow first (live QA CH-21), as the API serves it.
@@ -274,6 +280,10 @@ beforeEach(() => {
       ? { status: 'ok', data: { attempts: PLAN_ATTEMPTS }, fetchedAt: T0 }
       : { status: 'empty', fetchedAt: T0 },
   )
+})
+
+afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
 })
 
 // ---------------------------------------------------------------------------
@@ -319,11 +329,16 @@ async function openPage(id: string, tab: 'graph' | 'timeline' | 'table' = 'graph
   return c
 }
 
-/** The page's card, asserting the page is `id`'s: its address and its heading. */
+/**
+ * The page's own frame, asserting the page is `id`'s: its address and its
+ * heading. Not `.wf-card` any more -- the Graph Work redesign draws the
+ * Graph, Table and Timeline straight into the left pane (`.wfp.wfp-main`,
+ * `Board`), with no card wrapping them.
+ */
 function cardOf(id: string): HTMLElement {
   expect(parseWorkflowQuery(address).wf, `the page open is not ${id}'s`).toBe(id)
   expect(document.querySelector('.head h1')?.textContent, `the page is not headed ${id}`).toBe(id)
-  const cards = document.querySelectorAll<HTMLElement>('.wf-card')
+  const cards = document.querySelectorAll<HTMLElement>('.wfp.wfp-main')
   expect(cards, `no card for ${id}`).toHaveLength(1)
   return cards[0]!
 }
@@ -335,8 +350,8 @@ function cardOf(id: string): HTMLElement {
  * page the caller is on. The Table tab carries its step count after the word.
  */
 function chooseTab(_card: HTMLElement, label: string): void {
-  // The canonical underline tabs (components.html A): links, one per view.
-  const bar = document.querySelector<HTMLElement>('nav[aria-label="Views of this workflow"]')
+  // The canonical underline tabs (components.html A): links, one per view, in a tablist (QA2-FIX-20, runs2-13).
+  const bar = document.querySelector<HTMLElement>('[role="tablist"][aria-label="Views of this workflow"]')
   expect(bar, 'the page has no view tabs').toBeTruthy()
   const tab = [...bar!.querySelectorAll<HTMLAnchorElement>('a')].find((b) => b.firstChild?.textContent === label)
   expect(tab, `no ${label} tab`).toBeTruthy()
@@ -400,13 +415,13 @@ describe('U2: the view modes', () => {
   it('offers Table and Timeline beside the Graph, as the page tabs, and no board-wide control', async () => {
     const c = await openPage('wf_new')
     // The page's views are its underline tabs under the title (workflows.html B, #503).
-    const seg = document.querySelector('nav[aria-label="Views of this workflow"]')
+    const seg = document.querySelector('[role="tablist"][aria-label="Views of this workflow"]')
     expect(seg, 'the page has no view tabs').toBeTruthy()
     const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
     expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
     expect(c.querySelector('.wf-viewbar .c-seg'), 'the boxed control is still in the card').toBeNull()
-    // The Graph is what the page lands on.
-    expect(c.querySelector('.wf-canvas')).toBeTruthy()
+    // The Graph is what the page lands on: the stage grid now, not the canvas.
+    expect(c.querySelector('.sg')).toBeTruthy()
     expect(document.querySelector('.wf-chrome .c-seg'), 'a board-wide mode control is still drawn').toBeNull()
   })
 
@@ -430,10 +445,10 @@ describe('U2: the view modes', () => {
     chooseTab(c, 'Table')
     expect(parseWorkflowQuery(address).tab).toBe('table')
     expect(cardOf('wf_new').querySelector('.wf-table')).toBeTruthy()
-    expect(cardOf('wf_new').querySelector('.wf-canvas')).toBeNull()
+    expect(cardOf('wf_new').querySelector('.sg')).toBeNull()
     chooseTab(cardOf('wf_new'), 'Graph')
     expect(parseWorkflowQuery(address).tab).toBe('graph')
-    expect(cardOf('wf_new').querySelector('.wf-canvas')).toBeTruthy()
+    expect(cardOf('wf_new').querySelector('.sg')).toBeTruthy()
   })
 
   describe('the timeline', () => {
@@ -959,10 +974,35 @@ function pick(card: HTMLElement, stepId: string): void {
   fireEvent.click(b!)
 }
 
+/**
+ * The step inspector. Inside `card` when `card` is a standalone `WorkflowCard`
+ * (this file's own `Card`/`viewCard` helpers draw `.wf-panel > .wf-inspect`
+ * there); on the real page it is the docked inspector (`aside.wi-dock`), a
+ * SIBLING pane of `card` (the Graph Work redesign), so that is read too. On
+ * the real page the dock's content is `StepCard` (`.sc-card`), the owner's
+ * pick of 2026-11-05, not the shared `.wf-inspect`.
+ */
 function inspector(card: HTMLElement): HTMLElement {
-  const i = card.querySelector<HTMLElement>('.wf-inspect')
-  expect(i, 'the card holds no inspector').toBeTruthy()
+  const i =
+    card.querySelector<HTMLElement>('.wf-inspect') ??
+    document.querySelector<HTMLElement>('.wi-dock .wf-inspect') ??
+    document.querySelector<HTMLElement>('.wi-dock .sc-card')
+  expect(i, 'no inspector, neither in the card nor in the dock').toBeTruthy()
   return i!
+}
+
+/** The Details fold's dl (Exit code, Checkpoints, Generation, Parked, older Error) on a `StepCard`. */
+function cardFact(root: HTMLElement, label: string): string {
+  const dt = [...root.querySelectorAll('.sc-facts dt')].find((d) => d.textContent === label)
+  expect(dt, `no ${label} fact`).toBeTruthy()
+  return dt!.nextElementSibling!.textContent ?? ''
+}
+
+/** Opens a `StepCard`'s Details fold, so its dl and `sc-extras` are reachable by role. */
+function openCardDetails(card: HTMLElement): void {
+  const summary = card.querySelector<HTMLElement>('summary')
+  expect(summary, 'no Details fold on this card').toBeTruthy()
+  if (card.querySelector('details')?.hasAttribute('open') !== true) fireEvent.click(summary!)
 }
 
 function fact(root: HTMLElement, key: string): string {
@@ -972,41 +1012,54 @@ function fact(root: HTMLElement, key: string): string {
 }
 
 describe('U5: scrubbing', () => {
-  it('steps to the next and previous attempt of a step, by pointer and by keyboard', async () => {
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): the attempt scrubber is the timeline's Previous/Next-attempt
+  // buttons and numbered segments now, reading the Attempt tile and the
+  // Details fold's facts, never the old inspector's `.ctl-fact` list, its
+  // "attempt N of N made" sentence, or a keyboard arrow on a `data-scrub`
+  // group (dropped: the new buttons are plain `disabled`, not `aria-disabled`).
+  it('steps to the next and previous attempt of a step, by pointer', async () => {
     await openPage('wf_new', 'table')
     const c = cardOf('wf_new')
     pick(c, 'plan')
     const i = inspector(c)
-    // The link to the full run is on the inspector; selecting did not navigate.
+    // The run link is on the card's bar (the Agent action); selecting did not navigate.
     expect(i.querySelector('a[href="/agents/recent/t_plan"]'), 'a finished step opens over Recent (WF-21)').toBeTruthy()
     // Newest attempt first, because that is the one a reader asked about.
-    await within(i).findByText('attempt 3 of 3 made')
-    // 'lease generation', the figure, then what it is for (QAFIX5, run 5b L4).
-    expect(fact(i, 'lease generation')).toMatch(/^3 · raised by every new lease/)
-    // AT ITS END, NOT DISABLED: `aria-disabled`, so the control keeps focus and
-    // the arrow keys keep working (see the next test).
-    expect(within(i).getByRole('button', { name: 'Next attempt' }).getAttribute('aria-disabled')).toBe('true')
+    await waitFor(() => expect(i.querySelector('[data-tile="attempt"] .sc-tile-v')!.textContent).toBe('3 / 3'))
+    expect(cardFact(i, 'Generation')).toBe('3')
+    expect((within(i).getByRole('button', { name: 'Next attempt' }) as HTMLButtonElement).disabled).toBe(true)
 
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
-    expect(within(i).getByText('attempt 2 of 3 made')).toBeTruthy()
-    expect(fact(i, 'lease generation')).toMatch(/^2 · /)
-    expect(fact(i, 'exit code')).toBe('137')
+    expect(i.querySelector('[data-tile="attempt"] .sc-tile-v')!.textContent).toBe('2 / 3')
+    expect(cardFact(i, 'Generation')).toBe('2')
+    expect(cardFact(i, 'Exit code')).toBe('137')
 
-    const group = i.querySelector<HTMLElement>('[data-scrub="attempt"]')
-    expect(group).toBeTruthy()
-    fireEvent.keyDown(group!, { key: 'ArrowLeft' })
-    expect(within(i).getByText('attempt 1 of 3 made')).toBeTruthy()
-    expect(within(i).getByRole('button', { name: 'Previous attempt' }).getAttribute('aria-disabled')).toBe('true')
+    // The numbered segment buttons jump straight to an attempt (StepCard's
+    // `ol.sc-tl-bar`), the pointer equivalent of what the dropped keyboard
+    // arrow did.
+    fireEvent.click(within(i).getByRole('button', { name: '1' }))
+    expect(i.querySelector('[data-tile="attempt"] .sc-tile-v')!.textContent).toBe('1 / 3')
+    expect((within(i).getByRole('button', { name: 'Previous attempt' }) as HTMLButtonElement).disabled).toBe(true)
     // Pressing a control at its end does nothing.
     fireEvent.click(within(i).getByRole('button', { name: 'Previous attempt' }))
-    expect(within(i).getByText('attempt 1 of 3 made')).toBeTruthy()
-    // And the unmeasured cost of attempt 1 is a word, not $0.00.
-    expect(fact(i, 'this attempt’s cost')).toBe('not reported')
-    fireEvent.keyDown(group!, { key: 'ArrowRight' })
-    expect(within(i).getByText('attempt 2 of 3 made')).toBeTruthy()
+    expect(i.querySelector('[data-tile="attempt"] .sc-tile-v')!.textContent).toBe('1 / 3')
+    // And the unmeasured cost of attempt 1 is a dash, whose title says why, not $0.00.
+    const cost = i.querySelector<HTMLElement>('[data-tile="cost"] .sc-tile-v')!
+    expect(cost.textContent).toBe('—')
+    expect(cost.getAttribute('title')).toMatch(/not reported/)
+    fireEvent.click(within(i).getByRole('button', { name: '2' }))
+    expect(i.querySelector('[data-tile="attempt"] .sc-tile-v')!.textContent).toBe('2 / 3')
   })
 
-  it('steps to the same step in the next workflow of the same shape, newest first, and keeps focus on the control', async () => {
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): the sibling scrubber is the Details fold's "Other workflows"
+  // pager now ("n / N" plus Same-step-newer/older buttons), not the old
+  // inspector's "workflow N of M" sentence, its ◀/▶-prefixed `.wf-scrub-nav`,
+  // its `.wf-scrub-shape` caption or a keyboard arrow on a `data-scrub` group
+  // (dropped: the pager's buttons are plain `disabled`, not `aria-disabled`,
+  // and nothing refocuses the equivalent control across the page navigation).
+  it('steps to the same step in the next workflow of the same shape, newest first', async () => {
     // #112: `plan` is in all three workflows, but only `wf_mid` and `wf_old`
     // share a shape (1 -> 1, two steps). `wf_new` is 1 -> 2 -> 1, so it is
     // not a comparable object and the scrubber never visits it.
@@ -1014,94 +1067,64 @@ describe('U5: scrubbing', () => {
     // MOVED TO THE PAGE with the board form's removal (2026-10-01): the
     // selection no longer moves between two cards on one board -- a scrub
     // OPENS THE OTHER WORKFLOW'S PAGE, in the same tab, with the step picked.
-    // What is asserted is unchanged: the order, the shape filter, where the
-    // selection is afterwards, and where focus lands.
+    // What is asserted is unchanged: the order, the shape filter, and where
+    // the selection is afterwards.
     const c = await openPage('wf_new', 'table')
     pick(c, 'plan')
     const alone = inspector(cardOf('wf_new'))
-    // A list of one says so, not `workflow 1 of 1` (QAFIX5, run 5b L4).
-    // One sentence, no pager, the shape in its title, since QA1-FIX-29 (overview-agents-67).
-    const sentence = within(alone).getByText('No other workflow of this shape on this board')
-    expect(sentence.getAttribute('title')).toBe('This workflow’s shape: 4 steps in 3 stages (1 → 2 → 1). Only workflows of this shape are compared.')
-    expect(alone.querySelector('[data-scrub="workflow"] button')).toBeNull()
-    fireEvent.click(within(alone).getByRole('button', { name: 'Stop inspecting this step' }))
+    await waitFor(() => expect(alone.querySelector('.sc-more')).toBeTruthy())
+    openCardDetails(alone)
+    // A card alone in its shape has no "Other workflows" pager at all.
+    expect(within(alone).queryByRole('group', { name: /other workflows/i })).toBeNull()
+    fireEvent.click(within(document.querySelector<HTMLElement>('.wi-dock')!).getByRole('button', { name: 'Close the inspector' }))
 
-    // wf_mid's page lands with its failed `plan` already picked (the step
-    // that needs a look), so it is not clicked again -- a click would put it down.
+    // No arrival pick any more (the Graph Work redesign): wf_mid's page lands
+    // with the Overview, so `plan` -- its failed step, the one that needs a
+    // look -- is picked here, same as a reader would.
     await openPage('wf_mid', 'table')
+    pick(cardOf('wf_mid'), 'plan')
     const first = await waitFor(() => inspector(cardOf('wf_mid')))
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
-    expect(within(first).getByText('workflow 1 of 2')).toBeTruthy()
-    expect(first.querySelector('.wf-scrub-shape')!.textContent).toBe('shape: 2 steps in 2 stages (1 → 1)')
-    // ◀ position ▶ is one unit, the shape after it (D30; held here since the
-    // fixture's own workflows are each of their own shape, qa.u10b).
-    const nav = first.querySelector<HTMLElement>('[data-scrub="workflow"] > .wf-scrub-nav')!
-    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['◀', '▶'])
-    expect(nav.compareDocumentPosition(first.querySelector('.wf-scrub-shape')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(
-      within(first).getByRole('button', { name: 'Same step, newer workflow' }).getAttribute('aria-disabled'),
-    ).toBe('true')
+    openCardDetails(first)
+    const pager = within(first).getByRole('group', { name: /other workflows/i })
+    expect(pager.textContent).toContain('1 / 2')
+    expect((within(pager).getByRole('button', { name: 'Same step, newer workflow' }) as HTMLButtonElement).disabled).toBe(true)
 
-    fireEvent.click(within(first).getByRole('button', { name: 'Same step, older workflow' }))
+    fireEvent.click(within(pager).getByRole('button', { name: 'Same step, older workflow' }))
     // The selection MOVED: it is now wf_old's `plan`, inspected on wf_old's page.
     const second = await waitFor(() => inspector(cardOf('wf_old')))
-    expect(within(second).getByText('workflow 2 of 2')).toBeTruthy()
+    openCardDetails(second)
+    const pager2 = within(second).getByRole('group', { name: /other workflows/i })
+    expect(pager2.textContent).toContain('2 / 2')
     expect(second.querySelector('a[href="/agents/recent/t_plan_old"]')).toBeTruthy()
     expect(parseWorkflowQuery(address).tab, 'the scrub left the view the reader was in').toBe('table')
-    const older = within(second).getByRole('button', { name: 'Same step, older workflow' })
-    expect(older.getAttribute('aria-disabled')).toBe('true')
-    // FOCUS LANDS ON THE CONTROL THE READER WAS PRESSING, even at its end. It
-    // used to fall back to the other button, so a reader holding ArrowRight
-    // found themselves on "newer" with nothing said.
-    await waitFor(() => expect(document.activeElement).toBe(older))
-    // And from there the other direction still works, from the keyboard.
-    const group = second.querySelector<HTMLElement>('[data-scrub="workflow"]')
-    expect(group).toBeTruthy()
-    fireEvent.keyDown(group!, { key: 'ArrowLeft' })
+    expect((within(pager2).getByRole('button', { name: 'Same step, older workflow' }) as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(within(pager2).getByRole('button', { name: 'Same step, newer workflow' }))
     const back = await waitFor(() => inspector(cardOf('wf_mid')))
-    expect(within(back).getByText('workflow 1 of 2')).toBeTruthy()
-    await waitFor(() =>
-      expect(document.activeElement).toBe(within(back).getByRole('button', { name: 'Same step, newer workflow' })),
-    )
+    openCardDetails(back)
+    expect(within(back).getByRole('group', { name: /other workflows/i }).textContent).toContain('1 / 2')
     // And never on to wf_new, whose `plan` is the same id in a different shape.
     expect(visited, 'the scrubber opened a workflow of another shape').toEqual(['wf_mid', 'wf_old', 'wf_mid'])
   })
 
-  it('keeps focus on a scrub control that reaches its end, so the arrow keys keep working', async () => {
-    await openPage('wf_new', 'table')
-    const c = cardOf('wf_new')
-    pick(c, 'plan')
-    const i = inspector(c)
-    await within(i).findByText('attempt 3 of 3 made')
-    const prev = within(i).getByRole('button', { name: 'Previous attempt' })
-    prev.focus()
-    expect(document.activeElement).toBe(prev)
-    fireEvent.keyDown(prev, { key: 'ArrowLeft' })
-    fireEvent.keyDown(prev, { key: 'ArrowLeft' })
-    expect(within(i).getByText('attempt 1 of 3 made')).toBeTruthy()
-    // A BROWSER TAKES FOCUS OFF A CONTROL THE MOMENT IT BECOMES `disabled`
-    // (the HTML focus fixup rule), and from <body> no arrow key reaches the
-    // scrubber. jsdom does not run that rule, so this asks the question it can
-    // answer: at its end, can the control take focus at all?
-    //
-    // Focus goes to ANOTHER REAL CONTROL first, not through `blur()`. The first
-    // version of this test called `blur()` on the focused button, and jsdom's
-    // `blur()` is a no-op on a disabled element -- so focus never left it, and
-    // the test passed against the very defect it names (CI run 35979486837).
-    within(i).getByRole('button', { name: 'Stop inspecting this step' }).focus()
-    expect(document.activeElement).not.toBe(prev)
-    prev.focus()
-    expect(document.activeElement, 'the control at its end cannot take focus').toBe(prev)
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' })
-    expect(within(i).getByText('attempt 2 of 3 made')).toBeTruthy()
-  })
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): its Previous/Next-attempt buttons are plain `disabled`
+  // (`components/Button.tsx`), not `aria-disabled`, and the timeline has no
+  // keyboard-arrow handler at all. A disabled HTML button cannot hold focus,
+  // so the whole premise of this test -- a scrub control staying focused at
+  // its end so an arrow key keeps working -- no longer applies; there is no
+  // equivalent to rewrite it onto.
 
   it('says a step with no task has no attempt to scrub, rather than showing none', async () => {
     await openPage('wf_new', 'timeline')
     const c = cardOf('wf_new')
     pick(c, 'ship')
     const i = inspector(c)
-    expect(i.querySelector('[data-scrub="attempt"]')!.textContent).toContain('not started')
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): a never-attempted step says why in `.sc-wait` (`row.why`),
+    // not a `[data-scrub="attempt"]` strip.
+    expect(i.querySelector('.sc-wait')!.textContent).toContain('waiting on')
     expect(api.loadAttempts).not.toHaveBeenCalledWith(undefined)
     // Picking it again puts it down.
     pick(c, 'ship')
@@ -1266,7 +1289,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     // Waiting for it here is also what proves the read has LANDED.
     await waitFor(() => expect(mark()?.textContent).toBe('2/3 sampled'))
     expect(mark()!.closest('.wf-table-head'), 'the mark is not in the table head row').not.toBeNull()
-    expect(mark()!.closest('.wf-card'), 'the mark is outside the card').not.toBeNull()
+    expect(mark()!.closest('.wfp.wfp-main'), 'the mark is outside the page').not.toBeNull()
     expect(document.querySelector('.wf-chrome'), 'an empty strip above the card').toBeNull()
     // The Timeline draws times from the task read, not the sample.
     chooseTab(c, 'Steps over time')
@@ -1284,9 +1307,13 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
       head!.querySelector('h1')!.compareDocumentPosition(glyph!) & Node.DOCUMENT_POSITION_FOLLOWING,
       'the `?` sits before the heading',
     ).toBeTruthy()
-    // Under the Graph the page draws the Steps table, and its head row carries the mark.
+    // NO STEP TABLE UNDER THE GRAPH any more (visual QA pass 1
+    // overview-agents-73, #2596; the Graph Work redesign keeps that rule):
+    // the graph tab draws the stage grid alone, so the mark -- which lives in
+    // the Steps table's own head row -- is not drawn there either.
     chooseTab(cardOf('wf_new'), 'Graph')
-    expect(mark()?.closest('.wfp-steps .wf-table-head'), 'the Steps table under the graph lost its mark').not.toBeNull()
+    expect(document.querySelector('.wfp-steps'), 'a step table is back under the graph').toBeNull()
+    expect(mark(), 'a sample mark with no table to qualify').toBeNull()
   })
 })
 
@@ -1673,10 +1700,12 @@ describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
   it('keeps the view the reader chose, and the picked step, when the scrubber moves to another workflow', async () => {
     // MOVED TO THE PAGE (2026-10-01): the scrub opens the other workflow's
     // page, and the view it opens in is the tab the reader was on.
-    // `wf_mid` and `wf_old` are the two workflows of one shape (#112); wf_mid
-    // lands with its failed `plan` picked.
+    // `wf_mid` and `wf_old` are the two workflows of one shape (#112). No
+    // arrival pick any more (the Graph Work redesign): `plan`, wf_mid's
+    // failed step, is picked here, same as a reader would.
     const mid = await openPage('wf_mid')
     chooseTab(mid, 'Steps over time')
+    pick(cardOf('wf_mid'), 'plan')
     await waitFor(() => inspector(cardOf('wf_mid')))
     expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(within(inspector(cardOf('wf_mid'))).getByRole('button', { name: 'Same step, older workflow' }))

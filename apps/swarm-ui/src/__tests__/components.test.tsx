@@ -487,7 +487,7 @@ describe('Tabs, Segmented and Breadcrumb', () => {
         ]}
       />,
     )
-    const links = screen.getAllByRole('link')
+    const links = screen.getAllByRole('tab')
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/agents/live/t1', '/agents/live/t1/attempts', '/agents/live/t1/logs'])
     expect(links[0]!.getAttribute('aria-current')).toBe('page')
     // A word apart from its label (QA-007, run 5b): the tab's text is `Logs —`.
@@ -526,6 +526,73 @@ describe('Tabs, Segmented and Breadcrumb', () => {
     expect(screen.queryByRole('link')).toBeNull()
     fireEvent.click(tabs[2]!)
     expect(pick).toHaveBeenCalledWith('artifacts')
+  })
+
+  it('a strip drawn as tabs is a tablist in both forms, the current tab its one Tab stop, arrow keys moving along it', () => {
+    // QA2-FIX-20 (runs2-13): the link form was a `nav` of plain links, so the
+    // run's Run / Changes strip announced no tabs and arrow keys did nothing.
+    // MUTATION: draw the link form as a `nav` again, drop `role="tab"` or the
+    // roving `tabIndex`, or drop `onKeyDown` -- each fails a line below.
+    const go = vi.fn()
+    const { unmount } = render(
+      <Tabs
+        label="Views of this run"
+        current="run"
+        onGo={go}
+        tabs={[
+          { key: 'run', label: 'Run', href: '/runs/r1' },
+          { key: 'changes', label: 'Changes', href: '/runs/r1/changes' },
+          { key: 'log', label: 'Log', href: '/runs/r1/log' },
+        ]}
+      />,
+    )
+    const list = screen.getByRole('tablist', { name: 'Views of this run' })
+    expect(screen.queryByRole('navigation')).toBeNull()
+    const links = screen.getAllByRole('tab')
+    expect(links.map((a) => a.tagName)).toEqual(['A', 'A', 'A'])
+    expect(links.map((a) => a.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false'])
+    expect(links.map((a) => a.getAttribute('tabindex'))).toEqual(['0', '-1', '-1'])
+    expect(links[0]!.getAttribute('aria-current')).toBe('page')
+    links[0]!.focus()
+    fireEvent.keyDown(list, { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(links[1])
+    fireEvent.keyDown(list, { key: 'End' })
+    expect(document.activeElement).toBe(links[2])
+    fireEvent.keyDown(list, { key: 'ArrowRight' })
+    expect(document.activeElement, 'Right from the last tab wraps to the first').toBe(links[0])
+    fireEvent.keyDown(list, { key: 'ArrowLeft' })
+    expect(document.activeElement, 'Left from the first tab wraps to the last').toBe(links[2])
+    fireEvent.keyDown(list, { key: 'Home' })
+    expect(document.activeElement).toBe(links[0])
+    // Moving the focus is not choosing: the route changes only on a click.
+    expect(go).not.toHaveBeenCalled()
+    unmount()
+
+    const pick = vi.fn()
+    render(
+      <Tabs
+        label="Agent panes"
+        current="attempts"
+        onSelect={pick}
+        tabs={[
+          { key: 'detail', label: 'Details' },
+          { key: 'attempts', label: 'Attempts' },
+        ]}
+      />,
+    )
+    const buttons = screen.getAllByRole('tab')
+    expect(buttons.map((b) => b.getAttribute('tabindex'))).toEqual(['-1', '0'])
+    buttons[1]!.focus()
+    fireEvent.keyDown(screen.getByRole('tablist', { name: 'Agent panes' }), { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(buttons[0])
+    expect(pick).not.toHaveBeenCalled()
+  })
+
+  it('keeps a Tab stop on the first tab when the current view is not one the strip draws', () => {
+    // MUTATION: give the stop to `current` alone and every tab is -1: the
+    // strip drops out of the Tab order.
+    render(<Tabs label="Views" current="elsewhere" onSelect={vi.fn()} tabs={[{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }]} />)
+    expect(screen.getAllByRole('tab').map((b) => b.getAttribute('tabindex'))).toEqual(['0', '-1'])
   })
 
   it('the segmented control is toggle buttons', () => {

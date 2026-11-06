@@ -90,7 +90,9 @@ beforeEach(() => {
   api.loadTasks.mockResolvedValue(ok({ tasks: [TASK] } as TaskPage))
   api.loadTask.mockImplementation(async (id: string) => failed(404, `no ${id}`))
   api.loadWorkflow.mockImplementation(async (id: string) => (id === STEP.workflow_id ? ok(WF) : failed(404, `no ${id}`)))
-  api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
+  // A ledger over the 24 h span: since QA2-FIX-05 (runs2-04) one over
+  // another window shows no figures.
+  api.loadOutcomes.mockResolvedValue(ok({ ...ledgerFixture(), tz: 'UTC', bucket: 'hour', since: ago(24 * 60), until: ago(0), generated_at: ago(0) }))
   api.loadAttemptsPage.mockResolvedValue(ok(page([attempt('task_solo')])))
 })
 
@@ -109,16 +111,17 @@ const summary = (label: string) => {
 }
 
 describe('runs-submit-10: the headline names its window before its figures', () => {
-  it('leads with “Outcomes Sep 12 – Sep 25:” over a ledger outside the span, and with the figure over one that matches', async () => {
+  it('shows no figure over a ledger outside the span, and the figure first over one that matches', async () => {
+    api.loadOutcomes.mockResolvedValue(ok(ledgerFixture()))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const head = await waitFor(() => {
-      const el = cell(/% success/)
+      const el = cell(/not this span, read for/)
       expect(el).not.toBeNull()
       return el!
     })
-    // MUTATION: print the window after the figures (the code before this
-    // fix) and the line reads '91 % success … Sep 12 – Sep 25' as the span's.
-    expect(text(head)).toMatch(/^Outcomes Sep 12 – Sep 25: \d+ % success, \d+ of \d+ decided$/)
+    // MUTATION: print the ledger's figures over another window and the line
+    // reads '91 % success' as the span's (superseded by QA2-FIX-05, runs2-04).
+    expect(text(head)).toBe('outcomes — not this span, read for Sep 12 – Sep 25')
     cleanup()
 
     const same: Outcomes = { ...ledgerFixture(), tz: 'UTC', bucket: 'hour', since: ago(24 * 60), until: ago(0), generated_at: ago(0) }
@@ -173,12 +176,13 @@ describe('runs-submit-33 / chrome-C17: loading says counting; a partial read is 
   it('once the reads settle short, says it in one cell, of how many, and how to read the rest', async () => {
     api.loadTaskEventsPage.mockResolvedValue(failed(500, 'boom'))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(text(strip())).toMatch(/events not read/))
-    // MUTATION: print a fenced cell and a parks cell each 'events not read on N lanes' and this is red: two dashes.
-    expect(cells().filter((c) => /events not read/.test(text(c)))).toHaveLength(1)
+    await waitFor(() => expect(text(strip())).toMatch(/not counted/))
+    // MUTATION: print a fenced cell and a parks cell each 'not counted on N lanes' and this is red: two dashes.
+    expect(cells().filter((c) => /not counted/.test(text(c)))).toHaveLength(1)
     expect(document.querySelectorAll('.tl-strip1 .tl-dash')).toHaveLength(1)
     // MUTATION: drop 'of M' or the way to read the rest, and the reader cannot tell a short read from a broken page.
-    expect(text(cell(/events not read/))).toBe('fenced and parks — events not read on 1 of 1 lane · open a lane to read its events')
+    // QA2-FIX-05 (runs2-15): 'not counted', not 'events not read'.
+    expect(text(cell(/not counted/))).toBe('fenced and parks — not counted on 1 of 1 lane · open a lane to count')
   })
 })
 

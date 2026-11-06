@@ -339,7 +339,7 @@ def test_sc_mcp_servers_is_the_same_read_in_a_terminal(monkeypatch):
 
 def test_the_sc_command_grants_the_view_by_name():
     text = (_REPO / "plugin" / "commands" / "sc.md").read_text(encoding="utf-8")
-    assert "Bash(uv run sc mcp-servers:*)" in text
+    assert "Bash(sc mcp-servers:*)" in text
 
 
 # --------------------------------------------------------------------------

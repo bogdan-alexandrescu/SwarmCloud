@@ -59,6 +59,18 @@ step-spec signature does not cover (tests/unit/common/test_specsign_covers.py):
 so this design needs no frozen-contract change. Every other profile asks
 nothing.
 
+THE RUN SAYS WHICH STATE THE GATE'S SIGN-IN IS IN (`STATUS_NAME`, part of
+#2688). The gate lets an approved IdP token path through only while its own
+sign-in ended `signed_in`, read off `signed_in_selector` on its own tab. A
+test account that signs in and lands on a page without that element ends the
+sign-in `failed` while the IdP session is real, so every page the agent or
+the capture then loads is signed in and has its token exchange refused (on
+2 November 2026, on all 15 screens of a crawl). The refusal alone reads as
+the gate's rule, so beside the notice the worker writes `qa-target.json`:
+the target id, the leg's name, the gate's state, its cause and the sign-in
+count, public fields only, and the capture copies the state and cause into
+its manifest's `gate_refusals.sign_in`. An attempt with no target has none.
+
 FAIL SIGNED OUT, NEVER FAIL THE TASK. A refusal that shows there IS a target
 (a pending host, a credential not set or unreadable, a target changed since
 the run started: `_TARGET_CAUSES`) leaves the browser signed out of it and
@@ -92,11 +104,17 @@ CTL_OP = "qa_sign_in"
 MAX_SIGN_INS = 3
 #: The agent's notice, in the hand-off spool.
 NOTICE_NAME = "qa-target.md"
+#: The gate's sign-in state, in the hand-off spool, for the visual-QA capture
+#: (`swarm_qa.QA_TARGET_STATUS_NAME`; module docstring).
+STATUS_NAME = "qa-target.json"
 #: Where `swarm-handoff sign-in` writes its requests, in the spool.
 SIGN_INS_DIR = "sign-ins"
 #: How long the first sign-in is awaited before the runner starts: the gate's
-#: own bound is 30 s for the form and 30 s after submit, plus the return.
-FIRST_WAIT_SECONDS = 75.0
+#: own bound is 30 s for the form (`livegate.qatarget.FORM_SECONDS`) and, for
+#: a page still loading after the submit, 60 s for its verdict
+#: (`SIGNED_IN_MAX_SECONDS`, part of #2688), plus the return. Start clicks
+#: can take longer; the agent is held until the gate is done all the same.
+FIRST_WAIT_SECONDS = 95.0
 POLL_SECONDS = 0.5
 
 SIGNED_IN = "signed_in"
@@ -511,7 +529,27 @@ class QaTargetSignIn:
             else:
                 self._respond(root, request_id)
 
+    def status(self) -> dict[str, Any] | None:
+        """`STATUS_NAME`'s document: the gate's sign-in state for the target,
+        public fields only; None when this attempt has no target."""
+        if not self.wanted or not self.has_target or self.state is None:
+            return None
+        return {"target_id": self.target_id, "environment_name": self.environment_name, "state": self.state,
+                "cause": self.cause, "sign_ins": self.sign_ins}
+
+    def _write_status(self, root: Path) -> None:
+        target = root / STATUS_NAME
+        document = self.status()
+        try:
+            if document is None:
+                target.unlink(missing_ok=True)
+            else:
+                _write_atomic(target, document)
+        except OSError as exc:
+            self.log.warning("could not write the qa target status", error=type(exc).__name__)
+
     def _write_notice(self, root: Path) -> None:
+        self._write_status(root)
         target = root / NOTICE_NAME
         text = self.notice()
         try:
@@ -524,6 +562,6 @@ class QaTargetSignIn:
 
 
 __all__ = [
-    "CTL_OP", "MAX_SIGN_INS", "NOTICE_NAME", "PROFILE", "QA_TARGET_PURPOSE", "SIGN_INS_DIR",
+    "CTL_OP", "MAX_SIGN_INS", "NOTICE_NAME", "PROFILE", "QA_TARGET_PURPOSE", "SIGN_INS_DIR", "STATUS_NAME",
     "IssueRefused", "QaTargetSignIn", "handoff_args", "issue", "notice", "reason",
 ]

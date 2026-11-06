@@ -408,6 +408,22 @@ def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _other_branch_push(event: str | None, branch: str | None, head_ref: str | None) -> bool:
+    """Whether an Actions run was triggered by a push to a known branch that
+    is not `head_ref` -- another branch's result at a shared sha, not the
+    pull request's (#2946). The worker's `merge._other_branch_push` (#2365)
+    is the same rule. False when anything is unknown; an empty `head_ref`
+    (`PullSnapshot` when GitHub named no head ref) is unknown, as the worker
+    reads it."""
+    if not head_ref:
+        return False
+    return event == "push" and branch is not None and branch != head_ref
+
+
 def _full_name(side: Mapping[str, Any]) -> str:
     """`owner/repo` of a pull request's head or base, "" when GitHub named none."""
     repo = side.get("repo")
@@ -748,6 +764,50 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} names no commit")
         return sha
 
+    def tag_head(self, ref: IssueRef, tag: str, token: str) -> str | None:
+        """The object `tag` points at (a commit, or an annotated tag's own
+        object), or None when there is no such tag: admission's second look
+        at a `repository_ref` that is no branch (#2726)."""
+        what = f"the tag {tag} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"git/ref/tags/{quote(tag, safe='/')}"), token, what,
+                needs=PULLS_WRITE,
+            )
+        except ForgeWriteNotFound:
+            return None
+        target = data.get("object") if isinstance(data, dict) else None
+        sha = target.get("sha") if isinstance(target, dict) else None
+        if not isinstance(sha, str) or not sha:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no object")
+        return sha
+
+    def commit_head(self, ref: IssueRef, sha: str, token: str) -> str | None:
+        """The commit `sha` names, or None when GitHub has no such commit (a
+        404, or its 422 "No commit found for SHA"): admission's one look at a
+        full-sha `repository_ref` (#3315).
+
+        task_36c8a894 named a sha GitHub's upload-pack does not serve and
+        failed in the clone with "not our ref". A 200 here is NOT proof the
+        clone will succeed: the commits API can still answer for a dangling
+        object that upload-pack refuses. Any other 422 raises, so admission
+        reads it as "not checked" and admits."""
+        what = f"the commit {sha} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"commits/{quote(sha, safe='')}"), token, what,
+                needs=PULLS_WRITE, ok=(200, 422),
+            )
+        except ForgeWriteNotFound:
+            return None
+        found = data.get("sha") if isinstance(data, dict) else None
+        if isinstance(found, str) and found:
+            return found
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, str) and "no commit found" in message.lower():
+            return None
+        raise ForgeWriteError(f"GitHub's answer for {what} names no commit")
+
     def create_branch(self, ref: IssueRef, branch: str, sha: str, token: str) -> bool:
         """Point a new `branch` at `sha`. True when made, False when it was
         already there at `sha`; any other branch of that name is refused."""
@@ -779,6 +839,21 @@ class GitHubWriter:
         if not isinstance(entries, list):
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
         return _pull(ref, entries[0], what) if entries else None
+
+    def pulls_from(self, ref: IssueRef, head: str, token: str) -> list[PullSnapshot]:
+        """Every pull request from `head` (a branch of this repository), in any
+        state, newest first: one page of `PAGE_SIZE`. GitHub's list answer
+        carries `merged_at` but not `merged`, so a merged one is read by
+        `merged_at`."""
+        what = f"the pull requests from {head} in {ref.repository}"
+        query = (f"head={quote(ref.owner, safe='')}:{quote(head, safe='/')}"
+                 f"&state=all&per_page={PAGE_SIZE}")
+        entries = self._call(
+            "GET", f"{self._url(ref, 'pulls')}?{query}", token, what, needs=PULLS_WRITE,
+        )
+        if not isinstance(entries, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+        return [_pull(ref, entry, what) for entry in entries]
 
     def open_pull(
         self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str,
@@ -842,8 +917,10 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
         return [rule for rule in data if isinstance(rule, dict)]
 
-    def check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
-        """The LATEST check run of each name at `sha` (`filter=latest`), every page.
+    def check_runs(self, ref: IssueRef, sha: str, token: str, *,
+                   head_ref: str | None = None) -> list[dict[str, Any]]:
+        """The LATEST check run of each name at `sha` (`filter=latest`), every page,
+        for the pull request whose head branch is `head_ref`.
 
         When a name is listed more than once, or a run finished neither green
         nor tolerated, the Actions runs at `sha` are read in ONE more read
@@ -855,6 +932,18 @@ class GitHubWriter:
         concurrency cancelled reads as pending here as it does in the merge
         step (#2582). A head whose every check ran once and passed costs
         nothing more.
+
+        `commits/{sha}/check-runs` lists every check suite at the sha, from
+        whichever branch pushed it, and swarm/ lanes branch from one another:
+        at a9009a19 a sibling branch's newer green push ci-gate stood as the
+        PR's push result beside the PR branch's red one, so the merge wake
+        read green and never asked the free re-run (#2946). So with a
+        `head_ref`, a run whose suite's Actions run was triggered by a push to
+        a KNOWN branch other than `head_ref` is dropped, from the same read,
+        exactly as the worker's `merge.checks_at` drops it
+        (`_other_branch_push`, #2365). pull_request suites (a fork's names the
+        fork's branch), suites whose branch is unknown (no `actions: read`,
+        another App) and, without a `head_ref`, every run are kept.
         """
         what = f"the check runs at {ref.repository}@{sha[:12]}"
         url = self._url(ref, f"commits/{quote(sha, safe='')}/check-runs")
@@ -876,15 +965,19 @@ class GitHubWriter:
                   for run in runs)
         if len(names) != len(set(names)) or red:
             workflow_runs = self._workflow_runs(ref, sha, token)
-            events = {row["check_suite_id"]: row["event"] for row in workflow_runs
-                      if isinstance(row.get("event"), str)
-                      and row.get("check_suite_id") is not None}
+            suites = {row["check_suite_id"]: (_str(row.get("event")), _str(row.get("head_branch")))
+                      for row in workflow_runs if row.get("check_suite_id") is not None}
+            kept: list[dict[str, Any]] = []
             for run in runs:
                 suite = run.get("check_suite")
-                event = events.get(suite.get("id")) if isinstance(suite, dict) else None
+                event, branch = (suites.get(suite.get("id"), (None, None))
+                                 if isinstance(suite, dict) else (None, None))
+                if _other_branch_push(event, branch, head_ref):
+                    continue
                 if event is not None:
                     run["event"] = event
-            runs = forgechecks.mark_workflow_runs(runs, workflow_runs)
+                kept.append(run)
+            runs = forgechecks.mark_workflow_runs(kept, workflow_runs)
         return runs
 
     def _workflow_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
@@ -914,7 +1007,8 @@ class GitHubWriter:
                 break
         return rows
 
-    def actions_check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
+    def actions_check_runs(self, ref: IssueRef, sha: str, token: str, *,
+                           head_ref: str | None = None) -> list[dict[str, Any]]:
         """The Actions jobs at `sha`, each shaped as the check run it is.
 
         #1188 (measured 2026-10-27): a fine-grained personal access token has
@@ -930,6 +1024,14 @@ class GitHubWriter:
         Each job also carries its run's conclusion, from the same read
         (`forgechecks.mark_workflow_runs`, #2582), so a red gate in a run
         concurrency cancelled reads as pending, as `check_runs` reads it.
+        And its run's id as `workflow_run_id`, the run whose failed jobs the
+        merge wake tick's free re-run asks GitHub to re-run (#2841).
+
+        With a `head_ref`, the jobs of a run triggered by a push to a KNOWN
+        branch other than `head_ref` are not read: another branch's result at
+        a shared sha, dropped as `check_runs` drops it (#2946) and the
+        worker's `merge.checks_at` does (#2365). Each job carries its run's
+        `head_branch` beside its `event`.
         """
         what = f"the Actions runs at {ref.repository}@{sha[:12]}"
         # The newest MAX_ACTIONS_RUNS runs, one read: each costs a jobs read
@@ -943,6 +1045,9 @@ class GitHubWriter:
             run_id = _int(run.get("id"))
             if run_id is None or run.get("head_sha") not in (None, sha):
                 continue
+            event, branch = _str(run.get("event")), _str(run.get("head_branch"))
+            if _other_branch_push(event, branch, head_ref):
+                continue
             for job in self.run_jobs(ref, run_id, token):
                 job_id = _int(job.get("id"))
                 if job_id is None:
@@ -952,7 +1057,9 @@ class GitHubWriter:
                     "status": job.get("status"), "conclusion": job.get("conclusion"),
                     "app": {"id": GITHUB_ACTIONS_APP_ID, "slug": "github-actions"},
                     "check_suite": {"id": run.get("check_suite_id")},
-                    **({"event": run["event"]} if isinstance(run.get("event"), str) else {}),
+                    "workflow_run_id": run_id,
+                    **({"event": event} if event is not None else {}),
+                    **({"head_branch": branch} if branch is not None else {}),
                 })
         return forgechecks.mark_workflow_runs(checks, runs)
 
@@ -978,6 +1085,21 @@ class GitHubWriter:
         self._call(
             "POST", self._url(ref, f"actions/jobs/{int(job_id)}/rerun"), token,
             f"a re-run of Actions job {int(job_id)}", needs=ACTIONS_WRITE,
+            payload={}, ok=(201, 204),
+        )
+
+    def rerun_failed_jobs(self, ref: IssueRef, run_id: int, token: str) -> None:
+        """Ask GitHub to re-run the failed jobs of Actions run `run_id` (#2841).
+
+        GitHub re-runs every failed job of the run AND their dependents. A
+        job re-run (`rerun_job`) re-runs a job and its dependents, never its
+        needs: re-running a fan-in gate such as application.yml's `ci-gate`
+        alone never re-ran the flaky job it aggregates (PR 2790 at
+        d6548f96), so the gate read red again. Same `actions: write`.
+        """
+        self._call(
+            "POST", self._url(ref, f"actions/runs/{int(run_id)}/rerun-failed-jobs"), token,
+            f"a re-run of the failed jobs of Actions run {int(run_id)}", needs=ACTIONS_WRITE,
             payload={}, ok=(201, 204),
         )
 
@@ -1063,15 +1185,55 @@ class GitHubWriter:
         )
 
     def delete_branch(self, ref: IssueRef, branch: str, token: str) -> bool:
-        """Delete `branch`; False when it was already gone."""
+        """Delete `branch`; False when it was already gone (404, or 422
+        "Reference does not exist", GitHub's answer once its auto-delete of a
+        merged head branch got there first)."""
+        what = f"the branch {branch} of {ref.repository}"
         try:
-            self._call(
+            data = self._call(
                 "DELETE", self._url(ref, f"git/refs/heads/{quote(branch, safe='/')}"), token,
-                f"the branch {branch} of {ref.repository}", needs=CONTENTS_WRITE, ok=(204,),
+                what, needs=CONTENTS_WRITE, ok=(204, 422),
             )
         except ForgeWriteNotFound:
             return False
-        return True
+        if data is None:
+            return True
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, str) and "reference does not exist" in message.lower():
+            return False
+        raise ForgeWriteError(f"GitHub answered HTTP 422 for {what}")
+
+    def branch_protected(self, ref: IssueRef, branch: str, token: str) -> bool | None:
+        """Whether `branch` is protected; None when there is no such branch."""
+        what = f"the branch {branch} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"branches/{quote(branch, safe='')}"), token, what,
+                needs=CONTENTS_READ,
+            )
+        except ForgeWriteNotFound:
+            return None
+        return isinstance(data, dict) and data.get("protected") is True
+
+    def branches_page(self, ref: IssueRef, page: int, token: str) -> list[dict[str, Any]]:
+        """Page `page` (from 1, `PAGE_SIZE` a page) of the repository's branches,
+        as GitHub lists them: `name`, `commit.sha`, `protected`. One request,
+        so the caller counts its own budget."""
+        return self._list(
+            self._url(ref, f"branches?per_page={PAGE_SIZE}&page={int(page)}"), token,
+            f"the branches of {ref.repository}", needs=CONTENTS_READ,
+        )
+
+    def pulls_page(self, ref: IssueRef, state: str, page: int, token: str) -> list[dict[str, Any]]:
+        """Page `page` of the pull requests in `state` (`open`, `closed` or
+        `all`), most recently updated first. One request, as `branches_page`."""
+        if state not in ("open", "closed", "all"):
+            raise ValueError(f"a pull request state is open, closed or all, not {state!r}")
+        return self._list(
+            self._url(ref, f"pulls?state={state}&sort=updated&direction=desc"
+                           f"&per_page={PAGE_SIZE}&page={int(page)}"),
+            token, f"the {state} pull requests of {ref.repository}", needs=PULLS_READ,
+        )
 
     def compare_files(self, ref: IssueRef, base: str, head: str, token: str) -> list[str]:
         """The paths changed from the merge base of `base` and `head` to `head`.

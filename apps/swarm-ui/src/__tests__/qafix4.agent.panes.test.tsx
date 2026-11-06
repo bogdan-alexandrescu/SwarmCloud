@@ -187,9 +187,9 @@ afterEach(() => {
 })
 
 describe('N12: every Details card title is a heading, drawn as the bold title was', () => {
-  it('heads Now, Progress, Resources and Input with an h2 each', () => {
+  it('heads Now, Progress, Against each limit and Input with an h2 each', () => {
     const el = host(runOf(running()))
-    for (const name of ['Now', 'Progress', 'Resources', 'Input']) {
+    for (const name of ['Now', 'Progress', 'Against each limit', 'Input']) {
       // MUTATION: draw DtCardHead's title in a `<b>` again (AgentDetail.tsx) -- no heading by that name.
       const h = within(el).getByRole('heading', { name, level: 2 })
       // MUTATION: draw the title as an `h3` -- the level is not the other panes' 2.
@@ -207,7 +207,7 @@ describe('N12: every Details card title is a heading, drawn as the bold title wa
 
   it('draws each heading at the size, weight and line height `.dt-card-head > b` gave, with no margin', () => {
     const el = host(runOf(running()))
-    for (const name of ['Now', 'Progress', 'Resources', 'Input']) {
+    for (const name of ['Now', 'Progress', 'Against each limit', 'Input']) {
       const h = within(el).getByRole('heading', { name, level: 2 })
       // MUTATION: leave styles/details.css's rule on `.dt-card-head > b` only -- the h2 takes no size.
       expect(painted(h, ['font-size', 'font'], WIDE), name).toBe('var(--t-body)')
@@ -273,7 +273,8 @@ describe('N14: the paused stamp is the page’s one clock, and says what paused 
     })
     // jsdom's default locale draws `toLocaleTimeString()` on a 12-hour clock.
     // MUTATION: print `new Date(frozen.at).toLocaleTimeString()` again (AgentLogs.tsx) -- `9:25:53 PM`.
-    expect(stamp.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    // The person's zone, UTC by default, labelled (TZ-CLOCKTIME, part of #2391).
+    expect(stamp.textContent).toMatch(/^\d{2}:\d{2}:\d{2} UTC$/)
     expect(stamp.textContent).not.toMatch(/AM|PM/i)
     // MUTATION: drop the title -- the hover no longer carries the ISO time and its age.
     expect(stamp.getAttribute('title')).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)

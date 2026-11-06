@@ -28,6 +28,13 @@ mock_provider "google" {
   }
 }
 
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
 override_data {
   target = data.google_kms_crypto_key_versions.workspace_spec_versions[0]
   values = {
@@ -140,14 +147,22 @@ run "the_job_carries_spec_verify_keys_from_the_module" {
     error_message = "SPEC_VERIFY_KEYS is the job's only environment variable"
   }
 
-  # The pin: the command's last element is the value's SHA-256, so an
-  # override that replaces the variable is refused by entry.py.
+  # The pin: the command carries the value's SHA-256, so an override that
+  # replaces the variable is refused by entry.py; and it names the key whose
+  # versions count, the same module's key (DAYONE-BOOT-1), so an environment
+  # variable never chooses it.
   assert {
     condition = google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command == tolist([
       "python3", "-I", "/opt/swarm/entry.py",
       "--spec-verify-keys-sha256=${sha256(jsonencode(module.workspace_spec_keys[0].verify_keys))}",
+      "--spec-signing-key=${module.workspace_spec_keys[0].crypto_key_id}",
     ])
-    error_message = "the job's fixed command ends with --spec-verify-keys-sha256=<SHA-256 of SPEC_VERIFY_KEYS>, the one value no execution override reaches"
+    error_message = "the job's fixed command ends with --spec-verify-keys-sha256=<SHA-256 of SPEC_VERIFY_KEYS> and --spec-signing-key=<this project's step-spec key>, the values no execution override reaches"
+  }
+
+  assert {
+    condition     = module.workspace_spec_keys[0].crypto_key_id == "projects/${var.project_id}/locations/${var.region}/keyRings/${var.name_prefix}-dev-specs/cryptoKeys/step-spec"
+    error_message = "the job trusts this project's own dev step-spec key, and no other"
   }
 
   assert {

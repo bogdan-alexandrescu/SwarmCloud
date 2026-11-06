@@ -383,11 +383,14 @@ def _on_the_pool(job: dict) -> bool:
 
 def _pool_jobs_on_a_pull_request(file: str) -> list[str]:
     """Self-hosted jobs a same-repository pull request can start. A job whose
-    `if` rules a pull request out is left out; none of today's are on the pool."""
+    `if` rules a pull request out is left out: application.yml's `build` and
+    `plugin-tag` (a push to main only) among them."""
     found = []
     for job_id, job in _jobs(file).items():
         condition = str(job.get("if") or "")
         if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
+            continue
+        if re.fullmatch(r"github\.event_name == 'push' && [^|]*", condition):
             continue
         if _on_the_pool(job):
             found.append(job_id)

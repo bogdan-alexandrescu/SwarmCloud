@@ -14,7 +14,7 @@
  *     own workspaces only (S1c). The phone drawer holds the same panel (S1f).
  *   * Admin › Workspaces you admin draws each workspace's own progress (S10a).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 
 type Json = Record<string, unknown>
@@ -106,6 +106,14 @@ async function steps() {
   return (await import('../ConfigSetup')) as typeof import('../ConfigSetup')
 }
 
+// The first import of App transforms its whole module graph, which on a loaded
+// runner took the first test that renders App past its 30s timeout. Pay it once
+// here, under its own budget: `vi.resetModules()` in app() drops the module
+// instances, not the transform cache, so every test still gets a fresh App.
+beforeAll(async () => {
+  await import('../App')
+}, 120_000)
+
 afterEach(() => {
   cleanup()
   vi.unstubAllEnvs()
@@ -177,11 +185,10 @@ describe('the Config panel\'s row badges (S1a)', () => {
     expect(badge('GitHub access')?.text).toBe('✓')
     expect(badge('Repositories')?.text).toBe('4')
     expect(badge('MCP servers')?.text).toBe('1 to set')
-    expect(badge('People and roles')?.text).toBe('only you')
-    // Optional, so dim like S1a's lone admin, never the warning tone.
-    // MUTATION: give "only you" the missing tone -> fails.
-    const people = [...document.querySelectorAll('.sk-panel .sk-pk')].find((r) => r.querySelector('.sk-pl')?.textContent === 'People and roles')
-    expect(people?.querySelector('.cfg-badge')?.className).toBe('cfg-badge is-note')
+    // People and roles and Workspace Settings are the workspace page's tabs
+    // since the admin routes lane (part of #2688): no Config row, so no badge;
+    // People invited is still the strip's fourth step, below.
+    expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).not.toContain('People and roles')
     expect([...document.querySelectorAll('.sk-panel .cfg-badge.is-missing')].map((b) => b.textContent)).toEqual(['3 to set', '1 to set'])
     expect(badge('Workspace Settings')).toBeNull()
     // THE BADGES MATCH THE STRIP: each badge's name is the step's own line.
@@ -192,7 +199,6 @@ describe('the Config panel\'s row badges (S1a)', () => {
     expect(lines[2]).toContain('3 to set: linear and 2 more')
     expect(badge('Secrets')?.why).toBe('Secrets set: 3 to set: linear and 2 more')
     expect(lines[3]).toBe('only you so far')
-    expect(badge('People and roles')?.why).toBe('People invited: only you so far')
   })
 
   it('draws a dash with the reason on a row whose source was unread, never a tick', async () => {
@@ -204,7 +210,6 @@ describe('the Config panel\'s row badges (S1a)', () => {
     // MUTATION: draw `needed: null` as done -> a tick and this fails.
     expect(badge('Secrets')?.why).toContain('could not be read')
     expect(badge('MCP servers')).toEqual({ text: '—', why: 'MCP servers: the MCP servers could not be read' })
-    expect(badge('People and roles')?.text).toBe('—')
   })
 
   it('draws no tick on MCP servers when nothing is missing: the read counts credentials, not registrations (VQ-046)', async () => {
@@ -217,11 +222,10 @@ describe('the Config panel\'s row badges (S1a)', () => {
 
   it('draws a member the same states, and People invited done when someone else holds a role (S1d)', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')], { eng: onboarding({ secrets: SECRETS_THREE, people: PEOPLE(true, 5) }) })
-    await app('/config/people')
+    await app('/config/secrets')
     await waitFor(() => expect(badge('Secrets')?.text).toBe('3 to set'))
-    expect(badge('People and roles')?.text).toBe('5')
     const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
-    await waitFor(() => expect(document.querySelector('.cfg-count b')?.textContent).toBe('3 of 4 done'))
+    await waitFor(() => expect(document.querySelector('.cfg-count b')?.textContent).toBe('3 of 4 steps done'))
     expect(within(strip).getAllByRole('listitem')[3]!.className).toContain('is-done')
   })
 })
@@ -240,8 +244,8 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     await waitFor(() => expect(groups().length).toBe(3))
     const [ws, platform, automate] = groups()
     // MUTATION: draw PANEL_PAGES.admin as one list -> no groups and this fails.
-    expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['People and roles', 'Workspaces you admin'] })
-    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets'] })
+    expect(ws).toMatchObject({ name: 'People and workspaces', rows: ['Platform people', 'Workspaces'] })
+    expect(platform).toMatchObject({ name: 'Platform', rows: ['Pool limits', 'Runner sizes', 'Tenants', 'Platform counts', 'Platform secrets', 'Setup', 'Health'] })
     // MUTATION: draw Schedules or Approvals as Admin pages -> their links leave Automate and this fails.
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules?scope=all', '/automate/approvals'] })
     // The spine's Admin still opens Pool limits.
@@ -254,7 +258,7 @@ describe('the Admin panel in groups (S1b, S1c)', () => {
     await waitFor(() => expect(groups().length).toBe(2))
     const [ws, automate] = groups()
     // MUTATION: hand a workspace admin the Platform group -> fails.
-    expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['People and roles', 'Workspaces you admin'] })
+    expect(ws).toMatchObject({ name: 'Your workspaces', rows: ['Platform people', 'Workspaces'] })
     expect(automate).toEqual({ name: 'In Automate', rows: ['Schedules', 'Approvals'], hrefs: ['/automate/schedules', '/automate/approvals'] })
     expect(document.querySelector('.sk-panel')?.textContent).not.toMatch(/Pool limits|Tenants|Platform counts/)
     expect(document.querySelector('.sk-pnote')?.textContent).toBe('Showing eng and ops, the workspaces you administer. The platform’s own pages are shown to platform admins only.')
@@ -274,15 +278,16 @@ describe('Workspaces you admin, each with its own setup progress (S10a)', () => 
     await waitFor(() => expect(strips()).toHaveLength(2))
     // MUTATION: read every workspace's setup without naming it -> both read eng and this fails.
     expect(seen).toEqual(expect.arrayContaining(['eng', 'ops']))
-    const [eng, ops] = strips()
+    // Furthest behind first (HOME-ADMIN): ops, 2 of 4, before eng, 3 of 4.
+    const [ops, eng] = strips()
     expect(eng!.getAttribute('aria-label')).toBe('eng setup')
-    expect(eng!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 3 of 4')
-    expect(eng!.querySelector('.cfg-progress-next')?.textContent).toBe('Next: Secrets set, 3 to set: linear and 2 more')
-    expect(ops!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 2 of 4')
+    expect(eng!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 3 of 4 steps')
+    expect(eng!.querySelector('.cfg-progress-next')?.textContent).toBe('Next: Set secrets (3 to set: linear and 2 more)')
+    expect(ops!.querySelector('.cfg-progress-h b')?.textContent).toBe('Setup 2 of 4 steps')
     expect(ops!.querySelector('.cfg-progress-next a')?.getAttribute('href')).toBe('/config/repositories')
     // MUTATION: drop the comparison -> nothing says which is behind and this fails.
     const lead = screen.getByRole('region', { name: 'Your workspaces' })
-    expect(lead.querySelector('b')?.textContent).toBe('ops is behind')
+    expect(lead.querySelector('b')?.textContent).toBe('ops is furthest behind')
     expect(lead.querySelector('.ws-lead-s')?.textContent).toBe('Next: repositories chosen (not yet).')
     // Reading one workspace's setup does not switch the one in hand.
     const { chosenTenant } = await import('../fetch')

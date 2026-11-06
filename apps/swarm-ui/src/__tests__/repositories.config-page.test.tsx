@@ -113,7 +113,7 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
     expect(cards().map((c) => visible(c.querySelector('h2')))).toEqual(['example-org/example-api', 'example-org/example-web'])
     expect(within(cards()[0]!).getByRole('button', { name: 'Index now' })).toBeTruthy()
     // MUTATION: drop the QA targets tab and this is null.
-    const tabs = document.querySelector<HTMLElement>('nav[aria-label="Repositories pages"]')
+    const tabs = document.querySelector<HTMLElement>('[role="tablist"][aria-label="Repositories pages"]')
     expect(tabs).not.toBeNull()
     expect(document.querySelector('.c-phead')!.compareDocumentPosition(tabs!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(Array.from(tabs!.querySelectorAll('a')).map((a) => [visible(a), a.getAttribute('href'), a.getAttribute('aria-current')])).toEqual([
@@ -125,7 +125,7 @@ describe('Config › Repositories: what SwarmCloud may reach as you, then the re
   it('QA targets is the second tab of the same strip, current on its page', async () => {
     serve(() => null)
     await mount('page=qa-targets')
-    const tabs = document.querySelector<HTMLElement>('nav[aria-label="Repositories pages"]')
+    const tabs = document.querySelector<HTMLElement>('[role="tablist"][aria-label="Repositories pages"]')
     // MUTATION: draw the strip on the list only and the QA targets page loses its way back.
     expect(tabs).not.toBeNull()
     expect(tabs!.querySelector('a[aria-current="page"]')?.textContent).toBe('QA targets')

@@ -163,6 +163,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  atWidth(realWidth)
   for (const h of hosts.splice(0)) h.remove()
 })
 
@@ -171,21 +172,40 @@ async function page(tab: string | null = null): Promise<void> {
   await waitFor(() => expect(document.querySelector('.wfp:not(.is-loading) .wfp-head')).toBeTruthy())
 }
 
-const panel = () => document.querySelector<HTMLElement>('.wf-panel')
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 const flat = (el: Element | null | undefined) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+const realWidth = window.innerWidth
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
+}
 
 function changes(step: string | null) {
   const f = fan()
   render(<WorkflowChangesTab workflow={f.w} taskById={f.tasks} at={{ step, file: null }} onAt={() => {}} />)
 }
 
+/**
+ * The failed step's card, opened from the stage grid at 1440 (there is no
+ * arrival pick on the page any more -- graph-workflow-rest; the inspector
+ * starts folded below 1366).
+ */
 async function card(): Promise<HTMLElement> {
+  atWidth(1440)
   await page()
+  const chip = await waitFor(() => {
+    const b = document.querySelector<HTMLButtonElement>('.sg [data-step="checkpoints"]')
+    expect(b, 'no checkpoints chip on the stage grid').toBeTruthy()
+    return b!
+  })
+  fireEvent.click(chip)
+  // THE PAGE'S CARD IS StepCard, NOT StepInspector (owner's pick,
+  // 2026-11-05): `section.sc-card`, with its stat tiles once the attempts
+  // have landed, not `.wf-inspect`/`.wf-inspect-facts`.
   return waitFor(() => {
-    const el = panel()?.querySelector<HTMLElement>('.wf-inspect')
-    expect(el?.querySelector('.wf-inspect-facts')).toBeTruthy()
+    const el = document.querySelector<HTMLElement>('aside.wi-dock section.sc-card')
+    expect(el?.querySelector('.sc-tiles')).toBeTruthy()
     return el!
   })
 }
@@ -245,64 +265,77 @@ describe('78: the step chips keep their labels on one line', () => {
   })
 })
 
-describe('66: the lease generation folds under More about this attempt', () => {
+describe('66: the lease generation folds under Details', () => {
   it('keeps the card face to the attempt’s figures, the generation one press away', async () => {
     const el = await card()
-    const face = el.querySelector<HTMLElement>('.wf-inspect-facts')!
-    // MUTATION: empty `FOLDED_FACTS` -- 'lease generation 3 · raised by every
-    // new lease …' is on the card's face again.
+    // THE PAGE'S CARD IS StepCard, NOT StepInspector (owner's pick,
+    // 2026-11-05): its face is the four stat tiles (Elapsed, Attempt, Cost,
+    // Tokens); the generation is one of Details' facts, keyed "Generation"
+    // in words, never the raw attemptFacts key or "lease generation …" text.
+    const face = el.querySelector<HTMLElement>('.sc-tiles')!
+    // MUTATION: draw a fact tile for the generation on the card's face again.
+    expect(flat(face)).not.toContain('Generation')
     expect(flat(face)).not.toContain('lease generation')
-    const fold = el.querySelector<HTMLDetailsElement>('details.wf-inspect-more')
+    const fold = el.querySelector<HTMLDetailsElement>('details.sc-more')
     expect(fold).toBeTruthy()
-    expect(flat(fold!.querySelector('summary'))).toBe('More about this attempt')
-    expect(flat(fold)).toMatch(/lease generation ?3/)
+    expect(flat(fold!.querySelector('summary'))).toBe('Details')
     expect(fold!.open).toBe(false)
+    fireEvent.click(fold!.querySelector('summary')!)
+    const dt = [...fold!.querySelectorAll('dt')].find((d) => d.textContent === 'Generation')
+    expect(dt, 'no Generation row in Details').toBeTruthy()
+    expect(dt!.nextElementSibling?.textContent).toBe('3')
   })
 })
 
-describe('67: nothing to page, no pager', () => {
-  it('says there is no other workflow of this shape in one sentence, with no arrows and no strip', async () => {
-    const el = await card()
-    const row = el.querySelector<HTMLElement>('[data-scrub="workflow"]')!
-    // MUTATION: draw the pager whatever `siblings.length` is -- two disabled
-    // arrows and a lone strip mark around the sentence.
-    expect(row.querySelectorAll('button')).toHaveLength(0)
-    expect(row.querySelector('.wf-scrub-strip')).toBeNull()
-    expect(flat(row)).toContain('No other workflow of this shape on this board')
-  })
-})
+// The page's step card is the action bar and stat tiles (owner's pick,
+// 2026-11-05): "67: nothing to page, no pager" tested the same-step
+// scrubber's disabled sentence ("No other workflow of this shape on this
+// board"). StepCard draws no such row at all when there is nothing to page
+// -- Details' "Other workflows" pager only renders `others` (siblings.length
+// > 1), so with one workflow on the board there is nothing left to assert: no
+// sentence, no arrows, no strip, because nothing is drawn. The non-page
+// inspector (Workflows list/board) still draws `[data-scrub="workflow"]`
+// unchanged -- see WorkflowViews.tsx.
 
 describe('68 and 74: the attempt stepper', () => {
-  it('says "of N made", so it is not read as the table’s used-of-allowed', async () => {
+  it('keys the position Attempt n / the allowed, not "of N made"', async () => {
     const el = await card()
-    const pos = await waitFor(() => {
-      const p = el.querySelector<HTMLElement>('[data-scrub="attempt"] .wf-scrub-pos')
-      expect(p).toBeTruthy()
-      return p!
+    // THE PAGE'S "ATTEMPT" TILE (StepCard.tsx), NOT the scrubber's
+    // `[data-scrub="attempt"] .wf-scrub-pos` sentence: the label itself
+    // ("Attempt", not "Run") already says these attempts count against the
+    // task's allowance, so the tile's figure drops the old "made" wording.
+    const tile = await waitFor(() => {
+      const t = el.querySelector<HTMLElement>('.sc-tile[data-tile="attempt"]')
+      expect(t).toBeTruthy()
+      return t!
     })
-    // MUTATION: print 'attempt {k} of {n}' again.
-    expect(flat(pos)).toBe('attempt 3 of 3 made')
+    // MUTATION: label the tile "Run" (the uncounted branch) when the
+    // fixture's 3 attempt records do count against its 3 allowed.
+    expect(flat(tile.querySelector('.sc-tile-k'))).toBe('Attempt')
+    expect(flat(tile.querySelector('.sc-tile-v'))).toBe('3 / 3')
+    // MUTATION: print 'attempt {k} of {n} made' again.
+    expect(tile.querySelector('.sc-tile-v')?.getAttribute('title')).toBe('Attempt 3 of the 3 allowed')
   })
 
-  it('says Why it failed is the step’s final reason when an older attempt is picked', async () => {
+  it('keeps Why it failed as the step’s final reason when an older attempt is picked, and still lists that attempt’s own error', async () => {
     const el = await card()
-    const scrub = el.querySelector<HTMLElement>('[data-scrub="attempt"]')!
-    expect(el.querySelector('.wf-scrub-note'), 'the newest attempt is the reason’s own').toBeNull()
-    fireEvent.click(within(scrub).getByRole('button', { name: 'Previous attempt' }))
-    await waitFor(() => expect(flat(scrub.querySelector('.wf-scrub-pos'))).toBe('attempt 2 of 3 made'))
-    // MUTATION: drop the `!newest` note -- attempt 2 shows exit code 1 under
-    // a Why it failed that is attempt 3's exit status 2, with nothing saying so.
-    const note = el.querySelector<HTMLElement>('.wf-scrub-note')!
-    expect(flat(note)).toContain('Why it failed is the step’s final reason, from attempt 3')
-    // ITS OWN LINE, NOT A PIECE OF THE ATTEMPT ROW (review of QA1-FIX-29).
-    // MUTATION: render the note inside `[data-scrub="attempt"]` again -- it
-    // takes the row's one line, clipped at 390, and reads as the fold's label.
-    expect(scrub.contains(note)).toBe(false)
-    expect(note.parentElement?.classList.contains('wf-inspect')).toBe(true)
-    // MUTATION: drop `white-space: normal` from `.wf-inspect > .wf-scrub-note`.
-    expect(painted(note, 'white-space', PHONE)).toBe('normal')
-    // Its own error is listed, not swallowed as a repeat of the final reason.
-    expect(flat(scrub)).toContain('lint failed')
+    // THE PAGE'S CARD'S `.sc-err` IS THE STEP'S FINAL REASON, DRAWN ONCE,
+    // UNCONDITIONALLY (StepCard.tsx) -- not attached to whichever attempt the
+    // timeline has selected, so there is no "Why it failed is the step’s
+    // final reason, from attempt N" note to disambiguate any more: picking an
+    // older attempt cannot make the banner say anything else.
+    const errBefore = flat(el.querySelector('.sc-err-text'))
+    expect(errBefore).toContain('exit status 2')
+    const bar = el.querySelector<HTMLElement>('.sc-tl-bar')!
+    fireEvent.click(within(bar).getByRole('button', { name: '2' }))
+    await waitFor(() => expect(flat(el.querySelector('.sc-tile[data-tile="attempt"] .sc-tile-v'))).toBe('2 / 3'))
+    // MUTATION: tie `.sc-err` to the picked attempt -- it would now read
+    // attempt 2's own exit code 1 instead of the step's final reason.
+    expect(flat(el.querySelector('.sc-err-text'))).toBe(errBefore)
+    // Its own error is listed under Details, not swallowed as a repeat of the final reason.
+    const details = el.querySelector<HTMLDetailsElement>('details.sc-more')!
+    fireEvent.click(details.querySelector('summary')!)
+    expect(flat(details)).toContain('lint failed')
   })
 })
 
@@ -357,6 +390,8 @@ describe('72: the prompt is an input', () => {
 
 describe('75: Escape closes an opened step', () => {
   it('closes the step opened from the table, focus staying on its name', async () => {
+    // The inspector starts folded below 1366 (graph-workflow-rest).
+    atWidth(1440)
     await page('table')
     const name = await waitFor(() => {
       const b = document.querySelector<HTMLButtonElement>('.wf-table button.wf-pick[data-step="cold-start"]')
@@ -365,10 +400,12 @@ describe('75: Escape closes an opened step', () => {
     })
     fireEvent.click(name)
     name.focus()
-    await waitFor(() => expect(document.querySelector('.wf-inspect[aria-label^="Step cold-start"]')).toBeTruthy())
+    // THE PAGE'S CARD IS `section.sc-card` (StepCard.tsx), NOT `.wf-inspect`
+    // (owner's pick, 2026-11-05).
+    await waitFor(() => expect(document.querySelector('.sc-card[aria-label^="Step cold-start"]')).toBeTruthy())
     // MUTATION: drop `PickButton`'s Escape handler -- the opened step stays open.
     fireEvent.keyDown(name, { key: 'Escape' })
-    await waitFor(() => expect(document.querySelector('.wf-inspect[aria-label^="Step cold-start"]')).toBeNull())
+    await waitFor(() => expect(document.querySelector('.sc-card[aria-label^="Step cold-start"]')).toBeNull())
     expect(document.activeElement).toBe(name)
   })
 })

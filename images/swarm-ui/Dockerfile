@@ -1,4 +1,4 @@
-# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-ui -- the static web UI, served behind the same load balancer as swarm-api.
 #
@@ -59,7 +59,12 @@ ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.31.6-alpine@sha256:b54ac358b83fc6c
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+# No default, so this file names no project (DAYONE-DESAGA-1,
+# docs/design/day-one-install.md section 7): scripts/build-images.sh passes
+# the mirror of the project it builds for (lib/build-mirror.sh
+# mirror_build_args), and the `# syntax=` frontend through the same mirror as
+# BUILDKIT_SYNTAX. A `docker build` given neither fails on its first FROM.
+ARG MIRROR_DOCKER_HUB=
 
 # --- build -----------------------------------------------------------------
 FROM ${MIRROR_DOCKER_HUB}/library/${NODE_IMAGE} AS build
@@ -71,21 +76,18 @@ COPY apps/swarm-ui/package.json apps/swarm-ui/package-lock.json* ./
 RUN npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
 
 COPY apps/swarm-ui/ ./
+# NO ENVIRONMENT IS COMPILED IN (DAYONE-UIENV-1). This stage used to take
+# `ARG VITE_SWARM_ENV` and promote it to an ENV before the build, because Vite
+# inlines `import.meta.env.VITE_*` into the bundle -- which made a dev image and
+# a prod image two different images, and a release could not ship one bundle
+# to every deployment. The bundle now reads its environment at run time from
+# `/config.json`, which the entrypoint script below writes from the container's
+# own environment (apps/swarm-ui/src/runtimeConfig.ts), and
+# apps/swarm-ui/src/__tests__/runtimeConfig.test.ts refuses any VITE_ ARG or
+# ENV in this file.
+#
 # `npm run build` runs tsc first, so a type error FAILS THE IMAGE rather than
 # shipping a bundle nobody typechecked.
-# THE ENVIRONMENT THE BADGE NAMES, baked in at build time.
-#
-# Vite inlines `import.meta.env.VITE_*` at build, so this cannot be supplied at
-# run time by the Cloud Run service -- a static bundle has already decided.
-# Without it `classifyEnvironment` falls through to `unknown` and the header
-# draws a loud full-width "ENVIRONMENT UNKNOWN" bar on every screen.
-#
-# It is deliberately NOT defaulted to "dev". A wrong-but-quiet environment
-# label is the exact failure the badge replaced: the old `<span class="env">`
-# was hardcoded to "dev" and said so in production too. An unset build should
-# say it does not know, loudly, rather than guess and be believed.
-ARG VITE_SWARM_ENV=""
-ENV VITE_SWARM_ENV=$VITE_SWARM_ENV
 RUN npm run build
 
 # --- runtime ---------------------------------------------------------------
@@ -117,13 +119,46 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # PR #2390's and PR #2415's build-checks (runs 40260439312 and 40263732191,
 # 2026-10-26) refused it over curl and
 # libcurl 8.22.0-r0 (CVE-2026-92392, HIGH, fixed in 8.23.0-r0); same reason, same fix.
+# The generated-descriptions pull request's build-check (2026-11-06, 07:24Z) refused
+# it over zlib 1.3.2-r0 (CVE-2026-85091, HIGH, heap buffer overflow in gz_vacate,
+# fixed in 1.3.2-r1). Docker Hub's current 1.31.6-alpine digest (sha256:884e0b7f...,
+# Alpine 3.24.2, read on 2026-11-06) still ships 1.3.2-r0 -- checked by listing its
+# packages -- so the pin stays and the package is upgraded; same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
 # (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apk layer of ${APT_REFRESH}" \
- && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl
+ && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl zlib
+
+# THE ENVIRONMENT, WRITTEN AT START, NOT AT BUILD. nginx's own entrypoint runs
+# every executable script in /docker-entrypoint.d before it starts nginx, as
+# uid 101, so the file goes under /tmp (the bundle's directory is root's) and
+# nginx.conf serves it at /config.json. The service declares its environment
+# with the same ENVIRONMENT variable swarm-api reads. Unset, or anything but a
+# plain environment name, writes `{}`: the console then says ENVIRONMENT
+# UNKNOWN, loudly, rather than draw a name nobody checked. The value is never
+# echoed to the log.
+#
+# A FILE IN THE REPOSITORY, COPIED, NEVER A HEREDOC. Main's Cloud Build builds
+# this image with the classic builder (scripts/build-images.sh generate_config
+# sets DOCKER_BUILDKIT=1 only for a Dockerfile that mounts the tool mirror),
+# and a `RUN cat > ... <<"EOF"` heredoc is BuildKit's: written that way by
+# DAYONE-UIENV-1 (#2744), it passed the pull request's buildx build-check and
+# failed every main `build images` run from 16:01Z on 2026-10-29
+# (SWARM-UI-IMAGE-FIX). tests/unit/scripts/test_classic_builder_dockerfiles.py
+# refuses BuildKit-only syntax in every image the classic builder builds.
+#
+# NO `RUN chmod` AFTER THE COPY. The script is committed executable (git mode
+# 100755) and COPY keeps the mode, so a chmod changes nothing, and its layer is
+# byte-identical to the COPY's. The release's layer check refuses an image that
+# repeats a layer, because GKE image streaming will not stream it (docs/
+# browser-startup-speed.md section 2.4); that refusal stopped the release of
+# c08dc1e75 on 2026-10-29. `COPY --chmod` is BuildKit's, so it is no way out
+# either. tests/unit/scripts/test_ui_build_declares_its_environment.py holds both
+# the executable bit and the absence of the chmod.
+COPY images/swarm-ui/40-swarm-ui-config.sh /docker-entrypoint.d/40-swarm-ui-config.sh
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf

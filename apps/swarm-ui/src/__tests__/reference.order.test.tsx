@@ -102,10 +102,14 @@ describe('API reads orders routes by what went wrong (#140)', () => {
     // The caveat is the note over the page's first card (#138: the head is
     // title left, actions right, no chip), said exactly once on the page.
     // MUTATION: put it back in the head, or say it a second time anywhere.
+    // QA2 capacity-19: "this tab only" over a table of reads read as a
+    // restriction on the reader; the note says what the rows ARE.
+    // MUTATION: put "this tab only · not the API surface" back and this is red.
     const note = document.querySelector('.c-phead + .c-count-note')
-    expect(note?.textContent).toBe('this tab only · not the API surface')
-    expect((document.body.textContent ?? '').match(/this tab only/g) ?? []).toHaveLength(1)
-    expect(within(document.querySelector('.c-phead') as HTMLElement).queryByText(/this tab only/)).toBeNull()
+    expect(note?.textContent).toBe('reads this browser tab made · not the whole API')
+    expect((document.body.textContent ?? '').match(/this browser tab/g) ?? []).toHaveLength(1)
+    expect(document.body.textContent ?? '').not.toMatch(/this tab only/)
+    expect(within(document.querySelector('.c-phead') as HTMLElement).queryByText(/this browser tab/)).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Routes called in this tab' })).toBeNull()
     expect(document.body.textContent ?? '').not.toMatch(/since this tab loaded/)
     expect(document.querySelector('.ctl-table caption')).toBeNull()

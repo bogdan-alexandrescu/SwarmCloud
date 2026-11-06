@@ -133,8 +133,11 @@ class TargetBody(StrictModel):
     challenge_bypass: Any = None
     #: The tool its flows run with, `playwright` (unset) or `jev` (lane VQ9-TOOL).
     flows_browser_tool: Any = None
+    #: The leg's plain `key=value` pairs every URL it opens carries
+    #: (`qaspec.entry_query`, QA-ENTRY-QUERY), e.g. `env=production`.
+    entry_query: Any = None
     #: The app's legs (qa-environments.md §1.1): `[{name, base_url,
-    #: environment?, sign_in?, read_posts?, rate?, challenge_bypass?}]`, in
+    #: environment?, sign_in?, read_posts?, rate?, challenge_bypass?, entry_query?}]`, in
     #: place of those fields beside the app's.
     environments: Any = None
     #: The registrant's statement of who said this application may be tested.
