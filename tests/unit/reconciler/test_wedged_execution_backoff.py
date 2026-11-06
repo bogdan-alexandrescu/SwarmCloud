@@ -57,6 +57,9 @@ def config() -> ReconcilerConfig:
         orphan_execution_grace_seconds=120,
         enable_gke=False,
         enable_checkpoint_gc=False,
+        # Every pass a full sweep: a leaseless execution is an orphan, which
+        # only a full sweep judges, and these tests run pass after pass.
+        full_sweep_every=1,
     )
 
 

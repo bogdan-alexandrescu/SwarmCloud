@@ -19,7 +19,11 @@
 //   * a finding with no repair (no install step makes it) says so rather
 //     than inventing a command;
 //   * a row in the console's own shape is NOT read as a pass or a finding;
-//   * no doctor run says the hourly doctor is off, not drawn as healthy.
+//   * no doctor run says the hourly doctor is off, not drawn as healthy;
+//   * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+//     why a check could not look is the tooltip of a tick beside its title,
+//     "no repair command" is the title's tooltip, and what Health is sits
+//     behind an (i) beside the heading; each fact is still in the page.
 //
 // Fixtures only; no network.
 
@@ -86,6 +90,17 @@ async function mount(body: Json) {
   const { AdminSetupHealth } = await import('../AdminSetupHealth')
   render(<AdminSetupHealth now={NOW_MS} />)
 }
+
+/** The text a reader sees: tooltips and hidden descriptions left out. */
+function shown(el: Element | null): string {
+  if (el === null) return ''
+  const copy = el.cloneNode(true) as Element
+  for (const off of Array.from(copy.querySelectorAll('[role="tooltip"], [hidden]'))) off.remove()
+  return visible(copy)
+}
+
+/** The tooltip of the host around `el`. */
+const tipOf = (el: Element | null) => visible(el?.closest('.c-tip-host')?.querySelector('[role="tooltip"]') ?? null)
 
 const checkRow = (list: HTMLElement, id: string) => Array.from(list.querySelectorAll('li')).find((li) => visible(li).includes(id)) as HTMLElement
 
@@ -178,5 +193,29 @@ describe('Admin › Setup › Health reads the doctor’s shape', () => {
     expect(await screen.findByText(/The hourly doctor is off/)).toBeTruthy()
     expect(visible(document.body)).not.toMatch(/all (checks )?pass/i)
     expect(visible(document.body)).not.toContain('runs every hour')
+  })
+
+  it('keeps the explanations behind tooltips, every fact still in the page', async () => {
+    await mount(report(RUN))
+    const finding = await screen.findByRole('region', { name: 'quota.cloud-run-jobs' })
+    // The must-stay status stays on the surface.
+    expect(shown(finding)).toContain('quota.cloud-run-jobs could not be checked')
+    expect(shown(document.body)).toContain('1 could not be checked')
+    // MUTATION: print the cause as a "Why:" line again.
+    expect(shown(finding)).not.toContain('lacks a permission')
+    expect(shown(finding)).not.toContain('Why:')
+    const tick = finding.querySelector('.asm-tick')
+    expect(tick?.getAttribute('aria-label')).toContain('lacks a permission this check needs')
+    expect(tipOf(tick)).toContain('lacks a permission this check needs')
+    // MUTATION: print "No install step makes this one" under the finding again.
+    expect(shown(finding)).not.toContain('no repair command')
+    expect(tipOf(finding.querySelector('.asm-explained'))).toContain('there is no repair command')
+    // A finding with a repair command has no such tooltip.
+    expect((await screen.findByRole('region', { name: 'api.cloudkms' })).querySelector('.asm-explained')).toBeNull()
+    // MUTATION: keep the doctor's description in the card's foot.
+    expect(shown(document.body)).not.toContain('The checks the hourly doctor runs')
+    expect(shown(document.body)).toContain('Last run 2 min ago')
+    const about = screen.getByRole('button', { name: 'About Health' })
+    expect(tipOf(about)).toBe('The checks the hourly doctor runs, read-only, on the live deployment.')
   })
 })

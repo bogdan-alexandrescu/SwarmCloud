@@ -99,6 +99,14 @@ def _questions_unread(db) -> list[int]:
 
 
 def _bell_ids(db) -> list[str]:
+    # An ended task's questions ring only while its workflow still holds work
+    # (`notifications._holding_workflows`): the task is a running workflow's step.
+    now = datetime.now(timezone.utc)
+    db.docs[f"tasks/{TASK}"]["workflow_id"] = "wf_open"
+    db.docs["workflows/wf_open"] = {
+        "workflow_id": "wf_open", "tenant_id": "eng", "created_at": now, "updated_at": now,
+        "state": "RUNNING", "submitted_by": OWNER, "steps": [], "on_step_failure": "fail_workflow",
+        "priority": 0, "cancel_requested": False}
     viewer = notif.Viewer(email=OWNER, tenant_id="eng", is_admin=False, is_owner=False)
     reading = notif.Reading(db=db, store=Store(db), viewer=viewer, now=datetime.now(timezone.utc))
     return [item["id"] for item in notif.agent_questions(reading)]

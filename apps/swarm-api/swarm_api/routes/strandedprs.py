@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Query
 from pydantic import StrictBool
 
+from .. import route_scope
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_scope
 from ..errors import Forbidden
@@ -93,6 +94,7 @@ def list_stranded_prs(
 
 
 @router.post("/v1/admin/stranded-prs/sweep")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def sweep_stranded_prs(
     tenant_id: str = Query(..., min_length=1),
     body: StrandedSweepRequest | None = Body(default=None),

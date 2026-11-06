@@ -97,6 +97,7 @@ def _sampler(*, fraction_of_max: float, table, kill, clock=None, current=None, i
         cpu_meter=NoCpu(),
         clock=clock or Clock(),
         memory_current_reader=lambda: reading["current"],
+        memory_stat_reader=dict,
         memory_max_reader=lambda: LIMIT,
         process_table=table,
         kill=kill,
@@ -307,6 +308,7 @@ def test_each_kill_is_recorded_once_for_the_worker_to_drain():
             "name": "pytest",
             "rss_bytes": 4 * GIB,
             "memory_current_bytes": int(LIMIT * 0.96),
+            "working_set_bytes": int(LIMIT * 0.96),
             "memory_max_bytes": LIMIT,
         }
     ]
@@ -395,6 +397,9 @@ def test_a_real_sleep_grandchild_is_killed_and_only_it():
             cpu_meter=NoCpu(),
             clock=Clock(),
             memory_current_reader=lambda: LIMIT,
+            # The real `memory.stat` would subtract this container's cache
+            # from a scripted `memory.current`.
+            memory_stat_reader=dict,
             memory_max_reader=lambda: LIMIT,
         )
         sampler.sample_once()
@@ -429,6 +434,7 @@ def test_the_worker_logs_each_kill_when_it_reaps_the_runner(
         "name": "pytest",
         "rss_bytes": 4 * GIB,
         "memory_current_bytes": int(LIMIT * 0.96),
+        "working_set_bytes": int(LIMIT * 0.95),
         "memory_max_bytes": LIMIT,
     }
 

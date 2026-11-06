@@ -1014,3 +1014,39 @@ def test_the_wake_requested_row_of_a_parked_step_words_the_reason():
     # MUTATION: serving the raw code, or "checks settled", on the wake row turns this red.
     assert wake and wake[0]["text"] == (
         "wake requested: swarm-api's tick read that the head moved")
+
+
+# -- a CI wait handed to a person (part of #2688, 2026-11-06) --
+
+STUCK_LINE = ("CI on PR #41 waited 8 h 2 m over 30 re-checks; failing: unit (worker); "
+              "fix rounds 2 of 2 spent; main is red on unit (worker) too")
+
+
+def stuck_park() -> dict[str, Any]:
+    """The park the merge step writes (`agent_worker.merge._Run.hand_to_person`)."""
+    return {"reason": "HUMAN_REQUIRED", "park_phase": "ci_wait_stuck",
+            "ci_wait_stuck": {"why": "rounds_spent", "head": "f" * 40, "pull_request": 41,
+                              "wait_started_at": (READ_AT - timedelta(hours=8, minutes=2)).isoformat(),
+                              "waited_minutes": 482, "re_checks": 30,
+                              "failed_checks": ["unit (worker)"], "failed_again_after_round": [],
+                              "fix_rounds_ran": 2, "fix_rounds_asked": 2, "fix_rounds_spent": True,
+                              "main_red_on_same": ["unit (worker)"], "line": STUCK_LINE}}
+
+
+def test_a_stuck_ci_wait_leads_with_its_one_line_not_a_sign_in():
+    ev = [event(EventType.PARKED, READ_AT - timedelta(minutes=3), stuck_park())]
+    w = build_waiting(merge_task(), events=ev, as_of=READ_AT)
+    # MUTATION: the hand-off's sign-in sentence for this park turns this red.
+    assert w["summary"] == STUCK_LINE
+    d = w["detail"]
+    assert d["park_phase"] == "ci_wait_stuck" and d["why"] == "rounds_spent"
+    assert (d["re_checks"], d["waited_minutes"], d["pull_request"]) == (30, 482, 41)
+    assert d["failed_checks"] == ["unit (worker)"] and d["main_red_on_same"] == ["unit (worker)"]
+    assert (d["fix_rounds_ran"], d["fix_rounds_asked"], d["fix_rounds_spent"]) == (2, 2, True)
+    assert d["answer_route"].endswith("/human-ready")
+    assert w["since"] == READ_AT - timedelta(hours=8, minutes=2)
+
+
+def test_a_stuck_ci_wait_is_read_from_blocked_by_when_no_events_were_read():
+    w = build_waiting(merge_task(blocked_by=[stuck_park()]), events=None, as_of=READ_AT)
+    assert w["summary"] == STUCK_LINE

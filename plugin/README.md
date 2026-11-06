@@ -611,6 +611,7 @@ What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
@@ -618,6 +619,7 @@ What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:codex -->
 
 `claude-code-review` is `claude-code` under its own Job and service account,
@@ -628,6 +630,7 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 | input | kind and bounds | what the claude-code-review runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code-review -->
 
 `indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
@@ -949,8 +952,11 @@ pieces do it, and none of them submits anything.
 * **No name carries a workspace; every expanded run and row says whose,
   where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
   here should not have the [Engineering] or [eng@example.com] prefix in front of
-  the names"). Run titles are `SC · <name> · N steps` and `SC · <label> ·
-  task` (the name is cut to 150, never the count); rows inside the run are
+  the names"). Run titles are `SC ∴ <name> · N steps` (`SC ∴ <name>` for a
+  spec launched before it is submitted) and `SC · <label>` — three dots a
+  workflow, one dot a single task, right after `SC` because the panel shows
+  about 28 characters (the name is cut to 150, never the count); every
+  single task is a run of its own, whatever the `rows` setting; rows inside the run are
   `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
   task`. Each run's description starts with its DETAILS, one line, six
   fields in this order: `Workspace: <workspace> (<tenant>) · Started by:

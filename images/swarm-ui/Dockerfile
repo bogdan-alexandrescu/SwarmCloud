@@ -119,19 +119,22 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # PR #2390's and PR #2415's build-checks (runs 40260439312 and 40263732191,
 # 2026-10-26) refused it over curl and
 # libcurl 8.22.0-r0 (CVE-2026-92392, HIGH, fixed in 8.23.0-r0); same reason, same fix.
-# The generated-descriptions pull request's build-check (2026-11-06, 07:24Z) and
-# PR #3497's (2026-11-06) refused it over zlib 1.3.2-r0 (CVE-2026-85091, HIGH,
-# heap buffer overflow in gz_vacate, fixed in 1.3.2-r1). Docker Hub's current
-# 1.31.6-alpine digest (sha256:884e0b7f..., Alpine 3.24.2, read on 2026-11-06)
-# still ships 1.3.2-r0 -- checked by listing its packages -- so the pin stays and
-# the package is upgraded; same reason, same fix.
+# The generated-descriptions pull request's build-check (2026-11-06, 07:24Z) refused
+# it over zlib 1.3.2-r0 (CVE-2026-85091, HIGH, heap buffer overflow in gz_vacate,
+# fixed in 1.3.2-r1). Docker Hub's current 1.31.6-alpine digest (sha256:884e0b7f...,
+# Alpine 3.24.2, read on 2026-11-06) still ships 1.3.2-r0 -- checked by listing its
+# packages -- so the pin stays and the package is upgraded; same reason, same fix.
+# The workflow page change's build-check (run 42286631679, 2026-11-06 ~20:20Z)
+# refused it over musl 1.2.6-r2 (CVE-2026-107891, HIGH, integer overflow in
+# regcomp, fixed in 1.2.6-r3); musl-utils is the same source package, so both
+# move together. Same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
 # (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apk layer of ${APT_REFRESH}" \
- && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl zlib
+ && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl zlib musl musl-utils
 
 # THE ENVIRONMENT, WRITTEN AT START, NOT AT BUILD. nginx's own entrypoint runs
 # every executable script in /docker-entrypoint.d before it starts nginx, as

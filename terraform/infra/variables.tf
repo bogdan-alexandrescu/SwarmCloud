@@ -1045,6 +1045,29 @@ variable "contract_review_mode" {
   }
 }
 
+variable "work_contracts" {
+  description = <<-EOT
+    swarm-api's SWARM_WORK_CONTRACTS (apps/swarm-api/swarm_api/workcontract.py
+    SWITCH_ENV; docs/design/agent-quality/work-contract.md): "on" reads a
+    step's signed work contract at submission, and with it the plugins a step
+    names (swarm_api.plugins.with_step_plugins) and an issue run's security
+    review; "off" ignores metadata.work_contract and refuses every step that
+    names a plugin. OFF by default, the state swarm-api reads when the
+    variable is unset, so an environment that does not set it plans no
+    behaviour change; each environment's tfvars turns it on (dev: BGD,
+    2026-11-06). workcontract.enabled() reads anything but exactly "on" as
+    off; the validation refuses any other value instead, so a misspelt "On"
+    or "true" never ships as a silent off.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["on", "off"], var.work_contracts)
+    error_message = "work_contracts is on or off (swarm_api.workcontract.enabled reads exactly \"on\")."
+  }
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
@@ -1544,5 +1567,24 @@ variable "voice_speech" {
   validation {
     condition     = var.voice_speech.disk_gb >= 100 && var.voice_speech.idle_minutes >= 1
     error_message = "voice_speech.disk_gb is at least 100 (the image alone is about 50 GB) and idle_minutes at least 1."
+  }
+}
+
+# The managed plugins' bucket (docs/design/managed-plugins.md §3; plugins.tf).
+# Empty is "<project_id>-swarm-plugins", the name the design gives it and the
+# one `swarm install`'s verify check and `swarm doctor` look for: a fresh
+# deployment sets nothing. A name is accepted only to adopt a different one;
+# it is never one of the shared project's buckets (SHARED_DENY_LIST in
+# scripts/lib/common.sh), which all start "saga-" or carry "avatars", so a
+# name must contain "swarm".
+variable "plugins_bucket_name" {
+  description = "The managed plugins' bucket (plugins.tf). Empty: <project_id>-swarm-plugins."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.plugins_bucket_name == "" || (can(regex("^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$", var.plugins_bucket_name)) && strcontains(var.plugins_bucket_name, "swarm"))
+    error_message = "plugins_bucket_name is empty (<project_id>-swarm-plugins) or a bucket name of 3-63 lower-case letters, digits, '-' or '_' that contains \"swarm\"."
   }
 }

@@ -5,7 +5,7 @@ Owner request, 2026-10-14, seeing the rows after plugin 0.5.35: "instead of
 the workflow or task instead". Held here:
 
 * THE NAME. A `/sc:swarmcloud` run's meta.name is `SC ∴ <name> · N steps`
-  (a workflow) or `SC · <label> · task` (single tasks): no `[<workspace>] `
+  (a workflow) or `SC · <label>` (single tasks): no `[<workspace>] `
   segment, at most 150 characters, the step count never cut.
 * THE DESCRIPTION. meta.description STARTS with `Workspace: <shown>
   (<tenant>) · `, so DESCRIPTION_CHARS clips the end of it and never the
@@ -270,9 +270,10 @@ def test_the_launch_tool_description_states_the_same_format():
     tool = next(t for t in server.TOOLS if t["name"] == "swarm_workflow_launch")
     text = _flat(tool["description"])
     assert "SC · [<workspace>]" not in text
-    # swarm_mcp/server.py's own text, outside this lane's territory: it still
-    # states the titles before the kind marks (a question in the PR body).
-    assert "`SC · <name> · N steps`" in text and "`SC · <label> · task`" in text
+    # MUTATION: the titles before the kind marks (`SC · <name> · N steps`,
+    # `SC · <label> · task`) stay in the bridge's own tool description.
+    assert "`SC · <name> · N steps`" not in text and "`SC · <label> · task`" not in text
+    assert "`SC ∴ <name> · N steps`" in text and "`SC · <label>`" in text and "`SC ∴ <name>`" in text
     assert "Workspace: <workspace> (<tenant>)" in text and "Workspace: not reported" in text
 
 

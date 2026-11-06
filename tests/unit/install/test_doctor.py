@@ -440,7 +440,8 @@ def _state() -> InstallState:
 def verb(monkeypatch):
     entry = _entry("api.run", {"type": "service_enabled", "name": "run.googleapis.com"},
                    step="foundations.apis")
-    seen: dict[str, Any] = {"gcp": FakeGcp({"https://serviceusage.googleapis.com/": {"state": "ENABLED"}})}
+    seen: dict[str, Any] = {"gcp": FakeGcp({"https://serviceusage.googleapis.com/": {"state": "ENABLED"},
+                                            **_plugin_answers()})}
     monkeypatch.setattr(doctor_verb, "client_tier", lambda: None)
     monkeypatch.setattr(doctor_verb, "read_state", lambda project: (_state(), "gs://b/o"))
     monkeypatch.setattr(doctor_verb, "load_manifest", lambda path: _manifest(entry))
@@ -462,7 +463,7 @@ def test_swarm_doctor_prints_each_entry_and_says_the_hourly_doctor_is_off(verb, 
 def test_swarm_doctor_json_and_exit_3_on_unmet(verb, capsys):
     from swarm_install import cli
 
-    verb["gcp"] = FakeGcp({"https://serviceusage.googleapis.com/": {"state": "DISABLED"}})
+    verb["gcp"] = FakeGcp({"https://serviceusage.googleapis.com/": {"state": "DISABLED"}, **_plugin_answers()})
     code = cli.main(["doctor", "--project", PROJECT, "--json"])
     doc = json.loads(capsys.readouterr().out)
     assert code == ExitCode.TROUBLE
@@ -477,3 +478,99 @@ def test_swarm_doctor_without_install_state_is_not_fine(verb, monkeypatch, capsy
     code = cli.main(["doctor", "--project", PROJECT])
     assert code == ExitCode.FAIL
     assert "platform tier did not run" in capsys.readouterr().err
+
+
+# -- the managed plugins' infrastructure (managed-plugins.md §15, lane 3) ------------
+
+PLUGINS_BUCKET = f"{PROJECT}-swarm-plugins"
+STORAGE_B = "https://storage.googleapis.com/storage/v1/b"
+INTAKE_JOB = f"https://run.googleapis.com/v2/projects/{PROJECT}/locations/{REGION}/jobs/swarm-plugin-intake"
+PLATFORM_ARM = f'resource.name.startsWith("projects/_/buckets/{PLUGINS_BUCKET}/objects/platform/")'
+TENANT_READER = f"serviceAccount:swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
+
+
+def _plugin_policy(*bindings: Mapping[str, Any]) -> dict[str, Any]:
+    return {"version": 3, "bindings": list(bindings)}
+
+
+def _tenant_read(expression: str = PLATFORM_ARM + f' || resource.name.startsWith("projects/_/buckets/'
+                 f'{PLUGINS_BUCKET}/objects/tenants/eng/")', member: str = TENANT_READER,
+                 role: str = "roles/storage.objectViewer") -> dict[str, Any]:
+    return {"role": role, "members": [member], "condition": {"title": "t", "expression": expression}}
+
+
+def _plugin_answers(policy: Mapping[str, Any] | None = None, *, bucket: bool = True,
+                    job: bool = True) -> dict[str, Any]:
+    answers: dict[str, Any] = {
+        f"{STORAGE_B}/{PLUGINS_BUCKET}/iam": dict(policy if policy is not None else _plugin_policy(_tenant_read())),
+    }
+    if bucket:
+        answers[f"{STORAGE_B}/{PLUGINS_BUCKET}"] = {"name": PLUGINS_BUCKET}
+    if job:
+        answers[INTAKE_JOB] = {"name": INTAKE_JOB.split("/v2/", 1)[1]}
+    return answers
+
+
+def test_plugins_met_when_bucket_job_and_a_tenant_read_of_platform_exist():
+    finding = doctor_verb.plugins_finding(_target(), FakeGcp(_plugin_answers()))
+    assert finding.id == doctor_verb.PLUGINS_CHECK
+    assert finding.status == MET, finding.detail
+    assert PLUGINS_BUCKET in finding.detail and "swarm-agent-worker-eng" in finding.detail
+
+
+@pytest.mark.parametrize(("answers", "said"), [
+    (_plugin_answers(bucket=False), f"gs://{PLUGINS_BUCKET} does not exist"),
+    (_plugin_answers(job=False), "swarm-plugin-intake is not deployed"),
+    # a tenant reads its own prefix only, not platform/
+    (_plugin_answers(_plugin_policy(_tenant_read(
+        f'resource.name.startsWith("projects/_/buckets/{PLUGINS_BUCKET}/objects/tenants/eng/")'))),
+     "no tenant worker account may read platform/"),
+    # platform/ of another bucket
+    (_plugin_answers(_plugin_policy(_tenant_read(PLATFORM_ARM.replace(PLUGINS_BUCKET, "other-bucket")))),
+     "no tenant worker account may read platform/"),
+    # platform/ narrowed by a second clause is not a read of platform/
+    (_plugin_answers(_plugin_policy(_tenant_read(PLATFORM_ARM + " && request.time < timestamp(\"2020-01-01T00:00:00Z\")"))),
+     "no tenant worker account may read platform/"),
+    # a platform account reads platform/, but no tenant does
+    (_plugin_answers(_plugin_policy(_tenant_read(member=f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com"))),
+     "no tenant worker account may read platform/"),
+    # a role with no object read
+    (_plugin_answers(_plugin_policy(_tenant_read(role="roles/storage.objectCreator"))),
+     "no tenant worker account may read platform/"),
+])
+def test_plugins_unmet_names_what_is_missing(answers, said):
+    finding = doctor_verb.plugins_finding(_target(), FakeGcp(answers))
+    assert finding.status == UNMET
+    assert said in finding.detail
+    assert "swarm install" in finding.fix
+
+
+def test_plugins_read_the_bucket_the_install_recorded():
+    answers = {k.replace(PLUGINS_BUCKET, "acme-swarm-plugins"): v for k, v in _plugin_answers(
+        _plugin_policy(_tenant_read(PLATFORM_ARM.replace(PLUGINS_BUCKET, "acme-swarm-plugins")))).items()}
+    finding = doctor_verb.plugins_finding(_target(plugins_bucket="acme-swarm-plugins"), FakeGcp(answers))
+    assert finding.status == MET, finding.detail
+
+
+def test_plugins_unknown_when_a_read_is_refused():
+    answers = _plugin_answers()
+    answers[INTAKE_JOB] = doctor.Denied("run.jobs.get", INTAKE_JOB)
+    finding = doctor_verb.plugins_finding(_target(), FakeGcp(answers))
+    assert finding.status == UNKNOWN
+    assert "run.jobs.get" in finding.detail
+
+
+def test_swarm_doctor_checks_the_plugins_infrastructure(verb, capsys):
+    from swarm_install import cli
+
+    code = cli.main(["doctor", "--project", PROJECT])
+    out = capsys.readouterr().out
+    assert code == ExitCode.OK, out
+    assert doctor_verb.PLUGINS_CHECK in out
+
+    verb["gcp"].answers.pop(INTAKE_JOB)
+    code = cli.main(["doctor", "--project", PROJECT, "--json"])
+    doc = json.loads(capsys.readouterr().out)
+    assert code == ExitCode.TROUBLE
+    found = [c for c in doc["checks"] if c["id"] == doctor_verb.PLUGINS_CHECK]
+    assert found and found[0]["status"] == UNMET and "swarm-plugin-intake" in found[0]["detail"]
