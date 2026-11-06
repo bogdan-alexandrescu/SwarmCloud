@@ -6,8 +6,10 @@
 // pick on PR #3262, "Serve them in step_needs"): the step's
 // `task_summary.needs.plugin_ask` (`codec.step_needs`), which `stepNeedItems`
 // puts on the step's question rows. Nothing is read per task. The skill that
-// asked is not served, so it reads "not known"; no interview route exists yet,
-// so a planner or designer card says the interview opens from its run's page.
+// asked is the worker's record of the last Skill call before the question
+// (the owner's pick of 4 November 2026); a park with none recorded reads
+// "not known", never a guess. A planner or designer card opens its interview,
+// a full page (`/runs?interview=<task>`, InterviewPage.tsx), and links its run.
 //
 // MUTATIONS, one per block: draw no plugin line or card for a plugin step;
 // invent the skill or a time ("0 min"); draw a card for a step that is no
@@ -63,8 +65,8 @@ function clock(left = 23 * HOUR + 22 * 60_000 + 30_000, span = 24 * HOUR) {
 }
 
 /** A plugin step's `plugin_ask`, as `codec.step_needs` serves it. */
-function pluginAsk(mode: string, wait: { asked_at: string | null; expires_at: string | null } = clock()): NonNullable<StepNeeds['plugin_ask']> {
-  return { plugins: [{ name: 'gstack', mode }], repository_url: 'https://github.com/example-org/contacts-app', ...wait }
+function pluginAsk(mode: string, wait: { asked_at: string | null; expires_at: string | null } = clock(), skill: string | null = null): NonNullable<StepNeeds['plugin_ask']> {
+  return { plugins: [{ name: 'gstack', mode }], repository_url: 'https://github.com/example-org/contacts-app', ...wait, skill }
 }
 
 const OPTIONS = [
@@ -98,6 +100,18 @@ describe("a plugin step's question row", () => {
     expect(line.textContent).toContain('skill that asked: not known')
     expect(line.textContent).toContain('23 h 22 min left of 24 h')
     expect(line.textContent).toContain('never answered for anyone')
+  })
+
+  it('names the skill that asked when the list read served it, on the row and on its card', () => {
+    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', clock(), 'gstack:office-hours'))} approvals={[]} />)
+    const line = screen.getByRole('listitem').querySelector('.ny-plugin')!
+    expect(line.textContent).toContain('asked by gstack:office-hours')
+    expect(line.textContent).not.toContain('not known')
+    const card = within(cards()!).getByRole('article')
+    expect(card.textContent).toContain('asked by gstack:office-hours')
+    expect(card.textContent).not.toContain('not known')
+    expect(api.loadTask).not.toHaveBeenCalled()
+    expect(api.loadQuestions).not.toHaveBeenCalled()
   })
 
   it('keeps the plain row for a question whose step served no plugin_ask, and draws no card', () => {
@@ -145,15 +159,14 @@ describe('the parked plugin steps beside the list', () => {
     expect(api.loadQuestions).not.toHaveBeenCalled()
   })
 
-  it("says a designer step's interview opens from its run's page, linking the run, not a route that does not exist", () => {
+  it("opens a designer step's interview as its full page, and links its run beside it", () => {
     render(<NeedsYou items={rows(stepTask('t_design'), pluginAsk('designer'), [{ index: 0, question: 'Which layout?', recommended: 'Cards' }])} approvals={[]} />)
     const card = within(cards()!).getByRole('article')
     expect(card.textContent).toContain('Designer')
-    expect(card.textContent).toMatch(/Its interview opens from its run[’']s page/)
+    const open = within(card).getByRole('link', { name: /Open the interview/ })
+    expect(open.getAttribute('href')).toBe('/runs?interview=t_design')
     const link = within(card).getByRole('link', { name: /Open its run/ })
     expect(link.getAttribute('href')).toMatch(/\/t_design$/)
-    expect(link.getAttribute('href')).not.toContain('interview')
-    expect(card.textContent).not.toContain('Open the interview')
     expect(screen.getByRole('listitem').textContent).toContain('gstack · Designer')
   })
 
@@ -180,6 +193,9 @@ describe('the served values, read', () => {
     const parked = stepTask('a')
     expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.plugins).toEqual([{ name: 'gstack', mode: 'planner' }])
     expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.repository).toBe('https://github.com/example-org/contacts-app')
+    expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.skill).toBeNull()
+    expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner', clock(), 'gstack:office-hours') })?.skill).toBe('gstack:office-hours')
+    expect(pluginAskOf(parked, { plugin_ask: { ...pluginAsk('planner'), skill: '  ' } })?.skill).toBeNull()
     expect(pluginAskOf(parked, { plugin_ask: { plugins: [{ name: 'gstack', mode: null }], repository_url: null, asked_at: null, expires_at: null } })).toBeNull()
     expect(pluginAskOf(parked, { plugin_ask: null })).toBeNull()
     expect(pluginAskOf(parked, null)).toBeNull()

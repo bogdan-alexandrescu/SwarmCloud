@@ -305,6 +305,45 @@ def test_classify_a_run_that_asked_nothing(tmp_path):
     assert qb.classify(events, tmp_path / qb.PENDING_NAME) == (qb.NOT_ASKED, None)
 
 
+def _skill_call(name: Any, tool_id: str = "toolu_skill") -> dict[str, Any]:
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tool_id, "name": qb.SKILL_TOOL, "input": {"skill": name}}]}}
+
+
+def test_the_skill_that_asked_is_the_last_skill_call_before_the_question():
+    # The owner's pick of 4 November 2026: the last `Skill` call before the
+    # question names the skill that asked (finding 3).
+    sid = str(uuid.uuid4())
+    events = _events(sid)
+    stream = [events[0], _skill_call("gstack:plan-ceo-review", "toolu_1"),
+              _skill_call("gstack:office-hours", "toolu_2"), *events[1:],
+              _skill_call("gstack:ship", "toolu_3")]
+    assert qb.asked_by_skill(stream, "toolu_abc") == "gstack:office-hours"
+
+
+@pytest.mark.parametrize("stream", [
+    [],
+    _events(str(uuid.uuid4())),
+    [_skill_call(""), *_events(str(uuid.uuid4()))],
+    [_skill_call(None), *_events(str(uuid.uuid4()))],
+    [_skill_call("x" * (qb.MAX_SKILL_CHARS + 1)), *_events(str(uuid.uuid4()))],
+    # A Skill call with no question after it named nothing that asked.
+    [_skill_call("gstack:office-hours"), *_events(str(uuid.uuid4()), tool_id="toolu_other")],
+])
+def test_a_question_no_skill_call_preceded_names_no_skill(stream):
+    assert qb.asked_by_skill(stream, "toolu_abc") is None
+
+
+def test_the_wait_record_carries_the_skill_that_asked_or_none():
+    pending = qb.parse_call(_call())
+    record = qb.wait_record(pending, attempt_id="att_1", generation=1, source_revision=None,
+                            asked_at="2026-11-05T10:00:00+00:00", skill="gstack:office-hours")
+    assert record[qb.BRIDGE_KEY]["skill"] == "gstack:office-hours"
+    bare = qb.wait_record(pending, attempt_id="att_1", generation=1, source_revision=None,
+                          asked_at="2026-11-05T10:00:00+00:00")
+    assert bare[qb.BRIDGE_KEY]["skill"] is None
+
+
 # --- answers ----------------------------------------------------------------
 
 

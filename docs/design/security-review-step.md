@@ -196,20 +196,31 @@ both the chain and the staged shapes. The option is refused when work
 contracts are off, rather than compiled into a step that would load no
 plugin.
 
-## What still needs a change outside this lane
+## What was built outside this lane
 
-These are listed as questions in the pull request that added the step:
+The two follow-ups the pull request that added the step left as questions
+are on main:
 
-- `swarm_api.schemas.RunCreate` and `routes.runs.start_run` must accept and
-  pass `security_review` (one field and one argument).
-- `validation.resolve_integrator_step` and `merge_sources` must treat the
-  security review as they treat the re-review: a step after the integrator
-  that is not the integrator. Until then, `integrate` refuses a second final
-  step.
-- The merge step that swarm-api appends must stage the security review's
-  `security-verdict.json` in its `input_from`. For an issue run, the merge
-  that `issueci` submits must also read that verdict as it reads the
-  re-review's.
+- An issue run asks for the step through the API.
+  `swarm_api.schemas.RunCreate.security_review` carries the yes/no, and
+  `routes.runs.start_run` passes it on, refusing it while work contracts are
+  off.
+- An integrate workflow with both a re-review and a security review merges
+  only on both verdicts. `validation.resolve_integrator_step` and
+  `merge_sources` treat a final security review that builds on the
+  integrator as they treat the re-review: a step after the integrator that
+  is not the integrator, at most one per workflow. `MergeSources` makes the
+  merge step that swarm-api appends depend on it and stage its
+  `security-verdict.json` in its `input_from`, beside the re-review's
+  verdict, and `agent_worker.merge._security_hold` holds the merge to both.
+
+An issue run's merge is a merge-only continuation in a workflow of its own,
+so it stages no file from the run's workflow. `issueci._merge` reads the
+verdicts itself instead: `_security_verdict`, beside `_review_verdict`,
+reads the security review's `security-verdict.json`, and the merge is
+submitted only when both are MERGE. A NOT_YET, or a verdict that does not
+read, fails the run and leaves the pull request open for a person. The
+worker's owner-question park does not apply to issue runs.
 
 ## The invariants
 

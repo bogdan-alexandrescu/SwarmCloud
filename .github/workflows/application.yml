@@ -524,12 +524,25 @@ jobs:
     # pull-requests: read names the pull request a push to main merged (the
     # `reuse` step, main and same-repository pull requests). Nothing here
     # writes or mints a cloud token.
+    #
+    # checks: read and issues: read are the `train` step's (main's push run):
+    # the ci-gate check run at a merge train's head, and the comment the train
+    # closed with.
     permissions:
       contents: read
       actions: read
       pull-requests: read
+      checks: read
+      issues: read
     outputs:
       app: ${{ steps.diff.outputs.app }}
+      # A lane's pull request (a `swarm/**` head): `true` when it runs only
+      # what its change reaches, `false` when its change touches shared ground
+      # and it runs the full suite, empty on every other run (the `lane` step).
+      lane: ${{ steps.lane.outputs.lane }}
+      # With lane=true: the component tests and integration tests it reaches.
+      ui_tests: ${{ steps.lane.outputs.ui_tests }}
+      integration_tests: ${{ steps.lane.outputs.integration_tests }}
       # `select` passes the diff's python and areas through unchanged, except
       # on a pull request with python=all, where it narrows them (B2).
       python: ${{ steps.select.outputs.python }}
@@ -548,9 +561,11 @@ jobs:
       # identical tree passed them: main's push run (B1) or a pull request's
       # run (CI-TREE-REUSE, #1798). Empty everywhere else; every job reads it
       # as `fromJSON(needs.changes.outputs.reused || '[]')`.
-      reused: ${{ steps.reuse.outputs.reused }}
-      # The URL of the run those jobs passed in; ci-gate cites it.
-      reused_from: ${{ steps.reuse.outputs.reused_from }}
+      # On main, a green merge train that tested this exact tree (the `train`
+      # step) lists every reusable job; otherwise the `reuse` step decides.
+      reused: ${{ steps.train.outputs.train != '' && steps.train.outputs.reused || steps.reuse.outputs.reused }}
+      # The URL of the run (or merge train) those jobs passed in; ci-gate cites it.
+      reused_from: ${{ steps.train.outputs.train != '' && steps.train.outputs.reused_from || steps.reuse.outputs.reused_from }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -565,6 +580,13 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # A merge train's pull request (`train/<id>` in this repository) is
+          # where the full suite runs once per change (owner pick, BGD
+          # 2026-11-06, docs/ci.md "The full suite runs once per change, in
+          # the merge train"), so it runs every job, as main's push did.
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
           # One pattern per line: a path, or `<dir>/**` for everything under
           # it. `#` lines are the reasons, kept beside what they explain. Any
           # other glob shape is refused rather than matched with rules GitHub's
@@ -655,6 +677,14 @@ jobs:
             emit true all "" true
             exit 0
           fi
+          case "${HEAD_REF:-}" in
+            train/*)
+              if [ "${HEAD_REPO:-}" = "${REPO:-}" ]; then
+                echo "a merge train's pull request: every job runs, the full suite"
+                emit true all "" true
+                exit 0
+              fi ;;
+          esac
           prefixes=()
           exact=()
           while IFS= read -r line; do
@@ -725,6 +755,38 @@ jobs:
             emit true subset "${areas}" "${ui}"
           fi
 
+      - name: a lane's pull request tests what its change reaches
+        id: lane
+        # BGD's pick, 2026-11-06 (docs/ci.md "The full suite runs once per
+        # change, in the merge train"). A pull request from a `swarm/**`
+        # branch of this repository runs lint, format, typecheck and the
+        # contract and lock checks whole, and only the tests its change
+        # reaches: the unit shards narrowed by the `select` step below, and
+        # the component and integration tests scripts/ci-select.sh names.
+        # lane=false -- shared ground (a conftest, pyproject or a package
+        # manifest, a lockfile, the frozen contract, the test runner's config,
+        # a workflow) or a selection that cannot be computed -- runs the full
+        # suite. A merge train's pull request and main always run it.
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          APP: ${{ steps.diff.outputs.app }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${APP}" != "true" ]; then
+            echo "lane=" >> "$GITHUB_OUTPUT"
+            echo "nothing reaches this workflow: no test to select"
+            exit 0
+          fi
+          if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/lane-changed"; then
+            { echo "lane=false"; echo "ui_tests="; echo "integration_tests="; echo "ui_shards="; } >> "$GITHUB_OUTPUT"
+            echo "could not diff ${BASE_SHA}...${HEAD_SHA}; running the full suite"
+            exit 0
+          fi
+          ./scripts/ci-select.sh lane --changed "${RUNNER_TEMP}/lane-changed" \
+            --github-output "${GITHUB_OUTPUT}" --summary "${GITHUB_STEP_SUMMARY}"
+
       - name: which unit tests the change reaches
         id: select
         # B2 (owner decision 2026-10-14, docs/ci.md "A pull request runs the
@@ -744,12 +806,18 @@ jobs:
         # main, a merge-train branch, a queue entry or a dispatch runs the
         # WHOLE suite, as it always has -- that run is what catches a test
         # this selection missed, one merge later.
+        #
+        # A lane whose change touches shared ground (the `lane` step said
+        # lane=false) and a merge train's pull request run the whole suite.
         env:
           EVENT: ${{ github.event_name }}
           PYTHON: ${{ steps.diff.outputs.python }}
           AREAS: ${{ steps.diff.outputs.areas }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LANE: ${{ steps.lane.outputs.lane }}
+          LANE_WHY: ${{ steps.lane.outputs.why }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
           passthrough() {
@@ -758,6 +826,13 @@ jobs:
           }
           if [ "${EVENT}" != "pull_request" ] || [ "${PYTHON}" != "all" ]; then
             passthrough "not narrowed here"
+            exit 0
+          fi
+          case "${HEAD_REF:-}" in
+            train/*) passthrough "a merge train's pull request runs the whole suite"; exit 0 ;;
+          esac
+          if [ "${LANE:-}" = "false" ]; then
+            passthrough "a lane touching shared ground runs the whole suite: ${LANE_WHY:-}"
             exit 0
           fi
           if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/select-changed"; then
@@ -800,10 +875,20 @@ jobs:
         # to eight (scripts/lib/ui_shards.py says why); the pick step in
         # ui-tests splits with the same code. Computed on every run, as the unit
         # count is: ui-tests' own `if:` decides whether the shards run.
+        #
+        # A lane's pull request (lane=true) takes the count the `lane` step
+        # sized over its selected files with the same weights.
         env:
           DURATIONS: tests/unit/scripts/ui_test_durations.json
+          LANE: ${{ steps.lane.outputs.lane }}
+          LANE_UI_SHARDS: ${{ steps.lane.outputs.ui_shards }}
         run: |
           set -euo pipefail
+          if [ "${LANE:-}" = "true" ]; then
+            echo "shards=${LANE_UI_SHARDS}" >> "$GITHUB_OUTPUT"
+            echo "a lane's selection: shards ${LANE_UI_SHARDS}"
+            exit 0
+          fi
           python3 scripts/lib/ui_shards.py count
 
       - name: the pull request's changed paths, for shellcheck
@@ -825,6 +910,30 @@ jobs:
           fi
           echo "changed=$(jq -R -s -c 'split("\n") | map(select(length > 0))' "${RUNNER_TEMP}/shell-changed")" >> "$GITHUB_OUTPUT"
           echo "$(grep -c . "${RUNNER_TEMP}/shell-changed" || true) changed path(s) handed to the shell job"
+
+      - name: skip what a green merge train tested on this exact tree
+        id: train
+        # BGD's pick, 2026-11-06 (docs/ci.md "The full suite runs once per
+        # change, in the merge train"). The train lands each pull request as
+        # its own squash, so main's commit after the last one has the train's
+        # tested tree but names the last pull request, and the `reuse` step
+        # below never matched it: main ran the whole suite again on a tree
+        # the train had just tested. scripts/ci-select.sh train-match finds a
+        # merge train's pull request whose head has this commit's tree, whose
+        # ci-gate passed and which closed saying it landed; then every test
+        # job is skipped (listed in `reused`), ci-gate names the train, and
+        # `build images`, the plugin tag and the release still run. Anything
+        # else -- a direct push, a tree no green train tested, any API doubt
+        # -- lists nothing, and the full suite runs as before.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ./scripts/ci-select.sh train-match --repo "${REPO}" --sha "${SHA}" \
+            --github-output "${GITHUB_OUTPUT}" --summary "${GITHUB_STEP_SUMMARY}"
 
       - name: reuse what a run of this exact tree already passed
         id: reuse
@@ -850,7 +959,8 @@ jobs:
         # main moves nothing is reused. Never a fork's pull request. ci-gate's
         # `ci_reuse.py gate` step then passes a skip only when this step
         # listed it, and names the run.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        # Not when the `train` step above already matched a merge train.
+        if: steps.train.outputs.train == '' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -1778,17 +1888,29 @@ jobs:
         # scripts/lib/ui_shards.py, which the `changes` job's count shares,
         # lists the files vitest.config.ts includes and writes this shard's
         # part of the weighted split, relative to apps/swarm-ui.
+        #
+        # A lane's pull request (lane=true) splits only the files its change
+        # reaches, the same way (scripts/ci-select.sh ui-pick). When it reaches
+        # none, count=0 and every step below is skipped: never an empty
+        # `vitest run`, which would run the whole suite.
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
           DURATIONS: tests/unit/scripts/ui_test_durations.json
           SHARD_FILES: ${{ runner.temp }}/ui-shard-files
+          LANE: ${{ needs.changes.outputs.lane }}
+          UI_TESTS: ${{ needs.changes.outputs.ui_tests }}
         run: |
           set -euo pipefail
+          if [ "${LANE:-}" = "true" ]; then
+            ./scripts/ci-select.sh ui-pick
+            exit 0
+          fi
           python3 scripts/lib/ui_shards.py pick
 
       - name: read the Node major the swarm-ui image builds with
         id: node
+        if: steps.pick.outputs.count != '0'
         # ONE PLACE STATES IT: `ARG NODE_IMAGE` in images/swarm-ui/Dockerfile,
         # the Node that compiles the bundle that ships. This job used to pin
         # `node-version: "20"` on its own -- a second copy, and by 2026-09 a copy
@@ -1810,6 +1932,7 @@ jobs:
           echo "swarm-ui builds with Node ${majors} (${dockerfile})"
 
       - uses: actions/setup-node@v5
+        if: steps.pick.outputs.count != '0'
         with:
           # From the step above, not a literal. vitest 3.2 and jsdom 25 both
           # support Node 24. `cache: npm` needs the lockfile path because the
@@ -1819,6 +1942,7 @@ jobs:
           cache-dependency-path: apps/swarm-ui/package-lock.json
 
       - name: the Node that runs is the Node the image builds with
+        if: steps.pick.outputs.count != '0'
         # setup-node@v5 treats an EMPTY node-version as "no version": its
         # src/main.ts sets Node up only `if (version)`, so it installs
         # nothing and says nothing, and every step below would run -- and go
@@ -1846,12 +1970,14 @@ jobs:
 
       - name: install
         working-directory: apps/swarm-ui
+        if: steps.pick.outputs.count != '0'
         run: |
           set -euo pipefail
           echo "node $(node --version), npm $(npm --version)"
           npm ci --no-audit --no-fund
 
       - name: component tests
+        if: steps.pick.outputs.count != '0'
         # `npm run test:components` is `vitest run`; the arguments after `--`
         # reach vitest because it is the only command in that script (`npm
         # test` chains three, and a trailing argument would reach the last).
@@ -1908,15 +2034,39 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: which integration tests this run runs
+        id: pick
+        # A lane's pull request (lane=true) runs only the integration tests
+        # its change reaches (scripts/ci-select.sh lane): none, and every step
+        # below is skipped. Every other run runs tests/integration whole.
+        env:
+          LANE: ${{ needs.changes.outputs.lane }}
+          INTEGRATION_TESTS: ${{ needs.changes.outputs.integration_tests }}
+        run: |
+          set -euo pipefail
+          if [ "${LANE:-}" = "true" ] && [ -z "${INTEGRATION_TESTS}" ]; then
+            echo "none=true" >> "$GITHUB_OUTPUT"
+            echo "a lane's pull request whose change reaches no integration test"
+          elif [ "${LANE:-}" = "true" ]; then
+            echo "none=false" >> "$GITHUB_OUTPUT"
+            echo "a lane's pull request: ${INTEGRATION_TESTS}"
+          else
+            echo "none=false" >> "$GITHUB_OUTPUT"
+            echo "tests/integration, whole"
+          fi
+
       - uses: astral-sh/setup-uv@v7
+        if: steps.pick.outputs.none != 'true'
         with:
           enable-cache: true
 
       - uses: actions/setup-python@v6
+        if: steps.pick.outputs.none != 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/setup-java@v5
+        if: steps.pick.outputs.none != 'true'
         with:
           # The Firestore emulator is a Java program, and it now REQUIRES a
           # Java 21+ JRE: on 17 it refuses to start with "The java executable on
@@ -1926,8 +2076,10 @@ jobs:
           java-version: "21"
 
       - uses: google-github-actions/setup-gcloud@v3
+        if: steps.pick.outputs.none != 'true'
 
       - name: install the emulator
+        if: steps.pick.outputs.none != 'true'
         # RETRIED, BOUNDED (2026-10-14, the flake PR 1281 measured in run
         # 38124880207: the component download failed once and the job went
         # red on a fetch, not on a test). Four tries, 10, 20 and 40 s apart:
@@ -1949,14 +2101,18 @@ jobs:
           done
 
       - name: sync
+        if: steps.pick.outputs.none != 'true'
         run: uv sync --frozen --all-extras --dev
 
       - name: run integration tests against the emulator
+        if: steps.pick.outputs.none != 'true'
         # The emulator rather than a mock: the admission path depends on real
         # transaction semantics -- the last-slot race resolves the way it does
         # because Firestore aborts a transaction whose read set changed.
         env:
           PROJECT_ID: swarm-ci
+          LANE: ${{ needs.changes.outputs.lane }}
+          INTEGRATION_TESTS: ${{ needs.changes.outputs.integration_tests }}
           # The emulator serves the (default) database; the named `swarm`
           # database is a property of the real project, not of the emulator.
           FIRESTORE_DATABASE: "(default)"
@@ -2012,6 +2168,20 @@ jobs:
           # and requires the gate to notice it, the other requires a process to
           # still be running when it is looked at. Under -n they measure the
           # runner's load instead of the thing they were written to measure.
+          #
+          # A lane's pull request runs its selected files the same two ways.
+          # pytest's exit 5 (nothing collected) is then "none of them is in
+          # this half", but both halves collecting nothing still fails.
+          if [ "${LANE:-}" = "true" ]; then
+            read -r -a files <<< "${INTEGRATION_TESTS}"
+            ran=0
+            rc=0; uv run pytest "${files[@]}" -q -n auto -m "not serial" || rc=$?
+            if [ "${rc}" -eq 0 ]; then ran=1; elif [ "${rc}" -ne 5 ]; then exit "${rc}"; fi
+            rc=0; uv run pytest "${files[@]}" -q -m serial || rc=$?
+            if [ "${rc}" -eq 0 ]; then ran=1; elif [ "${rc}" -ne 5 ]; then exit "${rc}"; fi
+            if [ "${ran}" -ne 1 ]; then echo "::error::no selected integration test was collected"; exit 5; fi
+            exit 0
+          fi
           uv run pytest tests/integration -q -n auto -m "not serial"
           uv run pytest tests/integration -q -m serial
 
@@ -2278,7 +2448,18 @@ jobs:
   build:
     name: build images
     runs-on: ubuntu-24.04
-    needs: [python, shell, manifests]
+    # NO `needs:`: IT STARTS WITH ITS RUN (owner pick on PR 3344, issue 3336:
+    # "decouple build, gate the release"). It needed python, shell and
+    # manifests until then, and on 5 November 2026 that started it 18 to 44
+    # minutes after its push -- main's test jobs queue behind the merge
+    # train's and the pull requests' CI -- so each merge cancelled the build
+    # before it and nothing deployed for twelve hours. Now it builds while
+    # they run, and THE TESTS GATE THE RELEASE instead of the build:
+    # scripts/lib/ci-built-images.sh hands release.yml and hotfix.yml this
+    # job's record only once those same jobs (CI_RELEASE_TEST_JOBS,
+    # scripts/lib/common.sh) passed in this run, and refuses it when one
+    # failed. A commit whose tests fail is still never released; it is built,
+    # which costs one Cloud Build of the images it changed.
     # THE ONE BUILD OF A COMMIT. Owner decision, 2026-09-24 (docs/ci.md): this
     # job builds every image once per commit on main -- each commit main has
     # not moved past by the time it runs, since 2026-10-26 (the workflow's
@@ -2293,9 +2474,6 @@ jobs:
     # So the job's NAME is part of an interface: scripts/lib/ci-built-images.sh
     # finds it by name, and tests/unit/scripts/test_ci_built_images.py fails if
     # the two disagree.
-    #
-    # A build costs money and needs cloud credentials, so it runs only after the
-    # free checks have passed.
     #
     # THE REF PIN IS THE CONTROL.
     #
@@ -2338,9 +2516,11 @@ jobs:
     # rejects refs/pull/*. Left to run, it would fail every entry's run and so
     # ci-gate on every entry. The commit is built once it is on main, by the
     # push run, as every commit is.
-    # A needed check skipped by its paths (shell, manifests) is not a failure:
-    # without this guard GitHub skips the build too, and the release then
-    # refuses the unbuilt commit (adc51c0f, 2026-10-14).
+    # `!cancelled() && !failure()` dates from its `needs:`: a needed check
+    # skipped by its paths (shell, manifests) is not a failure, and without
+    # the guard GitHub skipped the build too, so the release refused the
+    # unbuilt commit (adc51c0f, 2026-10-14). With no needs it changes nothing,
+    # and stays so that a need added back cannot bring that skip back.
     # Main's push and a dispatch only: a lane push (`swarm/**`, LANE CI-EARLY)
     # is tested here but never builds or pushes an image. A disjunction, not
     # parentheses: `&&` binds tighter than `||`, and the workflow models in

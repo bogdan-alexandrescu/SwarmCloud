@@ -163,6 +163,17 @@ step's branch before it publishes, for the reason `clone_base` is here: the
 archived tree is the agent's to write. A manifest without it skips that branch
 check, and the start sha still decides whether the work is the step's own.
 
+A HEAD that moved publishes nothing, but it is no longer lost (reported by
+Product Oracle's session, 5 November 2026: an agent merged a train branch into
+its own, checked out another branch, and the merge had to be rebuilt by hand).
+Under the claude-code pre-publish gate the moved HEAD is handed back to the
+agent once, while its session can still be continued, naming the step's branch
+(given to the runner as `SWARM_START_BRANCH`) and where HEAD is, and the
+harvest decides after that turn; whatever it decides, a line it refuses is
+written to the step's artifacts as `moved-head.bundle` (HEAD's commits not on
+the start) and the publish reason names it, so `git fetch moved-head.bundle`
+brings the work back.
+
 ### Incremental archives after the first
 
 **An attempt's first checkpoint is a full archive; each one after it holds only

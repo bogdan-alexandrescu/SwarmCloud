@@ -341,12 +341,12 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     })
     const main = document.querySelector('.wi-main')!
     expect(main.querySelector('.wf-table tr[data-step="fix"]')).toBeTruthy()
-    expect(main.querySelector('.wf-inspect'), 'the inspector is still under the table').toBeNull()
-    const inspect = dock.querySelector<HTMLElement>('.wf-inspect')!
+    expect(main.querySelector('.sc-card'), 'the inspector is still under the table').toBeNull()
+    const inspect = dock.querySelector<HTMLElement>('.sc-card')!
     expect(inspect.getAttribute('aria-label')).toBe('Step fix of wf_one')
-    // On the workflow's own page the card is headed by its step (QAFIX5,
-    // QA-120): the page is titled by the workflow, which the label names.
-    expect(inspect.querySelector('.wf-inspect-steph .wf-inspect-id')!.textContent).toBe('fix')
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the card carries no head of its own any more -- the dock's own head (wi-title) names the step.
+    expect(dock.querySelector('.wi-title-text')!.textContent).toBe('fix')
     // Docked, not folded or a phone sheet.
     expect(document.querySelector('.wi.is-docked')).toBeTruthy()
   })
@@ -361,7 +361,7 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
       return p!
     })
     fireEvent.click(pick)
-    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"] .wf-inspect')).toBeTruthy())
+    await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"] .sc-card')).toBeTruthy())
     expect(document.querySelector('.wi-main .wf-timeline')).toBeTruthy()
   })
 
@@ -382,12 +382,12 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     fireEvent.click(pick)
     await waitFor(() => expect(pick.getAttribute('aria-pressed')).toBe('true'))
     const row = document.querySelector<HTMLElement>('.wf-table tr[data-step="fix"]')!
-    expect(row.nextElementSibling?.querySelector('.wf-inspect'), 'a card was drawn under the row').toBeFalsy()
+    expect(row.nextElementSibling?.querySelector('.sc-card'), 'a card was drawn under the row').toBeFalsy()
     expect(document.querySelector('.wf-panel'), 'a docked panel as well').toBeNull()
     // The pick opens the rail the page started folded, beside the rows.
     await waitFor(() => expect(document.querySelector('.wi-dock[aria-label="Step fix"]')).toBeTruthy())
     expect(document.querySelector('.wi.is-folded')).toBeNull()
-    expect(document.querySelectorAll('.wf-inspect')).toHaveLength(1)
+    expect(document.querySelectorAll('.sc-card')).toHaveLength(1)
   })
 
   // ON A PHONE THE INSPECTOR IS A FULL-SCREEN SHEET (brief, "What moved
@@ -410,7 +410,7 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     })
     expect(sheet.getAttribute('role')).toBe('dialog')
     const track = document.querySelector<HTMLElement>('.wf-tl-track[data-step="fix"]')!
-    expect(track.nextElementSibling?.querySelector('.wf-inspect'), 'a card was drawn under the track').toBeFalsy()
+    expect(track.nextElementSibling?.querySelector('.sc-card'), 'a card was drawn under the track').toBeFalsy()
     expect(document.querySelector('.wf-panel')).toBeNull()
   })
 
@@ -518,7 +518,7 @@ describe('#111: the workflows list sorts, and shows start and duration', () => {
     const heads = [...document.querySelectorAll('.wfg-table thead th')].map((th) => th.textContent)
     // The one-line row (frame graph-workflows-rest) keeps Changed; Submitted
     // (QA G3-20) and Duration moved into the inspector's summary.
-    expect(heads).toEqual(['State', 'Workflow', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
+    expect(heads).toEqual(['State', 'Workflow', 'Repository', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
     expect(heads).not.toContain('Age')
     expect((await summaryFact('wf_one', 'Duration')).textContent).toBe('20m 0s')
     expect((await summaryFact('wf_one', 'Submitted')).getAttribute('title')).toMatch(/submitted/)

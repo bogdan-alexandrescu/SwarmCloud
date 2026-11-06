@@ -13,7 +13,7 @@
  * MUTATIONS: drop the pane's `flex: 1` or the column's height,
  * let the title wrap, or let the tabs wrap -- each turns a case red.
  */
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
@@ -31,6 +31,17 @@ async function split(): Promise<HTMLElement> {
   // At its Logs address: a running agent opens on Details since #1646.
   window.location.hash = '#work/task/task_a073aff5/logs'
   render(<App />)
+  // A claude-code agent's Logs open on its Transcript, which in the agent's
+  // own pane is the trace (trace/Trace.tsx, part of #2688); the stream log
+  // these cases measure is the Runner view.
+  const runner = await waitFor(() => {
+    const b = [...document.querySelectorAll<HTMLButtonElement>('.ag-split-pane [aria-label="Which log"] button')].find(
+      (x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === 'Runner',
+    )
+    expect(b).toBeDefined()
+    return b!
+  })
+  fireEvent.click(runner)
   return waitFor(() => {
     const s = document.querySelector<HTMLElement>('.ag-split')
     expect(s).not.toBeNull()

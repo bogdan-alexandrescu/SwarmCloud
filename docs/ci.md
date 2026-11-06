@@ -607,6 +607,60 @@ stopping `gcloud builds submit` does not stop it (`build-images.sh`,
 the same build: if a newer push cancels that build, the hotfix run fails and
 the newer commit's normal release ships the fix.
 
+**When merges come faster than a build: the merge train holds (issue 3336).**
+Cancelling assumes a merge lull long enough for the newest build to finish.
+On 5 November 2026 there was none: no release had deployed since 21:04Z on 4
+November. `build images` then needed main's test jobs, which queue behind the merge
+train's and the pull requests' CI, so it started 18 to 44 minutes after its
+push and then took about 19; the train landed a batch every 20 to 40
+minutes, so each merge cancelled the build before it and every release ended
+superseded. And release 41992304818 (08:09Z) failed `timed out after 2700s`
+on a build that started at 08:53Z and succeeded at 09:12Z.
+
+So, before a green train merges, `scripts/merge-train.sh` (`deploy_hold`)
+reads `release.yml`'s runs on `main` and `main`'s newest `application` push
+run. When no release ran its deploy job successfully in the last 60 minutes
+**and** that run's `build images` job is in progress, the train does not
+merge on that tick: it stays open and green, says once in its own comments
+`holding the merge so main's build of <sha> can finish and deploy; nothing
+has deployed since <time>`, and records when the hold began, and for which
+build, in its state block (`hold=<epoch>:<sha>`), so the bound survives
+ticks. It merges on a later tick once that job has finished, either way, or
+25 minutes after the hold began, whichever comes first. It never holds for a
+build that has not started (cancelling that one costs nothing), never while
+deploys are recent, and never twice for one train; an API it cannot read, or
+a hold it cannot record, merges as before. A dry run says what it would have
+held. The cost is at most 12 API reads per green train and 2 per held tick.
+
+#2438's cancelling stays: the hold only spaces merges out while a build is
+already running, so the build that is running is the one that ships, and a
+burst of merges still costs one build, not one per commit.
+
+**The build no longer waits for main's tests; the tests gate the release
+(owner pick on PR 3344).** The hold above spaces merges out; it does not
+remove the 18 to 44 minutes `build images` spent queued behind main's test
+jobs. So `build images` has no `needs:` any more and starts with its run,
+building while `format / unit tests`, `shellcheck` and `kubernetes manifests`
+run beside it. Those three -- exactly the jobs it used to need -- now gate the
+release instead: `scripts/lib/ci-built-images.sh` hands release.yml and
+hotfix.yml the build's record only once each of them, in the same run,
+concluded success or was skipped by its own paths (the list is
+`CI_RELEASE_TEST_JOBS`, once, in `scripts/lib/common.sh`). While they still
+run, the release waits as for a build in progress (`CI_BUILD_WAIT_RUNNING`).
+When one failed or was cancelled, or the run finished without it, the release
+refuses the commit and, even when dispatched with `or-build`, builds nothing:
+a commit whose tests did not pass is never released. A newer push that
+cancelled those tests after the build succeeded is a supersession, as a
+cancelled build is (`scripts/lib/build-superseded.sh`). What it costs: a
+commit whose tests fail is still built -- one Cloud Build of the images it
+changed, which before was never spent.
+
+The release's wait, `scripts/lib/ci-built-images.sh`, keeps 2700 s
+(`CI_BUILD_WAIT`) as its bound for a build that is queued or not started,
+but waits for one whose job is **in progress** until it ends, up to
+`CI_BUILD_WAIT_RUNNING` (5400 s). A run a newer push cancelled still ends the
+wait at once, "never built".
+
 **What a pull request cannot prove about this.**
 `tests/unit/scripts/test_release_newest_only.py` holds the groups, the
 trigger and the two conditions, and runs both decision steps against a fake
@@ -4160,6 +4214,85 @@ vitest ids its log names. It is read-only. Then:
 1. fix the cause if it can be found now -- that is the default;
 2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
    issue to the line; the fix removes the line.
+
+## The full suite runs once per change, in the merge train
+
+**BGD's pick, 2026-11-06 (part of #2688):** *"we really need to fix ci merges
+and streamline the ci part, its the biggest bottleneck we have right now."*
+Measured that morning: one `application.yml` run was 27 jobs and 76
+runner-minutes on a pull request and 34 jobs, all GitHub-hosted, on a push to
+main; about 200 runs a day (145 `pull_request`, merge trains included, and 55
+pushes to main); from about 04:50Z GitHub-hosted jobs waited up to 51 minutes
+(68 waiting, 2 running at 06:55Z) while the own `bogdan-ci` pool (cap 200 VMs)
+had 15 up. Two changes, both in [`scripts/ci-select.sh`](../scripts/ci-select.sh)
+and the `changes` job.
+
+**A. Main skips what its merge train tested.** The train
+([`scripts/merge-train.sh`](../scripts/merge-train.sh),
+[docs/merge-trains.md](merge-trains.md)) tests `main` plus its pull requests
+on a draft pull request from `train/<id>`, then lands each as its own squash.
+Main's commit after the last squash has the train's tested tree but names the
+last pull request, not the train, so
+[the tree record below](#main-reuses-the-tested-tree) never matched it and
+main ran the whole suite again. Main's push run now starts with the `train`
+step (`ci-select.sh train-match`). It skips every test job when it finds a
+pull request that:
+
+* is titled `Merge train <id>: ...`, from `train/<id>` in this repository;
+* has a head whose tree is this commit's tree (`HEAD^{tree}`);
+* has a newest `ci-gate` at that head that concluded `success`;
+* is closed, with the train's own `Green, and landed` comment, posted by a bot.
+
+The squash lands a few seconds before the train closes, so an open train with
+this tree is waited for, at most `TRAIN_WAIT_SECONDS` (300). The step lists
+every job `ci_reuse.py` may skip (`REUSABLE`, read from there) as `reused`,
+and the train's URL as `reused_from`. ci-gate's reuse check then passes those
+skips and names the train. `build images`, the plugin tag and the release
+still run, and the release's test gate reads a skipped job as passed. Any
+other push runs the full suite as before: a direct push, a tree no green train
+tested, a train that closed any other way, or an API it could not read.
+
+**B. A lane's pull request tests what its change reaches.** A pull request
+from a `swarm/**` branch of this repository (the `lane` step,
+`ci-select.sh lane`) still runs shellcheck, actionlint, ruff, the format,
+contract and lock checks, the swarm-ui typecheck and build, the manifests and
+the image check whole. Its tests are narrowed:
+
+* unit shards: the `select` step's selection, as before
+  ([below](#a-pull-request-runs-the-unit-tests-its-change-reaches));
+* component tests: the vitest files whose imports reach a changed swarm-ui
+  module (`related_tests.py`, the selection `scripts/related-tests.sh`
+  prints), plus the stylesheet guards on a `.css` change. They are split into
+  shards by `ui_shards.py`'s weights;
+* integration tests: a changed one, one importing a changed module through
+  any chain, or one naming a changed path.
+
+A shard or the integration job with nothing selected skips its steps rather
+than run an empty `vitest run` or `pytest`, either of which would run the
+whole suite.
+
+**The full suite runs** on a lane whose change touches shared ground: anything
+in `select_unit_tests.py`'s fallback (a workflow or composite action, a
+`conftest.py`, `pyproject.toml`, `uv.lock`, the frozen contract, the
+quarantine, more than 40 paths), any `package.json` or lockfile, `pytest.ini`,
+`setup.cfg` or `tox.ini`, the swarm-ui runner's own files (`RUNNER_WIDE`), or
+a shared helper under `tests/integration/`. It also runs when the selection
+cannot be computed. The step says why in the job summary. A merge train's
+pull request (`train/**`) runs every job, whatever its diff reaches, and so
+does main. A pull request from any other branch is unchanged.
+
+**Every required check keeps its name.** `ci-gate`, `format / unit tests`,
+`swarm-ui typecheck / component tests`, `integration tests (emulator)`,
+`kubernetes manifests` and `shellcheck` still report. A job skipped by its own
+`if:` reads as passed in its fold job and in ci-gate.
+`tests/unit/scripts/test_ci_select.py` holds the selection, the train match
+and the workflow steps.
+
+**What a miss costs.** If a lane's selection misses a test, its pull request
+goes green and the train goes red. The train then bisects and ejects that
+pull request, and main never sees the failure. This is the same bound
+[the unit-test selection](#a-miss-costs-a-red-main-so-the-whole-tree-tests-always-run)
+already accepted, one step earlier.
 
 ## Main reuses the tested tree
 

@@ -35,9 +35,10 @@ import { join } from 'node:path'
 type Json = Record<string, unknown>
 
 // People and roles and Workspace Settings are the workspace page's tabs since
-// the admin routes lane (part of #2688): the panel draws four pages, and
+// the admin routes lane (part of #2688): the panel draws five pages (Plugins joined it, part of #2688), and
 // SECTIONS keeps Workspace Settings for Add a new workspace's address alone.
-const CONFIG_PANEL = ['GitHub access', 'Repositories', 'Secrets', 'MCP servers']
+// Plugins (part of #2688): the owner picked the settings table for Config › Plugins on 4 November 2026.
+const CONFIG_PANEL = ['GitHub access', 'Repositories', 'Secrets', 'MCP servers', 'Plugins']
 const CONFIG_TABS = [...CONFIG_PANEL, 'Workspace Settings']
 
 const ME = (isAdmin: boolean, tenant = 'eng'): Json => ({
@@ -121,7 +122,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     expect(App.SECTIONS.map((s) => s.id)).toEqual(['overview', 'work', 'automate', 'capacity', 'config', 'admin', 'voice'])
   })
 
-  it('draws the four pages in the panel, and Config on the spine between Capacity and Admin', async () => {
+  it('draws the five pages in the panel, and Config on the spine between Capacity and Admin', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')])
     await app('/config/github')
     await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="config"]')).not.toBeNull())
@@ -136,7 +137,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('GitHub access')
   })
 
-  it('draws a personal workspace the same four pages: People and roles is no Config page now (S1e)', async () => {
+  it('draws a personal workspace the same five pages: People and roles is no Config page now (S1e)', async () => {
     serve(ME(true, 'u-ana'), [PERSONAL])
     await app('/config/github')
     await waitFor(() => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com'))

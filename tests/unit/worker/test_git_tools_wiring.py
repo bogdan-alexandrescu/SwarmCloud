@@ -605,7 +605,7 @@ def attempt(db, worker_factory, monkeypatch, origin, local_urls, forge):  # noqa
             child_api=routes, child_nonce=NONCE, swarm_api_url="https://swarm-api.example",
             secret_client=_ApiKeySecrets(),
         )
-        monkeypatch.setattr(worker, "_git_token", lambda: None)
+        monkeypatch.setattr(worker, "_git_token", lambda **_: None)
         return worker
 
     return build, routes

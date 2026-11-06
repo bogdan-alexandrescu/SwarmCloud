@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from agent_worker.judge import shapes
-from agent_worker.judge.sanitize import is_denied_path
+from agent_worker.judge.sanitize import is_denied_path, is_flagged
 
 PLAN_FILE = "plan.json"
 VERDICT_FILE = "verdict.json"
@@ -450,6 +450,17 @@ OUTCOME_NOT_RUN = "not_run"
 #: their backoff, about 32 s) plus the two git reads' bound. Invariant 4: the
 #: worker never waits for Jev past its deadline; it posts `not_run` instead.
 JC2_MIN_SECONDS = 60
+#: The arm of the Jev work-contract experiment (jev-contract.md section 11):
+#: the signed dispatch block's `contract_jev` switch, handed to the runner by
+#: the worker beside the contract (`lifecycle.Worker._stage_work_contract`).
+#: `off` asks Jev nothing and posts `not_run` with reason `SKIPPED_ARM`, the
+#: word `swarm_api.contractreview.SKIPPED_ARM` and `scripts/benchstat.py`
+#: read; `on`, or no switch, judges exactly as before (it never turns JC2 on
+#: where the workspace left Jev off).
+CONTRACT_JEV_ENV = "SWARM_CONTRACT_JEV"
+CONTRACT_JEV_SWITCH = "contract_jev"
+ARM_OFF = "off"
+SKIPPED_ARM = "skipped:arm"
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _REASON_CODE = re.compile(r"[^A-Za-z0-9_.:-]")
@@ -482,6 +493,13 @@ def read_contract(env: Mapping[str, str]) -> tuple[dict[str, Any] | None, str | 
         document = None
     return (document if isinstance(document, dict) else None,
             digest if _HEX64.fullmatch(digest) else None)
+
+
+def contract_arm(env: Mapping[str, str]) -> str | None:
+    """The step's `contract_jev` word the worker handed over, `on` or `off`;
+    None when it set none (or any other word)."""
+    value = (env.get(CONTRACT_JEV_ENV) or "").strip()
+    return value if value in ("on", ARM_OFF) else None
 
 
 def _verified(document: Mapping[str, Any] | None, digest: str) -> bool:
@@ -537,7 +555,8 @@ def _reserved(judge: Any) -> Any:
 
 def contract_post_step(judge: Any, document: Mapping[str, Any] | None, digest: str | None,
                        checkout: Path | None, *, base: str | None,
-                       deadline_left: float | None) -> dict[str, Any] | None:
+                       deadline_left: float | None,
+                       environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """JC2 over the step's signed contract: the body `state/contract-verdict`
     takes (without its tuple and `request_id`), or None when there is nothing
     to judge or nothing the route could take (no contract, a digest that is
@@ -547,11 +566,18 @@ def contract_post_step(judge: Any, document: Mapping[str, Any] | None, digest: s
     agent's. The state holds the requirements' text, the commit's diff and
     the mechanical results ONLY: the agent's summary, its PR body, its claims
     and its transcript are not arguments here, so they never reach Jev.
+
+    `environ` (the process's own when None) carries the experiment's arm
+    (`CONTRACT_JEV_ENV`): `off` is `not_run`, `skipped:arm`, and no call.
     Never raises."""
     if digest is None or not _HEX64.fullmatch(digest):
         return None
     if document is not None and not shapes.judged_requirements(document):
         return None
+    if contract_arm(os.environ if environ is None else environ) == ARM_OFF:
+        commit = shapes.head_commit(checkout) if checkout is not None else None
+        return _not_run(digest, commit, base if isinstance(base, str)
+                        and _HEX40.fullmatch(base) else None, SKIPPED_ARM)
     if document is None:
         # A body the worker named and this process cannot read: it may name
         # `judgment`, so say so rather than post nothing.
@@ -588,6 +614,7 @@ def _judge_contract(judge: Any, document: Mapping[str, Any], digest: str,
     sha: str | None = None
     call_id: str | None = None
     verdicts: list[dict[str, Any]] = []
+    cited: dict[int, str] = {}
     failure: str | None = None
     for start in range(0, len(rows), shapes.JC2_PER_CALL):
         batch = rows[start:start + shapes.JC2_PER_CALL]
@@ -610,13 +637,49 @@ def _judge_contract(judge: Any, document: Mapping[str, Any], digest: str,
         if sent is None:
             sent, sha = paths, shapes.jc2_state_sha256(state)
             call_id = decision.call_id or None
-        verdicts.extend(shapes.read_jc2(batch, state, decision.answers))
+        read = shapes.read_jc2(batch, state, decision.answers)
+        _cite(cited, read, state)
+        verdicts.extend(read)
     if not verdicts:
         return _not_run(digest, commit, base, failure or "failed",
                         mechanical=mechanical, call_id=call_id)
     return {"digest": digest, "commit": commit, "base": base, "outcome": OUTCOME_JUDGED,
             "reason": None, "call_id": call_id, "state_sha256": sha,
-            "changed": list(sent or ()), "mechanical": mechanical, "verdicts": verdicts}
+            "changed": list(sent or ()),
+            "hunks": [cited.get(n) for n in range(len(sent or ()))],
+            "mechanical": mechanical, "verdicts": verdicts}
+
+
+def _cite(cited: dict[int, str], verdicts: Sequence[Mapping[str, Any]],
+          state: Mapping[str, Any]) -> None:
+    """Record in `cited` (item -> text) the hunk each verdict's `i<n>` rests
+    on, as the batch's own state sent it to Jev, for the route's `hunks`
+    (`ContractVerdictBody.hunks`; swarm-api keeps the cited ones,
+    `contractreask.cited_hunks`, and the console prints them under each
+    verdict). Nothing here is sent to Jev.
+
+    The rules are `cited_hunks`'s, so the worker posts no more than the record
+    keeps: only a cited item, the first verdict's text for it, cut to
+    `shapes.HUNK_CHARS` (the state's own cut); none for an item the state sent
+    by path alone (no change text) or the content of a denied path, and a hunk
+    holding anything credential-shaped is withheld whole (`sanitize`, the
+    shared package swarm-api checks with), because Jev never read it. The body
+    therefore carries at most one hunk per judged requirement."""
+    rows = state.get("changed") or ()
+    for verdict in verdicts:
+        item = verdict.get("evidence_item") or ""
+        if not item.startswith("i") or not item[1:].isdigit():
+            continue
+        n = int(item[1:])
+        if n in cited or n >= len(rows):
+            continue
+        path, text = rows[n].get("path"), rows[n].get("hunk")
+        if not isinstance(text, str) or not text or not isinstance(path, str) \
+                or is_denied_path(path):
+            continue
+        text = text[:shapes.HUNK_CHARS]
+        if not is_flagged(text):
+            cited[n] = text
 
 
 def deliver_contract_verdict(post: Any, verdict: Mapping[str, Any] | None, *,

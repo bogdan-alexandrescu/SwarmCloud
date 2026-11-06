@@ -81,7 +81,7 @@ def witness(monkeypatch) -> Witness:
 
     original_token = lifecycle.Worker._git_token
 
-    def git_token(self):  # type: ignore[no-untyped-def]
+    def git_token(self, **_):  # type: ignore[no-untyped-def]
         w.note("git token")
         return original_token(self)
 

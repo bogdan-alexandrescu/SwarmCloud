@@ -62,7 +62,8 @@ from .test_qa_target_attempt_route import (  # noqa: F401 - fixtures are used by
 STAGING = "https://staging.example.com"
 SHOP = "https://shop.example.com"
 VERSION = "projects/p/secrets/swarm-tenant-eng-qa/versions/1"
-FLOWS = [{"id": "checkout", "goal": "Buy the cheapest item", "start_path": "/", "mutating": True}]
+FLOWS = [{"id": "checkout", "goal": "Buy the cheapest item", "start_path": "/", "mutating": True,
+          "writes": "One order of the cheapest item."}]
 
 
 def status(is_set: bool = True) -> dict[str, Any]:

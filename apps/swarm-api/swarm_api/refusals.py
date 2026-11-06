@@ -556,7 +556,8 @@ SWITCHES: dict[str, Switch] = {
     "repository_ref_not_found": Switch(
         code="repository_ref_not_found",
         why="a submission whose repository_ref is neither a branch nor a tag of a repository "
-        "the submitter's forge slot can read is answered 422 repository_ref_not_found before "
+        "the submitter's forge slot can read, or a full sha GitHub has no commit for (#3315), "
+        "is answered 422 repository_ref_not_found before "
         "any task is stored. On once the report-only log shows only refs that really were gone",
     ),
     # Admin › Setup's first workspace before infra pass 3 (DAYONE-MANIFEST-
@@ -574,6 +575,29 @@ SWITCHES: dict[str, Switch] = {
         "workspace) while swarm-api's workspace publisher is off, which swarm install's "
         "infra pass 3 turns on; the team route answers 409 publishing_off and writes nothing. "
         "Ships on: the console shows the step waiting until then",
+        default=True,
+    ),
+    # QA flows that write (docs/design/qa-environments.md §6; BGD, 2026-11-05,
+    # "declared writes plus a switch, on by default"). Both refuse a SAVE of a
+    # QA target, raised by `qatargets` through `refuse`, and both SHIP ON
+    # (default=True) by that decision, with precedent budget_above_limit:
+    # off loses no protection, because a mutating flow without `writes`
+    # renders read-only, and with the workspace's `writing_flows` off every
+    # flow does (`qaspec.leg`). Off, the target is saved and its flow reads
+    # only. Set REFUSAL_QA_FLOW_WRITES_REQUIRED=off or
+    # REFUSAL_QA_WRITING_FLOWS_OFF=off to let the save through again.
+    "qa_flow_writes_required": Switch(
+        code="qa_flow_writes_required",
+        why="a QA target saved with a flow that is mutating and has no non-empty `writes`, the "
+        "one sentence saying what it writes, is refused 422. Ships on by BGD's decision "
+        "2026-11-05; off, the target is saved and that flow renders read-only",
+        default=True,
+    ),
+    "qa_writing_flows_off": Switch(
+        code="qa_writing_flows_off",
+        why="a QA target saved with a mutating flow while its workspace's `writing_flows` QA "
+        "setting is off is refused 422. Ships on by BGD's decision 2026-11-05; off, the "
+        "target is saved and every flow of the workspace still renders read-only",
         default=True,
     ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part

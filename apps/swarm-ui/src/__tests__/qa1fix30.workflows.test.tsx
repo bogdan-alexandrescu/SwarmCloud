@@ -282,8 +282,10 @@ describe('C-10: times are UTC, written with Z', () => {
     expect(fact(sum, 'Submitted')?.getAttribute('title')).toMatch(/submitted \d{4}-\d\d-\d\dT/)
     cleanup()
     await page(AUDIT)
-    // MUTATION: use `workflowStartText` in `pageSummary` -- `started 02:21:40`.
-    await waitFor(() => expect(flat(document.querySelector('.c-count-note'))).toMatch(/started (\d\d:\d\d:\d\dZ|[A-Z][a-z]{2} \d{1,2} \d\d:\d\dZ)$/))
+    // The start moved off the count line onto the facts card's When.
+    // MUTATION: print `workflowStartText` (local, no zone) in WorkflowFacts' When.
+    await waitFor(() => expect(flat(fact(document.querySelector<HTMLElement>('.wff-facts')!, 'When'))).toMatch(/(\d\d:\d\d:\d\dZ|[A-Z][a-z]{2} \d{1,2} \d\d:\d\dZ)$/))
+    expect(flat(document.querySelector('.c-count-note'))).not.toMatch(/· started /)
   })
 })
 
@@ -380,9 +382,12 @@ describe('83: one verb, Stop, for every stop on the page', () => {
       expect(d).toBeTruthy()
       return d!
     })
+    // THE PAGE'S CARD IS StepCard, NOT StepInspector + a `.wf-inspect-acts`
+    // group (owner's pick, 2026-11-05): Stop sits directly on the card's own
+    // bar, in `.sc-end`, with no group of its own any more.
     // MUTATION: put `label="Stop step"` back on the card's `StopRun`.
     const card = await waitFor(() => {
-      const c = dock.querySelector<HTMLElement>('.wf-inspect-acts')
+      const c = dock.querySelector<HTMLElement>('section.sc-card .sc-end')
       expect(c).toBeTruthy()
       return c!
     })

@@ -209,14 +209,19 @@ describe('every place the design names prints a person through PersonName', () =
       return <WorkflowsScreen view={view} onView={setView} />
     }
     render(<Routed />)
-    const note = await waitFor(() => {
-      const n = document.querySelector<HTMLElement>('.c-count-note')
-      expect(n?.textContent ?? '').toContain(EMAIL)
-      return n!
+    // The owner moved off the count line onto the facts card's Started by,
+    // which prints the FULL name (the card is the one place the page names them).
+    const startedBy = await waitFor(() => {
+      const dt = [...document.querySelectorAll('.wfp-head .wff-facts dt')].find((d) => d.textContent === 'Started by')
+      const dd = dt?.nextElementSibling as HTMLElement | null | undefined
+      expect(dd?.textContent ?? '').toContain(EMAIL)
+      return dd!
     }, WAIT)
-    printsThrough(note, EMAIL, FIRST, "the workflow page's owner", NAME)
-    // The note's title is its whole text, the owner included.
-    expect(note.getAttribute('title')).toContain(`by ${FIRST} · ${EMAIL}`)
+    printsThrough(startedBy, EMAIL, NAME, "the workflow page's owner", NAME)
+    // Nothing is drawn twice: the count line no longer says who started it.
+    const note = document.querySelector<HTMLElement>('.c-count-note')
+    expect(note?.textContent ?? '').not.toContain(EMAIL)
+    expect(note?.getAttribute('title') ?? '').not.toMatch(/\bby\b/)
   })
 
   it("the task page's submitter", async () => {

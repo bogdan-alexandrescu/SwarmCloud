@@ -1972,6 +1972,13 @@ def run_cli_agent(
     ceiling_state_path: Path | None = None
     ceiling_seed: dict[str, Any] | None = None
     resumed_over: str | None = None
+    # The previous session's last words in a handoff: OFF unless
+    # SWARM_CEILING_SESSION_TAIL turns them on (BGD, 2026-11-06). Its own
+    # assistant text fed back as user input got the fresh session's first
+    # call refused by the provider's safeguards (task_a27c0b2241d1492492ee,
+    # `ceiling.SESSION_TAIL_ENV`); the note file, todos, notes files, diff
+    # summary and commits carry what it knew.
+    ceiling_session_tail = ceiling_mod.session_tail_enabled(os.environ)
     if spec.context_ceiling:
         ceiling_state_path = ceiling_state_file()
         ceiling_seed = ceiling_mod.read_state(ceiling_state_path)
@@ -2372,6 +2379,16 @@ def run_cli_agent(
             + _without_capture_notices(_tail(stderr_path))
         )
 
+    def handoff_refusal(parsed_run: Any) -> str | None:
+        """The refusal a fresh session from a handoff ended in on its first
+        call (`ceiling.first_call_refusal`), unless the start ended for a
+        reason `judge` reads first: a timeout, the budget, a swap, the ceiling."""
+        if (ceiling_watcher is None or result.timed_out or ceiling_stop_pending()
+                or (budget is not None and budget.stopped_for is not None)
+                or (watcher is not None and watcher.stopped_for is not None)):
+            return None
+        return ceiling_mod.first_call_refusal(parsed_run)
+
     def ceiling_stop_pending() -> bool:
         """Whether the last start was stopped at the context ceiling, and by
         nothing else: a budget stop, a swap and a timeout are judged as before."""
@@ -2396,8 +2413,13 @@ def run_cli_agent(
         )
         return stop
 
+    #: The minimal handoff (`ceiling.minimal_handoff_prompt`) of the last
+    #: handoff written, until a refusal of its fresh session spends it.
+    handoff_minimal: list[str | None] = [None]
+
     def ceiling_handoff(stop: dict[str, Any], then: str | None) -> str:
-        """Commit the tree, and the prompt the fresh session starts from (#2524)."""
+        """Commit the tree, and the prompt the fresh session starts from (#2524);
+        the minimal one it starts from if refused goes to `handoff_minimal`."""
         from ..prepublish import CLONE_BASE_ENV, EMPTY_BASE  # lazy, as the gate's
 
         diff_stat: str | None = None
@@ -2417,14 +2439,20 @@ def run_cli_agent(
                 cwd, env, base if base and base != EMPTY_BASE else None)
             ctx.report["context_ceiling"] = ceiling_watcher.summary() if ceiling_watcher else None
         # The previous session's notes (#2897): its note file, the notes
-        # files it kept, its todo list and its own last words -- all of this
-        # attempt's own artifacts and stream, scrubbed of the run's secrets.
-        tail = ceiling_watcher.session_tail() if ceiling_watcher is not None else None
+        # files it kept, its todo list and -- only with the setting on -- its
+        # own last words: all of this attempt's own artifacts and stream,
+        # scrubbed of the run's secrets.
+        tail = (ceiling_watcher.session_tail()
+                if ceiling_watcher is not None and ceiling_session_tail else None)
+        note = ceiling_mod.agent_note(Path(ctx.artifacts_dir))
+        todos = _scrub_json(ceiling_watcher.todos, secrets) if ceiling_watcher else None
+        handoff_minimal[0] = ceiling_mod.minimal_handoff_prompt(
+            task_prompt=task_prompt, note=note, todos=todos, then=then)
         return ceiling_mod.handoff_prompt(
             stop=stop, task_prompt=task_prompt, diff_stat=diff_stat, commits=commits,
-            wip=wip, note=ceiling_mod.agent_note(Path(ctx.artifacts_dir)), then=then,
+            wip=wip, note=note, then=then,
             session_tail=scrub_text(tail, secrets) if tail else None,
-            todos=_scrub_json(ceiling_watcher.todos, secrets) if ceiling_watcher else None,
+            todos=todos,
             files=ceiling_mod.notes_files(Path(ctx.artifacts_dir)),
         )
 
@@ -2473,7 +2501,10 @@ def run_cli_agent(
         spend = _stopped_start_spend(ceiling_watcher, result)
         ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
     combined = detection_text(raw_stdout, parsed)
-    if not ceiling_stop_pending():
+    # A fresh session from a handoff refused on its first call is started
+    # once more from the minimal handoff (below, `refused_handoff`), not judged.
+    first_refusal = handoff_refusal(parsed) if resumed_over is not None else None
+    if not ceiling_stop_pending() and first_refusal is None:
         judge(result, watcher, spend, combined)
 
     def parked_on_question() -> bool:
@@ -2501,13 +2532,17 @@ def run_cli_agent(
     session_spend = spend
     spend = _attempt_spend(spend, ceiling_watcher)
 
-    def resume_pass(session: str | None, pass_prompt: str, remaining: float) -> Any:
+    def resume_pass(
+        session: str | None, pass_prompt: str, remaining: float, *, handoff: bool = False
+    ) -> Any:
         """Continue `session` once with `pass_prompt`; return that pass's own parsed output.
 
         Shared by the finish pass and the repair turns. The step's record is
         kept whole: the captures, the spend, the durations and what the
         transcript and summary read cover every start. `session` None starts
-        a fresh session instead (a context-ceiling handoff, #2524).
+        a fresh session instead (a context-ceiling handoff, #2524); `handoff`
+        says `pass_prompt` is one, so a refusal of its first call is retried
+        once from the minimal handoff (`refused_handoff`).
         """
         nonlocal result, watcher, capture, raw_stdout, parsed, spend, combined
         nonlocal duration_seconds, stdout_bytes, stderr_bytes, ended_spend, session_spend
@@ -2558,12 +2593,42 @@ def run_cli_agent(
         spend = _attempt_spend(
             _combined_spend(ended_spend, session_spend, fresh=True), ceiling_watcher)
         combined = detection_text(pass_raw, pass_parsed)
-        if not ceiling_stop_pending():
+        refusal = handoff_refusal(pass_parsed) if handoff else None
+        if not ceiling_stop_pending() and refusal is None:
             judge(result, watcher, spend, combined)
         duration_seconds += result.duration_seconds
         stdout_bytes += result.stdout_bytes
         stderr_bytes += result.stderr_bytes
+        if refusal is not None:
+            return refused_handoff(refusal, remaining - result.duration_seconds)
         return pass_parsed
+
+    def refused_handoff(refusal: str, left: float) -> Any:
+        """A fresh session started from a handoff was refused on its first
+        call: start it ONCE more from the minimal handoff -- the task, the note
+        file and the todos only -- and record that in the ceiling summary. A
+        second refusal fails the step, naming the refusal."""
+        assert ceiling_watcher is not None
+        minimal = handoff_minimal[0]
+        handoff_minimal[0] = None
+        if minimal is None or left < FINISH_MIN_SECONDS:
+            again = "again, from the minimal handoff" if minimal is None else (
+                "with too little of the step's budget left to start it once more")
+            raise RunnerFailure(
+                f"{spec.name}: the fresh session started from a context-ceiling handoff "
+                f"was refused on its first call ({refusal}) {again}",
+                spend=spend,
+            )
+        ceiling_watcher.refusal_restarts.append(
+            {"refusal": refusal, "session": ceiling_watcher.sessions})
+        ctx.report["context_ceiling"] = ceiling_watcher.summary()
+        log.warning(
+            "the fresh session started from a context-ceiling handoff was refused on its "
+            "first call; starting it once more from the minimal handoff (the task, the "
+            "note file and the todos only)",
+            refusal=refusal, remaining_seconds=round(left, 1),
+        )
+        return resume_pass(None, minimal, left, handoff=True)
 
     def step_remaining() -> float:
         return limits.timeout_seconds - duration_seconds
@@ -2590,7 +2655,7 @@ def run_cli_agent(
             # A handoff with nothing else to ask ends with what is left of the
             # step's wall clock (#2139), which the fresh session was never told.
             last = resume_pass(
-                None, ceiling_handoff(stop, then or time_limit_line(left)), left)
+                None, ceiling_handoff(stop, then or time_limit_line(left)), left, handoff=True)
         return last
 
     def pass_within_ceiling(
@@ -2602,11 +2667,17 @@ def run_cli_agent(
                if ceiling_watcher is not None and ceiling_watcher.armed else None)
         if why is not None:
             stop = note_ceiling_stop(at=ceiling_mod.AT_RESUME, why=why, resume_reason=reason)
-            done = resume_pass(None, ceiling_handoff(stop, pass_prompt), remaining())
+            done = resume_pass(
+                None, ceiling_handoff(stop, pass_prompt), remaining(), handoff=True)
         else:
             done = resume_pass(session, pass_prompt, remaining())
         later = carry_on(pass_prompt, remaining)
         return later if later is not None else done
+
+    if first_refusal is not None:
+        # The handoff this run started from (a resume over the ceiling) was
+        # refused on its first call.
+        refused_handoff(first_refusal, step_remaining())
 
     # RESUMED ONCE TO WRAP UP (#2139; see WRAP_UP_PROMPT). The watched run was
     # stopped at a turn boundary with less than the wrap-up margin left;
@@ -2916,9 +2987,9 @@ def run_cli_agent(
     # owner's answers 4 and 8). After the agent and the gate's turns, so the
     # agent can neither see nor answer it, and over the commit the gate left.
     # One bounded round on the budget's reserve; with Jev unavailable it is
-    # `not_run`, never a pass. It is recorded in the report only: posting it to
-    # `state/contract-verdict` (`poststeps.deliver_contract_verdict`) is wired
-    # by a follow-up lane, which also turns `workcontract.JC2_AT_END_OF_STEP` on.
+    # `not_run`, never a pass. Recorded in the report; the worker posts it to
+    # `state/contract-verdict` once the step is published
+    # (`lifecycle.Worker._deliver_contract_verdict`).
     if result.exit_code == 0 and cwd != ctx.work_dir and not parked_on_question():
         verdict = _contract_post_step(jev, cwd, log)
         if verdict is not None:

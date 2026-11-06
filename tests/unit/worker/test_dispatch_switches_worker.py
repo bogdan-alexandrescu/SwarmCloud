@@ -182,6 +182,23 @@ def test_no_switch_adds_nothing_to_the_attempts_summary(tmp_path):
         "code_intelligence": {"value": None}, "jev_judgments": {"value": "off"}}
 
 
+@pytest.mark.parametrize("arm", ["off", "on"])
+def test_contract_jev_is_recorded_in_the_attempts_switches(tmp_path, arm):
+    # What `scripts/benchstat.py contract-jev` reads the arm back from.
+    assert graphstage.switches_summary(tmp_path, {"contract_jev": arm}) == {
+        "code_intelligence": {"value": None}, "jev_judgments": {"value": None},
+        "contract_jev": {"value": arm}}
+    both = graphstage.switches_summary(tmp_path, {"contract_jev": arm, "jev_judgments": "on"})
+    assert both is not None and both["contract_jev"] == {"value": arm}
+    assert both["jev_judgments"] == {"value": "on"}
+
+
+def test_a_block_without_contract_jev_records_no_arm(tmp_path):
+    summary = graphstage.switches_summary(tmp_path, {"jev_judgments": "on"})
+    assert summary is not None and "contract_jev" not in summary
+    assert graphstage.switches_summary(tmp_path, {"contract_jev": "maybe"}) is None
+
+
 # --------------------------------------------------------------------------
 # jev_judgments
 # --------------------------------------------------------------------------

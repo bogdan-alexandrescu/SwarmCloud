@@ -105,6 +105,16 @@ class GitTransient(GitError):
         self.tries = tries
 
 
+class MergedHeadUnreadable(GitError):
+    """A branch the agent merged is a commit the clean repository cannot read (#3359).
+
+    The fold keeps every branch the agent merged as a parent of its one commit,
+    so a parent it cannot read cannot be kept, and folding without it would
+    drop that branch's history in silence. The publish fails instead; the
+    caller keeps the agent's branch as `swarm-work.bundle`, merges included.
+    """
+
+
 class PushRejected(GitError):
     """The forge refused a push because the branch holds commits HEAD does not
     descend from: a non-fast-forward, or a `--force-with-lease` whose expected
@@ -675,6 +685,19 @@ def validate_ref(ref: str | None) -> str | None:
     return ref
 
 
+def is_full_refname(ref: str | None) -> bool:
+    """True when `ref` names a ref in full, `refs/...`, rather than a branch or tag.
+
+    GitHub serves a pull request's head and merge commit only as
+    `refs/pull/<n>/head` and `refs/pull/<n>/merge`, which `git clone --branch`
+    cannot reach: it takes a branch or tag NAME (#3347). A full refname is
+    therefore fetched as itself, as a sha is. Safe to hand `git fetch` as its
+    refspec once `validate_ref` has passed it: `_SAFE_REF` admits no `:`, `+`
+    or `*`, so the fetch writes FETCH_HEAD and no local ref.
+    """
+    return bool(ref) and str(ref).startswith("refs/")
+
+
 def _credential_host(url: str) -> str | None:
     """The host to store the forge token for, or None when `url` gets none.
 
@@ -1046,6 +1069,11 @@ def shallow_clone(
 ) -> CloneResult:
     """Clone `url` at `ref` into `destination`, shallow and single-branch.
 
+    `ref`: a branch or tag name is cloned with `--branch`; a sha or a full
+    refname (`refs/pull/<n>/head`, `is_full_refname`, #3347) is fetched alone
+    at depth 1 and checked out detached. Everything after -- the history, the
+    pull base, the trace -- is the same for both.
+
     `pull_base` (a `publish_to_pr` step, #2901): the pull request's base
     branch. After the one-commit clone, it is fetched as `origin/<base>` and
     both sides deepened until they share a merge base (`fetch_pull_base`),
@@ -1082,8 +1110,11 @@ def shallow_clone(
         config_args += peers.config_args()
 
     is_sha = bool(ref and _SHA_RE.match(ref))
-    if is_sha:
-        # A shallow clone cannot target a bare commit, so fetch it explicitly.
+    if is_sha or is_full_refname(ref):
+        # A shallow clone cannot target a bare commit, nor a full refname such
+        # as `refs/pull/<n>/head` (`--branch` takes a name, #3347), so fetch
+        # it explicitly. `remote add` maps every branch, as TRACK_EVERY_BRANCH
+        # does after a clone; the fetch of an explicit ref writes FETCH_HEAD.
         steps = [
             [git_binary, *config_args, "init", "--quiet", str(destination)],
             [git_binary, *config_args, "-C", str(destination), "remote", "add", "origin", url],
@@ -1103,8 +1134,8 @@ def shallow_clone(
             [git_binary, *config_args, "-C", str(destination), *TRACK_EVERY_BRANCH],
         ]
 
-    # Every step is traced into the same two files, so a by-sha clone's
-    # fetch and checkout land on one timeline (`clone_phase_timings`).
+    # Every step is traced into the same two files, so a by-sha (or by full
+    # refname) clone's fetch and checkout land on one timeline (`clone_phase_timings`).
     trace = _CloneTrace.create(private_dir)
     phases: dict[str, Any] = {}
     failed: GitError | None = None
@@ -1662,10 +1693,15 @@ def clone_at_commit(
                 branch=branch, commit=commit, error=str(exc)[:300],
             )
             # Not shallow: the pinned commit is somewhere in the branch's past,
-            # and a depth would have to guess how far.
+            # and a depth would have to guess how far. A full refname (a pull
+            # request's `refs/pull/<n>/head`, #3347) is fetched as itself.
+            history_ref = (
+                branch if is_full_refname(branch)
+                else f"refs/heads/{branch}" if branch else "HEAD"
+            )
             by_branch = [
                 [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination),
-                 "fetch", "--no-tags", "origin", f"refs/heads/{branch}" if branch else "HEAD"],
+                 "fetch", "--no-tags", "origin", history_ref],
                 [*g, "checkout", "--quiet", commit],
             ]
             total += _run_git_steps(
@@ -2871,6 +2907,7 @@ def fold_agent_commits(
     logger: Any,
     git_binary: str = "git",
     merged: str = "",
+    history_leaks: Callable[[list[str]], bool] | None = None,
 ) -> int:
     """Replace every commit made since `base` with ONE commit the worker makes.
 
@@ -2904,12 +2941,33 @@ def fold_agent_commits(
     was cloned, so every commit in it is the agent's, and they are replaced by
     one worker commit with no parent.
 
+    EVERY BRANCH THE AGENT MERGED STAYS A PARENT (#3359). The one commit has
+    `base` as its first parent and, after it, the head of every branch the
+    agent merged since the base: each non-first parent of each merge commit in
+    `base..HEAD` that `base` does not already contain, less any that another
+    kept head contains. A lane that merged `origin/train/an` into a pull
+    request is still a merge of train/an once folded, so merging the pull
+    request back does not raise again every conflict the lane resolved (six
+    files on one pull request, sixteen on another, 5 November 2026). Folded
+    to one parent, the commit held train/an's TREE without its HISTORY.
+
+    A head is read in this repository, the clean one the agent's objects were
+    fetched into with every parent checked. One it cannot read fails the fold
+    (`MergedHeadUnreadable`) rather than fold without it. One whose own
+    commits carry Claude attribution -- a side branch the agent committed on
+    and merged -- is not kept, as the fold exists to keep exactly those off
+    the forge; its changes are in the tree, as they always were. Nor is one
+    whose own commits `history_leaks` finds a credential in (#259): kept as a
+    parent, every commit on that side would be pushed, a key added and
+    removed there included.
+
     `merged`, when given, is the default branch's commit the agent's work
-    merged, proven on the forge by the caller (`Worker._scan_floor`). The one
-    commit then has it as its SECOND PARENT, so a lane that merged `main` --
-    a merge step's conflict fix round above all -- is still a merge once
-    folded, and its pull request's merge base moves to `main` (#1321). It is
-    ignored unless HEAD contains it and `base` does not.
+    merged, proven on the forge by the caller (`Worker._scan_floor`), and is
+    one head of that rule kept without the attribution read, as the forge
+    already holds it: a lane that merged `main` -- a merge step's conflict
+    fix round above all -- is still a merge once folded, and its pull
+    request's merge base moves to `main` (#1321). It is ignored unless HEAD
+    contains it and `base` does not.
 
     `keep` is left alone only when it is the sole commit AND it reads back as
     the worker's. The sha alone does not prove that: a commit that concludes a
@@ -2992,21 +3050,24 @@ def fold_agent_commits(
                                 "publish-fold-redundant")
                 if code != 0 or inside == 0:
                     merged = ""
+        heads = _merged_heads(run, g, base=base, proven=merged, logger=logger,
+                              history_leaks=history_leaks)
         code, _ = run([*g, "reset", "--soft", base], "publish-fold-reset")
         if code != 0:
             raise GitError("could not rewind to the clone base to replace the agent's commits")
 
         # Commits that add up to no change leave nothing staged; HEAD is the base.
         code, _ = run([*g, "diff", "--cached", "--quiet"], "publish-fold-staged")
-        if merged:
-            # A merge of the default branch: one commit with two parents, so
-            # `git commit` (one parent) is not enough. The tree is the index,
-            # everything the agent left, exactly as the commit below takes it.
+        if heads:
+            # A merge: one commit with the base and every merged head as its
+            # parents, so `git commit` (one parent) is not enough. The tree is
+            # the index, everything the agent left, as the commit below takes it.
             code, tree = run([*g, "write-tree"], "publish-fold-tree")
             if code != 0 or not tree.strip():
                 raise GitError("could not write the agent's work as a tree")
+            parents = [arg for head in heads for arg in ("-p", head)]
             code, made = run(
-                [*g, "commit-tree", tree.strip(), "-p", base, "-p", merged, "-m", message],
+                [*g, "commit-tree", tree.strip(), "-p", base, *parents, "-m", message],
                 "publish-fold-merge",
             )
             if code != 0 or not _SHA_RE.match(made.strip()):
@@ -3027,6 +3088,154 @@ def fold_agent_commits(
                 raise GitError("could not commit the agent's work as the worker")
     logger.info("folded the agent's commits into one worker commit", replaced=count)
     return count
+
+
+#: Claude attribution in a merged branch's own commits: the identity Claude
+#: Code commits as where no git identity is set, and the lines it ends a
+#: message with. Narrower than `ATTRIBUTION_MARKERS`, and read as an identity
+#: and as whole lines: a person's `Co-authored-by` on a forge branch the agent
+#: merged, or a message that quotes a marker, is no reason to drop the branch.
+_CLAUDE_EMAIL_DOMAIN = "@anthropic.com>"
+_CLAUDE_LINE_STARTS = (
+    "co-authored-by: claude",
+    "generated with [claude code]",
+    "\N{ROBOT FACE} generated with",
+)
+
+
+def _claude_attributed(log: str) -> bool:
+    """Whether `log` (author, committer and message per commit, NUL-separated,
+    from `merged_head_kept`) holds a commit Claude Code wrote or signed off."""
+    for part in log.split("\0"):
+        lowered = part.strip().lower()
+        if lowered.endswith(_CLAUDE_EMAIL_DOMAIN) and "\n" not in lowered:
+            return True
+        if any(line.strip().startswith(_CLAUDE_LINE_STARTS) for line in lowered.splitlines()):
+            return True
+    return False
+
+
+def merged_head_kept(
+    run: Any,
+    g: list[str],
+    head: str,
+    *,
+    base: str,
+    upstream: str,
+    logger: Any,
+    history_leaks: Callable[[list[str]], bool] | None = None,
+) -> bool:
+    """Whether `head`, a parent after the first of a merge the agent made, stays a
+    parent of what the worker pushes (#3359): the fold's and the replay's one rule.
+
+    Not when `base` already contains it -- a redundant parent -- nor when its
+    own commits since `base` carry Claude attribution (`_claude_attributed`):
+    a side branch the agent committed on as Claude, whose commits would reach
+    the forge as written. `upstream` is a commit of the default branch the
+    forge holds (`Worker._scan_floor`): it and its ancestors are kept without
+    that read, as they are published already. Raises
+    `MergedHeadUnreadable` when this repository cannot read it.
+
+    Nor when `history_leaks`, given the head's own commits (`head --not base
+    [upstream]`), says one of them adds a credential (#259 review): the
+    replay's scan reads HEAD's first-parent line and the final tree, never
+    a side branch's commits, so a key the agent added on a branch and
+    removed before merging it would be pushed in that branch's history.
+    Dropped, the branch's changes still reach the forge in the merged tree,
+    which `final_tree_leak` scans.
+    """
+    code, _ = run([*g, "cat-file", "-e", f"{head}^{{commit}}"], "publish-merged-head-read")
+    if code != 0:
+        raise MergedHeadUnreadable(
+            f"the agent merged commit {head[:12]}, which the clean publish repository "
+            "cannot read, so the worker cannot keep it as a parent; nothing was pushed "
+            "rather than a commit that drops that branch's history"
+        )
+    if base:
+        code, _ = run([*g, "merge-base", "--is-ancestor", head, base], "publish-merged-head-base")
+        if code == 0:
+            return False
+    if upstream:
+        code, _ = run([*g, "merge-base", "--is-ancestor", head, upstream],
+                      "publish-merged-head-upstream")
+        if code == 0:
+            return True
+    argv = [*g, "log", "--format=%an <%ae>%x00%cn <%ce>%x00%B%x00", head]
+    code, log = run([*argv, "--not", base] if base else argv, "publish-merged-head-log")
+    if code != 0:
+        raise MergedHeadUnreadable(
+            f"the agent merged commit {head[:12]}, whose history the clean publish "
+            "repository cannot read, so the worker cannot keep it as a parent; nothing "
+            "was pushed rather than a commit that drops that branch's history"
+        )
+    if _claude_attributed(log):
+        logger.warning("a branch the agent merged carries Claude attribution, so its "
+                       "changes are published without its history", head=head[:12])
+        return False
+    if history_leaks is not None:
+        argv = [*g, "rev-list", head, "--not", *[rev for rev in (base, upstream) if rev]]
+        code, text = run(argv, "publish-merged-head-commits")
+        if code != 0:
+            raise MergedHeadUnreadable(
+                f"the agent merged commit {head[:12]}, whose commits the clean publish "
+                "repository cannot list, so the worker cannot scan them; nothing was "
+                "pushed rather than a commit that drops that branch's history"
+            )
+        if history_leaks(text.split()):
+            logger.warning("a commit on a branch the agent merged adds a credential, so "
+                           "its changes are published without its history", head=head[:12])
+            return False
+    return True
+
+
+def _merged_heads(
+    run: Any,
+    g: list[str],
+    *,
+    base: str,
+    proven: str,
+    logger: Any,
+    history_leaks: Callable[[list[str]], bool] | None = None,
+) -> list[str]:
+    """The heads the fold keeps as parents after `base`, in the order merged (#3359).
+
+    Every non-first parent of every merge commit in `base..HEAD`, plus
+    `proven` (the default branch's commit, from the forge), less those `base`
+    contains and those another kept head contains. Raises
+    `MergedHeadUnreadable` for a head this repository cannot read. A head
+    whose own commits carry Claude attribution, or one `history_leaks`
+    finds a credential in, is left out and logged.
+    """
+    code, text = run([*g, "rev-list", "--reverse", "--merges", "--parents", f"{base}..HEAD"],
+                     "publish-fold-merges")
+    if code != 0:
+        raise GitError("could not list the merges the agent made since the clone base")
+    found: list[str] = []
+    for line in text.splitlines():
+        for head in line.split()[2:]:
+            if head not in found:
+                found.append(head)
+    if proven and proven not in found:
+        found.insert(0, proven)
+    candidates = [
+        head for head in found
+        if merged_head_kept(run, g, head, base=base, upstream=proven, logger=logger,
+                            history_leaks=history_leaks)
+    ]
+    kept: list[str] = []
+    for head in candidates:
+        inside = False
+        for other in candidates:
+            if other == head:
+                continue
+            code, _ = run([*g, "merge-base", "--is-ancestor", head, other],
+                          "publish-fold-head-inside")
+            if code == 0:
+                inside = True
+                break
+        if not inside:
+            kept.append(head)
+    return kept
 
 
 def verify_merged_default_branch(
