@@ -32,6 +32,12 @@
       ],
       "outputs": []
     },
+    "swarm-speech": {
+      "resources": [
+        "google_compute_instance.speech"
+      ],
+      "outputs": []
+    },
     "swarm-typesafe-fwd": {
       "resources": [],
       "outputs": ["swarm_typesafe_fwd_manifest"]

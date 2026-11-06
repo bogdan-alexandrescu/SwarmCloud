@@ -343,6 +343,8 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "description": "the submitter's plain-text description (part of #2688); declared by the "
         "console lane",
         "description_source": "who wrote the description (part of #2688); declared by the console lane",
+        "about": "{purpose, goals, output}: the description in three labelled parts, drawn by "
+        "WorkflowFacts (part of #2688); declared by the console lane",
         "feature": "{title, url?} of the feature it builds (part of #2688); declared by the console lane",
         "started_from": "one of STARTED_FROM: schedule, quality_check, issue_run, claude_code "
         "or console (part of #2688); declared by the console lane",

@@ -91,7 +91,6 @@ def blobs() -> vstore.InMemoryVoiceBlobs:
 @pytest.fixture
 def client(db, tokens, group_map, objects, voice, reader, blobs) -> TestClient:  # noqa: F811
     built = _build(db, tokens, group_map, objects, voice)
-    built.app.include_router(rvv.router)
     built.app.state.voice_blobs = blobs
     built.app.state.voice_repo_reader = reader
     return built
