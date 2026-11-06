@@ -925,6 +925,15 @@ class ApiSettings:
     #: of searches each, so 200 is room for dozens of tasks.
     search_daily_queries_per_tenant: int = 200
 
+    # --- generated workflow descriptions (swarm_api.wfdescription, #2688) ---
+    #: SWARM_WORKFLOW_DESCRIPTION_MODEL: "vertex" asks Claude Haiku on Vertex
+    #: AI; "off" (what Terraform ships, terraform/infra/locals.tf) writes the
+    #: extractive fallback alone; empty, the default here and for a variable
+    #: that is absent (a unit test, a local run), writes nothing. The model is
+    #: off unless this says "vertex": it turns on once the owner grants Vertex
+    #: AI (#3346). Any other value is refused at start, not at a submission.
+    workflow_description_model: str = ""
+
     # --- model classes (docs/design/model-per-step.md §4.4, #1435) ---------
     #: Model class -> the ID a step of that class runs (WORKER_CLASS_MODELS,
     #: `parse_worker_class_models`). Empty: no class but a profile's default
@@ -1005,6 +1014,15 @@ class ApiSettings:
             raise ValueError(
                 f"SEARCH_PROVIDER must be one of {', '.join(sorted(SEARCH_PROVIDERS))}, "
                 f"got {search_provider!r}"
+            )
+        from .wfdescription import MODEL_SWITCHES
+
+        workflow_description_model = os.environ.get(
+            "SWARM_WORKFLOW_DESCRIPTION_MODEL", "").strip().lower()
+        if workflow_description_model and workflow_description_model not in MODEL_SWITCHES:
+            raise ValueError(
+                "SWARM_WORKFLOW_DESCRIPTION_MODEL must be one of "
+                f"{', '.join(MODEL_SWITCHES)} or unset, got {workflow_description_model!r}"
             )
         from .groups import GROUPS_AUTH_ADMIN_ROLE, parse_groups_auth
 
@@ -1166,6 +1184,7 @@ class ApiSettings:
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
             or "swarm-search-api-key",
             search_daily_queries_per_tenant=_int("SEARCH_DAILY_QUERIES_PER_TENANT", 200),
+            workflow_description_model=workflow_description_model,
             worker_class_models=parse_worker_class_models(
                 os.environ.get("WORKER_CLASS_MODELS", "")
             ),

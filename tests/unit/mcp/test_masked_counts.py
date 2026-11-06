@@ -39,6 +39,7 @@ from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
+from swarm_api import wfdescription
 
 from swarm_mcp import cli, patches, server
 from swarm_mcp import client as mcp_client
@@ -150,7 +151,10 @@ def test_a_count_the_api_did_not_send_is_a_dash_never_zero():
     assert patches.masked_words(only_input) == "masked 2"
 
 
-def test_workflow_status_says_masked_n_on_each_step(swarm, api, capsys):
+def test_workflow_status_says_masked_n_on_each_step(swarm, api, capsys, monkeypatch):
+    # The generated description (a masked brief's extract) would add to the
+    # metadata count; this counts what the submitter sent.
+    monkeypatch.setattr(wfdescription, "after_submission", lambda *a, **k: None)
     created = api.post(
         "/v1/workflows",
         json={
@@ -174,7 +178,10 @@ def test_workflow_status_says_masked_n_on_each_step(swarm, api, capsys):
     assert "masked 0" in rows["draft"], printed
 
 
-def test_the_mcp_tools_carry_the_counts(swarm, db, api):
+def test_the_mcp_tools_carry_the_counts(swarm, db, api, monkeypatch):
+    # The generated description (a masked brief's extract) would add to the
+    # metadata count; this counts what the submitter sent.
+    monkeypatch.setattr(wfdescription, "after_submission", lambda *a, **k: None)
     task_id = _seed(db)
     status = json.loads(server._call(swarm, "swarm_status", {"task_ids": [task_id]}))
     assert status[0]["masked"] == {"input": 2, "metadata": 1}
