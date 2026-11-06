@@ -90,7 +90,9 @@ retries a snapshot or click that fails while the page settles, at most
 `FLOW_TOOL_TRIES` tries, each in `retries` with its reason (`_retry_rule`);
 and bundles with the `tar` commands rendered from `FLOW_LAYOUT`, the layout
 stated once. `check_flow_output` reads a step's output against it,
-normalising a lone stray tar such as flow-1.tar with a line saying so.
+normalising a lone stray tar such as flow-1.tar with a line saying so; the
+worker applies the same tar rule at the end of the step, renaming the stray
+before the upload (`agent_worker.flow_output`, the owner's pick on PR #3521).
 
 A DISMISSED ROUTE IS SKIPPED BY LATER CRAWLS (lane QA-CRAWL-SKIP; BGD
 2026-10-25, part of #2157). The target's `dismissed_routes` (S9b's Remove,

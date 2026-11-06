@@ -173,6 +173,7 @@ from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
+from . import flow_output as flow_output_mod
 from . import qa_identity as qa_identity_mod
 from . import redact as redact_mod
 from . import extrarepos as extrarepos_mod
@@ -1209,6 +1210,8 @@ class Worker:
         self._ui_review_paths: list[str] | None = None
         # What `verdict.gate_rendered_review` found, for `result_summary`.
         self._rendered_review: dict[str, Any] | None = None
+        # What `flow_output.normalise` found for a QA flow step, for `result_summary`.
+        self._flow_output: dict[str, Any] | None = None
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -4899,6 +4902,8 @@ class Worker:
                 summary["pull_request_text_from"] = dict(self._pr_text_from)
             if self._rendered_review is not None:
                 summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
+            if self._flow_output is not None:
+                summary[flow_output_mod.SUMMARY_KEY] = self._scrub(dict(self._flow_output))
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
@@ -7932,6 +7937,18 @@ class Worker:
         except InputUnavailable:
             return None
         return verdict_mod.ui_paths_in_own_files(upstream.get("result_summary"))
+
+    def _normalise_flow_output(self) -> None:
+        """Rename a QA flow step's lone stray tar to its `<step>.tar` (`flow_output`; PR #3521)."""
+        ws = self.ws
+        if ws is None or not self._expected_outputs:
+            return
+        record = flow_output_mod.normalise(
+            ws.artifacts, (self._task or {}).get("step_id"), self._expected_outputs)
+        self._flow_output = record
+        if record is not None:
+            for line in record["lines"]:
+                (self.log.info if record["ok"] else self.log.warning)(line)
 
     def _hold_ui_review_to_rendered(self) -> None:
         """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
@@ -17909,6 +17926,11 @@ class Worker:
             # After the harvest's reap, so the agent can no longer write it,
             # and before the upload, so what goes up is the verdict that counts.
             self._hold_ui_review_to_rendered()
+        if defer_publish:
+            # A QA flow step's stray tar (re-run 8's flow-1.tar for flows-1)
+            # is renamed to its owed `<step>.tar` after the reap and before the
+            # upload, so the missing-output check and the flow report read it.
+            self._normalise_flow_output()
         # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
         # decision of 2026-09-26): at most `max_artifact_files`, a declared
         # output first, no name past the manifest's bound; see

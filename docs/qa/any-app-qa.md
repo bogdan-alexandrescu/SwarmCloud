@@ -127,10 +127,19 @@ its place with one line saying so; several are refused, named; none is
 refused, naming the expected tar. A step that claims a state with no
 `proof`, a retry without a reason, or more retries than the bound is
 flagged; a `missing` proof is said as not proven; each flow's retries are
-counted. The flow report's brief applies the same rules to `flows.md`. No
-swarm-api route reads a flow step's output today, so the brief is where the
-check runs; the worker's expected-output check still refuses a step whose
-`<step>.tar` was never written, naming it.
+counted. The flow report's brief applies the same rules to `flows.md`.
+
+**The worker normalises the tar (owner's pick on PR #3521, 2026-11-06).** No
+swarm-api route reads a flow step's output, so the tar rule runs where the
+files are: at the end of a flow step whose `<step>.tar` is owed, before the
+upload and the missing-output check, the worker
+(`agent_worker.flow_output`) renames a lone stray top-level tar that no
+`flow-<id>.json` names as its own to `<step>.tar`, logs the line and records it
+in `result_summary.flow_output`. Several strays are refused, named, and left
+in place; then, as with none, the expected-output check fails the attempt
+naming `<step>.tar`. Otherwise a leg would spend every flow's browser time
+and fail on a file name, and the flow report would never start. A step that
+wrote its `<step>.tar`, and every step that owes none, is untouched.
 
 ## 3. What is gone from the console template, and why
 
