@@ -804,6 +804,55 @@ def forget_attached() -> None:
     with _ATTACHED_LOCK:
         _ATTACHED.clear()
         _PERSON_WAITS.clear()
+        _ROW_LAUNCHES.clear()
+        _ROWS_FOLLOWING.clear()
+
+
+# A DISPATCH WHOSE ROWS NEVER STARTED (Product Oracle, 2026-11-06). The
+# dispatch reply carries the row launch, and `_ATTACHED` takes the task in
+# as it is written -- so a session that skipped the launch had a running task
+# with no row that nothing caught: `new_only` leaves it out. So the launch a
+# dispatch handed back is kept here by task id, and every task a row follows
+# (`swarm_follow` in a row's format) is marked; `rowless` names the running
+# ones no row ever followed, each with its launch, for `swarm_check`.
+_ROW_LAUNCHES: dict[str, dict[str, Any]] = {}
+_ROWS_FOLLOWING: set[str] = set()
+
+
+def remember_row_launch(task_id: str, copy: dict[str, Any]) -> None:
+    """The launch `swarm_dispatch`'s rows handed back for `task_id`."""
+    with _ATTACHED_LOCK:
+        _ROW_LAUNCHES[str(task_id)] = {key: copy.get(key) for key in ("title", "script_path", "args")}
+
+
+def remember_row_follow(task_ids: Any) -> None:
+    """A row followed these tasks (`swarm_follow` in a row's format)."""
+    with _ATTACHED_LOCK:
+        _ROWS_FOLLOWING.update(str(i) for i in task_ids or [] if i)
+
+
+def rowless(running: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Of `running` (`{task_id, state, label?}` each), the tasks this session
+    dispatched that no row has followed: `{task_id, state, line, launch}`,
+    `line` naming the task and the Workflow call that starts its row."""
+    with _ATTACHED_LOCK:
+        launches = {key: dict(value) for key, value in _ROW_LAUNCHES.items() if key not in _ROWS_FOLLOWING}
+    out = []
+    for task in running:
+        task_id = str(task.get("task_id") or "")
+        copy = launches.get(task_id)
+        if copy is None:
+            continue
+        call = json.dumps({"scriptPath": copy["script_path"], "args": copy["args"]}, separators=(",", ":"))
+        named = f"{task_id} ({task['label']})" if task.get("label") else task_id
+        out.append({
+            "task_id": task_id,
+            "state": task.get("state"),
+            "line": f"{named} is {task.get('state') or 'running'} with no row: its dispatch's row launch "
+                    f"was never started; start it now with the Workflow tool {call}",
+            "launch": copy,
+        })
+    return out
 
 
 # A ROW THAT ENDED WAITING ON A PERSON (#2441, BGD 2026-10-26). A row whose
@@ -1363,6 +1412,9 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
                        _tasks_workspace([entry]), details.for_task(entry.get("task")), labels)
         copy["rows"] = mode
         copy["task_ids"] = [row["task_id"]]
+        if dispatched:
+            # Kept so `swarm_check` can hand it back if no row ever follows.
+            remember_row_launch(row["task_id"], copy)
         launches.append(copy)
     out = dict(launches[0])
     out["launches"] = launches
