@@ -43,6 +43,9 @@ REFUSED = {
     "TRIVY_VERSION": {"0.74.0", "0.75.0"},
     # gcloud-crc32c on go1.26.6 in 587.0.0; on go1.27.2 in 591.0.0.
     "GCLOUD_VERSION": {"587.0.0"},
+    # gke-gcloud-auth-plugin 591.0.0: go1.27.1, x/net v0.59.0 (CVE-2026-78667,
+    # -78669, -97031); 592.0.0 is go1.27.3, x/net v0.61.0 (measured 2026-11-06).
+    "GKE_PLUGIN_VERSION": {"591.0.0"},
 }
 
 #: The Go that links the indexer's gopls and terraform-ls, and ships as its
@@ -75,7 +78,8 @@ def test_no_agent_runtime_pin_is_at_a_release_the_scan_refuses() -> None:
 
 def test_workspace_apply_takes_agent_runtime_bases_gcloud_and_its_image() -> None:
     base, apply = _args(BASE), _args(WORKSPACE_APPLY)
-    for var in ("GCLOUD_VERSION", "GKE_PLUGIN_POOL_ID", "GKE_PLUGIN_SHA256", "KUBECTL_VERSION", "KUBECTL_SHA256"):
+    for var in ("GCLOUD_VERSION", "GKE_PLUGIN_VERSION", "GKE_PLUGIN_POOL_ID", "GKE_PLUGIN_SHA256",
+                "KUBECTL_VERSION", "KUBECTL_SHA256"):
         assert apply[var] == base[var], f"workspace-apply's {var} is not agent-runtime-base's"
     image = apply["GCLOUD_IMAGE"]
     assert f"google-cloud-cli:{base['GCLOUD_VERSION']}-stable@sha256:" in image, image
