@@ -41,6 +41,10 @@
  * swarm-api's own sentence. A turn's cards arrive on the card stream, where
  * swarm-api's `write_card` puts every card, so they are drawn once, there.
  *
+ * THE STAGE (Stage.tsx) sits under the heads-up edge: the project's visuals,
+ * their notes and the read-back the gate holds. It reads the project the
+ * session continues; the console's fixture mode draws the fixture project.
+ *
  * THE METER (Meter.tsx) sits beside the cards once a session has started:
  * the session's and the day's spent and reserved lines against $100 and
  * $300, as swarm-api's ledger computes them.
@@ -48,6 +52,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { USE_FIXTURES } from '../api'
 import { Button, Segmented, ToneMark } from '../components'
 import { noteActivity } from '../Shell'
 import { CardList } from './CardList'
@@ -58,6 +63,7 @@ import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import { Listener, NO_RECOGNITION, recogniserClass, Speaker } from './speech'
+import { TalkStage } from './Stage'
 import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
@@ -163,6 +169,8 @@ export function TalkPane() {
   const [voicePlaying, setVoicePlaying] = useState(false)
   // The last session's id: its meter stays on the pane after it ends.
   const [sessionId, setSessionId] = useState<string | null>(null)
+  // The project the stage draws visuals from: the Resume's, the one a start continues.
+  const [projectId, setProjectId] = useState<string | null>(null)
   const [talkMode, setTalkMode] = useState<TalkMode>('live')
   // A text session's spoken reply, 0..1, or null when nothing is spoken.
   const [level, setLevel] = useState<number | null>(null)
@@ -278,6 +286,7 @@ export function TalkPane() {
     setDraft('')
     setPhase('connecting')
     if (resumed.current === undefined) resumed.current = takeResumedProject()
+    setProjectId(resumed.current)
     try {
       const c = await connectTalk(
         {
@@ -359,7 +368,7 @@ export function TalkPane() {
   const state: ScopeState = phase === 'connecting' ? 'connecting' : live ? (speaking ? 'speaking' : 'listening') : 'idle'
 
   return (
-    <div className="vt" data-state={state}>
+    <div className="vt has-stage" data-state={state}>
       <div className="vt-sky" aria-hidden="true" />
 
       <div className="vt-hud">
@@ -394,6 +403,12 @@ export function TalkPane() {
           </p>
         )}
       </div>
+
+      {USE_FIXTURES && sessionId === null ? (
+        <TalkStage projectId="vp_fixture" sessionId="vs_fixture" live />
+      ) : (
+        <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} />
+      )}
 
       <div className="vt-presence" aria-label="Voice it">
         <div className="vt-core">
