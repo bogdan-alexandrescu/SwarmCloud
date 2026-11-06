@@ -6,7 +6,9 @@
 // pick on PR #3262, "Serve them in step_needs"): the step's
 // `task_summary.needs.plugin_ask` (`codec.step_needs`), which `stepNeedItems`
 // puts on the step's question rows. Nothing is read per task. The skill that
-// asked is not served, so it reads "not known"; no interview route exists yet,
+// asked is the worker's record of the last Skill call before the question
+// (the owner's pick of 4 November 2026); a park with none recorded reads
+// "not known", never a guess. No interview route exists yet,
 // so a planner or designer card says the interview opens from its run's page.
 //
 // MUTATIONS, one per block: draw no plugin line or card for a plugin step;
@@ -63,8 +65,8 @@ function clock(left = 23 * HOUR + 22 * 60_000 + 30_000, span = 24 * HOUR) {
 }
 
 /** A plugin step's `plugin_ask`, as `codec.step_needs` serves it. */
-function pluginAsk(mode: string, wait: { asked_at: string | null; expires_at: string | null } = clock()): NonNullable<StepNeeds['plugin_ask']> {
-  return { plugins: [{ name: 'gstack', mode }], repository_url: 'https://github.com/example-org/contacts-app', ...wait }
+function pluginAsk(mode: string, wait: { asked_at: string | null; expires_at: string | null } = clock(), skill: string | null = null): NonNullable<StepNeeds['plugin_ask']> {
+  return { plugins: [{ name: 'gstack', mode }], repository_url: 'https://github.com/example-org/contacts-app', ...wait, skill }
 }
 
 const OPTIONS = [
@@ -98,6 +100,18 @@ describe("a plugin step's question row", () => {
     expect(line.textContent).toContain('skill that asked: not known')
     expect(line.textContent).toContain('23 h 22 min left of 24 h')
     expect(line.textContent).toContain('never answered for anyone')
+  })
+
+  it('names the skill that asked when the list read served it, on the row and on its card', () => {
+    render(<NeedsYou items={rows(stepTask('t_review'), pluginAsk('unattended', clock(), 'gstack:office-hours'))} approvals={[]} />)
+    const line = screen.getByRole('listitem').querySelector('.ny-plugin')!
+    expect(line.textContent).toContain('asked by gstack:office-hours')
+    expect(line.textContent).not.toContain('not known')
+    const card = within(cards()!).getByRole('article')
+    expect(card.textContent).toContain('asked by gstack:office-hours')
+    expect(card.textContent).not.toContain('not known')
+    expect(api.loadTask).not.toHaveBeenCalled()
+    expect(api.loadQuestions).not.toHaveBeenCalled()
   })
 
   it('keeps the plain row for a question whose step served no plugin_ask, and draws no card', () => {
@@ -180,6 +194,9 @@ describe('the served values, read', () => {
     const parked = stepTask('a')
     expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.plugins).toEqual([{ name: 'gstack', mode: 'planner' }])
     expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.repository).toBe('https://github.com/example-org/contacts-app')
+    expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner') })?.skill).toBeNull()
+    expect(pluginAskOf(parked, { plugin_ask: pluginAsk('planner', clock(), 'gstack:office-hours') })?.skill).toBe('gstack:office-hours')
+    expect(pluginAskOf(parked, { plugin_ask: { ...pluginAsk('planner'), skill: '  ' } })?.skill).toBeNull()
     expect(pluginAskOf(parked, { plugin_ask: { plugins: [{ name: 'gstack', mode: null }], repository_url: null, asked_at: null, expires_at: null } })).toBeNull()
     expect(pluginAskOf(parked, { plugin_ask: null })).toBeNull()
     expect(pluginAskOf(parked, null)).toBeNull()

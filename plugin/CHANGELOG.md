@@ -6,6 +6,43 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.84 (2026-11-05)
+
+* A `/sc:swarmcloud` launch reports the workflow it submitted, and its
+  `setup · read spec` row can no longer submit. Seen twice in one session on
+  5 November (plugin 0.5.79): a run ended NOT_SUBMITTED with "the row reading
+  <spec_handle path> did not hand back the spec_ref, spec_digest and outline
+  the bridge returns", yet the workflow existed and ran, and a relaunch made
+  a duplicate. The read row ran `sc:workflow`, which also holds
+  `swarm_workflow`, and it submitted the spec instead of reading its outline.
+  The read row now runs `sc:spec`, a new agent whose only SwarmCloud tool is
+  `swarm_workflow_spec`, and `sc:workflow` no longer holds
+  `swarm_workflow_spec` or a READ SPEC job. And when any row before the submit
+  row hands back a workflow id, the run takes it as the submission: it logs
+  `<id> submitted by the read spec row`, reads the workflow back and follows
+  it (state `SUBMITTED` in the band layout, `submitted_by: "read spec"` on
+  the result), and never submits again. A read-back that fails reports
+  `SUBMITTED_UNVERIFIED` and arms the watch, never NOT_SUBMITTED.
+
+## 0.5.83 (2026-11-05)
+
+* A finished task's questions for the owner are handed to a session only
+  while they have no stored answer. Seen twice on 5 November: a workflow
+  row's final result and `swarm_result` carried questions answered hours
+  earlier with `swarm_task_answer`, because the bridge read `questions.json`
+  and never the answers, and the session put them to the person again. The
+  follow outcome, a row's result (and so the `/sc:swarmcloud` run's
+  `owner_questions`), `swarm_result`'s `owner_questions` and the build
+  board's waiting list now read the stored answers from
+  `GET /v1/tasks/{id}/questions`, as `/sc check` does, once per task per
+  read and never cached, and list only the open questions, each under its
+  `index` in `questions.json` (the run keeps that index for
+  `swarm_task_answer`). A question whose answer could not be read stays
+  listed with `answer_unknown_because`, so "answered" and "could not tell"
+  are never the same. Every question, answered ones included, stays in
+  `swarm_result`'s new `owner_questions_asked`, each with `answered`
+  (true, false, or null), and on the console's task page.
+
 ## 0.5.82 (2026-11-05)
 
 * A workflow spec's top-level `description` and `feature` reach SwarmCloud

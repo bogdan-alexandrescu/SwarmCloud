@@ -212,6 +212,11 @@ def valid_session(value: str) -> bool:
 #: is not installed in the API image.
 QUESTIONS_NAME = "questions.json"
 QUESTIONS_KEY = "questions"
+#: The worker's short digest of each counted question, in index order
+#: (`agent_worker.questions.DIGESTS_KEY`), and the stored answer's copy of
+#: the one at its index when it was given (`question_digests`).
+QUESTION_DIGESTS_KEY = "question_digests"
+ASKED_DIGEST_KEY = "asked_digest"
 
 #: The worker takes no file larger than this (`agent_worker.questions.MAX_BYTES`);
 #: one byte more says whether the stored object is larger than it took.
@@ -361,6 +366,20 @@ def _wait_shape(value: Any) -> dict[str, Any] | None:
 def is_bridged(wait: dict[str, Any] | None) -> bool:
     """Whether a question wait is a plugin step's bridged question."""
     return isinstance(wait, dict) and isinstance(wait.get(BRIDGE_KEY), dict)
+
+
+def asked_by_skill(wait: dict[str, Any], masking: Any) -> str | None:
+    """The skill that asked a bridged question, masked: the worker records the
+    last `Skill` call before the question in the wait's bridge block
+    (`question_bridge.asked_by_skill`, the owner's pick of 4 November 2026).
+    None for a wait that is not bridged, a park recorded before the worker
+    wrote it, or a value that is not a non-empty text: the page then says
+    the skill is not known."""
+    bridge = wait.get(BRIDGE_KEY) if isinstance(wait, dict) else None
+    skill = bridge.get("skill") if isinstance(bridge, dict) else None
+    if not isinstance(skill, str) or not skill.strip():
+        return None
+    return masking.text(skill.strip())[0]
 
 
 def wait_max_seconds(wait: dict[str, Any]) -> int:
@@ -737,6 +756,32 @@ def question_count(summary: dict[str, Any] | None) -> int:
     return count
 
 
+def question_digests(summary: dict[str, Any] | None) -> list[str] | None:
+    """The worker's digest of each counted question, in index order, else None.
+
+    None for a task summarised before the worker wrote them, and for a list
+    that does not hold one non-empty string per counted question: digests
+    that cannot be matched to the count are not read, and the task is
+    counted by index as it always was.
+    """
+    raw = (summary or {}).get(QUESTION_DIGESTS_KEY)
+    if not isinstance(raw, list) or len(raw) != question_count(summary):
+        return None
+    if not all(isinstance(d, str) and d for d in raw):
+        return None
+    return raw
+
+
+def answers_digest(entry: dict[str, Any], index: int, digests: list[str]) -> bool:
+    """Whether the stored answer `entry` at `index` answers the question the
+    worker's `digests` say is asked there now. An answer stored before it was
+    stamped (`ASKED_DIGEST_KEY`) cannot be checked and counts by its index."""
+    stamp = entry.get(ASKED_DIGEST_KEY)
+    if not isinstance(stamp, str):
+        return True
+    return index < len(digests) and stamp == digests[index]
+
+
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -806,27 +851,35 @@ def answers_to(questions: list[dict[str, Any]], metadata: dict[str, Any] | None)
 
 
 def unanswered(count: int, metadata: dict[str, Any] | None,
-               questions: list[dict[str, Any]] | None = None) -> int:
+               questions: list[dict[str, Any]] | None = None, *,
+               digests: list[str] | None = None) -> int:
     """How many of the `count` questions have no stored answer (`unanswered_indices`)."""
-    return len(unanswered_indices(count, metadata, questions))
+    return len(unanswered_indices(count, metadata, questions, digests=digests))
 
 
 def unanswered_indices(count: int, metadata: dict[str, Any] | None,
-                       questions: list[dict[str, Any]] | None = None) -> list[int]:
+                       questions: list[dict[str, Any]] | None = None, *,
+                       digests: list[str] | None = None) -> list[int]:
     """The indices of the `count` questions with no stored answer, in order.
 
     Given the `questions` as served, an answer to a different question at an
-    index leaves it unanswered (`answers_to`). Without them -- a caller that
-    reads only the task document, not its questions file -- a stored answer
-    is counted by its index alone, as it always was: `open_question_tasks`,
-    `codec.step_needs`'s `questions_unread` and the bell's question item.
-    Making those question-aware is a follow-up lane (owner pick on #3355,
-    2026-11-05; docs/notifications.md), not this change.
+    index leaves it unanswered (`answers_to`). A caller that reads only the
+    task document, not its questions file -- `open_question_tasks`,
+    `codec.step_needs`'s `questions_unread` and the bell's question item --
+    passes the worker's `digests` instead (`question_digests` of the
+    task's result summary): an answer stamped with the digest of another
+    question at its index leaves it unanswered (`answers_digest`), with no
+    read of the questions file per task (the follow-up lane the owner picked
+    on #3355, 2026-11-05). A task summarised before the worker wrote digests
+    (`digests` None), and an answer stored before answers were stamped, are
+    counted by index alone, as they always were.
     """
     if questions is not None:
         answered = answers_to(questions, metadata)
     else:
         answered = owner_answers_by_index(metadata)
+        if digests is not None:
+            answered = {i: e for i, e in answered.items() if answers_digest(e, i, digests)}
     return [index for index in range(count) if index not in answered]
 
 
@@ -878,10 +931,10 @@ def open_question_tasks(
             continue
         if claude_session_of(task, masking_for(task, warm=False)) != session:
             continue
-        # By index: the questions file is not read here, so an answer to an
-        # earlier attempt's question at an index counts for it; question-aware
-        # is a follow-up lane (owner pick on #3355, 2026-11-05).
-        if unanswered(question_count(task.result_summary), task.metadata) == 0:
+        # The questions file is not read here: the worker's digests say
+        # which question each index asks now (`unanswered_indices`).
+        if unanswered(question_count(task.result_summary), task.metadata,
+                      digests=question_digests(task.result_summary)) == 0:
             continue
         found.append(task)
     epoch = datetime.min.replace(tzinfo=timezone.utc)
@@ -1013,7 +1066,8 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
     """A question wait's questions, as the worker validated them, redacted here.
 
     `waiting` says whether the agent is parked on them now, which block,
-    since when and until when, and where on GitHub they were posted.
+    since when and until when, where on GitHub they were posted, and, for a
+    plugin step's bridged question, the skill that asked (`skill`, or null).
     """
     masking = masking_for(task)
     waited = set(wait["blocking"])
@@ -1045,6 +1099,7 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
             "expires_at": (began + timedelta(seconds=wait_max_seconds(wait))).isoformat()
             if began else None,
             "issue_comment_url": comment.get("url") if isinstance(comment.get("url"), str) else None,
+            "skill": asked_by_skill(wait, masking),
         },
     }
 
@@ -1158,6 +1213,13 @@ def answer_question(
         "via": body.via,
         "session": body.session,
     }
+
+    # And the worker's digest of it, for the readers that count answers off
+    # the task document alone (`unanswered_indices`). The summary is the
+    # attempt whose file was just read: the read checked its count.
+    digests = question_digests(task.result_summary)
+    if digests is not None and index < len(digests):
+        entry[ASKED_DIGEST_KEY] = digests[index]
 
     promoted: dict[str, Any] = {}
 

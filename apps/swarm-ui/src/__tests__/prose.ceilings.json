@@ -25,6 +25,7 @@
     "capacity/quota": { "words": [112], "arrows": [0] },
     "config/github": { "words": [350, 287], "arrows": [1] },
     "config/mcp-servers": { "words": [259], "arrows": [1] },
+    "config/plugins": { "words": [138], "arrows": [1] },
     "config/repositories": { "words": [335], "arrows": [1] },
     "config/secrets": { "words": [294], "arrows": [2] },
     "config/workspace": { "words": [375], "arrows": [0] },

@@ -24,6 +24,12 @@ module builds to:
   swarm-api's MAC (`judgment.block_mac`, block `contract_review`, listed in
   the frozen `SETTINGS_MAC_FIELDS` by contract request 138); for a tenant cut over in
   SETTINGS_MAC_TENANTS a block that does not verify reads as off.
+* **The experiment's arm (jev-contract.md section 11).** The signed dispatch
+  block's `contract_jev: off` skips the review before the setting is read:
+  nothing is sent, the contract is unchanged, and the review is recorded
+  with outcome `skipped:arm` (`SKIPPED_ARM`). `on`, or no switch, is the
+  review exactly as above: the switch never reviews what the mode or the
+  setting leaves off.
 * **Open on failure (answer 2).** No route, no key, a timeout, a 429 or 5xx,
   a malformed answer, the month over its cap: the contract is accepted on the
   mechanical compile alone and the review is recorded `not_run` with the
@@ -258,6 +264,28 @@ NOT_OPTED_IN = "not_opted_in"
 DEADLINE = "deadline"
 ERROR = "error"
 
+#: The arm of the Jev work-contract experiment (jev-contract.md section 11):
+#: the signed dispatch block's `contract_jev` switch
+#: (`validation.DISPATCH_SWITCHES`). `off` skips the review before anything
+#: is read or sent and records its outcome as `skipped:arm`, the word
+#: `scripts/benchstat.py` (`SKIPPED_ARM`) reads; `on`, or no switch, reviews
+#: exactly as before. It only narrows: `on` never reviews what the mode or the
+#: workspace's setting leaves off.
+ARM_SWITCH = "contract_jev"
+ARM_OFF = "off"
+SKIPPED_ARM = "skipped:arm"
+ARM_REASON = "contract_jev_off"
+
+
+def arm_of(switches: Any) -> str | None:
+    """The `contract_jev` word of a submission's switches (the
+    `DispatchOptions.switches` pairs, or a mapping), None when it set none."""
+    pairs = switches.items() if isinstance(switches, Mapping) else (switches or ())
+    for pair in pairs:
+        if isinstance(pair, (tuple, list)) and len(pair) == 2 and pair[0] == ARM_SWITCH:
+            return pair[1] if isinstance(pair[1], str) else None
+    return None
+
 
 @dataclass(frozen=True)
 class Reviewed:
@@ -454,15 +482,24 @@ class ContractReviewer:
 
     def review(self, prepared: wc.Prepared, *, tenant_id: str,
                submitter_tenant_id: str | None, step_id: str | None,
-               enforced: frozenset[str] = wc.WORKER_ENFORCED_TODAY) -> Reviewed:
+               enforced: frozenset[str] = wc.WORKER_ENFORCED_TODAY,
+               switches: Any = ()) -> Reviewed:
         """Review one step's prepared contract (after `workcontract.prepare`,
         so a contract code already refused never reaches Jev). Raises
-        ValidationFailed only in `enforce` mode, for section 4.5's refusal."""
+        ValidationFailed only in `enforce` mode, for section 4.5's refusal.
+
+        `switches` are the submission's workflow switches: with `contract_jev`
+        `off` (`ARM_SWITCH`) nothing is read or sent and the review is
+        recorded `skipped:arm`, the contract unchanged."""
         current = mode(self.environ)
         contract = prepared.contract
         if current == MODE_OFF or not contract.requirements:
             return Reviewed(prepared, None)
         at = self._now().isoformat()
+        if arm_of(switches) == ARM_OFF:
+            record = cj.review_record(contract, None, call_id="", backend="", at=at,
+                                      not_run_reason=ARM_REASON)
+            return Reviewed(prepared, {**record, "outcome": SKIPPED_ARM, "mode": current})
         doc = self._settings_doc(tenant_id)
         if not stored_enabled(doc, tenant_id=tenant_id, mac=self._mac):
             record = cj.review_record(contract, None, call_id="", backend="", at=at,
@@ -567,6 +604,9 @@ def refuse(contract: wc.WorkContract, outcome: cj.Review, *, call_id: str,
 
 
 __all__ = [
+    "ARM_OFF",
+    "ARM_REASON",
+    "ARM_SWITCH",
     "AUDIT_ACTION",
     "ContractReviewPut",
     "ContractReviewStore",
@@ -583,6 +623,8 @@ __all__ = [
     "MODE_OFF",
     "MODE_REPORT",
     "Reviewed",
+    "SKIPPED_ARM",
+    "arm_of",
     "authorize_write",
     "bounded",
     "mode",

@@ -221,8 +221,9 @@ describe('item 1: the Steps table with the step card open', () => {
     // Own budget, not the config's 30 s: it measured ~10 s on an idle
     // container and 13.5 s alone on the SwarmCloud container (2026-11-05;
     // cascades over ten rows at two widths), and went past 30 s in loaded CI
-    // shards (PR #3255; PR #3304, component tests 3/8) with nothing wrong.
-    // 120 s, as qa.u11b.workflows and qa.head carry; a hang still fails.
+    // shards (PR #3255; PR #3304, component tests 3/8; PR #3342) with nothing
+    // wrong. 120 s, as qa.u11b.workflows, qa.head and keyboard carry; a hang
+    // still fails. A timeout is not what this test asserts.
   }, 120_000)
 
   // Browser QA D12 (2026-10-04) reversed item 1's wrap: ten names wrapped to

@@ -153,7 +153,11 @@ describe('the fixture board serves each step a needs block, as codec.step_needs 
       repository_url: null,
       asked_at: '2026-10-19T11:00:00.000Z',
       expires_at: '2026-10-20T11:00:00.000Z',
+      skill: null,
     })
+    // The skill that asked, as the worker recorded it in the bridge block.
+    const asked = [{ reason: 'HUMAN_REQUIRED', question_wait: { ...wait('att_1'), bridge: { skill: 'gstack:office-hours' } } }] as unknown as Task['blocked_by']
+    expect(fixtureStepNeeds(task({ ...parked, blocked_by: asked })).plugin_ask?.skill).toBe('gstack:office-hours')
     // No plugin, or no question wait: none.
     expect(fixtureStepNeeds(task({ ...parked, metadata: {} })).plugin_ask).toBeNull()
     expect(fixtureStepNeeds(task({ state: 'RUNNING', metadata })).plugin_ask).toBeNull()

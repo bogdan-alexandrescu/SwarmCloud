@@ -48,7 +48,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
 import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, type TaskQuestions } from './api'
-import { Button } from './components'
+import { Button, Chip } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { humanReady, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
@@ -74,6 +74,12 @@ interface QuestionWait {
   asked_at: string | null
   expires_at: string | null
   issue_comment_url: string | null
+  /**
+   * The skill that asked a plugin step's bridged question
+   * (`agent_questions.asked_by_skill`); null when not known (a read from
+   * before it was served omits it, and is drawn the same).
+   */
+  skill: string | null
 }
 
 type QuestionsRead = TaskQuestions & { waiting?: QuestionWait }
@@ -102,11 +108,27 @@ export function questionCount(task: Partial<Pick<Task, 'result_summary' | 'block
   return questionWaitOf(task)?.questions.length ?? 0
 }
 
+/**
+ * Who asked a plugin step's question: the skill's name in a chip, the way
+ * Needs you says it; nothing at all when the read served none (no new visible
+ * prose, the console rule of 5 November 2026).
+ */
+function AskingSkill({ skill }: { skill: string | null | undefined }) {
+  const name = typeof skill === 'string' ? skill.trim() : ''
+  if (name === '') return null
+  return (
+    <>
+      <Chip title={`The plugin skill ${name} asked these questions`}>asked by {name}</Chip>{' '}
+    </>
+  )
+}
+
 /** The lead of a card whose agent is parked on its blocking questions, or says it resumed. */
 function WaitingNote({ wait, taskId }: { wait: QuestionWait; taskId: string }) {
   if (!wait.open) {
     return (
       <p className="dt-note qc-waiting" data-waiting="resumed">
+        <AskingSkill skill={wait.skill} />
         This agent waited on these and was resumed when its blocking questions were answered.
       </p>
     )
@@ -115,6 +137,7 @@ function WaitingNote({ wait, taskId }: { wait: QuestionWait; taskId: string }) {
   return (
     <div className="dt-note qc-waiting" role="status" data-waiting="open">
       <p>
+        <AskingSkill skill={wait.skill} />
         <b>This agent is waiting for you.</b> It is parked, holding no capacity, until{' '}
         {left === 1 ? 'the blocking question below is' : `the ${left} blocking questions below are`} answered; the last
         answer resumes it.

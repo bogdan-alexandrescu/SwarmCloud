@@ -181,6 +181,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'repositories', label: 'Repositories', icon: 'repo', to: 'config/repositories' },
     { key: 'secrets', label: 'Secrets', icon: 'key', to: 'config/secrets' },
     { key: 'mcp-servers', label: 'MCP servers', icon: 'plug', to: 'config/mcp-servers' },
+    { key: 'plugins', label: 'Plugins', icon: 'runtimes', to: 'config/plugins' },
   ],
   admin: [
     { key: 'limits', label: 'Pool limits', icon: 'admin', to: 'admin/limits' },

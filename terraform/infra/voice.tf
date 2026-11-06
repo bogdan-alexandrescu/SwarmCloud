@@ -354,9 +354,15 @@ output "voice" {
 # The two templates with their placeholders filled, as one manifest. Null
 # while swarm-voice is off or has no image, so there is never a half-rendered
 # manifest to apply.
+#
+# The last two placeholders are swarm-voice's model pins, by class from
+# local.runner_models (voice-it-own-speech.md §14.1): VOICE_FRONT_MODEL, own
+# speech's fast front, is the haiku class (first-reply latency); and
+# VOICE_PLANNER_MODEL, the planner on both engines, is the planning class,
+# fable. Nothing to ask at install: the pins are Terraform's.
 output "swarm_voice_manifest" {
   description = "swarm-voice's Kubernetes objects and NetworkPolicies, rendered. Apply to swarm-autopilot only (never agents-staging). Null until voice_it is on with an image."
-  value = local.voice_on && local.voice_image != "" ? replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+  value = local.voice_on && local.voice_image != "" ? replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
     join("---\n", [
       file("${path.module}/../../kubernetes/swarm-system/swarm-voice.yaml"),
       file("${path.module}/../../kubernetes/network-policies/swarm-system-voice.yaml"),
@@ -371,5 +377,7 @@ output "swarm_voice_manifest" {
     "__SWARM_API_HOST__", local.voice_swarm_api_host),
     "__QUOTA_BROKER_URL__", local.voice_broker_url),
     "__QUOTA_BROKER_AUDIENCE__", local.voice_broker_audience),
-  "__QUOTA_BROKER_HOST__", local.voice_broker_host) : null
+    "__QUOTA_BROKER_HOST__", local.voice_broker_host),
+    "__VOICE_FRONT_MODEL__", local.runner_models["haiku"]),
+  "__VOICE_PLANNER_MODEL__", local.runner_models["fable"]) : null
 }

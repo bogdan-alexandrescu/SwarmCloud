@@ -110,6 +110,32 @@ def test_an_attempt_with_no_record_is_excluded_not_counted_in_its_assigned_arm()
     assert table["excluded"][0]["reason"] == "arm_unrecorded"
 
 
+@pytest.mark.parametrize("arm", ["off", "on"])
+def test_an_item_recorded_by_the_worker_and_swarm_api_is_counted_in_its_arm(tmp_path, arm):
+    # End to end with what the platform records: the attempt's switches as
+    # `graphstage.switches_summary` writes them, and under arm off the
+    # review's outcome as `contractreview` records it and JC2's posted reason
+    # as the worker's post-step sends it. Before both read `contract_jev`,
+    # every such item was excluded as `arm_unrecorded`.
+    from agent_worker import graphstage
+    from agent_worker.judge import poststeps
+    from swarm_api import contractreview
+
+    switches = graphstage.switches_summary(tmp_path, {"contract_jev": arm})
+    assert switches is not None
+    attempt = {"result_summary": {graphstage.SWITCHES_FIELD: switches}}
+    assert bs.recorded_arm(attempt) == arm
+    if arm == "off":
+        assert contractreview.SKIPPED_ARM == poststeps.SKIPPED_ARM == bs.SKIPPED_ARM
+        a = off("a", review=contractreview.SKIPPED_ARM)
+    else:
+        a = item("a", "on")
+    a["attempts"] = [attempt, attempt]
+    table = bs.contract_jev_table([a], jev_token_rates=RATES)
+    assert table["excluded"] == []
+    assert table["arms"][arm]["items"] == 1
+
+
 def test_an_item_with_no_attempts_is_excluded():
     a = item("a", "on")
     a["attempts"] = []
