@@ -7,6 +7,9 @@
 // MUTATIONS: drop the step's `result_summary.questions` -> no tick; drop its
 // `owner_answers` -> the tick reads 2; serve the workflow RUNNING -> its
 // question is a list '?' and no tick.
+//
+// Its list row costs Work › Workflows one word, so the list footer's
+// "100 per read" moves into the footer's tooltip (BGD's pick, 6 November 2026).
 
 import { cleanup, render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -72,5 +75,21 @@ describe("the fixture build's finished workflow with questions", () => {
     )
     const tick = await within(head).findByRole('button', { name: '1 unanswered question' }, { timeout: 5000 })
     expect(tick.textContent?.replace(/\s+/g, '')).toBe('?1')
+  })
+
+  it('lists it, with the read size behind the footer tooltip', async () => {
+    const { w } = await quietWorkflow()
+    render(<WorkflowsScreen view="" onView={() => {}} />)
+    const foot = await waitFor(
+      () => {
+        const f = document.querySelector<HTMLElement>('.wfl-foot')
+        expect(f).toBeTruthy()
+        return f!
+      },
+      { timeout: 5000 },
+    )
+    expect(document.querySelector(`tr.wfg-row[data-workflow="${w.workflow_id}"]`)).toBeTruthy()
+    expect(foot.title).toBe('100 per read')
+    expect(foot.textContent).not.toMatch(/per read/)
   })
 })

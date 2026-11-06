@@ -40,7 +40,7 @@
     "work/running": { "words": [284], "arrows": [0] },
     "work/runs": { "words": [107], "arrows": [1] },
     "work/timeline": { "words": [155], "arrows": [2] },
-    "work/workflows": { "words": [182], "arrows": [1] },
+    "work/workflows": { "words": [182, 179], "arrows": [1] },
     "workflow/step-selected": { "words": [969], "arrows": [8] }
   }
 }
