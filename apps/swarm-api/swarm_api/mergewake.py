@@ -228,6 +228,11 @@ whose own loop fixes CI before it merges). Three things come with them:
   refused, the other's fixed 600 s window lapsed while its fan-in
   `ci-gate` run was still running. This is still one answered re-run per
   head, with at most one retry of a refusal.
+  The rule itself -- which failing checks a re-run reaches, what is asked
+  of GitHub, whether an accepted re-run still runs, and the bounds -- is
+  `cirerun`'s, shared with an issue run in CHECKING, which re-runs a red
+  head's failed Actions jobs once before it spends or refuses a CI-fix
+  round of its own (#3200); the bookkeeping here stays `merge_fix.reruns`.
 * EACH ROUND IS A STEP OF THE MERGE'S WORKFLOW. After the round's own
   workflow is submitted, the tick appends a step `ci-fix:<n>`,
   `conflict-fix:<n>` or `pick-fix:<n>` (ROLLUP-PICK-FIX) naming the round's
@@ -333,6 +338,14 @@ from .auth import AuthContext
 from .cifix import (
     BRANCH_PREFIX, PR_WRITER_KINDS, live_claim, live_plain_continuation, live_pr_writer,
 )
+from .cirerun import (
+    ACTIONS_APP_SLUG,  # noqa: F401 - re-exported: mergewake.ACTIONS_APP_SLUG
+    RERUN_REFUSALS_MAX,
+    RERUN_SETTLE_SECONDS,
+    rerun_running as _rerun_running,
+    rerun_targets as _rerun_targets,
+    rerunnable as _rerunnable,
+)
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import (
@@ -341,7 +354,7 @@ from .forgechecks import (
     CiReading,
     evaluate,
     required_status_checks,
-    workflow_run_of,
+    workflow_run_of,  # noqa: F401 - the re-run's targets resolve runs through it (cirerun)
 )
 from . import forge_limits
 from .forge import GITHUB_API_HOST
@@ -512,19 +525,9 @@ CONFLICT_FIX_STEP = "conflict-fix"
 #: `{round, head, claimed_at}` as a round is claimed, then `jobs`, `runs`
 #: and `requested_at`, or `error` when GitHub refused.
 RERUNS_KEY = "reruns"
-#: How long after a re-run was requested the tick keeps reading the same
-#: failed check runs as "GitHub has not made the new ones yet" rather than as
-#: the re-run's answer. Ten minutes: GitHub queues a re-run in seconds, and
-#: past this a re-run that never registered gives way to a round -- unless a
-#: workflow run it asked of still reads not `completed` (#3006), which holds
-#: on; the window is the floor when that status cannot be read.
-RERUN_SETTLE_SECONDS = 600
-#: The re-run requests GitHub may refuse at one head before the step is
-#: woken without one (#3006): a refused re-run ran nothing, so it is asked
-#: once more, and a credential without `actions: write` costs one request.
-RERUN_REFUSALS_MAX = 2
-#: The App whose check runs are Actions jobs, the only ones a re-run reaches.
-ACTIONS_APP_SLUG = "github-actions"
+#: RERUN_SETTLE_SECONDS, RERUN_REFUSALS_MAX and ACTIONS_APP_SLUG are
+#: `cirerun`'s, imported above: the issue run's CHECKING read shares the
+#: re-run rule (#3200), so it is defined there once.
 #: A merge parked on an owner pick its branch did not build (PICK-FIX-ROUND,
 #: part of #2441): the worker's park codes (PENDING asks for the next round,
 #: RUNNING waits on the claimed one), the rounds' list in `merge_fix`, their
@@ -1107,63 +1110,6 @@ def round_step_id(key: str, round_no: int) -> str:
     return f"{ROUND_KIND[key]}-fix:{int(round_no)}"
 
 
-def _rerunnable(reading: CiReading | None) -> list[int]:
-    """The failing Actions jobs a re-run could turn green, or [] when it could not.
-
-    Every failing check must be an Actions job: a red commit status or
-    another App's check run is not re-run by this, so re-running the rest
-    could not make the reading green and would only delay the round.
-    """
-    if reading is None or reading.failing_statuses or not reading.failing_runs:
-        return []
-    jobs: list[int] = []
-    for run in reading.failing_runs:
-        job = run.get("id")
-        app = _mapping(run.get("app"))
-        if (app.get("slug") != ACTIONS_APP_SLUG or not isinstance(job, int)
-                or isinstance(job, bool)):
-            return []
-        jobs.append(job)
-    return sorted(set(jobs))
-
-
-def _rerun_targets(reading: CiReading | None, jobs: list[int]) -> tuple[list[int], list[int]]:
-    """(the workflow runs whose failed jobs to re-run, the jobs to re-run alone).
-
-    A failing job whose run can be resolved is re-run through its run, which
-    re-runs its failed needs too (#2841); the rest as their own job.
-    """
-    runs: set[int] = set()
-    alone: set[int] = set()
-    by_id = {r.get("id"): r for r in (reading.failing_runs if reading else [])}
-    for job in jobs:
-        run_id = workflow_run_of(by_id.get(job) or {})
-        if run_id is None:
-            alone.add(job)
-        else:
-            runs.add(run_id)
-    return sorted(runs), sorted(alone)
-
-
-def _rerun_running(ctx: Any, ref: IssueRef, entry: Mapping[str, Any], token: str) -> bool:
-    """True while a workflow run an accepted re-run asked of has a latest
-    attempt that has not completed (#3006: a fan-in `ci-gate` run still
-    re-running its needs past RERUN_SETTLE_SECONDS). A run whose status
-    cannot be read counts as answered: the window alone holds then."""
-    for run_id in entry.get("runs") or []:
-        if not isinstance(run_id, int) or isinstance(run_id, bool):
-            continue
-        try:
-            status = ctx.forge_writer.read_run(ref, run_id, token).get("status")
-        except Exception as exc:  # noqa: BLE001 - an unread run falls back to the window
-            log.info("merge wake: the status of re-run Actions run %d is unread (%s)",
-                     run_id, type(exc).__name__)
-            continue
-        if status != "completed":
-            return True
-    return False
-
-
 def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
                  head: str, read: _Reading, token: str, now: datetime) -> tuple[str, None] | None:
     """Re-run the failed jobs of a red head's failing Actions checks' workflow
@@ -1189,7 +1135,7 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
         if (
             asked & set(jobs) and isinstance(since, datetime) and since <= now
             and (now - since < timedelta(seconds=RERUN_SETTLE_SECONDS)
-                 or _rerun_running(ctx, ref, entry, token))
+                 or _rerun_running(ctx.forge_writer, ref, entry, token))
         ):
             return _WAITING, None
         return None
