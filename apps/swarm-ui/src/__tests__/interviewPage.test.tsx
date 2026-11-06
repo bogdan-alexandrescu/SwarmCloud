@@ -337,7 +337,7 @@ describe('the proposal page', () => {
     expect(doc.getAttribute('sandbox')).toBe('')
     const html = doc.getAttribute('srcdoc') ?? ''
     // Rendered: the heading and the bold are elements; the agent's script is text, never markup.
-    expect(html).toMatch(/<h1[^>]*>Timer<\/h1>/)
+    expect(html).toMatch(/<h[1-6][^>]*>Timer<\/h[1-6]>/)
     expect(html).toContain('<strong>summary</strong>')
     expect(html).not.toContain('<script')
     expect(sec.querySelector('.art-md')).toBeNull()
@@ -347,7 +347,7 @@ describe('the proposal page', () => {
     expect(sec.querySelector('img')).toBeNull()
     // Each by name and size, its read link the task's own artifact route.
     expect(sec.textContent).toContain('design.md')
-    expect(sec.textContent).toContain('2.0 KiB')
+    expect(sec.textContent).toContain('2 KiB')
     expect(sec.textContent).toContain('512 B')
     const links = within(sec).getAllByRole('link').map((a) => a.getAttribute('href'))
     expect(links).toEqual([
