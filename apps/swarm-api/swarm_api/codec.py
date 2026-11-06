@@ -1754,6 +1754,15 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       index (`result_summary.question_digests`) is the one it was given for
       (`agent_questions.unanswered_indices`); a task summarised before the
       digests counts by index.
+    * `question_text_digests`: for an ended task only, the worker's key of
+      each of those questions' words alone (`notifications.
+      question_text_digests`), in index order, so the list counts the same
+      words asked by two steps with other option labels once, as the bell
+      does; null for a task summarised before the key, which counts as
+      before. Each of `questions` carries its own words' key, `text_digest`
+      (`notifications.question_text_digest`), so a wait's question and an
+      artifact's are matched too (the follow-up picked under BGD's overnight
+      grant, 6 November 2026).
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
     * `plugin_ask`: for a plugin step PARKED on a question wait only (its work
       contract's `capabilities.plugins` names at least one plugin with a
@@ -1778,6 +1787,7 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
         unanswered_indices,
         wait_max_seconds,
     )
+    from .notifications import question_text_digest, question_text_digests
 
     def masked(value: Any) -> str | None:
         return masking.text(value)[0] if isinstance(value, str) else None
@@ -1831,6 +1841,7 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
                 "question": masked(entry.get("question")),
                 "options": options,
                 "recommended": masked(entry.get("recommended")),
+                "text_digest": question_text_digest(entry.get("question")),
             })
     plugin_ask: dict[str, Any] | None = None
     if question_wait is not None:
@@ -1871,6 +1882,11 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
             unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata,
                                digests=question_digests(task.result_summary))
             if task.state in TERMINAL_STATES else []
+        ),
+        "question_text_digests": (
+            text_keys[:MAX_ARTIFACT_QUESTIONS]
+            if task.state in TERMINAL_STATES and (text_keys := question_text_digests(task.result_summary)) is not None
+            else None
         ),
         "pull_request": pull_request,
         "plugin_ask": plugin_ask,
