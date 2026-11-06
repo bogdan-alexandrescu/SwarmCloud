@@ -124,6 +124,7 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # fixed in 1.3.2-r1). Docker Hub's current 1.31.6-alpine digest (sha256:884e0b7f...,
 # Alpine 3.24.2, read on 2026-11-06) still ships 1.3.2-r0 -- checked by listing its
 # packages -- so the pin stays and the package is upgraded; same reason, same fix.
+# PR #3486's build-check (2026-11-06) refused it over the same zlib 1.3.2-r0.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
