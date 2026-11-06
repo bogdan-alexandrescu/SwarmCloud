@@ -53,7 +53,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { USE_FIXTURES } from '../api'
-import { Button, Segmented, ToneMark } from '../components'
+import { Button, buttonClass, Segmented, ToneMark } from '../components'
 import { noteActivity } from '../Shell'
 import { CardList } from './CardList'
 import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
@@ -63,7 +63,7 @@ import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import { Listener, NO_RECOGNITION, recogniserClass, Speaker } from './speech'
-import { TalkStage } from './Stage'
+import { TalkStage, TalkTip } from './Stage'
 import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
@@ -390,12 +390,23 @@ export function TalkPane() {
               Start talking
             </Button>
           )}
+          {/* The advice sits behind an (i), not on the surface (the owner's
+              standing rule, 2026-11-05: no explanatory prose on the surface). */}
+          <TalkTip
+            tip={
+              textMode
+                ? "A text conversation on the ChatGPT plan: this browser hears you and reads Voice it's replies aloud. Headphones are advised, so Voice it does not hear itself."
+                : "Headphones are advised: the browser's echo cancellation is what lets you talk over Voice it."
+            }
+          >
+            <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="About headphones">
+              <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="8.5" />
+                <path d="M12 11v5.5M12 7.75v.01" />
+              </svg>
+            </button>
+          </TalkTip>
         </span>
-        <p className="vt-note">
-          {textMode
-            ? "A text conversation on the ChatGPT plan: this browser hears you and reads Voice it's replies aloud. Headphones are advised, so Voice it does not hear itself."
-            : "Headphones are advised: the browser's echo cancellation is what lets you talk over Voice it."}
-        </p>
         {textMode && typed !== null && <p className="vt-note">{typed}</p>}
         {problem !== null && (
           <p className="vt-problem" role="alert">

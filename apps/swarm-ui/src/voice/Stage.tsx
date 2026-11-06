@@ -22,7 +22,7 @@
  * state, GET the pending read-back, POST go or not-that. Nothing here spends.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 
 import {
   answerReadback,
@@ -35,7 +35,7 @@ import {
   type VoiceVisual,
   type VoiceVisualDetail,
 } from '../api'
-import { Button, Tooltip } from '../components'
+import { Button, TOOLTIP_DELAY_MS } from '../components'
 import '../styles/talk-stage.css'
 
 /** How often a live session's visuals are read again. */
@@ -88,6 +88,49 @@ function onLines(note: VoiceNote, d: VoiceVisualDetail): boolean {
 }
 
 const openNotes = (notes: readonly VoiceNote[]): VoiceNote[] => notes.filter((n) => n.state === 'open')
+
+/**
+ * Voice it's tooltip: the components' Tooltip (hover and focus, after its
+ * delay, gone on Escape; open on a tap too, since Safari never focuses a
+ * tapped button), with `data-help-description` on the tip so its sentence
+ * stays out of the words the prose ratchet counts (proseapp.tsx), as People's
+ * InfoTip and Profile's AboutTip are kept. The read-back's clock and the Talk
+ * pane's (i) use it.
+ */
+export function TalkTip({ tip, children }: { tip: string; children: ReactNode }) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const show = (now: boolean) => {
+    if (timer.current !== undefined) clearTimeout(timer.current)
+    if (now) setOpen(true)
+    else timer.current = setTimeout(() => setOpen(true), TOOLTIP_DELAY_MS)
+  }
+  const hide = () => {
+    if (timer.current !== undefined) clearTimeout(timer.current)
+    setOpen(false)
+  }
+  useEffect(() => () => hide(), [])
+  return (
+    <span
+      className="c-tip-host"
+      aria-describedby={id}
+      onMouseEnter={() => show(false)}
+      onMouseLeave={hide}
+      onFocus={() => show(true)}
+      onBlur={hide}
+      onClick={() => show(true)}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') hide()
+      }}
+    >
+      {children}
+      <span role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open}>
+        {tip}
+      </span>
+    </span>
+  )
+}
 
 /** One note's pin: its number, and its words while open. */
 function Pin({ n, note, open, onToggle }: { n: number; note: VoiceNote; open: boolean; onToggle: () => void }) {
@@ -175,9 +218,15 @@ function HoldCard({ rb, now, busy, problem, onAnswer }: { rb: VoiceReadback; now
     <section className={`vts-hold is-${state}`} aria-label="Read-back">
       <dl className="vts-rb">
         <dt>Heard</dt>
-        <dd className="vts-rb-heard">“{rb.heard}”</dd>
+        {/* What was heard and what it names are the person's words and the
+            gate's, not the console's prose: the ratchet does not count them. */}
+        <dd className="vts-rb-heard" data-prose-content="">
+          “{rb.heard}”
+        </dd>
         <dt>Will {rb.action}</dt>
-        <dd className="vts-rb-target">{rb.target_name}</dd>
+        <dd className="vts-rb-target" data-prose-content="">
+          {rb.target_name}
+        </dd>
       </dl>
       {state === 'pending' && (
         <div className="vts-hold-acts">
@@ -188,11 +237,11 @@ function HoldCard({ rb, now, busy, problem, onAnswer }: { rb: VoiceReadback; now
             Not that
           </Button>
           {left !== null && (
-            <Tooltip tip={`Expires in ${left} s and nothing runs. Say “go” or “not that”; a bare “yes” is not a go.`}>
+            <TalkTip tip={`Expires in ${left} s and nothing runs. Say “go” or “not that”; a bare “yes” is not a go.`}>
               <span className="vts-clock" tabIndex={0} style={{ ['--left' as string]: `${Math.min(100, (left / READBACK_WINDOW_S) * 100).toFixed(1)}%` }}>
                 {left}s
               </span>
-            </Tooltip>
+            </TalkTip>
           )}
         </div>
       )}
@@ -208,11 +257,11 @@ function HoldCard({ rb, now, busy, problem, onAnswer }: { rb: VoiceReadback; now
       )}
       {(state === 'expired' || state === 'superseded') && (
         <p className="vts-rb-done is-expired" role="status">
-          <Tooltip tip="Not answered in time, so nothing ran.">
+          <TalkTip tip="Not answered in time, so nothing ran.">
             <span className="vts-clock is-out" tabIndex={0}>
               0s
             </span>
-          </Tooltip>
+          </TalkTip>
           <span>{state}</span>
         </p>
       )}
@@ -386,7 +435,10 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
       )}
       <div className="vts-main">
         {shown !== null && (
-          <figure className={`vts-frame is-${shown.visual.kind}`} aria-label={shown.visual.title}>
+          // The figure is the file, diff, log or mock-up the planner drew,
+          // not the console's prose: `data-prose-content` keeps it out of the
+          // words the prose ratchet counts (proseapp.tsx).
+          <figure className={`vts-frame is-${shown.visual.kind}`} aria-label={shown.visual.title} data-prose-content="">
             {(where !== null || range !== null) && (
               <figcaption className="vts-head">
                 {where !== null && <code className="vts-where">{where}</code>}
