@@ -8,7 +8,7 @@ request left every profile empty until the routing package fills them in,
 and every catalogue entry states its value rather than inheriting it, so the
 package's change is a visible edit to each profile, never a default.
 
-Contract request 142 (managed plugins, docs/design/managed-plugins.md section
+Contract request 143 (managed plugins, docs/design/managed-plugins.md section
 14 request P4, accepted by the owner 6 November 2026) fills in the five
 claude-code profiles: `claude_plugins` (the runner loads Claude Code
 plugins) and the plugin runtimes `agent-runtime-base` ships, `node`, `bun`,
@@ -29,7 +29,7 @@ from swarm_api.workcontract import RUNTIME_CAPABILITIES
 
 PROFILES_PY = Path(profiles.__file__)
 
-#: Contract request 142: what a claude-code profile's runner provides to a
+#: Contract request 143: what a claude-code profile's runner provides to a
 #: managed plugin. The runtimes are the design's closed list (section 5).
 PLUGIN_CAPABILITIES = ("claude_plugins", "node", "bun", "python3", "bash")
 

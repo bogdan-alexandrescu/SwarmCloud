@@ -481,7 +481,7 @@ def check_additional_repositories(value: Any) -> None:
 #: against MCP_SERVER_NAME and the reserved names here; membership in the
 #: tenant's registry is checked by its reader, as for `profile:`.
 #:
-#: Contract request 141 (managed plugins P3, docs/design/managed-plugins.md
+#: Contract request 142 (managed plugins P3, docs/design/managed-plugins.md
 #: section 6.2, accepted by the owner 2026-11-06): a fifth kind, `plugin:`,
 #: names a managed plugin's install id, so a released plugin secret's record
 #: says which plugin it was for. Its membership in the workspace's catalogue
@@ -997,7 +997,7 @@ class Tenant:
         return f"swarm-tenant-{self.tenant_id}-{provider}"
 
     def plugin_secret_name(self, install_id: str, field: str) -> str:
-        """Contract request 141 (managed plugins P3), accepted by the owner
+        """Contract request 142 (managed plugins P3), accepted by the owner
         2026-11-06: the Secret Manager name of a managed plugin's secret
         setting `field` in this workspace, `swarm-tenant-<t>-plg-<16 hex>`,
         the hex the first 16 of sha256(install_id + "/" + field).

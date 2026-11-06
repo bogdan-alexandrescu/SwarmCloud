@@ -94,6 +94,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from .accountlease import NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused, build_broker
+from .claudefront import FRONT_MODELS
 from .claudeturn import admitted_model
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
@@ -131,6 +132,19 @@ class StartRequest(BaseModel):
     def _a_class_pin(cls, value: str | None) -> str | None:
         if value is not None and not admitted_model(value):
             raise ValueError("planner_model must be the id of one of the pool's model classes")
+        return value
+
+    #: The fast front's model for this session: Voice it › Settings'
+    #: `conversation_model`, read by swarm-api at the start. Only an id of the
+    #: curated list (claudefront.FRONT_MODELS) is accepted; absent, the front
+    #: keeps VOICE_FRONT_MODEL.
+    conversation_model: str | None = Field(default=None, max_length=64)
+
+    @field_validator("conversation_model")
+    @classmethod
+    def _a_curated_model(cls, value: str | None) -> str | None:
+        if value is not None and value not in FRONT_MODELS:
+            raise ValueError("conversation_model must be one of the curated conversation models")
         return value
 
 

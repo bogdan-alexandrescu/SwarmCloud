@@ -96,7 +96,7 @@ def test_the_covered_fields_are_the_requests():
         # Contract request 128 (JEV-LANES, PR 2905): the lane quality gates.
         "quality_gates": ("jev",),
         # Contract request 136 (AQ-WORK-CONTRACT, part of #2688): the catalogue
-        # plugins a workspace's steps may name; contract request 139 (managed
+        # plugins a workspace's steps may name; contract request 140 (managed
         # plugins P1): its every-step defaults and its plugin settings' digest.
         "plugins": ("allowed", "defaults", "configs_digest"),
         # Contract request 138 (JEV-SUBMISSION-REVIEW, part of #2688): the
@@ -144,7 +144,7 @@ def test_a_block_without_plugins_signs_the_same_bytes_as_before(block):
 
 
 #: A `plugins` block as `plugins.PluginsStore.put` stores it before contract
-#: request 139, and the bytes its MAC covers.
+#: request 140, and the bytes its MAC covers.
 STORED_PLUGINS = {"allowed": ["gstack"], "set_at": "2026-11-05T00:00:00Z",
                   "set_by": "alice@example.com", "mac": {"v": 1}}
 STORED_PLUGINS_BYTES = (
@@ -168,7 +168,7 @@ def test_the_plugins_block_signs_the_allowed_list_and_nothing_else():
 
 
 def test_a_plugins_block_stored_before_request_139_still_verifies():
-    """Request 139: `defaults` and `configs_digest` absent project as null, and a
+    """Request 140: `defaults` and `configs_digest` absent project as null, and a
     null key added to the block after its MACs were stored is left out of the
     bytes, so the block's bytes -- and its stored MAC -- are what they were."""
     assert canonical_settings_block(

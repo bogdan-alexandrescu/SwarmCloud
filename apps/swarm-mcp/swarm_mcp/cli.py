@@ -1076,6 +1076,8 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         # What the workflow delivers and its feature (BGD, 2026-11-04).
         description=spec["description"],
         feature=spec["feature"],
+        # Its purpose, goals and expected output (BGD, 2026-11-06).
+        about=spec["about"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")

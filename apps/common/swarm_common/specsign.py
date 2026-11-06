@@ -348,7 +348,7 @@ SETTINGS_PURPOSE = "swarm.settings/v1"
 #: these same bytes before the block was listed here, so every stored MAC
 #: still verifies and nothing needs re-signing.
 #:
-#: "plugins" gains "defaults" and "configs_digest" by contract request 139
+#: "plugins" gains "defaults" and "configs_digest" by contract request 140
 #: (managed plugins P1, docs/design/managed-plugins.md section 14), accepted
 #: by the owner 2026-11-06: the install ids on for every step of the
 #: workspace and the digest of its plugin settings documents are signed with
@@ -380,7 +380,7 @@ SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 #: block signed without it, or removing or nulling one that was signed,
 #: changes the bytes. Null and absent stay one value, as for every key.
 _SETTINGS_ADDED_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {"plugins": ("defaults", "configs_digest")}  # contract request 139
+    {"plugins": ("defaults", "configs_digest")}  # contract request 140
 )
 
 
@@ -393,7 +393,7 @@ def canonical_settings_block(
     stored; only the keys SETTINGS_MAC_FIELDS lists for it are projected, a
     listed key that is absent is null, and any other key is not covered and
     must not be acted on. A null key in _SETTINGS_ADDED_FIELDS is left out of
-    the bytes (contract request 139), so they are the bytes stored before it. The tenant and the block are inside the bytes, so a
+    the bytes (contract request 140), so they are the bytes stored before it. The tenant and the block are inside the bytes, so a
     block copied onto another tenant's document, or into another block, does
     not verify.
 
@@ -421,7 +421,7 @@ def canonical_settings_block(
 
 
 #: Domain separation for a managed plugin's install, version and intake
-#: documents (contract request 140, managed plugins P2,
+#: documents (contract request 141, managed plugins P2,
 #: docs/design/managed-plugins.md sections 1.1 and 14, accepted by the owner
 #: 2026-11-06). swarm-api MACs these bytes under `swarm-settings-key` and acts
 #: on a document only when its MAC verifies: a tenant identity can write any
@@ -505,7 +505,7 @@ def canonical_plugin_record(kind: str, fields: Mapping[str, Any]) -> bytes:
 
 
 #: Domain separation for the platform switches document,
-#: `platform_settings/switches` (contract request 143, managed plugins P5,
+#: `platform_settings/switches` (contract request 144, managed plugins P5,
 #: docs/design/managed-plugins.md sections 11 and 14, accepted by the owner
 #: 2026-11-06). It names no tenant: there is one platform.
 PLATFORM_SETTINGS_PURPOSE = "swarm.platform-settings/v1"

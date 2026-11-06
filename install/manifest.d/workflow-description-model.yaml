@@ -1,0 +1,9 @@
+# Generated workflow descriptions (part of #2688): swarm-api reads
+# SWARM_WORKFLOW_DESCRIPTION_MODEL into ApiSettings.workflow_description_model
+# (apps/swarm-api/swarm_api/settings.py) and validates it at start: "off" (what
+# terraform ships) writes the extractive description, "vertex" asks Claude Haiku
+# on Vertex AI, unset writes nothing.
+version: 1
+env:
+  SWARM_WORKFLOW_DESCRIPTION_MODEL:
+    setter: terraform/infra/locals.tf:858

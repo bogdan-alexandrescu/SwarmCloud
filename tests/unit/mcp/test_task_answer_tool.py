@@ -61,7 +61,7 @@ def _tool() -> dict[str, Any]:
 
 def test_the_tool_is_served_with_the_arguments_it_takes():
     schema = _tool()["inputSchema"]
-    assert set(schema["properties"]) == {"task_id", "question_index", "choice", "text"}
+    assert set(schema["properties"]) == {"task_id", "question_index", "choice", "text", "reply"}
     assert set(schema["required"]) == {"task_id", "question_index"}
     # Where it was answered is the bridge's to say, never the caller's.
     assert "via" not in schema["properties"] and "session" not in schema["properties"]

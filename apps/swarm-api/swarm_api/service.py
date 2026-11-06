@@ -117,6 +117,7 @@ from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from . import steprerun
+from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
 from .validation import (
@@ -1916,6 +1917,11 @@ class SubmissionService:
         self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
+        # A workflow submitted without a description gets one written for it,
+        # marked generated (BGD, 2026-11-04), on a thread of its own: this
+        # returns at once and never raises, so it delays and fails nothing.
+        wfdescription.after_submission(getattr(self._store, "db", None), tasks,
+                                       settings=self._settings)
         return WorkflowSubmission(
             workflow=workflow,
             tasks=tasks,

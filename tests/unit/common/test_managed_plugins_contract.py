@@ -1,4 +1,4 @@
-"""Contract requests 139-143: the managed plugins design's five requests.
+"""Contract requests 140-144: the managed plugins design's five requests.
 
 docs/design/managed-plugins.md section 14, requests P1-P5, accepted by the
 owner (BGD) on 6 November 2026 ("accept all five"):
@@ -79,7 +79,7 @@ INTAKE = {"intake_id": "i-1", "scope": "platform", "tenant_id": None, "state": "
 
 
 # --------------------------------------------------------------------------
-# Request 140 (P2): canonical_plugin_record
+# Request 141 (P2): canonical_plugin_record
 # --------------------------------------------------------------------------
 
 
@@ -202,7 +202,7 @@ def test_fields_that_are_not_a_map_or_hold_a_timestamp_have_no_canonical_form():
 
 
 # --------------------------------------------------------------------------
-# Request 143 (P5): canonical_platform_settings
+# Request 144 (P5): canonical_platform_settings
 # --------------------------------------------------------------------------
 
 
@@ -244,7 +244,7 @@ def test_platform_settings_that_are_not_a_map_have_no_canonical_form():
 
 
 # --------------------------------------------------------------------------
-# Request 141 (P3): the plugin secret name and the consumer kind
+# Request 142 (P3): the plugin secret name and the consumer kind
 # --------------------------------------------------------------------------
 
 
@@ -294,7 +294,7 @@ def test_plugin_is_a_consumer_kind_and_round_trips():
 # Nothing else in swarm_common changes
 # --------------------------------------------------------------------------
 
-#: specsign's public names before requests 139-143, and the ones they add.
+#: specsign's public names before requests 140-144, and the ones they add.
 SPECSIGN_BEFORE = {
     "MAX_DEPTH", "MAX_SAFE_INTEGER", "SETTINGS_MAC_FIELDS", "SETTINGS_PURPOSE",
     "SIGNED_METADATA_KEYS", "SPEC_FORMAT", "SPEC_FORMATS", "SPEC_PURPOSE",

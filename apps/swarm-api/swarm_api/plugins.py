@@ -340,7 +340,7 @@ class PluginsStore:
             signed = bool(keys) and block_verifies(tenant_id, MAC_BLOCK, stored, keys[:1])
             if previous == wanted and (signed or not keys) and stored.get(ALLOWED) == wanted:
                 return
-            # A covered key this writer does not write (contract request 139's
+            # A covered key this writer does not write (contract request 140's
             # `defaults` and `configs_digest`) was planted by a direct write:
             # dropped, never signed with the list the caller chose.
             dropped = (*OWNED_FIELDS, *unowned_covered_keys(MAC_BLOCK))

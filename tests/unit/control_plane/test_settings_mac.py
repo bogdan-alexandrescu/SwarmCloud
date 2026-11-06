@@ -215,7 +215,7 @@ def test_each_writers_fields_are_the_ones_the_module_writes():
     assert judgment.unowned_covered_keys("top") == ()
     assert judgment.unowned_covered_keys("merge") == ()
     assert judgment.WRITER_FIELDS["plugins"] == (plugins.ALLOWED,)
-    # Contract request 139 covers the block's every-step defaults and settings
+    # Contract request 140 covers the block's every-step defaults and settings
     # digest; no swarm-api path writes them yet, so they are unowned.
     assert judgment.unowned_covered_keys("plugins") == ("defaults", "configs_digest")
 
@@ -435,7 +435,7 @@ def test_a_resigned_document_reads_the_same_once_cut_over(client, seeded, api_co
 
 
 def test_the_plugins_writer_never_signs_a_planted_default():
-    """Contract request 139: `defaults` and `configs_digest` are covered, and
+    """Contract request 140: `defaults` and `configs_digest` are covered, and
     no swarm-api path writes them yet, so a value there was planted by a direct
     write. `PluginsStore.put` drops it rather than signing it with the list
     the admin chose."""
