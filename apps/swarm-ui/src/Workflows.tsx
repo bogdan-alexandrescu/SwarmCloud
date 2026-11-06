@@ -113,6 +113,7 @@ import {
   parentsDoneOf,
   resultTokenKinds,
   sameStepAcross,
+  summaryTask,
   summaryTaskById,
   shapeSignature,
   stateRankOf,
@@ -193,7 +194,8 @@ import './styles/workflows.css'
 import './styles/names.css'
 import { ownerQuestionsHold } from './Handoff'
 import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
-import { listNeedItems, workflowNeedItems } from './work/listNeeds'
+import { finishedQuestionsOf, listNeedItems, workflowNeedItems } from './work/listNeeds'
+import { QuestionsCard, questionCount } from './QuestionsCard'
 import { NeedsYou, StepRetryButton, mergeHeldBecause, type MergeNeed } from './work/NeedsYou'
 import { StageGrid, chipKindOf, chipTimeOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
 import { LineageStrip, lineageOf } from './work/Lineage'
@@ -6907,12 +6909,26 @@ function WorkflowHead({
   const age = workflowAge(workflow, now)
   const pr = workflowPullRequest(workflow, taskById)
   const n = workflow.steps.length
+  const quiet = finishedQuestionsOf(workflow, taskById)
+  const [asked, setAsked] = useState(false)
   return (
     <div className="wfp-head wfp-top">
       {/* `.wfp-chips` AND `.wfp-cost`, the slots the skeleton draws its
           bars in, so the line does not move when the read lands (V103). */}
       <p className="wfp-chips wfp-line">
         <WorkflowStateMark workflow={workflow} />
+        {quiet.length > 0 && (
+          <button
+            type="button"
+            className="c-chip is-link wfp-quiet-q"
+            aria-expanded={asked}
+            aria-label={`${quiet.length} unanswered ${quiet.length === 1 ? 'question' : 'questions'}`}
+            title={`${quiet.length} unanswered ${quiet.length === 1 ? 'question' : 'questions'}: the workflow has finished, so ${quiet.length === 1 ? 'it holds' : 'they hold'} no work and ${quiet.length === 1 ? 'is' : 'are'} not in Needs you. Open to answer.`}
+            onClick={() => setAsked((a) => !a)}
+          >
+            <span aria-hidden>?</span> {quiet.length}
+          </button>
+        )}
         {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
         <span className="wfp-fig">
           {n} {n === 1 ? 'step' : 'steps'}
@@ -6951,6 +6967,39 @@ function WorkflowHead({
         </span>
       </p>
       <WorkflowFacts workflow={workflow} taskById={taskById} started={utcStamp(workflow.created_at, now)} now={now} />
+      {asked && quiet.length > 0 && <FinishedQuestions workflow={workflow} taskById={taskById} quiet={quiet} />}
+    </div>
+  )
+}
+
+/**
+ * BEHIND THE FINISHED WORKFLOW'S QUIET TICK (BGD's pick "Only what still holds
+ * work", 6 November 2026): each asking step's "Questions for you" card, read
+ * and answered through the task's own questions route, as on its page. The
+ * list read serves a step's open indices, not the file's count, so a task
+ * without `result_summary.questions` in this read is given the least count
+ * its open indices prove.
+ */
+function FinishedQuestions({
+  workflow,
+  taskById,
+  quiet,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  quiet: readonly { taskId: string; index: number }[]
+}) {
+  const asking = new Map<string, number>()
+  for (const q of quiet) asking.set(q.taskId, Math.max(asking.get(q.taskId) ?? 0, q.index + 1))
+  return (
+    <div className="wfp-quiet-qs">
+      {[...asking].map(([taskId, least]) => {
+        const step = workflow.steps.find((s) => s.task_id === taskId)
+        const task = taskById?.get(taskId) ?? (step === undefined ? null : summaryTask(workflow, step))
+        if (task === null || task === undefined) return null
+        const counted = questionCount(task) > 0 ? task : { ...task, result_summary: { ...(task.result_summary ?? {}), questions: least } }
+        return <QuestionsCard key={taskId} task={counted} />
+      })}
     </div>
   )
 }
