@@ -141,6 +141,7 @@ run "the_output_records_every_gated_image_it_was_given" {
       "swarm-live"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:0000000000000000000000000000000000000000000000000000000000000000"
       "swarm-typesafe-fwd" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-typesafe-fwd@sha256:7777777777777777777777777777777777777777777777777777777777777777"
       "swarm-voice"        = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-speech"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-speech@sha256:2222222222222222222222222222222222222222222222222222222222222222"
     })
   }
 
