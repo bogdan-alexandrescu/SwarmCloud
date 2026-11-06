@@ -574,6 +574,10 @@ Two more, from outside that list:
   `swarm_trouble` before re-dispatching: an exhausted quota window, a paused
   pool or an account needing re-auth will fail the retry the same way, and
   re-dispatching into it spends the shared pool to learn nothing.
+* **Re-sending the same prompt.** A task that ended FAILED or CANCELLED before
+  any attempt started is re-sent as it was; the reply's `retry_of` names it.
+  Any other repeat is refused, naming the earlier task: to run it again on
+  purpose pass `retry_of: "<that task id>"`. Never change the prompt to get past it.
 
 ## How the work comes back
 
