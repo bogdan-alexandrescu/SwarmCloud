@@ -10,7 +10,26 @@
 # installer's choice to turn it on is lane L11's (install/manifest.d/
 # voice-speech-install.yaml). The IAM entries are IAM changes, so the release
 # that carries them waits at the IAM gate for the owner.
+#
+# swarm-api reads the machine's SWARM_SPEECH_* variables
+# (swarm_api/voice/speech_machine.py SpeechConfig.from_env); terraform/infra/
+# locals.tf sets them, empty while voice_speech is off.
 version: 1
+env:
+  SWARM_SPEECH_ADDR:
+    setter: terraform/infra/locals.tf:1175
+  SWARM_SPEECH_AUDIENCE:
+    setter: terraform/infra/locals.tf:1176
+  SWARM_SPEECH_IMAGE:
+    setter: terraform/infra/locals.tf:1177
+  SWARM_SPEECH_INSTANCE:
+    setter: terraform/infra/locals.tf:1174
+  SWARM_SPEECH_PROJECT:
+    setter: terraform/infra/locals.tf:1172
+  SWARM_SPEECH_SWEEP_AUDIENCE:
+    setter: terraform/infra/locals.tf:1178
+  SWARM_SPEECH_SWEEP_CALLERS:
+    setter: terraform/infra/locals.tf:1179
 entries:
 - id: sa.swarm-speech
   kind: service-account
