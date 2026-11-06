@@ -16,6 +16,7 @@ Offline: the real routes over FakeFirestore, and `WorkflowCreate` itself.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -208,11 +209,12 @@ def test_every_list_row_serves_it_in_both_views(client, view):
     assert row["started_from"] == "console"
 
 
-def test_a_workflow_without_them_serves_nulls_and_a_generated_description(client, monkeypatch):
+def test_a_workflow_without_them_serves_nulls_and_a_generated_description(client, api_context, monkeypatch):
     # No feature and no title are made up. The description is written for
     # it after the submission returns, marked generated (`wfdescription`),
     # with the switch as Terraform ships it.
-    monkeypatch.setenv(wfdescription.MODEL_SWITCH_ENV, "off")
+    service = api_context.submissions
+    monkeypatch.setattr(service, "_settings", replace(service._settings, workflow_description_model="off"))
     workflow = _post(client)
     assert wfdescription.wait_pending(10)
     read = client.get(f"/v1/workflows/{workflow['workflow_id']}", headers=auth_header("alice")).json()

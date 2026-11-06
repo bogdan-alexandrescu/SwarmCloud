@@ -3,7 +3,8 @@
 When a workflow arrives with no `metadata.description` or `metadata.about`,
 swarm-api writes the three parts (purpose, goals, expected output; BGD,
 2026-11-06) after the submission returns: Claude Haiku on Vertex AI behind
-SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform ships it "off"), else an
+SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform ships it "off"; swarm-api
+reads it into `ApiSettings.workflow_description_model`), else an
 extract of the masked step briefs and what the strategy publishes, marked
 `description_source: "generated"` either way. Unset, it writes nothing. One
 ledger row per workflow counts the call and caps it at one.
@@ -18,6 +19,7 @@ import json
 import re
 import secrets
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -38,11 +40,13 @@ from swarm_api.wfdescription import (
     after_submission,
     generate,
     output_of,
-    summariser_from_env,
+    summariser_for,
     usage_id,
 )
 
-from .conftest import auth_header
+from swarm_api.settings import ApiSettings
+
+from .conftest import api_settings, auth_header
 
 REPO = "https://github.com/octo-org/widget-shop.git"
 MODEL_ABOUT = {
@@ -107,18 +111,28 @@ class FakeModel:
         return Summary(text=self.text, input_tokens=812, output_tokens=41)
 
 
+def _switch(monkeypatch, api_context, value: str) -> None:
+    """Set the switch where swarm-api reads it: the submission service's settings."""
+    service = api_context.submissions
+    monkeypatch.setattr(service, "_settings", replace(service._settings, workflow_description_model=value))
+
+
+def _model_is(monkeypatch, fake: Any) -> None:
+    monkeypatch.setattr(wfdescription, "summariser_for", lambda switch, *, project_id, environ=None: fake)
+
+
 @pytest.fixture(autouse=True)
-def switched_off(monkeypatch):
+def switched_off(monkeypatch, api_context):
     """The switch as Terraform ships it: the extract writes."""
-    monkeypatch.setenv(MODEL_SWITCH_ENV, "off")
+    _switch(monkeypatch, api_context, "off")
 
 
 @pytest.fixture
-def model(monkeypatch) -> FakeModel:
+def model(monkeypatch, api_context) -> FakeModel:
     """The switch on, with a fake model where Vertex AI would be."""
     fake = FakeModel()
-    monkeypatch.setenv(MODEL_SWITCH_ENV, "vertex")
-    monkeypatch.setattr(wfdescription, "summariser_from_env", lambda environ, *, project_id: fake)
+    _switch(monkeypatch, api_context, "vertex")
+    _model_is(monkeypatch, fake)
     return fake
 
 
@@ -144,8 +158,8 @@ def test_with_the_switch_off_the_briefs_give_the_three_parts(client, db):
     assert row["tenant_id"] == workflow["tenant_id"] and row["settled_at"] is not None
 
 
-def test_unset_writes_nothing_and_the_page_shows_the_title_alone(client, db, monkeypatch):
-    monkeypatch.delenv(MODEL_SWITCH_ENV, raising=False)
+def test_unset_writes_nothing_and_the_page_shows_the_title_alone(client, db, api_context, monkeypatch):
+    _switch(monkeypatch, api_context, "")
     workflow = _post(client)
     served = _read(client, workflow)
     assert served["about"] is None and served["description"] is None
@@ -215,11 +229,11 @@ def test_a_description_written_meanwhile_is_never_overwritten(client, db, held, 
 # --------------------------------------------------------------------------
 
 
-def test_the_submission_returns_while_the_model_is_still_answering(client, db, monkeypatch):
+def test_the_submission_returns_while_the_model_is_still_answering(client, db, api_context, monkeypatch):
     gate = threading.Event()
     slow = FakeModel(gate=gate)
-    monkeypatch.setenv(MODEL_SWITCH_ENV, "vertex")
-    monkeypatch.setattr(wfdescription, "summariser_from_env", lambda environ, *, project_id: slow)
+    _switch(monkeypatch, api_context, "vertex")
+    _model_is(monkeypatch, slow)
     try:
         workflow = _post(client)
         assert _row(db, workflow)["outcome"] == "started"
@@ -229,10 +243,10 @@ def test_the_submission_returns_while_the_model_is_still_answering(client, db, m
 
 
 @pytest.mark.parametrize("error", [TimeoutError("read timed out"), SummaryRefused("vertex_http_403")])
-def test_a_failed_model_call_falls_back_to_the_extract_and_says_why(client, db, monkeypatch, error):
+def test_a_failed_model_call_falls_back_to_the_extract_and_says_why(client, db, api_context, monkeypatch, error):
     failing = FakeModel(error=error)
-    monkeypatch.setenv(MODEL_SWITCH_ENV, "vertex")
-    monkeypatch.setattr(wfdescription, "summariser_from_env", lambda environ, *, project_id: failing)
+    _switch(monkeypatch, api_context, "vertex")
+    _model_is(monkeypatch, failing)
     workflow = _post(client)
     served = _read(client, workflow)
     assert served["about"] == EXTRACT_ABOUT
@@ -248,10 +262,10 @@ def test_a_failed_model_call_falls_back_to_the_extract_and_says_why(client, db, 
     json.dumps({"purpose": "x" * (ABOUT_PURPOSE_MAX_CHARS + 1)}),
     json.dumps({"summary": "Adds a chart."}),
 ])
-def test_model_text_the_rule_refuses_falls_back_to_the_extract(client, db, monkeypatch, text):
+def test_model_text_the_rule_refuses_falls_back_to_the_extract(client, db, api_context, monkeypatch, text):
     marked = FakeModel(text=text)
-    monkeypatch.setenv(MODEL_SWITCH_ENV, "vertex")
-    monkeypatch.setattr(wfdescription, "summariser_from_env", lambda environ, *, project_id: marked)
+    _switch(monkeypatch, api_context, "vertex")
+    _model_is(monkeypatch, marked)
     workflow = _post(client)
     assert _read(client, workflow)["about"] == EXTRACT_ABOUT
     assert _row(db, workflow)["outcome"] == "extractive:model_text_refused"
@@ -338,10 +352,13 @@ def test_after_submission_starts_nothing_while_the_switch_is_unset(client, api_c
     real = wfdescription.threading.Thread
     wfdescription.threading.Thread = monkey_thread
     try:
-        after_submission(object(), _tasks(api_context, workflow), settings=None, environ={})
-        after_submission(object(), _tasks(api_context, workflow), settings=None, environ={MODEL_SWITCH_ENV: " "})
+        after_submission(object(), _tasks(api_context, workflow), settings=None)
+        after_submission(object(), _tasks(api_context, workflow), settings=api_settings())
+        after_submission(object(), _tasks(api_context, workflow),
+                         settings=api_settings(workflow_description_model=" "))
         assert started == []
-        after_submission(object(), _tasks(api_context, workflow), settings=None, environ={MODEL_SWITCH_ENV: "off"})
+        after_submission(object(), _tasks(api_context, workflow),
+                         settings=api_settings(workflow_description_model="off"))
         assert len(started) == 1
     finally:
         wfdescription.threading.Thread = real
@@ -391,9 +408,26 @@ def test_a_refused_vertex_answer_still_counts_its_tokens(client, db, held, api_c
 
 
 def test_the_switch_is_off_unless_it_says_vertex():
-    assert summariser_from_env({}, project_id="proj-1") is None
-    assert summariser_from_env({MODEL_SWITCH_ENV: "on"}, project_id="proj-1") is None
-    assert isinstance(summariser_from_env({MODEL_SWITCH_ENV: "vertex"}, project_id="proj-1"), VertexSummariser)
+    assert summariser_for("", project_id="proj-1", environ={}) is None
+    assert summariser_for("on", project_id="proj-1", environ={}) is None
+    assert isinstance(summariser_for("vertex", project_id="proj-1", environ={}), VertexSummariser)
+
+
+def test_swarm_api_reads_the_switch_into_its_settings_and_refuses_a_misspelt_one(monkeypatch):
+    """Read once, at start, by `ApiSettings.from_env`: the environment parity
+    check sees the read, and a value that is neither "off" nor "vertex" stops
+    the service rather than quietly writing the extract."""
+    assert api_settings().workflow_description_model == ""
+    monkeypatch.setenv("PROJECT_ID", "swarm-test-project")
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.delenv(MODEL_SWITCH_ENV, raising=False)
+    assert ApiSettings.from_env().workflow_description_model == ""
+    for value, expected in (("off", "off"), (" Vertex ", "vertex")):
+        monkeypatch.setenv(MODEL_SWITCH_ENV, value)
+        assert ApiSettings.from_env().workflow_description_model == expected
+    monkeypatch.setenv(MODEL_SWITCH_ENV, "on")
+    with pytest.raises(ValueError, match=MODEL_SWITCH_ENV):
+        ApiSettings.from_env()
 
 
 TERRAFORM = Path(__file__).resolve().parents[3] / "terraform"
@@ -408,7 +442,7 @@ def test_terraform_ships_the_switch_off_for_swarm_api():
     locals_tf = (TERRAFORM / "infra" / "locals.tf").read_text()
     api_env = locals_tf.split('"swarm-api" = merge(', 1)[1].split('\n    "swarm-', 1)[0]
     assert re.search(rf'^\s*{MODEL_SWITCH_ENV}\s*=\s*"off"\s*$', api_env, re.MULTILINE)
-    assert summariser_from_env({MODEL_SWITCH_ENV: "off"}, project_id="proj-1") is None
+    assert summariser_for("off", project_id="proj-1", environ={}) is None
     bindings = (TERRAFORM / "modules" / "iam" / "bindings.tf").read_text()
     api_roles = bindings.split('"swarm-api" = concat(', 1)[1].split("])", 1)[0]
     assert '"roles/aiplatform.user"' not in api_roles

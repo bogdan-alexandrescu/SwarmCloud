@@ -31,8 +31,10 @@ submitter's about is held to (plain text, one line a part, the parts' caps):
 
 * the model, Claude Haiku on Vertex AI (`VertexSummariser`), the owner's
   pick on #3346 (2026-11-05), behind the switch
-  `SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex`. It ships OFF: Terraform sets the
-  switch to "off" on swarm-api (terraform/infra/locals.tf). It turns to "vertex" once the owner
+  `SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex`, read once into swarm-api's
+  settings (`ApiSettings.workflow_description_model`, validated at start).
+  It ships OFF: Terraform sets the switch to "off" on swarm-api
+  (terraform/infra/locals.tf). It turns to "vertex" once the owner
   grants Vertex AI: swarm-api's account `roles/aiplatform.user`, the Vertex
   AI API enabled and Anthropic's Model Garden terms accepted;
 * the extractive fallback (`extract_about`): the purpose is the first
@@ -98,11 +100,14 @@ DESCRIPTION_SOURCE_GENERATED = "generated"
 USAGE_COLLECTION = "workflow_description_usage"
 USAGE_KIND = "workflow_description"
 
-#: The switch, and its one value that turns the model on. Any other value
-#: ("off", what Terraform ships) writes the extractive fallback alone; absent
-#: or empty writes nothing (`after_submission`).
+#: The switch's variable, read by `ApiSettings.from_env` into
+#: `workflow_description_model`, and its values: "vertex" turns the model on,
+#: "off" (what Terraform ships) writes the extractive fallback alone; empty
+#: (the variable absent) writes nothing (`after_submission`).
 MODEL_SWITCH_ENV = "SWARM_WORKFLOW_DESCRIPTION_MODEL"
+MODEL_SWITCH_OFF = "off"
 MODEL_SWITCH_VERTEX = "vertex"
+MODEL_SWITCHES = (MODEL_SWITCH_OFF, MODEL_SWITCH_VERTEX)
 #: Vertex AI's id of Claude Haiku 4.5 (a dated snapshot takes `@`), and the
 #: location it is served from. Both can be overridden for a deployment whose
 #: Model Garden enablement names another.
@@ -234,10 +239,13 @@ class _Spent(SummaryRefused):
         self.output_tokens = output_tokens
 
 
-def summariser_from_env(environ: Mapping[str, str], *, project_id: str) -> Summariser | None:
-    """The model behind the switch, or None while it is off (the default)."""
-    if (environ.get(MODEL_SWITCH_ENV) or "").strip().lower() != MODEL_SWITCH_VERTEX or not project_id:
+def summariser_for(switch: str, *, project_id: str,
+                   environ: Mapping[str, str] | None = None) -> Summariser | None:
+    """The model behind the switch (the settings' `workflow_description_model`),
+    or None while it is off (the default)."""
+    if (switch or "").strip().lower() != MODEL_SWITCH_VERTEX or not project_id:
         return None
+    environ = os.environ if environ is None else environ
     return VertexSummariser(
         project_id=project_id,
         model=(environ.get(MODEL_ENV) or "").strip() or DEFAULT_MODEL,
@@ -541,15 +549,15 @@ def after_submission(db: Any, tasks: Sequence[Task], *, settings: Any,
     Returns at once and never raises: `submit_workflow` calls it after the
     store write and before it returns."""
     try:
-        environ = os.environ if environ is None else environ
-        switch = environ.get(MODEL_SWITCH_ENV)
+        switch = (getattr(settings, "workflow_description_model", "") or "").strip().lower()
         # Unset writes nothing: no thread, no row, nothing invented.
-        if db is None or not tasks or has_description(tasks) or not (switch or "").strip():
+        if db is None or not tasks or has_description(tasks) or not switch:
             return
         summariser = None
-        if (switch or "").strip().lower() == MODEL_SWITCH_VERTEX:
+        if switch == MODEL_SWITCH_VERTEX:
             # Read only while the switch is on: the project id is the model's.
-            summariser = summariser_from_env(environ, project_id=getattr(settings, "project_id", "") or "")
+            summariser = summariser_for(switch, project_id=getattr(settings, "project_id", "") or "",
+                                        environ=environ)
         thread = threading.Thread(target=generate, args=(db, list(tasks)),
                                   kwargs={"summariser": summariser, "now": now},
                                   name="workflow-description", daemon=True)
