@@ -1745,7 +1745,14 @@ def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sit
         if version is None:
             # Never initialized: a crash keeps the base's answers, as the
             # files it would have asked keep their `ast` edges; a total that
-            # ran out first does not, as no version was checked.
+            # ran out first does not, as no version was checked -- unless
+            # this run's install is the one the base recorded its version
+            # with (`_same_install`): then the version is the base's, as the
+            # driver's known-version shortcut reads it, and the row records
+            # it so the next run carries these answers on too.
+            if row is not None and _same_install(recorded, server, row.counts):
+                row.counts["server_version"] = base_version
+                continue
             if row is not None and row.status == lsp_pass.STATUS_TIMED_OUT:
                 not_carried[language] = ("the LSP pass's total ran out before this run's server "
                                          "version was learnt, so the base's answers are not carried")
@@ -1760,6 +1767,20 @@ def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sit
         carried -= paths
         asked |= paths
     return result, asked, carried, not_carried
+
+
+def _same_install(recorded: "lsp_pass.Answered", server: str | None,
+                  counts: dict[str, Any]) -> bool:
+    """Whether a server that reported no version this run is the one the
+    base's answers came from: the same server, whose base version was
+    reported, at the same install (`lsp_pass.server_build`, the fingerprint
+    of its installed files, which the image pins). BGD's pick, 2026-11-06:
+    without it the most expensive server, last in the pass, dropped every
+    carried answer each time its grant ran out before initialize answered,
+    and 0-3.8% of the servers' answers were carried between builds."""
+    build = counts.get("server_build")
+    return (isinstance(build, str) and bool(build) and recorded.build == build
+            and lsp_pass.answers_kept(recorded, server, recorded.version))
 
 
 def _carry_lsp_edges(edges: "_Edges", base_graph: Any, carried: set[str]) -> None:
