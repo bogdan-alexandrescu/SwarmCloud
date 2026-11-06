@@ -103,6 +103,12 @@ def test_qwen_finish_flushes_the_tail_without_a_whole_chunk(monkeypatch, tmp_pat
     assert [call[1:] for call in _LLM.calls if call[0] == "generate"] == [(engines.ASR_PROMPT, 50, False)]
 
 
+def test_the_prompt_is_the_one_the_models_chat_template_rendered_for_the_sdk():
+    # Qwen/Qwen3-ASR-0.6B's chat_template.json writes the system turn even when empty.
+    assert engines.ASR_PROMPT == ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n"
+                                  "<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n<|im_start|>assistant\n")
+
+
 def test_the_transcript_is_what_follows_the_tag_with_decoding_loops_kept_once():
     assert engines.transcript("language English<asr_text> hi there ") == "hi there"
     assert engines.transcript("no tag at all") == "no tag at all"

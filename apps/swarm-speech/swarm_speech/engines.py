@@ -84,11 +84,12 @@ def resample_24k_to_16k(pcm: bytes) -> bytes:
     return out.tobytes()
 
 
-# Qwen3-ASR's prompt with no context and no forced language: the format of the
-# official SDK (qwen-asr 0.0.6) and of vLLM's own transcription route
-# (vllm/model_executor/models/qwen3_asr.py, get_generation_prompt). The model
-# answers "language <Name><asr_text><the words>".
-ASR_PROMPT = ("<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n"
+# Qwen3-ASR's prompt with no context and no forced language, as the official
+# SDK (qwen-asr 0.0.6) rendered it through the model's chat_template.json: that
+# template always writes the system turn, empty here (vLLM's own transcription
+# route omits it). The model answers "language <Name><asr_text><the words>".
+ASR_PROMPT = ("<|im_start|>system\n<|im_end|>\n"
+              "<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n"
               "<|im_start|>assistant\n")
 ASR_TEXT_TAG = "<asr_text>"
 # The SDK's streaming defaults: the first 2 decodes start from nothing; later
