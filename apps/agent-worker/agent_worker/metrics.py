@@ -5,7 +5,9 @@ Code lane (~2.5 GiB resident) doubled. Doubling a single measurement is a guess
 with a safety factor, not a sizing policy, so every attempt reports what it
 actually used:
 
-    peak_rss_bytes    high-water resident memory of the whole runner tree
+    peak_rss_bytes    high-water WORKING SET of the container: the memory
+                      the kernel cannot reclaim (`working_set_bytes`), or
+                      the runner tree's resident memory without a cgroup
     peak_disk_bytes   high-water bytes on the ephemeral disk
     oom_near_miss     the attempt came within a hair of its memory limit
 
@@ -15,10 +17,19 @@ that will be killed next week when the model gets chattier. Because
 `requests == limits` platform-wide there is no headroom to absorb that, so the
 near-miss has to be visible before it becomes a kill.
 
-Measurement prefers cgroup v2 (`memory.peak`, `memory.events`), which is what the
-kernel's OOM killer itself looks at, and falls back to summing RSS across the
-child's process group when no cgroup is visible -- for example on a developer's
-laptop during a local smoke run.
+Measurement prefers cgroup v2 (`memory.current`, `memory.stat`,
+`memory.events`), which is what the kernel's OOM killer itself looks at, and
+falls back to summing RSS across the child's process group when no cgroup is
+visible -- for example on a developer's laptop during a local smoke run.
+
+WORKING SET, NOT `memory.current` (load analysis 2026-11-06). `memory.current`
+and `memory.peak` count the clean page cache of every file the agent read --
+a clone, a `node_modules`, a test run's imports -- which the kernel drops
+under pressure long before its OOM killer runs. Judged on that, the memory
+guard killed 4,907 processes in seven days on 512 pods, and the victim's
+median share of its pod's memory was 7%. Both the guard and the recorded
+peak now read the working set, `memory.current` less `inactive_file`; the
+raw high-water rides beside it as `peak_memory_current_bytes`.
 
 CPU (docs/web-ui/redesign-v2.md section 6, S5). Every resource class reserves
 whole vCPUs with `requests == limits`, and until this was measured nothing said
@@ -112,7 +123,9 @@ NEAR_MISS_FRACTION = 0.90
 #: Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ended that way
 #: on an agent's pytest, tsc or dev server. At 95% of an 8 GiB container the
 #: guard acts with ~400 MiB still free, two sample intervals before a burst
-#: that fills the rest would.
+#: that fills the rest would. A fraction of the WORKING SET
+#: (`working_set_bytes`), which the OOM killer's own judgement is made on once
+#: reclaim has dropped the cache, so the margin to it is the same.
 MEMORY_GUARD_FRACTION = 0.95
 
 
@@ -121,6 +134,11 @@ class ResourceUsage:
     peak_rss_bytes: int = 0
     peak_disk_bytes: int = 0
     oom_near_miss: bool = False
+    #: The raw cgroup high-water, page cache included: `memory.peak`, else
+    #: the highest `memory.current` sampled. Beside `peak_rss_bytes`, which is
+    #: the working set, so a reader can see how much of the cgroup was cache.
+    #: None without a cgroup: not measured, never 0.
+    peak_memory_current_bytes: int | None = None
     #: cgroup `memory.events` counters, when the kernel exposes them.
     memory_events: dict[str, int] | None = None
     samples: int = 0
@@ -153,6 +171,11 @@ class ResourceUsage:
     def merge_rss(self, value: int) -> None:
         self.peak_rss_bytes = max(self.peak_rss_bytes, int(value))
 
+    def merge_memory_current(self, value: int | None) -> None:
+        if value is None:
+            return
+        self.peak_memory_current_bytes = max(self.peak_memory_current_bytes or 0, int(value))
+
     def merge_disk(self, value: int) -> None:
         self.peak_disk_bytes = max(self.peak_disk_bytes, int(value))
 
@@ -166,7 +189,8 @@ def combine_usage(parts: Sequence[ResourceUsage]) -> ResourceUsage | None:
     * `cpu_seconds` and `cpu_wall_seconds` add up, over the parts that have
       them. A part with no reading contributes nothing rather than a zero, so
       a total is None only when NO runner was measured.
-    * The peaks -- memory, disk, CPU cores -- are the highest of any part, and
+    * The peaks -- memory (working set and raw), disk, CPU cores -- are the
+      highest of any part (a raw peak None only when no part measured one), and
       a near miss in any runner is a near miss for the attempt.
     * `mean_cpu_cores` is total CPU over total time across the parts that have
       both, and exists only if at least one part was long enough to have a
@@ -192,6 +216,7 @@ def combine_usage(parts: Sequence[ResourceUsage]) -> ResourceUsage | None:
     any_mean = False
     for part in parts:
         out.merge_rss(part.peak_rss_bytes)
+        out.merge_memory_current(part.peak_memory_current_bytes)
         out.merge_disk(part.peak_disk_bytes)
         out.oom_near_miss = out.oom_near_miss or bool(part.oom_near_miss)
         if part.memory_events:
@@ -282,6 +307,63 @@ def cgroup_memory_events() -> dict[str, int]:
     except OSError:
         return {}
     return events
+
+
+def cgroup_memory_stat() -> dict[str, int]:
+    """cgroup v2 `memory.stat` as name -> bytes; {} when it cannot be read."""
+    stat: dict[str, int] = {}
+    try:
+        for line in (CGROUP_ROOT / "memory.stat").read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                try:
+                    stat[parts[0]] = int(parts[1])
+                except ValueError:
+                    continue
+    except OSError:
+        return {}
+    return stat
+
+
+def working_set_bytes(current: int | None, stat: dict[str, int]) -> int | None:
+    """The cgroup's memory the kernel cannot reclaim at once: `memory.current` less `inactive_file`.
+
+    WHAT IS SUBTRACTED, by cgroup v2 `memory.stat` name:
+
+      * `inactive_file` -- clean and dirty file pages on the inactive LRU
+        list: cache read once (a clone, an import, a grep) and not touched
+        since. Reclaim takes these first, before any OOM decision, so a
+        cgroup full of them is not short of memory. The same figure the
+        kubelet evicts on (cAdvisor's `working_set`).
+
+    WHAT STAYS COUNTED:
+
+      * `anon` -- the processes' heaps and stacks. No swap here, so it cannot
+        be reclaimed at all.
+      * `shmem` -- the tmpfs workspace and /dev/shm. Swap-backed, so the
+        kernel keeps it on the ANON LRU lists (`inactive_anon`,
+        `active_anon`), never on `inactive_file`: subtracting `inactive_file`
+        never subtracts the workspace, which without swap the kernel cannot
+        drop.
+      * `active_file` -- kept, deliberately. It is reclaimable only after
+        the kernel demotes it to the inactive list, and it holds what is in
+        use now: the mapped text of the running node and python, and dirty
+        or writeback pages that must reach the disk first. Dropping it
+        under pressure thrashes rather than frees, and a guard that counted
+        it as free could stand aside while the OOM killer took the
+        container. Counting it errs towards acting -- the failure the guard
+        exists to prevent -- and file pages read once enter the inactive
+        list, which is what filled the cgroups the guard was killing in.
+      * kernel memory (`slab_unreclaimable`, `sock`, `kernel_stack`,
+        `pagetables`), which is in `memory.current` and stays in it.
+
+    Never below zero. With no `inactive_file` (a `memory.stat` that could not
+    be read) it is `memory.current` itself: the guard then errs towards
+    acting, as it did before this existed. None when `current` is None.
+    """
+    if current is None:
+        return None
+    return max(0, int(current) - int(stat.get("inactive_file", 0)))
 
 
 def _proc_rss(pid: int) -> int:
@@ -694,6 +776,7 @@ class ResourceSampler:
         memory_guard_fraction: float = MEMORY_GUARD_FRACTION,
         memory_guard_cooldown_seconds: float | None = None,
         memory_current_reader: Callable[[], int | None] = cgroup_memory_current,
+        memory_stat_reader: Callable[[], dict[str, int]] = cgroup_memory_stat,
         memory_max_reader: Callable[[], int | None] = cgroup_memory_max,
         process_table: Callable[[], Sequence[ProcessInfo]] = proc_process_table,
         kill: Callable[[int, int], None] = os.kill,
@@ -742,6 +825,7 @@ class ResourceSampler:
         )
         self._guard_quiet_until: float | None = None
         self._memory_current_reader = memory_current_reader
+        self._memory_stat_reader = memory_stat_reader
         self._memory_max_reader = memory_max_reader
         self._process_table = process_table
         self._kill = kill
@@ -897,20 +981,22 @@ class ResourceSampler:
         return out
 
     def sample_once(self) -> None:
-        peak = cgroup_memory_peak()
-        if peak is not None:
-            self.usage.merge_rss(peak)
+        # THE WORKING SET, sampled, for `peak_rss_bytes` -- not `memory.peak`,
+        # the kernel's own high-water, which counts reclaimable page cache and
+        # so recorded every attempt that read a large tree as near its limit
+        # (see `working_set_bytes`). The raw high-water is kept beside it.
+        current = cgroup_memory_current()
+        if current is not None:
+            self.usage.merge_rss(working_set_bytes(current, cgroup_memory_stat()) or 0)
+            self.usage.merge_memory_current(current)
+            self.usage.merge_memory_current(cgroup_memory_peak())
         else:
-            current = cgroup_memory_current()
-            if current is not None:
-                self.usage.merge_rss(current)
-            else:
-                pid = self._pid_provider()
-                if pid:
-                    try:
-                        self.usage.merge_rss(process_group_rss(os.getpgid(pid)))
-                    except (ProcessLookupError, OSError):
-                        pass
+            pid = self._pid_provider()
+            if pid:
+                try:
+                    self.usage.merge_rss(process_group_rss(os.getpgid(pid)))
+                except (ProcessLookupError, OSError):
+                    pass
         try:
             self.usage.merge_disk(self._disk_provider())
         except OSError:
@@ -922,6 +1008,12 @@ class ResourceSampler:
     def _guard_memory(self) -> None:
         """At `memory_guard_fraction` of `memory.max`, SIGKILL the agent's largest process.
 
+        Judged on the WORKING SET (`working_set_bytes`), not `memory.current`:
+        a cgroup full of cache the kernel would drop is not about to be OOM
+        killed, and acting on it killed a process holding a median 7% of the
+        pod (load analysis, 2026-11-06). The victim is still chosen by its own
+        resident memory (`memory_guard_victim`).
+
         The kernel's OOM killer, left to act, took the whole container and the
         worker with it (#2504). Killing the agent's biggest process -- its
         pytest, tsc or dev server -- costs the agent one command it can see
@@ -932,7 +1024,10 @@ class ResourceSampler:
         try:
             current = self._memory_current_reader()
             limit = self._memory_max_reader()
-            if current is None or not limit or current < limit * self._guard_fraction:
+            if current is None or not limit:
+                return
+            working_set = working_set_bytes(current, self._memory_stat_reader())
+            if working_set is None or working_set < limit * self._guard_fraction:
                 return
             now = self._clock()
             if self._guard_quiet_until is not None and now < self._guard_quiet_until:
@@ -953,6 +1048,7 @@ class ResourceSampler:
                         "name": victim.name,
                         "rss_bytes": victim.rss_bytes,
                         "memory_current_bytes": current,
+                        "working_set_bytes": working_set,
                         "memory_max_bytes": limit,
                     }
                 )
@@ -1031,6 +1127,7 @@ class LoggingMetricsExporter:
         self._log.info(
             "attempt resource usage",
             peak_rss_bytes=usage.peak_rss_bytes,
+            peak_memory_current_bytes=usage.peak_memory_current_bytes,
             peak_disk_bytes=usage.peak_disk_bytes,
             oom_near_miss=usage.oom_near_miss,
             memory_events=usage.memory_events or {},

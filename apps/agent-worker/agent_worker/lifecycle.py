@@ -12627,6 +12627,8 @@ class Worker:
                 self.log.warning("could not read the series clock", error=f"{type(exc).__name__}: {exc}")
         return {
             "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
+            # The working set (`metrics.working_set_bytes`), page cache
+            # excluded: the figure the reconciler's memory judgement reads.
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
             "checkpoints": self.checkpoints.seq,
             "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
@@ -18548,6 +18550,7 @@ class Worker:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
                 peak_rss_bytes=usage.peak_rss_bytes,
+                peak_memory_current_bytes=usage.peak_memory_current_bytes,
                 limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
                 resource_class=self._memory_class(),
             )
@@ -18575,6 +18578,7 @@ class Worker:
                 name=kill.get("name"),
                 rss_bytes=kill.get("rss_bytes"),
                 memory_current_bytes=kill.get("memory_current_bytes"),
+                working_set_bytes=kill.get("working_set_bytes"),
                 memory_max_bytes=kill.get("memory_max_bytes"),
             )
 
