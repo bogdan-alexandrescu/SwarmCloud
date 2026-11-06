@@ -65,9 +65,9 @@
 # Exit codes: 0 assembled, 1 refused or failed, 2 bad arguments.
 
 set -euo pipefail
-# This script touches no project: it assembles a bundle from this checkout. It says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
-# PROJECT_ID.
+# This script touches no project: it assembles a bundle from this checkout. It
+# says so, so common.sh (no default project, DAYONE-DESAGA-2) does not stop on
+# an unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=lib/common.sh

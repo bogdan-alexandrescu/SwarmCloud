@@ -83,13 +83,17 @@ set -euo pipefail
 # for ten minutes (2026-10-30). With prompts off it fails at once, which reads
 # as "not there yet", and the enable below runs.
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
-# This script touches no project: it works in the release home named by --project, never PROJECT_ID. It says so, so
-# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
-# PROJECT_ID.
+# This script never touches PROJECT_ID's project: it works in the release home
+# its --project names. It says so, so common.sh (no default project,
+# DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
 SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# The release home is never PROJECT_ID, so the deny-list it is checked against
+# is the shared project's whole list, not the one common.sh keyed to whatever
+# PROJECT_ID an operator's .env names (empty for any other project).
+SHARED_DENY_LIST=("${SHARED_PROJECT_DENY_LIST[@]}")
 
 # The public grant and the CI publisher's grants are never non-interactive. An
 # automation that sets this does not get to answer the typed confirmation for
@@ -158,7 +162,7 @@ done
 # than spelling the project id a second time.
 is_shared_project() {
   local candidate="$1" protected
-  for protected in "${SHARED_DENY_LIST[@]}"; do
+  for protected in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     [[ "${protected}" == *"@${candidate}.iam.gserviceaccount.com" ]] && return 0
   done
   return 1
