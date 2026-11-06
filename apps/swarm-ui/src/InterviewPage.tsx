@@ -29,7 +29,8 @@ import { Button, Chip } from './components'
 import { FailedPanel, PageHead, Screen } from './Shell'
 import { AUTO_APPROVER, PlanEditor, RejectForm, runStateWord, shortDigest } from './Runs'
 import { leftOfWait } from './work/NeedsYou'
-import type { CataloguePlugin, IssueRun, OwnerAnswer, RunPlan, Task } from './types'
+import type { AnswerVia, CataloguePlugin, IssueRun, OwnerAnswer, RunPlan, Task } from './types'
+import { InfoTip } from './People'
 import { useNow } from './useNow'
 import { addressToPath } from './paths'
 import { interviewAddress, type InterviewAt } from './interviewPaths'
@@ -62,7 +63,7 @@ export const optionKey = (i: number): string => String.fromCharCode(65 + i)
  * API recorded where (or by a client that left it out) says so instead of
  * being counted as the console's.
  */
-export type ServedVia = 'console' | 'voice-it' | 'claude-code' | 'github-comment'
+export type ServedVia = AnswerVia
 const VIA_WORD: Readonly<Record<ServedVia, string>> = {
   console: 'Console', 'voice-it': 'Voice it', 'claude-code': 'Claude Code', 'github-comment': 'GitHub',
 }
@@ -111,8 +112,12 @@ export interface QuestionWait {
   skill: string | null
 }
 
-/** An option as the bridge carries it: `preview`, the design's HTML, only when the route serves it. */
-type ServedOption = QuestionOption & { preview?: unknown }
+/**
+ * An option as `agent_questions._question` serves it: `preview`, the design's
+ * HTML, on an option the agent drew one for; null with `preview_dropped`, the
+ * reason, when it passed the option's or the question's size cap.
+ */
+export type ServedOption = QuestionOption & { preview?: string | null; preview_dropped?: string | null }
 type ServedQuestion = AgentQuestion & { blocking?: boolean; options: ServedOption[] }
 export type InterviewQuestions = TaskQuestions & { waiting?: QuestionWait | null; questions: ServedQuestion[] }
 
@@ -120,6 +125,12 @@ export type InterviewQuestions = TaskQuestions & { waiting?: QuestionWait | null
 export function previewOf(option: QuestionOption): string | null {
   const p = (option as ServedOption).preview
   return typeof p === 'string' && p.trim() !== '' ? p : null
+}
+
+/** Why the design an option drew was not served, or null when none was dropped. */
+export function droppedOf(option: QuestionOption): string | null {
+  const why = (option as ServedOption).preview_dropped
+  return typeof why === 'string' && why.trim() !== '' ? why : null
 }
 
 /** The question the page asks: the wait's first unanswered blocking one, else the first unanswered. */
@@ -385,6 +396,7 @@ function Pending({ taskId, served, index, now, onSent }: {
           {q.options.map((o, i) => {
             const isRec = o.label === rec
             const html = previewOf(o)
+            const dropped = html === null ? droppedOf(o) : null
             return (
               <li key={`${i}-${o.label}`} className={`iv-opt${o.label === picked ? ' is-picked' : ''}${isRec ? ' is-rec' : ''}`}>
                 <label className="iv-opt-h">
@@ -396,7 +408,9 @@ function Pending({ taskId, served, index, now, onSent }: {
                 {o.description !== null && <p className="iv-opt-d">{o.description}</p>}
                 {html !== null
                   ? <Shot html={html} title={`Design: ${plainLabel(o.label)}`} onBig={() => setBig(i)} />
-                  : <p className="iv-shot-none">No design came with this option.</p>}
+                  : dropped !== null
+                    ? <p className="iv-shot-none"><InfoTip about="the design" tip={dropped} /></p>
+                    : <p className="iv-shot-none">No design came with this option.</p>}
               </li>
             )
           })}
