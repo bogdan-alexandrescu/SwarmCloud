@@ -560,10 +560,15 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
     centred: ['button.ctl-q-glyph [left] width 20px, centred', 'button.ctl-q-glyph [right] width 20px, centred'],
   },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
-  // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.
+  // ACCOUNTS IS TWO SLICES (part of #2688, 2026-11-06). Its six routes were the
+  // heaviest slice, 485 s in CI, and ran into the 900 s timeout in six runs of
+  // shard 1/8 and 1/4 with their findings complete. The rail's order is kept:
+  // holders to Account health here, Provider quota onwards in `quota`.
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health'], floor: 80 },
   // Jev usage (JEV-USAGE-PAGE; part of #2688) sits after Provider quota, as in the rail.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 160 },
+  // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
+  { name: 'quota', routes: ['capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 80 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.
