@@ -347,6 +347,14 @@ SETTINGS_PURPOSE = "swarm.settings/v1"
 #: (docs/design/agent-quality/jev-contract.md section 4.1). swarm-api signed
 #: these same bytes before the block was listed here, so every stored MAC
 #: still verifies and nothing needs re-signing.
+#:
+#: "plugins" gains "defaults" and "configs_digest" by contract request 139
+#: (managed plugins P1, docs/design/managed-plugins.md section 14), accepted
+#: by the owner 2026-11-06: the install ids on for every step of the
+#: workspace and the digest of its plugin settings documents are signed with
+#: the Allowed list. An absent key projects as null, and a null key the block
+#: gained after its MACs were stored is left out of the bytes
+#: (_SETTINGS_ADDED_FIELDS), so every block stored before it still verifies.
 SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "top": ("judgment_backend",),
@@ -360,9 +368,19 @@ SETTINGS_MAC_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "budget": ("unit", "amount"),
         "quality_gates": ("jev",),
-        "plugins": ("allowed",),
+        "plugins": ("allowed", "defaults", "configs_digest"),
         "contract_review": ("enabled",),
     }
+)
+
+#: The keys of SETTINGS_MAC_FIELDS a block gained after MACs over it were
+#: stored. Null or absent, such a key is left out of the bytes rather than
+#: projected as null, so a block stored before the key existed keeps its
+#: bytes and its MAC. Set, it is covered like any other key: planting one on a
+#: block signed without it, or removing or nulling one that was signed,
+#: changes the bytes. Null and absent stay one value, as for every key.
+_SETTINGS_ADDED_FIELDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {"plugins": ("defaults", "configs_digest")}  # contract request 139
 )
 
 
@@ -371,10 +389,11 @@ def canonical_settings_block(
 ) -> bytes:
     """JCS of {"purpose": "swarm.settings/v1", "tenant_id", "block", "fields"}.
 
-    `block` is "top", "merge", "code_intelligence" or "budget". `fields` is the block as
+    `block` is a key of SETTINGS_MAC_FIELDS. `fields` is the block as
     stored; only the keys SETTINGS_MAC_FIELDS lists for it are projected, a
     listed key that is absent is null, and any other key is not covered and
-    must not be acted on. The tenant and the block are inside the bytes, so a
+    must not be acted on. A null key in _SETTINGS_ADDED_FIELDS is left out of
+    the bytes (contract request 139), so they are the bytes stored before it. The tenant and the block are inside the bytes, so a
     block copied onto another tenant's document, or into another block, does
     not verify.
 
@@ -392,7 +411,129 @@ def canonical_settings_block(
             "purpose": SETTINGS_PURPOSE,
             "tenant_id": tenant_id,
             "block": block,
-            "fields": {key: fields.get(key) for key in SETTINGS_MAC_FIELDS[block]},
+            "fields": {
+                key: fields.get(key)
+                for key in SETTINGS_MAC_FIELDS[block]
+                if fields.get(key) is not None or key not in _SETTINGS_ADDED_FIELDS.get(block, ())
+            },
+        }
+    )
+
+
+#: Domain separation for a managed plugin's install, version and intake
+#: documents (contract request 140, managed plugins P2,
+#: docs/design/managed-plugins.md sections 1.1 and 14, accepted by the owner
+#: 2026-11-06). swarm-api MACs these bytes under `swarm-settings-key` and acts
+#: on a document only when its MAC verifies: a tenant identity can write any
+#: Firestore document, and a forged version could swap the digest every
+#: workspace's steps are signed with.
+PLUGIN_RECORD_PURPOSE = "swarm.plugin-record/v1"
+
+#: `plugin_installs/{install_id}`, `plugin_installs/{install_id}/versions/
+#: {version_id}` and `plugin_intake/{intake_id}`.
+PLUGIN_RECORD_KINDS: tuple[str, ...] = ("install", "version", "intake")
+
+#: A record's scope: a platform install, or one workspace's own.
+PLUGIN_SCOPES: tuple[str, ...] = ("platform", "workspace")
+
+#: The ids each kind's `fields` must carry, each a non-empty string. A
+#: document's id is not one of its stored fields, so its writer and reader
+#: put it into `fields`: a version copied under another install, or an
+#: intake's record onto another intake, then does not verify. An intake for
+#: a new install names no `install_id`; one for an update does, covered.
+PLUGIN_RECORD_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "install": ("install_id",),
+        "version": ("install_id", "version_id"),
+        "intake": ("intake_id",),
+    }
+)
+
+#: The keys a plugin record's MAC does not cover: the MAC itself, and who
+#: wrote the document and when, which no reader acts on. EVERY other key is
+#: covered, one no writer wrote included, so nothing stored is outside the MAC
+#: and a reader may act on any key of a record that verifies. A covered value
+#: must have a JSON form: a Firestore timestamp outside these keys is refused.
+PLUGIN_RECORD_UNCOVERED: tuple[str, ...] = (
+    "mac", "created_at", "created_by", "updated_at", "updated_by",
+)
+
+
+def canonical_plugin_record(kind: str, fields: Mapping[str, Any]) -> bytes:
+    """JCS of {"purpose": "swarm.plugin-record/v1", "kind", "scope", "tenant_id", "fields"}.
+
+    `kind` is one of PLUGIN_RECORD_KINDS and `fields` the document as stored
+    plus its ids (PLUGIN_RECORD_IDS). `scope` is "platform" or "workspace";
+    a workspace record names its tenant and a platform record names none
+    (absent or null), so the scope and the tenant are inside the bytes: a
+    record copied onto another workspace, or lifted to platform scope, does
+    not verify. `fields` projects every other key except
+    PLUGIN_RECORD_UNCOVERED.
+
+    The MAC is HMAC-SHA256 over these bytes under the `swarm-settings-key`
+    secret. It is not computed here, because its key is not the contract's.
+    """
+    if kind not in PLUGIN_RECORD_KINDS:
+        raise SpecNotCanonical(f"plugin record kind {kind!r} is not one of {PLUGIN_RECORD_KINDS}")
+    if not isinstance(fields, Mapping):
+        raise SpecNotCanonical(f"plugin {kind} record is not a map")
+    scope = fields.get("scope")
+    tenant_id = fields.get("tenant_id")
+    if scope not in PLUGIN_SCOPES:
+        raise SpecNotCanonical(f"plugin {kind} record's scope is not one of {PLUGIN_SCOPES}")
+    if scope == "workspace" and not (isinstance(tenant_id, str) and tenant_id):
+        raise SpecNotCanonical(f"workspace plugin {kind} record names no tenant")
+    if scope == "platform" and tenant_id is not None:
+        raise SpecNotCanonical(f"platform plugin {kind} record names a tenant")
+    for name in PLUGIN_RECORD_IDS[kind]:
+        value = fields.get(name)
+        if not (isinstance(value, str) and value):
+            raise SpecNotCanonical(f"plugin {kind} record has no {name}")
+    return jcs(
+        {
+            "purpose": PLUGIN_RECORD_PURPOSE,
+            "kind": kind,
+            "scope": scope,
+            "tenant_id": tenant_id,
+            "fields": {
+                key: value
+                for key, value in fields.items()
+                if key not in PLUGIN_RECORD_UNCOVERED and key not in ("scope", "tenant_id")
+            },
+        }
+    )
+
+
+#: Domain separation for the platform switches document,
+#: `platform_settings/switches` (contract request 143, managed plugins P5,
+#: docs/design/managed-plugins.md sections 11 and 14, accepted by the owner
+#: 2026-11-06). It names no tenant: there is one platform.
+PLATFORM_SETTINGS_PURPOSE = "swarm.platform-settings/v1"
+
+#: The switches swarm-api MACs and acts on: `work_contracts` (`on`/`off`) and
+#: `contract_review` (`off`/`report`/`enforce`). `set_by`, `set_at` and
+#: `mac` are not covered. A switch added to the document without being added
+#: here is outside the MAC, so a tenant worker can forge it.
+PLATFORM_SETTINGS_MAC_FIELDS: tuple[str, ...] = ("work_contracts", "contract_review")
+
+
+def canonical_platform_settings(fields: Mapping[str, Any]) -> bytes:
+    """JCS of {"purpose": "swarm.platform-settings/v1", "fields"}.
+
+    `fields` is the document as stored; only PLATFORM_SETTINGS_MAC_FIELDS
+    are projected, a listed key that is absent is null, and any other key is
+    not covered and must not be acted on. Its purpose is not a workspace
+    block's, so neither MAC verifies the other's document.
+
+    The MAC is HMAC-SHA256 over these bytes under the `swarm-settings-key`
+    secret. It is not computed here, because its key is not the contract's.
+    """
+    if not isinstance(fields, Mapping):
+        raise SpecNotCanonical("platform settings are not a map")
+    return jcs(
+        {
+            "purpose": PLATFORM_SETTINGS_PURPOSE,
+            "fields": {key: fields.get(key) for key in PLATFORM_SETTINGS_MAC_FIELDS},
         }
     )
 

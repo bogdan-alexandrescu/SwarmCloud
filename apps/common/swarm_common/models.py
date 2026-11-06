@@ -20,6 +20,7 @@ database stays free for other teams):
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -479,7 +480,13 @@ def check_additional_repositories(value: Any) -> None:
 #: kind, `mcp:`, names a server the tenant registered. Its name is checked
 #: against MCP_SERVER_NAME and the reserved names here; membership in the
 #: tenant's registry is checked by its reader, as for `profile:`.
-SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component", "mcp")
+#:
+#: Contract request 141 (managed plugins P3, docs/design/managed-plugins.md
+#: section 6.2, accepted by the owner 2026-11-06): a fifth kind, `plugin:`,
+#: names a managed plugin's install id, so a released plugin secret's record
+#: says which plugin it was for. Its membership in the workspace's catalogue
+#: is checked by its reader, as for `mcp:`.
+SECRET_CONSUMER_KINDS: tuple[str, ...] = ("profile", "tool", "component", "mcp", "plugin")
 
 #: Platform steps that take a workspace secret themselves, outside any
 #: agent. `judge` reads private/jev-key for TypeSafe judging; `merge` and
@@ -988,6 +995,23 @@ class Tenant:
 
     def secret_name(self, provider: str) -> str:
         return f"swarm-tenant-{self.tenant_id}-{provider}"
+
+    def plugin_secret_name(self, install_id: str, field: str) -> str:
+        """Contract request 141 (managed plugins P3), accepted by the owner
+        2026-11-06: the Secret Manager name of a managed plugin's secret
+        setting `field` in this workspace, `swarm-tenant-<t>-plg-<16 hex>`,
+        the hex the first 16 of sha256(install_id + "/" + field).
+
+        Derived from the workspace, the plugin and the field, never from
+        anything a caller types, so no value can be addressed into another
+        workspace's or plugin's name. An install id never holds the "/", so
+        ("a/b", "c") cannot name ("a", "b/c")'s secret."""
+        if not isinstance(install_id, str) or not install_id or "/" in install_id:
+            raise ValueError("a plugin secret names no install id, or one holding '/'")
+        if not isinstance(field, str) or not field:
+            raise ValueError("a plugin secret names no setting field")
+        digest = hashlib.sha256(f"{install_id}/{field}".encode("utf-8")).hexdigest()[:16]
+        return self.secret_name(f"plg-{digest}")
 
 
 class ProviderState(str, Enum):

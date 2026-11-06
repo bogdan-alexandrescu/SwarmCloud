@@ -79,7 +79,8 @@ def test_the_five_are_the_plugin_catalogues_profiles():
     from swarm_api import plugincatalogue
 
     assert plugincatalogue.CLAUDE_CODE_PROFILES == CLAUDE_CODE_PROFILES
-    assert all(RUNNER_PROFILES[n].agent == "claude-code" for n in CLAUDE_CODE_PROFILES)
+    assert all(RUNNER_PROFILES[n].runner_argv == ("python", "-m", "agent_worker.runners.claude_code")
+               for n in CLAUDE_CODE_PROFILES)
 
 
 @pytest.mark.parametrize("name", sorted(set(RUNNER_PROFILES) - set(CLAUDE_CODE_PROFILES)))

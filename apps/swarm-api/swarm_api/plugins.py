@@ -71,6 +71,7 @@ from .judgment import (
     SettingsMac,
     block_mac,
     block_verifies,
+    unowned_covered_keys,
 )
 from .plugincatalogue import (
     BRIDGE_REASON,
@@ -339,7 +340,11 @@ class PluginsStore:
             signed = bool(keys) and block_verifies(tenant_id, MAC_BLOCK, stored, keys[:1])
             if previous == wanted and (signed or not keys) and stored.get(ALLOWED) == wanted:
                 return
-            block = {k: v for k, v in stored.items() if k not in OWNED_FIELDS}
+            # A covered key this writer does not write (contract request 139's
+            # `defaults` and `configs_digest`) was planted by a direct write:
+            # dropped, never signed with the list the caller chose.
+            dropped = (*OWNED_FIELDS, *unowned_covered_keys(MAC_BLOCK))
+            block = {k: v for k, v in stored.items() if k not in dropped}
             block.update({ALLOWED: wanted, SET_AT: now, SET_BY: by})
             mac = block_mac(tenant_id, MAC_BLOCK, block, keys)
             if mac is not None:

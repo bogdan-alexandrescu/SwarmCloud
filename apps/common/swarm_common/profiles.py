@@ -1312,6 +1312,10 @@ class RunnerProfile:
     #: on every profile until the routing package fills them in; each
     #: catalogue entry states its value, so filling one in is an edit to that
     #: profile. Last in the class, so no positional construction changes meaning.
+    #:
+    #: Contract request 142 (managed plugins P4, docs/design/managed-plugins.md
+    #: section 5, accepted by the owner 2026-11-06) fills in the five
+    #: claude-code profiles with _CLAUDE_PLUGIN_CAPABILITIES.
     runtime_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -1880,6 +1884,15 @@ _DISABLED_UNTIL_342 = (
 #: accepted on one is accepted on all three. Every class, in vocabulary order.
 _CLAUDE_CODE_MODEL_CLASSES: tuple[str, ...] = tuple(MODEL_CLASSES)
 
+#: Contract request 142 (managed plugins P4): what the claude-code runner
+#: gives a managed plugin. `claude_plugins`: it loads Claude Code plugins
+#: (`--plugin-dir`); the rest are the runtimes a plugin's hooks and servers
+#: may need, the design's closed list, each shipped by `agent-runtime-base`
+#: and the browser and lightpanda images built on it (node from NODE_IMAGE,
+#: bun from the gstack build stage, python3, bash). codex loads no Claude
+#: Code plugin, and the indexer is a platform step, so neither has them.
+_CLAUDE_PLUGIN_CAPABILITIES: tuple[str, ...] = ("claude_plugins", "node", "bun", "python3", "bash")
+
 RUNNER_PROFILES: dict[str, RunnerProfile] = {
     "mock": RunnerProfile(
         name="mock",
@@ -1929,7 +1942,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 142
     ),
     # CONTRACT REQUEST 113, accepted by the owner 2026-10-22 (Q6 of
     # docs/design/agent-autonomy.md §7, applied by lane AU-9): claude-code made
@@ -1960,7 +1973,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 142
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -2118,7 +2131,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=("opus",),
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 142
     ),
     # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on agent-runtime-indexer, the image that carries the repository index's
@@ -2181,7 +2194,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 142
     ),
     # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
     # docs/design/lightpanda-runtime.md), accepted by the owner 2026-10-31:
@@ -2209,7 +2222,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 142
     ),
     # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
     # docs/design/human-steps.md §5 request C): a workflow step that waits for

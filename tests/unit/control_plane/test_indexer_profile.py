@@ -52,10 +52,14 @@ def test_the_indexer_profile_is_claude_code_on_the_indexer_image():
     # indexer after it: the two share a backend again.
     # Contract request 88 (MCP-CONTRACT) gave claude-code `mcp_servers` and
     # left the indexer without it: the indexer runs no prompt a caller wrote.
-    assert differ == ["image", "inputs", "name"], (
+    # Contract request 142 (managed plugins P4) gave the five claude-code
+    # profiles the plugin runtime capabilities and left the indexer without
+    # them: an index run names no managed plugin.
+    assert differ == ["image", "inputs", "name", "runtime_capabilities"], (
         f"the owner's decision was claude-code with only its name and image changed; {differ} differ"
     )
     assert dict(indexer.inputs) == {k: v for k, v in claude.inputs.items() if k != "mcp_servers"}
+    assert indexer.runtime_capabilities == ()
     assert indexer.backend.value == "GKE_AUTOPILOT" and claude.backend.value == "GKE_AUTOPILOT"
 
 
