@@ -28,7 +28,6 @@ The pushed ref, its argv and its checks are unchanged. Real git against a bare
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
