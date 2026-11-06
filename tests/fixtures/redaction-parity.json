@@ -1080,6 +1080,31 @@
       "expected": "f(token\u003d${NAME})",
       "never": [],
       "count": 0
+    },
+    {
+      "name": "authorization-placeholder-quote-glued-3448",
+      "text": "Authorization\u003a Bearer {TOKEN});'otter17walrus'",
+      "expected": "Authorization\u003a ******** ********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 2
+    },
+    {
+      "name": "kv-shell-substitution-quote-glued-3448",
+      "text": "token\u003d${NAME});'otter17walrus'",
+      "expected": "token\u003d********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "authorization-placeholder-minified-json-3448",
+      "text": "{\"Authorization\"\u003a\"Bearer ${TOKEN}\",\"Accept\"\u003a\"json\"}",
+      "expected": "{\"Authorization\"\u003a\"Bearer ${TOKEN}\",\"Accept\"\u003a\"json\"}",
+      "never": [],
+      "count": 0
     }
   ]
 }

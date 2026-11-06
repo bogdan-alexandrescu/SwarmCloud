@@ -58,6 +58,10 @@ def _literal(length: int) -> str:
         "Authorization: token $GH_TOKEN",
         'headers = {"Authorization": "Bearer %(token)s" % values}',
         'headers = {"Authorization": f"Bearer {self.token}"}',
+        # A quote after a comma, or after a run that ends the line, ends it.
+        '{"Authorization":"Bearer ${TOKEN}","Accept":"json"}',
+        'foo({"Authorization": f"Bearer {TOKEN}"},"json")',
+        "Authorization: Bearer {TOKEN});'",
     ],
 )
 def test_a_placeholder_alone_is_kept(line: str) -> None:
@@ -148,6 +152,11 @@ def test_a_short_literal_in_an_f_string_is_masked() -> None:
         "authorization={p}){v}",
         "Authorization: Bearer {p}});{v}",
         "authorization={p}]){v}",
+        # A quote after that run with a literal glued after the quote (the
+        # security re-review of PR #3448).
+        "Authorization: Bearer {p});'{v}'",
+        "Authorization: Bearer {p}]`{v}`",
+        "authorization={p});'{v}'",
     ],
 )
 def test_a_literal_mixed_with_a_placeholder_is_masked(template: str, placeholder: str) -> None:
@@ -197,7 +206,7 @@ def test_the_ci_database_password_stays_masked() -> None:
 
 
 @pytest.mark.parametrize("key", ["token", "api_key", "secret", "password", "authorization"])
-@pytest.mark.parametrize("glue", [";", ")", "]", "}", "));", "])"])
+@pytest.mark.parametrize("glue", [";", ")", "]", "}", "));", "])", ");'", "]`", "};'"])
 def test_a_literal_glued_after_a_shell_substitution_is_masked(key: str, glue: str) -> None:
     value = _literal(8)
     result = redact(f"{key}=${{NAME}}{glue}{value}")
@@ -216,6 +225,8 @@ def test_a_literal_glued_after_a_shell_substitution_is_masked(key: str, glue: st
         "token=${NAME};",
         "token=${NAME}, other=1",
         "authorization=${NAME}",
+        "f(token=${NAME}),'json'",
+        "token=${NAME});'",
     ],
 )
 def test_a_shell_substitution_alone_is_still_kept(line: str) -> None:
@@ -291,10 +302,21 @@ def _shell_cases() -> list[str]:
             "Authorization: Bearer {v}{p}",
             "authorization={p};{v}",
             "authorization={p}]){v}",
+            "Authorization: Bearer {p});'{v}'",
+            "authorization={p}]`{v}`",
+            '{"Authorization":"Bearer {p}","Accept":"json"}',
         ):
             lines.append(template.replace("{p}", placeholder).replace("{v}", value))
     for key in ("token", "api_key", "secret", "password", "authorization"):
-        for template in ('{k} = f"{v}"', '{k} = rb"{v}"', '{k} = f\\"{v}\\"', "{k}=${NAME};{v}", "{k}=${NAME}){v}", "{k}=${NAME}"):
+        for template in (
+            '{k} = f"{v}"',
+            '{k} = rb"{v}"',
+            '{k} = f\\"{v}\\"',
+            "{k}=${NAME};{v}",
+            "{k}=${NAME}){v}",
+            "{k}=${NAME});'{v}'",
+            "{k}=${NAME}",
+        ):
             lines.append(template.replace("{k}", key).replace("{v}", value))
     lines += [
         'headers = {"Authorization": f"Bearer ' + value + '"}',
