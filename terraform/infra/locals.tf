@@ -853,6 +853,10 @@ locals {
       # `egress_addresses`; "" serves [], which the console says in words.
       MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
 
+      # Generated workflow descriptions (swarm_api.wfdescription): "off" writes
+      # them extractively; turns to "vertex" once the owner grants Vertex AI.
+      SWARM_WORKFLOW_DESCRIPTION_MODEL = "off"
+
       # The job-made workspaces' Firestore cutover list (variables.tf
       # `worker_firestore_off_tenants`, #1457 design B). swarm_api.settings
       # reads it as worker_firestore_off_tenants and writes the record's
