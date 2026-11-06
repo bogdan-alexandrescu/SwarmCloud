@@ -143,7 +143,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/common/test_additional_repositories_contract.py` | `test_a_format_4_signature_verifies_and_a_rewrite_does_not` | `importorskip` | cryptography is not importable |
 | `tests/unit/common/test_specsign.py` | `test_agrees_with_the_rfc8785_package_on_generated_values` | `importorskip` | rfc8785 is not importable |
 | `tests/unit/common/test_specsign.py` | `test_a_spec_signed_before_format_3_still_verifies` | `importorskip` | cryptography is not importable |
-| `tests/unit/control_plane/e2e_setup/test_console_onboarding.py` | `test_the_smoke_row_serves_the_detail_and_link_the_page_shows` | `xfail` | E2E-2 (findings): api.ts reads a smoke's `detail` (or `reason`) and `url`, and a smoke whose task fails serves neither: routes/setup.py advance_smoke records ... |
+| `tests/unit/control_plane/e2e_setup/test_console_onboarding.py` | `test_the_smoke_row_serves_the_detail_and_link_the_page_shows` | `xfail` | E2E-2 (findings): api.ts reads a smoke's `detail` (or `reason`) and `url`, and a smoke whose agent fails serves neither (see the expected failure above) |
 | `tests/unit/control_plane/test_account_api.py` | `test_every_path_the_ui_calls_exists_on_this_api` | `skip_call` | apps/swarm-ui/src/api.ts is not present |
 | `tests/unit/control_plane/test_account_listing_is_honest.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
 | `tests/unit/control_plane/test_additional_repositories_submit.py` | `test_the_worker_reads_the_budget_from_the_key_swarm_api_serves` | `importorskip` | agent_worker.extrarepos is not importable |
