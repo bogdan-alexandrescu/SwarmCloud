@@ -388,9 +388,11 @@ export function PatchChanges({
     onFileChange: onFile,
     ...(pullRequest === undefined ? {} : { pullRequest }),
   }
-  return (
-    <div className="chg-patch">
-      {summary}
+  // THE OPEN FILE, RENDERED WHEN IT IS A PAGE, AN SVG OR AN IMAGE (BGD,
+  // 2026-11-06), as the matrix's file pane draws it; Diff is the viewer below.
+  const rendered = file !== null && renderKind(file) !== null
+  const sections = rendered ? patchSections(w === null ? data.content : w.patch).sections : null
+  const viewer = (
       <div className="chg-diff">
         {w === null ? (
           <DiffView patch={data.content} {...view} />
@@ -420,6 +422,15 @@ export function PatchChanges({
           />
         )}
       </div>
+  )
+  return (
+    <div className="chg-patch">
+      {summary}
+      {rendered ? (
+        <RenderedOrDiff key={file} path={file} source={{ taskId, section: sections?.get(file) ?? null }} framesSource={{ taskId, section: sections?.get(`${file.slice(0, file.lastIndexOf('/') + 1)}frames.json`) ?? null }} diff={viewer} />
+      ) : (
+        viewer
+      )}
     </div>
   )
 }
