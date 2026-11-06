@@ -179,11 +179,12 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     land({ status: 'ok', data: fixture(), fetchedAt: T0 })
     await waitFor(() => expect(document.querySelector('.wfp.is-loading')).toBeNull())
     // The loaded page is `Board`'s own frame, `.wfp.wfp-main`, drawn in
-    // the inspector shell's left pane -- the head and the Needs-you row ahead
-    // of the view bar that now holds the tabs.
+    // the inspector shell's left pane -- the head ahead of the view bar that
+    // now holds the tabs. Nothing in the fixture needs you, so no Needs-you
+    // card is drawn between them (WorkflowQuestions.tsx: nothing waits, no card).
     const loaded = document.querySelector<HTMLElement>('.wfp')!
     expect(loaded.className).toBe('wfp wfp-main')
-    expect([...loaded.children].map((c) => c.className.split(' ')[0]).slice(0, 3)).toEqual(['wfp-head', 'ny', 'wfp-viewbar'])
+    expect([...loaded.children].map((c) => c.className.split(' ')[0]).slice(0, 2)).toEqual(['wfp-head', 'wfp-viewbar'])
     // Copy link moved into the Overview, the inspector at rest, and is no
     // longer in the head once the read lands.
     expect(within(loaded.querySelector<HTMLElement>('.wfp-head')!).queryByRole('button', { name: 'Copy link' })).toBeNull()
