@@ -865,7 +865,8 @@ def test_a_window_with_nothing_new_waits_it_out_and_repeats_nothing(swarm, world
     got = progress.watch(swarm, ["task_a"], since=first["since"], wait_seconds=30, sleep=clock.sleep, clock=clock.clock)
 
     assert got["lines"] == [], got["lines"]
-    assert sum(clock.slept) == 30 and got["polls"] == 7
+    # Backed off while nothing new came: 5, 10, then what is left of the window.
+    assert sum(clock.slept) == 30 and got["polls"] == 4
 
 
 def test_a_window_longer_than_max_lines_keeps_the_latest_and_says_how_many_it_left_out(swarm, world, progress):

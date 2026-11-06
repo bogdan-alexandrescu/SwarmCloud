@@ -67,6 +67,7 @@ from .client import TERMINAL, SwarmClient, SwarmError
 from .follow import console_link, event_type, waiting_brief
 from .progress import (
     _PENDING,
+    IDLE_POLL_CAP_SECONDS,
     PERMANENT_READ_STATUSES,
     READ_FAILURE_LIMIT,
     SINCE_VERSION,
@@ -123,18 +124,11 @@ MAX_WAIT_SECONDS = 1800
 SILENT_MAX_WAIT_SECONDS = 1200
 
 #: How often a task is re-read inside a window right after it changed. One
-#: small read.
+#: small read. While nothing changes the wait doubles, up to
+#: `progress.IDLE_POLL_CAP_SECONDS` (a minute; why, there), and the first
+#: change resets it.
 POLL_SECONDS = 10.0
 
-#: THE QUIET BACK-OFF (BGD's pick, 2026-11-06). While nothing a poll reads
-#: changes -- no followed task's state or park reason -- the wait between
-#: polls doubles from `POLL_SECONDS` up to this, and the first change resets
-#: it. 7-day load analysis: single-task reads were 39% of swarm-api's
-#: requests, nearly all from these holds re-reading unchanged tasks every
-#: 10 s. A minute is the longest a finish goes unnoticed inside a hold: the
-#: row's next line then comes at most a minute late, and the five-step
-#: workflow a row follows costs about one read a minute instead of thirty.
-IDLE_POLL_CAP_SECONDS = 60.0
 
 #: The status a reader that is being rate limited is answered with. A 429 is
 #: NOT a failed read: the API will answer the same read once the reader slows
