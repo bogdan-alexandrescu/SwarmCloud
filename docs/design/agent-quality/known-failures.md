@@ -326,6 +326,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_cpu_sampler.py` | `test_a_real_process_tree_is_measured_including_its_children` | `skipif` | needs procfs |
 | `tests/unit/worker/test_cpu_sampler.py` | `test_a_run_writes_the_attempts_own_figures_while_it_runs_and_at_the_end` | `skipif` | a live CPU reading needs cgroup v2 or procfs; without either (macOS) the only figure is the reaped-children total at the end, by design (SystemCpuMeter). CI is ... |
 | `tests/unit/worker/test_egress_gate.py` | `test_a_real_loopback_peer_is_this_process_uid` | `skip_call` | no /proc/net/tcp here |
+| `tests/unit/worker/test_fold_keeps_any_branch_parents.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_fold_keeps_merge_parents.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_forge_token_isolation.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_forge_token_isolation.py` | `test_no_agent_process_is_alive_when_the_publish_token_is_used` | `skipif` | the reap verifies liveness via /proc; this platform has none (CI is Linux) |
