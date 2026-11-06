@@ -1,0 +1,61 @@
+# Lane L5 of Voice it's own speech engine (docs/design/voice-it-own-speech.md
+# section 14, "The sweep runs every two minutes"; part of #2688).
+# terraform/infra/voice_speech_sweep.tf makes the Cloud Scheduler job that
+# POSTs swarm-api's /v1/internal/voice/speech/sweep every two minutes as the
+# tick account, and the tick's run.invoker on swarm-api that lets it through.
+# Both are off until voice_speech.enabled and voice_it is "on", the switch the
+# installer already renders on every infra pass (voice-speech-install.yaml);
+# so a deployment that says yes to the engine gets the sweep with it. The
+# grant is an IAM change, so the release that carries it waits at the IAM gate
+# for the owner.
+version: 1
+entries:
+- id: iam-binding.tick-invokes-api-speech-sweep
+  kind: iam-binding
+  scope: core
+  stage: 6
+  provider: engine
+  step: infra.pass-1
+  check: gcloud run services get-iam-policy swarm-api --region=$REGION --project=$P --flatten=bindings
+    --filter=bindings.role:roles/run.invoker --format='value(bindings.members)'
+  apply: terraform/infra/voice_speech_sweep.tf google_cloud_run_v2_service_iam_member.speech_sweep_tick_invokes_api,
+    once voice_speech.enabled and voice_it is "on"
+  verify: serviceAccount:swarm-tick@$P.iam.gserviceaccount.com holds roles/run.invoker on swarm-api while the
+    speech engine is on, and on no other service of swarm-api's
+  explain: Cloud Run refuses a caller without run.invoker before swarm-api's own check runs; the tick is on no
+    swarm-api caller list but SWARM_SPEECH_SWEEP_CALLERS, so every other route still refuses it (design row I4).
+  guards: on the swarm-api service only, never project-wide
+  secret_entry: null
+  depends_on:
+  - sa.swarm-tick
+  - cloud-run-service.swarm-api
+  evidence:
+  - terraform/infra/voice_speech_sweep.tf
+  refs:
+    terraform:
+    - infra/google_cloud_run_v2_service_iam_member.speech_sweep_tick_invokes_api
+- id: sched.voice-speech-sweep
+  kind: scheduler-job
+  scope: core
+  stage: 6
+  provider: engine
+  step: infra.pass-1
+  check: gcloud scheduler jobs describe ${name_prefix}-voice-speech-sweep --project=$P --location=$REGION
+    --format='value(schedule,httpTarget.uri,httpTarget.oidcToken.serviceAccountEmail)'
+  apply: terraform/infra/voice_speech_sweep.tf google_cloud_scheduler_job.voice_speech_sweep, schedule '*/2 * * *
+    *', once voice_speech.enabled and voice_it is "on"
+  verify: schedule '*/2 * * * *', uri ends /v1/internal/voice/speech/sweep on swarm-api, oidcToken as swarm-tick
+    for swarm-api's push audience, description begins managed-by=swarm-terraform
+  explain: The stop that holds when every other failed (design section 4.5, stop 1); it ends a due session and
+    stops a speech machine nobody holds, so a forgotten L4 bills at most about two minutes.
+  guards: fenced by the lease's generation; it never starts the machine
+  secret_entry: null
+  depends_on:
+  - iam-binding.tick-invokes-api-speech-sweep
+  - compute.voice-speech-machine
+  - api.cloudscheduler
+  evidence:
+  - terraform/infra/voice_speech_sweep.tf
+  refs:
+    terraform:
+    - infra/google_cloud_scheduler_job.voice_speech_sweep
