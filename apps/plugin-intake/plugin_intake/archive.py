@@ -217,7 +217,10 @@ def _read_zip(packed: bytes) -> list[Entry]:
                     entries.append(Entry(index, path, FILE, data, executable=bool(mode & 0o111)))
     except Refusal:
         raise
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, EOFError, zlib.error, ValueError, NotImplementedError):
+    # RuntimeError: zipfile raises it for an encrypted member and its subclass
+    # for a compression method or flag bit the stdlib cannot read; both are
+    # refused, never passed through.
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, EOFError, zlib.error, ValueError, RuntimeError):
         raise Refusal("archive_corrupt") from None
     return entries
 
