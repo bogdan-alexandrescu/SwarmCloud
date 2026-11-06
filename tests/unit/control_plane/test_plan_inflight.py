@@ -454,7 +454,7 @@ def test_3507_a_same_files_run_lane_states_its_overlap_ref(client, db):
     assert in_flight["same_files"] == [LANE]
     assert in_flight["lane_refs"] == {LANE: f"{REPOSITORY}#1070"}
     # The instructions say what an overlap's ref is, whatever the lane's id.
-    assert 'an overlap\'s "ref" is always owner/repo#N' in prompt
+    assert 'overlap\'s "ref" is always owner/repo#N' in prompt
 
 
 def test_3507_a_same_issue_run_lane_states_its_overlap_ref(client, db):

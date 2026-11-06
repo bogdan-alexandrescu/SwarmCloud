@@ -1052,19 +1052,28 @@ class NotReadyVerdict(_PlanModel):
         return self
 
 
-def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
+def parse_planner_output(
+    value: Any, *, lane_refs: Mapping[str, str] | None = None,
+) -> tuple[str, dict[str, Any]]:
     """What the planner wrote in `plan.json`: `("plan", plan)` or `("not_ready", verdict)`.
 
     A JSON object carrying `"ready": false` is a `NotReadyVerdict` and is
     checked as strictly as a plan is; `"ready": true` beside a plan is
     accepted and dropped, so the plan digests exactly as one written without
     it. Anything else is a plan, through `parse_plan`.
+
+    `lane_refs` is the run's IN FLIGHT map of the issue-run lanes it listed,
+    run id -> owner/repo#N (#3507): an overlap whose ref is one of those run
+    ids is read as that run's issue, so a planner that copied the lane's id
+    is not refused for it. Any other ref is checked as before.
     """
     if isinstance(value, (str, bytes)):
         try:
             value = json.loads(value)
         except (ValueError, UnicodeDecodeError):
             raise InvalidPlan(f"{PLAN_FILE} is not JSON") from None
+    if lane_refs and isinstance(value, Mapping):
+        value = _lane_refs_normalised(value, lane_refs)
     if isinstance(value, Mapping) and "ready" in value:
         ready = value.get("ready")
         if ready is True:
@@ -1100,6 +1109,28 @@ def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
                 found["reason"] = _not_ready_reason(f"Duplicates {lane}: {verdict.reason}")
         return "not_ready", found
     return "plan", parse_plan(value)
+
+
+def _lane_refs_normalised(
+    plan: Mapping[str, Any], lane_refs: Mapping[str, str],
+) -> Mapping[str, Any]:
+    """`plan` with each overlap ref that is a listed run lane's id replaced by
+    that run's owner/repo#N, on a copy; `plan` itself when none is."""
+    overlaps = plan.get("overlaps")
+    if not isinstance(overlaps, list):
+        return plan
+    rewritten = []
+    changed = False
+    for overlap in overlaps:
+        ref = overlap.get("ref") if isinstance(overlap, Mapping) else None
+        lane = ref.strip() if isinstance(ref, str) else None
+        if lane and lane in lane_refs:
+            log.info("the planner named the run lane %s as an overlap ref: read as %s",
+                     lane, lane_refs[lane])
+            overlap = {**overlap, "ref": lane_refs[lane]}
+            changed = True
+        rewritten.append(overlap)
+    return {**plan, "overlaps": rewritten} if changed else plan
 
 
 def _not_ready_reason(reason: str) -> str:
@@ -1983,7 +2014,9 @@ _INFLIGHT_USE = (
     "names every SAME FILES lane in \"overlaps\" with its action, and keeps its steps "
     "off files a live lane declares unless a step depends on that lane landing first. "
     "Only if the issue was split on purpose and the lanes do different parts, plan your "
-    "part and say so in the overlaps.\n\n"
+    "part and say so in the overlaps. An overlap's \"ref\" is always owner/repo#N: for an "
+    "issue-run lane, the overlap ref its line gives (that run's issue); only a duplicate "
+    "verdict's \"lane\" takes a run_ or workflow id.\n\n"
 )
 
 

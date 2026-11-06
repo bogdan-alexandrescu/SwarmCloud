@@ -68,6 +68,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field, replace
+from typing import Mapping
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from google.cloud import firestore
@@ -160,10 +161,12 @@ def _runs(ctx: AppContext) -> IssueRuns:
 # advancing a run from what its tasks say
 # --------------------------------------------------------------------------
 
-def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> tuple[str, dict]:
+def _read_plan(ctx: AppContext, tenant_id: str, task_id: str, *,
+               lane_refs: Mapping[str, str] | None = None) -> tuple[str, dict]:
     """`plan.json` out of the planner's artifacts, through the API's own masked
     reader: `("plan", plan)`, or `("not_ready", verdict)` when the planner
-    found the issue not ready (`issueruns.parse_planner_output`)."""
+    found the issue not ready (`issueruns.parse_planner_output`). `lane_refs`
+    is the run's IN FLIGHT run-lane map (`_lane_refs`, #3507)."""
     try:
         window = ctx.inspection.read_artifact(
             tenant_id, task_id, submitted_by=None, name=PLAN_FILE, limit_bytes=MAX_PLAN_BYTES
@@ -176,7 +179,19 @@ def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> tuple[str, dict
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is not text")
     if window.get("truncated"):
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is larger than {MAX_PLAN_BYTES} bytes")
-    return parse_planner_output(window.get("content") or "")
+    return parse_planner_output(window.get("content") or "", lane_refs=lane_refs)
+
+
+def _lane_refs(run: IssueRun) -> dict[str, str]:
+    """The run lanes its IN FLIGHT section listed, run id -> owner/repo#N
+    (#3507), read defensively: a run created before the map, or with no
+    section, has none."""
+    context = run.index_context
+    in_flight = context.get("in_flight") if isinstance(context, Mapping) else None
+    found = in_flight.get("lane_refs") if isinstance(in_flight, Mapping) else None
+    if not isinstance(found, Mapping):
+        return {}
+    return {k: v for k, v in found.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 #: What the planner's worker writes beside plan.json when the workspace opted
@@ -340,7 +355,7 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         )
     if task.state == TaskState.SUCCEEDED:
         try:
-            kind, plan = _read_plan(ctx, tenant_id, task.id)
+            kind, plan = _read_plan(ctx, tenant_id, task.id, lane_refs=_lane_refs(run))
         except InvalidPlan as refused:
             return runs.transition(
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
