@@ -185,6 +185,9 @@ RUN rm -rf /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
 #
 # amd64 only, like every image here: Cloud Build's default pool is amd64, and
 # so is Cloud Run.
+# GCLOUD_VERSION names the CLI this image's base (GCLOUD_IMAGE) carries, the same
+# as agent-runtime-base's; the plugin has its own GKE_PLUGIN_VERSION.
+ARG GCLOUD_VERSION=591.0.0
 ARG GKE_PLUGIN_VERSION=592.0.0
 ARG GKE_PLUGIN_POOL_ID=a8fc8016eccf144b786a0d64a6f464aa
 ARG GKE_PLUGIN_SHA256=3a1da42673e0df59b86958c817d2369ef89d5b435767d1fea85e453707007df4
