@@ -65,6 +65,7 @@ from .continuation import TASK_ID_RE, publish_branch
 from .errors import InputUnavailable, WorkerError
 from .gitidentity import commit_identity
 from .hardening import PROTECTED
+from . import __version__
 from . import inputs as inputs_mod
 
 #: The spool's directory under `work/`. `Workspace.children_dir` is the one
@@ -475,7 +476,9 @@ def prompt_line(spool: str) -> str:
 PER_TICK: Any = object()
 
 _TIMEOUT = 10
-_UA = "swarm-agent-worker/children"
+#: `agent-worker/<version> (children)`: the request log tells a worker from the
+#: plugin bridge (`swarm-mcp/<version> (bridge)`) and from a bare urllib caller.
+_UA = f"agent-worker/{__version__} (children)"
 
 
 def request_message(method: str, path: str, body: bytes, timestamp: str) -> bytes:
