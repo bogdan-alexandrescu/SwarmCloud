@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
@@ -692,9 +693,12 @@ def verify_reference(contract: WorkContract, reference: Mapping[str, Any] | None
             and reference.get("requirements") == list(contract.requirement_ids()))
 
 
-def enabled(environ: Mapping[str, str]) -> bool:
-    """The switch: on only when SWARM_WORK_CONTRACTS is exactly `on`."""
-    return environ.get(SWITCH_ENV, "").strip() == "on"
+def enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """The switch: on only when SWARM_WORK_CONTRACTS is exactly `on`. The read
+    is written `(os.environ if environ is None else environ).get(...)` so that
+    scripts/lib/check-env-parity.sh sees swarm-api read the key terraform sets
+    (terraform/infra var.work_contracts)."""
+    return (os.environ if environ is None else environ).get(SWITCH_ENV, "").strip() == "on"
 
 
 def attach(options: Any, compiled: CompiledContract, *, environ: Mapping[str, str]) -> Any:
