@@ -36,6 +36,8 @@ import secrets
 import shutil
 import stat
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1009,13 +1011,16 @@ def test_the_train_runs_main_s_scripts_and_no_pull_request_s_code(train_workflow
 
 def test_the_github_token_asks_only_for_what_the_train_does_with_it(train_workflow):
     assert train_workflow["permissions"] == {}
-    # actions: read -- the Actions runs at a train's head, whose events the
-    # judge groups a check's runs by (CHECK-RULE-2). MUTATION: drop it -> the
-    # read 403s and the tick judges each check suite on its own.
-    assert train_workflow["jobs"]["tick"]["permissions"] == {
+    # actions: write -- read: the Actions runs at a train's head, whose events
+    # the judge groups a check's runs by (CHECK-RULE-2); write: rule 1
+    # re-runs a red train's failed jobs with this token
+    # (MERGE_TRAIN_RERUN_BY=workflow, the owner's pick). MUTATION: set it to
+    # read -> GitHub refuses every re-run and a red train bisects at once.
+    permissions = dict(train_workflow["jobs"]["tick"]["permissions"])
+    assert permissions.pop("actions") == "write"
+    assert permissions == {
         "contents": "read",
         "checks": "read",
-        "actions": "read",
         "statuses": "write",
         "pull-requests": "write",
     }
@@ -1272,6 +1277,490 @@ def test_the_runbook_says_how_to_roll_back():
     text = RUNBOOK.read_text()
     assert '"strict_required_status_checks_policy": true' in text
     assert re.search(r"^#+ .*roll(ing)? back", text, flags=re.M | re.I)
+
+
+# --------------------------------------------------------------------------
+# a red train: retry once, hold while main is red, else bisect
+# --------------------------------------------------------------------------
+#
+# BGD, 6 November 2026, after CLD measured the train (4 to 6 November): 74 of
+# 139 trains were red, mostly on checks known to fail at random ('format /
+# unit tests', 'swarm-ui typecheck / component tests', single shards), and 6
+# of 18 ejected pull requests later landed with no change. Keep the train and
+# fix red trains:
+#   rule 1, retry once: a first red at a train head re-runs only the failed
+#     jobs of the failing runs, once, and the train stays open;
+#   rule 2, hold while main is red: a red train whose failing checks are red
+#     on main's head too closes "Held: main is red on <names>", ejects nobody
+#     and keeps every `ready` label; no train boards until main's head is
+#     green on those checks (or MERGE_TRAIN_MAIN_RED_WAIT_MINUTES pass);
+#   rule 3, bisect, as before; a train of one is ejected.
+#
+# A whole tick, offline: bash, jq, git, and a fake `gh` (Python) serving a
+# JSON world and logging every call.
+
+RED_FAKE_GH = r'''#!{python}
+import json, os, sys, urllib.parse
+
+args = sys.argv[1:]
+world_path = os.environ["FAKE_WORLD"]
+with open(world_path) as fh:
+    world = json.load(fh)
+with open(os.environ["FAKE_GH_LOG"], "a") as fh:
+    fh.write(" ".join(args) + "\n")
+
+
+def save():
+    with open(world_path, "w") as fh:
+        json.dump(world, fh)
+
+
+def arg(flag):
+    return args[args.index(flag) + 1]
+
+
+if args[:2] == ["pr", "list"]:
+    print(json.dumps(world["closed"] if arg("--state") == "closed" else world["open"]))
+    sys.exit(0)
+if args[:2] == ["pr", "comment"]:
+    with open(arg("--body-file")) as src:
+        world.setdefault("comments", {}).setdefault(args[2], []).append(src.read())
+    save()
+    sys.exit(0)
+if args[:2] == ["pr", "close"]:
+    world.setdefault("closed_now", []).append(int(args[2]))
+    save()
+    sys.exit(0)
+if args[:2] == ["pr", "view"]:
+    if "statusCheckRollup" in arg("--json"):
+        # list_open_prs's own read of one `ready` pull request or train, beside the light list.
+        print(json.dumps(next(p for p in world["open"] if str(p["number"]) == args[2])))
+    else:
+        print(json.dumps(world["members"][args[2]]))
+    sys.exit(0)
+if args[:2] == ["pr", "merge"]:
+    world.setdefault("merged", []).append(int(args[2]))
+    save()
+    sys.exit(0)
+if args[:1] == ["api"]:
+    method = arg("-X") if "-X" in args else "GET"
+    path = next(a for a in args[1:] if a.startswith("repos/"))
+    parsed = urllib.parse.urlparse(path)
+    query = dict(urllib.parse.parse_qsl(parsed.query))
+    parts = parsed.path.split("/")[3:]
+    if method == "PATCH":
+        world.setdefault("bodies", {})[parts[1]] = json.load(sys.stdin)["body"]
+        save()
+        sys.exit(0)
+    if method == "POST" and parts[:2] == ["actions", "runs"] and parts[3] == "rerun-failed-jobs":
+        if world.get("rerun_refused"):
+            print("HTTP 403: Resource not accessible by integration", file=sys.stderr)
+            sys.exit(1)
+        world.setdefault("reruns", []).append(int(parts[2]))
+        world["rerun_by"] = "app" if os.environ["GH_TOKEN"] == os.environ["APP_TOKEN"] else "workflow"
+        save()
+        sys.exit(0)
+    if method == "POST" and parts[0] == "statuses":
+        sys.exit(0)
+    if method == "DELETE":
+        world.setdefault("deleted", []).append("/".join(parts))
+        save()
+        sys.exit(0)
+    if parts == ["rules", "branches", "main"]:
+        print("[]")
+        sys.exit(0)
+    if parts == ["branches", "main"]:
+        print(json.dumps(world["branch"]))
+        sys.exit(0)
+    if parts == ["commits", "main"]:
+        print(json.dumps({"sha": world["main"]}))
+        sys.exit(0)
+    if parts[0] == "commits":
+        at = world["checks"].get(parts[1], {})
+        if parts[2] == "check-runs":
+            print(json.dumps({"check_runs": at.get("check_runs", [])}))
+        else:
+            print(json.dumps({"statuses": at.get("statuses", [])}))
+        sys.exit(0)
+    if parts == ["actions", "runs"]:
+        print(json.dumps({"workflow_runs": world["checks"].get(query["head_sha"], {}).get("runs", [])}))
+        sys.exit(0)
+    if parts[:2] == ["actions", "workflows"]:
+        print(json.dumps({"workflow_runs": []}))
+        sys.exit(0)
+print("fake gh: unexpected: " + " ".join(args), file=sys.stderr)
+sys.exit(64)
+'''
+
+#: The required checks the fake serves (PROTECTED's), and the two flaky ones.
+UNIT = "format / unit tests"
+SHARD = "unit tests (1/10)"
+TRAIN_PR = 3500
+
+
+def _at(passing: list[str], failing: list[str] = (), *, suite_base: int = 900,
+        running: bool = False) -> dict:
+    """One commit's checks: each name its own Actions run (id = suite id),
+    `failing` ones concluded failure, `running` leaves every run queued."""
+    runs, check_runs = [], []
+    for i, name in enumerate([*passing, *failing]):
+        suite = suite_base + i
+        bad = name in failing
+        check_runs.append({"id": 10 * suite, "name": name, "status": "completed",
+                           "conclusion": "failure" if bad else "success",
+                           "html_url": f"https://example.invalid/job/{suite}",
+                           "check_suite": {"id": suite}})
+        runs.append({"id": suite, "check_suite_id": suite, "event": "pull_request",
+                     "status": "queued" if running else "completed",
+                     "conclusion": None if running else ("failure" if bad else "success")})
+    return {"check_runs": check_runs, "statuses": [], "runs": runs}
+
+
+REQUIRED_TICK = ["shellcheck", "trivy (repo)", "fmt / validate / tflint"]
+
+
+class RedTick:
+    """A tick with train #3500 in flight: main plus `members` squashed."""
+
+    def __init__(self, tmp_path: Path, members: list[int], suspects: str = ""):
+        _need("bash", "jq", "git", "awk")
+        self.tmp = tmp_path
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _git(origin, "init", "-q", "-b", "main")
+        _git(origin, "config", "user.email", "t@example.invalid")
+        _git(origin, "config", "user.name", "t")
+        (origin / "a.txt").write_text("a\n")
+        _git(origin, "add", "a.txt")
+        _git(origin, "commit", "-q", "-m", "base")
+        self.base = _git(origin, "rev-parse", "HEAD")
+        self.repo = tmp_path / "clone"
+        subprocess.run(["git", "clone", "-q", str(origin), str(self.repo)], check=True)
+        _git(self.repo, "config", "user.email", "t@example.invalid")
+        _git(self.repo, "config", "user.name", "t")
+        (self.repo / "b.txt").write_text("b\n")
+        _git(self.repo, "add", "b.txt")
+        _git(self.repo, "commit", "-q", "-m", "train")
+        self.head = _git(self.repo, "rev-parse", "HEAD")
+        self.main = secrets.token_hex(20)
+        self.members = members
+        pairs = " ".join(f"{n}:{secrets.token_hex(20)}" for n in members)
+        self.state = {"id": "41-1", "base": self.base, "head": self.head,
+                      "started": str(int(time.time()) - 1800), "dry_run": "false",
+                      "prs": pairs, "suspects": suspects}
+        self.extra: list[str] = []
+        self.env: dict[str, str] = {}
+        self.world: dict = {
+            "branch": PROTECTED, "main": self.main, "closed": [], "checks": {},
+            "members": {str(n): {"state": "OPEN", "headRefOid": pair.split(":")[1],
+                                 "labels": [{"name": "ready"}], "title": f"Change {n}"}
+                        for n, pair in zip(members, pairs.split())},
+        }
+        self.bin = tmp_path / "bin"
+        self.bin.mkdir()
+        fake = self.bin / "gh"
+        fake.write_text(RED_FAKE_GH.replace("{python}", sys.executable))
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    def body(self) -> str:
+        rendered = _run("state-render", *[f"{k}={v}" for k, v in self.state.items()], *self.extra)
+        assert rendered.returncode == 0, rendered.stderr
+        return "A merge train.\n\n" + rendered.stdout
+
+    def run(self, *, train_open: bool = True) -> str:
+        world = dict(self.world)
+        world["open"] = [{
+            "number": TRAIN_PR, "title": "Merge train 41-1", "body": self.body(),
+            "headRefOid": self.head, "headRefName": "train/41-1", "baseRefName": "main",
+            "isDraft": True, "isCrossRepository": False, "mergeable": "MERGEABLE",
+            "labels": [], "statusCheckRollup": [],
+        }] if train_open else []
+        self.path = self.tmp / "world.json"
+        self.path.write_text(json.dumps(world))
+        for name in ("gh.log", "summary.md"):
+            (self.tmp / name).write_text("")
+        env = {
+            "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            "HOME": str(self.tmp),
+            "GH_REPO": THIS_REPO,
+            "GH_TOKEN": "fake-" + secrets.token_hex(4),
+            "APP_TOKEN": "fake-" + secrets.token_hex(4),
+            "REPO_DIR": str(self.repo),
+            "RUN_ID": "42", "RUN_ATTEMPT": "1",
+            "RUN_URL": "https://example.invalid/run/42",
+            "EVENT_NAME": "schedule", "MERGE_TRAIN": "on", "DRY_RUN_INPUT": "false",
+            "GITHUB_STEP_SUMMARY": str(self.tmp / "summary.md"),
+            "FAKE_WORLD": str(self.path), "FAKE_GH_LOG": str(self.tmp / "gh.log"),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            **self.env,
+        }
+        proc = subprocess.run([str(SCRIPT), "tick"], env=env, capture_output=True, text=True,
+                              timeout=120, check=False)
+        assert proc.returncode == 0, proc.stderr
+        self.after = json.loads(self.path.read_text())
+        return (self.tmp / "summary.md").read_text()
+
+    def comments(self, n: int = TRAIN_PR) -> str:
+        return "\n".join(self.after.get("comments", {}).get(str(n), []))
+
+    def recorded(self, key: str) -> str | None:
+        m = re.search(rf"^{key}=(.*)$", self.after.get("bodies", {}).get(str(TRAIN_PR), ""), re.M)
+        return m.group(1) if m else None
+
+    def ejected(self) -> list[str]:
+        return [d for d in self.after.get("deleted", []) if d.endswith("/labels/ready")]
+
+
+@pytest.fixture
+def red_tick(tmp_path: Path):
+    return lambda members, suspects="": RedTick(tmp_path, members, suspects)
+
+
+def _red_at_head(t: RedTick, failing: list[str] = (UNIT,), *, running: bool = False) -> None:
+    t.world["checks"][t.head] = _at(REQUIRED_TICK, list(failing), running=running)
+
+
+def _main(t: RedTick, passing: list[str], failing: list[str] = ()) -> None:
+    t.world["checks"][t.main] = _at(passing, list(failing), suite_base=700)
+
+
+def test_a_first_red_re_runs_only_the_failed_jobs_and_keeps_the_train_open(red_tick):
+    t = red_tick([101, 102, 103])
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    out = t.run()
+    failing_run = next(r["id"] for r in t.world["checks"][t.head]["runs"]
+                       if r["conclusion"] == "failure")
+    # Only the failing run, through the rerun-failed-jobs endpoint.
+    assert t.after.get("reruns") == [failing_run]
+    assert t.after.get("rerun_by") == "workflow", "the workflow's own token, by default"
+    assert "/rerun\n" not in (t.tmp / "gh.log").read_text() + "\n"
+    assert TRAIN_PR not in t.after.get("closed_now", []), "the train stays open"
+    assert t.recorded("retry") is not None and t.recorded("retry").endswith(":" + t.head)
+    assert not t.ejected()
+    assert "rule 1 (retry once)" in out
+    assert "rule 1 (retry once)" in t.comments().lower()
+
+
+def test_a_green_after_the_retry_lands_every_member(red_tick):
+    t = red_tick([101, 102, 103])
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    t.world["checks"][t.head] = _at(REQUIRED_TICK)
+    t.run()
+    assert t.after.get("merged") == [101, 102, 103]
+    assert TRAIN_PR in t.after.get("closed_now", [])
+    assert "Green, and landed: #101, #102, #103" in t.comments()
+
+
+def test_a_second_red_on_the_same_head_bisects(red_tick):
+    t = red_tick([101, 102, 103, 104])
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    out = t.run()
+    assert not t.after.get("reruns"), "the retry is spent"
+    assert TRAIN_PR in t.after.get("closed_now", [])
+    assert "Bisecting" in t.comments() and "rule 3 (bisect)" in t.comments().lower()
+    assert "rule 3 (bisect)" in out
+    assert not t.ejected()
+
+
+def test_a_red_while_the_retry_still_runs_waits(red_tick):
+    """GitHub queues the re-run's runs when it accepts the call; a tick that
+    reads the head before the new check runs exist must not bisect."""
+    t = red_tick([101, 102])
+    t.extra = [f"retry={int(time.time()) - 60}:{t.head}"]
+    _red_at_head(t)
+    t.world["checks"][t.head]["runs"][-1]["status"] = "in_progress"
+    out = t.run()
+    assert TRAIN_PR not in t.after.get("closed_now", [])
+    assert "rule 1 (retry once)" in out
+
+
+def test_a_first_red_while_its_run_still_runs_waits_to_retry(red_tick):
+    """A shard fails while the rest of its workflow run is still going: the
+    head is red, but GitHub re-runs failed jobs only of a finished run. The
+    train waits for it rather than finding nothing to re-run and bisecting."""
+    t = red_tick([101, 102])
+    _red_at_head(t)
+    failing = t.world["checks"][t.head]["runs"][-1]
+    failing.update({"status": "in_progress", "conclusion": None})
+    out = t.run()
+    assert not t.after.get("reruns")
+    assert TRAIN_PR not in t.after.get("closed_now", [])
+    assert t.recorded("retry") is None
+    assert "rule 1 (retry once)" in out
+
+
+def _stuck_run(t: RedTick) -> None:
+    """A run at the head left queued (a runner outage, an approval wait)."""
+    t.world["checks"][t.head]["runs"].append(
+        {"id": 990, "check_suite_id": 990, "event": "pull_request",
+         "status": "queued", "conclusion": None})
+
+
+def test_a_first_red_past_the_age_limit_retries_without_waiting_for_a_stuck_run(red_tick):
+    t = red_tick([101, 102])
+    t.state["started"] = str(int(time.time()) - 91 * 60)
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    _stuck_run(t)
+    out = t.run()
+    failing_run = next(r["id"] for r in t.world["checks"][t.head]["runs"]
+                       if r["conclusion"] == "failure")
+    assert t.after.get("reruns") == [failing_run]
+    assert t.recorded("retry") is not None
+    assert "past the 90-minute limit: not waiting" in out
+    assert "re-running the failed jobs" in out
+
+
+def test_a_red_after_the_retry_past_the_age_limit_does_not_wait(red_tick):
+    t = red_tick([101, 102, 103, 104])
+    t.extra = [f"retry={int(time.time()) - 91 * 60}:{t.head}"]
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    _stuck_run(t)
+    out = t.run()
+    assert not t.after.get("reruns"), "the retry is spent"
+    assert TRAIN_PR in t.after.get("closed_now", [])
+    assert "past the 90-minute limit: not waiting" in out
+    assert "rule 3 (bisect)" in out
+
+
+def test_a_train_of_one_is_ejected_after_its_retry(red_tick):
+    t = red_tick([101])
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    t.run()
+    assert t.ejected() == ["issues/101/labels/ready"]
+    assert "rule 3" in t.comments(101).lower()
+
+
+def test_a_red_train_while_main_is_red_on_the_same_check_is_held(red_tick):
+    t = red_tick([101, 102, 103], suspects="104")
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t, [UNIT, SHARD])
+    _main(t, REQUIRED_TICK, [UNIT])
+    out = t.run()
+    assert TRAIN_PR in t.after.get("closed_now", [])
+    assert t.comments().startswith(f"Held: main is red on {UNIT}\n")
+    assert not t.ejected(), "every ready label stays"
+    assert set(t.after.get("comments", {})) == {str(TRAIN_PR)}, "no member is told anything"
+    assert t.recorded("main_red") is not None
+    assert json.loads(t.recorded("main_red_checks")) == [UNIT]
+    assert "rule 2 (hold while main is red)" in out
+    # Nothing boards behind it: no train branch pushed, no bisection's half.
+    assert "pr create" not in (t.tmp / "gh.log").read_text()
+
+
+def test_a_held_train_of_one_is_not_ejected(red_tick):
+    t = red_tick([101])
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t)
+    _main(t, REQUIRED_TICK, [UNIT])
+    t.run()
+    assert not t.ejected()
+    assert t.comments().startswith("Held: main is red on ")
+
+
+def test_a_red_on_a_check_main_has_green_bisects(red_tick):
+    t = red_tick([101, 102])
+    t.extra = [f"retry={int(time.time()) - 600}:{t.head}"]
+    _red_at_head(t, [UNIT])
+    _main(t, [*REQUIRED_TICK, UNIT], [SHARD])
+    t.run()
+    assert "Bisecting" in t.comments()
+    assert not t.comments().startswith("Held")
+
+
+def test_the_app_token_re_runs_when_the_owner_picks_it(red_tick):
+    t = red_tick([101, 102])
+    _red_at_head(t)
+    t.env = {"MERGE_TRAIN_RERUN_BY": "app"}
+    t.run()
+    assert t.after.get("rerun_by") == "app"
+    assert len(t.after.get("reruns", [])) == 1
+    assert TRAIN_PR not in t.after.get("closed_now", [])
+
+
+def test_a_refused_re_run_falls_back_to_bisect(red_tick):
+    t = red_tick([101, 102])
+    t.world["rerun_refused"] = True
+    _red_at_head(t)
+    _main(t, [*REQUIRED_TICK, UNIT])
+    out = t.run()
+    assert TRAIN_PR in t.after.get("closed_now", [])
+    assert "Bisecting" in t.comments()
+    assert "the retry could not run" in out
+
+
+def _held_train(t: RedTick, ago_minutes: float, checks: list[str]) -> None:
+    rendered = _run("state-render", *[f"{k}={v}" for k, v in t.state.items()],
+                    f"main_red={int(time.time() - ago_minutes * 60)}",
+                    f"main_red_checks={json.dumps(checks)}")
+    t.world["closed"] = [
+        {"number": TRAIN_PR - 7, "headRefName": "swarm/task_x", "body": ""},
+        {"number": TRAIN_PR, "headRefName": "train/41-1", "body": rendered.stdout},
+        {"number": TRAIN_PR - 1, "headRefName": "train/40-1", "body": ""},
+    ]
+
+
+def test_after_a_hold_nothing_boards_while_main_is_still_red(red_tick):
+    t = red_tick([101])
+    _held_train(t, 10, [UNIT])
+    _main(t, REQUIRED_TICK, [UNIT])
+    out = t.run(train_open=False)
+    assert "rule 2 (hold while main is red)" in out
+    assert STARTS not in out
+
+
+def test_after_a_hold_nothing_boards_while_main_s_check_is_pending(red_tick):
+    t = red_tick([101])
+    _held_train(t, 10, [UNIT])
+    t.world["checks"][t.main] = _at(REQUIRED_TICK)
+    out = t.run(train_open=False)
+    assert STARTS not in out
+
+
+def test_after_a_hold_a_train_boards_once_main_is_green_on_those_checks(red_tick):
+    t = red_tick([101])
+    _held_train(t, 10, [UNIT])
+    _main(t, [*REQUIRED_TICK, UNIT], [SHARD])
+    out = t.run(train_open=False)
+    assert STARTS in out
+
+
+def test_after_a_hold_a_train_boards_once_the_wait_is_past_its_bound(red_tick):
+    """A main that stays red would otherwise hold the fix itself out."""
+    t = red_tick([101])
+    _held_train(t, 61, [UNIT])
+    _main(t, REQUIRED_TICK, [UNIT])
+    out = t.run(train_open=False)
+    assert STARTS in out
+
+
+def test_state_carries_the_retry_and_the_hold_while_main_is_red(tmp_path):
+    extra = {"retry": f"1760400000:{'b' * 40}", "main_red": "1760400000",
+             "main_red_checks": json.dumps([UNIT, "swarm-ui component tests (3/8)"])}
+    proc = _render({**STATE, **extra})
+    assert proc.returncode == 0, proc.stderr
+    body = tmp_path / "body.md"
+    body.write_text(proc.stdout)
+    for key, value in extra.items():
+        got = _run("state-get", "--body", str(body), "--key", key)
+        assert (got.returncode, got.stdout.rstrip("\n")) == (0, value), key
+
+
+@pytest.mark.parametrize("key, value", [
+    ("retry", "b" * 40),
+    ("main_red", "soon"),
+    ("main_red_checks", "[]"),
+    ("main_red_checks", '["a -->"]'),
+    ("main_red_checks", "unit tests"),
+])
+def test_state_refuses_a_retry_or_hold_the_train_never_writes(key: str, value: str):
+    assert _render({**STATE, key: value}).returncode != 0
 
 
 # --------------------------------------------------------------------------
