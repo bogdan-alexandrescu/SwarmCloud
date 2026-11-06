@@ -89,7 +89,8 @@ def _ctx(tmp_path: Path, payload: dict, *, repo: bool) -> RunnerContext:
 #: The fake CLI. Its plan is `$HOME/plan.json` (HOME is the work directory);
 #: each start appends how it was started to `$HOME/runs.jsonl`, then writes
 #: the files its step names: `$ARTIFACTS/<name>` into the artifacts directory,
-#: anything else relative to where it was started (the checkout).
+#: anything else relative to where it was started (the checkout), and, when
+#: the step names a `commit` message, commits the tree with it.
 FAKE_CLI = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 argv = sys.argv[1:]
@@ -107,6 +108,10 @@ for name, text in step.get("write", {}).items():
         path = pathlib.Path.cwd() / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+if step.get("commit"):
+    import subprocess
+    subprocess.run(["git", "add", "-A"], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", step["commit"]], check=True)
 
 def say(event):
     print(json.dumps(event), flush=True)
@@ -277,6 +282,9 @@ def test_a_scan_that_cannot_run_is_not_read_as_a_failure_to_repair(tmp_path, mon
     ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
     monkeypatch.setenv("SWARM_CLONE_BASE", "0" * 40)
+    # A step that publishes nothing: it commits nothing, and the no-change
+    # turn (#3265) is not what this test is about.
+    monkeypatch.setenv(cliagent.STEP_PUBLISHES_ENV, "0")
     out = claude_code.body(ctx)
     assert len(_runs(ctx)) == 1
     assert out["repair_turns"] == 0

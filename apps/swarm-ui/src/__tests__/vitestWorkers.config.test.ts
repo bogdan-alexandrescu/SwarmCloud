@@ -13,6 +13,7 @@
 // to the agent's own `npx vitest run`: its environment is exactly the one given
 // here, with none of this run's VITEST_* variables.
 import { spawnSync } from 'node:child_process'
+import { availableParallelism } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -36,11 +37,15 @@ type Workers = {
 // What `vitest.config` holds once createVitest has returned: after the CLI
 // options were merged over the file and after every plugin's configureVitest
 // hook ran, which is the object a pool is later created from.
-function resolved(taskId: string | undefined, cli: Record<string, unknown>): Workers {
+// `ci` is the CI variable the child sees: absent unless given, so a run of this
+// file in CI resolves the same as one anywhere else.
+function resolved(taskId: string | undefined, cli: Record<string, unknown>, ci?: string): Workers {
   const env: Record<string, string | undefined> = {}
   for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('VITEST')) env[k] = v
   delete env.SWARM_TASK_ID
   if (taskId !== undefined) env.SWARM_TASK_ID = taskId
+  delete env.CI
+  if (ci !== undefined) env.CI = ci
   const options = { config: CONFIG, root: ROOT, watch: false, run: true, ...cli }
   const script = `
     import { createVitest } from 'vitest/node'
@@ -118,5 +123,17 @@ describe('the agent worker cap survives command-line pool options (#2508)', () =
       expect(config.maxWorkers).toBe(3)
       expect(config.poolOptions?.threads?.maxThreads).toBeUndefined()
     }
+  })
+
+  // Part of #2688: a CI shard runs on half the CPUs it may use, so the main
+  // process keeps cores to answer the workers' RPCs inside vitest's 60 s.
+  it('runs a CI shard on half the CPUs, and the command line still wins there', () => {
+    expect(resolved(undefined, {}, 'true').maxWorkers).toBe(Math.max(1, Math.floor(availableParallelism() / 2)))
+    expect(resolved(undefined, { maxWorkers: 1 }, 'true').maxWorkers).toBe(1)
+    expect(resolved(undefined, {}).maxWorkers).toBeUndefined()
+  })
+
+  it('keeps the agent cap in an agent container that also sets CI', () => {
+    expect(resolved(TASK_ID, {}, 'true').maxWorkers).toBe(agentCap())
   })
 })

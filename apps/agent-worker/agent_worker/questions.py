@@ -109,6 +109,12 @@ REJECTED_KEY = "questions_rejected"
 #: an answer only while the same question is asked at that index, without
 #: reading this file per task (the answer-counts lane, 5 November 2026).
 DIGESTS_KEY = "question_digests"
+#: `result_summary` key: a digest of each counted question's words alone
+#: (`text_digest`), in index order. An implement step and its fix step often
+#: ask the same question with other option labels; the bell and the Workflows
+#: list count such a question once by this key (the follow-up picked under
+#: BGD's overnight grant, 6 November 2026). A task without it counts as before.
+TEXT_DIGESTS_KEY = "question_text_digests"
 #: Hex characters kept of each digest: 64 bits tells one question from the
 #: next at an index, and twenty of them stay small in the summary.
 DIGEST_CHARS = 16
@@ -236,6 +242,19 @@ def digest(question: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:DIGEST_CHARS]
 
 
+def text_digest(question: Mapping[str, Any]) -> str:
+    """A short digest of one question's words alone, case and spacing aside.
+
+    The normalization is swarm-api's `notifications._question_key` and the
+    console's `questionKey`; swarm-api keys a waiting question's words with
+    the same digest (`notifications.question_text_digest`), and a test pins
+    the two equal.
+    """
+    words = question.get("question")
+    key = " ".join(words.split()).lower() if isinstance(words, str) else ""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:DIGEST_CHARS]
+
+
 def _read_regular(path: str, limit: int) -> bytes | None:
     """At most `limit` bytes of the regular file at `path`, None when there is none.
 
@@ -288,7 +307,8 @@ def summarise(
     counted, because a reader would then be told of questions it cannot read.
     `cause` is why it was not taken, as a sentence
     (`expected_outputs.cause_text`), when the upload said. A counted file
-    also gives `DIGESTS_KEY`, one `digest` per question in order.
+    also gives `DIGESTS_KEY`, one `digest` per question in order, and
+    `TEXT_DIGESTS_KEY`, one `text_digest` per question in order.
     """
     try:
         data = read(directory)
@@ -297,7 +317,8 @@ def summarise(
         if NAME not in uploaded:
             return {SUMMARY_KEY: 0, REJECTED_KEY: cause or "written but not uploaded"}
         taken = validate(data)
-        return {SUMMARY_KEY: len(taken), DIGESTS_KEY: [digest(q) for q in taken]}
+        return {SUMMARY_KEY: len(taken), DIGESTS_KEY: [digest(q) for q in taken],
+                TEXT_DIGESTS_KEY: [text_digest(q) for q in taken]}
     except Rejected as exc:
         return {SUMMARY_KEY: 0, REJECTED_KEY: str(exc)}
 

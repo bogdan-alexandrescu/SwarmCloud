@@ -1182,6 +1182,14 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
     ])
     error_message = "terraform/infra/verify.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
   }
+
+  # terraform/infra/plugins.tf (managed plugins, lane 3, part of #2688):
+  # swarm-api adds versions to the -plg- plugin secrets through a project
+  # grant conditioned on the secret's name, planned with no switch.
+  assert {
+    condition     = contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, google_project_iam_member.plugins_api_secret_versions.role)
+    error_message = "terraform/infra/plugins.tf grants a project-level role the scoped projectIamAdmin may not grant; add it to deployer_grantable_project_roles"
+  }
 }
 
 # terraform/infra/github_hooks.tf (lane GS-HOOKS, part of #1384) grants the

@@ -238,7 +238,10 @@ def test_a_reader_that_ignores_the_new_fields_reads_what_it_read_before():
         assert MERGE_WAIT_FIELDS_BEFORE <= set(wait)
         # `ci_paused_at`: the CI clock's pause across a slot wait (#3033), and
         # `train_entered_at`: a merge-train wait's start (part of #2688), additive.
-        assert set(wait) - MERGE_WAIT_FIELDS_BEFORE <= {"failed", "ci_paused_at", "train_entered_at"}
+        # The whole wait's record (part of #2688) is additive too.
+        assert set(wait) - MERGE_WAIT_FIELDS_BEFORE <= {"failed", "ci_paused_at", "train_entered_at",
+                                                        "wait_started_at", "rechecks",
+                                                        "failed_heads", "main_red"}
 
 
 def _train_park(last: dict[str, Any] | None) -> dict[str, Any]:

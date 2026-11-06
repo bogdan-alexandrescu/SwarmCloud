@@ -91,6 +91,13 @@ FROM ${MIRROR_DOCKER_HUB}/library/${ALPINE_IMAGE}
 # closed -- nothing leaked, the reason was lost -- which is still a check
 # that cannot say why it failed.
 RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git sed
+# musl from Alpine directly: the pinned alpine:3.20 digest ships musl 1.2.5-r3
+# (CVE-2026-107891, HIGH, integer overflow in regcomp, fixed in 1.2.5-r4), and
+# the speech-release pull request's build-check (run 42281167694, 2026-11-06)
+# refused this image over it. `apk add --upgrade` of the two named packages
+# takes the newest at build time, as the line above does for its packages; it
+# is not an `apk upgrade`, so this image stays off the every-release OS refresh.
+RUN apk add --no-cache --upgrade musl musl-utils
 
 WORKDIR /swarm
 
