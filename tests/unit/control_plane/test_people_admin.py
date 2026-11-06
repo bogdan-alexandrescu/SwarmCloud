@@ -915,6 +915,18 @@ def test_the_persons_first_poll_after_ready_applies_the_pending_loan_once(
     assert len(_grants(pool)) == 1 and len(_audit(db, "lend")) == 1
 
 
+def test_the_consoles_first_tenant_list_after_ready_applies_the_pending_loan(
+        client, db, pool) -> None:
+    _personal_tenant(db)
+    _pending_then(client, db, pool)
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    response = client.get("/v1/tenants/mine", headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    assert [e["tenant_id"] for e in response.json() if e["kind"] == "user"] == ["u-carol"]
+    assert _grants(pool) == [("set_lending", "acct-eng", ("u-carol",))]
+    assert db.docs["pending_loans/u-carol"]["loans"] == [] and len(_audit(db, "lend")) == 1
+
+
 def test_the_admin_list_applies_a_pending_loan_of_a_ready_workspace_before_its_row(
         client, db, pool) -> None:
     _pending_then(client, db, pool)
