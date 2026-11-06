@@ -473,8 +473,9 @@ describe('the inbox on a phone', () => {
     await mount('approval=run%3Arun_8f2a', routes(() => null))
     const detail = await loaded()
     expect(detail.closest('tr')).toBeNull()
-    expect(painted(detail.querySelector<HTMLElement>('.ad-qfacts')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
-    expect(painted(detail.querySelector<HTMLElement>('.ad-ev')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    // A plan is its brief: the facts two up, and the decision in the header card, not pinned.
+    expect(painted(detail.querySelector<HTMLElement>('.ab-facts')!, 'grid-template-columns', PHONE)).toBe('1fr 1fr')
+    expect(painted(detail.querySelector<HTMLElement>('.ab-head .ad-bar')!, 'position', PHONE)).toBe('static')
   })
 })
 
