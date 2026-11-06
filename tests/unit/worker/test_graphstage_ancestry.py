@@ -473,3 +473,20 @@ def test_the_commit_history_fetch_timing_out_does_not_start_the_fallback(tmp_pat
     # MUTATION: a fallback after a timeout doubles the wait past the limit.
     assert why == "the commit history fetch timed out after 1 s"
     assert not (lane.private / gitops.ANCESTRY_HISTORY_DIR).exists()
+
+
+def test_a_proof_from_the_scratch_history_without_the_changed_files_is_not_staged(
+        tmp_path, monkeypatch):
+    lane = _filtered_origin(_Lane(tmp_path))
+    unread = graphstage.Ancestry(basis="git", behind_by=2, changed=None)
+    monkeypatch.setattr(graphstage, "_git_ancestry", lambda *_args: unread)
+
+    proof = graphstage.prove_ancestry(
+        lane.checkout, lane.main[3], lane.base, {},
+        deepen=lambda: gitops.fetch_commit_history(url=lane.url, base_sha=lane.base,
+                                                   private_dir=lane.private))
+
+    # MUTATION: staging a proof whose changed files are unknown serves a
+    # stale graph as current (freshness reads "nothing changed").
+    assert isinstance(proof, str)
+    assert "the files changed since the index could not be read" in proof

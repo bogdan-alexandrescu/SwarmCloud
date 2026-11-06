@@ -558,7 +558,14 @@ def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
     history = why if isinstance(why, Path) else checkout
     local = is_ancestor(history, index_sha, base_sha)
     if local is True:
-        return _git_ancestry(history, index_sha, base_sha)
+        found = _git_ancestry(history, index_sha, base_sha)
+        if found.changed is None and history != checkout:
+            # The scratch history holds no file contents and fetches nothing
+            # lazily: a tree it lacks leaves the changed files unknown, and
+            # a graph whose staleness is unknown is not staged as current.
+            return f"{unshown} (the files changed since the index could not be read " \
+                   "from the fetched history)"
+        return found
     if local is False:
         return _not_an_ancestor(index_sha, base_sha)
     return f"{unshown} (not within the history fetched behind the base)"
