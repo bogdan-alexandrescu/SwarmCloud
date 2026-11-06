@@ -381,6 +381,7 @@ the cost of being wrong is an OOM kill. Their code defaults
 |---|---|---|---|---|---|
 | `standard` | 4 | 8 | 8 GiB | 4 GiB | 1 |
 | `browser` | 4 | 8 | 8 GiB | 4 GiB | 1 |
+| `medium` | 6 | 12 | 16 GiB | 8 GiB | 2 |
 | `large` | 8 | 16 | 32 GiB | 16 GiB | 4 |
 
 `large`'s memory is the Cloud Run ceiling, and so is every class's CPU
@@ -425,7 +426,7 @@ ERROR. `GET /v1/resource-classes` serves the current version, which is how
 the console's pickers and the MCP plugin follow a resize without a deploy.
 
 Only GKE profiles follow: `browser`, `claude-code`, `claude-code-browser`,
-`claude-code-large`, `claude-code-lightpanda`, `codex`, `generic`, `indexer` and `merge`. The Cloud Run profiles `mock`,
+`claude-code-large`, `claude-code-medium`, `claude-code-lightpanda`, `codex`, `generic`, `indexer` and `merge`. The Cloud Run profiles `mock`,
 `post-verdict` and `claude-code-review` always run at the code defaults,
 because Cloud Run fixes resources on the Job, not on the execution, and
 updating a shared Job in place would race between schedulers; the page lists
@@ -447,7 +448,7 @@ feature partially undermined the reason for the choice.
 What is deployed: that feature is not used and cannot be. The Terraform google
 provider cannot express it — `empty_dir.medium` accepts only `"MEMORY"` — so a
 workspace is a tmpfs slice of the container's memory (`standard` ~4 GiB of its
-8, `browser` ~4 GiB of its 8, `large` ~16 GiB of its 32) and the deployment runs on the fully-GA
+8, `browser` ~4 GiB of its 8, `medium` ~8 GiB of its 16, `large` ~16 GiB of its 32) and the deployment runs on the fully-GA
 path, **with** live migration.
 
 That tmpfs is Cloud Run only. On GKE, where every agent profile but `mock`

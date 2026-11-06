@@ -2451,8 +2451,8 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     name: 'demo-viewport', image: 'demo-runtime-viewport',
     backend: 'GKE_AUTOPILOT', resolved_backend: 'GKE_AUTOPILOT',
     provider: 'demo-vendor', secrets: ['DEMO_API_KEY'], secrets_any_of: false,
-    timeout_seconds: 5400, resource_class: 'demo-medium',
-    resources: { name: 'demo-medium', cpu: 6, memory_gib: 15, disk_gib: 7, units: 2 },
+    timeout_seconds: 5400, resource_class: 'demo-mid',
+    resources: { name: 'demo-mid', cpu: 6, memory_gib: 15, disk_gib: 7, units: 2 },
     // THE DISABLED EXEMPLAR. A fixture set where every profile is available
     // means the disabled branch of the catalogue screen ships unexercised --
     // the same argument `demo-wide` makes for declaring AUTO, since nothing in

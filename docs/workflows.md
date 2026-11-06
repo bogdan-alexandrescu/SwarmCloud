@@ -618,7 +618,7 @@ ID per class (`local.runner_models`), and the platform runs that pin:
 ```
 
 **Which profiles take one.** `claude-code`, `claude-code-browser`,
-`claude-code-large`, `claude-code-lightpanda` and `indexer` accept all four. The retired `claude-code-review` accepts only `opus`. Every
+`claude-code-large`, `claude-code-medium`, `claude-code-lightpanda` and `indexer` accept all four. The retired `claude-code-review` accepts only `opus`. Every
 other profile (`codex`, `mock`, `generic`, `browser` and the worker actions)
 runs no Claude model and accepts none. `GET /v1/runtimes`, `swarm_profiles` and
 the console's Runtimes screen list each profile's `model_classes`, its

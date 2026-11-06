@@ -892,7 +892,8 @@ def test_workflows_model_class_section_states_what_the_code_holds():
     assert f"`{default}` is the default" in body
     every = [p.name for p in RUNNER_PROFILES.values() if p.model_classes == tuple(MODEL_CLASSES)]
     assert sorted(every) == [
-        "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda", "indexer",
+        "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda", "claude-code-medium",
+        "indexer",
     ], every
     for name in every:
         assert f"`{name}`" in body, name
