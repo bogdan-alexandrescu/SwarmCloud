@@ -1086,6 +1086,13 @@ class Scheduler:
         # transaction that writes each pool document once, then dispatched in
         # the same order. A task the batch cannot fit stays READY and the
         # rest still admit, as a denial never stopped the loop before.
+        #
+        # A BATCH HOLDS ONE STEP OF A WORKFLOW. A step whose dispatch fails
+        # for the last time writes FAILED, and under `on_step_failure:
+        # fail_workflow` its siblings must stop in this same drain
+        # (`_stop_for_failed_workflow`, run when a task is prepared). So the
+        # batch holding a sibling is reserved and dispatched BEFORE the next
+        # sibling is prepared, never leased beside it first.
         leased_this_pass = 0
         batch: list[_Prepared] = []
         for task in ordered:
@@ -1094,6 +1101,14 @@ class Scheduler:
                 break
             if self._monotonic() - started >= self._settings.max_run_seconds:
                 break
+            if task.workflow_id and any(
+                (item.task.tenant_id, item.task.workflow_id) == (task.tenant_id, task.workflow_id)
+                for item in batch
+            ):
+                leased_this_pass += self._admit_batch(batch, report)
+                batch = []
+                if report.leased >= self._settings.max_leases_per_run:
+                    break
             prepared = self._prepare_admission(task, report)
             if prepared is None:
                 continue

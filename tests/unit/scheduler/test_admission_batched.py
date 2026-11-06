@@ -69,6 +69,8 @@ class _CountingTransaction(FakeTransaction):
         self._read_set = {}
 
     def get(self, ref: Any, **kwargs: Any) -> Any:
+        # Firestore refuses a read after a write inside one transaction.
+        assert not self._buffer, "a read after a write in one transaction"
         result = super().get(ref, **kwargs)
         if isinstance(ref, FakeDocumentRef):
             self._read_set.setdefault(ref.path, copy.deepcopy(result.to_dict()))
@@ -252,6 +254,53 @@ def test_a_task_no_longer_ready_or_repeated_is_denied_and_the_rest_admit(db):
     assert outcomes[2].reasons[0]["reason"] == "not_ready"
     assert db.docs["pools/global"]["active"] == 1
     assert len(_leases(db)) == 1
+
+
+def test_two_steps_of_one_workflow_in_a_batch_write_its_state_once(db):
+    seed_tenant(db, "eng", max_active=10)
+    seed_pool(db, "global", hard_limit=10)
+    base = datetime.now(timezone.utc) - timedelta(minutes=5)
+    for i, task_id in enumerate(("s1", "s2")):
+        seed_task(db=db, task_id=task_id, tenant_id="eng", workflow_id="wf1",
+                  created_at=base + timedelta(seconds=i))
+    db.docs["workflows/wf1"] = {
+        "workflow_id": "wf1", "tenant_id": "eng", "state": "READY",
+        "steps": [{"step_id": "a", "task_id": "s1"}, {"step_id": "b", "task_id": "s2"}],
+    }
+    store = SchedulerStore(db)
+
+    outcomes = store.acquire_leases(
+        [AdmissionRequest(task=store.get_task(t), units=1, backend=BACKEND) for t in ("s1", "s2")],
+        config=AdmissionConfig(),
+    )
+
+    assert [type(o) for o in outcomes] == [Lease, Lease]
+    assert db.docs["workflows/wf1"]["state"] == "RUNNING"
+    (writes,) = db.committed_writes
+    assert writes.count("workflows/wf1") == 1
+
+
+def test_a_batch_holds_one_step_of_a_workflow(db):
+    """So a sibling is prepared -- and its workflow's failure verdict read --
+    only after the batch before it dispatched (test_on_step_failure.py pins
+    the drain that fails a step mid-batch)."""
+    seed_tenant(db, "eng", max_active=10)
+    seed_pool(db, "global", hard_limit=10)
+    base = datetime.now(timezone.utc) - timedelta(minutes=5)
+    for i, (task_id, workflow_id) in enumerate(
+        (("w1", "wfA"), ("x1", None), ("w2", "wfA"), ("x2", None))
+    ):
+        seed_task(db=db, task_id=task_id, tenant_id="eng", workflow_id=workflow_id,
+                  created_at=base + timedelta(seconds=i))
+    scheduler, _dispatcher = _scheduler(db)
+
+    scheduler.drain()
+
+    assert _leased(db) == {"w1", "x1", "w2", "x2"}
+    batches = [sorted(p.split("/")[1] for p in w if p.startswith("tasks/"))
+               for w in db.admissions()]
+    # MUTATION: drop the flush in `_admission_pass` and this is one batch.
+    assert batches == [["w1", "x1"], ["w2", "x2"]], batches
 
 
 # --------------------------------------------------------------------------
