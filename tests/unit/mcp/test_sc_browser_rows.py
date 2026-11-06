@@ -135,12 +135,16 @@ def test_an_attach_in_the_pane_layout_is_one_copy_whose_rows_say_pane():
     assert "notices its finish" in Path(out["launches"][0]["script_path"]).read_text().split("\n", 3)[2]
 
 
-def test_rows_pane_is_taken_for_one_attach_and_a_task_batch_keeps_its_summary_row():
+def test_rows_pane_is_taken_for_one_attach_and_single_tasks_keep_a_run_each():
     out = json.loads(server._call(_Client(_envelope(3)), "swarm_workflow_launch", {"attach": "wf_big", "rows": "pane"}))
     assert out["launches"][0]["args"]["rows"] == "pane"
     _layout_tool(layout="pane")
-    batch = launch.for_tasks([{"task_id": "task_1", "label": "one"}], None, dispatched=False)
-    assert batch["args"]["rows"] == "summary"  # MUTATION: hand a task batch the stage row -- it has no stages.
+    # A single task has no stages: in the pane layout too it is a run of its
+    # own with one sc:task row (owner 2026-11-04), never a stage row.
+    tasks = launch.for_tasks([{"task_id": "task_1", "label": "one"}, {"task_id": "task_2", "label": "two"}],
+                             None, dispatched=False)
+    assert [[t["task_id"] for t in c["args"]["attach_tasks"]] for c in tasks["launches"]] == [["task_1"], ["task_2"]]
+    assert [c["title"] for c in tasks["launches"]] == ["SC · one", "SC · two"]
 
 
 _STAGE_STEPS = (
@@ -164,7 +168,7 @@ def test_the_pane_layout_starts_one_row_per_workflow_not_per_step(tmp_path):
     got = _attach(tmp_path, "pane", {"FINISH": finished})
     rows = [c for c in got["calls"] if c["agentType"] in ("sc:finish", "sc:step", "sc:summary")]
     assert [c["agentType"] for c in rows] == ["sc:finish"]  # MUTATION: per-step rows -- seven sc:step.
-    assert rows[0]["label"] == "SC · COUNTS-REVIEW"
+    assert rows[0]["label"] == "SC ∴ COUNTS-REVIEW"
     assert rows[0]["phase"] == "Finish"
     prompt = rows[0]["prompt"].split("\n")
     stage_of = json.loads(next(l for l in prompt if l.startswith("stage_of: "))[len("stage_of: "):])

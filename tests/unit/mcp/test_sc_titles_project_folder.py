@@ -92,8 +92,8 @@ def test_with_a_project_known_the_copy_is_written_under_its_run_folder(where, mo
     script = Path(reply["script_path"])
     assert script.parent == folder
     assert (folder / ".gitignore").read_text().splitlines()[0] == "*"
-    assert _COPY.match(script.name) and _COPY.match(script.name)["slug"] == "nightly-3-steps"
-    assert _meta_of(script)["name"] == reply["title"] == "SC · nightly · 3 steps"
+    assert _COPY.match(script.name) and _COPY.match(script.name)["slug"] == "nightly"
+    assert _meta_of(script)["name"] == reply["title"] == "SC ∴ nightly"
     assert not (where["tmp"] / launch.RUN_DIR).exists(), "nothing goes to the system temp dir"
     assert str(folder) in capsys.readouterr().err
 
@@ -103,7 +103,7 @@ def test_the_project_folder_is_ignored_by_git(where, monkeypatch):
         pytest.skip("git is not installed")
     subprocess.run(["git", "init", "-q", str(where["project"])], check=True)
     _in_project(monkeypatch, where["project"])
-    launch.write_script("SC · t · 1 step", "d")
+    launch.write_script("SC ∴ t · 1 step", "d")
     status = subprocess.run(["git", "-C", str(where["project"]), "status", "--porcelain", "--untracked-files=all"],
                             capture_output=True, text=True, check=True).stdout
     assert status == "", status
@@ -116,14 +116,14 @@ def test_the_bridges_working_directory_is_the_project_when_it_is_a_git_work_tree
     session_dir = where["project"] / "sub"
     session_dir.mkdir()
     monkeypatch.setenv("SWARM_CHECKOUT_DIR", str(session_dir))
-    script = launch.write_script("SC · t · 1 step", "d")
+    script = launch.write_script("SC ∴ t · 1 step", "d")
     # The session's directory itself, never the top level above it: that is
     # outside the session's allowed directories.
     assert script.parent == session_dir / launch.REPO_RUN_DIR
 
 
 def test_with_no_project_known_the_copy_goes_to_the_temp_fallback_and_says_why(where, capsys):
-    script = launch.write_script("SC · t · 1 step", "d")
+    script = launch.write_script("SC ∴ t · 1 step", "d")
     assert script.parent == where["tmp"] / launch.RUN_DIR
     assert _COPY.match(script.name)
     err = capsys.readouterr().err
@@ -133,16 +133,21 @@ def test_with_no_project_known_the_copy_goes_to_the_temp_fallback_and_says_why(w
 def test_a_project_folder_that_cannot_be_written_falls_back_to_temp(where, monkeypatch, capsys):
     _in_project(monkeypatch, where["project"])
     (where["project"] / launch.REPO_RUN_DIR).write_text("a file where the folder would go")
-    script = launch.write_script("SC · t · 1 step", "d")
+    script = launch.write_script("SC ∴ t · 1 step", "d")
     assert script.parent == where["tmp"] / launch.RUN_DIR
     assert "could not be written" in capsys.readouterr().err
 
 
+def test_the_slug_drops_either_kind_mark_with_sc():
+    assert launch.slug("SC ∴ nightly · 3 steps") == "nightly-3-steps"
+    assert launch.slug("SC · lane-a") == "lane-a"
+
+
 @pytest.mark.parametrize("title", [
     "SC · it's \"quoted\" / with\\slashes · 2 steps",
-    "SC · ünïcödé 中文 😀 · 1 step",
-    "SC · lone \ud800 surrogate · 1 step",
-    "SC · ../../etc/passwd · 1 step",
+    "SC ∴ ünïcödé 中文 😀 · 1 step",
+    "SC ∴ lone \ud800 surrogate · 1 step",
+    "SC ∴ ../../etc/passwd · 1 step",
     "SC · " + "x" * 400 + " · 1 step",
     "中文",
 ])
@@ -165,7 +170,7 @@ def test_pruning_removes_old_copies_of_both_name_patterns_and_nothing_else(where
         path.write_text("x")
     for path in (old_new, old_old, *keep):
         os.utime(path, (week_ago, week_ago))
-    script = launch.write_script("SC · t · 1 step", "d")
+    script = launch.write_script("SC ∴ t · 1 step", "d")
     assert not old_new.exists() and not old_old.exists()
     assert fresh_new.exists() and fresh_old.exists() and script.exists()
     assert all(path.exists() for path in keep)
@@ -205,13 +210,13 @@ def test_every_launch_path_appends_exactly_one_record_line(where, monkeypatch):
     assert len(lines) == 4
 
     submit, attach, attach_all, dispatch = lines
-    assert submit == {"workflow_id": "wf_1", "kind": "submit", "title": "SC · nightly · 3 steps",
+    assert submit == {"workflow_id": "wf_1", "kind": "submit", "title": "SC ∴ nightly · 3 steps",
                       "claude_session": SESSION, "repository": "github.com/acme/ci-runners",
                       "launched_at": submit["launched_at"], "name": "nightly"}
-    assert (attach["workflow_id"], attach["kind"], attach["title"]) == ("wf_9", "attach", "SC · attached one · 2 steps")
+    assert (attach["workflow_id"], attach["kind"], attach["title"]) == ("wf_9", "attach", "SC ∴ attached one · 2 steps")
     assert (attach_all["workflow_id"], attach_all["kind"], attach_all["repository"]) == ("wf_all", "attach", "github.com/acme/app")
     assert (dispatch["task_id"], dispatch["kind"], dispatch["title"], dispatch["repository"]) == \
-        ("task_d", "dispatch", "SC · lane-d · task", "github.com/acme/app")
+        ("task_d", "dispatch", "SC · lane-d", "github.com/acme/app")
     for line in lines:
         assert line["claude_session"] == SESSION
         datetime.strptime(line["launched_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)

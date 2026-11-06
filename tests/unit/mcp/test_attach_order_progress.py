@@ -87,8 +87,9 @@ def test_the_single_task_launch_runs_the_longest_running_task_first(monkeypatch)
          "state_age_seconds": 400, "age_seconds": 4000},
     ]})
     out = launch.for_all(_NoTenants())
-    (task_launch,) = [l for l in out["launches"] if "task_ids" in l]
-    assert task_launch["task_ids"] == ["task_old", "task_mid"]
+    # One launch per task (owner 2026-11-04), the longest-running first.
+    task_launches = [l for l in out["launches"] if "task_ids" in l]
+    assert [l["task_ids"] for l in task_launches] == [["task_old"], ["task_mid"]]
     assert [n["task_id"] for n in out["not_followed"]] == ["task_new"]
 
 

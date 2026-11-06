@@ -123,7 +123,6 @@ import {
   ENTRY_EVENT,
   tokenKindsCell,
   tokenKindsTotal,
-  workflowLabel,
   listRowName,
   workflowPullRequest,
   mergeCardOf,
@@ -187,7 +186,7 @@ import {
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, withVerdictTriage, type MergeRead, type VerdictRead } from './wfreview'
 import { TriageChip, useVerdictTriage } from './DecisionCard'
 import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
-import { PersonName } from './PersonName'
+import { WorkflowFacts, WorkflowRepoCell, WorkflowRepoUnder, workflowName } from './WorkflowFacts'
 import { Mark } from './primitives'
 import { stateWord } from './words'
 import './styles/workflows.css'
@@ -517,33 +516,22 @@ export function useRecentName(id: string | null): string | null {
 }
 
 /**
- * `4 steps in 3 stages (1 → 2 → 1) · 1 of 4 steps done · by Priya Rao ·
- * priya@example.com · started 8m ago`: one workflow's count note (#138).
+ * `4 steps in 3 stages (1 → 2 → 1) · 1 of 4 steps done`: one workflow's count
+ * note (#138).
  *
- * THE OWNER IS A PERSON, SO IT PRINTS THROUGH `PersonName` (user-profile.md
- * §4.4): their name when they set one, always beside the whole email. The
- * list's narrow Owner column keeps the name before the @ (QA G3-14); this
- * note is the workflow page's, where the design names the owner. It is
- * called, not mounted, so the note's element tree carries the name and the
- * email as text, and `CountNote`'s title (`textOf`) keeps them.
+ * WHO STARTED IT AND WHEN ARE THE FACTS CARD'S (`WorkflowFacts`, under the
+ * state row: Started by and When), so the note no longer says `by … ·
+ * started …` and nothing on the page is drawn twice.
  */
 function pageSummary(d: WorkflowBoard, id: string): ReactNode {
   const w = d.workflows.find((x) => x.workflow_id === id)
   if (w === undefined) return 'not in this read'
   const shape = shapeOf(w.steps)
-  const started = workflowStartUtc(w, d.taskById)
-  const owner = w.submitted_by === null || w.submitted_by === '' ? ownerShort(w.submitted_by) : PersonName({ email: w.submitted_by, name: w.submitted_by_name })
-  return (
-    <>
-      {/* EACH FIGURE SAYS WHAT IT COUNTS (visual QA QA-119, 2026-10-20): the
-          head read '6 steps · 5 → 1 · 4/6 done', and neither '5 → 1' nor
-          '4/6' said what it was. The shape names its stages and the census
-          its steps; the list's narrow cells keep the short forms. */}
-      {`${shapeWords(shape)} · ${rollupLine(w, d.taskById).text.replace(/^(\d+)\/(\d+) done/, '$1 of $2 steps done')} · by `}
-      {owner}
-      {` · ${startedPhrase(started)}`}
-    </>
-  )
+  // EACH FIGURE SAYS WHAT IT COUNTS (visual QA QA-119, 2026-10-20): the head
+  // read '6 steps · 5 → 1 · 4/6 done', and neither '5 → 1' nor '4/6' said
+  // what it was. The shape names its stages and the census its steps; the
+  // list's narrow cells keep the short forms.
+  return `${shapeWords(shape)} · ${rollupLine(w, d.taskById).text.replace(/^(\d+)\/(\d+) done/, '$1 of $2 steps done')}`
 }
 
 /**
@@ -1233,8 +1221,9 @@ export function WorkflowCard({
   // workflow document records no start -- with `created_at` as its submit.
   const started = workflowStartUtc(workflow, taskById)
   // WHAT THE WORKFLOW IS CALLED AND WHAT IT OPENED (#330), both off the step
-  // tasks the board already joined -- see `workflowLabel` and `workflowPullRequest`.
-  const label = workflowLabel(workflow, taskById)
+  // tasks the board already joined -- see `workflowName` (its served title,
+  // else `workflowLabel`) and `workflowPullRequest`.
+  const label = workflowName(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   const strays = straysOf(workflow, taskById)
   const unreadable = unreadableOf(workflow, taskById)
@@ -5510,6 +5499,9 @@ function markWord(word: string): string {
 const LIST_COLUMNS: readonly { col: string; label: string; num?: boolean }[] = [
   { col: 'state', label: 'State' },
   { col: 'workflow', label: 'Workflow' },
+  // THE REPOSITORY, NARROW: its name over its owner (`WorkflowRepoCell`). It
+  // gives way with Owner; the whole owner/repo then goes under the name.
+  { col: 'repo', label: 'Repository' },
   { col: 'steps', label: 'Steps' },
   { col: 'needs', label: 'Needs you' },
   { col: 'spent', label: 'Spent', num: true },
@@ -5657,7 +5649,7 @@ function WorkflowListFilters({
 /** How many rows the loading skeleton draws: about one laptop fold of the list. */
 const SKELETON_ROWS = 6
 /** Each skeleton cell's bar width, in em, per column. */
-const SKELETON_WIDTHS: readonly number[] = [5, 12, 7, 4, 4, 5, 5]
+const SKELETON_WIDTHS: readonly number[] = [5, 12, 6, 7, 4, 4, 5, 5]
 
 /**
  * THE LIST WHILE ITS READ IS IN FLIGHT (#113): the real toolbar, disabled, the
@@ -5745,7 +5737,7 @@ function WorkflowList({
     return out
   }, [all, board.workflows, board.taskById])
   const labels = useMemo(
-    () => new Map(all.map((w) => [w.workflow_id, workflowLabel(w, taskById)] as const)),
+    () => new Map(all.map((w) => [w.workflow_id, workflowName(w, taskById)] as const)),
     [all, taskById],
   )
   const [picked, setPicked] = useState<string | null>(null)
@@ -6145,7 +6137,9 @@ function WorkflowListRow({
         </a>
         <PullRequestWaitTag workflow={workflow} />
         {cancelPending(workflow) && <span className="tag wait">{CANCEL_PENDING_WORD}</span>}
+        <WorkflowRepoUnder workflow={workflow} />
       </td>
+      <WorkflowRepoCell workflow={workflow} />
       <td className="wfg-steps" data-col="steps">
         <StepBar workflow={workflow} roll={roll} />
       </td>
@@ -6506,7 +6500,9 @@ function WorkflowPage({
 
   // OPENING A WORKFLOW RECORDS IT in the panel's Recent (5), with the state it
   // was read in, so the switcher can draw its mark without a read of its own.
-  const label = workflow === null ? null : workflowLabel(workflow, board.taskById)
+  // Its name (`workflowName`: the served title, else the label) is the one the
+  // page heading and the breadcrumb read back (`useRecentName`).
+  const label = workflow === null ? null : workflowName(workflow, board.taskById)
   useEffect(() => {
     if (found) rememberWorkflow(id, derived, label)
   }, [id, found, derived, label])
@@ -6958,6 +6954,7 @@ function WorkflowHead({
           {browsers} {browsers === 1 ? 'browser' : 'browsers'}
         </span>
       </p>
+      <WorkflowFacts workflow={workflow} taskById={taskById} started={utcStamp(workflow.created_at, now)} now={now} />
       {asked && quiet.length > 0 && <FinishedQuestions workflow={workflow} taskById={taskById} quiet={quiet} />}
     </div>
   )
@@ -7150,14 +7147,9 @@ function WorkflowOverview({
   const pr = workflowPullRequest(workflow, taskById)
   const prs = workflow.steps.filter((s) => s.task_id && pullRequestOf(taskById?.get(s.task_id) ?? null) !== null).length
   const joined = workflow.steps.filter((s) => s.task_id && taskById?.has(s.task_id)).length
-  const started = workflowStartUtc(workflow, taskById, now)
   const changed = Number.isFinite(Date.parse(workflow.updated_at)) ? timeAgo(workflow.updated_at, now) : 'not recorded'
   const keepGoing = workflow.on_step_failure.toLowerCase() === 'continue'
   const wait = pullRequestWait(workflow)
-  const owner =
-    workflow.submitted_by === null || workflow.submitted_by === ''
-      ? ownerShort(workflow.submitted_by)
-      : PersonName({ email: workflow.submitted_by, name: workflow.submitted_by_name })
   return (
     <div className="wfp-ov">
       <dl className="wfp-dl">
@@ -7197,12 +7189,10 @@ function WorkflowOverview({
         </dd>
         <dt>On a failed step</dt>
         <dd>{keepGoing ? 'keep going' : 'stop the workflow'}</dd>
-        <dt>Owner</dt>
-        <dd title={workflow.submitted_by ?? undefined}>{owner}</dd>
-        <dt>Started</dt>
-        <dd title={started.title}>
-          {startedPhrase(started)} · changed {changed}
-        </dd>
+        {/* OWNER AND STARTED ARE THE FACTS CARD'S (Started by, When), above
+            the grid: the inspector keeps Changed, which the card does not say. */}
+        <dt>Changed</dt>
+        <dd title={workflow.updated_at}>{changed}</dd>
       </dl>
       <details className="wfp-details">
         <summary>Policy</summary>
