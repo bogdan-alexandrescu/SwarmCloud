@@ -24,7 +24,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api, USE_FIXTURES: false }
 })
 
-const { AgentsScreen, NO_BLOCKER, matchesQuery } = await import('../Agents')
+const { AgentsScreen, LIVE_AND_WAITING, NO_BLOCKER, matchesQuery } = await import('../Agents')
 
 const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.now() })
 const flat = (el: Element | null | undefined) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
@@ -70,7 +70,13 @@ const ALL = [flaky, untitled, leased, queued, ready, plan, scan, report, lone, f
 
 function serve(tasks: Task[] = ALL) {
   api.loadTasks.mockResolvedValue(ok({ tasks, next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
-  api.loadTasksInStates.mockResolvedValue(ok({ tasks: [], next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
+  // THE STATE READ AGREES WITH THE PAGE. It answered no rows while the page
+  // held RUNNING ones, and the list's 5 s poll (`pollStates`) rightly drops a
+  // live row a whole state read no longer holds: on a runner slow enough for
+  // a case to outlive 5 s, the poll emptied Browsers and the theater link
+  // went with it (overview-agents-18 read '' on CI).
+  const live = tasks.filter((t) => LIVE_AND_WAITING.includes(t.state))
+  api.loadTasksInStates.mockResolvedValue(ok({ tasks: live, next_page_token: null, tenant_id: 'eng' } satisfies TaskPage))
   api.loadAttempts.mockResolvedValue(ok({ attempts: [{ generation: 1 }] }))
   api.loadResourceClasses.mockReturnValue(new Promise(() => {}))
   // The workflow's full read never lands: the row must not need it.

@@ -141,7 +141,7 @@ def fast(monkeypatch):
     """Seconds where the bridge has minutes: the hold re-reads every 50 ms and
     the keepalive goes every 100 ms."""
     monkeypatch.setattr(compact, "POLL_SECONDS", 0.05)
-    monkeypatch.setattr(compact, "PENDING_POLL_CAP_SECONDS", 0.05)
+    monkeypatch.setattr(compact, "IDLE_POLL_CAP_SECONDS", 0.05)
     monkeypatch.setattr(server, "KEEPALIVE_SECONDS", 0.1)
 
 

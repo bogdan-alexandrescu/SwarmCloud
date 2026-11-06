@@ -96,8 +96,9 @@ def test_the_covered_fields_are_the_requests():
         # Contract request 128 (JEV-LANES, PR 2905): the lane quality gates.
         "quality_gates": ("jev",),
         # Contract request 136 (AQ-WORK-CONTRACT, part of #2688): the catalogue
-        # plugins a workspace's steps may name.
-        "plugins": ("allowed",),
+        # plugins a workspace's steps may name; contract request 140 (managed
+        # plugins P1): its every-step defaults and its plugin settings' digest.
+        "plugins": ("allowed", "defaults", "configs_digest"),
         # Contract request 138 (JEV-SUBMISSION-REVIEW, part of #2688): the
         # workspace's opt-in to Jev's review of its work contracts.
         "contract_review": ("enabled",),
@@ -142,20 +143,83 @@ def test_a_block_without_plugins_signs_the_same_bytes_as_before(block):
         ) == pinned
 
 
+#: A `plugins` block as `plugins.PluginsStore.put` stores it before contract
+#: request 140, and the bytes its MAC covers.
+STORED_PLUGINS = {"allowed": ["gstack"], "set_at": "2026-11-05T00:00:00Z",
+                  "set_by": "alice@example.com", "mac": {"v": 1}}
+STORED_PLUGINS_BYTES = (
+    b'{"block":"plugins","fields":{"allowed":["gstack"]},'
+    b'"purpose":"swarm.settings/v1","tenant_id":"team-a"}'
+)
+DIGEST = "0" * 64
+
+
 def test_the_plugins_block_signs_the_allowed_list_and_nothing_else():
     out = canonical_settings_block(
         tenant_id="team-a", block="plugins",
         fields={"allowed": ["gstack"], "mode": "unattended"},
     )
-    assert out == (
-        b'{"block":"plugins","fields":{"allowed":["gstack"]},'
-        b'"purpose":"swarm.settings/v1","tenant_id":"team-a"}'
-    )
+    assert out == STORED_PLUGINS_BYTES
     unset = canonical_settings_block(tenant_id="team-a", block="plugins", fields={})
     assert json.loads(unset)["fields"] == {"allowed": None}
     assert canonical_settings_block(
         tenant_id="team-b", block="plugins", fields={"allowed": ["gstack"]}
     ) != out
+
+
+def test_a_plugins_block_stored_before_request_139_still_verifies():
+    """Request 140: `defaults` and `configs_digest` absent project as null, and a
+    null key added to the block after its MACs were stored is left out of the
+    bytes, so the block's bytes -- and its stored MAC -- are what they were."""
+    assert canonical_settings_block(
+        tenant_id="team-a", block="plugins", fields=STORED_PLUGINS
+    ) == STORED_PLUGINS_BYTES
+    explicit_null = {**STORED_PLUGINS, "defaults": None, "configs_digest": None}
+    assert canonical_settings_block(
+        tenant_id="team-a", block="plugins", fields=explicit_null
+    ) == STORED_PLUGINS_BYTES
+
+
+def test_the_plugins_block_signs_its_defaults_and_configs_digest():
+    fields = {"allowed": ["w-0123456789ab"], "defaults": ["w-0123456789ab"],
+              "configs_digest": DIGEST}
+    out = canonical_settings_block(tenant_id="team-a", block="plugins", fields=fields)
+    assert out == (
+        b'{"block":"plugins","fields":{"allowed":["w-0123456789ab"],'
+        b'"configs_digest":"' + DIGEST.encode() + b'",'
+        b'"defaults":["w-0123456789ab"]},'
+        b'"purpose":"swarm.settings/v1","tenant_id":"team-a"}'
+    )
+
+
+_W = "w-0123456789ab"
+_SIGNED = {"allowed": [_W], "defaults": [_W], "configs_digest": DIGEST}
+
+
+@pytest.mark.parametrize("signed,read", [
+    # A default planted on a block signed without one.
+    ({"allowed": [_W], "configs_digest": DIGEST}, _SIGNED),
+    # A signed default removed, or set to null.
+    (_SIGNED, {"allowed": [_W], "configs_digest": DIGEST}),
+    (_SIGNED, {**_SIGNED, "defaults": None}),
+    # An emptied default list is a value, not an absence.
+    (_SIGNED, {**_SIGNED, "defaults": []}),
+    # A swapped or removed settings digest.
+    (_SIGNED, {**_SIGNED, "configs_digest": "1" * 64}),
+    (_SIGNED, {"allowed": [_W], "defaults": [_W]}),
+])
+def test_a_changed_default_or_digest_changes_the_bytes(signed, read):
+    assert canonical_settings_block(tenant_id="team-a", block="plugins", fields=read) \
+        != canonical_settings_block(tenant_id="team-a", block="plugins", fields=signed)
+
+
+def test_only_the_plugins_blocks_added_keys_are_left_out_when_null():
+    """A key listed from a block's start still projects as null: the other
+    blocks' bytes are pinned in BEFORE_PLUGINS, and `allowed` here."""
+    out = canonical_settings_block(
+        tenant_id="team-a", block="plugins", fields={"defaults": ["w-0123456789ab"]}
+    )
+    assert json.loads(out)["fields"] == {"allowed": None, "defaults": ["w-0123456789ab"]}
 
 
 def test_the_contract_review_block_signs_enabled_and_nothing_else():

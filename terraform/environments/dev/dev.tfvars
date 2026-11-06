@@ -336,7 +336,13 @@ pool_limits = {
 }
 
 service_max_instances = {
-  "swarm-api"          = 5
+  # 5 -> 8 (BGD's pick, 2026-11-06, part of #2688), with each instance doubled
+  # to 2 vCPU and 2 GiB in terraform/infra/main.tf: swarm-api sat at 5 of 5
+  # for 359 of 360 minutes at 91% CPU and 94% memory. A ceiling, not a floor:
+  # min_instances stays 2, so the fixed cost is ~$210 a month and the three
+  # instances past today's five bill only while they serve (~$105 each a month
+  # if they ran all the time).
+  "swarm-api"          = 8
   "swarm-scheduler"    = 2
   "swarm-quota-broker" = 2
   "swarm-reconciler"   = 1

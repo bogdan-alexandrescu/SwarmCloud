@@ -197,6 +197,7 @@ from .post_verdict import (
     unavailable,
 )
 from .control import MERGE_WAIT_METADATA_KEY
+from .control import round_heads as _wait_round_heads
 from .specverify import UpstreamSpecUnverified
 
 #: The signed dispatch block naming what this step merges. swarm-api's
@@ -206,6 +207,19 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: The code, and the HUMAN_REQUIRED park's `park_phase`, of a CI wait handed
+#: to a person (part of #2688, 2026-11-06): the repair rounds are spent past
+#: CI_STUCK_SECONDS, or a check that failed at a head a repair round was
+#: claimed at fails again after it. Re-checking every ~16 minutes then only
+#: hides the wait: task_ffe63d609c5d4662ba8e re-checked 28 times over 8
+#: hours, two rounds spent and main red on the same checks, and nothing
+#: raised it.
+CI_WAIT_STUCK = "ci_wait_stuck"
+#: How long a wait with its rounds spent re-checks before it is a person's:
+#: `/sc check`'s CI_PENDING window (swarm_mcp.check.CI_PENDING_MINUTES, held
+#: equal by tests/unit/worker/test_merge_ci_stuck.py), so the step parks for
+#: a person when the check would first flag it.
+CI_STUCK_SECONDS = 90 * 60
 #: The `result_summary` key listing each unanswered advisory question this
 #: merge went ahead past (owner decision, 2 November 2026): `{task_id,
 #: step_id, question_index, question, recommended, built}`. swarm-api's answer
@@ -2029,6 +2043,24 @@ class _Run:
             exit_code=ExitCode.PARKED, owner_wait=wait,
         )
 
+    def hand_to_person(self, evidence: dict[str, Any]) -> ActionOutcome:
+        """A CI wait no re-check will end: park HUMAN_REQUIRED with its evidence.
+
+        The owner-question hold's park (`lifecycle._park_for_owner_questions`,
+        `handoff.park_human_required`) under its own `park_phase`,
+        CI_WAIT_STUCK: one fenced transaction, no lease, so the step reaches
+        Needs you and `/sc check`'s owner list instead of re-checking. A
+        person's "I'm ready" returns it, and restarts the wait's clock
+        (`control.ci_wait_span`).
+        """
+        message = ci_stuck_line(evidence)
+        self.summary["wait"] = {"code": CI_WAIT_STUCK, "message": message}
+        return _outcome(
+            TaskState.PARKED, None, self.summary, f"{CI_WAIT_STUCK}: {message}",
+            exit_code=ExitCode.PARKED,
+            owner_wait={"park_phase": CI_WAIT_STUCK, **evidence, "line": message},
+        )
+
     def wait(self, code: str, message: str, *, head: str, pull_request: int,
              pending: list[str], failed: list[str] | None = None) -> ActionOutcome:
         """A fact that may change by itself: park CI_PENDING, holding nothing.
@@ -3179,6 +3211,11 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             return run.refuse("checks_timeout",
                               f"CI has not settled in {int(waited // 60)} min, past "
                               f"{MERGE_CI_MAX_SECONDS // 3600} h: {message}")
+        if code not in _IN_FLIGHT:
+            red = run.reading[2] if run.reading is not None and run.reading[0] == head else []
+            stuck = ci_stuck(own, head=head, pull_request=number, failed=red, now=utcnow())
+            if stuck is not None:
+                return run.hand_to_person(stuck)
         return run.wait(code, message, head=head, pull_request=number, pending=pending)
 
     if _queued_by_this_step(own):
@@ -4824,6 +4861,13 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
                          run_states=run_states)
     if parked is not None:
         return parked
+    stuck = ci_stuck(own, head=head, pull_request=_int_or_none(_mapping(
+        _mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY)).get("pull_request")),
+        failed=failed, now=utcnow())
+    if stuck is not None and stuck["why"] == SAME_CHECK_AFTER_ROUND:
+        # The same check failed after a repair round: a next round, or the
+        # refusal, would only repeat it. A person's (part of #2688).
+        return run.hand_to_person(stuck)
     asked = _rounds_asked(own)
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,
@@ -4930,6 +4974,126 @@ def _await_workflow_patch(run: _Run, message: str, task_id: str, refused: Mappin
                 f"{WORKFLOW_SCOPE_MISSING}, so a CI fix round could only be refused again: "
                 f"an operator pushes {WORKFLOW_PATCH_FILE}{where} to the branch, and this "
                 "step reads the pull request again once its head moves", [])
+
+
+#: The parks a stuck wait does not interrupt: a repair round running, and a
+#: re-run settling -- each a fix in flight whose answer is still to come.
+_IN_FLIGHT = frozenset({CI_FIX_RUNNING, CI_RERUN_PENDING})
+#: `ci_stuck`'s two reasons.
+SAME_CHECK_AFTER_ROUND = "same_check_failed_after_round"
+ROUNDS_SPENT = "rounds_spent"
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def ci_stuck(own: Mapping[str, Any], *, head: str, pull_request: int | None,
+             failed: list[str], now: datetime) -> dict[str, Any] | None:
+    """The evidence that this CI wait is a person's, or None (part of #2688).
+
+    From the step's own record (`merge_wait`, `control.ci_wait_span`;
+    `merge_fix`, the tick's): the wait's first park across its re-checks and
+    the heads its repair rounds pushed, how many re-checks, the checks
+    failing now, the CI-fix rounds run and asked for, and whether the
+    default branch is red on the same checks. A person's when
+
+      * a check failing now failed at a head a CI-fix round was claimed at,
+        and this head is another: the same check fails after a repair
+        round (`SAME_CHECK_AFTER_ROUND`);
+      * or the rounds asked for are all spent and the wait is older than
+        CI_STUCK_SECONDS (`ROUNDS_SPENT`).
+
+    A step with no rounds asked for keeps MERGE_CI_MAX_SECONDS's bound.
+    None, too, for a wait the park about to be made starts afresh
+    (`_wait_restarts`): a person's "I'm ready" re-checks, it is not handed
+    straight back.
+    The record is tenant-writable: a forged one can at most hand the step
+    to a person early, which changes nothing on the forge.
+    """
+    metadata = _mapping(own.get("metadata"))
+    wait = _mapping(metadata.get(MERGE_WAIT_METADATA_KEY))
+    if _wait_restarts(metadata, wait, head):
+        return None
+    rounds = _fix_rounds(own)
+    asked = _rounds_asked(own)
+    round_heads = {str(r.get("head")) for r in rounds if r.get("head")}
+    seen = _mapping(wait.get("failed_heads"))
+    again = sorted(name for name in failed
+                   if isinstance(seen.get(name), list) and (set(seen[name]) & round_heads) - {head})
+    started = _stored_instant(wait.get("wait_started_at")) or _stored_instant(wait.get("first_parked_at"))
+    waited = (now - started).total_seconds() if started is not None else None
+    spent = asked > 0 and len(rounds) >= asked
+    if again:
+        why = SAME_CHECK_AFTER_ROUND
+    elif spent and waited is not None and waited > CI_STUCK_SECONDS:
+        why = ROUNDS_SPENT
+    else:
+        return None
+    main = _mapping(wait.get("main_red"))
+    main_checks = [str(n) for n in main.get("checks") or [] if isinstance(n, str)]
+    return {
+        "why": why,
+        "head": head,
+        "pull_request": pull_request,
+        "wait_started_at": started.isoformat() if started is not None else None,
+        "waited_minutes": int(waited // 60) if waited is not None else None,
+        # This park is the wait's next re-check.
+        "re_checks": _count(wait.get("rechecks")) + 1,
+        "failed_checks": sorted(failed),
+        "failed_again_after_round": again,
+        "fix_rounds_ran": len(rounds),
+        "fix_rounds_asked": asked,
+        "fix_rounds_spent": spent,
+        "main_red_on_same": sorted(set(main_checks) & set(failed)) if main_checks else [],
+        "main_red_head": _str_or_none(main.get("head")),
+    }
+
+
+def _wait_restarts(metadata: Mapping[str, Any], wait: Mapping[str, Any], head: str) -> bool:
+    """Whether the recorded wait ends here, the rule `control.ci_wait_span`
+    applies at the next park: the record was left at a head no repair round
+    worked from, or a person said "I'm ready" (`human_ready.at`) after it
+    started. `ci_stuck` reads the record before that park, so without this a
+    person's return was handed straight back to them (review, part of #2688)."""
+    started = _stored_instant(wait.get("wait_started_at"))
+    if started is None:
+        return False
+    previous = wait.get("head")
+    if previous and previous != head and previous not in _wait_round_heads(metadata):
+        return True
+    returned = _stored_instant(_mapping(metadata.get("human_ready")).get("at"))
+    return returned is not None and returned > started
+
+
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def ci_stuck_line(evidence: Mapping[str, Any]) -> str:
+    """`ci_stuck`'s evidence as one line: how long, how many re-checks, what
+    fails, the rounds, and main."""
+    waited = evidence.get("waited_minutes")
+    hours, minutes = divmod(waited, 60) if isinstance(waited, int) else (None, None)
+    span = (f"{hours} h {minutes} m" if hours else f"{minutes} m") if minutes is not None else "an unrecorded time"
+    on = f"PR #{evidence['pull_request']}" if evidence.get("pull_request") else "its pull request"
+    parts = [f"CI on {on} waited {span} over {evidence.get('re_checks')} re-checks"]
+    failed = evidence.get("failed_checks") or []
+    if failed:
+        parts.append("failing: " + ", ".join(failed[:5]) + (", ..." if len(failed) > 5 else ""))
+    asked = evidence.get("fix_rounds_asked") or 0
+    if asked:
+        parts.append(f"fix rounds {evidence.get('fix_rounds_ran')} of {asked}"
+                     + (" spent" if evidence.get("fix_rounds_spent") else ""))
+    if evidence.get("failed_again_after_round"):
+        parts.append("failed again after a fix round: " + ", ".join(evidence["failed_again_after_round"][:5]))
+    if evidence.get("main_red_on_same"):
+        parts.append("main is red on " + ", ".join(evidence["main_red_on_same"][:5]) + " too")
+    return "; ".join(parts)
 
 
 def _ci_wait_age(ctx: ActionContext, head: str) -> float | None:

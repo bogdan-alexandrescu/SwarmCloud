@@ -847,7 +847,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # v0.59.0, below the fixed go1.27.2 and x/net 0.60.0, and no Google build is
 # newer, so the plugin's findings are accepted in .trivyignore.yaml until a
 # fixed build ships. Measured with `go version -m` and `trivy rootfs` over the
-# unpacked .debs. Neither .deb
+# unpacked .debs.
+# The plugin moved alone to 592.0.0 on 2026-11-06 (GKE_PLUGIN_VERSION): Google's
+# index lists it, and its binary, read with `go version -m` after the index's
+# SHA256 matched, is go1.27.3 with golang.org/x/net v0.61.0, which fixes
+# CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 in it. The CLI stays at
+# 591.0.0, so the agents' gcloud is unchanged. Neither .deb
 # declares a Depends. The auth plugin is not on the §2.12 list, but kubectl
 # cannot authenticate to a GKE cluster without it, so without it the kubectl
 # below would only reach clusters nobody here runs.
@@ -855,8 +860,9 @@ ARG GCLOUD_VERSION=591.0.0
 ARG GCLOUD_POOL_ID=a9222e6bee57d1c0f6eb73c93218c714
 ARG GCLOUD_SHA256=e11c443efa5d59bbb457cdf28e025246483d01db5b7fde772fe8a339a7ca20d0
 # Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031 reads "AUTH" in an ARG name as a secret and fails the PR; these are public package pool ids and checksums.
-ARG GKE_PLUGIN_POOL_ID=0f14e7e21ca8f8a0ba22a1f83c4b26b1
-ARG GKE_PLUGIN_SHA256=b46d7490fd2b596e3b58b0d94aa8f0328c288fcfa517a6f6b8a01e704b5760c7
+ARG GKE_PLUGIN_VERSION=592.0.0
+ARG GKE_PLUGIN_POOL_ID=a8fc8016eccf144b786a0d64a6f464aa
+ARG GKE_PLUGIN_SHA256=3a1da42673e0df59b86958c817d2369ef89d5b435767d1fea85e453707007df4
 # kubectl 1.36.6: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
 # on 2026-10-28), built on go1.26.10, which fixes CVE-2026-111943 and
 # CVE-2026-56857 in kubectl (1.36.5 was go1.26.8), and CVE-2026-78667 in
@@ -877,7 +883,7 @@ RUN mkdir -p /tmp/toolbox \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/google-cloud-cli.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli_${GCLOUD_VERSION}-0_amd64_${GCLOUD_POOL_ID}.deb" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
-      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
+      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GKE_PLUGIN_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GCLOUD_SHA256}  /tmp/toolbox/google-cloud-cli.deb" | sha256sum -c - \

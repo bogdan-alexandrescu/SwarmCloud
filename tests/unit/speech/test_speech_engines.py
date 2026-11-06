@@ -1,10 +1,10 @@
 """The real engines call their libraries as those libraries' source says
-(swarm_speech/engines.py; qwen-asr 0.0.6, kokoro 0.9.4), and the process
+(swarm_speech/engines.py; vllm 0.33.0, kokoro 0.9.4), and the process
 builds its app from the environment (swarm_speech/main.py).
 
 The libraries are replaced in sys.modules by stand-ins that record their
 calls: the root environment has no torch and no GPU. What is held is the
-shape of each call: Qwen3-ASR's vLLM constructor and streaming state; Kokoro's
+shape of each call: vLLM's constructor and the streaming loop's decodes; Kokoro's
 model built from the fetched files, a pipeline per language, voices loaded
 from their checked .pt files and speech split by sentence.
 """
@@ -20,40 +20,101 @@ import speech_fakes  # noqa: F401 -- puts apps/swarm-speech on sys.path
 from swarm_speech import engines, main
 
 
-class _State:
-    text = ""
+class _Tokenizer:
+    """One token per character, so a prefix's rollback is countable."""
+
+    def encode(self, text):
+        return list(text)
+
+    def decode(self, ids):
+        return "".join(ids)
 
 
-class _Qwen:
+class _LLM:
     calls: list = []
+    answers: list = []
 
-    @classmethod
-    def LLM(cls, **kwargs):  # noqa: N802 -- the library's name
-        cls.calls.append(("LLM", kwargs))
-        return cls()
+    def __init__(self, **kwargs):
+        self.calls.append(("LLM", kwargs))
 
-    def init_streaming_state(self, **kwargs):
-        self.calls.append(("init_streaming_state", kwargs))
-        return _State()
+    def get_tokenizer(self):
+        return _Tokenizer()
 
-    def finish_streaming_transcribe(self, state):
-        state.text = "the final words"
-        return state
+    def generate(self, requests, *, sampling_params, use_tqdm):
+        (request,) = requests
+        self.calls.append(("generate", request["prompt"], request["multi_modal_data"]["audio"][0], use_tqdm))
+        text = self.answers.pop(0)
+        return [types.SimpleNamespace(outputs=[types.SimpleNamespace(text=text)])]
 
 
-def test_qwen_loads_through_vllm_from_the_fetched_directory_and_streams(monkeypatch, tmp_path):
-    _Qwen.calls = []
-    monkeypatch.setitem(sys.modules, "qwen_asr", types.SimpleNamespace(Qwen3ASRModel=_Qwen))
+def _vllm(monkeypatch):
+    _LLM.calls = []
+    monkeypatch.setitem(sys.modules, "vllm", types.SimpleNamespace(
+        LLM=_LLM, SamplingParams=lambda **kwargs: ("SamplingParams", kwargs)))
+    # The samples vLLM is given, as the number of 16-bit samples heard so far.
+    monkeypatch.setattr(engines, "_float_samples", lambda pcm: len(pcm) // 2)
+
+
+def test_qwen_loads_vllms_own_model_from_the_fetched_directory(monkeypatch, tmp_path):
+    _vllm(monkeypatch)
     asr = engines.QwenAsr()
     with pytest.raises(RuntimeError):
         asr.begin()
     asr.load(tmp_path)
+    assert _LLM.calls == [("LLM", {"model": str(tmp_path), "gpu_memory_utilization": engines.GPU_MEMORY_UTILIZATION})]
+    assert asr._sampling == ("SamplingParams", {"temperature": 0.0, "max_tokens": engines.MAX_NEW_TOKENS})
+
+
+def test_qwen_streams_as_the_sdk_did_redecoding_all_audio_from_the_settled_words(monkeypatch, tmp_path):
+    _vllm(monkeypatch)
+    asr = engines.QwenAsr()
+    asr.load(tmp_path)
+    second = int(engines.CHUNK_SECONDS * engines.STT_RATE) * 2
+    # From the third decode the model continues the prompt's settled words.
+    _LLM.answers = ["language English<asr_text>hello", "language English<asr_text>hello there",
+                    "there friend", "riends"]
     stream = asr.begin()
-    assert stream.finish() == "the final words"
-    assert _Qwen.calls == [
-        ("LLM", {"model": str(tmp_path), "gpu_memory_utilization": engines.GPU_MEMORY_UTILIZATION,
-                 "max_new_tokens": engines.MAX_NEW_TOKENS}),
-        ("init_streaming_state", {"chunk_size_sec": engines.CHUNK_SECONDS})]
+    assert stream.feed(b"\0" * (second // 2)) == ""
+    assert stream.feed(b"\0" * (second // 2)) == "hello"
+    assert stream.feed(b"\0" * (second * 2 + second // 2)) == "hello there friend"
+    assert stream.finish() == "hello there friends"
+    assert stream.finish() == "hello there friends"
+    decodes = [call[1:] for call in _LLM.calls if call[0] == "generate"]
+    samples = second // 2
+    raw = "language English<asr_text>hello there"
+    assert decodes == [
+        (engines.ASR_PROMPT, samples, False),
+        (engines.ASR_PROMPT, 2 * samples, False),
+        # From the third decode on, the words so far less their last 5 tokens.
+        (engines.ASR_PROMPT + raw[:-5], 3 * samples, False),
+        # The tail, at finish: less the last 5 tokens again.
+        (engines.ASR_PROMPT + "language English<asr_text>hello there f", 3 * samples + samples // 2, False)]
+    assert len(_LLM.calls) == 5
+
+
+def test_qwen_finish_flushes_the_tail_without_a_whole_chunk(monkeypatch, tmp_path):
+    _vllm(monkeypatch)
+    asr = engines.QwenAsr()
+    asr.load(tmp_path)
+    _LLM.answers = ["language None<asr_text>"]
+    stream = asr.begin()
+    assert stream.feed(b"\0" * 100) == ""
+    assert stream.finish() == ""
+    assert [call[1:] for call in _LLM.calls if call[0] == "generate"] == [(engines.ASR_PROMPT, 50, False)]
+
+
+def test_the_prompt_is_the_one_the_models_chat_template_rendered_for_the_sdk():
+    # Qwen/Qwen3-ASR-0.6B's chat_template.json writes the system turn even when empty.
+    assert engines.ASR_PROMPT == ("<|im_start|>system\n<|im_end|>\n<|im_start|>user\n"
+                                  "<|audio_start|><|audio_pad|><|audio_end|><|im_end|>\n<|im_start|>assistant\n")
+
+
+def test_the_transcript_is_what_follows_the_tag_with_decoding_loops_kept_once():
+    assert engines.transcript("language English<asr_text> hi there ") == "hi there"
+    assert engines.transcript("no tag at all") == "no tag at all"
+    assert engines.transcript("language None<asr_text>") == ""
+    assert engines.transcript("language English<asr_text>so" + "o" * 30) == "so"
+    assert engines.transcript("language English<asr_text>ok " + "la " * 25 + "end") == "ok la end"
 
 
 class _Audio:
