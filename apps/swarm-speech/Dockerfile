@@ -146,9 +146,10 @@ RUN /usr/sbin/groupadd --gid 10001 swarm \
 USER swarm:swarm
 WORKDIR /home/swarm
 
-# The build proves the server, both model libraries, NVML's binding and the
-# spaCy model import. Import only: there is no GPU and no weight here.
-RUN python -c "import swarm_speech.main, swarm_speech.engines, qwen_asr, kokoro, pynvml, en_core_web_sm; print('swarm-speech ok')"
+# The build proves the server, both model libraries (vLLM's own Qwen3-ASR model
+# included), NVML's binding and the spaCy model import. Import only: there is
+# no GPU and no weight here.
+RUN python -c "import swarm_speech.main, swarm_speech.engines, vllm, vllm.model_executor.models.qwen3_asr, kokoro, pynvml, en_core_web_sm; print('swarm-speech ok')"
 
 ARG GIT_SHA=""
 ARG BUILD_TIME=""
