@@ -363,6 +363,9 @@ class _FencedMidCall(Exception):
 _EXEC_STATUS = {
     "bad_ref": 422, "bad_bundle": 422, "too_large": 422, "non_fast_forward": 422,
     "remote_rejected": 422, "busy": 503, "timed_out": 504, "bad_remote": 502, "failed": 502,
+    # A bundle's base the remote did not answer for, twice: the worker asks
+    # again on a 5xx, and a forge outage heals (AI Studio's report, 2026-11-06).
+    "remote_unavailable": 503,
 }
 
 
@@ -1384,13 +1387,7 @@ class GitTools:
                 source.chmod(0o600)
             repo = gx._init(scratch)
             with gx._credential(scratch, host, token) as cred:
-                for sha in header.prerequisites:
-                    run = gx._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
-                                                  "--no-write-fetch-head", "--depth=1", "--",
-                                                  url, sha], token=token, credential=cred)
-                    if run.code != 0:
-                        raise GitExecError("bad_bundle", f"the bundle is built on {sha}, which "
-                                                         "the remote does not have; fetch again")
+                gx._fetch_prerequisites(scratch, repo, url, header.prerequisites, token, cred)
             gx._must(gx._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
                                              "--no-write-fetch-head", "--", str(source),
                                              f"{header.ref}:refs/swarm/inspect"],
