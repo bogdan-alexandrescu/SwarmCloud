@@ -2634,7 +2634,7 @@ never stops moving, and nothing while the pages stand still.
 **A thumbnail is not a watcher (§7).** The relay reads each viewer link's
 SetEncodings and does not count a thumbnail-mode link when it sets the
 recorder's rate, so a session watched only by cards records at 1 fps; a
-Browser tab raises it to 10. The per-task and per-tenant viewer caps (§5.10)
+Browser tab raises it to 10. The per-agent and per-tenant viewer caps (§5.10)
 still count every link.
 
 ## 7. Recording and replay (LB-4)
