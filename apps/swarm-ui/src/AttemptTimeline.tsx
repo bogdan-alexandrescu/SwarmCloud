@@ -1,6 +1,7 @@
 import { useCallback } from 'react'
 import { AttemptModel, Em, GEN_TITLE, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
 import { ToneMark } from './components'
+import { ciWaitLead } from './ciwaitlead'
 import { loadAgentDetail, loadAttempts } from './api'
 import { attemptEnd, instant, spanText } from './duration'
 import { isTerminalEvent } from './events'
@@ -278,8 +279,24 @@ function Body({ t }: { t: AttemptTimeline }) {
   // The highest generation is the latest attempt: the one the task's
   // `result_summary` -- and so the CLI's reported models -- belongs to.
   const latest = t.attempts.reduce<AttemptRow | null>((best, a) => (best === null || a.generation > best.generation ? a : best), null)
+  // A RE-CHECKED MERGE STEP LEADS WITH ONE LINE (part of #2688): 28 identical
+  // re-check attempts said nothing a person could act on. The line comes
+  // first; the newest attempt stays open and the earlier ones fold under it.
+  const lead = ciWaitLead(t.task, Date.now())
+  const isLatest = (g: Group) => g.attempt !== null && g.attempt.attempt_id === latest?.attempt_id
+  const card = (g: Group) => (
+    <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} pageCount={t.events?.length ?? null} prev={prev} task={t.task}
+      isLatest={isLatest(g)} />
+  )
+  const folded = lead === null ? [] : groups.filter((g) => !isLatest(g))
   return (
     <>
+      {lead !== null && (
+        <p className="wp-summary" data-ci-wait-lead="" data-stuck={lead.stuck ? 'true' : 'false'}>
+          {lead.stuck && <ToneMark tone="warn" title="Handed to a person: re-checks would not end this wait">needs you</ToneMark>}{' '}
+          {lead.line}
+        </p>
+      )}
       <div className="ctl-toolbar">
         {/* AH-24: AFTER THE LABEL, NEVER AFTER A VALUE. The toolbar's `?` sat at
             its far end, after the event counts -- `12 ev · first page · 1
@@ -382,10 +399,17 @@ function Body({ t }: { t: AttemptTimeline }) {
             something else, beside a toolbar about paging. `event-paging` is
             built from this toolbar's own `say` strings. */}
       </div>
-      {groups.map((g) => (
-        <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} pageCount={t.events?.length ?? null} prev={prev} task={t.task}
-          isLatest={g.attempt !== null && g.attempt.attempt_id === latest?.attempt_id} />
-      ))}
+      {lead === null || folded.length === 0 ? (
+        groups.map(card)
+      ) : (
+        <>
+          {groups.filter(isLatest).map(card)}
+          <details data-ci-wait-earlier="">
+            <summary>{pluralise(folded.length, 'earlier attempt')}</summary>
+            {folded.map(card)}
+          </details>
+        </>
+      )}
       <p className="ctl-card-foot">
         <span>reading these cards:</span>
         <a href="#help/attempt-documents">When an attempt document exists</a>
