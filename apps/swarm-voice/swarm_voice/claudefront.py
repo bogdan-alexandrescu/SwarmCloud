@@ -9,6 +9,11 @@ THE SHAPE OF textchat.TextSessions: `start`, `turn`, `end`, `end_all` and
 THE MODEL. The haiku class (claudeturn.front_model(), VOICE_FRONT_MODEL from
 Terraform's `local.runner_models.haiku`), picked by first-reply latency: the
 front says one or two sentences and makes one choice, answer or `delegate`.
+Voice it › Settings' `conversation_model`, which swarm-api reads at the start
+and sends in the start body, overrides it for that session: the warm child
+(and a re-lease's) runs on that id, and only an id of FRONT_MODELS, the
+curated list swarm-api's catalogue offers, is taken. A change reaches the
+next session's start, never a running one.
 The planner keeps the planning class (claudeturn.planner_model(),
 `local.runner_models.fable`).
 
@@ -93,6 +98,10 @@ MAX_WAIT_SECONDS = 240.0
 #: The child's model rounds per sentence: an answer, or `delegate` then an answer.
 MAX_ROUNDS = 3
 BILLING = "subscription"
+#: The curated conversation models swarm-api's Voice it › Settings offers
+#: (`speech_catalogue.CONVERSATION_MODELS`' ids, held equal by a test), the
+#: haiku class's pin first: the only ids a start may run the front on.
+FRONT_MODELS: tuple[str, ...] = (claudeturn.FRONT_MODEL, "claude-sonnet-5", "claude-sonnet-4-6")
 
 SAY_EMPTY = "I didn't catch an answer to that; could you say it again?"
 SAY_BUSY = "refused: two requests are already waiting for the planner; tell the person to wait for them"
@@ -187,10 +196,15 @@ class FrontSession:
     mode = MODE
 
     def __init__(self, voice_id: str, *, person: str, grant: SessionGrant | None,
-                 clock: Callable[[], float]) -> None:
+                 clock: Callable[[], float], planner_model: str | None = None,
+                 claude: Any = None) -> None:
         self.voice_id = voice_id
         self.person = person
         self.grant = grant
+        #: The planner model read at this session's start; None keeps the pin.
+        self.planner_model = planner_model
+        #: The launcher this session's children start on, on its front model.
+        self.claude = claude
         self._clock = clock
         self.started_at = clock()
         self.last_turn_at = self.started_at
@@ -212,6 +226,10 @@ class FrontSession:
         self.delegated: str | None = None
         #: Token counts by model: the front's pin and the planner's.
         self.usage: dict[str, dict[str, int]] = {}
+
+    @property
+    def front_model(self) -> str:
+        return self.claude.model
 
     def __repr__(self) -> str:
         account = self.lease.account_id if self.lease is not None else None
@@ -272,14 +290,22 @@ class FrontSessions:
     # -- start --------------------------------------------------------------
 
     async def start(self, voice_id: str, *, person: str, grant: SessionGrant | None = None,
-                    exists: Callable[[str], bool] = lambda _id: False) -> FrontSession:
-        """Hold one Claude account for the session and start its warm child.
-        Raises SessionExists, or FrontRefused with nothing held."""
+                    exists: Callable[[str], bool] = lambda _id: False,
+                    planner_model: str | None = None,
+                    conversation_model: str | None = None) -> FrontSession:
+        """Hold one Claude account for the session and start its warm child on
+        `conversation_model`, else the front's pin. Raises ValueError for an
+        id outside FRONT_MODELS, SessionExists, or FrontRefused; nothing is
+        held on any of them."""
+        if conversation_model is not None and conversation_model not in FRONT_MODELS:
+            raise ValueError("conversation_model must be one of the curated conversation models")
         if voice_id in self._held or voice_id in self._starting or exists(voice_id):
             raise SessionExists(voice_id)
         self._starting.add(voice_id)
         try:
-            session = FrontSession(voice_id, person=person, grant=grant, clock=self._clock)
+            claude = self._claude if conversation_model is None else self._claude.with_model(conversation_model)
+            session = FrontSession(voice_id, person=person, grant=grant, clock=self._clock,
+                                   planner_model=planner_model, claude=claude)
             try:
                 await self._attach(session, exclude=())
             except (PoolFull, CredentialError, OSError) as exc:
@@ -289,7 +315,7 @@ class FrontSessions:
             self._held[voice_id] = session
             session.idle_task = asyncio.create_task(self._watch_idle(session), name=f"voice-front-idle-{voice_id}")
             log.info("voice session %s: fast front started on account %s (%s)", voice_id,
-                     session.lease.account_id if session.lease else None, self.model)
+                     session.lease.account_id if session.lease else None, session.front_model)
             return session
         finally:
             self._starting.discard(voice_id)
@@ -301,7 +327,7 @@ class FrontSessions:
                                             exclude=exclude)
         try:
             token = lease.bearer.reveal()
-            conversation = await self._claude.converse(
+            conversation = await session.claude.converse(
                 system=FRONT_INSTRUCTIONS, token=token, tools=[delegate_tool()],
                 handler=self._handler(session), known=(token,))
         except BaseException:
@@ -378,7 +404,7 @@ class FrontSessions:
                 raise FrontSessionEnded(voice_id)
             known = self._known(session)
             reply = prompts.spoken(outcome.result_text, secrets_=known) or SAY_EMPTY
-            session.add_usage(self.model, outcome.usage)
+            session.add_usage(session.front_model, outcome.usage)
             session.turns = [*session.turns, ("person", text), ("voice", reply)][-HISTORY_TURNS:]
             session.last_turn_at = self._clock()
             turn_id = "vf_" + secrets.token_hex(12)
@@ -483,7 +509,7 @@ class FrontSessions:
         assert self._planner is not None
         transcript = [*session.turns, ("person", delegation.request)] if delegation.request else list(session.turns)
         return await self._planner.delegate(person=session.person, grant=session.grant, transcript=transcript,
-                                            delegation_id=delegation.delegation_id)
+                                            delegation_id=delegation.delegation_id, model=session.planner_model)
 
     @staticmethod
     def _trim(session: FrontSession) -> None:

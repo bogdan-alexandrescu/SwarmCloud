@@ -2251,6 +2251,7 @@ async function fixtureArtifactContent(
   }
   // The Jev review's verdict file, with `p_real` on its findings.
   if (taskId === FIXTURE_JEV_REVIEW) bodies['verdict.json'] = FIXTURE_JEV_VERDICT
+  if (name === FIXTURE_MOCKUP_PATCH) bodies[name] = await fixtureMockupPatch()
   const content = bodies[name] ?? `fixture artifact ${name}\n`
   const bytes = new TextEncoder().encode(content).length
   return {
@@ -5515,6 +5516,180 @@ const FIXTURE_JEV_FINDINGS = [
 /** The review's `verdict.json` as Jev's post-step left it. */
 const FIXTURE_JEV_VERDICT = JSON.stringify({ verdict: 'NOT_YET', findings: FIXTURE_JEV_FINDINGS }, null, 2)
 
+// ---------------------------------------------------------------------------
+// A step's mock-ups, for the Changes view's Rendered pane (BGD, 2026-11-06)
+// ---------------------------------------------------------------------------
+//
+// The ux-mockups kit's shape: a desktop frame recorded at 1440x900, a phone
+// frame named `-390`, a frames.json beside them, and a PNG. The frames set
+// their theme from a `?theme=` script, which the console's sandbox never runs:
+// the pane writes `data-theme` on the html element instead, and the CSS below
+// keys on it. The PNG and its `GIT binary patch` literal are BUILT at load
+// time (CompressionStream), never written here as base85, which reads as
+// credential-shaped text to the publish scan.
+
+const FIXTURE_MOCKUP_PATCH = 'mockups.patch'
+const FIXTURE_MOCKUP_DIR = 'docs/design/mocks/settings-parity/frames'
+
+const FIXTURE_MOCKUP_FRAMES_JSON = JSON.stringify(
+  [
+    { name: 'sp1-a-rest', viewport: { width: 1440, height: 900 } },
+    { name: 'sp1-a-rest-390', viewport: { width: 390, height: 844 } },
+  ],
+  null,
+  2,
+)
+
+const fixtureLines = (text: string) => text.split('\n').length
+
+const FIXTURE_MOCKUP_FILES = [
+  { path: `${FIXTURE_MOCKUP_DIR}/frames.json`, old_path: null, status: 'A', insertions: fixtureLines(FIXTURE_MOCKUP_FRAMES_JSON), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.html`, old_path: null, status: 'A', insertions: fixtureLines(fixtureMockupFrame('Settings · rest', false)), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest-390.html`, old_path: null, status: 'A', insertions: fixtureLines(fixtureMockupFrame('Settings · rest · phone', true)), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.png`, old_path: null, status: 'A', insertions: null, deletions: null, binary: true },
+]
+
+function fixtureMockupFrame(title: string, phone: boolean): string {
+  const width = phone ? 390 : 1440
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    `<meta name="viewport" content="width=${width}">`,
+    `<title>${title}</title>`,
+    '<style>',
+    ':root { --bg: #f7f7f5; --fg: #1d1d1b; --card: #fff; --line: #e2e2dc; --accent: #3a5bd9 }',
+    'html[data-theme="dark"] { --bg: #16171a; --fg: #ececea; --card: #212226; --line: #34353a; --accent: #8aa2ff }',
+    'body { margin: 0; font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg) }',
+    `main { padding: ${phone ? 16 : 40}px; display: grid; gap: 16px; grid-template-columns: ${phone ? '1fr' : '240px 1fr'} }`,
+    '.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px }',
+    'button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px }',
+    '</style>',
+    // The kit's theme script: inert in the sandbox, which is the point.
+    "<script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') || 'light'</script>",
+    '</head>',
+    '<body>',
+    '<main>',
+    '<nav class="card">Settings<br>Profile<br>Workspaces<br>Tokens</nav>',
+    '<section class="card"><h1>Profile</h1><p>Name, e-mail and the default workspace.</p><button>Save</button></section>',
+    '</main>',
+    '</body>',
+    '</html>',
+  ].join('\n')
+}
+
+function fixtureAddedSection(path: string, text: string): string {
+  const lines = text.split('\n')
+  return [`diff --git a/${path} b/${path}`, 'new file mode 100644', '--- /dev/null', `+++ b/${path}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => `+${l}`)].join('\n') + '\n'
+}
+
+async function fixtureDeflate(data: Uint8Array): Promise<Uint8Array> {
+  const out = await new Response(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(data)
+        c.close()
+      },
+    }).pipeThrough(new CompressionStream('deflate') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>),
+  ).arrayBuffer()
+  return new Uint8Array(out)
+}
+
+function fixtureCrc32(bytes: Uint8Array): number {
+  let c = 0xffffffff
+  for (const b of bytes) {
+    c ^= b
+    for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1
+  }
+  return (c ^ 0xffffffff) >>> 0
+}
+
+/** A 96x64 PNG: two bands and a block, so a reviewer can tell it was decoded, not just named. */
+async function fixtureMockupPng(): Promise<Uint8Array> {
+  const w = 96
+  const h = 64
+  const raw = new Uint8Array(h * (1 + w * 3))
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 3)] = 0
+    for (let x = 0; x < w; x++) {
+      const at = y * (1 + w * 3) + 1 + x * 3
+      const block = x > 56 && x < 84 && y > 20 && y < 48
+      const rgb = block ? [58, 91, 217] : y < 14 ? [29, 29, 27] : [247, 247, 245]
+      raw.set(rgb, at)
+    }
+  }
+  const chunk = (type: string, data: Uint8Array): Uint8Array => {
+    const out = new Uint8Array(12 + data.length)
+    const view = new DataView(out.buffer)
+    view.setUint32(0, data.length)
+    out.set(new TextEncoder().encode(type), 4)
+    out.set(data, 8)
+    view.setUint32(8 + data.length, fixtureCrc32(out.subarray(4, 8 + data.length)))
+    return out
+  }
+  const ihdr = new Uint8Array(13)
+  const hv = new DataView(ihdr.buffer)
+  hv.setUint32(0, w)
+  hv.setUint32(4, h)
+  ihdr.set([8, 2, 0, 0, 0], 8)
+  const parts = [Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', await fixtureDeflate(raw)), chunk('IEND', new Uint8Array(0))]
+  const png = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+  let at = 0
+  for (const p of parts) {
+    png.set(p, at)
+    at += p.length
+  }
+  return png
+}
+
+const FIXTURE_B85 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~'
+
+/** Bytes as `git diff --binary` writes them: 52 to a line, a length letter first. */
+function fixtureBase85Lines(data: Uint8Array): string[] {
+  const out: string[] = []
+  for (let at = 0; at < data.length; at += 52) {
+    const chunk = data.subarray(at, at + 52)
+    const padded = new Uint8Array(Math.ceil(chunk.length / 4) * 4)
+    padded.set(chunk)
+    let line = String.fromCharCode(chunk.length <= 26 ? 64 + chunk.length : 96 + chunk.length - 26)
+    for (let i = 0; i < padded.length; i += 4) {
+      let acc = ((padded[i]! << 24) >>> 0) + (padded[i + 1]! << 16) + (padded[i + 2]! << 8) + padded[i + 3]!
+      let group = ''
+      for (let j = 0; j < 5; j++) {
+        group = FIXTURE_B85[acc % 85]! + group
+        acc = Math.floor(acc / 85)
+      }
+      line += group
+    }
+    out.push(line)
+  }
+  return out
+}
+
+async function fixtureMockupPatch(): Promise<string> {
+  const png = await fixtureMockupPng()
+  const pngPath = `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.png`
+  const binary =
+    [
+      `diff --git a/${pngPath} b/${pngPath}`,
+      'new file mode 100644',
+      'index 0000000..5d3c1e0',
+      'GIT binary patch',
+      `literal ${png.length}`,
+      ...fixtureBase85Lines(await fixtureDeflate(png)),
+      '',
+      'literal 0',
+      ...fixtureBase85Lines(await fixtureDeflate(new Uint8Array(0))),
+      '',
+    ].join('\n') + '\n'
+  return (
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/frames.json`, FIXTURE_MOCKUP_FRAMES_JSON) +
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/sp1-a-rest.html`, fixtureMockupFrame('Settings · rest', false)) +
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/sp1-a-rest-390.html`, fixtureMockupFrame('Settings · rest · phone', true)) +
+    binary
+  )
+}
+
 /**
  * `result_summary.quality_gates` as `agent_worker/lifecycle.py`
  * `_record_quality_gates` writes it when the hooks ran.
@@ -5968,6 +6143,14 @@ function fixtureTaskRows(): Task[] {
       workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
       dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+      // THE MOCK-UPS IN THE CHANGES VIEW (BGD, 2026-11-06): this step's patch
+      // adds a desktop frame, a phone frame and a PNG, so the file pane's
+      // Rendered view is looked at in development (`FIXTURE_MOCKUP_PATCH`).
+      result_summary: {
+        artifacts: 1,
+        checkpoints: 2,
+        git: { base: 'd41f0c9a7b', patch: FIXTURE_MOCKUP_PATCH, files: FIXTURE_MOCKUP_FILES },
+      },
     }),
     mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
       workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
@@ -8938,7 +9121,7 @@ function fixtureCodeIntelligence(): unknown {
 /** `GET /v1/qa-settings` (QA-FLOWS-UI): no value stored, so the default 15; the owner may change it. */
 function fixtureQaSettings(): unknown {
   return {
-    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, defaults: { qa_flows_per_step: 15 },
+    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, writing_flows: true, defaults: { qa_flows_per_step: 15, writing_flows: true },
     bounds: { qa_flows_per_step: { min: 1, max: 30 } }, set_at: null, set_by: null, can_edit: true,
   }
 }
@@ -11417,6 +11600,7 @@ export function budgetRefusalWords(error: ApiError): string | null {
  * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
  * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
  * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
+ * And `writing_flows` (part of #2688; BGD, 2026-11-05): whether the workspace's flows may write at all, on by default.
  */
 export interface QaSettings {
   tenant_id: string
@@ -11426,6 +11610,8 @@ export interface QaSettings {
   default_flows_per_step: number
   min_flows_per_step: number
   max_flows_per_step: number
+  /** Whether a mutating flow, its `writes` declared, may write on a non-production leg; off, every flow reads only. */
+  writing_flows: boolean
   /** The workspace's owner or admin, or a platform admin; the API is the gate. */
   can_edit: boolean
   set_at: string | null
@@ -11447,6 +11633,8 @@ function normQaSettings(raw: unknown): QaSettings {
     default_flows_per_step: fallback,
     min_flows_per_step: qaInt(bound.min, 1),
     max_flows_per_step: qaInt(bound.max, 30),
+    // On unless the API says off: the default is on (`qasettings.WRITING_DEFAULT`).
+    writing_flows: r.writing_flows !== false,
     can_edit: r.can_edit === true,
     set_at: keyField(r.set_at),
     set_by: keyField(r.set_by),
@@ -11465,6 +11653,12 @@ export async function loadQaSettings(): Promise<Result<QaSettings>> {
  */
 export async function putQaSettings(tenantId: string, flowsPerStep: number): Promise<Result<QaSettings>> {
   const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { qa_flows_per_step: flowsPerStep })
+  return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
+}
+
+/** The same PUT with `{writing_flows}` alone: the same gate, the flows-per-step setting untouched. */
+export async function putQaWritingFlows(tenantId: string, on: boolean): Promise<Result<QaSettings>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { writing_flows: on })
   return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
 }
 

@@ -1,0 +1,52 @@
+# Lane installer-offers-voice-it (part of #2688; BGD, 2026-11-05): the installer
+# never turned Voice it on, so a yes to its own speech engine made nothing.
+# Stage 0 now asks whether to turn Voice it on, default no; a yes walks
+# terraform/infra/voice.tf's three steps in its order (swarm_install/tfvars.py
+# voice_it): "off" on the registry pass, "account" on infra pass 1 (bootstrap
+# pass 1 made swarm-voice, sa.swarm-voice), "on" from infra pass 2 with the
+# release's swarm-voice digest in image_refs; stage 10's cluster.workloads
+# applies swarm_voice_manifest. The own-speech question (voice-speech-install.yaml)
+# is nested under it: other.voice-speech-offered orders it after this question,
+# and after a no it is not asked. The Voice it pool's ChatGPT plan accounts are
+# added later in the console (Capacity › Accounts); no secret slot here.
+version: 1
+entries:
+- id: other.voice-it-choice
+  kind: other
+  scope: core
+  stage: 0
+  provider: human-in-terminal
+  check: 'state.outputs.voice_it is {"enabled": true or false}'
+  apply: 'infra.voice-it asks "Voice it: talk to the deployment by voice, served by swarm-voice on the cluster.
+    Turn it on? Optional, y or n" with the default n and records the answer; an empty answer is no. After a yes
+    it says in one line that the Voice it pool''s accounts are added later on Capacity › Accounts'
+  verify: infra.voice-it re-check is MET
+  explain: Voice it is optional; a yes renders voice_it "account" on infra pass 1 and "on" from infra pass 2, so
+    swarm-voice's grants, address and StatefulSet exist only when the person asked for them
+  guards: asked once; the answer is never a secret; asks for no account and reads no secret
+  secret_entry: null
+  depends_on:
+  - other.deployment-sizing
+  evidence:
+  - apps/swarm-install/swarm_install/steps/infra.py
+  - apps/swarm-install/swarm_install/tfvars.py
+  step: infra.voice-it
+- id: other.voice-speech-offered
+  kind: other
+  scope: core
+  stage: 0
+  provider: engine
+  check: 'state.outputs.voice_it.enabled is false (own speech is not offered), or the own-speech question is
+    answered'
+  apply: infra.voice-speech asks its question only after a yes to Voice it; after a no it asks nothing and
+    infra.voice-speech-zone is met
+  verify: infra.voice-speech re-check is MET
+  explain: Voice it's own speech engine makes nothing while voice_it is not "on", so offering it without Voice it
+    would sell a machine the deployment never runs
+  guards: never asked before other.voice-it-choice
+  secret_entry: null
+  depends_on:
+  - other.voice-it-choice
+  evidence:
+  - apps/swarm-install/swarm_install/steps/infra.py
+  step: infra.voice-speech

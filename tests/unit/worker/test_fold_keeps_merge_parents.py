@@ -309,7 +309,7 @@ def test_a_lane_that_merges_a_train_branch_into_its_pull_request_pushes_the_merg
 # -- 3. a merged branch's own commits are scanned (#3359 review, #259) ----------
 
 #: Built at run time: a value only the fake leak test below knows.
-SECRET = f"swarm-review-{secrets.token_hex(12)}"
+SECRET = "swarm-review-" + secrets.token_hex(12)
 
 
 def _flags_secret(_path: str, text: str):

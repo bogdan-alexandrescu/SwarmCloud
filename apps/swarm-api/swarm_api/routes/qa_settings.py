@@ -5,13 +5,17 @@
     GET /v1/workspaces/{tenant_id}/qa-settings   the settings, their defaults and
                                                  bounds, and whether the caller may
                                                  change them
-    PUT /v1/workspaces/{tenant_id}/qa-settings   `{qa_flows_per_step}`, 1-30: its
-                                                 owner or admin, or a platform
-                                                 admin; audited
+    PUT /v1/workspaces/{tenant_id}/qa-settings   `{qa_flows_per_step?, writing_flows?}`,
+                                                 one at least; 1-30 and a bool:
+                                                 its owner or admin, or a
+                                                 platform admin; audited
 
 `qa_flows_per_step` is how many flows one live-browser step of a QA run
 runs when the run names no `flows_per_step` of its own (`qasettings`, which
 says where it is stored, who may change it and why it is read range-checked).
+`writing_flows`, default on, says whether the workspace's flows may write at
+all: off, every flow renders read-only and a mutating flow is refused at save
+(`qasettings`, "WRITING FLOWS").
 Nothing here takes or returns a credential, an image, a command or a URL
 (invariant 10).
 """
@@ -67,5 +71,9 @@ def put_qa_settings(
 ) -> dict:
     tenant = authorize_write(auth, ctx.store.get_tenant(tenant_id), tenant_id, ctx.roles)
     store = _store(ctx)
-    store.put(tenant_id, body.qa_flows_per_step, by=(auth.email or "").strip().lower())
+    by = (auth.email or "").strip().lower()
+    if body.qa_flows_per_step is not None:
+        store.put(tenant_id, body.qa_flows_per_step, by=by)
+    if body.writing_flows is not None:
+        store.put_writing_flows(tenant_id, body.writing_flows, by=by)
     return _answer(ctx, auth, tenant, store)

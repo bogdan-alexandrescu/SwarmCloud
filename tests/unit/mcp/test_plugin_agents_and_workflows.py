@@ -80,15 +80,19 @@ EXPECTED_TOOLS = {
     # #2318): it follows the whole workflow with `format: "stage"` and only
     # watches, like a summary row.
     "finish": {"swarm_follow"},
-    # `swarm_workflow_spec` reads a spec FILE for /sc:run (epic #227): a workflow
-    # script has no filesystem, so the bridge reads it and digests it.
+    # `sc:spec` is the `setup · read spec` row: `swarm_workflow_spec` reads a
+    # spec FILE or a launch's handle (epic #227; a workflow script has no
+    # filesystem, so the bridge reads it and digests it), and nothing else. It
+    # holds no submit tool: on 2026-11-05 the read row ran sc:workflow and
+    # submitted the spec instead of reading it.
+    "spec": {"swarm_workflow_spec"},
     # `swarm_follow` is the probe (owner decision, 2026-10-01): after a submit
     # or an attach it makes the rows' own progress follow once, so a bridge
     # that refuses it fails the workflow instead of every row falling back.
     # `swarm_workflows` is the LIST job (owner decision, 2026-10-02):
     # `{attach: "all"}` lists the tenant's running workflows before attaching each.
     "workflow": {
-        "swarm_workflow", "swarm_workflow_spec", "swarm_workflow_status", "swarm_workflows", "swarm_follow",
+        "swarm_workflow", "swarm_workflow_status", "swarm_workflows", "swarm_follow",
     },
 }
 
@@ -1017,7 +1021,7 @@ def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_pat
     assert "error" not in got, got.get("error")
     read, submit = got["calls"][0], got["calls"][1]
     assert (read["agentType"], read["phase"], read["label"]) == (
-        "sc:workflow", "Submit", "[SwarmCloud] specs/scan.json · setup · read spec")
+        "sc:spec", "Submit", "[SwarmCloud] specs/scan.json · setup · read spec")
     assert read["prompt"] == "READ SPEC\npath: specs/scan.json"
     # By the ref the bridge holds: the submit row never sees the spec.
     assert submit["prompt"].split("\n")[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC),

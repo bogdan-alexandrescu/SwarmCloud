@@ -6,6 +6,55 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.85 (2026-11-06)
+
+* Every running single task has a row and a run of its own, whatever the
+  `rows` setting. Seen on 4 November: twelve running single tasks showed in
+  /workflows as two rows, `SC · oracle-train-am-rereview +7 · 8 tasks 0/1`
+  and `SC · oracle-feature-panel-fix7 · task 0/1`, because the `summary`
+  setting followed a batch of tasks with ONE agent, so the counter read 0/1
+  and the line showed counts, not lanes. The bridge now writes one titled
+  copy per task (`launches`, one Workflow call each; `max_live_rows` still
+  caps the total and the rest are in `not_followed`), each starting one
+  `sc:task` row. A copy launched with tasks other than the one it was
+  written for is refused with a message naming the right call, instead of
+  running under another task's title.
+* A run's title marks its kind right after `SC`, because Claude Code's panel
+  cuts titles at about 28 characters: one dot for one task, `SC · <label>`
+  (no trailing ` · task`), and three dots for a workflow,
+  `SC ∴ <name> · N steps`. N is the number of steps SwarmCloud runs, read
+  from the served workflow; a spec launched before it is submitted is titled
+  `SC ∴ <name>`, without a count, because SwarmCloud may append a re-review,
+  a merge or a CI-fix round. The marks are `TASK_MARK` and `WORKFLOW_MARK`
+  in run.js and in the bridge's launch module, held equal by a test.
+* A workflow's summary row names every step on its own line, grouped by the
+  console's stages (`Stage N`, the console's own levels), with its state and
+  console link, and writes them again only when a step's state changes. The
+  lines read the served workflow, so the steps the platform appends show as
+  they appear: when the row ends while the workflow still runs and its
+  status names a new step, the run reads it, adds it at its stage and
+  follows it.
+* The summary row writes a finished `claude-code-browser` task's
+  `browser_unused` line once, on the step's own line.
+
+## 0.5.84 (2026-11-05)
+
+* A `/sc:swarmcloud` launch reports the workflow it submitted, and its
+  `setup · read spec` row can no longer submit. Seen twice in one session on
+  5 November (plugin 0.5.79): a run ended NOT_SUBMITTED with "the row reading
+  <spec_handle path> did not hand back the spec_ref, spec_digest and outline
+  the bridge returns", yet the workflow existed and ran, and a relaunch made
+  a duplicate. The read row ran `sc:workflow`, which also holds
+  `swarm_workflow`, and it submitted the spec instead of reading its outline.
+  The read row now runs `sc:spec`, a new agent whose only SwarmCloud tool is
+  `swarm_workflow_spec`, and `sc:workflow` no longer holds
+  `swarm_workflow_spec` or a READ SPEC job. And when any row before the submit
+  row hands back a workflow id, the run takes it as the submission: it logs
+  `<id> submitted by the read spec row`, reads the workflow back and follows
+  it (state `SUBMITTED` in the band layout, `submitted_by: "read spec"` on
+  the result), and never submits again. A read-back that fails reports
+  `SUBMITTED_UNVERIFIED` and arms the watch, never NOT_SUBMITTED.
+
 ## 0.5.83 (2026-11-05)
 
 * A finished task's questions for the owner are handed to a session only
