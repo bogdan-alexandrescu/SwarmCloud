@@ -15142,6 +15142,207 @@ export async function saveWorkspacePlugins(tenantId: string, allowed: readonly s
   return r
 }
 
+// --------------------------------------------------------------------------
+// Voice it › Settings (swarm-api routes/voice_settings.py)
+// --------------------------------------------------------------------------
+
+/** `GET` the settings, `PATCH {version, <field>: <name>}` to change them. */
+export const VOICE_SETTINGS = '/v1/voice/settings'
+/** Every name a setting may take: the page offers these and nothing else. */
+export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
+
+/** The fields a write may name (speech_catalogue.FIELDS). */
+export type VoiceSettingField = 'engine' | 'machine' | 'stt_model' | 'tts_model' | 'tts_voice' | 'conversation_model' | 'planner_model' | 'idle' | 'zone'
+export const VOICE_SETTING_FIELDS: readonly VoiceSettingField[] = ['engine', 'machine', 'stt_model', 'tts_model', 'tts_voice', 'conversation_model', 'planner_model', 'idle', 'zone']
+
+export interface VoiceCatalogue {
+  engines: { name: string; label: string; uses_machine: boolean }[]
+  machines: { name: string; vcpu: number; memory_gb: number; gpu: string | null; gpus: number; usd_per_hour: number; price_read_at: string | null; price_source: string | null }[]
+  stt_models: { name: string; disk_gb: number | null }[]
+  tts_models: { name: string; voices: string[]; default_voice: string }[]
+  conversation_models: { name: string; label: string; model: string }[]
+  planner_models: { name: string; label: string; model: string | null }[]
+  idle: { name: string; seconds: number }[]
+  zones: string[]
+}
+
+/** The OpenAI key's status: whether it is set, by whom and when. Never the key. */
+export interface VoiceKeyStatus {
+  set: boolean | null
+  by: string | null
+  at: string | null
+  link: { open: boolean; expires_at: string | null }
+}
+
+export interface VoiceSettingsView {
+  settings: Record<VoiceSettingField, string>
+  version: number
+  updated_by: string | null
+  updated_at: string | null
+  /** What the speech machine last started with; null before its first start. */
+  applied: { machine: string | null; stt_model: string | null; tts_model: string | null; idle: string | null; zone: string | null; at: string | null } | null
+  /** The machine fields the next start changes. */
+  pending: VoiceSettingField[]
+  openai_key: VoiceKeyStatus
+}
+
+const finiteOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+const listOf = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+const isField = (v: unknown): v is VoiceSettingField => typeof v === 'string' && (VOICE_SETTING_FIELDS as readonly string[]).includes(v)
+
+/** The catalogue as served, every entry without a name dropped. */
+export function normVoiceCatalogue(raw: unknown): VoiceCatalogue {
+  const d = objOf(raw) ?? {}
+  const named = (v: unknown) => listOf(v).map(objOf).filter((o): o is Record<string, unknown> => o !== null && strOf(o.name) !== null)
+  return {
+    engines: named(d.engines).map((e) => ({ name: strOf(e.name)!, label: strOf(e.label) ?? strOf(e.name)!, uses_machine: e.uses_machine === true })),
+    machines: named(d.machines).map((m) => ({
+      name: strOf(m.name)!,
+      vcpu: finiteOf(m.vcpu) ?? 0,
+      memory_gb: finiteOf(m.memory_gb) ?? 0,
+      gpu: strOf(m.gpu),
+      gpus: finiteOf(m.gpus) ?? 0,
+      usd_per_hour: finiteOf(m.usd_per_hour) ?? 0,
+      price_read_at: strOf(m.price_read_at),
+      price_source: strOf(m.price_source),
+    })),
+    stt_models: named(d.stt_models).map((m) => ({ name: strOf(m.name)!, disk_gb: finiteOf(m.disk_gb) })),
+    tts_models: named(d.tts_models).map((m) => ({
+      name: strOf(m.name)!,
+      voices: listOf(m.voices).filter((v): v is string => typeof v === 'string'),
+      default_voice: strOf(m.default_voice) ?? '',
+    })),
+    conversation_models: named(d.conversation_models).map((m) => ({ name: strOf(m.name)!, label: strOf(m.label) ?? strOf(m.name)!, model: strOf(m.model) ?? strOf(m.name)! })),
+    planner_models: named(d.planner_models).map((m) => ({ name: strOf(m.name)!, label: strOf(m.label) ?? strOf(m.name)!, model: strOf(m.model) })),
+    idle: named(d.idle).map((i) => ({ name: strOf(i.name)!, seconds: finiteOf(i.seconds) ?? 0 })),
+    zones: named(d.zones).filter((z) => z.machine !== false).map((z) => strOf(z.name)!),
+  }
+}
+
+/**
+ * The settings as served. The key's status keeps `set`, `by`, `at` and the
+ * link's state, and nothing else the answer might carry.
+ */
+export function normVoiceSettings(raw: unknown): VoiceSettingsView {
+  const d = objOf(raw) ?? {}
+  const s = objOf(d.settings) ?? {}
+  const settings = Object.fromEntries(VOICE_SETTING_FIELDS.map((f) => [f, strOf(s[f]) ?? ''])) as Record<VoiceSettingField, string>
+  const a = objOf(d.applied)
+  const k = objOf(d.openai_key) ?? {}
+  const link = objOf(k.link) ?? {}
+  return {
+    settings,
+    version: finiteOf(d.version) ?? 0,
+    updated_by: strOf(d.updated_by),
+    updated_at: strOf(d.updated_at),
+    applied: a === null ? null : { machine: strOf(a.machine), stt_model: strOf(a.stt_model), tts_model: strOf(a.tts_model), idle: strOf(a.idle), zone: strOf(a.zone), at: strOf(a.at) },
+    pending: listOf(d.pending).filter(isField),
+    openai_key: {
+      set: typeof k.set === 'boolean' ? k.set : null,
+      by: strOf(k.by),
+      at: strOf(k.at),
+      link: { open: link.open === true, expires_at: strOf(link.expires_at) },
+    },
+  }
+}
+
+/** The development fixture: the catalogue's current names, one zone. */
+function fixtureVoiceCatalogue(): unknown {
+  return {
+    engines: [
+      { name: 'own', label: 'Own speech', uses_machine: true },
+      { name: 'gpt-live', label: 'GPT-Live', uses_machine: false },
+    ],
+    machines: [
+      { name: 'g2-standard-4', vcpu: 4, memory_gb: 16, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.71, price_read_at: '2026-11-05', price_source: 'Owner figure' },
+      { name: 'g2-standard-8', vcpu: 8, memory_gb: 32, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.85, price_read_at: '2026-11-05', price_source: 'On-demand list price, machine plus one L4' },
+    ],
+    stt_models: [{ name: 'qwen3-asr-0.6b', disk_gb: 2 }],
+    tts_models: [{ name: 'kokoro-82m', voices: ['af_heart', 'am_michael', 'bf_emma', 'bm_george'], default_voice: 'af_heart' }],
+    conversation_models: [
+      { name: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (fastest)', model: 'claude-haiku-5-5' },
+      { name: 'claude-sonnet-5', label: 'Claude Sonnet 5', model: 'claude-sonnet-5' },
+    ],
+    planner_models: [
+      { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-1' },
+      { name: 'opus', label: 'Opus class (coding)', model: 'claude-opus-5-5' },
+    ],
+    idle: [
+      { name: '2m', seconds: 120 },
+      { name: '5m', seconds: 300 },
+      { name: '10m', seconds: 600 },
+    ],
+    zones: [{ name: 'us-central1-a', machine: true }],
+  }
+}
+
+let fixtureVoiceSaved: { settings: Record<string, string>; version: number; updated_at: string } | null = null
+
+function fixtureVoiceSettings(): unknown {
+  const settings = fixtureVoiceSaved?.settings ?? {
+    engine: 'own', machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', tts_voice: 'af_heart',
+    conversation_model: 'claude-haiku-5-5', planner_model: 'fable', idle: '5m', zone: 'us-central1-a',
+  }
+  const applied = { machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', idle: '5m', zone: 'us-central1-a', at: new Date(FIXTURE_NOW - 3_600_000).toISOString() }
+  return {
+    settings,
+    version: fixtureVoiceSaved?.version ?? 3,
+    updated_by: 'owner@example.com',
+    updated_at: fixtureVoiceSaved?.updated_at ?? new Date(FIXTURE_NOW - 86_400_000).toISOString(),
+    applied,
+    pending: (['machine', 'stt_model', 'tts_model', 'idle', 'zone'] as const).filter((f) => applied[f] !== settings[f]),
+    openai_key: { set: true, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), label: 'voice-openai', link: { open: false, expires_at: null } },
+  }
+}
+
+/** `GET /v1/voice/settings`. */
+export async function loadVoiceSettings(): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_SETTINGS)
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
+/** `GET /v1/voice/settings/catalogue`. */
+export async function loadVoiceCatalogue(): Promise<Result<VoiceCatalogue>> {
+  const target = route(VOICE_SETTINGS_CATALOGUE)
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceCatalogue(fixtureVoiceCatalogue()) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceCatalogue(r.data) }
+  return r as Result<VoiceCatalogue>
+}
+
+/**
+ * `PATCH /v1/voice/settings` with the version the page read: swarm-api
+ * refuses it 409 when someone else saved first, and 422 naming the field
+ * for a name its catalogue does not list. Platform admins only.
+ */
+export async function saveVoiceSettings(version: number, changes: Partial<Record<VoiceSettingField, string>>): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_SETTINGS)
+  if (USE_FIXTURES) {
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
+    noteFixtureProbe(target, 60, true)
+    const now = normVoiceSettings(fixtureVoiceSettings())
+    if (version !== now.version) {
+      return { status: 'error', error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'the settings changed since they were read; read them again', detail: { field: 'version', version: now.version }, method: 'PATCH' } }
+    }
+    fixtureVoiceSaved = { settings: { ...now.settings, ...changes }, version: now.version + 1, updated_at: new Date().toISOString() }
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await write(target, 'PATCH', { version, ...changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
 // ---- Voice it: the Talk stage's visuals, notes and read-backs -------------------
 
 /** swarm-api's visual routes (routes/voice_visuals.py) and read-back routes (routes/voice_readback.py). */
@@ -15381,107 +15582,6 @@ export async function loadVoiceVisual(projectId: string, visualId: string): Prom
       visual,
       body: typeof d.body === 'string' ? d.body : '',
       notes: Array.isArray(d.notes) ? d.notes.flatMap((n) => normVoiceNote(n) ?? []) : [],
-
-// --------------------------------------------------------------------------
-// Voice it › Settings (swarm-api routes/voice_settings.py)
-// --------------------------------------------------------------------------
-
-/** `GET` the settings, `PATCH {version, <field>: <name>}` to change them. */
-export const VOICE_SETTINGS = '/v1/voice/settings'
-/** Every name a setting may take: the page offers these and nothing else. */
-export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
-
-/** The fields a write may name (speech_catalogue.FIELDS). */
-export type VoiceSettingField = 'engine' | 'machine' | 'stt_model' | 'tts_model' | 'tts_voice' | 'conversation_model' | 'planner_model' | 'idle' | 'zone'
-export const VOICE_SETTING_FIELDS: readonly VoiceSettingField[] = ['engine', 'machine', 'stt_model', 'tts_model', 'tts_voice', 'conversation_model', 'planner_model', 'idle', 'zone']
-
-export interface VoiceCatalogue {
-  engines: { name: string; label: string; uses_machine: boolean }[]
-  machines: { name: string; vcpu: number; memory_gb: number; gpu: string | null; gpus: number; usd_per_hour: number; price_read_at: string | null; price_source: string | null }[]
-  stt_models: { name: string; disk_gb: number | null }[]
-  tts_models: { name: string; voices: string[]; default_voice: string }[]
-  conversation_models: { name: string; label: string; model: string }[]
-  planner_models: { name: string; label: string; model: string | null }[]
-  idle: { name: string; seconds: number }[]
-  zones: string[]
-}
-
-/** The OpenAI key's status: whether it is set, by whom and when. Never the key. */
-export interface VoiceKeyStatus {
-  set: boolean | null
-  by: string | null
-  at: string | null
-  link: { open: boolean; expires_at: string | null }
-}
-
-export interface VoiceSettingsView {
-  settings: Record<VoiceSettingField, string>
-  version: number
-  updated_by: string | null
-  updated_at: string | null
-  /** What the speech machine last started with; null before its first start. */
-  applied: { machine: string | null; stt_model: string | null; tts_model: string | null; idle: string | null; zone: string | null; at: string | null } | null
-  /** The machine fields the next start changes. */
-  pending: VoiceSettingField[]
-  openai_key: VoiceKeyStatus
-}
-
-const finiteOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-const listOf = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
-const isField = (v: unknown): v is VoiceSettingField => typeof v === 'string' && (VOICE_SETTING_FIELDS as readonly string[]).includes(v)
-
-/** The catalogue as served, every entry without a name dropped. */
-export function normVoiceCatalogue(raw: unknown): VoiceCatalogue {
-  const d = objOf(raw) ?? {}
-  const named = (v: unknown) => listOf(v).map(objOf).filter((o): o is Record<string, unknown> => o !== null && strOf(o.name) !== null)
-  return {
-    engines: named(d.engines).map((e) => ({ name: strOf(e.name)!, label: strOf(e.label) ?? strOf(e.name)!, uses_machine: e.uses_machine === true })),
-    machines: named(d.machines).map((m) => ({
-      name: strOf(m.name)!,
-      vcpu: finiteOf(m.vcpu) ?? 0,
-      memory_gb: finiteOf(m.memory_gb) ?? 0,
-      gpu: strOf(m.gpu),
-      gpus: finiteOf(m.gpus) ?? 0,
-      usd_per_hour: finiteOf(m.usd_per_hour) ?? 0,
-      price_read_at: strOf(m.price_read_at),
-      price_source: strOf(m.price_source),
-    })),
-    stt_models: named(d.stt_models).map((m) => ({ name: strOf(m.name)!, disk_gb: finiteOf(m.disk_gb) })),
-    tts_models: named(d.tts_models).map((m) => ({
-      name: strOf(m.name)!,
-      voices: listOf(m.voices).filter((v): v is string => typeof v === 'string'),
-      default_voice: strOf(m.default_voice) ?? '',
-    })),
-    conversation_models: named(d.conversation_models).map((m) => ({ name: strOf(m.name)!, label: strOf(m.label) ?? strOf(m.name)!, model: strOf(m.model) ?? strOf(m.name)! })),
-    planner_models: named(d.planner_models).map((m) => ({ name: strOf(m.name)!, label: strOf(m.label) ?? strOf(m.name)!, model: strOf(m.model) })),
-    idle: named(d.idle).map((i) => ({ name: strOf(i.name)!, seconds: finiteOf(i.seconds) ?? 0 })),
-    zones: named(d.zones).filter((z) => z.machine !== false).map((z) => strOf(z.name)!),
-  }
-}
-
-/**
- * The settings as served. The key's status keeps `set`, `by`, `at` and the
- * link's state, and nothing else the answer might carry.
- */
-export function normVoiceSettings(raw: unknown): VoiceSettingsView {
-  const d = objOf(raw) ?? {}
-  const s = objOf(d.settings) ?? {}
-  const settings = Object.fromEntries(VOICE_SETTING_FIELDS.map((f) => [f, strOf(s[f]) ?? ''])) as Record<VoiceSettingField, string>
-  const a = objOf(d.applied)
-  const k = objOf(d.openai_key) ?? {}
-  const link = objOf(k.link) ?? {}
-  return {
-    settings,
-    version: finiteOf(d.version) ?? 0,
-    updated_by: strOf(d.updated_by),
-    updated_at: strOf(d.updated_at),
-    applied: a === null ? null : { machine: strOf(a.machine), stt_model: strOf(a.stt_model), tts_model: strOf(a.tts_model), idle: strOf(a.idle), zone: strOf(a.zone), at: strOf(a.at) },
-    pending: listOf(d.pending).filter(isField),
-    openai_key: {
-      set: typeof k.set === 'boolean' ? k.set : null,
-      by: strOf(k.by),
-      at: strOf(k.at),
-      link: { open: link.open === true, expires_at: strOf(link.expires_at) },
     },
   }
 }
@@ -15531,100 +15631,4 @@ export async function answerReadback(sessionId: string, readbackId: string, go: 
   const r = await write(target, 'POST')
   if (r.status !== 'ok' && r.status !== 'stale') return r
   return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
-
-/** The development fixture: the catalogue's current names, one zone. */
-function fixtureVoiceCatalogue(): unknown {
-  return {
-    engines: [
-      { name: 'own', label: 'Own speech', uses_machine: true },
-      { name: 'gpt-live', label: 'GPT-Live', uses_machine: false },
-    ],
-    machines: [
-      { name: 'g2-standard-4', vcpu: 4, memory_gb: 16, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.71, price_read_at: '2026-11-05', price_source: 'Owner figure' },
-      { name: 'g2-standard-8', vcpu: 8, memory_gb: 32, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.85, price_read_at: '2026-11-05', price_source: 'On-demand list price, machine plus one L4' },
-    ],
-    stt_models: [{ name: 'qwen3-asr-0.6b', disk_gb: 2 }],
-    tts_models: [{ name: 'kokoro-82m', voices: ['af_heart', 'am_michael', 'bf_emma', 'bm_george'], default_voice: 'af_heart' }],
-    conversation_models: [
-      { name: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (fastest)', model: 'claude-haiku-5-5' },
-      { name: 'claude-sonnet-5', label: 'Claude Sonnet 5', model: 'claude-sonnet-5' },
-    ],
-    planner_models: [
-      { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-1' },
-      { name: 'opus', label: 'Opus class (coding)', model: 'claude-opus-5-5' },
-    ],
-    idle: [
-      { name: '2m', seconds: 120 },
-      { name: '5m', seconds: 300 },
-      { name: '10m', seconds: 600 },
-    ],
-    zones: [{ name: 'us-central1-a', machine: true }],
-  }
-}
-
-let fixtureVoiceSaved: { settings: Record<string, string>; version: number; updated_at: string } | null = null
-
-function fixtureVoiceSettings(): unknown {
-  const settings = fixtureVoiceSaved?.settings ?? {
-    engine: 'own', machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', tts_voice: 'af_heart',
-    conversation_model: 'claude-haiku-5-5', planner_model: 'fable', idle: '5m', zone: 'us-central1-a',
-  }
-  const applied = { machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', idle: '5m', zone: 'us-central1-a', at: new Date(FIXTURE_NOW - 3_600_000).toISOString() }
-  return {
-    settings,
-    version: fixtureVoiceSaved?.version ?? 3,
-    updated_by: 'owner@example.com',
-    updated_at: fixtureVoiceSaved?.updated_at ?? new Date(FIXTURE_NOW - 86_400_000).toISOString(),
-    applied,
-    pending: (['machine', 'stt_model', 'tts_model', 'idle', 'zone'] as const).filter((f) => applied[f] !== settings[f]),
-    openai_key: { set: true, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), label: 'voice-openai', link: { open: false, expires_at: null } },
-  }
-}
-
-/** `GET /v1/voice/settings`. */
-export async function loadVoiceSettings(): Promise<Result<VoiceSettingsView>> {
-  const target = route(VOICE_SETTINGS)
-  if (USE_FIXTURES) {
-    await new Promise((r) => setTimeout(r, 80))
-    noteFixtureProbe(target, 80, true)
-    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
-  }
-  const r = await read<unknown>(target, () => false)
-  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
-  return r as Result<VoiceSettingsView>
-}
-
-/** `GET /v1/voice/settings/catalogue`. */
-export async function loadVoiceCatalogue(): Promise<Result<VoiceCatalogue>> {
-  const target = route(VOICE_SETTINGS_CATALOGUE)
-  if (USE_FIXTURES) {
-    await new Promise((r) => setTimeout(r, 80))
-    noteFixtureProbe(target, 80, true)
-    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceCatalogue(fixtureVoiceCatalogue()) }
-  }
-  const r = await read<unknown>(target, () => false)
-  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceCatalogue(r.data) }
-  return r as Result<VoiceCatalogue>
-}
-
-/**
- * `PATCH /v1/voice/settings` with the version the page read: swarm-api
- * refuses it 409 when someone else saved first, and 422 naming the field
- * for a name its catalogue does not list. Platform admins only.
- */
-export async function saveVoiceSettings(version: number, changes: Partial<Record<VoiceSettingField, string>>): Promise<Result<VoiceSettingsView>> {
-  const target = route(VOICE_SETTINGS)
-  if (USE_FIXTURES) {
-    if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
-    noteFixtureProbe(target, 60, true)
-    const now = normVoiceSettings(fixtureVoiceSettings())
-    if (version !== now.version) {
-      return { status: 'error', error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'the settings changed since they were read; read them again', detail: { field: 'version', version: now.version }, method: 'PATCH' } }
-    }
-    fixtureVoiceSaved = { settings: { ...now.settings, ...changes }, version: now.version + 1, updated_at: new Date().toISOString() }
-    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
-  }
-  const r = await write(target, 'PATCH', { version, ...changes })
-  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
-  return r as Result<VoiceSettingsView>
 }
