@@ -507,7 +507,7 @@ def _not_an_ancestor(index_sha: str, base_sha: str) -> str:
 
 def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
                    index_state: Mapping[str, Any],
-                   deepen: Callable[[], str | None] | None = None) -> Ancestry | str:
+                   deepen: Callable[[], Path | str | None] | None = None) -> Ancestry | str:
     """How `index_sha` is known to be an ancestor of `base_sha`, or why it is not.
 
     `deepen` (lane GRAPH-ANCESTRY, part of #2540) makes the clone's history
@@ -521,6 +521,10 @@ def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
     were refused here, against 3 proven by git. The rule is unchanged: only
     a proof stages, and a fetch that fails or does not reach the index
     commit leaves the ancestry not shown.
+
+    `deepen` may instead answer a Path: the repository the history was
+    fetched into (`gitops.fetch_commit_history`, commits and trees without
+    file contents), where git is asked in place of the checkout.
     """
     if index_sha == base_sha:
         return Ancestry(basis="same", behind_by=0, changed=[])
@@ -549,11 +553,19 @@ def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
     if deepen is None or checkout is None:
         return unshown
     why = deepen()
-    if why is not None:
+    if isinstance(why, str):
         return f"{unshown} ({why})"
-    local = is_ancestor(checkout, index_sha, base_sha)
+    history = why if isinstance(why, Path) else checkout
+    local = is_ancestor(history, index_sha, base_sha)
     if local is True:
-        return _git_ancestry(checkout, index_sha, base_sha)
+        found = _git_ancestry(history, index_sha, base_sha)
+        if found.changed is None and history != checkout:
+            # The scratch history holds no file contents and fetches nothing
+            # lazily: a tree it lacks leaves the changed files unknown, and
+            # a graph whose staleness is unknown is not staged as current.
+            return f"{unshown} (the files changed since the index could not be read " \
+                   "from the fetched history)"
+        return found
     if local is False:
         return _not_an_ancestor(index_sha, base_sha)
     return f"{unshown} (not within the history fetched behind the base)"
@@ -563,15 +575,15 @@ class _HistoryOnce:
     """One staging's `deepen`: the fetch runs at most once, for the first
     candidate that needs it, and every later candidate reads its answer."""
 
-    def __init__(self, fetch: Callable[[Path, str], str | None], checkout: Path,
+    def __init__(self, fetch: Callable[[Path, str], Path | str | None], checkout: Path,
                  base_sha: str) -> None:
         self._fetch, self._checkout, self._base = fetch, checkout, base_sha
         self._asked = False
-        self._answer: str | None = None
+        self._answer: Path | str | None = None
         #: Seconds the fetch took, or None when it was not needed.
         self.seconds: float | None = None
 
-    def __call__(self) -> str | None:
+    def __call__(self) -> Path | str | None:
         if not self._asked:
             self._asked = True
             started = time.monotonic()
@@ -582,17 +594,41 @@ class _HistoryOnce:
             self.seconds = round(time.monotonic() - started, 3)
         return self._answer
 
+    def close(self) -> None:
+        """The scratch history repository, gone once the staging has read it."""
+        if isinstance(self._answer, Path) and self._answer != self._checkout:
+            shutil.rmtree(self._answer, ignore_errors=True)
+
+
+#: Below this many seconds left of the fetch limit, the fallback deepen of
+#: the checkout is not started: it could not land a pack in that time.
+HISTORY_FALLBACK_MIN_SECONDS = 2.0
+
 
 def history_fetcher(repository_url: str | None, private_dir: Path, *,
                     token: Callable[[], str | None] | None = None,
-                    ) -> Callable[[Path, str], str | None]:
-    """The production `deepen` fetch: `gitops.fetch_base_history` from the
-    task's SIGNED `repository_url`, validated as a clone validates it.
+                    timeout_seconds: float | None = None,
+                    git_binary: str = "git",
+                    ) -> Callable[[Path, str], Path | str | None]:
+    """The production `deepen` fetch from the task's SIGNED `repository_url`,
+    validated as a clone validates it.
+
+    First `gitops.fetch_commit_history`: the commits behind the base with
+    their trees and no file contents, in a scratch repository, which is what
+    the proof reads (lane GRAPH-DELIVERY, 2026-11-06: the blob-carrying
+    deepen ran past its limit on a third of AI Studio's steps). When that
+    fails for any reason but the limit -- a forge that refuses the filter,
+    say -- the bounded fallback is the old `gitops.fetch_base_history`
+    deepen of the checkout, in what is left of the same limit, so a step
+    never waits longer than `timeout_seconds` in all. A reason names both.
 
     `token` supplies the tenant's forge token for a private repository; with
     none, the fetch is anonymous, which a public repository answers and a
     private one refuses -- a reason in `stage.json`, as before this lane."""
-    def fetch(checkout: Path, base_sha: str) -> str | None:
+    limit = (gitops.ANCESTRY_FETCH_TIMEOUT_SECONDS if timeout_seconds is None
+             else timeout_seconds)
+
+    def fetch(checkout: Path, base_sha: str) -> Path | str | None:
         try:
             url = gitops.validate_repository_url(repository_url or "")
         except gitops.GitError:
@@ -605,9 +641,19 @@ def history_fetcher(repository_url: str | None, private_dir: Path, *,
             secret = token() if token is not None else None
         except Exception as exc:  # noqa: BLE001 -- a token read is a reason, never a failure
             secret, unread = None, f" (forge token not read: {type(exc).__name__})"
+        started = time.monotonic()
+        got = gitops.fetch_commit_history(url=url, base_sha=base_sha, private_dir=private_dir,
+                                          token=secret or None, timeout_seconds=limit,
+                                          git_binary=git_binary)
+        if isinstance(got, Path):
+            return got
+        left = limit - (time.monotonic() - started)
+        if "timed out" in got or left < HISTORY_FALLBACK_MIN_SECONDS:
+            return f"{got}{unread}"
         why = gitops.fetch_base_history(checkout, url=url, base_sha=base_sha,
-                                        private_dir=private_dir, token=secret or None)
-        return f"{why}{unread}" if why is not None else None
+                                        private_dir=private_dir, token=secret or None,
+                                        timeout_seconds=left, git_binary=git_binary)
+        return f"{got}; {why}{unread}" if why is not None else None
     return fetch
 
 
@@ -1074,6 +1120,7 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
     wants_service = delivery == DELIVERY_SERVICE
     if wants_service:
         result.fallback = unserved or service.unavailable()
+    deepen: _HistoryOnce | None = None
     try:
         if not base_sha or not _SHA.match(base_sha):
             raise StageRefused("the step has no base commit to compare the index with")
@@ -1117,6 +1164,9 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
         result.reason = str(refused)
     except Exception as exc:  # noqa: BLE001 -- see `stage`
         result.reason = f"staging failed ({type(exc).__name__})"
+    finally:
+        if deepen is not None:
+            deepen.close()
     return result
 
 

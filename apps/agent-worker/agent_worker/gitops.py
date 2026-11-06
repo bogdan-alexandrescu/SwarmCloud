@@ -1554,6 +1554,99 @@ def fetch_base_history(
     return None
 
 
+#: The scratch repository `fetch_commit_history` fetches into, under the
+#: caller's `private_dir`: never the checkout, which keeps its depth.
+ANCESTRY_HISTORY_DIR = "ancestry-history.git"
+#: What `fetch_commit_history`'s scratch repository's config is rewritten to
+#: once the fetch lands: no `extensions.partialClone` and no promisor remote,
+#: so an object the proof asks for and the fetch did not bring is an answer
+#: ("not there"), never a lazy fetch from the forge with no token and no bound.
+_HISTORY_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+
+
+def fetch_commit_history(
+    *,
+    url: str,
+    base_sha: str,
+    private_dir: Path,
+    token: str | None = None,
+    depth: int = ANCESTRY_FETCH_DEPTH,
+    timeout_seconds: float = ANCESTRY_FETCH_TIMEOUT_SECONDS,
+    git_binary: str = "git",
+) -> Path | str:
+    """`depth` commits behind `base_sha`, with their trees and no file
+    contents, in a scratch bare repository of their own: its path, else a
+    short reason (never git's own words).
+
+    `fetch_base_history` deepens the checkout, which brings every blob the
+    `depth` commits changed: on a large repository (AI Studio's, 2026-11-06)
+    that ran past the 20-second limit on 213 of 637 steps and the graph was
+    not delivered. An ancestry proof reads commits (`merge-base`,
+    `rev-list --count`) and trees (`diff --name-only`), never a blob, so
+    `--filter=blob:none` brings what it reads and nothing else. A forge that
+    does not honour the filter sends the blobs too, under the same limit.
+
+    The scratch repository is new each call, with the global and system
+    config off (`_clone_env`), so no config a restored checkpoint planted is
+    read and the token, when given, is held as a clone holds it: no
+    `_token_unsafe_config` withholding applies. Its config is rewritten once
+    the fetch lands (`_HISTORY_CONFIG`).
+    """
+    if not _FULL_SHA_RE.match(base_sha or ""):
+        return "the base is not a full commit sha"
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    repo = private_dir / ANCESTRY_HISTORY_DIR
+    shutil.rmtree(repo, ignore_errors=True)
+    started = time.monotonic()
+    try:
+        env, config_args, cred_file = _clone_env(url, token, private_dir, _QuietLog())
+    except GitError:
+        return "the forge token could not be held for the history fetch"
+    if cred_file is not None:
+        config_args = ["-c", "credential.helper=", *config_args]
+    common = [git_binary, *config_args, "-c", "http.proxy=", "-c", "core.hooksPath=/dev/null",
+              *_NO_AUTO_MAINTENANCE]
+    try:
+        init = run_child([*common, "init", "--quiet", "--bare", str(repo)], cwd=private_dir,
+                         env=env, stdout_path=private_dir / "git-history.out.log",
+                         stderr_path=private_dir / "git-history.err.log",
+                         timeout_seconds=timeout_seconds,
+                         grace_seconds=ANCESTRY_FETCH_GRACE_SECONDS,
+                         max_stdout_bytes=16 * 1024, max_stderr_bytes=16 * 1024,
+                         logger=_QuietLog())
+        if init.exit_code != 0 or init.timed_out:
+            shutil.rmtree(repo, ignore_errors=True)
+            return "the history repository could not be made"
+        left = timeout_seconds - (time.monotonic() - started)
+        argv = [*common, "-C", str(repo), "fetch", "--quiet", "--no-tags",
+                "--no-write-fetch-head", "--no-recurse-submodules", "--filter=blob:none",
+                f"--depth={int(depth)}", "--", url, base_sha]
+        done = run_child(argv, cwd=private_dir, env=env,
+                         stdout_path=private_dir / "git-history.out.log",
+                         stderr_path=private_dir / "git-history.err.log",
+                         timeout_seconds=max(left, 0.1),
+                         grace_seconds=ANCESTRY_FETCH_GRACE_SECONDS,
+                         max_stdout_bytes=64 * 1024, max_stderr_bytes=64 * 1024,
+                         logger=_QuietLog())
+    except OSError as exc:
+        shutil.rmtree(repo, ignore_errors=True)
+        return f"the history fetch did not start ({type(exc).__name__})"
+    finally:
+        _remove_credentials(cred_file, _QuietLog())
+    if done.timed_out or done.exit_code != 0:
+        shutil.rmtree(repo, ignore_errors=True)
+        if done.timed_out:
+            return f"the commit history fetch timed out after {timeout_seconds:g} s"
+        return f"the commit history fetch failed (git exit {done.exit_code})"
+    try:
+        (repo / "config").write_text(_HISTORY_CONFIG)
+    except OSError as exc:
+        shutil.rmtree(repo, ignore_errors=True)
+        return f"the history repository could not be closed ({type(exc).__name__})"
+    return repo
+
+
 #: Config sections in a checkout's own `.git/config` that could send a
 #: credential somewhere other than the repository's forge, or hand it to a
 #: program, and that a `-c` on the command line cannot reliably undo:
