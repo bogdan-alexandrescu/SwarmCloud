@@ -776,10 +776,34 @@ _CONTAINER = (
     r"(?:\[[ \t]*\]|\{[ \t]*\}|\([ \t]*\))" + _END
     + r"|[\[{(][ \t]*(?=\n|$)|\{(?=[ \t])"
 )
+#: AN `Authorization` VALUE THAT ONLY NAMES A VARIABLE IS CODE (AI Studio's
+#: report, 6 November 2026; part of #2688). A patch holding
+#: `"Authorization": f"Bearer {TOKEN}"` had the f-string's `f` masked here as
+#: the value, and `Bearer ${TOKEN}` had its scheme word masked here and the
+#: placeholder by `http_authorization_scheme`, so the patch no longer applied.
+#: A placeholder is ONE name in one of four spellings -- `{name}` (an
+#: f-string or `str.format` field, dots allowed), `${NAME}`, `$NAME`,
+#: `%(name)s` -- then at most a closing quote, then where a value ends. A
+#: default (`${TOKEN:-<v>}`), a second name, or any character glued to it
+#: (`{TOKEN}<v>`, `<v>{TOKEN}`, `{TOKEN}:<v>`) is not a placeholder, and the
+#: value is masked as before. `$NAME` takes its name possessively: a shell
+#: reads `$TOKENabc` as one longer name, and so does this.
+_PLACEHOLDER = (
+    r"(?:\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|\$\{[A-Za-z_][A-Za-z0-9_]{0,63}\}"
+    r"|\$[A-Za-z_][A-Za-z0-9_]{0,63}+|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])"
+    r"(?:\\{0,15}[\"'`])?(?=[\s,;)\]}]|$)"
+)
+_AUTH_SCHEME = r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)"
+#: Under the `authorization` key: an optional string prefix (`f`, `rb`) and
+#: quote, an optional scheme word, then a placeholder alone.
+_AUTH_PLACEHOLDER = (
+    r"(?:[bfru]{1,2}(?=\\{0,15}[\"']))?(?:\\{0,15}[\"'])?"
+    r"(?:" + _AUTH_SCHEME + r"[ \t]+)?" + _PLACEHOLDER
+)
 #: Not masked when the value starts with one of these (see above), and does
 #: not itself start a secret run.
 _NOT_A_LITERAL = (
-    _NO_SECRET + r"(?:" + _SHELL_SUBSTITUTION + r"|" + _CONTAINER
+    _NO_SECRET + r"(?:" + _SHELL_SUBSTITUTION + r"|(?(auth)" + _AUTH_PLACEHOLDER + r"|(?!))|" + _CONTAINER
     + r"|(?(colon)(?(pw)" + _COLON_VALUE_PASSWORD + r"|" + _COLON_VALUE + r")"
     + r"|(?(lc)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")"
     r"|(?(sp)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")|(?!)))))"
@@ -789,7 +813,7 @@ KEY_VALUE = _rule(
     "api[-_]?key",
     r"(?<![A-Za-z0-9_.-])"
     r"((?:\\{0,15}\")?(?P<lc>(?=(?-i:[A-Z0-9_.-]*[a-z])))?+[A-Za-z0-9_.-]*"
-    r"(?:(?P<pw>password|passwd|passphrase)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|authorization)"
+    r"(?:(?P<pw>password|passwd|passphrase)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|(?P<auth>authorization))"
     r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
     r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
     r"(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
@@ -1000,9 +1024,10 @@ RULES: tuple[Rule, ...] = (
     _rule(
         "http_authorization_scheme",
         "(token|bearer|basic|digest",
-        r"(authorization(?:\\*\")?[ \t]*[:=][ \t]*(?:\\*\")?"
-        r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[ \t]+)"
+        r"(authorization(?:\\*\")?[ \t]*[:=][ \t]*(?:[bfru]{1,2}(?=\\*\"))?(?:\\*\")?"
+        + _AUTH_SCHEME + r"[ \t]+)"
         r"(?![^\"\\,\s]*\*\*\*\*\*\*\*\*)"
+        r"(?!" + _PLACEHOLDER + r")"
         r"[^*\"\\,\s][^\"\\,\s]*",
         re.IGNORECASE,
     ),
