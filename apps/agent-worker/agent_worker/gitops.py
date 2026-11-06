@@ -2834,7 +2834,9 @@ def commit_dirty(
     # that. It is not a failure -- the agent may have committed everything
     # itself -- so it is distinguished here rather than raised.
     diff_code, _ = run([*g, "diff", "--cached", "--quiet"], "publish-staged")
-    if diff_code == 0:
+    # A merge in progress (`_carry_merge_in_progress`) is concluded even when
+    # it changes no file: its parents are the change (#3359).
+    if diff_code == 0 and not (repo / ".git" / "MERGE_HEAD").is_file():
         return None
 
     # `--author` as well as the identity keys: this commit concludes a
@@ -2908,6 +2910,7 @@ def fold_agent_commits(
     git_binary: str = "git",
     merged: str = "",
     history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
 ) -> int:
     """Replace every commit made since `base` with ONE commit the worker makes.
 
@@ -2974,7 +2977,12 @@ def fold_agent_commits(
     cherry-pick the agent left in progress is authored as the picked commit
     was, whoever ran `git commit`. `commit_dirty` passes `--author` against
     exactly that, and this check is what folds the commit anyway if some other
-    route lends it an author.
+    route lends it an author. A `keep` that concludes a merge the agent left
+    in progress (`commit_dirty`, #3359) is never the sole commit: the merged
+    branch's own commits are in the count, so it is folded like any merge.
+
+    `on_forge`, when given, says whether the forge holds a merged head; one
+    it holds is kept whatever its commits say (`merged_head_kept`).
     """
     empty = base == EMPTY_CLONE_BASE
     if not empty and (not base or not _SHA_RE.match(base.strip())):
@@ -3051,7 +3059,7 @@ def fold_agent_commits(
                 if code != 0 or inside == 0:
                     merged = ""
         heads = _merged_heads(run, g, base=base, proven=merged, logger=logger,
-                              history_leaks=history_leaks)
+                              history_leaks=history_leaks, on_forge=on_forge)
         code, _ = run([*g, "reset", "--soft", base], "publish-fold-reset")
         if code != 0:
             raise GitError("could not rewind to the clone base to replace the agent's commits")
@@ -3124,6 +3132,7 @@ def merged_head_kept(
     upstream: str,
     logger: Any,
     history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
 ) -> bool:
     """Whether `head`, a parent after the first of a merge the agent made, stays a
     parent of what the worker pushes (#3359): the fold's and the replay's one rule.
@@ -3143,6 +3152,17 @@ def merged_head_kept(
     removed before merging it would be pushed in that branch's history.
     Dropped, the branch's changes still reach the forge in the merged tree,
     which `final_tree_leak` scans.
+
+    A HEAD THE FORGE ALREADY HOLDS IS KEPT WITHOUT EITHER READ (#3359, again
+    on 6 November 2026). `on_forge(head)` asks the forge itself
+    (`forge_holds_commit`); a branch fetched from it -- a merge train, any
+    branch, by name or by refspec -- is published already, so keeping it as a
+    parent pushes nothing the forge lacks. Measured on Product Oracle's pull
+    request 1292: its train branch held a commit with a `Co-Authored-By:
+    Claude` trailer made outside this platform, the read above dropped the
+    train, and the agent's "merge train AO head" reached the pull request
+    with ONE parent and the train's tree, so the next merge would have
+    raised the train's 88 files again as conflicts.
     """
     code, _ = run([*g, "cat-file", "-e", f"{head}^{{commit}}"], "publish-merged-head-read")
     if code != 0:
@@ -3160,6 +3180,10 @@ def merged_head_kept(
                       "publish-merged-head-upstream")
         if code == 0:
             return True
+    if on_forge is not None and on_forge(head):
+        logger.info("a branch the agent merged is on the forge already; kept as a parent",
+                    head=head[:12])
+        return True
     argv = [*g, "log", "--format=%an <%ae>%x00%cn <%ce>%x00%B%x00", head]
     code, log = run([*argv, "--not", base] if base else argv, "publish-merged-head-log")
     if code != 0:
@@ -3196,6 +3220,7 @@ def _merged_heads(
     proven: str,
     logger: Any,
     history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """The heads the fold keeps as parents after `base`, in the order merged (#3359).
 
@@ -3204,7 +3229,8 @@ def _merged_heads(
     contains and those another kept head contains. Raises
     `MergedHeadUnreadable` for a head this repository cannot read. A head
     whose own commits carry Claude attribution, or one `history_leaks`
-    finds a credential in, is left out and logged.
+    finds a credential in, is left out and logged, unless `on_forge` says
+    the forge holds it (`merged_head_kept`).
     """
     code, text = run([*g, "rev-list", "--reverse", "--merges", "--parents", f"{base}..HEAD"],
                      "publish-fold-merges")
@@ -3220,7 +3246,7 @@ def _merged_heads(
     candidates = [
         head for head in found
         if merged_head_kept(run, g, head, base=base, upstream=proven, logger=logger,
-                            history_leaks=history_leaks)
+                            history_leaks=history_leaks, on_forge=on_forge)
     ]
     kept: list[str] = []
     for head in candidates:
@@ -3673,8 +3699,15 @@ def prepare_publish_repo(
     local_branch: str = "swarm-publish",
     allow_unknown_base: bool = False,
     confirm_on_origin: Callable[[list[str]], list[str]] | None = None,
+    carry_merge: bool = False,
 ) -> Path:
     """Build the worker-owned CLEAN repository the publish decides and pushes from.
+
+    `carry_merge`: a merge the agent left IN PROGRESS -- `git merge
+    --no-commit`, or a conflicted merge it resolved and staged but never
+    committed -- is carried over (`_carry_merge_in_progress`), so the
+    worker's commit of the uncommitted work (`commit_dirty`) concludes it as
+    a merge rather than squashing the merged branch into one parent (#3359).
 
     TWO GUARANTEES LIVE HERE, and both come from where the repository is, not
     from a list of settings to switch off.
@@ -3906,9 +3939,74 @@ def prepare_publish_repo(
     )
     if checkout_code != 0:
         raise GitError("could not check out the agent's work in the publish repository")
+    if carry_merge and not empty:
+        _carry_merge_in_progress(run, source_repo=source_repo, publish_dir=publish_dir,
+                                 shallow_file=shallow_file, git_binary=git_binary,
+                                 logger=logger)
 
     logger.info("clean publish repository prepared", branch=local_branch)
     return publish_dir
+
+
+#: The most `MERGE_HEAD` lines the publish carries over: an octopus merge
+#: names one per branch, and more is past any real one.
+_MERGE_HEAD_MAX_LINES = 16
+
+
+def _carry_merge_in_progress(
+    run: Callable[[list[str], str], tuple[int, str]],
+    *,
+    source_repo: Path,
+    publish_dir: Path,
+    shallow_file: str,
+    git_binary: str,
+    logger: Any,
+) -> list[str]:
+    """Carry the clone's merge in progress into the publish repository (#3359).
+
+    Returns the heads carried, oldest line first, or [] when the agent left no
+    merge in progress.
+
+    WHY. An agent that ran `git merge --no-commit <branch>`, or resolved a
+    conflicted merge and staged it without `git commit`, leaves the merge in
+    `.git/MERGE_HEAD`. The worker commits that uncommitted work in THIS
+    repository, which had no `MERGE_HEAD`, so its one commit held the merged
+    tree with ONE parent: the merged branch's history was dropped, and the
+    pull request's next merge raised every conflict the agent resolved.
+
+    `MERGE_HEAD` is read AS DATA (`_read_in_git_dir`), full 40-hex lines only,
+    at most `_MERGE_HEAD_MAX_LINES`; each head is fetched with the object
+    checks every other fetch here uses, and only then written as this
+    repository's own `MERGE_HEAD`, so `git commit` in `commit_dirty` makes the
+    merge. Whether a head stays a parent of what is pushed is still
+    `merged_head_kept`'s rule, applied by the replay and the fold. A head the
+    clone cannot send raises `MergedHeadUnreadable`: nothing is pushed rather
+    than the merge squashed.
+    """
+    raw = _read_in_git_dir(source_repo, "MERGE_HEAD", cap=_REF_FILE_MAX_BYTES)
+    if not raw:
+        return []
+    heads: list[str] = []
+    for line in raw.decode("ascii", "replace").splitlines():
+        sha = line.strip()
+        if _FULL_SHA_RE.match(sha) and sha not in heads:
+            heads.append(sha)
+    heads = heads[:_MERGE_HEAD_MAX_LINES]
+    if not heads:
+        return []
+    refspecs = [f"+{sha}:refs/swarm/merging/{index}" for index, sha in enumerate(heads)]
+    code, _ = run(_publish_fetch_argv(git_binary, source_repo, shallow_file, refspecs),
+                  "publish-fetch-merging")
+    if code != 0:
+        raise MergedHeadUnreadable(
+            "the agent left a merge in progress whose merged commit the clean publish "
+            "repository could not fetch, so the worker cannot conclude it as a merge; "
+            "nothing was pushed rather than a commit that drops that branch's history"
+        )
+    (publish_dir / ".git" / "MERGE_HEAD").write_text("".join(f"{sha}\n" for sha in heads))
+    logger.info("carried the agent's merge in progress into the publish repository",
+                heads=[sha[:12] for sha in heads])
+    return heads
 
 
 #: The most of the agent's `.git/shallow` the publish reads, and the most of
@@ -5990,6 +6088,74 @@ def fetch_branch_tip(
     )
     sha = text.strip()
     return sha if code == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def forge_holds_commit(
+    *,
+    url: str,
+    sha: str,
+    token: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> bool:
+    """Whether the forge at `url` serves commit `sha` (#3359): a merged head
+    the publish may keep as a parent whatever its commits say.
+
+    Asked of the forge, never the agent's clone, whose refs and objects the
+    agent writes. The commit is fetched BY SHA into a fresh, empty
+    repository under `private_dir` (removed after), so nothing local can
+    answer for the forge: a fetch into the publish repository, which holds
+    the commit already, would succeed without the forge sending a byte.
+    `--depth=1 --filter=tree:0` keeps it to the one commit object where the
+    forge filters (GitHub does). Any failure -- the forge does not have it,
+    refuses a sha want, or cannot be reached -- is False, and the head is
+    read as before. The token is the tenant's own, written to a credential
+    file as `fetch_branch_tip` does, never to the command line or a log.
+    """
+    if not _FULL_SHA_RE.match(sha or ""):
+        return False
+    try:
+        url = validate_repository_url(url)
+    except GitError:
+        return False
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    probe = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="forge-probe-"))
+    cred_file = _write_credentials(url, token, private_dir)
+    config_args = [*_TOKEN_SAFE]
+    if cred_file is not None:
+        config_args += ["-c", f"credential.helper=store --file={cred_file}"]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(argv, repo=probe, private_dir=private_dir, logs_dir=logs_dir,
+                         slug=slug, timeout_seconds=timeout_seconds, logger=logger)
+
+    try:
+        code, _ = run([git_binary, *_NO_HOOKS, "init", "--quiet", str(probe)], "forge-probe-init")
+        if code != 0:
+            return False
+        code, _ = run(
+            [
+                git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "fetch", "--quiet",
+                "--no-tags", "--depth=1", "--filter=tree:0", "--", url, sha,
+            ],
+            "forge-probe-fetch",
+        )
+        if code != 0:
+            return False
+        code, _ = run([git_binary, *_NO_HOOKS, "cat-file", "-e", f"{sha}^{{commit}}"],
+                      "forge-probe-read")
+        return code == 0
+    finally:
+        try:
+            if cred_file is not None:
+                cred_file.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("could not remove the git credential file", error=str(exc))
+        shutil.rmtree(probe, ignore_errors=True)
 
 
 def commit_tree_onto(
