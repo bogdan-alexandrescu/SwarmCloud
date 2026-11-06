@@ -31,10 +31,10 @@ OWNER = "alice@example.com"
 LABELS = ("Cards", "Table", "Timeline")
 
 
-def _parked(db, previews: dict[str, object]) -> None:
+def _parked(db, previews: dict[str, object], labels: tuple[str, ...] = LABELS) -> None:
     seed_tenant(db, "eng")
     moment = datetime.now(timezone.utc)
-    options = [{"label": label, "description": f"the {label.lower()} layout"} for label in LABELS]
+    options = [{"label": label, "description": f"the {label.lower()} layout"} for label in labels]
     wait = {
         "questions": [{
             "question": "Which layout should the dashboard use?",
@@ -108,16 +108,17 @@ def test_a_preview_over_the_option_cap_is_dropped_whole_with_its_reason(client, 
 
 def test_previews_past_the_question_cap_are_dropped_with_their_reason(client, db) -> None:
     each = agent_questions.PREVIEW_MAX_CHARS
-    per_question = agent_questions.PREVIEW_QUESTION_MAX_CHARS
-    assert 2 * each <= per_question < 3 * each, "the test fills the question with two previews"
-    _parked(db, {label: _html(each) for label in LABELS})
+    fit = agent_questions.PREVIEW_QUESTION_MAX_CHARS // each
+    labels = tuple(f"Layout {n}" for n in range(fit + 1))
+    _parked(db, {label: _html(each) for label in labels}, labels)
 
     options = _options(client)
 
-    assert options["Cards"]["preview"] == _html(each)
-    assert options["Table"]["preview"] == _html(each)
-    assert options["Timeline"]["preview"] is None
-    assert "question" in options["Timeline"]["preview_dropped"]
+    for label in labels[:fit]:
+        assert options[label]["preview"] == _html(each), label
+    last = options[labels[fit]]
+    assert last["preview"] is None
+    assert "question" in last["preview_dropped"]
 
 
 def test_a_preview_holding_a_token_is_redacted_like_the_question(client, db) -> None:

@@ -72,7 +72,8 @@ again wherever the task is served.
 WHERE IT WAS ANSWERED (owner decision 2026-10-19, "Plugin records it, marked
 as from Claude Code"; lane ANSWER-SYNC, part of #1644): an answer may say
 `via` -- `console`, or `claude-code` when the person answered in a Claude Code
-session and the sc plugin's `swarm_task_answer` recorded it -- and that
+session and the sc plugin's `swarm_task_answer` recorded it, or `voice-it`
+when they answered by talking in Voice it (BGD, 6 November 2026) -- and that
 session's id (`session`), so the console can say "answered in Claude Code".
 Both are optional, stored with the answer and inside `history`, and served
 beside `choice` and `text`. They are LABELS, NEVER PERMISSIONS: who may answer
@@ -80,6 +81,15 @@ is decided above, from the caller's identity and role, before either is
 read, so no `via` widens or narrows it. A `session` is a UUID or 8-64 of
 `[A-Za-z0-9_-]`, anything else a 422: it is shown to people, so it is held to
 the shape of an id and can carry nothing else.
+
+A DESIGN PREVIEW IS SERVED ON ITS OPTION (BGD's answer on the full-page
+interview lane, 6 November 2026, 'Serve preview'). A plugin step's agent may
+draw each option as HTML (`preview`); the worker keeps it in the wait's bridge
+block, and the read serves it on that option, redacted as the question's text
+is. One over `PREVIEW_MAX_CHARS`, or past its question's
+`PREVIEW_QUESTION_MAX_CHARS`, is dropped whole with a `preview_dropped`
+reason, never cut mid-tag. The console draws it only inside an iframe whose
+`sandbox` attribute is empty. A preview is not part of `question_digest`.
 
 The notification (`notifications.agent_questions`) stops listing a task once
 every question it asked has an answer (`unanswered`).
@@ -242,6 +252,16 @@ QUESTION_WAIT_MAX_SECONDS = 72 * 3600
 #: is not installed here, so it is spelled again), and how long one waits.
 BRIDGE_KEY = "bridge"
 BRIDGE_WAIT_MAX_SECONDS = 24 * 3600
+#: The most characters of design HTML served as one option's `preview`, and
+#: as all of one question's previews (BGD, 6 November 2026, 'Serve preview').
+#: The largest preview in the tests is a one-line snippet of under 60
+#: characters, so the caps come from the worker instead: the bridge takes a
+#: preview of at most 8 KiB (`question_bridge.MAX_TEXT`), which one option may
+#: show whole, and four such designs per question (a bridged question has up
+#: to 8 options) keep one GET under 8 x 32 KiB at the bridge's 8 questions.
+#: Past either cap a preview is dropped whole with `preview_dropped`.
+PREVIEW_MAX_CHARS = 8 * 1024
+PREVIEW_QUESTION_MAX_CHARS = 4 * PREVIEW_MAX_CHARS
 #: `detail.reason` of the refusal of a second answer to a bridged question.
 ALREADY_ANSWERED = "already_answered"
 #: The dead-letter's `last_error`, which failure-review skips by rule
@@ -743,9 +763,34 @@ def _redacted_question(entry: dict[str, Any]) -> tuple[dict[str, Any], int]:
     out["context"] = clean(out["context"])
     # Labels too, as the artifact read masks them: an answer's choice is
     # checked against the labels as served, so the two always agree.
-    out["options"] = [{"label": clean(o["label"]), "description": clean(o["description"])}
+    # And a design preview, as the text beside it is (BGD, 6 November 2026).
+    out["options"] = [{**o, "label": clean(o["label"]), "description": clean(o["description"]),
+                       **({"preview": clean(o["preview"])} if "preview" in o else {})}
                       for o in out["options"]]
     return out, masked
+
+
+def _with_previews(wait: dict[str, Any]) -> list[dict[str, Any]]:
+    """The wait's questions, each option with the preview the bridge block
+    records for it (`question_bridge.wait_record` keeps them only there),
+    matched by question index and option label."""
+    bridge = wait.get(BRIDGE_KEY) if isinstance(wait.get(BRIDGE_KEY), dict) else {}
+    asked = bridge.get("questions") if isinstance(bridge.get("questions"), list) else []
+    out: list[dict[str, Any]] = []
+    for i, entry in enumerate(wait["questions"]):
+        source = asked[i] if i < len(asked) and isinstance(asked[i], dict) else {}
+        previews = {
+            o.get("label"): o.get("preview")
+            for o in source.get("options") or [] if isinstance(o, dict) and isinstance(o.get("label"), str)
+        }
+        if not previews:
+            out.append(entry)
+            continue
+        out.append({**entry, "options": [
+            {**o, "preview": previews.get(o.get("label"))} if isinstance(o, dict) and "preview" not in o else o
+            for o in entry.get("options") or []
+        ]})
+    return out
 
 
 def question_count(summary: dict[str, Any] | None) -> int:
@@ -787,12 +832,27 @@ def _text(value: Any) -> str | None:
 
 
 def _question(entry: dict[str, Any]) -> dict[str, Any]:
-    """One question with exactly its four keys, and each option with its two."""
-    options = [
-        {"label": _text(option.get("label")), "description": _text(option.get("description"))}
-        for option in entry.get("options") or []
-        if isinstance(option, dict)
-    ]
+    """One question with exactly its four keys, and each option with its two,
+    plus `preview` (and `preview_dropped`) on an option the agent drew one for."""
+    options = []
+    total = 0
+    for option in entry.get("options") or []:
+        if not isinstance(option, dict):
+            continue
+        served = {"label": _text(option.get("label")), "description": _text(option.get("description"))}
+        preview = _text(option.get("preview"))
+        if preview:
+            # Dropped whole, never cut: a cut design is HTML broken mid-tag.
+            if len(preview) > PREVIEW_MAX_CHARS:
+                served.update(preview=None, preview_dropped=(
+                    f"the preview is larger than the {PREVIEW_MAX_CHARS} characters one option may show"))
+            elif total + len(preview) > PREVIEW_QUESTION_MAX_CHARS:
+                served.update(preview=None, preview_dropped=(
+                    f"the question's previews pass the {PREVIEW_QUESTION_MAX_CHARS} characters one question may show"))
+            else:
+                total += len(preview)
+                served["preview"] = preview
+        options.append(served)
     return {
         "question": _text(entry.get("question")),
         "options": options,
@@ -1071,7 +1131,7 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
     """
     masking = masking_for(task)
     waited = set(wait["blocking"])
-    redacted = [_redacted_question(entry) for entry in wait["questions"]]
+    redacted = [_redacted_question(entry) for entry in _with_previews(wait)]
     masked = sum(count for _, count in redacted)
     answers = answers_to([q for q, _ in redacted], task.metadata) if adopted else {}
     served: list[dict[str, Any]] = []
@@ -1119,7 +1179,8 @@ class AnswerBody(BaseModel):
     #: `github-comment` is the `/answer` reply on the agent's issue
     #: (`ghapprove.poll_answers`), set by swarm-api, never a caller's word for
     #: who may answer.
-    via: Literal["console", "claude-code", "github-comment"] | None = None
+    #: `voice-it` is an answer given by talking in Voice it (BGD, 6 November 2026).
+    via: Literal["console", "claude-code", "github-comment", "voice-it"] | None = None
     session: str | None = None
 
     @field_validator("session")
