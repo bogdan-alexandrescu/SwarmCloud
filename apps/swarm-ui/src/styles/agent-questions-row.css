@@ -1,0 +1,56 @@
+/* =========================================================================
+   THE QUESTIONS ROW: `AgQuestionsRow` in agent-split/tabs.tsx (part of #2688)
+   =========================================================================
+
+   One line at the top of every agent tab but Details: the asks-you mark,
+   the open count, the first open question clipped to the line, and Answer.
+   The question is never wrapped: the row stays one line at 390 px, and the
+   whole question is its title. The card opens under it, as Details draws it. */
+
+.aq { display: flex; flex-direction: column; gap: 8px; margin: 0 0 10px; min-width: 0; }
+
+.aq-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--info);
+  border-radius: var(--r-ctl);
+  background: var(--surface-2);
+}
+
+.aq-row.is-answered { border-left-color: var(--ok); }
+
+.aq-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--s-park);
+  color: var(--surface);
+  font-weight: 700;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+
+.aq-mark.is-ok { background: var(--ok); }
+
+.aq-count { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.aq-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.aq-row.is-answered .aq-text { color: var(--text-dim); }
+
+.aq-row > .c-btn, .aq-row > button { flex: none; }
+
+.aq-card > .dt-card { margin: 0; }

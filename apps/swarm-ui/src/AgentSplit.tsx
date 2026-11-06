@@ -28,7 +28,7 @@ import { useListGroup } from './agent-split/group'
 import { AgHandoff } from './agent-split/handoff'
 import { AgHead } from './agent-split/head'
 import { useOpeningPane } from './agent-split/opening'
-import { AgTabsEdge, paneTabs } from './agent-split/tabs'
+import { AgQuestionsRow, AgTabsEdge, paneTabs, useAgentQuestions } from './agent-split/tabs'
 import './styles/agents.css'
 
 /*
@@ -315,7 +315,19 @@ export function AgentSplit({
     base,
   })
 
-  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen: sessionLive, childCount, runs, ckpt, ckptCount, pane })
+  const asked = useAgentQuestions(task)
+  const tabs = paneTabs({
+    task,
+    base,
+    hasBrowser,
+    sessionOpen: sessionLive,
+    childCount,
+    runs,
+    ckpt,
+    ckptCount,
+    pane,
+    questions: asked.open ?? undefined,
+  })
   const selected: TaskPane = pane
   // THE THEATER ASKED FOR IS HELD UNTIL THE BROWSER TAB IS DRAWN (part of
   // #1346, comment 3): the route drops `?theater=1` after arrival, and the
@@ -437,6 +449,12 @@ export function AgentSplit({
           />
         )}
         {task !== null && <PodStartProblem task={task} />}
+        {/* THE AGENT'S QUESTIONS ON EVERY TAB (part of #2688): one row, and
+            Answer opens the card under it; Details leads with the cards. A
+            tab switch is a new visit, so an answered row is not drawn again. */}
+        {task !== null && !deciding && selected !== 'detail' && (
+          <AgQuestionsRow key={`${taskId}:${selected}`} task={task} asked={asked} />
+        )}
 
         <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (
