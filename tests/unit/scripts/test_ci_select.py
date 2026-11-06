@@ -340,3 +340,11 @@ def test_the_required_check_names_are_unchanged():
     assert jobs["integration"]["name"] == "integration tests (emulator)"
     assert jobs["manifests"]["name"] == "kubernetes manifests"
     assert jobs["shell"]["name"] == "shellcheck"
+
+
+def test_the_landed_sentence_is_the_one_the_train_writes():
+    """train-match reads finish_train's sentence; a reworded train would never match again."""
+    script = (REPO / SCRIPT).read_text()
+    assert 'LANDED_PREFIX="Green, and landed"' in script
+    train = (REPO / "scripts/merge-train.sh").read_text()
+    assert 'finish_train "${number}" "${branch}" "Green, and landed: ' in train
