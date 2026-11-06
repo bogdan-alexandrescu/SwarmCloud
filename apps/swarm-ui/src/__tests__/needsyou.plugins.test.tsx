@@ -8,8 +8,8 @@
 // puts on the step's question rows. Nothing is read per task. The skill that
 // asked is the worker's record of the last Skill call before the question
 // (the owner's pick of 4 November 2026); a park with none recorded reads
-// "not known", never a guess. No interview route exists yet,
-// so a planner or designer card says the interview opens from its run's page.
+// "not known", never a guess. A planner or designer card opens its interview,
+// a full page (`/runs?interview=<task>`, InterviewPage.tsx), and links its run.
 //
 // MUTATIONS, one per block: draw no plugin line or card for a plugin step;
 // invent the skill or a time ("0 min"); draw a card for a step that is no
@@ -159,15 +159,14 @@ describe('the parked plugin steps beside the list', () => {
     expect(api.loadQuestions).not.toHaveBeenCalled()
   })
 
-  it("says a designer step's interview opens from its run's page, linking the run, not a route that does not exist", () => {
+  it("opens a designer step's interview as its full page, and links its run beside it", () => {
     render(<NeedsYou items={rows(stepTask('t_design'), pluginAsk('designer'), [{ index: 0, question: 'Which layout?', recommended: 'Cards' }])} approvals={[]} />)
     const card = within(cards()!).getByRole('article')
     expect(card.textContent).toContain('Designer')
-    expect(card.textContent).toMatch(/Its interview opens from its run[’']s page/)
+    const open = within(card).getByRole('link', { name: /Open the interview/ })
+    expect(open.getAttribute('href')).toBe('/runs?interview=t_design')
     const link = within(card).getByRole('link', { name: /Open its run/ })
     expect(link.getAttribute('href')).toMatch(/\/t_design$/)
-    expect(link.getAttribute('href')).not.toContain('interview')
-    expect(card.textContent).not.toContain('Open the interview')
     expect(screen.getByRole('listitem').textContent).toContain('gstack · Designer')
   })
 

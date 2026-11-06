@@ -54,13 +54,26 @@ as `swarm-install`, so the cluster stages (10, 11) and stage 14's verify reads
 plane, whose module admits no public Google range; `infra-close`, the last
 pass, leaves it out.
 
+**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). Stage 0's
+`infra.voice-it` records `outputs["voice_it"]` as `{"enabled": bool}`. A no
+renders `voice_it` "off" on every infra pass. A yes renders voice.tf's three
+steps in its order: "off" on the registry pass, "account" on infra-1 (bootstrap
+pass 1 made swarm-voice; this root only reads it), "on" from infra-2, once
+infra-1 has made the cluster whose workload pool the Workload Identity binding
+names, with the release's swarm-voice digest in `image_refs` (a release
+without one is a `LookupError`, never a silent "off"). voice.tf's middle step,
+a ChatGPT plan account in the Voice it pool, is added in the console; swarm-voice
+reads no secret. An install state with no answer (older than the question)
+keeps Terraform's default, off.
+
 **Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
-`infra.voice-speech` records `outputs["voice_speech"]` as `{"enabled": bool}`;
+`infra.voice-speech`, asked only after a yes to Voice it, records `outputs["voice_speech"]` as `{"enabled": bool}`;
 for a yes, stage 1's `infra.voice-speech-zone` adds the zone (the first of the
 region's zones offering the L4) and the Deep Learning VM image it pinned by
 name. Every infra pass renders infra's `voice_speech` with `enabled`, `zone`
 and `image` from that, checked against infra's own validations; no would-be
-machine is made while `voice_it` is not "on" (voice_speech.tf). An install
+machine is made while `voice_it` is not "on" (voice_speech.tf), and after a no
+to Voice it `voice_speech` renders off whatever was recorded. An install
 state with no answer (older than the question) keeps Terraform's default, off.
 
 A value a pass needs that the state does not hold yet is a `LookupError` that
@@ -178,7 +191,13 @@ RECORDED_BY = {
     "org_domain": "stage 0 (preflight)",
     "installer_cidr": "stage 0 (preflight)",
     "voice_speech": "stage 1 (infra.voice-speech-zone)",
+    "swarm-voice": "stage 4 (images.copy, from the release's images.json)",
 }
+
+#: The install state's key for stage 0's Voice it choice, `{"enabled": bool}`.
+VOICE_IT = "voice_it"
+#: The release image Voice it's "on" needs (voice.tf `voice_it_has_an_image`).
+VOICE_IMAGE = "swarm-voice"
 
 #: terraform/infra's `voice_speech` validations (variables.tf): one zone, and a
 #: Deep Learning VM image by name, never a /family/ path, which moves under the
@@ -315,15 +334,39 @@ def service_max_instances(found: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def voice_it_chosen(state: Any) -> bool | None:
+    """Stage 0's Voice it answer, or None for an install state recorded before the question."""
+    found = state.outputs.get(VOICE_IT)
+    if found is None:
+        return None
+    if not isinstance(found, Mapping) or not isinstance(found.get("enabled"), bool):
+        raise ValueError(f"the install state's voice_it is {found!r}, not {{\"enabled\": true or false}}; "
+                         "rerun stage 0")
+    return bool(found["enabled"])
+
+
+def voice_it(state: Any, pass_name: str) -> str | None:
+    """infra's `voice_it` for `pass_name`: voice.tf's steps in its order for a
+    yes ("off" on the registry pass, "account" on infra-1, "on" from infra-2),
+    "off" for a no, None for an install state recorded before the question."""
+    chosen = voice_it_chosen(state)
+    if chosen is None:
+        return None
+    if not chosen or not after(pass_name, "infra-1"):
+        return "off"
+    return "on" if after(pass_name, "infra-2") else "account"
+
+
 def voice_speech(state: Any) -> dict[str, Any] | None:
     """infra's `voice_speech` from the own-speech choice, or None for an
-    install state recorded before the question (Terraform's default, off)."""
+    install state recorded before the question (Terraform's default, off).
+    Off after a no to Voice it: the engine is offered only under a yes."""
     found = state.outputs.get("voice_speech")
     if found is None:
         return None
     if not isinstance(found, Mapping):
         raise ValueError(f"the install state's voice_speech is {type(found).__name__}, not a mapping; rerun stage 0")
-    if found.get("enabled") is not True:
+    if found.get("enabled") is not True or voice_it_chosen(state) is False:
         return {"enabled": False}
     zone, image = found.get("zone"), found.get("image")
     if not zone or not image:
@@ -495,6 +538,12 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     if found:
         inputs["pool_limits"] = pool_limits(found)
         inputs["service_max_instances"] = service_max_instances(found)
+    voice = voice_it(state, pass_name)
+    if voice is not None:
+        if voice == "on" and VOICE_IMAGE not in inputs["image_refs"]:
+            raise LookupError(f"Voice it is on but the install state has no {VOICE_IMAGE} image digest; "
+                              f"{RECORDED_BY[VOICE_IMAGE]} records it")
+        inputs["voice_it"] = voice
     speech = voice_speech(state)
     if speech is not None:
         inputs["voice_speech"] = speech

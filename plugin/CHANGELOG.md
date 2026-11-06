@@ -6,6 +6,24 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.84 (2026-11-05)
+
+* A `/sc:swarmcloud` launch reports the workflow it submitted, and its
+  `setup · read spec` row can no longer submit. Seen twice in one session on
+  5 November (plugin 0.5.79): a run ended NOT_SUBMITTED with "the row reading
+  <spec_handle path> did not hand back the spec_ref, spec_digest and outline
+  the bridge returns", yet the workflow existed and ran, and a relaunch made
+  a duplicate. The read row ran `sc:workflow`, which also holds
+  `swarm_workflow`, and it submitted the spec instead of reading its outline.
+  The read row now runs `sc:spec`, a new agent whose only SwarmCloud tool is
+  `swarm_workflow_spec`, and `sc:workflow` no longer holds
+  `swarm_workflow_spec` or a READ SPEC job. And when any row before the submit
+  row hands back a workflow id, the run takes it as the submission: it logs
+  `<id> submitted by the read spec row`, reads the workflow back and follows
+  it (state `SUBMITTED` in the band layout, `submitted_by: "read spec"` on
+  the result), and never submits again. A read-back that fails reports
+  `SUBMITTED_UNVERIFIED` and arms the watch, never NOT_SUBMITTED.
+
 ## 0.5.83 (2026-11-05)
 
 * A finished task's questions for the owner are handed to a session only
