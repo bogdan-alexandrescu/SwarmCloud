@@ -197,6 +197,7 @@ from .post_verdict import (
     unavailable,
 )
 from .control import MERGE_WAIT_METADATA_KEY
+from .control import round_heads as _wait_round_heads
 from .specverify import UpstreamSpecUnverified
 
 #: The signed dispatch block naming what this step merges. swarm-api's
@@ -5004,11 +5005,16 @@ def ci_stuck(own: Mapping[str, Any], *, head: str, pull_request: int | None,
         CI_STUCK_SECONDS (`ROUNDS_SPENT`).
 
     A step with no rounds asked for keeps MERGE_CI_MAX_SECONDS's bound.
+    None, too, for a wait the park about to be made starts afresh
+    (`_wait_restarts`): a person's "I'm ready" re-checks, it is not handed
+    straight back.
     The record is tenant-writable: a forged one can at most hand the step
     to a person early, which changes nothing on the forge.
     """
     metadata = _mapping(own.get("metadata"))
     wait = _mapping(metadata.get(MERGE_WAIT_METADATA_KEY))
+    if _wait_restarts(metadata, wait, head):
+        return None
     rounds = _fix_rounds(own)
     asked = _rounds_asked(own)
     round_heads = {str(r.get("head")) for r in rounds if r.get("head")}
@@ -5042,6 +5048,22 @@ def ci_stuck(own: Mapping[str, Any], *, head: str, pull_request: int | None,
         "main_red_on_same": sorted(set(main_checks) & set(failed)) if main_checks else [],
         "main_red_head": _str_or_none(main.get("head")),
     }
+
+
+def _wait_restarts(metadata: Mapping[str, Any], wait: Mapping[str, Any], head: str) -> bool:
+    """Whether the recorded wait ends here, the rule `control.ci_wait_span`
+    applies at the next park: the record was left at a head no repair round
+    worked from, or a person said "I'm ready" (`human_ready.at`) after it
+    started. `ci_stuck` reads the record before that park, so without this a
+    person's return was handed straight back to them (review, part of #2688)."""
+    started = _stored_instant(wait.get("wait_started_at"))
+    if started is None:
+        return False
+    previous = wait.get("head")
+    if previous and previous != head and previous not in _wait_round_heads(metadata):
+        return True
+    returned = _stored_instant(_mapping(metadata.get("human_ready")).get("at"))
+    return returned is not None and returned > started
 
 
 def _str_or_none(value: Any) -> str | None:

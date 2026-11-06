@@ -126,3 +126,28 @@ describe('ciWaitLead, from the park record', () => {
     expect(waitSpan(40 * 60_000)).toBe('40 m')
   })
 })
+
+// THE BANNER ABOVE THE LINE IS NOT A BROWSER HAND-OFF (review, part of #2688).
+// A stuck CI wait parks HUMAN_REQUIRED, which `handoffOf` drew as a
+// live-browser hand-off: "The agent gave no reason that could be read" and
+// "its browser starts again" above a merge step that has no browser. It leads
+// with the wait's one line and keeps I'm ready, which re-checks CI.
+// MUTATION: drop `ci` from `handoffOf`'s parked case; these fail.
+describe('the hand-off banner of a CI wait handed to a person', () => {
+  it('leads with the one line, keeps I\'m ready, and says nothing of a browser', async () => {
+    const { HandoffBanner, ciWaitStuckLine, needsYou } = await import('../Handoff')
+    const t = stuck()
+    expect(ciWaitStuckLine(t)).toBe(LINE)
+    expect(needsYou(t)).toBe(true)
+    const { container } = render(<HandoffBanner task={t} now={Date.now()} />)
+    const text = container.textContent ?? ''
+    expect(text).toContain(LINE)
+    expect(text).toContain("I'm ready")
+    expect(text).not.toMatch(/browser|gave no reason|expected site/)
+  })
+
+  it('is null for a hand-off that is not a CI wait', async () => {
+    const { ciWaitStuckLine } = await import('../Handoff')
+    expect(ciWaitStuckLine(task({ state: 'PARKED', park_reason: 'HUMAN_REQUIRED' } as Partial<Task>))).toBeNull()
+  })
+})

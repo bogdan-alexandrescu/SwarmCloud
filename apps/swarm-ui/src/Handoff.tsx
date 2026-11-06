@@ -88,6 +88,8 @@ export type Handoff =
       phase: 'parked'
       /** When the scheduler dead-letters it, epoch ms; null when no instant was served. */
       deadline: number | null
+      /** A merge step's CI wait handed to a person (`ciWaitStuckLine`): its one line, else null. */
+      ci: string | null
     }
 
 /** One question a merge's owner-question hold names: whose, and which. */
@@ -140,6 +142,25 @@ export function ownerQuestionsHold(
 }
 
 /**
+ * A MERGE STEP'S CI WAIT HANDED TO A PERSON (part of #2688). The merge step
+ * parks PARKED(HUMAN_REQUIRED) with `park_phase: "ci_wait_stuck"` when its
+ * repair rounds are spent or the same check fails after one
+ * (agent_worker.merge._Run.hand_to_person). It needs you -- I'm ready
+ * re-checks CI -- but it has no browser and asked through no hand-off
+ * request, so the banner leads with the API's one line (`waiting.summary`)
+ * instead of the browser hand-off's. The line, else null.
+ */
+export function ciWaitStuckLine(task: Pick<Task, 'state' | 'park_reason' | 'blocked_by' | 'waiting'>): string | null {
+  if (task.state !== 'PARKED' || task.park_reason !== 'HUMAN_REQUIRED') return null
+  const waiting = isRecord(task.waiting) ? task.waiting : {}
+  const detail = isRecord(waiting.detail) ? waiting.detail : {}
+  const parked =
+    detail.park_phase === 'ci_wait_stuck' ||
+    (task.blocked_by ?? []).some((e) => isRecord(e) && e.reason === 'HUMAN_REQUIRED' && e.park_phase === 'ci_wait_stuck')
+  return parked ? (text(waiting.summary) ?? 'CI wait handed to you') : null
+}
+
+/**
  * Whether, and how, this task is waiting for a person. Null for every task
  * that is not, and for a merge held by the owner's questions, which waits for
  * answers rather than for a person at a browser (`ownerQuestionsHold`). The
@@ -159,7 +180,7 @@ export function handoffOf(task: Task): Handoff | null {
   }
   if (task.state === 'PARKED' && task.park_reason === 'HUMAN_REQUIRED' && ownerQuestionsHold(task) === null) {
     const parkedAt = at(task.next_eligible_at) ?? at(task.updated_at)
-    return { phase: 'parked', deadline: parkedAt === null ? null : parkedAt + HUMAN_PARK_MAX_MS }
+    return { phase: 'parked', deadline: parkedAt === null ? null : parkedAt + HUMAN_PARK_MAX_MS, ci: ciWaitStuckLine(task) }
   }
   return null
 }
@@ -345,7 +366,8 @@ export function HandoffBanner({
   children?: ReactNode
 }) {
   const h = handoffOf(task)
-  const request = useHandoffRequest(task, h?.phase === 'parked')
+  const ci = h?.phase === 'parked' ? h.ci : null
+  const request = useHandoffRequest(task, h?.phase === 'parked' && ci === null)
   const [ready, setReady] = useState<Ready>({ kind: 'idle' })
   const controller = h?.phase === 'hold' ? h.controller : null
   const read = useYou(task.id, you === undefined && controller !== null)
@@ -374,7 +396,7 @@ export function HandoffBanner({
         ? 'Reading why it asked…'
         : 'The agent gave no reason that could be read.'
   // A park whose request has been read (or failed to be) and named no reason.
-  const unread = h.phase === 'parked' && reason === null && request !== null && ready.kind !== 'done'
+  const unread = h.phase === 'parked' && ci === null && reason === null && request !== null && ready.kind !== 'done'
 
   // WHAT THE TIME LEFT IS TIME UNTIL, said with the figure: a hold ends in a
   // park and the capacity goes back; a park ends in a dead letter.
@@ -401,7 +423,7 @@ export function HandoffBanner({
     <Banner
       tone="warn"
       role="status"
-      title={`The agent needs your help: ${reasonLine}`}
+      title={ci !== null ? ci : `The agent needs your help: ${reasonLine}`}
       actions={
         h.phase === 'parked' && ready.kind !== 'done' ? (
           <>
@@ -416,16 +438,18 @@ export function HandoffBanner({
       }
     >
       <span className="ho-facts">
-        {h.phase === 'parked' && ready.kind !== 'done' && <span className="ho-parked">Parked until you say you are ready · </span>}
-        <span className="ho-expect">
-          {expect !== null ? (
-            <>
-              expects <b className="id">{expect}</b>
-            </>
-          ) : (
-            'no expected site given'
-          )}
-        </span>
+        {h.phase === 'parked' && ready.kind !== 'done' && <span className="ho-parked">{ci === null ? 'Parked until you say you are ready · ' : 'Parked until you say you are ready'}</span>}
+        {ci === null && (
+          <span className="ho-expect">
+            {expect !== null ? (
+              <>
+                expects <b className="id">{expect}</b>
+              </>
+            ) : (
+              'no expected site given'
+            )}
+          </span>
+        )}
         {control !== null && <span className="ho-ctl"> · {control}</span>}
         {clock !== null && <span className="ho-left"> · {clock}</span>}
       </span>
@@ -443,7 +467,8 @@ export function HandoffBanner({
           say it when you can stay with its browser.
         </span>
       )}
-      {ready.kind === 'done' && (
+      {ready.kind === 'done' && ci !== null && <span className="ho-starting">Re-checking CI.</span>}
+      {ready.kind === 'done' && ci === null && (
         <span className="ho-starting">
           Starting your browser. It is admitted like any agent and starts cold, so allow a minute or two; the agent
           asks again when it is up.

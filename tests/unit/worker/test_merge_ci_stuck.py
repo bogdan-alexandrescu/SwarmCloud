@@ -293,3 +293,36 @@ def test_a_stuck_wait_parks_human_required_under_its_own_phase(db, worker_factor
     assert "owner_questions" not in blocked
     parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
     assert parked and parked[-1]["detail"]["reason"] == ParkReason.HUMAN_REQUIRED.value
+
+
+# ---------------------------------------------------------------------------
+# A person's return re-checks (review, part of #2688)
+# ---------------------------------------------------------------------------
+
+
+def test_a_step_a_person_returned_re_checks_rather_than_parking_again(tmp_path):
+    """Handed to a person at 3 h with its rounds spent; they fixed it or
+    re-ran CI and said "I'm ready" a minute ago, and CI is pending. The
+    record still says 3 h (the next park restarts it), so the step re-checks
+    rather than handing itself straight back."""
+    world = _world(tmp_path, asked=1, waited=timedelta(hours=3), rechecks=11)
+    world.docs[TASK]["metadata"]["human_ready"] = {
+        "by": "owner@example.com", "at": (utcnow() - timedelta(minutes=1)).isoformat()}
+    _pending(world)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: drop `_wait_restarts` from `ci_stuck` -> PARKED ci_wait_stuck.
+    assert outcome.owner_wait is None, outcome.message
+    assert outcome.ci_wait is not None and outcome.ci_wait["head"] == FIXED
+
+
+def test_a_record_left_at_a_head_no_round_worked_from_is_a_new_wait(tmp_path):
+    """The branch moved to FIXED by someone else's push: the record at OTHER
+    ends there, so its age and failed heads are not this wait's."""
+    world = _world(tmp_path, asked=2, waited=timedelta(hours=8), rechecks=29,
+                   failed_heads={CHECK: [PINNED]})
+    world.docs[TASK]["metadata"][control_mod.MERGE_WAIT_METADATA_KEY]["head"] = OTHER
+
+    # MUTATION: drop `_wait_restarts` -> SAME_CHECK_AFTER_ROUND from OTHER's record.
+    assert merge.ci_stuck(world.docs[TASK], head=FIXED, pull_request=41, failed=[CHECK], now=utcnow()) is None
