@@ -64,19 +64,20 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # shellcheck source=lib/image-scan.sh
 source "${REPO_ROOT}/scripts/lib/image-scan.sh"
 
-# The same eighteen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
+# The same nineteen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
 # agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX, swarm-egress since
 # EGRESS-BUILD: its promoted digest is the image_refs entry egress.tf renders swarm_egress_manifest from, swarm-typesafe-fwd since
 # SEC-INJECT-B, for typesafe_fwd.tf's swarm_typesafe_fwd_manifest, swarm-graph since GS-INFRA, for graph_service.tf's
 # swarm_graph_manifest, swarm-github-hooks since GS-HOOKS, for github_hooks.tf's Cloud Run service, agent-runtime-lightpanda since
 # LIGHTPANDA-BUILD-SCRIPTS, the runner image a claude-code-lightpanda profile will name, swarm-voice since VOICE-STATEFULSET, for
-# voice.tf's swarm_voice_manifest). This list had six -- no swarm-ui, no
+# voice.tf's swarm_voice_manifest, swarm-speech since own speech's L3, for the SWARM_SPEECH_IMAGE the speech machine pulls at its next
+# start, docs/design/voice-it-own-speech.md §5.3). This list had six -- no swarm-ui, no
 # swarm-verify -- and it is the fallback whenever build/images-<env>.json is
 # absent. That used to cost only an unpromoted image; now terraform deploys
 # every image by digest from the manifest this writes and refuses to plan one
 # with no digest, so a promotion that silently skips two images is a deploy
 # that fails naming them. Better to promote them.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech workspace-apply)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"
@@ -429,9 +430,109 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2b. Set aside every image this environment does not deploy.
+#     SWITCHED_IMAGES maps an image to the top-level object in
+#     terraform/environments/<env>/<env>.tfvars whose `enabled` switches on
+#     the one thing that runs it: swarm-speech is pulled only by the speech
+#     machine, which voice_speech.tf makes only while voice_speech.enabled
+#     (locals.tf renders SWARM_SPEECH_IMAGE "" otherwise). Release of
+#     2026-11-06 11:28 UTC: trivy refused swarm-speech, with voice_speech off
+#     in dev, and that refusal held every other image back.
+#
+#     An image switched off is still built, resolved and scanned, and what the
+#     scan found is reported below; it is neither promoted nor allowed to
+#     block. Only a literal `enabled = false` in that environment's own tfvars
+#     switches it off. An absent file or block, an unreadable value, a
+#     --channel that is not ENVIRONMENT: the image counts as deployed and its
+#     refusal blocks exactly as any other. The scan of a deployed image is
+#     never weakened.
+# ---------------------------------------------------------------------------
+SWITCHED_IMAGES=("swarm-speech=voice_speech")
+
+# The tfvars switch for image $1, or nothing when no switch deploys it.
+image_switch() {
+  local entry
+  for entry in "${SWITCHED_IMAGES[@]}"; do
+    if [[ "${entry%%=*}" == "$1" ]]; then
+      printf '%s' "${entry#*=}"
+      return 0
+    fi
+  done
+}
+
+# Does this environment's tfvars say, literally, `<switch> = { ... enabled =
+# false ... }`? Comments are dropped first, so a commented-out line switches
+# nothing; the block ends where its braces balance.
+switch_is_off() {
+  local switch="$1" tfvars
+  [[ "${CHANNEL}" == "${ENVIRONMENT}" ]] || return 1
+  tfvars="${REPO_ROOT}/terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars"
+  [[ -f "${tfvars}" ]] || return 1
+  awk -v key="${switch}" '
+    !open && !closed && $0 ~ ("^" key "[[:space:]]*=[[:space:]]*[{]") { open = 1; depth = 0 }
+    open {
+      line = $0
+      sub(/(#|\/\/).*/, "", line)
+      if (line ~ /(^|[{,[:space:]])enabled[[:space:]]*=[[:space:]]*false([[:space:],}]|$)/) off = 1
+      if (line ~ /(^|[{,[:space:]])enabled[[:space:]]*=/ && line !~ /enabled[[:space:]]*=[[:space:]]*false([[:space:],}]|$)/) on = 1
+      depth += gsub(/[{]/, "{", line) - gsub(/[}]/, "}", line)
+      if (depth <= 0) { open = 0; closed = 1 }
+    }
+    END { exit !(closed && off && !on) }
+  ' "${tfvars}"
+}
+
+SKIPPED=(); SKIPPED_SWITCH=()
+for ((i = 0; i < ${#TARGETS[@]}; i++)); do
+  switch="$(image_switch "${TARGETS[$i]}")"
+  if [[ -n "${switch}" ]] && switch_is_off "${switch}"; then
+    SKIPPED+=("${TARGETS[$i]}"); SKIPPED_SWITCH+=("${switch}")
+  fi
+done
+
+is_skipped() {
+  local name
+  for name in ${SKIPPED[@]+"${SKIPPED[@]}"}; do
+    [[ "${name}" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+if [[ "${#SKIPPED[@]}" -gt 0 ]]; then
+  summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+  step "Not deployed in ${ENVIRONMENT}: scanned, reported, not promoted"
+  printf '\n### Not deployed in %s: scanned, not promoted, not blocking\n\n' "${ENVIRONMENT}" >>"${summary}"
+  for ((i = 0; i < ${#SKIPPED[@]}; i++)); do
+    why="scan clean"
+    for ((j = 0; j < ${#REFUSED[@]}; j++)); do
+      [[ "${REFUSED[$j]}" == "${SKIPPED[$i]}" ]] && why="REFUSED: ${REFUSED_WHY[$j]}"
+    done
+    warn "${SKIPPED[$i]}: ${SKIPPED_SWITCH[$i]} is off in ${ENVIRONMENT}.tfvars, so nothing runs it; ${why}; not promoted, does not block"
+    printf -- '- %s (%s off): %s\n' "${SKIPPED[$i]}" "${SKIPPED_SWITCH[$i]}" "${why}" >>"${summary}"
+  done
+
+  # Drop them from what is gated and what is promoted.
+  KEEP_REFUSED=(); KEEP_REFUSED_WHY=()
+  for ((i = 0; i < ${#REFUSED[@]}; i++)); do
+    is_skipped "${REFUSED[$i]}" && continue
+    KEEP_REFUSED+=("${REFUSED[$i]}"); KEEP_REFUSED_WHY+=("${REFUSED_WHY[$i]}")
+  done
+  REFUSED=(${KEEP_REFUSED[@]+"${KEEP_REFUSED[@]}"})
+  REFUSED_WHY=(${KEEP_REFUSED_WHY[@]+"${KEEP_REFUSED_WHY[@]}"})
+  K_NAME=(); K_IMAGE=(); K_DIGEST=(); K_PREV=()
+  for ((i = 0; i < ${#R_NAME[@]}; i++)); do
+    is_skipped "${R_NAME[$i]}" && continue
+    K_NAME+=("${R_NAME[$i]}"); K_IMAGE+=("${R_IMAGE[$i]}"); K_DIGEST+=("${R_DIGEST[$i]}"); K_PREV+=("${R_PREV[$i]}")
+  done
+  R_NAME=(${K_NAME[@]+"${K_NAME[@]}"}); R_IMAGE=(${K_IMAGE[@]+"${K_IMAGE[@]}"})
+  R_DIGEST=(${K_DIGEST[@]+"${K_DIGEST[@]}"}); R_PREV=(${K_PREV[@]+"${K_PREV[@]}"})
+fi
+
+# ---------------------------------------------------------------------------
 # The gate. Release run 35969538707 scanned and tagged one image at a time, so
 # seven images were on :dev at the new build when trivy refused swarm-ui, and
-# :dev described a release nobody built. Now one refusal promotes nothing.
+# :dev described a release nobody built. Now one refusal of an image this
+# environment deploys promotes nothing.
 # ---------------------------------------------------------------------------
 if [[ "${#REFUSED[@]}" -gt 0 ]]; then
   hr
@@ -606,4 +707,7 @@ mv -f "${DEPLOY_MANIFEST}.tmp" "${DEPLOY_MANIFEST}"
 
 hr
 ok "promoted ${#R_NAME[@]} image(s) to :${CHANNEL}"
+if [[ "${#SKIPPED[@]}" -gt 0 ]]; then
+  info "not promoted, not deployed in ${ENVIRONMENT}: ${SKIPPED[*]} (see \"Not deployed\" above)"
+fi
 info "deploy manifest: ${DEPLOY_MANIFEST}"

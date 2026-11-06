@@ -137,7 +137,7 @@ from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer, GateDown, OpRefused
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
-from .. import browser_tools
+from .. import browser_tools, buildinfo
 from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
 from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
@@ -2597,6 +2597,9 @@ async def run(cfg: GateConfig, deps: Deps | None = None, *, stop: asyncio.Event 
             await gate.stop()
             return 1
         log.info("live gate: ready")
+        # Which build this gate is (part of #2688): its refusals are read against it.
+        build = buildinfo.describe()
+        log.info("live gate: build commit=%s image=%s code=%s", build["commit"], build["image"], build["code"])
         await stop.wait()
         log.info("live gate: stopping on signal")
         await gate.stop()

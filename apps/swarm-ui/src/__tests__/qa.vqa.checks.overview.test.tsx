@@ -137,22 +137,23 @@ describe('QA-013: the Needs a look head counts the cards it draws', () => {
 /*
  * QA-061's link took a line of its own on a phone so "quota, all tenants ·
  * admin →" stopped squeezing the title. Since VQ-002 (2026-10-26) a phone
- * draws the card as one line -- mark, title, arrow -- so the words step
- * aside instead, visually only: the card's accessible name keeps them.
+ * draws the card as one line, and since 2026-11-05 (BGD's standing rule: a
+ * button, never an arrow link) there is no arrow left to keep there: the
+ * card's button steps aside whole, and the card itself is the tap target,
+ * its accessible name keeping the words.
  */
 describe('QA-061, VQ-002: a check card’s link words never squeeze its title on a phone', () => {
-  it('steps the link words aside at 390px, keeps the arrow, and draws the words at 1440', async () => {
+  it('steps the card’s button aside at 390px and draws it, words and all, at 1440', async () => {
     await mount({ providers: ok(TWO_THROTTLED) })
     const card = screen.getByRole('link', { name: /^anthropic is throttled/ })
     const go = card.querySelector('.ov-att-go')!
-    expect(text(go)).toBe('quota, all workspaces · admin →')
-    const words = go.querySelector('.ov-att-go-w')!
-    // MUTATION: drop `.ov-att-go-w` from the 560px block's visually-hidden rule.
-    expect(painted(words, 'clip', PHONE)).toBe('rect(0 0 0 0)')
-    expect(painted(words, 'position', PHONE)).toBe('absolute')
+    expect(text(go)).toBe('quota, all workspaces · admin')
+    expect(go.classList.contains('c-btn')).toBe(true)
+    // MUTATION: drop `.ov-att:not(.is-split) .ov-att-go` from the 560px block.
+    expect(painted(go, 'display', PHONE)).toBe('none')
     // MUTATION: move the phone rule out of the 560px block, onto every width.
-    expect(painted(words, 'clip', WIDE)).toBeNull()
-    expect(painted(go, 'display', PHONE)).not.toBe('none')
+    expect(painted(go, 'display', WIDE)).not.toBe('none')
+    expect(painted(go.querySelector('.ov-att-go-w')!, 'clip', WIDE)).toBeNull()
   })
 })
 
@@ -163,7 +164,7 @@ describe('QA-109: the failures card’s link names the page it opens', () => {
     })
     const card = screen.getByRole('link', { name: /^1 failed agent\b/ })
     // MUTATION: put back `linkLabel: 'failed agents'`, a name the page it opens does not carry, or 'Agents · FAILED'.
-    expect(text(card.querySelector('.ov-att-go'))).toBe('Agents · failed →')
+    expect(text(card.querySelector('.ov-att-go'))).toBe('Agents · failed')
     expect(card.getAttribute('href')).toBe('/agents/recent?state=failed')
   })
 })
@@ -184,10 +185,10 @@ describe('VOCAB-AGENTS (QA-109; owner decision 2026-10-20): the cards count agen
     })
     // MUTATION: put back `failed task${...}` in checks.ts's failedProblem headline.
     const failed = screen.getByRole('link', { name: /^2 failed agents among the 4 most recent/ })
-    expect(text(failed.querySelector('.ov-att-go'))).toBe('Agents · failed →')
+    expect(text(failed.querySelector('.ov-att-go'))).toBe('Agents · failed')
     // MUTATION: put back `'task' : 'tasks'` in checks.ts's unitFor.
     const parked = screen.getByRole('link', { name: /^2 parked agents will not resume without a person/ })
-    expect(text(parked.querySelector('.ov-att-go'))).toBe('waiting agents →')
+    expect(text(parked.querySelector('.ov-att-go'))).toBe('waiting agents')
     const titles = [...el.querySelectorAll('#ov-needs .ov-att-t b')].map(text)
     expect(titles.length, 'no check card was drawn, so this measured nothing').toBeGreaterThanOrEqual(2)
     for (const t of titles) expect(t).not.toMatch(/\btasks?\b/)

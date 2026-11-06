@@ -1,18 +1,17 @@
 /**
- * THE LAST FOUR CUTS OF VISUAL QA PASS 1 ON WORK › WORKFLOWS (#2391 comment
- * 58, lane workflows-cuts, 2026-10-27). Each was text the screen cut where a
- * reader needed it, the whole of it only in a title:
+ * THE LAST CUTS OF VISUAL QA PASS 1 ON WORK › WORKFLOWS (#2391 comment 58,
+ * lane workflows-cuts, 2026-10-27). Each was text the screen cut where a
+ * reader needed it, the whole of it only in a title. (A fourth, WHY, was the
+ * old list's second line, which the redesigned list does not draw.)
  *
  *  ID     the list cut each row's id at a different width at 1440
  *         (`wf_aud…`, `wf_b…`, 0px): a shrink factor of 100 with no floor.
- *  WHY    with the runners drawn under the name, the current step kept
- *         ~135px beside them: 'failed at checkpoints: e…'.
  *  NOTE   the graph card of a step parked on DEPENDENCY_INCOMPLETE cut its
  *         fixed sentence to 'Waiting on an earlier…' on its one note line.
  *  SHAPE  the same-step row's 'shape: …' was cut beside the ◀ position ▶ nav
  *         at 390 (scrollWidth 317 > clientWidth 300).
  */
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 
@@ -40,7 +39,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen, cardNote } = await import('../Workflows')
+const { WorkflowCard, WorkflowsScreen, cardNote } = await import('../Workflows')
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -151,9 +150,20 @@ function viewport(width: number) {
   })
 }
 
-function Routed({ initial }: { initial: string }) {
-  const [view, setView] = useState(initial)
-  return <WorkflowsScreen view={view} onView={setView} />
+/** `WorkflowCard` directly: the note is drawn by the canvas node, off the
+ *  redesigned page (brief, "What moved where" -- "render it directly"). */
+function CardHarness({ workflow, taskById }: { workflow: Workflow; taskById: Map<string, Task> }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  return (
+    <WorkflowCard
+      workflow={workflow}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      reload={() => {}}
+    />
+  )
 }
 
 const hosts: HTMLElement[] = []
@@ -181,88 +191,25 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-/** A `<n>ch` length as a number of characters, or NaN for anything else. */
-const chOf = (v: string | null) => {
-  const m = /^([\d.]+)ch$/.exec(v ?? '')
-  return m === null ? Number.NaN : Number(m[1])
-}
-
 describe('ID: the list draws every row’s id under its name (visual QA pass 1 overview-agents-61, #2596)', () => {
-  /** A list row's name cell: a name of `name`'s length on its line, then the id under it. */
-  function nameWith(name: string, id: string): HTMLElement {
-    const host = document.createElement('div')
-    host.className = 'wfl'
-    host.innerHTML = `<table><tbody><tr><td class="wfl-name"><span class="wfl-line"><a>${name}</a></span><span class="id">${id}</span></td></tr></tbody></table>`
-    document.body.appendChild(host)
-    hosts.push(host)
-    return host.querySelector<HTMLElement>('.wfl-name > .id')!
-  }
-
-  // MUTATION: put the id back on the name's line with `flex: 0 100 auto;
-  // max-width: 10ch`: every 45-character title is cut again at 1440, and this
-  // rule no longer matches the id at all.
-  it('draws the id as its own line, cut with an ellipsis and never wrapped, under names of every length', () => {
-    const ids = [
-      nameWith('Audit the operator surface for every tenant', 'wf_audit7c52762aa41b9e0d3f'),
-      nameWith('Build', 'wf_b81f02c9e4d7a3b6150c'),
-    ]
-    for (const id of ids) {
-      expect(painted(id, 'display', WIDE)).toBe('block')
-      expect(painted(id, 'white-space', WIDE)).toBe('nowrap')
-      expect(painted(id, 'text-overflow', WIDE)).toBe('ellipsis')
-      // No 10ch cap: the id is cut by its cell, not at `wf_` and six characters.
-      expect(chOf(painted(id, 'max-width', WIDE))).toBeNaN()
-    }
-  })
-
-  // MUTATION: draw the id inside `.wfl-line` again: `mixGoesUnder` counts its
-  // width and a 420px line sends the runners under a name it no longer shares.
-  it('leaves the id out of the name line’s sum, so the runners stay beside a name that has the line', async () => {
+  // THE ROW IS ONE LINE NOW (the redesign, frame graph-workflows-rest): no id
+  // under the name and no `mixGoesUnder` measuring; the id is the name link's
+  // title and the inspector summary's own line, uncut.
+  // MUTATION: draw `<Id>` in the row's Workflow cell again, or drop it from
+  // `WorkflowSummary`.
+  it('leaves the id off the row’s one line and draws it whole in the summary the row opens', async () => {
     viewport(1440)
-    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
-      return this.classList.contains('wfl-line') ? 420 : 0
-    })
     render(<WorkflowsScreen />)
     const td = await waitFor(() => {
-      const t = document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${chain.workflow_id}"] td[data-col="workflow"]`)
+      const t = document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${chain.workflow_id}"] td[data-col="workflow"]`)
       expect(t).toBeTruthy()
       return t!
     })
-    expect(td.querySelector(':scope > .wfl-line > .id')).toBeNull()
-    expect(td.querySelector(':scope > .id')?.getAttribute('title')).toBe(chain.workflow_id)
-    // 420 less the mix's gap (8) and the mix (176) leaves the name 236px: over 200.
-    await waitFor(() => expect(td.querySelector(':scope > .wfl-line > .wfl-mix'), 'the runners went under a 236px name').not.toBeNull())
-  })
-})
-
-describe('WHY: with the runners under the name, the current step has a line of its own', () => {
-  // MUTATION: put back `.wfl-sub { flex-wrap: nowrap }` and the step's
-  // `flex: 1 1 auto`: beside the mix's 11rem it keeps ~135px at 1440.
-  it('wraps the second line so the step takes the whole width under the runners, cut with its title', () => {
-    const why = build('div.wfl span.wfl-name span.wfl-sub span.wfl-why', hosts)
-    const sub = why.parentElement!
-    const mix = document.createElement('span')
-    mix.className = 'wfl-mix'
-    sub.insertBefore(mix, why)
-    expect(painted(sub, 'display', WIDE)).toBe('flex')
-    expect(painted(sub, 'flex-wrap', WIDE), 'the step shares a line with the runners').toBe('wrap')
-    const [, , basis] = (painted(why, 'flex', WIDE) ?? '').split(/\s+/)
-    expect(basis, 'the step does not take a line of its own').toBe('100%')
-    // The runners keep their one whole chip on the line above it.
-    expect((painted(mix, 'flex', WIDE) ?? '').split(/\s+/).slice(0, 2)).toEqual(['0', '0'])
-    // Still one line, cut, the whole text in the title.
-    expect(painted(why, 'white-space', WIDE)).toBe('nowrap')
-    expect(painted(why, 'text-overflow', WIDE)).toBe('ellipsis')
-  })
-
-  // The control: the phone card reads the step whole, as before.
-  it('leaves the phone card’s step uncut at 390', () => {
-    const under = build('div.wfl span.wfl-name span.wfl-sub span.wfl-why', hosts)
-    const alone = build('div.wfl span.wfl-name span.wfl-why', hosts)
-    for (const why of [under, alone]) {
-      expect(painted(why, 'white-space', PHONE) ?? 'normal').toBe('normal')
-      expect(painted(why, 'text-overflow', PHONE) ?? 'clip').toBe('clip')
-    }
+    expect(td.querySelector('.id')).toBeNull()
+    fireEvent.click(td.closest('tr')!.querySelector<HTMLElement>('[data-col="state"]')!)
+    const id = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum .id')
+    expect(id?.getAttribute('title')).toBe(chain.workflow_id)
+    expect(id?.textContent).toBe(chain.workflow_id)
   })
 })
 
@@ -277,7 +224,7 @@ describe('NOTE: a step waiting on its parents says so in a note that fits the ca
   // NODE_W box and was cut at the names tier Auto zoom picked (review of U02).
   it('draws the short form on the card, the whole sentence in its title', async () => {
     viewport(1440)
-    render(<Routed initial={`wf=${chain.workflow_id}`} />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const note = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('button.node[data-step="report"] .node-note')
       expect(n).toBeTruthy()

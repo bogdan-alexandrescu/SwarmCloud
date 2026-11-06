@@ -129,10 +129,11 @@ def _push_context(superseded: str) -> dict[str, str]:
     }
 
 
-@pytest.mark.parametrize("job_id", ["approval", "plugin-tag"])
-def test_a_superseded_release_approves_promotes_and_tags_nothing(job_id):
+@pytest.mark.parametrize("job_id", ["approval"])
+def test_a_superseded_release_approves_and_promotes_nothing(job_id):
     """`approval` gates promote, the applies and the deploy (test_release_prod_gate.py).
-    MUTATION: drop the superseded clause from either condition."""
+    The plugin tag is application.yml's now; test_plugin_tag.py holds that a
+    superseded commit tags nothing. MUTATION: drop the superseded clause."""
     condition = _load_workflow("release.yml")["jobs"][job_id]["if"]
     assert _evaluate(condition, **_push_context("false")) is True, f"{job_id} no longer runs for the newest commit"
     assert _evaluate(condition, **_push_context("true")) is False, f"{job_id} runs for a release a newer commit superseded"
@@ -213,6 +214,9 @@ def _run_step(tmp_path: Path, step_id: str, responses: dict, *, stage: str = "")
 
 def _cancelled_run(build_conclusion: str | None) -> dict:
     jobs = [{"name": "unit tests (1/4)", "conclusion": "cancelled"}]
+    # The jobs that gate the release (CI_RELEASE_TEST_JOBS, common.sh) passed:
+    # a build that succeeded beside them is then no supersession.
+    jobs += [{"name": n, "conclusion": "success"} for n in ("format / unit tests", "shellcheck", "kubernetes manifests")]
     if build_conclusion is not None:
         jobs.append({"name": "build images", "conclusion": build_conclusion})
     return {

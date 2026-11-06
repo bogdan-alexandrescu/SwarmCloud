@@ -20,12 +20,13 @@ from google.api_core import exceptions as gexc
 
 from swarm_api.errors import UpstreamUnavailable
 from swarm_api.setup_github import SecretManagerSetupSecrets
-from swarm_api.setup_links import COLLECTION, LINK_TTL, digest
+from swarm_api.setup_links import COLLECTION, LINK_TTL, VOICE_KEY_TTL, digest
 
 from .conftest import auth_header
 from .test_setup_routes import (  # noqa: F401 - fixtures
     ALICE,
     CAROL,
+    ROOT,
     ENV,
     TEAM_GROUP,
     create_team,
@@ -195,6 +196,63 @@ def test_form_link_survives_a_missing_value_or_a_failed_write(setup_client, db,
     assert db.docs[ref]["used_at"] is not None
 
 
+def _served_expiry(response) -> datetime:
+    """The `expires_at` a refusal's detail carries, in universal time."""
+    served = datetime.fromisoformat(response.json()["detail"]["expires_at"])
+    assert served.utcoffset() == timedelta(0), served
+    return served
+
+
+def test_a_value_links_422_tells_its_owner_when_it_expires(setup_client, db,
+                                                           fake_secrets) -> None:
+    """The owner's pick (3 November 2026): the 422 that keeps a value link
+    unused carries the link's `expires_at`, so the teammate's page draws the
+    hours left on it."""
+    token = _token(_mint(setup_client, "addon-secret", "tailscale"))
+    record = db.docs[f"{COLLECTION}/{digest(token)}"]
+    empty = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert empty.status_code == 422, empty.text
+    assert _served_expiry(empty) == record["expires_at"]
+    assert record["used_at"] is None
+
+
+def test_a_pool_links_409_tells_its_owner_when_it_expires(setup_client, db) -> None:
+    """The 409 for a workspace not ready yet keeps its workspace, state and
+    retry, and adds the link's `expires_at`."""
+    team = _team(setup_client, db)
+    assert db.docs[f"workspaces/{team}"]["state"] != "ready"
+    token = _token(_mint(setup_client, "pool-account", "pool-1"))
+    record = db.docs[f"{COLLECTION}/{digest(token)}"]
+    early = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert early.status_code == 409, early.text
+    detail = early.json()["detail"]
+    assert detail["workspace"] == team and detail["retry"] is True
+    assert "workspace_state" in detail
+    assert _served_expiry(early) == record["expires_at"]
+    assert record["used_at"] is None
+
+
+def test_no_expiry_reaches_a_probe_or_a_dead_link(setup_client, db, fake_secrets) -> None:
+    """The 404 for a used, an expired or an unknown link stays one answer
+    with no expiry, and someone else holding the token learns none either."""
+    token = _token(_mint(setup_client, "addon-secret", "tailscale"))
+    other = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("carol"))
+    assert other.status_code == 403, other.text
+    assert "expires_at" not in json.dumps(other.json())
+    used = setup_client.post(REDEEM, json={"token": token, "value": secrets.token_hex(16)},
+                             headers=auth_header("alice"))
+    assert used.status_code == 200, used.text
+    stale = _token(_mint(setup_client, "addon-secret", "typesafe"))
+    ref = f"{COLLECTION}/{digest(stale)}"
+    db.docs[ref]["expires_at"] = datetime.now(db.docs[ref]["created_at"].tzinfo) \
+        - timedelta(seconds=1)
+    answers = [setup_client.post(REDEEM, json={"token": t}, headers=auth_header("alice"))
+               for t in (token, stale, secrets.token_hex(24))]
+    assert [a.status_code for a in answers] == [404, 404, 404]
+    assert len({json.dumps(a.json(), sort_keys=True) for a in answers}) == 1
+    assert "expires_at" not in json.dumps(answers[0].json())
+
+
 def test_pool_link_refused_before_first_team(setup_client, db) -> None:
     response = _mint(setup_client, "pool-account", "pool-1")
     assert response.status_code == 409, response.text
@@ -232,3 +290,112 @@ def test_pool_link_sign_in_lands_in_first_team(setup_client, db, pool) -> None:
                                  headers=selected)
     assert finished.status_code == 201, finished.text
     assert [a["owner_tenant"] for a in pool.finished] == [team]
+
+
+# -- Voice it's OpenAI API key (the owner, 4 November 2026) --------------------
+
+
+def _voice_key() -> str:
+    return "sk-proj-" + secrets.token_hex(24)
+
+
+def _voice_link(client) -> str:
+    return _token(_mint(client, "voice-api-key", "voice-key", owner=ROOT))
+
+
+def test_voice_key_link_is_the_minting_admins_alone_for_ten_minutes(setup_client, db) -> None:
+    minted = _mint(setup_client, "voice-api-key", "voice-key", owner=ROOT)
+    token = _token(minted)
+    record = db.docs[f"{COLLECTION}/{digest(token)}"]
+    assert record["owner"] == ROOT and record["kind"] == "voice-api-key"
+    assert record["expires_at"] - record["created_at"] == timedelta(minutes=10) == VOICE_KEY_TTL
+    assert minted.json()["tenant"] == record["tenant_id"] and record["tenant_id"]
+    # Minted for someone else: refused, and nothing is written.
+    before = dict(db.docs)
+    for_alice = _mint(setup_client, "voice-api-key", "voice-key", owner=ALICE)
+    assert for_alice.status_code == 403, for_alice.text
+    assert db.docs == before
+    # Minted by a non-admin, even for themselves: refused by the admin gate.
+    by_alice = setup_client.post(LINKS, json={"kind": "voice-api-key", "label": "voice-key",
+                                              "owner": ALICE}, headers=auth_header("alice"))
+    assert by_alice.status_code == 403, by_alice.text
+
+
+@pytest.mark.parametrize("user", ["alice", "carol"])
+def test_voice_key_link_refuses_anyone_but_the_minting_admin(setup_client, db, pool,
+                                                            user) -> None:
+    token = _voice_link(setup_client)
+    other = setup_client.post(REDEEM, json={"token": token, "value": _voice_key()},
+                              headers=auth_header(user))
+    assert other.status_code == 403, other.text
+    assert pool.registered == []
+    assert db.docs[f"{COLLECTION}/{digest(token)}"]["used_at"] is None
+
+
+def test_voice_key_link_refuses_a_second_use_and_an_expired_link(setup_client, db,
+                                                                pool) -> None:
+    token = _voice_link(setup_client)
+    first = setup_client.post(REDEEM, json={"token": token, "value": _voice_key()},
+                              headers=auth_header("root"))
+    assert first.status_code == 200, first.text
+    second = setup_client.post(REDEEM, json={"token": token, "value": _voice_key()},
+                               headers=auth_header("root"))
+    assert second.status_code == 404, second.text
+    assert len(pool.registered) == 1
+
+    stale = _voice_link(setup_client)
+    ref = f"{COLLECTION}/{digest(stale)}"
+    # Ten minutes have passed: the stored expiry is behind the clock.
+    db.docs[ref]["expires_at"] = datetime.now(db.docs[ref]["created_at"].tzinfo) \
+        - timedelta(seconds=1)
+    expired = setup_client.post(REDEEM, json={"token": stale, "value": _voice_key()},
+                                headers=auth_header("root"))
+    assert expired.status_code == 404, expired.text
+    assert len(pool.registered) == 1
+
+
+def test_voice_key_reaches_the_broker_once_and_is_kept_nowhere(setup_client, db, pool,
+                                                              caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    token = _voice_link(setup_client)
+    tenant = db.docs[f"{COLLECTION}/{digest(token)}"]["tenant_id"]
+    # Without its value the link is refused and stays unused.
+    bare = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("root"))
+    assert bare.status_code == 422, bare.text
+    assert db.docs[f"{COLLECTION}/{digest(token)}"]["used_at"] is None
+    key = _voice_key()
+    opened = setup_client.post(REDEEM, json={"token": token, "value": key},
+                               headers=auth_header("root"))
+    assert opened.status_code == 200, opened.text
+    assert pool.registered == [{"owner_tenant": tenant, "label": "voice-key",
+                                "provider": "openai-api", "lend_to": [], "credential": key,
+                                "added_by": "root@example.com"}]
+    body = opened.json()
+    assert body["kind"] == "voice-api-key" and body["account_id"] == f"{tenant}:voice-key"
+    assert body["pool"] == "voice-it" and body["written"] is True
+    assert key not in opened.text
+    assert key not in caplog.text
+    assert key not in json.dumps(db.docs, default=str)
+    again = setup_client.post(REDEEM, json={"token": token, "value": key},
+                              headers=auth_header("root"))
+    assert again.status_code == 404 and key not in again.text
+    assert len(pool.registered) == 1
+
+
+def test_voice_key_the_broker_refuses_is_not_echoed_and_spends_the_link(setup_client, db,
+                                                                       pool) -> None:
+    """The broker's refusal reaches the admin in its own words, which never
+    quote the key; the link is spent, so the value is never forwarded twice."""
+    from swarm_api.errors import ValidationFailed
+
+    def refuse(**_: object) -> dict:
+        raise ValidationFailed("an OpenAI API key begins with 'sk-'; this is not one")
+
+    pool.register = refuse
+    token = _voice_link(setup_client)
+    pasted = secrets.token_hex(24)
+    refused = setup_client.post(REDEEM, json={"token": token, "value": pasted},
+                                headers=auth_header("root"))
+    assert refused.status_code == 422, refused.text
+    assert pasted not in refused.text
+    assert db.docs[f"{COLLECTION}/{digest(token)}"]["used_at"] is not None

@@ -33,7 +33,9 @@ const profile = (p: Persona): Json => ({
   identity: { email: 'ana.b@example.com', display_name: 'Ana', platform_role: p === 'platform' ? 'admin' : null, is_admin: p === 'platform' },
   workspaces: [
     { tenant_id: 'u-ana', display_name: 'ana.b@example.com', kind: 'user', role: { name: 'admin', source: 'personal' }, is_acting: false },
-    { tenant_id: 'eng', display_name: 'Engineering', kind: 'group', role: { name: p === 'member' ? 'member' : 'admin', source: 'override' }, is_acting: true },
+    // `GET /v1/profile` names a group workspace by its group's address
+    // (profile.py `_workspace_rows`), not by the record's display name.
+    { tenant_id: 'eng', display_name: 'eng@example.com', kind: 'group', role: { name: p === 'member' ? 'member' : 'admin', source: 'override' }, is_acting: true },
   ],
   default_workspace: { tenant_id: 'eng', source: 'profile', ignored: null },
   connections: {},
@@ -60,9 +62,18 @@ const roles = (p: Persona): Json => ({
   can_manage: p !== 'member',
 })
 
-function api(p: Persona, opts: { rolesDown?: boolean } = {}) {
+/** `GET /v1/tenants/me`: the acting workspace's own record, which the Settings tab's Name reads. */
+const tenantMe = (displayName: string | null): Json => ({
+  tenant: { tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: displayName, created_at: new Date().toISOString(), enabled: true, credentials: [] },
+  principal: { email: 'ana.b@example.com', domain: 'example.com', groups: ['eng@example.com'], is_admin: false },
+})
+
+type ApiOpts = { rolesDown?: boolean; tenantName?: string | null }
+
+function api(p: Persona, opts: ApiOpts = {}) {
   return serve((m, url) => {
     if (m === 'GET' && url === '/v1/profile') return { status: 200, body: profile(p) }
+    if (m === 'GET' && url === '/v1/tenants/me') return { status: 200, body: tenantMe(opts.tenantName === undefined ? 'Engineering' : opts.tenantName) }
     if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: ONBOARDING }
     if (m === 'GET' && url === '/v1/workspace/roles') return opts.rolesDown ? { status: 503, body: { detail: 'down' } } : { status: 200, body: roles(p) }
     if (m === 'PUT' && url === '/v1/workspace/roles/default') {
@@ -79,7 +90,7 @@ async function load() {
   return import('../WorkspacePage')
 }
 
-async function open(p: Persona, tab?: 'people' | 'roles' | 'settings' | 'setup', opts: { rolesDown?: boolean } = {}) {
+async function open(p: Persona, tab?: 'people' | 'roles' | 'settings' | 'setup', opts: ApiOpts = {}) {
   const calls = api(p, opts)
   const { WorkspacePage } = await load()
   render(<WorkspacePage tab={tab} />)
@@ -137,6 +148,80 @@ describe('the tabs each person is offered', () => {
     const chip = screen.getByRole('button', { name: /setup/i })
     fireEvent.click(chip)
     expect(within(tabs()).getByRole('tab', { name: 'Setup' }).getAttribute('aria-selected')).toBe('true')
+  })
+})
+
+describe("the page's name: the workspace's own display name, as the Settings tab and Admin › Workspaces show it", () => {
+  const back = { label: 'Workspaces', href: '/admin/workspaces' }
+  const crumb = () => visible(screen.getByRole('navigation', { name: 'Breadcrumb' }).querySelector('[aria-current="page"]'))
+
+  it("a group workspace whose group's address differs: the heading and the breadcrumb read the display name, the address is a chip", async () => {
+    api('wsadmin')
+    const { WorkspacePage } = await load()
+    render(<WorkspacePage tab="people" back={back} />)
+    // MUTATION: name the page from the profile row's display_name -> the heading reads the group's address, fails.
+    await screen.findByRole('heading', { level: 1, name: 'Engineering' })
+    expect(crumb()).toBe('Engineering')
+    expect(screen.queryByRole('heading', { level: 1, name: 'eng@example.com' })).toBeNull()
+    // The group's address stays visible, as a chip, never as the name.
+    await waitFor(() => expect(within(header()).getByTitle("The workspace's Google group").textContent).toBe('eng@example.com'))
+  })
+
+  it('a workspace with no display name falls back to its id', async () => {
+    api('wsadmin', { tenantName: null })
+    const { WorkspacePage } = await load()
+    render(<WorkspacePage tab="people" back={back} />)
+    // MUTATION: fall back to the profile row's display_name -> the group's address, fails.
+    await screen.findByRole('heading', { level: 1, name: 'eng' })
+    expect(crumb()).toBe('eng')
+  })
+
+  it('a personal workspace keeps its own label', async () => {
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/profile') {
+        const body = profile('wsadmin')
+        body.workspaces = [{ tenant_id: 'u-ana', display_name: 'Your workspace (u-ana)', kind: 'user', role: { name: 'admin', source: 'personal' }, is_acting: true }]
+        return { status: 200, body }
+      }
+      if (m === 'GET' && url === '/v1/tenants/me') {
+        const body = tenantMe('Ana')
+        body.tenant = { ...(body.tenant as Json), tenant_id: 'u-ana', kind: 'user', principal: 'ana.b@example.com' }
+        return { status: 200, body }
+      }
+      if (m === 'GET' && url === '/v1/workspace/roles') return { status: 200, body: { ...roles('wsadmin'), tenant_id: 'u-ana', kind: 'user', people: [] } }
+      if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: ONBOARDING }
+      return null
+    })
+    const { WorkspacePage } = await load()
+    const { OWN_WORKSPACE_LABEL } = await import('../Spine')
+    render(<WorkspacePage tab="people" back={back} />)
+    await screen.findByRole('heading', { level: 1, name: OWN_WORKSPACE_LABEL })
+    expect(crumb()).toBe(OWN_WORKSPACE_LABEL)
+    // A person's own address is not a group's: no group chip.
+    expect(within(header()).queryByTitle("The workspace's Google group")).toBeNull()
+  })
+})
+
+describe("the header's `?` (the owner's follow-up of 3 November 2026)", () => {
+  it("draws the shell's section help beside the title, as PageHead does", async () => {
+    api('wsadmin')
+    const { WorkspacePage } = await load()
+    const { SectionHelp } = await import('../Shell')
+    render(
+      <SectionHelp.Provider value={<span data-testid="shell-help">?</span>}>
+        <WorkspacePage tab="people" />
+      </SectionHelp.Provider>,
+    )
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Engineering' })
+    // MUTATION: drop `useContext(SectionHelp)` from the header and the page has no `?`.
+    expect(h1.parentElement!.querySelector('[data-testid="shell-help"]')).not.toBeNull()
+    // Beside the title, not inside it: the heading's name stays the workspace's.
+    expect(h1.querySelector('[data-testid="shell-help"]')).toBeNull()
+  })
+
+  it('draws no `?` outside the shell, where there is no section to ask about', async () => {
+    await open('wsadmin')
+    expect(document.querySelector('.wpg-head .ctl-q')).toBeNull()
   })
 })
 

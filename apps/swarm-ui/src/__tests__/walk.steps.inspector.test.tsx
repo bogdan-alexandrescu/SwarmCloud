@@ -23,7 +23,8 @@ import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
-import type { CascadeEnv } from './cssgate'
+import SHELL from '../work/inspectorShell.css?raw'
+import { cascade, type CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { cellStyle, crowded, fixedColumns, lengthPx, nowrap, textBox, type CellStyle, type TextBox } from './tablefit'
 
@@ -31,6 +32,13 @@ const WIDE: CascadeEnv = { width: 1440 }
 const WF = 'wf_5e5ad3b6f7da4299a839'
 /** The table's box at 1440 with the side panel open (walk.steps.test.tsx). */
 const AT_1440 = 1440 - 84 - 236 - 64 - 34
+/**
+ * The window the table and the step card are waited for: a cold first render
+ * of the whole App under the console CI's parallel shards outlasts setup.ts's
+ * 2000 ms (5 November 2026). 4000 ms is the agent page's workspace-switch wait
+ * (agentDetailTenantSwitch.test.tsx) for the same cause.
+ */
+const WAIT = { timeout: 4000 }
 
 /** Ten long step names, the shape a planned issue run gives its steps. */
 const LONG = [
@@ -56,13 +64,29 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
-/** The table's container width with the step card docked beside it: the split's grid less the panel and the gap. */
-function besideCard(split: Element): number {
-  const cols = painted(split, 'grid-template-columns', WIDE) ?? ''
-  const panel = /minmax\(\s*[\d.]+px\s*,\s*([\d.]+)px\s*\)\s*$/.exec(cols)
-  expect(panel, `the split is not a column beside a panel: ${cols}`).not.toBeNull()
-  const gap = lengthPx(painted(split, ['column-gap', 'gap'], WIDE), 0) ?? 0
-  return AT_1440 - Number(panel![1]) - gap
+/** What the inspector shell's own sheet (src/work/, which `painted` does not read) gives `el`. */
+function shelled(el: Element, prop: string): string | null {
+  const r = cascade(SHELL, el, prop, WIDE)
+  expect(r.unsupported, `the resolver could not evaluate ${r.unsupported.join(', ')}`).toEqual([])
+  return r.winner?.value ?? null
+}
+
+/**
+ * The table's container width with the step card docked beside it. Since the
+ * Graph Work redesign (part of #2688) the card is the page's docked inspector
+ * (`.wi.is-docked`, inspectorShell.css): the shell's grid is the left pane, the
+ * handle and the dock, the dock as wide as the shell's own `--wi-dock`, and the
+ * left pane keeps a padding before the handle.
+ */
+function besideCard(shell: HTMLElement): number {
+  const cols = shelled(shell, 'grid-template-columns') ?? ''
+  const handle = /\)\s+([\d.]+)px\s+minmax\(/.exec(cols)
+  expect(handle, `the shell is not a pane beside a docked inspector: ${cols}`).not.toBeNull()
+  const dock = lengthPx(shell.style.getPropertyValue('--wi-dock'), 0)
+  expect(dock, 'the dock has no width').toBeGreaterThan(0)
+  const main = shell.querySelector(':scope > .wi-main')!
+  const pad = lengthPx(shelled(main, 'padding-right') ?? '0', 0) ?? 0
+  return AT_1440 - dock! - Number(handle![1]) - pad
 }
 
 /** Ten rows with long names, cloned from a drawn row so every one matches the shipped cascade. */
@@ -137,21 +161,24 @@ function boxesOf(row: Element, styles: ReadonlyMap<string, CellStyle>, cols: Ret
   return out
 }
 
-async function tableWithCard(): Promise<{ split: HTMLElement; wrap: HTMLElement; t: HTMLTableElement }> {
+async function tableWithCard(): Promise<{ shell: HTMLElement; wrap: HTMLElement; t: HTMLTableElement }> {
   window.history.replaceState(null, '', `/workflows/${WF}/table`)
   render(<App />)
   const wrap = await waitFor(() => {
     const w = document.querySelector<HTMLElement>('.wf-card .wf-table')
     expect(w?.querySelectorAll('tbody tr[data-step]').length ?? 0).toBeGreaterThan(1)
     return w!
-  })
+  }, WAIT)
   fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
-  const split = await waitFor(() => {
-    const s = document.querySelector<HTMLElement>('.wf-split.has-panel')
-    expect(s?.querySelector(':scope > .wf-panel'), 'the step card did not open beside the table').toBeTruthy()
+  const shell = await waitFor(() => {
+    const s = document.querySelector<HTMLElement>('.wi.is-docked')
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): `StepInspector` (`.wf-inspect`) is replaced on the page by
+    // `StepCard` (`section.sc-card`).
+    expect(s?.querySelector(':scope > .wi-dock .sc-card'), 'the step card did not open beside the table').toBeTruthy()
     return s!
-  })
-  return { split, wrap, t: wrap.querySelector('table')! }
+  }, WAIT)
+  return { shell, wrap, t: wrap.querySelector('table')! }
 }
 
 describe('item 1: the Steps table with the step card open', () => {
@@ -161,8 +188,8 @@ describe('item 1: the Steps table with the step card open', () => {
   // the fallback a browser without container queries draws: a scroll inside
   // the card, never a column pushing the card.
   it('scrolls inside its card below its minimum width, and its column never pushes the card', async () => {
-    const { split, wrap, t } = await tableWithCard()
-    const container = besideCard(split)
+    const { shell, wrap, t } = await tableWithCard()
+    const container = besideCard(shell)
     const { width } = fixedColumns(t, container, WIDE)
     expect(container, 'the card left the table its minimum width, so this case asks nothing').toBeLessThan(width)
     // BELOW ITS MINIMUM THE ROWS STACK (D12) rather than scroll: the wrapper
@@ -170,16 +197,16 @@ describe('item 1: the Steps table with the step card open', () => {
     // container query draws the table as stacked rows in this column.
     expect(painted(wrap, ['overflow-x', 'overflow'], WIDE)).toBe('clip')
     expect(painted(t, 'display', { ...WIDE, container }), 'the table is wider than its column and neither scrolls nor stacks').toBe('block')
-    expect(painted(split.querySelector(':scope > .wf-split-main')!, 'min-width', WIDE)).toBe('0')
+    expect(shelled(shell.querySelector(':scope > .wi-main')!, 'min-width')).toBe('0')
   })
 
   it('wraps ten long step names inside their own cells, apart from the state pill and the figures', async () => {
-    const { split, t } = await tableWithCard()
+    const { shell, t } = await tableWithCard()
     const rows = longRows(t)
     const styles = new Map<string, CellStyle>()
     for (const td of rows[0]!.querySelectorAll('td[data-col]')) styles.set(td.getAttribute('data-col')!, cellStyle(td, WIDE))
     let visited = 0
-    for (const container of [besideCard(split), AT_1440]) {
+    for (const container of [besideCard(shell), AT_1440]) {
       const { width, cols } = fixedColumns(t, container, WIDE)
       const step = cols.find((c) => c.col === 'step')!
       for (const row of rows) {
@@ -191,7 +218,13 @@ describe('item 1: the Steps table with the step card open', () => {
       }
     }
     expect(visited).toBe(LONG.length * 2)
-  })
+    // Own budget, not the config's 30 s: it measured ~10 s on an idle
+    // container and 13.5 s alone on the SwarmCloud container (2026-11-05;
+    // cascades over ten rows at two widths), and went past 30 s in loaded CI
+    // shards (PR #3255; PR #3304, component tests 3/8; PR #3342) with nothing
+    // wrong. 120 s, as qa.u11b.workflows, qa.head and keyboard carry; a hang
+    // still fails. A timeout is not what this test asserts.
+  }, 120_000)
 
   // Browser QA D12 (2026-10-04) reversed item 1's wrap: ten names wrapped to
   // two and three lines at their hyphens. A name is one line now, cut, with

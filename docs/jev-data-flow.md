@@ -8,7 +8,10 @@ amended §5.4 to say where the audit lands. "When a call may be made" added
 run (the decision API's address, the signed opt-in, the setup order, the
 monthly cap and the per-agent count). "Jev spend on the state routes" added
 2026-11-03 at `272a7fd`, from the code lane AQ-JEV-ACCOUNTING merged (#3111),
-when the owner chose a doc follow-up for that lane. Every `path::Symbol` below is checked by
+when the owner chose a doc follow-up for that lane. Rule 2 and "The order a
+send goes through" reworded 2026-11-04, when the owner chose to correct the
+wording after the credential check moved into `swarm_redaction.credentials`,
+which every Jev call now runs. Every `path::Symbol` below is checked by
 `tests/unit/worker/test_jev_data_flow.py`, which fails when a cited function,
 name or test no longer exists. The rules are those of
 [context-quality.md §5.4](design/context-quality.md#54-what-is-sent-and-what-never-is-even-when-opted-in);
@@ -28,14 +31,22 @@ notice losing.
 ## The order a send goes through
 
 Every Jev call, from any call site, goes through
-`apps/agent-worker/agent_worker/judge/client.py::JudgeClient.decide`. Before
-anything is sent, it:
+`apps/jev-client/swarm_jev/client.py::JudgeClient.decide`, the shared
+package `swarm_jev` that `agent_worker.judge.client` and `.sanitize`
+re-export (the same objects) and swarm-api installs. Its scan asks the
+publish gate's credential check, `swarm_redaction.credentials`, by default,
+so a call from swarm-api is scanned exactly as one from the worker (the
+owner, 4 November 2026; before, the worker added the check when
+`judge.sanitize` was imported, and swarm-api's calls ran without it).
+Before anything is sent, it:
 
 1. validates the questions, and refuses (raises, sends nothing) a question
    whose own text is credential-shaped or holds a registered secret;
 2. runs `apps/agent-worker/agent_worker/judge/sanitize.py::sanitize_state`
    over the whole `state`, which applies rules 1 to 5 to every string at
-   every depth;
+   every depth, asking of each string, in this order, the registered
+   secrets (rule 4), the credential check (rule 2) and the redaction rules
+   (rule 3);
 3. skips the call (`skipped:empty_state`) when nothing survived, and
    (`skipped:oversize`) when the state is past 70,000 characters;
 4. reserves a slot in the attempt's ledger (8 calls, 120k input tokens);
@@ -104,11 +115,15 @@ the attempt's tuple):
 | `<tenant>_<task>_g<generation>` | `attempt` | as before (`calls`, `input_tokens`, `by_kind`, `settled_at`), plus `reservation` (the agent's carried spend, the grant, its reason, the cap and the month), `over_grant` when spend passed the grant, and `settlement` (the outcome, the unrecorded calls and tokens, the released tokens; or `abandoned` with its unreported spend null) |
 | `<tenant>_<task>_g<generation>_c<call_id>` | `call` | one call: source (`judgment`, `quality_hook`, `browser`), its kind, backend, requested and served model, input and output tokens, `tokens_estimated`, outcome, `recorded_at` |
 | `<tenant>_reservations` | `reservations` | `held`: each live reservation by `<task>_g<generation>`, with its remaining tokens and expiry |
+| `<tenant>_<task>_g<generation>_reask` | `attempt` | the control plane's re-ask of the attempt's acceptance judgment (`jevaccount.ReaskLedger`): `calls`, `input_tokens`, `settled_at` and `by_kind` under kind `contract_judgment`; each call also has its `_c<call_id>` `call` document, source `contract_reask` |
+| `<tenant>_contract_<contract_id>_r<revision>` | `contract_review` | swarm-api's review of a work contract at submission (`jevusage.record_contract_review`): `calls`, `input_tokens`, `settled_at` and `by_kind` under kind `contract_review` |
 
-`swarm_api.jevusage` reads only `kind: attempt` rows and the month documents,
-so the two new kinds change no total the usage page serves; the rows'
-`by_kind` now also carries the hooks' and the browser's kinds and
-`unattributed`.
+`swarm_api.jevusage` reads only `kind: attempt` and `kind: contract_review`
+rows and the month documents, so the `call` and `reservations` kinds change no
+total the usage page serves; the rows' `by_kind` now also carries the hooks'
+and the browser's kinds, the re-ask's `contract_judgment` and
+`unattributed`. Every row above adds to the same month document, so the
+monthly cap holds all of them.
 
 ## The rules
 
@@ -119,22 +134,23 @@ the mutations are listed under the table.
 
 | § 5.4 | Rule | Enforced by | Test that fails when it is removed | Audit line |
 |---|---|---|---|---|
-| 1a | **Path deny**, in the client: no content from `.env*`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate*`, anything under `secrets/` or `credentials/`, or the repository's `hard_stop_paths`. An object with such a `path`/`file` keeps its identity keys only (`i`, `kind`, `path`, `file`, `symbol`, `name`, `line`, `step_id`): the path name, never content. | `apps/agent-worker/agent_worker/judge/sanitize.py::is_denied_path`, `apps/agent-worker/agent_worker/judge/sanitize.py::DENIED_NAME_GLOBS`, `apps/agent-worker/agent_worker/judge/sanitize.py::DENIED_DIRECTORIES`, `apps/agent-worker/agent_worker/judge/sanitize.py::IDENTITY_KEYS`, `apps/agent-worker/agent_worker/judge/sanitize.py::_Walker.mapping` | `tests/unit/worker/test_judge_sanitize.py::test_a_denied_path_sends_its_name_only`, `tests/unit/worker/test_judge_sanitize.py::test_a_hard_stop_path_is_denied_like_a_secret_path`, `tests/unit/worker/test_judge_client.py::test_a_credential_in_the_state_never_reaches_jev`, `tests/unit/worker/test_jev_wiring.py::test_j1_drops_a_credential_shaped_excerpt_and_sends_names_only_for_denied_paths` | `denied` is counted on the returned `Decision`, not in the row; the row's `bytes` is the size of what was sent after the deny |
+| 1a | **Path deny**, in the client: no content from `.env*`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate*`, anything under `secrets/` or `credentials/`, or the repository's `hard_stop_paths`. An object with such a `path`/`file` keeps its identity keys only (`i`, `kind`, `path`, `file`, `symbol`, `name`, `line`, `step_id`): the path name, never content. | `apps/agent-worker/agent_worker/judge/sanitize.py::is_denied_path`, `apps/agent-worker/agent_worker/judge/sanitize.py::DENIED_NAME_GLOBS`, `apps/agent-worker/agent_worker/judge/sanitize.py::DENIED_DIRECTORIES`, `apps/agent-worker/agent_worker/judge/sanitize.py::IDENTITY_KEYS`, `apps/jev-client/swarm_jev/sanitize.py::_Walker.mapping` | `tests/unit/worker/test_judge_sanitize.py::test_a_denied_path_sends_its_name_only`, `tests/unit/worker/test_judge_sanitize.py::test_a_hard_stop_path_is_denied_like_a_secret_path`, `tests/unit/worker/test_judge_client.py::test_a_credential_in_the_state_never_reaches_jev`, `tests/unit/worker/test_jev_wiring.py::test_j1_drops_a_credential_shaped_excerpt_and_sends_names_only_for_denied_paths` | `denied` is counted on the returned `Decision`, not in the row; the row's `bytes` is the size of what was sent after the deny |
 | 1b | **Path deny, J3 call site.** `diff_hunk` is a top-level string, so `review_post_step` sends `""` for a denied or hard-stop `file`; `code_window` sends `{path}` alone for a denied path. | `apps/agent-worker/agent_worker/judge/poststeps.py::review_post_step`, `apps/agent-worker/agent_worker/judge/poststeps.py::code_window` | `tests/unit/worker/test_jev_wiring.py::test_j3_never_sends_the_hunk_of_a_denied_path`, `tests/unit/worker/test_jev_wiring.py::test_j3_never_sends_the_hunk_of_a_hard_stop_path` | as 1a |
 | 1c | **Path deny, J4 call site.** `changed` rows carry no `path`, so `jev_test_gap` blanks the hunk of a denied or hard-stop path, and `_test_excerpt` reads no denied test file. | `apps/agent-worker/agent_worker/prepublish.py::jev_test_gap`, `apps/agent-worker/agent_worker/prepublish.py::_test_excerpt` | `tests/unit/worker/test_jev_wiring.py::test_j4_sends_a_hard_stop_paths_symbols_by_name_only`, `tests/unit/worker/test_jev_wiring.py::test_j4_sends_a_denied_directorys_symbols_by_name_only` | as 1a |
-| 2 | **Credential scan, then drop.** Every string (and every object key) goes through the publish gate's predicate `lifecycle._credential_in` at its strictest tier (the path given is not a test path). A hit removes the whole string from its object or list: **dropped, never masked**, so a candidate survives as path and symbol only. | `apps/agent-worker/agent_worker/judge/sanitize.py::is_flagged`, `apps/agent-worker/agent_worker/lifecycle.py::_credential_in`, `apps/agent-worker/agent_worker/judge/sanitize.py::_Walker.value` | `tests/unit/worker/test_jev_data_flow.py::test_the_credential_scan_alone_drops_a_headerless_key` (new: random key material no redaction rule knows), `tests/unit/worker/test_judge_sanitize.py::test_a_credential_shaped_excerpt_is_dropped_not_masked` | `dropped` on the `Decision`; nothing of the dropped string anywhere |
+| 2 | **Credential scan, then drop.** Every string (and every object key) goes through the publish gate's credential check, `swarm_redaction.credentials.is_credential` (the shared package's `credential_in`, which the worker's `lifecycle._credential_in` is), at its strictest tier (the path given is not a test path). Every Jev call runs it, in the worker and in swarm-api alike: `swarm_jev.sanitize` imports it, so no process has to add it. `is_flagged` asks it second, after the registered secrets (rule 4) and before the redaction rules (rule 3). A hit removes the whole string from its object or list: **dropped, never masked**, so a candidate survives as path and symbol only. | `apps/jev-client/swarm_jev/sanitize.py::is_flagged`, `apps/redaction/swarm_redaction/credentials.py::is_credential`, `apps/redaction/swarm_redaction/credentials.py::credential_in`, `apps/agent-worker/agent_worker/judge/sanitize.py::is_flagged`, `apps/agent-worker/agent_worker/lifecycle.py::_credential_in`, `apps/jev-client/swarm_jev/sanitize.py::_Walker.value` | `tests/unit/worker/test_jev_data_flow.py::test_the_credential_scan_alone_drops_a_headerless_key` (new: random key material no redaction rule knows), `tests/unit/worker/test_judge_sanitize.py::test_a_credential_shaped_excerpt_is_dropped_not_masked` | `dropped` on the `Decision`; nothing of the dropped string anywhere |
 | 3 | **Redaction rules.** Every string also goes through `swarm_redaction.rules.redact` (`RULES`, the families `redact()` in `scripts/lib/common.sh` mirrors). Any match counts, **including one glued to a word**, which the publish predicate skips; the string is dropped, not the masked text sent. | `apps/agent-worker/agent_worker/judge/sanitize.py::is_flagged`, `apps/redaction/swarm_redaction/rules.py::redact` | `tests/unit/worker/test_jev_data_flow.py::test_the_redaction_rules_alone_drop_a_token_glued_to_a_word` (new) | as 2 |
-| 4 | **The agent's registered secrets** (the values `agent_worker.redact.scrub_text` scrubs). **Enforced.** The code is stricter than scrubbing: it does not call `scrub_text` and send the scrubbed text; a string holding a registered value is dropped whole, like rule 2. The values come from three places: the backend's own key (always); the runner's credential variables and sensitive passthrough (`_jev_client`); and **the agent profile's `RunnerProfile.secrets`**, whose names the lifecycle hands to `graphstage.prepare`, which hands them to `judge.attempt.setup` and on to `register.prepare`, which writes them (names only) into `<attempt>/judge/config.json` as `secret_env_names`; `JevServer.from_config` (behind `judge.attempt.load` in the runner, and the `jev_decide` tool) reads their values from the process's environment. So a profile secret that is not credential-shaped, which rules 2 and 3 pass, is still dropped. | `apps/agent-worker/agent_worker/judge/sanitize.py::is_flagged`, `apps/agent-worker/agent_worker/judge/client.py::JudgeClient.decide`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._graph_context_env`, `apps/agent-worker/agent_worker/graphstage.py::prepare`, `apps/agent-worker/agent_worker/judge/attempt.py::setup`, `apps/agent-worker/agent_worker/judge/register.py::prepare`, `apps/agent-worker/agent_worker/judge/attempt.py::load`, `apps/agent-worker/agent_worker/judge/mcp.py::JevServer.from_config`, `apps/agent-worker/agent_worker/runners/cliagent.py::_jev_client`, `apps/agent-worker/agent_worker/redact.py::scrub_text` | `tests/unit/worker/test_jev_profile_secrets.py::test_a_profile_secret_inside_a_j1_excerpt_is_dropped_before_the_jev_call` (new, JEV-SCRUB: a non-credential-shaped profile secret inside a J1 excerpt, through setup, load and rerank; red before the threading), `tests/unit/worker/test_jev_profile_secrets.py::test_without_the_names_the_same_excerpt_is_sent` (the control), `tests/unit/worker/test_jev_profile_secrets.py::test_graphstage_hands_the_profile_secret_names_to_jev_setup`, `tests/unit/worker/test_jev_profile_secrets.py::test_the_lifecycle_passes_the_task_profiles_secrets_to_graphstage`, `tests/unit/worker/test_judge_sanitize.py::test_a_registered_secret_drops_the_string_it_is_in`, `tests/unit/worker/test_jev_data_flow.py::test_the_runner_client_drops_the_runners_own_key`, `tests/unit/worker/test_judge_mcp.py::test_jev_decide_scrubs_the_tool_process_own_secrets` | as 2 |
-| 5a | **Never sent: author identities and emails, environment variables, the agent's transcript.** The keys `author`, `authors`, `email`, `emails`, `user`, `login`, `env`, `environ`, `environment`, `transcript` are removed at any depth, in any case. | `apps/agent-worker/agent_worker/judge/sanitize.py::NEVER_SENT_KEYS`, `apps/agent-worker/agent_worker/judge/sanitize.py::_Walker.mapping` | `tests/unit/worker/test_jev_data_flow.py::test_every_never_sent_key_is_removed_at_any_depth_and_any_case` (new: one case per key, spelled out), `tests/unit/worker/test_judge_sanitize.py::test_environment_and_identity_keys_are_never_sent` | none |
+| 4 | **The agent's registered secrets** (the values `agent_worker.redact.scrub_text` scrubs). **Enforced.** The code is stricter than scrubbing: it does not call `scrub_text` and send the scrubbed text; a string holding a registered value is dropped whole, like rule 2. The values come from three places: the backend's own key (always); the runner's credential variables and sensitive passthrough (`_jev_client`); and **the agent profile's `RunnerProfile.secrets`**, whose names the lifecycle hands to `graphstage.prepare`, which hands them to `judge.attempt.setup` and on to `register.prepare`, which writes them (names only) into `<attempt>/judge/config.json` as `secret_env_names`; `JevServer.from_config` (behind `judge.attempt.load` in the runner, and the `jev_decide` tool) reads their values from the process's environment. So a profile secret that is not credential-shaped, which rules 2 and 3 pass, is still dropped. | `apps/agent-worker/agent_worker/judge/sanitize.py::is_flagged`, `apps/jev-client/swarm_jev/client.py::JudgeClient.decide`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._graph_context_env`, `apps/agent-worker/agent_worker/graphstage.py::prepare`, `apps/agent-worker/agent_worker/judge/attempt.py::setup`, `apps/agent-worker/agent_worker/judge/register.py::prepare`, `apps/agent-worker/agent_worker/judge/attempt.py::load`, `apps/agent-worker/agent_worker/judge/mcp.py::JevServer.from_config`, `apps/agent-worker/agent_worker/runners/cliagent.py::_jev_client`, `apps/agent-worker/agent_worker/redact.py::scrub_text` | `tests/unit/worker/test_jev_profile_secrets.py::test_a_profile_secret_inside_a_j1_excerpt_is_dropped_before_the_jev_call` (new, JEV-SCRUB: a non-credential-shaped profile secret inside a J1 excerpt, through setup, load and rerank; red before the threading), `tests/unit/worker/test_jev_profile_secrets.py::test_without_the_names_the_same_excerpt_is_sent` (the control), `tests/unit/worker/test_jev_profile_secrets.py::test_graphstage_hands_the_profile_secret_names_to_jev_setup`, `tests/unit/worker/test_jev_profile_secrets.py::test_the_lifecycle_passes_the_task_profiles_secrets_to_graphstage`, `tests/unit/worker/test_judge_sanitize.py::test_a_registered_secret_drops_the_string_it_is_in`, `tests/unit/worker/test_jev_data_flow.py::test_the_runner_client_drops_the_runners_own_key`, `tests/unit/worker/test_judge_mcp.py::test_jev_decide_scrubs_the_tool_process_own_secrets` | as 2 |
+| 5a | **Never sent: author identities and emails, environment variables, the agent's transcript.** The keys `author`, `authors`, `email`, `emails`, `user`, `login`, `env`, `environ`, `environment`, `transcript` are removed at any depth, in any case. | `apps/agent-worker/agent_worker/judge/sanitize.py::NEVER_SENT_KEYS`, `apps/jev-client/swarm_jev/sanitize.py::_Walker.mapping` | `tests/unit/worker/test_jev_data_flow.py::test_every_never_sent_key_is_removed_at_any_depth_and_any_case` (new: one case per key, spelled out), `tests/unit/worker/test_judge_sanitize.py::test_environment_and_identity_keys_are_never_sent` | none |
 | 5b | **Never sent: the in-flight view beyond titles and file paths.** J1 never sends an `in_flight` or `cannot_push` row; J5 sends each in-flight lane as `{i, title, files}` and nothing else. | `apps/agent-worker/agent_worker/contextpack/rank.py::rerank`, `apps/agent-worker/agent_worker/contextpack/retrieve.py::ALWAYS`, `apps/agent-worker/agent_worker/judge/shapes.py::j5_duplicate` | `tests/unit/worker/test_jev_wiring.py::test_j1_sends_the_top_sixty_and_never_in_flight_or_cannot_push`, `tests/unit/worker/test_jev_data_flow.py::test_j5_sends_an_in_flight_lane_as_title_and_files_only` (new) | none |
 | 5c | **Never sent: another repository's content.** J3's code window is read only from a path that resolves inside the attempt's checkout; anything else is sent as `{path}`. J1's rows come from the attempt's own checkout and index (`retrieve.tracked_files`), and J4's tests from the gate's repository. | `apps/agent-worker/agent_worker/judge/poststeps.py::code_window`, `apps/agent-worker/agent_worker/judge/poststeps.py::_inside` | `tests/unit/worker/test_jev_data_flow.py::test_j3_sends_a_file_outside_the_checkout_by_path_only` (new) | none |
-| 6 | **Audit, no payload.** Each call -- sent, failed, malformed or skipped -- appends one row to the attempt's ledger, never the state, the questions, the answer or the key. | `apps/agent-worker/agent_worker/judge/client.py::JudgeClient.decide`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.record`, `apps/agent-worker/agent_worker/judge/budget.py::MAX_AUDIT_ROWS`, `apps/agent-worker/agent_worker/judge/register.py::prepare` | `tests/unit/worker/test_jev_data_flow.py::test_the_audit_row_holds_counts_never_the_payload_the_answer_or_the_key` (new: success and failure, with a TypeSafe key), `tests/unit/worker/test_judge_client.py::test_a_good_answer_is_returned_and_counted` | the row itself: see below |
+| 6 | **Audit, no payload.** Each call -- sent, failed, malformed or skipped -- appends one row to the attempt's ledger, never the state, the questions, the answer or the key. | `apps/jev-client/swarm_jev/client.py::JudgeClient.decide`, `apps/agent-worker/agent_worker/judge/budget.py::Ledger.record`, `apps/agent-worker/agent_worker/judge/budget.py::MAX_AUDIT_ROWS`, `apps/agent-worker/agent_worker/judge/register.py::prepare` | `tests/unit/worker/test_jev_data_flow.py::test_the_audit_row_holds_counts_never_the_payload_the_answer_or_the_key` (new: success and failure, with a TypeSafe key), `tests/unit/worker/test_judge_client.py::test_a_good_answer_is_returned_and_counted` | the row itself: see below |
 
 The mutations each test was proven against (2026-10-18, scratch monkeypatch
 runs, nothing committed): `is_denied_path` returning `False` (1a: 16 tests
 red); `DENIED_DIRECTORIES` emptied (1a, 1c: 3 red); `poststeps.is_denied_path`
 returning `False` (1b: both J3 tests red); `_credential_in` returning `None`
-(2); `_rules_redact` finding nothing (3); `is_flagged` ignoring the secrets it
+(2; since the move, the same mutation is `swarm_jev.sanitize.is_credential`
+returning `False`); `_rules_redact` finding nothing (3); `is_flagged` ignoring the secrets it
 is given (4: both sanitizer and MCP tests red); `cliagent.collect_secrets`
 returning nothing (4, runner); `login` removed from `NEVER_SENT_KEYS` (5a);
 `j5_duplicate` copying a lane's other fields (5b); `_inside` always true (5c);
@@ -216,8 +232,55 @@ records are the authority on what was sent.
   MCP config, the prompt, a log or the summary. Its calls are counted in the
   attempt's `result_summary.runner.metrics.tool_calls` as `jev_decision`.
   Codex steps do not register it.
-* **Never swarm-api.** swarm-api reads `plan-advisory.json` (the J2/J5
-  result) and never holds a Jev client.
+* **swarm-api, first: the work contract review at submission**
+  (JC1, docs/design/agent-quality/jev-contract.md section 4; lane
+  CONTRACT-REVIEW-SUBMIT, 4 November 2026).
+  `apps/swarm-api/swarm_api/contractreview.py::ContractReviewer.review` asks
+  Jev, inside the submission request, which of a work contract's requirements
+  no worker could enforce, through the shared client
+  (`apps/jev-client/swarm_jev/client.py::JudgeClient.decide`) and its
+  sanitizer, with a 15 s deadline and one retry. It runs only while the
+  platform's `SWARM_CONTRACT_REVIEW` is `report` or `enforce` (default
+  `off`: no call) and the workspace's own signed setting
+  `contract_review.enabled` is on -- not `code_intelligence.jev`, because no
+  code is sent: the state is `contractjudge.review_state`, the contract's own
+  requirement texts by index, its strictness, acceptance, artifact kinds and
+  write scope, never the tenant, the owner, the contract id, the repository
+  URL or a commit. A requirement whose text the sanitizer would drop
+  (credential-shaped, or holding the backend's own key) is not asked about
+  at all and is recorded `not_judged`
+  (`apps/swarm-api/swarm_api/contractreview.py::unreadable`): Jev never
+  answers for a text it did not read. What is kept is the step's signed
+  dispatch block's `contract_review`: the digest judged, Jev's closed
+  classes, reasons and probabilities by requirement id, the call id and the
+  backend's name, never a requirement's text. The backend is the workspace's `judgment_backend`,
+  reached through swarm-api's Direct VPC egress and the internal load
+  balancer in front of the tailnet egress (`judgment.resolve_call_backend`),
+  never TypeSafe in its place. Its calls are admitted under
+  `code_intelligence.jev_monthly_cap_tokens` and charged to the month as
+  kind `contract_review` (`jevusage.record_contract_review`). A call that
+  fails, times out or is over the cap is recorded `not_run` and the contract
+  is accepted on the mechanical compile alone. Every other swarm-api read of
+  Jev's work stays a file: `plan-advisory.json` (the J2/J5 result).
+* **swarm-api, second: the control plane's re-ask of a step's acceptance
+  judgment** (JC2 from the control plane, jev-contract.md sections 5.4, 8.2
+  and 9; the owner's answers of 3 November 2026).
+  `apps/swarm-api/swarm_api/contractreask.py::ForgeJudge` asks Jev again,
+  from the scheduled tick's bounded pass (`contractreask.run_pass`, one a
+  minute, never a sleep in a request), when the worker's end-of-step
+  judgment came back `not_run` or `cannot_judge`: at most three tries over
+  30 minutes, then the owner's approval screen. JC2 sends code -- the
+  published diff's hunks, read with the repository's read token -- so it
+  runs only while the workspace's signed `code_intelligence.jev` is on, and
+  through the same shared client and sanitizer, to the workspace's internal
+  `judgment_backend` only (`judgment.resolve_call_backend`), never TypeSafe.
+  Each call is admitted under `code_intelligence.jev_monthly_cap_tokens`
+  after every live reservation and charged to the same month document,
+  in a row of its own per attempt (`<attempt row>_reask`, `kind: attempt`)
+  under kind `contract_judgment`, which the usage page shows as the
+  control plane's re-ask (`jevaccount.ReaskLedger`); beside it, not in place
+  of it, the submission review's kind `contract_review`. A call the cap
+  refuses is a try without a verdict (`budget_monthly`).
 
 **Which verdict files J3 reads** (owner, 2 November 2026). A review step's
 verdict is not always one `verdict.json` with a `findings` list: the first
@@ -275,12 +338,18 @@ Chosen by the workspace's judgment backend (`judge.settings.resolve_backend`):
   bearer is the worker's loopback shim's **local token**, read from
   `private/jev-typesafe.shim`. The workspace key never enters the pod; the
   forwarder adds it.
-* **TypeSafe** otherwise: the workspace's key, read only from the
+* **TypeSafe** otherwise: the workspace's key, from the
   `private/jev-typesafe.key` the worker already wrote for a live-browser
-  attempt (since JEV-JUDGMENTS-RUN, before the judge's setup reads it),
-  copied to `<attempt>/private/jev-key` (0600) for the config to name, or,
-  under the signed workflow switch `jev_judgments: on`, the workspace's key
-  resolved for the step. Any other attempt reads `no_key` and makes no call.
+  attempt (since JEV-JUDGMENTS-RUN, before the judge's setup reads it), or,
+  on any other step whose judgments run -- the signed opt-in, or the signed
+  workflow switch `jev_judgments: on` -- the WORKSPACE's key resolved for
+  the step with no submitter, as the quality gates resolve theirs
+  (`apps/agent-worker/agent_worker/jevkey.py::resolve_workspace`), copied to
+  `<attempt>/private/jev-key` (0600) for the config to name. Until lane
+  jev-on-coding-profiles (4 November 2026) the workspace's key was resolved
+  only under the switch, so every claude-code and claude-code-large step on
+  TypeSafe read `no_key` ("Closed by lane jev-on-coding-profiles"). An
+  attempt with no key at all reads `no_key` and makes no call.
 
 In every case the key is in no config, MCP entry, environment variable, log
 line or audit row (`Backend.__repr__` omits it; rule 6's test checks the
@@ -323,9 +392,10 @@ Two GKE FQDNNetworkPolicies name `api.typesafe.ai`, and nothing else in
   (`apps/scheduler/scheduler/dispatch.py::TYPESAFE_DIRECT_POD_LABEL`, set by
   `apps/scheduler/scheduler/dispatch.py::with_typesafe_direct` and
   `apps/scheduler/scheduler/dispatch.py::GkeJobDispatcher._with_judgments_forwarder`):
-  a TypeSafe-backed live browser, quality gates on, or a `jev_judgments: on`
-  step on the TypeSafe backend, whenever the pod is not labelled
-  `swarm-typesafe: inject`.
+  a TypeSafe-backed live browser, quality gates on, or a step on the
+  TypeSafe backend whose judgments run (the signed opt-in, or
+  `jev_judgments: on`; `apps/scheduler/scheduler/dispatch.py::jev_judgments_run`),
+  whenever the pod is not labelled `swarm-typesafe: inject`.
 
 A pod labelled `swarm-typesafe: inject` has no TypeSafe allow: it reaches
 TypeSafe only through the forwarder, on TCP 8080 (`allow-typesafe-fwd.yaml`).
@@ -399,9 +469,12 @@ and every key at every depth, a matching string **dropped, never masked**, as
 the worker's config chose (TypeSafe, or the loopback shim) with the
 config's key, whatever `JEV_BASE_URL` or `CLAUDE_PLUGIN_OPTION_*` the
 environment holds; the launcher removes those and `JEV_BELAY_LOG`, so
-neither tool writes a text log. The publish gate's own predicate
-(`lifecycle._credential_in`, rule 2 of the table above) is not asked here:
-it lives in the worker package, whose import would cost each hook seconds.
+neither tool writes a text log. The publish gate's credential check
+(`swarm_redaction.credentials`, rule 2 of the table above) is not asked
+here: the launcher's interpreter imports `swarm_redaction.rules` alone. When
+this was written the check lived in the worker package, whose import would
+cost each hook seconds; it has since moved into `swarm_redaction`, which the
+image's interpreter holds, and the hooks have not been changed to ask it.
 
 **The Jev browser takes the same filter.** `images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp`
 starts the server as `node --import` of the launcher's `installBrowserFilter`
@@ -501,6 +574,55 @@ hooks, launcher redaction and URL pin, counts and event) and
   hostname sinkhole on unlabelled pods, or the general internet behind a
   proxy that refuses the host) is an owner question, in
   [the runbook](runbooks/typesafe-egress.md).
+
+### Closed by lane jev-on-coding-profiles (2026-11-04)
+
+* **Only live-browser steps called Jev.** SwarmCloud's own `jev_usage`
+  ledger for 3 November 15:26 to 4 November 19:51 UTC (Engineering) held
+  377 calls, every one from a claude-code-browser step, all through
+  TypeSafe; 902 of 1,165 attempts settled a reservation and made no call,
+  580 of them on claude-code and 116 on claude-code-large. The owner chose
+  that day to find why and fix it. Each candidate cause, checked:
+  * *The client in the image*: not the cause. `images/agent-runtime-base`
+    installs `swarm_jev` and `agent_worker`, and the browser image is built
+    `FROM` it; all three profiles run `agent_worker.runners.claude_code`.
+  * *The worker's key* (the cause on the worker): `judge.attempt.setup` read
+    only the key file `jevkey.prepare` writes for a live browser, and asked
+    for the workspace's key only under `jev_judgments: on`. A coding step
+    under the signed opt-in alone read `no_key`, so it had no
+    `judge/config.json`: no J0 or J1 in the context pack, no J3 on a review,
+    no `jev_decide` tool. Its reservation was still made and settled empty,
+    which is the 696. Now it resolves the workspace's key whenever its
+    judgments run and it has neither the browser's key file nor the
+    forwarder's shim (`apps/agent-worker/agent_worker/judge/attempt.py::setup`;
+    `tests/unit/worker/test_jev_on_coding_profiles.py`).
+  * *The pod's route* (the cause in the GKE render): the forwarder's
+    `swarm-typesafe: inject` label and SWARM_TYPESAFE_INJECT=on, or the
+    `swarm-jev: typesafe-direct` label, reached a non-browser pod only under
+    the switch, never under the signed opt-in, so on a forwarder tenant the
+    worker served no shim and the forwarder's ingress did not select the
+    pod. Now `apps/scheduler/scheduler/dispatch.py::jev_judgments_run` (the
+    signed reading or the switch, never `off`) decides it
+    (`tests/unit/control_plane/test_jev_on_coding_profiles.py`).
+  * *The opt-in read per profile*: not the cause. The scheduler's verdict
+    (`read_jev_judgments`) is read for every profile that carries the Jev
+    client, and the Internal backends' address already followed it
+    (`judges_internally`).
+  * *The decision API's egress and its ingress source ranges*: not the
+    cause, and unchanged. Every call in the window went through TypeSafe;
+    coding and browser pods share the cluster's pod range and policies, and
+    `allow-egress.yaml` rule 4 admits TCP 443 for every tenant pod.
+
+  The budget is unchanged: the coding step's calls go through the same
+  ledger, the same per-agent 8 calls and 120k tokens, the same swarm-api
+  reservation on the state routes and the same
+  `code_intelligence.jev_monthly_cap_tokens`. Which steps call Jev now: on
+  every claude-code, claude-code-large and claude-code-browser step of an
+  opted-in workspace, J0 for an `implement` step, J1 before the agent, J3 on
+  a review, J4 in the gate, J2/J5 after it and the agent's `jev_decide`
+  tool; codex steps the same, without the tool. The effect is read in the
+  ledger as `jev_usage` attempt rows' calls grouped by the agent's
+  `runner_profile` after the release that carries this.
 
 ### Closed by lane AQ-JEV-ACCOUNTING (2026-11-03)
 

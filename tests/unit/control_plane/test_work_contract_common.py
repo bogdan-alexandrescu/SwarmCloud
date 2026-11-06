@@ -63,12 +63,17 @@ def test_swarm_api_imports_the_one_definition_rather_than_restating_it():
     assert wc.CONTRACT_PURPOSE is common.CONTRACT_PURPOSE == "swarm.work-contract/v1"
     assert wc.SCHEMA_VERSION is common.SCHEMA_VERSION
     assert common.SCHEMA_VERSION == 1
-    # swarm-api's contract adds only what swarm-api reads; the fields and the
-    # projection the digest covers are the shared class's, never overridden.
+    # swarm-api's contract adds only what swarm-api reads, and `acceptance`:
+    # the fields and the projection the digest covers are the shared class's,
+    # and a strict contract (every contract written before `acceptance`)
+    # projects to exactly the shared document.
     assert issubclass(wc.WorkContract, common.WorkContract)
-    assert wc.WorkContract.to_document is common.WorkContract.to_document
     assert [f.name for f in dataclasses.fields(wc.WorkContract)] == \
-        [f.name for f in dataclasses.fields(common.WorkContract)]
+        [f.name for f in dataclasses.fields(common.WorkContract)] + ["acceptance"]
+    strict = wc.decode(_doc())
+    assert strict.to_document() == common.WorkContract.to_document(strict)
+    auto = wc.decode({**_doc(), "acceptance": "auto"})
+    assert auto.to_document() == {**common.WorkContract.to_document(auto), "acceptance": "auto"}
     assert wc.Requirement is common.Requirement
     assert common.CONTRACT_PURPOSE not in (specsign.SPEC_PURPOSE, specsign.SETTINGS_PURPOSE)
 

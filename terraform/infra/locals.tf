@@ -823,7 +823,10 @@ locals {
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
     # local.api_graph_stats_env: SWARM_GRAPH_STATS_URL, the graph service's
     # stats address (graph_service.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, {
+    # local.api_decision_route_env: INTERNAL_DECISION_API_ADDRESS, swarm-api's
+    # route to the decision API through the tailnet egress's internal load
+    # balancer (tailscale.tf; jev-contract.md section 4.1).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, local.api_decision_route_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -849,6 +852,10 @@ locals {
       # swarm_api.settings reads them and GET /v1/mcp-servers serves them as
       # `egress_addresses`; "" serves [], which the console says in words.
       MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
+
+      # Generated workflow descriptions (swarm_api.wfdescription): "off" writes
+      # them extractively; turns to "vertex" once the owner grants Vertex AI.
+      SWARM_WORKFLOW_DESCRIPTION_MODEL = "off"
 
       # The job-made workspaces' Firestore cutover list (variables.tf
       # `worker_firestore_off_tenants`, #1457 design B). swarm_api.settings
@@ -997,6 +1004,22 @@ locals {
       # swarm-api refuses every such submission while this is off.
       SWARM_MCP_SERVERS = var.mcp_servers_enabled ? "on" : "off"
 
+      # The Jev review of a contract at submission (swarm_api.contractreview
+      # MODE_ENV; var.contract_review_mode says what each value does). Until
+      # this line nothing in Terraform set it, so turning it on was a hand
+      # edit the next apply put back. "off" unless the environment's tfvars
+      # sets another value, and the variable's validation admits only the
+      # three values swarm-api reads.
+      SWARM_CONTRACT_REVIEW = var.contract_review_mode
+
+      # The work-contract switch (swarm_api.workcontract SWITCH_ENV;
+      # var.work_contracts says what each value does). Until this line
+      # nothing in Terraform set it, so swarm-api ran with contracts off and
+      # refused every step naming a plugin. "off" unless the environment's
+      # tfvars sets "on". swarm-api alone reads it: the worker reads a
+      # contract only through the signed reference swarm-api attaches.
+      SWARM_WORK_CONTRACTS = var.work_contracts
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build
@@ -1137,6 +1160,35 @@ locals {
       # deployed", and every Voice it route answers 503 voice_unavailable.
       # VOICE_IT_PEOPLE is unset on purpose: PLATFORM_OWNER, BGD alone (§1).
       SWARM_VOICE_URL = local.voice_url
+
+      # Voice it's own speech machine (voice_speech.tf; docs/design/
+      # voice-it-own-speech.md §3.2, §4, §5.3), read by
+      # swarm_api.voice.speech_machine.SpeechConfig.from_env. All empty while
+      # voice_speech is off: an empty SWARM_SPEECH_ADDR is "the engine is not
+      # deployed", and no speech route touches Compute.
+      #   _PROJECT/_ZONES/_INSTANCE: the one instance swarm-api starts and
+      #     stops (one zone, one machine; a stock-out falls back to text and
+      #     never tries a second zone).
+      #   _ADDR: the reserved internal address the relay dials on 8080.
+      #   _AUDIENCE: the ID token's audience the speech server checks; the
+      #     same constant the voice_speech output names.
+      #   _IMAGE: the release's swarm-speech digest (§5.3), written onto the
+      #     stopped machine at the next start. "" until the release pins it,
+      #     which swarm-api reads as "leave the instance's image as it is".
+      #   _SWEEP_AUDIENCE/_SWEEP_CALLERS: who may POST the two-minute sweep
+      #     (§4.5): a Cloud Scheduler OIDC token for swarm-api's own push
+      #     audience, from the doctor's account (§6 I4: it already holds
+      #     run.invoker on swarm-api, doctor.tf) while the doctor runs, or the
+      #     tick account, the scheduler identity this root already lists as
+      #     a platform caller. Empty callers means every sweep is refused.
+      SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
+      SWARM_SPEECH_ZONES          = local.voice_speech_on ? var.voice_speech.zone : ""
+      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? google_compute_instance.speech[0].name : ""
+      SWARM_SPEECH_ADDR           = local.voice_speech_on ? google_compute_address.speech[0].address : ""
+      SWARM_SPEECH_AUDIENCE       = "swarm-speech"
+      SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
+      SWARM_SPEECH_SWEEP_AUDIENCE = local.voice_speech_on ? local.push_audiences["swarm-api"] : ""
+      SWARM_SPEECH_SWEEP_CALLERS  = local.voice_speech_on ? join(",", concat([module.iam.tick_service_account], local.doctor_on ? [local.doctor_email] : [])) : ""
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the

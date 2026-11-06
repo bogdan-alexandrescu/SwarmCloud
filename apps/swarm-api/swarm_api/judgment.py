@@ -34,6 +34,19 @@ the caller in that workspace. A chosen backend that is unavailable means Jev
 is unavailable -- the dispatcher and the jev wrapper refuse rather than send
 page text to TypeSafe in place of an internal backend.
 
+SWARM-API'S OWN CALLS (docs/design/agent-quality/jev-contract.md section 4.1;
+the owner's answer to Q1, 3 November 2026). The contract review at submission
+is a Jev call swarm-api makes itself, so availability is not enough there:
+`resolve_call_backend` names the backend, its URL, model and key for ONE call,
+or why there is none (`no_route`, `no_key`). swarm-api is Cloud Run and cannot
+use a judging pod's hostAliases entry, so an internal backend is reached
+through its Direct VPC egress and the internal passthrough load balancer
+`decision-api-internal` in front of the tailnet egress (terraform/infra/
+tailscale.tf): the call dials INTERNAL_DECISION_API_ADDRESS and sends SNI and
+Host for the tailnet name (`pinned_transport`), so the decision API's own
+certificate still verifies end to end. No address rendered, or an address
+that answers nothing, is `no_route` -- never TypeSafe in its place.
+
 `scheduler.judgment` restates the backend names, the collection and the
 service address for the dispatcher (the scheduler does not import swarm-api);
 tests/unit/control_plane/test_dispatch_judgment.py holds the two equal.
@@ -69,15 +82,26 @@ import base64
 import binascii
 import hashlib
 import hmac
-from collections.abc import Iterable, Mapping
+import http.client
+import ipaddress
+import os
+import re
+import socket
+import ssl
+import urllib.parse
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from google.cloud import firestore
+from swarm_jev.client import Transport, urllib_transport
 
 from swarm_common.admission import _snapshot
-from swarm_common.specsign import SETTINGS_MAC_FIELDS, canonical_settings_block
+from swarm_common.specsign import (
+    SETTINGS_MAC_FIELDS,
+    canonical_settings_block,
+)
 
 from .admins import AUDIT_COLLECTION
 from .errors import ValidationFailed
@@ -118,13 +142,210 @@ NO_EGRESS = ("the tailnet egress to the decision API is not enabled on this plat
              "(INTERNAL_DECISION_API_URL is unset)")
 NO_KEY = ("no TypeSafe key resolves for you in this workspace: set your own key, "
           "or ask an admin to set a tenant key")
+#: swarm-api's own calls (`resolve_call_backend`, `probe_route`): no load
+#: balancer address rendered, or one that does not answer.
+NO_ROUTE = ("swarm-api has no route to the decision API: the tailnet egress's internal "
+            "load balancer is not rendered (INTERNAL_DECISION_API_ADDRESS is unset)")
+UNREACHABLE = "the decision API's internal load balancer did not answer"
 
 
 #: Each reason sentence above as the code the live read's `browser.jev.reason`
 #: carries (`live.JEV_REASONS`, the worker's `browser_tools.JEV_REASONS`):
 #: `no_route` is what the runner reports when the dispatcher sent no
-#: JEV_API_URL to an internal backend, `no_key` when TypeSafe has no key.
-UNAVAILABLE_CODES = {NO_EGRESS: "no_route", NO_KEY: "no_key"}
+#: JEV_API_URL to an internal backend, and what swarm-api's own call reads
+#: with no load balancer address or one that does not answer; `no_key` when
+#: TypeSafe has no key.
+UNAVAILABLE_CODES = {NO_EGRESS: "no_route", NO_KEY: "no_key",
+                     NO_ROUTE: "no_route", UNREACHABLE: "no_route"}
+
+# -- swarm-api's own calls (jev-contract.md section 4.1, Q1) ---------------------
+
+#: The internal load balancer's address terraform gives swarm-api
+#: (tailscale.tf `local.api_decision_route_env`): "" while the tailnet egress
+#: or the internal backends are off.
+INTERNAL_DECISION_API_ADDRESS_ENV = "INTERNAL_DECISION_API_ADDRESS"
+
+#: The decision API's path and the model asked for, per internal backend: the
+#: worker's `judge.settings` defaults and `scheduler.judgment.INTERNAL_PATHS`.
+INTERNAL_PATHS = {INTERNAL_JEV: "jev", INTERNAL_LAYA: "laya"}
+INTERNAL_MODELS = {INTERNAL_JEV: "jev-latest", INTERNAL_LAYA: "laya-latest"}
+#: TypeSafe as the worker's `judge.settings` calls it with no shim: swarm-api
+#: has no loopback shim and calls the public API directly.
+TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
+TYPESAFE_MODEL = "jev-latest"
+#: The longest a reachability probe waits for the load balancer's TCP answer.
+PROBE_SECONDS = 2.0
+#: As much of a response as `swarm_jev.client.urllib_transport` reads.
+_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+#: A MagicDNS name, as terraform/infra/tailscale.tf validates the target.
+_TAILNET_HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9-]+\.ts\.net$")
+
+
+@dataclass(frozen=True)
+class CallBackend:
+    """Where ONE swarm-api Jev call goes: a `swarm_jev.JevBackend`.
+
+    `connect_address` is the internal load balancer's address for an internal
+    backend (the URL's host is the tailnet name, which only the certificate
+    and the Host header carry) and None for TypeSafe. `key` is the bearer
+    credential, TypeSafe's only; it is excluded from the repr, so a logged
+    backend cannot carry it."""
+
+    name: str
+    url: str
+    model: str
+    stringify_state: bool
+    key: str | None = field(default=None, repr=False)
+    connect_address: str | None = None
+
+    def transport(self) -> Transport:
+        """The transport this backend is called through: dialled at the load
+        balancer's address for an internal backend, as named for TypeSafe."""
+        return pinned_transport(self.connect_address) if self.connect_address else urllib_transport
+
+
+@dataclass(frozen=True)
+class NoBackend:
+    """Why a call has no backend: `code` is a `UNAVAILABLE_CODES` value
+    (`no_route`, `no_key`), the reason the console and a `not_run` record
+    carry; `reason` is the sentence shown to a person."""
+
+    backend: str
+    code: str
+    reason: str
+
+
+def route_address(raw: str | None = None) -> str | None:
+    """The internal load balancer's address swarm-api dials, or None when
+    there is none it may dial. Read from INTERNAL_DECISION_API_ADDRESS at the
+    call, never at import. Only a private IPv4 address is accepted: the
+    address is terraform's reserved INTERNAL one, so anything else is a
+    misrendering, and dialling it would send the call out of the VPC."""
+    value = (os.environ.get("INTERNAL_DECISION_API_ADDRESS", "") if raw is None else raw).strip()
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    return value if address.version == 4 and address.is_private and not address.is_loopback else None
+
+
+def _internal_origin(internal_url: str) -> str | None:
+    """`https://<tailnet name>` from INTERNAL_DECISION_API_URL, or None for
+    anything else: no port, no path, no credentials -- the forwarder dials the
+    name on 443 and nothing else."""
+    parts = urllib.parse.urlsplit((internal_url or "").strip().rstrip("/"))
+    if parts.scheme != "https" or parts.path or parts.query or parts.fragment or \
+            parts.username or parts.password or parts.port is not None:
+        return None
+    host = parts.hostname or ""
+    return f"https://{host}" if _TAILNET_HOST.fullmatch(host) else None
+
+
+def resolve_call_backend(backend: str, *, internal_url: str, address: str | None,
+                         typesafe_key: str | None) -> CallBackend | NoBackend:
+    """The backend, URL, model and key for one swarm-api Jev call to the
+    workspace's chosen `backend`, or why there is none.
+
+    Never a fallback: an internal choice with no route is `no_route`, not
+    TypeSafe, so page text and contracts stay inside the network unless the
+    workspace chose otherwise (owner decision 2026-10-14). `internal_url` is
+    INTERNAL_DECISION_API_URL, `address` is `route_address()`, `typesafe_key`
+    is `typesafe_call_key()`'s value. An unknown name is the default, as
+    `stored_backend` reads it."""
+    name = backend if backend in BACKENDS else DEFAULT_BACKEND
+    if name == TYPESAFE_BACKEND:
+        key = (typesafe_key or "").strip()
+        if not key:
+            return NoBackend(name, UNAVAILABLE_CODES[NO_KEY], NO_KEY)
+        return CallBackend(name, TYPESAFE_URL, TYPESAFE_MODEL, stringify_state=False, key=key)
+    origin = _internal_origin(internal_url)
+    if origin is None:
+        return NoBackend(name, UNAVAILABLE_CODES[NO_EGRESS], NO_EGRESS)
+    pinned = route_address(address or "")
+    if pinned is None:
+        return NoBackend(name, UNAVAILABLE_CODES[NO_ROUTE], NO_ROUTE)
+    return CallBackend(name, f"{origin}/{INTERNAL_PATHS[name]}/v1/decide", INTERNAL_MODELS[name],
+                       stringify_state=True, connect_address=pinned)
+
+
+def typesafe_call_key(task_tenant_id: str, submitter_tenant_id: str | None,
+                      present: Collection[str],
+                      read_secret: Callable[[str], str | None]) -> str | None:
+    """The TypeSafe key one call uses, or None: the secret
+    `provider_keys.resolve_provider_key` picks (the submitter's own, then the
+    workspace's), read through `read_secret`. A secret that cannot be read is
+    no key -- the call is `no_key`, never another workspace's key."""
+    # Imported here: provider_keys' own imports reach this module.
+    from .provider_keys import TYPESAFE, resolve_provider_key
+
+    secret_id = resolve_provider_key(task_tenant_id, submitter_tenant_id, TYPESAFE, present)
+    if secret_id is None:
+        return None
+    try:
+        value = read_secret(secret_id)
+    except Exception:  # a denied or missing read is no key; its message may name the secret's content
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to `host` (SNI, certificate and Host header) over a TCP
+    connection to `address`: what a judging pod's hostAliases entry does."""
+
+    def __init__(self, host: str, *, address: str, port: int, timeout: float,
+                 context: ssl.SSLContext) -> None:
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._pinned_address = address
+        self._pinned_context = context
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._pinned_address, self.port), self.timeout)
+        self.sock = self._pinned_context.wrap_socket(sock, server_hostname=self.host)
+
+
+def pinned_transport(address: str, *, context: ssl.SSLContext | None = None) -> Transport:
+    """A `swarm_jev` transport that dials `address` for every URL it is given
+    and verifies the URL's own host's certificate (the system's roots unless
+    `context` is given). TLS is never terminated or relaxed on the way."""
+
+    def transport(url: str, body: bytes, headers: Mapping[str, str],
+                  timeout: float) -> tuple[int, bytes]:
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != "https" or not parts.hostname:
+            raise ValueError("a pinned call is https to a named host")
+        connection = _PinnedHTTPSConnection(
+            parts.hostname, address=address, port=parts.port or 443, timeout=timeout,
+            context=context if context is not None else ssl.create_default_context())
+        path = parts.path or "/"
+        if parts.query:
+            path = f"{path}?{parts.query}"
+        try:
+            connection.request("POST", path, body=body, headers=dict(headers))
+            response = connection.getresponse()
+            return response.status, response.read(_MAX_RESPONSE_BYTES)
+        finally:
+            connection.close()
+
+    return transport
+
+
+def probe_route(backend: CallBackend | NoBackend, *, timeout: float = PROBE_SECONDS,
+                connect: Callable[..., Any] = socket.create_connection) -> NoBackend | None:
+    """Whether the load balancer answers on its port: None when it does (or
+    the backend is not routed through it), a `no_route` NoBackend when it
+    does not or the backend already had none. A TCP connection only: no
+    request, no TLS, nothing about a workspace is sent."""
+    if isinstance(backend, NoBackend):
+        return backend if backend.code == "no_route" else None
+    if not backend.connect_address:
+        return None
+    port = urllib.parse.urlsplit(backend.url).port or 443
+    try:
+        sock = connect((backend.connect_address, port), timeout)
+    except OSError:
+        return NoBackend(backend.name, UNAVAILABLE_CODES[UNREACHABLE], UNREACHABLE)
+    sock.close()
+    return None
 
 
 #: The MAC beside each signed block (§4.5): the document's own top level for
@@ -187,8 +408,7 @@ def key_id(key: str) -> str:
 
 
 def _sig(key: str, tenant_id: str, block: str, fields: Mapping[str, Any]) -> bytes:
-    return hmac.new(key.encode("utf-8"),
-                    canonical_settings_block(tenant_id=tenant_id, block=block, fields=fields),
+    return hmac.new(key.encode("utf-8"), canonical_settings_block(tenant_id=tenant_id, block=block, fields=fields),
                     hashlib.sha256).digest()
 
 
@@ -259,9 +479,13 @@ WRITER_FIELDS: Mapping[str, tuple[str, ...]] = {
     "budget": ("unit", "amount"),
     # Contract request 128: `qualitygates.QualityGatesStore.put` writes it.
     "quality_gates": ("jev",),
-    # Contract request 136: no route writes `plugins.allowed` yet, so a stored
-    # one is only a forger's, held by the re-sign pass and never signed.
-    "plugins": (),
+    # Contract request 136: PUT /v1/workspaces/{tenant_id}/plugins
+    # (`plugins.PluginsStore.put`) writes and signs it, so a key rotation's
+    # re-sign pass signs the stored list again rather than holding it.
+    "plugins": ("allowed",),
+    # Contract request 138: PUT /v1/workspaces/{tenant_id}/contract-review
+    # (`contractreview.ContractReviewStore.put`) writes and signs it.
+    "contract_review": ("enabled",),
 }
 
 
@@ -309,7 +533,7 @@ def resign_workspace_settings(db: Any, key: str, *, apply: bool,
 
     It writes ONLY each block's `mac`, computed over the covered values
     (SETTINGS_MAC_FIELDS) as they are stored: no setting is changed, and a
-    key outside the lists is neither covered nor touched. The tenant is the
+    key outside the list is neither covered nor touched. The tenant is the
     DOCUMENT ID, never its `tenant_id` field, which a worker can rewrite. A
     block carrying a covered key no writer writes is `held`, never signed:
     signing it would sign a value only a forger can have put there. Each

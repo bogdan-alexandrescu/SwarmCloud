@@ -35,15 +35,19 @@ resolved tenant and refused when it differs -- and never used as the value
 anything is filed under, so no ordering of checks exists in which a body field
 could put a live credential into somebody else's pool.
 
-ONE KIND OF CREDENTIAL, TWO PROVIDERS
--------------------------------------
-The pool holds ROTATING OAUTH PAIRS and nothing else: Claude subscriptions
-(`anthropic`) and, since the owner's choice of 2026-11-01 (#2688), ChatGPT
-plans (`openai`, which codex runs on). There is no API-key branch here and no
+ONE KIND OF CREDENTIAL, TWO PROVIDERS, AND VOICE IT'S KEY
+--------------------------------------------------------
+The workspace pool holds ROTATING OAUTH PAIRS and nothing else: Claude
+subscriptions (`anthropic`) and, since the owner's choice of 2026-11-01
+(#2688), ChatGPT plans (`openai`, which codex runs on). There is no
 credential-kind selector: `provider` names which of those two pairs an
 account is, a sign-in that names neither is refused by its request model, and
 a registration that names neither is refused by name with the known providers
-in the refusal's detail. A sign-in that sends no provider is a Claude sign-in,
+in the refusal's detail. The one exception is the broker's
+`VOICE_ONLY_PROVIDERS` split, restated as `schemas.VOICE_ONLY_PROVIDERS`:
+`openai-api`, an OpenAI developer API key for Voice it's Live sessions (the
+owner, 4 November 2026). Only a platform admin may register one, never lent,
+and the broker files it into the Voice it pool alone. A sign-in that sends no provider is a Claude sign-in,
 exactly as before. This file forwards the provider unchanged and never reads
 or holds the pair itself. The unrelated `POST /v1/tenants/me/credentials`,
 which writes a tenant's own provider API key into that tenant's secret, is a
@@ -112,6 +116,7 @@ from ..schemas import (
     ACCOUNT_HEALTH_WINDOWS,
     ACCOUNT_HOLD_DEADLINE,
     ACCOUNT_PROVIDERS,
+    VOICE_ONLY_PROVIDERS,
     AccountCreate,
     AccountLending,
     AccountSignInFinish,
@@ -412,7 +417,8 @@ def register_account(
     ctx: AppContext = Depends(get_context),
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
-    """Register a subscription or a ChatGPT plan into the caller's own pool.
+    """Register a subscription or a ChatGPT plan into the caller's own pool,
+    or, for a platform admin, Voice it's OpenAI API key (`openai-api`).
 
     The credential is taken as pasted and forwarded once. The broker parses it
     BEFORE writing anything, so a credential with no refresh token is refused at
@@ -432,23 +438,30 @@ def register_account(
                 "owner comes from the verified token, so the field can be omitted"
             )
     provider = body.provider.strip().lower()
-    if provider not in ACCOUNT_PROVIDERS:
+    if provider in VOICE_ONLY_PROVIDERS:
+        _voice_only_registration(auth, body)
+    elif provider not in ACCOUNT_PROVIDERS:
         # THE POOL HOLDS ROTATING PAIRS, so this is not a free choice: a
         # caller naming anything else is told why rather than having a live
-        # credential filed under a provider the broker cannot refresh. There is
-        # no API-key path in the account pool at all.
+        # credential filed under a provider the broker cannot refresh. The one
+        # API-key kind is Voice it's, a platform admin's, above.
+        known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS
         raise ValidationFailed(
-            "the account pool holds Claude subscriptions and ChatGPT plans, so "
-            f"provider must be one of {', '.join(map(repr, ACCOUNT_PROVIDERS))}, "
-            f"not {provider!r}",
-            detail={"known_providers": list(ACCOUNT_PROVIDERS)},
+            "the account pool holds Claude subscriptions and ChatGPT plans (and, "
+            "for Voice it only, an OpenAI API key), so provider must be one of "
+            f"{', '.join(map(repr, known))}, not {provider!r}",
+            detail={"known_providers": list(known)},
         )
+    # Voice it's key is recorded with who added it (the broker writes it on
+    # the key's account); every other kind is registered as before.
+    added = {"added_by": auth.email} if provider in VOICE_ONLY_PROVIDERS else {}
     result = pool.register(
         owner_tenant=tenant_id,
         label=body.label,
         provider=provider,
         lend_to=list(body.lend_to),
         credential=body.credential,
+        **added,
     )
     return {
         "account": _own_view(result.get("account"), tenant_id),
@@ -458,6 +471,22 @@ def register_account(
             "stored write-only; no read path in this API can return key material"
         ),
     }
+
+
+def _voice_only_registration(auth: AuthContext, body: AccountCreate) -> None:
+    """The gate on a Voice-it-only kind (`openai-api`), BEFORE the broker is
+    asked: a PLATFORM admin, and no `lend_to`.
+
+    The broker refuses a non-platform caller itself, but swarm-api IS a
+    platform caller to the broker, so without this check any workspace member
+    could put a key into the pool every Voice it person draws on. `require_admin`
+    with no route is the full-admin rule: a pool admin is refused like any
+    non-admin, as on `PUT .../pools`."""
+    require_admin(auth, None)
+    if body.lend_to:
+        raise ValidationFailed(
+            "an OpenAI API key serves Voice it alone and is never lent; send no lend_to"
+        )
 
 
 @router.post("/authorize")

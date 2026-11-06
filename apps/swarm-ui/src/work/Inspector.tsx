@@ -12,6 +12,7 @@ import {
 } from 'react'
 
 import { clampPane, readPane, writePane, type PaneSpec } from '../panes'
+import { setTraceWide, useTraceWide } from '../trace/model'
 import './inspectorShell.css'
 
 /**
@@ -164,6 +165,11 @@ export interface InspectorProps {
   onWidthClass?: (cls: WidthClass) => void
   /** Called when the inspector folds (true) or unfolds (false). */
   onFold?: (folded: boolean) => void
+  /**
+   * The subject the inspector holds (an agent's id), or null. A new subject
+   * unfolds a folded inspector, so what the reader picked is shown, not a rail.
+   */
+  subject?: string | null
 }
 
 /** The page: the left pane, a drag handle, the docked inspector -- or its rail, or on a phone its sheet. */
@@ -183,14 +189,20 @@ export function Inspector({
   backLabel,
   onWidthClass,
   onFold,
+  subject = null,
 }: InspectorProps) {
   const root = useRef<HTMLDivElement>(null)
   const spec = inspectorSpec(screen, initialWidth)
   const [stored, setStored] = useState(() => readPane(spec))
-  const [folded, setFolded] = useState(startFolded)
+  // THE FOLD IS THE SUBJECT'S: folded for the subject it was folded on (null
+  // at rest), so a newly picked subject is shown, not a rail, in the same
+  // render that picks it -- an effect would mount it a commit late.
+  const [fold, setFold] = useState<{ folded: boolean; subject: string | null }>({ folded: startFolded, subject: null })
+  const folded = fold.folded && fold.subject === subject
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ right: number; at: number } | null>(null)
   const phone = useIsPhone()
+  const traceWide = useTraceWide()
   const pageWidth = usePageWidth(root)
 
   // A remount on another screen reads that screen's own width.
@@ -220,8 +232,8 @@ export function Inspector({
     [max, screen, initialWidth],
   )
 
-  const fold = (to: boolean) => {
-    setFolded(to)
+  const foldTo = (to: boolean) => {
+    setFold({ folded: to, subject })
     onFold?.(to)
   }
 
@@ -275,12 +287,15 @@ export function Inspector({
     return () => window.removeEventListener('keydown', esc)
   }, [sheet, back])
 
+  const trWide = traceWide && docked
   const cls = [
     'wi',
     has && !phone ? (folded ? 'is-folded' : 'is-docked') : 'is-alone',
     phone ? 'is-phone' : '',
     sheet ? 'is-sheet' : '',
     dragging ? 'is-dragging' : '',
+    // A TRANSCRIPT IS READ FULL WIDTH (trace/model.ts): the list folds to a strip.
+    trWide ? 'is-trwide' : '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -301,7 +316,7 @@ export function Inspector({
         <button
           type="button"
           className="wi-btn wi-fold"
-          onClick={() => fold(true)}
+          onClick={() => foldTo(true)}
           aria-label="Fold the inspector"
           title="Fold the inspector"
         >
@@ -318,6 +333,15 @@ export function Inspector({
 
   return (
     <div ref={root} className={cls} style={{ ['--wi-dock' as string]: `${width}px` }} data-screen={screen}>
+      {trWide && (
+        <div className="trc-strip">
+          <button type="button" onClick={() => setTraceWide(false)} aria-label="Show the list" title="Show the list ([)">
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+              <path d="M3 4.5h10M3 8h10M3 11.5h10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      )}
       <div className="wi-main" data-width={widthClass}>
         {main}
       </div>
@@ -326,7 +350,7 @@ export function Inspector({
           <button
             type="button"
             className="wi-btn wi-unfold"
-            onClick={() => fold(false)}
+            onClick={() => foldTo(false)}
             aria-label="Open the inspector"
             title="Open the inspector"
           >

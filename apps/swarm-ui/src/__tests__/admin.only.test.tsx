@@ -13,6 +13,11 @@
  * test_admin_surface_refuses_non_admins.py); this is the console not drawing
  * what it would refuse.
  *
+ * Since the admin routes lane (part of #2688; BGD 3 November) someone in a
+ * group workspace reaches Admin › Workspaces -- their group workspaces, each
+ * page read only -- and nothing else there; a viewer is in one, so their Admin
+ * is that one page, never a platform page.
+ *
  * MUTATION: in Spine.tsx count any group role other than `member` as
  * administering a workspace, and both cases go red.
  */
@@ -48,6 +53,8 @@ async function app(path: string) {
 }
 
 const adminItem = () => document.querySelector('.sk-spine a[data-sec="admin"]')
+// A viewer's Admin is Admin › Workspaces alone (BGD 3 November): the item opens it.
+const workspacesOnly = (label: string) => expect(adminItem()?.getAttribute('href'), label).toBe('/admin/workspaces')
 // The foot's second line is the role since CONFIG-ADMIN-POLISH (S1a); the email is its title.
 const signedIn = () => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com')
 
@@ -61,12 +68,12 @@ afterEach(() => {
 })
 
 describe('a viewer sees no Admin (ADMIN-ONLY)', () => {
-  it('draws no Admin in the spine for someone whose only role is viewer', async () => {
+  it('draws Admin in the spine as Workspaces alone for someone whose only role is viewer', async () => {
     serve()
     await app('/overview')
     await waitFor(signedIn)
     await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="capacity"]')).not.toBeNull())
-    expect(adminItem(), 'a viewer was shown Admin').toBeNull()
+    await waitFor(() => workspacesOnly('a viewer was shown a platform Admin page'))
   })
 
   // admin-shell-23 (BGD 2026-10-28, part of #2596) keeps the address and says
@@ -77,7 +84,7 @@ describe('a viewer sees no Admin (ADMIN-ONLY)', () => {
       await app(path)
       await waitFor(() => expect(document.querySelector('[data-refused="admin"]'), path).not.toBeNull())
       expect(window.location.pathname, path).toBe(path)
-      expect(adminItem(), path).toBeNull()
+      workspacesOnly(path)
       cleanup()
     }
   })

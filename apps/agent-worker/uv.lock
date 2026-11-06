@@ -700,6 +700,7 @@ dependencies = [
     { name = "google-cloud-secret-manager" },
     { name = "google-cloud-storage" },
     { name = "swarm-common" },
+    { name = "swarm-jev" },
     { name = "swarm-redaction" },
     { name = "swarm-workflow-rollup" },
 ]
@@ -712,6 +713,7 @@ requires-dist = [
     { name = "google-cloud-secret-manager", specifier = ">=2.20" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "swarm-common", editable = "../common" },
+    { name = "swarm-jev", editable = "../jev-client" },
     { name = "swarm-redaction", editable = "../redaction" },
     { name = "swarm-workflow-rollup", editable = "../workflow-rollup" },
 ]
@@ -720,6 +722,17 @@ requires-dist = [
 name = "swarm-common"
 version = "0.1.0"
 source = { editable = "../common" }
+
+[[package]]
+name = "swarm-jev"
+version = "0.1.0"
+source = { editable = "../jev-client" }
+dependencies = [
+    { name = "swarm-redaction" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "swarm-redaction", editable = "../redaction" }]
 
 [[package]]
 name = "swarm-redaction"

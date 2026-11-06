@@ -5,10 +5,11 @@ the waits' new events (lane PLUGIN-RELEASE-NOV, part of #2688).
   plugin.json still said 0.5.74: `swarm_check` lists a parked task's blocking
   owner questions first (#2860), and a workflow spec of any size launches
   through `swarm_workflow_launch` with only the spec handle in its args
-  (#2875). The release tags the bridge `sc-v<version>` only for a version it
-  has not tagged yet (docs/ci.md, "The plugin's bridge tag is made by the
-  release"), so neither reached a session until the version moved past 0.5.74,
-  with the bridge pin beside it and a CHANGELOG entry naming both.
+  (#2875). Main's CI tags the bridge `sc-v<version>` once the unit tests pass,
+  and only for a version it has not tagged yet (docs/ci.md, "The plugin's
+  bridge tag is made once the unit tests pass"), so neither reached a session
+  until the version moved past 0.5.74, with the bridge pin beside it and a
+  CHANGELOG entry naming both.
 * THE WAITS' EVENTS ARE RELAYED. swarm_install.waits sends a `wait_countdown`
   `detail` whenever the check's answer changes, and ends a wait at once with
   `wait_failed` and its `detail`. `/sc:install` and `/sc:team` are told to

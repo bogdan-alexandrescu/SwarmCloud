@@ -5,10 +5,13 @@
  * number (design-system §6.6). Console tokens only, so both themes hold.
  * Nothing here may be wider than its pane: every row wraps or cuts with …
  */
-.ny { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; padding: 6px var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-sizing: border-box; }
+/* The box's corner and the bar's gaps are the console tokens' resolved values
+   (--radius 10px, --ctl-s1 4px, --ctl-s2 8px): this sheet is not one of
+   src/styles/*.css, so the spacing sweep reads it unresolved. */
+.ny { display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; padding: 6px var(--ctl-s2); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); box-sizing: border-box; }
 .ny.has-some { border-color: var(--s-park); border-left-width: 4px; }
 
-.ny-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); min-width: 0; }
+.ny-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
 .ny-all { border: 0; background: none; padding: 2px var(--ctl-s1) 2px 0; font: inherit; color: var(--text); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .ny-n { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px; background: var(--s-park); color: var(--surface); font-weight: 700; font-size: var(--t-meta); font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .ny:not(.has-some) .ny-n { background: var(--line); color: var(--text); }
@@ -65,6 +68,35 @@
 .ny-more { margin: 0; display: flex; flex-wrap: wrap; gap: var(--ctl-s2); }
 .ny-morebtn { border: 0; background: none; padding: 0; font: inherit; font-size: var(--t-meta); color: inherit; text-decoration: underline; cursor: pointer; }
 
+/* A PLUGIN STEP'S PARKED QUESTION (direction B's Needs-you screen, the
+   plugins console's pick of 4 November 2026). The row's plugin line sits under
+   it, the whole width; beside the list, a column of one card per parked plugin
+   step, 320px wide (the picked frame's), which drops under the list at 900px
+   and under. A card is the console's card: --line border, --surface ground,
+   the parked colour on its left edge, as the box's own. */
+.ny-plugin { grid-column: 1 / -1; min-width: 0; color: var(--text-dim); font-size: var(--t-micro, 12px); line-height: 1.4; overflow-wrap: anywhere; }
+.ny-plugin b { color: var(--text); font-weight: 600; }
+.ny-plugin-left { color: var(--paused-ink, var(--s-park)); font-variant-numeric: tabular-nums; }
+.ny-body.has-parked { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; align-items: start; min-width: 0; }
+.ny-parked { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ny-parked-h { margin: 0; font-size: var(--t-meta); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.ny-parked-lead { margin: 0; color: var(--text-dim); font-size: var(--t-micro, 12px); line-height: 1.4; }
+.ny-park { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--s-park); border-radius: 10px; background: var(--surface); min-width: 0; font-size: var(--t-meta); }
+.ny-park-h { max-width: 100%; overflow-wrap: anywhere; }
+.ny-park-repo { font-family: var(--mono); font-size: var(--t-micro, 12px); color: var(--text-dim); max-width: 100%; overflow-wrap: anywhere; }
+.ny-park-chip { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; font-size: var(--t-micro, 12px); }
+.ny-park-seg { display: inline-flex; gap: 6px; padding: 2px 8px; border-left: 1px solid var(--line); }
+.ny-park-seg:first-child { border-left: 0; background: var(--s-parkb, var(--surface)); }
+.ny-park-seg.is-skill { color: var(--text-dim); }
+.ny-park-time { font-variant-numeric: tabular-nums; }
+.ny-park-act { line-height: 1.4; }
+.ny-park-act .c-btn { margin-top: 4px; }
+.ny-dim { color: var(--text-dim); }
+
+@media (max-width: 900px) {
+  .ny-body.has-parked { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* At 1280 and under, the rows drop the pull request and keep the rest. */
 @media (max-width: 1280px) {
   .ny-row .ny-pr { display: none; }
@@ -72,7 +104,8 @@
   .ny-title { max-width: 16ch; }
 }
 
-/* The phone: the chips go to their marks (the word stays the label and tooltip),
+/* The phone: the chips go to their marks (the word stays the label and tooltip:
+   a faint chip's aria-label names its kind, as a counted chip's does),
    and a row goes to two lines: what, then its actions. */
 @media (max-width: 720px) {
   .ny-chip .ny-word { display: none; }
@@ -83,4 +116,21 @@
   .ny-row .ny-acts { grid-column: 1 / -1; grid-row: 3; justify-content: flex-start; }
   .ny-row .ny-left { grid-column: 3; grid-row: 1; }
   .ny-title { max-width: none; }
+}
+
+/* THE ROW AT REST IS ONE LINE ON A PHONE, ON EVERY WORK SCREEN (#139 at 390,
+   #3146; the owner's pick, 4 November 2026). The row is on top of every Work
+   screen, the phone included, but with nothing waiting its box, its wrapped
+   chips and "Nothing waits on you here" stood three lines over the list. At
+   rest it is the chips' one line, unboxed, and `Needs you 0` says what the
+   quiet line said; a line too long for the screen scrolls sideways (as the
+   agent's tabs do, V148) rather than wrapping. Built for Work › Agents (in
+   agents.css, scoped to it), it is unscoped here, so the Workflows list, Agents
+   and the workflow page all show it. When something waits (`.has-some`) the
+   row keeps its box, its chips and its list: what needs you comes before the
+   list. 560px is the Work screens' phone (agents.css); the gap is --ctl-s1. */
+@media (max-width: 560px) {
+  .ny-bar { flex-wrap: nowrap; overflow-x: auto; gap: 4px; }
+  .ny:not(.has-some) { padding: 0; border: 0; background: none; }
+  .ny:not(.has-some) > .ny-quiet { display: none; }
 }

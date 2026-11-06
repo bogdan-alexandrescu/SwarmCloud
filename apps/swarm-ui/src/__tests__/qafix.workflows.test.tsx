@@ -9,17 +9,24 @@
  *           which still lists it because nothing says it ended, says so.
  *           Run 2 (wf_b6e2441b419f423a84eb, work-a-003) still read `Running 2`
  *           beside `1 running · 1 state unknown`: the tab is now named
- *           by what it counts, `Not ended` (QAFIX2-WORKFLOWS).
+ *           by what it counts, `Not ended` (QAFIX2-WORKFLOWS). The picked
+ *           Work redesign (frame graph-workflows-rest) puts a workflow whose
+ *           state was not derived in All only (`listBucketOf`), so Running
+ *           counts and lists the running one alone.
  *   QA-097  at 390 the owner, profile and sort selects started at 57, 56 and
  *           44 px, each after its own label's width. The labels now sit in one
- *           fixed column, so the selects share one left edge.
+ *           fixed column, so the selects share one left edge. The redesign
+ *           keeps the labels for assistive technology only (`.vh`), so each
+ *           select starts at its own pick's edge and fills it at 390.
  *
  * QAFIX2-WORK-MINOR (visual QA run 2, wf_b6e2441b419f423a84eb, 2026-10-20):
  *
  *   work-a-012  at 390 the state filter stopped 20-60 px short of the
  *           content edge while the search box and the selects under it ran
  *           the column wide. It runs the column wide too, its segments
- *           sharing the width.
+ *           sharing the width. The redesign (frame graph-workflows-rest)
+ *           sets the buckets on their own line at the left, never wider than
+ *           the column, scrolling inside it rather than past the edge.
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -109,7 +116,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
 
 describe('QA-036: a workflow whose state was not derived is not counted as running', () => {
   it('the summary says it apart from the running one', () => {
@@ -121,29 +128,32 @@ describe('QA-036: a workflow whose state was not derived is not counted as runni
 
   it('the rendered summary and the Running tab agree with the rows they count', async () => {
     render(<WorkflowsScreen view="state=running" />)
-    await waitFor(() => expect(rowIds()).toEqual(['wf_audit_01', 'wf_bcdc9180e4fb4a209f31']))
+    // MUTATION: put the underived workflow back in the running bucket (`listBucketOf`) and Running lists two rows.
+    await waitFor(() => expect(rowIds()).toEqual(['wf_audit_01']))
     // MUTATION: drop the underived part from listSummary and the page's own count line says `2 running` again.
     expect(screen.getByText(/1 running · 1 state unknown · 0 finished · 1 failed/)).toBeTruthy()
     const seg = screen.getByRole('group', { name: 'Which workflows' })
-    // The tab lists both rows, because nothing on this read says the underived one ended...
-    const notEnded = within(seg).getByRole('button', { name: /^Not ended/, pressed: true })
-    // MUTATION: count the underived row out of the tab and it says 1 over the two rows it lists.
-    expect(notEnded.textContent).toBe('Not ended2')
-    // MUTATION: restore the old title ("running, parked or waiting to start") and the tab claims both rows are running.
-    expect(notEnded.getAttribute('title')).toMatch(/state this read could not derive/)
+    // Running counts the one row it lists, and agrees with the summary's `1 running`...
+    const running = within(seg).getByRole('button', { name: /^Running/, pressed: true })
+    expect(running.textContent).toBe('Running1')
+    // ...and All, the one bucket that holds the underived row, says so in its title.
+    const all = within(seg).getByRole('button', { name: /^All/ })
+    expect(all.textContent).toBe('All3')
+    // MUTATION: drop the words from All's title and nothing says where the underived row is counted.
+    expect(all.getAttribute('title')).toMatch(/state this read could not derive/)
   })
 
   it('names the tab by what it counts, so its 2 never sits beside `1 running` as a running count (run 2, work-a-003)', async () => {
     render(<WorkflowsScreen view="state=running" />)
-    await waitFor(() => expect(rowIds()).toHaveLength(2))
+    await waitFor(() => expect(rowIds()).toHaveLength(1))
     const seg = screen.getByRole('group', { name: 'Which workflows' })
     const tabs = within(seg).getAllByRole('button').map((b) => b.textContent)
-    // MUTATION: label the tab `BUCKET_LABEL.running` again and the strip reads `Running2` beside `1 running`.
-    expect(tabs).toEqual(['Not ended2', 'Finished0', 'Failed1', 'All3'])
-    // MUTATION: drop the summary's `state unknown` part and the line no longer sums to the tab's 2.
+    // MUTATION: count the underived workflow in a bucket other than All and the strip reads `Running2` beside `1 running`.
+    expect(tabs).toEqual(['All3', 'Running1', 'Parked0', 'Failed1', 'Done0'])
+    // MUTATION: drop the summary's `state unknown` part and the line no longer says where the third workflow is.
     const line = screen.getByText(/1 running · 1 state unknown/).textContent ?? ''
-    const parts = [...line.matchAll(/(\d+) (running|parked|waiting|state unknown)/g)].reduce((n, m) => n + Number(m[1]), 0)
-    expect(parts).toBe(2)
+    const running = [...line.matchAll(/(\d+) running/g)].reduce((n, m) => n + Number(m[1]), 0)
+    expect(running).toBe(1)
   })
 })
 
@@ -154,19 +164,24 @@ describe('QA-097: at 390 the stacked filter selects share one left edge', () => 
   it('puts every pick label in one fixed column, so no select follows its label width', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toHaveLength(3))
-    const picks = [...document.querySelectorAll<HTMLElement>('.wfl-filters > .wfl-pick')]
-    expect(picks.map((p) => p.firstChild?.textContent?.trim())).toEqual(['owner', 'profile', 'sort'])
+    const picks = [...document.querySelectorAll<HTMLElement>('.wfg-tools > .wfg-pick')]
+    // The labels are read, not drawn: no label width sits before any select.
+    // MUTATION: make a label a visible word again and its select follows its width.
+    expect(picks.map((p) => (p.firstElementChild?.classList.contains('vh') ? p.firstElementChild.textContent?.trim() : null))).toEqual([
+      'owner',
+      'profile',
+      'sort',
+    ])
     for (const p of picks) {
-      // MUTATION: leave the pick an inline-flex row and each select starts after its own label (57, 56, 44 px).
-      expect(painted(p, 'display', PHONE)).toBe('grid')
-      // MUTATION: size the label track by its content (`auto` / `max-content`) and the edges go ragged again.
-      expect(painted(p, 'grid-template-columns', PHONE)).toBe('4.5em minmax(0, 1fr)')
+      // MUTATION: drop the phone share and each pick shrinks to its option.
+      expect(painted(p, ['flex', 'flex-basis'], PHONE)).toBe('1 1 40%')
       const select = p.querySelector('select')!
-      // MUTATION: drop the width and each select shrinks to its option instead of filling its row.
+      // MUTATION: drop the width and each select shrinks to its option instead of filling its pick.
       expect(painted(select, 'width', PHONE)).toBe('100%')
     }
-    // MUTATION: move the grid out of the phone query and the desktop toolbar's picks stack their selects too.
+    // MUTATION: move the share out of the phone query and the desktop toolbar's picks stretch too.
     expect(painted(picks[0]!, 'display', WIDE)).toBe('inline-flex')
+    expect(painted(picks[0]!, ['flex', 'flex-basis'], WIDE)).toBeNull()
   })
 })
 
@@ -178,21 +193,18 @@ describe('work-a-012: at 390 the Workflows state filter runs the column wide', (
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toHaveLength(3))
     const seg = screen.getByRole('group', { name: 'Which workflows' })
-    // MUTATION: drop the `.wfl-seg` phone rule and the shared `.c-seg`'s
-    // `flex: none` sizes the control to its segments, short of the edge.
-    expect(painted(seg, ['flex', 'flex-basis'], PHONE)).toBe('1 1 100%')
-    // The search box it lines up with is the column wide at 390.
-    // MUTATION: (control) give the search box a fixed width and it is no
-    // longer the edge the filter is held to.
-    expect(painted(document.querySelector('.wfl-search')!, ['flex', 'flex-basis'], PHONE)).toBe('1 1 200px')
-    for (const b of within(seg).getAllByRole('button')) {
-      // MUTATION: leave the segments content-packed at the left (no grow, or
-      // `justify-content` unset) and the spare width pools at the right end.
-      expect(painted(b, ['flex', 'flex-grow'], PHONE), b.textContent ?? '').toBe('1 0 auto')
-      expect(painted(b, 'justify-content', PHONE), b.textContent ?? '').toBe('center')
+    // The redesign (frame graph-workflows-rest) sets the buckets on their own
+    // line at the left, at every width, and never past the column's edge.
+    // MUTATION: drop the cap and five buckets run past the edge at 390.
+    expect(seg.classList.contains('wfg-seg')).toBe(true)
+    for (const env of [PHONE, WIDE]) {
+      expect(painted(seg, 'max-width', env)).toBe('100%')
+      // MUTATION: drop the scroll and a bucket past the edge is cut off rather than reachable.
+      expect(painted(seg, 'overflow-x', env)).toBe('auto')
+      expect(painted(seg, 'align-self', env)).toBe('flex-start')
     }
-    // MUTATION: move the rule out of the phone query and the desktop toolbar's
-    // filter fills its row too.
-    expect(painted(seg, ['flex', 'flex-basis'], WIDE)).toBe('none')
+    // The search box under it grows to the column wide at 390.
+    // MUTATION: give the search box a fixed width and it stops short of the edge.
+    expect(painted(document.querySelector('.wfg-search')!, ['flex', 'flex-basis'], PHONE)).toBe('1 1 220px')
   })
 })

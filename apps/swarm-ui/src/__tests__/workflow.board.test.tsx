@@ -23,7 +23,7 @@
 import STYLES from '../styles.css?raw'
 import WF_CSS from '../styles/workflows.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
 import { WorkflowCard, WorkflowsScreen } from '../Workflows'
@@ -292,14 +292,16 @@ describe('the list', () => {
     // Workflows V2 (owner's pick, 2026-10-01): the console's /workflows is the
     // list; a workflow's graph is on its own page.
     render(<WorkflowsScreen />)
-    await screen.findByText('wf_audit_01', {}, { timeout: 4000 })
-    const rows = document.querySelectorAll('.wfl-table tbody tr')
+    // The row's id moved off the line into its name's title and the
+    // inspector (the redesign, frame graph-workflows-rest): wait for the row.
+    await waitFor(() => expect(document.querySelector('.wfg-table tr[data-workflow="wf_audit_01"]')).toBeTruthy(), { timeout: 4000 })
+    const rows = document.querySelectorAll('.wfg-table tbody tr')
     expect(rows.length).toBeGreaterThan(0)
     expect(document.querySelector('.wf-canvas')).toBeNull()
     // Each row links to that workflow's page.
-    const row = document.querySelector('.wfl-table tr[data-workflow="wf_audit_01"]')
+    const row = document.querySelector('.wfg-table tr[data-workflow="wf_audit_01"]')
     expect(row, 'no row for wf_audit_01').toBeTruthy()
-    expect(row!.querySelector('.wfl-line > a')?.getAttribute('href')).toBe('/workflows/wf_audit_01')
+    expect(row!.querySelector('[data-col="workflow"] > a')?.getAttribute('href')).toBe('/workflows/wf_audit_01')
   })
 })
 

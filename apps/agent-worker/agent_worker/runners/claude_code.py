@@ -308,6 +308,7 @@ import os
 import shlex
 import shutil
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -318,6 +319,7 @@ from swarm_common.models import (
     RESERVED_MCP_SERVER_NAMES,
     RESERVED_MCP_SERVER_PREFIX,
 )
+from swarm_rollup.agentimage import QA_TOOL_MODULE, VENV_BIN, VENV_PYTHON, runs_qa_tool
 
 from .. import browser_tools, graphstage, lightpanda, stepservers
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
@@ -718,8 +720,14 @@ SCREENSHOT_TOOL = f"mcp__{MCP_SERVER_NAME}__browser_take_screenshot"
 #: build without it.
 LIVE_BROWSER_UNAVAILABLE = "live_browser_unavailable"
 
-#: The image's venv, first on the agent's PATH on the browser image.
-VENV_BIN = "/opt/venv/bin"
+#: The image's venv, first on the agent's PATH on the browser image, is
+#: `VENV_BIN`, imported above from `swarm_rollup.agentimage`: the one constant
+#: the visual-check brief's interpreter path (`swarm_api.qaspec`) is built from.
+
+#: How long the venv's interpreter has to import the capture tool before a
+#: visual-check step is failed (`qa_tool_refusal`). An import of one module
+#: from site-packages takes well under a second; this bounds a hung start.
+QA_TOOL_CHECK_SECONDS = 30
 
 #: What an agent is told, once, after its prompt, when the live browser exists.
 #: ONE-PLACE (the owner's ask of 2026-11-03): each rule once, in as few words
@@ -1102,6 +1110,36 @@ def egress_notice(spool: str) -> str | None:
     return _spool_text(spool, EGRESS_NOTICE_NAME)
 
 
+def qa_tool_refusal() -> str | None:
+    """Why the venv's Python cannot run the capture tool, or None when it can.
+
+    A visual-check brief runs `swarm_rollup.agentimage.QA_TOOL` (the venv's
+    interpreter by its full path, `-m swarm_qa`). On 3 November 2026 a capture
+    leg's agent found "No module named swarm_qa" mid-run; this asks the same
+    interpreter to import the module before the agent starts, so the step
+    fails at once with a message naming both. `-I` (isolated): no PYTHONPATH,
+    no user site and no working directory on the path, so only the venv's own
+    site-packages can satisfy it, as the image installs it. The environment is
+    the PATH alone: nothing of the worker's reaches the child.
+    """
+    argv = [VENV_PYTHON, "-I", "-c", f"import {QA_TOOL_MODULE}"]
+    try:
+        done = subprocess.run(argv, env={"PATH": f"{VENV_BIN}:/usr/local/bin:/usr/bin:/bin"},
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=QA_TOOL_CHECK_SECONDS, check=False)
+    except FileNotFoundError:
+        return f"{VENV_PYTHON} does not exist, so it cannot import {QA_TOOL_MODULE}"
+    except subprocess.TimeoutExpired:
+        return f"{VENV_PYTHON} did not import {QA_TOOL_MODULE} within {QA_TOOL_CHECK_SECONDS} s"
+    except OSError as exc:
+        return f"{VENV_PYTHON} could not be started to import {QA_TOOL_MODULE} ({type(exc).__name__})"
+    if done.returncode == 0:
+        return None
+    lines = (done.stderr or "").strip().splitlines()
+    why = f": {lines[-1].strip()[:200]}" if lines else ""
+    return f"{VENV_PYTHON} cannot import {QA_TOOL_MODULE} (exit {done.returncode}){why}"
+
+
 def qa_target_notice(spool: str) -> str | None:
     """VQ4-WIRE: why the gate did not sign the agent in to its QA target (a
     pending host, a challenge; `qa_target.NOTICE_NAME`, written by
@@ -1294,11 +1332,12 @@ def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Pat
             "hooks": [_jev_gate_hook(gates, "enforce-edit", JEV_ENFORCE_TIMEOUT)],
         })
     if question_bridge.enabled(os.environ):
-        # The question bridge spike, behind its switch, which nothing sets
-        # (`question_bridge`; docs/design/agent-plugins-question-bridge.md):
-        # a question tool call is recorded beside these settings and stops
-        # the turn. Nothing parks on it yet. A new settings file is a new
-        # run: an earlier one's question is not this one's.
+        # The question bridge, behind its switch, which the worker sets for
+        # a plugin step alone (`question_bridge`;
+        # docs/design/agent-plugins-question-bridge.md): a question tool
+        # call is recorded beside these settings and stops the turn, and the
+        # worker parks the step on it. A new settings file is a new run: an
+        # earlier one's question is not this one's.
         question_bridge.clear_pending(directory / question_bridge.PENDING_NAME)
         settings["hooks"]["PreToolUse"].append(
             question_bridge.hook_entry(directory / question_bridge.PENDING_NAME))
@@ -2042,6 +2081,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     refusal = live_browser_refusal(env, browsers, endpoint)
     if refusal:
         raise RunnerFailure(f"{refusal}; the agent was not started")
+    # A visual-check step on the browser image: its brief runs the capture or
+    # discovery tool with the venv's Python, so that Python must import it
+    # before the agent spends a turn (`qa_tool_refusal`).
+    if browsers and runs_qa_tool(prompt):
+        missing = qa_tool_refusal()
+        if missing:
+            raise RunnerFailure(f"{missing}; the visual-check step's agent was not started")
     if on_lightpanda and isinstance(prompt, str) and prompt.strip():
         # A child has no child path: it lists failing pages for its parent.
         lp_note = lightpanda.lightpanda_note(children=bool(env.get(CHILDREN_ENV)))
@@ -2153,12 +2199,18 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         cli_started = time.time()
         result = run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
         if question_bridge.enabled(os.environ):
-            # Nothing parks yet, so an asked question has no answer and the
-            # run is not the task done, whatever turns followed the stop.
-            reason = question_bridge.unanswered(question_bridge.read_stream(agent_stream),
-                                                settings.parent / question_bridge.PENDING_NAME)
-            if reason:
-                raise RunnerFailure(reason)
+            # A run that stopped on a recorded question ends cleanly, and the
+            # worker parks the step on it (`question_bridge`); `cliagent`
+            # took no turn after the stop. A question the stream and the
+            # record disagree on is missing evidence, never a normal end.
+            events = question_bridge.read_stream(agent_stream)
+            pending_path = settings.parent / question_bridge.PENDING_NAME
+            outcome, _ = question_bridge.classify(events, pending_path)
+            if outcome == question_bridge.BRIDGE_FAILED:
+                raise RunnerFailure(question_bridge.unanswered(events, pending_path)
+                                    or "question_bridge_failed: the run and its record disagree")
+            if outcome == question_bridge.PARKED and isinstance(result, dict):
+                result["question_parked"] = True
         if isinstance(result, dict):
             # AGENTS-USE-TOOLS: the calls per tool family of every session of
             # the attempt, in the metrics the worker copies whole into the

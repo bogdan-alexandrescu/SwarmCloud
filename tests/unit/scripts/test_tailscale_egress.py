@@ -52,6 +52,10 @@ POD_LABEL = {"swarm-judge": "internal"}
 APP = {"app.kubernetes.io/name": "decision-api-egress"}
 FORWARD_PORT = 8443
 SERVICE_PORT = 443
+#: What the rendering fills in for swarm-api's route (jev-contract.md section
+#: 4.1): the load balancer's reserved address and swarm-api's egress range.
+ROUTE_ADDRESS = "10.123.16.77"
+API_CIDR = "10.123.16.0/20"
 #: ghcr.io/tailscale/tailscale v1.104.1, the multi-arch index digest read from
 #: ghcr.io on 2026-10-14. Assembled, not written as one literal.
 IMAGE = "ghcr.io/tailscale/tailscale:v1.104.1@sha256:" + (
@@ -70,6 +74,8 @@ def _rendered(text: str | None = None) -> list[dict[str, Any]]:
     """The manifest as terraform/infra/tailscale.tf renders it."""
     text = (text if text is not None else TEMPLATE.read_text()).replace("__TAILNET_FQDN__", TARGET)
     text = text.replace("__DECISION_API_CLUSTER_IP__", _cluster_ip())
+    text = text.replace("__DECISION_API_ROUTE_ADDRESS__", ROUTE_ADDRESS)
+    text = text.replace("__SWARM_API_EGRESS_CIDR__", API_CIDR)
     return [d for d in yaml.safe_load_all(text) if d]
 
 
@@ -89,12 +95,17 @@ def _containers(pod: dict[str, Any]) -> dict[str, dict[str, Any]]:
 # --- the manifest --------------------------------------------------------------
 
 
-def test_the_template_has_two_placeholders_and_terraform_fills_both():
+def test_the_template_has_four_placeholders_and_terraform_fills_every_one():
     assert set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text())) == {
-        "__TAILNET_FQDN__", "__DECISION_API_CLUSTER_IP__"}
+        "__TAILNET_FQDN__", "__DECISION_API_CLUSTER_IP__",
+        "__DECISION_API_ROUTE_ADDRESS__", "__SWARM_API_EGRESS_CIDR__"}
     tf = TAILSCALE_TF.read_text()
     assert '"__TAILNET_FQDN__", var.tailscale_egress_target' in tf
     assert '"__DECISION_API_CLUSTER_IP__", local.decision_api_cluster_ip' in tf
+    assert '"__DECISION_API_ROUTE_ADDRESS__", google_compute_address.decision_api_route[0].address' in tf
+    assert '"__SWARM_API_EGRESS_CIDR__", local.decision_api_swarm_api_cidr' in tf
+    # swarm-api's range is the one the relay's and the graph's policies admit.
+    assert re.search(r"^\s*decision_api_swarm_api_cidr\s*=\s*var\.subnet_cidr$", tf, re.M)
     # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet.
     tfvars = (REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
     assert f'tailscale_egress_target = "{TARGET}"' in tfvars
@@ -200,9 +211,19 @@ def test_one_replica_requests_equal_limits_no_spot():
         assert resources["requests"] == resources["limits"], name
 
 
+def _service(name: str, docs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    (service,) = [s for s in _kind(docs or _rendered(), "Service") if s["metadata"]["name"] == name]
+    return service
+
+
+def test_two_services_and_only_two():
+    """decision-api for judging pods, decision-api-internal for swarm-api."""
+    assert sorted(s["metadata"]["name"] for s in _kind(_rendered(), "Service")) == [
+        "decision-api", "decision-api-internal"]
+
+
 def test_one_service_decision_api_on_443_to_the_forwarder():
-    (service,) = _kind(_rendered(), "Service")
-    assert service["metadata"]["name"] == "decision-api"
+    service = _service("decision-api")
     assert service["spec"].get("type", "ClusterIP") == "ClusterIP"
     assert service["spec"]["selector"] == APP
     assert service["spec"]["ports"] == [
@@ -217,10 +238,31 @@ def test_the_service_clusterip_is_rendered_from_the_one_value():
     """Judging pods pin the tailnet name to this address (hostAliases, #1380),
     so the Service carries it fixed, from terraform's one statement of it --
     never written into the template itself."""
-    (service,) = _kind(_rendered(), "Service")
+    service = _service("decision-api")
     assert service["spec"]["clusterIP"] == _cluster_ip() == "10.48.6.120"
     assert _cluster_ip() not in TEMPLATE.read_text()
     assert "clusterIP: __DECISION_API_CLUSTER_IP__" in TEMPLATE.read_text()
+
+
+def test_swarm_api_reaches_the_same_forwarder_through_an_internal_passthrough_load_balancer():
+    """jev-contract.md section 4.1 (the owner's answer to Q1): swarm-api is
+    Cloud Run, so it dials an INTERNAL load balancer on the reserved address,
+    443 to the forwarder's 8443, with nothing terminated in between. The
+    judging pods' Service, and its fixed clusterIP, are untouched."""
+    service = _service("decision-api-internal")
+    spec = service["spec"]
+    assert spec["type"] == "LoadBalancer"
+    assert service["metadata"]["annotations"]["networking.gke.io/load-balancer-type"] == "Internal"
+    assert service["metadata"]["annotations"]["swarm.saga.xyz/tailnet-fqdn"] == TARGET
+    assert spec["loadBalancerIP"] == ROUTE_ADDRESS
+    assert spec["externalTrafficPolicy"] == "Cluster"
+    assert spec["selector"] == APP
+    assert "clusterIP" not in spec
+    assert spec["ports"] == [
+        {"name": "https", "protocol": "TCP", "port": SERVICE_PORT, "targetPort": FORWARD_PORT}
+    ]
+    assert "loadBalancerIP: __DECISION_API_ROUTE_ADDRESS__" in TEMPLATE.read_text()
+    assert _service("decision-api")["spec"].get("type", "ClusterIP") == "ClusterIP"
 
 
 # --- who reaches it ------------------------------------------------------------
@@ -234,7 +276,8 @@ def _ingress_policy(docs: list[dict[str, Any]]) -> dict[str, Any]:
 
 def judge_ingress_problems(policy: dict[str, Any]) -> list[str]:
     """What is wrong with the forwarder's ingress: anything but TCP 8443 from
-    a `swarm-judge: internal` pod in a tenant namespace, as ONE peer."""
+    a `swarm-judge: internal` pod in a tenant namespace, as ONE peer, and
+    TCP 8443 from swarm-api's egress range, as a second rule."""
     problems = []
     spec = policy.get("spec", {})
     if spec.get("podSelector") != {"matchLabels": APP}:
@@ -242,9 +285,12 @@ def judge_ingress_problems(policy: dict[str, Any]) -> list[str]:
     if spec.get("policyTypes") != ["Ingress"]:
         problems.append("is not an ingress policy")
     rules = spec.get("ingress") or []
-    if len(rules) != 1:
-        return problems + [f"has {len(rules)} rules, not one"]
-    (rule,) = rules
+    if len(rules) != 2:
+        return problems + [f"has {len(rules)} rules, not two"]
+    rule, api_rule = rules
+    if api_rule != {"from": [{"ipBlock": {"cidr": API_CIDR}}],
+                    "ports": [{"protocol": "TCP", "port": FORWARD_PORT}]}:
+        problems.append("the second rule is not TCP 8443 from swarm-api's egress range alone")
     if rule.get("ports") != [{"protocol": "TCP", "port": FORWARD_PORT}]:
         problems.append("admits a port other than TCP 8443")
     peers = rule.get("from") or []
@@ -286,7 +332,12 @@ def _ingress_mutants(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
         "or-of-two-peers": mutate(_split_peer),
         "any-namespace": mutate(lambda s: s["ingress"][0]["from"][0].update(namespaceSelector={})),
         "another-port": mutate(lambda s: s["ingress"][0]["ports"].append({"protocol": "TCP", "port": 9002})),
-        "a-second-rule": mutate(lambda s: s["ingress"].append({"from": [{"ipBlock": {"cidr": "10.0.0.0/8"}}]})),
+        "a-third-rule": mutate(lambda s: s["ingress"].append({"from": [{"ipBlock": {"cidr": "10.0.0.0/8"}}]})),
+        "a-wider-api-range": mutate(lambda s: s["ingress"][1]["from"][0]["ipBlock"].update(cidr="10.0.0.0/8")),
+        "the-api-range-on-another-port": mutate(
+            lambda s: s["ingress"][1]["ports"].append({"protocol": "TCP", "port": 9002})),
+        "a-second-peer-beside-the-api-range": mutate(
+            lambda s: s["ingress"][1]["from"].append({"namespaceSelector": {}})),
         "another-label": mutate(lambda s: s["ingress"][0]["from"][0].update(
             podSelector={"matchLabels": {"swarm-judge": "typesafe"}})),
     }
@@ -487,7 +538,9 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     (d / "live_relay.json").write_text(json.dumps({"enabled": True, "port": 8080, "swarm_api_egress_cidr": FAKE_API_CIDR}))
     (d / "tailscale.yaml").write_text(
         TEMPLATE.read_text().replace("__TAILNET_FQDN__", TARGET)
-        .replace("__DECISION_API_CLUSTER_IP__", _cluster_ip()))
+        .replace("__DECISION_API_CLUSTER_IP__", _cluster_ip())
+        .replace("__DECISION_API_ROUTE_ADDRESS__", ROUTE_ADDRESS)
+        .replace("__SWARM_API_EGRESS_CIDR__", FAKE_API_CIDR))
     value = _oauth_value()
     (d / "oauth-value").write_text(value + "\n")
     (tmp_path / "tfdata").mkdir()
@@ -629,3 +682,121 @@ def test_apply_and_terraform_name_the_same_two_secrets():
     tf = TAILSCALE_TF.read_text()
     assert 'secret_id = "swarm-tailscale-oauth"' in tf
     assert 'tailscale_k8s_object      = "operator-oauth"' in tf
+
+
+# --- the post-apply comparison (kubernetes/network_parity.py --jev-egress-ingress) ---
+#
+# The owner chose (4 November 2026) that apply.sh --swarm-system --confirm
+# compares decision-api-egress-ingress with the range swarm-api egresses from,
+# read from its service, as it does swarm-live-ingress: terraform renders the
+# rule's ipBlock from local.decision_api_swarm_api_cidr, its own copy of the
+# subnet, and a stale copy closes swarm-api's route to the Jev backend.
+
+DRIFTED_API_CIDR = "10.124.32.0/20"
+
+
+def _parity() -> Any:
+    spec = importlib.util.spec_from_file_location("swarm_k8s_parity_jev", KUBERNETES / "network_parity.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _drifted(policy: dict[str, Any]) -> dict[str, Any]:
+    import copy
+
+    drifted = copy.deepcopy(policy)
+    drifted["spec"]["ingress"][1]["from"][0]["ipBlock"]["cidr"] = DRIFTED_API_CIDR
+    return drifted
+
+
+def test_the_parity_check_passes_the_rendered_policy():
+    assert _parity().check_jev_egress_ingress(_ingress_policy(_rendered()), API_CIDR) == []
+
+
+def test_the_parity_check_names_both_ranges_when_the_rule_has_drifted():
+    problems = _parity().check_jev_egress_ingress(_drifted(_ingress_policy(_rendered())), API_CIDR)
+    assert problems
+    assert any(DRIFTED_API_CIDR in p and API_CIDR in p for p in problems), problems
+
+
+def test_the_parity_check_names_the_port_when_the_rule_is_on_another():
+    policy = _ingress_policy(_rendered())
+    policy["spec"]["ingress"][1]["ports"] = [{"protocol": "TCP", "port": 9443}]
+    problems = _parity().check_jev_egress_ingress(policy, API_CIDR)
+    assert any("9443" in p and str(FORWARD_PORT) in p for p in problems), problems
+
+
+def test_the_parity_check_refuses_every_widening():
+    check = _parity().check_jev_egress_ingress
+    for name, mutant in _ingress_mutants(_ingress_policy(_rendered())).items():
+        assert check(mutant, API_CIDR), f"the parity check passed a widened policy: {name}"
+
+
+def test_the_parity_check_and_the_manifest_name_the_same_policy_selector_and_port():
+    parity = _parity()
+    policy = _ingress_policy(_rendered())
+    assert parity.JEV_EGRESS_INGRESS_POLICY == policy["metadata"]["name"] == "decision-api-egress-ingress"
+    assert parity.JEV_EGRESS_POD_SELECTOR == {"matchLabels": APP}
+    assert parity.JEV_EGRESS_PORT == FORWARD_PORT
+
+
+def test_the_parity_check_runs_against_swarm_systems_policies(tmp_path, capsys):
+    parity = _parity()
+    live = tmp_path / "live.json"
+    live.write_text(json.dumps({"swarm_api_egress_cidr": API_CIDR, "source": "the fake subnet"}))
+    policies = tmp_path / "policies.json"
+    argv = ["--jev-egress-ingress", "--live", str(live), "--policies", str(policies)]
+    policy = _ingress_policy(_rendered())
+
+    policies.write_text(json.dumps({"items": [policy]}))
+    assert parity.main(argv) == 0
+    assert "ok swarm-system/decision-api-egress-ingress" in capsys.readouterr().out
+
+    policies.write_text(json.dumps({"items": [_drifted(policy)]}))
+    assert parity.main(argv) == 1
+    out = capsys.readouterr().out
+    assert "FAIL swarm-system/decision-api-egress-ingress" in out and DRIFTED_API_CIDR in out and API_CIDR in out
+
+    # A missing policy is nothing compared, never a pass.
+    policies.write_text(json.dumps({"items": []}))
+    assert parity.main(argv) == 1
+    assert "swarm-system/decision-api-egress-ingress does not exist" in capsys.readouterr().out
+
+    live.write_text(json.dumps({"source": "the fake subnet"}))
+    policies.write_text(json.dumps({"items": [policy]}))
+    assert parity.main(argv) == 1
+    assert "no swarm_api_egress_cidr" in capsys.readouterr().out
+
+
+def test_confirm_compares_the_jev_egress_rule_with_swarm_apis_range(cluster):
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "ok swarm-system/decision-api-egress-ingress" in out, out
+
+
+def test_confirm_fails_when_the_jev_egress_rule_admits_another_range(cluster):
+    path = cluster["dir"] / "tailscale.yaml"
+    path.write_text(path.read_text().replace(f"cidr: {FAKE_API_CIDR}", f"cidr: {DRIFTED_API_CIDR}"))
+    assert DRIFTED_API_CIDR in path.read_text()
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "FAIL swarm-system/decision-api-egress-ingress" in out, out
+    assert DRIFTED_API_CIDR in result.stderr and FAKE_API_CIDR in result.stderr, result.stderr
+
+
+def test_a_dry_run_says_confirm_compares_the_jev_egress_rule(cluster):
+    result = _apply(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "network_parity.py --jev-egress-ingress" in result.stdout + result.stderr
+
+
+def test_without_a_tailscale_manifest_the_jev_egress_rule_is_not_compared(cluster):
+    (cluster["dir"] / "tailscale.yaml").unlink()
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "decision-api-egress-ingress" not in out

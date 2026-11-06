@@ -41,6 +41,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from .. import route_scope
 from ..access import org_to_api
 from ..auth import AuthContext
 from ..deps import admin_auth, current_auth, tenant_scope
@@ -130,6 +131,7 @@ def disconnect(
 
 
 @router.post("/v1/admin/forge/refresh")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def refresh_sweep(
     _auth: AuthContext = Depends(admin_auth),
     service: TokenRefresher = Depends(get_forge_app),

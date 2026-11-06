@@ -69,6 +69,7 @@ import { whyOf } from './AccountsTable'
 import type { TopicId } from './help'
 import { loadAccountHealthBoard, type AccountHealthBoard } from './api'
 import { capacityPoll, paneHref, usePhoneTables } from './capacityPoll'
+import { ButtonLink, Tooltip } from './components'
 import { Screen } from './Shell'
 import { unreadableFor } from './types'
 import './styles/account-health.css'
@@ -247,6 +248,33 @@ function Dash({ why }: { why: string }) {
   )
 }
 
+/**
+ * A label whose explanation is its tooltip (BGD's no-prose rule, 5 November
+ * 2026: no explanatory sentence on the surface). Focusable, so a keyboard
+ * opens the tooltip as a pointer does; the tooltip is the label's
+ * description either way.
+ */
+function Tip({ tip, children, ...rest }: { tip: string; children: ReactNode; [data: `data-${string}`]: string }) {
+  return (
+    <Tooltip tip={tip}>
+      <span className="ah-tipt" tabIndex={0} {...rest}>
+        {children}
+      </span>
+    </Tooltip>
+  )
+}
+
+/** An (i) beside a label: its definition, in a tooltip, on hover or focus. */
+function InfoTip({ about, tip }: { about: string; tip: string }) {
+  return (
+    <Tooltip tip={tip}>
+      <button type="button" className="ah-i" aria-label={`About ${about}`}>
+        i
+      </button>
+    </Tooltip>
+  )
+}
+
 function FamilyMark({ f }: { f: HealthFamily }) {
   return (
     <svg className={`ah-fm is-${f}`} viewBox="0 0 10 10" aria-hidden>
@@ -345,6 +373,9 @@ function HealthBanner({ m, tiles = true }: { m: Model; tiles?: boolean }) {
   return null
 }
 
+const REAUTH_WHY =
+  'The provider refused its credential. The broker assigns this account nothing until someone signs in again; work that would have used it waits for another account.'
+
 /** F4c: an account that needs re-auth leads with its fix. */
 function ReauthCallouts({ m }: { m: Model }) {
   const dead = m.sorted.filter((a) => m.cell(a).status === 'reauth_needed')
@@ -360,13 +391,15 @@ function ReauthCallouts({ m }: { m: Model }) {
         const since = open === undefined || !Number.isFinite(open.from) ? '' : ` since ${when(open.from, m.now)}`
         return (
           <div key={a.account_id} className="ah-callout is-reauth" data-state="reauth" data-account={a.account_id}>
+            {/* The reason is the tick's tooltip, not a paragraph (BGD's no-prose rule). */}
+            <Tooltip tip={REAUTH_WHY}>
+              <span className="ah-tick" tabIndex={0} role="img" aria-label="Why it needs re-auth" data-tick="reauth_needed">
+                <StatusIcon s="reauth_needed" />
+              </span>
+            </Tooltip>
             <b>
               {nameOf(a)} needs re-auth{since}
             </b>
-            <p>
-              The provider refused its credential. The broker assigns this account nothing until someone signs in again; work
-              that would have used it waits for another account.
-            </p>
             <div className="ah-acts">
               <a className="c-btn is-sm is-primary" href={sheetHref(a.account_id)}>
                 Sign in again
@@ -399,16 +432,23 @@ function outranked(m: Model): HealthAccount[] {
   })
 }
 
+/** Why the outranked accounts are not in Erroring's count: the Erroring word's tooltip carries it. */
+function outrankedWhy(m: Model): string {
+  const also = outranked(m)
+  if (also.length === 0) return ''
+  const one = also.length === 1 ? also[0]! : null
+  const s = one === null ? null : m.cell(one).status
+  return one !== null && s !== null
+    ? `${nameOf(one)} counts as ${STATUS_WORD[s]}, which outranks Erroring.`
+    : 'They count under a worse status, which outranks Erroring.'
+}
+
 function OutrankedLine({ m }: { m: Model }) {
   const also = outranked(m)
   if (also.length === 0) return null
-  const one = also.length === 1 ? also[0]! : null
-  const s = one === null ? null : m.cell(one).status
   return (
     <small className="ah-tile-also" data-outranked={also.length}>
-      {one !== null && s !== null
-        ? `${nameOf(one)} also had provider errors in 24 h; it counts as ${STATUS_WORD[s]}, which outranks Erroring`
-        : `${also.length} more had provider errors in 24 h, counted under a worse status: ${also.map(nameOf).join(', ')}`}
+      {also.map(nameOf).join(', ')} also had provider errors in 24 h
     </small>
   )
 }
@@ -433,12 +473,16 @@ function Tiles({ m }: { m: Model }) {
       {TILE_ORDER.map((s) => (
         <div key={s} className={`ah-tile is-${s}`} role="listitem" data-tile={s}>
           <div className="ah-tile-w">
-            <StatusChip s={s} />
+            <Tooltip tip={[sentence(STATUS_HINT[s]), s === 'erroring' && m.served ? outrankedWhy(m) : ''].filter(Boolean).join(' ')}>
+              <span className="ah-tipt" tabIndex={0}>
+                <StatusChip s={s} />
+              </span>
+            </Tooltip>
           </div>
           <div className="ah-tile-n" data-count={m.served ? t[s] : ''}>
             {m.served ? t[s] : <Dash why={NOT_SERVED_WHY} />}
           </div>
-          <small>{m.served ? STATUS_HINT[s] : 'not served'}</small>
+          {!m.served && <small>not served</small>}
           {m.served && s === 'erroring' && <OutrankedLine m={m} />}
           {m.served && s === 'healthy' && <WithheldLine m={m} />}
         </div>
@@ -454,12 +498,12 @@ function Tiles({ m }: { m: Model }) {
             </small>
           )}
         </div>
-        <small>
-          {v.n === null ? 'not said' : `${v.free} free ${v.free === 1 ? 'slot' : 'slots'}`} ·{' '}
-          <a className="ctl-link" href="#capacity/accounts">
-            Accounts ›
-          </a>
-        </small>
+        <small>{v.n === null ? 'not said' : `${v.free} free ${v.free === 1 ? 'slot' : 'slots'}`}</small>
+        <div className="ah-acts">
+          <ButtonLink size="sm" href="#capacity/accounts">
+            Accounts
+          </ButtonLink>
+        </div>
       </div>
       {m.served && t.unknown > 0 && (
         <p className="ah-tiles-note" data-unknown={t.unknown}>
@@ -481,7 +525,7 @@ function StatusCellView({ m, a }: { m: Model; a: HealthAccount }) {
   const until = c.status === 'limited' ? untilWord(m.records.get(a.account_id), m.now) : ''
   // The reset time sits under the word, free to wrap: inside the nowrap chip
   // it held the Status column wide enough to push the table 12 px past its
-  // card at 1440 and cut the re-auth row's "Sign in again ›".
+  // card at 1440 and cut the re-auth row's "Sign in again".
   return (
     <>
       <StatusChip s={c.status} />
@@ -539,6 +583,13 @@ function FamCell({ m, a, f }: { m: Model; a: HealthAccount; f: HealthFamily }) {
   return <td className={`ah-num${n ? '' : ' ah-mu'}`} data-fam={f}>{n}</td>
 }
 
+/** What each count column counts: the (i) beside its header. */
+const FAMILY_WHAT: Readonly<Record<HealthFamily, string>> = {
+  lim: 'Rate-limit hits, exhausted reports and refusals at assignment, in the last 24 h.',
+  err: 'Provider errors: 529s, 5xx and network failures, in the last 24 h.',
+  cred: 'Credential events: 401s, failed refreshes and re-auth marks, in the last 24 h.',
+}
+
 function AccountList({ m }: { m: Model }) {
   return (
     <section className="ctl-card ah-list">
@@ -550,7 +601,10 @@ function AccountList({ m }: { m: Model }) {
       </div>
       {m.accounts.length === 0 ? (
         <p className="ah-empty-line">
-          No accounts are registered for this workspace. <a className="ctl-link" href="#capacity/accounts">Add one on Accounts ›</a>
+          No accounts registered.{' '}
+          <ButtonLink size="sm" kind="primary" href="#capacity/accounts">
+            Add an account
+          </ButtonLink>
         </p>
       ) : (
         <div className="ctl-table is-scroll">
@@ -559,9 +613,11 @@ function AccountList({ m }: { m: Model }) {
               <tr>
                 <th>Account</th>
                 <th>Status</th>
-                <th className="ah-num">Limits</th>
-                <th className="ah-num">Provider errors</th>
-                <th className="ah-num">Credential</th>
+                {FAMILIES.map((f) => (
+                  <th key={f.key} className="ah-num">
+                    {f.label} <InfoTip about={f.label} tip={FAMILY_WHAT[f.key]} />
+                  </th>
+                ))}
                 <th>Last event</th>
                 <th aria-label="Open" />
               </tr>
@@ -588,13 +644,13 @@ function AccountList({ m }: { m: Model }) {
                     </td>
                     <td className="ah-open">
                       {s === 'reauth_needed' ? (
-                        <a className="ctl-link" href={sheetHref(a.account_id)}>
-                          Sign in again ›
-                        </a>
+                        <ButtonLink size="sm" kind="primary" href={sheetHref(a.account_id)}>
+                          Sign in again
+                        </ButtonLink>
                       ) : (
-                        <a className="ctl-link" href={sheetHref(a.account_id)}>
-                          Open ›
-                        </a>
+                        <ButtonLink size="sm" href={sheetHref(a.account_id)}>
+                          Open
+                        </ButtonLink>
                       )}
                     </td>
                   </tr>
@@ -603,13 +659,6 @@ function AccountList({ m }: { m: Model }) {
             </tbody>
           </table>
         </div>
-      )}
-      {m.accounts.length > 0 && (
-        <p className="ah-foot">
-          {m.accounts.length} {m.accounts.length === 1 ? 'row' : 'rows'}. Limits are rate-limit hits, exhausted reports and
-          refusals at assignment; provider errors are 529s, 5xx and network failures; credential is 401s, failed refreshes
-          and re-auth marks. A row opens the account on Accounts.
-        </p>
       )}
     </section>
   )
@@ -679,6 +728,10 @@ function useBoxWidth(el: HTMLElement | null): number | null | undefined {
   }, [el])
   return w
 }
+
+/** How to read the swimlane: the (i) beside its heading. */
+const LANES_HOW =
+  'One lane per account. A mark is one event: errors sit high, limits on the line, credential low. A band runs from a rate-limit hit to its window’s reset. Hover a mark for its message, or press it for the task.'
 
 function Timeline({ m }: { m: Model }) {
   const [picked, setPicked] = useState<LaneMark | null>(null)
@@ -753,7 +806,10 @@ function Timeline({ m }: { m: Model }) {
   return (
     <section className="ctl-card ah-timeline" data-state="ok">
       <div className="ctl-card-head">
-        <h2 className="ctl-card-title">Hits and errors over time</h2>
+        <span className="ah-head-t">
+          <h2 className="ctl-card-title">Hits and errors over time</h2>
+          <InfoTip about="Hits and errors over time" tip={LANES_HOW} />
+        </span>
         <span className="ctl-card-note" data-timeline-note="" data-marks={marks.length}>
           {marks.length} {marks.length === 1 ? 'event' : 'events'} on {busy} {busy === 1 ? 'account' : 'accounts'} in 7 days
         </span>
@@ -883,19 +939,16 @@ function Timeline({ m }: { m: Model }) {
       </div>
       {picked !== null && <PickedEvent mk={picked} name={nameById.get(picked.account_id) ?? picked.account_id} now={m.now} />}
       <Legend />
-      <p className="ah-foot">
-        One lane per account. A mark is one event: errors sit high, limits on the line, credential low. A band runs from a
-        rate-limit hit to its window’s reset. Hover a mark for its message, or press it for the task.
-        {older > 0 && (
-          <>
-            {' '}
-            <span data-older={older}>
-              {older} older {older === 1 ? 'event counts' : 'events count'} in the strip and the 7-day totals only: each
-              account’s record keeps its last {pool.events_max ?? 50} messages.
-            </span>
-          </>
-        )}
-      </p>
+      {older > 0 && (
+        <p className="ah-foot">
+          <Tip
+            tip={`They count in the strip and the 7-day totals; each account’s record keeps its last ${pool.events_max ?? 50} messages.`}
+            data-older={String(older)}
+          >
+            {older} older {older === 1 ? 'event is' : 'events are'} not marked
+          </Tip>
+        </p>
+      )}
     </section>
   )
 }
@@ -935,10 +988,10 @@ function Legend() {
           {f.label}
         </span>
       ))}
-      <span>
+      <Tip tip="From the hit to the window’s reset." data-key="limited">
         <i className="ah-band-k" />
-        limited: from the hit to the window’s reset
-      </span>
+        limited
+      </Tip>
     </div>
   )
 }
@@ -1079,9 +1132,9 @@ function SummaryLine({ m, open }: { m: Model; open: Incident[] | null }) {
             {v.free} free {v.free === 1 ? 'slot' : 'slots'}
           </>
         )}{' '}
-        <a className="ctl-link" href="#capacity/accounts">
-          (Accounts)
-        </a>
+        <ButtonLink size="sm" href="#capacity/accounts">
+          Accounts
+        </ButtonLink>
       </span>
     </div>
   )
@@ -1134,7 +1187,7 @@ function IncidentCard({ x, now }: { x: Incident; now: number }) {
           </span>
         )}
         <a className="c-btn is-sm" href={sheetHref(x.account_id)}>
-          {x.label} ›
+          {x.label}
         </a>
       </div>
     </article>

@@ -11,6 +11,7 @@ import {
   setAccountName,
   setAccountState,
   loadMe,
+  mintSetupLink,
   type AccountsBoard,
   type ServedAccount,
 } from './api'
@@ -26,6 +27,7 @@ import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { linkRefusal, redeemSetupLink } from './SetupLink'
 import {
   ACCOUNT_POOLS,
   AccountsTable,
@@ -40,7 +42,7 @@ import {
   type AccountPoolName,
 } from './AccountsTable'
 import { AcctState } from './AccountState'
-import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
+import { DuplicateBanner, Forecast, Info, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
 import { agoPastDay, utcAt, type PoolAccount } from './accountsPool'
 import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, SheetVerdict, SheetWindows } from './AccountSheet'
 import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
@@ -441,7 +443,6 @@ function Body({
             <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
             <ViewToggle view={pageView} hrefOf={viewHref} onChange={chooseView} />
           </div>
-          {accounts.length > 0 && <RuleLine accounts={pool} />}
           <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
           <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
         </>
@@ -584,6 +585,9 @@ function shownAccount(accounts: Account[], chosen: string | null, scope: string 
   return first === null ? null : { account: first, explicit: false }
 }
 
+/** The reason an account that needs a sign-in carries on its tick. */
+const REAUTH_WHY = 'needs someone to sign in again; it gives out nothing until then'
+
 /**
  * The accounts a timer will never fix, at the top, before anything else.
  *
@@ -618,29 +622,24 @@ function Broken({
   const names = (xs: Account[]) => xs.map((a) => accountName(a)).join(', ')
   return (
     <div className="acct-callout" role="status">
-      <WarnMark />
+      {/* Each own account carries its own tick; a lent-only callout keeps the one. */}
+      {mine.length === 0 && <WarnMark />}
       <div className="acct-callout-body">
-        {mine.length > 0 && (
-          <p>
-            <b>{names(mine)}</b> need{mine.length === 1 ? 's' : ''} someone to sign in again.{' '}
-            {mine.length === 1 ? 'It gives' : 'They give'} out nothing until then.{' '}
-            {/* ONE LINK PER ACCOUNT, SEPARATED (visual QA V016): two or more ran
-                together as "Sign in again to aSign in again to b". */}
-            {mine.map((a, i) => (
-              <span key={a.account_id}>
-                {i > 0 && <span aria-hidden="true"> &middot; </span>}
-                <button
-                  type="button"
-                  className="acct-link"
-                  aria-label={`Sign in again to ${accountName(a)}`}
-                  onClick={() => onOpen(a.account_id)}
-                >
-                  {mine.length === 1 ? 'Sign in again' : `Sign in again to ${accountName(a)}`}
-                </button>
-              </span>
-            ))}
+        {/* ONE TICK AND ONE BUTTON PER ACCOUNT (no prose on the surface, 5
+            November 2026): the tick's reason is "needs someone to sign in
+            again; it gives out nothing until then", and the action is a real
+            button, each apart (visual QA V016: two links once ran together as
+            "Sign in again to aSign in again to b"). */}
+        {mine.map((a) => (
+          <p key={a.account_id} className="acct-callout-row">
+            <ToneMark tone="warn" title={REAUTH_WHY} label={`${accountName(a)}: ${REAUTH_WHY}`}>
+              {accountName(a)}
+            </ToneMark>
+            <Button size="sm" aria-label={`Sign in again to ${accountName(a)}`} onClick={() => onOpen(a.account_id)}>
+              Sign in again
+            </Button>
           </p>
-        )}
+        ))}
         {lent.length > 0 && (
           <p>
             <b>{names(lent)}</b> need{lent.length === 1 ? 's' : ''} a sign-in by{' '}
@@ -959,6 +958,9 @@ function Pool({
         <div className="acct-list-head">
           <h2>
             Subscription accounts
+            {/* HOW TO READ THE TABLE IS THE HEADING'S (i), not a line over it
+                (no prose on the surface, 5 November 2026). */}
+            <Info about="Subscription accounts" tip="Ranked by when each can take a new agent. Times are UTC." />
             {/* THE QUALIFIER SLOT, NOT A CHIP (CP-22). */}
             <span className="ctl-card-note is-end">{pluralise(accounts.length, 'account')}</span>
           </h2>
@@ -968,7 +970,6 @@ function Pool({
             desktop, a card each on a phone. The name is the `acct-open`
             button the list was, so choosing one opens the same detail under
             it, with every control the page had. */}
-        <p className="acct-rank-note">Ranked by when each can take a new agent. Times are UTC.</p>
         <AccountsTable
           accounts={accounts as PoolAccount[]}
           scope={board.page.tenant_id}
@@ -1023,6 +1024,7 @@ function Pool({
         {/* THE VOICE IT POOL (the owner, 2026-11-02): drawn only when an
             account is in it, so a pool without one reads as it always did. */}
         <VoiceItPool accounts={accounts} now={now} phone={phone} />
+        <VoiceKeyLink />
       </section>
       {sheet}
     </div>
@@ -2876,7 +2878,17 @@ export const VOICE_IT_PEOPLE_NOTE = 'Version one: the platform owner only'
  * mocks `api` without it draws no control rather than throwing.
  */
 function usePlatformAdmin(): boolean {
-  const [admin, setAdmin] = useState(false)
+  return usePlatformPrincipal().admin
+}
+
+/** The platform admin's own verified email, or null for anyone else (and while unknown). */
+function usePlatformAdminEmail(): string | null {
+  const p = usePlatformPrincipal()
+  return p.admin ? p.email : null
+}
+
+function usePlatformPrincipal(): { admin: boolean; email: string | null } {
+  const [admin, setAdmin] = useState<{ admin: boolean; email: string | null }>({ admin: false, email: null })
   useEffect(() => {
     let live = true
     let answer: unknown
@@ -2887,7 +2899,10 @@ function usePlatformAdmin(): boolean {
     }
     Promise.resolve(answer as ReturnType<typeof loadMe> | undefined).then(
       (r) => {
-        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) setAdmin(r.data.principal?.is_admin === true)
+        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) {
+          const p = r.data.principal
+          setAdmin({ admin: p?.is_admin === true, email: typeof p?.email === 'string' && p.email !== '' ? p.email : null })
+        }
       },
       () => {},
     )
@@ -3134,6 +3149,123 @@ export function VoiceItPool({ accounts, now, phone }: { accounts: readonly Accou
             { key: 'holder', head: 'Held by', cell: holder },
           ]}
         />
+      )}
+    </section>
+  )
+}
+
+/** The label Voice it's key account gets unless the admin types another. */
+export const VOICE_KEY_LABEL = 'openai-key'
+/** The block's accessible name. */
+export const VOICE_KEY_BUTTON = 'Add an OpenAI API key for Voice it'
+/** The masked key field's accessible name. */
+export const VOICE_KEY_FIELD = 'OpenAI API key'
+const VOICE_KEY_TIP =
+  'Voice it’s Live sessions run on an OpenAI developer API key, not a ChatGPT plan. The key goes from here to the account pool once, into a secret only the pool reads, and is never shown again.'
+
+/**
+ * ADD AN OPENAI API KEY FOR VOICE IT, IN ONE STEP (the owner, 4 and 6
+ * November 2026). A Live session runs on an OpenAI developer API key alone,
+ * so the Voice it pool needs one. The admin types the key here and presses
+ * Add: the console mints a one-time `voice-api-key` link for the admin
+ * themself (`POST /v1/admin/setup/links`) and at once redeems its token with
+ * the key through SetupLink.tsx's `redeemSetupLink`, the one redemption path,
+ * so swarm-api forwards it once to the quota broker and keeps nothing. Nothing
+ * navigates: the link page that spoke of Claude is never shown. The key lives
+ * only in the field's state until the redeem call returns, and is cleared
+ * then, on success and on failure; it is never put in a URL, storage or a
+ * message. The label sits behind the pencil. Drawn for a platform admin only;
+ * the server is the real gate.
+ */
+export function VoiceKeyLink() {
+  const email = usePlatformAdminEmail()
+  const id = useId()
+  const [key, setKey] = useState('')
+  const [label, setLabel] = useState(VOICE_KEY_LABEL)
+  const [naming, setNaming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<string | null>(null)
+  const [added, setAdded] = useState<string | null>(null)
+  if (email === null) return null
+  const valid = /^[a-z0-9][a-z0-9-]{0,63}$/.test(label)
+
+  async function add(e: FormEvent) {
+    e.preventDefault()
+    if (busy || !valid || key === '' || email === null) return
+    setBusy(true)
+    setRefused(null)
+    setAdded(null)
+    const asked = label
+    const m = await mintSetupLink({ kind: 'voice-api-key', label: asked, owner: email })
+    if (m.status === 'error') {
+      setKey('')
+      setBusy(false)
+      setRefused(`The key was not sent: ${m.error.message}`)
+      return
+    }
+    if (m.status !== 'ok' && m.status !== 'stale') {
+      setKey('')
+      setBusy(false)
+      return
+    }
+    const token = m.data.path.split('/').pop() ?? ''
+    const r = await redeemSetupLink(token, key)
+    setKey('')
+    setBusy(false)
+    if (r.status === 'error') setRefused(linkRefusal(r.error).line)
+    else setAdded(asked)
+  }
+
+  return (
+    <section className="acct-voice-key" aria-label={VOICE_KEY_BUTTON}>
+      <form className="pk-form-row" autoComplete="off" onSubmit={(e) => void add(e)}>
+        <input
+          id={`${id}-key`}
+          className="c-inp mono"
+          type="password"
+          aria-label={VOICE_KEY_FIELD}
+          placeholder={VOICE_KEY_FIELD}
+          autoComplete="off"
+          spellCheck={false}
+          value={key}
+          onChange={(e) => setKey(e.target.value.trim())}
+        />
+        {naming ? (
+          <input
+            className="c-inp mono"
+            aria-label="Account name in the Voice it pool"
+            autoComplete="off"
+            spellCheck={false}
+            value={label}
+            onChange={(e) => setLabel(e.target.value.trim().toLowerCase())}
+          />
+        ) : (
+          <button
+            type="button"
+            className="acct-i"
+            aria-label={`Change the account name (${label})`}
+            title={`Account name: ${label}`}
+            onClick={() => setNaming(true)}
+          >
+            ✎
+          </button>
+        )}
+        <Button kind="primary" type="submit" busy={busy ? 'Adding…' : false} disabled={!valid || key === ''}>
+          Add
+        </Button>
+        <Info about="the OpenAI API key" tip={VOICE_KEY_TIP} />
+      </form>
+      {!valid && <p className="ur-small">Lowercase letters, digits and dashes, starting with a letter or digit.</p>}
+      {added !== null && (
+        <p className="acct-clause" role="status">
+          <CIcon name="check" /> <span className="mono">{added}</span> is in the Voice it pool{' '}
+          <Info about="the added key" tip="The key is never shown again." />
+        </p>
+      )}
+      {refused !== null && (
+        <p className="ur-small" role="alert">
+          {refused}
+        </p>
       )}
     </section>
   )

@@ -24,9 +24,12 @@ pull requests that are green at their head are squashed in order onto main as
 `train/<id>`, which is opened as a draft pull request so that application,
 security and terraform run their pull-request checks on it. Once the train is
 green, each pull request is squash-merged by GitHub with its own title and
-number, so main ends up with exactly the tree the train tested. A red train is
-split in half until the pull request that broke it is found, and that one is
-ejected: it gets a comment linking the failing job, and `ready` is removed.
+number, so main ends up with exactly the tree the train tested. A red train
+goes through three rules, in order ([below](#a-red-train)): it re-runs its
+failed jobs once and stays open; red again while main is red on the same
+checks, it is held and ejects nobody; otherwise it is split in half until the
+pull request that broke it is found, and that one is ejected: it gets a
+comment linking the failing job, and `ready` is removed.
 
 Strict up-to-date and the train do the same job. With both turned on, the
 train's second merge in each batch is refused, because main moved when the
@@ -43,6 +46,28 @@ nothing reaches main without having been in a green train.
 * The pull request that adds the train has merged. The train's
   `workflow_run` trigger only works once the workflow file is on the default
   branch.
+* The SwarmCloud worker's merge step reads the same switch (owner decision,
+  2026-11-03; [merge-step.md](../merge-step.md), "Revised 2026-11-03"). With
+  `MERGE_TRAIN` `on`, a merge step that is green and told MERGE adds `ready`
+  to its pull request and parks until the train has merged it; it no longer
+  takes the repository's merge slot or updates its branch. Ejected (the
+  train's comment and `ready` removed), it goes to its fix round if the pull
+  request now conflicts or is red, or else fails `train_ejected` with the
+  train's reason. Nothing else to do for that, with one thing to know: the
+  step reads the variable with the tenant's `-git` token, and the tenant
+  GitHub App does not have the *Variables: Read* permission today. Without
+  it, the step treats the train as on only once step 2's ruleset change
+  requires `merge-train`. So, with `merge-train` required, the step follows
+  the train from the moment the ruleset changes; without that requirement,
+  grant the App *Variables: Read* (App settings, Permissions, Repository
+  permissions, Variables) before step 2, or the step keeps merging directly.
+  A merge step on the train says which in its result summary:
+  `repository_train.on_by` is `variable` when it read the variable, and
+  `required_check` when it could not and followed the ruleset.
+
+* Merge steps parked on the train before the variable is turned off again
+  take the direct path at their next wake (at most 15 minutes later):
+  nothing needs undoing on them.
 
 ## 1. Run a train without landing anything
 
@@ -149,9 +174,10 @@ The train posts `merge-train` on a pull request's head only once that pull
 request has been in a green train. With the context required, **anything that
 merges into main some other way is refused**:
 
-* the SwarmCloud worker's merge step. It merges with the tenant's own token,
-  and this repository's `merge_policy` is `on_merge_verdict`. Its pull
-  requests would then need `ready` and would land through the train;
+* the SwarmCloud worker's merge step, unless it is on the train. Since
+  2026-11-03 it is: with the train on it labels its pull request `ready` and
+  waits for the train instead of merging (see "Before you start"), so this
+  requirement no longer refuses it;
 * a person pressing "Squash and merge";
 * the hotfix lane, if it merges a pull request.
 
@@ -160,10 +186,61 @@ out. That turns strict off without the requirement: those three keep working,
 but main is then a tested tree only for whatever goes through the train. That
 choice is the owner's.
 
+## A red train
+
+BGD, 6 November 2026, after CLD measured the train from 4 November 06:28Z to
+6 November 05:30Z: 74 of 139 trains were red, mostly on checks known to fail
+at random (`format / unit tests`, `swarm-ui typecheck / component tests`,
+single shards such as `unit tests (1/10)`), and 6 of the 18 ejected pull
+requests later landed with no change. The decision was to keep the train and
+fix red trains. `scripts/merge-train.sh` (`red_rules`) applies three rules in
+order, and every comment and step-summary line names the rule that acted:
+
+1. **Retry once.** The first time a train head is red, the train re-runs only
+   the failed jobs of its failing Actions runs (`rerun-failed-jobs`), once,
+   and stays open. It records `retry=<epoch>:<head>` in its state block, and
+   its 90-minute age limit counts from the retry. A green after the retry
+   lands every member, just as a first green would. GitHub re-runs failed
+   jobs only of a finished run. So while any run at the head is still queued
+   or running, a red reading of the head waits and does not bisect. This
+   covers a shard that fails while the rest of its run is still going, and a
+   re-run that is still in progress.
+2. **Hold while main is red.** If the train is red again, the train judges
+   main's head on the failing check names, using the same
+   latest-run-per-event rule. If main is red on any of them, the train closes
+   with `Held: main is red on <names>`. It ejects nobody, removes no `ready`
+   label and holds nothing back. No new train boards until main's head is
+   green on those checks (pending does not count). A main that stays red for
+   `MERGE_TRAIN_MAIN_RED_WAIT_MINUTES` (60) lets a train board anyway, so a
+   pull request that fixes main is not kept out by the red it fixes. Such a
+   train is held again if it is red on the same checks.
+3. **Bisect**, as before. A train of one is ejected after its retry.
+
+**The re-run needs `actions: write`.** The tick's own token has it
+(`.github/workflows/merge-train.yml`, the owner's pick of 6 November 2026), and
+it makes the re-run by default (`MERGE_TRAIN_RERUN_BY=workflow`). If GitHub
+refuses the re-run anyway, the train says `the retry could not run` and goes on
+to rules 2 and 3, as it did before the retry existed.
+
+Alternatively, set `MERGE_TRAIN_RERUN_BY=app` in the tick's `env:`. The
+merge App's token then makes the re-run instead. That needs the App's
+installed **Actions: write** permission and `permission-actions: write` on
+its token step. It also has a benefit: a re-run started by the App wakes the
+train through `workflow_run` as any App-started run does.
+
 ## 3. Watch the first live trains
 
-* Actions → `merge-train`: each scheduled tick either says what it is waiting
-  for, lands a train, or bisects one.
+* Actions → `merge-train`: each tick either says what it is waiting for,
+  lands a train, re-runs a red one's failed jobs (rule 1), holds one while
+  main is red (rule 2), or bisects one (rule 3). With the train on, a tick runs when an
+  application or security run finishes on a train, when one finishes green on
+  any other pull request of this repository, and when `ready` is added to a
+  pull request of this repository (through `auto-merge`'s run on that label;
+  a fork's pull request starts no tick). With no train open, such a tick
+  starts one, as a schedule tick does; a train's own run only judges it. The
+  five-minute schedule is only the fallback, because GitHub ran it only every
+  four to seven hours (2026-11-03). Many events close together make at most two
+  ticks: the one running and one pending behind it.
 * Every landed pull request is marked **merged** by GitHub, with the subject
   `<title> (#N)`. `auto-merge.yml`'s `close-issues` job closes the issues it
   names, as before.

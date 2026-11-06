@@ -13,7 +13,8 @@
 //   V098  the Step column grows to the longest name, out of Why's slack
 //   V099  the Table's inspector opens under the row when the split is too narrow
 //   V100  the Timeline's likewise; the × closes the head's first line
-//   V101  the held State cell keeps a failed row's tint; the corner is the head's
+//   V101  retired with the old list's rules (owner, 2026-11-04): no `.wfl`
+//         class in styles.css is one no component draws
 //   V102  a fan-in's `(file)` units fit the node; the integrator id is whole
 //   V103  the page skeleton draws the count note's line
 //   V110  the empty list says what a workflow is and links to Submit › workflow
@@ -352,27 +353,29 @@ describe('V099, V100: the inspector docks only beside a split wide enough for th
   })
 })
 
-describe('V101: the held State cell of the list keeps a failed row’s tint', () => {
-  const list = () =>
-    html(
-      '<div class="table-wrap is-scroll wfl-scroll"><table class="wfl-table"><thead><tr><th>State</th><th>Workflow</th></tr></thead>' +
-        '<tbody><tr class="wfl-row is-failed"><td>failed</td><td>wf</td></tr><tr class="wfl-row"><td>running</td><td>wf</td></tr></tbody></table></div>',
+describe('the old list’s base rules are gone from the main stylesheet (owner, 2026-11-04)', () => {
+  // The redesigned list is `.wfg`; the old one's base rules -- `.wfl`, its
+  // filters, its table, its failed-row tint (V101) and `.wfl-phone` -- styled
+  // markup no component draws. A `.wfl` class left in styles.css is one a
+  // component still renders: the why line, the done count, the empty and
+  // foot notes, the loading bars.
+  // MUTATION: put back any of the old list's rules, e.g. `.wfl-table thead`.
+  it('styles no `.wfl` class that no component draws', async () => {
+    const CSS = (await import('../styles.css?raw')).default.replace(/\/\*[\s\S]*?\*\//g, '')
+    // The console's own sources: not the tests, which still name the old
+    // classes in what they assert is gone.
+    const sources = Object.values(
+      import.meta.glob(['../**/*.{ts,tsx}', '!../__tests__/**', '!./**'], { eager: true, query: '?raw', import: 'default' }) as Record<
+        string,
+        string
+      >,
     )
-  // MUTATION: drop the held-cell branch of the failed-row rule.
-  it('paints the failed tint on the held cell at 400px, and --surface on a healthy one', () => {
-    const host = list()
-    const [failed, ok] = [...host.querySelectorAll('tbody tr')].map((r) => r.querySelector('td')!)
-    expect(painted(failed!, ['background', 'background-color'], { width: 400 })).toBe('var(--s-badb)')
-    expect(painted(ok!, ['background', 'background-color'], { width: 400 })).toBe('var(--surface)')
-  })
-
-  // MUTATION: drop `.wfl-table thead`'s fill: the corner is then the one tinted head cell.
-  it('fills the head row with the corner’s colour, on thead', () => {
-    const host = list()
-    const thead = host.querySelector('thead')!
-    const corner = host.querySelector('th')!
-    expect(painted(thead, ['background', 'background-color'], { width: 400 })).toBe('var(--surface-2)')
-    expect(painted(corner, ['background', 'background-color'], { width: 400 })).toBe('var(--surface-2)')
+    expect(sources.some((text) => text.includes('export function WorkflowsScreen'))).toBe(true)
+    const styled = [...new Set(CSS.match(/\.wfl(?:-[a-z0-9]+)*(?![\w-])/g) ?? [])].map((c) => c.slice(1))
+    // The control: the sheet still styles classes the list draws.
+    expect(styled).toContain('wfl-skel')
+    const drawn = (c: string) => sources.some((text) => new RegExp(`(?<![\\w-])${c}(?![\\w-])`).test(text))
+    expect(styled.filter((c) => !drawn(c)), 'styled in styles.css, drawn by no component').toEqual([])
   })
 })
 
@@ -412,8 +415,13 @@ describe('V103: the page skeleton draws the count note’s line', () => {
     const { w, tasks } = fanIn()
     await act(async () => land({ status: 'ok', data: { workflows: [w], taskById: tasks, statesDetail: null }, fetchedAt: T0 }))
     await waitFor(() => expect(document.querySelector('.wfp.is-loading')).toBeNull())
+    // THE LOADED PAGE IS INSIDE THE DOCKED-INSPECTOR SHELL NOW (brief, "What
+    // moved where" -- `.wi[data-screen="workflow"]`), so the count note
+    // precedes that shell, not `.wfp` itself (the skeleton draws no shell,
+    // so its own check above is unchanged).
     const loaded = document.querySelector<HTMLElement>('.wfp')!
-    expect(loaded.parentElement!.querySelector(':scope > .c-count-note')).not.toBeNull()
+    const shell = loaded.closest<HTMLElement>('.wi[data-screen="workflow"]')!
+    expect(shell.previousElementSibling?.classList.contains('c-count-note')).toBe(true)
   })
 
   it('makes the page head two lines in both states at a phone', () => {

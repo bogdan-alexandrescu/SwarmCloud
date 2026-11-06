@@ -32,7 +32,9 @@ the Jev rows of the [capability matrix](capability-matrix.md#2-jev-accounting-an
 `apps/agent-worker/agent_worker/judge/`. Every choice that is the owner's is
 in the pull request's `questions.json` with options and a recommendation;
 this document names each one where it arises (**Q1** to **Q12**, listed in
-[section 14](#14-open-choices)) and never decides it.
+[section 14](#14-open-choices)) and never decides it. The owner answered
+all twelve on 3 November 2026; the answers are section 14's last column and
+override this document where they differ.
 
 ## 1. The rules this design keeps
 
@@ -89,12 +91,21 @@ frozen `swarm_common`. None is a frozen-contract change
   `judgment` requirement is met only when a passing `Evidence` record of kind
   `judgment` binds the current digest and the commit, exactly as for
   `unit_tests`.
-* **`judgment` joins the enforced set only where Jev can run.** A strict
-  contract naming `judgment` compiles only for a workspace where the signed
-  opt-in is on (Q9) and a backend is configured; elsewhere it is refused
+* **`judgment` joins the enforced set only where JC2 runs.** A strict
+  contract naming `judgment` compiles only where the worker's post-step runs
+  JC2 at the end of the step (`workcontract.JC2_AT_END_OF_STEP`, on since
+  5 November 2026, turned on in the same change that made the worker deliver
+  JC2's verdict, section 5.1; before it the judgment ran and nothing posted
+  it, so no `judgment` evidence could ever be written) and the workspace's signed `code_intelligence.jev` is on, because
+  JC2 sends code (Q9). JC1 being able to review the contract at submission
+  (`contract_review` on, a backend configured) is **not** enough: without JC2
+  nothing ever writes the `judgment` evidence, so the requirement could never
+  be met, and a strict contract would carry a proof nobody runs. The owner
+  chose this ("Gate on JC2", 4 November 2026). Elsewhere it is refused
   mechanically, with no Jev call, as `work_contract_not_enforceable` with
-  `unenforced: ["judgment"]`. That is today's rule (a strict contract that
-  names what nothing enforces is refused), applied to one more component.
+  `unenforced: ["judgment"]`; JC1's revision 2 of a strict contract is
+  refused the same way. That is today's rule (a strict contract that names
+  what nothing enforces is refused), applied to one more component.
 * **A new top-level field, `acceptance`**: `strict` (the default when the field
   is absent) or `auto`. See [section 6](#6-the-strict-acceptance-default).
   Weakening it (`strict` to `auto`) is a widening under `widening()`, refused
@@ -123,7 +134,9 @@ In swarm-api's submission path, in this order:
    **Jev is not called**: no tokens are spent on a contract code has already
    refused.
 3. **JC1**, only when the workspace's signed Jev opt-in is on (Q9) and the
-   contract has at least one requirement.
+   contract has at least one requirement. **The owner's answer differs**
+   ([section 14](#14-open-choices), Q9): the opt-in is the new signed
+   workspace setting `contract_review`, not `code_intelligence.jev`.
 4. Apply JC1's result: accept, amend (revision 2 by `reviewer`) or refuse.
 5. Compile the final revision, attach its reference to the signed dispatch
    block, store, sign, return.
@@ -134,7 +147,9 @@ on the submission. Today swarm-api never holds a Jev client
 swarm-api"), and the internal decision backends are reached only from the
 cluster through the tailnet egress Service, which a Cloud Run service cannot
 reach. So JC1 needs both a client in swarm-api and a route from swarm-api to
-the workspace's backend. How it gets them is **Q1** (a direct VPC route to the
+the workspace's backend. How it gets them is **Q1** (the owner chose the
+direct VPC route, carried by the Day One install, [section 14](#14-open-choices);
+the options were a direct VPC route to the
 egress, TypeSafe only, a tailnet sidecar, or an asynchronous review job), and
 which code it shares with the worker is **Q10**. The data-flow record's "Never
 swarm-api" line changes in the lane that builds it, with its test.
@@ -260,7 +275,9 @@ anything from Jev that is not one of its closed values.
 refusal's code is the established `validation_failed`, so it cannot get a
 switch of its own without changing that mechanism. How it ships off is
 **Q7**; until it is on, the review runs in report-only mode, logs the refusal
-it would have made, and lets the submission through.
+it would have made, and lets the submission through. **The owner's answer
+differs** ([section 14](#14-open-choices), Q7): its own mode setting,
+`SWARM_CONTRACT_REVIEW=off|report|enforce`, outside `refusals.py`.
 
 ### 4.6 Re-review on amendment
 
@@ -287,6 +304,20 @@ and J5 in `runners/cliagent._jev_post_steps`:
   attempt proof like every state route, and swarm-api runs every check and
   writes the evidence and the transition in one transaction
   ([section 9](#9-fencing-a-stale-or-superseded-attempts-judgment)).
+* the worker names the contract and delivers the verdict, never the agent.
+  Before the runner starts, `lifecycle.Worker._stage_work_contract` writes
+  the stored body (`metadata.work_contract`) to `work/work-contract.json` and
+  hands the runner `SWARM_WORK_CONTRACT_FILE` and `SWARM_WORK_CONTRACT_DIGEST`
+  (the signed `metadata.dispatch.work_contract.digest`, the authority: a body
+  that does not digest to it is not judged). After the publish and its
+  `published` mark, `lifecycle.Worker._deliver_contract_verdict` posts the
+  runner report's `contract_judgment` once, about the pushed head, with a new
+  request id (`poststeps.deliver_contract_verdict`). A 409 `attempt_fenced`
+  stands the attempt down with nothing further written (invariant 5); a
+  send-back ends the attempt where the route ended it, in `READY`; any other
+  refusal, or a worker on the direct Firestore path with no state route, is
+  recorded in the summary's `contract_verdict` and left to the control
+  plane's re-ask.
 
 The other placements, a control-plane judgment that reads the published diff
 from the forge, and a separate judge step in its own pod, are in Q4 with what
@@ -358,7 +389,7 @@ swarm-api, in the state route's transaction:
 |---|---|
 | `met` | one `Evidence(requirement_id, digest, commit, kind="judgment", passed=True)` each; the step's contract status is `unmet(...)` over all its evidence, and acceptance continues under [section 6](#6-the-strict-acceptance-default) |
 | any `unmet` | **sent back**: the `unmet` requirements get `passed=False` evidence, and the agent takes the existing retry transition (`RetryBody`) with cause `contract_unmet`, back to `READY` (`AttemptState.retry`) |
-| any `cannot_judge`, no `unmet` | no evidence for those requirements; the step's acceptance is `judgment_pending` and goes to the owner (Q5) |
+| any `cannot_judge`, no `unmet` | no evidence for those requirements; the step's acceptance is `judgment_pending`, re-asked by the control plane three times over 30 minutes and then sent to the owner (Q5, the owner's answer in [section 14](#14-open-choices)) |
 
 **A send-back** gives the next attempt, in its brief, one block per unmet
 requirement: its id, Jev's reason code, the cited file and hunk, and the
@@ -376,6 +407,24 @@ short should reach a person, not fail as if it had crashed.
 **The evidence** is what the console's approval screen shows beside each
 requirement: the verdict, the reason, the cited hunk and the probability,
 labelled as Jev's judgment, with the call id that produced it.
+
+**Where it is read, and what is stored** (the owner's picks on PR #3255).
+The step's `contract_acceptance` keeps the TEXT of each hunk a verdict cites
+(`hunks`, keyed by the item `i<n>`), not only its path: the published branch
+can move or be deleted after the judgment, and the person deciding should read
+what Jev read. Only cited hunks are kept, so the record holds at most one per
+judged requirement; each is cut as the state cut it (`HUNK_CHARS`) and masked
+by the redaction rules before it is stored, because every member who opens the
+step is served it. A re-ask writes its own state's paths and hunks with its
+verdicts, since those are the items its verdicts cite. The record is served
+on `GET /v1/tasks/{id}`, and a step waiting on its owner is projected into
+the approvals inbox as `contract:<task_id>` (kind `contract`), whose
+`GET /v1/approvals/{id}` carries it. That item is never a record and has no
+decide path (approve and reject answer 404, as an await-input step's do): a
+model judgment is not an authorization (section 1, rule 1), so the inbox
+shows the evidence and links to the step. No route yet records an owner's
+acceptance of a step waiting on them; what that verb does is the owner's
+choice, asked on PR #3255, not decided here.
 
 ## 6. The strict acceptance default
 
@@ -433,7 +482,10 @@ set, the usage page prints no figure, never $0.
   120,000 input tokens across attempts) and charged to the month by
   `settle_attempt`. Because the agent's `jev_decide` and J0-J5 spend from the
   same ledger, a talkative agent could leave nothing for its own acceptance
-  judgment. Whether JC2 gets a reserved slot is **Q8**.
+  judgment. Whether JC2 gets a reserved slot is **Q8**. **The owner's answer
+  differs** ([section 14](#14-open-choices), Q8): the reserve is on top of
+  today's budget, 150,000 tokens and nine calls in total, one call and 30,000
+  tokens of them reserved for JC2.
 
 **When the cap is reached** the call is skipped as `skipped:budget_monthly`
 (or `budget_calls`, `budget_tokens` for the agent), exactly as the client
@@ -464,6 +516,10 @@ options; the owner chooses (**Q2**, **Q5**). This design does not.
 | D. Park the submission | stored as `review_pending`; reviewed on the next try; nothing dispatched until then | same | Breaks the synchronous 422 the owner chose, and needs a retry pass. |
 
 ### 8.2 At the end of a step (Q5)
+
+**The owner chose option B, then A** ([section 14](#14-open-choices), Q5),
+not the recommended A alone: the control plane re-asks three times over 30
+minutes, through Q1's route, before the owner's approval screen.
 
 | Option | What happens | Trade-off |
 |---|---|---|
@@ -539,8 +595,10 @@ amendment, no withdrawal); approvals; the budget or limits; the merge.
   acting threshold, never on the text, and a `met` alone never accepts; the
   experiment measures how often a `met` meets a failing hidden test.
 * **Requirement text leaves the platform at submission** to the workspace's
-  chosen backend, which is why JC1 is gated on the same signed opt-in that
-  governs code (Q9) and goes through the same sanitizer.
+  chosen backend, which is why JC1 is gated on a signed opt-in (Q9; the
+  owner chose its own setting, `contract_review`, apart from the one that
+  governs code, [section 14](#14-open-choices)) and goes through the same
+  sanitizer.
 * **`protected.interfaces`** ("never change the public API of X") is a
   component no worker enforces today; Jev could judge it at the end. Whether
   that judgment may count as enforcing it for a strict contract is **Q12**;
@@ -610,23 +668,27 @@ each piece, "not implemented" until lanes 4 to 6 land.
 
 ## 14. Open choices
 
-All are in the pull request's `questions.json`, with options and a
-recommendation. None blocks this document; each blocks the lane named.
+All were in the pull request's `questions.json`, with options and a
+recommendation. The owner answered all twelve on 3 November 2026 (BGD, about
+12:39 universal time). **The owner's answer overrides this document wherever
+the two differ**: four answers (Q5, Q7, Q8 and Q9) differ from the
+recommendation, Q1's adds that the Day One install carries the route, and the
+sections they change point here.
 
-| | Choice | Recommended | Blocks lane |
-|---|---|---|---|
-| Q1 | How swarm-api reaches the workspace's Jev backend at submission | a direct VPC route from swarm-api to an internal load balancer in front of the tailnet egress Service | 3 |
-| Q2 | Submission when Jev is unavailable, times out or is over its cap | open, recorded as `not_run` | 4 |
-| Q3 | Whether JC1 amends automatically or refuses with a proposal | amend automatically, as revision 2 by `reviewer`, adding only `judgment` | 2, 4 |
-| Q4 | Where JC2 runs | the worker's post-step, posting through the state route | 5, 6 |
-| Q5 | The end of a step when Jev is unavailable or cannot judge | the owner decides on the approval screen | 5 |
-| Q6 | What the strict acceptance default is | the `acceptance` field, `strict` by default: a person's approval, with Jev's verdict as evidence and its `unmet` sending back first | 2, 5 |
-| Q7 | How a 422 `validation_failed` refusal ships switched off | a refusal switch keyed on `detail.reason` in `refusals.py` | 4 |
-| Q8 | Whether JC2 has a reserved slot in the per-agent ledger | reserve one call and 30,000 tokens that `jev_decide` and J0-J5 cannot spend | 6 |
-| Q9 | Which opt-in gates JC1 | the same signed `code_intelligence.jev` | 4 |
-| Q10 | How swarm-api and the worker share the Jev client | a new shared package, as `swarm-redaction` is | 1 |
-| Q11 | The send-back cap per agent | two | 5 |
-| Q12 | Whether a Jev judgment of `protected.interfaces` counts as enforcing it | no | 2 |
+| | Choice | Recommended | Owner's answer, 3 November 2026 | Blocks lane |
+|---|---|---|---|---|
+| Q1 | How swarm-api reaches the workspace's Jev backend at submission | a direct VPC route from swarm-api to an internal load balancer in front of the tailnet egress Service | **As recommended, and more:** Direct VPC egress from swarm-api and an internal passthrough load balancer in front of the tailnet egress Service in `swarm-system`. The Day One install must carry it (`apps/swarm-install` and its stages), so a fresh deployment gets the route. | 3 |
+| Q2 | Submission when Jev is unavailable, times out or is over its cap | open, recorded as `not_run` | **As recommended:** the contract is accepted open, recorded as `jev_review.outcome: not_run` with its reason. | 4 |
+| Q3 | Whether JC1 amends automatically or refuses with a proposal | amend automatically, as revision 2 by `reviewer`, adding only `judgment` | **As recommended:** a requirement Jev classes `judgeable` is amended automatically, revision 2 by `reviewer`, adding only `judgment`. | 2, 4 |
+| Q4 | Where JC2 runs | the worker's post-step, posting through the state route | **As recommended:** the worker's post-step, posting through the state route. | 5, 6 |
+| Q5 | The end of a step when Jev is unavailable or cannot judge | the owner decides on the approval screen | **Differs (option B, then A):** when Jev is down, over its cap or answers `cannot_judge` at the end of a step, the **control plane** re-asks Jev three times over 30 minutes from the published diff, reaching it through Q1's route, and only then sends the step to the owner's approval screen. Section 8.2's option B is the one to build; the step is `judgment_pending` while the retries run. | 5 |
+| Q6 | What the strict acceptance default is | the `acceptance` field, `strict` by default: a person's approval, with Jev's verdict as evidence and its `unmet` sending back first | **As recommended:** the `acceptance` field, `strict` by default. | 2, 5 |
+| Q7 | How a 422 `validation_failed` refusal ships switched off | a refusal switch keyed on `detail.reason` in `refusals.py` | **Differs:** the submission refusal ships switched off through its **own** mode setting, `SWARM_CONTRACT_REVIEW=off\|report\|enforce`, outside `refusals.py`. `off` runs no review, `report` reviews and logs the refusal it would make, `enforce` refuses. | 4 |
+| Q8 | Whether JC2 has a reserved slot in the per-agent ledger | reserve one call and 30,000 tokens that `jev_decide` and J0-J5 cannot spend | **Differs:** the reserve is added **on top of** today's per-agent budget, not carved out of it: 150,000 input tokens in total (today's 120,000 plus a 30,000 reserve) and one reserved call on top of today's eight, which `jev_decide` and J0-J5 cannot spend. | 6 |
+| Q9 | Which opt-in gates JC1 | the same signed `code_intelligence.jev` | **Differs:** a **new** signed workspace setting, `contract_review` (on/off), gates JC1, not `code_intelligence.jev`, so a workspace can have its contracts reviewed without sending code. JC2 still sends code and stays gated on `code_intelligence.jev`. | 4 |
+| Q10 | How swarm-api and the worker share the Jev client | a new shared package, as `swarm-redaction` is | **As recommended:** a new shared package, as `swarm-redaction` is. | 1 |
+| Q11 | The send-back cap per agent | two | **As recommended:** two send-backs per agent, then the owner (`contractjudge.MAX_SEND_BACKS`). | 5 |
+| Q12 | Whether a Jev judgment of `protected.interfaces` counts as enforcing it | no | **As recommended:** never. `workcontract.enforced_with_judgment` adds only the `judgment` component, and JC2 judges requirements, never `protected`. | 2 |
 
 ## 15. CONTRACT.md invariants
 

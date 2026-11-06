@@ -910,7 +910,9 @@ exists.
 ### 5.4 What is sent, and what never is, even when opted in
 
 Applied in this order. Every step is code, and each is tested with fakes
-built at runtime.
+built at runtime. For each string, the check that decides a drop
+(`swarm_jev.sanitize.is_flagged`) asks the registered secrets (step 4) first,
+then the credential check (step 2), then the redaction rules (step 3).
 
 1. **Path deny.** No content is read from:
    * `.env*`, `*.pem`, `*.key`, `*.p12`, `*.tfvars`, `*.tfstate*`;
@@ -919,8 +921,11 @@ built at runtime.
 
    Only the path name may be sent.
 2. **Credential scan, then drop.** Every excerpt goes through the publish
-   scan's detector (`agent_worker.publish_scan`, which wraps the worker's
-   `_DiffLeakScanner` and `_credential_in`). A hit **drops the excerpt
+   gate's credential check, `swarm_redaction.credentials` (`is_credential`,
+   its `credential_in` at the strictest tier: the check
+   `agent_worker.publish_scan` runs, and the worker's `_credential_in`).
+   Every Jev call runs it, in the worker and in swarm-api alike, because the
+   shared `swarm_jev.sanitize` imports it. A hit **drops the excerpt
    entirely**. The candidate is sent as path and symbol only. Masking is not
    used, because a masked key's neighbourhood can still identify it.
 3. **Redaction rules.** Every string goes through `swarm_redaction.rules.redact`

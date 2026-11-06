@@ -406,7 +406,12 @@ describe('keyboard traversal', () => {
       // no Admin page in the panel. Since CONFIG-NAV (part of #2157) the route
       // also sends them to Overview once both reads say so, whose panel is its
       // jumps: what must never be drawn is a link to an Admin page.
-      const noAdmin = route.startsWith('admin/') && container.querySelector('.sk-spine a[data-sec="admin"]') === null
+      // Config › Workspace Settings's address opens the workspace's own page,
+      // an Admin page (admin routes lane, part of #2688), so where the route
+      // landed counts as well as the route it was typed as.
+      const landed = `${window.location.pathname}${window.location.hash}`
+      const onAdmin = route.startsWith('admin/') || /(^\/|#\/?)admin\//.test(landed)
+      const noAdmin = onAdmin && container.querySelector('.sk-spine a[data-sec="admin"]') === null
       for (const [what, group] of Object.entries(shellControls(container))) {
         if (noAdmin && what === 'panel page') {
           const adminRows = group.all.filter((el) => (el.getAttribute('href') ?? '').startsWith('/admin'))

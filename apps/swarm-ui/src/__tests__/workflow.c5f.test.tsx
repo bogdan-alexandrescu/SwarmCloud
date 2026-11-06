@@ -7,7 +7,7 @@
  */
 import STYLES from '../styles.css?raw'
 import WF_CSS from '../styles/workflows.css?raw'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -135,7 +135,7 @@ afterEach(() => {
 })
 
 function rowIds(): string[] {
-  return [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+  return [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
 }
 
 const row = (id: string) => document.querySelector<HTMLElement>(`tr[data-workflow="${id}"]`)!
@@ -196,18 +196,18 @@ describe('G3-06: a row whose steps the list read did not serve stays an id, and 
     FakeObserver.all = []
     vi.stubGlobal('IntersectionObserver', FakeObserver)
     render(<WorkflowsScreen />)
-    await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
-    expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('wf_old')
-    const note = document.querySelector('.wfl .c-count-note')
+    await waitFor(() => expect(rowIds()).toHaveLength(2))
+    expect(row('wf_old').querySelector('td[data-col="workflow"] > a')!.textContent).toBe('wf_old')
+    const note = document.querySelector('.wfg .c-count-note')
     expect(note?.textContent).toBe("1 of 2 rows have their steps read; the list read did not serve the rest's, which each one's page reads")
     // The note sits above the table, once.
-    expect(document.querySelectorAll('.wfl .c-count-note')).toHaveLength(1)
-    expect(note!.compareDocumentPosition(document.querySelector('.wfl-table')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(document.querySelectorAll('.wfg .c-count-note')).toHaveLength(1)
+    expect(note!.compareDocumentPosition(document.querySelector('.wfg-table')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     scrollIn(row('wf_old'))
     // MUTATION: put `useRowReads` back -- the row reads its workflow by id.
     await new Promise((r) => setTimeout(r, 20))
     expect(api.loadWorkflow).not.toHaveBeenCalled()
-    expect(row('wf_old').querySelector('.wfl-line > a')!.textContent).toBe('wf_old')
+    expect(row('wf_old').querySelector('td[data-col="workflow"] > a')!.textContent).toBe('wf_old')
   })
 })
 
@@ -216,34 +216,34 @@ describe('G3-06: a row whose steps the list read did not serve stays an id, and 
 // ---------------------------------------------------------------------------
 
 describe('G3-09: the Workflow column holds at least 280px at 1440 and the id never wraps', () => {
-  it('drops Shape and Runners below 1680 and carries the runner mix on the name’s line', async () => {
+  // THE ONE-LINE ROW (the redesign, frame graph-workflows-rest): Shape and
+  // Runners are no longer columns at any width, they are in the inspector's
+  // summary, and the Workflow column takes every pixel the others leave.
+  it('draws no Shape or Runners column, gives the Workflow column the rest of the row, and the runners in the summary', async () => {
     render(<WorkflowsScreen />)
-    await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
-    const heads = [...document.querySelectorAll('.wfl-table thead th')]
+    await waitFor(() => expect(rowIds()).toHaveLength(2))
+    const heads = [...document.querySelectorAll('.wfg-table thead th')]
     const shown = heads.filter((h) => at(h, 'display') !== 'none')
-    expect(shown.map((h) => h.getAttribute('data-col'))).toEqual(['state', 'workflow', 'done', 'cost', 'owner', 'submitted', 'duration'])
-    const used = shown
-      .filter((h) => h.getAttribute('data-col') !== 'workflow')
-      .reduce((t, h) => t + Number.parseFloat(at(h, 'width') ?? 'NaN'), 0)
-    // The table is 1054-1056px at 1440 (QA measured 1054).
-    expect(1054 - used, 'the name column at 1440').toBeGreaterThanOrEqual(280)
-    // The row's cells follow their heads.
+    expect(shown.map((h) => h.getAttribute('data-col'))).toEqual(['state', 'workflow', 'repo', 'steps', 'needs', 'spent', 'owner', 'changed'])
     const r = row('wf_fresh')
-    expect(at(r.querySelector('td[data-col="shape"]')!, 'display')).toBe('none')
-    expect(at(r.querySelector('td[data-col="runners"]')!, 'display')).toBe('none')
-    const inline = r.querySelector('.wfl-name .wfl-mix')!
-    expect(inline, 'no runner mix under the name').toBeTruthy()
-    expect(at(inline, 'display')).not.toBe('none')
-    // At 1680 the columns come back and the inline mix goes.
-    expect(at(heads.find((h) => h.getAttribute('data-col') === 'shape')!, 'display', 1680)).not.toBe('none')
-    expect(at(inline, 'display', 1680)).toBe('none')
+    expect(r.querySelector('td[data-col="shape"], td[data-col="runners"], .wfl-mix')).toBeNull()
+    const name = r.querySelector('td[data-col="workflow"]')!
+    expect(at(name, 'width')).toBe('100%')
+    expect(at(name, 'min-width')).toBe('10em')
+    // The runners are one click away, in the summary the row opens.
+    fireEvent.click(r.querySelector<HTMLElement>('[data-col="state"]')!)
+    const sum = document.querySelector('aside[aria-label="Workflow inspector"] .wfg-sum')!
+    expect([...sum.querySelectorAll('.wfg-sum-dl > dt')].map((d) => d.textContent)).toContain('Runners')
+    expect(sum.querySelector('.wfg-sum-dl .wf-mix')).toBeTruthy()
   })
 
   it('cuts the id on one line with an ellipsis', async () => {
     render(<WorkflowsScreen />)
-    await waitFor(() => expect(rowIds()).toEqual(['wf_fresh', 'wf_old']))
-    // The id is the name's second line since visual QA pass 1 (overview-agents-61, #2596).
-    const id = row('wf_fresh').querySelector('.wfl-name > .id')!
+    await waitFor(() => expect(rowIds()).toHaveLength(2))
+    // The id is the summary's own line since the redesign (frame graph-workflows-rest).
+    fireEvent.click(row('wf_fresh').querySelector<HTMLElement>('[data-col="state"]')!)
+    const id = document.querySelector('aside[aria-label="Workflow inspector"] .wfg-sum > .id')!
+    expect(id.textContent).toBe('wf_fresh')
     expect(at(id, 'white-space')).toBe('nowrap')
     expect(at(id, 'overflow')).toBe('hidden')
     expect(at(id, 'text-overflow')).toBe('ellipsis')
@@ -258,12 +258,14 @@ describe('G3-14: at 390 the owner select fits its column', () => {
   it('lets each pick and its select shrink to the row', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toHaveLength(2))
-    const pick = document.querySelector('.wfl-pick')!
+    // The redesign's toolbar (frame graph-workflows-rest) sets two picks a
+    // row at 390, each select the width of its pick and never wider.
+    const pick = document.querySelector('.wfg-pick')!
     const select = pick.querySelector('select')!
     expect(at(pick, 'min-width', 390)).toBe('0')
     expect(at(pick, 'max-width', 390)).toBe('100%')
-    expect(at(pick, 'flex', 390)).toBe('1 1 100%')
-    expect(at(select, 'min-width', 390)).toBe('0')
+    expect(at(pick, 'flex', 390)).toBe('1 1 40%')
+    expect(at(select, 'width', 390)).toBe('100%')
     expect(at(select, 'max-width', 390)).toBe('100%')
   })
 
@@ -285,8 +287,10 @@ describe('G3-14: at 390 the owner select fits its column', () => {
 // G3-20
 // ---------------------------------------------------------------------------
 
-describe('G3-20: the time column is the submission the newest-first order sorts by', () => {
-  it('names the column Submitted and prints each row’s submit time, newest first', async () => {
+// THE TIME COLUMN IS CHANGED since the redesign (frame graph-workflows-rest);
+// the submission the newest-first order sorts by is in the summary.
+describe('G3-20: the submission the newest-first order sorts by is in the summary', () => {
+  it('orders by submission, newest first, and prints each one’s submit time in its summary', async () => {
     // b was submitted later, but its first step started earlier than a's.
     const a = workflow('wf_a', 'SUCCEEDED', 'sam', [step('s', { task_id: 't_a' })], 300)
     const b = workflow('wf_b', 'SUCCEEDED', 'sam', [step('s', { task_id: 't_b' })], 200)
@@ -299,15 +303,23 @@ describe('G3-20: the time column is the submission the newest-first order sorts 
     )
     render(<WorkflowsScreen view="sort=newest" />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_b', 'wf_a']))
-    const heads = [...document.querySelectorAll('.wfl-table thead th')].map((th) => th.textContent)
-    expect(heads).toContain('Submitted')
+    const heads = [...document.querySelectorAll('.wfg-table thead th')].map((th) => th.textContent)
+    expect(heads).toContain('Changed')
     expect(heads).not.toContain('Started')
-    const cells = rowIds().map((id) => row(id).querySelector<HTMLElement>('td[data-col="submitted"]')!)
-    expect(cells.map((c) => c.textContent)).toEqual([b.created_at, a.created_at].map((t) => utcStamp(t, T0)))
+    const submitted = (id: string) => {
+      fireEvent.click(row(id).querySelector<HTMLElement>('[data-col="state"]')!)
+      const dl = document.querySelector(`aside[aria-label="Workflow inspector"] .wfg-sum[data-workflow="${id}"] .wfg-sum-dl`)!
+      const dt = [...dl.querySelectorAll('dt')].find((d) => d.textContent === 'Submitted')!
+      // Read now: the inspector redraws the same node for the next pick.
+      const dd = dt.nextElementSibling as HTMLElement
+      return { text: dd.textContent, title: dd.getAttribute('title') }
+    }
+    const cells = rowIds().map(submitted)
+    expect(cells.map((c) => c.text)).toEqual([b.created_at, a.created_at].map((t) => utcStamp(t, T0)))
     // UTC with Z, as the rest of the console writes it (visual QA pass 1 C-10, #2596).
-    expect(cells[0]!.textContent).toMatch(/Z$/)
+    expect(cells[0]!.text).toMatch(/Z$/)
     // The first step's start stays one hover away.
-    expect(cells[0]!.getAttribute('title')).toMatch(/^submitted .*; first step started /)
+    expect(cells[0]!.title).toMatch(/^submitted .*; first step started /)
   })
 })
 

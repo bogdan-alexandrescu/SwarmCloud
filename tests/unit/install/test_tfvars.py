@@ -110,6 +110,35 @@ def test_groups_auth_admin_role_for_installs() -> None:
         install_state(groups_impersonate_user="it@example.com"), pass_name="infra-2", installer="a@example.com")
 
 
+def test_contract_review_mode_renders_off_on_every_infra_pass() -> None:
+    # The owner's 2026-11-04 follow-up: a fresh deployment renders
+    # SWARM_CONTRACT_REVIEW like the live one, off until its owner turns it on.
+    import re
+
+    variables = (Path(__file__).resolve().parents[3] / "terraform" / "infra" / "variables.tf").read_text()
+    body = re.search(r'(?ms)^variable "contract_review_mode" \{(.*?)^\}', variables)
+    assert body, "terraform/infra declares contract_review_mode"
+    assert re.search(r'(?m)^  default\s*=\s*"off"\s*$', body.group(1)), "infra's default is off"
+    assert tfvars.CONTRACT_REVIEW_MODE == "off"
+    for pass_name in ("registry", "infra-1", "infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, EVERY_VERSION)["contract_review_mode"] == "off", pass_name
+
+
+def test_work_contracts_render_on_on_every_infra_pass() -> None:
+    # BGD, 2026-11-06: plugins chosen on Config > Plugins load only through a
+    # signed work contract, so a fresh deployment renders SWARM_WORK_CONTRACTS
+    # on, where infra's own default stays off.
+    import re
+
+    variables = (Path(__file__).resolve().parents[3] / "terraform" / "infra" / "variables.tf").read_text()
+    body = re.search(r'(?ms)^variable "work_contracts" \{(.*?)^\}', variables)
+    assert body, "terraform/infra declares work_contracts"
+    assert re.search(r'(?m)^  default\s*=\s*"off"\s*$', body.group(1)), "infra's default is off"
+    assert tfvars.WORK_CONTRACTS == "on"
+    for pass_name in ("registry", "infra-1", "infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, EVERY_VERSION)["work_contracts"] == "on", pass_name
+
+
 def test_tenant_job_vpc_egress_true() -> None:
     state = install_state()
     for pass_name in ("infra-2", "infra-3", "infra-4"):

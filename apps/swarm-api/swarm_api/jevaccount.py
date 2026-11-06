@@ -41,31 +41,44 @@ DOCUMENTS (collection `jev_usage`, the worker's):
 * `<tenant>_<task>_g<generation>_c<call_id>`, `kind: call`: one call;
 * `<tenant>_reservations`, `kind: reservations`: `held`, each live
   reservation by `<task>_g<generation>`.
-`jevusage` reads only `kind: attempt` rows and month documents, so the two
-new kinds change no total it serves.
+`jevusage` reads only `kind: attempt` rows, swarm-api's own `kind:
+contract_review` rows (the submission review, `jevusage.record_contract_review`)
+and month documents, so the two new kinds change no total it serves. The
+submission review adds its tokens to the same month document's
+`input_tokens`, so a reserve here admits against them too.
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Literal, Mapping
 
+from google.api_core import exceptions as gexc
+from google.cloud import firestore
 from pydantic import Field
 
 from swarm_common.admission import _snapshot
+from swarm_jev.client import MEASURED_TOKENS_PER_CALL
 
 from .attemptstate import AttemptState, Call, _Tuple
 from .judgment import settings_mac, trusted_block
 from .jevusage import COLLECTION, cap_of
 from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
 
+log = logging.getLogger(__name__)
+
 #: The worker's per-task limits (`agent_worker.judge.budget.MAX_CALLS_PER_TASK`,
-#: `MAX_INPUT_TOKENS_PER_TASK`, `MEASURED_TOKENS_PER_CALL`): restated, the
-#: worker's image is not this package; tests/unit/control_plane/
-#: test_jev_account.py holds them equal.
-MAX_CALLS_PER_TASK = 8
-MAX_INPUT_TOKENS_PER_TASK = 120_000
-MEASURED_TOKENS_PER_CALL = 2_850
+#: `MAX_INPUT_TOKENS_PER_TASK`): restated, the worker's image is not this
+#: package; tests/unit/control_plane/test_jev_account.py holds them equal.
+#: MEASURED_TOKENS_PER_CALL is imported from `swarm_jev.client`, where alone
+#: it is stated (owner, 4 November 2026).
+#: 9 calls and 150,000 tokens: today's 8 and 120,000 plus JC2's reserve of one
+#: call and 30,000 tokens ON TOP (jev-contract.md, the owner's answer 8). The
+#: worker's ledger keeps the reserve from `jev_decide` and J0-J5; the grant
+#: only has to hold it.
+MAX_CALLS_PER_TASK = 9
+MAX_INPUT_TOKENS_PER_TASK = 150_000
 #: How long a reservation is held without a call renewing it. 6 hours BECAUSE
 #: a step's time limit is at most a few hours and every recorded call renews
 #: it; past it the worker is gone, and a held remainder would starve the
@@ -383,3 +396,133 @@ class JevAccount:
                     "released_tokens": released}
 
         return self._state._run(_apply)
+
+
+# -- the control plane's re-ask (contractreask) ------------------------------
+
+#: The re-ask's row beside the attempt's own: `<attempt row>_reask`. A row of
+#: its own, `kind: attempt`, so `jevusage` counts it with every other row,
+#: while the task's per-attempt limits (`reserve` reads `row_id` rows only)
+#: never charge the worker's next attempt for what the control plane asked.
+REASK_SUFFIX = "_reask"
+REASK_SOURCE = "contract_reask"
+
+
+def reask_row_id(tenant_id: str, task_id: str, generation: int) -> str:
+    return f"{row_id(tenant_id, task_id, generation)}{REASK_SUFFIX}"
+
+
+class ReaskLedger:
+    """The re-ask's `swarm_jev.JevLedger` (the owner's answer, 4 November
+    2026: the re-ask's calls are counted in the workspace's monthly
+    `jev_usage` and admitted against `code_intelligence.jev_monthly_cap_tokens`).
+
+    One call per ledger: a second is refused `budget_calls` (REASK_TRIES
+    bounds the step). `admit` reads, in one transaction, the cap (only as
+    `trusted_block` lets a reader act on it), the month's spend and every live
+    reservation, and refuses `budget_monthly` when what is left after them
+    cannot pay for the call at its estimate, never below its measured cost:
+    the re-ask never spends a remainder the worker's attempts hold. `record`
+    writes, in one transaction keyed by the call's `call_id`, the call's
+    document, the re-ask's row and the month's total, as `record_call` does;
+    a record already stored charges nothing."""
+
+    def __init__(self, db: Any, settings: Any, now: Any, *, tenant_id: str, task_id: str,
+                 generation: int, attempt_id: str | None) -> None:
+        self._db = db
+        self._settings = settings
+        self._now = now
+        self._tenant = tenant_id
+        self._task = task_id
+        self._gen = int(generation)
+        self._attempt = attempt_id
+        self.rows: list[dict[str, Any]] = []
+        self.refused: str | None = None
+
+    def _ref(self, collection: str, doc_id: str) -> Any:
+        return self._db.collection(collection).document(doc_id)
+
+    def _run(self, body: Any) -> Any:
+        return firestore.transactional(body)(self._db.transaction())
+
+    def admit(self, *, estimate: int) -> str | None:
+        if self.rows:
+            return "budget_calls"
+        month = month_of(self._now())
+        settings_ref = self._ref(WORKSPACE_SETTINGS, self._tenant)
+        month_ref = self._ref(COLLECTION, f"{self._tenant}_{month}")
+        held_ref = self._ref(COLLECTION, f"{self._tenant}_reservations")
+
+        def _apply(txn: Any) -> str | None:
+            settings_doc = _doc(txn.get(settings_ref)) or {}
+            block = settings_doc.get("code_intelligence")
+            cap = cap_of(trusted_block(self._tenant, "code_intelligence",
+                                       block if isinstance(block, Mapping) else None,
+                                       settings_mac(self._settings)))
+            if cap is None:
+                return None
+            month_doc = _doc(txn.get(month_ref)) or {}
+            held_doc = _doc(txn.get(held_ref)) or {}
+            held = held_doc.get("held") if isinstance(held_doc.get("held"), Mapping) else {}
+            others = sum(_count(e.get("remaining_tokens")) for e in held.values()
+                         if isinstance(e, Mapping))
+            left = cap - _count(month_doc.get("input_tokens")) - others
+            return "budget_monthly" if left < max(_count(estimate), MEASURED_TOKENS_PER_CALL) \
+                else None
+
+        self.refused = self._run(_apply)
+        return self.refused
+
+    def record(self, row: dict[str, Any], *, succeeded: bool | None = None) -> bool:
+        self.rows.append(dict(row))
+        now = self._now()
+        month = month_of(now)
+        outcome = str(row.get("outcome") or "failed")
+        skipped = outcome.startswith(SKIPPED_PREFIX)
+        calls = 0 if skipped else 1
+        tokens = _count(row.get("input_tokens"))
+        output = row.get("output_tokens")
+        output = _count(output) if isinstance(output, int) else None
+        kind = str(row.get("kind") or UNATTRIBUTED_KIND)
+        reask_id = reask_row_id(self._tenant, self._task, self._gen)
+        call_ref = self._ref(COLLECTION, f"{reask_id}_c{row.get('call_id')}")
+        row_ref = self._ref(COLLECTION, reask_id)
+        month_ref = self._ref(COLLECTION, f"{self._tenant}_{month}")
+
+        def _apply(txn: Any) -> None:
+            if _doc(txn.get(call_ref)) is not None:
+                return
+            stored = _doc(txn.get(row_ref)) or {}
+            month_doc = _doc(txn.get(month_ref)) or {}
+            txn.set(call_ref, {
+                "kind": CALL_KIND, "tenant_id": self._tenant, "task_id": self._task,
+                "generation": self._gen, "attempt_id": self._attempt, "month": month,
+                "call_id": row.get("call_id"), "source": REASK_SOURCE, "call_kind": kind,
+                "backend": row.get("backend"), "requested_model": row.get("requested_model"),
+                "served_model": row.get("served_model"), "input_tokens": tokens,
+                "output_tokens": output, "tokens_estimated": bool(row.get("tokens_estimated")),
+                "outcome": outcome, "recorded_at": now})
+            txn.set(row_ref, {
+                "kind": ATTEMPT_KIND, "tenant_id": self._tenant, "task_id": self._task,
+                "generation": self._gen, "source": REASK_SOURCE,
+                "month": stored.get("month") or month,
+                "calls": _count(stored.get("calls")) + calls,
+                "input_tokens": _count(stored.get("input_tokens")) + tokens,
+                "settled_at": now,
+                "by_kind": _add_kind(stored.get("by_kind"), kind, calls=calls, tokens=tokens,
+                                     output=output,
+                                     outcome=outcome if outcome == "ok" or skipped
+                                     else "failed")}, merge=True)
+            if tokens:
+                txn.set(month_ref, {"tenant_id": self._tenant, "month": month,
+                                    "input_tokens": _count(month_doc.get("input_tokens"))
+                                    + tokens}, merge=True)
+
+        try:
+            self._run(_apply)
+        except gexc.GoogleAPIError as exc:
+            # The call was made: its verdict is kept, and the spend it could
+            # not record is logged, never silent.
+            log.warning("jev re-ask call=%s tenant=%s not recorded: %s", row.get("call_id"),
+                        self._tenant, type(exc).__name__)
+        return False

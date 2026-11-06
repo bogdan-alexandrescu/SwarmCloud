@@ -208,6 +208,18 @@ class FakePool:
         self.begun: list[dict[str, Any]] = []
         self.finished: list[dict[str, Any]] = []
         self.accounts: list[dict[str, Any]] = []
+        #: Every `POST /v1/accounts` swarm-api forwarded, credential included,
+        #: so a test can count how often a value reached the broker.
+        self.registered: list[dict[str, Any]] = []
+
+    def register(self, *, owner_tenant, label, provider, lend_to, credential, added_by=None):
+        self.registered.append({"owner_tenant": owner_tenant, "label": label,
+                                "provider": provider, "lend_to": list(lend_to),
+                                "credential": credential, "added_by": added_by})
+        account = {"account_id": f"{owner_tenant}:{label}", "owner_tenant": owner_tenant,
+                   "label": label, "provider": provider, "measured": False}
+        self.accounts.append(account)
+        return {"account": account, "expires_at": None}
 
     def begin_sign_in(self, *, owner_tenant, label, provider, lend_to):
         state = secrets.token_urlsafe(32)

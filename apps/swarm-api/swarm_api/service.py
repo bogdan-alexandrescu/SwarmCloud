@@ -53,7 +53,14 @@ from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backe
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from . import budget as budget_mod
-from . import gitidentity, publishtopr, runnersizes, workcontract
+from . import (
+    contractreview,
+    gitidentity,
+    plugins as plugins_mod,
+    publishtopr,
+    runnersizes,
+    workcontract,
+)
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix
@@ -101,7 +108,7 @@ from .mcp_servers import (
 )
 from .metrics import ApiMetrics
 from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
-from .provider_keys import task_key_scope
+from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
@@ -110,6 +117,7 @@ from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from . import steprerun
+from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
 from .validation import (
@@ -141,6 +149,7 @@ from .validation import (
     StepSpec,
     IssueRef,
     check_repository_ref,
+    is_full_sha,
     ref_needs_lookup,
     repository_ref_not_found,
     swarm_task_of_ref,
@@ -165,6 +174,7 @@ from .validation import (
     resolve_await_input,
     resolve_dispatch_options,
     resolve_input_layout,
+    is_security_review,
     resolve_integrator_step,
     resolve_merge_choice,
     resolve_fix_rounds,
@@ -294,6 +304,10 @@ class SubmissionService:
         #: registered-mcp-servers.md §4.4), built on first use so constructing
         #: the service opens no connection; a test substitutes one.
         self.mcp_credential_writer: Any = None
+        #: Jev's review of a work contract at submission (`contractreview`),
+        #: built on the first review so constructing the service reads no
+        #: setting; a test substitutes one.
+        self.contract_reviewer: contractreview.ContractReviewer | None = None
 
     @property
     def signer(self) -> SpecSigner | None:
@@ -722,6 +736,35 @@ class SubmissionService:
                         **({"step_id": step_id} if step_id else {})},
             ) from exc
 
+    def _review_contract(self, contract: workcontract.Prepared, *, tenant: Tenant,
+                         step_id: str | None, submitted_by: str,
+                         switches: Any = ()) -> contractreview.Reviewed:
+        """Jev's review of a prepared contract, under SWARM_CONTRACT_REVIEW
+        and the workspace's signed `contract_review` setting. Off (the
+        default) it reads nothing and returns the contract as it came; in
+        `enforce` mode its refusal is the 422 of jev-contract.md section 4.5.
+        `switches` are the step's workflow switches: `contract_jev: off`
+        skips the review, recorded `skipped:arm` (`contractreview.arm_of`)."""
+        if contractreview.mode(os.environ) == contractreview.MODE_OFF:
+            return contractreview.Reviewed(contract, None)
+        if self.contract_reviewer is None:
+            self.contract_reviewer = contractreview.ContractReviewer(
+                getattr(self._store, "db", None), mac=settings_mac(self._settings),
+                now=self._now, project_id=getattr(self._settings, "project_id", "") or "")
+        return self.contract_reviewer.review(
+            contract, tenant_id=tenant.tenant_id,
+            submitter_tenant_id=submitter_personal_tenant(self._store, submitted_by),
+            step_id=step_id, switches=switches)
+
+    def _workspace_settings(self, tenant_id: str) -> dict[str, Any]:
+        """`workspace_settings/{tenant_id}` as stored, or {} (and with no
+        database, which allows no plugin)."""
+        db = getattr(self._store, "db", None)
+        if db is None:
+            return {}
+        snap = db.collection(plugins_mod.COLLECTION).document(tenant_id).get()
+        return (snap.to_dict() or {}) if snap.exists else {}
+
     def _build_task(
         self,
         *,
@@ -750,6 +793,19 @@ class SubmissionService:
         if submitted_by is None:
             assert ctx is not None
             submitted_by = ctx.email
+        # The step's `plugins` field (the owner's pick on PR #3264): checked
+        # against the catalogue, its runner profile and the workspace's signed
+        # setting, then carried in its work contract, so the contract below
+        # and the digest the dispatch block signs hold them.
+        if spec.plugins:
+            spec = spec.model_copy(update={"metadata": plugins_mod.with_step_plugins(
+                spec.metadata, {n: p.model_dump() for n, p in spec.plugins.items()},
+                tenant_id=tenant.tenant_id, step_id=step_id,
+                runner_profile=validate_runner_profile(spec.runner_profile).name,
+                owner=submitted_by,
+                settings_doc=self._workspace_settings(tenant.tenant_id),
+                mac=settings_mac(self._settings), environ=os.environ,
+            )})
         # A work contract (docs/design/agent-quality/work-contract.md), only
         # while SWARM_WORK_CONTRACTS is on: first, because the limits it sets
         # and the step leaves unset become the step's own fields, which every
@@ -757,12 +813,34 @@ class SubmissionService:
         contract = self._work_contract(spec, tenant=tenant, step_id=step_id,
                                        repository_url=repository_url or spec.repository_url,
                                        repository_ref=repository_ref or spec.repository_ref)
+        # Jev's review of the contract (contractreview; jev-contract.md
+        # section 4): after the mechanical compile, so a contract code has
+        # refused never reaches Jev; before the step fields, so a reviewer's
+        # revision 2 is what the step carries and signs.
+        contract_review: dict[str, Any] | None = None
+        if contract is not None:
+            reviewed = self._review_contract(contract, tenant=tenant, step_id=step_id,
+                                             submitted_by=submitted_by,
+                                             switches=dispatch.switches)
+            contract, contract_review = reviewed.prepared, reviewed.record
         if contract is not None:
             update: dict[str, Any] = {**contract.fields, "metadata": dict(contract.metadata)}
             if "budget" in update:
                 update["budget"] = StepBudget(**update["budget"])
             spec = spec.model_copy(update=update)
         profile = validate_runner_profile(spec.runner_profile)
+        # The step's plugins (docs/design/agent-plugins.md), from its work
+        # contract's capabilities section: catalogue names its runner profile
+        # can load, in a mode that runs today, and only those the workspace
+        # allowed under a signed settings block. The contract's digest rides
+        # in the signed dispatch block, which signs them with the step.
+        if contract is not None and contract.contract.plugins:
+            plugins_mod.check_step(
+                contract.contract.plugins, tenant_id=tenant.tenant_id,
+                runner_profile=profile.name,
+                settings_doc=self._workspace_settings(tenant.tenant_id),
+                mac=settings_mac(self._settings), step_id=step_id,
+            )
         # An `await-input` step only inside a workflow (docs/design/
         # human-steps.md §4.1): as a task, a batch entry or a child it has no
         # step to answer and no dependant to hand the answer to.
@@ -870,6 +948,10 @@ class SubmissionService:
         # (`reject_reserved_metadata`). Only when there is a budget: with
         # none, the task, its format and its block are byte for byte what
         # they were before #2459.
+        if contract_review is not None:
+            # Beside the contract's reference, inside the signed block no
+            # caller can write, and never inside the contract's own bytes.
+            metadata[DISPATCH_METADATA_KEY][contractreview.DISPATCH_FIELD] = contract_review
         if resolved_budget is not None:
             metadata[DISPATCH_METADATA_KEY][budget_mod.PROVENANCE_KEY] = budget_mod.provenance(
                 step=step_budget, workspace=workspace_budget, ceiling=budget_ceiling)
@@ -1224,7 +1306,11 @@ class SubmissionService:
                     continue
                 asked.add(pair)
                 check_repository_ref(spec.repository_ref)
-                self._check_ref_exists(tenant, *pair, person=ctx.email)
+                # The platform's own submission (`repoindex`) names the head
+                # sha it has just read from GitHub with the same credential:
+                # asking again is one more read for nothing (#3315).
+                if not service_submission:
+                    self._check_ref_exists(tenant, *pair, person=ctx.email)
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
             tasks = [
@@ -1698,6 +1784,7 @@ class SubmissionService:
                     max_turns=source.max_turns,
                     budget=source.budget,
                     model_class=source.model_class,
+                    plugins=source.plugins,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).
@@ -1830,6 +1917,11 @@ class SubmissionService:
         self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
+        # A workflow submitted without a description gets one written for it,
+        # marked generated (BGD, 2026-11-04), on a thread of its own: this
+        # returns at once and never raises, so it delays and fails nothing.
+        wfdescription.after_submission(getattr(self._store, "db", None), tasks,
+                                       settings=self._settings)
         return WorkflowSubmission(
             workflow=workflow,
             tasks=tasks,
@@ -1876,6 +1968,9 @@ class SubmissionService:
                 runner_profile=s.runner_profile,
                 pr_role=s.pr_role,
                 merges=dict(s.merges) if s.merges is not None else None,
+                # The security review, by its work contract's plugin: a
+                # verdict source after the integrator, staged by the merge.
+                security_review=is_security_review(s.metadata, os.environ),
             )
             for s in spec.steps
         ]
@@ -2189,7 +2284,8 @@ class SubmissionService:
     def _check_ref_exists(self, tenant: Tenant, repository_url: str | None,
                           ref: str | None, *, person: str | None) -> None:
         """Refuse a `repository_ref` the forge has neither as a branch nor as
-        a tag (#2726), once per submission, before any task exists.
+        a tag (#2726) -- or, for a full sha, as a commit (#3315) -- once per
+        submission, before any task exists.
 
         wf_81c4f2da named `swarm/task_77d63ca8...`, a branch deleted after its
         pull request merged; its step took a lease, waited for a pod and
@@ -2200,11 +2296,16 @@ class SubmissionService:
         the `repository_ref_not_found` switch is on (refusals.py); off, the
         refusal is logged and the submission admitted.
 
+        A full sha is one read, `commit_head` (`GET commits/<sha>`), instead
+        of the branch and tag reads: task_36c8a894 named a sha GitHub does not
+        serve and failed in the clone with "not our ref". The commits API can
+        still answer for a dangling object upload-pack refuses, so this
+        narrows that gap without closing it.
+
         FAILS OPEN. No forge reader or credential, 401/403, a timeout, a 5xx,
         a rate limit or an unreadable repository admit as before: the clone
         still finds a missing ref, and a GitHub outage must not stop
-        admission. A full sha is fetched by sha and never asked about; a
-        repository off GitHub is not asked either.
+        admission. A repository off GitHub is not asked.
         """
         if self._forge_tokens is None or self._forge_writer is None:
             return
@@ -2217,7 +2318,8 @@ class SubmissionService:
         owner, repo = named
         target = IssueRef(owner=owner, repo=repo, number=0)
         writer = self._forge_writer
-        task_id = swarm_task_of_ref(ref)
+        full_sha = is_full_sha(ref)
+        task_id = None if full_sha else swarm_task_of_ref(ref)
         task: Task | None = None
         if task_id is not None:
             try:
@@ -2231,9 +2333,12 @@ class SubmissionService:
         try:
             token = self._forge_tokens.token_for(tenant, person=person)
             try:
-                if writer.branch_head(target, ref, token) is not None:
+                if full_sha:
+                    if writer.commit_head(target, ref, token) is not None:
+                        return
+                elif writer.branch_head(target, ref, token) is not None:
                     return
-                if writer.tag_head(target, ref, token) is not None:
+                elif writer.tag_head(target, ref, token) is not None:
                     return
                 # Neither: a 404 is also what a token that cannot see the
                 # repository reads, so the repository itself must answer.

@@ -528,6 +528,9 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
     if full.get("console"):
         # The API's link, so the row's answer can say where the whole of it is.
         out["console"] = full["console"]
+    if full.get("browser_unused"):
+        # A live-browser run that never used its browser (`progress.browser_unused_line`).
+        out["browser_unused"] = full["browser_unused"]
     return out
 
 
@@ -877,8 +880,16 @@ def hold_result(task_id: str, fast: list[float], link: str | None, *, end: bool)
 
 
 def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
-    """One of `progress.owner_questions`' questions, every missing text as ""."""
-    return {
+    """One of `progress.owner_questions`' questions, every missing text as "".
+
+    An open one (`progress.open_owner_questions`) keeps its `index`, its place
+    in questions.json that swarm_task_answer records the pick under, and its
+    `answer_unknown_because` when its stored answer could not be read."""
+    out: dict[str, Any] = {}
+    index = question.get("index")
+    if isinstance(index, int) and not isinstance(index, bool):
+        out["index"] = index
+    out.update({
         "question": _text(question.get("question")),
         "options": [
             {"label": _text(option.get("label")), "description": _text(option.get("description"))}
@@ -887,7 +898,10 @@ def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
         ],
         "recommended": _text(question.get("recommended")),
         "context": _text(question.get("context")),
-    }
+    })
+    if question.get("answer_unknown_because"):
+        out["answer_unknown_because"] = _text(question["answer_unknown_because"])
+    return out
 
 
 def _answer_index(answer: Any) -> int | None:
@@ -1150,6 +1164,11 @@ def watch_progress(
             if task["read"] == "ok" and task.get("terminal"):
                 try:
                     row["outcome"] = _slim_outcome(outcome(client, client.task(task_id)))
+                    unused = row["outcome"].get("browser_unused")
+                    if unused and news:
+                        # Under the finish line, on the call that writes it:
+                        # once, as the line itself is.
+                        progress.append(f"[{label}] {unused}")
                 except SwarmError as exc:
                     row["outcome"] = None
                     row["outcome_unavailable_because"] = clip(f"the finished task could not be re-read: {exc}", 200)
@@ -1382,7 +1401,7 @@ def watch_summary(
     payload["sm"] = {"p": {t: prs[t] for t in task_ids if t in prs}, "ln": line}
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     body = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    return {
+    out = {
         "line": line,
         "line_changed": line != before,
         "transitions": reply["transitions"],
@@ -1390,6 +1409,14 @@ def watch_summary(
         "since": f"{body}.{_checksum(body)}",
         "tasks": reply["tasks"],
     }
+    # A task that ran on a live browser and never used it, on the call it
+    # finished -- the only call that returns its row, so once each
+    # (`progress.browser_unused_line`, 2026-11-05). No key when none did.
+    unused = [str((row.get("outcome") or {}).get("browser_unused")) for row in reply["tasks"]
+              if row.get("terminal") and (row.get("outcome") or {}).get("browser_unused")]
+    if unused:
+        out["browser_unused"] = unused
+    return out
 
 
 # --------------------------------------------------------------------------

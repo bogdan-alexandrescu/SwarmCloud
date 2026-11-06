@@ -196,17 +196,19 @@ describe('the Connection tab is S2b’s two columns', () => {
     // 2:1 at 1440, one column at 390. MUTATION: drop the 899px one-column rule.
     expect(painted(body!, 'grid-template-columns', { width: 1440 })).toBe('minmax(0, 2fr) minmax(0, 1fr)')
     expect(painted(body!, 'grid-template-columns', { width: 390 })).toBe('minmax(0, 1fr)')
-    // The rules are a checklist of three short lines, each headline with its line (S2b).
+    // The rules are a checklist of three headlines (S2b); their short lines are
+    // the (i) beside the card's title (BGD's no-prose rule, 2026-11-05).
     const rules = [...side!.querySelectorAll<HTMLElement>('[data-rule]')]
     expect(rules.map((r) => r.querySelector('.ac-rule-t > b')?.textContent)).toEqual([
-      'Read means read, and SwarmCloud enforces it.',
+      'Read means read.',
       'No workflow changes.',
       'Verifying only reads.',
     ])
-    expect(rules.map((r) => r.querySelector('.ac-rule-t > small')?.textContent)).toEqual([
-      'A read grant never pushes, whatever GitHub would allow.',
-      'SwarmCloud never asks for the workflows permission.',
-      'Push test is opt-in, per repository.',
-    ])
+    // MUTATION: draw each rule's `<small>` line again.
+    expect(rules.map((r) => r.querySelector('.ac-rule-t > small'))).toEqual([null, null, null])
+    const info = within(side!).getByRole('button', { name: 'About what SwarmCloud may do as you' })
+    expect(document.getElementById(info.getAttribute('aria-describedby')!)?.textContent).toBe(
+      'Read means read, and SwarmCloud enforces it. A read grant never pushes, whatever GitHub would allow. SwarmCloud never asks for the workflows permission. Push test is opt-in, per repository.',
+    )
   })
 })

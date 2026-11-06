@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from urllib.parse import quote
 
@@ -544,7 +544,10 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     The free text was redacted before it was stored; it is masked again here
     as every collected text is (`task_input.COLLECTED_METADATA_KEYS`). `via`
     and `session` say where it was answered (ANSWER-SYNC), null on an answer
-    stored before they were.
+    stored before they were. Each `history` entry carries the `question` it
+    answered (#3349): a later attempt may ask another question at the same
+    index, and the earlier answer is read with its own; null on an entry
+    moved to history before it was kept.
     """
 
     def text(value: Any) -> str | None:
@@ -553,6 +556,7 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     def one(e: dict[str, Any]) -> dict[str, Any]:
         at = e.get("at")
         return {
+            "question": text(e.get("question")),
             "choice": text(e.get("choice")),
             "text": text(e.get("text")),
             "by": text(e.get("by")),
@@ -565,7 +569,6 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     masked, _ = masking.leaves(
         {
             "question_index": entry.get("question_index"),
-            "question": text(entry.get("question")),
             **one(entry),
             "history": [one(h) for h in history if isinstance(h, dict)],
         }
@@ -1703,6 +1706,174 @@ def step_task_summary(
         "completed_at": task.completed_at,
         **totals,
         "last_error_line": line or None,
+        "needs": step_needs(task, masking),
+    }
+
+
+def _iso(value: Any) -> str | None:
+    """A served instant: a datetime as ISO 8601, a string as stored, else None."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value if isinstance(value, str) else None
+
+
+#: The most questions one `questions.json` holds: the worker refuses a file
+#: with more (`agent_worker.questions.MAX_QUESTIONS`, which swarm-api does not
+#: import), so a larger `result_summary.questions` on the tenant-writable task
+#: document is never served as that many indices. A test pins the two equal.
+MAX_ARTIFACT_QUESTIONS = 20
+
+
+def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
+    """What the Workflows list's Needs-you bar draws for one step, off its task
+    document alone (the owner's pick on PR #3147, "Widen view=summary").
+
+    No artifact, event or approval is read, so the list costs no read more for
+    it. Every text an agent or a worker wrote is masked by the task's masker:
+
+    * `park_reason`, and the hand-off's clock: `next_eligible_at` and
+      `updated_at`, the instants the parked hand-off's deadline counts from.
+    * `human_wait`: a RUNNING task's browser hand-off, `{reason, expect,
+      deadline}`; null for every other task.
+    * `owner_questions`: a merge held by the owner's questions (#2313), its
+      park's `owner_questions` record, `{questions, unreadable}`, each
+      question `{task_id, step_id, question_index, question}`; else null.
+    * `question_wait`: whether the task is PARKED on a question wait, which
+      is HUMAN_REQUIRED as a browser hand-off is, and is not one.
+    * `questions`: the open questions of the wait the task is PARKED on, each
+      `{index, question, options, recommended}` -- the blocking indices with
+      no answer of that wait's own -- and empty for every other task: a wait
+      it parked on once is not one it waits on now.
+    * `questions_unread`: for an ended task only, as the bell counts them,
+      the indices of the questions in the agent's `questions.json` (the count
+      the worker validated, `result_summary.questions`, at most
+      `MAX_ARTIFACT_QUESTIONS`) with no stored answer, whose words are in
+      that artifact and not served here; the task's page reads them
+      (`GET /v1/tasks/{id}/questions`). The artifact is not read here: an
+      answer counts only while the worker's digest of the question at its
+      index (`result_summary.question_digests`) is the one it was given for
+      (`agent_questions.unanswered_indices`); a task summarised before the
+      digests counts by index.
+    * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
+    * `plugin_ask`: for a plugin step PARKED on a question wait only (its work
+      contract's `capabilities.plugins` names at least one plugin with a
+      mode), `{plugins, repository_url, asked_at, expires_at, skill}`: each
+      plugin `{name, mode}`, the repository it runs on, the wait's clock as
+      `GET /v1/tasks/{id}/questions` serves it (`agent_questions.asked_at`,
+      `wait_max_seconds`), and the skill that asked as the worker recorded it
+      (`agent_questions.asked_by_skill`; null when not known); else null. Needs you tells a plugin step's question
+      from it, with no read of the task or its questions (the owner's pick on
+      PR #3262, "Serve them in step_needs").
+    """
+    from swarm_common.states import TERMINAL_STATES
+
+    from .agent_questions import (
+        asked_at,
+        asked_by_skill,
+        blocking_unanswered,
+        current_wait,
+        parked_wait,
+        question_count,
+        question_digests,
+        unanswered_indices,
+        wait_max_seconds,
+    )
+
+    def masked(value: Any) -> str | None:
+        return masking.text(value)[0] if isinstance(value, str) else None
+
+    wait = task.human_wait if isinstance(task.human_wait, dict) else None
+    human_wait = (
+        {"reason": masked(wait.get("reason")), "expect": masked(wait.get("expect")),
+         "deadline": _iso(wait.get("deadline"))}
+        if wait is not None and task.state == TaskState.RUNNING else None
+    )
+    hold: dict[str, Any] | None = None
+    if task.state == TaskState.PARKED and task.park_reason == ParkReason.HUMAN_REQUIRED:
+        for entry in task.blocked_by or ():
+            if (not isinstance(entry, dict) or entry.get("reason") != ParkReason.HUMAN_REQUIRED.value
+                    or entry.get("park_phase") != "owner_questions"):
+                continue
+            record = entry.get("owner_questions") if isinstance(entry.get("owner_questions"), dict) else {}
+            questions = []
+            for q in record.get("questions") or ():
+                if not isinstance(q, dict):
+                    # Served as null, which the console counts as unreadable:
+                    # never the stored value, which no masker has read.
+                    questions.append(None)
+                    continue
+                questions.append({
+                    "task_id": q.get("task_id") if isinstance(q.get("task_id"), str) else None,
+                    "step_id": q.get("step_id") if isinstance(q.get("step_id"), str) else None,
+                    "question_index": q.get("question_index") if isinstance(q.get("question_index"), int) else None,
+                    "question": masked(q.get("question")),
+                })
+            unreadable = record.get("unreadable")
+            hold = {"questions": questions,
+                    "unreadable": unreadable if isinstance(unreadable, int) and not isinstance(unreadable, bool) else None}
+            break
+    open_questions: list[dict[str, Any]] = []
+    question_wait = parked_wait(task)
+    if question_wait is not None:
+        # The stored answers are this wait's only once swarm-api adopted it
+        # (the same attempt); an earlier wait's answers never hide its
+        # questions. notifications._asked_item reads them the same way.
+        _, adopted = current_wait(task)
+        asked = question_wait["questions"]
+        for index in blocking_unanswered(question_wait, task.metadata if adopted else None):
+            entry = asked[index]
+            options = [
+                {"label": masked(o.get("label")), "description": masked(o.get("description"))}
+                for o in entry.get("options") or () if isinstance(o, dict)
+            ]
+            open_questions.append({
+                "index": index,
+                "question": masked(entry.get("question")),
+                "options": options,
+                "recommended": masked(entry.get("recommended")),
+            })
+    plugin_ask: dict[str, Any] | None = None
+    if question_wait is not None:
+        contract = (task.metadata or {}).get("work_contract")
+        caps = contract.get("capabilities") if isinstance(contract, dict) else None
+        stored = caps.get("plugins") if isinstance(caps, dict) else None
+        plugins = [
+            {"name": masked(name), "mode": masked(p.get("mode"))}
+            for name, p in (stored.items() if isinstance(stored, dict) else ())
+            if isinstance(name, str) and isinstance(p, dict) and isinstance(p.get("mode"), str) and p["mode"]
+        ]
+        if plugins:
+            began = asked_at(task, question_wait)
+            plugin_ask = {
+                "plugins": plugins,
+                "repository_url": masked(task.repository_url),
+                "asked_at": began.isoformat() if began else None,
+                "expires_at": (began + timedelta(seconds=wait_max_seconds(question_wait))).isoformat()
+                if began else None,
+                "skill": asked_by_skill(question_wait, masking),
+            }
+    git = (task.result_summary or {}).get("git") if isinstance(task.result_summary, dict) else None
+    pr = git.get("pull_request") if isinstance(git, dict) else None
+    number = pr.get("number") if isinstance(pr, dict) else None
+    pull_request = (
+        {"number": number, "url": pr.get("url") if isinstance(pr.get("url"), str) else None}
+        if isinstance(number, int) and not isinstance(number, bool) else None
+    )
+    return {
+        "park_reason": task.park_reason.value if task.park_reason else None,
+        "next_eligible_at": _iso(task.next_eligible_at),
+        "updated_at": _iso(task.updated_at),
+        "human_wait": human_wait,
+        "owner_questions": hold,
+        "question_wait": question_wait is not None,
+        "questions": open_questions,
+        "questions_unread": (
+            unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata,
+                               digests=question_digests(task.result_summary))
+            if task.state in TERMINAL_STATES else []
+        ),
+        "pull_request": pull_request,
+        "plugin_ask": plugin_ask,
     }
 
 

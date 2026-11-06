@@ -140,6 +140,33 @@ describe("the teammate's part beside the link page", () => {
     expect(visible(line(1))).not.toMatch(/\d+ h|\d+ min/)
   })
 
+  it('the hours left are drawn from expires_at as swarm-api serves it, on the 409 and on a value link\'s 422', async () => {
+    // Python's isoformat in universal time: microseconds and a +00:00 offset, not toISOString's Z.
+    const served = (t: number) => new Date(t).toISOString().replace(/\.(\d{3})Z$/, '.$1456+00:00')
+    const token = rand(43)
+    stub((m, url, body) => {
+      if (m !== 'POST' || url !== '/v1/setup/links/redeem' || body?.token !== token) return null
+      return {
+        status: 422,
+        body: {
+          code: 'validation_failed',
+          message: 'a team-git link is opened with its value; the link is still unused, open it again with the value',
+          detail: { expires_at: served(Date.now() + 5 * HOUR + 20_000) },
+        },
+      }
+    })
+    await page(token)
+    await clickOpen()
+    await waitFor(() => expect(visible(line(1))).toMatch(/still unused · 5 h left on the link/), WAIT)
+    expect(visible(line(2))).toMatch(/Store the team's GitHub token/)
+    cleanup()
+    const pool = rand(43)
+    stub((m, url, body) => (m === 'POST' && url === '/v1/setup/links/redeem' && body?.token === pool ? notReady({ expires_at: served(Date.now() + 7 * HOUR + 20_000) }) : null))
+    await page(pool)
+    await clickOpen()
+    await waitFor(() => expect(visible(line(1))).toMatch(/still unused · 7 h left on the link/), WAIT)
+  })
+
   it('a used link and an expired link read the same: no longer opens, and the platform does not say which', async () => {
     const seen: string[] = []
     const used: LinkRecord = { expires_at: Date.now() + 10 * HOUR, used_at: Date.now() - HOUR, ready: true, serves_expiry: true }

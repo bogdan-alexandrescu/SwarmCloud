@@ -48,6 +48,13 @@
  * the platform served with a refusal that kept it unused (the 409 or the
  * value form's 422); without one it reads "time left: not recorded", never a
  * guess. The styles are the checklist finish's (styles/console-finish.css).
+ *
+ * VOICE IT'S OPENAI API KEY (`voice-api-key`, the owner, 4 November 2026). A
+ * platform admin mints it on Admin › Accounts for themself; it opens in their
+ * own console session within ten minutes, once. Like the form kinds it is
+ * refused without its value and stays unused, so the page asks for the key;
+ * swarm-api forwards it once to the quota broker, which files it into the
+ * Voice it pool, and the answer names the account, never the key.
  */
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { USE_FIXTURES, beginAccountSignIn, finishAccountSignIn } from './api'
@@ -75,9 +82,12 @@ interface PoolLink {
   label: string
   tenant: string
 }
+/** The kinds opened with a value typed on this page. */
+type FormKind = 'team-git' | 'addon-secret' | 'voice-api-key'
 type Opened =
   | { kind: 'pool-account'; link: PoolLink }
   | { kind: 'team-git' | 'addon-secret'; label: string | null; secret: string | null }
+  | { kind: 'voice-api-key'; label: string | null; account: string | null }
 
 /** `POST /v1/setup/links/redeem`, the token (and a form kind's value) in the body. */
 export async function redeemSetupLink(token: string, value?: string): Promise<Result<unknown>> {
@@ -98,6 +108,9 @@ function openedFrom(data: unknown): Opened | null {
   if (d.kind === 'team-git' || d.kind === 'addon-secret') {
     return { kind: d.kind, label, secret: typeof d.secret === 'string' ? d.secret : null }
   }
+  if (d.kind === 'voice-api-key') {
+    return { kind: d.kind, label, account: typeof d.account_id === 'string' && d.account_id !== '' ? d.account_id : null }
+  }
   return null
 }
 
@@ -109,7 +122,7 @@ function openedFrom(data: unknown): Opened | null {
 export function linkRefusal(e: ApiError): { line: string; retry: boolean } {
   if (e.httpStatus === 404 || (e.httpStatus === 422 && valueKind(e) === null)) {
     return {
-      line: 'This link has already been used, has expired (a link lasts 24 hours) or was never issued: ask the admin who sent it for a new link from Admin › Setup.',
+      line: 'This link has already been used, has expired (a link lasts 24 hours; a Voice it key link ten minutes) or was never issued: ask the admin who sent it for a new link from Admin › Setup, or make a new Voice it key link on Admin › Accounts.',
       retry: false,
     }
   }
@@ -126,13 +139,13 @@ export function linkRefusal(e: ApiError): { line: string; retry: boolean } {
 }
 
 /** The form kind a 422 names when its link needs a value, or null. */
-function valueKind(e: ApiError): 'team-git' | 'addon-secret' | null {
+function valueKind(e: ApiError): FormKind | null {
   if (e.httpStatus !== 422) return null
-  const m = /^a (team-git|addon-secret) link is opened with its value/.exec(e.message)
-  return m === null ? null : (m[1] as 'team-git' | 'addon-secret')
+  const m = /^a (team-git|addon-secret|voice-api-key) link is opened with its value/.exec(e.message)
+  return m === null ? null : (m[1] as FormKind)
 }
 
-type LinkKind = 'pool-account' | 'team-git' | 'addon-secret'
+type LinkKind = 'pool-account' | FormKind
 
 /**
  * What the page has learned about its link from the answers it was given,
@@ -192,13 +205,20 @@ export function partLines(p: LinkPart, nowMs: number): PartLine[] {
                 now: 'You',
               }
             : { title: 'Open your link', text: 'one click; it works once, for you only, within 24 hours of being made', state: 'todo', now: 'You' }
-  const formKind = p.kind === 'team-git' || p.kind === 'addon-secret' ? p.kind : null
+  const formKind = p.kind === 'team-git' || p.kind === 'addon-secret' || p.kind === 'voice-api-key' ? p.kind : null
   const acting = p.link === 'spent' || (formKind !== null && p.link === 'unused')
   const second: PartLine =
     formKind !== null
       ? {
           title: VALUE_WORDS[formKind].title,
-          text: p.done ? 'stored in its one secret; it is never shown again' : 'from this page straight into its one secret',
+          text:
+            formKind === 'voice-api-key'
+              ? p.done
+                ? 'in the Voice it pool; the key is never shown again'
+                : 'from this page to the account pool, once'
+              : p.done
+                ? 'stored in its one secret; it is never shown again'
+                : 'from this page straight into its one secret',
           state: p.done ? 'done' : acting ? 'in_progress' : 'todo',
           now: !p.done && acting ? 'You' : null,
         }
@@ -335,7 +355,7 @@ export function SetupLinkScreen({ token }: { token: string | null }) {
 function OpenLink({ token, auto, onPart, onPool }: { token: string; auto: boolean; onPart: (p: Partial<LinkPart>) => void; onPool: (link: PoolLink) => void }) {
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<{ line: string; retry: boolean } | null>(null)
-  const [needs, setNeeds] = useState<'team-git' | 'addon-secret' | null>(null)
+  const [needs, setNeeds] = useState<FormKind | null>(null)
   const [written, setWritten] = useState<Opened | null>(null)
   const [notReady, setNotReady] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -435,14 +455,30 @@ function OpenLink({ token, auto, onPart, onPool }: { token: string; auto: boolea
   )
 }
 
-const VALUE_WORDS: Record<'team-git' | 'addon-secret', { title: string; field: string }> = {
-  'team-git': { title: "Store the team's GitHub token", field: "The team's GitHub token" },
-  'addon-secret': { title: "Store the add-on's secret", field: "The add-on's secret" },
+const VALUE_WORDS: Record<FormKind, { title: string; field: string; lead: string; verb: string }> = {
+  'team-git': {
+    title: "Store the team's GitHub token",
+    field: "The team's GitHub token",
+    lead: 'The value goes straight from this page into its one secret in Secret Manager. It is never shown again, and the link is used only once it is stored.',
+    verb: 'Store it',
+  },
+  'addon-secret': {
+    title: "Store the add-on's secret",
+    field: "The add-on's secret",
+    lead: 'The value goes straight from this page into its one secret in Secret Manager. It is never shown again, and the link is used only once it is stored.',
+    verb: 'Store it',
+  },
+  'voice-api-key': {
+    title: "Add Voice it's OpenAI API key",
+    field: 'OpenAI API key (it begins sk-)',
+    lead: 'A developer API key from your OpenAI account, not a ChatGPT sign-in: only a key can open a Live session. It goes from this page to the account pool once, into a secret only the pool reads, and is never shown again. Sending it uses the link, so a key the pool refuses needs a new link from Admin › Accounts.',
+    verb: 'Add the key',
+  },
 }
 
 function ValueForm({ token, kind, onPart, onWritten }: {
   token: string
-  kind: 'team-git' | 'addon-secret'
+  kind: FormKind
   onPart: (p: Partial<LinkPart>) => void
   onWritten: (o: Opened) => void
 }) {
@@ -467,23 +503,20 @@ function ValueForm({ token, kind, onPart, onWritten }: {
     }
     setValue('')
     const opened = r.status === 'ok' || r.status === 'stale' ? openedFrom(r.data) : null
-    onWritten(opened ?? { kind, label: null, secret: null })
+    onWritten(opened ?? (kind === 'voice-api-key' ? { kind, label: null, account: null } : { kind, label: null, secret: null }))
   }
 
   return (
     <Card title={words.title}>
       <form className="pk-form" autoComplete="off" onSubmit={(e) => void send(e)}>
-        <p className="pk-lead">
-          The value goes straight from this page into its one secret in Secret Manager. It is never shown again, and
-          the link is used only once it is stored.
-        </p>
+        <p className="pk-lead">{words.lead}</p>
         <label htmlFor={`${id}-v`}>{words.field}</label>
         <input id={`${id}-v`} className="c-inp" type="password" autoComplete="off" spellCheck={false} value={value}
           onChange={(e) => setValue(e.target.value)} />
         {refused !== null && <Banner tone="bad" title={refused} role="alert" />}
         <div className="pk-form-row">
           <Button kind="primary" type="submit" busy={busy ? 'Storing…' : false} disabled={value.trim() === ''}>
-            Store it
+            {words.verb}
           </Button>
         </div>
       </form>
@@ -492,6 +525,14 @@ function ValueForm({ token, kind, onPart, onWritten }: {
 }
 
 function Written({ opened }: { opened: Opened }) {
+  if (opened.kind === 'voice-api-key') {
+    return (
+      <Banner tone="info" title={`The key is in the Voice it pool${opened.account !== null ? ` as ${opened.account}` : ''}.`} role="status">
+        This link is now used. Admin &rsaquo; Accounts shows the account in the Voice it pool; its usage windows read
+        &ldquo;not measured&rdquo;, because OpenAI gives a key none. You can close this page.
+      </Banner>
+    )
+  }
   const where = opened.kind !== 'pool-account' && opened.secret !== null ? ` in ${opened.secret}` : ''
   return (
     <Banner tone="info" title={`Stored${where}.`} role="status">

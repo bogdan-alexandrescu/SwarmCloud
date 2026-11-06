@@ -399,13 +399,14 @@ LINK_FIELDS = (LINK_CREDENTIAL, LINK_BYPASS)
 SPEC_FIELDS = (
     "name", "base_url", "repository", "sign_in", "screens", "discover", "flows",
     "widths", "themes", "exclusions", "environment", "read_posts", "design_docs",
-    "file", "rate", "clock", "challenge_bypass", "flows_browser_tool", "environments",
+    "file", "rate", "clock", "challenge_bypass", "flows_browser_tool", "environments", "entry_query",
 )
 REQUIRED_FIELDS = ("name", "base_url", "repository", "authorized_by")
 #: The registration fields of one leg (qa-environments.md §1.1): in a body,
 #: either beside the app's fields (a target of one environment, stored as
 #: before) or in each entry of `environments`, never both.
-LEG_SPEC_FIELDS = ("base_url", "sign_in", "environment", "read_posts", "rate", "challenge_bypass")
+LEG_SPEC_FIELDS = ("base_url", "sign_in", "environment", "read_posts", "rate", "challenge_bypass",
+                   "entry_query")
 #: The app's: stored on the target once, shared by every entry.
 APP_SPEC_FIELDS = tuple(k for k in SPEC_FIELDS if k not in LEG_SPEC_FIELDS and k != "environments")
 _ENTRY_KEYS = frozenset({"name", *LEG_SPEC_FIELDS})
@@ -468,6 +469,31 @@ class QaBypassLinkRequired(Forbidden):
     through and is logged without the value."""
 
     code = "qa_bypass_link_required"
+
+
+class QaFlowWritesRequired(ValidationFailed):
+    """A mutating flow saved with no `writes` (qa-environments.md §6). Raised
+    through `refusals.refuse`, its switch shipping on; off, the save goes
+    through and the flow renders read-only (`qaspec._flows`)."""
+
+    code = "qa_flow_writes_required"
+
+
+class QaWritingFlowsOff(ValidationFailed):
+    """A mutating flow saved while the workspace's `writing_flows` is off
+    (§6). Raised through `refusals.refuse`, its switch shipping on; off, the
+    save goes through and every flow renders read-only (`qaspec.leg`)."""
+
+    code = "qa_writing_flows_off"
+
+
+#: Fixed sentences: nothing from the request or the target is interpolated.
+WRITES_REQUIRED_MESSAGE = (
+    "A flow that writes (mutating: true) must say what it writes in `writes`, one plain sentence. "
+    "Nothing was saved.")
+WRITING_FLOWS_OFF_MESSAGE = (
+    "This workspace's QA settings turn writing flows off, so no flow may be mutating. A workspace "
+    "admin can turn writing flows on. Nothing was saved.")
 
 
 class QaCredentialUnavailable(ApiError):
@@ -535,7 +561,7 @@ LEG_BESIDE_ENVIRONMENTS_MESSAGE = (
 )
 ENVIRONMENTS_MESSAGE = (
     f"environments must list 1 to {qaspec.MAX_ENVIRONMENTS} entries, each {{name, base_url, "
-    "environment?, sign_in?, read_posts?, rate?, challenge_bypass?}"
+    "environment?, sign_in?, read_posts?, rate?, challenge_bypass?, entry_query?}"
 )
 ENVIRONMENT_NAME_MESSAGE = (
     "an environment's name is 1 to 20 lower-case letters, digits or hyphens, unique in its target"
@@ -943,7 +969,7 @@ def _entry_api(entry: Mapping[str, Any], *, screens: Any = None, dismissed: Any 
         "credential": credential_status(entry),
         BYPASS_FIELD: bypass_status(entry),
     }
-    for key in ("read_posts", "rate", "challenge_bypass"):
+    for key in ("read_posts", "rate", "challenge_bypass", "entry_query"):
         if key in entry:
             body[key] = entry[key]
     body.update(discovery_status(entry, screens=screens, dismissed=dismissed))
@@ -1234,6 +1260,14 @@ class QaTargets:
         origin, host = _origin_of(leg["base_url"])
         leg["host"] = check_public_host(host, self._resolve)
         leg["origin"] = origin
+        try:
+            # QA-ENTRY-QUERY: not part of the host, so a change of it alone
+            # keeps the leg's approval (`patch` compares host and extra origin).
+            query = qaspec.entry_query(values)
+        except qaspec.QaSpecError as exc:
+            raise _invalid(exc.message, field="entry_query") from None
+        if query is not None:
+            leg["entry_query"] = query
         leg["sign_in"] = _sign_in(values.get("sign_in"), self._resolve, exclusions=exclusions)
         rate = _rate(values.get("rate"))
         if rate is not None:
@@ -1296,6 +1330,22 @@ class QaTargets:
             check_spec(qaspec.leg(normal, leg["name"]))
         return normal
 
+    def _check_writing_flows(self, tenant_id: str, flows: Any) -> None:
+        """§6: a mutating flow says what it writes, and only a workspace whose
+        `writing_flows` is on saves one. Each through its switch (on). Read
+        for a save that carries `flows`: a change that leaves them as stored
+        is not refused for them, and a stored writes-less one reads only."""
+        mutating = [f for f in flows if isinstance(f, Mapping) and f.get("mutating") is True] \
+            if isinstance(flows, list) else []
+        if not mutating:
+            return
+        if not qasettings.QaSettingsStore(self._db, now=self._now).writing_flows(tenant_id):
+            refusals.refuse(QaWritingFlowsOff(WRITING_FLOWS_OFF_MESSAGE,
+                                              detail={"reason": QaWritingFlowsOff.code}))
+        if any(qaspec.declared_writes(f) is None for f in mutating):
+            refusals.refuse(QaFlowWritesRequired(WRITES_REQUIRED_MESSAGE,
+                                                 detail={"reason": QaFlowWritesRequired.code}))
+
     def _check_room(self, tenant_id: str, count: int, credentials: QaCredentialStore | None) -> None:
         """§1.4: refuse `count` new entries that will hold values when the
         map, at their maxima, would pass `SECRET_MAP_MAX_BYTES`."""
@@ -1313,6 +1363,7 @@ class QaTargets:
         authorized_by = _one_line(values.get("authorized_by"), "authorized_by",
                                   limit=AUTHORIZED_BY_MAX, field="authorized_by")
         doc = self._build(tenant_id, values)
+        self._check_writing_flows(tenant_id, doc.get("flows"))
         if self._name_taken(tenant_id, doc["name"]):
             raise Conflict("a QA target of this workspace already has this name")
         migrated = bool(doc[qaspec.MIGRATED])
@@ -1391,6 +1442,8 @@ class QaTargets:
                 merged[key] = value
         # The repository is stored as its URL; `_repository` reads either.
         doc = self._build(tenant_id, merged)
+        if changes.get("flows") is not None:
+            self._check_writing_flows(tenant_id, doc.get("flows"))
         if doc["name"].lower() != str(current.get("name") or "").lower() \
                 and self._name_taken(tenant_id, doc["name"], besides=target_id):
             raise Conflict("a QA target of this workspace already has this name")
@@ -1846,7 +1899,10 @@ class QaTargets:
 
     def _runnable_view(self, normal: Mapping[str, Any], tenant_id: str, *, file: str,
                        environment: Any) -> dict[str, Any]:
-        target = self._startable(_view(normal, environment), tenant_id, file=file)
+        # §6: the workspace's `writing_flows`, off, renders every flow read-only.
+        writing = qasettings.QaSettingsStore(self._db, now=self._now).writing_flows(tenant_id)
+        target = self._startable(qaspec.leg(normal, _entry_of(normal, environment)["name"], writing_flows=writing),
+                                 tenant_id, file=file)
         if target.get("screens") is None and not target.get("discovered") and target.get("discover") is None:
             # A target that asks to discover runs from its base alone, its
             # capture steps crawling (qa-environments.md §3.1, QAENV-RUN).
@@ -2548,6 +2604,7 @@ def _api_workflow(spec: Mapping[str, Any],
         "repository_url": spec["repository_url"],
         "on_step_failure": spec["on_step_failure"],
         "metadata": {"origin": "qa-target", "unit": spec["label"], "title": spec["title"],
+                     "description": spec["description"], "feature": spec["feature"],
                      "merge": spec["merge"]},
     }
     return workflow, mark, sorted(browser)
@@ -2683,7 +2740,10 @@ class QaTargetIssuer:
         if not self._run_names(tenant_id, task, target_id, attempt.task_id, environment=leg_name,
                                single=len(target["environments"]) == 1):
             raise missing
-        view = qaspec.leg(target, leg_name)
+        # §6: the leg as a run renders it, so a writes-less mutating flow, or
+        # any flow while the workspace's `writing_flows` is off, is never mutating.
+        view = qaspec.leg(target, leg_name,
+                          writing_flows=qasettings.QaSettingsStore(self._db, now=self._now).writing_flows(tenant_id))
         if view.get("host_state") != HOST_APPROVED:
             raise QaTargetHostPending(HOST_PENDING_MESSAGE)
         if target.get("revision") != mark.get("revision"):
@@ -2734,8 +2794,12 @@ class QaTargetIssuer:
         sign_in = dict(target.get("sign_in") or {"kind": "none"})
         origin = target.get("origin") or f"https://{target.get('host')}"
         served_sign_in: dict[str, Any] = {"kind": sign_in.get("kind", "none")}
+        # QA-ENTRY-QUERY: the gate's sign-in entry and the page it leaves
+        # the agent on carry the leg's pairs, as every route the capture opens does.
+        query = target.get("entry_query")
+        query = query if isinstance(query, str) and query else None
         if served_sign_in["kind"] == "own_login":
-            served_sign_in["login_url"] = origin + sign_in["login_path"]
+            served_sign_in["login_url"] = qaspec.with_query(origin + sign_in["login_path"], query)
             for key in ("signed_in_selector", *_SELECTOR_KEYS):
                 if sign_in.get(key) is not None:
                     served_sign_in[key] = sign_in[key]
@@ -2757,7 +2821,8 @@ class QaTargetIssuer:
             **served,
             "target_id": target.get("id"),
             "revision": target.get("revision"),
-            "base_url": target.get("base_url"),
+            "base_url": qaspec.with_query(target["base_url"], query) if query and target.get("base_url")
+            else target.get("base_url"),
             # Only what a platform admin approved: the base origin, and the
             # login's other origin when it was named in the approval.
             "origins": approved_origins,

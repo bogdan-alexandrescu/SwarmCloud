@@ -50,6 +50,7 @@ from .routes import (
     budget_settings,
     checkpoints,
     children,
+    contract_review,
     credentials,
     codeintel,
     failurefindings,
@@ -74,6 +75,7 @@ from .routes import (
     provider_keys,
     people,
     platform,
+    plugin_settings,
     qa_identity,
     qa_settings,
     qatargets,
@@ -102,6 +104,9 @@ from .routes import join_requests
 from .routes import setup
 from .routes import addon_probe
 from .routes import voice
+from .routes import voice_readback
+from .routes import voice_settings
+from .routes import voice_visuals
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -425,6 +430,12 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's quality gates: whether its claude-code lanes run
     # jev-belay and jev-enforce (JEV-LANES): its owner or admin, audited.
     app.include_router(quality_gates.router)
+    # A workspace's opt-in to Jev's review of its work contracts at
+    # submission (contractreview): its owner or admin, audited.
+    app.include_router(contract_review.router)
+    # A workspace's allowed agent plugins, from the platform's closed
+    # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
+    app.include_router(plugin_settings.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)
@@ -593,6 +604,18 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # people VOICE_IT_PEOPLE names (else the platform owner) only, in the
     # console's selected workspace; 503 while swarm-voice is not deployed.
     app.include_router(voice.router)
+    # Its read-backs (docs/design/voice-it-own-speech.md §7): a spoken
+    # cancel, merge, deploy, delete or approve waits for a "go".
+    app.include_router(voice_readback.router)
+    # Voice it's Settings (docs/design/voice-it-own-speech.md §11): read by a
+    # Voice it person or an admin, written by a platform admin alone.
+    app.include_router(voice_settings.router)
+    # Its visuals and notes (docs/design/voice-it-own-speech.md §8.3): the
+    # planner's draws and spoken notes, stored under the tenant's prefix; the
+    # planner draws and notes through the session grant, which reaches only
+    # the visual and note writes (voice.grant.WRITE_ROUTES); the page reads,
+    # points and edits; a code or log body is read here, never sent.
+    app.include_router(voice_visuals.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

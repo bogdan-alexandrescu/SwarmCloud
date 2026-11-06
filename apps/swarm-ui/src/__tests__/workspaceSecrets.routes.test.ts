@@ -30,10 +30,10 @@ describe('Config › Secrets', () => {
     }
   })
 
-  it('leaves Workspace Settings a page of its own', () => {
+  it('leaves Workspace Settings a page of its own: the workspace page\'s Settings tab (admin routes lane)', () => {
     const r = fromAddress(pathToAddress('/settings/workspace')!.address)
-    expect(r).toMatchObject({ sectionId: 'config', tab: 'workspace' })
-    expect(addressToPath(canonical(r))).toBe('/config/workspace')
+    expect(r).toMatchObject({ sectionId: 'admin', tab: 'workspaces' })
+    expect(addressToPath(canonical(r))).toBe('/admin/workspaces?tab=settings')
   })
 })
 

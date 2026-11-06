@@ -110,7 +110,6 @@ from __future__ import annotations
 
 import base64
 import dataclasses
-import fnmatch
 import functools
 import hashlib
 import json
@@ -120,6 +119,7 @@ import random
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -139,9 +139,8 @@ from swarm_common.profiles import (
     check_inputs,
 )
 from swarm_common.states import EventType, ParkReason, TaskState
-from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import MASK as CREDENTIAL_MASK
-from swarm_redaction import RULES as CREDENTIAL_RULES
+from swarm_redaction import credentials as _credentials
 from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
@@ -162,8 +161,11 @@ from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
+from . import pull_request as pull_request_mod
 from . import jevkey as jevkey_mod
+from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
+from . import security_review as security_review_mod
 from . import mcp_attach as mcp_attach_mod
 from . import secretrelease as secretrelease_mod
 from . import stepservers as stepservers_mod
@@ -178,6 +180,7 @@ from . import extrarepos as extrarepos_mod
 from . import standalone_outputs as standalone_mod
 from . import verdict as verdict_mod
 from . import workspace as workspace_mod
+from .statecall import new_request_id
 from .accountlease import (
     ACCOUNTS_FULL,
     ACCOUNT_UNREADABLE,
@@ -250,6 +253,7 @@ from .gitops import (
     CloneResult,
     GitError,
     GitTransient,
+    MergedHeadUnreadable,
     MergeOutcome,
     PeerPin,
     PushRejected,
@@ -263,13 +267,17 @@ from .gitops import (
     fold_agent_commits,
     hide_from_git,
     is_branch_ref_name,
+    is_full_refname,
     merge_branches,
+    merged_head_kept,
     mirror_worktree,
     moved_branch_tip,
     origin_tips_as_data,
     own_branch_tip,
     own_moved_head,
     prepare_publish_repo,
+    keep_work_bundle,
+    WORK_BUNDLE_NAME,
     push_branch,
     read_agent_excludes,
     read_head_as_data,
@@ -308,11 +316,14 @@ from .metrics import (
 from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
+from .runners import question_bridge
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
     ACCOUNT_ERROR_KINDS,
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
+    QUESTION_ANSWER_FILE_ENV,
+    RESUME_ANSWERED,
     RESUME_MOVED,
     RESUME_REASON_ENV,
     RESUME_RELOADED,
@@ -329,6 +340,7 @@ from .runners.ceiling import SESSIONS_METRIC as CEILING_SESSIONS_METRIC
 from .runners.ceiling import UNPRICED_KEY as CEILING_UNPRICED_KEY
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
+from .secrets import WRITE as FORGE_WRITE
 from .secrets import (
     FORGE_REFUSED_TWICE,
     GIT_PROVIDER,
@@ -556,6 +568,10 @@ REPO_DIR_NAME = workspace_mod.REPO_DIR_NAME
 WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
+#: The artifact a moved HEAD's line is kept in (`Worker._keep_moved_head`):
+#: nothing of it is published, and `git fetch moved-head.bundle` brings it
+#: back (reported by Product Oracle's session, 5 November 2026).
+MOVED_HEAD_BUNDLE = "moved-head.bundle"
 
 #: The checkpoint label, and the cause on the attempt's document, of an attempt
 #: that left because Firestore stayed unreachable while its agent ran (#70).
@@ -574,6 +590,10 @@ _MAX_WORKFLOW_STEPS: int = next(
     f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
 )
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
+#: The answer a session parked on a question resumes with, in `private/`
+#: (`Lifecycle._resume_parked_question`): never in `work/`, which the agent
+#: can write and a checkpoint archives.
+QUESTION_ANSWER_NAME = "question-answer.txt"
 
 #: How `forge.open_pull_request` words the forge's own refusal of a pull
 #: request (its 422 with no open one to reuse), as opposed to a forge that
@@ -994,6 +1014,15 @@ class Worker:
         self._graph_env: dict[str, str] | None = None
         #: The lane quality gates' runner variable (`qualitygates`), once per attempt.
         self._gates_env: dict[str, str] | None = None
+        #: The step's agent plugins (`plugins.start`), set up once per attempt
+        #: before the agent; None for a step that names none.
+        self._plugins: plugins_mod.Started | None = None
+        #: The step's signed work contract named for the runner's JC2
+        #: (`_stage_work_contract`), set once per attempt before the agent.
+        self._work_contract_env: dict[str, str] = {}
+        #: A security review step's record (`security_review`): {} once its
+        #: plugin started, filled after the agent; None for any other step.
+        self._security_review: dict[str, Any] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -1102,6 +1131,9 @@ class Worker:
         #: When the issue fetch started and ended, seconds since process
         #: start, for `agent_started`. None until a fetch has been joined.
         self._issue_fetch_timing: dict[str, Any] | None = None
+        #: The pull request this step works on (`_requested_pull_request`),
+        #: worked out once: `False` until then, None when it names none.
+        self._pull_request_number: int | None | bool = False
         self._clone_base: str | None = None
         #: The commit this attempt's clone checked out, recorded as
         #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
@@ -1297,6 +1329,9 @@ class Worker:
         #: Why the session is resumed (RESUME_MOVED / RESUME_RELOADED), which
         #: decides what the resumed CLI is told.
         self._resume_reason: str | None = None
+        #: The answer a session parked on a question resumes with, in
+        #: `private/` (`_resume_parked_question`); None otherwise.
+        self._question_answer_path: Path | None = None
         self._readings: ReadingForwarder | None = None
         self._turns_checked = 0
         self._channel_seen: int | None = None
@@ -2988,6 +3023,10 @@ class Worker:
         assert ws is not None
         if result.exit_code != 0 or result.timed_out or result.killed:
             return None
+        if self._question_bridge_on():
+            bridged = self._park_for_bridged_question()
+            if bridged is not None:
+                return bridged
         try:
             asked = questions_mod.await_answers(ws.artifacts)
         except questions_mod.Rejected as exc:
@@ -3004,7 +3043,146 @@ class Worker:
             return self._park_for_release(sha)
         return None
 
-    def _park_for_answers(self, asked: dict[str, Any]) -> Outcome:
+    def _question_bridge_on(self) -> bool:
+        """The question bridge, for this attempt: the worker's own switch
+        (`question_bridge.ENABLE_ENV`, exactly "1"), a step that started
+        agent plugins (`plugins_mod.start`), and a Claude Code runner. Off,
+        nothing here reads or parks on a question, and the runner registers
+        no hook."""
+        spec = cli_agent_spec(self.cfg.runner_profile)
+        return (question_bridge.enabled(os.environ) and self._plugins is not None
+                and getattr(spec, "name", None) == "claude-code")
+
+    def _question_bridge_env(self) -> dict[str, str]:
+        """The runner's switch, and the answer a parked session resumes with
+        (whatever the switch says now: a session parked is resumed with its
+        answer even on a worker the switch was since turned off on)."""
+        env: dict[str, str] = {}
+        if self._question_answer_path is not None and self._resume_reason == RESUME_ANSWERED:
+            env[QUESTION_ANSWER_FILE_ENV] = str(self._question_answer_path)
+        if self._question_bridge_on():
+            env[question_bridge.ENABLE_ENV] = "1"
+        return env
+
+    def _resume_parked_question(self, task: dict[str, Any]) -> None:
+        """Resume the session a bridged question parked, once it is answered.
+
+        After the restore, before the runner: the restored transcript must be
+        the parked session's (`question_bridge.restored_session`), or the
+        attempt fails with nothing run -- a fresh session would not know what
+        it asked. The answer message goes to `private/`, outside `work/`, and
+        the runner is told to `--resume` the session with it. Nothing is
+        written to the task here: a stale attempt is fenced before it reaches
+        this (invariant 5) and the answer stays as recorded.
+        """
+        ws = self.ws
+        assert ws is not None
+        try:
+            resume = questions_mod.bridge_resume(task)
+        except ValueError as exc:
+            raise WorkerError(
+                f"question_resume_failed: the parked question's record is not one the worker wrote ({exc})"
+            ) from None
+        if resume is None:
+            return
+        session = resume["session_id"]
+        if not question_bridge.restored_session(ws.work, session):
+            raise WorkerError(
+                "question_resume_failed: the restored workspace does not hold the session that "
+                "parked on the question; it is not started without it"
+            )
+        path = ws.private / QUESTION_ANSWER_NAME
+        path.unlink(missing_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(resume["message"])
+        self._question_answer_path = path
+        self._note_session(session)
+        self._resume_session = session
+        self._resume_reason = RESUME_ANSWERED
+        self.log.info("resuming the session that parked on a question, with its answer")
+
+    def _checkout_revision(self) -> str | None:
+        """The checkout's HEAD, the revision a parked question was asked about; None without one."""
+        ws = self.ws
+        if ws is None or not self._repo_url:
+            return None
+        try:
+            done = subprocess.run(
+                ["git", "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null",
+                 "-C", str(ws.checkout()), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        head = done.stdout.strip()
+        return head if done.returncode == 0 and _FULL_SHA_RE.fullmatch(head) else None
+
+    def _park_for_bridged_question(self) -> Outcome | None:
+        """Park the step on the question its agent asked through the bridge, or None.
+
+        The hook's record is read ONCE and checked against the agent's
+        stream (`question_bridge.classify`), then removed: from here on the
+        park's `question_wait` is the record (`question_bridge.wait_record`),
+        with the session and tool use, the attempt, its fencing generation
+        and the checkout's revision. A run and a record that disagree fail
+        the attempt (`question_bridge_failed`). The park is refused, and the
+        attempt fails, when the checkpoint before it would not hold the
+        session's transcript and gstack's state or did not upload: a park
+        nobody can resume is a lost step.
+        """
+        ws = self.ws
+        assert ws is not None
+        from .runners.claude_code import SETTINGS_DIR_NAME  # lazy: the claude-code runner's
+
+        files = agent_stream_files(self.cfg.runner_profile)
+        events = question_bridge.read_stream(ws.artifacts / files.stdout) if files else []
+        pending_path = ws.work / SETTINGS_DIR_NAME / question_bridge.PENDING_NAME
+        outcome, pending = question_bridge.classify(events, pending_path)
+        try:
+            question_bridge.clear_pending(pending_path)
+        except OSError:
+            pass
+        if outcome == question_bridge.NOT_ASKED:
+            return None
+        if outcome != question_bridge.PARKED or pending is None:
+            return self._fail_bridged_question(
+                "question_bridge_failed: the agent's question and its record disagree")
+        gaps = self._bridge_checkpoint_gaps(pending.session_id)
+        if gaps:
+            return self._fail_bridged_question(
+                "question_park_refused: the checkpoint would not hold " + "; ".join(gaps))
+        record = question_bridge.wait_record(
+            pending, attempt_id=self.cfg.attempt_id, generation=self.cfg.generation,
+            source_revision=self._checkout_revision(), asked_at=utcnow().isoformat(),
+            skill=question_bridge.asked_by_skill(events, pending.tool_use_id))
+        return self._park_for_answers(self._scrub(record), require_checkpoint=True)
+
+    def _bridge_checkpoint_gaps(self, session: str) -> list[str]:
+        """What a checkpoint of `work/` would miss to resume `session`: its
+        transcript, and gstack's state root when it is not under `work/`."""
+        ws = self.ws
+        assert ws is not None
+        gaps = []
+        if not question_bridge.restored_session(ws.work, session):
+            gaps.append("the session's transcript under work/.claude/projects")
+        env = self._plugins.env if self._plugins is not None else {}
+        home = env.get("GSTACK_HOME")
+        if home:
+            try:
+                Path(home).resolve().relative_to(ws.work.resolve())
+            except ValueError:
+                gaps.append("GSTACK_HOME, which is outside the attempt's work/")
+        return gaps
+
+    def _fail_bridged_question(self, error: str) -> Outcome:
+        """Fail the attempt retryably: a question the step cannot park on."""
+        self.log.error("not parked on the agent's question", reason=error)
+        state = self._fail_retryably_terminal(
+            exit_code=0, error=error, cause=error.split(":", 1)[0])
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _park_for_answers(self, asked: dict[str, Any], *, require_checkpoint: bool = False) -> Outcome:
         """Checkpoint, upload, PARKED(HUMAN_REQUIRED) with `question_wait`, release, exit.
 
         §3.9 step 1. The hand-off's park exactly (`handoff_mod.park_human_required`):
@@ -3012,9 +3190,15 @@ class Worker:
         and only a person -- here, the last blocking answer -- returns it to
         READY. The record carries the validated questions, which is how
         swarm-api serves them while the task has no result summary.
+
+        `require_checkpoint` (a bridged question): a checkpoint that did not
+        upload refuses the park and fails the attempt, since the session the
+        answer resumes is in it.
         """
         cfg = self.cfg
-        self._checkpoint("question-wait")
+        if self._checkpoint("question-wait") is None and require_checkpoint:
+            return self._fail_bridged_question(
+                "question_park_refused: the checkpoint before the park failed")
         uploaded = self._upload_outputs().get("artifacts")
         wait = {**asked, "attempt_id": cfg.attempt_id, "asked_at": utcnow().isoformat()}
         self.log.info(
@@ -3646,6 +3830,9 @@ class Worker:
         # block between nonce lines, as data. Nothing for a task that never
         # waited on one.
         questions_mod.resume_with_answers(ws.work, payload, task)
+        # A plugin step parked on its agent's question (the question bridge):
+        # the same session resumes, with the answer as its next message.
+        self._resume_parked_question(task)
         # A review's owner questions (#2070, option (c)): every earlier step
         # of its workflow's validated questions, with the answers so far, in
         # `work/owner-questions.json`, and the verdict instructions closing
@@ -3677,6 +3864,35 @@ class Worker:
         if self._ui_review_paths is not None and isinstance(payload.get("prompt"), str):
             payload["prompt"] += verdict_mod.rendered_review_guidance(
                 self._ui_review_paths, cfg.runner_profile
+            )
+        # The step's agent plugins (docs/design/agent-plugins.md, "The start
+        # of a step"): only those signed with the step, linked from the
+        # image's read-only install, ONLY the step's skills, before the agent.
+        # An image without the install fails here (`PluginUnavailable`,
+        # CANNOT_START), naming the image, before anything is linked.
+        self._plugins = plugins_mod.start(
+            task, work=ws.work, checkout=ws.checkout() if self._repo_url else None,
+            profile=cfg.runner_profile, image=str(getattr(cfg.profile, "image", "") or "?"),
+        )
+        if self._plugins is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += self._plugins.guidance
+        # The step's signed work contract, for the runner's end-of-step
+        # judgment (JC2, jev-contract.md section 5): its body in work/ and the
+        # SIGNED digest, both from the task document, never from `input`.
+        self._work_contract_env = self._stage_work_contract(task, ws.work)
+        # The optional security review step (docs/design/security-review-step.md):
+        # a step whose signed contract loads security-audit is told the owner's
+        # run settings here, and its output is checked after the agent.
+        if security_review_mod.applies(self._plugins):
+            self._security_review = {}
+            if isinstance(payload.get("prompt"), str):
+                payload["prompt"] += security_review_mod.guidance(ws.artifacts)
+        # The pull request this step works on (Product Oracle, 2026-11-06):
+        # one line of the brief names `work/pull_request.md`, which STEP 6b'
+        # writes after the credentials, before the agent starts.
+        if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += "\n\n" + pull_request_mod.prompt_line(
+                pull_request_mod.pull_request_path(ws.work)
             )
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
@@ -3813,6 +4029,15 @@ class Worker:
                     "beside_clone": False,
                 }
             )
+
+        # ---- STEP 6b': the pull request this step works on ----------------
+        # After the credentials, for the scrub, as the issue. A read that
+        # fails writes a file saying so and the agent starts: the pull
+        # request is context beside the checkout (`agent_worker.pull_request`).
+        pull_number = self._requested_pull_request()
+        if pull_number is not None:
+            self.phases.enter("fetch_pull_request")
+            self._stage_pull_request(pull_number, ws.work)
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -4685,6 +4910,11 @@ class Worker:
                     # After the publish, so the epic hears of a review only once
                     # the step it gated has done its own work; never on a stop.
                     summary[findings_epic_mod.SUMMARY_KEY] = self._file_review_minors()
+            if self._security_review is not None:
+                record = dict(self._security_review)
+                if not record.get("error") and result.exit_code != EXIT_TERMINATED:
+                    record["comment"] = self._post_security_report()
+                summary[security_review_mod.SUMMARY_KEY] = self._scrub(record)
             if self._pr_text_from is not None:
                 summary["pull_request_text_from"] = dict(self._pr_text_from)
             if self._rendered_review is not None:
@@ -4692,6 +4922,11 @@ class Worker:
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
+            # The plugins this step had and how often each skill ran.
+            plugins_record = plugins_mod.record(
+                self._plugins, ws.artifacts / "claude-code.stdout.log")
+            if plugins_record is not None:
+                summary[plugins_mod.SUMMARY_KEY] = plugins_record
             self._settle_jev()
 
         if self.budget is not None:
@@ -4784,6 +5019,12 @@ class Worker:
                 self._mark_publish(summary, failed=str(self._scrub(unpushed)))
                 return self._fail_for_published_nothing(unpushed, summary, exit_code=0)
             self._mark_publish(summary)
+            # JC2's verdict, AFTER the `published` mark the route checks its
+            # commit against (section 9, check 4) and before the success: a
+            # send-back ends the attempt in the route's own transaction.
+            judged = self._deliver_contract_verdict(summary, runner_result)
+            if judged is not None:
+                return judged
             # LAST before the success, so an attempt that fails above never
             # leaves a write-once verdict behind it for its retry to meet.
             unpublished = self._publish_review_verdict(summary)
@@ -4814,6 +5055,109 @@ class Worker:
             result_summary=summary,
         )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _stage_work_contract(self, task: Mapping[str, Any], work: Path) -> dict[str, str]:
+        """The runner's variables naming the step's SIGNED work contract for
+        JC2 (`poststeps.read_contract`): `SWARM_WORK_CONTRACT_DIGEST`, the
+        digest in the signed dispatch block (`metadata.dispatch.work_contract
+        .digest`), and `SWARM_WORK_CONTRACT_FILE`, the stored body
+        (`metadata.work_contract`, as `plugins.selected` reads it) written to
+        `work/WORK_CONTRACT_FILE`. {} for a step with no signed reference.
+
+        The digest is the authority: the runner judges a body only when it
+        digests to it, so a body the agent rewrote in work/ is not judged. A
+        reference whose body is missing or cannot be written still names its
+        digest, and JC2 says `not_run` (`contract_unreadable`) rather than
+        nothing. A file a restored checkpoint carried is replaced or removed,
+        never read for this attempt. Never raises."""
+        from .judge import poststeps
+
+        path = work / WORK_CONTRACT_FILE
+        metadata = task.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        dispatch = metadata.get("dispatch")
+        reference = dispatch.get("work_contract") if isinstance(dispatch, Mapping) else None
+        digest = reference.get("digest") if isinstance(reference, Mapping) else None
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log.warning("a previous work contract file could not be removed",
+                             error=type(exc).__name__)
+        if not isinstance(digest, str) or not digest.strip():
+            return {}
+        env = {poststeps.CONTRACT_DIGEST_ENV: digest.strip()}
+        # The Jev work-contract experiment's arm (`contract_jev`, signed in
+        # the same block): `off` makes JC2 `skipped:arm` with no call.
+        arm = graphstage_mod.switch_of(dispatch, poststeps.CONTRACT_JEV_SWITCH)
+        if arm is not None:
+            env[poststeps.CONTRACT_JEV_ENV] = arm
+        document = metadata.get("work_contract")
+        if isinstance(document, Mapping):
+            try:
+                # No `default=`: a body that is not plain JSON would digest
+                # differently once written, so it is not written at all.
+                path.write_text(json.dumps(document))
+            except (OSError, TypeError, ValueError) as exc:
+                self.log.warning("the work contract could not be written for the runner",
+                                 error=type(exc).__name__)
+            else:
+                env[poststeps.CONTRACT_FILE_ENV] = str(path)
+        return env
+
+    def _deliver_contract_verdict(
+        self, summary: dict[str, Any], runner_result: Mapping[str, Any] | None
+    ) -> Outcome | None:
+        """JC2's verdict, from the runner's report (`contract_judgment`), posted
+        once to `state/contract-verdict` about the head this attempt pushed
+        (`poststeps.deliver_contract_verdict`, a new request id), or None to
+        go on to the success.
+
+        * A STALE GENERATION (409 `attempt_fenced`) stands down as every other
+          fenced write here does (`_stand_down`): nothing else is posted, the
+          task and the lease are not touched (invariant 5).
+        * `unmet` SENT BACK: the route ended this attempt and returned the step
+          to READY in its own fenced transaction (section 5.4; invariant 1,
+          READY costs nothing), so the attempt ends there with no further
+          terminal write.
+        * Any other refusal or outage, or a worker on the direct Firestore path
+          (no state route to post to), is recorded in the summary and the step
+          goes on: the control plane re-asks from the published diff
+          (`contractreask`, the owner's answer 5)."""
+        from .judge import poststeps
+
+        output = runner_result.get("output") if isinstance(runner_result, Mapping) else None
+        verdict = output.get(CONTRACT_JUDGMENT_KEY) if isinstance(output, Mapping) else None
+        if not isinstance(verdict, Mapping):
+            return None
+        git = summary.get("git")
+        head = (git.get("pushed_head")
+                if isinstance(git, dict) and git.get("published") is True else None)
+        if not getattr(self.control, "state_via_api", False):
+            summary[CONTRACT_VERDICT_SUMMARY_KEY] = {"delivery": "no_state_route"}
+            self.log.warning("the contract verdict has no state route on the direct path; "
+                             "the control plane re-asks from the published diff")
+            return None
+        answers: list[Mapping[str, Any]] = []
+
+        def post(op: str, fields: Mapping[str, Any]) -> None:
+            answers.append(self.control._post(op, fields, call=None) or {})
+
+        try:
+            delivery = poststeps.deliver_contract_verdict(
+                post, verdict, published_head=head, request_id=new_request_id())
+        except FencedError as exc:
+            return Outcome(exit_code=self._stand_down(exc, where="contract verdict"),
+                           detail={"fenced": True})
+        answer = answers[-1] if answers else {}
+        summary[CONTRACT_VERDICT_SUMMARY_KEY] = {
+            "delivery": delivery, "outcome": answer.get("outcome"),
+            "waiting_on": answer.get("waiting_on")}
+        self.log.info("contract verdict", delivery=delivery, outcome=answer.get("outcome"),
+                      head=head)
+        if answer.get("sent_back") is True:
+            return Outcome(exit_code=ExitCode.FAILED, state=TaskState.READY,
+                           detail={"sent_back": "contract_unmet"})
+        return None
 
     def _publish_review_verdict(self, summary: dict[str, Any]) -> Outcome | None:
         """The review step's `review.json`, written once to the verdicts prefix (CR 36).
@@ -6262,7 +6606,11 @@ class Worker:
           rewritten history would no longer fast-forward, and not pinned to an
           upstream step's base, which a downstream patch must apply to;
         * no `carrier: branches`, whose checkpoints already pushed the branch;
-        * a BRANCH: a ref that is a sha has no newer tip.
+        * a BRANCH: a ref that is a sha has no newer tip. A full refname
+          (#3347) is a branch only as `refs/heads/<name>`, offered as
+          `<name>`, since the runner rebases onto `origin/<name>`; a pull
+          request's `refs/pull/<n>/head` or `/merge`, a tag, or any other
+          ref names no branch to rebase onto, and is offered nothing.
 
         The default branch, when the task names no ref, is read from the
         clone's own HEAD file, which this process wrote before any agent ran.
@@ -6283,6 +6631,10 @@ class Worker:
                 return None
             prefix = "ref: refs/heads/"
             name = head[len(prefix):] if head.startswith(prefix) else ""
+        if is_full_refname(name):
+            if not name.startswith("refs/heads/"):
+                return None
+            name = name[len("refs/heads/"):]
         if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
             return None
         try:
@@ -6477,7 +6829,53 @@ class Worker:
             "nothing of this task's was published"
         )
 
-    def _moved_head_result(self, out: dict[str, Any], moved: str) -> dict[str, Any]:
+    def _keep_moved_head(self, publish_repo: Path, floor: str | None) -> str | None:
+        """Keep a moved HEAD's line as `MOVED_HEAD_BUNDLE` in the artifacts.
+
+        REPORTED by Product Oracle's session, 5 November 2026:
+        task_884a993427ce44feb7a6's agent merged a train branch into its own,
+        checked out another branch, and the harvest rightly published nothing
+        -- and kept nothing, so a person rebuilt the merge by hand. The bundle
+        holds HEAD's commits that are not on the step's start (`floor..HEAD`),
+        or HEAD's whole line when the two share no history or the start is
+        unknown, read from the worker's clean repository; `git fetch
+        moved-head.bundle` brings it back. Nothing of it is pushed. Returns the
+        bundle's name, or None when none was written: a bundle that cannot be
+        written is logged and never fails the step.
+        """
+        ws = self.ws
+        assert ws is not None
+        target = ws.artifacts / MOVED_HEAD_BUNDLE
+
+        def git(argv: list[str], slug: str) -> int:
+            code, _ = _git_text(
+                ["git", *_NO_HOOKS, *argv], repo=Path(publish_repo), private_dir=ws.private,
+                logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            return code
+
+        try:
+            revs = ["HEAD"]
+            if floor and _FULL_SHA_RE.fullmatch(floor):
+                if git(["merge-base", floor, "HEAD"], "harvest-moved-bundle-base") == 0:
+                    revs = [f"{floor}..HEAD"]
+            code = git(["bundle", "create", "--quiet", str(target), *revs],
+                       "harvest-moved-bundle")
+        except Exception as exc:  # noqa: BLE001 -- keeping the line never costs the step
+            self.log.warning("the moved HEAD's line could not be kept as a bundle",
+                             error=type(exc).__name__)
+            return None
+        if code != 0 or not target.is_file():
+            self.log.warning("the moved HEAD's line could not be kept as a bundle",
+                             exit_code=code, revisions=revs)
+            return None
+        self.log.info("the moved HEAD's line is kept in the step's artifacts",
+                      bundle=MOVED_HEAD_BUNDLE, revisions=revs)
+        return MOVED_HEAD_BUNDLE
+
+    def _moved_head_result(self, out: dict[str, Any], moved: str, *,
+                           bundle: str | None = None) -> dict[str, Any]:
         """The harvest's record of a HEAD that left this step's work (#2094).
 
         Nothing on it is this step's, so it counts no commit and no
@@ -6485,9 +6883,15 @@ class Worker:
         a publish failure. A step allowed an empty diff therefore ends exactly
         as if its agent had stayed put (`expected_mod.changed_nothing`), a
         review's verdict standing, and one owed a pull request is told why it
-        has none (`_published_nothing`).
+        has none (`_published_nothing`). The line itself is kept when it could
+        be (`bundle`, `_keep_moved_head`), and the reason names it.
         """
         moved = str(self._scrub(moved))
+        reason = self._moved_reason(moved)
+        if bundle is not None:
+            out["moved_head_bundle"] = bundle
+            reason += (f"; its commits are kept in the step's artifacts as {bundle} "
+                       f"(git fetch {bundle})")
         out.update(
             {
                 "head_moved": moved,
@@ -6498,7 +6902,7 @@ class Worker:
                 "dirty": [],
                 "dirty_count": 0,
                 "published": False,
-                "publish_reason": self._moved_reason(moved),
+                "publish_reason": reason,
             }
         )
         return out
@@ -6910,6 +7314,12 @@ class Worker:
             | ws.control_file_names()
             # `issue.md`, when the task asks for an issue (#265).
             | issue_mod.reserved_names(task.get("input"), self.cfg.profile)
+            # `pull_request.md`, when the step works on a pull request.
+            | (
+                frozenset({pull_request_mod.FILE_NAME})
+                if self._requested_pull_request() is not None
+                else frozenset()
+            )
             # A review's owner questions, written after staging (#2070), and a
             # builds_on step's owner answers (#2836).
             | {owner_questions_mod.NAME, inputs_mod.OWNER_ANSWERS_NAME},
@@ -7056,7 +7466,7 @@ class Worker:
         url = self._repo_url or self.cfg.repository_url
         if not url:
             return skipped("the repository URL is unknown")
-        token = self._git_token()
+        token = self._git_token(write=True)
         try:
             token, access = self._probe_reading_again(url, token, "the no-change comment probe")
             if access is None:
@@ -7402,7 +7812,7 @@ class Worker:
             return None
         pull: PullHead | None = None
         url = self._repo_url
-        token = None if self._git_token_refusal() else self._git_token()
+        token = None if self._git_token_refusal() else self._git_token(write=True)
         if url and token:
             try:
                 token, access = self._probe_reading_again(url, token, "the CI fix start check")
@@ -7715,6 +8125,97 @@ class Worker:
             )
             return []
         return verdict_mod.reviewed_patches(review)
+
+    def _finish_security_review(self) -> None:
+        """Validate a security review's audit and write its verdict (`security_review.finish`).
+
+        A failing validator writes no verdict: the missing-output check then
+        fails the step, not retryably (`CAUSE_INVALID`), and the validator's
+        message is `result_summary.security_review.error`. Never a silent pass.
+        """
+        ws = self.ws
+        if ws is None or self._security_review is None:
+            return
+        task = self._task or {}
+        try:
+            record = security_review_mod.finish(
+                ws.artifacts, task_id=self.cfg.task_id, step_id=str(task.get("step_id") or ""),
+                skill=security_review_mod.skill_dir(
+                    security_review_mod.install_dir(plugins_mod.CATALOGUE)),
+            )
+        except security_review_mod.SecurityReviewInvalid as exc:
+            message = str(self._scrub(str(exc)))
+            self._security_review = {"error": message}
+            self.log.error("the security review's audit did not validate; the step fails",
+                           error=message)
+            return
+        self._security_review = record
+        self.log.info("security review verdict derived", verdict=record["verdict"],
+                      blocking=record["blocking"], owner_questions=record["owner_questions"])
+
+    def _post_security_report(self) -> dict[str, Any]:
+        """Post the audit's REPORT.md on the pull request this step reviewed.
+
+        The pull request is the one its `builds_on` step recorded opening; the
+        token is the tenant's own `-git` one, read here after the agent ended,
+        as `_file_review_minors` reads it. The report goes through the
+        redaction filter and is cut to GitHub's limit, naming the artifact.
+        Never raises: what was posted, or why not, is the result.
+        """
+        ws = self.ws
+        assert ws is not None
+        report = security_review_mod.output_dir(ws.artifacts) / security_review_mod.REPORT
+        try:
+            text = report.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return {"posted": False, "reason": f"the audit wrote no {security_review_mod.REPORT}"}
+        try:
+            builds_on = self._dispatch_builds_on()
+        except WorkerError as exc:
+            return {"posted": False, "reason": str(exc)}
+        number = None
+        if builds_on:
+            try:
+                number = post_verdict_mod.pull_request_number(inputs_mod.fetch_upstream_task(
+                    self.db, upstream_task_id=builds_on, tenant_id=self.cfg.tenant_id,
+                    call_options=self.control.call_options(),
+                ))
+            except InputUnavailable:
+                number = None
+        if number is None:
+            return {"posted": False,
+                    "reason": "the step it builds on recorded no pull request to comment on"}
+        ref = forge_mod.parse_repo(self._repo_url or self.cfg.repository_url or "")
+        if ref is None or not forge_mod.may_receive_forge_token(ref.host):
+            return {"posted": False, "pull_request": number,
+                    "reason": "the repository is not on github.com, where the tenant's git "
+                              "credential may be sent"}
+        refused = self._forge_write_refusal()
+        if refused:
+            return {"posted": False, "pull_request": number,
+                    "reason": f"{refused[0]}: {refused[1]}"}
+        refusal = self._git_token_refusal()
+        if refusal:
+            return {"posted": False, "pull_request": number,
+                    "reason": f"refusing to read the tenant git token: {refusal}"}
+        token = self._git_token()
+        if not token:
+            return {"posted": False, "pull_request": number,
+                    "reason": "no git credential is registered for this tenant"}
+        self.log.register_secret(token)
+        pointer = (f"`{security_review_mod.OUTPUT_DIR_NAME}/{security_review_mod.REPORT}` "
+                   f"in the artifacts of task `{self.cfg.task_id}`")
+        body = security_review_mod.comment_body(
+            text, artifact_pointer=pointer,
+            scrub=lambda value: _neutralise_mentions(str(self._scrub(value))))
+        try:
+            forge_mod.create_issue_comment(ref=ref, token=token, number=number, body=body)
+        except Exception as exc:  # noqa: BLE001 - the comment is a report, never the verdict
+            del token
+            return {"posted": False, "pull_request": number,
+                    "reason": f"GitHub refused the comment ({type(exc).__name__})"}
+        del token
+        return {"posted": True, "pull_request": number, "chars": len(body)}
 
     def _file_review_minors(self) -> dict[str, Any]:
         """File the verdict's minor findings on the tenant's wave epic (#638).
@@ -8802,6 +9303,9 @@ class Worker:
         causes = {**self._not_uploaded_causes, **self._skip_causes}
         if self._verdict_unreadable and expected_mod.REVIEW_VERDICT_NAME not in causes:
             causes[expected_mod.REVIEW_VERDICT_NAME] = expected_mod.CAUSE_UNREADABLE_VERDICT
+        if (self._security_review or {}).get("error"):
+            # Not retryable: the step fails, its validator's message in the summary.
+            causes[expected_mod.REVIEW_VERDICT_NAME] = security_review_mod.CAUSE_INVALID
         if PATCH_NAME in self._expected_outputs and PATCH_NAME not in causes:
             patch = expected_mod.patch_cause(summary.get("git"))
             if patch is not None:
@@ -9213,6 +9717,23 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
+        bundle = next(
+            (
+                entry.get("uri")
+                for entry in summary.get("artifacts") or []
+                if isinstance(entry, dict) and entry.get("name") == WORK_BUNDLE_NAME
+                and entry.get("uri")
+            ),
+            None,
+        )
+        if bundle and git.get("bundle") == WORK_BUNDLE_NAME:
+            # The branch itself, merges included (#3174): what a re-dispatch
+            # or a hand push takes, where the patch is the final tree flat.
+            where += (
+                f" The agent's branch, merge commits included, is kept as a git bundle in "
+                f"{bundle} (ref {git.get('bundle_ref') or 'swarm-work'}, on "
+                f"{git.get('bundle_base')})."
+            )
         located = credential_locator(cause)
         if located:
             # A REFUSAL A BRIEF CAN BE CORRECTED FROM (part of #2524): which
@@ -9492,7 +10013,7 @@ class Worker:
             return None
         return text or None
 
-    def _git_token(self) -> str | None:
+    def _git_token(self, *, write: bool = False) -> str | None:
         """The TASK's forge token, or None.
 
         Read from `swarm-tenant-<tenant>-<suffix>`, the suffix being the task's
@@ -9527,6 +10048,21 @@ class Worker:
         git's own message and a push has no credential. A superseded attempt
         raises `FencedError` and stands down. The merge, a write with no such
         gate of its own, asks the broker for `write` (`_read_action_git_token`).
+
+        `write` (#2907): this read comes before a push or a pull request -- the
+        publish, publish_to_pr, the push-scope and carrier-target probes, the
+        CI fix start check, the no-change comment, and their re-reads after a
+        401 -- and the token it returns is the one that write uses. It changes
+        only A SERVICE RUN's ask (`_service_run`) whose SIGNED `forge_access`
+        is exactly `write`, the condition swarm-api's `decide_run_token` mints
+        `RUN_WRITE_PERMISSIONS` on: without it the broker minted the read-only
+        run token and the probe refused the push ("an App installation token
+        whose receive-pack advertisement GitHub refused (HTTP 403)"). A run
+        signed `read`, or with no `forge_access`, still asks for `read`, and a
+        person's run still asks for `read`, its write gated by
+        `_forge_write_refusal`, so no run can obtain more than it could. A write
+        the broker refuses as a write (`ForgeWriteRefused`) is asked again for
+        `read`, today's token, and the probe refuses the push as it did.
         """
         self._git_token_error = None
         refusal = self._git_token_refusal()
@@ -9546,11 +10082,24 @@ class Worker:
                 self.db, self.cfg.tenant_id, call_options=self.control.call_options()
             )
             source = tenant.secret_name(suffix)
-            token = resolve_git_token(
-                tenant=tenant, client=self.secret_client, logger=self.log,
-                provider=suffix, broker=self.forge_broker,
-                app_installation=app_installation,
-            )
+            as_write = write and app_installation \
+                and (self._task or {}).get("forge_access") == FORGE_WRITE
+            try:
+                token = resolve_git_token(
+                    tenant=tenant, client=self.secret_client, logger=self.log,
+                    provider=suffix, broker=self.forge_broker, write=as_write,
+                    app_installation=app_installation,
+                )
+            except ForgeWriteRefused as exc:
+                if not as_write:
+                    raise
+                self.log.warning("the broker refused this run a write token; reading it "
+                                 "for read", cause=exc.cause)
+                token = resolve_git_token(
+                    tenant=tenant, client=self.secret_client, logger=self.log,
+                    provider=suffix, broker=self.forge_broker,
+                    app_installation=app_installation,
+                )
             # The KIND, classified here in memory; the value goes no further
             # than the caller. A tenant with no `git` slot read nothing.
             self._forge_credentials_read.append(
@@ -9647,6 +10196,81 @@ class Worker:
             refused=self._refused_credential,
         )
 
+    def _requested_pull_request(self) -> int | None:
+        """The pull request this step works on, or None (Product Oracle, 2026-11-06).
+
+        In order: the caller's `input.pull_request`; the signed `publish_to_pr`
+        it publishes onto; the pull request its signed `builds_on` step -- or,
+        for a single-pr reader or amender, its `pr_author` step -- recorded
+        opening: a review step's, in a workflow that has one. Only
+        for a step with a brief (a `prompt`) to name the file in. Worked out once.
+        """
+        if self._pull_request_number is not False:
+            return self._pull_request_number  # type: ignore[return-value]
+        number: int | None = None
+        task = self._task or {}
+        if pull_request_mod.takes_brief(task.get("input")):
+            number = pull_request_mod.from_input(task.get("input"), self.cfg.profile)
+            if number is None:
+                try:
+                    onto = self._publish_to_pr()
+                except WorkerError:
+                    onto = None
+                number = onto.number if onto is not None else None
+            if number is None and task.get("workflow_id"):
+                try:
+                    upstream = self._dispatch_builds_on()
+                    if not upstream and self._pr_role() in ("reader", "amender"):
+                        # A single-pr reader or amender: the pull request is
+                        # the one its signed `pr_author` step opened.
+                        upstream = self._pr_author_branch()[len(self.cfg.git_branch_prefix):]
+                    if upstream:
+                        number = post_verdict_mod.pull_request_number(
+                            inputs_mod.fetch_upstream_task(
+                                self.db, upstream_task_id=upstream,
+                                tenant_id=self.cfg.tenant_id,
+                                call_options=self.control.call_options(),
+                            )
+                        )
+                except (WorkerError, InputUnavailable):
+                    number = None
+        self._pull_request_number = number
+        return number
+
+    def _stage_pull_request(self, number: int, work_dir: Path) -> Path:
+        """`pull_request_mod.stage_pull_request` with the tenant's own `-git`
+        token, read again once on a 401 as the issue fetch is; scrubbed of
+        every registered secret and every credential-shaped run."""
+        refusal = self._git_token_refusal()
+
+        def token(again: bool) -> str | None:
+            value = self._git_token()
+            if value:
+                self.log.register_secret(value)
+            return value
+
+        path, _read = pull_request_mod.stage_pull_request(
+            number=number,
+            repository_url=self._repo_url,
+            token=token,
+            refusal=refusal,
+            work_dir=work_dir,
+            scrub=lambda text: str(self._scrub(redact_text(text).text)),
+            logger=self.log,
+            on_request=self._heartbeat,
+            retry=self._forge_retry(),
+            read_again=lambda read: call_reading_again(
+                read,
+                logger=self.log,
+                what="the pull request fetch",
+                twice=lambda exc: pull_request_mod.PullRequestUnavailable(
+                    f"{exc}; {FORGE_REFUSED_TWICE}"
+                ),
+                refused=self._refused_credential,
+            ),
+        )
+        return path
+
     def _refused_credential(self, exc: BaseException) -> bool:
         """A 401 worth a re-read: only when this worker reads a token at all."""
         return not self._git_token_refusal() and forge_credential_refused(exc)
@@ -9677,7 +10301,9 @@ class Worker:
             "the forge refused the credential; reading its secret again and retrying once",
             call=what,
         )
-        token = self._git_token()
+        # For write, as every caller's first read is: each is a probe before a
+        # push or a pull request (#2907, `_git_token`).
+        token = self._git_token(write=True)
         access = probe(token)
         if access is not None and not access.can_push \
                 and forge_credential_refused(access.reason):
@@ -9732,7 +10358,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             raise ForgeError(f"{unopened} (401): the token was not read again: {refusal}")
-        fresh = self._git_token()
+        fresh = self._git_token(write=True)
         if not fresh:
             why = getattr(self, "_git_token_error", None) or "no forge credential was read"
             self._emit_token_reread(branch, outcome="unread")
@@ -10067,6 +10693,13 @@ class Worker:
         # recorded and skipped. Set by the worker, never from `input`.
         if self._prepublish_rebase:
             base[PREPUBLISH_BASE_ENV] = self._prepublish_rebase
+        # THE BRANCH THE STEP STARTED ON, for the gate's moved-HEAD turn
+        # (`prepublish.Gate._moved_head`): the harvest refuses a HEAD that
+        # left it (`_head_moved`), so the agent is told while its session can
+        # still be continued. Unset for a clone at a commit. Set by the
+        # worker, never from `input`.
+        if self._start_branch and self._start_branch.startswith("refs/heads/"):
+            base[START_BRANCH_ENV] = self._start_branch.removeprefix("refs/heads/")
         # WHETHER THIS STEP PUBLISHES (ONE-PLACE, 2026-11-03): "0" for a
         # repository step whose branch is not its deliverable, so the CLI
         # runner leaves the publishing paragraph out of its prompt
@@ -10169,6 +10802,7 @@ class Worker:
                 # for the credential reload (#626).
                 base.update(self._session_channel_env())
         base.update(self._continuation_env())
+        base.update(self._question_bridge_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
         # §3.1). And the git tools' spool, when it is offered them
@@ -10218,6 +10852,15 @@ class Worker:
         # 0600 config naming the workspace key's 0600 file in private/, never
         # the key. Off, or no key: nothing, and no hook is registered.
         base.update(self._quality_gates_env(ws, profile))
+        # The step's agent plugins' variables (`plugins.start`): gstack's
+        # session kind, its state root under work/ and its switches. Names
+        # and paths, never a credential.
+        if self._plugins is not None:
+            base.update(self._plugins.env)
+        # The step's signed work contract for JC2 (`_stage_work_contract`):
+        # the body's path and the signed digest. A path and a hash, never a
+        # credential; nothing for a step without a signed contract.
+        base.update(self._work_contract_env)
         # The released workspace secrets (SEC-RELEASE): the manifest's PATH,
         # `SWARM_SECRETS_MANIFEST`, and nothing else -- never a value. The
         # release ran once, in STEP 6a; a rebuild on a credential reload
@@ -10383,9 +11026,10 @@ class Worker:
                     # this worker must not hold the token at all. This runs
                     # before the agent starts.
                     forge_token=None if self._git_token_refusal() else self._git_token,
-                    # The signed workflow switches (2026-11-01) and, for a
-                    # step whose `jev_judgments` is on, the WORKSPACE's
-                    # TypeSafe key, resolved as the quality gates resolve it.
+                    # The signed workflow switches (2026-11-01) and, for an
+                    # opted-in step on the TypeSafe backend with no key file
+                    # or shim, the WORKSPACE's TypeSafe key, resolved as the
+                    # quality gates resolve it (lane jev-on-coding-profiles).
                     dispatch=self._dispatch_block(),
                     jev_key=lambda: jevkey_mod.resolve_workspace(
                         db=self.db, client=self.secret_client,
@@ -12495,7 +13139,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             return f"the tenant git token is refused: {refusal}"
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             return "no credential"
         try:
@@ -12551,7 +13195,7 @@ class Worker:
         refusal = self._git_token_refusal()
         if refusal:
             return functools.partial(self._fail_git_token_refused, refusal)
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             return functools.partial(
                 self._fail_forge_read_only, url,
@@ -13956,7 +14600,7 @@ class Worker:
                 f"tenant git token, which this worker may not hold: {refusal}; nothing "
                 "was cloned and no agent ran"
             )
-        token = self._git_token()
+        token = self._git_token(write=True)
         if not token:
             raise WorkerError(
                 f"publish_to_pr: pull request #{number} is read and pushed with the "
@@ -14262,7 +14906,8 @@ class Worker:
             # described as moved and nothing on it is harvested or published.
             moved = self._head_moved(repo, publish_repo, fetched_base)
             if moved is not None:
-                return self._moved_head_result(out, moved)
+                kept = self._keep_moved_head(publish_repo, fetched_base)
+                return self._moved_head_result(out, moved, bundle=kept)
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -14290,6 +14935,20 @@ class Worker:
             # agent's TREE against the base, so it is taken from a repository
             # holding the base alone, whatever the clone's history lacks.
             out.update(self._harvest_tree_patch(repo, fetched_base))
+            # AND THE BRANCH ITSELF, MERGES INCLUDED (#3174): the patch is the
+            # final tree flat, so a re-dispatch or a hand push from it redid
+            # the merge the agent had made. Named in the failure text, so a
+            # reader of the failure finds it.
+            out.update(self._keep_work_bundle(
+                repo, EMPTY_CLONE_BASE if floor == EMPTY_CLONE_BASE else fetched_base
+            ))
+            if out.get("bundle"):
+                kept = (f"; the agent's branch, merge commits included, is kept in "
+                        f"{WORK_BUNDLE_NAME} ({out['bundle_commits']} commits on "
+                        f"{out['bundle_base']})")
+                out["error"] += kept
+                if "publish_reason" in out:
+                    out["publish_reason"] += kept
             return out
 
         out.update(
@@ -14553,6 +15212,75 @@ class Worker:
             "took the patch from the agent's tree after the publish repository failed",
             patch=work.patch_name, patch_bytes=work.patch_bytes,
         )
+        return out
+
+    def _keep_work_bundle(self, repo: Path, base: str | None) -> dict[str, Any]:
+        """`swarm-work.bundle`, the agent's branch with its merge commits, for
+        a harvest whose clean repository could not be built (#3174). Never
+        raises. Built in a repository of the worker's own and scanned commit
+        by commit with the publish's leak test (`gitops.keep_work_bundle`);
+        under the patch's cap. Returns the `result_summary["git"]` fields:
+        `bundle` (its artifact name, or None) and, when none was kept,
+        `bundle_note` saying why."""
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        git = ["git", *_NO_HOOKS]
+        overlap = self._scan_overlap()
+
+        def leaks(bundle_repo: Path, commits: list[str]) -> str | None:
+            code, empty_tree = _git_text(
+                [*git, "hash-object", "-t", "tree", "/dev/null"], repo=bundle_repo,
+                private_dir=ws.private, logs_dir=ws.logs, slug="bundle-scan-empty",
+                timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            empty_tree = empty_tree.strip()
+            if code != 0 or not _FULL_SHA_RE.fullmatch(empty_tree):
+                raise GitError("could not name the empty tree")
+            for sha in commits:
+                code, parents = _git_text(
+                    [*git, "rev-list", "--parents", "-n", "1", sha], repo=bundle_repo,
+                    private_dir=ws.private, logs_dir=ws.logs, slug="bundle-scan-parents",
+                    timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log,
+                )
+                listed = parents.split()
+                if code != 0 or not listed or listed[0] != sha:
+                    raise GitError("could not read a bundled commit's parents")
+                # The first parent, or the empty tree for a root (or a commit
+                # the clone was cut off at): its whole tree is what it adds.
+                before = listed[1] if len(listed) > 1 else empty_tree
+                code, hit = _scan_diff_stream(
+                    [
+                        *git, "-c", "core.quotePath=false", "diff", "--no-color",
+                        "--no-ext-diff", "--no-textconv", "--text", "--no-renames",
+                        "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
+                        before, sha, "--",
+                    ],
+                    leaks=self._leaks_in_added_text, overlap=overlap, new_rev=sha, git=git,
+                    repo=bundle_repo, private_dir=ws.private, logs_dir=ws.logs,
+                    slug="bundle-scan-diff", timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
+                if code != 0:
+                    raise GitError(f"could not diff commit {sha[:12]} against its parent")
+                if hit is not None:
+                    return sha
+            return None
+
+        kept = keep_work_bundle(
+            source_repo=repo, base=base, private_dir=ws.private, logs_dir=ws.logs,
+            bundle_path=ws.artifacts / WORK_BUNDLE_NAME, max_bytes=cfg.max_patch_bytes,
+            timeout_seconds=cfg.git_harvest_timeout_seconds, logger=self.log, leaks=leaks,
+        )
+        out: dict[str, Any] = {"bundle": kept.name, "bundle_bytes": kept.bytes,
+                               "bundle_omitted": kept.omitted}
+        if kept.name is not None:
+            out["bundle_commits"] = kept.commits
+            out["bundle_base"] = kept.base
+            out["bundle_ref"] = "swarm-work"
+        else:
+            out["bundle_note"] = self._scrub(str(kept.note or "no bundle was kept")[:500])
+            self.log.warning("kept no bundle of the agent's branch", reason=out["bundle_note"])
         return out
 
     def _build_clean_repo(
@@ -15162,7 +15890,7 @@ class Worker:
             self.log.error("not publishing: the tenant git token is refused", reason=refusal)
             return {"published": False, "publish_reason": f"refusing to publish: {refusal}"}
 
-        token = self._git_token()
+        token = self._git_token(write=True)
         try:
             token, access = self._probe_reading_again(url, token, "the publish probe")
         except ForgeError as exc:
@@ -15516,59 +16244,86 @@ class Worker:
                     ),
                 )
             else:
-                replayed = replay_agent_commits(
-                    repo=publish_repo,
-                    base=self._publish_base,
-                    keep=new_sha,
-                    task_id=cfg.task_id,
-                    scrub=lambda text: str(self._scrub(text)),
-                    author_name=author_name,
-                    author_email=author_email,
-                    private_dir=ws.private,
-                    logs_dir=ws.logs,
-                    timeout_seconds=cfg.git_harvest_timeout_seconds,
-                    logger=self.log,
-                    # A registered secret OR a credential-shaped run in any kept
-                    # commit's diff folds the history instead (#259 review; owner
-                    # decision 4, 2026-09-28, for the patterns): the scrub
-                    # replaces exactly the registered values, so "the scrub
-                    # changed it" is "a registered value is in it", and a key the
-                    # agent minted or an `.env` it committed is registered nowhere
-                    # and caught only by the patterns. Asked about the text each
-                    # file ADDS, `+` removed, in overlapping windows.
-                    leaks=self._leaks_in_added_text,
-                    overlap=self._scan_overlap(),
-                    upstream=scan_floor or "",
-                )
-                if replayed is not None:
-                    kept = replayed
-                    out["agent_commits_kept"] = kept
-                else:
-                    replaced = fold_agent_commits(
+                try:
+                    replayed = replay_agent_commits(
                         repo=publish_repo,
                         base=self._publish_base,
                         keep=new_sha,
-                        message=self._worker_commit_message(
-                            FOLDED_COMMIT_SUBJECT,
-                            "Everything the agent changed in this attempt, committed or "
-                            "not, as one commit made by the worker. The worker writes "
-                            "every commit it pushes, so no author, trailer or footer "
-                            "added inside the agent's container reaches this branch.",
-                        ),
+                        task_id=cfg.task_id,
+                        scrub=lambda text: str(self._scrub(text)),
                         author_name=author_name,
                         author_email=author_email,
                         private_dir=ws.private,
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
                         logger=self.log,
-                        # The default branch's commit the lane merged, proven
-                        # on the forge: the fold's second parent (#1321).
-                        merged=scan_floor or "",
+                        # A registered secret OR a credential-shaped run in any kept
+                        # commit's diff folds the history instead (#259 review; owner
+                        # decision 4, 2026-09-28, for the patterns): the scrub
+                        # replaces exactly the registered values, so "the scrub
+                        # changed it" is "a registered value is in it", and a key the
+                        # agent minted or an `.env` it committed is registered nowhere
+                        # and caught only by the patterns. Asked about the text each
+                        # file ADDS, `+` removed, in overlapping windows.
+                        leaks=self._leaks_in_added_text,
+                        overlap=self._scan_overlap(),
+                        upstream=scan_floor or "",
                     )
-                    # The worker's own auto-commit is among what was replaced when
-                    # there was one; the rest were the agent's.
-                    folded = max(replaced - (1 if new_sha else 0), 0)
-                    out["agent_commits_folded"] = folded
+                    if replayed is not None:
+                        kept = replayed
+                        out["agent_commits_kept"] = kept
+                    else:
+                        replaced = fold_agent_commits(
+                            repo=publish_repo,
+                            base=self._publish_base,
+                            keep=new_sha,
+                            message=self._worker_commit_message(
+                                FOLDED_COMMIT_SUBJECT,
+                                "Everything the agent changed in this attempt, committed or "
+                                "not, as one commit made by the worker. The worker writes "
+                                "every commit it pushes, so no author, trailer or footer "
+                                "added inside the agent's container reaches this branch.",
+                            ),
+                            author_name=author_name,
+                            author_email=author_email,
+                            private_dir=ws.private,
+                            logs_dir=ws.logs,
+                            timeout_seconds=cfg.git_harvest_timeout_seconds,
+                            logger=self.log,
+                            # The default branch's commit the lane merged, proven
+                            # on the forge, one of the fold's merged heads (#1321);
+                            # the fold reads every other merge itself (#3359).
+                            merged=scan_floor or "",
+                            # A merged branch kept as a parent is pushed commit by
+                            # commit, so its commits are scanned as the replay's
+                            # are, and one that leaks is not kept (#3359 review).
+                            history_leaks=lambda commits: _commits_leak(
+                                commits, leaks=self._leaks_in_added_text,
+                                overlap=self._scan_overlap(),
+                                git=["git", *_NO_HOOKS], repo=publish_repo,
+                                private_dir=ws.private, logs_dir=ws.logs,
+                                timeout_seconds=cfg.git_harvest_timeout_seconds,
+                                logger=self.log,
+                            ),
+                        )
+                        # The worker's own auto-commit is among what was replaced
+                        # when there was one; the rest were the agent's.
+                        folded = max(replaced - (1 if new_sha else 0), 0)
+                        out["agent_commits_folded"] = folded
+                except MergedHeadUnreadable as exc:
+                    # A merged branch the clean repository cannot read: a
+                    # replay or a fold without it would drop its history, so
+                    # nothing is pushed and the branch is kept, merges
+                    # included, as the harvest keeps it when the fetch fails
+                    # (#3174, #3359).
+                    out.update(self._keep_work_bundle(repo, self._publish_base))
+                    if out.get("bundle"):
+                        raise MergedHeadUnreadable(
+                            f"{exc}; the agent's branch, merge commits included, "
+                            f"is kept in {WORK_BUNDLE_NAME} ({out['bundle_commits']} "
+                            f"commits on {out['bundle_base']})"
+                        ) from exc
+                    raise
 
             # A CONFLICT FIX ROUND MUST LEAVE THE BRANCH ON MAIN (#1321). Its
             # whole job is to move the pull request's merge base to the
@@ -17200,6 +17955,8 @@ class Worker:
         if files is not None:
             first += files.names()
         first.append(PATCH_NAME)
+        # Beside the patch, the branch a failed publish kept (#3174).
+        first.append(WORK_BUNDLE_NAME)
         return first
 
     def _upload_outputs(
@@ -17245,7 +18002,11 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
-        if defer_publish:
+        if defer_publish and self._security_review is not None:
+            # A security review's verdict is the worker's, derived from the
+            # validated audit, never the agent's; a UI path does not gate it.
+            self._finish_security_review()
+        elif defer_publish:
             # After the harvest's reap, so the agent can no longer write it,
             # and before the upload, so what goes up is the verdict that counts.
             self._hold_ui_review_to_rendered()
@@ -18612,15 +19373,23 @@ CLONE_BASE_ENV = "SWARM_CLONE_BASE"
 #: The branch the runner rebases onto before publishing (SPEED-D1;
 #: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
 PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
+#: The branch the clone left HEAD on (`_start_branch`), named to the runner
+#: so the pre-publish gate can hand a moved HEAD back to the agent
+#: (`prepublish.START_BRANCH_ENV`, held equal by test_prepublish_moved_head.py).
+START_BRANCH_ENV = "SWARM_START_BRANCH"
+#: Where the worker writes the step's signed work contract's body for the
+#: runner's JC2 (`Worker._stage_work_contract`), under the attempt's work/.
+WORK_CONTRACT_FILE = "work-contract.json"
+#: The runner's report key holding JC2's verdict (`cliagent.run_cli_agent`),
+#: and the summary key recording its delivery (`_deliver_contract_verdict`).
+CONTRACT_JUDGMENT_KEY = "contract_judgment"
+CONTRACT_VERDICT_SUMMARY_KEY = "contract_verdict"
 
 
-class CredentialHit(NamedTuple):
-    """What a leak predicate found in one window of a file's added text: the
-    rule that matched (a `swarm_redaction` rule name, or
-    `REGISTERED_SECRET_RULE`) and where the match starts. Never the value."""
-
-    rule: str
-    offset: int
+#: What a leak predicate found in one window of a file's added text: the rule
+#: that matched (a `swarm_redaction` rule name, or `REGISTERED_SECRET_RULE`)
+#: and where the match starts. Never the value. The shared check's own class.
+CredentialHit = _credentials.CredentialHit
 
 
 class ScanHit(NamedTuple):
@@ -19082,898 +19851,32 @@ def _scan_diff_stream(
 
 # -- the tiered, path-aware publish guard (#373) ------------------------------
 #
-# OWNER DECISION, 2026-09-30 (#373). The publish scans refused any added text
-# the generic credential rules match, and a test of the redaction rules has to
-# hold exactly such text (`"password": "********"`, `secret="<name>"`), so no
-# SwarmCloud agent could publish one (#327's two runs, #376, #379). The guard
-# is tiered by the file's path:
-#
-# * TIER 1, every file, always refused: a registered secret (checked by the
-#   caller, `Worker._leaks_in_added_text`, never relaxed); a vendor-shaped key,
-#   whose tail must carry an explicit placeholder IN A TEST PATH, so an
-#   `sk-test-aaaa` fixture passes there and is refused anywhere else; a JWT
-#   whose header decodes to JSON naming `alg`; any private key.
-#   PRIVATE KEYS FOLLOW MAIN'S RULE IN EVERY PATH AND TIER: refused exactly
-#   when `swarm_redaction.rules.mask_private_keys` masks something, so any
-#   BEGIN ... PRIVATE KEY marker and any orphan-END tail is refused, a stub
-#   marker under `tests/` included. Owner decision, 2026-10-01: four review
-#   rounds of relaxing it (body length, entropy, DER shape, windows) each
-#   found inputs main refuses and the branch published. #373's real blocker
-#   was the generic key=value rule in redaction tests, not PEM markers; a
-#   test builds its marker at runtime.
-#   SECURITY PASS, 2026-10-09 (owner decision: un-deferred): main's rule is
-#   also laid over the WHOLE new file wherever an added line falls inside a
-#   key it holds (`_added_inside_a_private_key`, #361 box 79), and a free
-#   base64 blob that is key material without any marker -- encrypted-key
-#   ciphertext or a plaintext DER key -- is refused as
-#   `headerless_private_key` (`_headerless_key_at`, #361 box 80).
-# * TIER 2, outside test paths: the generic rules refuse as before, except
-#   for a REFERENCE (owner decisions, 2026-10-02; `_is_a_reference`): a value
-#   that is wholly one `${name}` slot, or -- not under a password name and
-#   not after an `Authorization` scheme -- one short lowercase word or a
-#   KNOWN reference shape. Vendor rules are not relaxed.
-# * TIER 3, in test paths: a generic match refuses only when its value looks
-#   like a credential (`_looks_like_a_credential`). The loose tier is test
-#   CODE only (`is_test_path`), never vendored third-party code (#361 box
-#   73), and a placeholder word counts only standing alone, beside nothing
-#   credential-shaped (#361 boxes 72 and 74).
-#
-# `swarm_redaction.RULES` is unchanged: read-time masking shares it, and a
-# false positive there costs one masked word, not a refused publish.
-#
-# RESIDUAL RISK, accepted by the owner: a weak real password committed under a
-# test path is published. Since 2026-10-02, outside test paths, tier 2 also
-# publishes, as a reference, a WHOLE value (`_ends_the_value`: nothing joined
-# to it by `+`, `,` or another literal, and an escaped quote does not close
-# it) that is one of:
-#   - a single lowercase word of ANY length (no cap since the owner's decision
-#     of 2026-10-02; an all-lowercase, digitless random token outside test
-#     paths therefore publishes, a residual risk the owner accepted), no `-`,
-#     `.`, `_` or digit (`anthropic`, `retained`) -- so a weak
-#     one-word secret under a `token`/`secret`/`api_key` name, or after a
-#     prose `Bearer`/`Basic` (`http_authorization`), publishes. There is no
-#     dictionary: `letmein` under `token = ` publishes. Under a name ending
-#     `password`/`passwd` it does NOT: that name is assigned the password
-#     itself, so only a slot is a reference there;
-#   - a `swarm-tenant-` secret name, or a hyphen-joined lowercase name ending
-#     `-api-key`, `-token`, `-secret` or `-git` (`hunter-horse-token` too);
-#   - a dotted path under `var.`, `local.`, `user_config.`, `data.` or
-#     `module.`.
-# Any other hyphen- or dot-joined value (`correct-horse-battery-staple`) is
-# refused, and so is every bare word after an `Authorization:` header's
-# scheme, whatever its case. A `${name}` slot holds no value, so it adds no
-# risk. CI's trivy secret scan still runs after the push.
-#
-# Since 2026-10-23 (#2030, BGD), NEITHER tier reads a comment line or a
-# template literal of runtime slots with the generic rules
-# (`_on_a_comment_line`, `_runtime_template`); the vendor and key rules do.
-#
-# Since 2026-10-23 (#2030, SCAN-IDENT, BGD), an UNQUOTED word-segment
-# identifier holding one short digit run (`sessionToken2`, `api_key_v2`) is
-# not a literal either, outside password names (`_is_an_identifier`).
-
-#: The `swarm_redaction` rules that match a NAME followed by a value rather
-#: than a provider's own token format. Tiers 2 and 3 apply to these. Any rule
-#: not named here, `jwt` or `private_key_block` is treated as a vendor rule --
-#: the stricter tier -- so a rule added to `RULES` is never silently relaxed.
-GENERIC_CREDENTIAL_RULES = frozenset(
-    {"key_value_assignment", "http_authorization", "http_authorization_scheme"}
-)
-
-#: A vendor key's own prefix, stripped before its tail is judged.
-_VENDOR_PREFIX = re.compile(r"(?:sk-|ya29\.|AIza|gh[pousr]_|github_pat_|xox[abprs]-|AKIA|ASIA)")
-
-#: What a value needs to look like a credential (owner decision, 2026-09-30):
-#: at least this many characters...
-CREDENTIAL_MIN_CHARS = 16
-#: ...and at least this much Shannon entropy per character. Random base62 of
-#: 16 distinct characters is 4.0 bits; English words and repeated fixtures
-#: (`p4ssw0rd-p4ssw0rd` is 3.0) sit below.
-CREDENTIAL_MIN_ENTROPY_BITS = 3.5
-
-#: What marks a value as a placeholder rather than a credential: a mask, a run
-#: of x, a `<name>` or `${VAR}` slot, or a word that says so. A WORD COUNTS
-#: ONLY STANDING ALONE (#361 box 72, security pass 2026-10-09): bounded by a
-#: character that is not a letter or digit, or by the value's edge. As a
-#: substring it let `latest`, `attest` and any real value with `test` glued
-#: into it read as a fixture in a test path. And a placeholder does not hide
-#: what stands BESIDE it: `_looks_like_a_credential` judges each segment left
-#: once it is removed, so `db-test-<24 random characters>` is a credential and
-#: `fake-unmasked-credential-000` is not.
-_PLACEHOLDER = re.compile(
-    r"\*+|x{4,}|<[^>]*>|\$\{[^}]*\}|(?<![A-Za-z0-9])(?:fake|test|dummy|example)(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-
-#: Where a refusal names a private key: its first BEGIN or END marker.
-_PEM_MARKER = re.compile(r"-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----")
-
-#: Directory names that make a CODE file under them a test file (compared
-#: lower-cased, so `Tests/x.py` is the same as `tests/x.py`). `fixtures/` and
-#: `testdata/` are NOT here: they hold data, and data is judged strictly.
-_TEST_DIRS = frozenset({"tests", "test", "__tests__"})
-#: Only these extensions can be test CODE (owner decision, 2026-10-01). The
-#: loose tier exists so a test may assert on `password="hunter2"`; a config or
-#: data file (.env, .yaml, .json, .toml, .pem, no extension...) is where real
-#: credentials live, so it is judged strictly even under `tests/`.
-_TEST_CODE_EXTENSIONS = frozenset(
-    {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java",
-     ".kt", ".rb", ".sh", ".bats"}
-)
-#: File names that are test files wherever they sit (matched lower-cased).
-_TEST_FILE = re.compile(r"(?:test_.+\..+|.+_test\..+|.+\.(?:test|spec)\..+)")
-#: NEVER a test path, even under `tests/`: the files real credentials live in.
-#: Matched against the file name; `*credential*` also against every directory.
-_NEVER_TEST_FILES = (".env*", "*.pem", "*.key", "*credential*", "*secret*.json")
-#: Directories that hold THIRD-PARTY code (#361 box 73, security pass
-#: 2026-10-09). A `test/` inside `node_modules/` or `vendor/` is a package's
-#: tests, not the agent's: the loose tier exists so the agent's own tests can
-#: assert on fixtures, and a vendored tree is copied in, not written to that
-#: end. Anything under one of these is judged strictly (compared lower-cased).
-_THIRD_PARTY_DIRS = frozenset(
-    {"node_modules", "vendor", "third_party", "third-party", "bower_components", "site-packages"}
-)
-
-
-def is_test_path(path: str) -> bool:
-    """True when `path` (repository-relative, `/`-separated) is test CODE for
-    the publish guard's loose tier (owner decisions, 2026-09-30 and
-    2026-10-01, #373).
-
-    Both must hold: the file has a code extension (`_TEST_CODE_EXTENSIONS`),
-    and it sits under a `tests/`, `test/` or `__tests__/` directory at any
-    depth (case-insensitive) or is named `test_*`, `*_test.*`, `*.test.*` or
-    `*.spec.*`. A file named `*credential*` -- or under a `*credential*`
-    directory, or under a third-party directory (`_THIRD_PARTY_DIRS`) --
-    never is. An empty or unknown path is not one: the guard falls to its
-    stricter tier when it cannot tell.
-    """
-    if not path:
-        return False
-    parts = path.split("/")
-    name = parts[-1].lower()
-    if os.path.splitext(name)[1] not in _TEST_CODE_EXTENSIONS:
-        return False
-    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _NEVER_TEST_FILES):
-        return False
-    if any("credential" in part.lower() for part in parts[:-1]):
-        return False
-    if any(part.lower() in _THIRD_PARTY_DIRS for part in parts[:-1]):
-        return False
-    if any(part.lower() in _TEST_DIRS for part in parts[:-1]):
-        return True
-    return _TEST_FILE.fullmatch(name) is not None
-
-
-def _shannon_bits(value: str) -> float:
-    """Shannon entropy of `value`'s characters, in bits per character."""
-    if not value:
-        return 0.0
-    counts: dict[str, int] = {}
-    for char in value:
-        counts[char] = counts.get(char, 0) + 1
-    size = len(value)
-    return -sum((n / size) * math.log2(n / size) for n in counts.values())
-
-
-def _looks_like_a_credential(value: str) -> bool:
-    """True when `value` is shaped like a real credential rather than a
-    fixture: at least `CREDENTIAL_MIN_CHARS` characters, letters AND digits,
-    at least `CREDENTIAL_MIN_ENTROPY_BITS` of entropy per character.
-
-    A value holding a placeholder (`_PLACEHOLDER`) is a fixture only when no
-    segment beside it -- what is left once the placeholders are removed,
-    split at every character that is not a letter or digit -- is itself
-    credential-shaped (#361 box 72): `test-password-123` and
-    `fake-unmasked-credential-000` are fixtures, `db-test-<random>` is not.
-    """
-    if len(value) < CREDENTIAL_MIN_CHARS:
-        return False
-    if _PLACEHOLDER.search(value) is not None:
-        rest = _PLACEHOLDER.sub(" ", value)
-        return any(_looks_like_a_credential(part) for part in _NOT_ALNUM.split(rest))
-    if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
-        return False
-    return _shannon_bits(value) >= CREDENTIAL_MIN_ENTROPY_BITS
-
-
-_NOT_ALNUM = re.compile(r"[^A-Za-z0-9]+")
-
-
-def _decodes_as_a_jwt(token: str) -> bool:
-    """True when `token`'s first segment base64url-decodes to a JSON object
-    naming `alg`, which every JWT header does. `eyword_only_args`, or an
-    `ey...` run in a fixture, is not one.
-
-    A HEADER NESTED PAST THE PARSER'S DEPTH COUNTS AS ONE (#361). `json.loads`
-    raises RecursionError, not ValueError, on an array or object nested about a
-    thousand deep, and that escaped the publish guard and failed the attempt
-    with a traceback. Such a header base64url-decodes to JSON-shaped text, which
-    an identifier never does, so the guard fails CLOSED on it: a finding, which
-    folds or refuses. Text that does not decode at all stays "not a JWT" -- that
-    is what keeps `eyword_only_args` from folding every history that names it.
-    """
-    header = token.split(".", 1)[0]
-    try:
-        decoded = json.loads(base64.urlsafe_b64decode(header + "=" * (-len(header) % 4)))
-    except ValueError:  # binascii.Error, UnicodeDecodeError and JSONDecodeError all are
-        return False
-    except RecursionError:
-        return True
-    return isinstance(decoded, dict) and "alg" in decoded
-
-
-#: Words that mark a vendor-shaped fixture as one, each STANDING ALONE in the
-#: token (#361 box 74): an `sk-` key whose tail is `test-aaaa` says it is a
-#: fixture; an AWS key id ending `<12 random>TEST` only has the word glued to
-#: a real-shaped key.
-_VENDOR_PLACEHOLDER = re.compile(
-    r"(?<![A-Za-z0-9])(?:example|test|fake|dummy)(?![A-Za-z0-9])|x{4,}", re.IGNORECASE
-)
-#: The shortest segment beside a vendor placeholder that can be key material:
-#: a key's variable part is 16 to 40 random characters, and a fixture's
-#: segments are words, digit runs or a few letters (an `sk-` tail of
-#: `ant-test-0000`, a `ya29.` tail of `fake-access-token`).
-_VENDOR_SEGMENT_MIN_CHARS = 8
-#: The vendors' own documented example values, matched whole. AWS's access key
-#: id example glues EXAMPLE into the key, which box 74 no longer accepts from
-#: an arbitrary key; this value is the published one, nothing else.
-_DOCUMENTED_EXAMPLES = frozenset({"AKIA" + "IOSFODNN7" + "EXAMPLE"})
-
-
-def _is_explicit_placeholder(tail: str, token: str = "") -> bool:
-    """True when a vendor token's variable part says it is a fixture: it is
-    one repeated character, the vendor's documented example (`token`), or it
-    holds a placeholder word standing alone or a run of four x AND no segment
-    left beside them is key-shaped (#361 box 74): at least
-    `_VENDOR_SEGMENT_MIN_CHARS` characters, six of them distinct, not only
-    digits, and mixing letters with digits or upper with lower case.
-    """
-    if token in _DOCUMENTED_EXAMPLES:
-        return True
-    if len(tail) >= 4 and len(set(tail)) == 1:
-        return True
-    if _VENDOR_PLACEHOLDER.search(tail) is None:
-        return False
-    return not any(
-        len(part) >= _VENDOR_SEGMENT_MIN_CHARS
-        and len(set(part)) >= 6
-        and not part.isdigit()
-        and (
-            (any(c.isdigit() for c in part) and any(c.isalpha() for c in part))
-            or (any(c.isupper() for c in part) and any(c.islower() for c in part))
-        )
-        for part in _NOT_ALNUM.split(_VENDOR_PLACEHOLDER.sub(" ", tail))
-    )
-
-
-#: A value that is wholly one interpolation slot holding only a NAME:
-#: `${user_config.client_secret}`, `${var.anthropic}`. Anything before or after
-#: it, or a second slot, is not. Nor is a slot carrying an operator --
-#: `${DB_PW:-<literal>}` (or `-`, `=`, `:=`, `:+`, `:?`) expands to the literal
-#: it holds -- which the owner's `^\$\{[^}]+\}$` would have let through.
-_INTERPOLATION_SLOT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_.]*\}")
-#: One lowercase word of ANY length (owner decision, 2026-10-02: the single-word
-#: length cap is removed): no `-`, `.`, `_` or digit to join it to another.
-#: RESIDUAL RISK, accepted by the owner: an all-lowercase, digitless random
-#: token (32 letters carry ~150 bits, but a weak one-word secret carries few)
-#: under a non-password name, outside test paths, publishes. Only
-#: `_REFERENCE_MAX_CHARS` bounds it. Under a password name it is still refused.
-_REFERENCE_WORD = re.compile(r"[a-z]+")
-#: The KNOWN shapes of a multi-segment reference (owner decision, 2026-10-02,
-#: #470's review), and no other: a tenant secret's name (`swarm-tenant-eng-git`),
-#: a name that says it names a credential (`anthropic-api-key`, `github-token`,
-#: `db-secret`, `tenant-git`), and an interpolation path under a root that
-#: Terraform, a plugin manifest or a module reads (`var.`, `local.`,
-#: `user_config.`, `data.`, `module.`). `correct-horse-battery-staple` and
-#: `correct.horse.battery.staple` are none of them, and are refused.
-#: RESIDUAL RISK, accepted by the owner (2026-10-02): these shapes are UNCAPPED
-#: in segments. A passphrase with a known prefix or suffix publishes outside
-#: test paths -- `correct-horse-battery-staple-token`, `swarm-tenant-<words>`,
-#: a `var.<words>` path -- up to the 64-character bound. No segment cap.
-_REFERENCE_SHAPE = re.compile(
-    r"swarm-tenant(?:-[a-z]+)+"
-    r"|[a-z]+(?:-[a-z]+)*-(?:api-key|token|secret|git)"
-    r"|(?:var|local|user_config|data|module)(?:\.[a-z_]+)+"
-)
-#: The longest value a shape may be: a name, not a passphrase.
-_REFERENCE_MAX_CHARS = 64
-#: The words an `Authorization` value opens with. Never a reference: it is
-#: the scheme, and the credential follows it (#470's review).
-_AUTH_SCHEME_WORDS = frozenset(
-    {"bearer", "basic", "token", "digest", "negotiate", "oauth", "ssws"}
-)
-
-
-def _is_a_reference(value: str, rule: Any = None, match: re.Match[str] | None = None) -> bool:
-    """True when a generic rule's matched `value` NAMES a credential rather
-    than holding one, so tier 2 does not refuse it (owner decisions,
-    2026-10-02).
-
-    WHY. Three of six SwarmCloud lanes were refused at publish for text that
-    held nothing: plugin.json's unchanged `"..._CLIENT_SECRET":
-    "${user_config.oauth_client_secret}"`, re-added by a trailing comma, a
-    Terraform local naming the Anthropic key with the provider id
-    `anthropic`, and a tenant secret's name `swarm-tenant-eng-git`. The
-    relaxation is narrow, for the generic rules outside test paths only:
-
-    * (i) the whole value is ONE `${...}` slot holding only a name
-      (`_INTERPOLATION_SLOT`). A slot with anything glued to it
-      (`${a}hunter2`), or with a shell default inside it (`${A:-hunter2}`),
-      is still refused: the glued part or the default may be the credential.
-    * (ii) otherwise, the value is a single lowercase word of any length
-      (`_REFERENCE_WORD`) or one of the
-      KNOWN reference shapes (`_REFERENCE_SHAPE`), holds no digit, and
-      `_looks_like_a_credential` rejects it (with no digit it always does;
-      it is asked so a change to it cannot make this rule pass a value it
-      accepts). Rule (ii) never applies:
-      - after an `Authorization` header's scheme (`http_authorization_scheme`):
-        what follows the scheme is the credential, whatever its case;
-      - to a scheme word itself (`bearer`, `Basic`, `token`): it names nothing;
-      - under a name ending `password`/`passwd` (the key/value rule's `pw`
-        group): that name is assigned the password, not a provider id or a
-        secret's name, so `password = "letmein"` is refused. No dictionary.
-
-    Only quotes, their escaping backslashes, whitespace and a trailing `;` or
-    `,` are stripped, never a bracket, so a slot's closing brace is kept.
-    """
-    candidate = value.strip("\"'`\\ \t").rstrip(";,").strip("\"'`\\")
-    if _INTERPOLATION_SLOT.fullmatch(candidate):
-        return True
-    if rule is not None and rule.name == "http_authorization_scheme":
-        return False
-    if candidate.lower() in _AUTH_SCHEME_WORDS:
-        return False
-    if (
-        rule is CREDENTIAL_KEY_VALUE
-        and match is not None
-        and match.re is rule.pattern
-        and match.group("pw")
-    ):
-        return False
-    if len(candidate) > _REFERENCE_MAX_CHARS or any(c.isdigit() for c in candidate):
-        return False
-    shaped = (
-        _REFERENCE_WORD.fullmatch(candidate) is not None
-        or _REFERENCE_SHAPE.fullmatch(candidate) is not None
-    )
-    return shaped and not _looks_like_a_credential(candidate)
-
-
-#: An identifier's shape: optional leading underscores, then letters and
-#: digits joined by single underscores (snake_case, camelCase, PascalCase).
-_IDENTIFIER_SHAPE = re.compile(r"_*[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*")
-#: One segment of an identifier: a capitalised or lowercase word, a run of
-#: capitals not followed by a lowercase letter (`API`, `KEY`), or a digit run.
-_IDENTIFIER_SEGMENT = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|[0-9]+")
-#: The longest digit run an identifier may hold: a version or an index
-#: (`v2`, `01`, `2024`), not a number long enough to be a secret's body.
-_IDENTIFIER_DIGITS_MAX = 4
-_VOWELS = frozenset("aeiouyAEIOUY")
-
-
-def _is_an_identifier(value: str) -> bool:
-    """True when an UNQUOTED bare `value` is a code identifier holding a digit
-    run, not a credential (SCAN-IDENT, #2030; BGD's decision of 2026-10-23,
-    on SCAN-FP's question): `sessionToken2`, `api_key_v2`, `MockUser01`,
-    `token2fa`. `_assigns_a_literal` asks it only for a bare value; a quoted
-    value is a literal whatever its shape, and this is never asked of one.
-
-    The value is split at `_` and at case changes into segments. It is an
-    identifier when every letter segment has at least 2 letters and a vowel
-    (`y` counts) -- word-like, not `Xq`, `Zv` -- except that one letter may
-    stand right before the digit run (`v2`, `V2`); it holds at most ONE digit
-    run, of at most `_IDENTIFIER_DIGITS_MAX` digits, after the first segment;
-    it does not open with a vendor key's prefix (`_VENDOR_PREFIX`); and it is
-    not at least `CREDENTIAL_MIN_CHARS` long with at least
-    `CREDENTIAL_MIN_ENTROPY_BITS` of entropy once its digits are removed.
-    So `aB3xQ9` (three digit runs), a five-digit run, and a long run of
-    distinct letters are still refused.
-
-    RESIDUAL RISK, accepted by BGD on 2026-10-23: a short real value shaped
-    like words plus digits (`hunterHorse42`), assigned bare to a credential
-    name in YAML or in an environment file, publishes. There is no dictionary;
-    "word-like" is the vowel and length test above. CI's trivy secret scan
-    still runs after the push. Under a password name `_assigns_a_literal`
-    does not ask this at all: a human picks `myDog2024` as a password.
-    """
-    if len(value) > _REFERENCE_MAX_CHARS or _IDENTIFIER_SHAPE.fullmatch(value) is None:
-        return False
-    if _VENDOR_PREFIX.match(value.lstrip("_")) is not None:
-        return False
-    segments = [s for part in value.split("_") for s in _IDENTIFIER_SEGMENT.findall(part)]
-    runs = [i for i, segment in enumerate(segments) if segment.isdigit()]
-    if len(runs) > 1 or runs == [0]:
-        return False
-    if runs and len(segments[runs[0]]) > _IDENTIFIER_DIGITS_MAX:
-        return False
-    for i, segment in enumerate(segments):
-        if segment.isdigit() or (len(segment) == 1 and runs and i == runs[0] - 1):
-            continue
-        if len(segment) < 2 or not _VOWELS.intersection(segment):
-            return False
-    letters = "".join(c for c in value if not c.isdigit())
-    return not (
-        len(value) >= CREDENTIAL_MIN_CHARS
-        and _shannon_bits(letters) >= CREDENTIAL_MIN_ENTROPY_BITS
-    )
-
-
-#: What may follow an unquoted reference on its line: nothing, or a closing
-#: bracket, separator or (escaped) quote that ends an enclosing string.
-_VALUE_END = re.compile(r"[ \t]*(?:$|[;,)\]}]|\\*[\"'`])")
-
-
-def _odd_backslashes(text: str) -> bool:
-    """True when `text` ends in an odd run of backslashes, i.e. a quote right
-    after it is escaped."""
-    return (len(text) - len(text.rstrip("\\"))) % 2 == 1
-
-
-def _ends_the_value(match: re.Match[str]) -> bool:
-    """True when a generic match's value is the WHOLE value, not its first word.
-
-    The generic rules' value class stops at whitespace, a comma or a quote, so
-    a password name assigned a quoted four-word passphrase matches only its
-    first word, a digitless lowercase word `_is_a_reference` would pass. The owner's rule
-    (ii) asks the whole value to be one identifier, so a reference counts only
-    when it ends the value: a quoted value must close right after it (the
-    rule's opening `"`, escaped or not, or a `'`/`` ` `` the value opens with),
-    and an unquoted one must end the line or meet a separator, a closing
-    bracket or the quote of an enclosing string.
-    """
-    prefix = match.group(1)
-    value = match.group(0)[len(prefix):]
-    rest = match.string[match.end():].split("\n", 1)[0]
-    opened = prefix.rstrip()
-    if opened.endswith('"'):
-        # The close must be escaped EXACTLY as the open was: in `"letmein\"
-        # <secret>"` the `\"` is part of the value, not its end (#470's review).
-        escapes = len(opened[:-1]) - len(opened[:-1].rstrip("\\"))
-        close = re.match(r'(\\*)"', rest)
-        # The value class swallows a backslash right before the close, so the
-        # backslashes the value ends in count with the close's own: `NAME =
-        # "x\" <rest>"` reads as the value `x\` and a bare `"`.
-        trailing = len(value) - len(value.rstrip("\\"))
-        if close is None or trailing + len(close.group(1)) != escapes:
-            return False
-        return not _value_continues(rest[close.end():], '"', escapes)
-    if value[:1] in ("'", "`"):
-        quote = value[0]
-        body = value[1:].rstrip(";,)]}")
-        if body.endswith(quote):
-            if not (len(body) > 1 and quote not in body[:-1]):
-                return False
-            if _odd_backslashes(body[:-1]):
-                return False  # the quote is escaped, so it does not close
-            return not _value_continues(rest, quote, 0)
-        if rest.startswith(quote):
-            if _odd_backslashes(body):
-                return False
-            return not _value_continues(rest[1:], quote, 0)
-        return False
-    return _VALUE_END.match(rest) is not None and not _value_continues(rest, None, 0)
-
-
-#: An opening quote, with the backslashes that escape it.
-_OPEN_QUOTE = re.compile(r"(\\*)([\"'`])")
-
-
-#: A comment start, which may follow a value only after whitespace.
-_COMMENT_START = re.compile(r"(?:#|//|--)")
-
-#: The next key or argument after a `,`: an identifier then `=` (not `==`) or `:`.
-_NEXT_KEY = re.compile(r"[A-Za-z_][\w.\-]*[ \t]*(?::|=(?!=))")
-
-
-def _comment_or_nothing(text: str) -> bool:
-    """True when `text` is empty, whitespace, or whitespace then a comment."""
-    if not text.strip():
-        return True
-    return text[:1] in " \t" and _COMMENT_START.match(text.lstrip(" \t")) is not None
-
-
-def _value_continues(after: str, closed: str | None, escapes: int) -> bool:
-    """True unless the text `after` a value's end on its line PROVES the value
-    ended there. An allow-list (#470's review: every deny-list of joiners, `+`,
-    `,`-literal, adjacency, missed `.`, `&`, `||`, `~`, `|`, a bare token, a
-    conditional and `;`). After the close the value is whole only when what
-    follows is the end of the line, whitespace, a `;` ending the statement, a
-    closing bracket (then `,`, `;` or the line's end), a comment after
-    whitespace, or a `,` and then the next key or argument. Anything else is
-    read as more of the value, so the generic rule refuses.
-
-    `closed` is the quote the value just closed with (None when it was
-    unquoted) and `escapes` how many backslashes escaped it. A quote of
-    another kind, or one escaped less, straight after it closes an ENCLOSING
-    string (`'"secret": "anthropic"'`, `"{\\"secret\\": \\"anthropic\\"}"`),
-    and nothing after that belongs to this value.
-    """
-    straight = _OPEN_QUOTE.match(after)
-    if straight is not None and (
-        closed is None or straight.group(2) != closed or len(straight.group(1)) < escapes
-    ):
-        return False
-    rest = after.lstrip(" \t")
-    if not rest:
-        return False
-    if len(rest) != len(after) and _COMMENT_START.match(rest):
-        return False
-    while rest[:1] in (")", "]", "}") and rest:
-        rest = rest[1:]
-        if not rest:
-            return False
-        if rest[:1] in " \t":
-            return not _comment_or_nothing(rest)
-        if _OPEN_QUOTE.match(rest):
-            return False  # the bracket ends a literal inside an enclosing string
-    if rest[:1] == ";":
-        return not _comment_or_nothing(rest[1:])
-    if rest[:1] != ",":
-        return True
-    following = rest[1:]
-    if _comment_or_nothing(following):
-        return False
-    following = following.lstrip(" \t")
-    if _NEXT_KEY.match(following):
-        return False
-    literal = _OPEN_QUOTE.match(following)
-    if literal is None:
-        return True
-    end = following.find(literal.group(2), literal.end())
-    if end < 0:
-        return True
-    return not following[end + 1:].lstrip(" \t").startswith(":")
-
-
-# -- what the GENERIC rules do not read (SCAN-FP, #2030) ----------------------
-#
-# BGD's decision, 2026-10-23: fix the false positives and the advice, add no
-# setting. Product Oracle's task was refused three attempts in a row over a
-# doc comment that quoted its fixture's name in prose (the reference was
-# followed by more words, so `_ends_the_value` read it as the first word of a
-# passphrase) and over a template literal whose one slot calls `mockUuid()`, a
-# value built at runtime (the value class stops at `(`, so no reference shape
-# could ever match it). Two things are therefore not read by the GENERIC rules
-# -- `key_value_assignment` and the `Authorization` rules -- in either tier.
-# The vendor rules, the JWT rule and the private-key rules read everything,
-# comments included: a vendor key is one by its own format, wherever it sits.
-#
-# RESIDUAL RISK, accepted with the decision: a generic-shaped credential
-# written into a comment (an assignment behind a `#`, a commented-out line of
-# an `.env`) publishes; CI's trivy secret scan still reads it. And on a
-# single line longer than a scan window the window may start mid-line
-# (`_DiffLeakScanner`), where text that opens like a comment is read as one.
-
-#: A line that opens a comment: its first non-space characters are `//`, `#`,
-#: `--` then a space or the line's end, or a block opener (`/*`, a block's
-#: continuation `*`, `<!--`). NOT `#name =`: that is a JavaScript private
-#: field, code. NOT `--name=`: a command-line flag on a continuation line.
-_COMMENT_LINE = re.compile(
-    r"[ \t]*(?:(?P<line>//|#(?![A-Za-z_$][\w$]*[ \t]*=(?!=))|--(?=[ \t\r]|$))"
-    r"|(?P<block>/\*|<!--|\*))"
-)
-
-
-def _on_a_comment_line(text: str, at: int) -> bool:
-    """True when the line of `text` holding offset `at` is a comment line
-    (`_COMMENT_LINE`). A block comment closed on the line with code after the
-    close (a `/* note */` and then an assignment) is not one: the code is read."""
-    start = text.rfind("\n", 0, at) + 1
-    end = text.find("\n", at)
-    line = text[start : len(text) if end < 0 else end]
-    opened = _COMMENT_LINE.match(line)
-    if opened is None:
-        return False
-    if opened.group("line"):
-        return True
-    block = opened.group("block")
-    close, search_from = (
-        ("-->", opened.end()) if block == "<!--"
-        else ("*/", opened.start("block") if block == "*" else opened.end())
-    )
-    closed_at = line.find(close, search_from)
-    return closed_at < 0 or not line[closed_at + len(close) :].strip()
-
-
-def _quoted_end(text: str, at: int) -> int | None:
-    """Where the string opening with the quote at `text[at]` closes on its
-    line (backslash escapes honoured), or None when it does not."""
-    quote, i = text[at], at + 1
-    while i < len(text) and text[i] != "\n":
-        if text[i] == "\\":
-            i += 2
-            continue
-        if text[i] == quote:
-            return i
-        i += 1
-    return None
-
-
-def _slot_end(text: str, at: int) -> tuple[int, int] | None:
-    """For a `${` slot whose body starts at `at`: where its closing `}` is and
-    how many characters of string literal its body holds, or None when it does
-    not close on its line. Braces inside a string in the body do not count."""
-    depth, literal, i = 1, 0, at
-    while i < len(text) and text[i] != "\n":
-        char = text[i]
-        if char in "\"'`":
-            close = _quoted_end(text, i)
-            if close is None:
-                return None
-            literal, i = literal + close - i - 1, close + 1
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return i, literal
-        i += 1
-    return None
-
-
-def _runtime_template(text: str, at: int) -> bool:
-    """True when the backtick at `text[at]` opens a template literal that is a
-    RUNTIME EXPRESSION, not a credential (#2030): it closes on its line, holds
-    at least one `${...}` slot, every slot holds an expression (any, not only
-    a name, as `_INTERPOLATION_SLOT` reads a whole value), and its LITERAL text
-    -- what stands outside the slots, plus any string literal inside one --
-    totals fewer than `CREDENTIAL_MIN_CHARS`. A slot does not hide what stands
-    beside it (`_is_explicit_placeholder` reasons the same way): `sk-${x}`
-    followed by 40 random characters, `${"<40 random>"}`, or 24 characters cut
-    in two by slots are all still read by the rule. Nor may more value be
-    joined after the close (`_value_continues`): `` `${x}` + "<literal>" ``.
-    """
-    literal, slots, i = 0, 0, at + 1
-    while i < len(text):
-        char = text[i]
-        if char == "\n":
-            return False
-        if char == "`":
-            break
-        if char == "\\":
-            literal, i = literal + 2, i + 2
-            continue
-        if text.startswith("${", i):
-            found = _slot_end(text, i + 2)
-            if found is None or not text[i + 2 : found[0]].strip():
-                return False
-            slots, literal, i = slots + 1, literal + found[1], found[0] + 1
-            continue
-        literal, i = literal + 1, i + 1
-    else:
-        return False
-    if slots == 0 or literal >= CREDENTIAL_MIN_CHARS:
-        return False
-    return not _value_continues(text[i + 1 :].split("\n", 1)[0], "`", 0)
-
-
-def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
-    """Whether one token-starting match of `rule` is a credential, by tier."""
-    if rule.name == "jwt":
-        return _decodes_as_a_jwt(match.group(0))
-    if rule.name in GENERIC_CREDENTIAL_RULES:
-        if _on_a_comment_line(match.string, match.start()):
-            return False
-        if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
-            return False
-        value = match.group(0)[len(match.group(1)):]
-        value_at = match.start() + len(match.group(1))
-        if value.startswith("`") and _runtime_template(match.string, value_at):
-            return False
-        if not in_tests:  # tier 2
-            return not (_is_a_reference(value, rule, match) and _ends_the_value(match))
-        return _looks_like_a_credential(value.strip("\"'`;,)]}\\ \t"))
-    # A vendor key: refused outside tests as before; in a test path it passes
-    # ONLY with an explicit placeholder (owner decision, 2026-10-01). Entropy
-    # and digits cannot tell a fixture from a real key: 22% of real-shaped
-    # AKIA tokens passed that judgement.
-    if not in_tests:
-        return True
-    prefix = _VENDOR_PREFIX.match(match.group(0))
-    tail = match.group(0)[prefix.end():] if prefix is not None else match.group(0)
-    return not _is_explicit_placeholder(tail, match.group(0))
-
-
-def _credential_in(path: str, added: str) -> CredentialHit | None:
-    """The first credential in `added` -- text the file at `path` adds, its
-    `+` removed -- tiered by whether `path` is a test path (#373), or None.
-
-    The patterns are `swarm_redaction.RULES`, the same families swarm-api
-    masks at read time (owner decision 4, 2026-09-28), so "credential-shaped"
-    means one thing on the platform.
-
-    A MATCH MUST START A TOKEN. swarm-api masks a run wherever it starts,
-    because there a false positive costs one masked word. Here it costs the
-    agent's whole history (a fold), and code is full of identifiers that hold
-    a family's prefix in the middle: `keyword_only` holds `eyword_only`, which
-    the JWT rule takes for a token. So a pattern match counts only when the
-    character before it is not a letter, a digit or `_`. The private-key
-    block is exempt: its marker is never part of an identifier. Rules are
-    asked in `swarm_redaction.RULES` order, and the answer names the rule and
-    where its match starts, never the value.
-    """
-    if not added:
-        return None
-    in_tests = is_test_path(path)
-    for rule in CREDENTIAL_RULES:
-        if rule.apply is not None:  # the private-key block
-            # Main's rule, in every path and tier: refused exactly when
-            # `mask_private_keys` would mask something (owner, 2026-10-01).
-            if rule.apply(added, False, False)[1]:
-                marker = _PEM_MARKER.search(added)
-                return CredentialHit(rule.name, marker.start() if marker else 0)
-            continue
-        for match in rule.pattern.finditer(added):
-            start = match.start()
-            if start and (added[start - 1].isalnum() or added[start - 1] == "_"):
-                continue
-            if _match_counts(rule, match, in_tests):
-                return CredentialHit(rule.name, start)
-    at = _headerless_key_at(added)
-    if at is not None:
-        return CredentialHit(HEADERLESS_KEY_RULE, at)
-    return None
-
-
-# -- key material with no marker in the added text (#361 box 80) --------------
-#
-# SECURITY PASS, 2026-10-09 (owner decision: the pass is un-deferred). The
-# private-key rule is main's `mask_private_keys`, which needs a BEGIN or END
-# marker in the text it is given. Traditional encrypted PEM ciphertext held in
-# a variable, with its `Proc-Type`/`DEK-Info` headers and markers built
-# somewhere else (another file, an unchanged line, a runtime join), carries no
-# marker, and was published. So the guard also refuses a free base64 blob
-# that IS key material on its own terms, in every path and tier:
-#
-# * ciphertext: at least `CIPHERTEXT_MIN_BYTES` decoded, a whole number of
-#   8-byte cipher blocks (DES, 3DES and AES-CBC, every cipher a traditional
-#   PEM names), random on both readings -- the base64 text at least
-#   `CIPHERTEXT_MIN_CHAR_BITS` per character, which no word, path or
-#   identifier reaches, and the bytes as varied as random bytes are -- and not
-#   a file format's magic (an image, an archive, a font);
-# * a plaintext DER private key: one DER SEQUENCE spanning the blob that opens
-#   with a key's version INTEGER (PKCS#1, SEC1, PKCS#8) or an encrypted
-#   PKCS#8's PBES algorithm. A certificate opens otherwise, and passes.
-#
-# A blob is the base64 runs a wrapped or concatenated literal is made of --
-# joined across whitespace, quotes, `+` and escaped newlines, never across a
-# `,` or `:` that separates two values -- and ends at its `=` padding.
-#
-# RESIDUAL RISK: a blob under 128 bytes, one cut by anything but those
-# joiners, base64url or any other encoding, and ciphertext deliberately padded
-# off the block size all pass. The guard stops a key committed by mistake or
-# by habit; an agent set on smuggling bytes past a pattern can always encode
-# them past it, and CI's secret scan still runs after the push.
-
-#: The rule name a refusal gives for headerless key material.
-HEADERLESS_KEY_RULE = "headerless_private_key"
-#: The smallest encrypted key: an EC P-256 key's DER is 121 bytes, padded to 128.
-CIPHERTEXT_MIN_BYTES = 128
-#: Uniform base64 over 172 characters measures about 5.7 bits a character;
-#: prose, identifiers and paths stay well under 5.
-CIPHERTEXT_MIN_CHAR_BITS = 5.2
-#: Leading bytes of formats that are high-entropy and are not keys.
-_NOT_KEY_MAGIC = (
-    b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"\x1f\x8b", b"PK\x03\x04", b"%PDF", b"wOFF",
-    b"wOF2", b"RIFF", b"\x00asm", b"BZh", b"\xfd7zXZ", b"\x28\xb5\x2f\xfd", b"OggS",
-    b"ID3", b"fLaC", b"7z\xbc\xaf", b"\x00\x00\x01\x00", b"\x1aE\xdf\xa3",
-)
-#: The DER that opens a private key's SEQUENCE: version 0 or 1 (PKCS#1, PKCS#8,
-#: SEC1), or an encrypted PKCS#8's PBES1/PBES2 (1.2.840.113549.1.5) or PKCS#12
-#: PBE (1.2.840.113549.1.12.1) algorithm.
-_DER_KEY_VERSION = (b"\x02\x01\x00", b"\x02\x01\x01")
-_DER_PBE_OIDS = (b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x05", b"\x06\x0a\x2a\x86\x48\x86\xf7\x0d\x01\x0c\x01")
-#: One run of standard base64, at least 16 characters, with its padding.
-_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{16,}(={1,2})?")
-#: What may join two runs of one wrapped or concatenated literal.
-_BASE64_JOIN = re.compile(r"(?:[ \t\r\n\"'`+]|\\[nr])*")
-#: How far apart two runs of one literal may be.
-_BASE64_JOIN_MAX = 64
-_HEX_ONLY = re.compile(r"[0-9A-Fa-f]+")
-
-
-def _der_total(data: bytes) -> tuple[int, int] | None:
-    """(header length, total length) of the DER SEQUENCE `data` opens, or None."""
-    if len(data) < 2 or data[0] != 0x30:
-        return None
-    first = data[1]
-    if first < 0x80:
-        return 2, 2 + first
-    width = first - 0x80
-    if width == 0 or width > 3 or len(data) < 2 + width:
-        return None
-    return 2 + width, 2 + width + int.from_bytes(data[2 : 2 + width], "big")
-
-
-def _is_key_material(blob: str) -> bool:
-    """Whether one joined base64 blob is a private key or its ciphertext (box 80)."""
-    if len(blob) < (CIPHERTEXT_MIN_BYTES * 4 + 2) // 3:
-        return False
-    if len(blob.rstrip("=")) % 4 == 1 or _HEX_ONLY.fullmatch(blob):
-        return False
-    try:
-        raw = base64.b64decode(blob + "=" * (-len(blob) % 4))
-    except ValueError:
-        return False
-    der = _der_total(raw)
-    if der is not None and der[1] == len(raw):
-        inner = raw[der[0] :]
-        if inner.startswith(_DER_KEY_VERSION):
-            return True
-        nested = _der_total(inner)
-        return nested is not None and inner[nested[0] :].startswith(_DER_PBE_OIDS)
-    if len(raw) < CIPHERTEXT_MIN_BYTES or len(raw) % 8 or raw.startswith(_NOT_KEY_MAGIC):
-        return False
-    if not (any(c.isupper() for c in blob) and any(c.islower() for c in blob)
-            and any(c.isdigit() for c in blob)):
-        return False
-    if _shannon_bits(blob.rstrip("=")) < CIPHERTEXT_MIN_CHAR_BITS:
-        return False
-    # As varied as random bytes: half the distinct values a uniform draw of
-    # this many bytes is expected to show, and no more printable ASCII than
-    # three in five (uniform bytes are 37% printable).
-    expected = 256 * (1 - math.exp(-len(raw) / 256))
-    printable = sum(32 <= b < 127 for b in raw)
-    return len(set(raw)) >= expected / 2 and printable * 5 < len(raw) * 3
-
-
-def _headerless_key_at(added: str) -> int | None:
-    """Where the first headerless key blob in `added` starts, or None (box 80)."""
-    start = end = -1
-    pieces: list[str] = []
-    for run in _BASE64_RUN.finditer(added):
-        joined = (
-            pieces
-            and run.start() - end <= _BASE64_JOIN_MAX
-            and not pieces[-1].endswith("=")
-            and _BASE64_JOIN.fullmatch(added, end, run.start()) is not None
-        )
-        if not joined:
-            if pieces and _is_key_material("".join(pieces)):
-                return start
-            start, pieces = run.start(), []
-        pieces.append(run.group())
-        end = run.end()
-    if pieces and _is_key_material("".join(pieces)):
-        return start
-    return None
-
-
-#: A bare value shaped like a credential: twelve or more token characters,
-#: with at least one letter and one digit. `get_token()`, `str`, `self.token`
-#: and `DEFAULT_TOKEN` are not; `a1b2c3d4e5f6g7h8` is.
-_BARE_CREDENTIAL_RE = re.compile(r"(?=[^\s]*[A-Za-z])(?=[^\s]*[0-9])[A-Za-z0-9_\-+/=~]{12,}")
-
-
-def _assigns_a_literal(match: re.Match[str]) -> bool:
-    """True when a `KEY_VALUE` match assigns a LITERAL to the credential's name.
-
-    OWNER DECISION, 2026-09-28 (#259): in a commit's code, `token =
-    get_token()` and `password: str` name a credential without holding one,
-    and folding a history for them would fold nearly every history that
-    touches authentication. So the key/value rule counts only for a quoted
-    string -- the rule's group 1 ends with the opening quote, or the value
-    opens with a single quote the rule's value class takes as a character --
-    or for a bare value shaped like a credential (`_BARE_CREDENTIAL_RE`) that
-    is not a code identifier (`_is_an_identifier`; BGD, 2026-10-23, #2030),
-    or that sits under a password name, where an identifier-shaped value is a
-    plausible password. The specific families (AWS keys, private keys, JWTs, provider tokens) and the
-    registered literals count wherever they appear.
-    """
-    prefix = match.group(1)
-    value = match.group(0)[len(prefix):]
-    # A backtick opens a literal too (`_ends_the_value` already reads one as a
-    # quoted value); without it `` secret = `x\` <token>` `` was never counted.
-    if prefix.rstrip().endswith('"') or value.startswith(("'", "`")):
-        return True
-    bare = value.rstrip(";)}]'")
-    if _BARE_CREDENTIAL_RE.fullmatch(bare) is None:
-        return False
-    if "pw" in match.re.groupindex and match.group("pw"):
-        return True
-    return not _is_an_identifier(bare)
+# The guard -- `_credential_in` and every helper it asks, the tiers, the
+# reference shapes and the headerless-key detection -- lives in the shared
+# package `swarm_redaction.credentials` (the owner, 4 November 2026), so the
+# shared Jev client scans with it in swarm-api as well as here. Its comments
+# there keep every owner decision and residual risk. Each name a caller or a
+# test reads is bound by assignment, so a cite of this file still resolves.
+_credential_in = _credentials.credential_in
+CREDENTIAL_RULES = _credentials.CREDENTIAL_RULES
+is_test_path = _credentials.is_test_path
+HEADERLESS_KEY_RULE = _credentials.HEADERLESS_KEY_RULE
+GENERIC_CREDENTIAL_RULES = _credentials.GENERIC_CREDENTIAL_RULES
+CREDENTIAL_MIN_CHARS = _credentials.CREDENTIAL_MIN_CHARS
+CREDENTIAL_MIN_ENTROPY_BITS = _credentials.CREDENTIAL_MIN_ENTROPY_BITS
+_IDENTIFIER_DIGITS_MAX = _credentials._IDENTIFIER_DIGITS_MAX
+_PLACEHOLDER = _credentials._PLACEHOLDER
+_REFERENCE_SHAPE = _credentials._REFERENCE_SHAPE
+_assigns_a_literal = _credentials._assigns_a_literal
+_decodes_as_a_jwt = _credentials._decodes_as_a_jwt
+_ends_the_value = _credentials._ends_the_value
+_is_a_reference = _credentials._is_a_reference
+_is_an_identifier = _credentials._is_an_identifier
+_looks_like_a_credential = _credentials._looks_like_a_credential
+_match_counts = _credentials._match_counts
+_on_a_comment_line = _credentials._on_a_comment_line
+_runtime_template = _credentials._runtime_template
+_shannon_bits = _credentials._shannon_bits
 
 
 def _first_leaking_commit(
@@ -20093,6 +19996,72 @@ def _first_leaking_commit(
         if hit is not None:
             return index
     return None
+
+
+def _commits_leak(
+    shas: list[str],
+    *,
+    leaks: LeakPredicate,
+    git: list[str],
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    overlap: int = SCAN_OVERLAP_CHARS,
+) -> bool:
+    """Whether any of `shas` ADDS text `leaks` finds, each diffed against its
+    own first parent (the empty tree for a root).
+
+    The scan of a branch the agent merged (`gitops.merged_head_kept`, #3359
+    review): kept as a parent, each of its commits is pushed as written, so
+    each is read, as `_first_leaking_commit` reads HEAD's own line.
+    """
+    empty_tree: str | None = None
+    for sha in shas:
+        code, listed = _git_text(
+            [*git, "rev-list", "--parents", "-n", "1", sha], repo=repo,
+            private_dir=private_dir, logs_dir=logs_dir, slug="publish-merged-scan-parents",
+            timeout_seconds=timeout_seconds, logger=logger,
+        )
+        parents = listed.split()
+        if code != 0 or not parents or parents[0] != sha:
+            raise GitError(f"could not read the parents of merged commit {sha[:12]}")
+        if len(parents) > 1:
+            before = parents[1]
+        else:
+            if empty_tree is None:
+                code, made = _git_text(
+                    [*git, "hash-object", "-t", "tree", "/dev/null"], repo=repo,
+                    private_dir=private_dir, logs_dir=logs_dir, slug="publish-merged-scan-empty",
+                    timeout_seconds=timeout_seconds, logger=logger,
+                )
+                empty_tree = made.strip()
+                if code != 0 or not _SHA_RE.match(empty_tree):
+                    raise GitError("could not name the empty tree")
+            before = empty_tree
+        code, hit = _scan_diff_stream(
+            [
+                *git, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
+                "--no-textconv", "--text", "--no-renames", "--submodule=short", "--src-prefix=a/",
+                "--dst-prefix=b/", "-U0", before, sha, "--",
+            ],
+            leaks=leaks,
+            overlap=overlap,
+            new_rev=sha,
+            git=git,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug="publish-merged-scan-diff",
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+        if code != 0:
+            raise GitError(f"could not diff merged commit {sha[:12]} against its parent")
+        if hit is not None:
+            return True
+    return False
 
 
 def final_tree_leak(
@@ -20362,15 +20331,18 @@ def replay_agent_commits(
     made with `git commit-tree` under `_worker_identity`, and #219's rule that
     the worker writes every commit it pushes holds, checked again at the push
     by `verify_worker_authorship`. A merge the agent made keeps its merged
-    tree, and keeps a second parent ONLY when that parent is `upstream` or
-    one of its ancestors -- a commit of the default branch proven on the
-    forge (`Worker._scan_floor`), already published, so nothing on that side
-    is pushed as the agent wrote it (#1321). Every other merge parent -- a
-    side branch the agent made -- is dropped: every commit on that side would
-    otherwise be pushed as it was written. Dropping main's parent too was
-    #1321: a conflict fix round's `git merge origin/main` reached the forge
-    with one parent, GitHub kept the old merge base and the pull request
-    still conflicted.
+    tree, and keeps each parent after the first that
+    `_published_merge_parents` keeps: `upstream` or one of its ancestors --
+    a commit of the default branch proven on the forge
+    (`Worker._scan_floor`), already published (#1321) -- or any other branch
+    the base does not contain whose own commits carry no Claude attribution,
+    such as a merge train's branch (#3359). A side branch the agent committed
+    on as Claude is dropped: every commit on that side would otherwise be
+    pushed as it was written. Dropping main's parent was #1321: a conflict
+    fix round's `git merge origin/main` reached the forge with one parent,
+    GitHub kept the old merge base and the pull request still conflicted;
+    dropping train/an's was #3359, every conflict the lane resolved raised
+    again when its pull request merged back.
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -20459,6 +20431,18 @@ def replay_agent_commits(
             )
             return None
 
+    # A merged branch kept as a parent is pushed commit by commit, and the
+    # scan above reads only HEAD's first-parent line: its commits are scanned
+    # too, and a branch one of them leaks from is not kept (#3359 review).
+    history_leaks: Callable[[list[str]], bool] | None = None
+    if leaks is not None:
+        scan_leaks = leaks
+        history_leaks = lambda commits: _commits_leak(  # noqa: E731
+            commits, leaks=scan_leaks, overlap=overlap, git=g, repo=Path(repo),
+            private_dir=private_dir, logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds, logger=logger,
+        )
+
     parent = floor or None
     kept = 0
     for index, sha in enumerate(shas, 1):
@@ -20471,7 +20455,8 @@ def replay_agent_commits(
         if not _SHA_RE.match(tree):
             raise GitError(f"could not read the tree of commit {sha[:12]}")
         merged = _published_merge_parents(
-            run, g, header, upstream=upstream, base=floor
+            run, g, header, upstream=upstream, base=floor, logger=logger,
+            history_leaks=history_leaks,
         )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
@@ -20518,32 +20503,31 @@ def _published_merge_parents(
     *,
     upstream: str,
     base: str,
+    logger: Any,
+    history_leaks: Callable[[list[str]], bool] | None = None,
 ) -> list[str]:
-    """The merge parents of a commit (its `header`) the replay keeps (#1321).
+    """The merge parents of a commit (its `header`) the replay keeps (#1321, #3359).
 
-    Every parent after the first that is `upstream` or one of its ancestors
-    -- the default branch's commit the lane merged, proven on the forge
-    (`Worker._scan_floor`) -- and that `base` does not already contain,
-    which would make it a redundant parent. Nothing when `upstream` is "".
-    A side branch the agent made is no ancestor of the forge's default
-    branch, so it is never here.
+    Every parent after the first that `gitops.merged_head_kept` keeps, the
+    fold's rule too: one `base` does not already contain, and either `upstream`
+    or one of its ancestors -- the default branch's commit the lane merged,
+    proven on the forge (`Worker._scan_floor`) -- or a branch whose own
+    commits carry no Claude attribution, such as the `origin/train/an` a lane
+    merged into its pull request. Dropping that parent pushed train/an's tree
+    without its history, and merging the pull request back raised every
+    conflict the lane had resolved again (#3359). A side branch the agent
+    committed on as Claude is still dropped: its commits would be pushed as
+    they were written. So is one `history_leaks` finds a credential in.
     """
-    if not upstream:
-        return []
     parents = [line[len("parent "):].strip() for line in header.split("\n")
                if line.startswith("parent ")]
     kept: list[str] = []
     for other in parents[1:]:
         if not _SHA_RE.match(other):
             continue
-        code, _ = run([*g, "merge-base", "--is-ancestor", other, upstream], "publish-keep-merged")
-        if code != 0:
-            continue
-        if base:
-            code, _ = run([*g, "merge-base", "--is-ancestor", other, base], "publish-keep-redundant")
-            if code == 0:
-                continue
-        kept.append(other)
+        if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger,
+                            history_leaks=history_leaks):
+            kept.append(other)
     return kept
 
 
