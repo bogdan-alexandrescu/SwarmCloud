@@ -10200,8 +10200,9 @@ class Worker:
         """The pull request this step works on, or None (Product Oracle, 2026-11-06).
 
         In order: the caller's `input.pull_request`; the signed `publish_to_pr`
-        it publishes onto; the pull request its signed `builds_on` step
-        recorded opening -- a review step's, in a workflow that has one. Only
+        it publishes onto; the pull request its signed `builds_on` step -- or,
+        for a single-pr reader or amender, its `pr_author` step -- recorded
+        opening: a review step's, in a workflow that has one. Only
         for a step with a brief (a `prompt`) to name the file in. Worked out once.
         """
         if self._pull_request_number is not False:
@@ -10218,11 +10219,15 @@ class Worker:
                 number = onto.number if onto is not None else None
             if number is None and task.get("workflow_id"):
                 try:
-                    builds_on = self._dispatch_builds_on()
-                    if builds_on:
+                    upstream = self._dispatch_builds_on()
+                    if not upstream and self._pr_role() in ("reader", "amender"):
+                        # A single-pr reader or amender: the pull request is
+                        # the one its signed `pr_author` step opened.
+                        upstream = self._pr_author_branch()[len(self.cfg.git_branch_prefix):]
+                    if upstream:
                         number = post_verdict_mod.pull_request_number(
                             inputs_mod.fetch_upstream_task(
-                                self.db, upstream_task_id=builds_on,
+                                self.db, upstream_task_id=upstream,
                                 tenant_id=self.cfg.tenant_id,
                                 call_options=self.control.call_options(),
                             )
