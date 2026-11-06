@@ -264,7 +264,9 @@ export function bucketCounts(rows: readonly Workflow[]): Record<BucketFilter, nu
  * Needs-you bar takes for it (`workflowNeedItems`, one classifier for both):
  * `failed`, the steps that failed or were dead-lettered; `questions`, every
  * open question -- a question wait's, a finished step's unanswered artifact
- * questions, an await-input step's input; `held`, the merges held by the
+ * questions, an await-input step's input -- while the workflow has not
+ * finished or a merge is held on them, the same words asked by two steps
+ * once (`workflowFinished`, `questionKey`); `held`, the merges held by the
  * owner's questions and the turns in a browser. A count is null -- "not
  * known", never 0 -- for a kind the bar cannot count either: questions and
  * held when a step was served no needs block, every kind when a step's task
