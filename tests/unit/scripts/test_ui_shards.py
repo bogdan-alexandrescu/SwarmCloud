@@ -311,13 +311,18 @@ def test_each_shard_hands_vitest_its_own_files():
     assert env.get("SHARD") == "${{ matrix.shard }}" and env.get("SHARDS") == "${{ strategy.job-total }}", env
     assert env.get("DURATIONS") == "tests/unit/scripts/ui_test_durations.json", env
     assert pick["run"].strip().splitlines()[-1].strip() == "python3 scripts/lib/ui_shards.py pick", pick["run"]
+    # A lane's pull request splits its selection the same way (ci-select.sh ui-pick).
+    assert "./scripts/ci-select.sh ui-pick" in pick["run"], pick["run"]
     steps = [s for s in _jobs()["ui-tests"]["steps"] if "test:components" in str(s.get("run", ""))]
     assert len(steps) == 1, steps
     step = steps[0]
     assert step.get("working-directory") == "apps/swarm-ui"
     assert (step.get("env") or {}).get("SHARD_FILES") == env.get("SHARD_FILES"), (step.get("env"), env)
     assert step["run"].strip() == 'npm run test:components -- $(cat "${SHARD_FILES}")', step["run"]
-    assert "if" not in step, step  # only after the pick passed
+    # Only after the pick passed, and never with no file: a lane's selection
+    # that reaches no component test writes count=0, and `vitest run` with no
+    # file argument would run the whole suite.
+    assert step.get("if") == "steps.pick.outputs.count != '0'", step
     order = _jobs()["ui-tests"]["steps"]
     assert order.index(pick) < order.index(step)
 
