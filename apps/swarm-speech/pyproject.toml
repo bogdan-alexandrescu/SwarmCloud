@@ -1,7 +1,7 @@
 # swarm-speech: Voice it's own speech server (docs/design/voice-it-own-speech.md
 # §3.3, §5.2, §12). One container on the stopped g2-standard-4 (one NVIDIA L4)
-# that swarm-api starts for a session: Qwen3-ASR-0.6B's streaming path through
-# vLLM turns the browser's speech into words, Kokoro-82M speaks the replies,
+# that swarm-api starts for a session: Qwen3-ASR-0.6B, streamed through
+# vLLM, turns the browser's speech into words, Kokoro-82M speaks the replies,
 # both over one WebSocket per swarm-api socket, /v1/stream.
 #
 # No swarm-common: the server reads and writes nothing of the platform's (no
@@ -23,10 +23,24 @@ dependencies = [
     "google-auth[requests]>=2.30",
     "huggingface-hub>=0.26",
     "numpy>=1.26",
-    # Exact pins: the streaming API (init_streaming_state, streaming_transcribe,
-    # finish_streaming_transcribe) and KPipeline's signature are read from these
-    # versions' source (engines.py); a newer release is a deliberate bump.
-    "qwen-asr[vllm]==0.0.6",
+    # vLLM 0.33.0 runs Qwen3-ASR with its own model (vllm/model_executor/models/
+    # qwen3_asr.py); engines.py streams through LLM.generate as qwen-asr's SDK
+    # did. Moved from qwen-asr[vllm]==0.0.6 (vllm 0.14.0) for the image scan of
+    # 2026-11-06: 0.14.0 carries CVE-2026-22778 (CRITICAL, remote code execution
+    # from an invalid image; fixed in 0.14.1) and CVE-2026-114053 (HIGH; fixed in
+    # 0.31.0). 0.33.0 is the newest release and fixes both. It builds for CUDA 13
+    # (torch 2.14.0), which runs on the L4 under an NVIDIA driver of 580 or
+    # later. It no longer depends on ray, so ray's ray_dist.jar and its
+    # jackson-core 2.18.8 (CVE-2026-89407) leave the image. qwen-asr 0.0.6, its
+    # last release, pins vllm 0.14.0 and transformers 4.57.6 and does not import
+    # under transformers 5, so it goes, and with it gradio (its demo UI), whose
+    # bundled node_modules carried follow-redirects 1.16.0 (CVE-2026-111755).
+    # Exact pins: LLM.generate's request shape and KPipeline's signature are read
+    # from these versions' source (engines.py); a newer release is a deliberate bump.
+    "vllm==0.33.0",
+    # pillow 12.3.0: CVE-2026-112393 (CRITICAL heap overflow) and CVE-2026-112390
+    # (HIGH), both fixed in 13.0.0. vLLM and Kokoro's stack bring it.
+    "pillow>=13.0.0",
     "kokoro==0.9.4",
     # Kokoro's English phonemiser (misaki) loads this spaCy model, and when it
     # is missing runs `spacy.cli.download` at the first synthesis: a pip install
