@@ -118,6 +118,19 @@ def test_select_boards_only_green_ready_mergeable_same_repo_pull_requests_oldest
     assert [r[0] for r in rows] == ["101", "114", "120"], rows
 
 
+def test_select_boards_a_train_first_pull_request_ahead_of_older_ones(tmp_path):
+    prs = json.loads((FIXTURES / "prs.json").read_text())
+    for pr in prs:
+        if pr["number"] == 120:
+            pr["labels"].append({"name": "train-first"})
+    path = tmp_path / "prs-first.json"
+    path.write_text(json.dumps(prs))
+    proc = _run("select", "--prs", str(path), "--required", str(_required_file(tmp_path)))
+    assert proc.returncode == 0, proc.stderr
+    # MUTATION: sort by number alone -> 120 boards last, behind every older one.
+    assert [line.split("\t")[0] for line in proc.stdout.splitlines() if line] == ["120", "101", "114"]
+
+
 def test_select_carries_the_head_it_judged_and_a_one_line_title(tmp_path):
     rows = {r[0]: r for r in _select(tmp_path)}
     assert rows["101"][1] == "1010000000000000000000000000000000000001"
@@ -1259,3 +1272,165 @@ def test_the_runbook_says_how_to_roll_back():
     text = RUNBOOK.read_text()
     assert '"strict_required_status_checks_policy": true' in text
     assert re.search(r"^#+ .*roll(ing)? back", text, flags=re.M | re.I)
+
+
+# --------------------------------------------------------------------------
+# the open pull request list: light for all, heavy one at a time, retried
+# --------------------------------------------------------------------------
+# On 6 November 2026 one `gh pr list` of every open pull request with its body
+# and rollup took 10.6 s and 1.4 MB at 64 open, at GitHub's 10-second GraphQL
+# limit: four ticks in a row died on a 504, an i/o timeout or an empty reply,
+# and the train stood still for 75 minutes (THE OPEN PULL REQUEST LIST).
+
+FAKE_LIST_GH = """#!/usr/bin/env bash
+set -euo pipefail
+# gh pr list (key `list`) and gh pr view <N> (key <N>), answered from
+# $FAKE_GH_DIR/<key>.json. $FAKE_GH_DIR/<key>.fails holds one line per read,
+# in order, for reads that fail first: 504, empty, notjson or 404.
+printf '%s\\n' "$*" >>"${FAKE_GH_LOG}"
+case "$1 $2" in
+  "pr list") key=list ;;
+  "pr view") key="$3" ;;
+  *) echo "fake gh: unexpected: $*" >&2; exit 64 ;;
+esac
+count="${FAKE_GH_DIR}/${key}.count"
+reads=0
+[[ -f "${count}" ]] && reads="$(cat "${count}")"
+reads=$((reads + 1))
+printf '%s' "${reads}" >"${count}"
+how=""
+[[ -f "${FAKE_GH_DIR}/${key}.fails" ]] && how="$(sed -n "${reads}p" "${FAKE_GH_DIR}/${key}.fails")"
+case "${how}" in
+  504) echo "HTTP 504: 504 Gateway Timeout (https://api.github.com/graphql)" >&2; exit 1 ;;
+  empty) echo "unexpected end of JSON input" >&2; exit 1 ;;
+  notjson) echo "<html>busy</html>"; exit 0 ;;
+  404) echo "HTTP 404: Not Found (https://api.github.com/graphql)" >&2; exit 1 ;;
+esac
+cat "${FAKE_GH_DIR}/${key}.json"
+"""
+
+_LIGHT = ["number", "title", "headRefOid", "headRefName", "baseRefName", "isDraft",
+          "isCrossRepository", "mergeable", "labels"]
+
+
+def _open_pr(number: int, *, ready: bool, branch: str | None = None) -> dict:
+    return {
+        "number": number, "title": f"Change {number}", "headRefOid": secrets.token_hex(20),
+        "headRefName": branch or f"swarm/task_{number}", "baseRefName": "main", "isDraft": False,
+        "isCrossRepository": False, "mergeable": "MERGEABLE",
+        "labels": [{"name": "ready"}] if ready else [],
+        "body": f"body of {number}",
+        "statusCheckRollup": [{"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED",
+                               "conclusion": "SUCCESS", "completedAt": "2026-11-06T12:00:00Z",
+                               "detailsUrl": f"https://example.test/{number}"}],
+    }
+
+
+def _list_prs(tmp_path: Path, prs: list[dict], fails: dict[str, list[str]] | None = None):
+    _need("bash", "jq")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    fake = bin_dir / "gh"
+    fake.write_text(FAKE_LIST_GH)
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    answers = tmp_path / "answers"
+    answers.mkdir(exist_ok=True)
+    (answers / "list.json").write_text(json.dumps([{k: p[k] for k in _LIGHT} for p in prs]))
+    for p in prs:
+        (answers / f"{p['number']}.json").write_text(json.dumps(p))
+    for key, lines in (fails or {}).items():
+        (answers / f"{key}.fails").write_text("".join(f"{line}\n" for line in lines))
+    log = tmp_path / "gh.log"
+    log.write_text("")
+    out = tmp_path / "prs.json"
+    proc = _run("list-prs", "--out", str(out), env={
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GH_REPO": "bogdan-alexandrescu/SwarmCloud",
+        "FAKE_GH_LOG": str(log),
+        "FAKE_GH_DIR": str(answers),
+        "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0",
+    })
+    listed = json.loads(out.read_text()) if proc.returncode == 0 else None
+    return proc, listed, log.read_text().splitlines()
+
+
+def test_the_list_reads_no_body_or_rollup_and_each_ready_or_train_pull_request_alone(tmp_path):
+    prs = [_open_pr(201, ready=True), _open_pr(202, ready=False),
+           _open_pr(203, ready=False, branch="train/abc"), _open_pr(204, ready=True)]
+    proc, listed, reads = _list_prs(tmp_path, prs)
+    assert proc.returncode == 0, proc.stderr
+    list_reads = [r for r in reads if r.startswith("pr list")]
+    # MUTATION: read body and statusCheckRollup in the list -> one 1.4 MB
+    # GraphQL reply that times out at 64 open pull requests.
+    assert len(list_reads) == 1
+    assert "statusCheckRollup" not in list_reads[0] and "body" not in list_reads[0]
+    viewed = sorted(r.split()[2] for r in reads if r.startswith("pr view"))
+    assert viewed == ["201", "203", "204"]
+    by_number = {p["number"]: p for p in listed}
+    assert sorted(by_number) == [201, 202, 203, 204]
+    assert by_number[201]["statusCheckRollup"] == prs[0]["statusCheckRollup"]
+    assert by_number[203]["body"] == "body of 203"
+    assert by_number[202]["body"] == "" and by_number[202]["statusCheckRollup"] == []
+
+
+def test_the_list_selects_the_same_pull_requests_as_the_one_big_read_did(tmp_path):
+    prs = [_open_pr(201, ready=True), _open_pr(202, ready=False), _open_pr(204, ready=True)]
+    proc, listed, _ = _list_prs(tmp_path, prs)
+    assert proc.returncode == 0, proc.stderr
+    light = tmp_path / "light.json"
+    light.write_text(json.dumps(listed))
+    big = tmp_path / "big.json"
+    big.write_text(json.dumps(prs))
+    required = _required_file(tmp_path, ["ci-gate"])
+    one = _run("select", "--prs", str(light), "--required", str(required))
+    other = _run("select", "--prs", str(big), "--required", str(required))
+    assert one.returncode == 0 and other.returncode == 0, (one.stderr, other.stderr)
+    assert one.stdout == other.stdout
+    assert [line.split("\t")[0] for line in one.stdout.splitlines()] == ["201", "204"]
+
+
+def test_a_list_read_that_answers_504_once_is_retried(tmp_path):
+    proc, listed, reads = _list_prs(tmp_path, [_open_pr(201, ready=True)], {"list": ["504"]})
+    # MUTATION: no retry on the list -> the tick dies, as four did at 12:45Z.
+    assert proc.returncode == 0, proc.stderr
+    assert len([r for r in reads if r.startswith("pr list")]) == 2
+    assert [p["number"] for p in listed] == [201]
+    assert "failed transiently" in proc.stderr
+
+
+def test_an_empty_or_non_json_reply_is_retried(tmp_path):
+    proc, listed, reads = _list_prs(tmp_path, [_open_pr(201, ready=True), _open_pr(204, ready=True)],
+                                    {"201": ["empty"], "204": ["notjson"]})
+    assert proc.returncode == 0, proc.stderr
+    assert sorted(p["number"] for p in listed) == [201, 204]
+    assert len([r for r in reads if r.startswith("pr view 201 ")]) == 2
+    assert len([r for r in reads if r.startswith("pr view 204 ")]) == 2
+
+
+def test_a_refused_read_is_not_retried_and_that_pull_request_sits_the_tick_out(tmp_path):
+    proc, listed, reads = _list_prs(tmp_path, [_open_pr(201, ready=True), _open_pr(204, ready=True)],
+                                    {"204": ["404", "404", "404"]})
+    assert proc.returncode == 0, proc.stderr
+    # MUTATION: retry a 404 -> three reads of 204.
+    assert len([r for r in reads if r.startswith("pr view 204 ")]) == 1
+    # MUTATION: keep 204 with an empty rollup -> `skips` would tell it a check
+    # is missing that it never read.
+    assert [p["number"] for p in listed] == [201]
+    assert "#204 sits this tick out" in proc.stderr
+
+
+def test_a_ready_pull_request_failing_every_attempt_sits_the_tick_out(tmp_path):
+    proc, listed, reads = _list_prs(tmp_path, [_open_pr(201, ready=True), _open_pr(204, ready=True)],
+                                    {"204": ["504", "504", "504"]})
+    assert proc.returncode == 0, proc.stderr
+    assert len([r for r in reads if r.startswith("pr view 204 ")]) == 3
+    assert [p["number"] for p in listed] == [201]
+
+
+def test_a_train_that_cannot_be_read_stops_the_tick(tmp_path):
+    proc, _, _ = _list_prs(tmp_path, [_open_pr(203, ready=False, branch="train/abc")],
+                           {"203": ["504", "504", "504"]})
+    # MUTATION: let a train sit out like a `ready` pull request -> the tick
+    # starts a second train while the first is still open.
+    assert proc.returncode != 0
+    assert "could not read train #203" in proc.stderr
