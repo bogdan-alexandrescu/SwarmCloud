@@ -70,7 +70,7 @@ not one):
 | `tenant_id` | the registering workspace | invariant 9: the target, its runs, its artifacts and its credential are that tenant's |
 | `base_url` | `https://host[:port]/[path]` | `https` only, no userinfo, no query; the host must resolve to a public unicast address and must not be an IP literal or an internal name (the rule of `swarm_egress.policy`, reused, not restated) |
 | `repository` | one of the tenant's **registered** repositories | where its findings go (§5). A URL alone is refused: filing reaches a repository only through a registration whose forge slot the tenant already holds |
-| `sign_in` | `{kind: "none"}` or `{kind: "own_login", login_path, username_selector, password_selector, submit_selector, signed_in_selector, extra_origin?}` | §2. Selectors are optional where the login page has exactly one `input[type=password]` and one `autocomplete=username` or `type=email` field; `signed_in_selector` is required, because "the page changed" is not "signed in": after the submit the gate reads the page's own state (§2.2 step 3), and the target is signed in when `signed_in_selector` shows **or** when the tab has settled on the target's own origin as the app (no login form, no OAuth callback in its address, not back on the start page); a page still on the form, or showing an error, reads as failed |
+| `sign_in` | `{kind: "none"}` or `{kind: "own_login", login_path, username_selector, password_selector, submit_selector, signed_in_selector, extra_origin?}` | §2. Selectors are optional where the login page has exactly one `input[type=password]` and one `autocomplete=username` or `type=email` field; `signed_in_selector` is required, because "the page changed" is not "signed in": after the submit the gate reads the page's own state (§2.2 step 3), and the target is signed in when `signed_in_selector` shows **or** when the tab has settled on the target's own origin as the app (no login form, no OAuth callback in its address, not back on the start page); before any form, a tab that lands on the target's own origin with no login field and no start-click control is signed in only when `signed_in_selector` shows or, after 3 s settled, the browser holds an `HttpOnly` session cookie for an approved origin that it did not hold, or held with another value, before `login_url` opened; a page still on the form, or showing an error, reads as failed |
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
 | `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
@@ -222,7 +222,14 @@ The QA-IDENTITY path, generalised from one header to one sign-in:
      app, or as an error, for a moment) on the target's own origin, loaded,
      with text on it, no password field, no OAuth callback (`code`, `state`,
      `session_state`) in its address and not back on the start page (the
-     last start click's control shown).
+     last start click's control shown). Before the form, a tab that lands
+     on the target's own origin with no password or username field and no
+     control the last start click names (`landed`: a role's home reached
+     through a session the identity provider still held) is signed in when
+     `signed_in_selector` shows or, once it has read `landed` for
+     `PAGE_SETTLED_SECONDS`, the browser holds an `HttpOnly` session cookie
+     for an approved origin that it did not hold, or held with another value,
+     before `login_url` opened (`_Landed`; the bypass cookie never counts).
    * **Failed** when `SIGNED_IN_SECONDS` (30 s, as before) pass with the tab
      still on the form, back on the start page or on another page, or as
      soon as the form has shown an error (an alert, an `aria-invalid` field)
@@ -516,7 +523,8 @@ prompt says the same so the agent does not fight its own gate.
     begins, never after the wipe, and never on a target that does not sign
     in. A verdict of `failed` or `challenge`, or a later sign-in that fails,
     does not take it back. The reason: the verdict is the gate's reading of
-    `signed_in_selector` on its own tab, not the provider's. On 2026-11-03
+    its own tab (`signed_in_selector` or the page's own state, §2.2 step 3),
+    not the provider's. On 2026-11-03
     (capture steps from 17:43) five production legs' sign-ins ended `failed`
     while the provider's session was real, and every screen's token
     exchange, 69 to 79 a group, was refused as a write: the approval was

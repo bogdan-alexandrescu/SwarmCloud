@@ -3150,7 +3150,8 @@ class Worker:
                 "question_park_refused: the checkpoint would not hold " + "; ".join(gaps))
         record = question_bridge.wait_record(
             pending, attempt_id=self.cfg.attempt_id, generation=self.cfg.generation,
-            source_revision=self._checkout_revision(), asked_at=utcnow().isoformat())
+            source_revision=self._checkout_revision(), asked_at=utcnow().isoformat(),
+            skill=question_bridge.asked_by_skill(events, pending.tool_use_id))
         return self._park_for_answers(self._scrub(record), require_checkpoint=True)
 
     def _bridge_checkpoint_gaps(self, session: str) -> list[str]:
@@ -5065,6 +5066,11 @@ class Worker:
         if not isinstance(digest, str) or not digest.strip():
             return {}
         env = {poststeps.CONTRACT_DIGEST_ENV: digest.strip()}
+        # The Jev work-contract experiment's arm (`contract_jev`, signed in
+        # the same block): `off` makes JC2 `skipped:arm` with no call.
+        arm = graphstage_mod.switch_of(dispatch, poststeps.CONTRACT_JEV_SWITCH)
+        if arm is not None:
+            env[poststeps.CONTRACT_JEV_ENV] = arm
         document = metadata.get("work_contract")
         if isinstance(document, Mapping):
             try:

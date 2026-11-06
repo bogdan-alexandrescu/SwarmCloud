@@ -736,11 +736,14 @@ class SubmissionService:
             ) from exc
 
     def _review_contract(self, contract: workcontract.Prepared, *, tenant: Tenant,
-                         step_id: str | None, submitted_by: str) -> contractreview.Reviewed:
+                         step_id: str | None, submitted_by: str,
+                         switches: Any = ()) -> contractreview.Reviewed:
         """Jev's review of a prepared contract, under SWARM_CONTRACT_REVIEW
         and the workspace's signed `contract_review` setting. Off (the
         default) it reads nothing and returns the contract as it came; in
-        `enforce` mode its refusal is the 422 of jev-contract.md section 4.5."""
+        `enforce` mode its refusal is the 422 of jev-contract.md section 4.5.
+        `switches` are the step's workflow switches: `contract_jev: off`
+        skips the review, recorded `skipped:arm` (`contractreview.arm_of`)."""
         if contractreview.mode(os.environ) == contractreview.MODE_OFF:
             return contractreview.Reviewed(contract, None)
         if self.contract_reviewer is None:
@@ -750,7 +753,7 @@ class SubmissionService:
         return self.contract_reviewer.review(
             contract, tenant_id=tenant.tenant_id,
             submitter_tenant_id=submitter_personal_tenant(self._store, submitted_by),
-            step_id=step_id)
+            step_id=step_id, switches=switches)
 
     def _workspace_settings(self, tenant_id: str) -> dict[str, Any]:
         """`workspace_settings/{tenant_id}` as stored, or {} (and with no
@@ -789,6 +792,19 @@ class SubmissionService:
         if submitted_by is None:
             assert ctx is not None
             submitted_by = ctx.email
+        # The step's `plugins` field (the owner's pick on PR #3264): checked
+        # against the catalogue, its runner profile and the workspace's signed
+        # setting, then carried in its work contract, so the contract below
+        # and the digest the dispatch block signs hold them.
+        if spec.plugins:
+            spec = spec.model_copy(update={"metadata": plugins_mod.with_step_plugins(
+                spec.metadata, {n: p.model_dump() for n, p in spec.plugins.items()},
+                tenant_id=tenant.tenant_id, step_id=step_id,
+                runner_profile=validate_runner_profile(spec.runner_profile).name,
+                owner=submitted_by,
+                settings_doc=self._workspace_settings(tenant.tenant_id),
+                mac=settings_mac(self._settings), environ=os.environ,
+            )})
         # A work contract (docs/design/agent-quality/work-contract.md), only
         # while SWARM_WORK_CONTRACTS is on: first, because the limits it sets
         # and the step leaves unset become the step's own fields, which every
@@ -803,7 +819,8 @@ class SubmissionService:
         contract_review: dict[str, Any] | None = None
         if contract is not None:
             reviewed = self._review_contract(contract, tenant=tenant, step_id=step_id,
-                                             submitted_by=submitted_by)
+                                             submitted_by=submitted_by,
+                                             switches=dispatch.switches)
             contract, contract_review = reviewed.prepared, reviewed.record
         if contract is not None:
             update: dict[str, Any] = {**contract.fields, "metadata": dict(contract.metadata)}
@@ -1766,6 +1783,7 @@ class SubmissionService:
                     max_turns=source.max_turns,
                     budget=source.budget,
                     model_class=source.model_class,
+                    plugins=source.plugins,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).

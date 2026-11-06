@@ -53,7 +53,7 @@ from swarm_api.voice import cards as vcards  # noqa: E402
 
 from swarm_voice import accountlease, claudeturn, mcp_server, plannerlease  # noqa: E402
 from swarm_voice import planner as pl  # noqa: E402
-from swarm_voice import prompts, tools_read  # noqa: E402
+from swarm_voice import prompts, tools_read, tools_visual  # noqa: E402
 from swarm_voice.grant import GRANT_HEADER, SESSION_HEADER, SessionGrant  # noqa: E402
 
 PERSON = "person@example.com"
@@ -320,7 +320,7 @@ def test_the_child_holds_the_token_and_no_api_key_and_only_the_planners_tools(wo
     assert "ANTHROPIC_API_KEY" not in env and "SWARM_API_URL" not in env
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1" and env["DISABLE_TELEMETRY"] == "1"
     argv = child["argv"]
-    assert argv[argv.index("--model") + 1] == "claude-opus-5-5"
+    assert argv[argv.index("--model") + 1] == "claude-fable-5-1"
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--allowedTools") + 1] == "mcp__planner"
@@ -332,7 +332,8 @@ def test_the_child_holds_the_token_and_no_api_key_and_only_the_planners_tools(wo
     names = {t["name"] for t in child["tools"]}
     draws = {t["name"] for t in vcards.catalogue()["tools"] if t["name"].startswith("draw_")}
     reads = {t["name"] for t in tools_read.tool_schemas()}
-    assert names == draws | reads | {prompts.SPEAK_TOOL}
+    visuals = {t["name"] for t in tools_visual.tool_schemas()}
+    assert names == draws | reads | visuals | {prompts.SPEAK_TOOL}
     assert all("inputSchema" in t for t in child["tools"])
     assert child["init"]["result"]["serverInfo"]["name"] == "planner"
 
@@ -396,7 +397,7 @@ def test_no_secret_reaches_a_log_the_transcript_the_summary_a_card_or_the_prompt
 def test_a_turns_usage_is_a_subscriptions_never_a_price(world):
     world.plan = {"calls": [["speak", {"summary": "Done."}]]}
     result = _delegate(world)
-    assert result.usage["billing"] == "subscription" and result.usage["model"] == "claude-opus-5-5"
+    assert result.usage["billing"] == "subscription" and result.usage["model"] == "claude-fable-5-1"
     assert result.usage["input_tokens"] >= 100 and "cost_usd" not in result.usage
 
 

@@ -16,6 +16,7 @@ test_issue_runs.py, test_issue_run_ci.py and test_issue_run_auto_merge.py.
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 
 import pytest
@@ -106,6 +107,20 @@ def test_a_workflow_without_the_key_is_admitted(client):
     # CONTROL for the refusals above: the same body, unmarked, is created.
     response = client.post("/v1/workflows", headers=auth_header("alice"), json=_workflow())
     assert response.status_code == 201, response.text
+
+
+def test_the_session_tag_stays_caller_written(client):
+    # Only `metadata.issue_run` is reserved: the Claude Code session tag is the
+    # sc plugin bridge's own caller metadata (`sessiontag`), admitted as sent,
+    # and the console reads such a workflow as started from Claude Code.
+    tag = "session-" + secrets.token_hex(4)
+    response = client.post("/v1/workflows", headers=auth_header("alice"),
+                           json=_workflow(metadata={"claude_session": tag}))
+    assert response.status_code == 201, response.text
+    workflow_id = response.json()["workflow"]["workflow_id"]
+    read = client.get(f"/v1/workflows/{workflow_id}", headers=auth_header("alice"))
+    assert read.status_code == 200, read.text
+    assert read.json()["workflow"]["started_from"] == "claude_code"
 
 
 # --------------------------------------------------------------------------

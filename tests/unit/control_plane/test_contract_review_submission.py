@@ -631,3 +631,89 @@ def test_judgment_is_enforced_for_revision_2_only_where_jc2_runs(
     detail = response.json()["detail"]
     assert detail["revision"] == 2 and detail["unenforced"] == unenforced
     assert _tasks(db) == []
+
+
+# --- the experiment's arm: `contract_jev` (jev-contract.md section 11) ----------
+
+
+def _workflow(client, contract: dict[str, Any], switches: dict[str, str] | None):
+    spec: dict[str, Any] = {"steps": [{"step_id": "a", "runner_profile": CODE,
+                                       "input": {"prompt": "hello"},
+                                       "metadata": {wc.METADATA_KEY: contract}}]}
+    if switches is not None:
+        spec["dispatch"] = switches
+    return client.post("/v1/workflows", headers=auth_header("alice"), json=spec)
+
+
+@pytest.mark.parametrize("mode", ["report", "enforce"])
+def test_a_workflow_with_contract_jev_off_asks_jev_nothing_and_records_skipped_arm(
+        client, context, db, routed, monkeypatch, mode):
+    monkeypatch.setenv(cr.MODE_ENV, mode)
+    _opt_in(db)
+    logs: list[dict[str, Any]] = []
+    jev = Jev(UNENFORCEABLE)
+    _reviewer(context, db, jev, logs)
+    sent = _contract()
+    response = _workflow(client, sent, {"contract_jev": "off"})
+    # Even `enforce` lets the strict contract through: nothing was reviewed.
+    assert response.status_code == 201, response.text
+    assert jev.bodies == []
+    assert [e for e in logs if e["event"].startswith("contract_review_would")] == []
+    (task,) = _tasks(db)
+    dispatch = task["metadata"]["dispatch"]
+    assert dispatch["contract_jev"] == "off"
+    record = dispatch[cr.DISPATCH_FIELD]
+    assert record["outcome"] == cr.SKIPPED_ARM == "skipped:arm"
+    assert record["reason"] == cr.ARM_REASON and record["mode"] == mode
+    assert record["classes"] == [] and record["call_id"] == "" and record["backend"] == ""
+    assert record["digest"] == dispatch[wc.DISPATCH_FIELD]["digest"]
+    # The contract is the one submitted: no reviewer's revision 2.
+    assert wc.decode(task["metadata"][wc.METADATA_KEY]) == wc.decode(sent)
+    # Nothing was charged to the month either.
+    assert not [p for p in db.docs if p.startswith(jevusage.COLLECTION)]
+
+
+@pytest.mark.parametrize("switches", [{"contract_jev": "on"}, None])
+def test_a_workflow_with_contract_jev_on_or_absent_reviews_as_before(
+        client, context, db, routed, monkeypatch, switches):
+    monkeypatch.setenv(cr.MODE_ENV, "report")
+    _opt_in(db)
+    jev = Jev(UNENFORCEABLE)
+    _reviewer(context, db, jev)
+    response = _workflow(client, _contract(), switches)
+    assert response.status_code == 201, response.text
+    assert len(jev.bodies) == 1
+    (task,) = _tasks(db)
+    record = task["metadata"]["dispatch"][cr.DISPATCH_FIELD]
+    assert record["outcome"] == cj.REVIEW_REFUSED and record["mode"] == "report"
+
+
+def test_contract_jev_on_never_reviews_what_the_setting_leaves_off(client, context, db,
+                                                                    routed, monkeypatch):
+    monkeypatch.setenv(cr.MODE_ENV, "enforce")
+    _opt_in(db, enabled=False)
+    jev = Jev(UNENFORCEABLE)
+    _reviewer(context, db, jev)
+    assert _workflow(client, _contract(), {"contract_jev": "on"}).status_code == 201
+    assert jev.bodies == []
+    (task,) = _tasks(db)
+    assert task["metadata"]["dispatch"][cr.DISPATCH_FIELD]["reason"] == cr.NOT_OPTED_IN
+
+
+def test_contract_jev_off_under_mode_off_records_nothing(client, context, db, routed,
+                                                         monkeypatch):
+    # The mode off reads nothing and records nothing, whatever the arm.
+    monkeypatch.delenv(cr.MODE_ENV, raising=False)
+    _opt_in(db)
+    _reviewer(context, db, Jev(UNENFORCEABLE))
+    assert _workflow(client, _contract(), {"contract_jev": "off"}).status_code == 201
+    (task,) = _tasks(db)
+    assert cr.DISPATCH_FIELD not in task["metadata"]["dispatch"]
+
+
+@pytest.mark.parametrize("switches, want", [
+    ((("contract_jev", "off"),), "off"), ((("jev_judgments", "off"),), None), ((), None),
+    ({"contract_jev": "on"}, "on"), (None, None),
+])
+def test_the_arm_is_read_from_the_dispatch_switches(switches, want):
+    assert cr.arm_of(switches) == want

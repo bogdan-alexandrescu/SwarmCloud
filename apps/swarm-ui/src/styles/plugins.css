@@ -1,0 +1,107 @@
+/* Config › Plugins (ConfigPlugins.tsx): the settings table the owner picked on
+   4 November 2026. Console tokens only, so light and dark follow the theme;
+   no type below --t-micro (12px). */
+
+.plg-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; max-width: 1240px; }
+.plg-body { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+.plg-dim { color: var(--text-dim); }
+.plg-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.plg-k { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.plg-note { margin: 6px 0 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.plg-skill { font: 400 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); background: var(--surface-2); border: 1px solid var(--line-soft); border-radius: var(--r-xs); padding: 0 5px; white-space: nowrap; }
+.plg-refuse { margin: 6px 0 0; padding: 6px 10px; border-left: 3px solid var(--warn-ink); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); border-radius: 0 var(--r-xs) var(--r-xs) 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.plg-end { justify-self: end; text-align: right; }
+
+/* The switch: a checkbox drawn as one, its state said beside it. */
+.plg-switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: var(--t-meta); flex: none; position: relative; }
+.plg-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.plg-switch-track { width: 30px; height: 18px; border-radius: 999px; background: var(--ctl-q-fill); border: 1px solid var(--ctl-bd); position: relative; transition: background .12s; flex: none; }
+.plg-switch-track > span { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text-dim); transition: left .12s; }
+.plg-switch input:checked + .plg-switch-track { background: var(--info); border-color: var(--info); }
+.plg-switch input:checked + .plg-switch-track > span { left: 14px; background: var(--ctl-onac); }
+.plg-switch input:focus-visible + .plg-switch-track { outline: 2px solid var(--info); outline-offset: 2px; }
+.plg-switch.is-inert { cursor: default; opacity: .55; }
+.plg-switch.is-changed .plg-switch-track { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 55%, transparent); }
+.plg-switch-word { min-width: 2ch; }
+
+/* The facts strip. Its cells are held apart by the flex gap rather than by
+   touching rules (the spacing sweep's surfaces-touch floor), as `.cfg-steps`'
+   are in config.css: one bordered box, plain cells inside it. */
+.plg-strip { display: flex; flex-wrap: wrap; gap: 0 var(--ctl-s1); margin: 0; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.plg-strip > div { padding: 8px 14px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.plg-strip dt { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.plg-strip dd { margin: 0; font-size: var(--t-meta); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 22px; }
+.plg-signed { display: inline-flex; align-items: center; gap: 4px; color: var(--ok-ink); font-weight: 600; }
+.plg-signed svg { width: 14px; height: 14px; }
+
+/* The catalogue table and its expanding row. */
+.plg-cat { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; overflow: hidden; }
+.plg-cat-head, .plg-cat-row { display: grid; grid-template-columns: 32px minmax(90px, .7fr) minmax(130px, .9fr) minmax(0, 2.2fr) minmax(0, 1.9fr) 110px; gap: 12px; align-items: center; padding: 0 14px; }
+.plg-cat-head { min-height: 34px; font-size: var(--t-micro); color: var(--text-dim); border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.plg-cat-row { min-height: 56px; font-size: var(--t-meta); padding-top: 6px; padding-bottom: 6px; }
+.plg-cat-group + .plg-cat-group { border-top: 1px solid var(--line-soft); }
+.plg-cat-group.is-open .plg-cat-row { background: color-mix(in srgb, var(--info) 5%, var(--surface)); border-bottom: 1px solid var(--line-soft); }
+.plg-caret { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); cursor: pointer; padding: 0; }
+.plg-caret svg { width: 14px; height: 14px; }
+.plg-cat-name { font-weight: 600; font-size: var(--t-body); overflow-wrap: anywhere; }
+.plg-cat-ver { min-width: 0; }
+.plg-ver { font: 500 var(--t-meta)/var(--lh-meta) var(--mono); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plg-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.plg-modecounts { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.plg-modecount { white-space: nowrap; }
+.plg-modecount b { font-variant-numeric: tabular-nums; margin-left: 4px; }
+.plg-cat-body { padding: 14px; }
+.plg-cat-cell { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.plg-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-areas: 'u p d' 'u n n'; gap: 12px; align-items: start; }
+.plg-modecol { border: 1px solid var(--line-soft); border-radius: var(--r-tile); padding: 10px 12px; min-width: 0; background: var(--bg); }
+.plg-modecol.is-unattended { grid-area: u; }
+.plg-modecol.is-planner { grid-area: p; }
+.plg-modecol.is-designer { grid-area: d; }
+/* An (i) is an icon, not text: a header that carries one centres it on the line. */
+.plg-modecol header, .plg-never header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plg-modecol h3, .plg-never h3 { margin: 0; font-size: var(--t-body); font-weight: 600; }
+.plg-runs { font-size: var(--t-micro); color: var(--ok-ink); font-weight: 600; }
+.plg-runs.is-not { color: var(--warn-ink); }
+.plg-n { margin-left: auto; font-size: var(--t-micro); font-variant-numeric: tabular-nums; }
+/* A block list, not a column flex: the rows are one list's repeats split by a
+   single `border-top`, `.rows`' construction (styles.css), and the sweep's
+   surfaces-touch check is about gutters between boxes in a flex or grid. */
+.plg-skills { list-style: none; margin: 0; padding: 0; display: block; }
+.plg-skills li { display: flex; align-items: flex-start; gap: 10px; padding: 5px 4px; border-top: 1px solid var(--line-soft); min-width: 0; }
+.plg-skills li:first-child { border-top: 0; }
+.plg-never { grid-area: n; border: 1px dashed var(--line); border-radius: var(--r-tile); padding: 10px 12px; min-width: 0; }
+.plg-audit { margin: 0; padding-top: 10px; border-top: 1px solid var(--line-soft); font-size: var(--t-meta); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: baseline; }
+.plg-audit .plg-k { color: var(--text); margin: 0 6px 0 0; font-size: var(--t-meta); font-weight: 600; }
+.plg-audit b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* The save bar: the change, what it refuses, and Save and sign. */
+.plg-savebar { position: sticky; bottom: 12px; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border: 1px solid var(--warn-ink); border-radius: var(--r-card); background: var(--surface); box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 18%, transparent); }
+.plg-savebar-t { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; flex: 1; font-size: var(--t-meta); }
+.plg-savebar-list { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.plg-savebar-refuse { flex-basis: 100%; color: var(--text); line-height: var(--lh-meta); }
+.plg-savebar-b { display: flex; gap: 8px; }
+.plg-failed { flex-basis: 100%; color: var(--bad-ink); font-weight: 600; }
+
+@media (max-width: 1360px) {
+  .plg-cat-head, .plg-cat-row { grid-template-columns: 32px minmax(80px, .7fr) minmax(120px, .9fr) minmax(0, 2fr) minmax(0, 1.6fr) 100px; }
+}
+
+/* The phone: the strip stacks as label and value, a row reads top to bottom. */
+@media (max-width: 760px) {
+  .plg-strip { flex-direction: column; }
+  .plg-strip > div { border-left: 0; border-top: 1px solid var(--line-soft); flex-direction: row; justify-content: space-between; align-items: center; gap: 10px; }
+  .plg-strip > div:first-child { border-top: 0; }
+  .plg-strip dd { justify-content: flex-end; text-align: right; }
+  .plg-cat-head { display: none; }
+  .plg-cat-row { grid-template-columns: 32px minmax(0, 1fr) auto; grid-template-areas: 'c n s' 'v v v' 'p p p' 'm m m'; padding: 10px 12px; gap: 6px 10px; }
+  .plg-cat-row > :nth-child(1) { grid-area: c; }
+  .plg-cat-row > :nth-child(2) { grid-area: n; }
+  .plg-cat-row > :nth-child(3) { grid-area: v; display: flex; gap: 6px; align-items: baseline; }
+  .plg-cat-row > :nth-child(4) { grid-area: p; }
+  .plg-cat-row > :nth-child(5) { grid-area: m; }
+  .plg-cat-row > :nth-child(6) { grid-area: s; }
+  .plg-cat-body { padding: 10px; }
+  .plg-modes { grid-template-columns: minmax(0, 1fr); grid-template-areas: 'u' 'p' 'd' 'n'; }
+  .plg-savebar { bottom: 8px; }
+  .plg-savebar-b { width: 100%; justify-content: flex-end; }
+}

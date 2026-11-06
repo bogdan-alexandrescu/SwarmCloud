@@ -6,6 +6,25 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.83 (2026-11-05)
+
+* A finished task's questions for the owner are handed to a session only
+  while they have no stored answer. Seen twice on 5 November: a workflow
+  row's final result and `swarm_result` carried questions answered hours
+  earlier with `swarm_task_answer`, because the bridge read `questions.json`
+  and never the answers, and the session put them to the person again. The
+  follow outcome, a row's result (and so the `/sc:swarmcloud` run's
+  `owner_questions`), `swarm_result`'s `owner_questions` and the build
+  board's waiting list now read the stored answers from
+  `GET /v1/tasks/{id}/questions`, as `/sc check` does, once per task per
+  read and never cached, and list only the open questions, each under its
+  `index` in `questions.json` (the run keeps that index for
+  `swarm_task_answer`). A question whose answer could not be read stays
+  listed with `answer_unknown_because`, so "answered" and "could not tell"
+  are never the same. Every question, answered ones included, stays in
+  `swarm_result`'s new `owner_questions_asked`, each with `answered`
+  (true, false, or null), and on the console's task page.
+
 ## 0.5.82 (2026-11-05)
 
 * A workflow spec's top-level `description` and `feature` reach SwarmCloud

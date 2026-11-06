@@ -54,6 +54,9 @@ NAME = "questions.json"
 #: `result_summary` keys: how many questions, and why a file was not taken.
 COUNT_KEY = "questions"
 REJECTED_KEY = "questions_rejected"
+#: A short digest of each counted question, in index order: what swarm-api's
+#: list paths compare a stored answer's `asked_digest` with.
+DIGESTS_KEY = "question_digests"
 
 #: The file's size cap, in bytes.
 MAX_BYTES = 64 * 1024
@@ -94,6 +97,12 @@ def test_a_valid_file_is_uploaded_and_counted(db, store: LocalObjectStore, worke
     summary = _summary(db)
     assert summary[COUNT_KEY] == 2, summary
     assert REJECTED_KEY not in summary, summary
+    # One digest per question, in order, each of that question alone: an
+    # answer is counted on a list path only under the question it answered.
+    from agent_worker import questions
+
+    assert summary[DIGESTS_KEY] == [questions.digest(q) for q in VALID], summary
+    assert len(set(summary[DIGESTS_KEY])) == 2
     assert NAME in _names(db)
     assert json.loads(_object(store, NAME).decode("utf-8")) == VALID
 
@@ -208,3 +217,13 @@ def test_a_file_that_was_not_uploaded_is_not_counted(tmp_path: Path):
     because = "written but not uploaded: over the artifact cap (cap)"
     got = questions.summarise(folder, uploaded=set(), cause=because)
     assert got == {COUNT_KEY: 0, REJECTED_KEY: because}
+
+
+def test_no_file_and_a_rejected_file_write_no_digests(tmp_path: Path):
+    from agent_worker import questions
+
+    folder = tmp_path / "artifacts"
+    folder.mkdir()
+    assert questions.summarise(folder, uploaded={NAME}) == {COUNT_KEY: 0}
+    (folder / NAME).write_text("this is not json")
+    assert DIGESTS_KEY not in questions.summarise(folder, uploaded={NAME})

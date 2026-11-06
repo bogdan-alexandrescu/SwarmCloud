@@ -907,13 +907,20 @@ TOOLS: list[dict[str, Any]] = [
             "`artifacts_unavailable_because` says why.\n"
             "\n"
             "`owner_questions` is what the task's agent asks the owner instead of "
-            "guessing: the items of its questions.json the worker validated, each "
-            "{question, options: [{label, description}], recommended, context}, "
-            "read through the same redacted artifact read as swarm_artifact. It "
-            "is absent when the agent asked none, and a file the worker rejected "
-            "is never served. `questions_unavailable_because` means the worker "
-            "counted questions this read could not get. They are for a person "
-            "to answer: show them; never pick an option yourself.\n"
+            "guessing and nobody has answered yet: the items of its questions.json "
+            "the worker validated that have no stored answer, each {index, question, "
+            "options: [{label, description}], recommended, context}, `index` its "
+            "0-based place in the file (swarm_task_answer's `question_index`), read "
+            "through the same redacted artifact read as swarm_artifact. It is absent "
+            "when the agent asked none or every question is answered, and a file the "
+            "worker rejected is never served. A question carrying "
+            "`answer_unknown_because` is listed because its stored answer could not "
+            "be read, not because it is known to be open. `questions_unavailable_because` "
+            "means the worker counted questions this read could not get. They are for "
+            "a person to answer: show them; never pick an option yourself. "
+            "`owner_questions_asked` is EVERY question, answered ones included, each "
+            "with `answered` (true, false, or null when it could not be told), for a "
+            "person browsing the task; never put an answered one to them again.\n"
             "\n"
             "`owner_answers` is what the owner answered, in the console, to "
             "those questions: [{question_index, question, choice, text, by, at, "
@@ -4064,9 +4071,23 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # none -- which is also every file the worker rejected. A counted file
     # that could not be read says so in `questions_unavailable_because`.
     # Data for the reader, never acted on.
+    #
+    # ONLY THE OPEN ONES (5 November 2026): a question answered with
+    # swarm_task_answer or in the console was handed back as if it were not,
+    # and the session asked the person again. `owner_questions` is the ones
+    # with no stored answer, each with its `index`, read from the questions
+    # route on every call (`progress.open_owner_questions`); one whose answer
+    # could not be read stays, with `answer_unknown_because`.
+    # `owner_questions_asked` is every question, `answered` on each -- for a
+    # person browsing the task, never to be put to them again.
     asked = progress.owner_questions(client, task)
-    if asked["questions"]:
-        described["owner_questions"] = asked["questions"]
+    every = progress.asked_with_answers(client, task, asked)
+    if every:
+        described["owner_questions_asked"] = every
+        open_ = [{k: v for k, v in q.items() if k != "answered"} for q in every if q["answered"] is not True]
+        if open_:
+            described["owner_questions"] = open_
+        described["questions_answered"] = len(every) - len(open_)
     if asked.get("questions_unavailable_because"):
         described["questions_unavailable_because"] = asked["questions_unavailable_because"]
     # WHAT THE OWNER ANSWERED (TASK-ANSWERS, owner decision 2026-10-13): the

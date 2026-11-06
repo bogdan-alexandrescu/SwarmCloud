@@ -530,6 +530,19 @@ def state_digest(state: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(state, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+#: The arm of the Jev work-contract experiment: the signed dispatch block's
+#: `contract_jev` (`contractreview.ARM_SWITCH`), and what an arm-off re-ask
+#: records (`contractreview.SKIPPED_ARM`, the worker's post-step's reason).
+SKIPPED_ARM = "skipped:arm"
+
+
+def arm_off(task: Mapping[str, Any]) -> bool:
+    """Whether the task's signed dispatch block says `contract_jev: off`."""
+    metadata = task.get("metadata") if isinstance(task, Mapping) else None
+    dispatch = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+    return isinstance(dispatch, Mapping) and dispatch.get("contract_jev") == "off"
+
+
 @dataclass
 class ForgeJudge:
     """Re-asks Jev from the published diff (`impact.read_diff`, with the
@@ -560,6 +573,12 @@ class ForgeJudge:
 
         ctx = self.ctx
         tenant_id = str(task.get("tenant_id"))
+        if arm_off(task):
+            # The Jev work-contract experiment's arm off (jev-contract.md
+            # section 11): the step's own judgment was `skipped:arm`, and so
+            # is every re-ask, with nothing read and no call; the record
+            # reaches the owner as a workspace that sends no code does.
+            return ReaskResult(OUTCOME_NOT_RUN, reason=SKIPPED_ARM)
         if not CodeIntelligenceStore(ctx.db, now=ctx.now,
                                      mac=settings_mac(ctx.settings)).get(tenant_id).jev:
             return ReaskResult(OUTCOME_NOT_RUN, reason="not_opted_in")
