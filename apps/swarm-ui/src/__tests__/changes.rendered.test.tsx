@@ -221,6 +221,15 @@ describe('an HTML frame opens Rendered, in a sandbox that is exactly empty', () 
     expect(f.hasAttribute('src')).toBe(false)
     expect(f.getAttribute('srcdoc')).toContain('<h1>Settings</h1>')
     expect(f.getAttribute('srcdoc')).toContain("default-src 'none'")
+    // https stylesheets and fonts load; nothing else leaves the frame.
+    const csp = /content="([^"]*)"/.exec(f.getAttribute('srcdoc') ?? '')?.[1] ?? ''
+    const directive = (name: string) => csp.split(';').map((d) => d.trim().split(/\s+/)).find((d) => d[0] === name)?.slice(1) ?? []
+    expect(directive('style-src')).toEqual(["'unsafe-inline'", 'https:'])
+    expect(directive('font-src')).toEqual(['data:', 'https:'])
+    expect(directive('img-src')).toEqual(['data:'])
+    expect(directive('media-src')).toEqual(['data:'])
+    expect(directive('script-src')).toEqual([])
+    expect(csp).not.toMatch(/\bhttp:/)
     expect(screen.getByRole('button', { name: 'Rendered' }).getAttribute('aria-pressed')).toBe('true')
     expect(document.querySelector('object, embed')).toBeNull()
     // The agent's markup is not in the console's own DOM.

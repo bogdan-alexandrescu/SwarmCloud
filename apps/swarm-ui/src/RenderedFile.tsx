@@ -59,8 +59,15 @@ export function renderKind(path: string): RenderKind | null {
 // The page as the frame gets it
 // ---------------------------------------------------------------------------
 
-/** Nothing the page asks for leaves the frame: inline styles and data: URLs only. */
-export const FRAME_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:"
+/**
+ * What the page may load: inline styles and data: URLs, plus stylesheets and
+ * fonts over https (the owner's pick on #3462, so a mock-up that links a web
+ * font or a CDN stylesheet draws as designed). Everything else -- scripts,
+ * frames, fetches, images and media off the page, any plain-http load --
+ * stays blocked by default-src 'none'.
+ */
+export const FRAME_CSP =
+  "default-src 'none'; style-src 'unsafe-inline' https:; img-src data:; font-src data: https:; media-src data:"
 
 export type Theme = 'light' | 'dark'
 
