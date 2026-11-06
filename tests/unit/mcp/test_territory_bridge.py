@@ -166,7 +166,7 @@ def _cloud_target(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_rows(monkeypatch):
     """The row launch writes a script; it is not under test here."""
-    monkeypatch.setattr(server, "_dispatch_rows", lambda sent: {"skipped": True})
+    monkeypatch.setattr(server, "_dispatch_rows", lambda sent, rows=None: {"skipped": True})
 
 
 def _call(api, name, args):

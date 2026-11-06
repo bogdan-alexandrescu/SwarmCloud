@@ -877,6 +877,9 @@ def test_a_job_of_a_newer_generation_is_never_touched():
         task.update({
             "current_generation": 2, "current_lease_id": newer["lease"],
             "state": "RUNNING", "attempt_count": 2,
+            # Admission stamps it, as every transition does: the next
+            # (incremental) pass reads this task because of it.
+            "updated_at": utcnow(),
         })
         db.docs[f"leases/{newer['lease']}"] = {
             **old_lease,

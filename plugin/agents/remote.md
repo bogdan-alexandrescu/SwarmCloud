@@ -64,9 +64,11 @@ session's repository and its pushed branch, PINNED at its current commit (not
 the branch name, which can move after this call returns), and refuses with the
 reason if the branch is not pushed or has unpushed commits. If `swarm_dispatch`
 returns an error, the step never started: go to section 4 with state `REFUSED`
-and the error text. Do not change the prompt to get round a refusal, and do
-not dispatch again -- `swarm_dispatch` is refused a second time in this
-session for the identical prompt, so retrying it here only wastes a turn.
+and the error text. Do not change the prompt to get round a refusal, do not
+pass `retry_of`, and do not dispatch again -- `swarm_dispatch` is refused a
+second time in this session for the identical prompt (unless its earlier task
+ended before any attempt started, which the bridge retries by itself), so
+retrying it here only wastes a turn.
 
 The reply's `rows` is for a session that dispatched without a row: you ARE
 this task's row, so ignore `rows` and launch nothing.

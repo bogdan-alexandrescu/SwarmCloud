@@ -1105,6 +1105,92 @@
       "expected": "{\"Authorization\"\u003a\"Bearer ${TOKEN}\",\"Accept\"\u003a\"json\"}",
       "never": [],
       "count": 0
+    },
+    {
+      "name": "kv-shell-substitution-double-quote-glued-2688",
+      "text": "token\u003d${NAME};\"otter17walrus\"",
+      "expected": "token\u003d********\"",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "authorization-placeholder-double-quote-glued-2688",
+      "text": "Authorization\u003a Bearer {TOKEN});\"otter17walrus",
+      "expected": "Authorization\u003a ******** ********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 2
+    },
+    {
+      "name": "kv-command-substitution-glued-2688",
+      "text": "token \u003d $(cat f);otter17walrus",
+      "expected": "token \u003d ********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-actions-expression-glued-2688",
+      "text": "token \u003d ${{ secrets.T }};otter17walrus",
+      "expected": "token \u003d ********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-shell-substitution-no-separator-2688",
+      "text": "token\u003d${NAME}otter17walrus",
+      "expected": "token\u003d********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-shell-substitution-quote-2688",
+      "text": "token\u003d${NAME}\"otter17walrus",
+      "expected": "token\u003d********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-shell-substitution-comma-2688",
+      "text": "token\u003d${NAME},otter17walrus",
+      "expected": "token\u003d********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "authorization-placeholder-comma-glued-2688",
+      "text": "Authorization\u003a Bearer ${NAME},otter17walrus",
+      "expected": "Authorization\u003a ******** ********",
+      "never": [
+        "otter17walrus"
+      ],
+      "count": 2
+    },
+    {
+      "name": "kv-command-substitution-alone-2688",
+      "text": "export GH_TOKEN\u003d\"$(gh auth token)\"",
+      "expected": "export GH_TOKEN\u003d\"$(gh auth token)\"",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "kv-actions-expression-alone-2688",
+      "text": "token\u003a ${{ secrets.GITHUB_TOKEN }}",
+      "expected": "token\u003a ${{ secrets.GITHUB_TOKEN }}",
+      "never": [],
+      "count": 0
     }
   ]
 }

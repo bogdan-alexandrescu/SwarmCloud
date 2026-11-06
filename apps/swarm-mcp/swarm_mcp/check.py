@@ -36,7 +36,9 @@ THE RULES, each with the control that is NOT flagged:
     flagged only for its age, never as a fault.
 (c) `parked` (STUCK): PARKED with HUMAN_REQUIRED (only a person promotes it),
     CI_PENDING for longer than 90 minutes (the CI wait's age across its
-    re-parks, `_ci_entered`, #2999; its last reading is the evidence), or
+    re-parks and the heads its repair rounds pushed, `_ci_entered`, #2999,
+    part of #2688; its last reading, its re-checks, the rounds run and spent
+    and whether main is red on the same checks are the evidence), or
     DEPENDENCY_INCOMPLETE whose
     dependency FAILED, was CANCELLED or DEAD_LETTERED. Any other park reason
     -- a provider quota window, a retry backoff -- is the platform waiting by
@@ -550,6 +552,14 @@ def _ci_entered(task: dict[str, Any], events: list[dict[str, Any]],
     that name no reason.
     """
     found: list[dict[str, Any]] = []
+    whole = render.parse_time(_merge_wait(task).get("wait_started_at"))
+    if whole is not None:
+        # The whole wait (part of #2688, 2026-11-06): `first_parked_at`
+        # restarts at every head a repair round pushes, so a step re-checked
+        # 28 times over 8 hours read as under 90 minutes old.
+        found.append({"since": whole, "exact": True,
+                      "source": "its CI wait's first re-check, across its repair rounds' heads "
+                                "(`merge_wait.wait_started_at`)"})
     waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
     since = render.parse_time(waiting.get("since")) if waiting.get("reason") == "CI_PENDING" else None
     if since is not None:
@@ -576,6 +586,58 @@ def _ci_entered(task: dict[str, Any], events: list[dict[str, Any]],
     if not found:
         return _entered(events, "PARKED", created)
     return min(found, key=lambda entry: entry["since"])
+
+
+def _merge_wait(task: dict[str, Any]) -> dict[str, Any]:
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    wait = metadata.get("merge_wait")
+    return wait if isinstance(wait, dict) else {}
+
+
+def _ci_history(task: dict[str, Any]) -> dict[str, Any]:
+    """The whole CI wait's record, as evidence (part of #2688): its re-checks,
+    the checks failed in it, the CI-fix rounds run and asked for, and whether
+    the default branch is red on the same checks -- the merge step's own
+    `merge_wait` and `merge_fix`. Only what was recorded."""
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    wait = _merge_wait(task)
+    out: dict[str, Any] = {}
+    rechecks = wait.get("rechecks")
+    if isinstance(rechecks, int) and not isinstance(rechecks, bool):
+        out["re_checks"] = rechecks
+    seen = wait.get("failed_heads")
+    if isinstance(seen, dict) and seen:
+        out["failed_in_wait"] = sorted(str(name) for name in seen)
+    fix = metadata.get("merge_fix") if isinstance(metadata.get("merge_fix"), dict) else {}
+    rounds = [r for r in fix.get("rounds") or [] if isinstance(r, dict)] if isinstance(fix.get("rounds"), list) else []
+    asked = metadata.get("merge_fix_rounds")
+    if isinstance(asked, int) and not isinstance(asked, bool) and asked > 0:
+        out["fix_rounds"] = {"ran": len(rounds), "asked": asked, "spent": len(rounds) >= asked}
+    elif rounds:
+        out["fix_rounds"] = {"ran": len(rounds), "asked": None, "spent": None}
+    main = wait.get("main_red") if isinstance(wait.get("main_red"), dict) else {}
+    checks = [str(n) for n in main.get("checks") or [] if isinstance(n, str)]
+    if checks:
+        out["main_red_on"] = checks
+    return out
+
+
+def _ci_words(evidence: dict[str, Any]) -> str:
+    """`_ci_history`'s evidence in words, for the flag's one line."""
+    parts: list[str] = []
+    if evidence.get("re_checks"):
+        parts.append(f"{evidence['re_checks']} re-checks")
+    failed = evidence.get("checks_failed") or evidence.get("failed_in_wait") or []
+    if failed:
+        parts.append("failing: " + ", ".join(str(n) for n in failed[:5]) + (", ..." if len(failed) > 5 else ""))
+    rounds = evidence.get("fix_rounds")
+    if rounds:
+        of = f" of {rounds['asked']}" if rounds.get("asked") else ""
+        parts.append(f"fix rounds {rounds['ran']}{of}" + (" spent" if rounds.get("spent") else ""))
+    if evidence.get("main_red_on"):
+        same = sorted(set(evidence["main_red_on"]) & set(failed)) or evidence["main_red_on"]
+        parts.append("main red on " + ", ".join(same[:5]) + " too")
+    return ("; " + "; ".join(parts)) if parts else ""
 
 
 def _train_park(event: dict[str, Any]) -> bool:
@@ -884,8 +946,9 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
             return None
         evidence["window_minutes"] = CI_PENDING_MINUTES
         evidence.update(_ci_reading(task))
+        evidence.update(_ci_history(task))
         text = (f"PARKED on CI_PENDING for {evidence['age_is']} {age} min (over {CI_PENDING_MINUTES}): "
-                "its pull request's checks have not finished")
+                "its pull request's checks have not finished" + _ci_words(evidence))
     elif _question_wait(task) is not None:
         # ITS AGENT'S BLOCKING QUESTIONS (#2860): the question, not a generic
         # wait. The API's line for this park is the hand-off's sign-in
@@ -1784,6 +1847,15 @@ def run(
     }
     if scope.get("note"):
         out["repository_note"] = scope["note"]
+    # A DISPATCH WHOSE ROWS NEVER STARTED (Product Oracle, 2026-11-06): each
+    # running task this session dispatched that no row followed, by a line
+    # naming it and the launch that starts its row. `new_only` leaves these
+    # out (the launch was written), so only this line catches a skipped one.
+    from . import launch
+
+    rowless = launch.rowless(out["running"]["single_tasks"])
+    if rowless:
+        out["rowless_tasks"] = rowless
     if not out["running"]["workflows"] and not out["running"]["single_tasks"]:
         # Said, not acted on (SC-AUTO-WATCH, owner 2026-10-14): an armed watch
         # with nothing to watch costs one read per interval, so the check

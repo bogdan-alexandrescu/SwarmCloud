@@ -160,6 +160,8 @@ def create_app(
         return {
             "status": "ok",
             "last_pass_at": last.started_at.isoformat() if last else None,
+            # `full` or `incremental` (`Reconciler._snapshot`).
+            "last_pass_sweep": last.sweep if last else None,
             "last_pass_findings": last.findings if last else None,
             # Leases past their TTL for longer than HELD_LEASE_ALERT_MINUTES on
             # the last pass: anything but 0 is capacity being held on purpose
