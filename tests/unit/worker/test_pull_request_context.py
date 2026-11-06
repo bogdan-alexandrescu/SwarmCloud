@@ -342,3 +342,23 @@ def test_a_step_with_no_brief_names_no_pull_request(db, worker_factory):
     }
 
     assert worker._requested_pull_request() is None
+
+
+def test_input_pull_request_is_read_where_the_profile_declares_it():
+    """The owner's pick on #3470 (2026-11-06): claude-code, codex and
+    claude-code-review declare `pull_request`, so a caller may name the pull
+    request a step works on; a profile that does not declare it reads none."""
+    from swarm_common.profiles import RUNNER_PROFILES
+
+    for name in ("claude-code", "codex", "claude-code-review"):
+        profile = RUNNER_PROFILES[name]
+        assert pull_request_mod.INPUT_KEY in profile.inputs, name
+        task_input = {"prompt": "review it", pull_request_mod.INPUT_KEY: NUMBER}
+        assert pull_request_mod.from_input(task_input, profile) == NUMBER, name
+        for wrong in (0, -1, True, "42", pull_request_mod.MAX_NUMBER + 1):
+            refused = {"prompt": "review it", pull_request_mod.INPUT_KEY: wrong}
+            assert pull_request_mod.from_input(refused, profile) is None, (name, wrong)
+    for name in ("claude-code-large", "indexer", "claude-code-browser"):
+        profile = RUNNER_PROFILES[name]
+        task_input = {"prompt": "review it", pull_request_mod.INPUT_KEY: NUMBER}
+        assert pull_request_mod.from_input(task_input, profile) is None, name

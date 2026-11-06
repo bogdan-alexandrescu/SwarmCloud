@@ -55,7 +55,11 @@ def test_the_indexer_profile_is_claude_code_on_the_indexer_image():
     assert differ == ["image", "inputs", "name"], (
         f"the owner's decision was claude-code with only its name and image changed; {differ} differ"
     )
-    assert dict(indexer.inputs) == {k: v for k, v in claude.inputs.items() if k != "mcp_servers"}
+    # pull_request is the owner's pick on #3470 for claude-code, codex and
+    # claude-code-review alone.
+    assert dict(indexer.inputs) == {
+        k: v for k, v in claude.inputs.items() if k not in ("mcp_servers", "pull_request")
+    }
     assert indexer.backend.value == "GKE_AUTOPILOT" and claude.backend.value == "GKE_AUTOPILOT"
 
 

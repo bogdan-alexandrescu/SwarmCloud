@@ -43,9 +43,10 @@ from swarm_common.profiles import InputRefused, RunnerProfile
 from . import issue as issue_mod
 from .forge import GITHUB_HOSTS, ForgeUnavailable, RetryPolicy, parse_repo, retry_transient
 
-#: The key of `input` a caller may name a pull request by. Not yet declared by
-#: any profile (`swarm_common.profiles`, frozen): read here when a profile
-#: declares it, or when a task written by a path that skipped the API holds it.
+#: The key of `input` a caller may name a pull request by. Declared by
+#: claude-code, codex and claude-code-review (`swarm_common.profiles`,
+#: `_PULL_REQUEST_INPUTS`, the owner's pick on #3470); read only where the
+#: task's profile declares it.
 INPUT_KEY = "pull_request"
 
 #: The file in `work/` the pull request is written to.
@@ -121,10 +122,9 @@ def from_input(task_input: Any, profile: RunnerProfile) -> int | None:
     """`input.pull_request` as a pull request number, or None.
 
     Only where the profile declares the key: the worker refuses a stored
-    input with a key its profile does not declare (`_recheck_runner_input`),
-    and no profile declares this one yet -- a contract request, since
-    `swarm_common` is frozen. Until then a step names its pull request through
-    `publish_to_pr` or `builds_on`.
+    input with a key its profile does not declare (`_recheck_runner_input`).
+    claude-code, codex and claude-code-review declare it; a step on any other
+    profile names its pull request through `publish_to_pr` or `builds_on`.
     """
     declared = (profile.inputs or {}).get(INPUT_KEY)
     if declared is None or not isinstance(task_input, Mapping) or INPUT_KEY not in task_input:
