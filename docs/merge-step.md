@@ -331,7 +331,7 @@ an address beyond `committer_email`. The refusal's message ends by naming
 them, so the next refusal of this kind explains itself.
 
 **The end cause is frozen.** `EndCause` in `swarm_common/models.py` has no
-member for this, so until contract request 139 (SUPERSEDED_BY_PERSON_PUSH,
+member for this, so until contract request 140 (SUPERSEDED_BY_PERSON_PUSH,
 [contract-change-requests.md](contract-change-requests.md)) lands the step
 still ends `FAILED`/`MERGE_REFUSED`, with the new code in
 `result_summary.merge.refusal.code`. failure-review's `person_push` rule
@@ -1019,7 +1019,7 @@ matches:
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
 | the head moved, and the step did not move it, nor a CI-fix or conflict fix round of this workflow, nor the PR-side CI fixer for this pull request (Revised 2026-10-11, #1073) | MERGE_REFUSED `head_moved` |
-| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27, #2505) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 139 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
+| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27, #2505) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 140 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
 | `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11, #1076) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |
