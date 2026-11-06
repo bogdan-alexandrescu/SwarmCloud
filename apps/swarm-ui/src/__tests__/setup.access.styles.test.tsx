@@ -20,7 +20,7 @@
 
 import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 
 import { Checklist } from '../Onboarding'
 import type { OnboardingDoc } from '../types'
@@ -238,7 +238,11 @@ async function renderGrants(): Promise<HTMLElement> {
   // The grid left GitHub access for ReachableRepositories.tsx (GITHUB-ACCESS-PAGE, part of #2157).
   const { ReachableRepositoriesRead } = await import('../ReachableRepositories')
   const { container } = render(<ReachableRepositoriesRead />)
-  await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
+  // Wait on the drawn grid, then hold it by role ONCE: a `findByRole` poll
+  // walks the whole page's accessibility tree, and a starved runner fit no
+  // poll after the reads landed in the 2 s window (reads.ts says why).
+  await waitFor(() => expect(container.querySelector('ul[aria-label="Your granted repositories, failures first"]')).not.toBeNull())
+  screen.getByRole('list', { name: 'Your granted repositories, failures first' })
   return container
 }
 

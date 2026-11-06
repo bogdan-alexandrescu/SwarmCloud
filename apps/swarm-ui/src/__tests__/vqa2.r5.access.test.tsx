@@ -155,7 +155,15 @@ describe('Access (VQA2-R5)', () => {
   it('V165: "Install on <a long owner>" shrinks to its card and wraps, at 400 and at 1440', async () => {
     api([ORG('example-org'), UNINSTALLED])
     await mount('choose')
-    const link = await screen.findByRole('link', { name: `Install on ${LONG}` }, { timeout: 5000 })
+    // Wait on the drawn link, then hold it by role ONCE: polled through
+    // `findByRole`, each poll walked the whole Access page's accessibility
+    // tree, and a starved runner fit no poll after the owners read landed
+    // (reads.ts says why).
+    await waitFor(
+      () => expect([...document.querySelectorAll('a')].some((a) => a.textContent === `Install on ${LONG}`)).toBe(true),
+      { timeout: 5000 },
+    )
+    const link = screen.getByRole('link', { name: `Install on ${LONG}` })
     expect(link.parentElement!.classList.contains('ac-owner-acts')).toBe(true)
     for (const env of [WIDE, PHONE]) {
       expect(painted(link, 'white-space', env), `nowrap at ${env.width}`).toBe('normal')
