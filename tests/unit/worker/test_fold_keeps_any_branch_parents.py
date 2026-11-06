@@ -155,6 +155,7 @@ def test_a_side_branch_the_agent_made_as_claude_is_still_dropped(
     assert out["published"] is True, out
     tip = refs(origin)[PR_BRANCH]
     assert not _is_ancestor(origin, heads[0], tip)
+    assert _is_ancestor(origin, start, tip)  # still a fast-forward
     assert "side-1.txt" in tree_at(origin, tip)
 
 
