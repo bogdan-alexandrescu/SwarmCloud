@@ -371,10 +371,21 @@ def test_a_session_that_is_not_id_shaped_is_a_422_and_nothing_is_stored(client, 
     assert _stored(db) == []
 
 
-def test_a_via_that_is_neither_console_nor_claude_code_is_a_422(client, db, objects) -> None:
+def test_an_answer_given_in_voice_it_is_stored_and_served_as_voice_it(client, db, objects) -> None:
+    """BGD's answer on the full-page interview lane, 6 November 2026 ('Add voice-it')."""
     _asked(db, objects)
 
-    for via in ("mcp", "admin", "CLAUDE-CODE", ""):
+    response = _answer(client, {"question_index": 0, "choice": "per task", "via": "voice-it"})
+
+    assert response.status_code == 200, response.text
+    assert _stored(db)[0]["via"] == "voice-it"
+    assert response.json()["questions"][0]["answer"]["via"] == "voice-it"
+
+
+def test_a_via_that_is_none_of_the_four_is_a_422(client, db, objects) -> None:
+    _asked(db, objects)
+
+    for via in ("mcp", "admin", "CLAUDE-CODE", "", "voice", "Voice-It", "voice_it"):
         response = _answer(client, {"question_index": 0, "choice": "per task", "via": via})
         assert response.status_code == 422, (via, response.text)
     assert _stored(db) == []
