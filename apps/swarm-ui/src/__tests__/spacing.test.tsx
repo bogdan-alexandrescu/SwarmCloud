@@ -75,7 +75,7 @@ describe('spacing: the slices', () => {
     const files = SPACING_GROUPS.map((g) => `src/__tests__/spacing.${g.name}.test.tsx`)
     expect(files.filter((f) => weights[f] === undefined), 'slices with no recorded weight').toEqual([])
     expect(
-      files.filter((f) => weights[f] > 900 / 3).map((f) => `${f}: ${weights[f]} s`),
+      files.filter((f) => (weights[f] ?? 0) > 900 / 3).map((f) => `${f}: ${weights[f]} s`),
       'slices over a third of the timeout: split them',
     ).toEqual([])
   })
