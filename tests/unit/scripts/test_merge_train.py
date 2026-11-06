@@ -1332,7 +1332,11 @@ if args[:2] == ["pr", "close"]:
     save()
     sys.exit(0)
 if args[:2] == ["pr", "view"]:
-    print(json.dumps(world["members"][args[2]]))
+    if "statusCheckRollup" in arg("--json"):
+        # list_open_prs's own read of one `ready` pull request or train, beside the light list.
+        print(json.dumps(next(p for p in world["open"] if str(p["number"]) == args[2])))
+    else:
+        print(json.dumps(world["members"][args[2]]))
     sys.exit(0)
 if args[:2] == ["pr", "merge"]:
     world.setdefault("merged", []).append(int(args[2]))
