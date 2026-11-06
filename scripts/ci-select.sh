@@ -44,6 +44,8 @@
 # tests/unit/scripts/test_ci_select.py runs both against fixtures.
 set -euo pipefail
 
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 # How long main's run waits for a train with its tree to close. The train
@@ -276,9 +278,11 @@ train_landed() {
     waited=$((waited + TRAIN_POLL_SECONDS))
   done
   [[ "${state}" == closed ]] || return 1
+  # To a file, then grep: `gh ... | grep -q` under pipefail fails when grep
+  # stops reading early.
   gh api "repos/${repo}/issues/${number}/comments?per_page=100" --paginate \
-      --jq ".[] | select(.user.type == \"Bot\") | .body" \
-    | grep -q "^${LANDED_PREFIX}"
+      --jq ".[] | select(.user.type == \"Bot\") | .body" >"${WORK}/comments" || return 1
+  grep -q "^${LANDED_PREFIX}" "${WORK}/comments"
 }
 
 gate_green() {
@@ -325,7 +329,8 @@ train_match() {
     none "the pull requests could not be listed"
     return 0
   fi
-  while IFS=$'\t' read -r number head_sha url; do
+  # The list on fd 3, so no `gh` in the loop can read it from stdin.
+  while IFS=$'\t' read -r number head_sha url <&3; do
     [[ -n "${number}" ]] || continue
     head_tree="$(gh api "repos/${repo}/git/commits/${head_sha}" --jq '.tree.sha')" || continue
     [[ "${head_tree}" == "${tree}" ]] || continue
@@ -347,7 +352,7 @@ train_match() {
     emit train "${number}"
     say "**Main skips its test jobs:** merge train #${number} (${url}) tested this exact tree (${tree}) at ${head_sha}, its ci-gate passed and it landed."
     return 0
-  done <"${list}"
+  done 3<"${list}"
   none "none of the ${TRAIN_LOOKBACK} newest pull requests is one"
 }
 
