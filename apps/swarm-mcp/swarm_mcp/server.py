@@ -5240,8 +5240,8 @@ def _call(
     timeout. The answer is text, except `swarm_artifact`'s image, which is an
     `artifacts.ImageAnswer` that `serve` sends as text and image blocks."""
     _refuse_unknown_arguments(name, args)
-    if name == "swarm_dispatch":
-        _dispatch_rows_mode(args.get("rows"))
+    if name == "swarm_dispatch" and args.get("rows") is not None:
+        _dispatch_rows_mode(args["rows"])
     if name == "swarm_dispatch" and args.get("tasks") is not None:
         # Before any request, `/v1/stats` included: neither the call nor a
         # task of it may name a pull request to publish onto (#2183).
