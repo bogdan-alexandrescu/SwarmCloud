@@ -176,7 +176,7 @@ describe('Add an OpenAI API key for Voice it', () => {
     expect(api.mintSetupLink).toHaveBeenCalledWith({ kind: 'voice-api-key', label: VOICE_KEY_LABEL, owner: ADMIN })
     expect(link.redeemSetupLink).toHaveBeenCalledTimes(1)
     expect(link.redeemSetupLink).toHaveBeenCalledWith(token, key)
-    expect(api.mintSetupLink.mock.invocationCallOrder[0]).toBeLessThan(link.redeemSetupLink.mock.invocationCallOrder[0])
+    expect(api.mintSetupLink.mock.invocationCallOrder[0] ?? Infinity).toBeLessThan(link.redeemSetupLink.mock.invocationCallOrder[0] ?? -Infinity)
     expect(window.location.href).toBe(before)
     expect(open).not.toHaveBeenCalled()
     expect(tick.textContent).toContain(VOICE_KEY_LABEL)
