@@ -2805,16 +2805,19 @@ class Worker:
         keeps no workspace.
         """
         wait = dict(outcome.owner_wait or {})
+        # A CI wait handed to a person (`merge.CI_WAIT_STUCK`, part of #2688)
+        # names its own phase, and its evidence rides under it; the owner
+        # questions' hold keeps `owner_questions`.
+        phase = str(wait.pop("park_phase", None) or "owner_questions")
         uploaded = self._upload_outputs().get("artifacts")
-        self.log.info("the merge waits on the owner's questions; parking for a person",
+        self.log.info("the merge waits for a person; parking", phase=phase,
                       action=action.value, questions=len(wait.get("questions") or []),
                       unreadable=wait.get("unreadable"))
         with self._metrics_after_the_record():
             park = handoff_mod.park_human_required(
                 self.control,
                 max_resumes=self.handoff.max_resumes,
-                detail={"park_phase": "owner_questions",
-                        "owner_questions": self._scrub(wait)},
+                detail={"park_phase": phase, phase: self._scrub(wait)},
                 uploads=uploaded if isinstance(uploaded, list) else None,
             )
         if park.returned_by is not None:
