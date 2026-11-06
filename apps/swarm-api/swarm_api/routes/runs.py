@@ -68,6 +68,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field, replace
+from typing import Mapping
 
 from fastapi import APIRouter, Depends, Query, Response, status
 from google.cloud import firestore
@@ -95,6 +96,7 @@ from ..errors import (
     ValidationFailed,
 )
 from .. import issueci, workcontract
+from ..agent_output import AgentOutputService
 from ..forge import ForgeReadError, preview, read_open_work
 from .. import approvals
 from ..issueruns import (
@@ -116,6 +118,7 @@ from ..issueruns import (
     plan_digest,
     plan_files,
     plan_hold,
+    planner_documents,
     planner_task,
     sign_owner,
     auto_merge_default,
@@ -160,10 +163,12 @@ def _runs(ctx: AppContext) -> IssueRuns:
 # advancing a run from what its tasks say
 # --------------------------------------------------------------------------
 
-def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> tuple[str, dict]:
+def _read_plan(ctx: AppContext, tenant_id: str, task_id: str, *,
+               lane_refs: Mapping[str, str] | None = None) -> tuple[str, dict]:
     """`plan.json` out of the planner's artifacts, through the API's own masked
     reader: `("plan", plan)`, or `("not_ready", verdict)` when the planner
-    found the issue not ready (`issueruns.parse_planner_output`)."""
+    found the issue not ready (`issueruns.parse_planner_output`). `lane_refs`
+    is the run's IN FLIGHT run-lane map (`_lane_refs`, #3507)."""
     try:
         window = ctx.inspection.read_artifact(
             tenant_id, task_id, submitted_by=None, name=PLAN_FILE, limit_bytes=MAX_PLAN_BYTES
@@ -176,7 +181,19 @@ def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> tuple[str, dict
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is not text")
     if window.get("truncated"):
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is larger than {MAX_PLAN_BYTES} bytes")
-    return parse_planner_output(window.get("content") or "")
+    return parse_planner_output(window.get("content") or "", lane_refs=lane_refs)
+
+
+def _lane_refs(run: IssueRun) -> dict[str, str]:
+    """The run lanes its IN FLIGHT section listed, run id -> owner/repo#N
+    (#3507), read defensively: a run created before the map, or with no
+    section, has none."""
+    context = run.index_context
+    in_flight = context.get("in_flight") if isinstance(context, Mapping) else None
+    found = in_flight.get("lane_refs") if isinstance(in_flight, Mapping) else None
+    if not isinstance(found, Mapping):
+        return {}
+    return {k: v for k, v in found.items() if isinstance(k, str) and isinstance(v, str)}
 
 
 #: What the planner's worker writes beside plan.json when the workspace opted
@@ -292,6 +309,37 @@ def with_plan_advisory(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict
     return row
 
 
+#: How much of the planner's manifest `planner_documents` looks through: the
+#: worker's own cap on the files one attempt uploads, so none is missed.
+PLANNER_LISTING_LIMIT = 500
+
+
+def with_planner_documents(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict) -> dict:
+    """`row` with `planner_documents`: the planner's design docs and diagrams
+    (`issueruns.planner_documents`), by name, size and read link, for the
+    proposal page (BGD, 6 November 2026: "Serve them on the run").
+
+    `None` while the planner has not finished (its artifacts are uploaded at
+    the end of its attempt, so an empty list then would be a "none" nobody
+    found) or when its listing cannot be read. The listing is the task's own,
+    in this run's tenant, through the same service `GET /v1/tasks/{id}/artifacts`
+    uses; no object is read. Read-only, like `plan_advisory`.
+    """
+    served = None
+    if run.planner_task_id:
+        try:
+            listing = AgentOutputService(ctx.inspection).list_artifacts(
+                tenant_id, run.planner_task_id, limit=PLANNER_LISTING_LIMIT, submitted_by=None
+            )
+        except ApiError as exc:
+            log.warning("issue run %s: planner listing not read (%s)", run.id, exc.code)
+            listing = None
+        if listing is not None and listing.get("complete"):
+            served = planner_documents(run.planner_task_id, listing.get("artifacts") or [])
+    row["planner_documents"] = served
+    return row
+
+
 def workflows_refusal(paths: list[str]) -> str:
     """The run's `error` when its plan names `.github/workflows/` files (§4.4)."""
     return (
@@ -340,7 +388,7 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         )
     if task.state == TaskState.SUCCEEDED:
         try:
-            kind, plan = _read_plan(ctx, tenant_id, task.id)
+            kind, plan = _read_plan(ctx, tenant_id, task.id, lane_refs=_lane_refs(run))
         except InvalidPlan as refused:
             return runs.transition(
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
@@ -1261,7 +1309,8 @@ def get_run(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     run = advance_run(ctx, tenant_id, _runs(ctx).get(tenant_id, run_id))
-    return {"run": with_plan_advisory(ctx, tenant_id, run, run.to_api())}
+    row = with_plan_advisory(ctx, tenant_id, run, run.to_api())
+    return {"run": with_planner_documents(ctx, tenant_id, run, row)}
 
 
 @router.post("/{run_id}/plan:approve")

@@ -1312,6 +1312,10 @@ class RunnerProfile:
     #: on every profile until the routing package fills them in; each
     #: catalogue entry states its value, so filling one in is an edit to that
     #: profile. Last in the class, so no positional construction changes meaning.
+    #:
+    #: Contract request 143 (managed plugins P4, docs/design/managed-plugins.md
+    #: section 5, accepted by the owner 2026-11-06) fills in the five
+    #: claude-code profiles with _CLAUDE_PLUGIN_CAPABILITIES.
     runtime_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -1799,6 +1803,28 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
     ),
 }
 
+#: THE OWNER'S PICK, 2026-11-06 (pull request #3470, part of #2688): a step
+#: that works on a pull request may name it. `pull_request` names a pull
+#: request in the task's OWN repository; the worker reads its body,
+#: conversation and review threads read-only with the tenant's forge
+#: credential, writes them to the workspace as `pull_request.md` and names
+#: that file in the prompt (`agent_worker.pull_request`). The number is data,
+#: and so is the text it reads (invariant 10). Declared by claude-code, codex
+#: and claude-code-review, the profiles that write, amend or review a pull
+#: request; the ceiling is the issue input's, for the same reason.
+_PULL_REQUEST_INPUTS: dict[str, RunnerInput] = {
+    "pull_request": RunnerInput(
+        "integer",
+        minimum=1,
+        maximum=999_999,
+        means=(
+            "a pull request in the task's repository: its body, conversation and "
+            "review threads are written to pull_request.md in the workspace and "
+            "named in the prompt"
+        ),
+    ),
+}
+
 #: CONTRACT REQUEST 88, accepted by the owner 2026-10-17 (design
 #: docs/design/registered-mcp-servers.md §5 M1, part of #1433): the
 #: registered MCP servers a step may call, by name, never a URL or a command
@@ -1826,6 +1852,22 @@ _MCP_SERVER_INPUTS: dict[str, RunnerInput] = {
 _CLI_AGENT_MCP_INPUTS: dict[str, RunnerInput] = {
     **_CLI_AGENT_INPUTS,
     **_MCP_SERVER_INPUTS,
+}
+
+#: claude-code and codex: the CLI agent inputs, mcp_servers (request 88) and
+#: pull_request (the owner's pick on #3470). Its own dict, so that
+#: claude-code-large and the browser profiles, which share the first two, do
+#: not gain it.
+_CLI_AGENT_PR_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_MCP_INPUTS,
+    **_PULL_REQUEST_INPUTS,
+}
+
+#: claude-code-review: the CLI agent inputs and pull_request, the pull
+#: request it reviews (the owner's pick on #3470).
+_CLI_AGENT_REVIEW_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_PULL_REQUEST_INPUTS,
 }
 
 #: CONTRACT REQUEST 77, accepted by the owner 2026-10-14 ("Picker on Submit,
@@ -1880,6 +1922,15 @@ _DISABLED_UNTIL_342 = (
 #: accepted on one is accepted on all three. Every class, in vocabulary order.
 _CLAUDE_CODE_MODEL_CLASSES: tuple[str, ...] = tuple(MODEL_CLASSES)
 
+#: Contract request 143 (managed plugins P4): what the claude-code runner
+#: gives a managed plugin. `claude_plugins`: it loads Claude Code plugins
+#: (`--plugin-dir`); the rest are the runtimes a plugin's hooks and servers
+#: may need, the design's closed list, each shipped by `agent-runtime-base`
+#: and the browser and lightpanda images built on it (node from NODE_IMAGE,
+#: bun from the gstack build stage, python3, bash). codex loads no Claude
+#: Code plugin, and the indexer is a platform step, so neither has them.
+_CLAUDE_PLUGIN_CAPABILITIES: tuple[str, ...] = ("claude_plugins", "node", "bun", "python3", "bash")
+
 RUNNER_PROFILES: dict[str, RunnerProfile] = {
     "mock": RunnerProfile(
         name="mock",
@@ -1922,14 +1973,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
+        inputs=_CLI_AGENT_PR_INPUTS,   # contract request 88; pull_request (#3470)
         secret_slots={"files": _FILES_SLOT},   # contract request 80
         # Contract request 101 (owner's Q3, 2026-10-17): every class, opus by
         # default (R3: a step naming no class runs opus).
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
     # CONTRACT REQUEST 113, accepted by the owner 2026-10-22 (Q6 of
     # docs/design/agent-autonomy.md §7, applied by lane AU-9): claude-code made
@@ -1960,7 +2011,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
     "codex": RunnerProfile(
         name="codex",
@@ -1981,7 +2032,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_MCP_INPUTS,   # contract request 88
+        inputs=_CLI_AGENT_PR_INPUTS,   # contract request 88; pull_request (#3470)
         # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
         # on Claude, and codex does not currently work here anyway. A twenty-step
         # load test that day dispatched four codex steps and all four failed
@@ -2108,7 +2159,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        inputs=_CLI_AGENT_REVIEW_INPUTS,   # pull_request (#3470)
         never_restore_checkpoint=True,
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
@@ -2118,7 +2169,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=("opus",),
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
     # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
     # on agent-runtime-indexer, the image that carries the repository index's
@@ -2181,7 +2232,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
     # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
     # docs/design/lightpanda-runtime.md), accepted by the owner 2026-10-31:
@@ -2209,7 +2260,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         model_classes=_CLAUDE_CODE_MODEL_CLASSES,
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
-        runtime_capabilities=(),
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
     ),
     # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
     # docs/design/human-steps.md §5 request C): a workflow step that waits for

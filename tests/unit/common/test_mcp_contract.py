@@ -60,10 +60,13 @@ def test_indexer_and_review_inputs_are_unchanged(name):
     # They share _CLI_AGENT_INPUTS with claude-code; the input is a dict of
     # its own so that it does not reach them.
     assert check_inputs(RUNNER_PROFILES[name], {"issue": 12}) == {"issue": 12}
-    assert set(RUNNER_PROFILES[name].inputs) == {"issue"}
+    # pull_request is the owner's pick on #3470: claude-code-review declares
+    # it beside claude-code, the indexer does not.
+    reviews = {"pull_request"} if name == "claude-code-review" else set()
+    assert set(RUNNER_PROFILES[name].inputs) == {"issue"} | reviews
     assert set(RUNNER_PROFILES["claude-code"].inputs) - set(RUNNER_PROFILES[name].inputs) == {
         "mcp_servers"
-    }
+    } | ({"pull_request"} - reviews)
 
 
 @pytest.mark.parametrize("name", TAKES_MCP)
@@ -101,7 +104,8 @@ def test_mcp_servers_item_bound_is_the_name_bound():
 
 
 def test_mcp_is_a_consumer_kind():
-    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component", "mcp")
+    # Contract request 142 appends "plugin" after it.
+    assert models.SECRET_CONSUMER_KINDS == ("profile", "tool", "component", "mcp", "plugin")
 
 
 def test_mcp_consumer_round_trips():

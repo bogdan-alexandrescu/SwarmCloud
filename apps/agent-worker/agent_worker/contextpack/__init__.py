@@ -98,7 +98,8 @@ __all__ = [
     "ARTIFACT_NAME", "BUDGET_BYTES", "CONTEXT_DIR_NAME", "CONTEXT_ENV", "CONTEXT_FILE",
     "DELIVERY_SERVICE", "INFLIGHT_FILE", "PACK_FILE", "PIN_FILE", "PIN_MANIFEST_FILE",
     "SNAPSHOT_DIR", "STAGE_FILE", "TASK_TYPES",
-    "ContextPackError", "context_dir", "failed_line", "prepare", "prompt_line",
+    "GRAPH_LOOKUP_TOOL", "GRAPH_LOOKUP_TYPES",
+    "ContextPackError", "context_dir", "failed_line", "lookup_line", "prepare", "prompt_line",
 ]
 
 #: A stager's reason is shown in the prompt: one line, bounded.
@@ -113,6 +114,39 @@ def prompt_line(context_file: Path | str) -> str:
         "work and a checklist for this kind of step. Read it before editing. The "
         "swarm-graph tools answer anything it pages out."
     )
+
+
+#: THE LOOKUP LINE (BGD's pick, 6 November 2026, after the 48-hour code
+#: intelligence report; part of #2688). Implement steps called the graph most
+#: (34% of its calls), reviews and fixes almost never, and when a step called
+#: it the graph named a file it then changed in 35 of 56 answers. So a step of
+#: these types that has the graph is told, as an instruction with its moment,
+#: which tool answers "where is this defined or used". Other types get no line.
+GRAPH_LOOKUP_TYPES = ("implement", "review", "fix")
+#: The tool as the loaded-tools shape names it; a runner with the code-graph
+#: skill passes its own wording (`claude_code.graph_lookup_line`).
+GRAPH_LOOKUP_TOOL = "call the swarm-graph `context` tool"
+
+
+def lookup_line(payload: Any, work_dir: Path | str, *, tool: str) -> str | None:
+    """The one brief line naming the graph's lookup, or None for a step type
+    not in `GRAPH_LOOKUP_TYPES`. The caller adds it only when the step has the
+    graph. The type is the pack's own (`tasktype.classify`); never raises."""
+    from .tasktype import classify
+
+    try:
+        where = context_dir(Path(work_dir))
+        stage = read_stage(where) if where is not None else {}
+    except Exception:  # noqa: BLE001 -- an unreadable stage.json types by the brief
+        stage = {}
+    try:
+        kind = classify(payload if isinstance(payload, dict) else {}, Path(work_dir), stage)
+    except Exception:  # noqa: BLE001 -- a line is never worth a failed step
+        return None
+    if kind not in GRAPH_LOOKUP_TYPES:
+        return None
+    return (f"Before you search widely for where a symbol is defined or used, {tool} with "
+            "its name: one answer gives where it is defined and who calls it.")
 
 
 def failed_line(error: str, *, graph: bool) -> str:
@@ -207,6 +241,6 @@ def _record_failure(ctx: "RunnerContext", stage: dict[str, Any], error: str,
         write_artifact(Path(ctx.artifacts_dir), {
             "schema": SCHEMA, "built": False, "error": error, "seconds": seconds,
             "deadline_seconds": PACK_DEADLINE_SECONDS, "arm": _arm(stage),
-            "delivery": stage.get("delivery")})
+            "delivery": stage.get("delivery"), "graph_files": 0})
     except Exception:  # noqa: BLE001 -- a record is never worth a failed step
         return

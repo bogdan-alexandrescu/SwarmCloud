@@ -161,6 +161,7 @@ from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
+from . import pull_request as pull_request_mod
 from . import jevkey as jevkey_mod
 from . import plugins as plugins_mod
 from . import qualitygates as qualitygates_mod
@@ -173,6 +174,7 @@ from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
+from . import flow_output as flow_output_mod
 from . import qa_identity as qa_identity_mod
 from . import redact as redact_mod
 from . import extrarepos as extrarepos_mod
@@ -264,6 +266,7 @@ from .gitops import (
     commit_tree_onto,
     fetch_branch_tip,
     fold_agent_commits,
+    forge_holds_commit,
     hide_from_git,
     is_branch_ref_name,
     is_full_refname,
@@ -1130,6 +1133,9 @@ class Worker:
         #: When the issue fetch started and ended, seconds since process
         #: start, for `agent_started`. None until a fetch has been joined.
         self._issue_fetch_timing: dict[str, Any] | None = None
+        #: The pull request this step works on (`_requested_pull_request`),
+        #: worked out once: `False` until then, None when it names none.
+        self._pull_request_number: int | None | bool = False
         self._clone_base: str | None = None
         #: The commit this attempt's clone checked out, recorded as
         #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
@@ -1209,6 +1215,8 @@ class Worker:
         self._ui_review_paths: list[str] | None = None
         # What `verdict.gate_rendered_review` found, for `result_summary`.
         self._rendered_review: dict[str, Any] | None = None
+        # What `flow_output.normalise` found for a QA flow step, for `result_summary`.
+        self._flow_output: dict[str, Any] | None = None
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -2805,16 +2813,19 @@ class Worker:
         keeps no workspace.
         """
         wait = dict(outcome.owner_wait or {})
+        # A CI wait handed to a person (`merge.CI_WAIT_STUCK`, part of #2688)
+        # names its own phase, and its evidence rides under it; the owner
+        # questions' hold keeps `owner_questions`.
+        phase = str(wait.pop("park_phase", None) or "owner_questions")
         uploaded = self._upload_outputs().get("artifacts")
-        self.log.info("the merge waits on the owner's questions; parking for a person",
+        self.log.info("the merge waits for a person; parking", phase=phase,
                       action=action.value, questions=len(wait.get("questions") or []),
                       unreadable=wait.get("unreadable"))
         with self._metrics_after_the_record():
             park = handoff_mod.park_human_required(
                 self.control,
                 max_resumes=self.handoff.max_resumes,
-                detail={"park_phase": "owner_questions",
-                        "owner_questions": self._scrub(wait)},
+                detail={"park_phase": phase, phase: self._scrub(wait)},
                 uploads=uploaded if isinstance(uploaded, list) else None,
             )
         if park.returned_by is not None:
@@ -3883,6 +3894,13 @@ class Worker:
             self._security_review = {}
             if isinstance(payload.get("prompt"), str):
                 payload["prompt"] += security_review_mod.guidance(ws.artifacts)
+        # The pull request this step works on (Product Oracle, 2026-11-06):
+        # one line of the brief names `work/pull_request.md`, which STEP 6b'
+        # writes after the credentials, before the agent starts.
+        if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
+            payload["prompt"] += "\n\n" + pull_request_mod.prompt_line(
+                pull_request_mod.pull_request_path(ws.work)
+            )
         ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
 
         # ---- STEP 6: tenant credentials ---------------------------------
@@ -4018,6 +4036,15 @@ class Worker:
                     "beside_clone": False,
                 }
             )
+
+        # ---- STEP 6b': the pull request this step works on ----------------
+        # After the credentials, for the scrub, as the issue. A read that
+        # fails writes a file saying so and the agent starts: the pull
+        # request is context beside the checkout (`agent_worker.pull_request`).
+        pull_number = self._requested_pull_request()
+        if pull_number is not None:
+            self.phases.enter("fetch_pull_request")
+            self._stage_pull_request(pull_number, ws.work)
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -4899,6 +4926,8 @@ class Worker:
                 summary["pull_request_text_from"] = dict(self._pr_text_from)
             if self._rendered_review is not None:
                 summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
+            if self._flow_output is not None:
+                summary[flow_output_mod.SUMMARY_KEY] = self._scrub(dict(self._flow_output))
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
@@ -7294,6 +7323,12 @@ class Worker:
             | ws.control_file_names()
             # `issue.md`, when the task asks for an issue (#265).
             | issue_mod.reserved_names(task.get("input"), self.cfg.profile)
+            # `pull_request.md`, when the step works on a pull request.
+            | (
+                frozenset({pull_request_mod.FILE_NAME})
+                if self._requested_pull_request() is not None
+                else frozenset()
+            )
             # A review's owner questions, written after staging (#2070), and a
             # builds_on step's owner answers (#2836).
             | {owner_questions_mod.NAME, inputs_mod.OWNER_ANSWERS_NAME},
@@ -7932,6 +7967,18 @@ class Worker:
         except InputUnavailable:
             return None
         return verdict_mod.ui_paths_in_own_files(upstream.get("result_summary"))
+
+    def _normalise_flow_output(self) -> None:
+        """Rename a QA flow step's lone stray tar to its `<step>.tar` (`flow_output`; PR #3521)."""
+        ws = self.ws
+        if ws is None or not self._expected_outputs:
+            return
+        record = flow_output_mod.normalise(
+            ws.artifacts, (self._task or {}).get("step_id"), self._expected_outputs)
+        self._flow_output = record
+        if record is not None:
+            for line in record["lines"]:
+                (self.log.info if record["ok"] else self.log.warning)(line)
 
     def _hold_ui_review_to_rendered(self) -> None:
         """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
@@ -10169,6 +10216,81 @@ class Worker:
             ),
             refused=self._refused_credential,
         )
+
+    def _requested_pull_request(self) -> int | None:
+        """The pull request this step works on, or None (Product Oracle, 2026-11-06).
+
+        In order: the caller's `input.pull_request`; the signed `publish_to_pr`
+        it publishes onto; the pull request its signed `builds_on` step -- or,
+        for a single-pr reader or amender, its `pr_author` step -- recorded
+        opening: a review step's, in a workflow that has one. Only
+        for a step with a brief (a `prompt`) to name the file in. Worked out once.
+        """
+        if self._pull_request_number is not False:
+            return self._pull_request_number  # type: ignore[return-value]
+        number: int | None = None
+        task = self._task or {}
+        if pull_request_mod.takes_brief(task.get("input")):
+            number = pull_request_mod.from_input(task.get("input"), self.cfg.profile)
+            if number is None:
+                try:
+                    onto = self._publish_to_pr()
+                except WorkerError:
+                    onto = None
+                number = onto.number if onto is not None else None
+            if number is None and task.get("workflow_id"):
+                try:
+                    upstream = self._dispatch_builds_on()
+                    if not upstream and self._pr_role() in ("reader", "amender"):
+                        # A single-pr reader or amender: the pull request is
+                        # the one its signed `pr_author` step opened.
+                        upstream = self._pr_author_branch()[len(self.cfg.git_branch_prefix):]
+                    if upstream:
+                        number = post_verdict_mod.pull_request_number(
+                            inputs_mod.fetch_upstream_task(
+                                self.db, upstream_task_id=upstream,
+                                tenant_id=self.cfg.tenant_id,
+                                call_options=self.control.call_options(),
+                            )
+                        )
+                except (WorkerError, InputUnavailable):
+                    number = None
+        self._pull_request_number = number
+        return number
+
+    def _stage_pull_request(self, number: int, work_dir: Path) -> Path:
+        """`pull_request_mod.stage_pull_request` with the tenant's own `-git`
+        token, read again once on a 401 as the issue fetch is; scrubbed of
+        every registered secret and every credential-shaped run."""
+        refusal = self._git_token_refusal()
+
+        def token(again: bool) -> str | None:
+            value = self._git_token()
+            if value:
+                self.log.register_secret(value)
+            return value
+
+        path, _read = pull_request_mod.stage_pull_request(
+            number=number,
+            repository_url=self._repo_url,
+            token=token,
+            refusal=refusal,
+            work_dir=work_dir,
+            scrub=lambda text: str(self._scrub(redact_text(text).text)),
+            logger=self.log,
+            on_request=self._heartbeat,
+            retry=self._forge_retry(),
+            read_again=lambda read: call_reading_again(
+                read,
+                logger=self.log,
+                what="the pull request fetch",
+                twice=lambda exc: pull_request_mod.PullRequestUnavailable(
+                    f"{exc}; {FORGE_REFUSED_TWICE}"
+                ),
+                refused=self._refused_credential,
+            ),
+        )
+        return path
 
     def _refused_credential(self, exc: BaseException) -> bool:
         """A 401 worth a re-read: only when this worker reads a token at all."""
@@ -12627,6 +12749,8 @@ class Worker:
                 self.log.warning("could not read the series clock", error=f"{type(exc).__name__}: {exc}")
         return {
             "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
+            # The working set (`metrics.working_set_bytes`), page cache
+            # excluded: the figure the reconciler's memory judgement reads.
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
             "checkpoints": self.checkpoints.seq,
             "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
@@ -13423,6 +13547,24 @@ class Worker:
             base=base,
         )
         return floor
+
+    def _forge_holder(self, *, url: str, token: str) -> Callable[[str], bool]:
+        """Whether the forge serves a commit (`forge_holds_commit`), each sha
+        asked once: the replay and the fold ask of every merged head (#3359)."""
+        ws = self.ws
+        assert ws is not None
+        answers: dict[str, bool] = {}
+
+        def holds(sha: str) -> bool:
+            if sha not in answers:
+                answers[sha] = forge_holds_commit(
+                    url=url, sha=sha, token=token, private_dir=ws.private,
+                    logs_dir=ws.logs, timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                    logger=self.log,
+                )
+            return answers[sha]
+
+        return holds
 
     def _default_branch_tip(
         self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
@@ -15212,6 +15354,9 @@ class Worker:
                 logger=self.log,
                 allow_unknown_base=allow_unknown_base,
                 confirm_on_origin=self._origin_confirmer(fenced),
+                # A merge the agent left in progress is concluded as a merge
+                # by `commit_dirty`, never squashed (#3359).
+                carry_merge=True,
             )
         finally:
             # `prepare_publish_repo` reads a confirmer that raised as "origin
@@ -16143,6 +16288,9 @@ class Worker:
                     ),
                 )
             else:
+                # A merged branch the forge already holds stays a parent
+                # whatever its commits say: it is published already (#3359).
+                on_forge = self._forge_holder(url=url, token=token)
                 try:
                     replayed = replay_agent_commits(
                         repo=publish_repo,
@@ -16167,6 +16315,7 @@ class Worker:
                         leaks=self._leaks_in_added_text,
                         overlap=self._scan_overlap(),
                         upstream=scan_floor or "",
+                        on_forge=on_forge,
                     )
                     if replayed is not None:
                         kept = replayed
@@ -16204,6 +16353,7 @@ class Worker:
                                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                                 logger=self.log,
                             ),
+                            on_forge=on_forge,
                         )
                         # The worker's own auto-commit is among what was replaced
                         # when there was one; the rest were the agent's.
@@ -17909,6 +18059,11 @@ class Worker:
             # After the harvest's reap, so the agent can no longer write it,
             # and before the upload, so what goes up is the verdict that counts.
             self._hold_ui_review_to_rendered()
+        if defer_publish:
+            # A QA flow step's stray tar (re-run 8's flow-1.tar for flows-1)
+            # is renamed to its owed `<step>.tar` after the reap and before the
+            # upload, so the missing-output check and the flow report read it.
+            self._normalise_flow_output()
         # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
         # decision of 2026-09-26): at most `max_artifact_files`, a declared
         # output first, no name past the manifest's bound; see
@@ -18548,6 +18703,7 @@ class Worker:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
                 peak_rss_bytes=usage.peak_rss_bytes,
+                peak_memory_current_bytes=usage.peak_memory_current_bytes,
                 limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
                 resource_class=self._memory_class(),
             )
@@ -18575,6 +18731,7 @@ class Worker:
                 name=kill.get("name"),
                 rss_bytes=kill.get("rss_bytes"),
                 memory_current_bytes=kill.get("memory_current_bytes"),
+                working_set_bytes=kill.get("working_set_bytes"),
                 memory_max_bytes=kill.get("memory_max_bytes"),
             )
 
@@ -20198,6 +20355,7 @@ def replay_agent_commits(
     leaks: LeakPredicate | None = None,
     overlap: int = SCAN_OVERLAP_CHARS,
     upstream: str = "",
+    on_forge: Callable[[str], bool] | None = None,
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -20241,7 +20399,10 @@ def replay_agent_commits(
     fix round's `git merge origin/main` reached the forge with one parent,
     GitHub kept the old merge base and the pull request still conflicted;
     dropping train/an's was #3359, every conflict the lane resolved raised
-    again when its pull request merged back.
+    again when its pull request merged back. A parent `on_forge` says the
+    forge holds is kept whatever its commits say: it is published already
+    (#3359 again, 6 November 2026, a train branch with one attributed
+    commit made outside the platform).
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -20355,7 +20516,7 @@ def replay_agent_commits(
             raise GitError(f"could not read the tree of commit {sha[:12]}")
         merged = _published_merge_parents(
             run, g, header, upstream=upstream, base=floor, logger=logger,
-            history_leaks=history_leaks,
+            history_leaks=history_leaks, on_forge=on_forge,
         )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
@@ -20404,6 +20565,7 @@ def _published_merge_parents(
     base: str,
     logger: Any,
     history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """The merge parents of a commit (its `header`) the replay keeps (#1321, #3359).
 
@@ -20416,7 +20578,8 @@ def _published_merge_parents(
     without its history, and merging the pull request back raised every
     conflict the lane had resolved again (#3359). A side branch the agent
     committed on as Claude is still dropped: its commits would be pushed as
-    they were written. So is one `history_leaks` finds a credential in.
+    they were written. So is one `history_leaks` finds a credential in --
+    unless `on_forge` says the forge holds it already.
     """
     parents = [line[len("parent "):].strip() for line in header.split("\n")
                if line.startswith("parent ")]
@@ -20425,7 +20588,7 @@ def _published_merge_parents(
         if not _SHA_RE.match(other):
             continue
         if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger,
-                            history_leaks=history_leaks):
+                            history_leaks=history_leaks, on_forge=on_forge):
             kept.append(other)
     return kept
 

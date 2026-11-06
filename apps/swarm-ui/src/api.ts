@@ -2106,7 +2106,11 @@ async function fixtureWorkflowRead(workflowId: string): Promise<Result<WorkflowR
   const stepTasks = new Set(workflow.steps.map((s) => s.task_id).filter((id): id is string => !!id))
   const tasks =
     page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId || stepTasks.has(t.id)) : []
-  return { status: 'ok', fetchedAt: Date.now(), data: { workflow, tasks } }
+  // EACH STEP'S `task_summary`, needs block included, as the live read serves
+  // it (`step_totals` given, codec.workflow_to_api): without it no fixture
+  // page counted a question, so a finished workflow's quiet tick never drew.
+  const [summarised] = withTaskSummaries([workflow], tasks)
+  return { status: 'ok', fetchedAt: Date.now(), data: { workflow: summarised ?? workflow, tasks } }
 }
 
 /**
@@ -4816,8 +4820,8 @@ type FixtureInputContract = RunnerInputContract & { inputs?: Record<string, unkn
 const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "mock": {"required_keys": []},
   "generic": {"required_keys": []},
-  "claude-code": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
-  "codex": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
+  "claude-code": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "pull_request": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt"}}},
+  "codex": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "pull_request": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt"}}},
   "browser": {"required_keys": []},
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
@@ -5035,7 +5039,18 @@ const FIXTURE_HELD = [
   { task_id: 'task_wait_asked_fix', step_id: 'fix', question_index: 1, question: 'Rename the views flag in this change or in a follow-up?' },
 ]
 
-/** What each asking task of the fixture's held merge asked: `GET /v1/tasks/{id}/questions`. */
+/** The owner's answer to `wf_quiet_q_01`'s first question, as `metadata.owner_answers` stores it. */
+const FIXTURE_QUIET_ANSWER = {
+  question_index: 0,
+  question: 'Keep the old views address as a redirect?',
+  choice: 'Redirect',
+  text: null,
+  by: 'alice@example.com',
+  at: new Date(FIXTURE_NOW - 40 * 60_000).toISOString(),
+  history: [],
+}
+
+/** What each asking fixture task asked (the held merge's and `wf_quiet_q_01`'s): `GET /v1/tasks/{id}/questions`. */
 function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
   const option = (label: string, description: string) => ({ label, description })
   const asked: Record<string, AgentQuestion[]> = {
@@ -5065,6 +5080,25 @@ function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
           option('This change', 'One pull request; the review re-runs on the rename.'),
           option('Follow-up', 'This merges as reviewed; the rename is its own lane.'),
         ],
+        recommended: 'Follow-up',
+        context: null,
+        answer: null,
+      },
+    ],
+    task_f278adec: [
+      {
+        question: FIXTURE_QUIET_ANSWER.question,
+        options: [
+          option('Redirect', 'Old links keep working.'),
+          option('Remove', 'Old links 404.'),
+        ],
+        recommended: 'Redirect',
+        context: null,
+        answer: FIXTURE_QUIET_ANSWER,
+      },
+      {
+        question: 'Rename the views flag in this change or in a follow-up?',
+        options: [option('This change', 'One pull request.'), option('Follow-up', 'Its own lane.')],
         recommended: 'Follow-up',
         context: null,
         answer: null,
@@ -6102,7 +6136,19 @@ function fixtureTaskRows(): Task[] {
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_bcdc9180e4fb4a209f31 },
     }),
     mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
-    mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
+    // THE FINISHED WORKFLOW'S QUIET TICK (part of #2688): this unnamed row
+    // converted, so every task total stands, into the implement step of
+    // `wf_quiet_q_01`. It asked two questions and the owner answered the
+    // first, so its page draws '? 1' and the list no '?'
+    // (`fixtureHeldQuestions` serves both).
+    mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48, {
+      workflow_id: 'wf_quiet_q_01', step_id: 'implement', depends_on: [],
+      metadata: {
+        title: FIXTURE_WORKFLOW_TITLES.wf_quiet_q_01,
+        owner_answers: [FIXTURE_QUIET_ANSWER],
+      },
+      result_summary: { artifacts: 1, checkpoints: 2, questions: 2 },
+    }),
     // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
     // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
     // no test named, converted rather than a row added so every fixture
@@ -6219,6 +6265,7 @@ const FIXTURE_WORKFLOW_TITLES = {
   wf_audit_01: 'Audit the operator scripts and the Terraform',
   wf_5e5ad3b6f7da4299a839: 'Check the five contract invariants, then write one synthesis',
   wf_bcdc9180e4fb4a209f31: 'Research, draft and review the restore runbook',
+  wf_quiet_q_01: 'Views',
 } as const
 
 async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
@@ -6594,6 +6641,28 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
           step('draft', ['research'], 'task_8e33a3de'),
           step('review', ['draft'], 'task_1beb89a5'),
         ],
+      },
+      {
+        workflow_id: 'wf_quiet_q_01',
+        tenant_id: 'u-bogdan',
+        state: 'SUCCEEDED',
+        stored_state: 'SUCCEEDED',
+        state_source: 'derived',
+        rollup: {
+          state: 'SUCCEEDED',
+          complete: true,
+          reason: 'all_steps_succeeded',
+          counts: {},
+          unreadable_steps: [],
+          unstarted_steps: [],
+          steps_read: 1,
+        },
+        ...spanOf(['task_f278adec']),
+        submitted_by: 'alice@example.com',
+        priority: 0,
+        on_step_failure: 'FAIL_WORKFLOW',
+        cancel_requested: false,
+        steps: [step('implement', [], 'task_f278adec')],
       },
   ]
   // THE ROLLUP COUNTS ITS OWN STEPS (QAFIX6-FIXTURE i, run 5b QA-042, box
@@ -15071,4 +15140,294 @@ export async function saveWorkspacePlugins(tenantId: string, allowed: readonly s
   const r = await write(target, 'PUT', { allowed: [...allowed] })
   if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
   return r
+}
+
+// ---- Voice it: the Talk stage's visuals, notes and read-backs -------------------
+
+/** swarm-api's visual routes (routes/voice_visuals.py) and read-back routes (routes/voice_readback.py). */
+export const VOICE_VISUALS = '/v1/voice/projects/{project_id}/visuals'
+export const VOICE_VISUAL = '/v1/voice/projects/{project_id}/visuals/{visual_id}'
+export const VOICE_NOTE = '/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/{note_id}'
+export const VOICE_READBACK_PENDING = '/v1/voice/sessions/{session_id}/readbacks/pending'
+export const VOICE_READBACK_GO = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/go'
+export const VOICE_READBACK_NOT_THAT = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/not-that'
+
+export type VoiceVisualKind = 'mockup' | 'diagram' | 'spec' | 'code' | 'log'
+
+/** Where on a visual (swarm_api/voice/visuals.py `check_anchor`); null is the whole visual. */
+export type VoiceAnchor =
+  | { type: 'point'; x: number; y: number }
+  | { type: 'region'; x: number; y: number; w: number; h: number }
+  | { type: 'part'; part_id: string }
+  | { type: 'lines'; from: number; to: number }
+  | null
+
+/** A visual as the routes serve it (`visual_view`): no body, no tenant. */
+export interface VoiceVisual {
+  visual_id: string
+  kind: VoiceVisualKind
+  title: string
+  version: number
+  /** A file slice `{repo, ref, path, from, to}`, a diff `{repo, pull}` or a log `{task_id, step}`; null when drawn. */
+  source: Record<string, unknown> | null
+  parts: { part_id: string; title?: string }[]
+  /** The body's first and last line numbers, for a code, log or spec body. */
+  lines: { from: number; to: number } | null
+  created_by: string | null
+  updated_at: string | null
+}
+
+export interface VoiceNote {
+  note_id: string
+  visual_id: string
+  anchor: VoiceAnchor
+  text: string
+  via: 'voice' | 'typed' | 'tap'
+  state: 'open' | 'resolved' | 'work'
+  created_at: string | null
+}
+
+export interface VoiceVisualDetail {
+  visual: VoiceVisual
+  body: string
+  notes: VoiceNote[]
+}
+
+/** A read-back as the routes answer it (`readback.view`). */
+export interface VoiceReadback {
+  readback_id: string
+  session_id: string | null
+  heard: string
+  action: string
+  target_name: string
+  state: 'pending' | 'confirmed' | 'refused' | 'expired' | 'superseded' | 'used'
+  expires_at: string | null
+}
+
+const VISUAL_KINDS: readonly VoiceVisualKind[] = ['mockup', 'diagram', 'spec', 'code', 'log']
+const READBACK_STATES: readonly VoiceReadback['state'][] = ['pending', 'confirmed', 'refused', 'expired', 'superseded', 'used']
+
+const vStr = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+const vNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+function normAnchor(v: unknown): VoiceAnchor {
+  const a = (v ?? null) as Record<string, unknown> | null
+  if (a === null || typeof a !== 'object') return null
+  const [x, y, w, h, from, to] = [vNum(a.x), vNum(a.y), vNum(a.w), vNum(a.h), vNum(a.from), vNum(a.to)]
+  if (a.type === 'lines' && from !== null && to !== null) return { type: 'lines', from, to }
+  if (a.type === 'region' && x !== null && y !== null && w !== null && h !== null) return { type: 'region', x, y, w, h }
+  if (a.type === 'point' && x !== null && y !== null) return { type: 'point', x, y }
+  if (a.type === 'part' && typeof a.part_id === 'string') return { type: 'part', part_id: a.part_id }
+  return null
+}
+
+export function normVoiceVisual(v: unknown): VoiceVisual | null {
+  const d = (v ?? null) as Record<string, unknown> | null
+  if (d === null || typeof d !== 'object') return null
+  const id = vStr(d.visual_id)
+  const kind = VISUAL_KINDS.find((k) => k === d.kind)
+  if (id === null || kind === undefined) return null
+  const lines = (d.lines ?? null) as Record<string, unknown> | null
+  const from = vNum(lines?.from)
+  const to = vNum(lines?.to)
+  return {
+    visual_id: id,
+    kind,
+    title: vStr(d.title) ?? id,
+    version: vNum(d.version) ?? 1,
+    source: d.source !== null && typeof d.source === 'object' ? (d.source as Record<string, unknown>) : null,
+    parts: Array.isArray(d.parts)
+      ? d.parts.flatMap((p) => {
+          const part = p as Record<string, unknown> | null
+          const pid = vStr(part?.part_id)
+          return pid === null ? [] : [{ part_id: pid, title: vStr(part?.title) ?? undefined }]
+        })
+      : [],
+    lines: from !== null && to !== null ? { from, to } : null,
+    created_by: vStr(d.created_by),
+    updated_at: vStr(d.updated_at),
+  }
+}
+
+function normVoiceNote(v: unknown): VoiceNote | null {
+  const d = (v ?? null) as Record<string, unknown> | null
+  const id = vStr(d?.note_id)
+  const text = vStr(d?.text)
+  if (d === null || id === null || text === null) return null
+  return {
+    note_id: id,
+    visual_id: vStr(d.visual_id) ?? '',
+    anchor: normAnchor(d.anchor),
+    text,
+    via: d.via === 'typed' || d.via === 'tap' ? d.via : 'voice',
+    state: d.state === 'resolved' || d.state === 'work' ? d.state : 'open',
+    created_at: vStr(d.created_at),
+  }
+}
+
+export function normVoiceReadback(v: unknown): VoiceReadback | null {
+  const d = (v ?? null) as Record<string, unknown> | null
+  const id = vStr(d?.readback_id)
+  const state = READBACK_STATES.find((s) => s === d?.state)
+  if (d === null || id === null || state === undefined) return null
+  return {
+    readback_id: id,
+    session_id: vStr(d.session_id),
+    heard: vStr(d.heard) ?? '',
+    action: vStr(d.action) ?? '',
+    target_name: vStr(d.target_name) ?? '',
+    state,
+    expires_at: vStr(d.expires_at),
+  }
+}
+
+// The fixture project: one file slice with a note on two of its lines, and one log.
+const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
+  {
+    visual: {
+      visual_id: 'vv_fixture_code',
+      kind: 'code',
+      title: 'WorkflowSteps.tsx',
+      version: 2,
+      source: { repo: 'acme-labs/console', ref: 'main', path: 'src/WorkflowSteps.tsx', from: 40, to: 52, pull: null },
+      parts: [],
+      lines: { from: 40, to: 52 },
+      created_by: 'planner',
+      updated_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
+    },
+    body: [
+      'export function StepFilters({ steps, onPick }: StepFiltersProps) {',
+      '  const [picked, setPicked] = useState<StepState | null>(null)',
+      '  const counts = useMemo(() => countByState(steps), [steps])',
+      '  return (',
+      '    <div className="wf-filters" role="toolbar" aria-label="Filter steps">',
+      '      {STATES.map((s) => (',
+      '        <Chip key={s} pressed={picked === s} onClick={() => { setPicked(s); onPick(s) }}>',
+      '          {WORD[s]} {counts[s] ?? 0}',
+      '        </Chip>',
+      '      ))}',
+      '    </div>',
+      '  )',
+      '}',
+    ].join('\n'),
+    notes: [
+      {
+        note_id: 'vn_fixture_sticky',
+        visual_id: 'vv_fixture_code',
+        anchor: { type: 'lines', from: 44, to: 45 },
+        text: 'Keep the filter row in view when the steps scroll.',
+        via: 'voice',
+        state: 'open',
+        created_at: new Date(FIXTURE_NOW - 30_000).toISOString(),
+      },
+    ],
+  },
+  {
+    visual: {
+      visual_id: 'vv_fixture_log',
+      kind: 'log',
+      title: 'e2e, step 4',
+      version: 1,
+      source: { task_id: 'task_fixture_e2e', step: 'e2e' },
+      parts: [],
+      lines: { from: 1, to: 4 },
+      created_by: 'planner',
+      updated_at: new Date(FIXTURE_NOW - 120_000).toISOString(),
+    },
+    body: [
+      'Running 14 tests using 2 workers',
+      '  ✘  workflow.spec.ts:62 › keeps the filter row in view (30.0s)',
+      '  Error: Timed out 30000ms waiting for expect(locator).toBeInViewport()',
+      '    Received: outside viewport (y = -48)',
+    ].join('\n'),
+    notes: [],
+  },
+]
+
+let fixtureReadback: VoiceReadback | null = null
+let fixtureNotesResolved = new Set<string>()
+
+function voiceFixtureOk<T>(target: ApiRoute, data: T): Result<T> {
+  noteFixtureProbe(target, 40, true)
+  return { status: 'ok', fetchedAt: Date.now(), data }
+}
+
+/** `GET /v1/voice/projects/{p}/visuals`: the project's visuals, the most recently drawn first. */
+export async function loadVoiceVisuals(projectId: string): Promise<Result<VoiceVisual[]>> {
+  const target = route(VOICE_VISUALS, { project_id: projectId })
+  if (USE_FIXTURES) return voiceFixtureOk(target, FIXTURE_VISUALS.map((v) => v.visual))
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const rows = (r.data as { visuals?: unknown } | null)?.visuals
+  return { ...r, data: Array.isArray(rows) ? rows.flatMap((v) => normVoiceVisual(v) ?? []) : [] }
+}
+
+/** `GET /v1/voice/projects/{p}/visuals/{v}`: the visual, its body as text, and its notes. */
+export async function loadVoiceVisual(projectId: string, visualId: string): Promise<Result<VoiceVisualDetail>> {
+  const target = route(VOICE_VISUAL, { project_id: projectId, visual_id: visualId })
+  if (USE_FIXTURES) {
+    const found = FIXTURE_VISUALS.find((v) => v.visual.visual_id === visualId)
+    if (found === undefined) return { status: 'empty', fetchedAt: Date.now() }
+    return voiceFixtureOk(target, { ...found, notes: found.notes.map((n) => (fixtureNotesResolved.has(n.note_id) ? { ...n, state: 'resolved' as const } : n)) })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const d = (r.data ?? {}) as { visual?: unknown; body?: unknown; notes?: unknown }
+  const visual = normVoiceVisual(d.visual)
+  if (visual === null) return { status: 'empty', fetchedAt: r.fetchedAt }
+  return {
+    ...r,
+    data: {
+      visual,
+      body: typeof d.body === 'string' ? d.body : '',
+      notes: Array.isArray(d.notes) ? d.notes.flatMap((n) => normVoiceNote(n) ?? []) : [],
+    },
+  }
+}
+
+/** `PATCH /v1/voice/projects/{p}/visuals/{v}/notes/{n}` with `{state: "resolved"}`. */
+export async function resolveVoiceNote(projectId: string, visualId: string, noteId: string, sessionId: string | null): Promise<Result<unknown>> {
+  const target = route(VOICE_NOTE, { project_id: projectId, visual_id: visualId, note_id: noteId })
+  if (USE_FIXTURES) {
+    fixtureNotesResolved = new Set([...fixtureNotesResolved, noteId])
+    return voiceFixtureOk(target, { note_id: noteId, state: 'resolved' })
+  }
+  return write(target, 'PATCH', sessionId === null ? { state: 'resolved' } : { state: 'resolved', session_id: sessionId })
+}
+
+/** `GET /v1/voice/sessions/{s}/readbacks/pending`: the read-back waiting on the person, or null. */
+export async function loadPendingReadback(sessionId: string): Promise<Result<VoiceReadback | null>> {
+  const target = route(VOICE_READBACK_PENDING, { session_id: sessionId })
+  if (USE_FIXTURES) {
+    fixtureReadback ??= {
+      readback_id: 'rb_fixture',
+      session_id: sessionId,
+      heard: 'cancel the nightly run',
+      action: 'cancel',
+      target_name: 'run nightly-e2e #482',
+      state: 'pending',
+      expires_at: new Date(Date.now() + 45_000).toISOString(),
+    }
+    return voiceFixtureOk(target, fixtureReadback.state === 'pending' ? fixtureReadback : null)
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
+}
+
+/**
+ * Go (`.../go`) or Not that (`.../not-that`) on a pending read-back. Either is
+ * 409 once it is no longer pending (answered, superseded or expired), and then
+ * nothing runs. Answers the read-back as it now stands.
+ */
+export async function answerReadback(sessionId: string, readbackId: string, go: boolean): Promise<Result<VoiceReadback | null>> {
+  const target = route(go ? VOICE_READBACK_GO : VOICE_READBACK_NOT_THAT, { session_id: sessionId, readback_id: readbackId })
+  if (USE_FIXTURES) {
+    const was = fixtureReadback
+    fixtureReadback = was === null ? null : { ...was, state: go ? 'confirmed' : 'refused' }
+    return voiceFixtureOk(target, fixtureReadback)
+  }
+  const r = await write(target, 'POST')
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
 }

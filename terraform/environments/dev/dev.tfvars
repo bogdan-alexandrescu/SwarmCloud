@@ -336,7 +336,13 @@ pool_limits = {
 }
 
 service_max_instances = {
-  "swarm-api"          = 5
+  # 5 -> 8 (BGD's pick, 2026-11-06, part of #2688), with each instance doubled
+  # to 2 vCPU and 2 GiB in terraform/infra/main.tf: swarm-api sat at 5 of 5
+  # for 359 of 360 minutes at 91% CPU and 94% memory. A ceiling, not a floor:
+  # min_instances stays 2, so the fixed cost is ~$210 a month and the three
+  # instances past today's five bill only while they serve (~$105 each a month
+  # if they ran all the time).
+  "swarm-api"          = 8
   "swarm-scheduler"    = 2
   "swarm-quota-broker" = 2
   "swarm-reconciler"   = 1
@@ -1151,6 +1157,14 @@ settings_mac_required = true
 
 # The Jev review of a contract at submission (swarm-api's SWARM_CONTRACT_REVIEW,
 # terraform/infra/variables.tf contract_review_mode). Rendered from 2026-11-04
-# (owner's choice) and left off, what swarm-api read while it was unset, so the
-# live plan changes no behaviour. "report" reviews and logs; "enforce" refuses.
-contract_review_mode = "off"
+# (owner's choice) and left off until BGD chose REPORT on 2026-11-06: each
+# contract is reviewed and the refusal or amendment it would make is logged,
+# never applied. It reviews only for a workspace whose own signed
+# contract_review setting is on. "enforce" refuses.
+contract_review_mode = "report"
+
+# Work contracts (swarm-api's SWARM_WORK_CONTRACTS, terraform/infra/variables.tf
+# work_contracts). On by BGD's choice of 2026-11-06, after he enabled gstack and
+# security-audit on Config > Plugins: off, swarm-api refuses every step that
+# names a plugin. A step with no contract and no plugins submits as before.
+work_contracts = "on"

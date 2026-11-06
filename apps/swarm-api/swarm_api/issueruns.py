@@ -195,6 +195,7 @@ from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Any, Callable, Literal, Mapping
+from urllib.parse import quote, urlencode
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -1052,19 +1053,28 @@ class NotReadyVerdict(_PlanModel):
         return self
 
 
-def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
+def parse_planner_output(
+    value: Any, *, lane_refs: Mapping[str, str] | None = None,
+) -> tuple[str, dict[str, Any]]:
     """What the planner wrote in `plan.json`: `("plan", plan)` or `("not_ready", verdict)`.
 
     A JSON object carrying `"ready": false` is a `NotReadyVerdict` and is
     checked as strictly as a plan is; `"ready": true` beside a plan is
     accepted and dropped, so the plan digests exactly as one written without
     it. Anything else is a plan, through `parse_plan`.
+
+    `lane_refs` is the run's IN FLIGHT map of the issue-run lanes it listed,
+    run id -> owner/repo#N (#3507): an overlap whose ref is one of those run
+    ids is read as that run's issue, so a planner that copied the lane's id
+    is not refused for it. Any other ref is checked as before.
     """
     if isinstance(value, (str, bytes)):
         try:
             value = json.loads(value)
         except (ValueError, UnicodeDecodeError):
             raise InvalidPlan(f"{PLAN_FILE} is not JSON") from None
+    if lane_refs and isinstance(value, Mapping):
+        value = _lane_refs_normalised(value, lane_refs)
     if isinstance(value, Mapping) and "ready" in value:
         ready = value.get("ready")
         if ready is True:
@@ -1100,6 +1110,28 @@ def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
                 found["reason"] = _not_ready_reason(f"Duplicates {lane}: {verdict.reason}")
         return "not_ready", found
     return "plan", parse_plan(value)
+
+
+def _lane_refs_normalised(
+    plan: Mapping[str, Any], lane_refs: Mapping[str, str],
+) -> Mapping[str, Any]:
+    """`plan` with each overlap ref that is a listed run lane's id replaced by
+    that run's owner/repo#N, on a copy; `plan` itself when none is."""
+    overlaps = plan.get("overlaps")
+    if not isinstance(overlaps, list):
+        return plan
+    rewritten = []
+    changed = False
+    for overlap in overlaps:
+        ref = overlap.get("ref") if isinstance(overlap, Mapping) else None
+        lane = ref.strip() if isinstance(ref, str) else None
+        if lane and lane in lane_refs:
+            log.info("the planner named the run lane %s as an overlap ref: read as %s",
+                     lane, lane_refs[lane])
+            overlap = {**overlap, "ref": lane_refs[lane]}
+            changed = True
+        rewritten.append(overlap)
+    return {**plan, "overlaps": rewritten} if changed else plan
 
 
 def _not_ready_reason(reason: str) -> str:
@@ -1983,7 +2015,9 @@ _INFLIGHT_USE = (
     "names every SAME FILES lane in \"overlaps\" with its action, and keeps its steps "
     "off files a live lane declares unless a step depends on that lane landing first. "
     "Only if the issue was split on purpose and the lanes do different parts, plan your "
-    "part and say so in the overlaps.\n\n"
+    "part and say so in the overlaps. An overlap's \"ref\" is always owner/repo#N: for an "
+    "issue-run lane, the overlap ref its line gives (that run's issue); only a duplicate "
+    "verdict's \"lane\" takes a run_ or workflow id.\n\n"
 )
 
 
@@ -3756,6 +3790,63 @@ def run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
             key: value for key, value in pull.items() if key not in PULL_REQUEST_SUMMARY_DROPPED
         }
     return out
+
+
+#: `GET /v1/runs/{id}`'s `planner_documents` (BGD, 6 November 2026, on the
+#: full-page interview lane: "Serve them on the run"): the planner step's
+#: design document and diagrams for the proposal page. A design doc is a
+#: Markdown artifact whose file name holds this word (gstack's planning skills
+#: write `<user>-<branch>-design-<time>.md`); a diagram is an artifact the name
+#: table calls an `image` -- PNG, JPEG, GIF or WebP, which the raw route serves
+#: as an image only when the bytes agree. SVG is text there, so it is no diagram.
+PLANNER_DOC_WORD = "design"
+
+#: At most this many of each, in name order: the page draws every one it is
+#: served, and a planner that wrote hundreds of screenshots is not a proposal.
+MAX_PLANNER_DOCS = 4
+MAX_PLANNER_DIAGRAMS = 12
+
+
+def planner_documents(task_id: str, rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """The planner task's design docs and diagrams out of its artifact listing.
+
+    `rows` are `AgentOutputService.list_artifacts`' entries (each with the name
+    table's `kind`). Each is served by NAME, size and a read link through the
+    planner task's own `/artifacts/raw` route -- never the bytes, never a
+    `gs://` uri or a signed URL -- so whoever follows the link passes that
+    route's tenant check (another tenant's member gets its 404) and its
+    read-time redaction. Pure: nothing is read here.
+    """
+    docs: list[dict[str, Any]] = []
+    diagrams: list[dict[str, Any]] = []
+    for row in rows:
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        kind = row.get("kind")
+        base = name.rsplit("/", 1)[-1].lower()
+        if kind == "markdown" and PLANNER_DOC_WORD in base:
+            docs.append(_planner_entry(task_id, name, row))
+        elif kind == "image":
+            diagrams.append(_planner_entry(task_id, name, row))
+    return {
+        "task_id": task_id,
+        "design_docs": sorted(docs, key=lambda d: d["name"])[:MAX_PLANNER_DOCS],
+        "diagrams": sorted(diagrams, key=lambda d: d["name"])[:MAX_PLANNER_DIAGRAMS],
+    }
+
+
+def _planner_entry(task_id: str, name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    content_type = row.get("content_type")
+    return {
+        "name": name,
+        "bytes": _opt_int(row.get("bytes")),
+        "content_type": content_type if isinstance(content_type, str) else None,
+        "read_url": (
+            f"/v1/tasks/{quote(task_id, safe='')}/artifacts/raw"
+            f"?{urlencode({'name': name, 'disposition': 'inline'}, quote_via=quote)}"
+        ),
+    }
 
 
 def _schedule_mark(metadata: Any) -> dict[str, Any] | None:

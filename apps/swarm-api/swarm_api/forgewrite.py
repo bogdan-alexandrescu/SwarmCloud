@@ -252,6 +252,13 @@ MAX_CHECK_PAGES = 5
 MAX_ANNOTATIONS = 50
 #: The most of a job log's tail read.
 MAX_LOG_TAIL_BYTES = 16 * 1024
+#: The most of a job log read when a caller opts in with `job_log_tail(...,
+#: cap=MAX_LOG_FULL_READ_BYTES)`: only the CI-fix excerpt's re-read does, when
+#: the 16 KiB tail holds fewer vitest FAIL headers than `Tests N failed`
+#: (issueci, #3170). A vitest shard's log with testing-library DOM dumps runs
+#: to hundreds of KiB, and the excerpt keeps 3,000 bytes of it, so this bounds
+#: the memory and transfer of one read, not what is kept.
+MAX_LOG_FULL_READ_BYTES = 1024 * 1024
 #: Where GitHub's Actions log redirect may point. The read carries no token,
 #: but a URL outside these is not GitHub's log storage and is not read.
 LOG_HOST_SUFFIXES = (".actions.githubusercontent.com", ".blob.core.windows.net")
@@ -1267,9 +1274,15 @@ class GitHubWriter:
         return [entry for entry in data if isinstance(entry, dict)]
 
     def job_log_tail(
-        self, ref: IssueRef, job_id: int, token: str, *, limit: int = MAX_LOG_TAIL_BYTES
+        self, ref: IssueRef, job_id: int, token: str, *, limit: int = MAX_LOG_TAIL_BYTES,
+        cap: int = MAX_LOG_TAIL_BYTES,
     ) -> str | None:
         """The last `limit` bytes of an Actions job's log, or None.
+
+        `limit` is clamped to `cap`, and `cap` to MAX_LOG_FULL_READ_BYTES. The
+        default `cap` is MAX_LOG_TAIL_BYTES, which every caller keeps except
+        the CI-fix excerpt's one re-read of a vitest log whose tail named fewer
+        failures than vitest counted (`issueci._check_section`, #3170).
 
         None for every failure -- a token without `actions: read`, a job that
         is not an Actions job, a redirect to anywhere but GitHub's log
@@ -1277,7 +1290,8 @@ class GitHubWriter:
         run's own output. The token goes to api.github.com only; the log
         storage is read without it (module docstring).
         """
-        limit = max(1, min(int(limit), MAX_LOG_TAIL_BYTES))
+        cap = max(1, min(int(cap), MAX_LOG_FULL_READ_BYTES))
+        limit = max(1, min(int(limit), cap))
         try:
             status, location = self._locate(
                 self._url(ref, f"actions/jobs/{int(job_id)}/logs"), github_headers(token),

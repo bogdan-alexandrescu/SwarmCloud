@@ -7,8 +7,9 @@
 # on was a hand edit the next apply put back. These runs hold the rendering:
 # "off" by default, each of the three values rendered as given, swarm-api's
 # alone, the validation refusing any other value, and dev's committed value,
-# "off". A terraform test cannot load a tfvars file into a run, so the dev run
-# sets the value the file holds and asserts the file as text.
+# "report" (BGD, 2026-11-06; "off" from 2026-11-04). A terraform test cannot
+# load a tfvars file into a run, so the dev run sets the value the file holds
+# and asserts the file as text.
 
 mock_provider "google" {
   source = "./mocks/google"
@@ -56,7 +57,7 @@ run "the_default_renders_off_on_swarm_api_only" {
   }
 }
 
-run "dev_keeps_the_review_off" {
+run "dev_reviews_in_report_mode" {
   command = plan
 
   module {
@@ -65,17 +66,17 @@ run "dev_keeps_the_review_off" {
 
   # dev's value, as committed (asserted as text below).
   variables {
-    contract_review_mode = "off"
+    contract_review_mode = "report"
   }
 
   assert {
-    condition     = length(regexall("(?m)^contract_review_mode\\s*=\\s*\"off\"", file("${var.tf_root}/../environments/dev/dev.tfvars"))) == 1
-    error_message = "terraform/environments/dev/dev.tfvars sets contract_review_mode = \"off\" (the owner turns it on, 2026-11-04)"
+    condition     = length(regexall("(?m)^contract_review_mode\\s*=\\s*\"report\"", file("${var.tf_root}/../environments/dev/dev.tfvars"))) == 1
+    error_message = "terraform/environments/dev/dev.tfvars sets contract_review_mode = \"report\" (BGD, 2026-11-06)"
   }
 
   assert {
-    condition     = local.service_env["swarm-api"].SWARM_CONTRACT_REVIEW == "off"
-    error_message = "dev renders SWARM_CONTRACT_REVIEW=\"off\""
+    condition     = local.service_env["swarm-api"].SWARM_CONTRACT_REVIEW == "report"
+    error_message = "dev renders SWARM_CONTRACT_REVIEW=\"report\""
   }
 }
 

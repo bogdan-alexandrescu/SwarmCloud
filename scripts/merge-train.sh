@@ -21,8 +21,10 @@
 #   * A train in flight (an open pull request from `train/<id>`) is judged at
 #     its head: pending waits, unless it is older than
 #     MERGE_TRAIN_MAX_AGE_MINUTES, when it is abandoned; green lands (unless
-#     the deploy-starvation hold below holds it); red is bisected.
-#   * No train in flight: up to MERGE_TRAIN_MAX_PRS (default 4) open pull
+#     the deploy-starvation hold below holds it); red goes through RED's
+#     three rules.
+#   * No train in flight, and rule 2 below not waiting for main: up to
+#     MERGE_TRAIN_MAX_PRS (default 4) open pull
 #     requests that are green at head, labelled `ready`, mergeable, not drafts,
 #     not forks and aimed at main board a new one, oldest first, each still
 #     passing main's closing-references and dependency checks (the same two
@@ -61,11 +63,30 @@
 # commit status on each head it lands, so the ruleset can require that context
 # (the runbook's change) and nothing reaches main without a green train.
 #
-# RED. A train of one is ejected: a comment linking the failing job, and
-# `ready` removed. A larger train is halved: the first half (the larger, when
-# odd) boards the next train at once, and the second is held back as suspects,
-# which board the train after it. So a culprit is found in log2(N) trains and
-# the innocent land on the way.
+# RED (BGD, 6 November 2026: keep the train and fix red trains). From 4 to 6
+# November 74 of 139 trains were red, mostly on checks known to fail at random
+# ('format / unit tests', 'swarm-ui typecheck / component tests', single
+# shards), and 6 of 18 ejected pull requests later landed with no change. So a
+# red train goes through three rules, in order (red_rules), and every comment
+# and summary line names the rule that acted:
+#   1. RETRY ONCE. The first red at a train head re-runs only the failed jobs
+#      of its failing Actions runs, once (rerun-failed-jobs), once every run
+#      at the head has finished, and the train stays open; the state block records `retry=<epoch>:<head>`, and the
+#      age bound counts from then. A green after it lands every member as a
+#      first green does. A re-run GitHub refuses (no `actions: write`), or one
+#      that cannot be recorded, falls through to the next rules this tick.
+#   2. HOLD WHILE MAIN IS RED. Red again: main's head is judged on the failing
+#      check names, by the same latest-run-per-event rule. Red on any of them
+#      there, the train closes "Held: main is red on <names>", ejects nobody,
+#      keeps every `ready` label and holds nothing back; no train boards until
+#      main's head is green on those checks (main_red_gate), or
+#      MERGE_TRAIN_MAIN_RED_WAIT_MINUTES after the hold, so a fix for main can
+#      still board when main stays red.
+#   3. BISECT, as before. A train of one is ejected: a comment linking the
+#      failing job, and `ready` removed. A larger train is halved: the first
+#      half (the larger, when odd) boards the next train at once, and the
+#      second is held back as suspects, which board the train after it. So a
+#      culprit is found in log2(N) trains and the innocent land on the way.
 #
 # THE DEPLOY-STARVATION HOLD (issue 3336). A green train does not land while
 # nothing has deployed for MERGE_TRAIN_DEPLOY_RECENT_MINUTES (60) and main's
@@ -86,7 +107,7 @@
 #   select --prs <gh pr list json> --required <names file>
 #          [--allow-unknown-mergeable | --recheck-unknown]
 #       Who may board. Prints `<N>\t<head sha>\t<title>` per pull request,
-#       oldest first. --recheck-unknown (needs GH_REPO) re-reads an otherwise
+#       those labelled `train-first` first, then oldest first. --recheck-unknown (needs GH_REPO) re-reads an otherwise
 #       eligible UNKNOWN pull request with `gh pr view`: the one network read.
 #   skips --prs <gh pr list json>
 #       Who will not board until someone acts: a `ready` pull request with a
@@ -94,9 +115,11 @@
 #       \t<key>\t<why>`, then `item\t<N>\t<key>\t<line>` per check. The tick
 #       comments once per head and key, under a hidden marker (tell_skip).
 #   judge --check-runs <json> --statuses <json> --required <names file> [--workflow-runs <json>]
+#         [--names <JSON array of check names>]
 #       A head's checks, each by the latest run of each event (the Actions
 #       runs give each check suite's event): `verdict\t<green|red|pending>`, then
-#       `failed\t<name>\t<url>` per failed check.
+#       `failed\t<name>\t<url>` per failed check, then with --names
+#       `named\t<name>\t<green|red|pending>` per name given.
 #   plan --verdict <green|red> --train "<N...>" --suspects "<N...>"
 #       What follows a judged train: `eject=`, `next=`, `suspects=`.
 #   compose --repo <dir> --base <sha> --prs <tsv: N, head sha, title>
@@ -106,6 +129,9 @@
 #       The state block a train pull request's body carries.
 #   tell --prs <gh pr list json>
 #       That telling step alone (GH_REPO, GH_TOKEN, RUN_URL).
+#   list-prs --out <file>
+#       The open pull request list the tick reads (list_open_prs) alone,
+#       into <file> (GH_REPO, GH_TOKEN).
 #   hold --train <N> --body <file> [--dry-run]
 #       The deploy-starvation hold alone, for green train <N> whose body is
 #       <file>: `hold\t<why>` or `merge\t<why>` (GH_REPO, GH_TOKEN, RUN_URL).
@@ -132,6 +158,11 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # for: it is posted after the train is green.
 TRAIN_CONTEXT="merge-train"
 TRAIN_PREFIX="train/"
+# A `ready` pull request also labelled this boards ahead of every other, oldest
+# first among them: an urgent fix waits for no queue, and still rides a tested
+# train with every required check (6 November 2026: a deploy blocker and the
+# train's own fix were 40 pull requests back, about seven trains).
+FIRST_LABEL="train-first"
 STATE_OPEN="<!-- merge-train-state"
 STATE_CLOSE="-->"
 # Four, the owner's brief: a red train of four is found in two more trains.
@@ -168,6 +199,32 @@ RELEASE_LOOK="${MERGE_TRAIN_RELEASE_LOOK:-10}"
 # in a new one: about 40 minutes for one network blip. The waits sum to 40
 # seconds, so a blip passes and a real outage still stops the tick quickly.
 MERGE_RETRY_WAITS="${MERGE_TRAIN_MERGE_RETRY_WAITS:-10 30}"
+# RULE 2, HOLD WHILE MAIN IS RED (red_rules, main_red_gate). Sixty minutes:
+# main's own CI answers a re-run of its failed jobs in about 40, so a main red
+# on a flake is green again inside it; past it, a train boards anyway, so a
+# pull request that fixes main is not held out by the red it fixes (it is
+# held again, ejecting nobody, if main is still red on the same checks).
+MAIN_RED_WAIT_MINUTES="${MERGE_TRAIN_MAIN_RED_WAIT_MINUTES:-60}"
+# RULE 1, RETRY ONCE: whose token asks GitHub to re-run the failed jobs.
+# `workflow`, the workflow's own token, which needs `actions: write` in
+# merge-train.yml; `app`, the merge App's token, which needs the App's
+# `actions: write` permission (installed) and its token's permission-actions.
+# Either refused, the train falls back to rule 2 and 3 and says so.
+RERUN_BY="${MERGE_TRAIN_RERUN_BY:-workflow}"
+# THE OPEN PULL REQUEST LIST (list_open_prs). One `gh pr list` of every open
+# pull request with its body and check rollup took 10.6 s and returned 1.4 MB
+# at 64 open (3,144 rollup entries) on 6 November 2026, at GitHub's 10-second
+# GraphQL limit: from 12:45Z four ticks in a row died on a 504, an i/o timeout
+# or an empty reply, and with no tick to start the next one the train stood
+# still for 75 minutes. So the list reads only the light fields of every open
+# pull request (1.5 s), and the two heavy ones, the body and the rollup, one
+# pull request at a time and only for those a tick acts on: a `ready` one and a
+# train. Every read is retried like a merge (gh_read, MERGE_RETRY_WAITS).
+PR_LIGHT_FIELDS="number,title,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository,mergeable,labels"
+PR_HEAVY_FIELDS="body,statusCheckRollup"
+# Six single reads at once: each takes about a second, so forty `ready` pull
+# requests are read in about seven.
+PR_READS_AT_ONCE="${MERGE_TRAIN_PR_READS_AT_ONCE:-6}"
 
 # The header, up to the first line that is not a comment: a hand-kept line
 # range drifts every time the header grows.
@@ -273,7 +330,8 @@ cmd_select() {
   local keep_unknown="${unknown}"
   [[ "${recheck}" == false ]] || keep_unknown=true
   local n sha mergeable title
-  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${keep_unknown}" "${ROLLUP_JQ}"'
+  jq -r --argjson required "${req}" --arg prefix "${TRAIN_PREFIX}" --argjson unknown "${keep_unknown}" \
+    --arg first "${FIRST_LABEL}" "${ROLLUP_JQ}"'
     def green:
       checks as $c
       | ([ $c[] | select(.done and (.result | bad)) ] | length == 0)
@@ -284,7 +342,7 @@ cmd_select() {
       | select((.title | test("^\\s*\\[swarm\\] task_"; "i")) | not)
       | select(green)
     ]
-    | sort_by(.number)
+    | sort_by([(any(.labels[]?; .name == $first) | not), .number])
     | .[]
     | "\(.number)\t\(.headRefOid)\t\(.mergeable)\t\(.title | gsub("[\\t\\r\\n]"; " "))"
   ' "${prs}" | while IFS=$'\t' read -r n sha mergeable title; do
@@ -348,19 +406,23 @@ cmd_skips() {
 # ---------------------------------------------------------------------------
 
 cmd_judge() {
-  local check_runs="" statuses="" required="" workflow_runs=""
+  local check_runs="" statuses="" required="" workflow_runs="" names=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --check-runs) [[ $# -ge 2 ]] || die "--check-runs needs a value"; check_runs="$2"; shift 2 ;;
       --workflow-runs) [[ $# -ge 2 ]] || die "--workflow-runs needs a value"; workflow_runs="$2"; shift 2 ;;
       --statuses) [[ $# -ge 2 ]] || die "--statuses needs a value"; statuses="$2"; shift 2 ;;
       --required) [[ $# -ge 2 ]] || die "--required needs a value"; required="$2"; shift 2 ;;
+      --names) [[ $# -ge 2 ]] || die "--names needs a value"; names="$2"; shift 2 ;;
       *) die "judge: unknown argument: $1" ;;
     esac
   done
   [[ -f "${check_runs}" && -f "${statuses}" ]] || die "judge: needs --check-runs and --statuses files"
   if [[ -n "${workflow_runs}" && ! -f "${workflow_runs}" ]]; then
     die "judge: no --workflow-runs file: ${workflow_runs}"
+  fi
+  if [[ -n "${names}" ]] && ! jq -e 'type == "array" and all(.[]; type == "string")' "${names}" >/dev/null 2>&1; then
+    die "judge: --names is not a JSON array of check names: ${names}"
   fi
   local req
   req="$(required_json "${required}")"
@@ -391,7 +453,8 @@ cmd_judge() {
   # latest run of another event still makes the verdict red. The worker's
   # `cancelled_run` and swarm-api's `forgechecks.cancelled_run` say the same.
   jq -rn --slurpfile cr "${check_runs}" --slurpfile st "${statuses}" \
-    --slurpfile wf "${workflow_runs:-/dev/null}" --argjson required "${req}" '
+    --slurpfile wf "${workflow_runs:-/dev/null}" --slurpfile nm "${names:-/dev/null}" \
+    --argjson required "${req}" '
     def good: . as $c | ["success", "skipped", "neutral"] | index($c) != null;
     def bad: . as $c | ["failure", "timed_out", "action_required",
                         "startup_failure", "stale", "error"] | index($c) != null;
@@ -419,7 +482,16 @@ cmd_judge() {
         elif all($required[]; . as $r | any($all[]; .name == $r and .done and (.result | good))) then "green"
         else "pending" end ) as $verdict
     | "verdict\t\($verdict)",
-      ( $failed[] | "failed\t\(.name | gsub("[\\t\\r\\n]"; " "))\t\(.url)" )
+      ( $failed[] | "failed\t\(.name | gsub("[\\t\\r\\n]"; " "))\t\(.url)" ),
+      # A name: red when any latest run of it finished bad, green when it
+      # ran and every latest run finished good, else pending (not run yet,
+      # running, or cancelled). Rule 2 holds on red and boards on green.
+      ( ($nm[0] // [])[] as $n
+        | [ $all[] | select(.name == $n) ] as $runs
+        | ( if any($runs[]; .done and (.result | bad)) then "red"
+            elif ($runs | length) > 0 and all($runs[]; .done and (.result | good)) then "green"
+            else "pending" end ) as $r
+        | "named\t\($n | gsub("[\\t\\r\\n]"; " "))\t\($r)" )
   '
 }
 
@@ -534,7 +606,11 @@ cmd_compose() {
 # `hold` (`<epoch>:<sha>`: when the train began holding, and for which build of
 # main) is written only by deploy_hold, so a body without it reads as a train
 # that never held; every other key is required.
-STATE_KEYS="id base head started dry_run prs suspects hold"
+# `retry` (rule 1: `<epoch>:<head>` once the failed jobs at that head were
+# re-run), `main_red` and `main_red_checks` (rule 2: when the train was held
+# and on which checks, a JSON array of names) are written by red_rules alone,
+# and read as absent like `hold`.
+STATE_KEYS="id base head started dry_run prs suspects hold retry main_red main_red_checks"
 
 state_valid() {
   local key="$1" value="$2"
@@ -546,6 +622,16 @@ state_valid() {
     prs) [[ "${value}" =~ ^[1-9][0-9]*:[0-9a-f]{40}( [1-9][0-9]*:[0-9a-f]{40})*$ ]] ;;
     suspects) is_number_list "${value}" ;;
     hold) [[ "${value}" =~ ^[0-9]+:[0-9a-f]{40}$ ]] ;;
+    retry) [[ "${value}" =~ ^[0-9]+:[0-9a-f]{40}$ ]] ;;
+    main_red) [[ "${value}" =~ ^[0-9]+$ ]] ;;
+    # Check names are the repository's own job names; nothing that could end
+    # the hidden block, and nothing but a non-empty list of one-line names.
+    main_red_checks)
+      [[ "${value}" != *"-->"* ]] \
+        && jq -en --arg v "${value}" '$v | fromjson? // null
+             | type == "array" and length > 0
+               and all(.[]; type == "string" and length > 0 and (test("[\\t\\r\\n]") | not))' >/dev/null 2>&1
+      ;;
     *) return 1 ;;
   esac
 }
@@ -646,10 +732,78 @@ required_contexts() {
   [[ -s "${out}" ]] || die "main has no required status checks: a train could never be judged green"
 }
 
+gh_read() {
+  # Runs the GitHub read "$3..." (one that is safe to repeat) into file $2,
+  # and runs it again after each wait in MERGE_RETRY_WAITS while it fails
+  # transiently (merge_failure_transient, or gh's "unexpected end of JSON
+  # input" for an empty reply) or exits 0 with something that is not JSON.
+  # $1 names the read in its messages. Returns 1, the reason on stderr, when
+  # it was refused or every attempt failed.
+  local what="$1" out="$2" err="$2.err" attempt=1 wait why
+  shift 2
+  # shellcheck disable=SC2086 # MERGE_RETRY_WAITS is a list of numbers.
+  for wait in ${MERGE_RETRY_WAITS} last; do
+    if "$@" >"${out}" 2>"${err}" </dev/null; then
+      jq -e . "${out}" >/dev/null 2>&1 && return 0
+      printf 'the reply was not JSON\n' >"${err}"
+    elif ! merge_failure_transient "${err}" && ! grep -q 'unexpected end of JSON input' "${err}"; then
+      break
+    fi
+    why="$(head -c 300 "${err}" | tr '\n' ' ')"
+    [[ "${wait}" != "last" ]] || break
+    echo "::warning::reading ${what} failed transiently (attempt ${attempt}): ${why}; retrying in ${wait}s" >&2
+    sleep "${wait}"
+    attempt=$((attempt + 1))
+  done
+  echo "::error::reading ${what} failed (attempt ${attempt}): $(head -c 300 "${err}" | tr '\n' ' ')" >&2
+  return 1
+}
+
 list_open_prs() {
-  gh pr list --repo "${GH_REPO}" --state open --base main --limit 200 \
-    --json number,title,body,headRefOid,headRefName,baseRefName,isDraft,isCrossRepository,mergeable,labels,statusCheckRollup \
-    >"$1"
+  # The open pull requests aimed at main, into file $1 as one JSON array:
+  # each with PR_LIGHT_FIELDS, and a `ready` one or a train with
+  # PR_HEAVY_FIELDS too, read on its own (THE OPEN PULL REQUEST LIST above).
+  # Every other one carries an empty body and rollup, which nothing reads. A
+  # `ready` one whose own read fails is left out of this tick's list (it
+  # boards on a later tick, and is told nothing on a rollup it does not
+  # have); a train's must be read, or the tick fails.
+  local out="$1" dir="$1.reads" n running=0
+  rm -rf "${dir}"
+  mkdir -p "${dir}/full"
+  gh_read "the open pull request list" "${dir}/list.json" \
+    gh pr list --repo "${GH_REPO}" --state open --base main --limit 200 --json "${PR_LIGHT_FIELDS}" \
+    || die "could not read the open pull requests"
+  jq -r --arg prefix "${TRAIN_PREFIX}" '
+    .[] | select(any(.labels[]?; .name == "ready") or (.headRefName | startswith($prefix))) | .number
+  ' "${dir}/list.json" >"${dir}/heavy.txt"
+  while read -r n; do
+    { gh_read "pull request #${n}" "${dir}/${n}.json" \
+        gh pr view "${n}" --repo "${GH_REPO}" --json "${PR_LIGHT_FIELDS},${PR_HEAVY_FIELDS}" \
+        && mv "${dir}/${n}.json" "${dir}/full/${n}.json"; } &
+    running=$((running + 1))
+    if [[ "${running}" -ge "${PR_READS_AT_ONCE}" ]]; then
+      wait
+      running=0
+    fi
+  done <"${dir}/heavy.txt"
+  wait
+  while read -r n; do
+    [[ ! -f "${dir}/full/${n}.json" ]] || continue
+    if jq -e --argjson n "${n}" --arg prefix "${TRAIN_PREFIX}" \
+      'any(.[]; .number == $n and (.headRefName | startswith($prefix)))' "${dir}/list.json" >/dev/null; then
+      die "could not read train #${n}"
+    fi
+    info "#${n} sits this tick out: reading it failed"
+  done <"${dir}/heavy.txt"
+  find "${dir}/full" -name '*.json' -exec cat {} + | jq -s . >"${dir}/full.json"
+  jq --slurpfile full "${dir}/full.json" --arg prefix "${TRAIN_PREFIX}" '
+    ($full[0] | map({key: (.number | tostring), value: .}) | from_entries) as $read
+    | [ .[]
+        | if $read[(.number | tostring)] then $read[(.number | tostring)]
+          elif any(.labels[]?; .name == "ready") or (.headRefName | startswith($prefix)) then empty
+          else . + {body: "", statusCheckRollup: []}
+          end ]
+  ' "${dir}/list.json" >"${out}"
 }
 
 finish_train() {
@@ -670,7 +824,7 @@ eject_pr() {
   local number="$1" train_id="$2" failed="$3" body
   body="${WORK}/eject-${number}.md"
   {
-    echo "**Ejected from the merge train, and \`ready\` removed.** Train ${train_id} -- main plus this pull request alone -- failed:"
+    echo "**Ejected from the merge train (rule 3, bisect), and \`ready\` removed.** Train ${train_id} -- main plus this pull request alone -- failed, after its one retry where GitHub allowed it, while main was not red on the same checks:"
     echo
     printf '%s\n' "${failed}"
     echo
@@ -682,7 +836,7 @@ eject_pr() {
   # Projects GraphQL field and changes nothing.
   gh api -X DELETE "repos/${GH_REPO}/issues/${number}/labels/ready" >/dev/null 2>&1 \
     || warn "could not remove ready from #${number}"
-  summary "ejected #${number}"
+  summary "rule 3 (bisect): ejected #${number}"
 }
 
 # The hidden marker on a "does not board" comment, and the sentence after it
@@ -1160,6 +1314,215 @@ deploy_hold() {
   return 0
 }
 
+state_patch() {
+  # Sets keys in train $1's state block, in its body file $2 and on GitHub:
+  # $3... are key=value pairs. Returns 1 when GitHub refused the edit.
+  local number="$1" body="$2" pair lines="${WORK}/state-lines.txt" edited="${WORK}/state-edited.md"
+  shift 2
+  : >"${lines}"
+  for pair in "$@"; do
+    state_valid "${pair%%=*}" "${pair#*=}" || die "state_patch: ${pair%%=*} is not valid: ${pair#*=}"
+    printf '%s\n' "${pair}" >>"${lines}"
+  done
+  # The new lines come from a file, never `awk -v`, which would read the
+  # backslashes a check name may carry as escapes.
+  awk -v open_mark="${STATE_OPEN}" -v close_mark="${STATE_CLOSE}" '
+    NR == FNR { line[++n] = $0; k = $0; sub(/=.*/, "", k); key[k] = 1; next }
+    { sub(/\r$/, "") }
+    $0 == open_mark { inside = 1; print; next }
+    inside && $0 == close_mark { inside = 0; for (i = 1; i <= n; i++) print line[i]; print; next }
+    inside { k = $0; sub(/=.*/, "", k); if (k in key) next }
+    { print }' "${lines}" "${body}" >"${edited}"
+  jq -n --rawfile b "${edited}" '{body: $b}' \
+    | gh api -X PATCH "repos/${GH_REPO}/pulls/${number}" --input - >/dev/null 2>&1 || return 1
+  cp "${edited}" "${body}"
+}
+
+main_checks() {
+  # Judges main's head on the check names in the JSON array $1, by the same
+  # latest-run-per-event rule as a train head (cmd_judge). Sets MAIN_SHA,
+  # MAIN_RED (the names red there, joined by ", "; empty when none) and
+  # MAIN_GREEN (true when every name is green there). Returns 1 when GitHub
+  # could not be read.
+  local nm="${WORK}/main-names.json" commit="${WORK}/main-commit.json" cr="${WORK}/main-check-runs.json"
+  local st="${WORK}/main-status.json" wf="${WORK}/main-workflow-runs.json" out="${WORK}/main-verdict.tsv"
+  MAIN_SHA=""
+  MAIN_RED=""
+  MAIN_GREEN=false
+  printf '%s\n' "$1" >"${nm}"
+  gh api "repos/${GH_REPO}/commits/main" >"${commit}" 2>/dev/null </dev/null || return 1
+  MAIN_SHA="$(jq -r '.sha // empty' "${commit}")" || return 1
+  is_sha "${MAIN_SHA}" || return 1
+  gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/check-runs?per_page=100" >"${cr}" 2>/dev/null </dev/null || return 1
+  gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/status?per_page=100" >"${st}" 2>/dev/null </dev/null || return 1
+  # Unread (no `actions: read`), each check suite is judged on its own, as
+  # handle_train judges a train head.
+  gh api "repos/${GH_REPO}/actions/runs?head_sha=${MAIN_SHA}&per_page=100" >"${wf}" 2>/dev/null </dev/null \
+    || printf '{"workflow_runs": []}\n' >"${wf}"
+  cmd_judge --check-runs "${cr}" --statuses "${st}" --workflow-runs "${wf}" \
+    --required "${WORK}/required.txt" --names "${nm}" >"${out}" || return 1
+  MAIN_RED="$(awk -F'\t' '$1 == "named" && $3 == "red" { printf "%s%s", sep, $2; sep = ", " }' "${out}")"
+  if awk -F'\t' '$1 == "named" { seen = 1; if ($3 != "green") bad = 1 } END { exit (seen && !bad) ? 0 : 1 }' "${out}"; then
+    MAIN_GREEN=true
+  fi
+}
+
+rerun_gh() {
+  if [[ "${RERUN_BY}" == "app" ]]; then
+    gh_app "$@"
+  else
+    gh "$@"
+  fi
+}
+
+retry_failed_runs() {
+  # Rule 1: re-runs only the failed jobs of each failed Actions run at train
+  # $1's head $3, once, after recording `retry` in its state (body $2), so the
+  # retry is spent even if the tick dies. Sets RETRY_RUNS (the run ids) on
+  # success, RETRY_WHY on failure (return 1): nothing failed in an Actions
+  # run, the state could not be recorded, or GitHub refused a re-run (the
+  # token lacks `actions: write`).
+  local number="$1" body="$2" head="$3" wf="${WORK}/retry-runs.json" err="${WORK}/rerun.err" run
+  RETRY_RUNS=""
+  RETRY_WHY=""
+  if ! gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${wf}" 2>/dev/null </dev/null; then
+    RETRY_WHY="could not read the Actions runs at ${head:0:12}"
+    return 1
+  fi
+  RETRY_RUNS="$(jq -r '[(.workflow_runs // [])[]
+      | select(.status == "completed"
+               and ((.conclusion // "") as $c | ["failure", "timed_out", "startup_failure"] | index($c) != null)
+               and ((.id | type) == "number"))
+      | .id | tostring] | join(" ")' "${wf}")"
+  if [[ -z "${RETRY_RUNS}" ]]; then
+    RETRY_WHY="no Actions run at ${head:0:12} failed, so no job can be re-run"
+    return 1
+  fi
+  if ! state_patch "${number}" "${body}" "retry=$(date +%s):${head}"; then
+    RETRY_WHY="could not record the retry in train #${number}'s state"
+    return 1
+  fi
+  for run in ${RETRY_RUNS}; do
+    if ! rerun_gh api -X POST "repos/${GH_REPO}/actions/runs/${run}/rerun-failed-jobs" >/dev/null 2>"${err}" </dev/null; then
+      RETRY_WHY="GitHub refused to re-run the failed jobs of run ${run}: $(head -c 300 "${err}" | tr '\n' ' ' | redact)"
+      return 1
+    fi
+  done
+}
+
+red_rules() {
+  # Which rule acts on red train $1 (body $2, head $3, judged into $4, its
+  # identity $5, its age in seconds $6). Sets RED_RULE: `retry` (rule 1 re-ran the failed jobs; the
+  # train stays open), `wait` (its re-run is still running), `held` (rule 2;
+  # RED_HELD names the checks main is red on) or `bisect` (rule 3). Writes
+  # the summary line for each rule it passes through.
+  local number="$1" body="$2" head="$3" verdict_file="$4" id="$5" age="$6" retried="" runs="${WORK}/red-runs.json"
+  RED_RULE=bisect
+  RED_HELD=""
+  retried="$(cmd_state_get --body "${body}" --key retry 2>/dev/null)" || retried=""
+  # Rule 1 acts on finished runs alone. Before the retry: GitHub re-runs the
+  # failed jobs of a completed run only, and a shard fails while the rest of
+  # its run goes on. After it: GitHub queues the re-run's runs when it accepts
+  # the call, before their new check runs exist. Either way a run at the head
+  # not completed is waited for within the age limit (counted from `started`,
+  # or from the retry at this head): past it the rules go on, so a run left
+  # queued (a runner outage, an approval wait) cannot keep a red train open
+  # and stop every other train boarding. An unreadable list goes on, and
+  # retry_failed_runs says why it cannot retry.
+  if [[ "${age}" -gt $((MAX_AGE_MINUTES * 60)) ]]; then
+    if gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${runs}" 2>/dev/null </dev/null \
+      && jq -e 'any((.workflow_runs // [])[]; .status != "completed")' "${runs}" >/dev/null; then
+      summary "train ${id}: rule 1 (retry once): some runs at ${head:0:12} still run after $((age / 60)) minutes, past the ${MAX_AGE_MINUTES}-minute limit: not waiting for them"
+    fi
+  elif gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${runs}" 2>/dev/null </dev/null \
+    && jq -e 'any((.workflow_runs // [])[]; .status != "completed")' "${runs}" >/dev/null; then
+    if [[ -n "${retried}" && "${retried#*:}" == "${head}" ]]; then
+      summary "train ${id}: rule 1 (retry once): its re-run at ${head:0:12} is still running: waiting"
+    else
+      summary "train ${id}: rule 1 (retry once): red at ${head:0:12} while some of its runs still run: waiting for them before re-running the failed jobs"
+    fi
+    RED_RULE="wait"
+    return 0
+  fi
+  if [[ -n "${retried}" && "${retried#*:}" == "${head}" ]]; then
+    summary "train ${id}: rule 1 (retry once): red again at ${head:0:12} after its retry: on to rule 2"
+  elif retry_failed_runs "${number}" "${body}" "${head}"; then
+    local note="${WORK}/retry-${number}.md"
+    {
+      echo "**Red. Rule 1 (retry once):** the failed jobs of run(s) ${RETRY_RUNS} are re-run, once, at this head; the train stays open and is judged again when they finish. Failing:"
+      echo
+      awk -F'\t' '$1 == "failed" { printf "- [%s](%s)\n", $2, $3 }' "${verdict_file}"
+      echo
+      echo "(scripts/merge-train.sh, run ${RUN_URL})"
+    } >"${note}"
+    comment_on "${number}" "${note}" || warn "could not say on #${number} that it retries"
+    summary "train ${id}: rule 1 (retry once): re-running the failed jobs of run(s) ${RETRY_RUNS}; the train stays open"
+    RED_RULE=retry
+    return 0
+  else
+    summary "train ${id}: rule 1 (retry once): the retry could not run (${RETRY_WHY}): falling back to bisect"
+  fi
+  local names
+  names="$(awk -F'\t' '$1 == "failed" { print $2 }' "${verdict_file}" | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')"
+  if [[ "${names}" == "[]" ]]; then
+    summary "train ${id}: rule 2 (hold while main is red): no failed check run to compare with main: rule 3 (bisect)"
+    return 0
+  fi
+  if ! main_checks "${names}"; then
+    summary "train ${id}: rule 2 (hold while main is red): could not read main's checks: rule 3 (bisect)"
+    return 0
+  fi
+  if [[ -z "${MAIN_RED}" ]]; then
+    summary "train ${id}: rule 2 (hold while main is red): main (${MAIN_SHA:0:12}) is not red on the failing checks: rule 3 (bisect)"
+    return 0
+  fi
+  RED_HELD="${MAIN_RED}"
+  local held
+  held="$(awk -F'\t' '$1 == "named" && $3 == "red" { print $2 }' "${WORK}/main-verdict.tsv" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+  # Recorded so a later tick boards only once main is green on these
+  # (main_red_gate). Unrecorded, the next tick boards at once: never worse
+  # than before rule 2.
+  state_patch "${number}" "${body}" "main_red=$(date +%s)" "main_red_checks=${held}" \
+    || warn "could not record the hold in train #${number}'s state: the next tick boards without waiting for main"
+  summary "train ${id}: rule 2 (hold while main is red): main (${MAIN_SHA:0:12}) is red on ${RED_HELD}: held; nobody ejected, nothing bisected"
+  RED_RULE=held
+}
+
+main_red_gate() {
+  # Rule 2's wait: with no train in flight, a train boards only when the
+  # newest closed train was not held (rule 2), or main's head is green on the
+  # checks it was held on, or MAIN_RED_WAIT_MINUTES have passed since. 0
+  # boards, 1 waits. A closed list that cannot be read boards, as before rule
+  # 2; main's checks that cannot be read wait, within the same bound.
+  local closed="${WORK}/closed.json" last="${WORK}/last-train.md" since checks names age
+  if ! gh pr list --repo "${GH_REPO}" --state closed --base main --limit 30 \
+    --json number,headRefName,body >"${closed}" 2>/dev/null </dev/null; then
+    warn "could not read the closed trains: boarding without rule 2's wait"
+    return 0
+  fi
+  jq -r --arg prefix "${TRAIN_PREFIX}" '
+    [ .[] | select((.headRefName // "") | startswith($prefix)) ] | max_by(.number) // {} | .body // ""' \
+    "${closed}" >"${last}"
+  since="$(cmd_state_get --body "${last}" --key main_red 2>/dev/null)" || return 0
+  checks="$(cmd_state_get --body "${last}" --key main_red_checks 2>/dev/null)" || return 0
+  names="$(jq -r 'join(", ")' <<<"${checks}")"
+  age=$(($(date +%s) - since))
+  if [[ "${age}" -ge $((MAIN_RED_WAIT_MINUTES * 60)) ]]; then
+    summary "rule 2 (hold while main is red): the last train was held on ${names} $((age / 60)) minutes ago, past the ${MAIN_RED_WAIT_MINUTES}-minute bound: boarding"
+    return 0
+  fi
+  if ! main_checks "${checks}"; then
+    summary "rule 2 (hold while main is red): could not read main's checks: no train boards this tick"
+    return 1
+  fi
+  if [[ "${MAIN_GREEN}" == "true" ]]; then
+    summary "rule 2 (hold while main is red): main (${MAIN_SHA:0:12}) is green on ${names} again: boarding"
+    return 0
+  fi
+  summary "rule 2 (hold while main is red): main (${MAIN_SHA:0:12}) is not green on ${names} yet: no train boards ($((age / 60)) of ${MAIN_RED_WAIT_MINUTES} minutes)"
+  return 1
+}
+
 handle_train() {
   local number="$1" train_on="$2"
   local body="${WORK}/train-${number}.md" branch head_now
@@ -1208,7 +1571,13 @@ handle_train() {
   verdict="$(awk -F'\t' '$1 == "verdict" { print $2 }' "${verdict_file}")"
   failed="$(awk -F'\t' '$1 == "failed" { printf "- [%s](%s)\n", $2, $3 }' "${verdict_file}")"
 
-  local age=$(($(date +%s) - started))
+  # Rule 1's re-run restarts the age bound: the re-run is a CI run of its own.
+  local retried="" age
+  retried="$(cmd_state_get --body "${body}" --key retry 2>/dev/null)" || retried=""
+  if [[ -n "${retried}" && "${retried#*:}" == "${head}" ]]; then
+    started="${retried%%:*}"
+  fi
+  age=$(($(date +%s) - started))
   case "${verdict}" in
     pending)
       if [[ "${age}" -gt $((MAX_AGE_MINUTES * 60)) ]]; then
@@ -1261,6 +1630,17 @@ handle_train() {
         finish_train "${number}" "${branch}" "Red. **Dry run:** nothing ejected and nothing bisected. Failing:"$'\n\n'"${failed}"
         return 0
       fi
+      # Rules 1 and 2 (red_rules); rule 3 below, as before them.
+      red_rules "${number}" "${body}" "${head}" "${verdict_file}" "${id}" "${age}"
+      case "${RED_RULE}" in
+        retry | wait) return 0 ;;
+        held)
+          # Nobody ejected, no label removed, nothing held back: every member
+          # stays `ready` and boards again once main is green (main_red_gate).
+          finish_train "${number}" "${branch}" "Held: main is red on ${RED_HELD}"
+          return 0
+          ;;
+      esac
       local plan eject next held
       plan="$(cmd_plan --verdict red --train "${train_prs}" --suspects "${suspects}")"
       eject="$(sed -n 's/^eject=//p' <<<"${plan}")"
@@ -1268,9 +1648,9 @@ handle_train() {
       held="$(sed -n 's/^suspects=//p' <<<"${plan}")"
       if [[ -n "${eject}" ]]; then
         eject_pr "${eject}" "${id}" "${failed}"
-        finish_train "${number}" "${branch}" "Red, with #${eject} alone: ejected. Failing:"$'\n\n'"${failed}"
+        finish_train "${number}" "${branch}" "Red, with #${eject} alone (rule 3, bisect): ejected. Failing:"$'\n\n'"${failed}"
       else
-        finish_train "${number}" "${branch}" "Red. Bisecting: $(hash_list "${next}") board the next train, $(hash_list "${held}") are held back. Failing:"$'\n\n'"${failed}"
+        finish_train "${number}" "${branch}" "Red. Rule 3 (bisect). Bisecting: $(hash_list "${next}") board the next train, $(hash_list "${held}") are held back. Failing:"$'\n\n'"${failed}"
       fi
       list_open_prs "${WORK}/prs.json"
       start_train false "${next}" "${held}"
@@ -1296,6 +1676,22 @@ cmd_tell() {
   WORK="$(mktemp -d)"
   trap 'rm -rf "${WORK}"' EXIT
   tell_skipped "${prs}"
+}
+
+cmd_list_prs() {
+  # The tick's open pull request list alone (list_open_prs), into --out.
+  local out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --out) [[ $# -ge 2 ]] || die "--out needs a value"; out="$2"; shift 2 ;;
+      *) die "list-prs: unknown argument: $1" ;;
+    esac
+  done
+  [[ -n "${out}" ]] || die "list-prs: no --out file"
+  : "${GH_REPO:?GH_REPO is required}"
+  retry_knobs_valid
+  is_number "${PR_READS_AT_ONCE}" || die "MERGE_TRAIN_PR_READS_AT_ONCE is not a positive number: ${PR_READS_AT_ONCE}"
+  list_open_prs "${out}"
 }
 
 cmd_hold() {
@@ -1377,8 +1773,12 @@ cmd_tick() {
   : "${RUN_URL:?RUN_URL is required}"
   is_number "${MAX_PRS}" || die "MERGE_TRAIN_MAX_PRS is not a positive number: ${MAX_PRS}"
   is_number "${MAX_AGE_MINUTES}" || die "MERGE_TRAIN_MAX_AGE_MINUTES is not a positive number: ${MAX_AGE_MINUTES}"
+  is_number "${MAIN_RED_WAIT_MINUTES}" || die "MERGE_TRAIN_MAIN_RED_WAIT_MINUTES is not a positive number: ${MAIN_RED_WAIT_MINUTES}"
+  [[ "${RERUN_BY}" == "workflow" || "${RERUN_BY}" == "app" ]] \
+    || die "MERGE_TRAIN_RERUN_BY is workflow or app, not: ${RERUN_BY}"
   hold_knobs_valid
   retry_knobs_valid
+  is_number "${PR_READS_AT_ONCE}" || die "MERGE_TRAIN_PR_READS_AT_ONCE is not a positive number: ${PR_READS_AT_ONCE}"
   WORK="$(mktemp -d)"
   trap 'rm -rf "${WORK}"' EXIT
 
@@ -1430,10 +1830,12 @@ cmd_tick() {
   fi
   case "${event}" in
     workflow_dispatch)
+      main_red_gate || return 0
       start_train "${dry}" "" ""
       ;;
     *)
       if [[ "${train_on}" == "true" ]]; then
+        main_red_gate || return 0
         start_train "${dry}" "" ""
       else
         summary "MERGE_TRAIN is not on: no train started"
@@ -1449,6 +1851,7 @@ main() {
     select) cmd_select "$@" ;;
     skips) cmd_skips "$@" ;;
     tell) cmd_tell "$@" ;;
+    list-prs) cmd_list_prs "$@" ;;
     hold) cmd_hold "$@" ;;
     land) cmd_land "$@" ;;
     judge) cmd_judge "$@" ;;

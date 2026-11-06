@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from agent_worker import graphstage
+from agent_worker import contextpack, graphstage
 from agent_worker.graphmcp import shim
 from swarm_common.profiles import RUNNER_PROFILES
 
@@ -165,13 +165,15 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     # path is the shim's argument, not the agent's variable.
     assert seen["env"][graphstage.CONTEXT_ENV] == env[graphstage.CONTEXT_ENV]
     assert graphstage.TICKET_FILE_ENV not in seen["env"]
-    # A served graph gets the graph clause of the exploration line (LANE CAPS,
-    # part of #2524), and nothing else.
+    # A served graph's implement step gets the lookup line (BGD, 2026-11-06),
+    # which names the graph in place of the exploration line's graph clause
+    # (LANE CAPS, part of #2524), and nothing else ...
     # ... after the line saying what to ask the graph first (AGENTS-USE-TOOLS).
     assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
                               + claude_code.GRAPH_FIRST_NOTE + "\n\n"
-                              + claude_code.exploration_note(graph=True, children="",
-                                                             shape=graphstage.SHAPE_TOOLS))
+                              + claude_code.graph_lookup_line(
+                                  {"prompt": "Implement it."}, work,
+                                  shape=graphstage.SHAPE_TOOLS))
 
 
 def test_claude_code_browser_registers_the_shim_beside_the_live_browser(monkeypatch, tmp_path):
@@ -250,7 +252,9 @@ def test_codex_registers_the_shim_and_its_url_as_toml_overrides(monkeypatch, tmp
     assert parsed == {f"{key}.command": command, f"{key}.args": args,
                       f"{key}.env": {graphstage.URL_ENV: URL}}
     assert seen["env"][graphstage.CONTEXT_ENV] == env[graphstage.CONTEXT_ENV]
-    assert seen["prompt"] == "Implement it."
+    # An implement step with the graph: the one lookup line (BGD, 2026-11-06).
+    assert seen["prompt"] == ("Implement it.\n\n" + contextpack.lookup_line(
+        {"prompt": "Implement it."}, work, tool=contextpack.GRAPH_LOOKUP_TOOL))
 
 
 def test_codex_with_a_snapshot_still_registers_the_local_server(monkeypatch, tmp_path):

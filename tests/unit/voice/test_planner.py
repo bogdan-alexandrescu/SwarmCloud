@@ -17,7 +17,8 @@ stdio to the planner's real MCP server (swarm_voice.mcp_server), this holds that
   only the planner's MCP server is loaded, nonessential traffic is off, and the
   private HOME is gone after the turn;
 * the MCP server lists exactly the planner's tools: the catalogue's
-  `draw_<kind>` tools, the read tools and `speak`;
+  `draw_<kind>` tools, the read tools, the visual tools, the answer act tool
+  and `speak`;
 * an unknown kind is refused and never reaches swarm-api; a turn without a
   grant is refused before anything is leased or read;
 * no secret value -- the leased token, the grant, the ID token -- appears in
@@ -53,7 +54,7 @@ from swarm_api.voice import cards as vcards  # noqa: E402
 
 from swarm_voice import accountlease, claudeturn, mcp_server, plannerlease  # noqa: E402
 from swarm_voice import planner as pl  # noqa: E402
-from swarm_voice import prompts, tools_read, tools_visual  # noqa: E402
+from swarm_voice import prompts, tools_act, tools_read, tools_visual  # noqa: E402
 from swarm_voice.grant import GRANT_HEADER, SESSION_HEADER, SessionGrant  # noqa: E402
 
 PERSON = "person@example.com"
@@ -333,7 +334,8 @@ def test_the_child_holds_the_token_and_no_api_key_and_only_the_planners_tools(wo
     draws = {t["name"] for t in vcards.catalogue()["tools"] if t["name"].startswith("draw_")}
     reads = {t["name"] for t in tools_read.tool_schemas()}
     visuals = {t["name"] for t in tools_visual.tool_schemas()}
-    assert names == draws | reads | visuals | {prompts.SPEAK_TOOL}
+    acts = {t["name"] for t in tools_act.tool_schemas()}
+    assert names == draws | reads | visuals | acts | {prompts.SPEAK_TOOL}
     assert all("inputSchema" in t for t in child["tools"])
     assert child["init"]["result"]["serverInfo"]["name"] == "planner"
 
