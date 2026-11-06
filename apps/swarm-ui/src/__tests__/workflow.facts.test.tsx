@@ -2,7 +2,7 @@
  * THE WORKFLOW'S FACTS CARD (the picked workflow-clarity variant, part of
  * #2688; Bogdan, 2026-11-05). Under the page's state row: the description on
  * the left, in three labelled lines (Purpose, Goals, Expected output; BGD,
- * 2026-11-06), held to about five lines with More only when the clamp cut
+ * 2026-11-06), each part clamped on its own row with More only when a clamp cut
  * text, a generated one marked by its chip, the dim ink and an (i); nothing
  * when none is served) and labelled facts on the right (Repository, Feature, Started by,
  * From, When). The count line and the inspector no longer repeat who and
@@ -372,6 +372,29 @@ describe('the Workflows list', () => {
 
 describe('on a phone', () => {
   const SHEET = `${FACTS_CSS}\n${STYLES}`
+  it('keeps all three labelled lines in view collapsed: label and text on one row, each part clamped, never the block', () => {
+    document.body.innerHTML =
+      '<div class="wff-parts is-clamped">' +
+      '<p class="wff-part"><span class="wff-part-label">Purpose</span><span class="wff-text wff-clip">p</span></p>' +
+      '<div class="wff-part"><span class="wff-part-label">Goals</span><ul class="wff-goals"><li><span class="wff-text wff-clip">g</span></li></ul></div>' +
+      '<p class="wff-part" id="out"><span class="wff-part-label">Expected output</span><span class="wff-text wff-clip">o</span></p>' +
+      '</div>'
+    const parts = document.querySelector('.wff-parts')!
+    const out = document.getElementById('out')!
+    const outText = out.querySelector('.wff-clip')!
+    const goal = document.querySelector('.wff-goals .wff-clip')!
+    for (const width of [1440, 390]) {
+      const at = (el: Element, prop: string) => cascade(SHEET, el, prop, { width, theme: 'light' }).winner?.value ?? null
+      // The collapsed block is not cut by height, so the Expected output line is never in a hidden overflow.
+      expect(at(parts, 'max-height')).toBeNull()
+      expect(at(parts, 'overflow')).toBeNull()
+      expect(at(out, 'display')).toBe('grid')
+      expect(at(out, 'grid-template-columns')).toBe('7.5rem minmax(0, 1fr)')
+      expect(at(outText, '-webkit-line-clamp')).toBe('2')
+      expect(at(goal, '-webkit-line-clamp')).toBe('1')
+    }
+  })
+
   it('stacks the facts under the description, the rule above them, and hides the Repository column', () => {
     document.body.innerHTML =
       '<section class="wff-card"><div class="wff-desc"></div><dl class="wff-facts"></dl></section>' +

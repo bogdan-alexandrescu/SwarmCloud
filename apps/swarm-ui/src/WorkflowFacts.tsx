@@ -231,11 +231,12 @@ export function WorkflowFacts({
   const [open, setOpen] = useState(false)
   const [clipped, setClipped] = useState(false)
   // SHOW ALL IS DRAWN ONLY WHEN THE CLAMP CUT TEXT: measured, not guessed
-  // from a character count, so it follows the width the card has.
+  // from a character count, so it follows the width the card has. Each part
+  // is clamped on its own, so any one of them cut draws More.
   useLayoutEffect(() => {
     const el = textRef.current
     if (el === null || open) return
-    const measure = () => setClipped(el.scrollHeight > el.clientHeight + 1)
+    const measure = () => setClipped([...el.querySelectorAll<HTMLElement>('.wff-clip')].some((c) => c.scrollHeight > c.clientHeight + 1))
     measure()
     const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     ro?.observe(el)
@@ -274,7 +275,7 @@ export function WorkflowFacts({
             {parts.purpose !== null && (
               <p className="wff-part">
                 <span className="wff-part-label">Purpose</span>
-                <span className="wff-text">{parts.purpose}</span>
+                <span className="wff-text wff-clip">{parts.purpose}</span>
               </p>
             )}
             {parts.goals.length > 0 && (
@@ -282,8 +283,8 @@ export function WorkflowFacts({
                 <span className="wff-part-label">Goals</span>
                 <ul className="wff-goals">
                   {parts.goals.map((g, i) => (
-                    <li key={i} className="wff-text">
-                      {g}
+                    <li key={i}>
+                      <span className="wff-text wff-clip">{g}</span>
                     </li>
                   ))}
                 </ul>
@@ -292,7 +293,7 @@ export function WorkflowFacts({
             {parts.output !== null && (
               <p className="wff-part">
                 <span className="wff-part-label">Expected output</span>
-                <span className="wff-text">{parts.output}</span>
+                <span className="wff-text wff-clip">{parts.output}</span>
               </p>
             )}
           </div>
