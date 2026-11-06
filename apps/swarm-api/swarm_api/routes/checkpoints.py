@@ -7,7 +7,9 @@ Owner decision 2026-09-24 (redesign-v2 S3, item A3) -- all three of:
         a truncation signal;
     GET /v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path}
         one member as text: content-type allowlist, redacted, windowed under
-        the artifact-content route's own size cap;
+        the artifact-content route's own size cap -- or, with `?format=image`
+        (BGD, 2026-11-06), a png, jpeg, webp or gif member as its own bytes
+        when its signature says it is one;
     GET /v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content
         the whole archive, streamed, `Content-Disposition: attachment`.
 
@@ -32,8 +34,10 @@ All logic is in `swarm_api.checkpoint_content`; the routes only translate.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from ..checkpoint_content import CheckpointContent
 from ..deps import AppContext, get_context, submission_scope, tenant_scope
@@ -85,7 +89,7 @@ def list_checkpoint_files(
     )
 
 
-@router.get("/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}")
+@router.get("/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}", response_model=None)
 def read_checkpoint_file(
     task_id: str,
     checkpoint_id: str,
@@ -93,10 +97,11 @@ def read_checkpoint_file(
     attempt_id: str | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     limit_bytes: int | None = Query(default=None, ge=1),
+    format: Literal["text", "image"] = Query(default="text"),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     service: CheckpointContent = Depends(checkpoint_content),
-) -> dict:
+) -> dict | Response:
     """One member's content, as the artifact-content route serves an artifact.
 
     `path` is matched EXACTLY against the member names in this checkpoint's
@@ -105,7 +110,23 @@ def read_checkpoint_file(
     segment, a backslash or a control character. Text only, by allowlist and
     by NUL sniff; redacted at read time; `truncated`/`next_offset` on every
     window.
+
+    `format=image` asks for the member's BYTES instead, and is answered only
+    for a png, jpeg, webp or gif whose first bytes are that type's signature
+    (`CheckpointContent.read_image`); anything else, an SVG included, is a
+    415. Opt-in, so a text read's JSON never turns into bytes under a client
+    that did not ask for them.
     """
+    if format == "image":
+        image = service.read_image(
+            tenant_id,
+            task_id,
+            submitted_by=submitted_by,
+            checkpoint_id=checkpoint_id,
+            path=path,
+            attempt_id=attempt_id,
+        )
+        return Response(image.data, media_type=image.media_type, headers=image.headers)
     return service.read_file(
         tenant_id,
         task_id,
