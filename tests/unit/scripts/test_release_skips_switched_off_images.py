@@ -135,6 +135,11 @@ def test_a_release_whose_ci_record_is_current_promotes_it_without_speech(box):
 def test_a_dev_release_whose_switch_is_not_literally_off_builds_it(box, tfvars, mode):
     if mode == 0o000 and os.geteuid() == 0:
         pytest.skip("root reads a file whatever its mode")
+    if mode is not None:
+        # Untracked: git status cannot read it either, and the build would
+        # call the tree dirty.
+        with (box.root / ".git" / "info" / "exclude").open("a") as fh:
+            fh.write("/terraform/\n")
     _tfvars(box.root, "dev", tfvars)
     proc, manifest, events = _release(box, "only", tfvars_mode=mode)
     assert proc.returncode == 0, proc.stderr[-4000:]
