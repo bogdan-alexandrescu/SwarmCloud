@@ -165,10 +165,13 @@ class FakePlanner:
         self.forgotten: list[str] = []
         self.running = 0
         self.most = 0
+        #: The planner model each delegation was asked for (None: the pin).
+        self.models: list[str | None] = []
 
-    async def delegate(self, *, person, grant, transcript, delegation_id=None):  # noqa: ANN001
+    async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None):  # noqa: ANN001
         self.calls.append({"person": person, "grant": grant, "transcript": list(transcript),
                            "delegation_id": delegation_id})
+        self.models.append(model)
         self.running += 1
         self.most = max(self.most, self.running)
         try:
@@ -249,6 +252,23 @@ def test_the_reply_comes_back_before_a_slow_planner_ends():
         assert done["cards"] == [{"kind": "plan", "card_id": "vc_1"}]
         assert (await client.get("/delegations/vd_unknown")).status_code == 404
         await client.aclose()
+    run(body)
+
+
+def test_each_front_session_delegates_with_the_planner_model_it_started_with():
+    """The Voice it setting is read at a session's start: a session keeps the
+    model it started with, the next one gets the admin's change, and one
+    started with none leaves the planner on its pin."""
+    async def body(w: World):
+        await w.front.start("vs-1", person=PERSON, grant=_grant(), planner_model="claude-opus-5-5")
+        # The admin changes the setting while vs-1 lives; vs-2 starts after it.
+        await w.front.start("vs-2", person=PERSON, grant=_grant(), planner_model="claude-sonnet-5-5")
+        await w.front.start("vs-3", person=PERSON, grant=_grant())
+        w.planner.gate.set()
+        for voice_id in ("vs-1", "vs-2", "vs-3"):
+            answer = await w.front.turn(voice_id, "plan the fix for the login bug")
+            await w.front.delegation(answer.delegation_id).done.wait()
+        assert w.planner.models == ["claude-opus-5-5", "claude-sonnet-5-5", None]
     run(body)
 
 

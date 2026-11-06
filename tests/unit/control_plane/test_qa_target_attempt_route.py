@@ -36,6 +36,7 @@ from typing import Any
 
 import pytest
 
+from swarm_api import qasettings
 from swarm_api.handoff import LIVE_AUDIT
 from swarm_api.main import UNCAPTURED_ROUTES
 from swarm_api.qa_identity import qa_identity_message
@@ -328,7 +329,8 @@ def test_the_route_is_never_captured():
 # --------------------------------------------------------------------------
 
 FLOWS = [
-    {"id": "checkout", "goal": "Buy one item", "start_path": "/", "mutating": True},
+    {"id": "checkout", "goal": "Buy one item", "start_path": "/", "mutating": True,
+     "writes": "One order of one item."},
     {"id": "browse", "goal": "Find an item", "start_path": "/", "mutating": False},
 ]
 
@@ -431,3 +433,27 @@ def test_a_flow_batch_step_is_never_mutating(client, ldb, running):
     assert response.status_code == 200, response.text
     # MUTATION: grant a batch writes when any flow of the target is mutating and this is true.
     assert response.json()["mutating"] is False
+
+
+# --------------------------------------------------------------------------
+# Declared writes and the workspace's `writing_flows` (qa-environments.md §6; part of #2688)
+# --------------------------------------------------------------------------
+
+
+def test_a_stored_mutating_flow_without_writes_is_not_mutating(client, ldb, running):
+    flows = [{"id": "checkout", "goal": "Buy one item", "start_path": "/", "mutating": True}]
+    response = mutating_answer(client, ldb, running, flows=flows)
+    assert response.status_code == 200, response.text
+    # MUTATION: build the issue's view with `qaspec.leg(target, leg_name)` alone and this is true.
+    assert response.json()["mutating"] is False
+
+
+def test_no_flow_step_is_mutating_while_the_workspaces_writing_flows_is_off(client, ldb, running):
+    ldb.docs[f"{qasettings.COLLECTION}/eng"] = {"tenant_id": "eng", qasettings.WRITING_FIELD: False}
+    response = mutating_answer(client, ldb, running)
+    assert response.status_code == 200, response.text
+    # MUTATION: pass `writing_flows=True` to the issue's `qaspec.leg` and this is true.
+    assert response.json()["mutating"] is False
+    # Anything but a stored bool is the default, on.
+    ldb.docs[f"{qasettings.COLLECTION}/eng"] = {"tenant_id": "eng", qasettings.WRITING_FIELD: "off"}
+    assert ask(client, running[0]).json()["mutating"] is True

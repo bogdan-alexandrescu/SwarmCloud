@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from agent_worker.judge import shapes
-from agent_worker.judge.sanitize import is_denied_path
+from agent_worker.judge.sanitize import is_denied_path, is_flagged
 
 PLAN_FILE = "plan.json"
 VERDICT_FILE = "verdict.json"
@@ -614,6 +614,7 @@ def _judge_contract(judge: Any, document: Mapping[str, Any], digest: str,
     sha: str | None = None
     call_id: str | None = None
     verdicts: list[dict[str, Any]] = []
+    cited: dict[int, str] = {}
     failure: str | None = None
     for start in range(0, len(rows), shapes.JC2_PER_CALL):
         batch = rows[start:start + shapes.JC2_PER_CALL]
@@ -636,13 +637,49 @@ def _judge_contract(judge: Any, document: Mapping[str, Any], digest: str,
         if sent is None:
             sent, sha = paths, shapes.jc2_state_sha256(state)
             call_id = decision.call_id or None
-        verdicts.extend(shapes.read_jc2(batch, state, decision.answers))
+        read = shapes.read_jc2(batch, state, decision.answers)
+        _cite(cited, read, state)
+        verdicts.extend(read)
     if not verdicts:
         return _not_run(digest, commit, base, failure or "failed",
                         mechanical=mechanical, call_id=call_id)
     return {"digest": digest, "commit": commit, "base": base, "outcome": OUTCOME_JUDGED,
             "reason": None, "call_id": call_id, "state_sha256": sha,
-            "changed": list(sent or ()), "mechanical": mechanical, "verdicts": verdicts}
+            "changed": list(sent or ()),
+            "hunks": [cited.get(n) for n in range(len(sent or ()))],
+            "mechanical": mechanical, "verdicts": verdicts}
+
+
+def _cite(cited: dict[int, str], verdicts: Sequence[Mapping[str, Any]],
+          state: Mapping[str, Any]) -> None:
+    """Record in `cited` (item -> text) the hunk each verdict's `i<n>` rests
+    on, as the batch's own state sent it to Jev, for the route's `hunks`
+    (`ContractVerdictBody.hunks`; swarm-api keeps the cited ones,
+    `contractreask.cited_hunks`, and the console prints them under each
+    verdict). Nothing here is sent to Jev.
+
+    The rules are `cited_hunks`'s, so the worker posts no more than the record
+    keeps: only a cited item, the first verdict's text for it, cut to
+    `shapes.HUNK_CHARS` (the state's own cut); none for an item the state sent
+    by path alone (no change text) or the content of a denied path, and a hunk
+    holding anything credential-shaped is withheld whole (`sanitize`, the
+    shared package swarm-api checks with), because Jev never read it. The body
+    therefore carries at most one hunk per judged requirement."""
+    rows = state.get("changed") or ()
+    for verdict in verdicts:
+        item = verdict.get("evidence_item") or ""
+        if not item.startswith("i") or not item[1:].isdigit():
+            continue
+        n = int(item[1:])
+        if n in cited or n >= len(rows):
+            continue
+        path, text = rows[n].get("path"), rows[n].get("hunk")
+        if not isinstance(text, str) or not text or not isinstance(path, str) \
+                or is_denied_path(path):
+            continue
+        text = text[:shapes.HUNK_CHARS]
+        if not is_flagged(text):
+            cited[n] = text
 
 
 def deliver_contract_verdict(post: Any, verdict: Mapping[str, Any] | None, *,
