@@ -3,6 +3,7 @@ import { loadQaSettings, loadRepositories, type QaSettings } from './api'
 import { Banner, Button, Card, EmptyState } from './components'
 import { repoName } from './RepositoriesData'
 import { UrLink, UrRefresh, UrRegion, useUrRead, writeFailure } from './RepositoriesParts'
+import { InfoTip } from './People'
 import { useIsAdmin } from './PermissionCards'
 import { useRoleGate } from './Profile'
 import { PageHead } from './Shell'
@@ -135,6 +136,22 @@ import './styles/repositories.css'
 export const QA_TARGETS_PAGE = 'work/repositories?page=qa-targets'
 
 const LIST_ROUTE = 'GET /v1/qa-targets'
+
+/**
+ * WRITING FLOWS (part of #2688; qa-environments.md §6): a flow marked `mutating` declares in `writes`, one sentence,
+ * what it may write. The target's row names each such flow, its sentence behind an (i). A mutating flow with no
+ * `writes` (saved before it was required) runs read-only, so it is not named here.
+ */
+function writingFlows(raw: unknown): { id: string; writes: string }[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((f) => {
+    if (typeof f !== 'object' || f === null) return []
+    const { id, mutating, writes } = f as Record<string, unknown>
+    return mutating === true && typeof id === 'string' && typeof writes === 'string' && writes.trim() !== ''
+      ? [{ id, writes: writes.trim() }]
+      : []
+  })
+}
 
 /** The run's flows-per-step field width: two digits and the spinner. */
 const FLOWS_INPUT: CSSProperties = { width: '4.5rem' }
@@ -629,6 +646,11 @@ function TargetCard({
           Files in <b>{slug ?? t.repository ?? t.repo_id ?? 'an unnamed repository'}</b>
         </span>
         <span>{screensWords}</span>
+        {writingFlows(t.more.flows).map((f) => (
+          <span key={f.id} className="qa-flow" data-writing-flow={f.id}>
+            <code>{f.id}</code> writes <InfoTip about={`what ${f.id} writes`} tip={f.writes} />
+          </span>
+        ))}
       </div>
       <div className="qa-envs-wrap">
         <table className="qa-envs" aria-label={`${t.name}’s environments`}>

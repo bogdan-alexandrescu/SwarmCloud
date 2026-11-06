@@ -44,13 +44,38 @@ routes, the merge switch, budget raises, approving a hold, destroy and purge.
 Phase three's acting routes join it in their own lane, with their audit rows
 stamped from `AuthContext.via`.
 
-THE WRITE LIST is one route, apart from the reads so the read list stays reads
+THE WRITE LIST began as one route, apart from the reads so the read list stays reads
 only: `POST /v1/voice/sessions/{session_id}/cards`, the card write path the
 planner draws through (§3.5, §4; routes/voice.py). The route writes only to
 the grant's own session (any other session id is 403), takes the tenant from
 that session, and validates the card against the catalogue, which has no
 field that can hold a credential value. A test walks the route table and
 fails when any other write is reachable with a grant.
+
+THE WRITE LIST ALSO HOLDS what voice-it-own-speech.md adds (§7.3, §8.3):
+`POST /v1/voice/sessions/{session_id}/readbacks/answer`, where swarm-voice
+posts each final utterance GPT-Live heard so the read-back gate can tell a
+"go" before the planner does (routes/voice_readback.py), and the visual and
+note writes the planner draws through (§8.3). Each is classed as heard in
+`voice/readback.py`, and each writes only to the grant's own session.
+
+THE WRITE LIST ALSO HOLDS the planner's one act route (voice-it.md §3.9; BGD's
+pick, 6 November 2026): `POST /v1/tasks/{task_id}/answers`, the answer to an
+agent's question, sent by swarm-voice's `answer_question` act tool with
+`via: voice-it` after a read-back the person confirmed. Who may answer is the
+route's rule, unchanged: the task's submitter or an admin, never a viewer
+(`role_member_required`), and a grant carries none of the person's
+platform-admin powers. It runs as heard (`readback.AS_HEARD_ROUTES`).
+
+THE READ-BACK GATE (voice-it-own-speech.md §7.2). An act route that cancels,
+merges, deploys, deletes or approves (`readback.GATED_ROUTES`) does not run on
+a grant alone: `gate` holds it as a pending read-back and answers 202
+`readback_pending` with its id, and runs it only when it is re-sent with
+`X-Swarm-Voice-Readback: <id>` naming a confirmed, unused read-back of this
+session whose method, route and body hash match. The route declares
+`routes.voice_readback.readback_gate`, which reads the body and calls `gate`;
+tests/unit/voice/test_readback.py fails when a gated route on these lists
+does not, and when a non-GET route on them is unclassed.
 
 THE GRANT IS A CREDENTIAL. Nothing here logs, raises, returns or stores it:
 messages name the session id at most, and the stored value is its hash.
@@ -69,7 +94,8 @@ from typing import Any, Mapping
 
 from swarm_common.admission import _snapshot
 
-from ..errors import Forbidden, Unauthenticated, UpstreamUnavailable
+from ..errors import ApiError, Forbidden, Unauthenticated, UpstreamUnavailable
+from . import readback as vreadback
 from . import sessions as vs
 
 GRANT_HEADER = "X-Swarm-Voice-Grant"
@@ -121,6 +147,14 @@ ALLOWED_ROUTES: frozenset[tuple[str, str]] = frozenset({
 #: `ALLOWED_ROUTES` so that list stays GETs only; see the module docstring.
 WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/v1/voice/sessions/{session_id}/cards"),
+    # voice-it-own-speech.md §7.3: GPT-Live's finals, for the read-back gate.
+    ("POST", "/v1/voice/sessions/{session_id}/readbacks/answer"),
+    # §8.3: the planner's visuals and spoken notes (routes/voice_visuals.py).
+    ("POST", "/v1/voice/sessions/{session_id}/visuals"),
+    ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
+    # voice-it.md §3.9: the planner's answer act tool (swarm_voice/tools_act.py),
+    # BGD's pick of 6 November 2026. The route's own rule decides who answers.
+    ("POST", "/v1/tasks/{task_id}/answers"),
 })
 
 
@@ -132,6 +166,14 @@ class GrantRefused(Unauthenticated):
 class RouteNotGranted(Forbidden):
     """403: the route is on neither `ALLOWED_ROUTES` nor `WRITE_ROUTES`, or the grant would act
     somewhere its session does not."""
+
+
+class ReadbackHeld(ApiError):
+    """202: a gated call was held as a read-back and did not run; the
+    detail names the read-back, what it will do and to what."""
+
+    status_code = 202
+    code = "readback_pending"
 
 
 class GrantAuditUnavailable(UpstreamUnavailable):
@@ -220,3 +262,44 @@ def write_audit(db: Any, row: dict[str, Any]) -> None:
         raise GrantAuditUnavailable(
             f"the Voice it audit row could not be written ({type(exc).__name__}); "
             "nothing was done") from None
+
+
+def where_of(session: GrantSession) -> vreadback.Where:
+    return vreadback.Where(tenant_id=session.tenant_id, person=session.person,
+                           project_id=session.project_id, session_id=session.session_id)
+
+
+def session_of(session_header: str | None, *, tenant_id: str, person: str) -> GrantSession:
+    """The session a grant request named, after `resolve` accepted it on the
+    same request (`deps.current_auth`)."""
+    match = _SESSION_RE.match((session_header or "").strip())
+    if match is None:
+        raise GrantRefused("the Voice it grant is not valid")
+    return GrantSession(tenant_id=tenant_id, person=person.strip().lower(),
+                        project_id=match.group(1), session_id=match.group(2))
+
+
+def gate(db: Any, readbacks: vreadback.Readbacks, session: GrantSession, *, method: str,
+         route: str, path_params: Mapping[str, Any], body: bytes | None,
+         presented: str | None) -> dict[str, Any] | None:
+    """The read-back gate (voice-it-own-speech.md §7.2) for a grant request.
+
+    An act that runs as heard, or a read, passes (None). A gated act passes
+    only with `presented` naming its confirmed read-back, which is then used
+    (returned); without one it is held and `ReadbackHeld` (202) is raised,
+    so the route never runs. A wrong, used or mismatched id is 409 and
+    nothing runs."""
+    verb = vreadback.classify(method, route)
+    if verb is None or verb == vreadback.AS_HEARD:
+        return None
+    where = where_of(session)
+    if presented is not None:
+        return readbacks.consume(where, presented, method=method, route=route, body=body)
+    target = vreadback.target_name(db, tenant_id=session.tenant_id, method=method,
+                                   route=route, path_params=path_params)
+    held = readbacks.hold(where, action=verb, target=target, method=method, route=route,
+                          body=body)
+    raise ReadbackHeld(
+        f"Will {verb} {target}: held for a spoken go",
+        detail={"readback_id": held["id"], "action": verb, "target_name": target,
+                "expires_at": held["expires_at"].isoformat()})

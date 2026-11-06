@@ -43,14 +43,16 @@ import { act, render } from '@testing-library/react'
 
 import { App, SECTIONS } from '../App'
 import {
-  probe,
+  probeYielding,
   resolveSheet,
   resolveVars,
   stripComments,
   tokenTables,
+  yieldToWorker,
   type Finding,
   type Report,
 } from './spaceprobe'
+import { expectTwins, reaching, sectionTwins } from './sheetcut'
 
 /**
  * Every route the rail can reach, DERIVED rather than restated.
@@ -175,19 +177,34 @@ function merge(parts: Report[]): Report {
  * on its own selector (`--wi-height`), which the token tables, read from the
  * theme blocks, do not hold, so resolving it throws.
  */
-const SECTION_SHEETS = Object.values(
-  import.meta.glob<string>(['../styles/*.css', '../work/needs-you.css'], { query: '?raw', import: 'default', eager: true }),
-)
+const SECTION_SHEET_FILES = import.meta.glob<string>(['../styles/*.css', '../work/needs-you.css'], {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+})
+const SECTION_SHEETS = Object.values(SECTION_SHEET_FILES)
 const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 
+// The injected twins and the cut sheet the probe reads: sheetcut.ts, with why.
+
 async function sweep(routes: readonly string[], Shown: typeof App = App): Promise<Record<Theme, Report>> {
-  const sheets: Record<Theme, string> = {
-    // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
-    // components' rules in components.css among them) as well as styles.css.
-    dark: resolveSheet(SHEET, 'dark'),
-    light: resolveSheet(SHEET, 'light'),
-  }
+  // A REAL TURN BETWEEN EVERY LONG STEP, not only inside the probe. Measured
+  // alone on the SwarmCloud container for the admin-setup slice (2026-11-05):
+  // these four calls held the loop for 19.7 s, and each snapshot's
+  // cut / unpainted / cut before its probe for up to 9.4 s, plus the up to 5 s
+  // the previous probe ran past its last turn. PR #3264's CI shard 2/8, with
+  // the slice passing in 70 s, still ended on "Timeout calling onTaskUpdate":
+  // a loaded runner stretches a 15-20 s hold past the RPC's 60 s (see
+  // YIELD_EVERY_MS in spaceprobe.ts).
+  // With a turn after each step the longest hold is one step (about 5 s).
+  // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
+  // components' rules in components.css among them) as well as styles.css.
+  const darkSheet = resolveSheet(SHEET, 'dark')
+  await yieldToWorker()
+  const sheets: Record<Theme, string> = { dark: darkSheet, light: resolveSheet(SHEET, 'light') }
+  await yieldToWorker()
   const tables = { dark: tokenTables(SHEET).dark, light: tokenTables(SHEET).light }
+  await yieldToWorker()
 
   const snapshots: { el: HTMLElement; local: { el: Element; source: string }[] }[] = []
   for (const route of routes) {
@@ -196,6 +213,9 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
     await settle()
     const snap = container.cloneNode(true) as HTMLElement
     unmount()
+    // The walk's only real turn of the event loop between renders: see
+    // YIELD_EVERY_MS in spaceprobe.ts for what went unread without one.
+    await yieldToWorker()
     // A screen's own `<style>` element, resolved like the main sheet. Overview
     // shipped one (`OVERVIEW_CSS`) until U8 folded it into styles.css, and no
     // screen ships one now -- stylesheet.gate.test.ts holds that. The loop
@@ -207,31 +227,63 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
     })
   }
 
+  // The whole resolved sheet, parsed once per theme and read as rules; the
+  // document carries only `reaching`'s cut of it while a snapshot is probed.
+  const whole = document.createElement('style')
+  const parse = (text: string): CSSRule[] => {
+    whole.textContent = text
+    document.head.appendChild(whole)
+    const rules = [...whole.sheet!.cssRules]
+    expectTwins(twins, whole)
+    whole.remove()
+    return rules
+  }
+  const twins = sectionTwins(Object.keys(SECTION_SHEET_FILES))
+  const rules = { dark: parse(sheets.dark), light: parse(sheets.light) }
   const style = document.createElement('style')
   document.head.appendChild(style)
+  const cut = (theme: Theme) => {
+    const { text, count } = reaching(rules[theme])
+    style.textContent = text
+    expect(style.sheet!.cssRules.length, 'the cut sheet did not parse back rule for rule').toBe(count)
+  }
 
   const dark: Report[] = []
   const light: Report[] = []
 
-  style.textContent = sheets.dark
-  const borders: Element[][] = []
-  for (const s of snapshots) {
-    for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.dark)
-    document.body.appendChild(s.el)
-    unpainted(s.el)
-    const r = probe(s.el)
-    dark.push(r)
-    borders.push(r.bordered)
-    s.el.remove()
-  }
+  const home = twins.map(({ el }) => ({ el, parent: el.parentNode!, next: el.nextSibling }))
+  for (const { el } of twins) el.remove()
+  try {
+    const borders: Element[][] = []
+    for (const s of snapshots) {
+      for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.dark)
+      document.body.appendChild(s.el)
+      cut('dark')
+      await yieldToWorker()
+      unpainted(s.el)
+      await yieldToWorker()
+      // Again: a box `unpainted` took out can change what a structural
+      // selector (`:last-child`, `+`, `:has`) matches.
+      cut('dark')
+      await yieldToWorker()
+      const r = await probeYielding(s.el)
+      dark.push(r)
+      borders.push(r.bordered)
+      s.el.remove()
+    }
 
-  style.textContent = sheets.light
-  snapshots.forEach((s, i) => {
-    for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.light)
-    document.body.appendChild(s.el)
-    light.push(probe(s.el, borders[i]))
-    s.el.remove()
-  })
+    for (const [i, s] of snapshots.entries()) {
+      for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.light)
+      document.body.appendChild(s.el)
+      cut('light')
+      await yieldToWorker()
+      light.push(await probeYielding(s.el, borders[i]))
+      s.el.remove()
+    }
+  } finally {
+    // Last first, so each one's next sibling is back before it is.
+    for (const { el, parent, next } of home.reverse()) parent.insertBefore(el, next)
+  }
 
   style.remove()
   window.location.hash = ''
@@ -388,7 +440,48 @@ const TALK_CARDS_ON_GLASS: Exemption = {
       (f.where === 'a.c-btn.is-sm' && f.detail.endsWith('on rgb(181 181 181)'))),
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS, TALK_CARDS_ON_GLASS]
+/**
+ * THE STAGE'S READ-BACK HOLD ON GLASS, the mic group's artefact again. A
+ * `.vts-hold` is `--vt-glass` (`--surface` at 70%) over the Talk pane's opaque
+ * `--bg` (styles/talk-stage.css, styles/talk-pane.css), so its Go and Not that
+ * buttons' boundary, rgb(125 142 163), is about 3.3:1 on the drawn ground; the
+ * probe, compositing the glass's alpha twice, measures the same grey
+ * rgb(198 199 200) and 1.97:1. Keyed on the hold's small buttons and that
+ * measured ground.
+ */
+const TALK_HOLD_ON_GLASS: Exemption = {
+  name: 'talk hold on glass',
+  why: "the probe composites the hold's color-mix(--surface 70%, transparent) twice; the drawn boundary is about 3.3:1",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' &&
+    (f.where === 'button.c-btn.is-sm' || f.where === 'button.c-btn.is-primary.is-sm') &&
+    f.detail.endsWith('on rgb(198 199 200)'),
+}
+
+/**
+ * THE STAGE'S NOTE PIN HAS NO BORDER; jsdom gives it one. `.vts-pin` sets
+ * `border: 0` (styles/talk-stage.css), which outranks `:where(.app button)`'s
+ * `--ctl-bd` floor in styles.css on specificity, so a browser draws the pin as
+ * its `--paused` disc alone. jsdom 25's `getComputedStyle` applies rules in
+ * document order without weighing specificity, and the section sheets come
+ * before styles.css, so the probe reads the floor's 1px `--ctl-bd` border on
+ * the noted line's tint. Exactly that selector, and only its divider contrast.
+ */
+const TALK_PIN_BORDERLESS: Exemption = {
+  name: 'talk pin borderless',
+  why: "jsdom's cascade ignores specificity, so `:where(.app button)`'s border overrides the pin's `border: 0`; a browser draws none",
+  matches: (f) => f.kind === 'divider-under-floor' && f.where === 'button.vts-pin',
+}
+
+const EXEMPTIONS: readonly Exemption[] = [
+  APP_FRAME,
+  NAV_CHROME_HAIRLINES,
+  BAD_BANNER_HAIRLINE,
+  TALK_MIC_ON_GLASS,
+  TALK_CARDS_ON_GLASS,
+  TALK_HOLD_ON_GLASS,
+  TALK_PIN_BORDERLESS,
+]
 
 function lines(r: Report): string[] {
   return r.findings
@@ -504,14 +597,19 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // edge for that ink to crowd; the card's inset is measured off the heading
   // beside it, as the submit slice's `?` is.
   {
-    name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/workspace'], floor: 60,
+    name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/plugins', 'config/workspace'], floor: 60,
     centred: ['button.ctl-q-glyph [left] width 20px, centred', 'button.ctl-q-glyph [right] width 20px, centred'],
   },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
-  // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.
+  // ACCOUNTS IS TWO SLICES (part of #2688, 2026-11-06). Its six routes were the
+  // heaviest slice, 485 s in CI, and ran into the 900 s timeout in six runs of
+  // shard 1/8 and 1/4 with their findings complete. The rail's order is kept:
+  // holders to Account health here, Provider quota onwards in `quota`.
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health'], floor: 80 },
   // Jev usage (JEV-USAGE-PAGE; part of #2688) sits after Provider quota, as in the rail.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 160 },
+  // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
+  { name: 'quota', routes: ['capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 80 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.

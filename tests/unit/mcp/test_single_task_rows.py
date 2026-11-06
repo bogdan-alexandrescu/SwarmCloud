@@ -252,22 +252,43 @@ def test_a_task_launch_titles_its_run_and_rows_from_the_labels(_plugin_root):
         {"task_id": "task_a", "label": "lane-a", "console": "https://c.test/agents/task_a"},
         {"task_id": "task_b", "label": None},
     ])
-    assert out["title"] == "SC · lane-a +1 · 2 tasks"
+    # ONE RUN PER TASK (owner 2026-11-04), each titled from its own label;
+    # the reply's own fields are the first run's.
+    assert [copy["title"] for copy in out["launches"]] == ["SC · lane-a", "SC · task_b"]
+    assert out["title"] == "SC · lane-a" and out["script_path"] == out["launches"][0]["script_path"]
     # SC-DESC-DETAILS: each row carries its details line; these entries carry
     # no task document, so every field says it was not reported.
     none = "Workspace: not reported · Started by: not reported · Profiles: not reported · LLM: not reported · Browser tool: not reported · Session: not reported"
-    assert out["args"] == {"attach_tasks": [
+    first, second = out["launches"]
+    assert first["args"] == {"attach_tasks": [
         {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a", "details": none},
-        {"task_id": "task_b", "title": "task_b", "details": none},
-    ], "max_rows": launch.MAX_ATTACHED_TASKS, "rows": "summary", "titled_copy": out["script_path"]}
-    assert Path(out["script_path"]).is_file()
-    assert launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])["title"] == "SC · lane-a · task"
+    ], "max_rows": 1, "rows": "summary", "titled_copy": first["script_path"]}
+    assert second["args"] == {"attach_tasks": [{"task_id": "task_b", "title": "task_b", "details": none}],
+                              "max_rows": 1, "rows": "summary", "titled_copy": second["script_path"]}
+    assert all(Path(copy["script_path"]).is_file() for copy in out["launches"])
+    assert out["task_ids"] == ["task_a", "task_b"]
+    assert launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])["title"] == "SC · lane-a"
+
+
+def test_eight_single_tasks_are_eight_launches_each_titled_from_its_own_task(_plugin_root):
+    """Seen 4 November: twelve running single tasks showed as two rows,
+    `SC · oracle-train-am-rereview +7 · 8 tasks 0/1`. Every rows setting now
+    gives each task its own run and its own row."""
+    labels = [f"oracle-lane-{n}" for n in range(8)]
+    for rows in ("summary", "per-step", "pane"):
+        out = launch.for_tasks([{"task_id": f"task_{n}", "label": label} for n, label in enumerate(labels)], rows=rows)
+        assert len(out["launches"]) == 8, rows  # MUTATION: one copy for the batch -- 1 launch.
+        assert [copy["title"] for copy in out["launches"]] == [f"SC · {label}" for label in labels]
+        assert [[t["task_id"] for t in copy["args"]["attach_tasks"]] for copy in out["launches"]] == [
+            [f"task_{n}"] for n in range(8)]
+        assert len({copy["script_path"] for copy in out["launches"]}) == 8
+        assert "one Workflow call per entry of `launches`" in out["launch_with"]
 
 
 def test_a_task_launch_follows_at_most_the_cap(_plugin_root):
     entries = [{"task_id": f"task_{n:02d}"} for n in range(launch.MAX_ATTACHED_TASKS + 2)]
     out = launch.for_tasks(entries)
-    assert len(out["args"]["attach_tasks"]) == launch.MAX_ATTACHED_TASKS
+    assert len(out["launches"]) == launch.MAX_ATTACHED_TASKS
     cap = launch.MAX_ATTACHED_TASKS
     assert [e["task_id"] for e in out["not_followed"]] == [f"task_{cap:02d}", f"task_{cap + 1:02d}"]
 
@@ -280,6 +301,7 @@ def test_attach_all_launches_one_more_run_for_my_single_tasks(_plugin_root, swar
     by_args = [entry["args"] for entry in reply["launches"]]
     assert [a["attach"] for a in by_args if "attach" in a] == [created["workflow_id"]]
     (tasks,) = [a for a in by_args if "attach_tasks" in a]
+    assert [e["title"] for e in reply["launches"] if "attach_tasks" in e["args"]] == ["SC · lane-a"]
     assert [t["task_id"] for t in tasks["attach_tasks"]] == [lane]
     assert tasks["attach_tasks"][0]["title"] == "lane-a"
     assert reply["single_tasks"] == 1
@@ -300,9 +322,16 @@ def test_a_batch_dispatch_reply_starts_a_row_per_task(_plugin_root, swarm, api, 
         {"prompt": "one", "runner_profile": "mock", "label": "lane-1"},
         {"prompt": "two", "runner_profile": "mock"},
     ]}))
-    sent = payload["rows"]["args"]["attach_tasks"]
+    launches = payload["rows"]["launches"]
+    sent = [t for copy in launches for t in copy["args"]["attach_tasks"]]
+    assert [len(copy["args"]["attach_tasks"]) for copy in launches] == [1, 1], "one run per task"
     assert [t["task_id"] for t in sent] == payload["task_ids"]
     assert [t["title"] for t in sent] == ["lane-1", payload["task_ids"][1]]
+    assert [copy["title"] for copy in launches] == ["SC · lane-1", "SC · " + payload["task_ids"][1]]
+    # MUTATION: `start_now` says "call the Workflow tool once" with the reply's
+    # own script, which starts the first task's run and leaves the second rowless.
+    assert "once" not in payload["rows"]["start_now"]
+    assert "one Workflow tool call per entry of `rows.launches`" in payload["rows"]["start_now"]
 
 
 def test_a_dispatch_outside_the_plugin_still_dispatches_and_says_how_to_get_a_row(swarm, api, db, monkeypatch):  # noqa: F811
@@ -363,6 +392,55 @@ def test_attach_tasks_starts_one_task_row_per_task_titled_from_its_label(tmp_pat
     assert [(t["task_id"], t["state"]) for t in result["tasks"]] == [("task_a", "SUCCEEDED"), ("task_b", "FAILED")]
 
 
+def _titled_copy(tmp_path, label: str, task_id: str) -> Path:
+    """The copy launch.for_tasks writes for one task, run.js with its meta."""
+    import os
+
+    os.environ[launch.PLUGIN_ROOT_ENV] = str(_PLUGIN)
+    try:
+        old = tempfile.tempdir
+        tempfile.tempdir = str(tmp_path)
+        out = launch.for_tasks([{"task_id": task_id, "label": label}], dispatched=False, rows="summary")
+    finally:
+        tempfile.tempdir = old
+        del os.environ[launch.PLUGIN_ROOT_ENV]
+    return Path(out["script_path"])
+
+
+def _run_copy(tmp_path, copy: Path, args, answers) -> dict:
+    harness = tmp_path / "harness.cjs"
+    harness.write_text(_BY_PROMPT)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps({"args": args, "answers": answers}))
+    done = subprocess.run([_node(), str(harness), str(copy), str(fixture)],
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_a_titled_copy_launched_with_its_own_task_follows_it(tmp_path):
+    copy = _titled_copy(tmp_path, "lane-a", "task_a")
+    got = _run_copy(tmp_path, copy, {"attach_tasks": [{"task_id": "task_a", "title": "lane-a"}]},
+                    {"task_id: task_a": _step("SUCCEEDED")})
+    assert [c["agentType"] for c in got["calls"]] == ["sc:task"]
+    assert got["result"]["state"] == "FOLLOWED"
+
+
+def test_a_titled_copy_reused_for_other_tasks_is_refused_naming_the_right_call(tmp_path):
+    """A copy's title is fixed before it runs: other tasks launched from it
+    would run under the wrong name, so the run refuses and starts no row."""
+    copy = _titled_copy(tmp_path, "lane-a", "task_a")
+    for args in ({"attach_tasks": [{"task_id": "task_b", "title": "lane-b"}]},
+                 {"attach_tasks": [{"task_id": "task_a", "title": "lane-a"}, {"task_id": "task_b", "title": "lane-b"}]}):
+        got = _run_copy(tmp_path, copy, args, {"task_id: task_b": _step("SUCCEEDED"), "task_id: task_a": _step("SUCCEEDED")})
+        assert got["calls"] == [], "no row under another task's title"  # MUTATION: drop the titledFor check.
+        result = got["result"]
+        assert result["state"] == "REFUSED"
+        assert '"SC · lane-a"' in result["error"] and "task_b" in result["error"]
+        assert "swarm_dispatch" in result["error"] and 'swarm_workflow_launch {attach: "all"}' in result["error"]
+        assert [t["task_id"] for t in result["not_followed"]] == [t["task_id"] for t in args["attach_tasks"]]
+
+
 def test_attach_tasks_naming_no_task_is_refused(tmp_path):
     got = _run(tmp_path, {"attach_tasks": []}, {})
     assert "attach_tasks" in got["error"] and got["calls"] == []
@@ -419,3 +497,17 @@ def test_the_task_row_never_passes_a_step_id_or_parents():
 def test_the_list_relay_relays_the_single_tasks():
     _, body = _load(_PLUGIN / "agents" / "workflow.md")
     assert "`single_tasks`" in body and "`single_tasks_error`" in body
+
+
+def test_the_bridge_texts_state_one_run_per_single_task():
+    """Owner 2026-11-04: every single task is a run of its own, `SC · <label>`,
+    whatever the `rows` setting; the bridge's tool descriptions say so."""
+    dispatch = " ".join(next(t for t in server.TOOLS if t["name"] == "swarm_dispatch")["description"].split())
+    assert "`rows.launches`" in dispatch and "one Workflow tool call per entry" in dispatch
+    assert "`SC · <label>`" in dispatch
+    started = " ".join(server.ROWS_START_NOW.split())
+    assert "`SC · <label>`" in started and "Workflow tool once" not in started
+    tool = " ".join(next(t for t in server.TOOLS if t["name"] == "swarm_workflow_launch")["description"].split())
+    # MUTATION: "A batch of single tasks follows `rows` too." -- the one-row task batch.
+    assert "batch of single tasks" not in tool
+    assert "Single tasks never follow `rows`" in tool

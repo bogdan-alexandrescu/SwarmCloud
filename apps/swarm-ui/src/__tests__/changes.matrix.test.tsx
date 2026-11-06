@@ -171,9 +171,28 @@ function head(stepKey: string): HTMLElement {
   return table().querySelector<HTMLElement>(`thead th[data-step="${stepKey}"]`)!
 }
 
-function sources(): string[] {
-  const lines = screen.getByRole('region', { name: 'Diff lines' })
+function sourcesIn(lines: Element): string[] {
   return [...lines.querySelectorAll('[data-diff-row="source"]')].map((r) => r.getAttribute('data-step') ?? '')
+}
+
+function sources(): string[] {
+  return sourcesIn(screen.getByRole('region', { name: 'Diff lines' }))
+}
+
+/**
+ * Wait until the diff draws `steps`' hunks, then hold them by role ONCE.
+ * Polled through `getByRole`, every poll paid the accessibility walk over the
+ * whole tab, and a starved runner fit no poll after the hunks landed in the
+ * 2 s window ("Unable to find role region 'Diff lines'"; reads.ts says why).
+ * The poll reads the same element through its attributes, which costs nothing.
+ */
+async function sourcesAre(steps: string[]): Promise<void> {
+  await waitFor(() => {
+    const lines = document.querySelector('[role="region"][aria-label="Diff lines"]')
+    expect(lines, 'no Diff lines region yet').not.toBeNull()
+    expect(sourcesIn(lines!)).toEqual(steps)
+  })
+  expect(sources()).toEqual(steps)
 }
 
 function readsOf(taskId: string): number {
@@ -271,7 +290,7 @@ describe('the matrix: which step changed which file', () => {
 
   it('reads hunks on demand: only the steps that changed the open file', async () => {
     render(<Tab steps={THREE} tasks={THREE_TASKS} start={{ step: null, file: 'src/app/two.ts' }} />)
-    await waitFor(() => expect(sources()).toEqual(['implement']))
+    await sourcesAre(['implement'])
     expect(readsOf('t_impl')).toBe(1)
     expect(readsOf('t_fix'), 'a step that did not change the open file was read').toBe(0)
     expect(readsOf('t_rev')).toBe(0)
@@ -280,10 +299,10 @@ describe('the matrix: which step changed which file', () => {
   it('stacks each step’s hunks for the open file, tagged by step, and writes the choice to the address', async () => {
     const onAt = vi.fn()
     render(<Tab steps={THREE} tasks={THREE_TASKS} onAt={onAt} start={{ step: null, file: 'src/app/two.ts' }} />)
-    await waitFor(() => expect(sources()).toEqual(['implement']))
+    await sourcesAre(['implement'])
     fireEvent.click(within(table()).getByRole('button', { name: 'src/app/one.ts' }))
     expect(onAt).toHaveBeenLastCalledWith({ step: null, file: 'src/app/one.ts' })
-    await waitFor(() => expect(sources()).toEqual(['implement', 'fix']))
+    await sourcesAre(['implement', 'fix'])
     const meta = screen.getByRole('note', { name: 'Where these hunks come from' })
     expect(meta.textContent).toMatch(/which step wrote each line: not recorded/)
     expect(screen.getByRole('region', { name: 'src/app/one.ts, by step' }).textContent).toMatch(/changed by implement, fix/)
@@ -296,7 +315,7 @@ describe('the matrix: which step changed which file', () => {
     fireEvent.click(within(chips).getByRole('button', { name: 'fix' }))
     expect(onAt).toHaveBeenLastCalledWith({ step: 'fix', file: 'src/app/one.ts' })
     await waitFor(() => expect([...table().querySelectorAll('tbody tr')].map((r) => r.getAttribute('data-file'))).toEqual(['src/app/one.ts']))
-    await waitFor(() => expect(sources()).toEqual(['fix']))
+    await sourcesAre(['fix'])
     expect(within(chips).getByRole('button', { name: 'fix' }).getAttribute('aria-pressed')).toBe('true')
     // The other steps' columns are not drawn (QAFIX5 L6: dimmed, they left
     // every column on screen and the selection read as doing nothing).
@@ -337,7 +356,7 @@ describe('the states: none of them reads as no changes', () => {
     render(<Tab steps={THREE} tasks={tasks} start={{ step: null, file: 'src/app/one.ts' }} />)
     await waitFor(() => expect(head('fix').textContent).toMatch(/withheld/))
     expect(cell('src/app/one.ts', 'fix').textContent).toBe('withheld')
-    await waitFor(() => expect(sources()).toEqual(['implement']))
+    await sourcesAre(['implement'])
     expect(readsOf('t_fix'), 'the refused patch was read').toBe(0)
   })
 
@@ -375,7 +394,7 @@ describe('the states: none of them reads as no changes', () => {
     const note = await screen.findByRole('note', { name: 'Where these hunks come from' })
     await waitFor(() => expect(note.textContent).toMatch(/not read: .*503/))
     fireEvent.click(within(note).getByRole('button', { name: 'Retry' }))
-    await waitFor(() => expect(sources()).toEqual(['implement']))
+    await sourcesAre(['implement'])
     expect(readsOf('t_impl')).toBe(2)
   })
 
@@ -468,7 +487,7 @@ describe('an issue run’s Changes tab', () => {
     const go = vi.fn()
     const row = { key: '0:ui', round: 0, stepId: 'ui', title: null, taskId: 't_ui', task: null, dependsOn: [], merge: null }
     render(<StepChanges runId="run_4c1e09d2" row={row} go={go} />)
-    const a = screen.getByRole('link', { name: 'Changes ›' })
+    const a = screen.getByRole('link', { name: 'Changes' })
     expect(a.getAttribute('href')).toBe('/runs/run_4c1e09d2/changes?step=ui')
     fireEvent.click(a)
     expect(go).toHaveBeenCalledWith('work/runs?run=run_4c1e09d2&tab=changes&step=ui')

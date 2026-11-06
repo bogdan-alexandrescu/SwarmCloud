@@ -195,6 +195,7 @@ from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Any, Callable, Literal, Mapping
+from urllib.parse import quote, urlencode
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -209,7 +210,13 @@ from swarm_common.models import utcnow
 
 from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .redaction import redact_detail
-from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import (
+    DESCRIPTION_MAX_CHARS,
+    FEATURE_TITLE_MAX_CHARS,
+    TaskCreate,
+    WorkflowCreate,
+    WorkflowStepCreate,
+)
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
 from . import sessiontag, workcontract
@@ -217,6 +224,7 @@ from .specsigning import SpecSigningUnavailable
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
+    ISSUE_RUN_METADATA_KEY,
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_ID,
@@ -228,6 +236,7 @@ from .validation import (
     RUNTIME_POLICY_PROFILES,
     IssueRef,
     StepSpec,
+    issue_run_mark_allowed,
     rereview_step_for,
 )
 
@@ -1044,19 +1053,28 @@ class NotReadyVerdict(_PlanModel):
         return self
 
 
-def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
+def parse_planner_output(
+    value: Any, *, lane_refs: Mapping[str, str] | None = None,
+) -> tuple[str, dict[str, Any]]:
     """What the planner wrote in `plan.json`: `("plan", plan)` or `("not_ready", verdict)`.
 
     A JSON object carrying `"ready": false` is a `NotReadyVerdict` and is
     checked as strictly as a plan is; `"ready": true` beside a plan is
     accepted and dropped, so the plan digests exactly as one written without
     it. Anything else is a plan, through `parse_plan`.
+
+    `lane_refs` is the run's IN FLIGHT map of the issue-run lanes it listed,
+    run id -> owner/repo#N (#3507): an overlap whose ref is one of those run
+    ids is read as that run's issue, so a planner that copied the lane's id
+    is not refused for it. Any other ref is checked as before.
     """
     if isinstance(value, (str, bytes)):
         try:
             value = json.loads(value)
         except (ValueError, UnicodeDecodeError):
             raise InvalidPlan(f"{PLAN_FILE} is not JSON") from None
+    if lane_refs and isinstance(value, Mapping):
+        value = _lane_refs_normalised(value, lane_refs)
     if isinstance(value, Mapping) and "ready" in value:
         ready = value.get("ready")
         if ready is True:
@@ -1092,6 +1110,28 @@ def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
                 found["reason"] = _not_ready_reason(f"Duplicates {lane}: {verdict.reason}")
         return "not_ready", found
     return "plan", parse_plan(value)
+
+
+def _lane_refs_normalised(
+    plan: Mapping[str, Any], lane_refs: Mapping[str, str],
+) -> Mapping[str, Any]:
+    """`plan` with each overlap ref that is a listed run lane's id replaced by
+    that run's owner/repo#N, on a copy; `plan` itself when none is."""
+    overlaps = plan.get("overlaps")
+    if not isinstance(overlaps, list):
+        return plan
+    rewritten = []
+    changed = False
+    for overlap in overlaps:
+        ref = overlap.get("ref") if isinstance(overlap, Mapping) else None
+        lane = ref.strip() if isinstance(ref, str) else None
+        if lane and lane in lane_refs:
+            log.info("the planner named the run lane %s as an overlap ref: read as %s",
+                     lane, lane_refs[lane])
+            overlap = {**overlap, "ref": lane_refs[lane]}
+            changed = True
+        rewritten.append(overlap)
+    return {**plan, "overlaps": rewritten} if changed else plan
 
 
 def _not_ready_reason(reason: str) -> str:
@@ -1975,7 +2015,9 @@ _INFLIGHT_USE = (
     "names every SAME FILES lane in \"overlaps\" with its action, and keeps its steps "
     "off files a live lane declares unless a step depends on that lane landing first. "
     "Only if the issue was split on purpose and the lanes do different parts, plan your "
-    "part and say so in the overlaps.\n\n"
+    "part and say so in the overlaps. An overlap's \"ref\" is always owner/repo#N: for an "
+    "issue-run lane, the overlap ref its line gives (that run's issue); only a duplicate "
+    "verdict's \"lane\" takes a run_ or workflow id.\n\n"
 )
 
 
@@ -2080,7 +2122,7 @@ def planner_task(
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
-        metadata={"issue_run": run_id, **sessiontag.tag(claude_session)},
+        metadata={ISSUE_RUN_METADATA_KEY: run_id, **sessiontag.tag(claude_session)},
         **classed,
     )
 
@@ -2856,6 +2898,69 @@ def workflow_unit(run: "IssueRun") -> str:
     return f"issue-{run.issue.number}"
 
 
+def submitting(spec: TaskCreate | WorkflowCreate) -> Any:
+    """The block an issue run's submission is made in: inside it, the spec's
+    own `metadata.issue_run` gets past the reserved-key check, and nothing
+    else does (BGD, 2026-11-04). The caller calls
+    `ctx.submissions.submit_tasks`/`submit_workflow` itself inside it, so the
+    signing paths stay the only writers of a task: the planner and the
+    compiled workflow (routes/runs.py), a CI fix round and the merge
+    (issueci.py). A batch of tasks is submitted in its first spec's block,
+    so a spec in it carrying another run's link is refused."""
+    return issue_run_mark_allowed(spec.metadata.get(ISSUE_RUN_METADATA_KEY))
+
+
+def workflow_feature(run: "IssueRun") -> dict[str, str]:
+    """The compiled workflow's `metadata.feature`: the issue, by its title --
+    its reference when the title was not read -- and its URL, the title on one
+    line and at most FEATURE_TITLE_MAX_CHARS (BGD, 2026-11-04)."""
+    issue_read = getattr(run, "issue_read", None)
+    read = issue_read if isinstance(issue_read, Mapping) else {}
+    title = " ".join(str(read.get("title") or "").split()) or run.issue.short
+    if len(title) > FEATURE_TITLE_MAX_CHARS:
+        title = title[: FEATURE_TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return {"title": title, "url": run.issue.url}
+
+
+#: How many of the summary's sentences the description keeps: "two or three
+#: sentences" is what the workflow page heads with (BGD, 2026-11-04).
+DESCRIPTION_SENTENCES = 3
+
+_FENCED = re.compile(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", re.MULTILINE | re.DOTALL)
+_HEADING_LINE = re.compile(r"^\s{0,3}#{1,6}\s.*$", re.MULTILINE)
+_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_TAG = re.compile(r"<\s*/?\s*[A-Za-z!][^>]*>")
+_LEFTOVER_MARKUP = re.compile(r"```|~~~|\*\*|__|\]\(|[\x00-\x1f\x7f]")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def workflow_description(run: "IssueRun") -> str | None:
+    """The compiled workflow's `metadata.description`: the first
+    DESCRIPTION_SENTENCES sentences of the approved plan's summary, as plain
+    text of at most DESCRIPTION_MAX_CHARS, or None when nothing is left.
+
+    The summary is a paragraph the planner wrote, often in Markdown, and
+    `schemas.check_workflow_about` refuses markup rather than cut it. So
+    fenced code and heading lines are dropped, a link keeps its text, tags
+    and doubled emphasis markers go, and whitespace collapses to one line. A
+    first sentence over the cap is cut at a word, with an ellipsis."""
+    text = str((run.plan or {}).get("summary") or "")
+    text = _HEADING_LINE.sub(" ", _FENCED.sub(" ", text))
+    text = _TAG.sub(" ", _LINK.sub(r"\1", text))
+    text = " ".join(_LEFTOVER_MARKUP.sub(" ", text).split())
+    if not text:
+        return None
+    kept = ""
+    for sentence in _SENTENCE_END.split(text)[:DESCRIPTION_SENTENCES]:
+        joined = f"{kept} {sentence}".strip()
+        if len(joined) > DESCRIPTION_MAX_CHARS:
+            break
+        kept = joined
+    if not kept:
+        kept = text[: DESCRIPTION_MAX_CHARS - 1].rsplit(" ", 1)[0].rstrip() + "…"
+    return kept
+
+
 def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
     """The signed workflow around compiled steps: the same for a chain and for stages."""
     ref = run.issue
@@ -2866,13 +2971,17 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "metadata": {
             "title": workflow_title(run),
             "unit": workflow_unit(run),
+            # What the workflow page heads with (BGD, 2026-11-04): the issue
+            # it works on, and what its approved plan delivers.
+            "feature": workflow_feature(run),
+            **({"description": description} if (description := workflow_description(run)) else {}),
             # Always "off", stated, so the platform default cannot append a
             # merge here: an `auto_merge` run merges from the CI loop, once CI
             # is green and its keyword block is written (`issueci._merge`).
             MERGE_METADATA_KEY: "off",
             # The session that asked for the run (SC-SESSION-SCOPE).
             **sessiontag.tag(getattr(run, "claude_session", None)),
-            "issue_run": {
+            ISSUE_RUN_METADATA_KEY: {
                 "run_id": run.id,
                 "issue": ref.short,
                 "plan_digest": run.plan_digest,
@@ -3681,6 +3790,63 @@ def run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
             key: value for key, value in pull.items() if key not in PULL_REQUEST_SUMMARY_DROPPED
         }
     return out
+
+
+#: `GET /v1/runs/{id}`'s `planner_documents` (BGD, 6 November 2026, on the
+#: full-page interview lane: "Serve them on the run"): the planner step's
+#: design document and diagrams for the proposal page. A design doc is a
+#: Markdown artifact whose file name holds this word (gstack's planning skills
+#: write `<user>-<branch>-design-<time>.md`); a diagram is an artifact the name
+#: table calls an `image` -- PNG, JPEG, GIF or WebP, which the raw route serves
+#: as an image only when the bytes agree. SVG is text there, so it is no diagram.
+PLANNER_DOC_WORD = "design"
+
+#: At most this many of each, in name order: the page draws every one it is
+#: served, and a planner that wrote hundreds of screenshots is not a proposal.
+MAX_PLANNER_DOCS = 4
+MAX_PLANNER_DIAGRAMS = 12
+
+
+def planner_documents(task_id: str, rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """The planner task's design docs and diagrams out of its artifact listing.
+
+    `rows` are `AgentOutputService.list_artifacts`' entries (each with the name
+    table's `kind`). Each is served by NAME, size and a read link through the
+    planner task's own `/artifacts/raw` route -- never the bytes, never a
+    `gs://` uri or a signed URL -- so whoever follows the link passes that
+    route's tenant check (another tenant's member gets its 404) and its
+    read-time redaction. Pure: nothing is read here.
+    """
+    docs: list[dict[str, Any]] = []
+    diagrams: list[dict[str, Any]] = []
+    for row in rows:
+        name = row.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        kind = row.get("kind")
+        base = name.rsplit("/", 1)[-1].lower()
+        if kind == "markdown" and PLANNER_DOC_WORD in base:
+            docs.append(_planner_entry(task_id, name, row))
+        elif kind == "image":
+            diagrams.append(_planner_entry(task_id, name, row))
+    return {
+        "task_id": task_id,
+        "design_docs": sorted(docs, key=lambda d: d["name"])[:MAX_PLANNER_DOCS],
+        "diagrams": sorted(diagrams, key=lambda d: d["name"])[:MAX_PLANNER_DIAGRAMS],
+    }
+
+
+def _planner_entry(task_id: str, name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    content_type = row.get("content_type")
+    return {
+        "name": name,
+        "bytes": _opt_int(row.get("bytes")),
+        "content_type": content_type if isinstance(content_type, str) else None,
+        "read_url": (
+            f"/v1/tasks/{quote(task_id, safe='')}/artifacts/raw"
+            f"?{urlencode({'name': name, 'disposition': 'inline'}, quote_via=quote)}"
+        ),
+    }
 
 
 def _schedule_mark(metadata: Any) -> dict[str, Any] | None:

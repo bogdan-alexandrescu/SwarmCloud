@@ -29,7 +29,7 @@ from swarm_common.identity import Principal
 from swarm_common.models import Lease, ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
-from .. import roles, runnersizes
+from .. import roles, route_scope, runnersizes
 from ..attempt_totals import totals_for, with_totals
 from ..browser_logins import CarryReaper
 from ..auth import AuthContext
@@ -1206,6 +1206,7 @@ def list_tenants(
 
 
 @router.post("/workflows/rollup")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def rollup_workflows(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1280,6 +1281,7 @@ def rollup_workflows(
 
 
 @router.post("/runs/advance")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def advance_runs(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1328,6 +1330,7 @@ def advance_runs(
 
 
 @router.post("/merges/wake")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def wake_merges(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1437,6 +1440,7 @@ def registration_owner_auth(ctx: AppContext, tenant_id: str):
 
 
 @router.post("/repositories/poll")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def poll_repositories(
     tenant_id: str = Query(..., min_length=1),
     limit: int | None = Query(default=None, ge=1),
@@ -1485,6 +1489,7 @@ def poll_repositories(
 
 
 @router.post("/repositories/push")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def push_repository(
     body: RepositoryPush,
     auth: AuthContext = Depends(admin_auth),
@@ -1556,6 +1561,7 @@ def _push_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
 
 
 @router.post("/tasks/finished")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def task_finished_push(
     envelope: dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(admin_auth),

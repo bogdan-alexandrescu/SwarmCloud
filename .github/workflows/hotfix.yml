@@ -31,10 +31,11 @@
 #     shellcheck and manifests passed -- application.yml's `build images`
 #     needs [python, shell, manifests] -- and the images stage refuses to
 #     build anything of its own.
-#   * warming the worker jobs, acceptance, the GKE proof and the plugin tag:
-#     the SAME push still starts the normal release, which tags the plugin,
-#     and whose completion starts accept.yml, which warms, proves GKE and
-#     accepts what dev then runs. Acceptance is delayed, not dropped.
+#   * warming the worker jobs, acceptance and the GKE proof: the SAME push
+#     still starts the normal release, whose completion starts accept.yml,
+#     which warms, proves GKE and accepts what dev then runs. Acceptance is
+#     delayed, not dropped. (The plugin tag is not skipped: application.yml's
+#     plugin-tag job makes it on the same push once the unit tests pass.)
 #   * any change to IAM: a plan that changes IAM FAILS this lane, which never
 #     applies it, so the owner's dev-iam gate is untouched. The normal release
 #     holds that plan for dev-iam as it always has.

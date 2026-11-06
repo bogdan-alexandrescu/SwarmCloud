@@ -146,124 +146,12 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
 | 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
 | 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
-| 140 | `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"`, so a merge step a person on its pull request pushed over ends `CANCELLED` with a cause of its own instead of `FAILED`/`MERGE_REFUSED` (#2505, epic #2525) | REQUESTED 2026-11-05 by the pull request that adds this line, on the owner's decision of 2026-10-27 (#2505, epic #2525); not applied |
-
----
-
-## 140. `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH`, a `CANCELLED` end for a merge step a person pushed over (#2505, epic #2525)
-
-**Status:** REQUESTED 2026-11-05 by the pull request that adds this section,
-on the owner's decision of 2026-10-27 (BGD, issue triage, epic #2525): "A
-distinct non-failure end: superseded_by_person_push (not FAILED) when the
-committer is not the platform identity, so failure-review stops filing it; a
-foreign head from an unknown branch-mate still refuses. If the end cause is
-typed in the frozen contract, it goes in as a contract request first." The
-worker side of the decision is on main; this is the contract request the
-decision promised and nobody filed. Not applied.
-
-### What is true today
-
-Read on main (a515b65) on 2026-11-05.
-
-* `EndCause` in `apps/common/swarm_common/models.py` has no member for it.
-* A parked merge step whose pull request a person on it (its author or an
-  assignee) pushed a non-merge commit to, which the platform did not make,
-  ends `FAILED` with `end_cause` `merge_refused` and
-  `result_summary.merge.refusal.code` `superseded_by_person_push`
-  (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, chosen by
-  `merge._person_pusher`, ended by `merge._superseded`). The refusal itself
-  is unchanged: `merge._accept` takes no head a person made of content and
-  nothing merges.
-* `swarm_api.failuredigest._person_push` skips both the refusal code and the
-  string `superseded_by_person_push` as an `end_cause`, so failure-review does
-  not file the step either way.
-* `docs/merge-step.md` (section "Revised 2026-10-27: a person's push
-  supersedes the merge step"), `docs/design/failure-review.md` and the
-  comments on `merge.SUPERSEDED_BY_PERSON_PUSH` and
-  `failuredigest.SUPERSEDED_BY_PERSON_PUSH` all say "until contract request
-  SUPERSEDED_BY_PERSON_PUSH lands"; until this entry, no such request existed.
-
-### Why
-
-`EndCause` is "why a task reached a FAILED or CANCELLED state". A step a person
-took over by pushing to its pull request did not fail: the platform's guarantee
-(a person's content commit is never merged unreviewed) held, and the person
-went on by hand. Ending it `FAILED` puts it in the failed-step counts, the
-outcome ledger's `merge_refused` class and any reader that treats `FAILED` as
-something to look at, and only failure-review's rule, which reads the refusal
-code, tells it apart.
-
-### The change
-
-```python
-class EndCause(str, Enum):
-    ...
-    SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
-```
-
-* The member's value is the string the refusal code already carries, so the
-  two never differ.
-* Its one writer is the worker (`agent_worker.control`), beside
-  `completed_at`, when the merge step ends `CANCELLED` having found a head a
-  person on the pull request made. The `EndCause` docstring's list of the
-  worker's causes gains `SUPERSEDED_BY_PERSON_PUSH`.
-* The worker ends such a step `CANCELLED` (exit code `ExitCode.CANCELLED`)
-  with the refusal still in `result_summary.merge.refusal`, as
-  `merge._outcome` already does for `pull_request_closed`. Nothing merges.
-
-### What empties once it is applied
-
-In the same pull request that applies it:
-
-* `merge._superseded` writes `CANCELLED` with
-  `EndCause.SUPERSEDED_BY_PERSON_PUSH` instead of `FAILED` with
-  `EndCause.MERGE_REFUSED`; the comment on `merge.SUPERSEDED_BY_PERSON_PUSH`
-  loses "until contract request SUPERSEDED_BY_PERSON_PUSH lands".
-* `failuredigest` needs no change: `_person_push` already reads the string as
-  an `end_cause`, and the refusal-code branch stays for steps ended before.
-  Its comment loses "while `EndCause` has no member for it".
-* `swarm_api.outcomes` classifies the new member (`_CANCEL_OF_CAUSE`, a
-  cancel cause of its own), because
-  `test_every_end_cause_has_exactly_one_class` holds the two maps to the
-  enum; the ledger's `DERIVE_VERSION` moves with it.
-* `docs/merge-step.md`'s table row, "`MERGE_REFUSED` `superseded_by_person_push`
-  ... `CANCELLED` once contract request ... lands", and its paragraph "The end
-  cause is frozen" become one statement of the new end; the same line in
-  `docs/design/failure-review.md` is updated.
-* `tests/unit/worker/test_merge_person_push.py` asserts the `CANCELLED` end
-  and the cause.
-
-### What it would break if accepted
-
-A reader that sorts `FAILED` steps by `end_cause` and has no branch for an
-unknown value: `swarm_api.outcomes` is the one in this repository, and its
-parity test names it. A step ended before the change keeps `FAILED`/
-`merge_refused` and its code; every reader that reads the code keeps working.
-
-### If it is declined
-
-The step stays `FAILED`/`MERGE_REFUSED` with the refusal code, which is
-today's state: failure-review skips it by the code, and the failed-step counts
-and the ledger's `merge_refused` class carry a step nobody should look at.
-
-### Invariants
-
-None of CONTRACT.md's ten changes. Capacity and fencing are untouched: the
-step is already ended by the worker holding the current generation, and no
-state that creates infrastructure demand changes.
-
-### How it is tested
-
-`tests/unit/worker/test_merge_person_push.py` holds the worker's end and
-the parity of the two modules' constants;
-`tests/unit/control_plane/test_outcomes_classifier_parity.py` and the
-`EndCause` partition test hold the ledger to the enum once it has the member.
-
-### Who decided
-
-The decision is the owner's (BGD), 2026-10-27, epic #2525; this request is
-filed by the pull request that adds it, for #2505, and awaits the owner's
-acceptance.
+| 139 | `specsign.py`: `SETTINGS_MAC_FIELDS["plugins"]` becomes `("allowed", "defaults", "configs_digest")`, so a workspace's every-step plugins and its plugin settings' digest are signed with the Allowed list (managed plugins P1, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): an absent key projects as null and a null added key is left out of the bytes, so every stored block still verifies; `plugins.PluginsStore.put` drops a planted value of either key |
+| 140 | `specsign.py`: `canonical_plugin_record(kind, fields)`, purpose `swarm.plugin-record/v1`, the bytes swarm-api MACs for a plugin install, version and intake, scope and tenant inside (managed plugins P2, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): every stored key covered but the MAC and the writer record |
+| 141 | `models.py`: `Tenant.plugin_secret_name(install_id, field)`, `swarm-tenant-<t>-plg-<16 hex>`, and the secret consumer kind `plugin` (managed plugins P3, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 142 | `profiles.py`: `runtime_capabilities` `("claude_plugins", "node", "bun", "python3", "bash")` on the five claude-code profiles (managed plugins P4, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 143 | `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1`, fields `work_contracts` and `contract_review` (managed plugins P5, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 145 | `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"`, so a merge step a person on its pull request pushed over ends `CANCELLED` with a cause of its own instead of `FAILED`/`MERGE_REFUSED` (#2505, epic #2525) | REQUESTED 2026-11-05 by the pull request that adds this line, on the owner's decision of 2026-10-27 (#2505, epic #2525); not applied |
 
 ---
 
@@ -16875,3 +16763,486 @@ before the change verifies after it.
 
 Requested by the pull request that adds this section, on the owner's
 (BGD) answer of 4 November 2026 to its second question.
+
+## 139. `profiles.py`: `pull_request` declared as a runner input of claude-code, codex and claude-code-review (PR-CONTEXT-INPUT, pull request #3470, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026, picking "declare"
+on pull request #3470's question, and APPLIED by that pull request.
+
+### What is true today
+
+Read on that pull request's branch on 2026-11-06. The worker stages the
+pull request a step works on as `work/pull_request.md`
+(`agent_worker/pull_request.py`) and finds its number from the signed
+`publish_to_pr`, or the pull request its `builds_on` (or, for a single-pr
+reader or amender, its `pr_author`) step recorded opening. Before this
+change no profile declared `input.pull_request`, so swarm-api refused it
+with 422 `invalid_input` and a caller could not name the pull request
+itself.
+
+### The change
+
+`_PULL_REQUEST_INPUTS` declares `pull_request`, an integer 1..999999 (the
+`issue` input's bound, for the same reason), on claude-code and codex
+(`_CLI_AGENT_PR_INPUTS`) and claude-code-review
+(`_CLI_AGENT_REVIEW_INPUTS`). `pull_request.from_input` reads it only where
+the agent's profile declares it; it is read first, before `publish_to_pr`
+and `builds_on`. claude-code-large, claude-code-lightpanda,
+claude-code-browser and indexer do not gain it: the question named the
+three.
+
+### What it would break if accepted
+
+Nothing: a key a caller could not send before is now accepted on three
+profiles. The generated input tables in `docs/workflows.md` and
+`plugin/README.md` and the UI fixture's input contracts gain the row.
+
+### Invariants
+
+Invariant 10: the caller names a pull request by number, data, never an
+image, a command or a resource spec; the worker reads it read-only with the
+tenant's own forge credential, in the agent's own repository (invariant 9),
+and no token reaches the container.
+
+### How it is tested
+
+`tests/unit/mcp/test_runner_inputs.py` pins which profiles declare it and
+holds the key to the worker module that reads it;
+`tests/unit/worker/test_pull_request_context.py` reads it through
+`from_input` on the three and not on the others;
+`tests/unit/mcp/test_runner_input_prose.py` holds the generated tables.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, answering pull request #3470's question.
+
+---
+
+## 140. `specsign.py`: `SETTINGS_MAC_FIELDS["plugins"]` becomes `("allowed", "defaults", "configs_digest")` (managed plugins P1, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five",
+his answers to docs/design/managed-plugins.md section 18) and APPLIED
+2026-11-06 by the pull request that adds this section (lane
+managed-plugins-contract, part of #2688). Requested by
+docs/design/managed-plugins.md section 14, request P1.
+
+### What is true today
+
+Read on main at 0772457 on 2026-11-06. The `plugins` block is
+`{allowed, set_at, set_by, mac}`, written and signed by
+`swarm_api.plugins.PluginsStore.put` (request 136); its MAC covers
+`{"allowed": [...]}` only.
+
+### Why
+
+The managed plugins design adds two values the control plane acts on: the
+install ids on for every step of the workspace (`defaults`, section 7) and
+the digest of the workspace's plugin settings documents (`configs_digest`,
+section 6.2), so a forged default or a forged non-secret setting does not
+verify. A tenant identity can write its own `workspace_settings` document, so
+both must be inside the block's MAC.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "plugins": ("allowed", "defaults", "configs_digest"),
+    ...,
+})
+_SETTINGS_ADDED_FIELDS = MappingProxyType({"plugins": ("defaults", "configs_digest")})
+```
+
+An absent key projects as null, as for every block. The request also says
+"so every block stored today still verifies", and a literal null in the
+bytes would break that: `{"allowed": [...]}` would become
+`{"allowed": [...], "configs_digest": null, "defaults": null}` and every
+stored MAC would fail. So `canonical_settings_block` leaves a null key of
+`_SETTINGS_ADDED_FIELDS` (keys a block gained after MACs over it were stored)
+out of the bytes. Null and absent remain one value. A set value is covered:
+a default planted on a block signed without one, a signed default removed or
+nulled, an emptied list, a swapped digest, each changes the bytes.
+
+Crossing into swarm-api (its track's files, for this reason only):
+`judgment.unowned_covered_keys("plugins")` becomes
+`("defaults", "configs_digest")`, because no swarm-api path writes them yet.
+`PluginsStore.put` carried over every key it does not own, so it would have
+signed a planted `defaults` with the list the admin chose. It now drops
+the unowned covered keys, as `codeintel` already does.
+`tests/unit/control_plane/test_settings_mac.py` pins both.
+
+### What it would break if accepted
+
+Nothing stored. A block carrying `defaults` or `configs_digest` can only come
+from a direct Firestore write today: the re-sign pass holds it (`held`), and
+the next `PUT /v1/workspaces/{tenant_id}/plugins` drops the value. The lane
+that writes `defaults` adds both keys to `judgment.WRITER_FIELDS["plugins"]`.
+
+### If it is declined
+
+The defaults and the settings digest would need a block of their own, and the
+Allowed list and the defaults could then be swapped independently.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Invariant 9: the tenant and the block are
+inside the bytes, as before.
+
+### How it is tested
+
+`tests/unit/common/test_settings_block.py` pins the list, the bytes a block
+stored before the change covers (unchanged, explicit nulls included) and the
+bytes with both keys set, and asserts each forgery changes the bytes.
+`tests/unit/control_plane/test_settings_mac.py` asserts that the writer drops
+a planted default and that the block still verifies.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 141. `specsign.py`: `canonical_plugin_record(kind, fields)`, purpose `swarm.plugin-record/v1` (managed plugins P2, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five")
+and APPLIED 2026-11-06 by the pull request that adds this section (lane
+managed-plugins-contract, part of #2688). Requested by
+docs/design/managed-plugins.md section 14, request P2.
+
+### Why
+
+`plugin_installs/{install_id}`, its `versions/{version_id}` and
+`plugin_intake/{intake_id}` are written by swarm-api only. But the tenant GSAs
+hold project-wide Firestore access, so any tenant's worker can write any of
+them. A forged version could swap the `runnable_sha256` that every
+workspace's steps are signed with. swarm-api acts on one only when its MAC,
+under `swarm-settings-key`, verifies. These are the bytes of that MAC (design
+sections 1.1 and 2.3).
+
+### The change
+
+```python
+PLUGIN_RECORD_PURPOSE = "swarm.plugin-record/v1"
+PLUGIN_RECORD_KINDS = ("install", "version", "intake")
+PLUGIN_SCOPES = ("platform", "workspace")
+PLUGIN_RECORD_IDS = {"install": ("install_id",),
+                     "version": ("install_id", "version_id"),
+                     "intake": ("intake_id",)}
+PLUGIN_RECORD_UNCOVERED = ("mac", "created_at", "created_by", "updated_at", "updated_by")
+
+def canonical_plugin_record(kind, fields) -> bytes:
+    # JCS of {"purpose", "kind", "scope", "tenant_id", "fields"}
+```
+
+* The scope and the tenant are inside the bytes. A workspace record must
+  name its tenant, and a platform record names none (absent or null), so a
+  record copied onto another workspace, or lifted to platform scope, does not
+  verify. The kind is inside the bytes too: an intake's MAC never verifies an
+  install.
+* A document's id is not one of its stored fields. Its writer and reader put
+  the ids into `fields` (`PLUGIN_RECORD_IDS`, each a non-empty string), so a
+  version copied under another install does not verify. An intake for a new
+  install names no `install_id`. One for an update does, and it is covered.
+* Every other key is covered, except the MAC and who wrote the record and
+  when. The design names the documents' fields but not the intake's
+  spelling, and the lane that writes them is not written yet. Covering
+  everything leaves nothing stored outside the MAC, so no key name is
+  guessed and a later key needs no further request. A covered value must
+  have a JSON form: a Firestore timestamp outside the writer-record keys is
+  refused (`SpecNotCanonical`).
+
+### What it would break if accepted
+
+Nothing: no document of these kinds exists yet.
+
+### If it is declined
+
+swarm-api would have to define its own canonical form, a second opinion
+about what is signed.
+
+### Invariants
+
+None changes. Invariant 9: the tenant is inside the bytes. Invariant 10: a
+record names a plugin by install id and never takes an image, a command or a
+resource spec from a caller.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins the bytes of an
+install, a version and an intake. It also covers the scope, the tenant and
+the kind inside them, the uncovered keys, a planted key changing the bytes,
+and the refusals (an unknown kind, an incoherent scope, a missing id, a
+timestamp).
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 142. `models.py`: `Tenant.plugin_secret_name(install_id, field)` and the secret consumer kind `plugin` (managed plugins P3, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five";
+secrets are per workspace only) and APPLIED 2026-11-06 by the pull request
+that adds this section (lane managed-plugins-contract, part of #2688).
+Requested by docs/design/managed-plugins.md section 14, request P3.
+
+### The change
+
+```python
+SECRET_CONSUMER_KINDS = ("profile", "tool", "component", "mcp", "plugin")
+
+def plugin_secret_name(self, install_id: str, field: str) -> str:
+    # swarm-tenant-<t>-plg-<first 16 hex of sha256(install_id + "/" + field)>
+```
+
+The name is derived from the workspace, the plugin and the field (design
+section 6.2), never from anything a caller types, so no value can be
+addressed into another workspace's or plugin's name. It is built with
+`secret_name`, so the frozen `swarm-tenant-<t>-` prefix has one definition.
+An empty id or field is refused, and so is an install id holding the "/"
+separator, so ("a/b", "c") cannot name ("a", "b/c")'s secret. `plugin:<install
+id>` names the consumer of a released plugin secret. Its name passes the
+generic consumer check, and its membership in the workspace's catalogue is
+checked by its reader, as for `mcp:`.
+
+### What it would break if accepted
+
+Nothing. The tests that pinned the four kinds pin five. A `-plg-` suffix is
+21 characters, like `-wsec-`, so the tenant-id budget is unchanged. No shell
+script builds a plugin secret name (`create-secrets.sh` does not store them:
+swarm-api's one-time form does), so the contract-parity script has no mirror
+to update.
+
+### Invariants
+
+Invariant 9: the tenant is in the name and the hash. The tenant GSA holds no
+grant on a `-plg-` secret (design section 6.2), which is Terraform and
+swarm-api's.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins the shape and the
+derivation, checks that a different workspace, plugin or field gives a
+different name, and covers the refusals and the consumer's round trip.
+`test_workspace_secret_contract.py` and `test_mcp_contract.py` pin the five
+kinds.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 143. `profiles.py`: `runtime_capabilities` on the five claude-code profiles (managed plugins P4, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five")
+and APPLIED 2026-11-06 by the pull request that adds this section (lane
+managed-plugins-contract, part of #2688). Requested by
+docs/design/managed-plugins.md section 14, request P4.
+
+### The change
+
+`claude-code`, `claude-code-large`, `claude-code-review`,
+`claude-code-browser` and `claude-code-lightpanda` (swarm-api's
+`plugincatalogue.CLAUDE_CODE_PROFILES`, every one running
+`agent_worker.runners.claude_code`) state
+`runtime_capabilities=("claude_plugins", "node", "bun", "python3", "bash")`.
+`claude_plugins` means the runner loads Claude Code plugins. The rest are the
+design's closed list of plugin runtimes (section 5), each shipped by
+`agent-runtime-base` and by the browser and lightpanda images built on it
+(node from `NODE_IMAGE`, bun copied from the gstack build stage, python3,
+bash). Every other profile keeps `()`: codex loads no Claude Code plugin, and
+the indexer is a platform step.
+
+### What it would break if accepted
+
+Nothing reads a profile's capabilities yet. A strict work contract's runtime
+capabilities are `swarm_api.workcontract.RUNTIME_CAPABILITIES` names, and
+these names are not among them, so no contract is admitted or refused
+differently. `tests/unit/common/test_runtime_capabilities_contract.py`
+allowed only those names on a profile, and now also allows the five plugin
+capabilities.
+
+### Invariants
+
+Invariant 10: names only, never a binary or a path.
+
+### How it is tested
+
+`tests/unit/common/test_runtime_capabilities_contract.py` pins the five
+profiles' tuple, checks that they are the plugin catalogue's
+`CLAUDE_CODE_PROFILES` running the claude-code runner, and checks that every
+other profile is still empty.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 144. `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1` (managed plugins P5, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five";
+a platform switch change is confirmed in a dialog) and APPLIED 2026-11-06 by
+the pull request that adds this section (lane managed-plugins-contract, part
+of #2688). Requested by docs/design/managed-plugins.md section 14, request
+P5.
+
+### Why
+
+The platform switches `SWARM_WORK_CONTRACTS` and `SWARM_CONTRACT_REVIEW`
+become console settings in `platform_settings/switches` (design section 11).
+Any tenant's worker can write that document, so swarm-api acts on it only
+when its MAC verifies.
+
+### The change
+
+```python
+PLATFORM_SETTINGS_PURPOSE = "swarm.platform-settings/v1"
+PLATFORM_SETTINGS_MAC_FIELDS = ("work_contracts", "contract_review")
+
+def canonical_platform_settings(fields) -> bytes:
+    # JCS of {"purpose", "fields": {work_contracts, contract_review}}
+```
+
+Only the two switches are covered, and an absent one is null. `set_by`,
+`set_at` and `mac` are not covered, and a key outside the list must not be
+acted on. It names no tenant, because there is one platform. Its purpose is
+not a workspace block's, so neither MAC verifies the other's document.
+
+### What it would break if accepted
+
+Nothing: no such document exists yet.
+
+### Invariants
+
+None changes.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins the bytes, an unset
+switch as null, a changed switch changing them, an uncovered key, and the
+refusal of a non-map. It also checks that specsign's public names are exactly
+the ones before plus those requests 141 and 144 add.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+## 145. `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH`, a `CANCELLED` end for a merge step a person pushed over (#2505, epic #2525)
+
+**Status:** REQUESTED 2026-11-05 by the pull request that adds this section,
+on the owner's decision of 2026-10-27 (BGD, issue triage, epic #2525): "A
+distinct non-failure end: superseded_by_person_push (not FAILED) when the
+committer is not the platform identity, so failure-review stops filing it; a
+foreign head from an unknown branch-mate still refuses. If the end cause is
+typed in the frozen contract, it goes in as a contract request first." The
+worker side of the decision is on main; this is the contract request the
+decision promised and nobody filed. Not applied.
+
+### What is true today
+
+Read on main (a515b65) on 2026-11-05.
+
+* `EndCause` in `apps/common/swarm_common/models.py` has no member for it.
+* A parked merge step whose pull request a person on it (its author or an
+  assignee) pushed a non-merge commit to, which the platform did not make,
+  ends `FAILED` with `end_cause` `merge_refused` and
+  `result_summary.merge.refusal.code` `superseded_by_person_push`
+  (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, chosen by
+  `merge._person_pusher`, ended by `merge._superseded`). The refusal itself
+  is unchanged: `merge._accept` takes no head a person made of content and
+  nothing merges.
+* `swarm_api.failuredigest._person_push` skips both the refusal code and the
+  string `superseded_by_person_push` as an `end_cause`, so failure-review does
+  not file the step either way.
+* `docs/merge-step.md` (section "Revised 2026-10-27: a person's push
+  supersedes the merge step"), `docs/design/failure-review.md` and the
+  comments on `merge.SUPERSEDED_BY_PERSON_PUSH` and
+  `failuredigest.SUPERSEDED_BY_PERSON_PUSH` all say "until contract request
+  SUPERSEDED_BY_PERSON_PUSH lands"; until this entry, no such request existed.
+
+### Why
+
+`EndCause` is "why a task reached a FAILED or CANCELLED state". A step a person
+took over by pushing to its pull request did not fail: the platform's guarantee
+(a person's content commit is never merged unreviewed) held, and the person
+went on by hand. Ending it `FAILED` puts it in the failed-step counts, the
+outcome ledger's `merge_refused` class and any reader that treats `FAILED` as
+something to look at, and only failure-review's rule, which reads the refusal
+code, tells it apart.
+
+### The change
+
+```python
+class EndCause(str, Enum):
+    ...
+    SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
+```
+
+* The member's value is the string the refusal code already carries, so the
+  two never differ.
+* Its one writer is the worker (`agent_worker.control`), beside
+  `completed_at`, when the merge step ends `CANCELLED` having found a head a
+  person on the pull request made. The `EndCause` docstring's list of the
+  worker's causes gains `SUPERSEDED_BY_PERSON_PUSH`.
+* The worker ends such a step `CANCELLED` (exit code `ExitCode.CANCELLED`)
+  with the refusal still in `result_summary.merge.refusal`, as
+  `merge._outcome` already does for `pull_request_closed`. Nothing merges.
+
+### What empties once it is applied
+
+In the same pull request that applies it:
+
+* `merge._superseded` writes `CANCELLED` with
+  `EndCause.SUPERSEDED_BY_PERSON_PUSH` instead of `FAILED` with
+  `EndCause.MERGE_REFUSED`; the comment on `merge.SUPERSEDED_BY_PERSON_PUSH`
+  loses "until contract request SUPERSEDED_BY_PERSON_PUSH lands".
+* `failuredigest` needs no change: `_person_push` already reads the string as
+  an `end_cause`, and the refusal-code branch stays for steps ended before.
+  Its comment loses "while `EndCause` has no member for it".
+* `swarm_api.outcomes` classifies the new member (`_CANCEL_OF_CAUSE`, a
+  cancel cause of its own), because
+  `test_every_end_cause_has_exactly_one_class` holds the two maps to the
+  enum; the ledger's `DERIVE_VERSION` moves with it.
+* `docs/merge-step.md`'s table row, "`MERGE_REFUSED` `superseded_by_person_push`
+  ... `CANCELLED` once contract request ... lands", and its paragraph "The end
+  cause is frozen" become one statement of the new end; the same line in
+  `docs/design/failure-review.md` is updated.
+* `tests/unit/worker/test_merge_person_push.py` asserts the `CANCELLED` end
+  and the cause.
+
+### What it would break if accepted
+
+A reader that sorts `FAILED` steps by `end_cause` and has no branch for an
+unknown value: `swarm_api.outcomes` is the one in this repository, and its
+parity test names it. A step ended before the change keeps `FAILED`/
+`merge_refused` and its code; every reader that reads the code keeps working.
+
+### If it is declined
+
+The step stays `FAILED`/`MERGE_REFUSED` with the refusal code, which is
+today's state: failure-review skips it by the code, and the failed-step counts
+and the ledger's `merge_refused` class carry a step nobody should look at.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Capacity and fencing are untouched: the
+step is already ended by the worker holding the current generation, and no
+state that creates infrastructure demand changes.
+
+### How it is tested
+
+`tests/unit/worker/test_merge_person_push.py` holds the worker's end and
+the parity of the two modules' constants;
+`tests/unit/control_plane/test_outcomes_classifier_parity.py` and the
+`EndCause` partition test hold the ledger to the enum once it has the member.
+
+### Who decided
+
+The decision is the owner's (BGD), 2026-10-27, epic #2525; this request is
+filed by the pull request that adds it, for #2505, and awaits the owner's
+acceptance.
+
+---

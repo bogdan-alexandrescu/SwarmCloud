@@ -1,0 +1,588 @@
+"""Visuals and notes are stored and served (docs/design/voice-it-own-speech.md §8;
+build plan §14, L9; swarm_api/voice/visuals.py, swarm_api/routes/voice_visuals.py).
+
+swarm-api is built as test_voice_grant builds it: the in-memory Firestore, a
+fake swarm-voice, swarm-voice's identity as a static token. The visuals router
+is mounted beside the app's own, as routes/voice.py will mount it (L6), the
+bucket is `InMemoryVoiceBlobs` and the GitHub read is a fake reader that
+records what it was asked. This holds that:
+
+* a drawn visual's body lives under the tenant's own prefix,
+  `tenants/<t>/voice/<p>/visuals/<v>/<version>.txt`, never rewritten, and is
+  served back as text; another person's project is the same 404 as a missing one;
+* a `code` visual is read by swarm-api, only through the person's repository
+  grant in the session's tenant (no grant, or another tenant's repository:
+  403 and GitHub is never asked), and is redacted before it is stored;
+* anchors are checked against the visual: points and regions inside the frame,
+  parts it has, lines inside its lines;
+* a spoken note takes the page's fresh pointer, else a named part, else the
+  whole visual;
+* notes become a follow-up, an issue or a lane brief, each note then `work`;
+* a grant reaches only the two writes it is listed for, and only its own
+  session's; the pointer, the note edit and the notes-to-work route are the page's;
+* `speak`'s `point_at` is a `focus` event on the session's stream.
+
+No network, no cloud credential; every token and grant is built at runtime.
+"""
+
+from __future__ import annotations
+
+import secrets
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from control_plane.conftest import auth_header, db, group_map, objects, tokens  # noqa: E402,F401
+from control_plane.test_voice_grant import _build, _grant_headers, _start  # noqa: E402
+from control_plane.test_voice_sessions import FakeVoice  # noqa: E402
+
+from swarm_api.access import GRANTS, grant_id_for  # noqa: E402
+from swarm_api.errors import NotFound, ValidationFailed  # noqa: E402
+from swarm_api.repositories import repo_id_for  # noqa: E402
+from swarm_api.routes import voice_visuals as rvv  # noqa: E402
+from swarm_api.voice import grant as vg  # noqa: E402
+from swarm_api.voice import readback as rb  # noqa: E402
+from swarm_api.voice import store as vstore  # noqa: E402
+from swarm_api.voice import visuals as vvis  # noqa: E402
+from swarm_common.states import EventType  # noqa: E402
+
+ALICE = "alice@example.com"
+SPEC = "# Overview\nWhat it is.\n\n## The API\nRoutes.\n\n```\n# not a heading\n```\n## The API\n"
+
+
+class FakeReader:
+    """The GitHub read, recording each call; answers a file of numbered lines."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+        self.file = "\n".join(f"line {i}" for i in range(1, 51))
+
+    def read_file(self, tenant_id, owner, repo, ref, path):
+        self.calls.append(("file", tenant_id, owner, repo, ref, path))
+        return self.file
+
+    def read_diff(self, tenant_id, owner, repo, pull):
+        self.calls.append(("diff", tenant_id, owner, repo, pull))
+        return "diff --git a/x b/x\n+added\n-removed\n"
+
+
+@pytest.fixture
+def voice() -> FakeVoice:
+    return FakeVoice()
+
+
+@pytest.fixture
+def reader() -> FakeReader:
+    return FakeReader()
+
+
+@pytest.fixture
+def blobs() -> vstore.InMemoryVoiceBlobs:
+    return vstore.InMemoryVoiceBlobs()
+
+
+@pytest.fixture
+def client(db, tokens, group_map, objects, voice, reader, blobs) -> TestClient:  # noqa: F811
+    built = _build(db, tokens, group_map, objects, voice)
+    built.app.state.voice_blobs = blobs
+    built.app.state.voice_repo_reader = reader
+    return built
+
+
+def _tenant(db, call) -> str:  # noqa: F811
+    return db.docs[f"voice_projects/{call.project_id}/sessions/{call.session_id}"]["tenant_id"]
+
+
+def _draw(client, call, *, headers=None, **visual) -> Any:
+    body = {"kind": "spec", "title": "The spec", "body": SPEC, "parts": None, "source": None,
+            **visual}
+    return client.post(f"/v1/voice/sessions/{call.session_id}/visuals", json={"visual": body},
+                       headers=headers or _grant_headers(call))
+
+
+def _events(db, call, kind: str) -> list[dict[str, Any]]:  # noqa: F811
+    prefix = f"voice_projects/{call.project_id}/sessions/{call.session_id}/events/"
+    return [row for path, row in sorted(db.docs.items())
+            if path.startswith(prefix) and row.get("type") == kind]
+
+
+def _grant_repo(db, tenant: str, repo: str = "acme/widgets", *, person: str = ALICE) -> str:  # noqa: F811
+    owner, name = repo.split("/")
+    repo_id = repo_id_for(tenant, owner, name)
+    db.collection("repositories").document(repo_id).set(
+        {"tenant_id": tenant, "owner": owner, "repo": name})
+    db.collection(GRANTS).document(grant_id_for(tenant, person, repo_id)).set(
+        {"tenant_id": tenant, "user": person, "repo_id": repo_id, "mode": "read"})
+    return repo_id
+
+
+# ---- the routes a grant reaches ---------------------------------------------
+
+
+def test_the_grant_reaches_the_two_visual_writes_and_both_act_as_heard():
+    routes = {(m, p) for m, p in vg.WRITE_ROUTES if "/visuals" in p}
+    assert routes == {("POST", "/v1/voice/sessions/{session_id}/visuals"),
+                      ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes")}
+    assert all(rb.classify(m, p) == rb.AS_HEARD for m, p in routes)
+
+
+def test_every_route_of_the_router_is_a_voice_route_the_design_names():
+    table = {(m, r.path) for r in rvv.router.routes for m in r.methods}
+    assert table == {
+        ("GET", "/v1/voice/projects/{project_id}/visuals"),
+        ("GET", "/v1/voice/projects/{project_id}/visuals/{visual_id}"),
+        ("POST", "/v1/voice/sessions/{session_id}/visuals"),
+        ("POST", "/v1/voice/sessions/{session_id}/pointer"),
+        ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes"),
+        ("PATCH", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/{note_id}"),
+        ("POST", "/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/work"),
+    }
+
+
+# ---- a drawn visual: tenant prefix, versions, served as text -----------------
+
+
+def test_a_drawn_spec_lives_under_the_tenants_prefix_and_is_served_as_text(client, db, voice, blobs):
+    call = _start(client, voice)
+    tenant = _tenant(db, call)
+    first = _draw(client, call)
+    assert first.status_code == 200, first.text
+    visual = first.json()["visual"]
+    vid = visual["visual_id"]
+    assert visual["version"] == 1 and visual["created_by"] == "planner"
+    assert visual["body_ref"] == f"tenants/{tenant}/voice/{call.project_id}/visuals/{vid}/000001.txt"
+    assert blobs.objects[visual["body_ref"]] == SPEC.encode()
+    assert blobs.content_types[visual["body_ref"]].startswith("text/plain")
+    # Headings are the parts; a fenced line is not a heading; a repeat is numbered.
+    assert visual["parts"] == [{"id": "overview", "label": "Overview"},
+                               {"id": "the-api", "label": "The API"},
+                               {"id": "the-api-2", "label": "The API"}]
+    assert "tenant_id" not in visual and "person" not in visual
+    # A new version is a new object; the first is never rewritten.
+    second = _draw(client, call, visual_id=vid, body=SPEC + "More.\n")
+    assert second.json()["visual"]["version"] == 2
+    assert blobs.objects[visual["body_ref"]] == SPEC.encode()
+    assert [e["visual"]["version"] for e in _events(db, call, vvis.VISUAL_UPSERT)] == [1, 2]
+    served = client.get(f"/v1/voice/projects/{call.project_id}/visuals/{vid}",
+                        headers=auth_header("alice"))
+    assert served.status_code == 200, served.text
+    assert served.headers["content-type"].startswith("application/json")
+    assert served.json()["body"] == SPEC + "More.\n"
+    listed = client.get(f"/v1/voice/projects/{call.project_id}/visuals",
+                        headers=auth_header("alice")).json()["visuals"]
+    assert [v["visual_id"] for v in listed] == [vid]
+
+
+def test_another_persons_project_is_the_same_404_as_a_missing_one(client, db, voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    theirs = client.get(f"/v1/voice/projects/{call.project_id}/visuals/{vid}",
+                        headers=auth_header("root"))
+    missing = client.get(f"/v1/voice/projects/vp_{secrets.token_hex(16)}/visuals/{vid}",
+                         headers=auth_header("alice"))
+    assert theirs.status_code == missing.status_code == 404
+
+
+def test_a_body_key_outside_the_tenants_prefix_is_refused():
+    key = vstore.blob_key("eng", "vp_" + "a" * 32, vvis.VISUALS, "vv_" + "b" * 32, "000001.txt")
+    assert key.startswith("tenants/eng/voice/vp_")
+    assert vstore.key_refusal("research", key) is not None
+    with pytest.raises(vstore.VoiceBlobKeyRefused):
+        vstore.blob_key("eng", "vp_" + "a" * 32, vvis.VISUALS, "..", "x.txt")
+
+
+def test_a_drawn_kind_takes_no_source_and_a_read_kind_takes_no_body(client, voice):
+    call = _start(client, voice)
+    with_source = _draw(client, call, source={"task_id": "t1", "step": None})
+    assert with_source.status_code == 422
+    log_with_body = _draw(client, call, kind="log", body="pasted", source={"task_id": "t1",
+                                                                          "step": None})
+    assert log_with_body.status_code == 422
+
+
+def test_a_grant_draws_only_on_its_own_session(client, voice):
+    mine = _start(client, voice)
+    other = SimpleNamespace(session_id="vs_" + secrets.token_hex(16))
+    response = _draw(client, other, headers=_grant_headers(mine))
+    assert response.status_code == 403
+
+
+# ---- a code visual: the repository grant scope --------------------------------
+
+
+def _show(client, call, source, *, headers=None):
+    return client.post(f"/v1/voice/sessions/{call.session_id}/visuals", json={"visual": {
+        "kind": "code", "title": "widgets", "body": None, "parts": None, "source": source}},
+        headers=headers or _grant_headers(call))
+
+
+FILE = {"repo": "acme/widgets", "ref": "main", "path": "src/app.py", "from": 10, "to": 12}
+
+
+def test_a_file_is_read_through_the_persons_repository_grant(client, db, voice, reader):
+    call = _start(client, voice)
+    tenant = _tenant(db, call)
+    refused = _show(client, call, FILE)
+    assert refused.status_code == 403 and reader.calls == []
+    _grant_repo(db, tenant)
+    shown = _show(client, call, FILE)
+    assert shown.status_code == 200, shown.text
+    visual = shown.json()["visual"]
+    assert reader.calls == [("file", tenant, "acme", "widgets", "main", "src/app.py")]
+    assert visual["lines"] == {"from": 10, "to": 12}
+    assert visual["source"]["path"] == "src/app.py"
+    body = client.get(f"/v1/voice/projects/{call.project_id}/visuals/{visual['visual_id']}",
+                      headers=auth_header("alice")).json()["body"]
+    assert body == "line 10\nline 11\nline 12"
+
+
+def test_another_tenants_repository_and_another_persons_grant_are_no_grant(client, db, voice,
+                                                                          reader):
+    call = _start(client, voice)
+    tenant = _tenant(db, call)
+    _grant_repo(db, "research")
+    assert _show(client, call, FILE).status_code == 403
+    repo_id = repo_id_for(tenant, "acme", "widgets")
+    db.collection("repositories").document(repo_id).set({"tenant_id": tenant})
+    db.collection(GRANTS).document(grant_id_for(tenant, ALICE, repo_id)).set(
+        {"tenant_id": tenant, "user": "bob@example.com", "repo_id": repo_id, "mode": "read"})
+    assert _show(client, call, FILE).status_code == 403
+    assert reader.calls == []
+
+
+def test_a_diff_is_read_through_the_same_grant(client, db, voice, reader):
+    call = _start(client, voice)
+    tenant = _tenant(db, call)
+    _grant_repo(db, tenant)
+    shown = _show(client, call, {"repo": "acme/widgets", "pull": 42})
+    assert shown.status_code == 200, shown.text
+    assert reader.calls == [("diff", tenant, "acme", "widgets", 42)]
+    assert shown.json()["visual"]["lines"] == {"from": 1, "to": 3}
+
+
+def test_a_credential_in_a_file_is_redacted_before_it_is_stored(client, db, voice, reader, blobs):
+    call = _start(client, voice)
+    _grant_repo(db, _tenant(db, call))
+    leaked = "ghp_" + secrets.token_hex(18)
+    reader.file = f"TOKEN = '{leaked}'\nprint('hi')\n"
+    shown = _show(client, call, {**FILE, "from": 1, "to": None})
+    assert shown.status_code == 200, shown.text
+    stored = blobs.objects[shown.json()["visual"]["body_ref"]].decode()
+    assert leaked not in stored and "print('hi')" in stored
+
+
+@pytest.mark.parametrize("source", [
+    {**FILE, "repo": "../widgets"}, {**FILE, "path": "../etc/passwd"}, {**FILE, "path": "/abs"},
+    {**FILE, "ref": "main..evil"}, {**FILE, "from": 0}, {**FILE, "from": 5, "to": 4},
+    {"repo": "acme/widgets", "pull": 0}, {"repo": "acme/widgets", "pull": 3, "path": "x"},
+])
+def test_a_source_that_could_steer_the_read_is_refused(client, db, voice, reader, source):
+    call = _start(client, voice)
+    _grant_repo(db, _tenant(db, call))
+    assert _show(client, call, source).status_code == 422
+    assert reader.calls == []
+
+
+class _FakeAnswer:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status, self.body, self.headers = status, body, {}
+
+
+def test_the_github_reader_uses_the_installation_token_for_that_one_repository():
+    minted = secrets.token_hex(20)
+    asked: list[tuple[str, str, str]] = []
+    sent: list[tuple[str, dict[str, str]]] = []
+
+    class Installations:
+        def token_for_repo(self, tenant_id, owner, repo):
+            asked.append((tenant_id, owner, repo))
+            return minted
+
+    def send(method, url, headers, body, timeout):
+        sent.append((url, headers))
+        return _FakeAnswer(200, b"hello\n")
+
+    gh = vvis.GitHubRepoReader(Installations(), send=send)
+    assert gh.read_file("eng", "acme", "widgets", "main", "src/a b.py") == "hello\n"
+    assert asked == [("eng", "acme", "widgets")]
+    url, headers = sent[0]
+    assert url == "https://api.github.com/repos/acme/widgets/contents/src/a%20b.py?ref=main"
+    assert headers["Authorization"] == f"Bearer {minted}"
+    gh.read_diff("eng", "acme", "widgets", 7)
+    assert sent[1][0] == "https://api.github.com/repos/acme/widgets/pulls/7"
+    assert sent[1][1]["Accept"] == "application/vnd.github.diff"
+
+
+def test_without_an_installation_the_reader_refuses_and_never_falls_back():
+    class NoInstallation:
+        def token_for_repo(self, tenant_id, owner, repo):
+            return None
+
+    def send(*_args):
+        raise AssertionError("GitHub was asked without an installation token")
+
+    with pytest.raises(vvis.RepositoryNotCovered):
+        vvis.GitHubRepoReader(NoInstallation(), send=send).read_file("eng", "a", "b", "main", "x")
+    with pytest.raises(vvis.RepositoryNotCovered):
+        vvis.GitHubRepoReader(None, send=send).read_diff("eng", "a", "b", 1)
+
+
+def test_a_failed_github_read_names_no_body():
+    class Installations:
+        def token_for_repo(self, tenant_id, owner, repo):
+            return secrets.token_hex(20)
+
+    def send(*_args):
+        return _FakeAnswer(500, b"secret-ish body")
+
+    with pytest.raises(vvis.RepositoryReadFailed) as caught:
+        vvis.GitHubRepoReader(Installations(), send=send).read_file("eng", "a", "b", "main", "x")
+    assert "secret-ish" not in str(caught.value)
+
+
+# ---- a log visual -------------------------------------------------------------
+
+
+def _event(kind: EventType, attempt: str, error: str | None, minute: int) -> Any:
+    return SimpleNamespace(type=kind, attempt_id=attempt, detail={"error": error} if error else {},
+                           at=datetime(2026, 11, 5, 6, minute, tzinfo=timezone.utc))
+
+
+class FakeTaskStore:
+    def __init__(self, events: list[Any]) -> None:
+        self.events = events
+        self.asked: list[tuple[str, str, str | None]] = []
+
+    def get_task(self, tenant_id, task_id, *, submitted_by):
+        self.asked.append((tenant_id, task_id, submitted_by))
+        if tenant_id != "eng":
+            raise NotFound("no such task")
+        return SimpleNamespace(task_id=task_id)
+
+    def list_events(self, tenant_id, task_id, *, limit, descending, task):
+        assert descending and limit == vvis.LOG_EVENTS_SCAN
+        return SimpleNamespace(items=list(reversed(self.events)), next_page_token=None)
+
+
+def test_a_log_is_the_tasks_failure_tails_in_the_sessions_tenant():
+    store = FakeTaskStore([
+        _event(EventType.RUNNING, "a1", None, 1),
+        _event(EventType.RETRYING, "a1", "first failure", 2),
+        _event(EventType.FAILED, "a2", "Traceback\nboom", 3),
+    ])
+    text = vvis.log_tail(store, tenant_id="eng", submitted_by=None,
+                         source=vvis.LogSource(task_id="t1", step=None))
+    assert text.index("first failure") < text.index("boom")
+    only = vvis.log_tail(store, tenant_id="eng", submitted_by=ALICE,
+                         source=vvis.LogSource(task_id="t1", step="a2"))
+    assert "boom" in only and "first failure" not in only
+    assert store.asked[-1] == ("eng", "t1", ALICE)
+    with pytest.raises(NotFound):
+        vvis.log_tail(store, tenant_id="research", submitted_by=None,
+                      source=vvis.LogSource(task_id="t1", step=None))
+
+
+def test_a_task_with_no_failed_step_has_no_log_to_show():
+    store = FakeTaskStore([_event(EventType.SUCCEEDED, "a1", None, 1)])
+    with pytest.raises(NotFound):
+        vvis.log_tail(store, tenant_id="eng", submitted_by=None,
+                      source=vvis.LogSource(task_id="t1", step=None))
+
+
+# ---- anchors ------------------------------------------------------------------
+
+
+VISUAL = {"parts": [{"id": "header", "label": "Header"}], "lines": {"from": 10, "to": 20}}
+
+
+@pytest.mark.parametrize("anchor", [
+    {"type": "point", "x": 0, "y": 1},
+    {"type": "region", "x": 0.25, "y": 0.5, "w": 0.75, "h": 0.5},
+    {"type": "part", "part_id": "header"},
+    {"type": "lines", "from": 10, "to": 20},
+    None,
+])
+def test_an_anchor_inside_the_visual_is_kept(anchor):
+    assert vvis.check_anchor(anchor, VISUAL) == anchor
+
+
+@pytest.mark.parametrize("anchor", [
+    {"type": "point", "x": 1.5, "y": 0},
+    {"type": "point", "x": True, "y": 0},
+    {"type": "point", "x": 0.1, "y": 0.1, "w": 0.2},
+    {"type": "region", "x": 0.5, "y": 0.5, "w": 0.6, "h": 0.1},
+    {"type": "region", "x": 0.1, "y": 0.1, "w": 0, "h": 0.1},
+    {"type": "part", "part_id": "footer"},
+    {"type": "lines", "from": 9, "to": 12},
+    {"type": "lines", "from": 15, "to": 14},
+    {"type": "circle", "x": 0, "y": 0},
+    "here",
+])
+def test_an_anchor_outside_the_visual_is_refused(anchor):
+    with pytest.raises(ValidationFailed):
+        vvis.check_anchor(anchor, VISUAL)
+
+
+# ---- notes ----------------------------------------------------------------------
+
+
+def _note(client, call, vid, *, headers=None, **note):
+    body = {"text": "make this bigger", "via": "voice", "anchor": None, "part": None, **note}
+    return client.post(f"/v1/voice/projects/{call.project_id}/visuals/{vid}/notes",
+                       json={"note": body}, headers=headers or _grant_headers(call))
+
+
+def _point(client, call, vid, anchor):
+    return client.post(f"/v1/voice/sessions/{call.session_id}/pointer",
+                       json={"visual_id": vid, "anchor": anchor}, headers=auth_header("alice"))
+
+
+def test_a_spoken_note_takes_the_fresh_pointer_else_a_part_else_the_whole_visual(client, db,
+                                                                               voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    region = {"type": "region", "x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}
+    assert _point(client, call, vid, region).status_code == 200
+    pinned = _note(client, call, vid)
+    assert pinned.status_code == 200, pinned.text
+    note = pinned.json()["note"]
+    assert note["anchor"] == region and note["via"] == "voice" and note["state"] == "open"
+    assert note["visual_version"] == 1 and "tenant_id" not in note
+    named = _note(client, call, vid, part="the api").json()["note"]
+    assert named["anchor"] == {"type": "part", "part_id": "the-api"}
+    # A pointer older than five seconds is not where the person is pointing now.
+    pointer = f"voice_projects/{call.project_id}/pointers/{call.session_id}"
+    db.docs[pointer]["at"] = db.docs[pointer]["at"] - timedelta(
+        seconds=vvis.POINTER_MAX_AGE_SECONDS + 1)
+    whole = _note(client, call, vid).json()["note"]
+    assert whole["anchor"] is None
+    assert len(_events(db, call, vvis.NOTE_UPSERT)) == 3
+
+
+def test_a_typed_note_carries_its_own_anchor_and_a_bad_one_is_refused(client, voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    point = {"type": "point", "x": 0.5, "y": 0.5}
+    typed = _note(client, call, vid, via="tap", anchor=point, headers=auth_header("alice"))
+    assert typed.status_code == 200 and typed.json()["note"]["anchor"] == point
+    bad = _note(client, call, vid, via="typed", headers=auth_header("alice"),
+                anchor={"type": "part", "part_id": "nope"})
+    assert bad.status_code == 422
+    # The planner pins spoken notes only.
+    assert _note(client, call, vid, via="typed").status_code == 422
+
+
+def test_a_note_with_a_credential_is_refused(client, voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    assert _note(client, call, vid, text="use ghp_" + secrets.token_hex(18)).status_code == 422
+
+
+def test_a_grant_reaches_only_its_own_projects_notes_and_not_the_pages_routes(client, voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    other = SimpleNamespace(project_id="vp_" + secrets.token_hex(16))
+    assert _note(client, other, vid, headers=_grant_headers(call)).status_code == 403
+    note_id = _note(client, call, vid).json()["note"]["note_id"]
+    base = f"/v1/voice/projects/{call.project_id}/visuals/{vid}/notes"
+    grant = _grant_headers(call)
+    assert client.post(f"/v1/voice/sessions/{call.session_id}/pointer",
+                       json={"visual_id": vid, "anchor": None}, headers=grant).status_code == 403
+    assert client.patch(f"{base}/{note_id}", json={"state": "resolved"},
+                        headers=grant).status_code == 403
+    assert client.post(f"{base}/work", json={"note_ids": [note_id], "kind": "issue"},
+                       headers=grant).status_code == 403
+
+
+def test_the_person_resolves_a_note_and_a_note_that_became_work_stays_work(client, voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    first = _note(client, call, vid).json()["note"]["note_id"]
+    base = f"/v1/voice/projects/{call.project_id}/visuals/{vid}/notes"
+    resolved = client.patch(f"{base}/{first}", json={"state": "resolved"},
+                            headers=auth_header("alice"))
+    assert resolved.status_code == 200 and resolved.json()["note"]["state"] == "resolved"
+    second = _note(client, call, vid).json()["note"]["note_id"]
+    made = client.post(f"{base}/work", json={"note_ids": [second], "kind": "follow_up"},
+                       headers=auth_header("alice"))
+    assert made.status_code == 200, made.text
+    again = client.patch(f"{base}/{second}", json={"state": "open"}, headers=auth_header("alice"))
+    assert again.status_code == 409
+
+
+# ---- notes become work ----------------------------------------------------------
+
+
+def test_notes_become_a_follow_up_on_the_projects_open_list(client, db, voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    ids = [_note(client, call, vid, text=t).json()["note"]["note_id"] for t in ("one", "two")]
+    made = client.post(f"/v1/voice/projects/{call.project_id}/visuals/{vid}/notes",
+                       json={"to_work": {"note_ids": ids, "kind": "follow_up", "title": None}},
+                       headers=_grant_headers(call))
+    assert made.status_code == 200, made.text
+    work = made.json()["work"]
+    assert work["kind"] == "follow_up" and work["ref"].startswith("brief.open/vf_")
+    brief = db.docs[f"voice_projects/{call.project_id}"]["brief"]
+    assert brief["open"][-1]["notes"] == ["one", "two"]
+    assert {n["state"] for n in made.json()["notes"]} == {"work"}
+    again = client.post(f"/v1/voice/projects/{call.project_id}/visuals/{vid}/notes",
+                        json={"to_work": {"note_ids": ids[:1], "kind": "issue", "title": None}},
+                        headers=_grant_headers(call))
+    assert again.status_code == 409
+
+
+def test_notes_become_an_issue_card_and_a_lane_brief_over_the_visuals_files(client, db, voice):
+    call = _start(client, voice)
+    _grant_repo(db, _tenant(db, call))
+    vid = _show(client, call, FILE).json()["visual"]["visual_id"]
+    first = _note(client, call, vid, anchor={"type": "lines", "from": 11, "to": 11}).json()
+    assert first["note"]["anchor"] == {"type": "lines", "from": 11, "to": 11}
+    second = _note(client, call, vid, text="rename this").json()["note"]["note_id"]
+    url = f"/v1/voice/projects/{call.project_id}/visuals/{vid}/notes"
+    issue = client.post(url, json={"to_work": {"note_ids": [first["note"]["note_id"]],
+                                               "kind": "issue", "title": "Bigger"}},
+                        headers=_grant_headers(call))
+    assert issue.status_code == 200, issue.text
+    card_id = issue.json()["work"]["ref"].removeprefix("card/")
+    card = db.docs[f"voice_projects/{call.project_id}/cards/{card_id}"]
+    assert card["kind"] == "work" and card["body"]["body"]["target_kind"] == "issue"
+    assert card["body"]["body"]["repository"] == "acme/widgets"
+    lane = client.post(url, json={"to_work": {"note_ids": [second], "kind": "lane_brief",
+                                              "title": None}}, headers=_grant_headers(call))
+    assert lane.status_code == 200, lane.text
+    plan_id = lane.json()["work"]["ref"].removeprefix("card/")
+    plan = db.docs[f"voice_projects/{call.project_id}/cards/{plan_id}"]
+    assert plan["kind"] == "plan"
+    assert plan["body"]["body"]["waves"][0]["lanes"][0]["territory"] == ["src/app.py"]
+
+
+# ---- speak's point_at -----------------------------------------------------------
+
+
+def test_speaks_point_at_is_a_focus_on_the_sessions_stream(client, db, voice):
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    anchor = {"type": "part", "part_id": "overview"}
+    sent = client.post(f"/v1/voice/sessions/{call.session_id}/visuals",
+                       json={"focus": {"visual_id": vid, "anchor": anchor,
+                                       "caption": "The overview is here."}},
+                       headers=_grant_headers(call))
+    assert sent.status_code == 200, sent.text
+    [focus] = _events(db, call, vvis.FOCUS)
+    assert focus["visual_id"] == vid and focus["anchor"] == anchor
+    assert focus["caption"] == "The overview is here."
+    null_visual = client.post(f"/v1/voice/sessions/{call.session_id}/visuals",
+                       json={"focus": {"visual_id": vid}, "visual": None},
+                       headers=_grant_headers(call))
+    assert null_visual.status_code == 200
+    neither = client.post(f"/v1/voice/sessions/{call.session_id}/visuals", json={},
+                          headers=_grant_headers(call))
+    assert neither.status_code == 422

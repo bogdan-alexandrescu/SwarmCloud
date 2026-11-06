@@ -73,6 +73,12 @@
 .ws-kv dt { color: var(--text-dim); }
 .ws-kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 
+/* The Writing flows switch (part of #2688) wore the browser's 0.5ex side
+   margins, a length off the spacing scale the sweep cannot turn into px; the
+   space after it holds it apart from its word. Longhands and a plain selector,
+   config.css's form for the same fix. */
+[data-qa-writing-flows] input[type='checkbox'] { margin-left: 0; margin-right: 0; }
+
 /* The parts stay one row on a phone (S6d-S6f). Three parts at the shared
    12px padding came to 380px with the bold current one, past a 390 phone's
    358px column, and the shared phone rule wrapped them onto two rows. */

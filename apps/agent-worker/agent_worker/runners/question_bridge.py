@@ -80,6 +80,13 @@ PERMISSION_PROMPT_ARGS = ("--permission-prompt-tool", "stdio")
 #: before another flag.
 WITHHELD_TOOLS = ("EnterPlanMode", "ExitPlanMode")
 
+#: Claude Code's skill tool: its `input.skill` names the skill it runs. The
+#: last call of it before a question is the skill that asked (finding 3; the
+#: owner's pick of 4 November 2026), which the hook's payload does not carry.
+SKILL_TOOL = "Skill"
+#: The longest skill name a wait record carries; a longer one is none.
+MAX_SKILL_CHARS = 200
+
 #: The pending question, beside the runner's settings in `work/` (HOME, which
 #: is checkpointed), never in the checkout.
 PENDING_NAME = "pending-question.json"
@@ -384,6 +391,30 @@ def _last_tool_use(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | N
     return last
 
 
+def asked_by_skill(events: Iterable[Mapping[str, Any]], tool_use_id: str) -> str | None:
+    """The skill that asked the question tool call `tool_use_id`: the
+    `input.skill` of the last `Skill` call before it in the stream, or None
+    when no Skill call preceded it, the call is not in the stream, or the
+    name is not a short text (the page then says the skill is not known)."""
+    skill: str | None = None
+    for event in events:
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, Mapping) or block.get("type") != "tool_use":
+                continue
+            if block.get("id") == tool_use_id:
+                return skill
+            if block.get("name") == SKILL_TOOL:
+                tool_input = block.get("input")
+                name = tool_input.get("skill") if isinstance(tool_input, Mapping) else None
+                name = name.strip() if isinstance(name, str) else ""
+                skill = name if name and len(name) <= MAX_SKILL_CHARS else None
+    return None
+
+
 def classify(events: Sequence[Mapping[str, Any]], pending_path: Path) -> tuple[str, PendingQuestion | None]:
     """How one print-mode run ended, from its stream-json events and the
     pending file: `parked` with the question, `bridge_failed`, or `not_asked`.
@@ -519,6 +550,7 @@ def wait_record(
     generation: int,
     source_revision: str | None,
     asked_at: str,
+    skill: str | None = None,
 ) -> dict[str, Any]:
     """The park's `question_wait` for a bridged question.
 
@@ -529,7 +561,9 @@ def wait_record(
     the record -- the session and tool use to resume (and when the hook
     recorded the call, which `pending_of` checks as the hook's record), each question's own
     options with their previews, whether it is a multiple choice, the
-    attempt and its fencing generation, and the checkout's revision.
+    attempt and its fencing generation, the checkout's revision, and the
+    skill that asked (`asked_by_skill`; None when it is not known), which
+    swarm-api serves to Needs you and the step's questions.
     """
     questions = [
         {
@@ -553,6 +587,7 @@ def wait_record(
             "generation": generation,
             "source_revision": source_revision,
             "questions": pending.to_json()["questions"],
+            "skill": skill,
         },
     }
 

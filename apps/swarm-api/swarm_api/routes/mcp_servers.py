@@ -52,6 +52,7 @@ from pydantic import Field
 
 from swarm_common.models import Tenant
 
+from .. import route_scope
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_scope
 from ..errors import NotFound
@@ -248,6 +249,7 @@ def credential_writer(request: Request,
 
 
 @router.post(SWEEP_ROUTE)
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def sweep_credentials(
     _auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),

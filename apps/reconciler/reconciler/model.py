@@ -508,6 +508,11 @@ class ControlSnapshot:
     leases: dict[str, LeaseView] = field(default_factory=dict)
     attempts: dict[str, AttemptView] = field(default_factory=dict)
     taken_at: datetime = field(default_factory=utcnow)
+    #: True for a full sweep (`ControlStore.snapshot`), False for an
+    #: incremental pass's read of what changed and what falls due
+    #: (`ControlStore.incremental_snapshot`). On False an absence proves
+    #: nothing: a task or lease outside the read is simply not in it.
+    full: bool = True
     #: Tasks OUTSIDE the four concurrency states that an active execution
     #: names, read by id after the backends were listed. `tasks` holds only
     #: the concurrency states (see `ControlStore.snapshot`), so without this a

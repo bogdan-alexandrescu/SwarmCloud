@@ -1,92 +1,188 @@
-// THE PROSE TABLE ITSELF: every page has a row, and no ceiling ever rises.
+// THE PROSE RATCHET'S OWN RULES: what it counts, what it compares with, and
+// that it is merge-safe (BGD's pick, 2026-11-06, part of #2688).
 //
-// The slices (prose.app.<group>.test.tsx) hold each page to its row; this file
-// holds the rows. A ceiling may only go DOWN (BOGDAN'S RULE, 2026-11-05), so
-// two things are checked, and each catches what the other cannot:
-//
-//   THE HISTORY IN THE FILE. Every row keeps every ceiling it has had, oldest
-//   first, and the history must not rise. This is what CI sees: the UI job
-//   checks out one commit, so it has no previous table to read.
-//   THE PREVIOUS COMMIT'S TABLE, read with git where the history is there (a
-//   working tree, or a checkout deeper than one commit). A row's history must
-//   start with the one that commit had, so an edit that rewrites a number
-//   instead of appending a lower one is refused, as is a raise in place.
+// The slices (prose.app.<group>.test.tsx) render every page twice, on the
+// change's base and on its head, and fail a page whose visible words or arrow
+// links went up (proseapp.tsx; the base: prosebase.ts). There is no table of
+// ceilings to edit, so two changes that each pass against their own base pass
+// together: each added nothing, so together they add nothing. The fixtures
+// below are pages as HTML, the way a change would leave them.
 
 import { execFileSync } from 'node:child_process'
-import { dirname } from 'node:path'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
-import { measure, newWords, PAGES, pieces, TABLE, type CeilingRow } from './proseapp'
-import WORDS from './prose.words.json'
+import { measure, newWords, PAGES, pieces, proseDelta, type Measure } from './proseapp'
+import { chooseBase, extractApp, firstParent } from './prosebase'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
-/** The table as `ref` had it, or null where git has no such commit or the file was not there yet. */
-function tableAt(ref: string): Record<string, CeilingRow> | null {
-  try {
-    const raw = execFileSync('git', ['show', `${ref}:./prose.ceilings.json`], {
-      cwd: HERE,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    return (JSON.parse(raw) as { pages: Record<string, CeilingRow> }).pages
-  } catch {
-    return null
+function page(html: string): Measure {
+  const root = document.createElement('div')
+  root.innerHTML = html
+  return measure(root)
+}
+
+/** Each page's failures when `head` is compared with `base`, page by page; an empty list is a pass. */
+function check(base: Record<string, string>, head: Record<string, string>): string[] {
+  return Object.entries(head).flatMap(([key, html]) =>
+    proseDelta(key, base[key] === undefined ? null : page(base[key]), page(html)),
+  )
+}
+
+const BASE = {
+  'capacity/pools': '<h1>Pools</h1> <p>two pools are full</p> <a href="#a">Open</a>',
+  'admin/setup': '<h1>Setup</h1> <p>one step left before ready</p>',
+}
+
+describe('the prose ratchet compares a change with its base', () => {
+  it('fails a change that adds words to one page, naming the page and the words', () => {
+    const head = { ...BASE, 'capacity/pools': '<h1>Pools</h1> <p>two pools are full</p> <p>Raise them in Config</p> <a href="#a">Open</a>' }
+    const bad = check(BASE, head)
+    expect(bad).toHaveLength(1)
+    expect(bad[0]).toContain('capacity/pools')
+    expect(bad[0]).toContain('Raise them in Config')
+    expect(bad[0]).not.toContain('admin/setup')
+  })
+
+  it('passes two changes that each remove words, alone and together', () => {
+    const a = { ...BASE, 'capacity/pools': '<h1>Pools</h1> <p>two full</p> <a href="#a">Open</a>' }
+    const b = { ...BASE, 'admin/setup': '<h1>Setup</h1> <p>one step left</p>' }
+    const both = { 'capacity/pools': a['capacity/pools'], 'admin/setup': b['admin/setup'] }
+    expect(check(BASE, a)).toEqual([])
+    expect(check(BASE, b)).toEqual([])
+    // A train runs the second against the first, and main runs both against the commit before.
+    expect(check(a, both)).toEqual([])
+    expect(check(BASE, both)).toEqual([])
+  })
+
+  it('passes a change that lowers a page while another adds nothing to it, which a hand-edited ceiling failed', () => {
+    const lowered = { ...BASE, 'admin/setup': '<h1>Setup</h1> <p>one step</p>' }
+    const elsewhere = { ...BASE, 'capacity/pools': '<h1>Pools</h1> <p>two full</p> <a href="#a">Open</a>' }
+    const both = { 'capacity/pools': elsewhere['capacity/pools'], 'admin/setup': lowered['admin/setup'] }
+    expect(check(BASE, lowered)).toEqual([])
+    expect(check(BASE, elsewhere)).toEqual([])
+    expect(check(lowered, both)).toEqual([])
+  })
+
+  it('passes a change that moves words behind a tooltip', () => {
+    const head = {
+      ...BASE,
+      'admin/setup':
+        '<h1>Setup</h1> <button aria-label="About setup">i</button>' +
+        '<span data-help-description>one step left before ready</span>',
+    }
+    expect(check(BASE, head)).toEqual([])
+  })
+
+  it('fails a change that draws a new text link with an arrow, naming it', () => {
+    const head = { ...BASE, 'admin/setup': '<h1>Setup</h1> <p>one step left</p> <a href="#s">Next →</a>' }
+    const bad = check(BASE, head)
+    expect(bad).toHaveLength(1)
+    expect(bad[0]).toContain('admin/setup')
+    expect(bad[0]).toContain('"Next →"')
+  })
+
+  it('passes a page the base did not have: there is nothing to compare it with', () => {
+    expect(check(BASE, { ...BASE, 'admin/new-page': '<h1>New</h1> <p>a page of its own</p>' })).toEqual([])
+  })
+
+  it('keeps no table of ceilings for lanes to edit', () => {
+    expect(existsSync(join(HERE, 'prose.ceilings.json'))).toBe(false)
+    expect(existsSync(join(HERE, 'prose.words.json'))).toBe(false)
+  })
+
+  it('measures each page once: no two pages share a key', () => {
+    const keys = PAGES.map((p) => p.key)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+})
+
+// A throwaway repository per test, under the system's temporary directory.
+let repos: string[] = []
+afterEach(() => {
+  for (const r of repos) rmSync(r, { recursive: true, force: true })
+  repos = []
+})
+
+function sh(cwd: string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=prose', '-c', 'user.email=prose@example.invalid', ...args], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
+}
+
+function repo(): string {
+  const r = mkdtempSync(join(tmpdir(), 'prose-repo-'))
+  repos.push(r)
+  sh(r, 'init', '-q', '-b', 'main')
+  return r
+}
+
+function commit(r: string, files: Record<string, string>, message: string): string {
+  for (const [path, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(r, path)), { recursive: true })
+    writeFileSync(join(r, path), body)
   }
+  sh(r, 'add', '-A')
+  sh(r, 'commit', '-q', '-m', message)
+  return sh(r, 'rev-parse', 'HEAD')
 }
 
-function rising(history: readonly number[]): boolean {
-  return history.some((n, i) => i > 0 && n > (history[i - 1] ?? n))
-}
-
-describe('the prose ceilings table', () => {
-  it('has a row for every page the nav reaches and the named extra pages, and no other', () => {
-    expect(Object.keys(TABLE).sort()).toEqual(PAGES.map((p) => p.key).sort())
-    expect(Object.keys(WORDS.pages).sort()).toEqual(PAGES.map((p) => p.key).sort())
+describe('the base a change is compared with', () => {
+  it("is HEAD's first parent on main, in a train and in a pull request's merge commit", () => {
+    const r = repo()
+    const one = commit(r, { 'app/src/a.ts': 'one' }, 'one')
+    const two = commit(r, { 'app/src/a.ts': 'two' }, 'two')
+    sh(r, 'update-ref', 'refs/remotes/origin/main', two)
+    expect(firstParent(r, two)).toBe(one)
+    expect(chooseBase(join(r, 'app'), {}).sha).toBe(one)
   })
 
-  it('keeps every row a non-empty history of whole numbers', () => {
-    for (const [key, row] of Object.entries(TABLE)) {
-      for (const h of [row.words, row.arrows]) {
-        expect(h.length, `${key} has an empty history`).toBeGreaterThan(0)
-        expect(h.every((n) => Number.isInteger(n) && n >= 0), `${key}: ${JSON.stringify(h)}`).toBe(true)
-      }
-    }
+  it('is the merge base with origin/main on a branch, however many commits it has', () => {
+    const r = repo()
+    const one = commit(r, { 'app/src/a.ts': 'one' }, 'one')
+    sh(r, 'update-ref', 'refs/remotes/origin/main', one)
+    commit(r, { 'app/src/a.ts': 'two' }, 'two')
+    commit(r, { 'app/src/a.ts': 'three' }, 'three')
+    expect(chooseBase(join(r, 'app'), {})).toEqual({ sha: one, why: 'the merge base with origin/main' })
   })
 
-  it('never lets a ceiling rise within its history', () => {
-    const up = Object.entries(TABLE)
-      .flatMap(([key, row]) => [
-        ...(rising(row.words) ? [`${key} words ${JSON.stringify(row.words)}`] : []),
-        ...(rising(row.arrows) ? [`${key} arrows ${JSON.stringify(row.arrows)}`] : []),
-      ])
-    expect(up, 'a ceiling may only go down: append a lower number').toEqual([])
+  it("is HEAD under an uncommitted edit to main's tip, and PROSE_BASE when it is set", () => {
+    const r = repo()
+    const one = commit(r, { 'app/src/a.ts': 'one' }, 'one')
+    const two = commit(r, { 'app/src/a.ts': 'two' }, 'two')
+    sh(r, 'update-ref', 'refs/remotes/origin/main', two)
+    writeFileSync(join(r, 'app/src/a.ts'), 'edited')
+    expect(chooseBase(join(r, 'app'), {}).sha).toBe(two)
+    expect(chooseBase(join(r, 'app'), { PROSE_BASE: one }).sha).toBe(one)
+    expect(() => chooseBase(join(r, 'app'), { PROSE_BASE: 'no-such-ref' })).toThrow(/names no commit/)
   })
 
-  it("only appends to the previous commit's table", () => {
-    // HEAD for an uncommitted edit; HEAD~1 for the commit that made it.
-    const refs = ['HEAD', 'HEAD~1']
-    const read = refs.map((ref) => [ref, tableAt(ref)] as const)
-    console.log(
-      `PROSE TABLE COMPARED WITH: ${read.map(([ref, t]) => `${ref} (${t === null ? 'not there' : `${Object.keys(t).length} rows`})`).join(', ')}`,
+  it('copies the base app without its tests into the head node_modules, and removes it', () => {
+    const r = repo()
+    const one = commit(
+      r,
+      { 'app/src/a.ts': 'one', 'app/src/__tests__/t.test.ts': 'test', 'app/package.json': '{}', 'app/tsconfig.json': '{}' },
+      'one',
     )
-    const bad: string[] = []
-    for (const [ref, old] of read) {
-      if (old === null) continue
-      for (const [key, before] of Object.entries(old)) {
-        const now = TABLE[key]
-        if (now === undefined) continue
-        for (const k of ['words', 'arrows'] as const) {
-          const kept = before[k].every((n, i) => now[k][i] === n)
-          if (!kept || now[k].length < before[k].length) {
-            bad.push(`${key} ${k}: ${ref} had ${JSON.stringify(before[k])}, now ${JSON.stringify(now[k])}`)
-          }
-        }
-      }
+    commit(r, { 'app/src/a.ts': 'two' }, 'two')
+    mkdirSync(join(r, 'app/node_modules'))
+    const tree = extractApp(join(r, 'app'), one)
+    try {
+      expect(readFileSync(join(tree.app, 'src/a.ts'), 'utf8')).toBe('one')
+      expect(existsSync(join(tree.app, 'src/__tests__'))).toBe(false)
+      expect(dirname(tree.app)).toBe(join(r, 'app/node_modules'))
+      expect(readFileSync(join(tree.app, 'package.json'), 'utf8')).toBe('{}')
+    } finally {
+      tree.remove()
     }
-    expect(bad, 'a ceiling is lowered by appending to its history, never by editing it').toEqual([])
+    expect(existsSync(tree.app)).toBe(false)
   })
 })
 
@@ -102,6 +198,12 @@ describe('what the prose meter counts', () => {
     expect(measure(root).words).toBe(3)
   })
 
+  it("does not count the content a page draws, a stage's lines of code", () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<h1>Talk</h1> <code data-prose-content>export function StepFilters({ steps }) {</code>'
+    expect(measure(root).words).toBe(1)
+  })
+
   it('counts a text link with an arrow as an action that should be a button, and a button not', () => {
     const root = document.createElement('div')
     root.innerHTML =
@@ -112,7 +214,7 @@ describe('what the prose meter counts', () => {
     expect(m.arrowLinks).toEqual(['All workflows →', 'Open › setup', 'Next →'])
   })
 
-  it('names the words a page added since its ceiling, once per extra occurrence', () => {
+  it('names the words a page added since its base, once per extra occurrence', () => {
     expect(newWords(['a', 'b', 'b', 'c', 'd'], ['b', 'a', 'c'])).toEqual(['b', 'd'])
     expect(newWords(['a'], ['a', 'a'])).toEqual([])
   })

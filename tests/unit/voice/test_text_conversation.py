@@ -149,9 +149,12 @@ class FakePlanner:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.forgotten: list[str] = []
+        #: The planner model each turn was asked for (None: the pin).
+        self.models: list[str | None] = []
 
-    async def delegate(self, *, person, grant, transcript, delegation_id=None) -> TurnResult:
+    async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None) -> TurnResult:
         self.calls.append({"person": person, "transcript": list(transcript), "delegation_id": delegation_id})
+        self.models.append(model)
         return TurnResult(delegation_id, "Three steps are on screen.",
                           cards=[{"kind": "plan", "card_id": "card_1", "title": "Rollout"}])
 
@@ -363,6 +366,48 @@ def test_a_turn_that_asks_for_a_plan_is_a_planner_turn_whose_summary_is_the_repl
         assert planner.forgotten == [VOICE_ID]
 
     run(scenario, planner=planner)
+
+
+def _delegating_turn(h: Harness) -> None:
+    h.codex.next.append((200, {}, _sse(
+        {"type": "response.output_item.done", "item": {
+            "type": "function_call", "name": "delegate", "call_id": "call_1",
+            "arguments": json.dumps({"request": "plan the rollout"})}}, COMPLETED)))
+
+
+def test_the_planner_model_is_read_at_each_sessions_start_and_kept_for_the_session():
+    """swarm-api sends the Voice it setting's planner model in the start body.
+    A change between two starts reaches the second session only; a start
+    without one leaves the planner on VOICE_PLANNER_MODEL (model None)."""
+    planner = FakePlanner()
+    ids = [VOICE_ID + suffix for suffix in ("a", "b", "c")]
+
+    async def scenario(h: Harness):
+        starts = [{"planner_model": "claude-opus-5-5"}, {"planner_model": "claude-sonnet-5-5"}, {}]
+        for voice_id, extra in zip(ids, starts):
+            r = await h.post("/internal/sessions", {"voice_session_id": voice_id, "person": PERSON,
+                                                    "mode": "text", **extra})
+            assert r.status_code == 201, r.text
+        # The first session's next turn, after the change: still its own model.
+        for voice_id in (ids[0], ids[1], ids[2], ids[0]):
+            _delegating_turn(h)
+            r = await h.post(f"/internal/sessions/{voice_id}/turns", {"text": "plan the rollout for me"})
+            assert r.status_code == 200, r.text
+        assert planner.models == ["claude-opus-5-5", "claude-sonnet-5-5", None, "claude-opus-5-5"]
+
+    run(scenario, planner=planner)
+
+
+@pytest.mark.parametrize("model", ["gpt-5", "claude-opus-4-1", "claude-mythos-5", "fable",
+                                   "claude-fable-5-1 --dangerously-skip-permissions", ""])
+def test_a_start_naming_a_planner_model_outside_the_classes_is_refused_and_leases_nothing(model):
+    async def scenario(h: Harness):
+        r = await h.post("/internal/sessions", {"voice_session_id": VOICE_ID, "person": PERSON,
+                                                "mode": "text", "planner_model": model})
+        assert r.status_code == 422, r.text
+        assert h.broker.leases == [] and h.texts.get(VOICE_ID) is None
+
+    run(scenario, planner=FakePlanner())
 
 
 def test_a_refused_token_is_renewed_once_and_a_turn_on_no_session_is_404():

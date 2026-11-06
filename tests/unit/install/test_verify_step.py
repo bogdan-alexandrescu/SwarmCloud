@@ -1571,3 +1571,87 @@ def test_verify_waits_point_only_at_what_exists() -> None:
     # Audit 5b M2: the give-up already says "run swarm install again", which
     # re-checks it; the page is the project's own, not `<project>`.
     assert f"cloudscheduler?project={PROJECT}" in verify.TARGETS_WAIT.look_at_for(_ctx())
+
+
+# -- the managed plugins' infrastructure (managed-plugins.md §15, lane 3) -----------
+
+PLUGINS_BUCKET = f"{PROJECT}-swarm-plugins"
+_STORAGE_B = "https://storage.googleapis.com/storage/v1/b"
+_INTAKE_JOB = f"https://run.googleapis.com/v2/projects/{PROJECT}/locations/{REGION}/jobs/swarm-plugin-intake"
+_PLATFORM_READ = {
+    "role": "roles/storage.objectViewer",
+    "members": [f"serviceAccount:swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"],
+    "condition": {"title": "t", "expression": (
+        f'resource.name.startsWith("projects/_/buckets/{PLUGINS_BUCKET}/objects/platform/") || '
+        f'resource.name.startsWith("projects/_/buckets/{PLUGINS_BUCKET}/objects/tenants/eng/")')},
+}
+
+
+class PluginsFakeGcp(VerifyFakeGcp):
+    """Answers the plugins check's three reads by URL; None is a 404."""
+
+    def __init__(self, *, bucket: bool = True, job: bool = True, bindings: list[dict[str, Any]] | None = None) -> None:
+        super().__init__()
+        self.found: dict[str, Any] = {f"{_STORAGE_B}/{PLUGINS_BUCKET}/iam?optionsRequestedPolicyVersion=3":
+                                      {"bindings": [_PLATFORM_READ] if bindings is None else bindings}}
+        if bucket:
+            self.found[f"{_STORAGE_B}/{PLUGINS_BUCKET}"] = {"name": PLUGINS_BUCKET}
+        if job:
+            self.found[_INTAKE_JOB] = {"name": "swarm-plugin-intake"}
+
+    def get_or_none(self, url: str) -> dict[str, Any] | None:
+        self._call("get_or_none", url)
+        return self.found.get(url)
+
+
+def _plugins_ctx(*, released: bool = True) -> Any:
+    ctx = _ctx()
+    ctx.state.region = REGION
+    if released:
+        ctx.outputs["image_digests"] = {**(ctx.outputs.get("image_digests") or {}),
+                                        "swarm-plugin-intake": "sha256:" + "2" * 64}
+    return ctx
+
+
+def test_plugins_check_met_when_the_bucket_the_job_and_a_tenant_read_exist() -> None:
+    observed = verify.PluginsStep(lambda: PluginsFakeGcp(), Answers()).check(_plugins_ctx())
+    assert observed.status == MET, observed.detail
+    assert PLUGINS_BUCKET in observed.detail
+
+
+@pytest.mark.parametrize(("fake", "said"), [
+    (lambda: PluginsFakeGcp(bucket=False), f"gs://{PLUGINS_BUCKET} does not exist"),
+    (lambda: PluginsFakeGcp(job=False), "swarm-plugin-intake is not deployed"),
+])
+def test_plugins_check_unmet_names_what_is_missing(fake: Any, said: str) -> None:
+    observed = verify.PluginsStep(fake, Answers()).check(_plugins_ctx())
+    assert observed.status == UNMET
+    assert said in observed.detail
+
+
+# Installs declare no Terraform tenants and the intake image ships in a later
+# lane, so a fresh install's stage 14 names those two gaps as pending instead
+# of keeping the install from READY; `swarm doctor` still reports them unmet.
+@pytest.mark.parametrize(("fake", "released", "said"), [
+    (lambda: PluginsFakeGcp(job=False), False, "the release carries no swarm-plugin-intake image"),
+    (lambda: PluginsFakeGcp(bindings=[]), True, "no tenant worker account may read platform/ yet"),
+    (lambda: PluginsFakeGcp(job=False, bindings=[]), False, "pending: the release carries no"),
+])
+def test_plugins_check_names_what_later_lanes_make_as_pending(fake: Any, released: bool, said: str) -> None:
+    observed = verify.PluginsStep(fake, Answers()).check(_plugins_ctx(released=released))
+    assert observed.status == MET, observed.detail
+    assert said in observed.detail
+    assert f"gs://{PLUGINS_BUCKET} exists" in observed.detail
+
+
+def test_plugins_check_unmet_on_a_missing_bucket_even_before_the_intake_image() -> None:
+    observed = verify.PluginsStep(lambda: PluginsFakeGcp(bucket=False), Answers()).check(
+        _plugins_ctx(released=False))
+    assert observed.status == UNMET
+    assert f"gs://{PLUGINS_BUCKET} does not exist" in observed.detail
+
+
+def test_plugins_check_runs_in_stage_14_before_the_runs() -> None:
+    ids = [s.id for s in verify.STEPS]
+    assert "verify.plugins" in ids
+    assert ids.index("verify.plugins") < ids.index("verify.end-to-end")

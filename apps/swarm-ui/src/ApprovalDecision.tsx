@@ -23,10 +23,14 @@
  * A waiting item holds no capacity (invariant 1): nothing here is running.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { approveApproval, loadApproval, loadSchedule, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
+import { approveApproval, loadApproval, loadRun, loadSchedule, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
 import { Dash } from './components'
+import { AcceptanceVerdicts, contractAcceptance } from './ContractJev'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { diagramFrame, docFrame, loadPlannerDocuments, type PlannerDocuments, type ShownDocuments } from './InterviewPage'
+import { InfoTip } from './People'
 import { PersonName } from './PersonName'
+import { FROZEN_AREA, Legend, PlanChangeMap, base, dir, type ChangeKind, type MapChange, type MapEdge, type MapNode } from './PlanChangeMap'
 import { useRoleGate } from './Profile'
 import { HeldButton, InApp, rememberScheduleNames, scheduleAddress, untilWords, useScheduleName } from './Schedules'
 import { Screen, timeAgo } from './Shell'
@@ -60,6 +64,10 @@ export const APPROVAL_KIND: Readonly<Record<string, string>> = {
   // A workflow step waiting for a member's answer (human-steps.md §4.5),
   // projected from its task. The inbox lists it and never takes the answer.
   input: 'Answer',
+  // A step whose work-contract acceptance waits on its owner (jev-contract.md
+  // section 5.4), projected from its task: the detail serves Jev's judgment,
+  // and the step is decided on its own page, never here.
+  contract: 'Contract judgment',
 }
 
 /** `may_decide` (#2417 A4, A5f): what the reader may do, served beside each item. */
@@ -158,6 +166,7 @@ const APPROVE_DOES: Readonly<Record<string, string>> = {
   merge: 'Approving submits the merge of this pull request at the head it was checked at.',
   proposal: 'Approving files this proposal as an issue.',
   spec: 'A custom-prompt spec is approved by a platform admin.',
+  contract: 'Jev could not settle this step’s work contract alone, so it is yours: read Jev’s judgment below and open the step.',
 }
 
 /**
@@ -600,6 +609,11 @@ function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
       ),
     })
   }
+  // JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4): each
+  // verdict beside what it cites, labelled as Jev's. Evidence, never the
+  // decision: the card says so, and the bar below is still the only verb.
+  const acceptance = contractAcceptance(d.contract_acceptance)
+  if (acceptance !== null) cards.push({ title: 'Jev’s judgment of the work contract', side: 'l', body: <AcceptanceVerdicts acceptance={acceptance} /> })
   // Why it is held reads before what you approve, in the left column as the
   // mock-up draws it, so the DOM, the Tab order and the numbers agree
   // (visual QA automate2-04: the right column put 2 after 3 in the DOM).
@@ -652,6 +666,7 @@ const KIND_NOUN: Readonly<Record<string, string>> = {
   hold: 'This held plan',
   proposal: 'This proposal',
   spec: 'This spec',
+  contract: 'This step',
 }
 
 /**
@@ -677,6 +692,8 @@ function question(d: Decision): ReactNode {
   const a = d.approval
   if (a.state !== 'pending') return outcomeSentence(d)
   switch (a.kind) {
+    case 'contract':
+      return <>Accept this step’s work against its contract?</>
     case 'merge': {
       const n = d.merge?.pull_request?.number
       const { head } = mergeDigest(d)
@@ -851,8 +868,35 @@ function NotYours({ md }: { md: MayDecide }) {
   )
 }
 
+/**
+ * A CONTRACT STEP'S BAR (jev-contract.md section 5.4; the owner's pick on PR
+ * #3255). The item is projected from the step's task and the inbox has no
+ * decide path for it (`approvals.project_contract`): no Approve or Reject is
+ * drawn, since either would answer 404. The bar says so and links the step's
+ * page, beside Jev's judgment above it.
+ */
+function ContractStepBar({ d, go }: { d: Decision; go: (to: string) => void }) {
+  const s = d.approval.subject ?? {}
+  const taskId = typeof s.task_id === 'string' && s.task_id !== '' ? s.task_id : null
+  return (
+    <div className="ad-bar is-info" data-testid="ap-contract-step">
+      <div className="ad-bar-l">
+        <b className="ad-bar-h">Not decided in this inbox</b>
+        <span className="ad-sub">Jev’s judgment is evidence for your decision; it approves nothing, and this page has no verb.</span>
+      </div>
+      {taskId !== null && (
+        <div className="ad-bar-acts">
+          <InApp go={go} to={`work/task/${encodeURIComponent(taskId)}`} className="c-btn is-primary">
+            Open the step ›
+          </InApp>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Approve and Reject, as `may_decide` allows, with the server's refusal said in place. */
-function Decide({ d, onDecided }: { d: Decision; onDecided: (word: string) => void }) {
+function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: string) => void; edit?: { to: string; go: (to: string) => void } | null }) {
   const a = d.approval
   const now = useNow()
   const md = a.may_decide ?? null
@@ -935,11 +979,18 @@ function Decide({ d, onDecided }: { d: Decision; onDecided: (word: string) => vo
             Reject
           </HeldButton>
         )}
+        {edit !== null && (
+          // Edit opens the run's page, where its plan editor is (Runs.tsx's PlanEditor).
+          <InApp go={edit.go} to={edit.to} className="c-btn">
+            Edit
+          </InApp>
+        )}
         {offerApprove && (
           <HeldButton kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={gate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
             {approveWord}
           </HeldButton>
         )}
+        {edit !== null && <InfoTip about="the decision" tip={`${APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.'} Edit opens the run to change its plan. Rejecting ends the run, with the reason.`} end />}
       </div>
       {refused !== null && !(confirm !== null && confirm.typed === '' && confirmationOf(refused) !== null) && (
         <p className="c-hint ad-refused" role="alert" data-code={refused.code ?? ''}>
@@ -950,10 +1001,714 @@ function Decide({ d, onDecided }: { d: Decision; onDecided: (word: string) => vo
   )
 }
 
-/** The page: the way back, the question, the evidence, and the decision. */
-export function ApprovalDecision({ d, kind, go, onDecided }: { d: Decision; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+// ---------------------------------------------------------------------------
+// THE PLAN AS A ONE-PAGE BRIEF (BGD, 6 November 2026: show super quickly what
+// a plan does, why, what changes where, the risk and the test and QA plan).
+// A plan's page reads top to bottom in the order a decider asks: the header
+// card (purpose, why, size, estimate, risk, overlaps and the decision), the
+// change map, Risk and Validation side by side, the steps, the overlaps, then
+// the design doc and the raw briefs folded.
+//
+// The sections are the planner's (`purpose`, `why`, `changes`, `risk`,
+// `validation`, `graph` on `GET /v1/runs/{id}`'s plan). A plan stored before
+// them falls back: the summary is the purpose, the steps' files the change
+// list (a path under tests/ is a test), the map those files boxed by
+// directory, and no Risk or Validation card is drawn rather than an empty one.
+// ---------------------------------------------------------------------------
+
+type Json = Record<string, unknown>
+const text = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null)
+const texts = (v: unknown): string[] => (Array.isArray(v) ? v.flatMap((x) => text(x) ?? []) : [])
+const objs = (v: unknown): Json[] => (Array.isArray(v) ? v.filter((x): x is Json => x !== null && typeof x === 'object' && !Array.isArray(x)) : [])
+
+export type RiskLevel = 'low' | 'medium' | 'high'
+const RISK_WORD: Record<RiskLevel, string> = { low: 'Low risk', medium: 'Medium risk', high: 'High risk' }
+/** The frozen contract's tree (CLAUDE.md rule 1): a plan that changes it is shown so. */
+const FROZEN_TREE = 'apps/common/swarm_common/'
+
+export interface BriefInvariant {
+  label: string
+  words: string
+}
+export interface BriefStep {
+  key: string
+  title: string
+  prompt: string | null
+  files: string[]
+  after: string[]
+  estimate: string | null
+}
+export interface PlanBrief {
+  purpose: string | null
+  why: string | null
+  evidence: string[]
+  changes: MapChange[]
+  nodes: MapNode[]
+  edges: MapEdge[]
+  risk: { level: RiskLevel | null; factors: string[]; blast: string | null; invariants: BriefInvariant[]; mitigations: string[]; rollback: string | null } | null
+  frozen: string[]
+  /** Each test file with what it proves and the ids (`R1`, the requirement's place) of the requirements it proves. */
+  validation: { tests: { file: string; proves: string[]; requirements: string[] }[]; qa: { check: string; where: string | null; when: string | null }[] } | null
+  steps: BriefStep[]
+  estimate: string | null
+  /**
+   * Each overlap with the files it shares with this plan: the ones its `theirs` serves, with what the other
+   * work does to each, and the ones the run's open work lists for it, `theirs` null where none is served.
+   */
+  overlaps: { ref: string; kind: string; note: string | null; required: boolean; shared: { file: string; theirs: string | null }[] }[]
+  requirements: string[]
+}
+
+/** An open pull request as the run's `open_work` lists it: its number and its files, null when unread. */
+export interface OpenPull {
+  number: number
+  files: string[] | null
+}
+
+/** A test file by its path: under tests/ or __tests__/, or named as one. */
+export function isTestPath(p: string): boolean {
+  return /(^|\/)(tests?|__tests__)\//.test(p) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(p) || /(^|\/)test_[^/]+\.py$/.test(p)
+}
+const areaOf = (file: string) => (file.startsWith(FROZEN_TREE) ? FROZEN_AREA : dir(file).replace(/\/$/, '') || '(root)')
+const CHANGE_KINDS: readonly ChangeKind[] = ['add', 'modify', 'delete', 'test']
+
+/** An invariant as served: a number, "2", "Invariant 2: ...", or `{n, words}`. */
+function invariantOf(v: unknown): BriefInvariant | null {
+  if (typeof v === 'number') return { label: `Invariant ${v}`, words: '' }
+  if (v !== null && typeof v === 'object') {
+    const o = v as Json
+    const n = typeof o.n === 'number' || typeof o.n === 'string' ? String(o.n) : null
+    const words = text(o.words) ?? text(o.text) ?? ''
+    return n === null ? (words === '' ? null : { label: words, words: '' }) : { label: `Invariant ${n}`, words }
+  }
+  const s = text(v)
+  if (s === null) return null
+  const m = /^(?:invariant\s*)?#?(\d+)\b[\s:.,)-]*(.*)$/i.exec(s)
+  return m ? { label: `Invariant ${m[1]}`, words: m[2] ?? '' } : { label: s, words: '' }
+}
+
+/** A test's requirement as served -- `R2`, `2` or 2 -- as its id `R2`; null when the plan has no such requirement. */
+function requirementId(v: unknown, count: number): string | null {
+  const m = typeof v === 'number' ? [String(v), String(v)] : typeof v === 'string' ? /^\s*R?(\d+)\s*$/i.exec(v) : null
+  const n = m === null ? NaN : Number(m[1])
+  return Number.isInteger(n) && n >= 1 && n <= count ? `R${n}` : null
+}
+
+/** The plan as the brief draws it, from the sections the planner serves or, without them, from its steps. */
+export function planBrief(plan: Json, pulls: OpenPull[] = []): PlanBrief {
+  const steps: BriefStep[] = objs(plan.steps).flatMap((o, i) => {
+    const title = text(o.title) ?? text(o.prompt)
+    if (title === null) return []
+    return [{ key: text(o.step_id) ?? `s${i}`, title, prompt: text(o.title) === null ? null : text(o.prompt), files: texts(o.files), after: texts(o.depends_on), estimate: text(o.estimate) }]
+  })
+  const stepOf = (file: string) => {
+    const i = steps.findIndex((s) => s.files.includes(file))
+    return i < 0 ? undefined : i + 1
+  }
+  const served = objs(plan.changes).flatMap((o): MapChange[] => {
+    const file = text(o.file)
+    if (file === null) return []
+    const k = text(o.kind)
+    const kind = CHANGE_KINDS.includes(k as ChangeKind) ? (k as ChangeKind) : isTestPath(file) ? 'test' : 'modify'
+    return [{ file, area: file.startsWith(FROZEN_TREE) ? FROZEN_AREA : (text(o.area) ?? areaOf(file)), kind, what: text(o.what) ?? '' }]
+  })
+  const files = [...new Set([...steps.flatMap((s) => s.files), ...texts(plan.files)])]
+  const changes: MapChange[] = served.length > 0 ? served : files.map((file) => ({ file, area: areaOf(file), kind: isTestPath(file) ? 'test' : 'modify', what: '' }))
+  const changeOf = (file: string) => changes.find((c) => c.file === file)
+  const g = plan.graph !== null && typeof plan.graph === 'object' ? (plan.graph as Json) : null
+  const servedNodes = objs(g?.nodes).flatMap((o): MapNode[] => {
+    const id = text(o.id)
+    const file = text(o.file) ?? text(o.label)
+    if (id === null || file === null) return []
+    const k = text(o.kind) ?? ''
+    const c = changeOf(file)
+    const kind = /^caller/.test(k) ? 'caller' : /^test/.test(k) || c?.kind === 'test' || (c === undefined && isTestPath(file)) ? 'test' : 'changed'
+    return [{ id, file, label: text(o.label) ?? base(file), kind, area: c?.area ?? areaOf(file), what: c?.what ?? '', step: stepOf(file) }]
+  })
+  const ids = new Set(servedNodes.map((n) => n.id))
+  const edges: MapEdge[] = objs(g?.edges).flatMap((o) => {
+    const from = text(o.from)
+    const to = text(o.to)
+    return from !== null && to !== null && ids.has(from) && ids.has(to) ? [{ from, to, kind: text(o.kind) ?? 'calls' }] : []
+  })
+  const nodes: MapNode[] =
+    servedNodes.length > 0
+      ? servedNodes
+      : changes.map((c, i) => ({ id: `f${i}`, file: c.file, label: dir(c.file), kind: c.kind === 'test' ? 'test' : 'changed', area: c.area, what: c.what, step: stepOf(c.file) }))
+  const r = plan.risk !== null && typeof plan.risk === 'object' ? (plan.risk as Json) : null
+  const level = text(r?.level)?.toLowerCase() ?? null
+  const risk =
+    r === null
+      ? null
+      : {
+          level: level === 'low' || level === 'medium' || level === 'high' ? (level as RiskLevel) : null,
+          factors: texts(r.factors),
+          blast: text(r.blast_radius),
+          invariants: (Array.isArray(r.invariants) ? r.invariants : []).flatMap((v) => invariantOf(v) ?? []),
+          mitigations: texts(r.mitigations),
+          rollback: text(r.rollback),
+        }
+  const v = plan.validation !== null && typeof plan.validation === 'object' ? (plan.validation as Json) : null
+  const requirements = texts(plan.requirements)
+  const tests: { file: string; proves: string[]; requirements: string[] }[] = []
+  for (const o of objs(v?.tests)) {
+    const file = text(o.file)
+    const proves = text(o.proves)
+    if (file === null) continue
+    const ids = (Array.isArray(o.requirements) ? o.requirements : []).flatMap((x) => requirementId(x, requirements.length) ?? [])
+    const at = tests.find((t) => t.file === file)
+    if (at === undefined) tests.push({ file, proves: proves === null ? [] : [proves], requirements: [...new Set(ids)] })
+    else {
+      if (proves !== null) at.proves.push(proves)
+      at.requirements = [...new Set([...at.requirements, ...ids])].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
+    }
+  }
+  const qa = objs(v?.qa).flatMap((o) => {
+    const check = text(o.check)
+    return check === null ? [] : [{ check, where: text(o.where), when: text(o.when) }]
+  })
+  const why = plan.why !== null && typeof plan.why === 'object' ? (plan.why as Json) : null
+  return {
+    purpose: text(plan.purpose) ?? text(plan.summary),
+    why: why === null ? text(plan.why) : text(why.line),
+    evidence: why === null ? [] : texts(why.evidence),
+    changes,
+    nodes,
+    edges,
+    risk: risk !== null && risk.level === null && risk.factors.length + risk.invariants.length + risk.mitigations.length === 0 && risk.blast === null && risk.rollback === null ? null : risk,
+    frozen: changes.filter((c) => c.file.startsWith(FROZEN_TREE)).map((c) => c.file),
+    validation: tests.length + qa.length === 0 ? null : { tests, qa },
+    steps,
+    estimate: text(plan.estimate),
+    overlaps: objs(plan.overlaps).flatMap((o) => {
+      const ref = text(o.ref)
+      if (ref === null) return []
+      const kind = text(o.kind) ?? 'issue'
+      const n = Number(/#(\d+)$/.exec(ref)?.[1] ?? NaN)
+      const read = kind === 'pull_request' ? (pulls.find((p) => p.number === n)?.files ?? []) : []
+      const served = new Map(objs(o.theirs).flatMap((t) => (text(t.file) === null ? [] : [[text(t.file)!, text(t.what)] as const])))
+      const shared = changes.filter((c) => served.has(c.file) || read.includes(c.file)).map((c) => ({ file: c.file, theirs: served.get(c.file) ?? null }))
+      return [{ ref, kind, note: text(o.note), required: o.action === 'required', shared }]
+    }),
+    requirements,
+  }
+}
+
+function sizeOf(b: PlanBrief): { word: string; detail: string } {
+  const files = b.changes.length
+  const steps = Math.max(1, b.steps.length)
+  const word = files <= 6 && steps === 1 ? 'Small' : files <= 15 ? 'Medium' : 'Large'
+  return { word, detail: `${steps} ${steps === 1 ? 'step' : 'steps'} · ${files} ${files === 1 ? 'file' : 'files'}` }
+}
+
+/** `owner/repo#N` as its page on the forge; null when the ref is not that shape. */
+function refUrl(ref: string, kind: string): string | null {
+  const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(ref)
+  return m ? `https://github.com/${m[1]}/${kind === 'pull_request' ? 'pull' : 'issues'}/${m[2]}` : null
+}
+
+/** `owner/repo#N` drawn as `#N`, so the overlap's ref column stays narrow. */
+function refShort(ref: string): string {
+  const m = /#(\d+)$/.exec(ref)
+  return m ? `#${m[1]}` : ref
+}
+
+function RiskMeter({ level }: { level: RiskLevel }) {
+  const n = level === 'low' ? 1 : level === 'medium' ? 2 : 3
+  return (
+    <span className={`ab-meter is-${level}`} aria-hidden="true">
+      {[1, 2, 3].map((i) => (
+        <i key={i} data-on={i <= n ? 'y' : 'n'} />
+      ))}
+    </span>
+  )
+}
+
+function BriefCard({ id, title, aside, tone, children }: { id: string; title: string; aside?: ReactNode; tone?: string | null; children: ReactNode }) {
+  return (
+    <section className={`ab-card${tone ? ` is-${tone}` : ''}`} id={id} aria-labelledby={`${id}-h`}>
+      <header className="ab-card-h">
+        <h3 id={`${id}-h`}>{title}</h3>
+        {aside}
+      </header>
+      {children}
+    </section>
+  )
+}
+
+/** The header card: the question, the purpose, why, the four facts, what it touches, and the decision. */
+function BriefHead({ d, b, kind, go, onDecided }: { d: Decision; b: PlanBrief; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
   const a = d.approval
   const now = useNow()
+  const size = sizeOf(b)
+  const r = b.risk
+  const word = STATE_WORD[a.state] ?? a.state
+  const who = decidersWords(a.may_decide) ?? approversWords(a.approvers)
+  const tone = a.state === 'pending' ? 'is-warn' : a.state === 'approved' ? 'is-ok' : a.state === 'rejected' ? 'is-bad' : 'is-done'
+  const issue = text(a.subject.issue)
+  const issueUrl = issue === null ? null : refUrl(issue, 'issue')
+  const runId = text(a.subject.run_id) ?? text(d.run?.id)
+  const touches = b.frozen.length > 0 || (r?.level === 'high' && r.invariants.length > 0)
+  return (
+    <section className="ab-head" data-risk={r?.level ?? 'none'} aria-label="The plan in brief" data-testid="ab-head">
+      <p className="ab-meta">
+        <span className="ad-chip is-kind">{(APPROVAL_KIND[a.kind] ?? a.kind).toLowerCase()} approval</span>
+        <span className={`ad-chip ${tone}`} data-testid="ap-state">
+          {word}
+        </span>
+        {issue !== null &&
+          (issueUrl === null ? (
+            <span className="mono">{issue}</span>
+          ) : (
+            <a className="ab-issue" href={issueUrl} target="_blank" rel="noreferrer">
+              {issue}
+            </a>
+          ))}
+        {a.requested_at !== null && (
+          <span className="ab-dim" title={a.requested_at}>
+            asked {timeAgo(a.requested_at, now)}
+          </span>
+        )}
+        {who !== null && (
+          <span className="ab-dim">
+            decides: <span data-testid="ad-who">{who}</span>
+          </span>
+        )}
+      </p>
+      <p className="ad-sent ab-q">{question(d)}</p>
+      <h2 className="ab-purpose" data-testid="ab-purpose">
+        {b.purpose ?? a.summary}
+      </h2>
+      {b.why !== null && (
+        <p className="ab-why" data-testid="ab-why">
+          <b>Why</b>
+          {b.evidence.length > 0 && <InfoTip about="the evidence" tip={b.evidence.join(' · ')} />}
+          <span>{b.why}</span>
+        </p>
+      )}
+      <ul className="ab-facts" aria-label="Size, estimate and risk">
+        <li data-fact="size">
+          <span className="ab-fk">Size</span>
+          <b>{size.word}</b>
+          <span className="ab-dim">{size.detail}</span>
+        </li>
+        {b.estimate !== null && (
+          <li data-fact="estimate">
+            <span className="ab-fk">Estimate</span>
+            <b>{b.estimate}</b>
+          </li>
+        )}
+        {r !== null && r.level !== null && (
+          <li className={`ab-risk-f is-${r.level}`} data-fact="risk">
+            <span className="ab-fk">Risk</span>
+            <b>
+              <RiskMeter level={r.level} /> {RISK_WORD[r.level]}
+            </b>
+            <span className="ab-dim">{r.invariants.length === 0 ? 'no invariant touched' : `${r.invariants.length} invariant${r.invariants.length === 1 ? '' : 's'} touched`}</span>
+          </li>
+        )}
+        {b.overlaps.length > 0 && (
+          <li data-fact="overlaps">
+            <span className="ab-fk">Overlaps</span>
+            <b>{b.overlaps.length}</b>
+            <span className="ab-dim">work in flight</span>
+          </li>
+        )}
+      </ul>
+      {touches && (
+        <p className="ab-alarm" role="note" data-testid="ab-touches">
+          <b>Touches</b>
+          {r?.level === 'high' &&
+            r.invariants.map((i) => (
+              <span key={i.label} className="ab-inv is-hot" title={i.words || undefined}>
+                {i.label}
+              </span>
+            ))}
+          {b.frozen.map((f) => (
+            <span key={f} className="ab-inv is-frozen" title={f}>
+              Frozen contract · {base(f)}
+            </span>
+          ))}
+        </p>
+      )}
+      {a.state === 'pending' ? <Decide d={d} onDecided={onDecided} edit={runId === null ? null : { to: runAddress(runId), go }} /> : <Outcome d={d} kind={kind} go={go} />}
+    </section>
+  )
+}
+
+function RiskCard({ risk, frozen }: { risk: NonNullable<PlanBrief['risk']>; frozen: string[] }) {
+  const hot = risk.level === 'high'
+  return (
+    <BriefCard
+      id="ab-risk"
+      title="Risk"
+      tone={risk.level}
+      aside={
+        risk.level !== null && (
+          <span className={`ab-lvl is-${risk.level}`}>
+            <RiskMeter level={risk.level} /> {RISK_WORD[risk.level]}
+          </span>
+        )
+      }
+    >
+      <dl className="ab-kv">
+        {risk.blast !== null && (
+          <div>
+            <dt>Blast radius</dt>
+            <dd>{risk.blast}</dd>
+          </div>
+        )}
+        <div>
+          <dt>Invariants</dt>
+          <dd>
+            {risk.invariants.length === 0 && frozen.length === 0 ? (
+              <span className="ab-ok">none touched</span>
+            ) : (
+              <ul className="ab-invs" aria-label="Invariants touched">
+                {risk.invariants.map((i) => (
+                  <li key={i.label} className={hot ? 'is-hot' : ''}>
+                    <b>{i.label}</b> {i.words}
+                  </li>
+                ))}
+                {frozen.map((f) => (
+                  <li key={f} className="is-frozen">
+                    <b>Frozen</b> <span className="mono">{f}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </dd>
+        </div>
+        {risk.factors.length > 0 && (
+          <div>
+            <dt>Factors</dt>
+            <dd>
+              <ul className="ab-dots">
+                {risk.factors.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+        )}
+        {risk.mitigations.length > 0 && (
+          <div>
+            <dt>Mitigations</dt>
+            <dd>
+              <ul className="ab-ticks">
+                {risk.mitigations.map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+        )}
+        {risk.rollback !== null && (
+          <div>
+            <dt>Rollback</dt>
+            <dd>{risk.rollback}</dd>
+          </div>
+        )}
+      </dl>
+    </BriefCard>
+  )
+}
+
+function ValidationCard({ v, requirements }: { v: NonNullable<PlanBrief['validation']>; requirements: string[] }) {
+  return (
+    <BriefCard id="ab-val" title="Validation" aside={<span className="ab-dim">{v.tests.length} test files · {v.qa.length} QA checks</span>}>
+      {v.tests.length > 0 && (
+        <>
+          <h4 className="ab-sub">
+            <span className="ab-num">1</span> Red-first tests
+            <InfoTip about="red-first tests" tip="Each test is committed failing first; the change makes it pass." />
+          </h4>
+          <ol className="ab-tests" aria-label="Red-first tests">
+            {v.tests.map((t, i) => (
+              <li key={t.file}>
+                <span className="ab-tid">T{i + 1}</span>
+                <div>
+                  <span className="mono ab-tf" title={t.file}>
+                    {t.file}
+                  </span>
+                  {t.proves.map((p) => (
+                    <span key={p} className="ab-tw">
+                      {p}
+                    </span>
+                  ))}
+                  {t.requirements.length > 0 && (
+                    <span className="ab-treqs" aria-label={`T${i + 1} proves ${t.requirements.join(', ')}`}>
+                      {t.requirements.map((id) => (
+                        <span key={id} className="ab-req" title={requirements[Number(id.slice(1)) - 1]}>
+                          {id}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+      {v.qa.length > 0 && (
+        <>
+          <h4 className="ab-sub">
+            <span className="ab-num">2</span> QA checks
+            <InfoTip about="QA checks" tip="Each check is run where and when it says, after the change deploys; it is ticked on the run's page, not here." />
+          </h4>
+          <ol className="ab-qa" aria-label="QA checks">
+            {v.qa.map((q, i) => (
+              <li key={q.check}>
+                <span className="ab-qid">Q{i + 1}</span>
+                <div>
+                  <span className="ab-tw">{q.check}</span>
+                  {(q.where !== null || q.when !== null) && <span className="ab-dim">{[q.where, q.when].filter((x) => x !== null).join(' · ')}</span>}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </>
+      )}
+      {requirements.length > 0 && (
+        <details className="ab-reqlist">
+          <summary>Done when · {requirements.length}</summary>
+          <ul>
+            {requirements.map((r, i) => {
+              const by = v.tests.flatMap((t, j) => (t.requirements.includes(`R${i + 1}`) ? [`T${j + 1}`] : []))
+              return (
+                <li key={r}>
+                  <span className="ab-req">R{i + 1}</span> {r}
+                  {by.length > 0 && <span className="ab-dim"> · proved by {by.join(', ')}</span>}
+                </li>
+              )
+            })}
+          </ul>
+        </details>
+      )}
+    </BriefCard>
+  )
+}
+
+/** Steps by stage: a stage holds every step whose dependencies ran in earlier stages. */
+function stagesOf(steps: BriefStep[]): BriefStep[][] {
+  // A plan that names no dependency runs as a chain (`PlanStepDoc.depends_on`): a stage per step.
+  if (steps.every((s) => s.after.length === 0)) return steps.map((s) => [s])
+  const left = [...steps]
+  const done = new Set<string>()
+  const out: BriefStep[][] = []
+  while (left.length > 0) {
+    const ready = left.filter((s) => s.after.every((k) => done.has(k)))
+    const stage = ready.length > 0 ? ready : [left[0]!]
+    out.push(stage)
+    for (const s of stage) {
+      done.add(s.key)
+      left.splice(left.indexOf(s), 1)
+    }
+  }
+  return out
+}
+
+function StepsCard({ b }: { b: PlanBrief }) {
+  const st = stagesOf(b.steps)
+  const num = (key: string) => b.steps.findIndex((s) => s.key === key) + 1
+  const multi = b.steps.length > 1
+  const staged = b.steps.some((s) => s.after.length > 0)
+  return (
+    <BriefCard id="ab-steps" title="Steps" aside={<span className="ab-dim">{!multi ? 'one step' : staged ? `${b.steps.length} steps in ${st.length} stages` : `${b.steps.length} steps in order`}</span>}>
+      <ol className="ab-stages" aria-label="The plan’s steps">
+        {st.map((stage, i) => (
+          <li key={stage.map((s) => s.key).join()} className="ab-stage">
+            {staged && (
+              <p className="ab-stage-h">
+                Stage {i + 1}
+                {stage.length > 1 && <span className="ab-par">in parallel</span>}
+              </p>
+            )}
+            <div className="ab-stage-row">
+              {stage.map((s) => (
+                <article key={s.key} className="ab-step">
+                  <p className="ab-step-h">
+                    <span className="ab-stepn">{num(s.key)}</span>
+                    <b>{s.title}</b>
+                    {s.estimate !== null && <span className="ab-dim ab-step-hr">{s.estimate}</span>}
+                  </p>
+                  <p className="ab-step-m">
+                    <span className="mono ab-dim">{s.key}</span>
+                    {s.after.length > 0 && <span className="ab-after">after {s.after.map((k) => (num(k) > 0 ? `step ${num(k)}` : k)).join(', ')}</span>}
+                  </p>
+                  {s.files.length > 0 && (
+                    <ul className="ab-sfiles">
+                      {s.files.map((f) => {
+                        const c = b.changes.find((x) => x.file === f)
+                        return (
+                          <li key={f} title={f}>
+                            {c && <span className={`ab-ck is-${c.kind}`}>{c.kind}</span>}
+                            <span className="mono">{base(f)}</span>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </article>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </BriefCard>
+  )
+}
+
+function OverlapsCard({ overlaps, changes }: { overlaps: PlanBrief['overlaps']; changes: MapChange[] }) {
+  const [open, setOpen] = useState<string | null>(null)
+  return (
+    <BriefCard id="ab-over" title="Overlaps" aside={<span className="ab-dim">{overlaps.length} in flight</span>}>
+      <ul className="ab-overs">
+        {overlaps.map((o) => {
+          const url = refUrl(o.ref, o.kind)
+          return (
+            <li key={o.ref} data-on={open === o.ref ? 'y' : 'n'}>
+              {url === null ? (
+                <span className="ab-pr mono" title={o.ref}>{o.ref}</span>
+              ) : (
+                <a className="ab-pr" href={url} target="_blank" rel="noreferrer" title={o.ref} aria-label={o.ref}>
+                  {refShort(o.ref)}
+                </a>
+              )}
+              <div className="ab-over-t">
+                {o.note !== null && <span>{o.note}</span>}
+                {o.shared.length > 0 && <span className="ab-dim">{o.shared.map((s) => base(s.file)).join(', ')}</span>}
+              </div>
+              <span className="ab-where">{o.kind === 'pull_request' ? 'pull request' : 'issue'}</span>
+              <span className="ab-effect">{o.required ? 'action needed' : null}</span>
+              {o.shared.length > 0 && (
+                <button type="button" className="c-btn is-ghost is-sm ab-over-x" aria-expanded={open === o.ref} aria-label={`${open === o.ref ? 'Hide' : 'Show'} the files shared with ${o.ref}`} onClick={() => setOpen(open === o.ref ? null : o.ref)}>
+                  {open === o.ref ? 'Hide' : 'Compare'}
+                </button>
+              )}
+              {open === o.ref && (
+                <dl className="ab-over-d" data-testid="ab-over-d">
+                  {o.shared.map(({ file: f, theirs }) => (
+                    <div key={f}>
+                      <dt className="mono">{f}</dt>
+                      <dd>
+                        <span className="ab-fk">This plan</span> {changes.find((c) => c.file === f)?.what || 'changes it'}
+                      </dd>
+                      <dd>
+                        <span className="ab-fk">Theirs</span> {theirs ?? 'changes it'}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </BriefCard>
+  )
+}
+
+/** The planner's design doc and diagrams, each drawn in an empty-sandbox frame (InterviewPage's rule), folded. */
+function DesignFold({ shown }: { shown: ShownDocuments }) {
+  const docs = shown.docs.filter((x) => x.source !== null)
+  const diagrams = shown.diagrams.filter((x) => x.src !== null)
+  if (docs.length + diagrams.length === 0) return null
+  return (
+    <details className="ab-raw" data-testid="ab-design">
+      <summary>
+        Design doc and diagrams <span className="ab-dim">· {docs.length + diagrams.length}</span>
+      </summary>
+      {docs.map(({ doc, source }) => (
+        <section key={doc.name} className="ab-raw-s">
+          <h4 className="mono">{doc.name}</h4>
+          <iframe className="ab-frame" title={`Design doc: ${doc.name}`} sandbox="" srcDoc={docFrame(source ?? '')} />
+        </section>
+      ))}
+      {diagrams.map(({ doc, src }) => (
+        <section key={doc.name} className="ab-raw-s">
+          <h4 className="mono">{doc.name}</h4>
+          <iframe className="ab-frame" title={`Diagram: ${doc.name}`} sandbox="" srcDoc={diagramFrame(src ?? '', doc.name)} />
+        </section>
+      ))}
+    </details>
+  )
+}
+
+function RawFold({ steps }: { steps: BriefStep[] }) {
+  const briefs = steps.filter((s) => s.prompt !== null)
+  if (briefs.length === 0) return null
+  return (
+    <details className="ab-raw" data-testid="ab-rawbriefs">
+      <summary>
+        Raw step briefs <span className="ab-dim">· {briefs.length}</span>
+      </summary>
+      {briefs.map((s) => (
+        <section key={s.key} className="ab-raw-s">
+          <h4>
+            {steps.indexOf(s) + 1}. <span className="mono">{s.key}</span>
+          </h4>
+          <pre>{s.prompt}</pre>
+        </section>
+      ))}
+    </details>
+  )
+}
+
+/** A plan's decision page as its brief. */
+function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided }: { d: Decision; plan: Json; docs: ShownDocuments | null; pulls: OpenPull[]; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+  const a = d.approval
+  const b = planBrief(plan, pulls)
+  const hold = a.hold ?? null
+  const multi = b.steps.length > 1
+  return (
+    <section className="ap-detail ad-page ab-page" data-testid="ap-detail" data-state={a.state} aria-label={`${APPROVAL_KIND[a.kind] ?? a.kind}: ${a.summary}`}>
+      <BriefHead d={d} b={b} kind={kind} go={go} onDecided={onDecided} />
+      {hold !== null && (
+        <BriefCard id="ab-hold" title="Why it is held" tone="medium">
+          <HoldBody hold={hold} itemApprovers={a.approvers} />
+        </BriefCard>
+      )}
+      {b.changes.length > 0 && (
+        <BriefCard
+          id="ab-map"
+          title="Where it changes"
+          aside={
+            <>
+              <Legend multi={multi} />
+              <InfoTip about="the change map" tip="The files the plan changes, boxed by area, with what calls them and what tests them. Pick a file to see its change and its neighbours." end />
+            </>
+          }
+        >
+          <PlanChangeMap nodes={b.nodes} edges={b.edges} changes={b.changes} multi={multi} />
+        </BriefCard>
+      )}
+      {(b.risk !== null || b.validation !== null) && (
+        <div className="ab-pair">
+          {b.risk !== null && <RiskCard risk={b.risk} frozen={b.frozen} />}
+          {b.validation !== null && <ValidationCard v={b.validation} requirements={b.requirements} />}
+        </div>
+      )}
+      {b.steps.length > 0 && <StepsCard b={b} />}
+      {b.overlaps.length > 0 && <OverlapsCard overlaps={b.overlaps} changes={b.changes} />}
+      <BriefCard id="ab-asked" title="What asked for it">
+        <AskedBy d={d} go={go} />
+      </BriefCard>
+      {docs !== null && <DesignFold shown={docs} />}
+      <RawFold steps={b.steps} />
+    </section>
+  )
+}
+
+/** The page: the way back, the question, the evidence, and the decision. */
+export function ApprovalDecision({ d, kind, go, onDecided, served = null }: { d: Decision; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; served?: ServedPlan | null }) {
+  const a = d.approval
+  const now = useNow()
+  // A plan reads as its brief: the run's own read when it answered (it carries
+  // the planner's sections), else the plan the approval served.
+  const plan = served?.plan ?? (d.run?.plan as Json | null | undefined) ?? null
+  if (plan !== null && (a.kind === 'plan' || a.kind === 'hold')) return <PlanBriefPage d={d} plan={plan} docs={served?.docs ?? null} pulls={served?.pulls ?? []} kind={kind} go={go} onDecided={onDecided} />
   const word = STATE_WORD[a.state] ?? a.state
   const who = decidersWords(a.may_decide) ?? approversWords(a.approvers)
   const tone = a.state === 'pending' ? 'is-warn' : a.state === 'approved' ? 'is-ok' : a.state === 'rejected' ? 'is-bad' : 'is-done'
@@ -978,7 +1733,7 @@ export function ApprovalDecision({ d, kind, go, onDecided }: { d: Decision; kind
             <dt>{a.state === 'pending' ? 'Expires' : a.state === 'expired' ? 'Expired' : 'Was due to expire'}</dt>
             <dd>
               {a.expires_at === null ? (
-                <span className="ad-sub-i">never: a run made by hand waits as it always has</span>
+                <span className="ad-sub-i">{a.kind === 'contract' ? 'never: it waits for its owner' : 'never: a run made by hand waits as it always has'}</span>
               ) : (
                 <span title={a.expires_at}>
                   {when(a.expires_at)}
@@ -994,7 +1749,7 @@ export function ApprovalDecision({ d, kind, go, onDecided }: { d: Decision; kind
         </dl>
       </section>
       <Evidence d={d} go={go} />
-      {a.state === 'pending' ? <Decide d={d} onDecided={onDecided} /> : <Outcome d={d} kind={kind} go={go} />}
+      {a.kind === 'contract' ? <ContractStepBar d={d} go={go} /> : a.state === 'pending' ? <Decide d={d} onDecided={onDecided} /> : <Outcome d={d} kind={kind} go={go} />}
     </section>
   )
 }
@@ -1010,6 +1765,34 @@ export function BackToList({ kind, go }: { kind: string | null; go: (to: string)
   )
 }
 
+/** A plan's run as read on its own: the plan with the planner's sections, and its design doc and diagrams. */
+export interface ServedPlan {
+  plan: Json | null
+  docs: ShownDocuments | null
+  pulls: OpenPull[]
+}
+
+/**
+ * Reads the run behind a plan's approval (`GET /v1/runs/{id}`), whose plan
+ * carries the planner's sections and whose `planner_documents` name the design
+ * doc and diagrams. A read that fails leaves the approval's own plan standing:
+ * never throws, never blocks the decision.
+ */
+async function servedPlan(d: Decision): Promise<ServedPlan | null> {
+  const a = d.approval
+  if (a.kind !== 'plan' && a.kind !== 'hold') return null
+  const runId = text(a.subject.run_id) ?? text(d.run?.id)
+  if (runId === null) return null
+  try {
+    const r = await loadRun(runId)
+    if (r.status !== 'ok' && r.status !== 'stale') return null
+    const run = r.data.run as unknown as { plan?: Json | null; planner_documents?: PlannerDocuments | null; open_work?: { pull_requests?: OpenPull[] } | null }
+    return { plan: run.plan ?? null, docs: await loadPlannerDocuments(run.planner_documents), pulls: run.open_work?.pull_requests ?? [] }
+  } catch {
+    return null
+  }
+}
+
 /**
  * `/automate/approvals/<id>`: one item, read on its own (`GET
  * /v1/approvals/{id}`), so a link to an item someone else decided, or one that
@@ -1023,15 +1806,16 @@ export function ApprovalDecisionScreen({ itemId, kind, round, go, onDecided }: {
       // The read is wrapped so the page says a missing item in its own words
       // (the link names an item that does not exist here), not the Screen's.
       load={async () => {
-        const r = await loadApproval(itemId)
-        return { status: 'ok' as const, data: r as Result<Decision>, fetchedAt: Date.now() }
+        const r = (await loadApproval(itemId)) as Result<Decision>
+        const served = r.status === 'ok' ? await servedPlan(r.data) : null
+        return { status: 'ok' as const, data: { r, served }, fetchedAt: Date.now() }
       }}
     >
-      {(r) => (
+      {({ r, served }) => (
         <>
           <BackToList kind={kind} go={go} />
           {r.status === 'ok' ? (
-            <ApprovalDecision d={r.data} kind={kind} go={go} onDecided={onDecided} />
+            <ApprovalDecision d={r.data} kind={kind} go={go} onDecided={onDecided} served={served} />
           ) : r.status === 'error' ? (
             <p className="c-hint" role="alert" data-testid="ap-detail">
               {r.error.kind === 'not_found'

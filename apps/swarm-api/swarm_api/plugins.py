@@ -34,10 +34,24 @@ SIGNED WITH THE STEP. The contract document is stored in the step's metadata
 and its digest rides in the signed dispatch block
 (`metadata.dispatch.work_contract`), so the worker trusts the plugins it reads
 only after it has digested the stored document and found the signed digest.
+
+A FIELD OF THE STEP (the owner's pick on PR #3264, 5 November 2026). A caller
+names a step's plugins in its own `plugins` field (`schemas.StepPluginCreate`),
+never by writing a work contract. `with_step_plugins` checks them here, in
+`check_step`'s words pointing at `plugins`, and puts them in the step's work
+contract: the caller's own, when it sent one (it may name none or the same
+plugins, never others), or else the smallest contract `workcontract.decode`
+accepts (`step_contract`): the step's runner profile as its only limit, the
+submitter as its owner and the plugins, every component one the worker
+enforces, so it is strict and never degrades to advisory. That contract is
+what the existing digest in the signed dispatch block binds, so no second
+signed field exists. Work contracts are behind SWARM_WORK_CONTRACTS: with it
+off a step naming plugins is refused, never stored to run without them.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
 
@@ -47,6 +61,7 @@ from pydantic import Field
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 
+from . import workcontract
 from .admins import AUDIT_COLLECTION
 from .auth import AuthContext
 from .errors import RoleAdminRequired, ValidationFailed
@@ -56,6 +71,7 @@ from .judgment import (
     SettingsMac,
     block_mac,
     block_verifies,
+    unowned_covered_keys,
 )
 from .plugincatalogue import (
     BRIDGE_REASON,
@@ -78,10 +94,15 @@ from .schemas import StrictModel
 FIELD_PATH = "metadata.work_contract.capabilities.plugins"
 
 
-def _refuse(message: str, *, step_id: str | None, **detail: Any) -> ValidationFailed:
+#: Where a refusal points when the plugins came in the step's own field.
+STEP_FIELD = "plugins"
+
+
+def _refuse(message: str, *, step_id: str | None, field: str = FIELD_PATH,
+            **detail: Any) -> ValidationFailed:
     return ValidationFailed(
         message,
-        detail={"field": FIELD_PATH, "plugins": "plugin_refused", **detail,
+        detail={"field": field, "plugins": "plugin_refused", **detail,
                 **({"step_id": step_id} if step_id else {})},
     )
 
@@ -102,37 +123,133 @@ def allowed_plugins(tenant_id: str, doc: Mapping[str, Any] | None,
 
 def check_step(plugins: Mapping[str, Mapping[str, Any]], *, tenant_id: str,
                runner_profile: str, settings_doc: Mapping[str, Any] | None,
-               mac: SettingsMac, step_id: str | None = None) -> None:
+               mac: SettingsMac, step_id: str | None = None,
+               field: str = FIELD_PATH) -> None:
     """Refuse (422 `validation_failed`, `detail.plugins`) a step's plugins the
     platform cannot run for it: a name outside the catalogue, a profile that
     cannot load it, a mode that needs the question bridge, a skill its mode
-    does not offer, or a plugin the workspace has not allowed under a signed
+    does not offer, no skill at all, or a plugin the workspace has not allowed under a signed
     block. Nothing to check for a step that names none."""
     allowed = allowed_plugins(tenant_id, settings_doc, mac) if plugins else ()
     for name, chosen in sorted(plugins.items()):
         entry = CATALOGUE.get(name)
         if entry is None:
             raise _refuse(f"{name!r} is not in the plugin catalogue", step_id=step_id,
-                          plugin=name, catalogue=sorted(CATALOGUE))
+                          field=field, plugin=name, catalogue=sorted(CATALOGUE))
         if runner_profile not in entry.runner_profiles:
             raise _refuse(
                 f"{name} runs only on the profiles {', '.join(entry.runner_profiles)}, "
-                f"not {runner_profile}", step_id=step_id, plugin=name,
+                f"not {runner_profile}", step_id=step_id, field=field, plugin=name,
                 runner_profile=runner_profile, profiles=list(entry.runner_profiles))
         mode = chosen.get("mode")
         if mode not in SUPPORTED_MODES:
             raise _refuse(f"{name} in {mode} mode {BRIDGE_REASON}", step_id=step_id,
-                          plugin=name, mode=mode, modes=list(SUPPORTED_MODES))
+                          field=field, plugin=name, mode=mode, modes=list(SUPPORTED_MODES))
         offered = entry.skills.get(mode, ())
         extra = sorted(set(chosen.get("skills") or ()) - set(offered))
         if extra:
             raise _refuse(f"{name} in {mode} mode does not offer {', '.join(extra)}",
-                          step_id=step_id, plugin=name, skills=extra, offered=list(offered))
+                          step_id=step_id, field=field, plugin=name, skills=extra,
+                          offered=list(offered))
+        if not chosen.get("skills"):
+            raise _refuse(f"{name} names at least one skill its mode offers", step_id=step_id,
+                          field=field, plugin=name, offered=list(offered))
         if name not in allowed:
             raise _refuse(
                 f"this workspace has not allowed {name}: its owner or admin allows it "
-                "in the workspace's plugins setting", step_id=step_id, plugin=name,
+                "in the workspace's plugins setting", step_id=step_id, field=field, plugin=name,
                 tenant_id=tenant_id)
+
+
+def contract_id_of(step_id: str | None) -> str:
+    """`wc-<lowercase name>`: the step id folded into the contract id's alphabet."""
+    slug = re.sub(r"[^a-z0-9-]+", "-", (step_id or "task").lower()).lstrip("-")
+    if len(slug) < 3:
+        slug = f"step-{slug}".rstrip("-")
+    return f"wc-{slug[:63]}"
+
+
+def step_contract(plugins: Mapping[str, Mapping[str, Any]], *, tenant_id: str,
+                  step_id: str | None, runner_profile: str, owner: str) -> dict[str, Any]:
+    """The smallest work contract `workcontract.decode` accepts that carries
+    a step's plugins: the step's runner profile as its one limit, so
+    `workcontract.prepare` finds no mismatch, and strict, because every
+    component it sets is one the worker enforces."""
+    named = "; ".join(f"{n} in {c['mode']} mode, using {', '.join(c['skills'])}"
+                      for n, c in sorted(plugins.items()))
+    return {
+        "schema": workcontract.SCHEMA_VERSION,
+        "contract_id": contract_id_of(step_id),
+        "tenant_id": tenant_id,
+        "revision": 1,
+        "previous_digest": None,
+        "strictness": workcontract.STRICT,
+        "requirements": [{"id": "REQ-1", "text": f"Step {step_id or 'task'} runs with {named}.",
+                          "verification": []}],
+        "repositories": [],
+        "scope": {"read": [], "write": []},
+        "protected": {"paths": [], "interfaces": []},
+        "capabilities": {"runtime": [],
+                         "plugins": {n: {"mode": c["mode"], "skills": list(c["skills"])}
+                                     for n, c in sorted(plugins.items())}},
+        "limits": {"runner_profile": runner_profile, "model_class": None, "budget": None,
+                   "max_turns": None, "timeout_seconds": None},
+        "artifacts": [],
+        "ownership": {"owner": owner, "depends_on": [], "withdrawn": []},
+    }
+
+
+def _as_set(plugins: Any) -> Any:
+    """Plugins compared as `decode` reads them: skills in any order."""
+    if not isinstance(plugins, Mapping):
+        return plugins
+    return {n: (c.get("mode"), frozenset(c.get("skills") or ())) if isinstance(c, Mapping) else c
+            for n, c in plugins.items()}
+
+
+def with_step_plugins(metadata: Mapping[str, Any], plugins: Mapping[str, Mapping[str, Any]], *,
+                      tenant_id: str, step_id: str | None, runner_profile: str, owner: str,
+                      settings_doc: Mapping[str, Any] | None, mac: SettingsMac,
+                      environ: Mapping[str, str]) -> dict[str, Any]:
+    """The step's metadata with its `plugins` field in its work contract.
+
+    Refuses (422 `validation_failed`, `detail.plugins`, pointing at
+    `plugins`) what `check_step` refuses, a step naming plugins while work
+    contracts are off (nothing would sign them, and the worker loads only
+    signed plugins), and a contract the caller sent that names other
+    plugins than the field. A caller's contract naming none gets them added
+    to its capabilities before it is decoded and digested."""
+    chosen = {n: {"mode": c.get("mode"), "skills": list(c.get("skills") or ())}
+              for n, c in plugins.items()}
+    check_step(chosen, tenant_id=tenant_id, runner_profile=runner_profile,
+               settings_doc=settings_doc, mac=mac, step_id=step_id, field=STEP_FIELD)
+    if not workcontract.enabled(environ):
+        raise _refuse(
+            "a step's plugins are signed with it in its work contract, and work "
+            f"contracts are off on this platform ({workcontract.SWITCH_ENV})",
+            step_id=step_id, field=STEP_FIELD)
+    out = dict(metadata)
+    document = out.get(workcontract.METADATA_KEY)
+    if document is None:
+        out[workcontract.METADATA_KEY] = step_contract(
+            chosen, tenant_id=tenant_id, step_id=step_id,
+            runner_profile=runner_profile, owner=owner)
+        return out
+    capabilities = document.get("capabilities", {}) if isinstance(document, Mapping) else None
+    if not isinstance(capabilities, Mapping):
+        # Not a contract `decode` accepts: it refuses it in its own words.
+        return out
+    named = capabilities.get("plugins")
+    if named:
+        if _as_set(named) != _as_set(chosen):
+            raise _refuse(
+                "the step's plugins and its work contract's capabilities.plugins "
+                "name different plugins; send them in the step's plugins field only",
+                step_id=step_id, field=STEP_FIELD)
+        return out
+    out[workcontract.METADATA_KEY] = {**document,
+                                      "capabilities": {**capabilities, "plugins": chosen}}
+    return out
 
 
 # --- the workspace's allowed plugins ----------------------------------------
@@ -223,7 +340,11 @@ class PluginsStore:
             signed = bool(keys) and block_verifies(tenant_id, MAC_BLOCK, stored, keys[:1])
             if previous == wanted and (signed or not keys) and stored.get(ALLOWED) == wanted:
                 return
-            block = {k: v for k, v in stored.items() if k not in OWNED_FIELDS}
+            # A covered key this writer does not write (contract request 140's
+            # `defaults` and `configs_digest`) was planted by a direct write:
+            # dropped, never signed with the list the caller chose.
+            dropped = (*OWNED_FIELDS, *unowned_covered_keys(MAC_BLOCK))
+            block = {k: v for k, v in stored.items() if k not in dropped}
             block.update({ALLOWED: wanted, SET_AT: now, SET_BY: by})
             mac = block_mac(tenant_id, MAC_BLOCK, block, keys)
             if mac is not None:
@@ -291,6 +412,7 @@ __all__ = [
     "PluginEntry",
     "PluginsPut",
     "PluginsStore",
+    "STEP_FIELD",
     "SUPPORTED_MODES",
     "allowed_plugins",
     "authorize_read",
@@ -298,7 +420,10 @@ __all__ = [
     "can_edit",
     "catalogue_view",
     "check_step",
+    "contract_id_of",
     "normalise",
     "offered_skills",
+    "step_contract",
     "view",
+    "with_step_plugins",
 ]

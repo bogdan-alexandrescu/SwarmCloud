@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
@@ -141,19 +142,23 @@ WORKER_ENFORCED_TODAY = frozenset({COMPONENT_REPOSITORIES, COMPONENT_LIMITS, COM
 
 
 #: Whether the worker's post-step runs JC2, the acceptance judgment at the end
-#: of a step (jev-contract.md section 5, lane 6 WORKER-CONTRACT-JUDGE). False:
-#: the worker judges each requirement naming `judgment` at the step's commit
-#: (`agent_worker.judge.poststeps.contract_post_step`, on the budget's
-#: reserve), but nothing posts that verdict to `state/contract-verdict` yet
-#: (`poststeps.deliver_contract_verdict` has no caller), so no `judgment`
-#: evidence is ever written and a requirement proven only by a judgment could
-#: never be met. The owner's answer of 5 November 2026: this stays off until
-#: the follow-up lane that wires the delivery turns it on in the same change.
+#: of a step (jev-contract.md section 5, lane 6 WORKER-CONTRACT-JUDGE). True:
+#: the worker names the step's signed contract to its runner
+#: (`lifecycle.Worker._stage_work_contract`: SWARM_WORK_CONTRACT_FILE and
+#: SWARM_WORK_CONTRACT_DIGEST), the runner judges each requirement naming
+#: `judgment` at the step's commit (`agent_worker.judge.poststeps
+#: .contract_post_step`, on the budget's reserve), and after the publish the
+#: worker posts that verdict, or `not_run`, to `state/contract-verdict`
+#: about the pushed head (`lifecycle.Worker._deliver_contract_verdict`), so
+#: the `judgment` evidence is written and a `not_run` is re-asked by the
+#: control plane (`contractreask`). The owner's answer of 5 November 2026:
+#: this turns on only in the change that wires the delivery, which this is.
 #: The owner's pick of 4 November 2026 ("Gate on JC2"): `judgment` counts as
 #: enforced only where JC2 runs, not merely where Jev can review a contract at
 #: submission; `contractreview` also requires the workspace's signed
-#: `code_intelligence.jev`, because JC2 sends code.
-JC2_AT_END_OF_STEP = False
+#: `code_intelligence.jev`, because JC2 sends code. A code constant, not a
+#: setting: no deployment renders it, so the Day One install has nothing to set.
+JC2_AT_END_OF_STEP = True
 
 
 def enforced_with_judgment(enforced: frozenset[str] = WORKER_ENFORCED_TODAY, *,
@@ -688,9 +693,12 @@ def verify_reference(contract: WorkContract, reference: Mapping[str, Any] | None
             and reference.get("requirements") == list(contract.requirement_ids()))
 
 
-def enabled(environ: Mapping[str, str]) -> bool:
-    """The switch: on only when SWARM_WORK_CONTRACTS is exactly `on`."""
-    return environ.get(SWITCH_ENV, "").strip() == "on"
+def enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """The switch: on only when SWARM_WORK_CONTRACTS is exactly `on`. The read
+    is written `(os.environ if environ is None else environ).get(...)` so that
+    scripts/lib/check-env-parity.sh sees swarm-api read the key terraform sets
+    (terraform/infra var.work_contracts)."""
+    return (os.environ if environ is None else environ).get(SWITCH_ENV, "").strip() == "on"
 
 
 def attach(options: Any, compiled: CompiledContract, *, environ: Mapping[str, str]) -> Any:

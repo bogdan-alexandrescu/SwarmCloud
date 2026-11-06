@@ -244,6 +244,13 @@ is a fenced transaction, so a superseded attempt writes nothing
 - The CI wake tick skips these parks.
 - The coordinator marks the park when the entry concludes, and the
   15-minute fallback instant covers a lost mark.
+- `merge_wait.train_entered_at` is the train wait's start: set by the
+  first train park of an unbroken run of them, carried by every train park
+  after it, cleared by any other park (both park writers keep it).
+  swarm-api serves it as `waiting.detail.train_since`, and `/sc check` ages
+  the wait from it (rule `merge_train_stalled`, part of #2688) BECAUSE the
+  train pauses the CI clock, so `waiting.since` cannot say how long the step
+  has queued.
 
 ### 5.3 How the step ends
 
@@ -270,7 +277,12 @@ again; a second ejection at the same head is a CI-fix round's
 (`train_fix_pending`, the train run's failing jobs as its excerpt) when the
 step has rounds left; only after that round ends at the same head, or with no
 round, does it end FAILED `train_ejected` with the train's reason. One
-re-board per head, so it cannot loop. A `ready` removed by auto-merge.yml's
+re-board per head, so it cannot loop. Since 6 November 2026 (BGD: keep the
+train and fix red trains), that train ejects less often. It first re-runs a
+red train's failed jobs once. If the train is red again while main is red on
+the same checks, it closes `Held: main is red on <names>` and ejects nobody.
+Only otherwise does it bisect and eject
+([runbook](runbooks/merge-train.md#a-red-train)). A `ready` removed by auto-merge.yml's
 gate rather than the train still refuses at once. The step's wait record is
 tenant-writable: a forged one can at worst re-label once or refuse
 (docs/merge-step.md, "Revised 2026-11-03").

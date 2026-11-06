@@ -44,6 +44,39 @@ below.**
 **Revised 2026-11-03: in a repository whose own merge train is on, the merge
 step labels its pull request `ready` and parks on the train instead of taking
 the merge slot -- the first section below.**
+**Revised 2026-11-05: a re-review that only re-publishes the review's MERGE is
+readied on `claude-code`, never the browser -- the section below.**
+
+## Revised 2026-11-05: the re-review that runs no agent runs on claude-code (part of #2688)
+
+In implement -> review -> fix -> re-review -> merge, a MERGE review means no
+fix runs and the re-review runs no agent: the worker re-publishes the verdict
+it staged, byte for byte (`Worker._republish_staged_verdict`), so the merge
+step reads the same file from the same step either way. Until now the
+re-review of a `browser_if_ui` review inherited the profile the review
+resolved to, so a UI lane's MERGE started a browser pod on GKE only to copy a
+file. In the day to 10:00Z on 5 November 2026, 56 re-reviews ran on
+`claude-code-browser` and 53 of them used no browser. BGD asked for agents
+that start on the browser runtime and barely use it to be fixed.
+
+The rule (`scheduler.runtime.republishes`). When the scheduler readies the
+re-review, it reads the same gate the worker reads: the re-review's
+`metadata.dispatch.verdict_gate`, which is the integrator's own. It also
+reads the verdict the integrator recorded from that review's verdict file,
+`result_summary.verdict_gate` on the step it builds on. Whether the
+integrator's worker or swarm-api's control-plane publish ended that step, the
+record has the same shape. If the verdict is outside `verdict_in`, the
+re-review's gate is shut too, so it resolves to `claude-code` by catalogue
+name, swapped with the spec swarm-api already signed for it, with reason
+`republish_no_agent`. If the gate is open, because a fix ran or the record is
+missing, malformed or names another review, the re-review inherits as
+before. A NOT_YET that the integrator's no-op precheck skipped also inherits:
+the re-review's own precheck needs its clone, so the scheduler cannot know.
+A pinned review's re-review carries no `inherit` (Q-2275) and is not
+touched. The resolution is written into the PARKED -> READY transaction, the
+same write `browser_if_ui` already uses, so admission reserves only
+`claude-code`'s pools, and the READY event and `metadata.runtime.resolved`
+record which runtime ran.
 
 ## Revised 2026-11-03: the repository's merge train boards the merge step's pull request (part of #2688)
 
@@ -331,7 +364,7 @@ an address beyond `committer_email`. The refusal's message ends by naming
 them, so the next refusal of this kind explains itself.
 
 **The end cause is frozen.** `EndCause` in `swarm_common/models.py` has no
-member for this, so until contract request 140 (SUPERSEDED_BY_PERSON_PUSH,
+member for this, so until contract request 145 (SUPERSEDED_BY_PERSON_PUSH,
 [contract-change-requests.md](contract-change-requests.md)) lands the step
 still ends `FAILED`/`MERGE_REFUSED`, with the new code in
 `result_summary.merge.refusal.code`. failure-review's `person_push` rule
@@ -1019,7 +1052,7 @@ matches:
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
 | the head moved, and the step did not move it, nor a CI-fix or conflict fix round of this workflow, nor the PR-side CI fixer for this pull request (Revised 2026-10-11, #1073) | MERGE_REFUSED `head_moved` |
-| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27, #2505) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 140 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
+| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27, #2505) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 145 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
 | `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11, #1076) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |

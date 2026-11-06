@@ -18,6 +18,7 @@ import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
 import { addressToPath } from './paths'
+import { interviewAddress, proposalAddress } from './interviewPaths'
 import { Absent } from './primitives'
 import { RunChangesTab, changesAtOf, withChangesAt } from './WorkflowChanges'
 import { Markdown } from './ArtifactViewer'
@@ -77,7 +78,7 @@ import './styles/runs.css'
 export const RUN_POLL_MS = 15_000
 
 /** `issueruns.AUTO_APPROVER`: who `approved_by` names on an automatic approval. */
-const AUTO_APPROVER = 'auto-approval'
+export const AUTO_APPROVER = 'auto-approval'
 
 /** `issueruns.OVERLAP_REF_PATTERN`: the only overlap ref that is made a link. */
 const GITHUB_REF = /^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})#([1-9][0-9]{0,9})$/
@@ -1278,6 +1279,16 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                   (`.rn-id`, D3), whole in its title. */}
               {run.planner_task_id !== '' && <span className="sb-note rn-id" title={run.planner_task_id}>{run.planner_task_id}</span>}
             </li>
+            {/* The planner's interview and its proposal, each a full page (InterviewPage.tsx). */}
+            {run.planner_task_id !== '' && (
+              <li className="ctl-fact">
+                <b>Interview</b>
+                <InApp go={go} words to={interviewAddress(run.planner_task_id)} href={addressToPath(interviewAddress(run.planner_task_id))}>Open the interview</InApp>
+                {run.plan !== null && (
+                  <InApp go={go} words to={proposalAddress(run.id)} href={addressToPath(proposalAddress(run.id))}>Open the proposal</InApp>
+                )}
+              </li>
+            )}
             <li className={run.workflow_id === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>Workflow</b>
               {run.workflow_id === null
@@ -1691,7 +1702,7 @@ type StepDraft = { step: PlanStepDoc; title: string; prompt: string; files: stri
  * The mode and the overlaps are the planner's findings and are kept as
  * written. Every field the plan carries goes back, so an edit never drops one.
  */
-function PlanEditor({ plan, busy, onCancel, onSave }: {
+export function PlanEditor({ plan, busy, onCancel, onSave }: {
   plan: RunPlan; busy: boolean; onCancel: () => void; onSave: (plan: RunPlan) => void
 }) {
   const [summary, setSummary] = useState(plan.summary)
@@ -2576,7 +2587,7 @@ function IssueFact({ run, known, url }: { run: IssueRun; known: MergeKnown; url:
  * Escape did nothing. Its Why field has the focus once it opens, and Escape
  * anywhere in it is "Keep it" (which gives the focus back to Reject).
  */
-function RejectForm({ busy, onCancel, onReject }: { busy: boolean; onCancel: () => void; onReject: (reason: string) => void }) {
+export function RejectForm({ busy, onCancel, onReject }: { busy: boolean; onCancel: () => void; onReject: (reason: string) => void }) {
   const [reason, setReason] = useState('')
   const why = useRef<HTMLTextAreaElement>(null)
   useEffect(() => why.current?.focus(), [])

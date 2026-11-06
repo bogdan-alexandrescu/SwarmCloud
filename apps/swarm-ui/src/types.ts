@@ -725,8 +725,12 @@ export interface OwnerAnswerVersion {
   session?: string | null
 }
 
-/** `AnswerBody.via` in agent_questions.py: where an answer was given. */
-export type AnswerVia = 'console' | 'claude-code'
+/**
+ * `AnswerBody.via` in agent_questions.py: where an answer was given --
+ * `github-comment` for one taken from the issue's comment, `voice-it` for one
+ * given in a Voice it session (`voice/grant.py`'s `VIA`).
+ */
+export type AnswerVia = 'console' | 'claude-code' | 'github-comment' | 'voice-it'
 
 /**
  * The owner's answer to one question (`codec.owner_answer_to_api`), with the
@@ -1097,6 +1101,13 @@ export interface Task {
    * task reads `collect`, an old API reads "not reported".
    */
   dispatch?: TaskDispatch | null
+
+  /**
+   * The step's `contract_acceptance` (jev-contract.md sections 5.4 and 8.2),
+   * served on the detail only and only where Jev judged the step's work
+   * contract: read by `ContractJev.contractAcceptance`, drawn as Jev's.
+   */
+  contract_acceptance?: unknown
 }
 
 /**
@@ -3025,7 +3036,8 @@ export interface Waiting extends WaitingRow {
   /**
    * Per reason (docs/api.md "Why a task is waiting"). CI_PENDING:
    * pull_request {number, url}, head, code, pending, failed, wakes,
-   * attempts_counted, last_checked_at, wake_requested_at. READY_CAPACITY:
+   * attempts_counted, last_checked_at, wake_requested_at, train_since.
+   * READY_CAPACITY:
    * waiting_for, pool, pool_state, active, limit, units, place_in_line,
    * place_in_line_unavailable, last_pass. Provider parks: provider, account,
    * provider_state, source, account_pool_reason, wait_seconds, until.
@@ -6964,4 +6976,45 @@ export interface QaIdentityGrantDoc extends QaIdentityGrant {
   identity: string
   revoked_by: string | null
   revoked_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Agent plugins (docs/design/agent-plugins.md): the closed catalogue and a
+// workspace's allowed plugins, as `GET /v1/plugins` and
+// `GET`/`PUT /v1/workspaces/{tenant_id}/plugins` answer them
+// (swarm_api.plugins.view). Names only: no route serves a path, a command, a
+// URL or a version a caller could choose (invariant 10).
+// ---------------------------------------------------------------------------
+
+/** The modes a step may name, in the catalogue's order. */
+export const PLUGIN_MODES = ['unattended', 'planner', 'designer'] as const
+export type PluginMode = (typeof PLUGIN_MODES)[number]
+
+/** One mode of a catalogue plugin: its skills, and whether a step may run it today. */
+export interface PluginModeOffer {
+  skills: string[]
+  available: boolean
+  /** Why not, in the API's words (`BRIDGE_REASON`); null when it runs. */
+  reason: string | null
+}
+
+export interface CataloguePlugin {
+  name: string
+  /** Pinned, built into the agent images; never a caller's to choose. */
+  version: string
+  runner_profiles: string[]
+  /** Only the modes the plugin offers skills in; a missing mode offers none. */
+  modes: Partial<Record<PluginMode, PluginModeOffer>>
+}
+
+export interface WorkspacePlugins {
+  tenant_id: string
+  /** The plugins in force: read only from a block whose signature verifies. */
+  allowed: string[]
+  /** What a workspace nobody has chosen for allows; null when not served. */
+  default_allowed: string[] | null
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+  catalogue: CataloguePlugin[]
 }

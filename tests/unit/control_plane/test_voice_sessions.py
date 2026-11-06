@@ -509,6 +509,8 @@ def swarm_voice():
             payload = json.dumps(
                 state["refusal"] if state.get("refusal") is not None and self.path == "/internal/sessions"
                 else {"voice_session_id": state["voice_session_id"] or body.get("voice_session_id"),
+                      "mode": "text"} if body.get("mode") == "text"
+                else {"voice_session_id": state["voice_session_id"] or body.get("voice_session_id"),
                  "live_session_id": "live_0123456789", "answer": ANSWER}
                 if self.path == "/internal/sessions" else {})
             self.send_response(state["status"] if self.path == "/internal/sessions"
@@ -702,3 +704,99 @@ def test_the_browser_reads_openais_refusal_as_served(db, tokens, group_map, obje
     assert response.json()["message"] == refusing.pool_refusal.message
     (session,) = _sessions(db).values()
     assert session["end_cause"] == vs.END_VOICE_UNREACHABLE
+
+
+# --------------------------------------------------------------------------
+# The session's models: Voice it › Settings, read at the start
+# --------------------------------------------------------------------------
+
+#: Terraform's `local.runner_models`, as `model_class_env` hands it to swarm-api.
+CLASS_PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", "sonnet": "claude-sonnet-5-5",
+              "haiku": "claude-haiku-5-5"}
+
+
+def _voice_settings(db, **fields) -> None:
+    from swarm_api.voice import settings as vsettings
+    db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set({"version": 1, **fields})
+
+
+@pytest.fixture
+def pinned(db, tokens, group_map, objects, voice) -> TestClient:
+    """`client`, on a deployment whose settings pin the classes to CLASS_PINS."""
+    return _client(db, tokens, group_map, objects, voice,
+                   voice_url="http://voice.internal:8080",
+                   voice_people=("alice@example.com", "bob@example.com"),
+                   worker_class_models=dict(CLASS_PINS))
+
+
+def test_the_start_sends_the_settings_planner_and_conversation_models(pinned, db, voice):
+    """BGD, 6 November 2026 ('wire-in-follow-up', 'front-reads-it'): the
+    planner class's pin and the conversation model's id, read at the start.
+    A change reaches the next session's start, never the one already started."""
+    client = pinned
+    _voice_settings(db, planner_model="opus", conversation_model="claude-sonnet-5")
+    first = _start(client, "alice")
+    assert first.status_code == 200, first.text
+    _voice_settings(db, planner_model="sonnet", conversation_model="claude-haiku-5-5")
+    assert _end(client, "alice", first.json()["session_id"]).status_code == 200
+    second = _start(client, "alice")
+    assert second.status_code == 200, second.text
+
+    assert [(c.planner_model, c.conversation_model) for c in voice.starts] == [
+        ("claude-opus-5-5", "claude-sonnet-5"), ("claude-sonnet-5-5", "claude-haiku-5-5")]
+
+
+def test_unset_or_unlisted_models_are_none_so_swarm_voice_keeps_its_pins(pinned, db, voice):
+    client = pinned
+    first = _start(client, "alice")  # no settings document at all
+    assert first.status_code == 200, first.text
+    assert _end(client, "alice", first.json()["session_id"]).status_code == 200
+    _voice_settings(db, planner_model="mythos", conversation_model="gpt-4o")
+    second = _start(client, "alice")
+    assert second.status_code == 200, second.text
+
+    assert [(c.planner_model, c.conversation_model) for c in voice.starts] == [(None, None), (None, None)]
+
+
+def test_the_planner_pin_is_swarm_apis_own_class_models_not_the_environment(
+        db, tokens, group_map, objects, voice, monkeypatch):
+    """BGD, 6 November 2026: the voice route builds its sessions with
+    `Settings.worker_class_models`, the map every other swarm-api caller
+    reads, never a second read of WORKER_CLASS_MODELS. The environment here
+    pins `opus` to one model and the settings to another: the settings' wins."""
+    import json
+
+    monkeypatch.setenv("WORKER_CLASS_MODELS", json.dumps(CLASS_PINS))
+    settings_pins = {**CLASS_PINS, "opus": "claude-opus-5"}
+    client = _client(db, tokens, group_map, objects, voice,
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com",),
+                     worker_class_models=settings_pins)
+    _voice_settings(db, planner_model="opus")
+
+    started = _start(client, "alice")
+
+    assert started.status_code == 200, started.text
+    assert [c.planner_model for c in voice.starts] == ["claude-opus-5"]
+
+
+@pytest.mark.parametrize("mode", [vs.MODE_LIVE, vs.MODE_TEXT])
+def test_the_http_client_sends_the_models_when_set_and_omits_them_when_not(swarm_voice, mode):
+    from swarm_voice.main import StartRequest
+
+    url, seen, _ = swarm_voice
+    client = vs.HttpVoiceClient(url, token=lambda audience, timeout: secrets.token_hex(16))
+    for models in ({"planner_model": "claude-opus-5-5", "conversation_model": "claude-sonnet-5"}, {}):
+        call = vs.StartCall(session_id="vs_" + secrets.token_hex(16), project_id="vp_" + secrets.token_hex(16),
+                            tenant_id="eng", person="alice@example.com",
+                            offer=OFFER if mode == vs.MODE_LIVE else "", grant=secrets.token_urlsafe(32),
+                            mode=mode, **models)
+        client.start(call)
+
+    sent, bare = (s["body"] for s in seen)
+    assert sent["planner_model"] == "claude-opus-5-5"
+    assert sent["conversation_model"] == "claude-sonnet-5"
+    assert "planner_model" not in bare and "conversation_model" not in bare
+    # Otherwise the body is today's, field for field.
+    assert set(sent) - set(bare) == {"planner_model", "conversation_model"} and set(bare) <= set(sent)
+    assert set(sent) <= set(StartRequest.model_fields)

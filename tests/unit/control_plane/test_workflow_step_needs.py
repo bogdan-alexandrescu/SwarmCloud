@@ -13,6 +13,7 @@ Offline: the real routes over FakeFirestore.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -26,7 +27,7 @@ from .conftest import auth_header, seed_task, seed_tenant
 T0 = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)
 NEEDS_KEYS = {
     "park_reason", "next_eligible_at", "updated_at", "human_wait", "owner_questions", "question_wait",
-    "questions", "questions_unread", "pull_request", "plugin_ask",
+    "questions", "questions_unread", "question_text_digests", "pull_request", "plugin_ask",
 }
 
 
@@ -142,6 +143,8 @@ def test_a_question_wait_serves_its_open_questions_and_not_the_answered(client, 
     assert needs["questions"] == [{
         "index": 0, "question": "Which database?",
         "options": [{"label": "Postgres", "description": "the usual"}], "recommended": "Postgres",
+        # Its words alone, as the worker keys an artifact question (PR body, 6 November 2026).
+        "text_digest": hashlib.sha256(b"which database?").hexdigest()[:16],
     }]
 
 
@@ -178,7 +181,8 @@ def test_answers_to_an_earlier_wait_never_hide_a_new_waits_questions(client, db)
     needs = _needs(client, "wf_new_wait")
 
     assert needs["question_wait"] is True
-    assert needs["questions"] == [{"index": 0, "question": "Which bucket?", "options": [], "recommended": None}]
+    assert needs["questions"] == [{"index": 0, "question": "Which bucket?", "options": [], "recommended": None,
+                                   "text_digest": hashlib.sha256(b"which bucket?").hexdigest()[:16]}]
 
 
 def test_questions_unread_is_bounded_by_the_workers_cap(client, db):
@@ -246,6 +250,25 @@ def test_a_parked_plugin_step_serves_its_plugins_and_its_waits_clock(client, db)
     # A bridged question waits 24 hours from the earliest instant the park names.
     assert datetime.fromisoformat(ask["asked_at"]) == T0
     assert datetime.fromisoformat(ask["expires_at"]) == T0 + timedelta(hours=24)
+    # A park the worker recorded no skill for says so: the row says "not known".
+    assert ask["skill"] is None
+
+
+def test_a_parked_plugin_step_serves_the_skill_that_asked_masked(client, db):
+    """The owner's pick of 4 November 2026: the worker records the last Skill
+    call before the question in the wait's bridge block; the list serves it."""
+    seed_tenant(db, "eng")
+    wait = {"attempt_id": "att_1", "blocking": [0], "questions": [{"question": "Ship it?", "options": []}],
+            "bridge": {"skill": "gstack:office-hours"}}
+    _one_step(db, "wf_skill", state="PARKED", park_reason="HUMAN_REQUIRED", next_eligible_at=T0,
+              blocked_by=[{"reason": "HUMAN_REQUIRED", "question_wait": wait}],
+              metadata={"title": "The step", "question_wait": wait,
+                        "work_contract": _plugin_contract(gstack={"mode": "planner", "skills": ["office-hours"]})})
+
+    ask = _needs(client, "wf_skill")["plugin_ask"]
+
+    assert ask["skill"] == "gstack:office-hours"
+    assert ask["plugins"] == [{"name": "gstack", "mode": "planner"}]
 
 
 def test_a_plugin_step_not_parked_on_a_question_serves_no_ask(client, db):

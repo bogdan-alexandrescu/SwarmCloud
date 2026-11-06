@@ -699,6 +699,16 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         # A new dict on the same context: `run_runner` holds this object.
         prompt = f"{prompt.rstrip()}\n\n{unstaged}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    # Where to look a symbol up (`contextpack.lookup_line`, BGD 2026-11-06):
+    # codex lists the graph's loaded tools, so the line names `context`.
+    if served or snapshot:
+        from .. import contextpack  # lazy, as `run_cli_agent` imports it
+
+        lookup = contextpack.lookup_line(ctx.payload, ctx.work_dir,
+                                         tool=contextpack.GRAPH_LOOKUP_TOOL)
+        if lookup and isinstance(prompt, str) and prompt.strip():
+            prompt = f"{prompt.rstrip()}\n\n{lookup}"
+            ctx.payload = {**ctx.payload, "prompt": prompt}
     if attached and isinstance(prompt, str) and prompt.strip():
         ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{mcp_servers_note(attached)}"}
     plan = plan_credential()

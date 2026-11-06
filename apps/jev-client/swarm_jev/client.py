@@ -229,6 +229,107 @@ def _valid_answer(question: Mapping[str, Any], answer: Any) -> bool:
     return _numbers_only(dict(answer))
 
 
+#: What a `lenient` call adds to a choice question's instructions, so the
+#: answer is the shape `_valid_answer` reads: one option label, verbatim, and a
+#: confidence (BGD's pick of 6 November 2026, after 4 of 529 `jev_decide`
+#: answers were recorded malformed, each a short output).
+CHOICE_SHAPE = (" Answer with exactly one option label from the criteria, verbatim and with "
+                "no other text, and a confidence between 0 and 1.")
+#: What is stripped from either end of a choice label before it is matched.
+_LABEL_EDGES = " \t\r\n\"'`*.,;:!?()[]<>"
+
+
+def _tightened(questions: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """`questions` with `CHOICE_SHAPE` after each choice's instructions, where
+    it still fits under MAX_INSTRUCTIONS_CHARS."""
+    out: dict[str, dict[str, Any]] = {}
+    for name, question in questions.items():
+        fixed = dict(question)
+        if fixed["type"] == "choice" and \
+                len(fixed["instructions"]) + len(CHOICE_SHAPE) <= MAX_INSTRUCTIONS_CHARS:
+            fixed["instructions"] = fixed["instructions"] + CHOICE_SHAPE
+        out[name] = fixed
+    return out
+
+
+def _lenient_probability(value: Any) -> float | None:
+    """A probability, also from a numeric string ("0.8", "80%"); else None."""
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            number = float(text[:-1]) / 100 if text.endswith("%") else float(text)
+        except ValueError:
+            return None
+        value = number
+    return float(value) if _probability(value) else None
+
+
+def _lenient_label(value: Any, options: Mapping[str, Any]) -> str | None:
+    """The ONE option `value` names: verbatim, once quotes, punctuation and
+    case are set aside, or as the only option named as a whole word inside
+    surrounding text. None when it names none or more than one."""
+    if not isinstance(value, str):
+        return None
+    if value in options:
+        return value
+    text = value.strip(_LABEL_EDGES)
+    if text in options:
+        return text
+    folded = [o for o in options if o.casefold() == text.casefold()]
+    if len(folded) == 1:
+        return folded[0]
+    named = [o for o in options if o.strip() and re.search(
+        rf"(?<![\w-]){re.escape(o.strip())}(?![\w-])", value, re.IGNORECASE)]
+    # "use the cache" names "cache" too: the longer option is the one meant
+    named = [o for o in named
+             if not any(o != p and o.casefold() in p.casefold() for p in named)]
+    return named[0] if len(named) == 1 else None
+
+
+def _lenient_answer(question: Mapping[str, Any], answer: Any) -> dict[str, Any] | None:
+    """`answer` in the shape `_valid_answer` accepts, when it is unambiguous;
+    else None. A valid answer is returned as it is."""
+    if _valid_answer(question, answer):
+        return dict(answer)
+    kind = question["type"]
+    if kind == "noul":
+        raw = answer.get("noul") if isinstance(answer, Mapping) else answer
+        noul = _lenient_probability(raw)
+        if noul is None:
+            return None
+        return {**(dict(answer) if isinstance(answer, Mapping) else {}), "noul": noul}
+    if kind != "choice" or not isinstance(answer, Mapping):
+        return None
+    options = question["criteria"]
+    label = _lenient_label(answer.get("choice"), options)
+    if label is None:
+        return None
+    fixed: dict[str, Any] = {k: v for k, v in answer.items()
+                             if k not in ("choice", "confidence", "probabilities")}
+    fixed["choice"] = label
+    given = answer.get("probabilities")
+    if isinstance(given, Mapping):
+        probabilities: dict[str, float] = {}
+        for option, p in given.items():
+            name, number = _lenient_label(option, options), _lenient_probability(p)
+            if name is None or number is None or name in probabilities:
+                probabilities = {}
+                break
+            probabilities[name] = number
+        if probabilities:
+            fixed["probabilities"] = probabilities
+    # a stated confidence must read as one; only an absent one is the label's
+    # stated probability
+    if answer.get("confidence") is None:
+        confidence = fixed.get("probabilities", {}).get(label)
+    else:
+        confidence = _lenient_probability(answer.get("confidence"))
+    if confidence is None:
+        return None
+    fixed["confidence"] = confidence
+    return fixed
+
+
 def _count(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 \
         else None
@@ -271,8 +372,17 @@ class JudgeClient:
     secrets: tuple[str, ...] = field(default=(), repr=False)
     clock: Callable[[], float] = time.monotonic
 
-    def decide(self, kind: str, state: Any, questions: Any) -> Decision:
-        """Ask Jev; never raise for anything but a QuestionError."""
+    def decide(self, kind: str, state: Any, questions: Any, *, lenient: bool = False,
+               malformed_retries: int = 0) -> Decision:
+        """Ask Jev; never raise for anything but a QuestionError.
+
+        `lenient` (the agent's `jev_decide`) asks each choice for one label
+        and a confidence (`CHOICE_SHAPE`) and reads an answer that is not the
+        exact shape when it is unambiguous (`_lenient_answer`). A malformed
+        answer is asked again up to `malformed_retries` times, each a call of
+        its own -- admitted, and audited with `retry_of` naming the first
+        call. A retry's malformed answer does not count towards the breaker
+        again: one question answered badly is one failure, not Jev down."""
         asked = validate_questions(questions)
         secrets = self.secrets + ((self.backend.key,) if self.backend.key else ())
         for name, text in _question_strings(asked):
@@ -280,7 +390,7 @@ class JudgeClient:
                 raise QuestionError(f"question {name} holds credential-shaped text; nothing was sent")
         clean = sanitize.sanitize_state(state, hard_stop_paths=self.hard_stop_paths,
                                         secrets=secrets)
-        call_id = uuid.uuid4().hex[:12]
+        first_call = call_id = uuid.uuid4().hex[:12]
 
         def finish(outcome: str, *, reason: str | None = None, answers: Any = None,
                    tokens: int = 0, size: int = 0, ms: int = 0,
@@ -298,6 +408,8 @@ class JudgeClient:
                                    # names and counts, never a payload
                                    "requested_model": self.backend.model or None,
                                    "tokens_estimated": False}
+            if call_id != first_call:
+                row["retry_of"] = first_call
             row.update(served or {})
             opened = self.ledger.record(row, succeeded=succeeded)
             if opened:
@@ -314,42 +426,55 @@ class JudgeClient:
             len(json.dumps(sent_state, separators=(",", ":")))
         if state_chars > MAX_STATE_CHARS:
             return finish("skipped", reason="oversize")
+        sent_questions = _tightened(asked) if lenient else asked
         body = json.dumps({"state": sent_state, "model": self.backend.model,
-                           "questions": asked}, separators=(",", ":")).encode()
-        refused = self.ledger.admit(estimate=len(body) // 3)
-        if refused is not None:
-            return finish("skipped", reason=refused)
-
+                           "questions": sent_questions}, separators=(",", ":")).encode()
         headers = {"Content-Type": "application/json"}
         if self.backend.key:
             headers["Authorization"] = f"Bearer {self.backend.key}"
-        started = self.clock()
-        status, raw = 0, b""
-        for attempt in range(RETRIES + 1):
+        malformed: Decision | None = None
+        for asking in range(max(0, malformed_retries) + 1):
+            if asking:
+                call_id = uuid.uuid4().hex[:12]
+            refused = self.ledger.admit(estimate=len(body) // 3)
+            if refused is not None:
+                skipped = finish("skipped", reason=refused)
+                return skipped if malformed is None else malformed
+            started = self.clock()
+            status, raw = 0, b""
+            for attempt in range(RETRIES + 1):
+                try:
+                    status, raw = self.transport(self.backend.url, body, headers,
+                                                 CALL_TIMEOUT_SECONDS)
+                except Exception:  # a timeout, a refused connection, a reset: retryable
+                    status, raw = 0, b""
+                if 200 <= status < 300:
+                    break
+                if status and status != 429 and status < 500:
+                    break  # the API refused the request; asking again changes nothing
+                if attempt < RETRIES:
+                    self.sleep(BACKOFF_SECONDS * (attempt + 1))
+            ms = int((self.clock() - started) * 1000)
+            if not 200 <= status < 300:
+                return finish("failed", reason=f"http_{status}" if status else "transport",
+                              size=len(body), ms=ms, succeeded=False)
             try:
-                status, raw = self.transport(self.backend.url, body, headers,
-                                             CALL_TIMEOUT_SECONDS)
-            except Exception:  # a timeout, a refused connection, a reset: retryable
-                status, raw = 0, b""
-            if 200 <= status < 300:
-                break
-            if status and status != 429 and status < 500:
-                break  # the API refused the request; asking again changes nothing
-            if attempt < RETRIES:
-                self.sleep(BACKOFF_SECONDS * (attempt + 1))
-        ms = int((self.clock() - started) * 1000)
-        if not 200 <= status < 300:
-            return finish("failed", reason=f"http_{status}" if status else "transport",
-                          size=len(body), ms=ms, succeeded=False)
-        try:
-            parsed = json.loads(raw)
-        except ValueError:
-            parsed = None
-        tokens, served = _usage(parsed, estimate=len(body) // 3)
-        answers = parsed.get("answers") if isinstance(parsed, dict) else None
-        if not isinstance(answers, dict) or \
-                not all(_valid_answer(q, answers.get(n)) for n, q in asked.items()):
-            return finish("malformed", reason="malformed", tokens=tokens, size=len(body),
-                          ms=ms, succeeded=False, served=served)
-        return finish("ok", answers={n: answers[n] for n in asked}, tokens=tokens,
-                      size=len(body), ms=ms, succeeded=True, served=served)
+                parsed = json.loads(raw)
+            except ValueError:
+                parsed = None
+            tokens, served = _usage(parsed, estimate=len(body) // 3)
+            answers = parsed.get("answers") if isinstance(parsed, dict) else None
+            read: dict[str, Any] | None = None
+            if isinstance(answers, dict):
+                if lenient:
+                    read = {n: _lenient_answer(q, answers.get(n)) for n, q in asked.items()}
+                elif all(_valid_answer(q, answers.get(n)) for n, q in asked.items()):
+                    read = {n: answers[n] for n in asked}
+            if read is not None and all(a is not None for a in read.values()):
+                return finish("ok", answers=read, tokens=tokens, size=len(body), ms=ms,
+                              succeeded=True, served=served)
+            malformed = finish("malformed", reason="malformed", tokens=tokens,
+                               size=len(body), ms=ms,
+                               succeeded=False if malformed is None else None, served=served)
+        assert malformed is not None  # the loop runs at least once
+        return malformed

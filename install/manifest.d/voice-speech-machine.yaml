@@ -1,14 +1,35 @@
 # Lane L1 of Voice it's own speech engine (docs/design/voice-it-own-speech.md
 # section 14, "The speech machine exists, stopped, on swarm-vpc"; part of
 # #2688). terraform/bootstrap makes the swarm-speech account, the
-# swarmSpeechOperator role and the two actAs grants on the account;
+# swarmSpeechOperator role and the two actAs grants on the account, and
+# terraform/bootstrap/deployer_conditions.tf the release deployer's
+# swarmSpeechDeployer, conditioned to the machine's instance and disk names;
 # terraform/infra/voice_speech.tf makes the one stopped L4 machine, its
 # internal address, its firewall pair, its grants and the samples' TTL. All of
 # infra's part is off until voice_speech.enabled and voice_it is "on"; the
 # installer's choice to turn it on is lane L11's (install/manifest.d/
 # voice-speech-install.yaml). The IAM entries are IAM changes, so the release
 # that carries them waits at the IAM gate for the owner.
+#
+# swarm-api reads the machine's SWARM_SPEECH_* variables
+# (swarm_api/voice/speech_machine.py SpeechConfig.from_env); terraform/infra/
+# locals.tf sets them, empty while voice_speech is off.
 version: 1
+env:
+  SWARM_SPEECH_ADDR:
+    setter: terraform/infra/locals.tf:1175
+  SWARM_SPEECH_AUDIENCE:
+    setter: terraform/infra/locals.tf:1176
+  SWARM_SPEECH_IMAGE:
+    setter: terraform/infra/locals.tf:1177
+  SWARM_SPEECH_INSTANCE:
+    setter: terraform/infra/locals.tf:1174
+  SWARM_SPEECH_PROJECT:
+    setter: terraform/infra/locals.tf:1172
+  SWARM_SPEECH_SWEEP_AUDIENCE:
+    setter: terraform/infra/locals.tf:1178
+  SWARM_SPEECH_SWEEP_CALLERS:
+    setter: terraform/infra/locals.tf:1179
 entries:
 - id: sa.swarm-speech
   kind: service-account
@@ -76,6 +97,56 @@ entries:
     terraform:
     - bootstrap/google_service_account_iam_member.deployer_acts_as_speech
     - bootstrap/google_service_account_iam_member.api_acts_as_speech
+- id: role.custom.swarmSpeechDeployer
+  kind: custom-role
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam roles describe swarmSpeechDeployer --project=$P
+  apply: terraform/bootstrap/deployer_conditions.tf google_project_iam_custom_role.deployer_speech_machine (while
+    the deployer is on)
+  verify: permissions == compute.instances.{create, delete, get, getIamPolicy, setDeletionProtection, setIamPolicy,
+    setLabels, setMachineType, setMetadata, setScheduling, setServiceAccount, setTags, start, stop, update,
+    updateShieldedVmConfig} and compute.disks.{create, delete, get, setLabels} only
+  explain: What the release deployer may do to Voice it's speech machine and its boot disk, so a release can make,
+    stop and delete it when voice_speech is turned on. Owner's decided follow-up, 2026-11-05.
+  guards: '#79: defined by terraform/bootstrap, which the owner applies, never by terraform/infra'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/deployer_conditions.tf
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_custom_role.deployer_speech_machine
+- id: iam-binding.deployer-speech-machine
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter=bindings.role:swarmSpeechDeployer
+    --format='value(bindings.members,bindings.condition.expression)'
+  apply: terraform/bootstrap/deployer_conditions.tf google_project_iam_member.deployer_speech_machine (while the
+    deployer is on), applied by the owner in the bootstrap pass, never by a release
+  verify: 'the release deployer (<name_prefix>-tf-deployer) holds swarmSpeechDeployer with the condition
+    resource.name.extract("projects/$P/zones/$REGION-{zone}/instances/<name_prefix>-speech-") != "" ||
+    resource.name.extract("projects/$P/zones/$REGION-{zone}/disks/<name_prefix>-speech-") != "", and no
+    unconditioned binding of it'
+  explain: The release deployer applies terraform/infra/voice_speech.tf, which creates, stops and deletes the
+    speech machine and its boot disk; this grants exactly those verbs on names starting <name_prefix>-speech- in a
+    zone of the region, and nothing on any other VM or disk in the project.
+  guards: conditioned from the start, on the speech machine's instance and disk names; lint the expression
+    (bootstrap output deployer_speech_machine_condition) with iamPolicies:lintPolicy before the apply that adds it
+  secret_entry: null
+  depends_on:
+  - role.custom.swarmSpeechDeployer
+  evidence:
+  - terraform/bootstrap/deployer_conditions.tf
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.deployer_speech_machine
 - id: compute.voice-speech-machine
   kind: other
   scope: core
@@ -97,6 +168,7 @@ entries:
   - network.subnet
   - sa.swarm-speech
   - iam-binding.swarm-speech-act-as
+  - iam-binding.deployer-speech-machine
   - network.voice-speech-address
   evidence:
   - terraform/infra/voice_speech.tf

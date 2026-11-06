@@ -10,6 +10,7 @@ fake secret is built at runtime with `secrets`.
 
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import sys
@@ -153,7 +154,10 @@ def test_the_own_speech_engine_names_no_openai_model(client):
 def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has(client):
     """The owner's answer (2026-11-05): "selected from a curated list that we
     have available". Every entry is a Claude model the platform prices, so
-    each pick runs on the pool and is costed; Haiku 4.5 is the default."""
+    each pick runs on the pool and is costed. The default is the haiku
+    class's pin, the model the front runs with no setting (BGD, 6 November
+    2026), and it too is one the platform's price seed lists (BGD, 6 November
+    2026: the seed lists claude-haiku-5-5)."""
     from swarm_api import modelprices
 
     body = client.get("/v1/voice/settings/catalogue", headers=_as(ALICE)).json()
@@ -161,10 +165,29 @@ def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has
 
     assert len(listed) > 1
     assert [m["name"] for m in listed][0] == body["defaults"]["conversation_model"]
-    assert body["defaults"]["conversation_model"] == "claude-haiku-4-5"
+    assert body["defaults"]["conversation_model"] == "claude-haiku-5-5"
+    assert listed[0]["model"] == _runner_models()["haiku"]
     for m in listed:
         assert m["name"] in modelprices.SEED, m
+    for m in listed:
         assert m["model"].startswith(m["name"]) and m["label"], m
+
+
+def _runner_models() -> dict[str, str]:
+    """Terraform's `local.runner_models`, read from locals.tf."""
+    locals_tf = Path(__file__).resolve().parents[3] / "terraform" / "infra" / "locals.tf"
+    block = re.search(r"runner_models = \{(.*?)\n  \}", locals_tf.read_text(), re.S)
+    assert block, "locals.tf has no runner_models map"
+    return dict(re.findall(r'^\s*(\w+)\s*=\s*"([^"]+)"', block.group(1), re.M))
+
+
+def test_a_stored_conversation_model_no_longer_listed_reads_as_the_pin(db):
+    """A deployment that stored the old default (claude-haiku-4-5) reads the
+    pin now: an entry removed from the list never reaches a session."""
+    service = vsettings.VoiceSettings(db, now=lambda: NOW, zones=("us-central1-a",))
+    db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set(
+        {"conversation_model": "claude-haiku-4-5", "version": 1})
+    assert service.read()["settings"]["conversation_model"] == "claude-haiku-5-5"
 
 
 def test_an_admin_picks_another_listed_conversation_model_and_an_unlisted_one_is_refused(
@@ -180,6 +203,83 @@ def test_an_admin_picks_another_listed_conversation_model_and_an_unlisted_one_is
                            headers=_as(ROOT))
     assert refused.status_code == 422, refused.text
     assert refused.json()["detail"]["field"] == "conversation_model"
+
+
+#: Terraform's `local.runner_models`, as `model_class_env` hands it to swarm-api.
+PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", "sonnet": "claude-sonnet-5-5",
+        "haiku": "claude-haiku-5-5"}
+
+
+def test_the_planner_model_is_the_pools_model_classes_and_the_planning_class_by_default(
+        client, monkeypatch):
+    """BGD, 2026-11-05: the planner runs the planning class, "make it
+    configurable as well". The names are the frozen MODEL_CLASSES, each shown
+    with the pin Terraform's runner_models gives it; never a model id."""
+    from swarm_common.profiles import MODEL_CLASSES
+
+    monkeypatch.setenv("WORKER_CLASS_MODELS", json.dumps(PINS))
+    body = client.get("/v1/voice/settings/catalogue", headers=_as(ALICE)).json()
+
+    listed = body["planner_models"]
+    assert [m["name"] for m in listed] == list(MODEL_CLASSES)
+    assert {m["name"]: m["model"] for m in listed} == PINS
+    assert all(m["label"] for m in listed)
+    assert body["defaults"]["planner_model"] == "fable"
+    settings = client.get("/v1/voice/settings", headers=_as(ALICE)).json()
+    assert settings["settings"]["planner_model"] == "fable"
+
+
+@pytest.mark.parametrize("value", ["claude-opus-5-5", "claude-fable-5-1", "gpt-5", "mythos",
+                                   "Fable", "", 5])
+def test_a_planner_model_outside_the_classes_is_refused(client, db, value):
+    r = client.patch("/v1/voice/settings", json={"version": 0, "planner_model": value},
+                     headers=_as(ROOT))
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["field"] == "planner_model"
+    # Refused as a value off the list, which the answer names: the classes.
+    assert r.json()["detail"]["choices"] == ["opus", "fable", "sonnet", "haiku"]
+    assert _doc(db) is None and _audits(db) == []
+
+
+def test_an_admin_picks_another_class_for_the_next_session_and_it_is_never_pending(client, db):
+    service = vsettings.VoiceSettings(db, now=lambda: NOW, zones=("us-central1-a",))
+    service.mark_applied(values=cat.defaults(("us-central1-a",)),
+                         image="sha256:" + secrets.token_hex(32))
+
+    r = client.patch("/v1/voice/settings", json={"version": 0, "planner_model": "opus"},
+                     headers=_as(ROOT))
+
+    assert r.status_code == 200, r.text
+    assert r.json()["settings"]["planner_model"] == "opus"
+    # It changes no machine: the next session's start reads it.
+    assert r.json()["pending"] == []
+    assert service.session_planner_model(PINS) == "claude-opus-5-5"
+    [audit] = _audits(db)
+    assert audit["detail"]["changed"] == {"planner_model": {"from": "fable", "to": "opus"}}
+
+
+def test_an_unset_planner_model_gives_the_session_no_model_so_swarm_voice_keeps_its_pin(db):
+    service = vsettings.VoiceSettings(db, now=lambda: NOW, zones=("us-central1-a",))
+
+    # No document at all, then a document that never set the field.
+    assert service.session_planner_model(PINS) is None
+    db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set(
+        {"machine": "g2-standard-8", "version": 1})
+    assert service.session_planner_model(PINS) is None
+
+
+def test_a_planner_class_with_no_pin_or_a_name_no_longer_listed_falls_back_too(db):
+    service = vsettings.VoiceSettings(db, now=lambda: NOW, zones=("us-central1-a",))
+    ref = db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT)
+
+    ref.set({"planner_model": "sonnet", "version": 1})
+    assert service.session_planner_model(PINS) == "claude-sonnet-5-5"
+    # The local loop pins no class, and a pin of the wrong class is never sent.
+    assert service.session_planner_model({}) is None
+    assert service.session_planner_model({**PINS, "sonnet": "claude-opus-5-5"}) is None
+    ref.set({"planner_model": "mythos", "version": 2})
+    assert service.session_planner_model(PINS) is None
 
 
 def test_the_zones_are_the_deployments_machines_one_by_default():

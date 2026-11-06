@@ -76,7 +76,9 @@ def test_swarm_result_carries_the_owner_answers_beside_the_questions(swarm, worl
 
     reply = json.loads(server._call(swarm, "swarm_result", {"task_id": "task_a"}))
 
-    assert reply["owner_questions"] == QUESTIONS
+    # Answered, so not handed on as open (5 November 2026); still asked.
+    assert "owner_questions" not in reply
+    assert reply["owner_questions_asked"] == [{"index": 0, **QUESTIONS[0], "answered": True}]
     assert [a["choice"] for a in reply["owner_answers"]] == ["keep"]
     assert reply["owner_answers"][0]["text"] == "one release, then drop it"
     assert reply["owner_answers"][0]["by"] == "alice@example.com"
@@ -88,7 +90,7 @@ def test_swarm_result_of_an_unanswered_task_carries_no_answers_key(swarm, world)
 
     reply = json.loads(server._call(swarm, "swarm_result", {"task_id": "task_a"}))
 
-    assert reply["owner_questions"] == QUESTIONS
+    assert reply["owner_questions"] == [{"index": 0, **QUESTIONS[0]}]
     assert "owner_answers" not in reply
 
 
@@ -98,7 +100,8 @@ def test_the_follow_outcome_carries_the_owner_answers(swarm, world):
 
     got = progress.outcome(swarm, swarm.task("task_a"))
 
-    assert got["questions"] == QUESTIONS
+    assert got["questions"] == []
+    assert got["questions_answered"] == 1
     assert [a["choice"] for a in got["owner_answers"]] == ["keep"]
     # The step row's slimmed outcome keeps them: they are why a person reads it.
     assert [a["choice"] for a in compact._slim_outcome(got)["owner_answers"]] == ["keep"]

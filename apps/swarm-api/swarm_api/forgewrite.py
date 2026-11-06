@@ -252,6 +252,13 @@ MAX_CHECK_PAGES = 5
 MAX_ANNOTATIONS = 50
 #: The most of a job log's tail read.
 MAX_LOG_TAIL_BYTES = 16 * 1024
+#: The most of a job log read when a caller opts in with `job_log_tail(...,
+#: cap=MAX_LOG_FULL_READ_BYTES)`: only the CI-fix excerpt's re-read does, when
+#: the 16 KiB tail holds fewer vitest FAIL headers than `Tests N failed`
+#: (issueci, #3170). A vitest shard's log with testing-library DOM dumps runs
+#: to hundreds of KiB, and the excerpt keeps 3,000 bytes of it, so this bounds
+#: the memory and transfer of one read, not what is kept.
+MAX_LOG_FULL_READ_BYTES = 1024 * 1024
 #: Where GitHub's Actions log redirect may point. The read carries no token,
 #: but a URL outside these is not GitHub's log storage and is not read.
 LOG_HOST_SUFFIXES = (".actions.githubusercontent.com", ".blob.core.windows.net")
@@ -782,6 +789,32 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} names no object")
         return sha
 
+    def commit_head(self, ref: IssueRef, sha: str, token: str) -> str | None:
+        """The commit `sha` names, or None when GitHub has no such commit (a
+        404, or its 422 "No commit found for SHA"): admission's one look at a
+        full-sha `repository_ref` (#3315).
+
+        task_36c8a894 named a sha GitHub's upload-pack does not serve and
+        failed in the clone with "not our ref". A 200 here is NOT proof the
+        clone will succeed: the commits API can still answer for a dangling
+        object that upload-pack refuses. Any other 422 raises, so admission
+        reads it as "not checked" and admits."""
+        what = f"the commit {sha} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET", self._url(ref, f"commits/{quote(sha, safe='')}"), token, what,
+                needs=PULLS_WRITE, ok=(200, 422),
+            )
+        except ForgeWriteNotFound:
+            return None
+        found = data.get("sha") if isinstance(data, dict) else None
+        if isinstance(found, str) and found:
+            return found
+        message = data.get("message") if isinstance(data, dict) else None
+        if isinstance(message, str) and "no commit found" in message.lower():
+            return None
+        raise ForgeWriteError(f"GitHub's answer for {what} names no commit")
+
     def create_branch(self, ref: IssueRef, branch: str, sha: str, token: str) -> bool:
         """Point a new `branch` at `sha`. True when made, False when it was
         already there at `sha`; any other branch of that name is refused."""
@@ -1241,9 +1274,15 @@ class GitHubWriter:
         return [entry for entry in data if isinstance(entry, dict)]
 
     def job_log_tail(
-        self, ref: IssueRef, job_id: int, token: str, *, limit: int = MAX_LOG_TAIL_BYTES
+        self, ref: IssueRef, job_id: int, token: str, *, limit: int = MAX_LOG_TAIL_BYTES,
+        cap: int = MAX_LOG_TAIL_BYTES,
     ) -> str | None:
         """The last `limit` bytes of an Actions job's log, or None.
+
+        `limit` is clamped to `cap`, and `cap` to MAX_LOG_FULL_READ_BYTES. The
+        default `cap` is MAX_LOG_TAIL_BYTES, which every caller keeps except
+        the CI-fix excerpt's one re-read of a vitest log whose tail named fewer
+        failures than vitest counted (`issueci._check_section`, #3170).
 
         None for every failure -- a token without `actions: read`, a job that
         is not an Actions job, a redirect to anywhere but GitHub's log
@@ -1251,7 +1290,8 @@ class GitHubWriter:
         run's own output. The token goes to api.github.com only; the log
         storage is read without it (module docstring).
         """
-        limit = max(1, min(int(limit), MAX_LOG_TAIL_BYTES))
+        cap = max(1, min(int(cap), MAX_LOG_FULL_READ_BYTES))
+        limit = max(1, min(int(limit), cap))
         try:
             status, location = self._locate(
                 self._url(ref, f"actions/jobs/{int(job_id)}/logs"), github_headers(token),

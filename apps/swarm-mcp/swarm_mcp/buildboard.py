@@ -19,8 +19,11 @@ Owner requirements and decisions, 2026-10-20 (#1773; lane BOARD-CORE):
 * WAITING ON SOMEONE lists exactly three kinds, from what SwarmCloud knows:
   owner questions (the recommended option marked); steps waiting for a
   person (AWAITING_INPUT, and HUMAN_REQUIRED parks), each with its
-  `/sc answer WF STEP`; merges refused (`check.MERGE_CODES`) and CI parks
-  over `CI_PARK_MINUTES`. A failed step in general is NOT listed.
+  `/sc answer WF STEP`; merges refused (`check.MERGE_CODES`), CI parks
+  over `CI_PARK_MINUTES`, and waits on the merge train over
+  `check.MERGE_TRAIN_MINUTES` (`check`'s rule `merge_train_stalled`, aged
+  the same way, `check._train_entered`). A failed step in general is NOT
+  listed.
 * AN OWNER QUESTION WAITS only while its lane is open (owner decision
   2026-10-27, "Yes, narrow it"; #1812): a finished step's question, in a
   workflow that has neither finished nor merged (a merge step SUCCEEDED),
@@ -44,7 +47,9 @@ workflow is titled `<owner>/<repo>#<n>: <issue title>`
 
 WHAT IS CACHED, AND WHY. A finished task's questions and pull request never
 change, nor does a finished lane: `.claude/build-board/cache.json` keeps them,
-so a refresh re-reads only what is still moving. Nothing else is kept there.
+so a refresh re-reads only what is still moving. Nothing else is kept there:
+the owner's answers to those questions are read again on every refresh
+(`progress.stored_answers`), so an answered question leaves the page.
 
 A FAILED READ leaves the previous page in place (the page is replaced by a
 rename, never rewritten in place) and is recorded beside it; the next page
@@ -77,7 +82,8 @@ from typing import Any, Callable
 from swarm_common.states import TERMINAL_STATES
 
 from . import awaitinput, checkout, progress, workflows
-from .check import EVENT_PAGE, MERGE_CODES, MERGE_PROFILE, _entered, _refusal_code, pull_request_link, repo_key
+from .check import (EVENT_PAGE, MERGE_CODES, MERGE_PROFILE, MERGE_TRAIN_MINUTES, _entered, _refusal_code,
+                    _train_entered, on_train, pull_request_link, repo_key, serves_wait_detail)
 from .client import SwarmClient, SwarmError, task_id_of
 from .follow import console_link
 from .invocation import terminal_command
@@ -210,20 +216,31 @@ class _Reader:
         one, so they are not fetched, and that answer is not cached."""
         tid = str(task_id_of(task) or "")
         kept = self.cache["tasks"].get(tid)
-        if kept is not None:
-            return kept
-        if not questions:
-            return {"pull_request": pull_request_of(task), "questions": [],
+        if kept is None:
+            if not questions:
+                return {"pull_request": pull_request_of(task), "questions": [],
+                        "ended": _iso(task.get("completed_at"))}
+            asked = progress.owner_questions(self.client, task)
+            kept = {"pull_request": pull_request_of(task),
+                    "questions": asked.get("questions") or [],
                     "ended": _iso(task.get("completed_at"))}
-        asked = progress.owner_questions(self.client, task)
-        entry: dict[str, Any] = {"pull_request": pull_request_of(task),
-                                 "questions": asked.get("questions") or [],
-                                 "ended": _iso(task.get("completed_at"))}
-        if "questions_unavailable_because" in asked:
-            # NOT CACHED: a read that failed is tried again on the next refresh.
-            return {**entry, "unavailable": asked["questions_unavailable_because"]}
-        self.cache["tasks"][tid] = entry
-        return entry
+            if "questions_unavailable_because" in asked:
+                # NOT CACHED: a read that failed is tried again on the next refresh.
+                return {**kept, "unavailable": asked["questions_unavailable_because"]}
+            self.cache["tasks"][tid] = kept
+        if not questions or not kept["questions"]:
+            return kept
+        # THE ANSWERS ARE NEVER CACHED (5 November 2026): an answer given with
+        # swarm_task_answer or in the console after the questions were cached
+        # must take its question off the next page, and the lane's task
+        # documents need not carry it. Read on every refresh, once per task
+        # (`progress.stored_answers`); a read that failed keeps the questions
+        # no answer is known for, each saying why.
+        answered, why = progress.stored_answers(self.client, task)
+        live = {**kept, "answered": sorted(answered)}
+        if why:
+            live["answer_unknown_because"] = why
+        return live
 
     def parked_since(self, task: dict[str, Any]) -> str | None:
         """When a PARKED task entered PARKED, from its newest events (`check._entered`)."""
@@ -231,6 +248,44 @@ class _Reader:
         data = self.client.request("GET", f"/v1/tasks/{task_id_of(task)}/events?{query}")
         events = [e for e in (data.get("events") if isinstance(data, dict) else None) or [] if isinstance(e, dict)]
         return _iso(_entered(events, "PARKED", parse_time(task.get("created_at")))["since"])
+
+    def _events_page(self, task_id: str, token: str | None) -> tuple[list[dict[str, Any]], str | None, bool]:
+        """One page of a task's events, newest first: `(events, next token,
+        whether the API serves tokens at all)`."""
+        params: dict[str, Any] = {"order": "desc", "limit": EVENT_PAGE}
+        if token:
+            params["page_token"] = token
+        data = self.client.request("GET", f"/v1/tasks/{task_id}/events?{urllib.parse.urlencode(params)}")
+        events = [e for e in (data.get("events") if isinstance(data, dict) else None) or [] if isinstance(e, dict)]
+        paged = isinstance(data, dict) and "next_page_token" in data
+        nxt = data.get("next_page_token") if paged else None
+        return events, (str(nxt) if nxt else None), paged
+
+    def train_wait(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        """When a merge step's wait on the merge train began (`check.
+        _train_entered`, its older pages read here), or None when its
+        CI_PENDING park is not a train park."""
+        tid = str(task_id_of(task))
+        events, token, paged = self._events_page(tid, None)
+        if not on_train(task, events):
+            return None
+        state = {"token": token, "paged": paged}
+
+        def older() -> list[dict[str, Any]] | None:
+            if not state["paged"]:
+                return None
+            if state["token"] is None:
+                return []
+            page, state["token"], state["paged"] = self._events_page(tid, state["token"])
+            return page
+
+        if not serves_wait_detail(task):
+            # A listing's row: the task route serves the train's start.
+            data = self.client.request("GET", f"/v1/tasks/{tid}")
+            full = data.get("task") if isinstance(data, dict) and isinstance(data.get("task"), dict) else data
+            if isinstance(full, dict):
+                task = {**task, **full}
+        return _train_entered(task, events, older)
 
 
 # --------------------------------------------------------------------------
@@ -255,7 +310,11 @@ def _questions(lane: dict[str, Any], read: list[tuple[Any, dict[str, Any], dict[
     steps' `(step_id, task, reader.finished(task))`."""
     answered: set[str] = set()
     for _, task, done in read:
-        answered |= _answered(task, done.get("questions") or [])
+        asked = done.get("questions") or []
+        answered |= _answered(task, asked)
+        # And what the questions route says is answered (`_Reader.finished`).
+        answered |= {str(asked[i].get("question") or "") for i in done.get("answered") or []
+                     if isinstance(i, int) and 0 <= i < len(asked)}
     shown: dict[str, tuple[dict[str, Any], list[str]]] = {}
     unread: list[str] = []
     since: list[str] = []
@@ -273,10 +332,15 @@ def _questions(lane: dict[str, Any], read: list[tuple[Any, dict[str, Any], dict[
                     shown[text][1].append(name)
                 continue
             recommended = asked.get("recommended")
+            unknown = done.get("answer_unknown_because")
+            context = asked.get("context") or ""
+            if unknown:
+                # Listed because whether it is answered could not be told, never as open.
+                context = (context + " " if context else "") + f"(whether it is answered is unknown: {unknown})"
             shown[text] = ({
                 "kind": "question", "who": "Owner", "item": text,
                 "since": done.get("ended"), "unlocks": "a decision this lane left to the owner",
-                "context": asked.get("context") or "",
+                "context": context,
                 "options": [{"label": str(o.get("label") or ""), "recommended": bool(recommended)
                              and o.get("label") == recommended} for o in asked.get("options") or []],
                 "next": None,
@@ -330,7 +394,23 @@ def _step_waits(reader: _Reader, lane: dict[str, Any], steps: list[dict[str, Any
                           "item": f"The merge of PR #{number} was refused" if number else "A merge was refused",
                           "since": _iso(task.get("completed_at")), "unlocks": f"{lane['label']} merging",
                           "detail": code + (f": {message}" if message else ""), "next": f"/sc status {wid}"})
-    if is_merge and state == "PARKED" and park == "CI_PENDING":
+    train = reader.train_wait(task) if is_merge and state == "PARKED" and park == "CI_PENDING" else None
+    if train is not None:
+        at = train["since"]
+        if at is not None and (reader.now - at).total_seconds() > MERGE_TRAIN_MINUTES * 60:
+            number = pull_request_of(task)
+            minutes = int((reader.now - at).total_seconds() // 60)
+            link = pull_request_link(task.get("repository_url"), number)
+            items.append({"kind": "merge_train_stalled", "who": "You",
+                          "item": ((f"PR #{number}" if number else "A merge")
+                                   + f" has waited on the merge train for {'' if train['exact'] else 'at least '}"
+                                   f"{minutes} min"),
+                          "since": _iso(at), "unlocks": f"{lane['label']} merging",
+                          "detail": (f"merge train over {MERGE_TRAIN_MINUTES} min: the train boards only "
+                                     "pull requests whose checks are all green; open the pull request "
+                                     "to see which is not"),
+                          "next": link or f"/sc status {wid}"})
+    elif is_merge and state == "PARKED" and park == "CI_PENDING":
         since = reader.parked_since(task)
         at = parse_time(since)
         if at is not None and (reader.now - at).total_seconds() > CI_PARK_MINUTES * 60:

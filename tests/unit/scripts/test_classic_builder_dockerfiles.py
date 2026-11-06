@@ -2,9 +2,10 @@
 
 scripts/build-images.sh writes a Cloud Build config for every image with no
 checked-in cloudbuild.yaml (generate_config). Its one step is
-`gcr.io/cloud-builders/docker build`, and it sets DOCKER_BUILDKIT=1 only for a
-Dockerfile that bind-mounts the tool mirror; every other image is built by the
-classic builder. A pull request's `build-check` builds the same Dockerfile with
+`gcr.io/cloud-builders/docker build`, and it sets DOCKER_BUILDKIT=1 only for
+a layer-cached image (swarm-speech, layer_cached) or a Dockerfile that
+bind-mounts the tool mirror; every other image is built by the classic
+builder. A pull request's `build-check` builds the same Dockerfile with
 `docker buildx build` (BuildKit) instead, so a BuildKit-only line passes the
 pull request and fails only main's build.
 
@@ -69,9 +70,11 @@ PROJECT_ID=swarm-test-project
 REGION=us-central1
 APT_REFRESH=testtag
 BUILD_MIRROR_BUCKET=swarm-test-bucket
+INCREMENTAL=
 die() {{ printf '%s\\n' "$*" >&2; exit 1; }}
 source scripts/lib/build-mirror.sh
-for fn in target_build_args apt_build_args mirror_build_args_yaml mirror_step_for generate_config; do
+for fn in target_build_args apt_build_args mirror_build_args_yaml mirror_step_for layer_cached uses_buildkit \\
+          previous_ref cache_build_args generate_config; do
   body="$(sed -n "/^${{fn}}() {{/,/^}}/p" scripts/build-images.sh)"
   if [[ -n "${{body}}" ]]; then eval "${{body}}"; fi
 done
@@ -149,7 +152,7 @@ def test_a_classic_builder_dockerfile_uses_nothing_only_buildkit_reads():
     assert visited, "no image is built by the classic builder; this test checks nothing"
     assert not offenders, (
         "Cloud Build builds these with the classic builder (generate_config sets "
-        "DOCKER_BUILDKIT=1 only for a tool-mirror Dockerfile), which does not run "
+        "DOCKER_BUILDKIT=1 only for a tool-mirror or layer-cached Dockerfile), which does not run "
         "BuildKit-only Dockerfile syntax; the pull request's buildx build-check "
         "passes them, main's build fails:\n" + "\n".join(offenders)
     )

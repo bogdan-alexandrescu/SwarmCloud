@@ -165,6 +165,13 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.states import TaskState
 
 from . import approvals, refusals
+from .cirerun import (
+    RERUN_REFUSALS_MAX,
+    RERUN_SETTLE_SECONDS,
+    rerun_running,
+    rerun_targets,
+    rerunnable,
+)
 from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
 from .forgechecks import (
     FAILED,
@@ -181,7 +188,9 @@ from .forgechecks import (
 from .forge import NoForgeCredential
 from .forge_installation import read_token
 from .forgewrite import (
+    MAX_LOG_FULL_READ_BYTES,
     MAX_LOG_TAIL_BYTES as LOG_READ_BYTES,
+    ForgeWriteError,
     ForgeWriteNotFound,
     GitHubWriter,
     PullSnapshot,
@@ -197,6 +206,7 @@ from .issueruns import (
     OUTCOME_ALREADY_ON_MAIN,
     REREVIEW_STEP,
     REVIEW_STEP,
+    SECURITY_REVIEW_STEP,
     STEP_PROFILE,
     VERDICT_FILE,
     VERIFICATION_FILE,
@@ -208,6 +218,7 @@ from .issueruns import (
     iam_patch_hits,
     merge_hold,
     requirements_finding,
+    submitting,
     verification_finding,
     verification_text,
 )
@@ -220,7 +231,9 @@ from .reviewcontext import EARLIER_FIXES, read_fix_context
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
 from . import sessiontag
-from .validation import DISPATCH_METADATA_KEY, MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef
+from .validation import (
+    DISPATCH_METADATA_KEY, MERGE_METADATA_KEY, MERGE_STEP_ID, SECURITY_VERDICT_FILE, IssueRef,
+)
 
 log = logging.getLogger(__name__)
 
@@ -252,9 +265,28 @@ MAX_LOG_TAIL_BYTES = 3_000
 # cleanup, and the `FAIL <file> > <test>` line and the Received value sat
 # about 3,500 bytes from the end -- so the round was told "1 failed" and
 # spent nine minutes finding which test.
+#
+# EVERY FAILING FILE, NOT THE FIRST 3,000 BYTES OF THEM (#3170). On PR #3146,
+# "swarm-ui component tests (1/4)" said `Tests  2 failed`, and the excerpt
+# named one file: the later failure, a `waitFor` timeout, printed a DOM dump
+# of tens of KiB under its FAIL line, so the earlier phone.chrome.test.tsx
+# FAIL sat above the 16 KiB read, and the blocks kept front-first would have
+# let the dump fill the 3,000 bytes anyway. Neither CI-fix round heard of the
+# second file. So the count vitest prints is compared with the distinct FAIL
+# headers found; when it found fewer, the log is read ONCE more, up to
+# forgewrite's MAX_LOG_FULL_READ_BYTES (a bound on the transfer: what is kept
+# is still MAX_LOG_TAIL_BYTES). Of what is kept, every FAIL header and its
+# first assertion line come first; each block's remaining lines (the diff,
+# the code frame, a DOM dump) then get a share of what is left, cut with a
+# `[... N lines of this block cut]` marker; and failures still unseen are
+# counted with the run and job that hold them. A pytest log, which prints no
+# `Tests N failed`, is read once and kept as before.
 #: Lines a failure block keeps under its `FAIL` line (the assertion, the
 #: Expected/Received diff and the code frame) unless a separator ends it first.
 FAILURE_BLOCK_LINES = 30
+#: The most of one kept log line: a DOM dump's single line can be longer than
+#: the whole MAX_LOG_TAIL_BYTES (#3170).
+MAX_FAILURE_LINE_BYTES = 400
 
 #: CI is read at most this often per run. A console polls every 15 s; CI
 #: moves in minutes.
@@ -379,31 +411,34 @@ def _review_task_id(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> s
 
 
 def _read_review_verdict(
-    ctx: Any, tenant_id: str, task_id: str | None
+    ctx: Any, tenant_id: str, task_id: str | None, *,
+    name: str = VERDICT_FILE, step: str = REVIEW_STEP, what: str = "review",
 ) -> tuple[str | None, str | None]:
     """`(content, problem)`: the review's verdict.json, through the API's masked reader.
 
     The same reader, under the run's tenant, that `routes/runs._read_plan`
     reads the plan with. A verdict that cannot be read whole is a problem,
     never a guess: `requirements_finding` turns it into "not all met".
+    `name`, `step` and `what` read the security review's
+    `SECURITY_VERDICT_FILE` the same way (`_security_verdict`).
     """
     if not task_id:
-        return None, f"the run's workflow has no {REVIEW_STEP!r} step to read"
+        return None, f"the run's workflow has no {step!r} step to read"
     try:
         window = ctx.inspection.read_artifact(
-            tenant_id, task_id, submitted_by=None, name=VERDICT_FILE,
+            tenant_id, task_id, submitted_by=None, name=name,
             limit_bytes=MAX_VERDICT_BYTES,
         )
     except NotFound:
-        return None, f"the review task {task_id} wrote no {VERDICT_FILE}"
+        return None, f"the {what} task {task_id} wrote no {name}"
     except Gone:
-        return None, f"the review task's {VERDICT_FILE} is no longer in the bucket"
+        return None, f"the {what} task's {name} is no longer in the bucket"
     except ApiError as exc:
-        return None, f"the review task's {VERDICT_FILE} could not be read ({exc.code})"
+        return None, f"the {what} task's {name} could not be read ({exc.code})"
     if window.get("status") != "ok":
-        return None, f"the review task's {VERDICT_FILE} is not text"
+        return None, f"the {what} task's {name} is not text"
     if window.get("truncated"):
-        return None, f"the review task's {VERDICT_FILE} is larger than {MAX_VERDICT_BYTES} bytes"
+        return None, f"the {what} task's {name} is larger than {MAX_VERDICT_BYTES} bytes"
     return str(window.get("content") or ""), None
 
 
@@ -744,7 +779,24 @@ def _check_section(writer: GitHubWriter, ref: IssueRef, label: str, check: Mappi
             except Exception as exc:
                 log.info("%s: log of %s not read (%s)", label, check_id, type(exc).__name__)
                 tail = None
-            heading, kept = _log_failures(tail or "")
+            tail = tail or ""
+            lines = _step_lines(tail)
+            counted = _failure_count(lines)
+            found = len(_fail_headers(lines))
+            if counted is not None and found < counted:
+                # Fewer FAIL headers than vitest counted (#3170): once more,
+                # up to the full-read cap; a failed re-read keeps the tail.
+                try:
+                    full = writer.job_log_tail(ref, check_id, token, limit=MAX_LOG_FULL_READ_BYTES,
+                                               cap=MAX_LOG_FULL_READ_BYTES)
+                except Exception as exc:
+                    log.info("%s: log of %s not re-read (%s)", label, check_id, type(exc).__name__)
+                    full = None
+                if full and len(_fail_headers(_step_lines(full))) > found:
+                    tail = full
+            run_id = workflow_run_of(check)
+            where = (f"run {run_id} " if run_id is not None else "") + f"job {check_id}"
+            heading, kept = _log_failures(tail, where=where)
             if kept:
                 out += [heading, kept]
     return "\n".join(out)
@@ -787,14 +839,18 @@ def _bound_lines(lines: list[str], limit: int, *, from_end: bool) -> str:
     return "\n".join(reversed(kept) if from_end else kept)
 
 
-def _log_failures(log: str, limit: int = MAX_LOG_TAIL_BYTES) -> tuple[str, str]:
-    """(heading, text): the lines of a job log that name its failure, or its tail.
+#: vitest's summary counts: failed tests, and failed files (a floor when the
+#: tests line is missing).
+_TESTS_FAILED = re.compile(r"^\s*Tests\s+(\d+) failed")
+_FILES_FAILED = re.compile(r"^\s*Test Files\s+(\d+) failed")
 
-    The log is cut where the failed step ended (the first `##[error]Process
-    completed with exit code`, else the line before `Post job cleanup`), so
-    the runner's cleanup never takes the room. Then the lines that name a
-    failure are kept, in order, a vitest `FAIL` line with its block; with
-    none but the step's exit line, the plain tail of what is left. At most `limit` bytes either way.
+
+def _step_lines(log: str) -> list[str]:
+    """A job log's lines, unstamped, up to where the failed step ended.
+
+    The cut is the first `##[error]Process completed with exit code`, else
+    the line before `Post job cleanup`, so the runner's cleanup never takes
+    the room.
     """
     lines = [_STAMP.sub("", _ANSI.sub("", line)).rstrip() for line in log.splitlines()]
     end = len(lines)
@@ -808,7 +864,141 @@ def _log_failures(log: str, limit: int = MAX_LOG_TAIL_BYTES) -> tuple[str, str]:
     lines = lines[:end]
     while lines and not lines[-1].strip():
         lines.pop()
+    return lines
+
+
+def _failure_count(lines: list[str]) -> int | None:
+    """How many failures vitest says it had (`Tests  N failed`, else `Test
+    Files  N failed`), or None: a pytest log, or a tail that missed the summary."""
+    for pattern in (_TESTS_FAILED, _FILES_FAILED):
+        counts = [int(m.group(1)) for m in map(pattern.match, lines) if m]
+        if counts:
+            return sum(counts)
+    return None
+
+
+def _header_key(line: str) -> str:
+    return " ".join(line.split())
+
+
+def _fail_headers(lines: list[str]) -> list[str]:
+    """The distinct `FAIL <file> > <test>` headers, in order. vitest prints
+    one in its run output and again in its Failed Tests section: one failure."""
+    return list(dict.fromkeys(_header_key(line) for line in lines if _FAIL_BLOCK.match(line)))
+
+
+def _cut_line(line: str, limit: int = MAX_FAILURE_LINE_BYTES) -> str:
+    raw = line.encode("utf-8")
+    return line if len(raw) <= limit else raw[: limit - 3].decode("utf-8", errors="ignore") + "…"
+
+
+def _cost(lines: list[str]) -> int:
+    return sum(len(line.encode("utf-8")) + 1 for line in lines)
+
+
+def _fit_block(rest: list[str], room: int) -> list[str]:
+    """A block's lines under its header and assertion, front-first, in `room`
+    bytes, with a marker saying how many lines were cut."""
+    if _cost(rest) <= room:
+        return rest
+    marker = f"[... {len(rest)} lines of this block cut]"
+    kept: list[str] = []
+    for line in rest:
+        if _cost([*kept, line]) + len(marker.encode("utf-8")) + 1 > room:
+            break
+        kept.append(line)
+    cut = f"[... {len(rest) - len(kept)} lines of this block cut]"
+    return [*kept, cut] if _cost([*kept, cut]) <= room else kept
+
+
+def _vitest_failures(lines: list[str], blocks: list[tuple[int, int]], keep: list[bool],
+                     limit: int, where: str) -> str:
+    """The FAIL blocks kept so that no block crowds out another (#3170).
+
+    Each distinct header once (its last block: the Failed Tests section's),
+    with its first assertion line, first; then each block's other lines in a
+    share of the room left; then the other failure lines (the counts, the
+    `##[error]`s). Headers that did not fit, or that vitest counted and the
+    log did not hold, are counted on one line naming `where` to read them.
+    """
+    chosen: dict[str, tuple[int, int]] = {}
+    for start, stop in blocks:
+        chosen[_header_key(lines[start])] = (start, stop)
+    picked = sorted(chosen.values())
+    in_block = {n for start, stop in blocks for n in range(start, stop)}
+    others = [n for n, k in enumerate(keep) if k and n not in in_block]
+    counted = max(_failure_count(lines) or 0, len(picked))
+    note = f"[{counted} of {counted} failures not shown: {where}]" if where else (
+        f"[{counted} of {counted} failures not shown]")
+    room = limit - (len(note.encode("utf-8")) + 1)
+    heads: list[tuple[int, int, list[str], list[str]]] = []
+    for start, stop in picked:
+        body = [_cut_line(line) for line in lines[start + 1:stop]]
+        first = next((i for i, line in enumerate(body) if line.strip()), None)
+        head = [_cut_line(lines[start])] + ([body[first]] if first is not None else [])
+        rest = body[first + 1:] if first is not None else []
+        while rest and not rest[-1].strip():
+            rest.pop()
+        # Every piece may need a `[...]` before it.
+        if _cost(head) + 6 > room:
+            break
+        room -= _cost(head) + 6
+        heads.append((start, stop, head, rest))
+    other_lines = [_cut_line(lines[n]) for n in others]
+    other_room = min(_cost(other_lines) + 6 * len(other_lines), room // 3)
+    room -= other_room
+    # Water-filling: a block needing less than an equal share gives the rest back.
+    shares: dict[int, int] = {}
+    left = len(heads)
+    for start, _stop, _head, rest in sorted(heads, key=lambda h: _cost(h[3])):
+        share = room // left if left else 0
+        shares[start] = min(_cost(rest), share)
+        room -= shares[start]
+        left -= 1
+    other_room += room
+    pieces: list[tuple[int, int, list[str]]] = []
+    for start, stop, head, rest in heads:
+        pieces.append((start, stop, head + _fit_block(rest, shares[start])))
+    size = 0
+    for n, line in zip(others, other_lines):
+        if size + _cost([line]) + 6 > other_room:
+            break
+        size += _cost([line]) + 6
+        pieces.append((n, n + 1, [line]))
+    pieces.sort(key=lambda p: p[0])
+    out: list[str] = []
+    after = 0
+    for start, stop, body in pieces:
+        if out and start > after:
+            out.append("[...]")
+        out += body
+        after = stop
+    unseen = counted - len(heads)
+    if unseen > 0:
+        out.append(f"[{unseen} of {counted} failures not shown: {where}]" if where else
+                   f"[{unseen} of {counted} failures not shown]")
+    return _bound_lines(out, limit, from_end=False)
+
+
+def _log_failures(log: str, limit: int = MAX_LOG_TAIL_BYTES, *, where: str = "") -> tuple[str, str]:
+    """(heading, text): the lines of a job log that name its failure, or its tail.
+
+    The log is cut where the failed step ended (`_step_lines`), so the
+    runner's cleanup never takes the room. Then the lines that name a
+    failure are kept, in order, a vitest `FAIL` line with its block; with
+    none but the step's exit line, the plain tail of what is left. At most
+    `limit` bytes either way.
+
+    With vitest FAIL blocks (#3170, PR #3146 shard 1/4), no block crowds out
+    another: every distinct header and its first assertion line are kept
+    first, each block's other lines get a share, and the failures vitest
+    counted (`Tests N failed`) that are still not shown are counted on a
+    `[k of N failures not shown: <where>]` line, `where` naming the run and
+    job to read. A log with no FAIL block (pytest) is kept as before.
+    """
+    lines = _step_lines(log)
     keep: list[bool] = [False] * len(lines)
+    blocks: list[tuple[int, int]] = []
     n = 0
     while n < len(lines):
         if _FAIL_BLOCK.match(lines[n]):
@@ -818,6 +1008,7 @@ def _log_failures(log: str, limit: int = MAX_LOG_TAIL_BYTES) -> tuple[str, str]:
             while m < stop and not _BLOCK_END.search(lines[m]) and not _FAIL_BLOCK.match(lines[m]):
                 keep[m] = True
                 m += 1
+            blocks.append((n, m))
             n = m
             continue
         if _FAILURE_LINE.search(lines[n]):
@@ -826,6 +1017,8 @@ def _log_failures(log: str, limit: int = MAX_LOG_TAIL_BYTES) -> tuple[str, str]:
     # The step's own exit line names no test: alone, it is the plain tail.
     if not any(k and not _STEP_FAILED.search(line) for k, line in zip(keep, lines)):
         return "log tail:", _bound_lines(lines, limit, from_end=True)
+    if blocks:
+        return "failures in the log:", _vitest_failures(lines, blocks, keep, limit, where)
     picked: list[str] = []
     for n, line in enumerate(lines):
         if keep[n]:
@@ -1340,15 +1533,17 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
 
     writer: GitHubWriter = ctx.forge_writer
     token = ""
+    reader = ""
     try:
         try:
             token = ctx.forge_tokens.token_for(_tenant(ctx, run.tenant_id))
             # The CI read goes out as the App when the owner has an
             # installation (#1483), so the read every CI_READ_SECONDS spends
             # no person's quota; the merge and its gate below keep `token`.
-            pull, reading = _read_ci(writer, run, number, read_token(
+            reader = read_token(
                 getattr(ctx, "forge_installations", None), run.tenant_id,
-                run.issue.owner, run.issue.repo) or token)
+                run.issue.owner, run.issue.repo) or token
+            pull, reading = _read_ci(writer, run, number, reader)
         except Exception as exc:
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             message = exc.message if isinstance(exc, ApiError) else f"the CI read failed ({code})"
@@ -1463,6 +1658,13 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
                         f"#{pull.number}: its head is still {head[:12]}, where CI was red"
                     )},
                 )
+            # A FLAKE COSTS NO ROUND (#3200): the red head's failed Actions
+            # jobs are re-run once, and the run reads their answer, before a
+            # round is spent or the cap refuses one.
+            rerun = _rerun_red_head(ctx, tenant_id, run, record, head, reading,
+                                    token=token, reader=reader, now=now)
+            if rerun is not None:
+                return rerun
             excerpt = build_excerpt(writer, run, head, reading, token)
             spent = run.ci_fix_round
             if spent >= run.fix_rounds:
@@ -1498,6 +1700,136 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
             }})
     finally:
         token = ""
+        reader = ""
+
+
+#: The re-runs of a red head's failed Actions jobs in the run's
+#: `pull_request` (#3200), one accepted per head at most: each
+#: `{head, jobs, claimed_at}` as it is claimed, then `{head, jobs, runs,
+#: requested_at}`, or `{head, jobs, runs, error}` when GitHub refused.
+RERUNS_KEY = "reruns"
+
+
+def _reruns(record: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    entries = (record or {}).get(RERUNS_KEY)
+    if not isinstance(entries, list):
+        return []
+    return [dict(e) for e in entries if isinstance(e, Mapping)]
+
+
+def _rerun_red_head(
+    ctx: Any, tenant_id: str, run: IssueRun, record: dict[str, Any], head: str,
+    reading: CiReading, *, token: str, reader: str, now: datetime,
+) -> IssueRun | None:
+    """Re-run a red head's failed Actions jobs once before a round is spent
+    or refused (#3200), as the merge wake tick does for a merge step
+    (`mergewake._rerun_first`; the rule is `cirerun`'s).
+
+    The run, still CHECKING with the reading stored, when this read asked
+    GitHub for the re-run or is waiting for its answer: inside
+    RERUN_SETTLE_SECONDS of the request while the same failed check runs
+    are the latest, or past it while a workflow run it asked of has not
+    completed. None to go on to the cap or the round exactly as before: no
+    failing check a re-run reaches (a commit status, another App's check
+    run), a re-run at this head that already answered red, or one GitHub
+    refused -- recorded with its `error` and costing nothing, and not asked
+    again at this head past RERUN_REFUSALS_MAX. On None `record` carries
+    the head's re-runs as stored, so the move that follows keeps them.
+
+    The claim is made in the run's own transaction before GitHub is asked,
+    so two reads of one head never both ask. The re-run goes out with
+    `token`, the owner's write credential, to the run's own repository
+    (`run.issue`), never one named by the pull request or a check.
+    """
+    runs = _runs(ctx)
+    ref = run.issue
+    reruns = _reruns(record)
+    record[RERUNS_KEY] = reruns
+    jobs = rerunnable(reading)
+    mine = [r for r in reruns if r.get("head") == head]
+    refused = [r for r in mine if r.get("error")]
+
+    def _store(current: IssueRun, entries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        # The reading, with the re-runs as the transaction reads them and
+        # anything another write recorded meanwhile (the keyword block).
+        if current.state != RunState.CHECKING:
+            return {}
+        stored = dict(current.pull_request or {})
+        return {"pull_request": {
+            **record,
+            **{k: v for k, v in stored.items() if k not in record},
+            RERUNS_KEY: _reruns(stored) if entries is None else entries,
+        }}
+
+    if mine and len(refused) < len(mine):
+        entry = [r for r in mine if not r.get("error")][-1]
+        asked = {j for j in entry.get("jobs") or [] if isinstance(j, int)}
+        since = _aware(entry.get("requested_at"))
+        claimed_at = _aware(entry.get("claimed_at"))
+        settle = timedelta(seconds=RERUN_SETTLE_SECONDS)
+        if since is None and claimed_at is not None and now - claimed_at < settle:
+            # Claimed by a read still asking GitHub: its outcome is not stored yet.
+            return runs.patch(tenant_id, run.id, _store)
+        if (
+            asked & set(jobs) and since is not None and since <= now
+            and (now - since < settle or rerun_running(ctx.forge_writer, ref, entry, reader))
+        ):
+            return runs.patch(tenant_id, run.id, _store)
+        return None
+    if len(refused) >= RERUN_REFUSALS_MAX or not jobs:
+        return None
+
+    seen = len(reruns)
+    claim = {"head": head, "jobs": jobs, "claimed_at": now}
+    claimed: list[list[dict[str, Any]]] = []
+
+    def _claim(current: IssueRun) -> dict[str, Any]:
+        claimed.clear()
+        entries = _reruns(current.pull_request)
+        if current.state != RunState.CHECKING or len(entries) != seen:
+            # Another read claimed (or recorded) a re-run first: it asks.
+            return _store(current)
+        claimed.append([*entries, claim])
+        return _store(current, claimed[0])
+
+    after = runs.patch(tenant_id, run.id, _claim)
+    if not claimed:
+        return after
+    record[RERUNS_KEY] = claimed[0]
+
+    targets, alone = rerun_targets(reading, jobs)
+    outcome: dict[str, Any] = {"head": head, "jobs": jobs, "runs": targets}
+    try:
+        for run_id in targets:
+            ctx.forge_writer.rerun_failed_jobs(ref, run_id, token)
+        for job in alone:
+            ctx.forge_writer.rerun_job(ref, job, token)
+    except Exception as exc:
+        reason = exc.message if isinstance(exc, ApiError) else (
+            str(exc) if isinstance(exc, ForgeWriteError) else type(exc).__name__
+        )
+        outcome["error"] = failure_text(f"the re-run was refused: {reason}")
+    else:
+        outcome["requested_at"] = now
+
+    def _record(current: IssueRun) -> dict[str, Any]:
+        entries = _reruns(current.pull_request)
+        if seen < len(entries) and entries[seen].get("head") == head:
+            entries[seen] = outcome
+        else:
+            entries.append(outcome)
+        record[RERUNS_KEY] = entries
+        return _store(current, entries)
+
+    after = runs.patch(tenant_id, run.id, _record)
+    if "error" in outcome:
+        log.info("issue run %s tenant=%s: re-run refused (%s)",
+                 run.id, run.tenant_id, outcome["error"])
+        return None
+    log.info("issue run %s tenant=%s: re-ran the failed jobs of %d workflow run(s) and %d "
+             "job(s) alone for %d failing check(s) at %s before any round",
+             run.id, run.tenant_id, len(targets), len(alone), len(jobs), head[:12])
+    return after
 
 
 def _start_round(
@@ -1555,7 +1887,8 @@ def _start_round(
         # The run's own tenant's index only (invariant 9); None is today's prompt.
         context = read_fix_context(ctx, tenant_id, claimed, excerpt)
         spec = ci_fix_workflow(claimed, round_no, excerpt, head, context)
-        submission = ctx.submissions.submit_workflow(owner, spec)
+        with submitting(spec):
+            submission = ctx.submissions.submit_workflow(owner, spec)
     except PrFixInFlight as exc:
         # Another writer (the platform's CI fixer, a conflict fix) holds this
         # pull request (#2535). That is a wait, not a failure: its push moves
@@ -2012,20 +2345,56 @@ def merge_gate(
 
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
     """`(verdict, why not)`: the review's `verdict`, read as `evaluate_requirements` reads it."""
-    import json
-
     content, problem = _read_review_verdict(
         ctx, tenant_id, _review_task_id(ctx, tenant_id, run, None)
     )
+    return _verdict_of(content, problem, what="review", name=VERDICT_FILE)
+
+
+def _security_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
+    """`(verdict, why not)`: the security review's, for a run that asked for one.
+
+    The run's merge is a merge-only continuation of the task that pushed
+    the green head, in a workflow of its own, so it can stage no file from
+    the run's workflow: this loop reads the verdicts for it, the security
+    review's `SECURITY_VERDICT_FILE` beside the re-review's `verdict.json`,
+    and submits the merge only when both are MERGE. A verdict that does not
+    read is not a pass (`agent_worker.merge._security_hold` holds a staged
+    one to the same rule). `(None, "")` for a run that asked for none.
+    """
+    if not run.security_review:
+        return None, ""
+    task_id = None
+    if run.workflow_id:
+        try:
+            workflow = ctx.store.get_workflow(tenant_id, run.workflow_id, submitted_by=None)
+        except NotFound:
+            workflow = None
+        task_id = next((
+            getattr(step, "task_id", None) for step in getattr(workflow, "steps", None) or []
+            if getattr(step, "step_id", None) == SECURITY_REVIEW_STEP
+        ), None)
+    content, problem = _read_review_verdict(
+        ctx, tenant_id, task_id, name=SECURITY_VERDICT_FILE, step=SECURITY_REVIEW_STEP,
+        what="security review",
+    )
+    return _verdict_of(content, problem, what="security review", name=SECURITY_VERDICT_FILE)
+
+
+def _verdict_of(content: str | None, problem: str | None, *, what: str,
+                name: str) -> tuple[str | None, str]:
+    """`(verdict, why not)` from a verdict file's text as `_read_review_verdict` read it."""
+    import json
+
     if content is None:
-        return None, problem or f"the review's {VERDICT_FILE} could not be read"
+        return None, problem or f"the {what}'s {name} could not be read"
     try:
         data = json.loads(content)
     except ValueError:
-        return None, f"the review's {VERDICT_FILE} is not JSON"
+        return None, f"the {what}'s {name} is not JSON"
     verdict = data.get("verdict") if isinstance(data, Mapping) else None
     if not isinstance(verdict, str):
-        return None, f"the review's {VERDICT_FILE} states no verdict"
+        return None, f"the {what}'s {name} states no verdict"
     return verdict, ""
 
 
@@ -2213,6 +2582,17 @@ def _merge(
     verdict, why = _review_verdict(ctx, tenant_id, run)
     if verdict != "MERGE":
         return _fail(f"the review's verdict is {verdict}, not MERGE" if verdict else why)
+    if run.security_review:
+        # The security review's say (docs/design/security-review-step.md): a
+        # NOT_YET's blocking findings are owner questions on that review's
+        # task, and the pull request stays open for a person to settle them.
+        verdict, why = _security_verdict(ctx, tenant_id, run)
+        if verdict != "MERGE":
+            return _fail(
+                f"the security review's verdict is {verdict}, not MERGE: its blocking "
+                "findings are the owner questions on the security review's task"
+                if verdict else why
+            )
     try:
         pushed_by, not_ours = through_base_merges(
             writer, run.issue, token, head=head, base=base,
@@ -2251,7 +2631,9 @@ def _merge(
 
     runs.patch(tenant_id, run.id, _claim)
     try:
-        submission = ctx.submissions.submit_workflow(owner, merge_workflow(run, pushed_by, head))
+        merge_spec = merge_workflow(run, pushed_by, head)
+        with submitting(merge_spec):
+            submission = ctx.submissions.submit_workflow(owner, merge_spec)
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: merge refused at submission (%s)", run.id, reason)

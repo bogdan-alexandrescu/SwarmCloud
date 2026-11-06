@@ -259,7 +259,7 @@ def _run_fix(db, worker_factory, monkeypatch, verdict: dict[str, Any] | None, to
     # The repository this step cloned. No clone runs here: the step is
     # `collect` with no repository, so this stands in for `_maybe_clone`.
     worker._repo_url = REPO
-    monkeypatch.setattr(worker, "_git_token", lambda: token)
+    monkeypatch.setattr(worker, "_git_token", lambda **_: token)
     assert worker.run() == ExitCode.OK
     task = db.doc(f"tasks/task_{n}")
     assert task["state"] == TaskState.SUCCEEDED.value, task.get("last_error")

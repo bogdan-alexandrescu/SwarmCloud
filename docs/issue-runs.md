@@ -215,8 +215,14 @@ The permissions it needs, on every repository a tenant submits issues from, are
 tabled in [multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed):
 `Contents` and `Pull requests` read/write (unchanged, for the agents' push and
 the pull request), **`Issues: Read and write`** for the two comments,
-`Checks: Read` and `Commit statuses: Read` for the CI loop, and optionally
-`Actions: Read` for a failing job's log tail.
+`Checks: Read` and `Commit statuses: Read` for the CI loop, and
+**`Actions: Read and write`**: read for a failing job's log tail, write for the
+merge step's re-run of a flaky run's failed jobs (`POST
+actions/runs/<run>/rerun-failed-jobs`, `forgewrite.GitHubWriter.rerun_failed_jobs`).
+A token with `Actions: Read` only gets 403 on the re-run, so a flake is never
+re-run and the merge step fails with `checks_failed`, naming the refusal
+("the credential needs `actions: write` on the repository") when a round
+found nothing to change.
 
 **A forge 403 or 404 fails the planner** (owner decision, 2026-10-01) -- in
 practice it refuses the run before the planner exists: the open-work read
@@ -480,6 +486,24 @@ at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
   is behind a fix on main, merge main. Measured on PR #2888, round 2: the
   round saw only the gate, never merged main, and main already had the fix
   (#2937). A jobs or log read that fails leaves the gate's own section.
+
+  **A flake costs no round (#3200).** Before a red head spends a round, or
+  the cap refuses one, the run asks GitHub once per head to re-run the
+  failed jobs of each failing workflow run (`GitHubWriter.rerun_failed_jobs`;
+  `rerun_job` for a job whose run cannot be resolved), when every failing
+  check is an Actions job. The re-run is claimed in the run's own
+  transaction before GitHub is asked, so two reads never both ask, and
+  recorded on `pull_request.reruns` (`head`, `jobs`, `runs`, and
+  `requested_at`, or `error`). The run stays `CHECKING` while it settles
+  (`RERUN_SETTLE_SECONDS`, or longer while its workflow run has not
+  completed), then reads the answer: green is `DONE` or the merge gate, red
+  spends the round or fails at the cap as before. A commit status or
+  another App's check, which a re-run cannot reach, and a re-run GitHub
+  refuses (no `actions: write`) cost nothing: the round or the cap happens
+  on that read. The rule is the merge step's (`swarm_api.cirerun`, shared
+  with `mergewake._rerun_first`). Why: run_7eddc5b3 (PR #3150) failed at
+  its cap of 3 on a 30 s vitest timeout in one swarm-ui shard of a pull
+  request that touched no swarm-ui file, and nothing was ever re-run.
 * **Review-then-fix rounds inside the compiled workflow** -- but only **one** is
   compiled today, whatever the cap (`COMPILED_REVIEW_ROUNDS`). Under
   `integrate` only the integrator may be gated (and the one re-review

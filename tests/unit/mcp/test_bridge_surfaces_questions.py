@@ -45,6 +45,10 @@ QUESTIONS = [
     },
 ]
 
+#: The questions as handed on while none is answered: each under its index
+#: in questions.json (`progress.open_owner_questions`).
+OPEN = [{"index": i, **q} for i, q in enumerate(QUESTIONS)]
+
 
 def _finished(world: World, task_id: str = "task_a", *, questions: list[dict[str, Any]] | None,
               count: int | None = None) -> None:
@@ -74,7 +78,7 @@ def test_swarm_result_carries_the_questions(swarm, world):
 
     reply = json.loads(server._call(swarm, "swarm_result", {"task_id": "task_a"}))
 
-    assert reply["owner_questions"] == QUESTIONS
+    assert reply["owner_questions"] == OPEN
     assert "questions_unavailable_because" not in reply
 
 
@@ -83,7 +87,7 @@ def test_the_follow_outcome_carries_the_questions(swarm, world):
 
     got = progress.outcome(swarm, swarm.task("task_a"))
 
-    assert got["questions"] == QUESTIONS
+    assert got["questions"] == OPEN
 
 
 def test_a_task_with_no_questions_carries_an_empty_list_and_reads_nothing_more(swarm, world, monkeypatch):
@@ -118,14 +122,14 @@ def test_the_progress_row_says_how_many_and_the_step_result_carries_them(swarm, 
     got = compact.watch_progress(swarm, ["task_a"])
 
     assert any("? 2 question(s) for the owner" in line for line in got["progress"]), got["progress"]
-    assert got["tasks"][0]["outcome"]["questions"] == QUESTIONS
+    assert got["tasks"][0]["outcome"]["questions"] == OPEN
     result = got["result"]
     assert len(result["questions"]) == 2
     # The step result holds no null anywhere (`step_result`'s rule).
     assert "null" not in json.dumps(result), result
     assert result["questions"][1]["recommended"] == ""
     assert result["questions"][1]["context"] == ""
-    assert result["questions"][0] == QUESTIONS[0]
+    assert result["questions"][0] == OPEN[0]
 
 
 def test_the_lines_format_says_how_many(swarm, world):

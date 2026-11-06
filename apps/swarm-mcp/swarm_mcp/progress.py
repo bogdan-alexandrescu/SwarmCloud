@@ -65,6 +65,7 @@ import json
 import secrets
 import threading
 import time
+import urllib.parse
 import zlib
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -117,15 +118,16 @@ MAX_WAIT_SECONDS = 300
 #: How often a gathering call re-reads the routes.
 POLL_SECONDS = 5.0
 
-#: The longest a gathering call backs off to while every task it follows stays
-#: PENDING (owner decision, 2026-09-26, proxy cost bound). A QUEUED, PARKED or
-#: READY task holds no capacity (invariant 1) and cannot produce a new line
-#: until it leaves that state -- which `started` below already ends the call
-#: for, at once -- so polling it every `POLL_SECONDS` for a whole window is
-#: four routes' worth of reads that can only ever answer "still pending". The
-#: interval doubles each poll while that holds, capped here, and resets to
-#: `POLL_SECONDS` the moment it does not.
-PENDING_POLL_CAP_SECONDS = 30.0
+#: THE QUIET BACK-OFF (BGD's pick, 2026-11-06; it replaces the 30 s cap for
+#: pending tasks, owner decision 2026-09-26, which it keeps as a cost bound).
+#: While a poll brings nothing new -- no line, no state change -- the wait
+#: before the next one doubles from `POLL_SECONDS` up to this, and any new
+#: line resets it. 7-day load analysis: single-task reads were 39% of
+#: swarm-api's requests, nearly all from follows re-reading tasks that had
+#: not moved. A minute is the longest new output or a finish waits to be
+#: noticed inside a window; a row repeats its call, so nothing is lost.
+#: `compact`'s rows back off the same way, to the same figure.
+IDLE_POLL_CAP_SECONDS = 60.0
 
 #: How much of the answer `answer_excerpt` carries -- what a workflow step's
 #: row returns in place of the whole answer (`sc:step`).
@@ -783,7 +785,7 @@ def watch(
     read_ok: set[str] = set()
     #: Tasks that are not the step this row expects: task id -> their step id.
     wrong_step: dict[str, Any] = {}
-    #: The next sleep, backed off while every known task stays PENDING (below).
+    #: The next sleep, backed off while polls bring nothing new (below).
     interval = POLL_SECONDS
 
     def given_up(task_id: str) -> bool:
@@ -799,6 +801,7 @@ def watch(
     while True:
         polls += 1
         truncation = []
+        lines_before = len(lines)
         for report in _poll(
             client, list(task_ids), cursor, groups,
             room=lambda: max(0, budget - spent),
@@ -856,16 +859,13 @@ def watch(
         remaining = deadline - clock()
         if remaining <= 0:
             break
-        sleep(min(interval, remaining))
-        # BACK OFF while every task known so far is still PENDING: nothing has
-        # happened that a poll could report, and `started` above already ends
-        # the call the moment one leaves that state. Reset the instant a known
-        # task is not pending (already terminal, running, or unreadable) --
-        # that case wants the ordinary cadence, not this one.
-        if latest and all(task.get("state") in _PENDING for task in latest.values()):
-            interval = min(interval * 2, PENDING_POLL_CAP_SECONDS)
-        else:
+        # BACK OFF while a poll brings nothing new (`IDLE_POLL_CAP_SECONDS`);
+        # `started` above already ends the call the moment a task leaves its
+        # wait, and a state change or new output is a line, which resets it.
+        if len(lines) > lines_before:
             interval = POLL_SECONDS
+        sleep(min(interval, remaining))
+        interval = min(interval * 2, IDLE_POLL_CAP_SECONDS)
 
     # THE STREAK, per task, carried to the next call in the token: one good
     # read in this call clears it; a call in which every read failed adds one.
@@ -970,6 +970,10 @@ def watch(
                     # its own after the window's: the outcome holds the text.
                     label = task_label(task_id, task.get("step_id"))
                     shown.append(f"[{label}] {questions_words(asked)}")
+                if row["outcome"].get("browser_unused"):
+                    # The live-browser run that never used it, as its own line.
+                    label = task_label(task_id, task.get("step_id"))
+                    shown.append(f"[{label}] {row['outcome']['browser_unused']}")
             except SwarmError as exc:
                 # NOT all finished, then: a caller that stopped here would stop
                 # with no outcome to return. The next call re-reads it.
@@ -1117,9 +1121,10 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     out.update(totals)
     out["pr_url"] = described.get("pull_request")
     out["artifacts"] = _artifacts(task)
-    # The agent's questions for the owner, read back from its questions.json
-    # (`owner_questions`); `[]` and no extra read when it asked none.
-    out.update(owner_questions(client, task))
+    # The agent's questions for the owner that have no stored answer, read
+    # back from its questions.json and the questions route
+    # (`open_owner_questions`); `[]` and no extra read when it asked none.
+    out.update(open_owner_questions(client, task))
     # The owner's answers to them, as the API lifted them onto the task
     # (TASK-ANSWERS); `[]` when none is answered. No extra read.
     out["owner_answers"] = owner_answers(task)
@@ -1143,6 +1148,11 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     link = console_link(task)
     if link is not None:
         out["console"] = link
+    # A LIVE-BROWSER RUN THAT NEVER USED ITS BROWSER (2026-11-05): one line,
+    # no key otherwise (`browser_unused_line`).
+    unused = browser_unused_line(task)
+    if unused is not None:
+        out["browser_unused"] = unused
     return out
 
 
@@ -1248,6 +1258,93 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
         "recommended": _question_text(entry.get("recommended")),
         "context": _question_text(entry.get("context")),
     }
+
+
+#: Where the owner's stored answers are read, per task (`swarm_api.routes.tasks.read_questions`):
+#: each question as `questions.json` holds it, with its `answer` or null.
+QUESTIONS_ROUTE = "/v1/tasks/{task_id}/questions"
+
+#: How long `answer_unknown_because` may be: a reason, not the error's whole text.
+ANSWER_UNKNOWN_CHARS = 200
+
+
+def stored_answers(client: SwarmClient, task: dict[str, Any]) -> tuple[set[int], str | None]:
+    """`(indexes, why)`: which of the task's questions hold a stored answer.
+
+    Read the way `swarm_check` reads a parked task's (`check._parked_questions`):
+    one `GET /v1/tasks/{id}/questions` per call, never cached, since an answer
+    can be given at any time -- `swarm_task_answer` and the console store it,
+    and a task document read before that does not carry it. The task's own
+    `owner_answers` count too. `why` is set when the route could not be read
+    or did not serve the questions: the indexes are then only what the task
+    document carried, and the rest cannot be told answered or open.
+    """
+    known = {a.get("question_index") for a in owner_answers(task)}
+    indexes = {i for i in known if isinstance(i, int) and not isinstance(i, bool)}
+    tid = urllib.parse.quote(str(task_id_of(task) or ""), safe="")
+    try:
+        served = client.request("GET", QUESTIONS_ROUTE.format(task_id=tid))
+    except SwarmError as exc:
+        return indexes, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
+    if (not isinstance(served, dict) or served.get("status") != "ok"
+            or not isinstance(served.get("questions"), list)):
+        status = served.get("status") if isinstance(served, dict) else None
+        return indexes, clip(f"its stored answers could not be read: the questions route says {status}",
+                             ANSWER_UNKNOWN_CHARS)
+    for index, question in enumerate(served["questions"]):
+        if isinstance(question, dict) and question.get("answer") is not None:
+            indexes.add(index)
+    return indexes, None
+
+
+def open_owner_questions(client: SwarmClient, task: dict[str, Any], *,
+                         asked: dict[str, Any] | None = None) -> dict[str, Any]:
+    """`owner_questions`, less every question the owner has already answered.
+
+    WHY (5 November 2026, seen twice). A workflow row's result and
+    `swarm_result` handed the session every question in `questions.json`,
+    including ones answered hours earlier with `swarm_task_answer`, and the
+    session put them to the person again. Whatever hands a finished task's
+    questions to a session hands these: each open question with its `index`
+    -- its 0-based place in `questions.json`, the `question_index`
+    `swarm_task_answer` records a pick under, kept because answered ones are
+    left out before it -- and `questions_answered`, how many were left out.
+
+    ANSWERED AND "COULD NOT TELL" ARE NEVER THE SAME. When the stored answers
+    could not be read (`stored_answers`), a question no answer is known for
+    stays listed with `answer_unknown_because`, a short reason. The full
+    list, answered ones included, is `swarm_result`'s `owner_questions_asked`
+    and the console's task page. `asked` is `owner_questions`' read, when the
+    caller already made it. Two reads at most: the artifact and the answers,
+    and only the first when the agent asked none.
+    """
+    asked = asked if asked is not None else owner_questions(client, task)
+    questions = asked.get("questions") or []
+    if not questions:
+        return asked
+    answered, why = stored_answers(client, task)
+    open_ = [{"index": i, **q, **({"answer_unknown_because": why} if why else {})}
+             for i, q in enumerate(questions) if i not in answered]
+    out = {**asked, "questions": open_, "questions_answered": len(questions) - len(open_)}
+    return out
+
+
+def asked_with_answers(client: SwarmClient, task: dict[str, Any],
+                       asked: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every question `asked` holds, for a person browsing the task: each with
+    its `index` and `answered` -- true, false, or null with
+    `answer_unknown_because` when the stored answers could not be read."""
+    questions = asked.get("questions") or []
+    if not questions:
+        return []
+    answered, why = stored_answers(client, task)
+    out = []
+    for i, q in enumerate(questions):
+        entry = {"index": i, **q, "answered": True if i in answered else (None if why else False)}
+        if why and i not in answered:
+            entry["answer_unknown_because"] = why
+        out.append(entry)
+    return out
 
 
 def owner_answers(task: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1544,6 +1641,46 @@ def browser_words(task: dict[str, Any]) -> str | None:
         return None
     because = BROWSER_UNKNOWN_WORDS.get(str(detail.get("unknown_because")), "the worker recorded no verdict")
     return f"not measured ({because})"
+
+
+def browser_unused_line(task: dict[str, Any], *, label: str | None = None) -> str | None:
+    """The one line for a FINISHED task on a live-browser profile that never
+    used its browser, or None (owner request, 2026-11-05, part of #2688).
+
+    WHY. Over the 24 hours to 10:00Z on 5 November, 76 of 642
+    claude-code-browser tasks made no browser call and produced no image --
+    about 46 hours of browser runtime -- mostly code changes whose only
+    browser need was a headless Playwright spec, which plain claude-code runs
+    (with Postgres 16) since issue 2253. The session that picked the profile
+    reads this beside the result and can pick claude-code next time.
+
+    Only `browser_used is False` adds it: true is a use, and null is no
+    measurement, never a zero (`browser_words`). A non-browser profile never.
+    ADVICE, NEVER A REFUSAL: nothing here changes or refuses a dispatch;
+    callers pick the profile by name (CONTRACT.md invariant 10). `seconds` is
+    how long the agent ran on that runtime (`lifecycle.browser_use_record`),
+    else the last attempt's runner duration.
+    """
+    name = str(task.get("runner_profile"))
+    profile = RUNNER_PROFILES.get(name)
+    if not getattr(profile, "live_browser", False) or task.get("browser_used") is not False:
+        return None
+    if task.get("state") not in TERMINAL_STATE_VALUES:
+        return None
+    detail = task.get("browser_use") if isinstance(task.get("browser_use"), dict) else {}
+    seconds = detail.get("seconds")
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool):
+        seconds = (task.get("result_summary") or {}).get("duration_seconds")
+    shown = (
+        str(round(seconds))
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds >= 0
+        else "?"
+    )
+    who = label or task_id_of(task) or "the task"
+    return (
+        f"{who} ran on {name} and never used its browser ({shown} s): claude-code runs "
+        "Playwright suites and Postgres too; pick it unless the agent must look at a page"
+    )
 
 
 def _cost(totals: dict[str, Any]) -> dict[str, Any]:

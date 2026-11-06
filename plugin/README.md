@@ -611,6 +611,7 @@ What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code -->
 
 <!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
@@ -618,6 +619,7 @@ What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:codex -->
 
 `claude-code-review` is `claude-code` under its own Job and service account,
@@ -628,6 +630,7 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 | input | kind and bounds | what the claude-code-review runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code-review -->
 
 `indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
@@ -829,8 +832,8 @@ calls in a row that read nothing), or the sc plugin's server is not connected.
 workflow spec — the same object `swarm workflow` reads — as an object, as JSON
 text, or as the path of the spec file, relative to the session's checkout and
 inside it (the bridge reads no spec file from outside the checkout). A
-workflow script has no filesystem, so given a path one `sc:workflow` agent
-(label `read spec`) has the bridge read the file with `swarm_workflow_spec`,
+workflow script has no filesystem, so given a path one `sc:spec` agent
+(label `read spec`, holding no submit tool) has the bridge read the file with `swarm_workflow_spec`,
 which checks it as `swarm_workflow` would, submits nothing and returns the spec
 with its digest; the script submits the relayed spec only when it digests to
 what the bridge read. Text that begins like JSON and does not parse is reported
@@ -906,10 +909,10 @@ becomes a row with that state, `state_from: "workflow status"` and the row's
 failure in `row_note`. A step still running, or not named, stays a
 `row_error`, which the Result step re-attaches while the workflow runs on.
 
-All seven agents run on **haiku at low effort** (`model` and `effort` in their
+All eight agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
 need — `sc:remote` dispatch and follow, `sc:step`, `sc:task`, `sc:summary` and `sc:finish` follow,
-`sc:workflow` read a spec file, submit and read — and only through the sc plugin's own server (above).
+`sc:spec` read a spec file and nothing else, `sc:workflow` submit and read — and only through the sc plugin's own server (above).
 `sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
 row whose bridge was not connected or not responding, one `sleep 30` through
 Bash, because a workflow script has no timer of its own. A session that asks
@@ -949,8 +952,11 @@ pieces do it, and none of them submits anything.
 * **No name carries a workspace; every expanded run and row says whose,
   where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
   here should not have the [Engineering] or [eng@example.com] prefix in front of
-  the names"). Run titles are `SC · <name> · N steps` and `SC · <label> ·
-  task` (the name is cut to 150, never the count); rows inside the run are
+  the names"). Run titles are `SC ∴ <name> · N steps` (`SC ∴ <name>` for a
+  spec launched before it is submitted) and `SC · <label>` — three dots a
+  workflow, one dot a single task, right after `SC` because the panel shows
+  about 28 characters (the name is cut to 150, never the count); every
+  single task is a run of its own, whatever the `rows` setting; rows inside the run are
   `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
   task`. Each run's description starts with its DETAILS, one line, six
   fields in this order: `Workspace: <workspace> (<tenant>) · Started by:
@@ -1512,6 +1518,7 @@ are the same value.
   answer, and no refusal names the label, so an agent cannot confirm its own
   removal. A host that cannot ask its human removes nothing and is told to run
   `sc account remove <account>` in a terminal, which asks there.
+* `swarm_task_answers` records up to 200 answers `{task_id, question_index, choice?, text?}` through the single-answer route with `reply=short` (each checked as one answer is; a refusal is its own line and never stops the rest), and `swarm_task_answer` takes `reply: "short"` (6 November 2026).
 * `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
   per task only when it changed, the state `transitions` since `since`, and a
   finished task's `outcome` reduced to the step result's fields. A call holds

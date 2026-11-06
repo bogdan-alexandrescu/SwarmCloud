@@ -46,6 +46,16 @@ byte for byte as before. Of a target with several, a `production` leg, and a
 `non_production` leg sharing an origin with a `production` one, render no
 mutating flow: a production leg reads only.
 
+A FLOW THAT WRITES SAYS WHAT IT WRITES (docs/design/qa-environments.md §6;
+BGD, 2026-11-05, "declared writes plus a switch, on by default"). A flow with
+`mutating: true` carries `writes`, one plain sentence of at most
+`WRITES_MAX` characters; its step's brief states that sentence as the limit
+of what it may write, and its report repeats it word for word under "This
+flow wrote". `qatargets` refuses a save without one; one stored before that
+rule renders read-only (`_flows`), and the workspace's `writing_flows`
+setting, off, renders every flow read-only (`leg`). Both only ever turn a
+write off.
+
 EVERY CAPTURE STEP DISCOVERS WHILE IT CAPTURES (docs/design/qa-environments.md
 §3.1, §3.5; lane QAENV-RUN; BGD's Q3 (a), 2026-10-23). A capture step runs
 `swarm_qa capture --crawl` (lane QAENV-CRAWL): its prompt carries the WHOLE
@@ -71,6 +81,18 @@ the gate's write grant reads that step id (`flow_batches` says why). The
 batch size is the run's, else the workspace's, else 15 (`qasettings`); a leg
 that would pass the workflow's step or input bounds is refused with the
 batch size that fits.
+
+A FLOW CAPTURES WHAT IT PROVES (QA-FLOW-CAPTURE, part of #2688; the AI Studio
+session's QA re-run 8, 2026-11-06). Every flow brief makes each step wait,
+bounded, for the text or element that proves the state it records before
+its screenshot, and write it in the step's `proof` (`_capture_rule`);
+retries a snapshot or click that fails while the page settles, at most
+`FLOW_TOOL_TRIES` tries, each in `retries` with its reason (`_retry_rule`);
+and bundles with the `tar` commands rendered from `FLOW_LAYOUT`, the layout
+stated once. `check_flow_output` reads a step's output against it,
+normalising a lone stray tar such as flow-1.tar with a line saying so; the
+worker applies the same tar rule at the end of the step, renaming the stray
+before the upload (`agent_worker.flow_output`, the owner's pick on PR #3521).
 
 A DISMISSED ROUTE IS SKIPPED BY LATER CRAWLS (lane QA-CRAWL-SKIP; BGD
 2026-10-25, part of #2157). The target's `dismissed_routes` (S9b's Remove,
@@ -142,6 +164,10 @@ MAX_SEGMENTS = 120
 #: as an agent's prompt, and the capture tool (`swarm_qa`) never reads one, so
 #: there is no second statement to hold equal (docs/mirrored-values.md).
 MAX_FLOWS = 150
+#: A writing flow's `writes` (BGD, 2026-11-05, "declared writes plus a
+#: switch"): one plain sentence saying what the flow writes, held to this
+#: length so it reads as one sentence in a prompt and on the console's row.
+WRITES_MAX = 300
 #: How many read-only flows one flow-batch step runs (`flows_per_step`): the
 #: run's own value (`:run`'s `flows_per_step`), else the workspace's
 #: `qa_flows_per_step` (`qasettings`), else 15 (BGD, 2026-10-26). One agent
@@ -155,6 +181,32 @@ MAX_FLOWS_PER_STEP = 30
 #: One flow's budget: the timeout a one-flow step had before batching. A
 #: batch step's timeout is this times its flows, held to `FLOW_STEP_CEILING`.
 FLOW_SECONDS = 2700
+#: A flow's output, stated HERE ONLY (QA-FLOW-CAPTURE, part of #2688): every
+#: path is relative to $SWARM_ARTIFACTS_DIR, `{id}` a flow's id, `{width}` a
+#: preset, `{step}` the step id. A flow-batch step stages `{step}.tar`
+#: (`flows-<k>.tar`) holding one `flow-{id}.tar` a flow; a mutating flow's own
+#: step stages its `flow-{id}.tar` (its step id is `flow-{id}`). Each flow tar
+#: holds its json, its recordings and the screenshots its json lists. The
+#: prompts render the `tar` commands from these, because two legs of the AI
+#: Studio session's QA re-run 8 (2026-11-06) told "bundle ... into
+#: flows-1.tar" in words wrote flow-1.tar; `check_flow_output` reads them.
+FLOW_LAYOUT = {
+    "json": "flow-{id}.json",
+    "recording": "flows/flow-{id}-{width}.gif",
+    "screenshots": "screenshots/",
+    "flow_tar": "flow-{id}.tar",
+    "batch_tar": "{step}.tar",
+}
+#: How long a flow step waits for what proves the state it is about to record
+#: before its screenshot (re-run 8: a step recorded "twin opened" over a frame
+#: showing the closed button). Ten seconds holds a slow panel's animation and
+#: a lazy fetch; a 30-flow batch's 240 s a flow still holds several waits.
+FLOW_WAIT_SECONDS = 10
+#: The tries a browser_snapshot or browser_click gets while the page settles
+#: (re-run 8's failed calls): a stale ref after a reload or a re-render is
+#: Playwright MCP's answer by design (docs/design/visual-qa.md, QAFIX6), and
+#: three is the console template's "three stale refs in a row" bound.
+FLOW_TOOL_TRIES = 3
 #: The live-browser profile's own ceiling (`claude-code-browser`'s
 #: `timeout_seconds`, 7,200 s), read from the frozen catalogue rather than
 #: restated: the API cuts a longer step to it anyway (`validation`), so a
@@ -214,6 +266,16 @@ DEFAULT_FLOW_BROWSER_TOOL = "playwright"
 _FLOW_TOOL_SENTENCE = {
     "playwright": "Using the Playwright MCP browser_* tools (browser_navigate, browser_snapshot, browser_click)",
     "jev": "Using the jev browser tools",
+}
+#: How each tool waits for what proves a state (`_capture_rule`), and what its
+#: page-settling retry names (`_retry_rule`).
+_FLOW_WAIT_SENTENCE = {
+    "playwright": "browser_wait_for or a fresh browser_snapshot",
+    "jev": "the jev tools",
+}
+_FLOW_SETTLE_CALLS = {
+    "playwright": ("A browser_snapshot or browser_click", "wait 1 s, take a fresh snapshot, retry with its new ref"),
+    "jev": ("A jev read or click", "wait 1 s, read the page again, retry"),
 }
 
 #: Never visited, never clicked, whatever the target says (§1): the target's
@@ -654,7 +716,15 @@ def shares_production_origin(target: Mapping[str, Any], name: str) -> bool:
                and mine & _leg_origins(e) for e in environments(target))
 
 
-def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
+def declared_writes(flow: Mapping[str, Any]) -> str | None:
+    """The flow's `writes` sentence, stripped, when it has a non-empty one;
+    None otherwise. Its form is `_flows`' to check."""
+    writes = flow.get("writes")
+    return writes.strip() if isinstance(writes, str) and writes.strip() else None
+
+
+def leg(target: Mapping[str, Any], name: str | None = None, *,
+        writing_flows: bool | None = None) -> dict[str, Any]:
     """The target as its leg `name` sees it: the app's fields, and that
     entry's per-leg fields where a target of one origin keeps them, so every
     rule here applies to a leg unchanged. Nothing of another entry is in it.
@@ -662,7 +732,13 @@ def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
     A target with no `environments` is its own one leg: the view is the
     target itself, with `LEG_NAME`. Of a target with several entries, a leg
     that is `production`, or shares an origin with a `production` entry, is
-    rendered with no mutating flow (§1.5, §6: a production leg reads only)."""
+    rendered with no mutating flow (§1.5, §6: a production leg reads only).
+
+    `writing_flows` is the workspace's setting, given by a run and by the
+    gate's issue: False renders every flow read-only, and True or False
+    renders read-only a mutating flow that declares no `writes` (§6). None,
+    what a save checks, is the leg as stored, so a production leg's refusal
+    of a mutating flow is unchanged."""
     entry = entry_named(target, name)
     migrated = is_migrated(target)
     view = {k: v for k, v in target.items() if k not in LEG_FIELDS and k not in ("environments", MIGRATED)}
@@ -674,6 +750,12 @@ def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
             (entry.get("environment") or "production") == "production"
             or shares_production_origin(target, entry["name"])):
         view["flows"] = [f for f in view["flows"] if not (isinstance(f, Mapping) and f.get("mutating") is True)]
+    if writing_flows is not None and isinstance(view.get("flows"), list):
+        view["flows"] = [
+            {**f, "mutating": False}
+            if isinstance(f, Mapping) and f.get("mutating") is True
+            and (writing_flows is not True or declared_writes(f) is None) else f
+            for f in view["flows"]]
     return view
 
 
@@ -687,7 +769,7 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
     flows: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, Mapping):
-            raise _invalid("a flow must be {id, goal, start_path, mutating?}")
+            raise _invalid("a flow must be {id, goal, start_path, mutating?, writes?}")
         fid = item.get("id")
         if not isinstance(fid, str) or not _NAME.fullmatch(fid) or "--" in fid or fid == "report":
             raise _invalid("a flow id must be lower-case letters, digits and single hyphens, and not 'report'")
@@ -699,6 +781,14 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
             # that writes. Refused here, before anything is admitted.
             raise QaSpecError("qa_mutating_flow_on_production",
                               f"flow {fid} is mutating and the target's environment is production")
+        writes = declared_writes(item)
+        if writes is not None:
+            writes = _text(writes, f"flow {fid}'s writes", limit=WRITES_MAX)
+        elif item.get("writes") is not None and not isinstance(item.get("writes"), str):
+            raise _invalid(f"flow {fid}'s writes must be one line of text")
+        # §6: a mutating flow stored before `writes` was required declares
+        # nothing it may write, so it renders read-only. Only ever a write off.
+        mutating = mutating and writes is not None
         start = _path(item.get("start_path", "/"), f"flow {fid}'s start_path")
         # `start_path` is relative to the base and exclusions to the origin,
         # so both readings are checked: `/logout` under `/app` is `/app/logout`.
@@ -706,7 +796,7 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
         if _excluded(start, excluded) or _excluded(opened, excluded):
             raise QaSpecError("qa_screen_excluded", f"flow {fid} starts on an excluded path")
         flows.append({"id": fid, "goal": _text(item.get("goal"), f"flow {fid}'s goal", limit=500),
-                      "start_path": start, "mutating": mutating})
+                      "start_path": start, "mutating": mutating, **({"writes": writes} if mutating else {})})
     if len({f["id"] for f in flows}) != len(flows):
         raise _invalid("two flows share an id")
     return flows
@@ -1129,11 +1219,13 @@ def _gate_report_line() -> str:
     )
 
 
-def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False) -> str:
+def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False,
+            declared: str | None = None) -> str:
     paths, controls = _exclusions(target)
     writes = (
-        "This flow may submit forms on the target, whose environment is non-production; it still never "
-        "sends anything to another origin."
+        "This flow may submit forms on the target, whose environment is non-production, and only to do "
+        f"what it declares it writes, which is the limit of what it may write: \"{declared}\" Write nothing "
+        "else; it still never sends anything to another origin."
         if mutating else
         "Submit no form and send no write: the live browser refuses any POST, PUT, PATCH or DELETE to the "
         "target, and anything but GET to any other origin."
@@ -1262,18 +1354,70 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
             f"at `{width}`: run `swarm-handoff device {width}`, then `swarm-handoff record start "
             f"flow-{fid}-{width}`, reach the goal, then `swarm-handoff record stop`"
         )
+    json_name = FLOW_LAYOUT["json"].format(id=fid)
     return (
         f"Goal-driven flow test of {target['name']}. Open {screen_url(base, flow['start_path'])} in the live "
         f"browser.{_sign_in_note(own_login, start_clicks(target))} {_FLOW_TOOL_SENTENCE[tool]}, reach this goal as a person "
         f"would, without typing addresses: {flow['goal']}. Do it once per width, recorded: "
-        f"{'; '.join(runs)}. For each run write in flow-{fid}.json whether the goal was reached, the steps "
-        f"taken, and every point where a label was missing, ambiguous or misleading, each with a "
-        f"screenshot taken with browser_take_screenshot and no filename (it is saved under "
-        f"$SWARM_ARTIFACTS_DIR/screenshots). List in flow-{fid}.json every screenshot you take, by its file "
-        f"name, with what it shows. Bundle flow-{fid}.json, the flows/flow-{fid}-*.gif recordings and the "
-        f"screenshots into flow-{fid}.tar under $SWARM_ARTIFACTS_DIR. "
-        f"{_safety(target, _origin(base), mutating=flow['mutating'])} {NO_CHANGE}"
+        f"{'; '.join(runs)}. {_capture_rule(tool)} {_retry_rule(tool)} For each run write in {json_name} whether "
+        f"the goal was reached, the steps taken, and every point where a label was missing, ambiguous or "
+        f"misleading, each with its screenshot. {_flow_json_line(json_name)} Then bundle it: in "
+        f"$SWARM_ARTIFACTS_DIR run {_flow_tar_command(fid)}, and stage {FLOW_LAYOUT['flow_tar'].format(id=fid)} "
+        f"under that name. {_wrote_line(flow)}"
+        f"{_safety(target, _origin(base), mutating=flow['mutating'], declared=flow.get('writes'))} {NO_CHANGE}"
     )
+
+
+def _capture_rule(tool: str) -> str:
+    """Wait, then capture (QA-FLOW-CAPTURE (a)): a step's screenshot is taken
+    only once what proves its state is on the page, and the json says what
+    proved it, so a frame that shows otherwise is visible as a mismatch."""
+    return (
+        f"Wait, then capture: before its screenshot, each step waits at most {FLOW_WAIT_SECONDS} s, with "
+        f"{_FLOW_WAIT_SENTENCE[tool]}, for the text or element (role and name) that proves the state it "
+        "records, and puts it in the step's `proof`: " '{"text": "<text>"} or {"element": "<role> <name>"}; '
+        'if it never appears, {"missing": "<what>"}, and the step did not reach its state.'
+    )
+
+
+def _retry_rule(tool: str) -> str:
+    """A settling page is retried, bounded (QA-FLOW-CAPTURE (b)). Re-run 8's
+    failed calls were the brief's: it carried no retry rule, and the gate
+    reloads the page when `swarm-handoff device` changes the user agent
+    (DEVICE-RELOAD), which makes every ref taken before it stale."""
+    calls, again = _FLOW_SETTLE_CALLS[tool]
+    return (
+        f"{calls} that fails while the page settles (a stale ref, a navigation, an element not ready, a "
+        f"timeout): {again}, at most {FLOW_TOOL_TRIES} tries in all; each failed try goes in the step's "
+        '`retries` as {"call": "<call>", "reason": "<error>"}, and a step fails only after its last try. '
+        "`swarm-handoff device` may reload the page: read it after, and never reuse a ref from before it."
+    )
+
+
+def _flow_json_line(json_name: str) -> str:
+    """The flow json's shape, said once a brief."""
+    return (
+        f'{json_name} is {{"flow", "runs": [{{"width", "goal_reached", "stopped", "steps": [{{"did", "state", '
+        '"proof", "screenshot", "shows", "retries"}], "labels": [{"screenshot", "problem"}]}]}; a step\'s '
+        "`screenshot` is its screenshots/ file (browser_take_screenshot, no filename)."
+    )
+
+
+def _flow_tar_command(fid: str) -> str:
+    """The one command that bundles a flow, rendered from `FLOW_LAYOUT`."""
+    return (
+        f"`tar -cf {FLOW_LAYOUT['flow_tar'].format(id=fid)} {FLOW_LAYOUT['json'].format(id=fid)} "
+        f"{FLOW_LAYOUT['recording'].format(id=fid, width='*')}` followed by every "
+        f"{FLOW_LAYOUT['screenshots']} file its json lists"
+    )
+
+
+def _wrote_line(flow: Mapping[str, Any]) -> str:
+    """A writing flow's report repeats its `writes` word for word (§6)."""
+    if not flow["mutating"]:
+        return ""
+    return (f"Set flow-{flow['id']}.json's `this_flow_wrote` to this sentence, word for word: "
+            f"{flow['writes']} ")
 
 
 def _flow_batch_prompt(target: Mapping[str, Any], base: str, batch_id: str, flows: Sequence[Mapping[str, Any]],
@@ -1287,6 +1431,11 @@ def _flow_batch_prompt(target: Mapping[str, Any], base: str, batch_id: str, flow
         f"({n}) `{f['id']}`: open {screen_url(base, f['start_path'])}; goal: {f['goal']}."
         for n, f in enumerate(flows, 1)
     )
+    batch_tar = FLOW_LAYOUT["batch_tar"].format(step=batch_id)
+    inner = " ".join(FLOW_LAYOUT["flow_tar"].format(id=f["id"]) for f in flows)
+    # Re-run 8's two legs wrote the batch as flow-1.tar: the confusable name
+    # is said, beside the one command that writes the right one.
+    confusable = FLOW_LAYOUT["flow_tar"].format(id=batch_id.removeprefix("flows-"))
     return (
         f"Goal-driven flow tests of {target['name']}: {len(flows)} flows, run one after another in this "
         f"order, in the one live browser.{_sign_in_note(own_login, start_clicks(target))} The browser stays "
@@ -1294,16 +1443,15 @@ def _flow_batch_prompt(target: Mapping[str, Any], base: str, batch_id: str, flow
         f"each flow's goal as a person would, without typing addresses after opening its start page. For "
         f"each flow <id>, at each width of {', '.join(widths)}: run `swarm-handoff device <width>`, then "
         f"`swarm-handoff record start flow-<id>-<width>`, open the flow's start page, reach the goal, then "
-        f"`swarm-handoff record stop`. Then STOP and capture that flow before you start the next: write "
-        f"flow-<id>.json saying, for each width, whether the goal was reached, the steps taken, and every "
-        f"point where a label was missing, ambiguous or misleading, each with a screenshot taken with "
-        f"browser_take_screenshot and no filename (it is saved under $SWARM_ARTIFACTS_DIR/screenshots); list "
-        f"in flow-<id>.json every screenshot you took during that flow, by its file name, with what it shows; "
-        f"and bundle flow-<id>.json, the flows/flow-<id>-*.gif recordings and those screenshots into "
-        f"flow-<id>.tar under $SWARM_ARTIFACTS_DIR. A flow you cannot finish still gets its flow-<id>.json, "
+        f"`swarm-handoff record stop`. {_capture_rule(tool)} {_retry_rule(tool)} Then STOP and capture that "
+        f"flow before you start the next: write flow-<id>.json saying, for each width, whether the goal was "
+        f"reached, the steps taken, and every point where a label was missing, ambiguous or misleading, each "
+        f"with its screenshot. {_flow_json_line('flow-<id>.json')} Then bundle it: in $SWARM_ARTIFACTS_DIR "
+        f"run {_flow_tar_command('<id>')}. A flow you cannot finish still gets its flow-<id>.json, "
         f"saying where it stopped and why, and its flow-<id>.tar; then go on to the next flow. The flows: "
-        f"{listing} Last, bundle every flow-<id>.tar of this batch, and nothing else, into {batch_id}.tar "
-        f"under $SWARM_ARTIFACTS_DIR. {_safety(target, _origin(base))} {NO_CHANGE}"
+        f"{listing} Last, in $SWARM_ARTIFACTS_DIR run `tar -cf {batch_tar} {inner}`: the batch is staged "
+        f"as {batch_tar} and under no other name (not {confusable}, which names a flow's own tar). "
+        f"{_safety(target, _origin(base))} {NO_CHANGE}"
     )
 
 
@@ -1359,14 +1507,30 @@ def _flow_report_prompt(flows: Sequence[Mapping[str, Any]],
         staged.append(f"{batch_id}.tar, holding {inner}")
     staged += [f"flow-{f['id']}.tar" for f in flows if f["id"] not in batched]
     order = ", ".join(f"`{f['id']}`" for f in flows)
+    wrote = "".join(
+        f" In the section of `{f['id']}`, first, the line \"This flow wrote: {f['writes']}\", word for word."
+        for f in flows if f["mutating"])
     return (
         f"Write the visual QA report of the flows. Unpack every staged tar, and every flow tar a batch tar "
         f"holds, each flow's into its own directory: {'; '.join(staged)}. A flow tar that is missing, from "
         f"its batch tar or because the batch tar is missing, is itself a finding, naming the flow. The "
         f"flows, in order: {order}. Write flows.md: one section per flow, and in it, for each "
         f"width, whether the goal was reached, the steps, and every finding with its screenshot embedded by "
-        f"relative link; a screenshot no json describes is listed as one nobody described. Copy every "
+        f"relative link; a screenshot no json describes is listed as one nobody described. {_flow_check_line()}"
+        f"{wrote} Copy every "
         f"screenshot and recording to $SWARM_ARTIFACTS_DIR next to flows.md. {NO_CHANGE}"
+    )
+
+
+def _flow_check_line() -> str:
+    """The flow report reads each json as `check_flow_output` does."""
+    return (
+        "Read each flow's steps by their `proof`: a step with no `proof`, or whose `proof` says `missing`, "
+        "is written as not proven, naming the state it claimed, and never as reached, whatever its "
+        "screenshot is said to show; name each flow's `retries`, with their count and reasons, and any "
+        f"step that retried more than {FLOW_TOOL_TRIES - 1} times. A tar named otherwise than "
+        f"{FLOW_LAYOUT['batch_tar'].format(step='<step>')} or {FLOW_LAYOUT['flow_tar'].format(id='<id>')} is "
+        "named, with the name it should have had."
     )
 
 
@@ -1475,9 +1639,60 @@ def _step(step_id: str, profile: str, model: str, prompt: str, *, timeout: int,
     return step
 
 
-def _workflow(target: Mapping[str, Any], title: str, steps: list[dict[str, Any]]) -> dict[str, Any]:
+#: A leg-name word that names an environment, and how a title spells it:
+#: legs are named `stg-moderator`, `prod-reviewer`, `staging` (§1.1), so the
+#: environment is the word that is one of these and the role what is left.
+_ENVIRONMENT_WORDS = {
+    "prod": "production", "production": "production", "stg": "staging", "stage": "staging",
+    "staging": "staging", "dev": "development", "development": "development", "preview": "preview",
+    "test": "test", "qa": "qa", "uat": "uat", "local": "local",
+}
+#: Markup the API refuses in `metadata.description` (`schemas._MARKUP`): a
+#: target's name is put in the description with these spaced out.
+_DESCRIPTION_MARKUP = re.compile(r"[<>\[\]]|\*\*|__|```|~~~")
+
+
+def leg_words(target: Mapping[str, Any]) -> tuple[str | None, str]:
+    """(the leg's role, its environment) for a run's titles, read off the
+    leg's name (`LEG_NAME`): `stg-moderator` is ("moderator", "staging"),
+    `staging` (None, "staging"). A name with no environment word takes the
+    leg's mark, `production` or `non-production`; a target that is its own
+    one leg has no name and is its legacy name's environment."""
+    production = (target.get("environment") or "production") == "production"
+    name = target.get(LEG_NAME)
+    if not isinstance(name, str) or not name:
+        return None, legacy_environment_name(target)
+    words = [w for w in name.split("-") if w]
+    named = [_ENVIRONMENT_WORDS[w] for w in words if w in _ENVIRONMENT_WORDS]
+    role = "-".join(w for w in words if w not in _ENVIRONMENT_WORDS) or None
+    return role, named[0] if named else ("production" if production else "non-production")
+
+
+def _leg_title(kind: str, name: str, target: Mapping[str, Any]) -> str:
+    """`Visual QA: ai-studio, moderator, staging`: every leg of one target
+    titled apart (BGD, 2026-11-04: the reviewer and moderator legs read alike)."""
+    role, environment = leg_words(target)
+    return f"{kind}: {', '.join(w for w in (name, role, environment) if w)}"
+
+
+def _about(name: str, target: Mapping[str, Any], work: str) -> tuple[str, dict[str, str]]:
+    """(`metadata.description`, `metadata.feature`) of a QA run: plain text
+    within the API's 600 characters, and the feature every run of the target
+    shares."""
+    role, environment = leg_words(target)
+    plain = _DESCRIPTION_MARKUP.sub(" ", name)
+    leg_note = f" signed in as {role}" if role else ""
+    return (f"Visual QA of {plain}{leg_note} on {environment}. {work}",
+            {"title": f"Quality check of {name}"})
+
+
+def _workflow(target: Mapping[str, Any], title: str, steps: list[dict[str, Any]],
+              about: tuple[str, dict[str, str]]) -> dict[str, Any]:
+    description, feature = about
     return {
         "title": title,
+        "description": description,
+        "feature": feature,
         "label": "visual-qa",
         "repository_url": _repository(target),
         "strategy": "collect",
@@ -1579,7 +1794,12 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
         steps.append(_step("file", REVIEW_PROFILE, FILE_MODEL, _file_prompt(target, settings, run_group),
                            timeout=2700, depends_on=["report"], input_from={"report": "findings.json"}))
     _hold_step_bound(steps, batches)
-    return _workflow(target, f"Visual QA: {name}", steps)
+    report = ("The report lists every finding by screen; the file step files the new ones as GitHub issues."
+              if file == "issues" else "The report lists every finding by screen; nothing is filed.")
+    work = (f"{len(groups)} capture group{'s' if len(groups) != 1 else ''} screenshot its screens at "
+            f"{len(widths)} width{'s' if len(widths) != 1 else ''} in {' and '.join(themes)}, each group reviewed "
+            f"against its design{f', and {len(flows)} flows are run' if flows else ''}. {report}")
+    return _workflow(target, _leg_title("Visual QA", name, target), steps, _about(name, target, work))
 
 
 def _hold_step_bound(steps: Sequence[Mapping[str, Any]],
@@ -1633,7 +1853,10 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
         f"{_safety(target, _origin(base))} {NO_CHANGE}"
     )
     step = _step("discover", CAPTURE_PROFILE, CAPTURE_MODEL, prompt, timeout=1800, browser_tool="playwright")
-    return _workflow(target, f"Visual QA discovery: {name}", [step])
+    work = (f"One step lists the same-origin screens reachable from its base, at most {pages} pages "
+            f"{depth} links deep, for its runs to capture. Nothing is reviewed or filed.")
+    return _workflow(target, _leg_title("Visual QA discovery", name, target), [step],
+                     _about(name, target, work))
 
 
 def discovered_screens(target: Mapping[str, Any], document: Any) -> list[dict[str, str]]:
@@ -1912,3 +2135,117 @@ def validate_findings(document: Any, *, available: Collection[str] | None = None
         if isinstance(entry, Mapping) and _one_line(entry.get("title"), 300):
             check.about_run.append({k: (redact(v).text if isinstance(v, str) else v) for k, v in entry.items()})
     return check
+
+
+# --------------------------------------------------------------------------
+# The flow output check (QA-FLOW-CAPTURE, part of #2688)
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class FlowOutputCheck:
+    """One flow step's output, checked against `FLOW_LAYOUT`. `tar` is the
+    file read as the step's tar (None when none can be); `renamed` is
+    (written, expected) when a lone stray tar was read in its place; `lines`
+    say each thing found, plainly, redacted; `retries` counts each flow's
+    retried calls, for the flows that retried any. `ok` is False when the
+    output cannot be read as the layout says, or a step claims a state with
+    no proof."""
+
+    ok: bool = True
+    tar: str | None = None
+    renamed: tuple[str, str] | None = None
+    lines: list[str] = field(default_factory=list)
+    retries: dict[str, int] = field(default_factory=dict)
+
+    def flag(self, line: str) -> None:
+        self.ok = False
+        self.say(line)
+
+    def say(self, line: str) -> None:
+        self.lines.append(redact(line).text)
+
+
+def _quoted(value: Any, limit: int = 120) -> str:
+    text = " ".join(str(value).split())
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+def check_flow_output(step_id: str, flow_ids: Sequence[str], *, files: Collection[str],
+                      documents: Mapping[str, Any]) -> FlowOutputCheck:
+    """Check a flow step's output against `FLOW_LAYOUT`.
+
+    `step_id` is the step (`flows-<k>` or `flow-<id>`), `flow_ids` its flows
+    in order, `files` the names it wrote under $SWARM_ARTIFACTS_DIR (relative
+    paths), `documents` each flow's parsed `flow-<id>.json` by flow id.
+
+    The step's tar is `<step_id>.tar`. When it is missing and exactly one
+    other top-level tar is there that is none of its flows' own tars (re-run
+    8's flow-1.tar for flows-1), that one is read in its place, said in one
+    line; several are refused, named. Then every step of every run that
+    records a state needs a `proof` naming the text or element that proved
+    it, or what never appeared; a step whose proof says `missing` is said as
+    not proven; retries past `FLOW_TOOL_TRIES` or without a reason are
+    flagged."""
+    check = FlowOutputCheck()
+    expected = FLOW_LAYOUT["batch_tar"].format(step=step_id)
+    own = {FLOW_LAYOUT["flow_tar"].format(id=fid) for fid in flow_ids} - {expected}
+    strays = sorted(n for n in files if isinstance(n, str) and n.endswith(".tar") and "/" not in n
+                    and n != expected and n not in own)
+    if expected in files:
+        check.tar = expected
+    elif len(strays) == 1:
+        check.tar = strays[0]
+        check.renamed = (strays[0], expected)
+        check.say(f"{step_id} packaged its flow output as {strays[0]}, not {expected}: read as {expected}")
+    elif strays:
+        check.flag(f"{step_id} wrote {', '.join(strays)} in place of {expected}: refused, as the layout "
+                   f"names one tar, {expected}")
+    else:
+        check.flag(f"{step_id} wrote no {expected}")
+    for fid in flow_ids:
+        _check_flow_document(check, fid, documents.get(fid))
+    return check
+
+
+def _check_flow_document(check: FlowOutputCheck, fid: str, document: Any) -> None:
+    name = FLOW_LAYOUT["json"].format(id=fid)
+    if document is None:
+        check.flag(f"flow {fid}: no {name}")
+        return
+    runs = document.get("runs") if isinstance(document, Mapping) else None
+    if not isinstance(runs, list):
+        check.flag(f"flow {fid}: {name} is not {{flow, runs}}")
+        return
+    retried = 0
+    for run in runs:
+        if not isinstance(run, Mapping):
+            check.flag(f"flow {fid}: a run of {name} is not an object")
+            continue
+        width = _quoted(run.get("width", "an unnamed width"), 20)
+        steps = run.get("steps") if isinstance(run.get("steps"), list) else []
+        for n, step in enumerate(steps, 1):
+            if not isinstance(step, Mapping):
+                continue
+            where = f"flow {fid} at {width}, step {n}"
+            proof = step.get("proof")
+            kinds = [k for k in ("text", "element", "missing")
+                     if isinstance(proof, Mapping) and isinstance(proof.get(k), str) and proof[k].strip()]
+            if not kinds:
+                if "screenshot" in step or "state" in step:
+                    check.flag(f"{where}: {_quoted(step.get('screenshot', 'its screenshot'))} has no proof of "
+                               f"{_quoted(step.get('state', 'the state it claims'))}")
+            elif kinds == ["missing"]:
+                check.say(f"{where}: not proven, {_quoted(proof['missing'])} never appeared")
+            tries = step.get("retries", [])
+            if not isinstance(tries, list):
+                check.flag(f"{where}: retries is not a list")
+                continue
+            retried += len(tries)
+            if len(tries) > FLOW_TOOL_TRIES - 1:
+                check.flag(f"{where}: more than {FLOW_TOOL_TRIES - 1} retries ({len(tries)})")
+            if any(not isinstance(t, Mapping) or not _prose(t.get("reason"), 500) for t in tries):
+                check.flag(f"{where}: a retry without a reason")
+    if retried:
+        check.retries[fid] = retried
+        check.say(f"flow {fid}: {retried} retried {'call' if retried == 1 else 'calls'} while the page settled")

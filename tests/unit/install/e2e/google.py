@@ -97,6 +97,8 @@ class Cloud:
     revisions: dict[str, dict[str, Any]] = field(default_factory=dict)  # revision name -> knative revision
     run_policies: dict[str, dict[str, Any]] = field(default_factory=dict)  # service resource -> its policy
     scheduler_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    run_jobs: dict[str, dict[str, Any]] = field(default_factory=dict)  # name -> Cloud Run job
+    bucket_policies: dict[str, dict[str, Any]] = field(default_factory=dict)  # bucket -> its IAM policy
     #: Cloud Monitoring: notification channels, swarm_* log metric descriptor types, alert policies.
     channels: list[dict[str, Any]] = field(default_factory=list)
     descriptors: list[str] = field(default_factory=list)
@@ -400,6 +402,12 @@ def register(world: World, cloud: Cloud) -> None:
         found = world.buckets.get(call.group(1))
         return found if found is not None else error(404, "NOT_FOUND", call.group(1))
 
+    @route("GET", rf"{STORAGE}/b/([^/]+)/iam")
+    def bucket_policy(call: Call) -> Any:
+        if call.group(1) not in world.buckets:
+            return error(404, "NOT_FOUND", call.group(1))
+        return cloud.bucket_policies.get(call.group(1)) or {"bindings": [], "etag": "BwE2E"}
+
     @route("POST", rf"{STORAGE}/b")
     def create_bucket(call: Call) -> Any:
         body = dict(call.body or {})
@@ -625,6 +633,10 @@ def register(world: World, cloud: Cloud) -> None:
     @route("GET", r"https://compute\.googleapis\.com/compute/v1/(projects/[^/]+/regions/[^/]+/subnetworks/[^/]+)")
     def subnetwork(call: Call) -> Any:
         return cloud.subnetworks.get(call.group(1)) or error(404, "NOT_FOUND", call.group(1))
+
+    @route("GET", r"https://run\.googleapis\.com/v2/projects/([^/]+)/locations/([^/]+)/jobs/([^/:]+)")
+    def run_job(call: Call) -> Any:
+        return cloud.run_jobs.get(call.group(3)) or error(404, "NOT_FOUND", call.group(3))
 
     @route("GET", r"https://run\.googleapis\.com/v2/projects/([^/]+)/locations/([^/]+)/services/([^/]+)")
     def run_service(call: Call) -> Any:
