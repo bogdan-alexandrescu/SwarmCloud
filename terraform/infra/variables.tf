@@ -1546,3 +1546,22 @@ variable "voice_speech" {
     error_message = "voice_speech.disk_gb is at least 100 (the image alone is about 50 GB) and idle_minutes at least 1."
   }
 }
+
+# The managed plugins' bucket (docs/design/managed-plugins.md §3; plugins.tf).
+# Empty is "<project_id>-swarm-plugins", the name the design gives it and the
+# one `swarm install`'s verify check and `swarm doctor` look for: a fresh
+# deployment sets nothing. A name is accepted only to adopt a different one;
+# it is never one of the shared project's buckets (SHARED_DENY_LIST in
+# scripts/lib/common.sh), which all start "saga-" or carry "avatars", so a
+# name must contain "swarm".
+variable "plugins_bucket_name" {
+  description = "The managed plugins' bucket (plugins.tf). Empty: <project_id>-swarm-plugins."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.plugins_bucket_name == "" || (can(regex("^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$", var.plugins_bucket_name)) && strcontains(var.plugins_bucket_name, "swarm"))
+    error_message = "plugins_bucket_name is empty (<project_id>-swarm-plugins) or a bucket name of 3-63 lower-case letters, digits, '-' or '_' that contains \"swarm\"."
+  }
+}

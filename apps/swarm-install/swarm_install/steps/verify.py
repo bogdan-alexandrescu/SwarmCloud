@@ -7,6 +7,7 @@
 | `verify.digests` | `other.verify-digests` | every service serves 100 % on its latest ready revision, and that revision's **digest** is the release's | 28: labels lie; a pinned revision served 0 % |
 | `verify.reconciler-jobs` | (lesson 30) | the reconciler may list Jobs in every tenant namespace, namespaced, by email and by uniqueId | 30: it listed Jobs at cluster scope and saw nothing |
 | `verify.firestore-migrations` | `other.firestore-migrations` | the state and the install record are at this engine's schema | |
+| `verify.plugins` | (managed-plugins.md §15) | the managed plugins' bucket exists, the `swarm-plugin-intake` job is deployed, and a tenant worker account may read `platform/` (`swarm doctor`'s same check) | |
 | `verify.end-to-end` | `other.verify-end-to-end`, `other.verify-row`, `other.verify-gke`, `other.verify-live-browser`, `other.verify-code-intelligence` | seven runs on the NEW deployment: a single task and a workflow from the plugin and from the console, each to a pull request, and three check runs (a task on GKE, a live-browser task, a code-intelligence read) | 18: the plugin signs in with the Desktop client; 43: no run's task cloned or pushed with a personal access token; the console's used an App installation token (below) |
 
 **The new deployment, never the person's current context.** The step uses
@@ -90,6 +91,9 @@ from swarm_common.identity import tenant_id_for_group
 
 from ..record import PERSONAL, RECORD_SCHEMA_VERSION, VERIFY_RUNS, console_document, engine_document
 from ..state import SCHEMA_VERSION
+from ..doctor import NotFound, Target
+from ..exitcodes import UNKNOWN
+from ..verbs.doctor import plugins_finding
 from ..swarm_context import (Run, deployment_url, list_contexts, points_at, run_command, run_interactive, swarm_cli,
                              verify_env)
 from ..waits import FAILED, WaitSpec, cloud_page
@@ -229,6 +233,26 @@ class VerifyGcp(Gcp):
     def knative_revision(self, project: str, region: str, name: str) -> dict[str, Any] | None:
         """A revision's v1 view: `status.imageDigest` is the digest it resolved."""
         return self._call("GET", f"{self._knative(project, region)}/revisions/{name}", missing_ok=True)
+
+    def get_or_none(self, url: str) -> dict[str, Any] | None:
+        """One GET; None on a 404 (the plugins check's bucket, job and bucket policy)."""
+        return self._call("GET", url, missing_ok=True)
+
+
+@dataclass(frozen=True)
+class _AsDoctorGcp:
+    """`VerifyGcp` as `swarm doctor`'s reads, so stage 14 runs the doctor's own check."""
+
+    gcp: VerifyGcp
+
+    def get(self, url: str, *, permission: str, resource: str) -> Mapping[str, Any]:
+        found = self.gcp.get_or_none(url)
+        if found is None:
+            raise NotFound(f"{url.split('?')[0]} is absent")
+        return found
+
+    def post(self, url: str, body: Mapping[str, Any], *, permission: str, resource: str) -> Mapping[str, Any]:
+        raise PermissionError("the plugins check only reads")
 
 
 @dataclass
@@ -602,6 +626,26 @@ class FirestoreMigrationsStep(_Base):
         if version != RECORD_SCHEMA_VERSION:
             return Observation(UNMET, f"the install record is schema {version}, not {RECORD_SCHEMA_VERSION}")
         return Observation(MET, f"state schema {SCHEMA_VERSION}, record schema {RECORD_SCHEMA_VERSION}")
+
+
+class PluginsStep(_Base):
+    id = "verify.plugins"
+    check_name = "plugins"
+    _explain = (
+        "Managed plugins are pinned in one bucket and unpacked only by the swarm-plugin-intake job; a "
+        "worker loads platform plugins from platform/, so a tenant account must be able to read it "
+        "(managed-plugins.md section 15)."
+    )
+
+    def _check(self, ctx: Any) -> Observation:
+        target = Target(project=ctx.project, environment=str(getattr(ctx.state, "environment", "") or ""),
+                        region=str(ctx.state.region or ctx.outputs.get("region") or ""),
+                        outputs=dict(ctx.outputs))
+        finding = plugins_finding(target, _AsDoctorGcp(self.gcp))
+        if finding.status == MET:
+            return Observation(MET, finding.detail)
+        cause = f"{finding.detail} ({finding.status})" if finding.status == UNKNOWN else finding.detail
+        return Observation(UNMET, f"{cause}; {finding.fix}")
 
 
 # -- the seven runs ---------------------------------------------------------------
@@ -1303,6 +1347,7 @@ def build_steps(gcp: Callable[[], VerifyGcp] = VERIFY_GCP, ask: Ask = ASK) -> li
         DigestsStep(gcp, ask),
         ReconcilerJobsStep(gcp, ask),
         FirestoreMigrationsStep(gcp, ask),
+        PluginsStep(gcp, ask),
         EndToEndStep(gcp, ask),
     ]
 

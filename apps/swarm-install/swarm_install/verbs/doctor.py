@@ -13,7 +13,10 @@ The **platform tier** runs when the caller can read the install state of the
 deployment (`--project`, else the gcloud configuration's project): every
 manifest entry's probe (`swarm_install.doctor`), `met`, `unmet` or `unknown`
 per entry, with the fix in words and the `swarm install --repair <id>` that
-repairs it, and one line on the hourly doctor. It never writes.
+repairs it, one line on the hourly doctor, and the managed plugins' check
+(`plugins_finding`: the bucket exists, the intake job is deployed and a tenant
+worker account may read `platform/`; managed-plugins.md §15), which stage 14's
+`verify.plugins` runs too. It never writes.
 
 Exit codes follow `sc`: 0 every probed entry is met; 3 something is unmet or
 could not be checked (never 0 when a probe did not run); 1 the doctor could
@@ -28,12 +31,13 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
 from .. import doctor
 from .. import manifest as manifest_model
-from ..exitcodes import ExitCode
+from ..exitcodes import MET, UNKNOWN, UNMET, ExitCode
 from ..state import STATE_OBJECT, GcsObjectStore, InstallState, local_path, state_bucket
 
 NAME = "doctor"
@@ -134,6 +138,82 @@ def make_deps(state: InstallState) -> doctor.Deps:
     return doctor.Deps(gcp=rest, api=_InstallApi(state), kube=doctor.kube_for(rest._bearer))
 
 
+# -- the managed plugins' infrastructure (managed-plugins.md §15) ---------------
+
+PLUGINS_CHECK = "plugins.infrastructure"
+#: terraform/infra/plugins.tf's job and the account prefix modules/tenancy and
+#: scripts/register-tenant.sh give every tenant's worker.
+PLUGIN_INTAKE_JOB = "swarm-plugin-intake"
+TENANT_WORKER_PREFIX = "swarm-agent-worker-"
+#: Roles carrying storage.objects.get.
+OBJECT_READ_ROLES = frozenset({"roles/storage.objectViewer", "roles/storage.objectUser",
+                               "roles/storage.objectAdmin", "roles/storage.admin"})
+PLUGINS_FIX = ("re-run `swarm install`: its infra passes apply terraform/infra/plugins.tf "
+               "(the plugins bucket, its grants and the swarm-plugin-intake job)")
+STORAGE_API = "https://storage.googleapis.com/storage/v1"
+
+
+def plugins_bucket(project: str, outputs: Mapping[str, Any]) -> str:
+    """The bucket terraform/infra names `<project>-swarm-plugins` unless the
+    install recorded another (`plugins_bucket`, the root's output)."""
+    return str(outputs.get("plugins_bucket") or f"{project}-swarm-plugins")
+
+
+def platform_reader(policy: Mapping[str, Any], bucket: str) -> str:
+    """The first tenant worker account `policy` lets get objects under
+    `platform/`, or "". A condition counts only when one of its `||` arms is
+    exactly the `platform/` prefix of this bucket."""
+    platform = f'resource.name.startsWith("projects/_/buckets/{bucket}/objects/platform/")'
+    for binding in policy.get("bindings") or ():
+        if binding.get("role") not in OBJECT_READ_ROLES:
+            continue
+        expression = str((binding.get("condition") or {}).get("expression") or "")
+        if expression and platform not in (arm.strip() for arm in expression.split("||")):
+            continue
+        for member in binding.get("members") or ():
+            account = str(member).removeprefix("serviceAccount:")
+            if str(member).startswith("serviceAccount:") and account.startswith(TENANT_WORKER_PREFIX):
+                return account
+    return ""
+
+
+def _found(gcp: doctor.Gcp, url: str, permission: str, resource: str) -> Mapping[str, Any] | None:
+    try:
+        return gcp.get(url, permission=permission, resource=resource)
+    except doctor.NotFound:
+        return None
+
+
+def plugins_finding(target: doctor.Target, gcp: doctor.Gcp) -> doctor.Finding:
+    """The plugins bucket exists, the intake job is deployed in the region, and
+    at least one tenant worker account may read `platform/`. Never writes."""
+    bucket = plugins_bucket(target.project, target.outputs)
+    gcs = f"//storage.googleapis.com/projects/_/buckets/{bucket}"
+    job = f"projects/{target.project}/locations/{target.region}/jobs/{PLUGIN_INTAKE_JOB}"
+    try:
+        if _found(gcp, f"{STORAGE_API}/b/{bucket}", "storage.buckets.get", gcs) is None:
+            return doctor.Finding(PLUGINS_CHECK, UNMET, f"the plugins bucket gs://{bucket} does not exist",
+                                  fix=PLUGINS_FIX)
+        if not target.region:
+            return doctor.Finding(PLUGINS_CHECK, UNKNOWN, "the install state records no region to look for "
+                                  f"the {PLUGIN_INTAKE_JOB} job in", fix=PLUGINS_FIX)
+        if _found(gcp, f"https://run.googleapis.com/v2/{job}", "run.jobs.get",
+                  f"//run.googleapis.com/{job}") is None:
+            return doctor.Finding(PLUGINS_CHECK, UNMET, f"the plugin intake job {PLUGIN_INTAKE_JOB} is not deployed "
+                                  f"in {target.region} (it is made once the release carries its image)",
+                                  fix=PLUGINS_FIX)
+        policy = _found(gcp, f"{STORAGE_API}/b/{bucket}/iam?optionsRequestedPolicyVersion=3",
+                        "storage.buckets.getIamPolicy", gcs) or {}
+    except Exception as exc:  # noqa: BLE001 - a read that cannot run is unknown, never fine
+        return doctor.Finding(PLUGINS_CHECK, UNKNOWN, f"{type(exc).__name__}: {exc}", fix=PLUGINS_FIX)
+    reader = platform_reader(policy, bucket)
+    if not reader:
+        return doctor.Finding(PLUGINS_CHECK, UNMET, f"no tenant worker account may read platform/ in gs://{bucket}",
+                              fix=PLUGINS_FIX)
+    return doctor.Finding(PLUGINS_CHECK, MET, f"gs://{bucket} exists, {PLUGIN_INTAKE_JOB} is deployed, "
+                          f"and {reader} may read platform/")
+
+
 # -- the verb ------------------------------------------------------------------
 
 
@@ -168,10 +248,10 @@ def run(args: argparse.Namespace) -> int:
         principal=principal(),
     )
     deps = make_deps(state)
-    findings = doctor.run(manifest, target, deps)
+    findings = [*doctor.run(manifest, target, deps), plugins_finding(target, deps.gcp)]
     code = doctor.exit_code(findings)
     hourly = doctor.hourly_doctor(target, deps)
-    skipped = len(manifest.entries) - len(findings)
+    skipped = len(manifest.entries) - (len(findings) - 1)
     if args.json:
         print(json.dumps({
             "project": project,

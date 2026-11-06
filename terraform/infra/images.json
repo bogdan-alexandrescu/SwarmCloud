@@ -26,6 +26,12 @@
       "resources": [],
       "outputs": ["swarm_live_manifest"]
     },
+    "swarm-plugin-intake": {
+      "resources": [
+        "google_cloud_run_v2_job.plugin_intake"
+      ],
+      "outputs": []
+    },
     "swarm-typesafe-fwd": {
       "resources": [],
       "outputs": ["swarm_typesafe_fwd_manifest"]

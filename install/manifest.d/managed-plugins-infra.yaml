@@ -1,0 +1,352 @@
+# Lane MANAGED-PLUGINS-INFRA (lane 3 of docs/design/managed-plugins.md section 17;
+# part of #2688): terraform/infra/plugins.tf makes the managed plugins' bucket,
+# its grants, the intake job's account, network and firewalls, and (once the
+# release carries the swarm-plugin-intake image) the intake job. swarm install's
+# infra passes apply it with no prompt and no step of its own (section 15);
+# stage 14's verify.plugins and swarm doctor's plugins.infrastructure check that
+# the bucket exists, the job is deployed and a tenant account may read platform/.
+version: 1
+entries:
+- id: bucket.plugins
+  kind: bucket
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets describe gs://$P-swarm-plugins
+  apply: terraform/infra/plugins.tf google_storage_bucket.plugins
+  verify: the bucket exists, uniform access, public access prevented (verify.plugins)
+  explain: pinned plugin copies by digest under platform/ and tenants/<t>/, intake under quarantine/ and staging/ (section 3)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - api.storage
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_storage_bucket.plugins
+- id: iam-binding.plugins-api-objects
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
+  apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_api_objects
+  verify: swarm-api holds roles/storage.objectUser on the plugins bucket, the catalogues one writer
+  explain: managed-plugins.md sections 2.2, 3 and 9.3
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.plugins
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_storage_bucket_iam_member.plugins_api_objects
+- id: iam-binding.plugins-intake-read
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
+  apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_intake_read
+  verify: the intake account reads objects under quarantine/ only
+  explain: managed-plugins.md sections 2.2, 3 and 9.3
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.plugins
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_storage_bucket_iam_member.plugins_intake_read
+- id: iam-binding.plugins-intake-stage
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
+  apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_intake_stage
+  verify: the intake account creates objects under staging/ only
+  explain: managed-plugins.md sections 2.2, 3 and 9.3
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.plugins
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_storage_bucket_iam_member.plugins_intake_stage
+- id: iam-binding.plugins-reconciler-list
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
+  apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_reconciler_list
+  verify: the reconciler lists and reads the plugins bucket for garbage collection
+  explain: managed-plugins.md sections 2.2, 3 and 9.3
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.plugins
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_storage_bucket_iam_member.plugins_reconciler_list
+- id: iam-binding.plugins-reconciler-gc
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
+  apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_reconciler_gc
+  verify: the reconciler deletes under platform/ and tenants/ only, with the delete-only role
+  explain: managed-plugins.md sections 2.2, 3 and 9.3
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.plugins
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_storage_bucket_iam_member.plugins_reconciler_gc
+- id: iam-binding.plugins-tenant-read
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud storage buckets get-iam-policy gs://$P-swarm-plugins --project=$P
+  apply: terraform/infra/plugins.tf google_storage_bucket_iam_member.plugins_tenant_read
+  verify: each listed tenant worker reads platform/ and its own tenants/<t>/ only
+  explain: managed-plugins.md sections 2.2, 3 and 9.3
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - bucket.plugins
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_storage_bucket_iam_member.plugins_tenant_read
+- id: iam-binding.plugins-api-secret-versions
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud projects get-iam-policy $P | grep "swarm plugin secrets"
+  apply: terraform/infra/plugins.tf google_project_iam_member.plugins_api_secret_versions
+  verify: swarm-api holds secretVersionAdder conditioned on swarm-tenant-<t>-plg-* names
+  explain: plugin secret values are versions swarm-api adds (section 6.2)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - sa.swarm-api
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_project_iam_member.plugins_api_secret_versions
+- id: sa.swarm-plugin-intake
+  kind: service-account
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud iam service-accounts describe swarm-plugin-intake@$P.iam.gserviceaccount.com
+  apply: terraform/infra/plugins.tf google_service_account.plugin_intake
+  verify: account exists and holds no project role
+  explain: the intake job runs as it: no secret, no database, no egress (section 2.2)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - api.iam
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_service_account.plugin_intake
+- id: iam-binding.plugin-intake-deployer-acts-as
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud iam service-accounts get-iam-policy swarm-plugin-intake@$P.iam.gserviceaccount.com
+  apply: terraform/infra/plugins.tf google_service_account_iam_member.plugin_intake_deployer_acts_as
+  verify: the release deployer may deploy a job that runs as the intake account
+  explain: Cloud Run checks actAs on every job create and update
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - sa.swarm-plugin-intake
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_service_account_iam_member.plugin_intake_deployer_acts_as
+- id: network.plugin-intake
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-intake
+  apply: terraform/infra/plugins.tf google_compute_network.plugin_intake
+  verify: the intake network exists with no router and no NAT
+  explain: the intake job has no egress: no route out except Private Google Access (section 2.2)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - api.compute
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_compute_network.plugin_intake
+- id: network.plugin-intake-subnet
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-intake
+  apply: terraform/infra/plugins.tf google_compute_subnetwork.plugin_intake
+  verify: the intake subnetwork has Private Google Access
+  explain: the intake job has no egress: no route out except Private Google Access (section 2.2)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - api.compute
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_compute_subnetwork.plugin_intake
+- id: network.fw-plugin-intake-deny-egress
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-intake
+  apply: terraform/infra/plugins.tf google_compute_firewall.plugin_intake_deny_egress
+  verify: all egress from the intake network is denied
+  explain: the intake job has no egress: no route out except Private Google Access (section 2.2)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - api.compute
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_compute_firewall.plugin_intake_deny_egress
+- id: network.fw-plugin-intake-allow-apis
+  kind: network
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud compute networks list --project=$P --filter=name~plugin-intake
+  apply: terraform/infra/plugins.tf google_compute_firewall.plugin_intake_allow_google_apis
+  verify: HTTPS from the intake job is admitted, reaching only Google APIs
+  explain: the intake job has no egress: no route out except Private Google Access (section 2.2)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - api.compute
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-1
+refs:
+  terraform:
+  - infra/google_compute_firewall.plugin_intake_allow_google_apis
+- id: cloud-run-job.swarm-plugin-intake
+  kind: cloud-run-job
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud run jobs describe swarm-plugin-intake --region=$R --project=$P
+  apply: terraform/infra/plugins.tf google_cloud_run_v2_job.plugin_intake, once the release carries the swarm-plugin-intake image
+  verify: the job is deployed (verify.plugins)
+  explain: unpacks, checks and pins one quarantined archive, isolated (section 2.2)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - sa.swarm-plugin-intake
+  - network.plugin-intake-subnet
+  - image.swarm-plugin-intake
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-2
+refs:
+  terraform:
+  - infra/google_cloud_run_v2_job.plugin_intake
+- id: iam-binding.plugin-intake-api-runs
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud run jobs get-iam-policy swarm-plugin-intake --region=$R --project=$P
+  apply: terraform/infra/plugins.tf google_cloud_run_v2_job_iam_member.plugin_intake_api_runs
+  verify: swarm-api holds roles/run.jobsExecutorWithOverrides on the intake job only
+  explain: swarm-api starts one execution per intake, naming the intake id
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - cloud-run-job.swarm-plugin-intake
+  - sa.swarm-api
+evidence:
+- terraform/infra/plugins.tf
+notes: 'null'
+step: infra.pass-2
+refs:
+  terraform:
+  - infra/google_cloud_run_v2_job_iam_member.plugin_intake_api_runs
+- id: image.swarm-plugin-intake
+  kind: image
+  scope: core
+  stage: 4
+  provider: engine
+  check: the release image list carries swarm-plugin-intake
+  apply: images.copy copies the release digest (lane 4 builds apps/plugin-intake)
+  verify: the digest is in image_refs
+  explain: a gated image: the intake job is planned only once it has a digest
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - registry.swarm
+evidence:
+- terraform/infra/images.json
+notes: 'null'
+step: images.copy
+refs:
+  image:
+  - swarm-plugin-intake
