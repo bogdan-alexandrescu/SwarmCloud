@@ -1784,6 +1784,15 @@ def run(
     }
     if scope.get("note"):
         out["repository_note"] = scope["note"]
+    # A DISPATCH WHOSE ROWS NEVER STARTED (Product Oracle, 2026-11-06): each
+    # running task this session dispatched that no row followed, by a line
+    # naming it and the launch that starts its row. `new_only` leaves these
+    # out (the launch was written), so only this line catches a skipped one.
+    from . import launch
+
+    rowless = launch.rowless(out["running"]["single_tasks"])
+    if rowless:
+        out["rowless_tasks"] = rowless
     if not out["running"]["workflows"] and not out["running"]["single_tasks"]:
         # Said, not acted on (SC-AUTO-WATCH, owner 2026-10-14): an armed watch
         # with nothing to watch costs one read per interval, so the check

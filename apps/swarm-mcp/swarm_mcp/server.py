@@ -418,6 +418,15 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "The agent's instructions."},
+                "rows": {
+                    "type": "string",
+                    "enum": ["summary", "per-step", "pane"],
+                    "description": (
+                        "The row mode of the reply's `rows` launch, as `swarm_workflow_launch`'s "
+                        "`rows`. Unset, this project's layout (`/sc layout`) and then the sc "
+                        "plugin's `rows` setting decide, as they do for an attach."
+                    ),
+                },
                 "profile": {
                     "type": "string",
                     "default": "claude-code",
@@ -1795,7 +1804,10 @@ TOOLS: list[dict[str, Any]] = [
             "`running` lists the project's running workflows and your single tasks; "
             "`unchecked` names what was not checked and why; `repository: null` means "
             "the check was not scoped (`repository_note` says why). Then attach rows "
-            "with swarm_workflow_launch {attach: \"all\", repository, new_only: true}."
+            "with swarm_workflow_launch {attach: \"all\", repository, new_only: true}. "
+            "`rowless_tasks`, when present: a running task this session dispatched whose row "
+            "never started, each `line` naming it and the Workflow call that starts its row "
+            "(`launch`): make that call."
         ),
         "inputSchema": {
             "type": "object",
@@ -3354,10 +3366,28 @@ def _submitted_session_fields() -> dict[str, Any]:
     return out
 
 
-def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[str, Any]:
+def _dispatch_rows_mode(rows: Any) -> str | None:
+    """`swarm_dispatch`'s `rows`, checked before anything is sent: one of the
+    modes `swarm_workflow_launch` takes, or None (unset)."""
+    if rows is None:
+        return None
+    if rows not in (*config.ROWS_MODES, config.ROWS_PANE):
+        raise SwarmError(
+            f"swarm_dispatch: `rows` is one of {[*config.ROWS_MODES, config.ROWS_PANE]}; it was "
+            f"{rows!r}. Nothing was sent"
+        )
+    return rows
+
+
+def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]], rows: Any = None) -> dict[str, Any]:
     """The row launch for tasks just dispatched (#830): `swarm_dispatch`'s
     reply hands it back so a dispatched task gets a row without anyone asking
     for one. `sent` is `(task_id, label, task)` per task.
+
+    THE ROW MODE IS THE ATTACH'S (Product Oracle, 2026-11-06: a dispatch's
+    rows said `summary` in a per-step project): `rows`, the call's own,
+    outranks this project's saved layout and the plugin's `rows` option,
+    exactly as `swarm_workflow_launch`'s does (`layout.row_mode`).
 
     Never a reason for the dispatch to fail: the tasks are already in
     SwarmCloud, so a copy that cannot be written -- a bridge started outside
@@ -3379,7 +3409,7 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
         entry["task"] = task
         entries.append(with_console(entry, task))
     try:
-        rows = launch.for_tasks(entries)
+        rows = launch.for_tasks(entries, rows=_dispatch_rows_mode(rows))
     except (SwarmError, OSError) as exc:
         return {"error": str(exc), "attach_with": "/sc attach --all"}
     if rows.get("followed_by") != "band":
@@ -4023,7 +4053,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         "rows": _dispatch_rows([
             (task_id, (item.get("label") if isinstance(item, dict) else None) or None, task)
             for task_id, task, item in zip(ids, created, tasks)
-        ]),
+        ], args.get("rows")),
     }
     if limit_note:
         answer["max_batch_size_unread_because"] = limit_note
@@ -5210,6 +5240,8 @@ def _call(
     timeout. The answer is text, except `swarm_artifact`'s image, which is an
     `artifacts.ImageAnswer` that `serve` sends as text and image blocks."""
     _refuse_unknown_arguments(name, args)
+    if name == "swarm_dispatch":
+        _dispatch_rows_mode(args.get("rows"))
     if name == "swarm_dispatch" and args.get("tasks") is not None:
         # Before any request, `/v1/stats` included: neither the call nor a
         # task of it may name a pull request to publish onto (#2183).
@@ -5347,7 +5379,7 @@ def _call(
             # publishes onto in the form the API received.
             reply["publish_to_pr"] = {"pull_request": publish_to_pr}
         # Its live row, started by the session from this reply (#830).
-        reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
+        reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)], args.get("rows"))
         reply.update(_submitted_session_fields())
         reply.update(territory)
         for check in checks:
@@ -5420,6 +5452,10 @@ def _call(
         args = {**args, "since": since_token}
         reply = _follow_rows(client, args, expected_step, parents, keepalive=keepalive)
         _remember_person_waits(reply)
+        # A row follows these: `swarm_check` no longer names them rowless.
+        from . import launch
+
+        launch.remember_row_follow(args["task_ids"])
         reply["since"] = progress.HANDLES.issue(follower, reply["since"])
         if since_note:
             reply["since_note"] = since_note
