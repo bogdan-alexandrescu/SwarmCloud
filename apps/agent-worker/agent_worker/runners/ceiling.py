@@ -144,6 +144,19 @@ BUCKET_FIELDS = (
 #: findings "in my context" and the session after it rebuilt them from
 #: screenshots, because the handoff carried only the note file.
 SESSION_TAIL_MAX_CHARS = 12 * 1024
+#: Whether a handoff carries that tail at all: OFF unless this is "1"/"true"
+#: (BGD, 2026-11-06). The tail is the previous session's own assistant text
+#: fed back in as user input, and a fresh session started from it was refused
+#: on its FIRST call -- `model_refusal_no_fallback`, "safeguards flagged this
+#: message ... [reasoning_extraction]" (task_a27c0b2241d1492492ee,
+#: task_56ad2dba41f041aa835f) -- which failed every long task at the
+#: ceiling. The note file, the todos, the notes files, the diff summary and
+#: the commits still go in; the agent is told to keep its findings in files.
+SESSION_TAIL_ENV = "SWARM_CEILING_SESSION_TAIL"
+#: What a fresh session's first call ending in a refusal looks like in the
+#: stream: the CLI's own system event, or the provider's refusal text.
+REFUSAL_SUBTYPE = "model_refusal_no_fallback"
+_REFUSAL_MARKERS = (REFUSAL_SUBTYPE, "safeguards flagged")
 #: The most files of $SWARM_ARTIFACTS_DIR a handoff lists by name (#2897).
 NOTES_LIST_MAX = 40
 #: What a handoff lists of $SWARM_ARTIFACTS_DIR: the files an agent keeps
@@ -179,6 +192,40 @@ def _lowered(value: Any, cap: int) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         return None
     return min(value, cap)
+
+
+def session_tail_enabled(environ: Mapping[str, str]) -> bool:
+    """Whether a handoff carries the previous session's last words
+    (`SESSION_TAIL_ENV`, off by default)."""
+    return environ.get(SESSION_TAIL_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def first_call_refusal(parsed: Any) -> str | None:
+    """The refusal a session's stream ended in on its FIRST model call, or None.
+
+    `parsed` is one start's events (`cliagent._parse_cli_output`). A start
+    that got an answer -- a top-level assistant message that is not the
+    CLI's own API-error message -- did not end on its first call, whatever
+    followed. Otherwise a `system` event `model_refusal_no_fallback`, or a
+    failed `result` naming a safeguards refusal, is what it ended in; the
+    marker is returned so the failure can name it."""
+    events = [e for e in parsed if isinstance(e, Mapping)] if isinstance(parsed, list) else []
+    found: str | None = None
+    for event in events:
+        kind = event.get("type")
+        if kind == "assistant" and not event.get("parent_tool_use_id") and not (
+                event.get("isApiErrorMessage") or event.get("error")):
+            return None
+        if kind == "system" and event.get("subtype") == REFUSAL_SUBTYPE:
+            found = found or REFUSAL_SUBTYPE
+        elif kind in ("result", "assistant", "system"):
+            text = json.dumps(event.get("result") if kind == "result" else event.get("message"))
+            lowered = text.lower()
+            for marker in _REFUSAL_MARKERS:
+                if marker in lowered:
+                    found = found or ("safeguards refusal" if marker == "safeguards flagged"
+                                      else marker)
+    return found
 
 
 def resolve_limits(payload: Mapping[str, Any] | None, profile: str | None) -> CeilingLimits:
@@ -220,6 +267,9 @@ class CeilingWatcher:
         self.stops: list[dict[str, Any]] = []
         #: Why a ceiling stop was called for but no fresh session followed.
         self.skipped: str | None = None
+        #: Fresh sessions refused on their first call and started once more
+        #: from the minimal handoff (`minimal_handoff_prompt`).
+        self.refusal_restarts: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._fed: list[bytes] = []
         self._partial = b""
@@ -506,6 +556,7 @@ class CeilingWatcher:
             "fresh_sessions": self.fresh_sessions,
             "stops": list(self.stops),
             "skipped": self.skipped,
+            "refusal_restarts": list(self.refusal_restarts),
             **self.sessions_record(),
         }
 
@@ -803,8 +854,9 @@ def handoff_prompt(
 
     It carries the previous session's notes (#2897): its note file, the
     notes files it kept in $SWARM_ARTIFACTS_DIR (`files`), its last todo
-    list (`todos`) and its own last words (`session_tail`) -- what it knew
-    and had not yet written down."""
+    list (`todos`) and, only when `SESSION_TAIL_ENV` turns it on, its own
+    last words (`session_tail`) -- off by default, because that text fed back
+    as user input got the fresh session's first call refused."""
     why = (
         f"its context reached {stop.get('context_tokens', 0):,} tokens"
         if stop.get("why") == WHY_CONTEXT
@@ -847,6 +899,31 @@ def handoff_prompt(
             "What it said as it worked, including anything it had found and "
             f"not yet written down.\n\n{session_tail}"
         )
+    parts.append(f"## The task, as the first session was given it\n\n{task_prompt}")
+    if then:
+        parts.append(f"## And now\n\n{then}")
+    return "\n\n".join(parts)
+
+
+def minimal_handoff_prompt(
+    *, task_prompt: str, note: str | None, todos: Any = None, then: str | None = None,
+) -> str:
+    """The handoff a fresh session refused on its first call starts from once
+    more: the task, the note file and the todo list, nothing else of the
+    previous session's (no branch summary, file list or last words). `then`
+    is what this pass was to do -- the time left, or a finish, repair or gate
+    turn's prompt -- which is the platform's, not the session's."""
+    parts = [
+        "CONTEXT CEILING HANDOFF (#2524). You are a fresh session continuing a task "
+        "another session started; nothing in the workspace was undone and its "
+        "changes are on the branch or in the tree. Check the tree, read "
+        "$SWARM_ARTIFACTS_DIR, and carry the task on; do not redo finished work.",
+        f"## The previous session's note ($SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME})\n\n"
+        + (note or "(it wrote none)"),
+    ]
+    todo_text = _todo_lines(todos)
+    if todo_text:
+        parts.append(f"## Its todo list, as it last wrote it\n\n{todo_text}")
     parts.append(f"## The task, as the first session was given it\n\n{task_prompt}")
     if then:
         parts.append(f"## And now\n\n{then}")
