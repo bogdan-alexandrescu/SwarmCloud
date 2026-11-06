@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
-# Managed plugins: the bucket, its IAM, the intake job and its account
+# Managed plugins: the bucket, its IAM, the intake job and its network
+# (the job's account is made by terraform/bootstrap/plugin_intake.tf)
 # (docs/design/managed-plugins.md §2.2, §3, §9.3 and §15; lane 3 of §17).
 # ---------------------------------------------------------------------------
 #
@@ -42,8 +43,8 @@
 # this root lists, and the script's rows are asked for in the same pull
 # request.
 #
-# THE OTHER TEAM'S RESOURCES. Nothing here names one: one new bucket, one new
-# account, one new network, its subnetwork and two firewalls, all spelled from
+# THE OTHER TEAM'S RESOURCES. Nothing here names one: one new bucket, one
+# new network, its subnetwork and two firewalls, all spelled from
 # name_prefix or the project id; the grants are on the new bucket and job only,
 # and the one project-level row is conditioned on swarm-tenant-*-plg- names.
 
