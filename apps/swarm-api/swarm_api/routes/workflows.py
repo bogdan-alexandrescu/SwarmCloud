@@ -39,7 +39,7 @@ from pydantic import BaseModel, ConfigDict
 from swarm_common.models import Task
 from swarm_common.states import TERMINAL_STATES
 
-from .. import sessiontag
+from .. import route_scope, sessiontag
 from ..auth import AuthContext
 from .tasks import require_member
 from ..attempt_totals import IN_LIMIT, totals_for, with_totals
@@ -235,6 +235,7 @@ def _workflow_api(workflow: Any, *args: Any, step_tasks: dict[str, Task] | None 
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def create_workflow(
     body: WorkflowCreate,
     response: Response,
@@ -280,6 +281,7 @@ def create_workflow(
 
 
 @router.get("")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_workflows(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
@@ -684,6 +686,7 @@ def _without_rerun_replaced(workflow: Any, tasks: list[Task]) -> list[Task]:
 
 
 @router.get("/{workflow_id}")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def get_workflow(
     workflow_id: str,
     tenant_id: str = Depends(tenant_scope),
