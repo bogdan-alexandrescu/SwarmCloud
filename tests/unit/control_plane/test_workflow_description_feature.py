@@ -16,12 +16,14 @@ Offline: the real routes over FakeFirestore, and `WorkflowCreate` itself.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+from swarm_api import wfdescription
 from swarm_api.routes.workflows import STARTED_FROM, _started_from
 from swarm_api.schemas import DESCRIPTION_MAX_CHARS, FEATURE_TITLE_MAX_CHARS, WorkflowCreate
 
@@ -207,7 +209,24 @@ def test_every_list_row_serves_it_in_both_views(client, view):
     assert row["started_from"] == "console"
 
 
-def test_a_workflow_without_them_serves_nulls(client):
+def test_a_workflow_without_them_serves_nulls_and_a_generated_description(client, api_context, monkeypatch):
+    # No feature and no title are made up. The description is written for
+    # it after the submission returns, marked generated (`wfdescription`),
+    # with the switch as Terraform ships it.
+    service = api_context.submissions
+    monkeypatch.setattr(service, "_settings", replace(service._settings, workflow_description_model="off"))
+    workflow = _post(client)
+    assert wfdescription.wait_pending(10)
+    read = client.get(f"/v1/workflows/{workflow['workflow_id']}", headers=auth_header("alice")).json()
+    served = read["workflow"]
+    assert served["description"] == "build it." and served["description_source"] == "generated"
+    assert served["feature"] is None and served["title"] is None
+
+
+def test_a_workflow_without_them_serves_nulls(client, monkeypatch):
+    # What the submission itself stores: the generated description is a
+    # separate write after it returns, held by the test above.
+    monkeypatch.setattr(wfdescription, "after_submission", lambda *a, **k: None)
     workflow = _post(client)
     read = client.get(f"/v1/workflows/{workflow['workflow_id']}", headers=auth_header("alice")).json()
     served = read["workflow"]
