@@ -6,7 +6,7 @@ export const meta = {
     { title: 'Submit', detail: 'given a path or a launch\'s spec_handle, one sc:spec agent, which has no submit tool, reads its outline with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
     { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent lists the running workflows and your running single tasks with swarm_workflows and the run returns the attach call for each workflow and one for the tasks; nothing is submitted' },
     { title: 'Tasks', detail: 'given {attach_tasks: [...]}, one sc:task row per single task -- a task in no workflow -- titled from its label, follows it until it finishes; nothing is submitted' },
-    { title: 'Summary', detail: 'given rows: "summary" (the sc plugin\'s default), ONE sc:summary row follows the whole workflow or task batch instead of a row each, writing a count line only when the counts change and naming each step that fails or waits for a person' },
+    { title: 'Summary', detail: 'given rows: "summary" (the sc plugin\'s default), ONE sc:summary row follows the whole workflow instead of a row each (a single task keeps its own sc:task row), writing a count line only when the counts change and naming each step that fails or waits for a person' },
     { title: 'Finish', detail: 'given rows: "pane" (the sc plugin\'s pane layout, /sc layout pane), ONE sc:finish row per workflow notices its finish, writing a stage line only when the workflow\'s stage changes and holding each follow until it does; the SwarmCloud pane browses the stages' },
     { title: 'Result', detail: 'one sc:workflow agent reads the workflow state SwarmCloud derived with one swarm_workflow_status call, and re-attaches once any step whose row ended UNKNOWN while the workflow still runs' },
   ],
@@ -2281,8 +2281,8 @@ function summaryNotices(name, item) {
 //   Stage 1
 //     implement · RUNNING · console: https://...
 // The row writes them again only when a step's state changes, never for the
-// remote log. `items` carry `stage` (consoleStages); a batch of single tasks
-// has no stages and no step lines.
+// remote log. `items` carry `stage` (consoleStages); a single task is never
+// in a summary row (attachTasks gives it its own sc:task row).
 function stepLines(items) {
   const ordered = items
     .map((item, index) => ({ item: item, index: index }))

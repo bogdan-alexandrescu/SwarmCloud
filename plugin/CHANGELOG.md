@@ -36,6 +36,10 @@ here.
   follows it.
 * The summary row writes a finished `claude-code-browser` task's
   `browser_unused` line once, on the step's own line.
+* The bridge's own texts say the same: `swarm_workflow_launch` and
+  `swarm_dispatch` state the marked titles and that each single task is a
+  run of its own (one Workflow call per entry of `launches`), and a
+  dispatch's `start_now` no longer says to launch one script once.
 
 ## 0.5.84 (2026-11-05)
 
