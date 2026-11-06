@@ -1361,6 +1361,11 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
             log.info("merge wake %s tenant=%s: CI fix round waits: %s red at the default "
                      "branch's head %s too", task_id, tenant.tenant_id,
                      redact(", ".join(names)).text, sha[:12])
+            # The evidence a stuck wait is handed to a person with (part of
+            # #2688): the merge step and `/sc check` read it off the record.
+            _record(db, tenant.tenant_id, task_id, head,
+                    {"main_red": {"checks": [str(n)[:256] for n in names[:40]],
+                                  "head": sha, "read_at": now}})
             return _WAITING, None
         return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now)
 

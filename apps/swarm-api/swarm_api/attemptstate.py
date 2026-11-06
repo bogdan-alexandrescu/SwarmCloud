@@ -88,6 +88,7 @@ from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLE
 from .rollup import derived_state_write
 from .task_accounts import account_after
 from .store import CONTROL, EVENTS, LEASES, SETTINGS_DOC, TASKS
+from .validation import HUMAN_READY_METADATA_KEY
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
 
@@ -566,6 +567,68 @@ def _end_cause(value: str | None) -> EndCause | None:
 
 def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+#: Bounds on `merge_wait.failed_heads`, as the direct path's
+#: (`agent_worker.control.FAILED_HEADS_MAX_NAMES`/`_PER_NAME`).
+FAILED_HEADS_MAX_NAMES = 40
+FAILED_HEADS_MAX_PER_NAME = 10
+
+
+def _wait_instant(value: Any) -> datetime | None:
+    """An aware instant from `merge_wait`: a stored datetime or ISO text."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return value if isinstance(value, datetime) and value.tzinfo is not None else None
+
+
+def _round_heads(metadata: Mapping[str, Any]) -> set[str]:
+    fix = _mapping(metadata.get("merge_fix"))
+    heads: set[str] = set()
+    for kind in ("rounds", "conflict_rounds"):
+        rounds = fix.get(kind)
+        for entry in rounds if isinstance(rounds, list) else []:
+            if isinstance(entry, Mapping) and isinstance(entry.get("head"), str) and entry["head"]:
+                heads.add(entry["head"])
+    return heads
+
+
+def ci_wait_span(metadata: Mapping[str, Any], last: Mapping[str, Any], head: str,
+                 failed: Any, now: datetime) -> dict[str, Any]:
+    """The whole CI wait a merge step's park continues, as the direct path
+    keeps it (`agent_worker.control.ci_wait_span`, part of #2688):
+    `wait_started_at` carried at this head or across a head a repair round
+    was claimed at, restarted by any other head move or a person's "I'm
+    ready" after it; `rechecks` this wait's parks; `failed_heads` each check
+    failed in the wait and the heads it failed at."""
+    started = _wait_instant(last.get("wait_started_at"))
+    previous = last.get("head")
+    if started is not None and previous and previous != head and previous not in _round_heads(metadata):
+        started = None
+    returned = _wait_instant(_mapping(metadata.get(HUMAN_READY_METADATA_KEY)).get("at"))
+    if started is not None and returned is not None and returned > started:
+        started = None
+    carried = started is not None
+    heads: dict[str, list[str]] = {}
+    old = last.get("failed_heads") if carried else None
+    for name, seen in (old.items() if isinstance(old, Mapping) else []):
+        if isinstance(seen, list) and len(heads) < FAILED_HEADS_MAX_NAMES:
+            heads[str(name)[:256]] = [str(h)[:64] for h in seen if isinstance(h, str)][-FAILED_HEADS_MAX_PER_NAME:]
+    for name in failed if isinstance(failed, list) else []:
+        key = str(name)[:256]
+        if key not in heads and len(heads) >= FAILED_HEADS_MAX_NAMES:
+            continue
+        seen = heads.setdefault(key, [])
+        if head not in seen:
+            seen.append(head)
+            del seen[:-FAILED_HEADS_MAX_PER_NAME]
+    return {"wait_started_at": started if started is not None else now,
+            "rechecks": (_count(last.get("rechecks")) if carried else 0) + 1,
+            "failed_heads": heads,
+            "main_red": dict(last["main_red"]) if carried and isinstance(last.get("main_red"), Mapping) else None}
 
 
 def park_attempt_error(reason: ParkReason, event_detail: Mapping[str, Any]) -> str:
@@ -1580,6 +1643,7 @@ class AttemptState:
                 "pending": names, **counts, "updates": _count(last.get("updates")),
                 "first_parked_at": first, "ci_paused_at": paused,
                 "train_entered_at": train, "parked_at": now,
+                **ci_wait_span(metadata, last, ci.head, body.detail.get("failed"), now),
             }
             payload["metadata"] = metadata
             payload["next_eligible_at"] = now + timedelta(seconds=CI_FALLBACK_SECONDS)
