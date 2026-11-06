@@ -891,7 +891,7 @@ class Scheduler:
         self._paused_by_cache: dict[str, dict[str, str]] = {}
         # Per drain as well, keyed by (tenant_id, workflow_id). A verdict is at
         # most one drain old, except that a failure the drain itself writes
-        # evicts it at once (see the DispatchError branch of `_admit_one`). A
+        # evicts it at once (see the DispatchError branch of `_dispatch_leased`). A
         # failure a WORKER or the reconciler writes mid-drain is not seen until
         # the next drain, so a sibling admitted in between starts, holds
         # capacity and runs to completion (docs/workflows.md says so).
@@ -2271,7 +2271,8 @@ class Scheduler:
         is left to run to completion like any other running step. The window
         is the rest of the drain that was running when the failure was
         written, which `max_run_seconds` bounds. A failure the drain writes
-        itself is seen at once (the DispatchError branch of `_admit_one`).
+        itself is seen at once (the DispatchError branch of `_dispatch_leased`;
+        a batch holds one step of a workflow, `_admission_pass`).
         """
         if not task.workflow_id:
             return False
