@@ -145,8 +145,14 @@ def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
 
 #: The Dockerfiles that read the tool mirror. agent-runtime-browser joined the
 #: base on 2026-10-14 for the pinned dev-browser binary (DEVB-INSTALL, part of
-#: #1030); the manifest is still one file, listing what all of them read.
-MIRROR_READERS = (BASE_DOCKERFILE, REPO / "images" / "agent-runtime-browser" / "Dockerfile")
+#: #1030), and agent-runtime-lightpanda on 2026-10-31 for the Lightpanda
+#: binaries and the tag's source archive (LIGHTPANDA-IMAGE, part of #2688);
+#: the manifest is still one file, listing what all of them read.
+MIRROR_READERS = (
+    BASE_DOCKERFILE,
+    REPO / "images" / "agent-runtime-browser" / "Dockerfile",
+    REPO / "images" / "agent-runtime-lightpanda" / "Dockerfile",
+)
 
 
 def test_the_mirror_readers_are_every_dockerfile_that_bind_mounts_it() -> None:
@@ -220,6 +226,23 @@ def _steps(config: Path) -> list[dict]:
     return yaml.safe_load(config.read_text())["steps"]
 
 
+def _generated_mirror_step(root: Path, config: Path, tmp_path: Path) -> dict:
+    """A generated config's staging step, rendered the way Cloud Build renders
+    it (`$$` is a dollar), with the build's source -- the manifest the config
+    was generated from -- in the step's workspace. The step names no
+    substitution: a lone `$` would be one, and Cloud Build refuses a config
+    that names one it was not given."""
+    step = dict(_steps(config)[0])
+    assert step.get("id") == "tool-mirror", step
+    for arg in step["args"]:
+        assert "$" not in arg.replace("$$", ""), f"the step names a substitution: {arg}"
+    step["args"] = [a.replace("$$", "$") for a in step["args"]]
+    manifest = tmp_path / "workspace" / MANIFEST.relative_to(REPO)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_bytes((root / MANIFEST.relative_to(REPO)).read_bytes())
+    return step
+
+
 # A gcloud that serves `storage cp gs://<bucket>/<object> <dest>` from a
 # directory, as the build's own gcloud serves it from the bucket.
 STORAGE_GCLOUD = r'''#!{python}
@@ -268,15 +291,15 @@ def test_the_base_images_cloud_build_stages_the_tool_mirror_before_it_builds(tmp
     assert steps[0].get("id") == "tool-mirror", [s.get("id") for s in steps]
     assert any(a == "build" for a in steps[-1]["args"]), "the docker build comes after the staging step"
     script = "\n".join(steps[0]["args"])
-    for _, obj in rows:
-        assert f"gs://{BUCKET}/{obj}" in script, obj
+    # It reads the manifest from the build's source rather than inlining it.
+    assert f"'{BUCKET}'" in script and str(MANIFEST.relative_to(REPO)) in script, script
     # An image that reads nothing from the mirror gets no staging step.
     api = _steps(root / "build" / "cloudbuild-swarm-api.yaml")
     assert all(s.get("id") != "tool-mirror" for s in api)
 
     bucket = tmp_path / "bucket"
     _fill_bucket(bucket, rows)
-    done = _run_step(tmp_path, steps[0], bucket)
+    done = _run_step(tmp_path, _generated_mirror_step(root, root / "build" / "cloudbuild-agent-runtime-base.yaml", tmp_path), bucket)
     assert done.returncode == 0, done.stderr
     for sha, obj in rows:
         staged = tmp_path / "workspace" / "build" / "tool-mirror" / obj
@@ -332,7 +355,7 @@ def test_the_browser_recipe_names_a_missing_or_tampered_object(tmp_path: Path) -
 def test_a_missing_mirror_object_fails_the_build_and_names_it(tmp_path: Path) -> None:
     root, rows, proc = _cloud_build_config(tmp_path, ["agent-runtime-base"])
     assert proc.returncode == 0, proc.stderr[-3000:]
-    step = _steps(root / "build" / "cloudbuild-agent-runtime-base.yaml")[0]
+    step = _generated_mirror_step(root, root / "build" / "cloudbuild-agent-runtime-base.yaml", tmp_path)
     missing = rows[len(rows) // 2][1]
     bucket = tmp_path / "bucket"
     _fill_bucket(bucket, rows, skip=missing)
@@ -345,13 +368,115 @@ def test_a_missing_mirror_object_fails_the_build_and_names_it(tmp_path: Path) ->
 def test_a_mirror_object_with_the_wrong_sha256_fails_the_build(tmp_path: Path) -> None:
     root, rows, proc = _cloud_build_config(tmp_path, ["agent-runtime-base"])
     assert proc.returncode == 0, proc.stderr[-3000:]
-    step = _steps(root / "build" / "cloudbuild-agent-runtime-base.yaml")[0]
+    step = _generated_mirror_step(root, root / "build" / "cloudbuild-agent-runtime-base.yaml", tmp_path)
     bad = rows[0][1]
     bucket = tmp_path / "bucket"
     _fill_bucket(bucket, rows, tamper=bad)
     done = _run_step(tmp_path, step, bucket)
     assert done.returncode != 0
     assert bad in done.stdout + done.stderr
+
+
+def test_a_manifest_that_is_not_the_one_the_config_was_generated_from_fails_the_build(tmp_path: Path) -> None:
+    """The step reads the manifest from the build's source, pinned by that
+    file's own sha256 when the config is generated: a source whose manifest
+    differs -- a row added, a sha256 changed, the file left out -- copies
+    nothing and fails, so the sha256s checked are the ones that were read."""
+    root, rows, proc = _cloud_build_config(tmp_path, ["agent-runtime-base"])
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    step = _generated_mirror_step(root, root / "build" / "cloudbuild-agent-runtime-base.yaml", tmp_path)
+    bucket = tmp_path / "bucket"
+    _fill_bucket(bucket, rows, tamper=rows[0][1])
+    manifest = tmp_path / "workspace" / MANIFEST.relative_to(REPO)
+    # The tampered object's own sha256, swapped into the source's manifest.
+    swapped = hashlib.sha256(b"tampered\n").hexdigest()
+    manifest.write_text(manifest.read_text().replace(rows[0][0], swapped))
+    done = _run_step(tmp_path, step, bucket)
+    assert done.returncode != 0, "a build read a manifest it was not generated from"
+    assert str(MANIFEST.relative_to(REPO)) in done.stderr, done.stderr
+    assert not (tmp_path / "workspace" / "build" / "tool-mirror" / rows[0][1]).exists()
+    manifest.unlink()
+    done = _run_step(tmp_path, step, bucket)
+    assert done.returncode != 0, "a build with no manifest in its source went on"
+
+
+# Cloud Build refuses a config whose step argument is longer than this
+# ("invalid .steps field: build step 0 arg 1 too long (max: 10000)"), which is
+# how every release that rebuilt agent-runtime-base failed after the security
+# audit plugin's rows joined the manifest (build run 41932938466). Every
+# argument must stay under half of it, so a long new row, or a longer bucket
+# name, cannot be the one that breaks the release.
+CLOUD_BUILD_ARG_MAX = 10_000
+ARG_HEADROOM_MAX = CLOUD_BUILD_ARG_MAX // 2
+
+
+def _long_args(config: Path) -> list[str]:
+    return [
+        f"{config.name} step {i} ({s.get('id')}) arg {j}: {len(a)} characters"
+        for i, s in enumerate(_steps(config))
+        for j, a in enumerate(s.get("args") or [])
+        if len(str(a)) >= ARG_HEADROOM_MAX
+    ]
+
+
+def _render_base_configs(tmp_path: Path, manifest: str | None = None) -> list[Path]:
+    """The generated configs of agent-runtime-base and both its variants --
+    agent-runtime-base-nocodex, and a build-only run, in which the browser
+    image is built FROM the codex-less base in one chained config -- against
+    the checkout's own manifest, or the manifest text given."""
+    root = _sandbox(tmp_path)
+    if manifest is not None:
+        (root / MANIFEST.relative_to(REPO)).write_text(manifest)
+    bindir = tmp_path / "bin"
+    _write_tool(bindir, "gcloud", FAKE_GCLOUD)
+    targets = ["agent-runtime-base", "agent-runtime-base-nocodex"]
+    for extra in ([], ["--build-only", "agent-runtime-browser"]):
+        proc = subprocess.run(
+            ["bash", str(root / "scripts" / "build-images.sh"), *extra, *targets, "--tag", TAG],
+            env=_env(tmp_path, bindir), capture_output=True, text=True, timeout=180, check=False,
+        )
+        assert proc.returncode == 0, proc.stderr[-3000:]
+    configs = [
+        root / "build" / "cloudbuild-agent-runtime-base.yaml",
+        root / "build" / "cloudbuild-agent-runtime-base-nocodex.yaml",
+        *sorted((root / "build" / "build-only").glob("cloudbuild-*.yaml")),
+    ]
+    missing = [c.name for c in configs if not c.is_file()]
+    assert not missing, missing
+    # A build-only run builds the codex-less base inside the browser's chain.
+    build_only = {c.name for c in configs[2:]}
+    assert {"cloudbuild-agent-runtime-base.yaml", "cloudbuild-agent-runtime-browser.yaml"} <= build_only, build_only
+    assert any("agent-runtime-base-nocodex" in c.read_text() for c in configs[2:]), build_only
+    for config in configs:
+        assert _steps(config)[0].get("id") == "tool-mirror", config.name
+    return configs
+
+
+def test_every_step_argument_of_the_base_images_builds_is_under_cloud_build_s_limit(tmp_path: Path) -> None:
+    configs = _render_base_configs(tmp_path)
+    too_long = [line for c in configs for line in _long_args(c)]
+    assert not too_long, (
+        f"Cloud Build refuses a step argument of {CLOUD_BUILD_ARG_MAX} characters or more; "
+        f"these leave less than half of it: {too_long}"
+    )
+
+
+def test_the_staging_step_does_not_grow_with_the_manifest(tmp_path: Path) -> None:
+    """Five hundred rows render the same staging step, but for the one
+    sha256 that pins the manifest: the next row cannot break the build."""
+    real = (REPO / MANIFEST.relative_to(REPO)).read_text()
+    many = real + "".join(
+        f"{hashlib.sha256(str(i).encode()).hexdigest()}  github.com/example-org/tool-{i}/releases/download/v{i}.0.0/tool-{i}_linux_amd64.tar.gz\n"
+        for i in range(500)
+    )
+    assert len(many) > 5 * CLOUD_BUILD_ARG_MAX
+    few = _render_base_configs(tmp_path / "few")
+    lots = _render_base_configs(tmp_path / "many", manifest=many)
+    for a, b in zip(few, lots):
+        assert a.relative_to(tmp_path / "few") == b.relative_to(tmp_path / "many")
+        sa, sb = (_steps(a)[0]["args"], _steps(b)[0]["args"])
+        assert [len(x) for x in sa] == [len(x) for x in sb], a.name
+        assert not _long_args(b), _long_args(b)
 
 
 def test_a_build_only_cloud_build_stages_the_mirror_too(tmp_path: Path) -> None:

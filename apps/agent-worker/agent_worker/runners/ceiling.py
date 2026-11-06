@@ -96,6 +96,60 @@ USAGE_FIELDS = (
     "cache_creation_input_tokens",
 )
 
+#: The key a stopped start's spend carries its usage under, per model, for
+#: the worker to have priced (HANDOFF-COST-NOTES, #2896). A start stopped at
+#: the ceiling prints no `result` event, so nothing reports its cost; the
+#: session after it does print one, and its `total_cost_usd` is that
+#: session's alone. Summing tokens and keeping that cost read a 30-minute,
+#: four-session attempt as its last 5-turn session ($0.20, qa4-docs,
+#: 2026-10-31). The worker prices these counts (`lifecycle._collect_spend`)
+#: and adds them to the reported cost, so the attempt's cost is every
+#: session's. The shape is `lifecycle._stream_usage`'s `usage_by_model`.
+UNPRICED_KEY = "unpriced_usage_by_model"
+#: What a spend says when one of its sessions' usage was not read
+#: (COST-ACROSS-SESSIONS, part of #2688): measured in experiment batches one
+#: and two, 17 steps restarted at the ceiling and their recorded cost left the
+#: stopped session out ($17.04 recorded against about $85 read off the
+#: streams). A session whose stream showed no usage is not a free one, so the
+#: runner never reports such a cost as complete: it drops the reported
+#: `total_cost_usd`, which the worker then prices from the whole capture and
+#: marks estimated (`lifecycle._collect_spend`), and says so under this key.
+COST_INCOMPLETE_KEY = "cost_incomplete"
+#: Where the runner reports the attempt's sessions, in its `metrics` (copied
+#: whole into `result_summary.runner.metrics`): `count`, `usage_unread` (the
+#: session numbers whose usage was not read) and `cost_complete`.
+SESSIONS_METRIC = "sessions"
+#: The state key the tool calls per family of this attempt's ENDED runner
+#: processes are carried under, so a runner restarted inside the attempt (an
+#: account swap, a credential reload, a resume over the ceiling) reports every
+#: session's calls, not only those of its own capture.
+EARLIER_TOOL_CALLS_KEY = "earlier_tool_calls"
+
+#: The width, in prompt tokens, of a `prompt_buckets` row: equal to
+#: `lifecycle._PROMPT_BUCKET_TOKENS` (a test holds the two equal).
+PROMPT_BUCKET_TOKENS = 1_000
+#: A message that named no model: priced by nobody, so the worker reads the
+#: whole figure as "not reported" rather than one that left it out.
+UNNAMED_MODEL = "<unnamed>"
+#: The counts of a `prompt_buckets` row, after its bucket, in this order.
+BUCKET_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+#: The most of the stopped session's own last words a handoff carries
+#: (#2897): what it said last, newest kept. qa4-company (2026-10-31) kept its
+#: findings "in my context" and the session after it rebuilt them from
+#: screenshots, because the handoff carried only the note file.
+SESSION_TAIL_MAX_CHARS = 12 * 1024
+#: The most files of $SWARM_ARTIFACTS_DIR a handoff lists by name (#2897).
+NOTES_LIST_MAX = 40
+#: What a handoff lists of $SWARM_ARTIFACTS_DIR: the files an agent keeps
+#: notes and findings in. Its captures (`*.log`) and images are not notes.
+NOTES_SUFFIXES = (".md", ".json", ".txt", ".yml", ".yaml", ".csv", ".jsonl")
+
 #: The most lines of `git diff --stat` and of `git log` a handoff carries.
 DIFF_STAT_LINES = 60
 LOG_LINES = 15
@@ -105,10 +159,10 @@ _GIT_TIMEOUT_SECONDS = 60.0
 HANDOFF_NOTE = (
     "This session may be stopped at a turn boundary once its context passes "
     f"{CONTEXT_CEILING_TOKENS:,} tokens or it has made {TOOL_CALL_CEILING} tool "
-    "calls, and the task continued by a fresh session that starts from a "
-    "handoff. As you work, keep a short note for that session in "
-    f"$SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME}: what is done, what is left, "
-    "and anything you learnt that it would otherwise have to find again."
+    "calls, and the task continued by a fresh session that sees only a handoff. "
+    f"As you work, keep a short note for it in $SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME} "
+    "(what is done, what is left, what you learnt) and your findings in files "
+    "under $SWARM_ARTIFACTS_DIR, never only in your context."
 )
 
 
@@ -170,8 +224,27 @@ class CeilingWatcher:
         self._fed: list[bytes] = []
         self._partial = b""
         self._start_usage = {}
+        self._start_spend_messages: dict[str, tuple[str, dict[str, int]]] = {}
         self._start_turns = 0
+        #: The sessions this attempt has run, an earlier runner process's
+        #: included (`carry`), and the numbers of those whose usage was not
+        #: read; `_unread_here` is whether one of THIS process's was.
+        self.sessions = 0
+        self.unread_sessions: list[int] = []
+        self._unread_here = False
+        self.earlier_tool_calls: dict[str, int] | None = None
         self._reset()
+
+    def carry(self, state: Mapping[str, Any] | None) -> None:
+        """Carry on the attempt's session record from the state an earlier
+        runner process of the same attempt left (`STATE_NAME`)."""
+        state = state or {}
+        self.sessions = max(self.sessions, _count(state.get("sessions")))
+        unread = state.get("unread_sessions")
+        for number in unread if isinstance(unread, list) else []:
+            if _count(number) and number not in self.unread_sessions:
+                self.unread_sessions.append(number)
+        self.earlier_tool_calls = family_counts(state.get(EARLIER_TOOL_CALLS_KEY))
 
     def _reset(self) -> None:
         self.session_id: str | None = None
@@ -184,6 +257,11 @@ class CeilingWatcher:
         self.passed: str | None = None
         #: Set when this start was stopped at a boundary for the ceiling.
         self.stopped_for: str | None = None
+        #: The session's own last words and its last todo list (#2897): what
+        #: a handoff carries of a session that kept its notes in its context.
+        self._texts: list[str] = []
+        self._texts_chars = 0
+        self.todos: list[dict[str, Any]] | None = None
 
     @property
     def tool_calls(self) -> int:
@@ -210,10 +288,16 @@ class CeilingWatcher:
             self._fed = []
         self._partial = b""
         self._start_usage: dict[str, dict[str, int]] = {}
+        self._start_spend_messages = {}
         self._start_turns = 0
         if fresh:
             self._reset()
+            self.sessions += 1
         else:
+            # A resume carries on a session already counted -- by this
+            # process, or by the earlier one whose state was carried; one
+            # that left no state is still a session.
+            self.sessions = max(self.sessions, 1)
             self.stopped_for = None
             self.passed = None
             if seed:
@@ -250,6 +334,9 @@ class CeilingWatcher:
             sid = event.get("session_id")
             if isinstance(sid, str) and sid:
                 self.session_id = sid
+            if event.get("type") == "assistant":
+                # Every message is paid for, a subagent's too (#2896).
+                self._note_spend(event)
             if event.get("parent_tool_use_id"):
                 continue
             kind = event.get("type")
@@ -282,24 +369,104 @@ class CeilingWatcher:
             self.context_tokens = context
             self.peak_context_tokens = max(self.peak_context_tokens, context)
         content = message.get("content")
+        texts = []
         for block in content if isinstance(content, list) else []:
+            if isinstance(block, Mapping) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
             if not isinstance(block, Mapping) or block.get("type") != "tool_use":
                 continue
+            if block.get("name") == "TodoWrite":
+                todos = (block.get("input") or {}).get("todos") if isinstance(
+                    block.get("input"), Mapping) else None
+                if isinstance(todos, list):
+                    self.todos = [t for t in todos if isinstance(t, Mapping)]
             block_id = block.get("id")
             if isinstance(block_id, str) and block_id:
                 self._tool_ids.add(block_id)
             else:
                 self._anonymous_calls += 1
+        if texts:
+            self._note_text("\n\n".join(texts))
+
+    def _note_text(self, text: str) -> None:
+        """Keep the session's last words, newest first to stay (#2897).
+
+        The stream repeats a message once per content block, so a text equal
+        to the last one kept is that copy, not new words."""
+        if self._texts and self._texts[-1] == text:
+            return
+        self._texts.append(text)
+        self._texts_chars += len(text)
+        while len(self._texts) > 1 and self._texts_chars > SESSION_TAIL_MAX_CHARS:
+            self._texts_chars -= len(self._texts.pop(0))
+
+    def session_tail(self) -> str | None:
+        """The session's own last words, at most `SESSION_TAIL_MAX_CHARS`."""
+        if not self._texts:
+            return None
+        text = "\n\n---\n\n".join(self._texts)
+        if len(text) > SESSION_TAIL_MAX_CHARS:
+            text = "... (earlier cut)\n" + text[-SESSION_TAIL_MAX_CHARS:]
+        return text
+
+    def _note_spend(self, event: Mapping[str, Any]) -> None:
+        message = event.get("message")
+        if not isinstance(message, Mapping) or not isinstance(message.get("usage"), Mapping):
+            return
+        usage = message["usage"]
+        model = message.get("model")
+        key = message.get("id")
+        # The last copy of each message: the stream repeats one per block.
+        slot = key if isinstance(key, str) and key else f"\x00{len(self._start_spend_messages)}"
+        self._start_spend_messages[slot] = (
+            model if isinstance(model, str) and model else UNNAMED_MODEL,
+            {f: _count(usage.get(f)) for f in USAGE_FIELDS},
+        )
 
     def start_spend(self) -> dict[str, Any]:
         """This start's spend as read off its stream: for a start stopped at
         the ceiling, whose CLI never printed the `result` event that totals
-        it. Tokens only; the cost is priced from them downstream."""
+        it. Tokens only; the cost is priced from them downstream: every
+        message's counts, a subagent's included, per model under
+        `UNPRICED_KEY` (#2896)."""
         usage = dict.fromkeys(USAGE_FIELDS, 0)
         for message in self._start_usage.values():
             for field_name in USAGE_FIELDS:
                 usage[field_name] += message.get(field_name, 0)
-        return {"usage": usage, "num_turns": self._start_turns}
+        spend: dict[str, Any] = {"usage": usage, "num_turns": self._start_turns}
+        by_model = usage_by_model(self._start_spend_messages.values())
+        if by_model:
+            spend[UNPRICED_KEY] = by_model
+        return spend
+
+    @property
+    def start_usage_read(self) -> bool:
+        """Whether this start's stream showed the usage of any message."""
+        return bool(self._start_usage or self._start_spend_messages)
+
+    def note_unread(self) -> None:
+        """This start's usage was not read: the current session's cost is
+        unknown, so the attempt's is never reported complete."""
+        number = max(self.sessions, 1)
+        if number not in self.unread_sessions:
+            self.unread_sessions.append(number)
+        self._unread_here = True
+
+    @property
+    def unread_here(self) -> bool:
+        """Whether a session THIS process ran had its usage unread."""
+        return self._unread_here
+
+    def sessions_record(self) -> dict[str, Any]:
+        """`SESSIONS_METRIC`: how many sessions the attempt ran, and whether
+        every one's usage was read."""
+        return {
+            "count": max(self.sessions, 1),
+            "usage_unread": sorted(self.unread_sessions),
+            "cost_complete": not self.unread_sessions,
+        }
 
     def record_stop(self, *, at: str, why: str, **extra: Any) -> dict[str, Any]:
         """Note a ceiling stop the runner acts on: a fresh session follows."""
@@ -325,6 +492,10 @@ class CeilingWatcher:
             "tool_calls": self.tool_calls,
             "turns": self.turns,
             "fresh_sessions": self.fresh_sessions,
+            "sessions": self.sessions,
+            "unread_sessions": sorted(self.unread_sessions),
+            **({EARLIER_TOOL_CALLS_KEY: dict(self.earlier_tool_calls)}
+               if self.earlier_tool_calls is not None else {}),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -335,7 +506,82 @@ class CeilingWatcher:
             "fresh_sessions": self.fresh_sessions,
             "stops": list(self.stops),
             "skipped": self.skipped,
+            **self.sessions_record(),
         }
+
+
+def usage_by_model(
+    messages: Any,
+) -> dict[str, dict[str, Any]]:
+    """`(model, counts)` pairs as `lifecycle._stream_usage`'s `usage_by_model`:
+    each model's sums, and its `prompt_buckets` rows -- `[bucket, input,
+    output, cache written, cache read]`, a request whose prompt is `p` tokens
+    in bucket `ceil(p / PROMPT_BUCKET_TOKENS)`, rising."""
+    out: dict[str, dict[str, Any]] = {}
+    for model, counts in messages:
+        mine = out.setdefault(model, {**dict.fromkeys(USAGE_FIELDS, 0), "prompt_buckets": []})
+        for field_name in USAGE_FIELDS:
+            mine[field_name] += counts.get(field_name, 0)
+        prompt = (counts.get("input_tokens", 0) + counts.get("cache_creation_input_tokens", 0)
+                  + counts.get("cache_read_input_tokens", 0))
+        row = [-(-prompt // PROMPT_BUCKET_TOKENS), *(counts.get(f, 0) for f in BUCKET_FIELDS)]
+        mine["prompt_buckets"] = _merged_buckets(mine["prompt_buckets"], [row])
+    return out
+
+
+def _merged_buckets(first: Any, second: Any) -> list[list[int]]:
+    rows: dict[int, list[int]] = {}
+    for row in [*(first or []), *(second or [])]:
+        if not isinstance(row, list) or len(row) != 1 + len(BUCKET_FIELDS):
+            continue
+        into = rows.setdefault(_count(row[0]), [0] * len(BUCKET_FIELDS))
+        for at, value in enumerate(row[1:]):
+            into[at] += _count(value)
+    return [[bucket, *rows[bucket]] for bucket in sorted(rows)]
+
+
+def merged_usage_by_model(first: Any, second: Any) -> dict[str, dict[str, Any]]:
+    """Two `usage_by_model` maps as one: counts summed and bucket rows merged
+    per model, so two stopped sessions are priced as the requests they made."""
+    out: dict[str, dict[str, Any]] = {}
+    for source in (first, second):
+        if not isinstance(source, Mapping):
+            continue
+        for model, counts in source.items():
+            if not isinstance(counts, Mapping):
+                continue
+            mine = out.setdefault(str(model), {**dict.fromkeys(USAGE_FIELDS, 0), "prompt_buckets": []})
+            for field_name in USAGE_FIELDS:
+                mine[field_name] += _count(counts.get(field_name))
+            mine["prompt_buckets"] = _merged_buckets(
+                mine["prompt_buckets"], counts.get("prompt_buckets"))
+    return out
+
+
+def family_counts(value: Any) -> dict[str, int] | None:
+    """A `{family: calls}` map with only non-negative integer counts, or None."""
+    if not isinstance(value, Mapping):
+        return None
+    return {str(k): _count(v) for k, v in value.items()}
+
+
+def carry_tool_calls(
+    path: Path | None, families: Mapping[str, int] | None
+) -> dict[str, int] | None:
+    """This runner process's tool calls per family, plus those of the
+    attempt's runner processes before it (`EARLIER_TOOL_CALLS_KEY`); the sum
+    is written back for the next one. `families` None (the capture could not
+    be read) carries the earlier counts on unchanged and returns None."""
+    state = read_state(path) or {}
+    earlier = family_counts(state.get(EARLIER_TOOL_CALLS_KEY)) or {}
+    if families is None:
+        return None
+    total = dict(earlier)
+    for family, calls in families.items():
+        total[family] = total.get(family, 0) + _count(calls)
+    if path is not None:
+        write_state(path, {**state, EARLIER_TOOL_CALLS_KEY: total})
+    return total
 
 
 def over_state(state: Mapping[str, Any] | None, session: str, limits: CeilingLimits) -> str | None:
@@ -499,6 +745,47 @@ def agent_note(artifacts_dir: Path) -> str | None:
     return text or None
 
 
+def notes_files(artifacts_dir: Path) -> list[str]:
+    """The files the agent keeps notes and findings in, as `name (N bytes)`:
+    $SWARM_ARTIFACTS_DIR's own text files, one directory deep, sorted, at
+    most `NOTES_LIST_MAX` (#2897). The attempt's own directory and nothing
+    else: a link is not followed, so no other tenant's or attempt's file is
+    named. The note file itself is in the handoff already."""
+    root = Path(artifacts_dir)
+    found: list[str] = []
+    try:
+        if root.is_symlink() or not root.is_dir():
+            return []
+        entries = sorted(root.iterdir())
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            children = sorted(entry.iterdir()) if entry.is_dir() else [entry]
+            for path in children:
+                if (path.is_symlink() or not path.is_file()
+                        or path.suffix.lower() not in NOTES_SUFFIXES
+                        or path.relative_to(root).as_posix() == AGENT_HANDOFF_NAME):
+                    continue
+                found.append(f"{path.relative_to(root).as_posix()} ({path.stat().st_size} bytes)")
+    except OSError:
+        pass
+    if len(found) > NOTES_LIST_MAX:
+        return [*found[:NOTES_LIST_MAX], f"... and {len(found) - NOTES_LIST_MAX} more"]
+    return found
+
+
+def _todo_lines(todos: Any) -> str | None:
+    lines = []
+    for todo in todos or []:
+        if not isinstance(todo, Mapping):
+            continue
+        content = todo.get("content")
+        if isinstance(content, str) and content.strip():
+            status = todo.get("status")
+            lines.append(f"- [{status if isinstance(status, str) else '?'}] {content.strip()}")
+    return "\n".join(lines) or None
+
+
 def handoff_prompt(
     *,
     stop: Mapping[str, Any],
@@ -508,8 +795,16 @@ def handoff_prompt(
     wip: Mapping[str, Any] | None,
     note: str | None,
     then: str | None = None,
+    session_tail: str | None = None,
+    todos: Any = None,
+    files: list[str] | None = None,
 ) -> str:
-    """The prompt a fresh session starts from: the handoff, then the task."""
+    """The prompt a fresh session starts from: the handoff, then the task.
+
+    It carries the previous session's notes (#2897): its note file, the
+    notes files it kept in $SWARM_ARTIFACTS_DIR (`files`), its last todo
+    list (`todos`) and its own last words (`session_tail`) -- what it knew
+    and had not yet written down."""
     why = (
         f"its context reached {stop.get('context_tokens', 0):,} tokens"
         if stop.get("why") == WHY_CONTEXT
@@ -537,6 +832,21 @@ def handoff_prompt(
         f"## The previous session's note ($SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME})\n\n"
         + (note or "(it wrote none)")
     )
+    if files:
+        parts.append(
+            "## Its notes and findings files ($SWARM_ARTIFACTS_DIR)\n\n"
+            "Read the ones you need before you redo any of their work.\n\n"
+            + "\n".join(f"- {name}" for name in files)
+        )
+    todo_text = _todo_lines(todos)
+    if todo_text:
+        parts.append(f"## Its todo list, as it last wrote it\n\n{todo_text}")
+    if session_tail:
+        parts.append(
+            "## Its last messages (newest last)\n\n"
+            "What it said as it worked, including anything it had found and "
+            f"not yet written down.\n\n{session_tail}"
+        )
     parts.append(f"## The task, as the first session was given it\n\n{task_prompt}")
     if then:
         parts.append(f"## And now\n\n{then}")

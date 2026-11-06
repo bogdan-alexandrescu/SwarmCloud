@@ -11,9 +11,10 @@ limit in BOTH rounds, and the fix turn between them cannot fix a timeout. So:
   tree ITSELF and skips its own run only when a record says `passed` on the
   same tree from the same base -- never on the agent's word, and never on a
   record whose tree does not match;
-* a guard run that timed out is reported as a timeout, is never sent to the
-  agent as something to fix, and is run once more in the parts the script
-  advises (`--shard k/n`), never as-is.
+* a guard run that ran out of time is never sent to the agent as something
+  to fix. Since GUARDS-TIMEBOX (owner decision 2026-11-03) the gate runs the
+  selection as parts within a budget, and a part that runs out of time is
+  LEFT TO CI, named, never passed (test_prepublish_guards_timebox.py).
 
 These run the REAL script, copied into a scratch repository with a stand-in
 project python, so the record the script writes and the tree the gate
@@ -52,9 +53,14 @@ _IDENT = {"GIT_AUTHOR_NAME": "lane", "GIT_AUTHOR_EMAIL": "lane@example.invalid",
 
 #: The stand-in project python: logs each pytest call to $CALLS, then exits
 #: with the next code in $EXITS (one per line, consumed), or 0. Exit 124 is
-#: what `timeout` returns, so the script reads it as `ran past 540 s`.
+#: what `timeout` returns, so the script reads it as `ran past 540 s`. The
+#: n-th call prints the file $OUTS/<n>, when there is one.
 FAKE_PYTHON = r'''#!/usr/bin/env bash
 printf 'pytest %s\n' "$*" >> "$CALLS"
+n="$(wc -l < "$CALLS" | tr -d ' ')"
+if [[ -n "${OUTS:-}" && -f "$OUTS/$n" ]]; then
+  cat "$OUTS/$n"
+fi
 code=0
 if [[ -s "$EXITS" ]]; then
   code="$(head -n 1 "$EXITS")"
@@ -107,6 +113,7 @@ def lane(tmp_path: Path) -> dict[str, Any]:
     env = {"PATH": ":".join(dirs + ["/usr/bin", "/bin"]), "HOME": str(tmp_path),
            "NO_COLOR": "1", "SWARM_ENV_FILE": str(tmp_path / "no.env"),
            "CALLS": str(tmp_path / "calls"), "EXITS": str(tmp_path / "exits"),
+           "OUTS": str(tmp_path / "outs"),
            prepublish.CLONE_BASE_ENV: base, **_IDENT}
     return {"repo": repo, "base": base, "env": env, "tmp": tmp_path}
 
@@ -289,32 +296,34 @@ def test_a_record_written_by_hand_with_another_tree_is_not_trusted(lane):
 
 
 # ---------------------------------------------------------------------------
-# A timeout is reported, and never re-run as-is
+# A guard part out of time is left to CI; a failing one reaches the fix turn
 # ---------------------------------------------------------------------------
 
 
-def test_a_guard_timeout_is_not_a_fix_turn_and_is_run_again_in_parts(lane):
-    (lane["tmp"] / "exits").write_text("124\n")  # the gate's first run runs out of time
+def _guards(record: dict[str, Any], round_: int = 0) -> dict[str, Any]:
+    (guards,) = [c for c in record["rounds"][round_] if c["name"] == "changed-guards"]
+    return guards
+
+
+def test_a_guard_part_out_of_time_is_left_to_ci_and_not_a_fix_turn(lane):
+    (lane["tmp"] / "exits").write_text("124\n")  # the gate's part runs out of time
     turns = Turns()
     record = _gate(lane, turns).run()
-    first = [c for c in record["rounds"][0] if c["name"] == "changed-guards"][0]
-    assert first["status"] == "failed"
-    # MUTATION: not detecting the script's `ran past` line turns this red.
-    assert first["timed_out"] is True
-    # MUTATION: sending a timed-out guard run to the fix turn turns this red.
+    guards = _guards(record)
+    # MUTATION: reading the part's `ran past` line as the check's timeout
+    # turns this red (a timed-out check, run again in parts).
+    assert guards["status"] == "passed" and "timed_out" not in guards
+    assert sorted(guards["left_to_ci"]) == sorted(GUARDS)
+    assert "left to CI" in guards["reason"]
+    # MUTATION: sending a part out of time to the fix turn turns this red.
     assert turns.prompts == [] and record["fix_turn"] is False
-    # MUTATION: re-running the script as-is in the second round turns this red:
-    # its calls would carry no --shard.
-    shards = [c for c in record["rounds"][1] if c["name"] == "changed-guards"]
-    assert shards and shards[0]["status"] == "passed"
-    script_calls = _pytest_calls(lane)
-    assert len(script_calls) == 3, script_calls  # the timed-out run, then parts 1/2 and 2/2
+    assert len(record["rounds"]) == 1 and len(_pytest_calls(lane)) == 1
     assert record["failed"] == [] and record["pr_section"] is False
     advisory = _artifact(lane, prepublish.ADVISORY_SECTION_NAME) or ""
-    assert "timed out" in advisory and "--shard 1/2" in advisory
+    assert "LEFT TO CI, not passed" in advisory and GUARDS[0] in advisory
 
 
-def test_a_timeout_beside_a_fixable_failure_leaves_the_guards_out_of_the_fix_prompt(lane):
+def test_a_part_out_of_time_beside_a_fixable_failure_stays_out_of_the_fix_prompt(lane):
     bin_dir = lane["tmp"] / "bin"
     bin_dir.mkdir()
     shellcheck = bin_dir / "shellcheck"
@@ -327,25 +336,32 @@ def test_a_timeout_beside_a_fixable_failure_leaves_the_guards_out_of_the_fix_pro
         "#!/usr/bin/env bash\necho ok\n"))
     record = _gate(lane, turns, env=env).run()
     assert len(turns.prompts) == 1
-    # MUTATION: listing the timed-out guards among the failures to fix turns this red.
     assert "## changed-guards" not in turns.prompts[0]
     assert "## shellcheck" in turns.prompts[0]
-    assert "ran out of time" in turns.prompts[0]
     second = {c["name"]: c for c in record["rounds"][1]}
     assert second["shellcheck"]["status"] == "passed"
     assert second["changed-guards"]["status"] == "passed"
-    # The timed-out run, then the two parts after the fix turn.
-    assert len(_pytest_calls(lane)) == 3, _pytest_calls(lane)
+    assert "left_to_ci" not in second["changed-guards"]
+    # The part out of time, then the part after the fix turn.
+    assert len(_pytest_calls(lane)) == 2, _pytest_calls(lane)
 
 
-def test_parts_that_time_out_too_are_reported_as_a_timeout(lane):
-    (lane["tmp"] / "exits").write_text("124\n124\n0\n")
-    record = _gate(lane, Turns()).run()
+def test_a_failing_guard_part_fails_the_gate_and_reaches_the_fix_prompt(lane):
+    outs = lane["tmp"] / "outs"
+    outs.mkdir()
+    (outs / "1").write_text("FAILED tests/x.py::test_y - assert 1 == 2\n")
+    (outs / "2").write_text("FAILED tests/x.py::test_y - assert 1 == 2\n")
+    (lane["tmp"] / "exits").write_text("1\n1\n")
+    turns = Turns()
+    record = _gate(lane, turns).run()
+    # MUTATION: treating a failing part as left to CI turns all of this red.
+    assert _guards(record)["status"] == "failed"
+    assert len(turns.prompts) == 1
+    assert "## changed-guards" in turns.prompts[0]
+    assert "FAILED tests/x.py::test_y" in turns.prompts[0]
     assert record["failed"] == ["changed-guards"]
-    section = _artifact(lane, prepublish.PR_SECTION_NAME)
-    assert section is not None
-    # MUTATION: reporting a timeout as an ordinary failure turns this red.
-    assert "changed-guards timed out" in section
+    section = _artifact(lane, prepublish.PR_SECTION_NAME) or ""
+    assert "FAILED tests/x.py::test_y" in section and "changed-guards failed" in section
 
 
 def test_the_timeout_reading_covers_the_scripts_line_and_the_runners_kill():

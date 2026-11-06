@@ -162,3 +162,18 @@ resource "google_secret_manager_secret_iam_member" "discovery_client_secret" {
   role      = "roles/secretmanager.secretAccessor"
   member    = local.discovery_member
 }
+
+# Admin › Setup's Sign-in client step (issue #2964): the console takes the
+# Desktop client's secret in a form and swarm-api adds it as a new version of
+# this one secret. secretVersionAdder only: swarm-api cannot read a version.
+# On the secret, never the project; under enable_console_app_setup, which the
+# install engine turns on in infra pass 2, after stage 2 made the container
+# (`edge.client-secret-container`). The live deployment leaves it off.
+resource "google_secret_manager_secret_iam_member" "console_client_secret_adder" {
+  count = var.enable_console_app_setup ? 1 : 0
+
+  project   = var.project_id
+  secret_id = local.discovery_desktop_client_secret
+  role      = "roles/secretmanager.secretVersionAdder"
+  member    = module.iam.service_account_members["swarm-api"]
+}

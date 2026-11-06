@@ -42,6 +42,7 @@ import spec_keys
 from worker_seeds import TENANT, seed_attempt
 from test_input_from import run_upstream
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     forge,
     local_urls,
@@ -123,7 +124,7 @@ def _run_fix(worker_factory: Any, monkeypatch: Any, origin: Path, *, agent: bool
         task_id=FIX, attempt_id="att_fix", lease_id="lease_fix",
         repository_url=f"file://{origin}",
     )
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     if agent:
         # The fix agent here is the mock runner, which writes no
         # `pr-title.txt`; the title is not what this file is about.

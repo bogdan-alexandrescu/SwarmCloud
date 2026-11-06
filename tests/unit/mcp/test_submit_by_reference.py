@@ -110,7 +110,9 @@ def test_a_spec_ref_from_swarm_workflow_spec_submits_the_held_spec(tmp_path, mon
     # What a relay copies back instead of the spec: the outline.
     assert read["outline"]["steps"][1] == {"step_id": "s01", "depends_on": ["s00"], "stage": None,
                                            "runner_profile": None, "when_step": None,
-                                           "input_from": {}}
+                                           "input_from": {},
+                                           "prompt_chars": len(spec["steps"][1]["prompt"]),
+                                           "prompt_first_line": server._prompt_first_line(spec["steps"][1]["prompt"])}
     assert read["outline"]["label"] == "big"
 
     recorder = _Recorder()

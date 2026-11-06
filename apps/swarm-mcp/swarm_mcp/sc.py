@@ -9,11 +9,12 @@ used at the moment it is needed.
 
 THE ONE EXCEPTION IS `sc account ...` (S10, owner decision 2026-10-01): pause,
 resume, drain and remove one of your own accounts, set how many agents it may
-hold (`max-agents`, #2222), and add one through the API's browser sign-in. The
+hold (`max-agents`, #2222), put it in or take it out of the workspace and
+Voice it pools (`pool`), and add one through the API's browser sign-in. The
 API served those routes and nothing reached them. They are a separate
 subcommand, never a view, held out of every skill's grant by
-`test_plugin_commands.py`, and `remove` and `max-agents` take the label typed
-back.
+`test_plugin_commands.py`, and `remove`, `max-agents` and `pool` take the
+label typed back.
 
 THE SECOND IS THE ISSUE RUN (#454): `sc run --issue owner/repo#N` creates a
 run -- one planner task -- and `sc plan approve|edit|reject <run>` moves its
@@ -212,6 +213,26 @@ def fetch_stats(client: SwarmClient) -> dict[str, Any]:
 
 def fetch_capacity(client: SwarmClient) -> dict[str, Any]:
     return client.request("GET", "/v1/capacity")
+
+
+class JevUsageRouteAbsent(SwarmError):
+    """The API refused `/v1/jev-usage` with a 403 or 404: an API older than
+    the route. One line in `sc capacity`, never a failed capacity view."""
+
+
+def fetch_jev_usage(client: SwarmClient) -> dict[str, Any]:
+    """The console's Capacity › Jev usage read, for `sc capacity` (part of #2688)."""
+    try:
+        data = client.request("GET", render.JEV_USAGE_ROUTE)
+    except SwarmError as via_api:
+        # A 404 from Google's edge is the ingress refusing this caller, not
+        # an absent route, as in `fetch_accounts`.
+        if via_api.status in (403, 404) and not via_api.edge:
+            raise JevUsageRouteAbsent(str(via_api), status=via_api.status) from None
+        raise
+    if not isinstance(data, dict):
+        raise SwarmError("the jev-usage response was not an object")
+    return data
 
 
 #: One page of `/v1/tasks`. The API clamps it to its own `max_page_size`, and
@@ -471,7 +492,7 @@ NEEDS = {
     "overview": ("tenant", "stats", "capacity", "accounts", "tasks", "leases"),
     "accounts": ("accounts",),
     "agents": ("tasks",),
-    "capacity": ("capacity",),
+    "capacity": ("capacity", "jev_usage"),
     "trouble": ("tenant", "stats", "capacity", "accounts", "tasks", "leases", "workflows"),
 }
 
@@ -505,6 +526,8 @@ def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
         jobs["leases"] = lambda: fetch_leases(client)
     if "workflows" in wanted:
         jobs["workflows"] = lambda: fetch_workflows(client)
+    if "jev_usage" in wanted:
+        jobs["jev_usage"] = lambda: fetch_jev_usage(client)
 
     if jobs:
         with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
@@ -521,6 +544,8 @@ def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
                     snap.accounts_absent = True
                 if name == "leases" and isinstance(error, LeasesRefused):
                     snap.leases_refused = True
+                if name == "jev_usage" and isinstance(error, JevUsageRouteAbsent):
+                    snap.jev_usage_absent = True
     return snap
 
 
@@ -615,17 +640,16 @@ def cmd_agents(client: SwarmClient, args, out) -> int:
 def cmd_capacity(client: SwarmClient, args, out) -> int:
     style = style_for(out, width=args.width, color=args.color, ascii_only=args.ascii)
     snap = collect(client, NEEDS["capacity"])
-    # This view is ABOUT one area, so that area being unreadable is the whole
+    # This view is ABOUT the pools, so the pools being unreadable is the whole
     # command failing -- whatever the reason, including a route this
-    # deployment does not have: there is nothing else on the screen.
+    # deployment does not have. The Jev usage block under them is not: an
+    # unreadable or unserved /v1/jev-usage is said on screen and the code
+    # stays the pools' (part of #2688).
     code = EXIT_FAIL if snap.capacity is None else EXIT_OK
     if args.json:
         _dump(snap, out)
         return code
-    lines = [
-        render.section("capacity", render.capacity_subtitle(snap.capacity, style), style)
-    ] + render.render_capacity(snap.capacity, style, error=snap.capacity_error)
-    _emit(lines, out)
+    _emit(render.render_capacity_view(snap, style), out)
     return code
 
 
@@ -1616,6 +1640,11 @@ def _dump(snap: Snapshot, out) -> None:
         "stats_error": snap.stats_error,
         "capacity": snap.capacity,
         "capacity_error": snap.capacity_error,
+        # Jev's 30-day usage, as `sc capacity` draws it; `jev_usage_absent`
+        # says an older API does not serve the route (part of #2688).
+        "jev_usage": snap.jev_usage,
+        "jev_usage_error": snap.jev_usage_error,
+        "jev_usage_absent": snap.jev_usage_absent,
         "accounts": (
             None if snap.accounts is None
             else [
@@ -1838,6 +1867,91 @@ def cmd_account_max_agents(client: SwarmClient, args, out) -> int:
     return EXIT_OK
 
 
+ACCOUNT_POOLS = render.ACCOUNT_POOLS
+account_pools = render.account_pools
+
+
+def set_account_pools(
+    client: SwarmClient, account: dict[str, Any], pools: list[str], confirm_label: str
+) -> Any:
+    """`PUT /v1/accounts/{id}/pools` with the pools and the label as TYPED:
+    the API checks the label again, so a typed confirmation is not only local."""
+    account_id = urllib.parse.quote(str(account["account_id"]), safe="")
+    return client.request(
+        "PUT",
+        f"/v1/accounts/{account_id}/pools",
+        payload={"pools": list(pools), "confirm_label": confirm_label},
+    )
+
+
+def cmd_account_pool(client: SwarmClient, args, out) -> int:
+    """Add an account to, or take it out of, a pool -- the agents' workspace
+    pool or the Voice it pool -- after its label is TYPED back.
+
+    SWARM_ASSUME_YES IS IGNORED, as for `remove` and `max-agents`: taking an
+    account out of a pool is how every workspace (or every Voice it session)
+    that ran on it stops being able to. The last pool is refused HERE, before
+    anything is asked or sent: an account in no pool serves nothing, and the
+    API would refuse an empty set anyway. A pool the account holds a live lease
+    of is refused by the API (409 pool_in_use), and that refusal is printed in
+    its own words.
+    """
+    add, remove = args.add, args.remove
+    if bool(add) == bool(remove):
+        raise SwarmError("name one change: --add POOL or --remove POOL; nothing was sent")
+    account = resolve_account(client, args.account)
+    label = str(account.get("label") or "")
+    before = account_pools(account)
+    if add:
+        after = [p for p in ACCOUNT_POOLS if p in before or p == add]
+    else:
+        after = [p for p in before if p != remove]
+        if not after:
+            raise SwarmError(
+                f"{remove} is the only pool {label} ({account.get('account_id')}) is in; an "
+                "account in no pool serves nothing. Add it to another pool first, or "
+                f"`{terminal_command('sc account remove')} {label}`. Nothing was sent"
+            )
+    if after == before:
+        word = "already in" if add else "not in"
+        out.write(f"{label} ({account.get('account_id')}) is {word} {add or remove}; nothing was sent\n")
+        return EXIT_OK
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; an account's pools are typed\n")
+    typed = _ask(
+        f"move {label} ({account.get('account_id')}) from pools {','.join(before)} to "
+        f"{','.join(after)}? Type its label to confirm: "
+    )
+    if not label or typed.strip() != label:
+        raise SwarmError(f"the label typed was not {label!r}; nothing was changed")
+    try:
+        answer = set_account_pools(client, account, after, typed.strip())
+    except SwarmError as refused:
+        if refused.status == 409:
+            raise SwarmError(
+                f"refused: {label} holds a live lease in the {remove or 'changed'} pool right now, "
+                "so it cannot leave it (pool_in_use). Try again once that agent or Voice it "
+                f"session has finished. The API said: {refused}",
+                status=409, code=refused.code, detail=refused.detail,
+            ) from refused
+        if refused.status in (400, 422):
+            raise SwarmError(
+                f"refused: the API would not set {label}'s pools to {','.join(after)}. "
+                f"The API said: {refused}",
+                status=refused.status, code=refused.code, detail=refused.detail,
+            ) from refused
+        raise
+    served = answer.get("account") if isinstance(answer, dict) else None
+    now = account_pools(served) if isinstance(served, dict) else after
+    if args.json:
+        out.write(json.dumps({"account_id": account.get("account_id"), "label": label,
+                              "from_pools": before, "requested_pools": after,
+                              "pools": now}, indent=2, default=str) + "\n")
+        return EXIT_OK
+    out.write(f"{label} ({account.get('account_id')}) is now in pools {','.join(now)}\n")
+    return EXIT_OK
+
+
 def cmd_account_remove(client: SwarmClient, args, out) -> int:
     """Remove an account, after its label is TYPED back.
 
@@ -2011,6 +2125,98 @@ def _masked(text: str, secrets: Sequence[str]) -> str:
     return text
 
 
+#: The account kinds `sc account add` signs in to. `anthropic` is the Claude
+#: subscription pool; `openai` a ChatGPT plan for the codex runner (#2688, BGD
+#: 2026-11-01: codex runs on ChatGPT plans from a shared pool).
+ACCOUNT_PROVIDERS = ("anthropic", "openai")
+
+
+def _catch_callback(redirect_uri: str, state: str, timeout: float) -> str | None:
+    """Listen where a ChatGPT plan's sign-in lands, on THIS machine, and return
+    the authorization code its redirect carries -- or None when the port could
+    not be opened or nothing arrived in time.
+
+    The redirect is `http://localhost:1455/auth/callback`, the one the Codex
+    client registered (measured: the 127.0.0.1 form failed live). Bound to the
+    loopback interface only, it answers one request whose `state` matches and
+    refuses any other, so a page that guesses the port cannot file a code. The
+    code is returned, never printed; the page says only that the sign-in
+    reached the terminal.
+    """
+    import http.server
+    import time
+    from urllib.parse import parse_qs, urlsplit
+
+    target = urlsplit(redirect_uri)
+    caught: dict[str, str] = {}
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 -- http.server's name
+            asked = urlsplit(self.path)
+            query = parse_qs(asked.query)
+            code = (query.get("code") or [""])[0]
+            if asked.path != target.path or (query.get("state") or [""])[0] != state or not code:
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"This is not the sign-in sc started. Nothing was sent.\n")
+                return
+            caught["code"] = code
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Signed in. Return to your terminal; you can close this tab.\n")
+
+        def log_message(self, *args):  # the request line carries the code
+            return
+
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", target.port or 80), Callback)
+    except OSError:
+        return None
+    server.timeout = 1.0
+    deadline = time.monotonic() + max(1.0, timeout)
+    try:
+        while not caught and time.monotonic() < deadline:
+            server.handle_request()
+    finally:
+        server.server_close()
+    return caught.get("code")
+
+
+def _code_from_address(pasted: str, state: str) -> str:
+    """The code from the address a browser landed on, pasted when the local
+    port could not be opened. Refused when its `state` is another sign-in's."""
+    from urllib.parse import parse_qs, urlsplit
+
+    query = parse_qs(urlsplit(pasted.strip()).query)
+    if not query:
+        return pasted.strip()
+    if (query.get("state") or [""])[0] != state:
+        raise SwarmError("that address belongs to a different sign-in; nothing was registered")
+    return (query.get("code") or [""])[0]
+
+
+def _plan_sign_in_code(started: dict, state: str) -> str:
+    """Wait for a ChatGPT plan's callback on this machine, or ask for the
+    address the browser landed on when the port is taken."""
+    redirect = started.get("redirect_uri")
+    if not isinstance(redirect, str) or not redirect.startswith("http://localhost:"):
+        raise SwarmError("the API named no local address for the ChatGPT sign-in; nothing was registered")
+    expires = started.get("expires_in_seconds")
+    timeout = float(expires) if isinstance(expires, int) and expires > 0 else 900.0
+    sys.stderr.write("waiting for the sign-in to come back to this machine...\n")
+    code = _catch_callback(redirect, state, timeout)
+    if code is None:
+        sys.stderr.write(
+            f"could not receive the sign-in on {redirect} (the port is in use, or "
+            "it timed out). If your browser shows a page that failed to load, "
+            "paste its whole address.\n"
+        )
+        code = _code_from_address(_read_code("paste the address (it is not echoed): "), state)
+    return code
+
+
 def cmd_account_add(client: SwarmClient, args, out) -> int:
     """Add a subscription account through the API's OWN browser sign-in.
 
@@ -2034,13 +2240,27 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     if not label:
         raise SwarmError("`--label` names the account in the pool; give one. Nothing was sent")
     lend_to = [t.strip() for t in (args.lend_to or []) if t and t.strip()]
-    started = client.request(
-        "POST", "/v1/accounts/authorize", payload={"label": label, "lend_to": lend_to}
-    )
+    provider = (getattr(args, "provider", None) or "anthropic").strip().lower()
+    if provider not in ACCOUNT_PROVIDERS:
+        raise SwarmError(f"--provider is one of {', '.join(ACCOUNT_PROVIDERS)}. Nothing was sent")
+    payload: dict[str, Any] = {"label": label, "lend_to": lend_to}
+    if provider != "anthropic":
+        # Only named when it is not the default, so a Claude add sends exactly
+        # what it always sent.
+        payload["provider"] = provider
+    started = client.request("POST", "/v1/accounts/authorize", payload=payload)
     url = started.get("authorize_url") if isinstance(started, dict) else None
     state = started.get("state") if isinstance(started, dict) else None
     if not url or not state:
         raise SwarmError("the API began no sign-in: its answer named no URL to open")
+    if provider == "openai" and started.get("provider") != "openai":
+        # An API that dropped the provider started a CLAUDE sign-in: opening
+        # it would sign the person in to the wrong service and wait forever on
+        # a callback that page never makes.
+        raise SwarmError(
+            "this deployment's API did not start a ChatGPT sign-in (its answer "
+            "names no openai provider), so nothing was opened or registered"
+        )
     opened = _open_browser(url)
     sys.stderr.write(
         ("opened your browser to sign in. " if opened else "could not open a browser. ")
@@ -2049,7 +2269,10 @@ def cmd_account_add(client: SwarmClient, args, out) -> int:
     minutes = started.get("expires_in_seconds")
     if isinstance(minutes, int):
         sys.stderr.write(f"the sign-in expires in {minutes // 60} minutes\n")
-    code = _read_code("paste the code the page shows (it is not echoed): ").strip()
+    if provider == "openai":
+        code = _plan_sign_in_code(started, state).strip()
+    else:
+        code = _read_code("paste the code the page shows (it is not echoed): ").strip()
     if not code:
         raise SwarmError("no code was pasted; nothing was registered. Run it again to start over")
     try:
@@ -4368,6 +4591,7 @@ def cmd_run(client: SwarmClient, args, out) -> int:
         plan_approval=args.plan_approval,
         auto_merge=args.auto_merge,
         fix_rounds=args.fix_rounds,
+        security_review=args.security_review,
     )
     if args.follow and not args.json:
         style = _run_style(args, out)
@@ -5125,7 +5349,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- the account verbs: WRITE to the pool (see `ACCOUNT_VERBS`) -------
     ac = sub.add_parser(
-        "account", help="change one of your accounts: add, pause, resume, drain, remove, max-agents"
+        "account", help="change one of your accounts: add, pause, resume, drain, remove, max-agents, pool"
     )
     ac_sub = ac.add_subparsers(dest="account_command", required=True)
     for verb, state in ACCOUNT_VERBS.items():
@@ -5147,8 +5371,25 @@ def build_parser() -> argparse.ArgumentParser:
     am.add_argument("max_agents", metavar="N", help="1 to 50")
     _common(am, root=False)
     am.set_defaults(func=cmd_account_max_agents)
-    aa = ac_sub.add_parser("add", help="add an account by signing in to Claude in your browser")
+    ap = ac_sub.add_parser(
+        "pool", help="add your account to, or take it out of, the workspace or voice-it pool "
+        "(type its label to confirm)"
+    )
+    ap.add_argument("account", help="its label or id")
+    # Not `required=True`: neither flag is refused by the handler, in this
+    # command's words and before anything is resolved or sent.
+    ap_change = ap.add_mutually_exclusive_group()
+    ap_change.add_argument("--add", choices=ACCOUNT_POOLS, help="the pool to add it to")
+    ap_change.add_argument("--remove", choices=ACCOUNT_POOLS, help="the pool to take it out of")
+    _common(ap, root=False)
+    ap.set_defaults(func=cmd_account_pool)
+    aa_help = "add an account by signing in to Claude (or a ChatGPT plan) in your browser"
+    aa = ac_sub.add_parser("add", help=aa_help)
     aa.add_argument("--label", required=True, help="the account's name in the pool")
+    aa.add_argument(
+        "--provider", default="anthropic", choices=ACCOUNT_PROVIDERS,
+        help="anthropic: a Claude subscription (default); openai: a ChatGPT plan for codex",
+    )
     aa.add_argument(
         "--lend-to", action="append", default=[], metavar="TENANT",
         help="a tenant that may run on it too (repeat for several)",
@@ -5312,6 +5553,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rn.add_argument("--fix-rounds", type=int, default=None, metavar="N",
                     help="CI fix rounds after the pull request opens (the API's default is 3)")
+    rn.add_argument("--security-review", action="store_true",
+                    help="add the security review step after the fix (off by default); the "
+                         "merge then needs its verdict too")
     rn.add_argument("--follow", action="store_true",
                     help="keep reading the run, one row per step, until it ends or waits for you")
     rn.add_argument("--interval", type=float, default=10.0, help="seconds between reads with --follow")

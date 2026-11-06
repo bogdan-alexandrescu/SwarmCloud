@@ -144,7 +144,8 @@ def harness(tmp_path: Path):
     (tf_dir / "runner_profiles.json").write_text(json.dumps(PROFILES))
 
     live = {"global": 40, "resource:browser": 10, "resource:standard": 10,
-            HEAVY_POOL: 10, "runner:mock": 10}
+            HEAVY_POOL: 10, "runner:mock": 10,
+            "provider:anthropic": 10, "provider:anthropic:tenant:eng": 10}
     (tmp_path / "pools.json").write_text(
         json.dumps({"documents": [_pool_doc(n, v) for n, v in live.items()]})
     )
@@ -265,3 +266,18 @@ def test_an_unreadable_catalogue_is_said_rather_than_read_as_fine(harness) -> No
     assert "not checked" in proc.stderr, (
         "a catalogue that could not be read must be named, not taken as 'no warning'\n" + proc.stderr
     )
+
+
+def test_a_provider_pool_is_judged_at_one_unit_whatever_the_class(harness) -> None:
+    """#2950: a large agent takes 1 unit in a provider pool (contract request 129).
+
+    A provider limit of 1 admits one claude-code-large agent, so it is not
+    "never admits"; under the old rule it warned at the class's 4 units.
+    """
+    assert any(p.get("provider") == "anthropic" and CLASSES[p["resource_class"]]["units"] == HEAVY_UNITS
+               for p in PROFILES.values()), "no large anthropic profile; this case proves nothing"
+    for pool in ("provider:anthropic", "provider:anthropic:tenant:eng"):
+        proc = harness["run"]("--pool", pool, "--limit", "1")
+        assert proc.returncode == 0, proc.stderr
+        assert NEVER not in proc.stderr, proc.stderr
+        assert _patched(harness, pool)

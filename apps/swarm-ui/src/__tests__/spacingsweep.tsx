@@ -43,14 +43,16 @@ import { act, render } from '@testing-library/react'
 
 import { App, SECTIONS } from '../App'
 import {
-  probe,
+  probeYielding,
   resolveSheet,
   resolveVars,
   stripComments,
   tokenTables,
+  yieldToWorker,
   type Finding,
   type Report,
 } from './spaceprobe'
+import { expectTwins, reaching, sectionTwins } from './sheetcut'
 
 /**
  * Every route the rail can reach, DERIVED rather than restated.
@@ -169,21 +171,40 @@ function merge(parts: Report[]): Report {
  * Resolved like the main sheet and placed BEFORE it -- the order the app loads
  * them, since main.tsx imports App (and so every screen's sheet) first. The
  * resolved copy comes after the injected one in the document, so it is the
- * one the cascade picks.
+ * one the cascade picks. The Needs-you row keeps its sheet beside it
+ * (`src/work/needs-you.css`) and Agents draws it (#3146), so it is read too.
+ * Not `src/work/*.css` whole: `inspectorShell.css` declares a custom property
+ * on its own selector (`--wi-height`), which the token tables, read from the
+ * theme blocks, do not hold, so resolving it throws.
  */
-const SECTION_SHEETS = Object.values(
-  import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
-)
+const SECTION_SHEET_FILES = import.meta.glob<string>(['../styles/*.css', '../work/needs-you.css'], {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+})
+const SECTION_SHEETS = Object.values(SECTION_SHEET_FILES)
 const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 
+// The injected twins and the cut sheet the probe reads: sheetcut.ts, with why.
+
 async function sweep(routes: readonly string[], Shown: typeof App = App): Promise<Record<Theme, Report>> {
-  const sheets: Record<Theme, string> = {
-    // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
-    // components' rules in components.css among them) as well as styles.css.
-    dark: resolveSheet(SHEET, 'dark'),
-    light: resolveSheet(SHEET, 'light'),
-  }
+  // A REAL TURN BETWEEN EVERY LONG STEP, not only inside the probe. Measured
+  // alone on the SwarmCloud container for the admin-setup slice (2026-11-05):
+  // these four calls held the loop for 19.7 s, and each snapshot's
+  // cut / unpainted / cut before its probe for up to 9.4 s, plus the up to 5 s
+  // the previous probe ran past its last turn. PR #3264's CI shard 2/8, with
+  // the slice passing in 70 s, still ended on "Timeout calling onTaskUpdate":
+  // a loaded runner stretches a 15-20 s hold past the RPC's 60 s (see
+  // YIELD_EVERY_MS in spaceprobe.ts).
+  // With a turn after each step the longest hold is one step (about 5 s).
+  // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
+  // components' rules in components.css among them) as well as styles.css.
+  const darkSheet = resolveSheet(SHEET, 'dark')
+  await yieldToWorker()
+  const sheets: Record<Theme, string> = { dark: darkSheet, light: resolveSheet(SHEET, 'light') }
+  await yieldToWorker()
   const tables = { dark: tokenTables(SHEET).dark, light: tokenTables(SHEET).light }
+  await yieldToWorker()
 
   const snapshots: { el: HTMLElement; local: { el: Element; source: string }[] }[] = []
   for (const route of routes) {
@@ -192,6 +213,9 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
     await settle()
     const snap = container.cloneNode(true) as HTMLElement
     unmount()
+    // The walk's only real turn of the event loop between renders: see
+    // YIELD_EVERY_MS in spaceprobe.ts for what went unread without one.
+    await yieldToWorker()
     // A screen's own `<style>` element, resolved like the main sheet. Overview
     // shipped one (`OVERVIEW_CSS`) until U8 folded it into styles.css, and no
     // screen ships one now -- stylesheet.gate.test.ts holds that. The loop
@@ -203,31 +227,63 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
     })
   }
 
+  // The whole resolved sheet, parsed once per theme and read as rules; the
+  // document carries only `reaching`'s cut of it while a snapshot is probed.
+  const whole = document.createElement('style')
+  const parse = (text: string): CSSRule[] => {
+    whole.textContent = text
+    document.head.appendChild(whole)
+    const rules = [...whole.sheet!.cssRules]
+    expectTwins(twins, whole)
+    whole.remove()
+    return rules
+  }
+  const twins = sectionTwins(Object.keys(SECTION_SHEET_FILES))
+  const rules = { dark: parse(sheets.dark), light: parse(sheets.light) }
   const style = document.createElement('style')
   document.head.appendChild(style)
+  const cut = (theme: Theme) => {
+    const { text, count } = reaching(rules[theme])
+    style.textContent = text
+    expect(style.sheet!.cssRules.length, 'the cut sheet did not parse back rule for rule').toBe(count)
+  }
 
   const dark: Report[] = []
   const light: Report[] = []
 
-  style.textContent = sheets.dark
-  const borders: Element[][] = []
-  for (const s of snapshots) {
-    for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.dark)
-    document.body.appendChild(s.el)
-    unpainted(s.el)
-    const r = probe(s.el)
-    dark.push(r)
-    borders.push(r.bordered)
-    s.el.remove()
-  }
+  const home = twins.map(({ el }) => ({ el, parent: el.parentNode!, next: el.nextSibling }))
+  for (const { el } of twins) el.remove()
+  try {
+    const borders: Element[][] = []
+    for (const s of snapshots) {
+      for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.dark)
+      document.body.appendChild(s.el)
+      cut('dark')
+      await yieldToWorker()
+      unpainted(s.el)
+      await yieldToWorker()
+      // Again: a box `unpainted` took out can change what a structural
+      // selector (`:last-child`, `+`, `:has`) matches.
+      cut('dark')
+      await yieldToWorker()
+      const r = await probeYielding(s.el)
+      dark.push(r)
+      borders.push(r.bordered)
+      s.el.remove()
+    }
 
-  style.textContent = sheets.light
-  snapshots.forEach((s, i) => {
-    for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.light)
-    document.body.appendChild(s.el)
-    light.push(probe(s.el, borders[i]))
-    s.el.remove()
-  })
+    for (const [i, s] of snapshots.entries()) {
+      for (const { el, source } of s.local) el.textContent = resolveVars(stripComments(source), tables.light)
+      document.body.appendChild(s.el)
+      cut('light')
+      await yieldToWorker()
+      light.push(await probeYielding(s.el, borders[i]))
+      s.el.remove()
+    }
+  } finally {
+    // Last first, so each one's next sibling is back before it is.
+    for (const { el, parent, next } of home.reverse()) parent.insertBefore(el, next)
+  }
 
   style.remove()
   window.location.hash = ''
@@ -345,7 +401,46 @@ const BAD_BANNER_HAIRLINE: Exemption = {
   matches: (f) => f.kind === 'divider-under-floor' && f.where === 'div.c-banner.is-bad',
 }
 
-const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE]
+/**
+ * THE TALK PANE'S MIC CONTROLS ON GLASS, the same artefact in the light pass.
+ * `.vt-mic-group` is `--surface` at 70% over the pane's opaque `--bg`
+ * (styles/talk-pane.css), so the drawn ground is about #fbfcfd and the
+ * controls' boundary, rgb(125 142 163), is about 3.3:1 on it; the probe,
+ * compositing the glass's alpha twice, measures a grey rgb(198 199 200) and
+ * 1.97:1. Keyed on that measured ground so a real finding on these controls
+ * anywhere else still fails.
+ */
+const TALK_MIC_ON_GLASS: Exemption = {
+  name: 'talk mic on glass',
+  why: "the probe composites the mic group's color-mix(--surface 70%, transparent) twice; the drawn boundary is about 3.3:1",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' &&
+    (f.where === 'button.c-btn' || f.where === 'div.c-seg.is-sm') &&
+    f.detail.endsWith('on rgb(198 199 200)'),
+}
+
+/**
+ * THE TALK PANE'S CARDS ON GLASS, the same artefact one layer deeper. A
+ * `.vt-card > .c-card` is `--vt-glass` (`--surface` at 70%) over the card
+ * area's `--vt-glass-dim` (`--surface` at 52%) over the pane's opaque `--bg`
+ * (styles/talk-pane.css), so the drawn ground in the light pass is about
+ * #fdfeff: the card's `--vt-glass-line` hairline, rgb(168 198 218), is about
+ * 1.64:1 on it, over the 1.15 floor, and an `Open …` button's boundary,
+ * rgb(125 142 163), about 3.3:1. The probe, compositing each glass's alpha
+ * twice, measures greys rgb(186 187 188) and rgb(181 181 181). Keyed on those
+ * measured grounds so a real finding on a card or a button elsewhere still
+ * fails.
+ */
+const TALK_CARDS_ON_GLASS: Exemption = {
+  name: 'talk cards on glass',
+  why: "the probe composites the cards' nested color-mix(--surface, transparent) glass twice; the drawn hairline is about 1.64:1, the buttons' boundary about 3.3:1",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' &&
+    ((f.where === 'section.c-card' && f.detail.endsWith('on rgb(186 187 188)')) ||
+      (f.where === 'a.c-btn.is-sm' && f.detail.endsWith('on rgb(181 181 181)'))),
+}
+
+const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES, BAD_BANNER_HAIRLINE, TALK_MIC_ON_GLASS, TALK_CARDS_ON_GLASS]
 
 function lines(r: Report): string[] {
   return r.findings
@@ -448,14 +543,27 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // one route, and a slice is a file of its own (the slice test).
   // CONFIG-NAV (part of #2157): Repositories and Access left Work for Config;
   // the first two Config pages keep their place in this walk, and the other
-  // four are the `config` slice. Workspace setup (Work › Setup until then) is
-  // a part of Workspace Settings with no tab of its own, so no slice reaches it.
+  // Config pages are the `config` slice (People and roles is the workspace
+  // page's tab since the admin routes lane, part of #2688). Workspace setup
+  // (Work › Setup until then) is a part of Workspace Settings with no tab of
+  // its own, so no slice reaches it.
   { name: 'setup', routes: ['config/github', 'config/repositories', 'automate/schedules', 'automate/approvals'], floor: 90 },
-  { name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/people', 'config/workspace'], floor: 60 },
+  // THE SECRETS PAGE'S (i)s (no-prose rule, 5 November 2026; part of #2688).
+  // Config › Secrets moved its explanations behind Profile's `AboutTip`, a
+  // `.ctl-q-glyph` 20px disc in the card heads' action row and beside the
+  // Scope label, where the walk in from the card's border now reaches it. Its
+  // "i" is centred in a fixed 20px with `border: 0` (§B5.3), so there is no
+  // edge for that ink to crowd; the card's inset is measured off the heading
+  // beside it, as the submit slice's `?` is.
+  {
+    name: 'config', routes: ['config/secrets', 'config/mcp-servers', 'config/plugins', 'config/workspace'], floor: 60,
+    centred: ['button.ctl-q-glyph [left] width 20px, centred', 'button.ctl-q-glyph [right] width 20px, centred'],
+  },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   // API reads is Capacity's last page since NAV-FOOT (#1672), so it closes this walk.
   // Account health (ACCOUNT-HEALTH-PAGE; part of #2302) sits beside Accounts, as in the rail.
-  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/api-reads'], floor: 160 },
+  // Jev usage (JEV-USAGE-PAGE; part of #2688) sits after Provider quota, as in the rail.
+  { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/account-health', 'capacity/quota', 'capacity/jev-usage', 'capacity/api-reads'], floor: 160 },
   // Workspaces you admin (NAV-ADMIN-ROLE; part of #1633) is Admin's last tab;
   // Runner sizes (SIZES-UI; part of #1689) sits beside Pool limits, as in the rail.
   // Platform secrets (SSC-UI; part of #2158) sits after Platform counts, as in the rail.
@@ -472,12 +580,25 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   // (13px, weight 600). A wide capital ("W", "M") advances about 12px there,
   // so the ink clears the border by (24 - 2 - 12) / 2 = 5px a side, over the
   // 4px `textInset` floor; a typical initial clears it by more.
+  //
+  // ADMIN IS TWO SLICES (PR #2815's CI, 2026-10-30). With Setup and Health
+  // added, the one admin slice walked nine routes and ran 958 s in a loaded
+  // shard 1/4 (470 s and 582 s in the 2026-10-26 incident's shards), past the
+  // 900 s timeout with its findings complete. The rail's order is kept: the
+  // first five tabs here, Setup onwards in `admin-setup`. The fallback token
+  // card is on Pool limits and the People rows on People, so each disc's
+  // centring is kept by the slice that renders it.
   {
-    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets', 'admin/setup', 'admin/health', 'admin/people', 'admin/workspaces'], floor: 120,
-    centred: [
-      'button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred',
-      'span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred',
-    ],
+    name: 'admin', routes: ['admin/limits', 'admin/runner-sizes', 'admin/tenants', 'admin/counts', 'admin/platform-secrets'], floor: 70,
+    centred: ['button.help-glyph [left] width 14px, centred', 'button.help-glyph [right] width 14px, centred'],
+    persona: 'platform-admin',
+  },
+  // Voice it's three panes ride Admin › Setup's slice: they render their body
+  // only for the person Voice it is open to, a platform admin until swarm-api's
+  // session routes say otherwise (voice/Section.tsx `voiceItOpen`).
+  {
+    name: 'admin-setup', routes: ['admin/setup', 'admin/health', 'admin/people', 'admin/workspaces', 'voice/talk', 'voice/projects', 'voice/preferences'], floor: 50,
+    centred: ['span.pp-avatar [left] width 24px, centred', 'span.pp-avatar [right] width 24px, centred'],
     persona: 'platform-admin',
   },
 ]

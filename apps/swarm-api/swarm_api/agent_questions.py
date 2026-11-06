@@ -43,7 +43,9 @@ additive metadata key needs no contract change -- one entry per question:
 Re-answering REPLACES the entry and moves the replaced answer, with its own
 `by`, `at`, `via` and `session`, into `history`, so who changed what is on the task for as long as the task
 is; the write is one Firestore transaction, so two people answering at once
-cannot drop either one's history. `history` is capped at
+cannot drop either one's history, and contention is run again
+(`ANSWER_TRANSACTION_ATTEMPTS`) so answers sent at once are all stored or
+refused by name (503 `answer_contended`). `history` is capped at
 `MAX_ANSWER_CHANGES`, past which a change is refused rather than an earlier
 answer forgotten.
 
@@ -70,7 +72,8 @@ again wherever the task is served.
 WHERE IT WAS ANSWERED (owner decision 2026-10-19, "Plugin records it, marked
 as from Claude Code"; lane ANSWER-SYNC, part of #1644): an answer may say
 `via` -- `console`, or `claude-code` when the person answered in a Claude Code
-session and the sc plugin's `swarm_task_answer` recorded it -- and that
+session and the sc plugin's `swarm_task_answer` recorded it, or `voice-it`
+when they answered by talking in Voice it (BGD, 6 November 2026) -- and that
 session's id (`session`), so the console can say "answered in Claude Code".
 Both are optional, stored with the answer and inside `history`, and served
 beside `choice` and `text`. They are LABELS, NEVER PERMISSIONS: who may answer
@@ -78,6 +81,15 @@ is decided above, from the caller's identity and role, before either is
 read, so no `via` widens or narrows it. A `session` is a UUID or 8-64 of
 `[A-Za-z0-9_-]`, anything else a 422: it is shown to people, so it is held to
 the shape of an id and can carry nothing else.
+
+A DESIGN PREVIEW IS SERVED ON ITS OPTION (BGD's answer on the full-page
+interview lane, 6 November 2026, 'Serve preview'). A plugin step's agent may
+draw each option as HTML (`preview`); the worker keeps it in the wait's bridge
+block, and the read serves it on that option, redacted as the question's text
+is. One over `PREVIEW_MAX_CHARS`, or past its question's
+`PREVIEW_QUESTION_MAX_CHARS`, is dropped whole with a `preview_dropped`
+reason, never cut mid-tag. The console draws it only inside an iframe whose
+`sandbox` attribute is empty. A preview is not part of `question_digest`.
 
 The notification (`notifications.agent_questions`) stops listing a task once
 every question it asked has an answer (`unanswered`).
@@ -105,6 +117,17 @@ which failure-review skips by rule. Only HUMAN_REQUIRED is read as a
 question wait: an AWAITING_INPUT park is a workflow's await-input step,
 answered and expired by `awaitinput` alone, and never promoted or ended here.
 
+A PLUGIN STEP'S QUESTION (the question bridge, docs/design/agent-plugins.md;
+owner decision of 3 November 2026). An unattended gstack step whose agent
+asked a question it could not answer itself is parked the same way, its
+`question_wait` carrying a `bridge` block (`BRIDGE_KEY`: the session the
+answer resumes). Two rules differ for it, and only for it: the FIRST answer
+to each question stands -- a second is refused 409 `already_answered`,
+because the resumed session has already been given the first -- and it is
+dead-lettered unanswered after `BRIDGE_WAIT_MAX_SECONDS` (24 hours, the
+human steps' default), the question left open, never with an answer nobody
+gave.
+
 AN ANSWER ALSO WAKES THE MERGE ITS QUESTION HELD (owner decision 2026-10-23
 ~19:23Z, "Resume on answer, no expiry"; lane QUESTION-WAKE, part of #2070).
 A merge step whose review named blocking owner questions (`needs_owner`)
@@ -128,13 +151,16 @@ admitted all-or-nothing under a new generation (invariants 2, 5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import random
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from collections.abc import Iterator
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -142,17 +168,24 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import TaskEvent, new_id
-from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
+from swarm_common.states import TERMINAL_STATES, EventType, ParkReason, TaskState, assert_transition
 
 from . import refusals, roles
 from .agent_output import AgentOutputService
-from .codec import event_to_firestore, owner_answer_to_api, owner_answers_by_index, task_from_dict
-from .errors import Conflict, Forbidden, NotFound, RoleMemberRequired, ValidationFailed
+from .codec import (
+    claude_session_of,
+    event_to_firestore,
+    owner_answer_to_api,
+    owner_answers_by_index,
+    task_from_dict,
+)
+from .errors import Conflict, Forbidden, NotFound, RateLimited, RoleMemberRequired, ValidationFailed
 from .handoff import ready_writes
 from .redaction import redact
-from .store import EVENTS, TASKS, Store
+from .store import EVENTS, TASKS, Store, _is_contention
 from .task_input import masking_for
 from .validation import (
+    CONFLICT_ROUND_METADATA_KEY,
     OWNER_ANSWERS_METADATA_KEY,
     QUESTION_WAIT_METADATA_KEY,
     QUESTION_WAITS_EARLIER_METADATA_KEY,
@@ -189,6 +222,11 @@ def valid_session(value: str) -> bool:
 #: is not installed in the API image.
 QUESTIONS_NAME = "questions.json"
 QUESTIONS_KEY = "questions"
+#: The worker's short digest of each counted question, in index order
+#: (`agent_worker.questions.DIGESTS_KEY`), and the stored answer's copy of
+#: the one at its index when it was given (`question_digests`).
+QUESTION_DIGESTS_KEY = "question_digests"
+ASKED_DIGEST_KEY = "asked_digest"
 
 #: The worker takes no file larger than this (`agent_worker.questions.MAX_BYTES`);
 #: one byte more says whether the stored object is larger than it took.
@@ -209,6 +247,23 @@ MAX_EARLIER_WAITS = 5
 #: How long a blocking question waits before its agent is dead-lettered
 #: (§3.9 step 5): three days, a weekend and a day, at no cost (invariant 1).
 QUESTION_WAIT_MAX_SECONDS = 72 * 3600
+#: The block of a question wait that makes it a plugin step's bridged
+#: question (`agent_worker.runners.question_bridge.BRIDGE_KEY`; the worker
+#: is not installed here, so it is spelled again), and how long one waits.
+BRIDGE_KEY = "bridge"
+BRIDGE_WAIT_MAX_SECONDS = 24 * 3600
+#: The most characters of design HTML served as one option's `preview`, and
+#: as all of one question's previews (BGD, 6 November 2026, 'Serve preview').
+#: The largest preview in the tests is a one-line snippet of under 60
+#: characters, so the caps come from the worker instead: the bridge takes a
+#: preview of at most 8 KiB (`question_bridge.MAX_TEXT`), which one option may
+#: show whole, and four such designs per question (a bridged question has up
+#: to 8 options) keep one GET under 8 x 32 KiB at the bridge's 8 questions.
+#: Past either cap a preview is dropped whole with `preview_dropped`.
+PREVIEW_MAX_CHARS = 8 * 1024
+PREVIEW_QUESTION_MAX_CHARS = 4 * PREVIEW_MAX_CHARS
+#: `detail.reason` of the refusal of a second answer to a bridged question.
+ALREADY_ANSWERED = "already_answered"
 #: The dead-letter's `last_error`, which failure-review skips by rule
 #: (docs/design/failure-review.md §2).
 UNANSWERED = "owner question unanswered"
@@ -224,10 +279,75 @@ OWNER_QUESTIONS_ANSWERED = "owner_questions_answered"
 #: one merge step, and a merge-only continuation another; past this the rest
 #: wait for a person's `human-ready`, never for a read nobody bounded.
 MAX_HELD_MERGES = 10
+#: The blocks a merge's fix round carries in its task's metadata, each naming
+#: the merge it serves as `merge_task` (`mergewake._on_red` / `_on_pick`:
+#: `merge_fix_round`; `_on_conflict`: `validation.CONFLICT_ROUND_METADATA_KEY`).
+ROUND_METADATA_KEYS = ("merge_fix_round", CONFLICT_ROUND_METADATA_KEY)
+#: The merge's own record of its rounds (`mergewake.MERGE_FIX_METADATA_KEY`)
+#: and its round lists: CI, conflict and pick (`mergewake.ROUND_KIND`).
+#: Spelled again, as `mergewake` brings the forge clients with it; held
+#: equal by tests/unit/control_plane/test_answer_wakes_the_merge_round.py.
+MERGE_FIX_METADATA_KEY = "merge_fix"
+MERGE_ROUND_LISTS = ("rounds", "conflict_rounds", "pick_rounds")
 #: The most distinct asking tasks one hold may name before it is read as
 #: unreadable (it waits for a person): every one is read in the answer's
 #: transaction, and the document is tenant-writable.
 MAX_HOLD_TASKS = 25
+#: ADVISORY QUESTIONS DO NOT HOLD A MERGE (owner decision, 2 November 2026).
+#: A merge step goes ahead past an unanswered non-blocking question with a
+#: recommended option its branch built, about nothing sensitive, and lists
+#: it in its `result_summary` under this key (`agent_worker.merge.
+#: ADVISORY_MERGED_PAST_KEY`, held equal by
+#: tests/unit/worker/test_merge_advisory_questions.py): `{task_id, step_id,
+#: question_index, question, recommended, built}`. The question stays open.
+ADVISORY_MERGED_PAST_KEY = "advisory_merged_past"
+#: The merge task's metadata record of the pick-fix rounds later answers to
+#: those questions started against the default branch: one `{task_id,
+#: question_index, picked, text, built, by, at}` per pick, then the round's
+#: `round_workflow_id` and `round_task_id`, or its `error`. Claimed in the answer's
+#: transaction, so one pick starts one round however often it is answered.
+ADVISORY_PICK_FIX_KEY = "advisory_pick_fix"
+#: The most rounds one merge's advisory questions start: past this, a pick
+#: is stored as an answer and starts nothing, as a record bound.
+MAX_ADVISORY_PICK_ROUNDS = 10
+#: The runner profile of a merge step (`validation.MERGE_STEP_ID`).
+MERGE_PROFILE = "merge"
+
+#: ANSWERS SENT AT ONCE (5 November 2026, part of #2688): four answers to
+#: four questions of one task, sent together, contend for the task document;
+#: one met contention `firestore.transactional` does not retry (`Aborted` on
+#: the transactional read) and answered 500. The answer's transaction is run
+#: again, as the cancel's is (`store._is_contention`: only what cannot have
+#: committed; never `DeadlineExceeded`), each run re-reading the answers it
+#: merges into. How many runs, each itself up to five commit attempts:
+ANSWER_TRANSACTION_ATTEMPTS = 4
+#: The full-jitter pause before run n+1 is uniform in [0, base * 2**n]: at
+#: most 0.1 + 0.2 + 0.4 s, jittered so answers that collided do not again.
+ANSWER_RETRY_BASE_SECONDS = 0.1
+#: The wall-clock budget for the pauses, well inside a request's time, so the
+#: caller hears the named 503 rather than its own client timing out.
+ANSWER_RETRY_BUDGET_SECONDS = 2.0
+#: The 503's `Retry-After`: contention clears in well under a second.
+ANSWER_RETRY_AFTER_SECONDS = 1.0
+#: Replaced by the tests, which record the pauses rather than take them.
+_contention_sleep = time.sleep
+
+
+class AnswerContended(RateLimited):
+    """The answer's transaction stayed contended through every run.
+
+    503, retryable, and nothing was written. A `RateLimited` only so the
+    API's error handler writes its `Retry-After`; its status says it is not
+    a rate limit (as `store.CancelContended`).
+    """
+
+    status_code = 503
+    code = "answer_contended"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, ANSWER_RETRY_AFTER_SECONDS)
+
+
 #: Parks read per page by `parked_human_snapshots`: the sweep pages through
 #: every PARKED(HUMAN_REQUIRED) task, so this bounds one read, not the sweep.
 EXPIRY_SCAN = 200
@@ -261,6 +381,30 @@ def _wait_shape(value: Any) -> dict[str, Any] | None:
     if not isinstance(value.get("attempt_id"), str):
         return None
     return value
+
+
+def is_bridged(wait: dict[str, Any] | None) -> bool:
+    """Whether a question wait is a plugin step's bridged question."""
+    return isinstance(wait, dict) and isinstance(wait.get(BRIDGE_KEY), dict)
+
+
+def asked_by_skill(wait: dict[str, Any], masking: Any) -> str | None:
+    """The skill that asked a bridged question, masked: the worker records the
+    last `Skill` call before the question in the wait's bridge block
+    (`question_bridge.asked_by_skill`, the owner's pick of 4 November 2026).
+    None for a wait that is not bridged, a park recorded before the worker
+    wrote it, or a value that is not a non-empty text: the page then says
+    the skill is not known."""
+    bridge = wait.get(BRIDGE_KEY) if isinstance(wait, dict) else None
+    skill = bridge.get("skill") if isinstance(bridge, dict) else None
+    if not isinstance(skill, str) or not skill.strip():
+        return None
+    return masking.text(skill.strip())[0]
+
+
+def wait_max_seconds(wait: dict[str, Any]) -> int:
+    """How long a question wait is held before it is dead-lettered unanswered."""
+    return BRIDGE_WAIT_MAX_SECONDS if is_bridged(wait) else QUESTION_WAIT_MAX_SECONDS
 
 
 def parked_wait(task: Any) -> dict[str, Any] | None:
@@ -357,33 +501,83 @@ def owner_questions_hold(data: dict[str, Any]) -> list[tuple[str, int]] | None:
     return None
 
 
-def _held_merges(txn: Any, db: Any, data: dict[str, Any]) -> list[dict[str, Any]]:
-    """The parked merges in the answered task's workflow whose owner-question hold names it.
+def _round_merge(data: dict[str, Any]) -> str | None:
+    """The merge task a fix round's task names in its metadata, else None."""
+    metadata = data.get("metadata")
+    for key in ROUND_METADATA_KEYS:
+        block = metadata.get(key) if isinstance(metadata, dict) else None
+        merge = block.get("merge_task") if isinstance(block, dict) else None
+        if isinstance(merge, str) and merge:
+            return merge
+    return None
 
-    Read in the answer's transaction, before any write. Each one's
-    workflow and tenant are checked again on the document, as the query
-    alone is not trusted to say them.
+
+def _is_round_of(doc: dict[str, Any], merge: dict[str, Any]) -> bool:
+    """Whether task `doc` is one of `merge`'s own fix rounds (#2913).
+
+    A round runs as a workflow of its own, so it is not a step of the
+    merge's workflow. Both documents are tenant-writable, so BOTH sides must
+    say it: the same tenant, the round's metadata naming the merge, and the
+    merge's `merge_fix` record listing the round's task in the round's own
+    workflow -- as `agent_worker.merge._round_questions` reads the rounds
+    from that record.
+    """
+    if doc.get("tenant_id") != merge.get("tenant_id") or _round_merge(doc) != merge.get("id"):
+        return False
+    task_id, workflow_id = doc.get("id"), doc.get("workflow_id")
+    if not isinstance(task_id, str) or not task_id or task_id == merge.get("id"):
+        return False
+    metadata = merge.get("metadata")
+    record = metadata.get(MERGE_FIX_METADATA_KEY) if isinstance(metadata, dict) else None
+    if not isinstance(record, dict):
+        return False
+    for key in MERGE_ROUND_LISTS:
+        entries = record.get(key)
+        for entry in entries if isinstance(entries, list) else ():
+            if (isinstance(entry, dict) and entry.get("task_id") == task_id
+                    and entry.get("workflow_id") == workflow_id):
+                return True
+    return False
+
+
+def _held_merges(txn: Any, db: Any, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """The parked merges whose owner-question hold names the answered task.
+
+    Those in the answered task's workflow, and -- when the answered task is a
+    merge's fix round, which runs as a workflow of its own (#2913) -- the
+    merge its metadata names, when that merge is the same tenant's and its
+    `merge_fix` record lists the round (`_is_round_of`). Read in the
+    answer's transaction, before any write. Each one's workflow and tenant
+    are checked again on the document, as the query alone is not trusted to
+    say them.
     """
     workflow_id, tenant_id, task_id = data.get("workflow_id"), data.get("tenant_id"), data.get("id")
-    if not isinstance(workflow_id, str) or not workflow_id:
-        return []
-    query = (
-        db.collection(TASKS)
-        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
-        .where(filter=FieldFilter("workflow_id", "==", workflow_id))
-        .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
-        .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
-        .limit(MAX_HELD_MERGES)
-    )
     held: list[dict[str, Any]] = []
-    for snap in txn.get(query):
-        doc = {"id": snap.id, **(snap.to_dict() or {})}
-        if (doc.get("tenant_id") != tenant_id or doc.get("workflow_id") != workflow_id
-                or doc.get("id") == task_id):
-            continue
-        named = owner_questions_hold(doc)
-        if named is not None and any(task == task_id for task, _ in named):
-            held.append(doc)
+    if isinstance(workflow_id, str) and workflow_id:
+        query = (
+            db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+            .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+            .where(filter=FieldFilter("park_reason", "==", ParkReason.HUMAN_REQUIRED.value))
+            .limit(MAX_HELD_MERGES)
+        )
+        for snap in txn.get(query):
+            doc = {"id": snap.id, **(snap.to_dict() or {})}
+            if (doc.get("tenant_id") != tenant_id or doc.get("workflow_id") != workflow_id
+                    or doc.get("id") == task_id):
+                continue
+            named = owner_questions_hold(doc)
+            if named is not None and any(task == task_id for task, _ in named):
+                held.append(doc)
+    merge_id = _round_merge(data)
+    if merge_id is not None and merge_id != task_id and all(m["id"] != merge_id for m in held):
+        snap = _snapshot(txn.get(db.collection(TASKS).document(merge_id)))
+        merge = {**(snap.to_dict() or {}), "id": merge_id} if snap.exists else None
+        if merge is not None and _is_round_of(data, merge):
+            named = owner_questions_hold(merge)
+            if named is not None and any(task == task_id for task, _ in named):
+                held.append(merge)
     return held
 
 
@@ -394,9 +588,11 @@ def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, 
     `answered` is the task just answered, with the answer it is being
     given; every other named task is read in the transaction (`docs`
     caches the reads, and every read precedes the transaction's writes).
-    FAIL CLOSED: a named task that cannot be read, or is not a step of the
-    merge's own workflow and tenant, answers nothing -- as the merge's own
-    re-read (`agent_worker.merge._unanswered`) holds it.
+    A named task counts when it is a step of the merge's own workflow and
+    tenant, or one of the merge's own fix rounds (`_is_round_of`, #2913).
+    FAIL CLOSED: a named task that cannot be read, or is neither, answers
+    nothing -- as the merge's own re-read (`agent_worker.merge._unanswered`,
+    `_round_questions`) holds it.
     """
     named = owner_questions_hold(merge) or []
     if not named:
@@ -407,19 +603,124 @@ def _hold_cleared(txn: Any, db: Any, merge: dict[str, Any], answered: dict[str, 
         else:
             if task_id not in docs:
                 snap = _snapshot(txn.get(db.collection(TASKS).document(task_id)))
-                docs[task_id] = snap.to_dict() if snap.exists else None
+                docs[task_id] = {**(snap.to_dict() or {}), "id": task_id} if snap.exists else None
             doc = docs[task_id]
-        if (doc is None or doc.get("tenant_id") != merge.get("tenant_id")
-                or doc.get("workflow_id") != merge.get("workflow_id")):
+        if doc is None:
             return False
+        step = (doc.get("tenant_id") == merge.get("tenant_id")
+                and doc.get("workflow_id") == merge.get("workflow_id"))
+        if not step and not _is_round_of(doc, merge):
+            return False
+        # The named task's questions are in its artifact, which this
+        # transaction does not read, so a stored answer is taken as is here;
+        # the woken merge re-reads every answer against the questions before
+        # it merges (`agent_worker.merge._unanswered`).
         if index not in owner_answers_by_index(doc.get("metadata")):
             return False
     return True
 
 
+def _merges_past(txn: Any, db: Any, data: dict[str, Any], index: int) -> list[dict[str, Any]]:
+    """The SUCCEEDED merges of the answered task's workflow that went past question `index`.
+
+    Read in the answer's transaction, before any write. The tenant and the
+    workflow are checked again on each document, and the merge's record of
+    the question must name the answered task and index.
+    """
+    workflow_id, tenant_id, task_id = data.get("workflow_id"), data.get("tenant_id"), data.get("id")
+    if not isinstance(workflow_id, str) or not workflow_id:
+        return []
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+        .where(filter=FieldFilter("state", "==", TaskState.SUCCEEDED.value))
+        .where(filter=FieldFilter("runner_profile", "==", MERGE_PROFILE))
+        .limit(MAX_HELD_MERGES)
+    )
+    merges: list[dict[str, Any]] = []
+    for snap in txn.get(query):
+        doc = {**(snap.to_dict() or {}), "id": snap.id}
+        if (doc.get("tenant_id") == tenant_id and doc.get("workflow_id") == workflow_id
+                and doc.get("id") != task_id and merged_past_row(doc, task_id, index) is not None):
+            merges.append(doc)
+    return merges
+
+
+def merged_past_row(merge: dict[str, Any], task_id: Any, index: int) -> dict[str, Any] | None:
+    """The merge's record that it went past question `index` of `task_id`, else None."""
+    summary = merge.get("result_summary")
+    rows = summary.get(ADVISORY_MERGED_PAST_KEY) if isinstance(summary, dict) else None
+    for row in rows if isinstance(rows, list) else ():
+        if (isinstance(row, dict) and row.get("task_id") == task_id
+                and row.get("question_index") == index and not isinstance(index, bool)):
+            return row
+    return None
+
+
+def advisory_pick_due(merge: dict[str, Any], task_id: str, index: int,
+                      choice: str | None, text: str | None) -> dict[str, Any] | None:
+    """The pick-fix claim an answer to a merged-past question makes, else None.
+
+    Owner decision, 2 November 2026: an answer whose pick is not what the
+    merged branch builds -- its `built`, else its `recommended` option --
+    starts a pick-fix round against the default branch; free text with no
+    option is such a pick too, as the merge's own check reads it. The same
+    pick (the recommended one, or one a round was already started for)
+    starts nothing, and a question whose `built` is null changes nothing
+    the branch builds. Never an answer: the owner's stays theirs.
+    """
+    row = merged_past_row(merge, task_id, index)
+    if row is None or ("built" in row and row["built"] is None):
+        return None
+    built = row.get("built") if isinstance(row.get("built"), str) else row.get("recommended")
+    if not isinstance(built, str) or (choice is not None and choice == built):
+        return None
+    metadata = merge.get("metadata") if isinstance(merge.get("metadata"), dict) else {}
+    started = [e for e in metadata.get(ADVISORY_PICK_FIX_KEY) or () if isinstance(e, dict)]
+    if len(started) >= MAX_ADVISORY_PICK_ROUNDS:
+        return None
+    for entry in started:
+        if (entry.get("task_id") == task_id and entry.get("question_index") == index
+                and entry.get("picked") == choice
+                and (choice is not None or entry.get("text") == text)):
+            return None
+    return {"task_id": task_id, "step_id": row.get("step_id"), "question_index": index,
+            "question": row.get("question"), "picked": choice,
+            "text": text if choice is None else None, "built": built}
+
+
+#: Starts one pick-fix round against the default branch for a merge's
+#: advisory claim: `(merge document, claim) -> {round_workflow_id, round_task_id}`;
+#: raises when the round is refused (`mergewake.advisory_pick_fix`).
+StartPickFix = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+
+
+def _record_advisory_round(db: Any, merge_id: str, claim: dict[str, Any],
+                           patch: dict[str, Any]) -> None:
+    """Write a started (or refused) round onto its claim in the merge's metadata."""
+    ref = db.collection(TASKS).document(merge_id)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> None:
+        snap = _snapshot(txn.get(ref))
+        data = snap.to_dict() if snap.exists else None
+        if data is None:
+            return
+        metadata = dict(data.get("metadata") or {})
+        entries = [dict(e) for e in metadata.get(ADVISORY_PICK_FIX_KEY) or () if isinstance(e, dict)]
+        for entry in entries:
+            if all(entry.get(k) == claim.get(k) for k in ("task_id", "question_index", "picked", "at")):
+                entry.update(patch)
+        metadata[ADVISORY_PICK_FIX_KEY] = entries
+        txn.update(ref, {"metadata": metadata})
+
+    _apply(db.transaction())
+
+
 def blocking_unanswered(wait: dict[str, Any], metadata: dict[str, Any] | None) -> list[int]:
-    """The wait's blocking indices with no stored answer."""
-    answered = owner_answers_by_index(metadata)
+    """The wait's blocking indices with no stored answer to THAT question (`answers_to`)."""
+    answered = answers_to([_redacted_question(q)[0] for q in wait["questions"]], metadata)
     return [i for i in wait.get("blocking") or [] if i not in answered]
 
 
@@ -462,9 +763,34 @@ def _redacted_question(entry: dict[str, Any]) -> tuple[dict[str, Any], int]:
     out["context"] = clean(out["context"])
     # Labels too, as the artifact read masks them: an answer's choice is
     # checked against the labels as served, so the two always agree.
-    out["options"] = [{"label": clean(o["label"]), "description": clean(o["description"])}
+    # And a design preview, as the text beside it is (BGD, 6 November 2026).
+    out["options"] = [{**o, "label": clean(o["label"]), "description": clean(o["description"]),
+                       **({"preview": clean(o["preview"])} if "preview" in o else {})}
                       for o in out["options"]]
     return out, masked
+
+
+def _with_previews(wait: dict[str, Any]) -> list[dict[str, Any]]:
+    """The wait's questions, each option with the preview the bridge block
+    records for it (`question_bridge.wait_record` keeps them only there),
+    matched by question index and option label."""
+    bridge = wait.get(BRIDGE_KEY) if isinstance(wait.get(BRIDGE_KEY), dict) else {}
+    asked = bridge.get("questions") if isinstance(bridge.get("questions"), list) else []
+    out: list[dict[str, Any]] = []
+    for i, entry in enumerate(wait["questions"]):
+        source = asked[i] if i < len(asked) and isinstance(asked[i], dict) else {}
+        previews = {
+            o.get("label"): o.get("preview")
+            for o in source.get("options") or [] if isinstance(o, dict) and isinstance(o.get("label"), str)
+        }
+        if not previews:
+            out.append(entry)
+            continue
+        out.append({**entry, "options": [
+            {**o, "preview": previews.get(o.get("label"))} if isinstance(o, dict) and "preview" not in o else o
+            for o in entry.get("options") or []
+        ]})
+    return out
 
 
 def question_count(summary: dict[str, Any] | None) -> int:
@@ -475,17 +801,58 @@ def question_count(summary: dict[str, Any] | None) -> int:
     return count
 
 
+def question_digests(summary: dict[str, Any] | None) -> list[str] | None:
+    """The worker's digest of each counted question, in index order, else None.
+
+    None for a task summarised before the worker wrote them, and for a list
+    that does not hold one non-empty string per counted question: digests
+    that cannot be matched to the count are not read, and the task is
+    counted by index as it always was.
+    """
+    raw = (summary or {}).get(QUESTION_DIGESTS_KEY)
+    if not isinstance(raw, list) or len(raw) != question_count(summary):
+        return None
+    if not all(isinstance(d, str) and d for d in raw):
+        return None
+    return raw
+
+
+def answers_digest(entry: dict[str, Any], index: int, digests: list[str]) -> bool:
+    """Whether the stored answer `entry` at `index` answers the question the
+    worker's `digests` say is asked there now. An answer stored before it was
+    stamped (`ASKED_DIGEST_KEY`) cannot be checked and counts by its index."""
+    stamp = entry.get(ASKED_DIGEST_KEY)
+    if not isinstance(stamp, str):
+        return True
+    return index < len(digests) and stamp == digests[index]
+
+
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
 def _question(entry: dict[str, Any]) -> dict[str, Any]:
-    """One question with exactly its four keys, and each option with its two."""
-    options = [
-        {"label": _text(option.get("label")), "description": _text(option.get("description"))}
-        for option in entry.get("options") or []
-        if isinstance(option, dict)
-    ]
+    """One question with exactly its four keys, and each option with its two,
+    plus `preview` (and `preview_dropped`) on an option the agent drew one for."""
+    options = []
+    total = 0
+    for option in entry.get("options") or []:
+        if not isinstance(option, dict):
+            continue
+        served = {"label": _text(option.get("label")), "description": _text(option.get("description"))}
+        preview = _text(option.get("preview"))
+        if preview:
+            # Dropped whole, never cut: a cut design is HTML broken mid-tag.
+            if len(preview) > PREVIEW_MAX_CHARS:
+                served.update(preview=None, preview_dropped=(
+                    f"the preview is larger than the {PREVIEW_MAX_CHARS} characters one option may show"))
+            elif total + len(preview) > PREVIEW_QUESTION_MAX_CHARS:
+                served.update(preview=None, preview_dropped=(
+                    f"the question's previews pass the {PREVIEW_QUESTION_MAX_CHARS} characters one question may show"))
+            else:
+                total += len(preview)
+                served["preview"] = preview
+        options.append(served)
     return {
         "question": _text(entry.get("question")),
         "options": options,
@@ -494,10 +861,145 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def unanswered(count: int, metadata: dict[str, Any] | None) -> int:
-    """How many of the `count` questions have no stored answer."""
-    answered = owner_answers_by_index(metadata)
-    return sum(1 for index in range(count) if index not in answered)
+def question_digest(question: dict[str, Any]) -> str:
+    """The digest of one question as it is served: its text and its options.
+
+    Stored with each answer (`question_digest`) so an answer is served only
+    under the question it answered (#3349). Only the text and the options'
+    labels and descriptions are read -- not `recommended`, `context` or a
+    served `answer` -- so the store and every read hash the same thing.
+    """
+    shape = {
+        "question": _text(question.get("question")),
+        "options": [
+            [_text(o.get("label")), _text(o.get("description"))]
+            for o in question.get("options") or [] if isinstance(o, dict)
+        ],
+    }
+    canonical = json.dumps(shape, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def answers_question(entry: dict[str, Any], question: dict[str, Any]) -> bool:
+    """Whether the stored answer `entry` answers `question` (served form, redacted).
+
+    THE INDEX IS NOT THE QUESTION (#3349). An answer is stored by
+    `question_index`, and a later attempt's file may ask a different
+    question at that index; its answer then belongs to the question it was
+    given for, never to the new one. An answer records the question it
+    answered: `question_digest` (text and options) since #3349, compared
+    whole; an answer stored before that has only the `question` text, which
+    is compared instead. An answer with neither cannot be checked and is
+    served as it always was.
+    """
+    digest = entry.get("question_digest")
+    if isinstance(digest, str):
+        return digest == question_digest(question)
+    text = entry.get("question")
+    if isinstance(text, str):
+        return text == _text(question.get("question"))
+    return True
+
+
+def answers_to(questions: list[dict[str, Any]], metadata: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    """The stored answers by index, only those that answer the question asked there now."""
+    return {
+        index: entry
+        for index, entry in owner_answers_by_index(metadata).items()
+        if index < len(questions) and answers_question(entry, questions[index])
+    }
+
+
+def unanswered(count: int, metadata: dict[str, Any] | None,
+               questions: list[dict[str, Any]] | None = None, *,
+               digests: list[str] | None = None) -> int:
+    """How many of the `count` questions have no stored answer (`unanswered_indices`)."""
+    return len(unanswered_indices(count, metadata, questions, digests=digests))
+
+
+def unanswered_indices(count: int, metadata: dict[str, Any] | None,
+                       questions: list[dict[str, Any]] | None = None, *,
+                       digests: list[str] | None = None) -> list[int]:
+    """The indices of the `count` questions with no stored answer, in order.
+
+    Given the `questions` as served, an answer to a different question at an
+    index leaves it unanswered (`answers_to`). A caller that reads only the
+    task document, not its questions file -- `open_question_tasks`,
+    `codec.step_needs`'s `questions_unread` and the bell's question item --
+    passes the worker's `digests` instead (`question_digests` of the
+    task's result summary): an answer stamped with the digest of another
+    question at its index leaves it unanswered (`answers_digest`), with no
+    read of the questions file per task (the follow-up lane the owner picked
+    on #3355, 2026-11-05). A task summarised before the worker wrote digests
+    (`digests` None), and an answer stored before answers were stamped, are
+    counted by index alone, as they always were.
+    """
+    if questions is not None:
+        answered = answers_to(questions, metadata)
+    else:
+        answered = owner_answers_by_index(metadata)
+        if digests is not None:
+            answered = {i: e for i, e in answered.items() if answers_digest(e, i, digests)}
+    return [index for index in range(count) if index not in answered]
+
+
+#: `GET /v1/tasks/open-questions` (#2835): how far back `since` may reach, its
+#: default, and the most documents one request reads. The sc plugin's check
+#: raises a finished task's questions for 7 days (`swarm_mcp.check.
+#: OWNER_QUESTIONS_DAYS`); 31 lets a reader ask for a month and no more. The
+#: query reads only the caller's tasks that ended in the window AND whose
+#: agent asked questions -- answered or not -- so 2,000 is many weeks of a
+#: busy person's asking; a read that reaches it says so (`complete: false`).
+OPEN_QUESTIONS_DEFAULT_DAYS = 7
+OPEN_QUESTIONS_MAX_DAYS = 31
+OPEN_QUESTIONS_SCAN = 2000
+
+
+def open_question_tasks(
+    db: Any, tenant_id: str, submitted_by: str, session: str, since: datetime,
+) -> tuple[list[Any], bool]:
+    """`(tasks, complete)`: `submitted_by`'s tasks in `tenant_id`, tagged with
+    the Claude Code `session`, that ended at or after `since` with at least
+    one question the worker validated (`result_summary.questions`) and no
+    stored answer for it (`metadata.owner_answers`), newest end first.
+
+    ONE QUERY, NOT A WALK OF EVERY FINISHED TASK (#2835). The sc plugin's
+    check paged the session's SUCCEEDED tasks to find these and stopped
+    after 10 pages, so a busy session's older questions were never listed.
+    The worker writes the count only for a file it validated, so
+    `result_summary.questions > 0` with `completed_at >= since` (index
+    tasks-tenant-submitter-completed-questions) reads exactly the tasks that
+    asked; the session tag and the answers, which no index can hold, are
+    filtered from those few. `complete` is False only when the read reached
+    `OPEN_QUESTIONS_SCAN` documents."""
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("submitted_by", "==", submitted_by))
+        .where(filter=FieldFilter("completed_at", ">=", since))
+        .where(filter=FieldFilter(f"result_summary.{QUESTIONS_KEY}", ">", 0))
+        .limit(OPEN_QUESTIONS_SCAN)
+    )
+    found: list[Any] = []
+    read = 0
+    for snap in query.stream():
+        read += 1
+        task = task_from_dict(snap.to_dict() or {})
+        if task.tenant_id != tenant_id or task.submitted_by != submitted_by:
+            continue
+        if task.state not in TERMINAL_STATES:
+            continue
+        if claude_session_of(task, masking_for(task, warm=False)) != session:
+            continue
+        # The questions file is not read here: the worker's digests say
+        # which question each index asks now (`unanswered_indices`).
+        if unanswered(question_count(task.result_summary), task.metadata,
+                      digests=question_digests(task.result_summary)) == 0:
+            continue
+        found.append(task)
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    found.sort(key=lambda t: (t.completed_at or epoch, t.id), reverse=True)
+    return found, read < OPEN_QUESTIONS_SCAN
 
 
 def answer_refusal(submitted_by: str | None, email: str, *, is_admin: bool) -> str | None:
@@ -602,17 +1104,18 @@ def read_questions(
                 "it is in the task's artifacts"
             ),
         }
-    answers = owner_answers_by_index(task.metadata)
+    served = [_question(entry) for entry in parsed]
+    answers = answers_to(served, task.metadata)
     masking = masking_for(task)
     return {
         **out,
         "status": "ok",
         "questions": [
             {
-                **_question(entry),
+                **question,
                 "answer": owner_answer_to_api(answers[i], masking) if i in answers else None,
             }
-            for i, entry in enumerate(parsed)
+            for i, question in enumerate(served)
         ],
         "redacted": bool(window.get("redacted")),
         "redaction_count": int(window.get("redaction_count") or 0),
@@ -623,16 +1126,16 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
     """A question wait's questions, as the worker validated them, redacted here.
 
     `waiting` says whether the agent is parked on them now, which block,
-    since when and until when, and where on GitHub they were posted.
+    since when and until when, where on GitHub they were posted, and, for a
+    plugin step's bridged question, the skill that asked (`skill`, or null).
     """
-    answers = owner_answers_by_index(task.metadata) if adopted else {}
     masking = masking_for(task)
     waited = set(wait["blocking"])
+    redacted = [_redacted_question(entry) for entry in _with_previews(wait)]
+    masked = sum(count for _, count in redacted)
+    answers = answers_to([q for q, _ in redacted], task.metadata) if adopted else {}
     served: list[dict[str, Any]] = []
-    masked = 0
-    for i, entry in enumerate(wait["questions"]):
-        question, count = _redacted_question(entry)
-        masked += count
+    for i, (question, _) in enumerate(redacted):
         served.append({
             **question,
             "blocking": i in waited,
@@ -653,9 +1156,10 @@ def _serve_wait(task: Any, wait: dict[str, Any], adopted: bool, out: dict[str, A
             "blocking": sorted(waited),
             "unanswered": [i for i in sorted(waited) if i not in answers],
             "asked_at": began.isoformat() if began else None,
-            "expires_at": (began + timedelta(seconds=QUESTION_WAIT_MAX_SECONDS)).isoformat()
+            "expires_at": (began + timedelta(seconds=wait_max_seconds(wait))).isoformat()
             if began else None,
             "issue_comment_url": comment.get("url") if isinstance(comment.get("url"), str) else None,
+            "skill": asked_by_skill(wait, masking),
         },
     }
 
@@ -675,7 +1179,8 @@ class AnswerBody(BaseModel):
     #: `github-comment` is the `/answer` reply on the agent's issue
     #: (`ghapprove.poll_answers`), set by swarm-api, never a caller's word for
     #: who may answer.
-    via: Literal["console", "claude-code", "github-comment"] | None = None
+    #: `voice-it` is an answer given by talking in Voice it (BGD, 6 November 2026).
+    via: Literal["console", "claude-code", "github-comment", "voice-it"] | None = None
     session: str | None = None
 
     @field_validator("session")
@@ -701,8 +1206,16 @@ def answer_question(
     email: str,
     is_admin: bool,
     now: datetime,
+    start_pick_fix: StartPickFix | None = None,
 ) -> dict[str, Any]:
-    """Store the owner's answer to one question on the task; serve the questions as they now read."""
+    """Store the owner's answer to one question on the task; serve the questions as they now read.
+
+    An answer to a question a merge went past (`ADVISORY_MERGED_PAST_KEY`)
+    whose pick is not what the merged branch builds is claimed on that merge
+    in the same transaction (`advisory_pick_due`), and then started through
+    `start_pick_fix` as a pick-fix round against the default branch. Without
+    `start_pick_fix` the claim is recorded with an error naming why.
+    """
     # The tenant boundary first, as on the read: another tenant's task is a 404.
     task = store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     refusal = answer_refusal(task.submitted_by, email, is_admin=is_admin)
@@ -751,6 +1264,9 @@ def answer_question(
     entry = {
         "question_index": index,
         "question": question.get("question"),
+        # The question this answers, so a later attempt asking another
+        # question at this index does not read it as answered (#3349).
+        "question_digest": question_digest(question),
         "choice": choice,
         "text": text,
         "by": email,
@@ -758,6 +1274,13 @@ def answer_question(
         "via": body.via,
         "session": body.session,
     }
+
+    # And the worker's digest of it, for the readers that count answers off
+    # the task document alone (`unanswered_indices`). The summary is the
+    # attempt whose file was just read: the read checked its count.
+    digests = question_digests(task.result_summary)
+    if digests is not None and index < len(digests):
+        entry[ASKED_DIGEST_KEY] = digests[index]
 
     promoted: dict[str, Any] = {}
 
@@ -776,6 +1299,15 @@ def answer_question(
             adopt_wait(metadata, wait)
         current = owner_answers_by_index(metadata)
         previous = current.get(index)
+        if (previous is not None and is_bridged(recorded_wait(metadata))
+                and answers_question(previous, question)):
+            # A bridged question's first answer is the one its session
+            # resumes with; a second is refused, never recorded.
+            raise Conflict(
+                f"question {index + 1} was answered already, and that answer is the one the "
+                "step resumes with; it is not changed",
+                detail={"reason": ALREADY_ANSWERED},
+            )
         history: list[dict[str, Any]] = []
         if previous is not None:
             history = [h for h in previous.get("history") or [] if isinstance(h, dict)]
@@ -784,8 +1316,11 @@ def answer_question(
                     f"question {index + 1}'s answer has been changed {MAX_ANSWER_CHANGES} times; "
                     "it is not changed again, so its history stays whole"
                 )
+            # With the question it answered: an answer to another question
+            # asked at this index stays readable with its own (#3349).
             history.append({
-                k: previous.get(k) for k in ("choice", "text", "by", "at", "via", "session")
+                k: previous.get(k)
+                for k in ("question", "question_digest", "choice", "text", "by", "at", "via", "session")
             })
         current[index] = {**entry, "history": history}
         metadata[OWNER_ANSWERS_METADATA_KEY] = [current[i] for i in sorted(current)]
@@ -796,6 +1331,13 @@ def answer_question(
         docs: dict[str, dict[str, Any] | None] = {}
         woken = [merge for merge in _held_merges(txn, db, moved)
                  if _hold_cleared(txn, db, merge, moved, docs) and _resumable(merge)]
+        # 2 November 2026: a merge that went past this question while it was
+        # advisory; a pick it did not build is claimed here, once.
+        claims: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for merge in _merges_past(txn, db, moved, index):
+            claim = advisory_pick_due(merge, task_id, index, choice, text)
+            if claim is not None:
+                claims.append((merge, {**claim, "by": email, "at": now.isoformat()}))
         if wait is not None and not blocking_unanswered(wait, metadata) and _resumable(data):
             # The last blocking answer: PARKED(HUMAN_REQUIRED) -> READY in
             # this same transaction, as `human-ready` makes it. Nothing is
@@ -812,9 +1354,58 @@ def answer_question(
             # before it merges. Nothing is leased here (invariants 1, 2, 5).
             ready_writes(txn, db, merge, email=email, now=now, reason=OWNER_QUESTIONS_ANSWERED)
             promoted.setdefault("merges", []).append(merge["id"])
+        for merge, claim in claims:
+            merge_metadata = dict(merge.get("metadata") or {})
+            merge_metadata[ADVISORY_PICK_FIX_KEY] = [
+                *(e for e in merge_metadata.get(ADVISORY_PICK_FIX_KEY) or () if isinstance(e, dict)),
+                claim,
+            ]
+            txn.update(db.collection(TASKS).document(merge["id"]), {"metadata": merge_metadata})
+            promoted.setdefault("claims", []).append((merge, claim))
         return previous is not None
 
-    replaced = _apply(db.transaction())
+    # CONTENTION IS RUN AGAIN, THEN REFUSED BY NAME. A fresh transaction
+    # each run, and each run re-reads the task: an answer another question's
+    # answer committed in between is merged, never overwritten, and a second
+    # answer to the SAME question meets the history rule as it would alone.
+    # Anything that is not contention is raised as is.
+    deadline = time.monotonic() + ANSWER_RETRY_BUDGET_SECONDS
+    last: BaseException | None = None
+    for run in range(ANSWER_TRANSACTION_ATTEMPTS):
+        try:
+            replaced = _apply(db.transaction())
+            break
+        except Exception as exc:
+            if not _is_contention(exc):
+                raise
+            last = exc
+        pause = random.uniform(0, ANSWER_RETRY_BASE_SECONDS * 2**run)
+        if run + 1 == ANSWER_TRANSACTION_ATTEMPTS or time.monotonic() + pause >= deadline:
+            log.warning(
+                "answer to question %d of task %s stayed contended after %d runs: %s",
+                index, task_id, run + 1, type(last).__name__,
+            )
+            raise AnswerContended(
+                f"question {index + 1}'s answer met other writes to task {task_id!r} on every "
+                "attempt, often other answers sent at the same moment; nothing was stored, "
+                "retry the answer"
+            ) from last
+        _contention_sleep(pause)
+    started: list[str] = []
+    for merge, claim in promoted.get("claims", []):
+        # After the transaction: a submission is not a Firestore write. A
+        # refusal is recorded on the claim, never retried by another answer.
+        try:
+            if start_pick_fix is None:
+                raise RuntimeError("this answer path starts no pick-fix round")
+            patch = start_pick_fix(merge, claim)
+            started.append(str(patch.get("round_workflow_id")))
+        except Exception as exc:  # recorded, and the answer still stands
+            reason = exc.message if hasattr(exc, "message") else (
+                str(exc) if isinstance(exc, (ValueError, RuntimeError)) else type(exc).__name__)
+            patch = {"error": redact(str(reason)).text[:300]}
+            log.warning("advisory pick fix for merge %s not started: %s", merge["id"], patch["error"])
+        _record_advisory_round(db, merge["id"], claim, patch)
     # The audit line names who and which question, never the answer's words.
     log.info(
         "owner answer stored",
@@ -829,6 +1420,7 @@ def answer_question(
             "via": body.via,
             "resumed": "by" in promoted,
             "merges_resumed": promoted.get("merges", []),
+            "pick_fix_rounds_started": started,
         },
     )
     return read_questions(
@@ -875,7 +1467,8 @@ def parked_human_snapshots(db: Any, *, page_size: int = EXPIRY_SCAN) -> Iterator
 
 
 def expire_question_waits(db: Any, now: datetime, *, limit: int = EXPIRY_SCAN) -> int:
-    """Dead-letter every agent parked on a blocking question past 72 hours (§3.9 step 5).
+    """Dead-letter every agent parked on a blocking question past 72 hours (§3.9 step 5),
+    or past 24 hours for a bridged one (`wait_max_seconds`).
 
     Every PARKED(HUMAN_REQUIRED) task across tenants, `limit` per page
     (`parked_human_snapshots`); a task
@@ -892,7 +1485,7 @@ def expire_question_waits(db: Any, now: datetime, *, limit: int = EXPIRY_SCAN) -
         if wait is None:
             continue
         began = asked_at(doc, wait)
-        if began is None or began + timedelta(seconds=QUESTION_WAIT_MAX_SECONDS) > now:
+        if began is None or began + timedelta(seconds=wait_max_seconds(wait)) > now:
             continue
         if _dead_letter(db, str(doc.get("id") or snap.id), str(doc.get("tenant_id") or ""),
                         wait, now):

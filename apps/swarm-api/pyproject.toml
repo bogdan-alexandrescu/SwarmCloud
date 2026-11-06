@@ -10,6 +10,10 @@ dependencies = [
     # The workflow state derivation (swarm_api.rollup re-exports it), shared
     # with the reconciler's workflow stall check (#616).
     "swarm-workflow-rollup",
+    # The Jev client, shared with the worker (jev-contract.md, answer 10):
+    # the work contract's submission review and the control plane's re-ask
+    # call Jev through the same validated, sanitised, audited client.
+    "swarm-jev",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
@@ -47,6 +51,7 @@ dependencies = [
 swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
 swarm-workflow-rollup = { path = "../workflow-rollup", editable = true }
+swarm-jev = { path = "../jev-client", editable = true }
 
 [build-system]
 requires = ["hatchling"]

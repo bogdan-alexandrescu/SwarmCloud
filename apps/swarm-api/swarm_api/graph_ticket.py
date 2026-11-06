@@ -55,8 +55,32 @@ THE STATS TICKET (docs/design/graph-answer-cache.md §5.3, lane CACHE-3-ROUTE,
 part of #1835) is minted by routes/graph_cache.py for the console's Cache
 section: the same key, its own domain and fields (`mint_stats_ticket`).
 
-Read-only: minting writes nothing. Nothing here logs, stores or serves a key,
-a signature or a ticket, other than the one ticket in the response body.
+THE PIN (#3116; the owner chose "record-pins", 3 November 2026). Before a
+ticket is served, the commit it names is recorded on the task's WORKFLOW
+document (`swarm_rollup.GRAPH_PINS`, `GRAPH_PIN_REPOS`), in one transaction
+that reads the workflow first: a workflow of another tenant, or one whose
+stored state is already terminal, gets no pin, and a commit already pinned
+costs no write, so a renewal is one read. Index retention keeps a pinned
+version past both of its rules while the workflow runs
+(`repoindex.pinned_commits`), and the write that settles the workflow clears
+the pins (`swarm_rollup.settled_unpin`). Because the pin and a settle both
+read the workflow inside a transaction, a pin never lands on a workflow that
+settled first. A pin that cannot be written is a 503 and no ticket: a ticket
+without its pin could name a version retention then sweeps. A task with no
+workflow pins nothing here.
+
+THE HOLDER PIN (owner's pick `record-pins`, PR #3105). Minting also writes
+a pin under the repository, `repositories/{repo_id}/index_pins/` (`record_pin`),
+naming the ticket's `index_sha` and its holder -- the task's workflow, or the
+task itself when it runs outside one. Index retention keeps a pinned version,
+however old, until that holder settles (`repoindex.RepoIndex._pinned_commits`),
+so a long workflow's later steps still find the graph its first step read. A
+pin that cannot be written is logged and the ticket still minted: the graph
+is read now, and the day's age floor still keeps a recent version.
+
+The two pins are the only writes; retention keeps a version either one holds
+(`repoindex.RepoIndex._all_pinned`). Nothing here logs, stores or serves a
+key, a signature or a ticket, other than the one ticket in the response body.
 """
 
 from __future__ import annotations
@@ -66,15 +90,19 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
 from typing import Any, Callable, Sequence
 
+from google.cloud import firestore
 from pydantic import Field
 
+from swarm_common.admission import _snapshot
 from swarm_common.models import check_additional_repositories, utcnow
-from swarm_common.states import TaskState
+from swarm_common.states import TERMINAL_STATES, TaskState
+from swarm_rollup import GRAPH_PIN_REPOS, GRAPH_PINS, WORKFLOWS
 
 from .attemptcontext import repository_key
 from .childkey import AttemptTuple, verify_proof
@@ -83,11 +111,13 @@ from .codeintel import OFF, CodeIntelligenceStore, effective_context
 from .judgment import settings_mac
 from .errors import ApiError, Conflict, Forbidden, ValidationFailed
 from .live import LiveSessionOpen
-from .repoindex import VERSIONS_COLLECTION
+from .repoindex import PINS_COLLECTION, VERSIONS_COLLECTION, pin_id
 from .repograph import NoGraph
 from .repositories import COLLECTION as REPOSITORIES
 from .repositories import Repositories, parse_repository, readable_by_tasks_of, repo_id_for
 from .store import LEASES, TASKS
+
+log = logging.getLogger(__name__)
 
 #: The worker's signing purpose for this route; never another route's (§3.2).
 TICKET_PURPOSE = "swarm-graph-ticket-request/v1"
@@ -104,6 +134,10 @@ MIN_TICKET_SECONDS = 60
 #: its OWN domain, so an attempt ticket never reads `/v1/stats` and a stats
 #: ticket never reads `/mcp`. It names a repository and two digests, and no
 #: task, attempt or commit: it reads counters, never a graph.
+#: swarm_graph.ticket.STATS_TICKET_FIELDS restates this set (its image carries
+#: no swarm-api); tests/unit/graphsvc/test_graphsvc_ticket.py mints here and
+#: verifies there, so a rename on either side turns it red. The nonce makes
+#: every mint distinct; the service checks its shape.
 STATS_DOMAIN = b"swarm-graph-stats/v1\0"
 STATS_FIELDS = frozenset({"tenant_id", "repo_id", "manifest_digest", "previous_digest",
                           "exp", "nonce"})
@@ -366,6 +400,61 @@ class GraphTicketService:
                           "no graph ticket was minted")
         return digest
 
+    def _pin(self, tenant_id: str, task: dict[str, Any], repo_id: str, index_sha: str) -> None:
+        """Record `index_sha` of `repo_id` on the task's running workflow (#3116).
+
+        One transaction: the workflow is read, and the pin is added only when
+        it is this tenant's, its stored state is not terminal and the commit
+        is not pinned already. A failed write raises GraphTicketUnavailable,
+        so no ticket is served without its pin.
+        """
+        workflow_id = task.get("workflow_id")
+        if not isinstance(workflow_id, str) or not workflow_id:
+            return
+        ref = self._db.collection(WORKFLOWS).document(workflow_id)
+        settled = {state.value for state in TERMINAL_STATES}
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = (snap.to_dict() or {}) if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id \
+                    or data.get("state") in settled:
+                return
+            pins = {repo: list(shas) for repo, shas in (data.get(GRAPH_PINS) or {}).items()
+                    if isinstance(shas, list)}
+            repos = [repo for repo in (data.get(GRAPH_PIN_REPOS) or []) if isinstance(repo, str)]
+            if index_sha in pins.get(repo_id, ()) and repo_id in repos:
+                return
+            pins[repo_id] = sorted({*pins.get(repo_id, ()), index_sha})
+            txn.update(ref, {GRAPH_PINS: pins,
+                             GRAPH_PIN_REPOS: sorted({*repos, repo_id})})
+
+        try:
+            _apply(self._db.transaction())
+        except Exception:
+            raise GraphTicketUnavailable(
+                "the graph version this ticket names could not be pinned for the workflow, so "
+                "index retention could sweep it; no graph ticket was minted") from None
+
+    def record_pin(self, tenant_id: str, repo_id: str, task: dict[str, Any], task_id: str,
+                   index_sha: str) -> None:
+        """Record that `index_sha` is pinned until this step's workflow -- or
+        the task, outside one -- settles (module docstring, THE PIN). One
+        document per holder and commit, rewritten on every renewal. Best
+        effort: a failed write is logged and never refuses the ticket."""
+        workflow_id = task.get("workflow_id")
+        holder, holder_id = (("workflows", workflow_id) if isinstance(workflow_id, str)
+                             and workflow_id else ("tasks", task_id))
+        try:
+            (self._db.collection(REPOSITORIES).document(repo_id)
+             .collection(PINS_COLLECTION).document(pin_id(holder, holder_id, index_sha))
+             .set({"commit_sha": index_sha, "holder": holder, "holder_id": holder_id,
+                   "tenant_id": tenant_id, "task_id": task_id, "pinned_at": self._now()}))
+        except Exception as failed:  # the pin never stops a step reading its graph
+            log.warning("graph ticket pin unrecorded tenant=%s repo_id=%s error=%s",
+                        tenant_id, repo_id, type(failed).__name__)
+
     def mint(self, authorization: str | None, attempt_id: str, raw: bytes, *, path: str,
              proof: str | None, timestamp: str | None) -> dict[str, Any]:
         key = self._s("graph_ticket_key", "")
@@ -399,6 +488,8 @@ class GraphTicketService:
                 "graph context is off for this repository in this workspace's code-intelligence "
                 "setting; no graph ticket was minted", detail={"reason": CONTEXT_DISABLED})
         digest = self._digest(repo_id, body.index_sha)
+        self._pin(tenant_id, task, repo_id, body.index_sha)
+        self.record_pin(tenant_id, repo_id, task, attempt.task_id, body.index_sha)
 
         seconds = ticket_seconds(self._s("graph_ticket_seconds", 600))
         ticket = mint_graph_ticket(

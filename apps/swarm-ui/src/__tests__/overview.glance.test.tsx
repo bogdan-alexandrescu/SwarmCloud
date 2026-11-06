@@ -233,7 +233,7 @@ describe('#95: every figure in the Headroom card names what it counts', () => {
     const el = await mount()
     const heavy = profileTile(el, 'heavy')
     expect(text(heavy.querySelector('b'))).toBe('+5')
-    expect(heavy.getAttribute('title') ?? '').toMatch(/5 more agents can start; 4 unit\(s\) per agent/)
+    expect(heavy.getAttribute('title') ?? '').toMatch(/5 more agents can start; one agent takes 4 units in each of 1 pool\./)
     expect(profileTile(el, 'claude-code').getAttribute('title') ?? '').toMatch(/1 more agent can start;/)
     const pool = [...el.querySelectorAll('.ov-pools .ov-pl')].find((r) => r.querySelector('.ov-idc')?.getAttribute('title') === 'resource:large')!
     expect(text(pool.querySelector('b'))).toBe('0/20')

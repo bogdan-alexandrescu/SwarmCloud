@@ -139,6 +139,12 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
             "display": {"cpu_request": 0.5, "cpu_limit": 0.5, "memory_gib": 1.0},
         }
 
+    # Contract request 129: what a lease took in each of its pools, keyed by
+    # the fixture's own `pools` (["pools-0", "pools-1"]), so the served
+    # `held_units()` is this value and not the old rule's `units` everywhere.
+    if name == "pool_units":
+        return {"pools-0": 1, "pools-1": 7 + index}
+
     # Contract request 120: a budget in either unit, served as its limits.
     if name == "budget":
         return {"usd": 1.25, "tokens": 40_000 + index}
@@ -287,6 +293,14 @@ CODECS: tuple[Codec, ...] = (
             # public shape (docs/design/multi-repository-steps.md §4.1); this
             # entry is the thing that lane deletes.
             "additional_repositories": "served by lane MR-API as its §4.1 projection; not yet",
+            # Contract request 132 (accepted 2026-11-01). Read-side views: the
+            # stored copies of what a row already serves, read by
+            # `attempt_totals.served_totals` and `task_accounts.served_account`
+            # while they are the current attempt's. Served under the keys the
+            # derivation fills -- the totals beside the row, `account` --
+            # never as themselves, so a row reads the same either way.
+            "attempt_totals": "stored copy of the row's totals keys, served by attempt_totals.served_totals",
+            "current_account": "stored copy of `account`, served by task_accounts.served_account",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the

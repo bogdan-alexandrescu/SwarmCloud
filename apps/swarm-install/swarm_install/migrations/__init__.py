@@ -38,6 +38,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..record import DATABASE
+
 ADDITIVE = "additive"
 NEEDS_NEW_CODE = "needs-new-code"
 REMOVES_DATA = "removes-data"
@@ -99,9 +101,13 @@ class Migration(Protocol):
 
 
 class FirestoreMigrationDocuments:
-    """`Documents` on a real Firestore database (the client is built on first use)."""
+    """`Documents` on a real Firestore database (the client is built on first use).
 
-    def __init__(self, project: str, *, database: str = "(default)", client: Any = None) -> None:
+    The database is the install's own, never (default): in a shared project
+    (default) belongs to someone else.
+    """
+
+    def __init__(self, project: str, *, database: str = DATABASE, client: Any = None) -> None:
         self._project = project
         self._database = database
         self._client = client

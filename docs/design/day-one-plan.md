@@ -105,7 +105,7 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 - Flags: **held: Terraform, held: IAM** (the job spec is IAM-adjacent: it decides whose signatures grant). The live plan must show the job's command gaining one argument and nothing else. Estimate: **$25**.
 - CI green proves: a fresh project can create a team workspace (issue #2688's first finding), and bootstrap state can never be created twice.
 
-**DAYONE-RELHOME-1** — A script stands up the release home's registry, bucket and signing key in project `swarmcloud`, idempotently. `held: IAM`.
+**DAYONE-RELHOME-1** — A script stands up the release home's registry, bucket and signing key in project `swarmcloud-prod`, idempotently. `held: IAM`.
 - Territory: `scripts/release-home.sh` (new), `tests/unit/scripts/test_release_home.py` (new).
 - depends_on: none. Manifest: `+other.release-home`, `other.release-bundle`.
 - What it does (BGD runs it; CLD does not create projects, D23): Artifact Registry repo `swarmcloud` (us, Docker), bucket `gs://swarmcloud` (uniform access, versioning), KMS key ring `swarmcloud-release` and an asymmetric P-256 key for cosign, each labelled `managed-by=swarm-release`; then, **only after** the Q4 org-policy exception exists (it checks the effective policy first), `allUsers` `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repo. The public grant needs a typed confirmation of the project id that ignores `SWARM_ASSUME_YES`.
@@ -685,7 +685,7 @@ Firestore collection `swarm-install`, document `<env>` (D26), and its subcollect
 | `swarm-install/<env>` | the engine (CLI), only | `schema_version`, `release`, `region`, `hostname`, `stages[0..15]` `{state, at, by}`, `lease {holder, heartbeat, expires}`, `verify {check, done, total, started, expected_end, deadline, result}`, `hand_off_at`, `ready_at` |
 | `swarm-install/<env>/console/github_app` | swarm-api, only | `state_hash`, `id`, `slug`, `client_id`, `installed_on`, `secrets_written_at`, `self_check` |
 | `swarm-install/<env>/console/accounts` | swarm-api, only | per label: `owner`, `link_hash`, `link_expires`, `signed_in_at` |
-| `swarm-install/<env>/console/teams/<id>` | swarm-api, only | `group`, `workspace`, `first_admin`, `invites`, `progress`, `smoke` |
+| `swarm-install/<env>/teams/<id>` (a collection under the env document since PR 2850: `swarm-install/<env>/console/teams/<id>` has five segments, and a Firestore document path needs an even count) | swarm-api, only | `group`, `workspace`, `first_admin`, `invites`, `progress`, `smoke` |
 | `swarm-install/<env>/console/finished` | swarm-api, only | `at`, `by` (written when every required console step is done) |
 | `swarm-install/<env>/health/latest` | swarm-api on behalf of `swarm-doctor`, only | `run_at`, `checks`, `findings` |
 | `gs://swarm-tfstate-<P>/swarm-install/state.json` | the engine, only | the authoritative state (design §2.3); the engine copies the console's results into it when it reads them |
@@ -700,6 +700,14 @@ Within one writer, every write is a transaction with an `update_time` preconditi
 4. If the CLI was closed, every console step still works up to the App's self-check; the page says how to continue (5.1, "Waiting for the CLI"). Re-running `swarm install` resumes at step 2 or 3.
 
 ---
+
+### 5.6 The Sign-in client step: the brand and the Desktop client move to the console (issue #2964)
+
+**Where it lives now.** Admin › Setup's first step, before the GitHub App, is **Sign-in client**. It links three Google Cloud console pages in order (Branding: app name SwarmCloud, support email the person's own address; Audience: Internal; Clients › Create client: Desktop app, name SwarmCloud sc) and takes the client's id and secret in a form. `POST /v1/admin/setup/sign-in-client` (platform admins only, audited like the GitHub App conversion) refuses an id that does not end `.apps.googleusercontent.com` (422 `client_id_invalid`), adds the secret as a new version of `swarm-iap-desktop-client-secret` and never returns, logs or stores it elsewhere, and records `{client_id, saved_at, saved_by}` in `swarm-install/<env>/console/sign_in_client`. `GET /v1/admin/setup` serves `sign_in_client` as `waiting`, `saved` or `applied`, with the three links built from the deployment's own project id.
+
+In the installer, stage 2 only makes the secret's **empty container** (`edge.client-secret-container`), so infra pass 2, before the hand-off, can grant swarm-api `secretVersionAdder` on that one secret (`terraform/infra/discovery.tf`, a grant on the secret itself, under `enable_console_app_setup`). That is the only grant swarm-api holds on it: the bootstrap root grants it nothing on the secret (owner's pick, 2026-11-01). `edge.brand` and `edge.desktop-client` are **waits in stage 13, after `handoff.console`**, and ask nothing in the terminal. The hand-off wait carries three triggered steps that run once the console saved a client this state has not taken in: `handoff.sign-in-client` reads the secret's latest version with the person's own credentials into the new deployment's context credential store (`verify_context`, as before, so verify never asks); `handoff.sign-in-bootstrap` re-runs bootstrap pass 2, which writes `frontend_iap_programmatic_clients` through the IAP settings API, and records the client as `iap_programmatic_client` in the engine document, which the route reads as `applied`; `handoff.sign-in-infra` re-runs the latest infra pass the install reached, so the discovery document names the client and no switch a later pass turned on goes off. Infra and bootstrap passes before then render the client as absent (`oauth_client_id` empty, programmatic clients `[]`). A state that recorded a client id from the old terminal prompt is met as before: the passes' own checks find the id already applied, and nothing is read again.
+
+**Why.** The real install of 2026.10.1-rc.3 stopped at `edge.brand`, which sent the person from the terminal to three console pages and asked for the client's id and secret there. Google shut the IAP OAuth Admin API down on 2026-03-19, so no API creates the brand or the client; the owner chose (2026-11-01) to keep the client and make the console, where the person already is, the place they make it. The move is sound because the console does not need the brand: "By default, IAP uses a Google-managed OAuth client", which "can only be used to manage access for internal users that are within an organization" ([custom OAuth configuration](https://cloud.google.com/iap/docs/custom-oauth-configuration)), and `terraform/modules/frontend/main.tf` turns IAP on with no `oauth2_client_id`, so the organisation's people reach Admin › Setup in a browser before any brand exists. The Desktop client is for programmatic sign-in only (`sc`, verify): "IAP-protected applications that use the Google-managed OAuth client can still be accessed programmatically using a separate OAuth client configured through the programmatic_clients setting", which the IAP settings API (`iapSettings`, not shut down) writes ([sharing OAuth clients](https://cloud.google.com/iap/docs/sharing-oauth-clients)). The engine reads the secret's value only for this one secret, and only to hand it to the credential store (`tests/unit/install/test_switches.py` holds that).
 
 ## 6. The discovery service and the plugin's source (D28, Q1, Q3, Q4)
 
@@ -754,9 +762,9 @@ The plugin can run ahead of the deployment it talks to (D28). The rule: **a skew
 
 ## 7. The release (D5, D16, D21, D22, D25, Q4)
 
-### 7.1 The release home (project `swarmcloud`, D25)
+### 7.1 The release home (project `swarmcloud-prod`, D25)
 
-RELHOME-1's script, run by BGD: Artifact Registry `us-docker.pkg.dev/swarmcloud/swarmcloud` (Docker), `gs://swarmcloud`, KMS key `swarmcloud-release/cosign` (P-256). **The one org-policy exception (Q4):** `iam.allowedPolicyMemberDomains` overridden on project `swarmcloud` alone, covering `allUsers` as `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repository. It is an org-admin action (BGD); the script checks the effective policy and refuses the public grant until the exception exists.
+RELHOME-1's script, run by BGD: Artifact Registry `us-docker.pkg.dev/swarmcloud-prod/swarmcloud` (Docker), `gs://swarmcloud`, KMS key `swarmcloud-release/cosign` (P-256). **The one org-policy exception (Q4):** `iam.allowedPolicyMemberDomains` overridden on project `swarmcloud-prod` alone, covering `allUsers` as `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repository. It is an org-admin action (BGD); the script checks the effective policy and refuses the public grant until the exception exists.
 
 ### 7.2 The pipeline
 
@@ -764,7 +772,7 @@ RELHOME-1's script, run by BGD: Artifact Registry `us-docker.pkg.dev/swarmcloud/
 2. **Build prod-shaped images** in SwarmCloud's own CI into its existing registry: the console with no `VITE_SWARM_ENV` (UIENV-1), Dockerfiles with no project (DESAGA-1).
 3. **Scan** with the existing trivy gate; a HIGH or CRITICAL needs an acceptance with an expiry, which `RELEASE.md` lists (lesson 27).
 4. **Assemble** (`scripts/release/assemble.sh`): `module.tgz` (`terraform/{bootstrap,infra,modules}`, no tfvars, no `environments/`), the two wheels, `manifest.yaml`, `images.json` (digests only), `kubernetes.tgz` (`kubernetes/render.py`, `policies/`, `swarm-system/`, `rbac/`, the tenant templates), the plugin directory, `compat.json`, `marketplace.json`, `RELEASE.md`, `SHA256SUMS`. Uploaded as a workflow artefact.
-5. **Publish** (`scripts/release/publish.sh`), run by a person, not CI: copy each image by digest to the release home, sign each digest with cosign and the KMS key, sign `SHA256SUMS`, upload under `releases/<V>/`. CI holds no grant in project `swarmcloud`, so D22's "no IAM change for CI" holds (open question 4 asks whether BGD wants CI to publish later).
+5. **Publish** (`scripts/release/publish.sh`), run by a person, not CI: copy each image by digest to the release home, sign each digest with cosign and the KMS key, sign `SHA256SUMS`, upload under `releases/<V>/`. CI holds no grant in project `swarmcloud-prod`, so D22's "no IAM change for CI" holds (open question 4 asks whether BGD wants CI to publish later).
 6. **Promote** (`publish.sh --promote V`): moves `channels/stable` and the root `marketplace.json`, refused unless the manual test of 7.3 is recorded for `V`.
 
 **Signing: cosign with a KMS key**, not Binary Authorization. cosign signatures live beside the images and are verified on the installer's machine with the public key pinned in the engine wheel (`swarm_install/release_key.pub`, written by ENGINE-3 after BGD has run `release-home.sh`; cosign and gcrane are fetched at pinned versions and checked against pinned SHA-256s by `swarm_install/tools.py`) (design §6.1); Binary Authorization would need a policy and attestors in every company's project, which core does not otherwise need.
@@ -921,9 +929,9 @@ Only what the decisions do not settle.
    - (c) File neither; the engine's environment and doctor's check guard the fallback.
 
    **Recommend (a)**. Built either way: nothing in P3 waits on them.
-4. **Who publishes a release to project `swarmcloud`.** D22 keeps IAM for CI unchanged, so `publish.sh` is run by a person (section 7.2).
-   - (a) A person runs `publish.sh` for v1 (CLD or BGD, with rights in `swarmcloud`), as planned.
-   - (b) Add a release-publisher identity in `swarmcloud` that the tag workflow assumes (an IAM change for CI, held).
+4. **Who publishes a release to project `swarmcloud-prod`.** D22 keeps IAM for CI unchanged, so `publish.sh` is run by a person (section 7.2).
+   - (a) A person runs `publish.sh` for v1 (CLD or BGD, with rights in `swarmcloud-prod`), as planned.
+   - (b) Add a release-publisher identity in `swarmcloud-prod` that the tag workflow assumes (an IAM change for CI, held).
 
    **Recommend (a)** for v1: it honours D22 and the manual test already puts a person in the loop.
 

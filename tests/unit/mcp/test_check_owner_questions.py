@@ -14,7 +14,10 @@ another session's is not; one in another repository is not; one finished
 more than 7 days ago is not; a questions read that fails lands in
 `unchecked` with its reason; a failed list read too; the cache spares a
 second read of a finished task's questions; and the section is never a
-stuck or stale flag.
+stuck or stale flag. Since #2835 the tasks come from one server-side read
+(`GET /v1/tasks/open-questions`), so a busy session's old question is
+listed; the old walk is only the fallback for an API without the route,
+and says so under `unchecked`.
 """
 
 from __future__ import annotations
@@ -162,16 +165,79 @@ def test_a_failed_questions_read_lands_in_unchecked(swarm, db, sid, reads):  # n
     assert reads.count("task_broken") == 2, reads
 
 
-def test_a_failed_list_read_lands_in_unchecked(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+def test_a_busy_sessions_old_question_is_listed_from_one_read(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+    """#2835: 600 succeeded tasks of this session in the last hours -- twelve
+    pages of 50, past the old 10-page walk -- and, six days ago, one task
+    whose question nobody answered."""
+    for i in range(600):
+        _finished(db, f"task_busy_{i:03d}", sid, asked=0, days_ago=i / 86400 * 10)
+    _finished(db, "task_old_open", sid, asked=1, days_ago=6)
+    paths: list[str] = []
+    real = type(swarm).request
+
+    def counting(self, method, path, **kwargs):
+        if path.startswith("/v1/tasks"):
+            paths.append(path)
+        return real(self, method, path, **kwargs)
+
+    monkeypatch.setattr(type(swarm), "request", counting)
+    result = _check(swarm)
+    # MUTATION: page the session's finished tasks (the #2835 defect) and the
+    # six-day-old task is never reached: `unchecked` says "more than 10 pages".
+    assert [e["task_id"] for e in result["owner_questions"]] == ["task_old_open"], result["owner_questions"]
+    assert not [u for u in result["unchecked"] if u.get("section") == "owner_questions"], result["unchecked"]
+    # ONE read for (g), not a walk of every terminal state.
+    asked = [p for p in paths if p.startswith(check.OPEN_QUESTIONS_ROUTE)]
+    assert len(asked) == 1, asked
+    assert not [p for p in paths if "state=SUCCEEDED" in p], paths
+
+
+def test_a_failed_open_questions_read_lands_in_unchecked(swarm, db, sid, reads, monkeypatch):  # noqa: F811
     _finished(db, "task_open", sid)
     real = type(swarm).request
 
     def failing(self, method, path, **kwargs):
-        if path.startswith("/v1/tasks?") and "state=FAILED" in path:
-            raise check.SwarmError("503 Service Unavailable")
+        if path.startswith(check.OPEN_QUESTIONS_ROUTE):
+            raise check.SwarmError("503 Service Unavailable", status=503)
         return real(self, method, path, **kwargs)
 
     monkeypatch.setattr(type(swarm), "request", failing)
+    result = _check(swarm)
+    assert result["owner_questions"] == []
+    # MUTATION: swallowing the failed read -- "no questions" over a list never read.
+    assert any(u.get("section") == "owner_questions" and "503" in u["why"]
+               for u in result["unchecked"]), result["unchecked"]
+
+
+def _without_the_route(swarm, monkeypatch, fail_state: str | None = None):  # noqa: F811
+    """A deployment that predates the route: it answers 404 from the API."""
+    real = type(swarm).request
+
+    def old_api(self, method, path, **kwargs):
+        if path.startswith(check.OPEN_QUESTIONS_ROUTE):
+            raise check.SwarmError("404 not_found: no such task", status=404)
+        if fail_state and path.startswith("/v1/tasks?") and f"state={fail_state}" in path:
+            raise check.SwarmError("503 Service Unavailable", status=503)
+        return real(self, method, path, **kwargs)
+
+    monkeypatch.setattr(type(swarm), "request", old_api)
+
+
+def test_an_api_without_the_route_falls_back_to_paging_and_says_so(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+    _finished(db, "task_open", sid)
+    _finished(db, "task_done", sid, asked=1, answered=(0,))
+    _without_the_route(swarm, monkeypatch)
+    result = _check(swarm)
+    # The walk still finds the question, and still drops the answered one.
+    assert [e["task_id"] for e in result["owner_questions"]] == ["task_open"]
+    # MUTATION: fall back silently, and a session cannot tell a bounded walk
+    # from the one read that sees every task.
+    assert check.OPEN_QUESTIONS_FALLBACK in [u["why"] for u in result["unchecked"]], result["unchecked"]
+
+
+def test_a_failed_list_read_in_the_fallback_lands_in_unchecked(swarm, db, sid, reads, monkeypatch):  # noqa: F811
+    _finished(db, "task_open", sid)
+    _without_the_route(swarm, monkeypatch, fail_state="FAILED")
     result = _check(swarm)
     # The other states were still read.
     assert [e["task_id"] for e in result["owner_questions"]] == ["task_open"]
@@ -206,3 +272,79 @@ def test_the_tools_description_tells_the_session_to_ask_the_person():
     # it: a session reads the check and leaves the questions in its answer.
     for word in ("owner_questions", "AskUserQuestion", "swarm_task_answer", "NEVER a flag"):
         assert word in tool["description"], word
+
+
+# --------------------------------------------------------------------------
+# A task PARKED on its agent's blocking questions (#2860)
+# --------------------------------------------------------------------------
+#
+# MEASURED, 2026-10-30 18:02Z to 21:00Z: task_aaf56ef0026746928cdf was
+# PARKED on a blocking question (park_phase question_wait) and every
+# /sc check flagged it STUCK `parked` with the hand-off's sign-in text and
+# never listed its question: (g) read only finished tasks.
+
+
+def _parked_on_questions(db, task_id: str, sid: str, *, asked: int = 2, blocking=(0,),  # noqa: F811
+                         answered=(), minutes_ago: float = 90) -> None:
+    now = datetime.now(timezone.utc)
+    parked = now - timedelta(minutes=minutes_ago)
+    wait = {"questions": [_question(i) for i in range(asked)], "blocking": list(blocking),
+            "attempt_id": "att_parked_1", "asked_at": parked.isoformat()}
+    metadata = {"claude_session": sid, "title": "SC · CHECK-PARKED · 1 step", "unit": "check-parked"}
+    if answered:
+        # The answer route adopts the wait before it stores the answers.
+        metadata["question_wait"] = wait
+        metadata["owner_answers"] = [{"question_index": i, "choice": "wake", "text": None,
+                                      "by": "alice@example.com", "at": now, "history": []} for i in answered]
+    db.docs[f"tasks/{task_id}"] = {
+        "id": task_id, "tenant_id": "eng", "state": "PARKED", "park_reason": "HUMAN_REQUIRED",
+        "blocked_by": [{"reason": "HUMAN_REQUIRED", "park_phase": "question_wait", "question_wait": wait}],
+        "created_at": parked - timedelta(minutes=20), "updated_at": parked, "started_at": parked - timedelta(minutes=19),
+        "runner_profile": "mock", "resource_class": "standard", "input": {},
+        "metadata": metadata, "repository_url": _REPO, "submitted_by": "alice@example.com",
+    }
+
+
+def test_a_task_parked_on_a_blocking_question_is_listed_first_and_marked_blocking(swarm, db, sid, reads):  # noqa: F811
+    _finished(db, "task_open", sid, asked=1, days_ago=0.01)
+    _parked_on_questions(db, "task_parked", sid, asked=2, blocking=(0,))
+    result = _check(swarm)
+    # MUTATION: reading only finished tasks (the #2860 defect) lists task_open alone.
+    # MUTATION: sorting the parked task among the finished by its end lists it second.
+    assert [e["task_id"] for e in result["owner_questions"]] == ["task_parked", "task_open"], result["owner_questions"]
+    parked, finished = result["owner_questions"]
+    # MUTATION: not marking it: a session reads a step that waits like one that ended.
+    assert parked["blocking"] is True and parked["state"] == "PARKED", parked
+    assert finished["blocking"] is False, finished
+    assert parked["open"] == 2 and [q["index"] for q in parked["questions"]] == [0, 1]
+    assert [q["blocking"] for q in parked["questions"]] == [True, False]
+    assert parked["questions"][0]["question"] == _question(0)["question"]
+    assert "swarm_task_answer" in parked["answer_with"] and "task_parked" in parked["answer_with"]
+    # Its questions come from the park, never from a questions.json it has not uploaded.
+    assert "task_parked" not in reads, reads
+
+
+def test_the_parked_flag_points_at_the_question_not_a_sign_in(swarm, db, sid, reads):  # noqa: F811
+    _parked_on_questions(db, "task_parked", sid, asked=2, blocking=(0, 1))
+    result = _check(swarm)
+    (flag,) = [f for f in result["flagged"] if f.get("task_id") == "task_parked"]
+    assert flag["rule"] == "parked"
+    # MUTATION: the hand-off's sentence ("sign in on its console page") for a
+    # park that waits on the owner's answer.
+    assert "sign in" not in flag["reason"] and "take control" not in flag["reason"], flag["reason"]
+    assert "2 blocking question" in flag["reason"] and "owner_questions" in flag["reason"], flag["reason"]
+    assert flag["evidence"]["park_phase"] == "question_wait", flag["evidence"]
+    assert "swarm_task_answer" in flag.get("next", ""), flag
+
+
+def test_a_parked_task_whose_questions_are_answered_is_not_listed(swarm, db, sid, reads):  # noqa: F811
+    _parked_on_questions(db, "task_answered", sid, asked=2, blocking=(0,), answered=(0, 1))
+    result = _check(swarm)
+    # MUTATION: listing the park's questions without its stored answers.
+    assert result["owner_questions"] == [], result["owner_questions"]
+
+
+def test_another_sessions_parked_task_is_not_listed(swarm, db, sid, reads):  # noqa: F811
+    _parked_on_questions(db, "task_theirs", str(uuid.uuid4()))
+    result = _check(swarm)
+    assert result["owner_questions"] == [], result["owner_questions"]

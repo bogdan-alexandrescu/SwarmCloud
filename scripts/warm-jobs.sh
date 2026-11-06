@@ -51,10 +51,10 @@
 # only occupies a worker shape. Two checks, the first where it can be made:
 #
 #   * --previous FILE (or WARM_PREVIOUS_MANIFEST): the deployed-images manifest
-#     of the release before this one. When agent-runtime-base, -browser and
-#     -indexer carry the same digests there as in --manifest (default
-#     build/deployed-images-<env>.json), nothing is warmed and the output says
-#     so. release.yml does not pass it today -- its deploy job holds no
+#     of the release before this one. When agent-runtime-base, -browser,
+#     -indexer and -lightpanda carry the same digests there as in --manifest
+#     (default build/deployed-images-<env>.json), nothing is warmed and the
+#     output says so. release.yml does not pass it today -- its deploy job holds no
 #     `actions: read` to fetch that artifact, and another lane is
 #     restructuring release.yml -- so without it:
 #   * per listed job: a job whose image is pinned by digest and which already
@@ -104,9 +104,14 @@ while [[ "$#" -gt 0 ]]; do
     *)          NAMED+=("$1"); shift ;;
   esac
 done
-# The images every worker job runs. Stated here once; deploy.sh pins the
-# same three into WORKER_IMAGE_REFS.
-RUNNER_IMAGES=(agent-runtime-base agent-runtime-browser agent-runtime-indexer)
+# The images a worker job can run. Stated here once; scripts/lib/deploy.sh
+# pins those the runner profiles name (terraform/infra/locals.tf
+# worker_image_refs) into WORKER_IMAGE_REFS. agent-runtime-lightpanda since
+# LIGHTPANDA-BUILD-SCRIPTS (docs/design/lightpanda-runtime.md 6.4): a release
+# that changes only its digest still warms, because a job that runs it pays
+# that import on its first task. A manifest with no digest for an image counts
+# it as changed, so the first release that promotes it warms.
+RUNNER_IMAGES=(agent-runtime-base agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda)
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-warm-jobs.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT

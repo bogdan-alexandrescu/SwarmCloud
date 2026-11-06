@@ -21,14 +21,15 @@
 //                                and 'not measured not collected'.
 //   f  6343767840                unknown, loading and zero cost.
 //   g  6343794378                the policy chip read as what happened.
-//   h  6314117148                the list's cost note (verified fixed: 136px).
 //   i  6283740207 (QA-120)       the failed step on arrival.
 //
 // Every assertion names the mutation that turns it red.
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useState } from 'react'
 
+import type { WorkflowView } from '../stepviews'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Result } from '../fetch'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
@@ -49,7 +50,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowsScreen } = await import('../Workflows')
+const { WorkflowsScreen, WorkflowCard } = await import('../Workflows')
 const { WorkflowChangesTab } = await import('../WorkflowChanges')
 
 const T0 = Date.parse('2026-10-23T12:00:00.000Z')
@@ -184,6 +185,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  atWidth(realWidth)
   for (const h of hosts.splice(0)) h.remove()
   for (const r of restore.splice(0).reverse()) r()
 })
@@ -252,12 +254,74 @@ const flat = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' '
 const count = (hay: string, needle: string) => hay.split(needle).length - 1
 const WIDE: CascadeEnv = { width: 1440 }
 
+const realWidth = window.innerWidth
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
+}
+
+/**
+ * THE CANVAS, RENDERED DIRECTLY (the Graph Work redesign, part of #2688): the
+ * page no longer draws `WorkflowCard`'s graph or picks a step on arrival, but
+ * the card itself still carries the arrival-pick behaviour run 6 found bugs
+ * in, so these cases render it the way the old workflow page used to --
+ * `page`, with the failed step already picked -- rather than through
+ * `WorkflowsScreen`, which draws the stage grid and the inspector instead.
+ */
+function PageCard({
+  initialPicked = 'checkpoints' as string | null,
+  onView,
+}: { initialPicked?: string | null; onView?: (id: string, v: WorkflowView) => void } = {}) {
+  const f = fan()
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  const [picked, setPicked] = useState<string | null>(initialPicked)
+  return (
+    <WorkflowCard
+      workflow={f.w}
+      taskById={f.tasks}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      picked={picked}
+      onPick={(_id, stepId) => setPicked((p) => (p === stepId ? null : stepId))}
+      view="graph"
+      onView={onView}
+      page
+      reload={() => {}}
+    />
+  )
+}
+
 async function openPanel(): Promise<HTMLElement> {
-  await page()
-  await waitFor(() => expect(panel()?.querySelector('.wf-inspect-id')?.textContent).toBe('checkpoints'))
-  // The attempt facts land after the panel.
-  await waitFor(() => expect(panel()!.querySelector('.wf-inspect-facts')).toBeTruthy())
+  render(<PageCard />)
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): the card is `section.sc-card`, named by its own
+  // aria-label, not `.wf-inspect` with a separate `.wf-inspect-id`.
+  await waitFor(() => expect(panel()?.querySelector('.sc-card')?.getAttribute('aria-label')).toBe('Step checkpoints of wf_fan'))
+  // The attempt facts land after the panel, as the stat tiles.
+  await waitFor(() => expect(panel()!.querySelector('.sc-tiles')).toBeTruthy())
   return panel()!
+}
+
+/** The real page, the checkpoints chip picked from the grid: what the Graph
+ *  tab shows once a reader opens a step (there is no arrival pick any more). */
+async function openOnPage(): Promise<HTMLElement> {
+  atWidth(1440)
+  await page()
+  const chip = await waitFor(() => {
+    const b = document.querySelector<HTMLButtonElement>('.sg [data-step="checkpoints"]')
+    expect(b, 'no checkpoints chip on the stage grid').toBeTruthy()
+    return b!
+  })
+  fireEvent.click(chip)
+  const dock = await waitFor(() => {
+    const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step checkpoints"]')
+    expect(d, 'the inspector did not open on checkpoints').toBeTruthy()
+    return d!
+  })
+  // The attempt facts land after the dock, as the stat tiles (the page's
+  // step card is the action bar and stat tiles, owner's pick, 2026-11-05).
+  await waitFor(() => expect(dock.querySelector('.sc-tiles')).toBeTruthy())
+  return dock
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +330,11 @@ async function openPanel(): Promise<HTMLElement> {
 
 describe('a. F1: the expanded stage', () => {
   it('holds no step card, sits above its cards, and begins its error line with the step’s name', async () => {
-    await page()
+    // F1 is a canvas behaviour, and the canvas is no longer drawn by the page
+    // (graph-workflow-rest: the Graph tab is the stage grid); `WorkflowCard`
+    // still carries it, rendered the way the old workflow page used to.
+    render(<PageCard />)
+    await waitFor(() => expect(document.querySelector('.wfp-fail-lead')).toBeTruthy())
     // The page's own pick leaves its stage folded (visual QA pass 2,
     // overview-agents-63, #2694); the failure line's control opens it.
     const go = await waitFor(() => {
@@ -301,7 +369,8 @@ describe('a. F1: the expanded stage', () => {
     stubBox('clientWidth', (el) => (el.classList.contains('wf-canvas-wrap') ? 770 : 0))
     stubBox('scrollWidth', (el) => (el.classList.contains('wf-canvas-wrap') ? 72 + Number.parseFloat(el.querySelector<HTMLElement>('.wf-canvas')?.style.width ?? '0') : 0))
     stubBox('offsetWidth', (el) => (el.classList.contains('wf-levels') ? 72 : 0))
-    await page()
+    render(<PageCard />)
+    await waitFor(() => expect(document.querySelector('.wfp-fail-lead')).toBeTruthy())
     // The reader's open, not the arrival, brings the stage round (overview-agents-63).
     const go = await waitFor(() => {
       const b = document.querySelector<HTMLButtonElement>('.wfp-fail-lead-go')
@@ -336,34 +405,42 @@ describe('a. F1: the expanded stage', () => {
 // ---------------------------------------------------------------------------
 
 describe('b. F2: the inspector says each thing once, in words', () => {
-  it('labels the count "saved checkpoints" and leaves no bare ckpts or gen', async () => {
+  it('labels the count "Checkpoints" and leaves no bare ckpts or gen', async () => {
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the Details fold's facts are plain dt/dd pairs
+    // ("Checkpoints", "Generation"), not the inspector's curated
+    // `FACT_LABEL` prose ("saved checkpoints", "lease generation").
     const p = await openPanel()
-    const labels = [...p.querySelectorAll('.wf-inspect-facts .ctl-fact > b')].map((b) => b.textContent)
-    // MUTATION: label `ckpts` 'checkpoints' in `FACT_LABEL` -- beside the
-    // step called checkpoints, 'checkpoints 2' reads as the step.
-    expect(labels).toContain('saved checkpoints')
+    const labels = [...p.querySelectorAll('.sc-facts dt')].map((d) => d.textContent)
+    expect(labels).toContain('Checkpoints')
+    expect(labels).toContain('Generation')
     expect(flat(p)).not.toMatch(/\bckpts\b|\bgen\b/)
   })
 
-  it('states the exit once: no "error exit status 2" after "exit code 2"', async () => {
+  it('states the exit once: no separate "Error" fact duplicating the latest attempt’s own cause', async () => {
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the Details fold's "Error" fact (`olderError`) only ever
+    // holds an OLDER attempt's error, never the latest's -- the latest's own
+    // error is already "Why it failed" above, so it gets no second fact.
     const p = await openPanel()
-    const labels = [...p.querySelectorAll('.wf-inspect-facts .ctl-fact > b')].map((b) => b.textContent)
-    // MUTATION: keep the `error` fact when its line is the exit status the
-    // exit code already states.
-    expect(labels).not.toContain('error')
-    expect(count(flat(p.querySelector('.wf-inspect-facts')), 'exit status 2')).toBe(0)
-    expect(flat(p.querySelector('.wf-inspect-facts'))).toMatch(/exit code ?2/)
+    const facts = p.querySelector('.sc-facts')!
+    const labels = [...facts.querySelectorAll('dt')].map((d) => d.textContent)
+    expect(labels).not.toContain('Error')
+    const exitDt = [...facts.querySelectorAll('dt')].find((d) => d.textContent === 'Exit code')!
+    expect((exitDt.nextElementSibling as HTMLElement).textContent).toBe('2')
   })
 
-  it('prints the failure sentence once outside the banner while the banner is in view', async () => {
+  it('omits the whole "why it failed" group from the card while the banner is in view', async () => {
     observeBanner(true)
     const p = await openPanel()
     const banner = document.querySelector<HTMLElement>('.wfp-fail-lead')!
     expect(count(flat(banner), ERROR)).toBe(1)
-    // MUTATION: drop the `leadInView` branch in `InspectorSlot` -- the
-    // banner and the card both print the whole sentence.
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): `.sc-err` itself (not just its text) is left out while
+    // the banner is in view, rather than kept with a reference line pointing
+    // at the banner.
     await waitFor(() => expect(count(flat(p), ERROR)).toBe(0))
-    expect(within(p).getByRole('heading', { level: 4, name: 'Why it failed' })).toBeTruthy()
+    expect(p.querySelector('.sc-err')).toBeNull()
   })
 
   it('prints it in the inspector, once, when the banner is off screen', async () => {
@@ -373,14 +450,20 @@ describe('b. F2: the inspector says each thing once, in words', () => {
     await waitFor(() => expect(count(flat(p), ERROR)).toBe(1))
   })
 
-  it('never draws "exit 0" beside "why it failed"', async () => {
+  it('keeps the raw exit code away from "why it failed": Details-only, never beside the failure group', async () => {
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the old card's euphemism for a failed step's clean exit
+    // ("ended cleanly · the step failed on what it reported") is dropped --
+    // `StepCard` prints the raw exit code as a plain Details fact,
+    // structurally apart from the `.sc-err` group that carries the
+    // failure's own words, so the two are never read side by side.
     attemptsExiting(0, null)
     const p = await openPanel()
-    expect(within(p).getByRole('heading', { level: 4, name: 'Why it failed' })).toBeTruthy()
-    // MUTATION: print the exit fact as-is for a failed step -- 'exit code 0'
-    // reads as the step having succeeded.
-    expect(flat(p)).not.toMatch(/exit (code ?)?0\b/)
-    expect(flat(p.querySelector('.wf-inspect-facts'))).toMatch(/agent process ?ended cleanly · the step failed on what it reported/)
+    const cause = p.querySelector('.sc-err')!
+    expect(cause.getAttribute('aria-label')).toBe('Why it failed')
+    expect(cause.textContent).not.toMatch(/exit (code ?)?0\b/)
+    const exitDt = [...p.querySelectorAll('.sc-facts dt')].find((d) => d.textContent === 'Exit code')!
+    expect((exitDt.nextElementSibling as HTMLElement).textContent).toBe('0')
   })
 })
 
@@ -392,15 +475,20 @@ describe('c. F3: the list row', () => {
   it('reads "claude-code · 6 steps" and "4/6 · 1 failed · 1 cancelled"', async () => {
     render(<WorkflowsScreen view="" onView={() => {}} />)
     const row = await waitFor(() => {
-      const r = document.querySelector<HTMLElement>('.wfl-table tr[data-workflow="wf_fan"]')
+      const r = document.querySelector<HTMLElement>('.wfg-table tr[data-workflow="wf_fan"]')
       expect(r).toBeTruthy()
       return r!
     })
+    // Runners and Steps done moved from the row into the inspector's summary
+    // the row opens (the redesign, frame graph-workflows-rest).
+    fireEvent.click(row.querySelector<HTMLElement>('[data-col="state"]')!)
+    const sum = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')!
+    expect(sum).toBeTruthy()
     // MUTATION: print `×{m.count}` again in `Mix`.
-    const chip = row.querySelector<HTMLElement>('td[data-col="runners"] .c-chip')!
+    const chip = sum.querySelector<HTMLElement>('.wfg-sum-dl .c-chip')!
     expect(flat(chip)).toBe('claude-code · 6 steps')
-    // MUTATION: drop the outcomes from `StepsDone` -- the cell is '4/6'.
-    expect(flat(row.querySelector('td[data-col="done"]')).trim()).toBe('4/6 · 1 failed · 1 cancelled')
+    // MUTATION: drop the outcomes from `StepsDone` -- the summary reads '4/6'.
+    expect(flat(sum.querySelector('.wfg-sum-row')).trim()).toBe('4/6 · 1 failed · 1 cancelled')
   })
 })
 
@@ -409,19 +497,26 @@ describe('c. F3: the list row', () => {
 // ---------------------------------------------------------------------------
 
 describe('d. F4: one name per scope', () => {
-  it('has exactly one control naming the step and its changes, and the banner’s button no longer says changes', async () => {
-    await openPanel()
-    const named = [...screen.getAllByRole('link'), ...screen.getAllByRole('button')]
-      .map((el) => el.getAttribute('aria-label') ?? el.textContent ?? '')
-      .filter((n) => n.includes('checkpoints') && /changes/i.test(n))
-    // MUTATION: put back 'This step’s changes in this workflow ›' -- no
-    // control names the step.
-    expect(named).toHaveLength(1)
+  it('has exactly one control for this step’s own changes, scoped to it, and the banner’s button no longer says changes', async () => {
+    // The page itself has no Changes tab inside a bare WorkflowCard -- that
+    // chrome is `WfTabs`, drawn by the page around the card -- so "the tab
+    // stays the workflow's" is read off `onView` instead: opening the step's
+    // card from the banner must never ask the page to change its view.
+    const onView = vi.fn()
+    render(<PageCard onView={onView} />)
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the bar's "Changes" link no longer spells the step's id
+    // in its own name or title -- the card it sits in is already headed by
+    // the step -- so a link scoped to this step's own column (by `href`) is
+    // what "names" it now, not its visible text or accessible name.
+    await waitFor(() => expect(panel()?.querySelector('.sc-card')?.getAttribute('aria-label')).toBe('Step checkpoints of wf_fan'))
+    const changesLinks = screen.getAllByRole('link').filter((a) => (a.getAttribute('href') ?? '').includes('/changes?step=checkpoints'))
+    expect(changesLinks).toHaveLength(1)
     const lead = screen.getByRole('region', { name: 'Why step checkpoints failed' })
     // MUTATION: keep ', changes' on the banner's button while the card is open.
     expect(within(lead).getByRole('button').textContent).not.toMatch(/changes/i)
     // The tab stays the workflow's.
-    expect(screen.getByRole('tab', { name: 'Changes' })).toBeTruthy()
+    expect(onView).not.toHaveBeenCalled()
   })
 })
 
@@ -474,7 +569,13 @@ describe('e. F5: a finished step’s empty Changes', () => {
 // ---------------------------------------------------------------------------
 
 describe('f. the head’s cost: reading, then not reported, then the figure', () => {
-  const headCost = () => flat(document.querySelector('.wfp-head .wfp-cost'))
+  // THE COST FIGURE IS NO LONGER A DEDICATED `.wfp-cost` CHIP (the redesign):
+  // the head's line holds it as one of three `.wfp-fig`s (steps, spend,
+  // age), so the cost is picked out by what it says rather than its class.
+  const headCost = () => {
+    const figs = [...document.querySelectorAll<HTMLElement>('.wfp-head .wfp-fig')]
+    return flat(figs.find((el) => /reading|not reported|\$/.test(el.textContent ?? '')) ?? null)
+  }
 
   it('says "reading" while the read is in flight', async () => {
     api.loadWorkflowUsage.mockReturnValue(new Promise(() => {}))
@@ -490,18 +591,22 @@ describe('f. the head’s cost: reading, then not reported, then the figure', ()
     expect(headCost()).not.toMatch(/reading|\$0\.00/)
   })
 
-  it('prints the figure once a step has reported one, and labels the panel’s cost as the step’s own', async () => {
+  it('prints the figure once a step has reported one, as its own stat tile', async () => {
     serve(fan((id) => (id === 'cold-start' ? { result_summary: { runner: { usage: { total_cost_usd: 1.21 } } } } : {})))
-    await page()
+    // NO ARRIVAL PICK ON THE PAGE any more: the reader opens checkpoints
+    // themselves, from the stage grid, to see its own attempt's cost.
+    const dock = await openOnPage()
     await waitFor(() => expect(headCost()).toMatch(/\$1\.21/))
-    const p = await waitFor(() => {
-      const el = panel()?.querySelector<HTMLElement>('.wf-inspect-facts')
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): the step's own cost is the "Cost" stat tile, read apart
+    // from the head's workflow total by where it sits, not by a comparative
+    // sentence ("this step's own, not the workflow's") the new card drops.
+    const cost = await waitFor(() => {
+      const el = dock.querySelector<HTMLElement>('.sc-tile[data-tile="cost"] .sc-tile-v')
       expect(el).toBeTruthy()
       return el!
     })
-    // MUTATION: drop the `cost` hint in `FACT_HINT` -- '$0.253' beside the
-    // head's '$1.21' reads as a second figure for the workflow.
-    expect(flat(p)).toMatch(/this attempt’s cost ?\$0\.253 · this step’s own, not the workflow’s/)
+    expect(cost.textContent).toBe('$0.253')
   })
 })
 
@@ -511,40 +616,33 @@ describe('f. the head’s cost: reading, then not reported, then the figure', ()
 
 describe('g. the policy chip reads as configuration', () => {
   it('carries a Policy label and is not the state chip’s sibling', async () => {
+    // THE POLICY IS NO LONGER A CHIP IN THE HEAD (the redesign): it reads as
+    // configuration in the Overview, behind its own "On a failed step" row
+    // and a Policy toggle -- nowhere beside the state mark any more.
+    atWidth(1440)
     await page()
     const head = document.querySelector<HTMLElement>('.wfp-head')!
     // OVERVIEW-AGENTS-66 (visual QA pass 1, part of #2596): 'on failure: fail
-    // the workflow' was jargon. MUTATION: restore the old words and no chip matches.
-    const chip = within(head).getByText((_, el) => el?.classList.contains('c-chip') === true && flat(el) === 'if a step fails: stop the workflow')
-    const state = head.querySelector<HTMLElement>('.wfp-chips')!.firstElementChild!
-    // MUTATION: put the chip back as a bare child of `.wfp-chips`, beside the state.
-    expect(chip.parentElement).not.toBe(state.parentElement)
-    expect(flat(chip.parentElement)).toMatch(/^Policy ?if a step fails: stop the workflow$/)
+    // the workflow' was jargon. MUTATION: put the old chip back in the head
+    // and this finds it beside the state mark.
+    expect(within(head).queryByText(/if a step fails/i)).toBeNull()
+    const ov = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Workflow overview"]')!
+    const row = within(ov).getByText('On a failed step')
+    expect(row.nextElementSibling?.textContent).toBe('stop the workflow')
+    const details = within(ov).getByText('Policy').closest('details')!
+    // MUTATION: drop the "configuration, not an outcome" sentence -- the
+    // policy reads as what happened again, exactly the bug this guards.
+    expect(flat(details)).toMatch(/A failed step stops the workflow: no step after it starts\. This is what the workflow was submitted with: configuration, not an outcome\./)
   })
 
   it('says a workflow submitted to continue keeps going when a step fails', async () => {
+    atWidth(1440)
     const f = fan()
     serve({ ...f, w: { ...f.w, on_step_failure: 'CONTINUE' } })
     await page()
-    const head = document.querySelector<HTMLElement>('.wfp-head')!
-    // MUTATION: swap the two branches of the policy chip and this reads 'stop the workflow'.
-    expect(flat(head.querySelector('.wfp-policy'))).toMatch(/^Policy ?if a step fails: keep going$/)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// h. 6314117148: the cost note (verified fixed by QAFIX5)
-// ---------------------------------------------------------------------------
-
-describe('h. the list’s cost column holds its note on one line at 1440', () => {
-  it('sizes the Cost head 136px from 1280', () => {
-    const host = document.createElement('div')
-    host.innerHTML = '<div class="wfl"><table class="wfl-table"><thead><tr><th data-col="cost">Cost</th></tr></thead></table></div>'
-    document.body.appendChild(host)
-    hosts.push(host)
-    // MUTATION: drop the min-width 1280 block in workflows.css -- 100px, and
-    // '3 of 4 reported' wraps to three lines.
-    expect(painted(host.querySelector('th')!, 'width', WIDE)).toBe('136px')
+    const ov = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Workflow overview"]')!
+    // MUTATION: swap the two branches and "On a failed step" reads 'stop the workflow'.
+    expect(within(ov).getByText('On a failed step').nextElementSibling?.textContent).toBe('keep going')
   })
 })
 

@@ -199,10 +199,13 @@ def test_territory_gives_community_fan_in_and_dependants_and_says_what_it_cannot
     assert answer["in_flight"] == tools.IN_FLIGHT
 
 
-def test_an_ambiguous_name_lists_the_candidates_instead_of_guessing(snapshot):
+def test_an_ambiguous_name_answers_its_best_match_and_lists_the_others(snapshot):
+    """SKILL-ON-DEMAND (part of #2688): batch two's first graph call was an
+    ambiguity error, and that agent never asked the graph again."""
     answer, failed = ask(snapshot, "context", {"symbol": "render"})
-    assert failed
-    assert set(answer["candidates"]) == {"lib/a.py#render", "lib/b.py#render"}
+    assert not failed
+    assert {answer["symbol"], *answer["also_matched"]} == {"lib/a.py#render", "lib/b.py#render"}
+    assert answer["symbol"] not in answer["also_matched"]
 
 
 @pytest.mark.parametrize("tool, arguments", [

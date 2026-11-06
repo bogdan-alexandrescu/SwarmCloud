@@ -18,6 +18,7 @@ import datetime as dt
 import hashlib
 import io
 import json
+import secrets
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -32,8 +33,10 @@ from swarm_install.exitcodes import MET, UNMET, ExitCode
 from swarm_install.lease import Lease
 from swarm_install.manifest import load as load_manifest
 from swarm_install.state import InstallState, StateStore
+from swarm_install import sizing
 from swarm_install.steps import foundations, preflight
 from swarm_install.steps.preflight import RELEASE_HOME, ApiError
+from swarm_install.waits import WaitGaveUp
 
 from .test_state_store import FakeBucket, FakeClock
 
@@ -97,6 +100,9 @@ class FakeGcp:
                                                      "directoryCustomerId": "C0abc12"}}
         self.folder_tree: dict[str, dict[str, Any]] = {FOLDER: {"name": FOLDER, "displayName": "eng", "parent": ORG}}
         self.org_failure: ApiError | None = None
+        self.cpu_quota: int | None = 3000  # the region's CPUS
+        self.cpu_quota_all_regions: int | None = 3000  # the project's CPUS_ALL_REGIONS
+        self.cpu_quota_failure: ApiError | None = None
 
     def _call(self, name: str, *args: Any) -> None:
         self.calls.append((name, args))
@@ -106,6 +112,9 @@ class FakeGcp:
 
     def called(self, name: str) -> list[tuple[Any, ...]]:
         return [args for n, args in self.calls if n == name]
+
+    def reset_credentials(self):
+        self._call("reset_credentials")
 
     # reads
     def project(self, project):
@@ -162,6 +171,12 @@ class FakeGcp:
     def quota_metrics(self, project, service):
         self._call("quota_metrics", project, service)
         return self.quotas.get(service, [])
+
+    def cpu_quotas(self, project, region):
+        self._call("cpu_quotas", project, region)
+        if self.cpu_quota_failure is not None:
+            raise self.cpu_quota_failure
+        return preflight.CpuQuotas(self.cpu_quota, self.cpu_quota_all_regions)
 
     def enabled_services(self, project):
         self._call("enabled_services", project)
@@ -307,21 +322,24 @@ def good_tools() -> dict[str, Any]:
 
 def answers(log: list[Any] | None = None, *, region: str = "us-central1", confirm: str | None = None,
             **extra: list[str]) -> Answers:
-    return Answers(
-        log,
-        preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT],
-        preflight_region=[region, confirm if confirm is not None else region],
-        foundations_default_compute_editor=["remove-editor"],
-        **extra,
-    )
+    by_step: dict[str, list[str]] = {
+        "preflight_inputs": ["alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT],
+        "preflight_region": [region, confirm if confirm is not None else region],
+        "preflight_sizing": ["1", ""],  # just me; Enter accepts the proposal
+        "foundations_default_compute_editor": ["remove-editor"],
+    }
+    by_step.update(extra)
+    return Answers(log, **by_step)
 
 
 def stage0(gcp: FakeGcp, ask: Answers, *, tools: dict[str, Any] | None = None,
-           today: dt.date = dt.date(2026, 10, 29)) -> list[Any]:
+           today: dt.date = dt.date(2026, 10, 29), account: str = "admin@example.com",
+           sign_in: Callable[[], None] | None = None) -> list[Any]:
     make = lambda: gcp  # noqa: E731
     return [
         preflight.ToolsStep(make, ask, **(tools or good_tools())),
         signed_in(make, ask),
+        preflight.OrganizationStep(make, ask, account=lambda: account, sign_in=sign_in),
         preflight.InputsStep(make, ask),
         preflight.RegionStep(make, ask),
         preflight.RightsStep(make, ask),
@@ -329,7 +347,8 @@ def stage0(gcp: FakeGcp, ask: Answers, *, tools: dict[str, Any] | None = None,
         preflight.InstallerAddressStep(make, ask),
         preflight.OrgPoliciesStep(make, ask),
         preflight.QuotasStep(make, ask),
-        preflight.ReleaseStep(make, ask, today=lambda: today),
+        preflight.SizingStep(make, ask),
+        preflight.ReleaseStep(make, ask, today=lambda: today, installed=lambda: None, environ={}),
     ]
 
 
@@ -339,7 +358,7 @@ def signed_in(make: Callable[[], Any], ask: Answers) -> Any:
         raise AssertionError(f"signed in already, yet ran {argv}")
 
     return preflight.SignInStep(make, ask, gcloud=lambda: "/usr/local/bin/gcloud", account=lambda: "admin@example.com",
-                                adc=lambda: True, login=no_login)
+                                adc=lambda: frozenset(preflight.ADC_SCOPES), login=no_login)
 
 
 def stage1(gcp: FakeGcp, ask: Answers) -> list[Any]:
@@ -441,7 +460,7 @@ def test_region_confirmed_before_stage_1(tmp_path: Path) -> None:
     gcp = FakeGcp(log)
     gcp.iam["bindings"] = [{"role": "roles/editor",
                             "members": [f"serviceAccount:{NUMBER}-compute@developer.gserviceaccount.com"]}]
-    right = answers(log, region="europe-west1")
+    right = answers(log, region="europe-west1", foundations_budget=[""])
     rig = Rig(tmp_path / "second")
     result = rig.engine(stage0(gcp, right) + stage1(gcp, right), manifest=load_manifest()).run()
     assert result.exit_code == ExitCode.OK, result.message
@@ -469,9 +488,9 @@ def test_kms_signing_quota_read() -> None:
     low = step.check(ctx_for())
     assert low.status == UNMET and "quota.kms-signing-h4" in low.detail
 
-    gcp.quotas["cloudkms.googleapis.com"] = []
-    with pytest.raises(LookupError):  # unreadable is unknown to the engine, never fine
-        step.check(ctx_for())
+    gcp.quotas["cloudkms.googleapis.com"] = []  # #32: not reported is said in one line, never raised
+    unreported = step.check(ctx_for())
+    assert unreported.status == MET and "reports no crypto_requests quota" in unreported.detail
 
 
 def test_org_policies_read_effective() -> None:
@@ -538,13 +557,15 @@ def test_release_cve_acceptances_shown_with_expiry() -> None:
     expired acceptance stops it, and the scan is never skipped."""
     gcp = FakeGcp()
     step = preflight.ReleaseStep(lambda: gcp, answers(), today=lambda: dt.date(2026, 10, 29))
-    observed = step.check(ctx_for())
+    ctx = ctx_for()
+    ctx.state.release = "v1.0.0"
+    observed = step.check(ctx)
     assert observed.status == MET
     assert "CVE-2026-1111 in openssl, accepted until 2026-12-31" in observed.detail
-    assert step.plan(ctx_for()).actions == ("CVE-2026-1111 in openssl, accepted until 2026-12-31: no fix upstream yet",)
+    assert step.plan(ctx).actions == ("CVE-2026-1111 in openssl, accepted until 2026-12-31: no fix upstream yet",)
 
     gcp.release = release_files(dt.date(2026, 10, 1))
-    expired = step.check(ctx_for())
+    expired = step.check(ctx)
     assert expired.status == UNMET and "CVE-2026-1111" in expired.detail and "expiry" in expired.detail
 
     with pytest.raises(ValueError):
@@ -677,7 +698,9 @@ def test_missing_gcloud_yes_installs_the_sdk_and_signs_in(tmp_path: Path) -> Non
     assert machine.fetched == []
 
 
-def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path) -> None:
+def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr(preflight, "open_page", lambda url, *, why: opened.append(url))
     machine = FetchingTools(tmp_path, {k: v for k, v in EVERY_GOOD.items() if k != "gcloud"})
     ask = answers(preflight_tools=["n"])
     step = machine.step(ask)
@@ -689,6 +712,7 @@ def test_missing_gcloud_no_stops_with_how_to_install_it(tmp_path: Path) -> None:
     assert "signs you in itself" in str(stopped.value)
     assert machine.sdk_installs == 0 and machine.logins == []
     assert len(ask.asked) == 1
+    assert opened == [preflight.SDK_PAGE]  # the page it names opens (steps.open_page)
 
 
 def test_python_is_the_running_interpreter() -> None:
@@ -748,10 +772,15 @@ def test_billing_account_is_a_numbered_choice_from_the_api() -> None:
     assert f"1) {ACCOUNT}" in question and f"2) {OTHER_ACCOUNT}" in question and "Lab" in question
     assert gcp.called("billing_accounts")
 
-    gcp.billing_account_list = []  # nothing listed: the id is typed
+    unlisted = FakeGcp(exists=False, billed=False)  # the list cannot be read: the id is typed
+
+    def refused() -> list[dict[str, Any]]:
+        raise ApiError(403, "PERMISSION_DENIED", "billing.accounts.list")
+
+    unlisted.billing_accounts = refused  # type: ignore[method-assign]
     ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT])
     ctx = ctx_for()
-    preflight.InputsStep(lambda: gcp, ask).apply(ctx, step.plan(ctx))
+    preflight.InputsStep(lambda: unlisted, ask).apply(ctx, step.plan(ctx))
     assert ctx.outputs["billing_account"] == ACCOUNT and "XXXXXX-XXXXXX-XXXXXX" in ask.asked[-1][1]
 
     for wrong in ("3", "0", "nope"):
@@ -871,19 +900,56 @@ def test_installer_cidr_asked_when_the_echoes_disagree() -> None:
         preflight.InstallerAddressStep(lambda: gcp, ask).apply(ctx_for(), step.plan(ctx_for()))
 
 
+#: The ADC sign-in preflight runs: Cloud Platform and the two Directory scopes,
+#: with no quota project copied from the laptop's gcloud (issue 2942).
+ADC_LOGIN = ["auth", "application-default", "login", "--disable-quota-project",
+             "--scopes=https://www.googleapis.com/auth/cloud-platform,"
+             "https://www.googleapis.com/auth/admin.directory.customer.readonly,"
+             "https://www.googleapis.com/auth/admin.directory.rolemanagement"]
+CLOUD_PLATFORM_ONLY = frozenset({"https://www.googleapis.com/auth/cloud-platform", "openid"})
+DIRECTORY_SCOPES = frozenset({"https://www.googleapis.com/auth/admin.directory.customer.readonly",
+                              "https://www.googleapis.com/auth/admin.directory.rolemanagement"})
+CLOUD_PLATFORM_LOGIN = ["auth", "application-default", "login", "--disable-quota-project",
+                        "--scopes=https://www.googleapis.com/auth/cloud-platform"]
+
+
 class Login:
-    """gcloud, faked: each login argv run flips what it signs in."""
+    """gcloud, faked: each login argv run flips what it signs in. `adc` is the
+    scopes the application-default credentials carry (None: no ADC); an ADC
+    login grants exactly the scopes its --scopes flag names."""
 
-    def __init__(self, *, account: str = "", adc: bool = False, code: int = 0) -> None:
-        self.account, self.adc, self.code = account, adc, code
+    def __init__(self, *, account: str = "", adc: frozenset[str] | None = None, code: int = 0,
+                 directory: str = "granted") -> None:
+        """`directory` is what Google does with the Directory scopes: "granted",
+        "blocked" (the browser says the app is blocked and never returns to
+        gcloud's localhost redirect, so gcloud waits until it is stopped, audit
+        4a F2: a login run with no timeout is refused, as it would hang; one
+        with a timeout comes back `TIMED_OUT`), "interrupted" (blocked, and the
+        person presses Ctrl-C), "refused" (gcloud exits 1) or "dropped" (the
+        sign-in finishes and the token comes back without them)."""
+        self.account, self.adc, self.code, self.directory = account, adc, code, directory
         self.ran: list[list[str]] = []
+        self.timeouts: list[float | None] = []
 
-    def __call__(self, argv: list[str]) -> int:
+    def __call__(self, argv: list[str], *, timeout: float | None = None) -> int:
         self.ran.append(list(argv))
+        self.timeouts.append(timeout)
         if self.code == 0 and argv[1:] == ["auth", "login"]:
             self.account = "admin@example.com"
-        if self.code == 0 and argv[1:] == ["auth", "application-default", "login"]:
-            self.adc = True
+        if self.code == 0 and argv[1:4] == ["auth", "application-default", "login"]:
+            flag = next((a for a in argv[4:] if a.startswith("--scopes=")), "--scopes=")
+            scopes = frozenset(filter(None, flag.removeprefix("--scopes=").split(",")))
+            if scopes & DIRECTORY_SCOPES and self.directory == "blocked":
+                if timeout is None:
+                    raise AssertionError("gcloud would wait forever on Google's 'This app is blocked' page")
+                return preflight.TIMED_OUT
+            if scopes & DIRECTORY_SCOPES and self.directory == "interrupted":
+                raise KeyboardInterrupt
+            if scopes & DIRECTORY_SCOPES and self.directory == "refused":
+                return 1
+            if self.directory == "dropped":
+                scopes -= DIRECTORY_SCOPES
+            self.adc = scopes
         return self.code
 
     def step(self, ask: Any = None) -> preflight.SignInStep:
@@ -900,12 +966,12 @@ def test_sign_in_runs_gcloud_itself() -> None:
     observed = step.check(ctx)
     assert observed.status == UNMET and "account" in observed.detail and "application-default" in observed.detail
     step.apply(ctx, step.plan(ctx))
-    assert gcloud.ran == [["/opt/gcloud", "auth", "login"], ["/opt/gcloud", "auth", "application-default", "login"]]
+    assert gcloud.ran == [["/opt/gcloud", "auth", "login"], ["/opt/gcloud", *ADC_LOGIN]]
     assert step.check(ctx).status == MET
 
     only_adc = Login(account="admin@example.com")
     only_adc.step().apply(ctx, only_adc.step().plan(ctx))
-    assert only_adc.ran == [["/opt/gcloud", "auth", "application-default", "login"]]
+    assert only_adc.ran == [["/opt/gcloud", *ADC_LOGIN]]
 
 
 def test_sign_in_failure_never_hands_the_person_a_command() -> None:
@@ -920,6 +986,1148 @@ def test_sign_in_failure_never_hands_the_person_a_command() -> None:
 
 def test_stage_0_order_signs_in_before_any_api_read() -> None:
     ids = [step.id for step in preflight.build_steps(lambda: FakeGcp(), Answers())]
-    assert ids == ["preflight.tools", "preflight.sign-in", "preflight.inputs", "preflight.region", "preflight.rights",
-                   "preflight.org-domain", "preflight.installer-address", "preflight.org-policies",
-                   "preflight.quotas", "preflight.release"]
+    assert ids == ["preflight.tools", "preflight.sign-in", "preflight.organization", "preflight.inputs",
+                   "preflight.region", "preflight.rights", "preflight.org-domain", "preflight.installer-address", "preflight.org-policies",
+                   "preflight.quotas", "preflight.sizing", "preflight.release", "preflight.sizing-quota"]
+
+
+# -- DAYONE-SIZING-ASK: the Directory scopes, the sizing questions, the Quotas page -----------
+
+
+def test_adc_sign_in_asks_the_directory_scopes() -> None:
+    """BGD's answer for IDENTITY-STAGE: preflight's own ADC sign-in asks the
+    admin.directory.customer.readonly and admin.directory.rolemanagement scopes
+    beside cloud-platform, and the check is MET only when the ADC carries them."""
+    gcloud = Login(account="admin@example.com")
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN]]
+    assert gcloud.adc == frozenset(preflight.ADC_SCOPES)
+    assert step.check(ctx).status == MET
+
+
+def test_existing_adc_without_the_directory_scopes_signs_in_again() -> None:
+    gcloud = Login(account="admin@example.com", adc=CLOUD_PLATFORM_ONLY)
+    step = gcloud.step()
+    ctx = ctx_for()
+    observed = step.check(ctx)
+    assert observed.status == UNMET
+    assert "admin.directory.customer.readonly" in observed.detail
+    assert "admin.directory.rolemanagement" in observed.detail
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN]]
+    assert step.check(ctx).status == MET
+
+
+
+# -- DAYONE-DIR-SCOPES: Google refusing the Directory scopes is never a dead end ----------
+
+
+def test_directory_scopes_accepted_at_stage_0_are_recorded() -> None:
+    gcloud = Login(account="admin@example.com")
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN]]
+    assert ctx.outputs["directory_scopes"] is True
+    observed = step.check(ctx)
+    assert observed.status == MET and observed.outputs.get("directory_scopes") is True
+
+
+@pytest.mark.parametrize("refusal", ["blocked", "interrupted", "refused", "dropped"])
+def test_directory_scopes_refused_at_stage_0_signs_in_without_them(refusal: str) -> None:
+    """Google blocks the sign-in that asks the Directory scopes (gcloud's own
+    client may not ask them), or finishes it without them: the ADC sign-in
+    runs again with Cloud Platform alone, `directory_scopes` is recorded false,
+    one plain line says stage 8 asks for them later, and the step is MET on
+    this and every later run, never asking for them again at stage 0."""
+    gcloud = Login(account="admin@example.com", directory=refusal)
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN], ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert gcloud.adc == frozenset({"https://www.googleapis.com/auth/cloud-platform"})
+    assert ctx.outputs["directory_scopes"] is False
+    said = [e["message"] for e in ctx.events.of_kind("step_apply") if "stage 8" in e.get("message", "")]
+    assert len(said) == 1 and "\n" not in said[0] and "Directory" in said[0]
+    assert step.check(ctx).status == MET
+    assert step.missing(ctx) == []
+    gcloud.ran.clear()
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == []
+
+
+@pytest.mark.parametrize("refusal", ["blocked", "interrupted"])
+def test_a_blocked_consent_page_never_hangs_the_sign_in(refusal: str) -> None:
+    """Audit 4a F2: Google's "This app is blocked" page never returns to gcloud.
+    The scoped sign-in waits at most CONSENT_WAIT_S (or until Ctrl-C, which
+    stops gcloud and not the run), says beforehand how to get past the page,
+    and records `directory_scopes` false before the Cloud-Platform-only
+    sign-in, so a run stopped during that one never asks the blocked scopes
+    again."""
+    gcloud = Login(account="admin@example.com", directory=refusal)
+    step = gcloud.step()
+    ctx = ctx_for()
+    seen: list[Any] = []
+    real = gcloud.__call__
+
+    def login(argv: list[str], *, timeout: float | None = None) -> int:
+        seen.append(ctx.outputs.get("directory_scopes"))
+        return real(argv, timeout=timeout)
+
+    step._login = login
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN], ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert gcloud.timeouts[0] == preflight.CONSENT_WAIT_S and gcloud.timeouts[1] is None
+    assert seen == [None, False]  # recorded before the Cloud-Platform-only sign-in starts
+    hint = [e["message"] for e in ctx.events.of_kind("step_apply") if "Ctrl-C" in e.get("message", "")]
+    assert len(hint) == 1 and "blocked" in hint[0]
+    assert ctx.outputs["directory_scopes"] is False
+    assert step.check(ctx).status == MET
+
+
+def test_run_auth_stops_gcloud_at_its_timeout(tmp_path: Path) -> None:
+    """The real runner: a gcloud still waiting at `timeout` is stopped and
+    answers TIMED_OUT instead of raising or waiting on."""
+    waits = tmp_path / "gcloud"
+    waits.write_text("#!/bin/sh\nsleep 30\n")
+    waits.chmod(0o755)
+    assert preflight.run_auth([str(waits)], timeout=0.2) == preflight.TIMED_OUT
+    done = tmp_path / "done"
+    done.write_text("#!/bin/sh\nexit 3\n")
+    done.chmod(0o755)
+    assert preflight.run_auth([str(done)]) == 3
+
+
+def test_a_sign_in_that_fails_without_the_directory_scopes_too_still_stops() -> None:
+    gcloud = Login(account="admin@example.com", code=1)
+    step = gcloud.step()
+    ctx = ctx_for()
+    with pytest.raises(RuntimeError) as stopped:
+        step.apply(ctx, step.plan(ctx))
+    assert "swarm install" in str(stopped.value)
+    assert gcloud.ran == [["/opt/gcloud", *ADC_LOGIN], ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert "directory_scopes" not in ctx.outputs
+
+
+def test_a_declined_stage_0_signs_in_again_without_asking_the_directory_scopes() -> None:
+    """Review minor: once `directory_scopes` is false, a missing ADC signs in
+    with Cloud Platform alone; Google's "app is blocked" page never shows again."""
+    gcloud = Login(account="admin@example.com", directory="blocked")
+    step = gcloud.step()
+    ctx = ctx_for(outputs={"directory_scopes": False, "installer": "admin@example.com"})
+    step.apply(ctx, step.plan(ctx))
+    assert gcloud.ran == [["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]]
+    assert ctx.outputs["directory_scopes"] is False
+    assert step.check(ctx).status == MET
+
+
+class GoogleAdc:
+    """google-auth and tokeninfo, faked the way Google answers: an
+    authorized_user refresh grant that asks for a scope the refresh token was
+    never granted gets invalid_scope; one that asks for none gets the token's
+    own grant, which tokeninfo reports."""
+
+    def __init__(self, granted: frozenset[str]) -> None:
+        self.granted = granted
+        self.asked: list[Any] = []
+        self.token = secrets.token_hex(16)
+
+    def default(self, scopes: Any = None, **_: Any) -> tuple[Any, None]:
+        from google.auth.exceptions import RefreshError
+
+        self.asked.append(scopes)
+        adc = self
+
+        class Credentials:
+            token = None
+            requires_scopes = False
+
+            def refresh(self, request: Any) -> None:
+                if scopes and not set(scopes) <= adc.granted:
+                    raise RefreshError("invalid_scope")
+                self.token = adc.token
+
+        return Credentials(), None
+
+    def post(self, url: str, data: dict[str, str], timeout: float) -> Any:
+        assert url == preflight.TOKENINFO and data["access_token"] == self.token
+        return Response(200, {"scope": " ".join(sorted(self.granted))})
+
+
+def test_adc_scopes_reads_a_cloud_platform_only_grant_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review finding: after the Cloud-Platform-only fallback, adc_scopes
+    reads {cloud-platform} back rather than forcing the Directory scopes on
+    the refresh (invalid_scope, an empty set, the sign-in again on every
+    run), and the sign-in step is MET with directory_scopes false."""
+    import google.auth
+    import requests
+
+    google_adc = GoogleAdc(frozenset({preflight.CLOUD_PLATFORM_SCOPE}))
+    monkeypatch.setattr(google.auth, "default", google_adc.default)
+    monkeypatch.setattr(requests, "post", google_adc.post)
+    assert preflight.adc_scopes() == frozenset({preflight.CLOUD_PLATFORM_SCOPE})
+    assert google_adc.asked == [None]
+
+    gcloud = Login(account="admin@example.com")
+    step = preflight.SignInStep(lambda: FakeGcp(), Answers(), gcloud=lambda: "/opt/gcloud",
+                                account=lambda: gcloud.account, login=gcloud)
+    ctx = ctx_for(outputs={"directory_scopes": False, "installer": "admin@example.com"})
+    observed = step.check(ctx)
+    assert observed.status == MET and observed.outputs["directory_scopes"] is False
+    assert gcloud.ran == []
+
+
+def test_the_organisation_sign_in_again_falls_back_the_same_way() -> None:
+    gcloud = Login(account="admin@example.com", directory="blocked")
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.sign_in_again(ctx)
+    assert gcloud.ran[-1] == ["/opt/gcloud", *CLOUD_PLATFORM_LOGIN]
+    assert ctx.outputs["directory_scopes"] is False
+
+
+def _sized(gcp: FakeGcp, *answered: str, outputs: dict[str, Any] | None = None) -> tuple[Any, Answers, Any]:
+    ask = Answers(preflight_sizing=list(answered))
+    step = preflight.SizingStep(lambda: gcp, ask)
+    ctx = ctx_for(outputs=outputs)
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    return step, ask, ctx
+
+
+@pytest.fixture
+def pages(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(preflight, "open_page", lambda url, *, why: opened.append((url, why)))
+    return opened
+
+
+def test_just_me_proposes_a_small_deployment_accepted_with_enter(pages: list[Any]) -> None:
+    gcp = FakeGcp()
+    step, ask, ctx = _sized(gcp, "1", "")
+    assert ask.asked[0] == ("preflight.sizing", preflight.WHO_QUESTION)
+    assert preflight.WHO_QUESTION == "Who is this SwarmCloud for? [1] just me  [2] a team"
+    assert ask.defaults[0] == "1"  # an optional choice: Enter is "just me"
+    assert len(ask.asked) == 2  # no "how many" for one person
+    assert "Proposed sizing for one person" in ask.asked[1][1]
+    assert ctx.outputs["sizing"] == sizing.propose("individual", 1, region_cpu_quota=3000)
+    assert ctx.outputs["sizing"]["mode"] == "individual" and ctx.outputs["sizing"]["members"] == 1
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 3000}
+    assert (PROJECT, "us-central1") in gcp.called("cpu_quotas")
+    observed = step.check(ctx)
+    assert observed.status == MET and observed.outputs["sizing"] == ctx.outputs["sizing"]
+    assert pages == []
+    assert gcp.mutations == []
+
+
+def test_a_team_is_asked_how_many_people() -> None:
+    gcp = FakeGcp()
+    _, ask, ctx = _sized(gcp, "2", "15", "")
+    assert ask.asked[1] == ("preflight.sizing", preflight.MEMBERS_QUESTION)
+    assert preflight.MEMBERS_QUESTION == "How many people will use it?"
+    assert ctx.outputs["sizing"] == sizing.propose("team", 15, region_cpu_quota=3000)
+    assert "Proposed sizing for a team of 15" in ask.asked[2][1]
+
+
+def test_an_answer_that_is_not_a_choice_or_a_count_is_asked_again() -> None:
+    gcp = FakeGcp()
+    _, ask, ctx = _sized(gcp, "3", "2", "zero", "-4", "15", "")
+    assert ctx.outputs["sizing"]["members"] == 15
+    assert "'3' is not an answer" in ask.asked[1][1]
+    assert "'-4' is not an answer" in ask.asked[4][1]
+
+    with pytest.raises(ValueError):
+        _sized(FakeGcp(), "x", "y", "z")
+    with pytest.raises(ValueError):
+        _sized(FakeGcp(), "2", "0", "0", "0")
+
+
+def test_one_number_changed_then_accepted() -> None:
+    gcp = FakeGcp()
+    _, ask, ctx = _sized(gcp, "2", "15", "1", "60", "")
+    expected = sizing.with_change(sizing.propose("team", 15, region_cpu_quota=3000), ("pool_limits", "global"), 60)
+    assert ctx.outputs["sizing"] == expected
+    assert ask.asked[3][1].startswith("New value for tasks at once, the whole deployment (global) (now 81)")
+    assert ask.asked[4][1].startswith("Changed tasks at once, the whole deployment (global) to 60.")
+
+    budget = len(sizing.rows(ctx.outputs["sizing"]))
+    _, _, ctx = _sized(FakeGcp(), "1", str(budget), "750", "")
+    assert ctx.outputs["sizing"]["budget_usd"] == 750
+
+
+def test_a_change_terraform_would_refuse_is_not_taken() -> None:
+    """provider_tenant above global breaks terraform's own floor
+    (global >= tenants x provider_tenant): the change is refused, said, and
+    the proposal stands; a row that is not a row, or a value that is not a
+    positive number, is said too."""
+    gcp = FakeGcp()
+    _, ask, ctx = _sized(gcp, "1", "3", "11", "99", "2", "abc", "")
+    assert ctx.outputs["sizing"] == sizing.propose("individual", 1, region_cpu_quota=3000)
+    assert ask.asked[3][1].startswith("Not changed: global (10) is below 1 x provider_tenant (11)")
+    assert ask.asked[4][1].startswith("'99' is not a row number.")
+    assert ask.asked[6][1].startswith("Not changed: 'abc' is not a whole number")
+
+
+def test_the_region_cpu_quota_caps_the_proposal_and_opens_the_quotas_page(pages: list[Any]) -> None:
+    gcp = FakeGcp()
+    gcp.cpu_quota = 48  # (48 - 8 for the cluster) / 4 vCPU = 10 tasks, room for a team of 5 (not of 50)
+    _, ask, ctx = _sized(gcp, "2", "5", "")
+    pools = ctx.outputs["sizing"]["pool_limits"]
+    assert pools["global"] == 10
+    assert all(v <= 10 for _, v in sizing.rows(ctx.outputs["sizing"]) if _[0] == "pool_limits")
+    assert [url for url, _ in pages] == [f"https://console.cloud.google.com/iam-admin/quotas?project={PROJECT}"]
+    assert "48 CPUs" in pages[0][1]
+
+    _, ask, ctx = _sized(FakeGcp(), "2", "50", "1", "500", "")  # 3,000 CPUs run 748 at most
+    assert ctx.outputs["sizing"]["pool_limits"]["global"] == 500
+    gcp = FakeGcp()
+    gcp.cpu_quota = 48
+    _, ask, ctx = _sized(gcp, "2", "5", "1", "11", "")
+    assert ctx.outputs["sizing"]["pool_limits"]["global"] == 10
+    assert "above the 10 tasks the 48 usable CPUs can run" in ask.asked[4][1]
+
+
+def test_a_new_project_says_the_quota_is_checked_after_stage_1(pages: list[Any]) -> None:
+    gcp = FakeGcp(exists=False)
+    _, _, ctx = _sized(gcp, "1", "", outputs={"parent": ORG})
+    assert not gcp.called("cpu_quotas")
+    said = [e.get("message", "") for e in ctx.events.of_kind("step_apply")]
+    assert any("checked against it again after stage 1" in m for m in said)
+    assert ctx.outputs["sizing"] == sizing.propose("individual", 1)
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": None}
+
+    gcp = FakeGcp()
+    gcp.cpu_quota_failure = ApiError(403, "SERVICE_DISABLED", "Compute Engine API has not been used")
+    _, _, ctx = _sized(gcp, "1", "")
+    said = [e.get("message", "") for e in ctx.events.of_kind("step_apply")]
+    assert any("after stage 1 enables Compute Engine" in m for m in said)
+
+
+def test_stage_1_checks_the_sizing_against_the_new_projects_quota(pages: list[Any]) -> None:
+    recorded = sizing.propose("team", 15)
+    outputs = {"sizing": recorded, "sizing_cpu_quota": {"region": "us-central1", "cpus": None}}
+    gcp = FakeGcp()
+    gcp.cpu_quota = 108  # (108 - 8) / 4 = 25 tasks
+    step = preflight.SizingQuotaStep(lambda: gcp, Answers(preflight_sizing_quota=[""]))
+    assert step.stage == 1
+    ctx = ctx_for(outputs=outputs)
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "above the 25 tasks" in observed.detail
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["sizing"] == sizing.capped(recorded, 108)
+    assert ctx.outputs["sizing"]["pool_limits"]["runner_profiles"]["codex"] == 9  # under the cap: kept
+    assert ctx.outputs["sizing"]["budget_usd"] == recorded["budget_usd"]
+    assert step.check(ctx).status == MET
+
+    roomy = FakeGcp()
+    fits = preflight.SizingQuotaStep(lambda: roomy, Answers()).check(ctx_for(outputs=outputs))
+    assert fits.status == MET and fits.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 3000}
+    assert preflight.SizingQuotaStep(lambda: FakeGcp(exists=False), Answers()).check(
+        ctx_for(outputs=outputs)).status == UNMET
+
+
+def test_sizing_recorded_by_a_full_stage_0(tmp_path: Path) -> None:
+    gcp = FakeGcp()
+    ask = answers(preflight_sizing=["2", "5", ""])
+    rig = Rig(tmp_path)
+    result = rig.engine(stage0(gcp, ask), manifest=load_manifest()).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert rig.store.load().outputs["sizing"] == sizing.propose("team", 5, region_cpu_quota=3000)
+    assert gcp.mutations == []
+
+
+def test_quotas_step_opens_the_quotas_page_for_an_increase(pages: list[Any]) -> None:
+    gcp = FakeGcp()
+    gcp.quotas["cloudkms.googleapis.com"] = [_metric("cloudkms.googleapis.com/crypto_requests", 100)]
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [f"https://console.cloud.google.com/iam-admin/quotas?project={PROJECT}"]
+    assert "quota.kms-signing-h4" in pages[0][1]
+
+    pages.clear()
+    gcp.quotas["cloudkms.googleapis.com"] = [_metric("cloudkms.googleapis.com/crypto_requests", 60_000)]
+    step.apply(ctx, step.plan(ctx))
+    assert pages == []
+
+
+# -- DAYONE-PREFLIGHT-RECORD: the release, the installer, the organisation, the quota project ----------
+
+
+def test_the_release_is_recorded_from_the_installers_own_wheel() -> None:
+    """Audit #2 and #30: with no --version, preflight.release records
+    `state.release` itself, defaulting to the installed wheel's own release, so
+    an rc CLI installs the rc it was downloaded as, never channels/stable."""
+    gcp = FakeGcp()
+    gcp.release = release_files(dt.date(2026, 12, 31), version="2026.11.3-rc.2")
+    step = preflight.ReleaseStep(lambda: gcp, answers(), today=lambda: dt.date(2026, 10, 29),
+                                 installed=lambda: "2026.11.3-rc.2", environ={})
+    ctx = ctx_for()
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "not recorded" in observed.detail
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.state.release == "2026.11.3-rc.2"
+    assert step.check(ctx).status == MET
+    assert not [url for (url,) in gcp.called("read_public") if "/channels/" in url]
+
+
+def test_with_no_wheel_release_the_channel_install_sh_used_is_read() -> None:
+    gcp = FakeGcp()
+    gcp.release = release_files(dt.date(2026, 12, 31), version="2026.11.4-rc.1")
+    gcp.release[f"{RELEASE_HOME}/channels/rc"] = gcp.release.pop(f"{RELEASE_HOME}/channels/stable")
+    step = preflight.ReleaseStep(lambda: gcp, answers(), today=lambda: dt.date(2026, 10, 29),
+                                 installed=lambda: None, environ={"SWARM_CHANNEL": "rc"})
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.state.release == "2026.11.4-rc.1"
+
+    stable = FakeGcp()
+    default = preflight.ReleaseStep(lambda: stable, answers(), today=lambda: dt.date(2026, 10, 29),
+                                    installed=lambda: None, environ={})
+    ctx = ctx_for()
+    default.apply(ctx, default.plan(ctx))
+    assert ctx.state.release == "v1.0.0"
+    assert (f"{RELEASE_HOME}/channels/stable",) in stable.called("read_public")
+
+
+def test_the_summary_never_names_a_channel_that_is_not_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(preflight, "installed_release", lambda: None)
+    assert preflight.default_release_said({"SWARM_CHANNEL": "rc"}) == "the current rc release"
+    said = preflight.default_release_said({"SWARM_CHANNEL": "foo"})
+    assert "the current foo release" not in said and "not a release channel" in said
+
+
+def test_a_workspace_account_that_sees_no_organisation_is_told_to_ask_for_a_role() -> None:
+    gcp = _no_organisation()
+    workspace = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: "dev@acme.example")
+    assert "ask your organisation's admin for a role" in workspace.check(ctx_for()).detail
+    consumer = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: NO_ORG_ACCOUNT)
+    assert "admin for a role" not in consumer.check(ctx_for()).detail
+
+
+def test_a_release_whose_acceptances_expired_is_never_recorded() -> None:
+    gcp = FakeGcp()
+    gcp.release = release_files(dt.date(2026, 10, 1))
+    step = preflight.ReleaseStep(lambda: gcp, answers(), today=lambda: dt.date(2026, 10, 29),
+                                 installed=lambda: None, environ={})
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.state.release is None
+    assert step.check(ctx).status == UNMET
+
+
+def test_wheel_versions_map_back_to_release_names() -> None:
+    assert preflight.release_of_wheel("2026.1.2") == "2026.01.2"
+    assert preflight.release_of_wheel("2026.11.3rc2") == "2026.11.3-rc.2"
+    assert preflight.release_of_wheel("0.1.0") is None
+    assert preflight.release_of_wheel("2026.10.1.dev3") is None
+
+
+def test_a_full_stage_0_records_the_release_and_the_installer(tmp_path: Path) -> None:
+    gcp = FakeGcp()
+    rig = Rig(tmp_path)
+    result = rig.engine(stage0(gcp, answers()), manifest=load_manifest()).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    state = rig.store.load()
+    assert state.release == "v1.0.0"
+    assert state.outputs["installer"] == "admin@example.com"
+
+
+def test_sign_in_records_the_installer() -> None:
+    """Audit #3: preflight.sign-in records `installer`, the signed-in gcloud
+    account, and keeps the first one recorded."""
+    gcloud = Login()
+    step = gcloud.step()
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["installer"] == "admin@example.com"
+    assert step.check(ctx).status == MET
+
+    signed = Login(account="admin@example.com", adc=frozenset(preflight.ADC_SCOPES))
+    ctx = ctx_for()
+    unrecorded = signed.step().check(ctx)
+    assert unrecorded.status == UNMET and "installer" in unrecorded.detail
+    signed.step().apply(ctx, signed.step().plan(ctx))
+    assert signed.ran == [] and ctx.outputs["installer"] == "admin@example.com"
+
+
+NO_ORG_ACCOUNT = "someone@gmail.com"
+
+
+def _no_organisation() -> FakeGcp:
+    gcp = FakeGcp(exists=False)
+    gcp.orgs, gcp.folder_tree = {}, {}
+    return gcp
+
+
+def test_no_organisation_is_said_first_and_the_cloud_identity_page_opens(tmp_path: Path,
+                                                                        pages: list[Any]) -> None:
+    """Audit #24, BGD 2026-10-30 "require an org, say so up front": an account
+    with no Google organisation hears, before any question, that SwarmCloud
+    needs one; the Cloud Identity Free sign-up opens; there is no path on."""
+    log: list[Any] = []
+    gcp = _no_organisation()
+    gcp.log = log
+    ask = answers(log)
+    signed: list[str] = []
+    rig = Rig(tmp_path)
+    steps = stage0(gcp, ask, account=NO_ORG_ACCOUNT, sign_in=lambda: signed.append("again"))
+    result = rig.engine(steps, manifest=load_manifest()).run()
+
+    assert result.step == "preflight.organization"
+    assert result.exit_code == ExitCode.PAUSED
+    assert ask.asked == []  # nothing was asked before it
+    assert [url for url, _ in pages] == [preflight.CLOUD_IDENTITY_SIGNUP]
+    assert "needs a Google organisation" in pages[0][1] and "Cloud Identity" in pages[0][1]
+    assert signed == ["again"]  # a consumer account signs in again, as the organisation's admin
+    assert len(gcp.called("organizations")) > 2  # polled, never "press Enter"
+    assert gcp.mutations == []
+
+
+def test_the_organisation_step_goes_on_once_the_organisation_appears(pages: list[Any]) -> None:
+    gcp = _no_organisation()
+    accounts = [NO_ORG_ACCOUNT]
+
+    def sign_in() -> None:
+        accounts.append("admin@acme.example")
+        gcp.orgs = {ORG: {"name": ORG, "displayName": "acme.example"}}
+
+    step = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: accounts[-1], sign_in=sign_in)
+    assert step.kind == "wait" and step.wait.bound_s >= 30 * 60
+    ctx = ctx_for(outputs={"installer": NO_ORG_ACCOUNT})
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "needs a Google organisation" in observed.detail
+    step.apply(ctx, step.plan(ctx))
+    assert step.check(ctx).status == MET
+    assert ctx.outputs["installer"] == "admin@acme.example"  # the organisation's account, not the gmail one
+
+
+def test_an_organisation_account_is_not_signed_in_again(pages: list[Any]) -> None:
+    gcp = FakeGcp(exists=False)
+    assert preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: "admin@example.com").check(
+        ctx_for()).status == MET
+
+    workspace = _no_organisation()
+    step = preflight.OrganizationStep(lambda: workspace, answers(), account=lambda: "admin@acme.example",
+                                      sign_in=lambda: pytest.fail("signed in again"))
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.CLOUD_IDENTITY_SIGNUP]
+
+
+def test_stage_0_says_the_organisation_before_asking_anything() -> None:
+    ids = [step.id for step in preflight.build_steps(lambda: FakeGcp(), Answers())]
+    assert ids.index("preflight.organization") == ids.index("preflight.sign-in") + 1
+    assert ids.index("preflight.organization") < ids.index("preflight.inputs")
+
+
+class Response:
+    def __init__(self, status: int, body: Any) -> None:
+        self.status_code, self._body = status, body
+        self.content = json.dumps(body).encode()
+        self.reason = "x"
+
+    def json(self) -> Any:
+        return self._body
+
+
+class Session:
+    """An AuthorizedSession, faked: each request kept with its headers."""
+
+    def __init__(self, body: Any = None) -> None:
+        self.body = body if body is not None else {}
+        self.requests: list[dict[str, Any]] = []
+
+    def request(self, method, url, *, json=None, params=None, timeout=None, headers=None):  # noqa: A002
+        self.requests.append({"method": method, "url": url, "json": json, "headers": dict(headers or {})})
+        return Response(200, self.body)
+
+
+def test_org_policy_is_read_through_resource_manager_v1_with_no_quota_project() -> None:
+    """Audit #8: the org policy API needs a quota project a fresh laptop does
+    not have; Resource Manager v1's getEffectiveOrgPolicy does not."""
+    session = Session({"constraint": "constraints/gcp.resourceLocations",
+                       "listPolicy": {"allowedValues": ["in:eu-locations"]}})
+    gcp = preflight.Gcp(session)
+    policy = gcp.effective_policy(FOLDER, "gcp.resourceLocations")
+    sent = session.requests[0]
+    assert sent["method"] == "POST"
+    assert sent["url"] == f"{preflight.CRM}/v1/{FOLDER}:getEffectiveOrgPolicy"
+    assert sent["json"] == {"constraint": "constraints/gcp.resourceLocations"}
+    assert "x-goog-user-project" not in sent["headers"]
+    assert preflight._values(policy, "allowedValues") == ["in:eu-locations"]
+
+    class QuotaProjectAsked(Session):
+        def request(self, method, url, **kw):
+            super().request(method, url, **kw)
+            if "x-goog-user-project" in (kw.get("headers") or {}):
+                return Response(200, {})
+            return Response(403, {"error": {"status": "PERMISSION_DENIED",
+                                            "message": "This API requires a quota project, which is not set"}})
+
+    asked = QuotaProjectAsked()
+    preflight.Gcp(asked).effective_policy(f"projects/{PROJECT}", "gcp.resourceLocations")
+    assert [r["headers"].get("x-goog-user-project") for r in asked.requests] == [None, PROJECT]
+    with pytest.raises(ApiError):
+        preflight.Gcp(QuotaProjectAsked()).effective_policy(FOLDER, "gcp.resourceLocations")
+
+    fake = FakeGcp()
+    fake.policies["gcp.resourceLocations"] = policy
+    blocked = preflight.OrgPoliciesStep(lambda: fake, answers()).check(ctx_for(region="us-central1"))
+    assert blocked.status == UNMET and "gcp.resourceLocations" in blocked.detail
+
+
+def test_the_organisation_wait_polls_as_the_account_signed_in_again(monkeypatch: pytest.MonkeyPatch,
+                                                                     pages: list[Any]) -> None:
+    """A gmail account signs in again as the new organisation's admin; the
+    wait's polls then load the application-default credentials afresh. The
+    session cached from the gmail sign-in never sees the organisation."""
+    import google.auth
+    import google.auth.transport.requests as transport
+
+    signed_in = ["gmail"]
+    loaded: list[str] = []
+
+    def default(scopes=None):
+        loaded.append(signed_in[-1])
+        return signed_in[-1], None
+
+    class AccountSession(Session):
+        def __init__(self, credentials: str) -> None:
+            super().__init__()
+            self.credentials = credentials
+
+        def request(self, method, url, **kw):
+            super().request(method, url, **kw)
+            if url.endswith("organizations:search") and self.credentials == "admin":
+                return Response(200, {"organizations": [{"name": ORG, "displayName": "acme.example"}]})
+            return Response(200, {})
+
+    monkeypatch.setattr(google.auth, "default", default)
+    monkeypatch.setattr(transport, "AuthorizedSession", AccountSession)
+    gcp = preflight.Gcp()
+    accounts = [NO_ORG_ACCOUNT]
+
+    def sign_in() -> None:
+        signed_in.append("admin")
+        accounts.append("admin@acme.example")
+
+    step = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: accounts[-1], sign_in=sign_in)
+    ctx = ctx_for()
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    assert step.check(ctx).status == MET
+    assert loaded == ["gmail", "admin"]
+
+    given = Session()
+    kept = preflight.Gcp(given)
+    kept.reset_credentials()
+    assert kept.session is given  # a session given in is never dropped
+
+
+def test_budget_calls_carry_the_project_as_quota_project() -> None:
+    session = Session({"budgets": []})
+    gcp = preflight.Gcp(session)
+    gcp.quota_project = PROJECT
+    gcp.budgets(ACCOUNT)
+    gcp.create_budget(ACCOUNT, {"displayName": "swarm-p-test"})
+    assert [r["headers"].get("x-goog-user-project") for r in session.requests] == [PROJECT, PROJECT]
+
+    shared = preflight._Lazy()
+    shared.use_quota_project(PROJECT)
+    shared.made.append(preflight.Gcp(Session()))
+    shared.use_quota_project("p-other")
+    assert shared().quota_project == "p-other"
+
+
+def _cpus(region_limits: dict[str | None, int], name: str = "compute.googleapis.com/cpus") -> dict[str, Any]:
+    buckets = [{"effectiveLimit": str(v), **({"dimensions": {"region": r}} if r else {})}
+               for r, v in region_limits.items()]
+    return {"metric": name, "consumerQuotaLimits": [{"unit": "1/{project}/{region}", "quotaBuckets": buckets}]}
+
+
+def test_the_cpu_quota_is_the_exact_metric_in_the_install_region(pages: list[Any]) -> None:
+    """Audit #32: only `compute.googleapis.com/cpus`, and only the install
+    region's bucket (else the default), is the regional CPU quota; a low one
+    opens the Quotas page for that metric."""
+    gcp = FakeGcp()
+    gcp.enabled.add("compute.googleapis.com")
+    gcp.quotas["compute.googleapis.com"] = [
+        _cpus({None: 24, "us-central1": 200, "asia-south2": 8}),
+        _cpus({None: 0}, name="compute.googleapis.com/a2_cpus"),
+        _cpus({None: 1}, name="compute.googleapis.com/preemptible_cpus"),
+        _metric("compute.googleapis.com/static_addresses", 8),
+    ]
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    observed = step.check(ctx_for(region="us-central1"))
+    assert observed.status == MET, observed.detail
+    assert list(observed.outputs["quotas"]["quota.compute-regional-cpus"].values()) == [200]
+
+    assert step.check(ctx_for(region="europe-west1")).status == MET  # the default bucket, 24
+    gcp.quotas["compute.googleapis.com"][0] = _cpus({None: 24, "us-central1": 12})
+    ctx = ctx_for(region="us-central1")
+    low = step.check(ctx)
+    assert low.status == UNMET and "quota.compute-regional-cpus: 12 is below 24" in low.detail
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.quotas_page(PROJECT, metric="compute.googleapis.com/cpus",
+                                                               region="us-central1")]
+    assert "metric=compute.googleapis.com%2Fcpus" in pages[0][0]
+
+
+def test_an_unreadable_stage_1_quota_keeps_the_proposed_sizing() -> None:
+    """BGD 2026-10-30: preflight.sizing-quota says in one line that the quota
+    could not be read and keeps the proposal, never "run swarm install again"."""
+    recorded = sizing.propose("team", 15)
+    gcp = FakeGcp()
+    gcp.cpu_quota_failure = ApiError(403, "SERVICE_DISABLED", "Compute Engine API has not been used")
+    step = preflight.SizingQuotaStep(lambda: gcp, Answers())
+    ctx = ctx_for(outputs={"sizing": recorded})
+    observed = step.check(ctx)
+    assert observed.status == MET
+    assert "could not be read" in observed.detail and "\n" not in observed.detail
+    assert "swarm install again" not in observed.detail
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["sizing"] == recorded
+
+
+# -- DAYONE-PREFLIGHT-3: a new organisation's billing, the organisation landing, the quota wait (part of #2688) --
+
+
+def _billing_after(gcp: FakeGcp, polls: int) -> None:
+    """`billingAccounts.list` is empty for `polls` reads, then lists ACCOUNT."""
+    listed = list(gcp.billing_account_list)
+    seen = {"n": 0}
+
+    def billing_accounts() -> list[dict[str, Any]]:
+        gcp._call("billing_accounts")
+        seen["n"] += 1
+        return listed if polls is not None and seen["n"] > polls else []
+
+    gcp.billing_account_list = []
+    gcp.billing_accounts = billing_accounts  # type: ignore[method-assign]
+
+
+def test_no_billing_account_opens_billing_creation_and_polls_until_one_appears(pages: list[Any]) -> None:
+    """N15: a brand-new organisation has no billing account; the installer
+    says so, opens the billing account creation page and polls the list,
+    then offers the account that appeared. It never asks for an id to type."""
+    gcp = FakeGcp(exists=False, billed=False)
+    _billing_after(gcp, polls=3)
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ""])
+    step = preflight.InputsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.BILLING_CREATE]
+    assert "no billing account" in pages[0][1]
+    assert ctx.outputs["billing_account"] == ACCOUNT
+    assert len(gcp.called("billing_accounts")) == 4  # polled, never "press Enter"
+    assert not [q for _, q in ask.asked if "XXXXXX" in q]
+    assert ctx.clock.sleeps and all(s <= preflight.BILLING_WAIT.interval_s for s in ctx.clock.sleeps)
+    assert gcp.mutations == []
+
+
+def test_a_billing_account_that_never_appears_says_what_to_look_at(pages: list[Any]) -> None:
+    gcp = FakeGcp(exists=False, billed=False)
+    _billing_after(gcp, polls=10**9)
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG])
+    step = preflight.InputsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    with pytest.raises(WaitGaveUp) as raised:
+        step.apply(ctx, step.plan(ctx))
+    # BGD, 2026-10-30: the wait's own WaitGaveUp, so the engine pauses the run (ENGINE-WAIT-PAUSE).
+    assert type(raised.value) is WaitGaveUp
+    assert "billing" in str(raised.value) and preflight.BILLING_WAIT.look_at in str(raised.value)
+    assert [url for url, _ in pages] == [preflight.BILLING_CREATE]
+    assert not [q for _, q in ask.asked if "Billing" in q]
+
+
+def test_a_new_domain_account_with_no_organisation_opens_billing_creation(pages: list[Any]) -> None:
+    """N16 [plausible]: Google may create the organisation only when the
+    domain's account first creates a billing account (or a project). Once the
+    person is signed in as the domain account and no organisation shows, the
+    billing account creation page opens too, so the organisation comes into
+    being whichever way Google answers; the wait says what to check."""
+    gcp = _no_organisation()
+    gcp.billing_account_list = []
+    accounts = [NO_ORG_ACCOUNT]
+    step = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: accounts[-1],
+                                      sign_in=lambda: accounts.append("admin@acme.example"))
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.CLOUD_IDENTITY_SIGNUP, preflight.BILLING_CREATE]
+    assert "admin@acme.example" in pages[1][1] and "creates the organisation" in pages[1][1]
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "admin@acme.example" in observed.detail
+    assert "must be in the new domain" in observed.detail
+    assert "must be in the new domain" in preflight.ORGANISATION_WAIT.look_at
+    assert preflight.ORGANISATION_WAIT.bound_s >= 3 * 60 * 60
+
+
+def test_an_organisation_that_lands_at_sign_up_opens_no_billing_page(pages: list[Any]) -> None:
+    gcp = _no_organisation()
+    gcp.billing_account_list = []
+    accounts = [NO_ORG_ACCOUNT]
+
+    def sign_in() -> None:
+        accounts.append("admin@acme.example")
+        gcp.orgs = {ORG: {"name": ORG, "displayName": "acme.example"}}
+
+    step = preflight.OrganizationStep(lambda: gcp, answers(), account=lambda: accounts[-1], sign_in=sign_in)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [preflight.CLOUD_IDENTITY_SIGNUP]
+
+
+def test_a_quota_the_service_does_not_report_is_said_in_one_line_not_raised() -> None:
+    """#32: a metric the service does not report is said in one plain line."""
+    gcp = FakeGcp()
+    gcp.enabled.add("run.googleapis.com")
+    gcp.quotas["run.googleapis.com"] = [_metric("run.googleapis.com/requests", 100)]
+    observed = preflight.QuotasStep(lambda: gcp, answers()).check(ctx_for())
+    assert observed.status == MET
+    said = observed.outputs["quotas"]["quota.cloud-run-jobs"]
+    assert isinstance(said, str) and "reports no" in said and "\n" not in said
+    assert "reports no" in observed.detail
+
+
+def test_the_quotas_step_polls_for_the_increase_after_the_page_opens(tmp_path: Path, pages: list[Any]) -> None:
+    """#32: the Quotas page opens and the step waits for the increase to land,
+    with a countdown, instead of "after apply its check is unmet"."""
+    gcp = FakeGcp()
+    gcp.quotas["cloudkms.googleapis.com"] = [_metric("cloudkms.googleapis.com/crypto_requests", 100)]
+    reads = {"n": 0}
+    original = gcp.quota_metrics
+
+    def quota_metrics(project: str, service: str) -> list[dict[str, Any]]:
+        reads["n"] += 1
+        if reads["n"] > 4:  # granted while the installer polls
+            gcp.quotas["cloudkms.googleapis.com"] = [_metric("cloudkms.googleapis.com/crypto_requests", 60_000)]
+        return original(project, service)
+
+    gcp.quota_metrics = quota_metrics  # type: ignore[method-assign]
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    assert step.kind == "wait" and step.wait is preflight.QUOTA_WAIT
+    rig = Rig(tmp_path)
+    result = rig.engine([step]).run()
+    assert result.exit_code == ExitCode.OK, result.message
+    assert len(pages) == 1 and "quota.kms-signing-h4" in pages[0][1]
+    assert rig.of_kind("wait_countdown", "preflight.quotas")
+    assert gcp.mutations == []
+
+
+# -- DAYONE-SIZING-CAP (audit 3, A6): a quota too small for the team is a wait, never optional ----------
+
+CPUS_PAGE = preflight.quotas_page(PROJECT, metric="compute.googleapis.com/cpus", region="us-central1")
+
+
+def _cpus_after(gcp: FakeGcp, first: int, granted: int, *, polls: int) -> None:
+    """The region's CPUS quota reads `first` for `polls` reads, then `granted`."""
+    seen = {"n": 0}
+
+    def cpu_quotas(project: str, region: str) -> preflight.CpuQuotas:
+        gcp._call("cpu_quotas", project, region)
+        seen["n"] += 1
+        return preflight.CpuQuotas(granted if seen["n"] > polls else first, 3000)
+
+    gcp.cpu_quotas = cpu_quotas  # type: ignore[method-assign]
+
+
+def test_enter_is_refused_while_the_sizing_breaks_a_rule(pages: list[Any]) -> None:
+    """A6: Enter accepted whatever the table held; now it says which number
+    breaks which rule and asks again until the sizing is one terraform takes."""
+    bad = sizing.with_change(sizing.propose("team", 5), ("pool_limits", "provider_tenant"), 10)
+    ask = Answers(preflight_sizing=["", "3", "5", ""])
+    chosen = preflight.review(ask, ctx_for(), "preflight.sizing", "team", 5, None, start=bad)
+    assert ask.asked[1][1].startswith("Not accepted: global (27) is below 5 x provider_tenant (10)")
+    assert chosen["pool_limits"]["provider_tenant"] == 5
+    assert sizing.problems(chosen) == []
+
+
+def test_a_quota_too_small_for_the_team_is_a_required_wait(pages: list[Any]) -> None:
+    """A6: 24 CPUs run 4 tasks, fewer than a team of 5's workspaces, so no
+    edit can pass. The increase is required: the CPUS quota opens on the
+    Quotas page and the step polls it until it is granted, then proposes."""
+    gcp = FakeGcp()
+    _cpus_after(gcp, 24, 48, polls=3)
+    _, ask, ctx = _sized(gcp, "2", "5", "")
+    assert [url for url, _ in pages] == [CPUS_PAGE]
+    assert "required" in pages[0][1] and "optional" not in pages[0][1]
+    assert "at least 28" in pages[0][1]
+    assert len(gcp.called("cpu_quotas")) == 4  # polled, never "press Enter"
+    assert ctx.clock.sleeps and all(s <= preflight.QUOTA_WAIT.interval_s for s in ctx.clock.sleeps)
+    assert ctx.outputs["sizing"] == sizing.propose("team", 5, region_cpu_quota=48)
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 48}
+    assert preflight.SizingStep(lambda: gcp, Answers()).check(ctx).status == MET
+
+
+def test_a_quota_never_granted_pauses_and_the_rerun_keeps_the_answer(pages: list[Any]) -> None:
+    """A6: past the wait's bound the run pauses (the engine's WaitGaveUp); the
+    answer is recorded, so `swarm install` again never asks who it is for."""
+    gcp = FakeGcp()
+    gcp.cpu_quota = 24
+    ask = Answers(preflight_sizing=["2", "5"])
+    step = preflight.SizingStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    with pytest.raises(WaitGaveUp) as raised:
+        step.apply(ctx, step.plan(ctx))
+    assert preflight.QUOTA_WAIT.look_at in str(raised.value)
+    assert ctx.outputs["sizing"]["mode"] == "team" and ctx.outputs["sizing"]["members"] == 5
+    assert step.check(ctx).status == UNMET
+
+    gcp.cpu_quota = 48  # granted while the run was paused
+    again = Answers(preflight_sizing=[""])
+    rerun = preflight.SizingStep(lambda: gcp, again)
+    rerun.apply(ctx, rerun.plan(ctx))
+    assert preflight.WHO_QUESTION not in [q for _, q in again.asked]
+    assert "Proposed sizing for a team of 5" in again.asked[0][1]
+    assert ctx.outputs["sizing"] == sizing.propose("team", 5, region_cpu_quota=48)  # never accepted: afresh
+    assert rerun.check(ctx).status == MET
+
+
+def test_stage_1_waits_for_the_cpus_a_recorded_team_needs(pages: list[Any]) -> None:
+    """A6 in stage 1: the new project's 24 CPUs cannot fit a team of 10, so
+    preflight.sizing-quota opens the CPUS quota and waits, then caps."""
+    recorded = sizing.propose("team", 10)
+    gcp = FakeGcp()
+    _cpus_after(gcp, 24, 48, polls=2)
+    step = preflight.SizingQuotaStep(lambda: gcp, Answers(preflight_sizing_quota=[""]))
+    ctx = ctx_for(outputs={"sizing": recorded})
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [CPUS_PAGE]
+    assert "required" in pages[0][1] and "at least 48" in pages[0][1]
+    assert ctx.outputs["sizing"] == sizing.capped(recorded, 48)
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 48}
+    assert step.check(ctx).status == MET
+
+
+@pytest.mark.parametrize(("recorded", "floor"), [(None, 24), (sizing.propose("individual", 1), 24),
+                                                 (sizing.propose("team", 5), 28),
+                                                 (sizing.propose("team", 10), 48)])
+def test_the_cpus_floor_follows_the_recorded_sizing(recorded: Any, floor: int) -> None:
+    """A6: the CPUS floor of 24 let through a quota the sizing cannot use; it
+    is now the smallest quota the recorded sizing can use (never below 24)."""
+    gcp = FakeGcp()
+    gcp.enabled.add("compute.googleapis.com")
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    ctx = ctx_for(outputs={"sizing": recorded} if recorded else None)
+    gcp.quotas["compute.googleapis.com"] = [_metric("compute.googleapis.com/cpus", floor)]
+    assert step.check(ctx).status == MET
+    gcp.quotas["compute.googleapis.com"] = [_metric("compute.googleapis.com/cpus", floor - 1)]
+    observed = step.check(ctx)
+    assert observed.status == UNMET and f"{floor - 1} is below {floor}" in observed.detail
+
+
+# -- DAYONE-PREFLIGHT-4 (audit 4a F5): the project-wide CPU quota, and a Free Trial account ----------
+
+ALL_REGIONS_PAGE = preflight.quotas_page(PROJECT, metric="compute.googleapis.com/cpus_all_regions")
+UPGRADE_PAGE = f"https://console.cloud.google.com/billing/{ACCOUNT}?project={PROJECT}"
+
+
+class Compute(Session):
+    """Compute Engine, faked the way Google answers: `regions.get` holds the
+    region's CPUS limit and `projects.get` the project's CPUS_ALL_REGIONS,
+    each beside other metrics that are not the cluster's."""
+
+    def __init__(self, region: int, all_regions: int) -> None:
+        super().__init__()
+        self.answers = {
+            f"{preflight.COMPUTE}/projects/{PROJECT}/regions/us-central1": {"quotas": [
+                {"metric": "PREEMPTIBLE_CPUS", "limit": 0.0}, {"metric": "CPUS", "limit": float(region)}]},
+            f"{preflight.COMPUTE}/projects/{PROJECT}": {"quotas": [
+                {"metric": "GPUS_ALL_REGIONS", "limit": 0.0},
+                {"metric": "CPUS_ALL_REGIONS", "limit": float(all_regions)}]},
+        }
+
+    def request(self, method, url, *, json=None, params=None, timeout=None, headers=None):  # noqa: A002
+        self.requests.append({"method": method, "url": url})
+        return Response(200, self.answers[url])
+
+
+def test_the_cpu_quota_read_is_the_smaller_of_the_regional_and_project_wide() -> None:
+    """F5: GKE Autopilot nodes count against the region's CPUS and the
+    project's CPUS_ALL_REGIONS; a 200-CPU region in a project held to 12 can
+    run only 12, which no team of 5 fits."""
+    session = Compute(region=200, all_regions=12)
+    quotas = preflight.Gcp(session).cpu_quotas(PROJECT, "us-central1")
+    assert (quotas.region, quotas.all_regions, quotas.usable) == (200, 12, 12)
+    assert quotas.all_regions_binds
+    assert [r["url"] for r in session.requests] == [f"{preflight.COMPUTE}/projects/{PROJECT}/regions/us-central1",
+                                                    f"{preflight.COMPUTE}/projects/{PROJECT}"]
+    assert not sizing.fits_quota("team", 5, quotas.usable)
+
+
+def test_stage_1_never_passes_a_sizing_the_project_wide_quota_cannot_run(pages: list[Any]) -> None:
+    """F5: preflight.sizing-quota said "the sizing fits the us-central1 CPU
+    quota" for a region of 3000 in a project held to 16 CPUS_ALL_REGIONS; the
+    task pods then stayed Pending. The smaller quota is the one checked."""
+    gcp = FakeGcp()
+    gcp.cpu_quota_all_regions = 16
+    step = preflight.SizingQuotaStep(lambda: gcp, Answers(preflight_sizing_quota=[""]))
+    ctx = ctx_for(outputs={"sizing": sizing.propose("team", 5)})
+    observed = step.check(ctx)
+    assert observed.status == UNMET and "16 usable CPUs" in observed.detail
+
+
+def test_a_project_wide_quota_too_small_opens_its_own_quotas_page(pages: list[Any]) -> None:
+    """F5: a paid account whose CPUS_ALL_REGIONS (16) binds, not the region's
+    CPUS (3000): the Quotas page opens on CPUS_ALL_REGIONS, not on CPUS."""
+    gcp = FakeGcp()
+    seen = {"n": 0}
+
+    def cpu_quotas(project: str, region: str) -> preflight.CpuQuotas:
+        gcp._call("cpu_quotas", project, region)
+        seen["n"] += 1
+        return preflight.CpuQuotas(3000, 28 if seen["n"] > 2 else 16)
+
+    gcp.cpu_quotas = cpu_quotas  # type: ignore[method-assign]
+    _, _, ctx = _sized(gcp, "2", "5", "", outputs={"billing_account": ACCOUNT})
+    assert [url for url, _ in pages] == [ALL_REGIONS_PAGE]
+    assert "CPUS_ALL_REGIONS" in pages[0][1] and "required" in pages[0][1] and "at least 28" in pages[0][1]
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 28}
+
+
+def test_a_free_trial_account_opens_its_upgrade_page_not_the_quotas_page(pages: list[Any]) -> None:
+    """F5: a Free Trial billing account holds the project to 8 CPUs across all
+    regions and Google grants it no increase, so the Quotas page was a dead
+    end. Its billing page opens to activate a paid account; once it is paid
+    and still short, the CPUS_ALL_REGIONS Quotas page opens; once that is
+    granted the step goes on by itself."""
+    gcp = FakeGcp()
+    reads = iter([8, 8, 10, 10, 24])  # the trial; upgraded to a paid default; granted
+
+    def cpu_quotas(project: str, region: str) -> preflight.CpuQuotas:
+        gcp._call("cpu_quotas", project, region)
+        return preflight.CpuQuotas(3000, next(reads))
+
+    gcp.cpu_quotas = cpu_quotas  # type: ignore[method-assign]
+    _, _, ctx = _sized(gcp, "1", "", outputs={"billing_account": ACCOUNT})
+    assert [url for url, _ in pages] == [UPGRADE_PAGE, ALL_REGIONS_PAGE]
+    assert "Free Trial" in pages[0][1] and "Activate full account" in pages[0][1]
+    assert "iam-admin/quotas" not in pages[0][0]
+    assert len(gcp.called("cpu_quotas")) == 5  # polled, never "press Enter"
+    assert ctx.outputs["sizing_cpu_quota"] == {"region": "us-central1", "cpus": 24}
+
+
+def test_a_free_trial_wait_that_runs_out_says_to_upgrade_the_account(pages: list[Any]) -> None:
+    gcp = FakeGcp()
+    gcp.cpu_quota_all_regions = 8
+    step = preflight.SizingStep(lambda: gcp, Answers(preflight_sizing=["1"]))
+    ctx = ctx_for(outputs={"billing_account": ACCOUNT})
+    with pytest.raises(WaitGaveUp) as raised:
+        step.apply(ctx, step.plan(ctx))
+    assert "Activate full account" in str(raised.value)
+    assert [url for url, _ in pages] == [UPGRADE_PAGE]
+
+
+def test_the_quotas_step_reads_the_project_wide_cpus_beside_the_regional(pages: list[Any]) -> None:
+    """F5 in preflight.quotas: `cpus_all_regions` below the floor is UNMET
+    even when the region's `cpus` is ample; at a Free Trial's cap the page
+    that opens is the account's upgrade page."""
+    gcp = FakeGcp()
+    gcp.enabled.add("compute.googleapis.com")
+    gcp.quotas["compute.googleapis.com"] = [_cpus({None: 24, "us-central1": 200}),
+                                           _cpus({None: 8}, name="compute.googleapis.com/cpus_all_regions")]
+    step = preflight.QuotasStep(lambda: gcp, answers())
+    ctx = ctx_for(region="us-central1", outputs={"billing_account": ACCOUNT})
+    low = step.check(ctx)
+    assert low.status == UNMET and "quota.compute-regional-cpus: 8 is below 24" in low.detail
+    assert "CPUS_ALL_REGIONS" in low.detail and "Free Trial" in low.detail
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [UPGRADE_PAGE]
+
+    gcp.quotas["compute.googleapis.com"][1] = _cpus({None: 16}, name="compute.googleapis.com/cpus_all_regions")
+    pages.clear()
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [ALL_REGIONS_PAGE]
+    gcp.quotas["compute.googleapis.com"][1] = _cpus({None: 3000}, name="compute.googleapis.com/cpus_all_regions")
+    assert step.check(ctx).status == MET
+
+
+# -- ISSUE 2942: the quota project, and a confirmation asked again ------------
+
+
+class _Recorded:
+    """The transport under the real AuthorizedSession: every request kept
+    with its headers, answered 200 with `body`."""
+
+    def __init__(self, body: Any) -> None:
+        import requests.adapters
+
+        self.sent: list[dict[str, str]] = []
+        recorded = self.sent
+
+        class Adapter(requests.adapters.BaseAdapter):
+            def send(self, request, **kwargs):  # noqa: ANN001, ANN003
+                import requests
+
+                recorded.append(dict(request.headers))
+                response = requests.Response()
+                response.status_code, response.request, response.url = 200, request, request.url
+                response._content = json.dumps(body).encode()
+                return response
+
+            def close(self) -> None:
+                pass
+
+        self.adapter = Adapter()
+
+
+def test_stage_0_calls_never_send_the_laptops_quota_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue 2942: `gcloud auth application-default login` writes the laptop's
+    gcloud project into the credentials as their quota project, and google-auth
+    sends it as `x-goog-user-project` on every call. Stage 0's billing listing
+    and rights check must go without one; stage 1's budget calls still name the
+    install's project."""
+    import google.auth
+    import requests
+    from google.oauth2.credentials import Credentials
+
+    laptop = "laptop-default-" + secrets.token_hex(3)
+    credentials = Credentials(token=secrets.token_hex(16), quota_project_id=laptop)
+    monkeypatch.setattr(google.auth, "default", lambda scopes=None: (credentials, laptop))
+    recorded = _Recorded({"billingAccounts": [], "permissions": [], "budgets": []})
+    monkeypatch.setattr(requests.Session, "get_adapter", lambda self, url: recorded.adapter)
+    gcp = preflight.Gcp()
+    gcp.billing_accounts()
+    gcp.test_permissions(f"billingAccounts/{ACCOUNT}", ["billing.resourceAssociations.create"])
+    gcp.test_permissions(FOLDER, ["resourcemanager.projects.create"])
+    assert len(recorded.sent) == 3
+    assert [h.get("x-goog-user-project") for h in recorded.sent] == [None, None, None]
+
+    gcp.quota_project = PROJECT  # stage 1: the project exists
+    gcp.budgets(ACCOUNT)
+    assert recorded.sent[-1].get("x-goog-user-project") == PROJECT
+
+
+def test_adc_sign_in_writes_no_quota_project() -> None:
+    """Issue 2942: the installer's own application-default sign-in never lets
+    gcloud copy the laptop's project into the credentials as a quota project."""
+    assert "--disable-quota-project" in preflight.adc_login()
+    assert "--disable-quota-project" in preflight.adc_login((preflight.CLOUD_PLATFORM_SCOPE,))
+
+
+def test_an_empty_region_confirmation_is_asked_again() -> None:
+    """Issue 2942: an empty line at the region's confirmation is no answer;
+    it is asked again, saying what was expected, and the right answer then
+    confirms it."""
+    ask = Answers(preflight_region=["europe-west1", "", "europe-west1"])
+    ctx = ctx_for(region=None)
+    step = preflight.RegionStep(lambda: FakeGcp(), ask)
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.state.region == "europe-west1" and ctx.outputs["region_confirmed"] == "europe-west1"
+    assert len(ask.asked) == 3 and "europe-west1" in ask.asked[2][1] and "nothing was typed" in ask.asked[2][1]
+
+
+def test_a_confirmation_gives_up_after_its_tries_and_records_nothing() -> None:
+    wrong = ["europe-west2"] * preflight.CONFIRM_TRIES
+    ask = Answers(preflight_region=["europe-west1", "", *wrong[1:]])
+    ctx = ctx_for(region=None)
+    step = preflight.RegionStep(lambda: FakeGcp(), ask)
+    with pytest.raises(ValueError, match="nothing was recorded"):
+        step.apply(ctx, step.plan(ctx))
+    assert ctx.state.region is None and "region_confirmed" not in ctx.outputs
+    assert len(ask.asked) == 1 + preflight.CONFIRM_TRIES
+    assert "'europe-west2' is not europe-west1" in ask.asked[-1][1]

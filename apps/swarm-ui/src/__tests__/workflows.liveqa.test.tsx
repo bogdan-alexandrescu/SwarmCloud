@@ -13,20 +13,22 @@
  *   WF-6       the attempt stepper and the table count one thing, or say
  *              which each counts;
  *   WF-7/17    another workflow or another tab is a new history entry;
- *   WF-8       the phone draws a card per row, not the desktop table.
+ *   WF-8       the phone draws a card per row, not the desktop table; since
+ *              the picked Work redesign (frame graph-workflow-rest-390), one
+ *              short row of state, name, steps and needs, the rest in the
+ *              row's summary.
  *
  * WF-5 (the merge card's CI clock) is held in merge.card.test.tsx.
  */
 import STYLES from '../styles.css?raw'
 import WF_CSS from '../styles/workflows.css?raw'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowRead, WorkflowUsage } from '../api'
 import type { AttemptRow, Task, TaskState, Workflow, WorkflowPage, WorkflowStep } from '../types'
 import { cascade } from './cssgate'
-import { painted } from './marks'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -153,11 +155,6 @@ function serve(workflows: Workflow[], taskById: Map<string, Task> | null, nextPa
   } satisfies Result<WorkflowBoard>)
 }
 
-const notFound = {
-  status: 'error',
-  error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-} as const
-
 /** An IntersectionObserver that never reports a row in view: nothing scrolls here. */
 class NeverInView {
   observe(): void {}
@@ -196,75 +193,34 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+const rowIds = () => [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
 
 // ---------------------------------------------------------------------------
 // WF-1 (S1)
 // ---------------------------------------------------------------------------
 
-describe('WF-1: a search finds a row whose name had not been read, without scrolling to it', () => {
-  it('reads the unread row for the search, and the row is found', async () => {
-    api.loadWorkflow.mockImplementation(async (id: string) =>
-      id === 'wf_old'
-        ? ({ status: 'ok', data: { workflow: old, tasks: [oldTask] }, fetchedAt: T0 } satisfies Result<WorkflowRead>)
-        : notFound,
-    )
+describe('WF-1: a search finds a row by the name the list read served, without scrolling to it', () => {
+  // THE NAMES COME WITH THE LIST (console load speed, owner's pick
+  // 2026-11-01): each step's block carries its task's `unit` and `title`, so
+  // a search reads every row's name from the list read and reads no row by id.
+  it('finds a row by its step block’s name, with no read of its own', async () => {
+    serve([fresh, old], new Map([['task_fresh', task('task_fresh', 'SUCCEEDED', { metadata: { unit: 'fresh-title' } })], ['task_old', oldTask]]))
     render(<WorkflowsScreen view="q=VQA-L10" />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_old']))
-    // No row was ever in view: the search itself asked for the read.
-    expect(api.loadWorkflow).toHaveBeenCalledWith('wf_old')
     expect(document.querySelector('.wfl-none')).toBeNull()
+    // MUTATION: put `useRowReads` back -- the search reads rows by id.
+    expect(api.loadWorkflow).not.toHaveBeenCalled()
   })
 
-  it('never says "no match among" the rows while a name it searches is still unread', async () => {
-    // The read never lands: the row can be judged neither way.
-    api.loadWorkflow.mockReturnValue(new Promise(() => {}))
+  it('a row the list read served no name for is not read for the search either', async () => {
     render(<WorkflowsScreen view="q=VQA-L10" />)
-    const none = await waitFor(() => {
-      const p = document.querySelector('.wfl-none')
-      expect(p).not.toBeNull()
-      return p!
-    })
-    expect(none.textContent).not.toMatch(/No match among/)
-    expect(none.textContent).toMatch(/1 of the 2 workflows have not had their names read/)
+    await waitFor(() => expect(document.querySelector('.wfl-none')?.textContent).toMatch(/^No match among all 2 workflows read\./))
+    expect(api.loadWorkflow).not.toHaveBeenCalled()
   })
 
-  it('says "no match" once every name it searched was read', async () => {
-    api.loadWorkflow.mockResolvedValue({ status: 'ok', data: { workflow: old, tasks: [oldTask] }, fetchedAt: T0 } satisfies Result<WorkflowRead>)
+  it('says "no match" over every row the list read', async () => {
     render(<WorkflowsScreen view="q=nothing-is-called-this" />)
     await waitFor(() => expect(document.querySelector('.wfl-none')?.textContent).toMatch(/^No match among all 2 workflows read\./))
-  })
-
-  it('keeps no more than six row reads in flight at once', async () => {
-    const many = Array.from({ length: 20 }, (_, i) =>
-      workflow(`wf_${String(i).padStart(2, '0')}`, 'SUCCEEDED', [step('implement', { task_id: `task_${i}` })], 1000 + i),
-    )
-    serve(many, new Map())
-    let inFlight = 0
-    let most = 0
-    const settle: (() => void)[] = []
-    api.loadWorkflow.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          inFlight += 1
-          most = Math.max(most, inFlight)
-          settle.push(() => {
-            inFlight -= 1
-            resolve(notFound)
-          })
-        }),
-    )
-    render(<WorkflowsScreen view="q=anything" />)
-    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(6))
-    expect(most).toBe(6)
-    // Each read that lands lets one more start, until all twenty were asked.
-    for (let i = 0; i < 20; i++) {
-      await act(async () => {
-        settle.shift()?.()
-      })
-    }
-    await waitFor(() => expect(api.loadWorkflow).toHaveBeenCalledTimes(20))
-    expect(most).toBe(6)
   })
 })
 
@@ -290,7 +246,7 @@ describe('WF-2: the list pages past its newest 100 and says what its counts are 
     render(<WorkflowsScreen view="sort=oldest" />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_old', 'wf_fresh']))
     // Before: the counts say they are of the newest read, not of everything.
-    expect(document.querySelector('.wfl')!.textContent).toMatch(/Counts and order are of the 2 newest workflows/)
+    expect(document.querySelector('.wfg')!.textContent).toMatch(/Counts and order are of the 2 newest workflows/)
     fireEvent.click(screen.getByRole('button', { name: 'Load 100 older' }))
     await waitFor(() => expect(rowIds()).toEqual(['wf_older_b', 'wf_older_a', 'wf_old', 'wf_fresh']))
     expect(api.loadOlderWorkflows).toHaveBeenCalledWith(cursor)
@@ -298,8 +254,8 @@ describe('WF-2: the list pages past its newest 100 and says what its counts are 
     // nothing is older, so the list stops offering more and stops qualifying.
     expect(screen.queryByRole('button', { name: 'Load 100 older' })).toBeNull()
     expect(document.querySelector('.wfl-foot')!.textContent).toMatch(/4 of 4 read .* no older workflows/)
-    expect(document.querySelector('.wfl')!.textContent).not.toMatch(/Counts and order are of/)
-    const failed = within(document.querySelector<HTMLElement>('.wfl-seg')!).getByText('Failed').closest('button, a')!
+    expect(document.querySelector('.wfg')!.textContent).not.toMatch(/Counts and order are of/)
+    const failed = within(document.querySelector<HTMLElement>('.wfg-seg')!).getByText('Failed').closest('button, a')!
     expect(failed.textContent).toMatch(/2/)
   })
 
@@ -395,41 +351,60 @@ describe('WF-6: the attempt stepper and the table count the same thing, or say w
       data: { attempts: [5, 4, 3, 2, 1].map((n) => attempt(n, 't_merge', n === 5 ? { exit_code: 0 } : { error: 'CI_PENDING' })) },
       fetchedAt: T0,
     })
-    render(<WorkflowsScreen view="wf=wf_plugin&tab=table" />)
-    const pickButton = await waitFor(() => {
-      const b = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="merge"]')
-      expect(b).not.toBeNull()
-      return b!
-    })
-    if (document.querySelector('.wf-inspect') === null) fireEvent.click(pickButton)
-    const pos = await waitFor(() => {
-      const p = document.querySelector<HTMLElement>('[data-scrub="attempt"] .wf-scrub-pos')
-      expect(p).not.toBeNull()
-      return p!
-    })
-    // Not "attempt 5 of 5" beside a table saying "1 of 10".
-    expect(pos.textContent).not.toMatch(/^attempt 5 of 5$/)
-    expect(pos.textContent).toBe('run 5 of 5')
-    // V200 (#1427): ◀ position ▶ is one unit that never wraps -- at 400 the
-    // whole sentence filled the line and ▶ wrapped alone -- and the counted
-    // figure is after it, outside it, where it may wrap on its own.
-    // MUTATION: put the counted figure back inside the position, or the
-    // buttons back outside `.wf-scrub-nav`.
-    const scrub = document.querySelector<HTMLElement>('[data-scrub="attempt"]')!
-    const nav = pos.parentElement!
-    expect(nav.classList.contains('wf-scrub-nav')).toBe(true)
-    expect(within(nav).getByRole('button', { name: 'Previous attempt' })).toBeTruthy()
-    expect(within(nav).getByRole('button', { name: 'Next attempt' })).toBeTruthy()
-    const counted = scrub.querySelector<HTMLElement>(':scope > .wf-scrub-counted')!
-    expect(counted.textContent).toBe('1 of 10 counted')
-    expect(nav.nextElementSibling).toBe(counted)
-    expect(counted.title).toMatch(/a wait for CI is refunded and not counted/)
-    expect(painted(nav, 'white-space', { width: 400 })).toBe('nowrap')
-    // WF-20: a park is not filed under `error`. Step back to a CI park.
-    fireEvent.click(within(document.querySelector<HTMLElement>('[data-scrub="attempt"]')!).getByRole('button', { name: 'Previous attempt' }))
-    const keys = [...document.querySelectorAll('[data-scrub="attempt"] .ctl-fact > b')].map((b) => b.textContent)
-    expect(keys).toContain('parked')
-    expect(keys).not.toContain('error')
+    // A picked step opens in the docked inspector, which starts folded below
+    // 1366px (jsdom's default innerWidth is 1024); widen the page so the
+    // dock -- and this scrub control -- actually renders.
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    try {
+      render(<WorkflowsScreen view="wf=wf_plugin&tab=table" />)
+      const pickButton = await waitFor(() => {
+        const b = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="merge"]')
+        expect(b).not.toBeNull()
+        return b!
+      })
+      // THE PAGE'S CARD IS StepCard, NOT StepInspector's `[data-scrub="attempt"]`
+      // scrubber (owner's pick, 2026-11-05): the uncounted branch labels the
+      // tile "Run", not "Attempt", with the ratio as its figure -- no visible
+      // "run 5 of 5" sentence, and no separate "N of M counted" line; both are
+      // said in the tile's `title` now.
+      if (document.querySelector('section.sc-card') === null) fireEvent.click(pickButton)
+      const tile = await waitFor(() => {
+        const t = document.querySelector<HTMLElement>('.sc-tile[data-tile="attempt"], .sc-tile[data-tile="run"]')
+        expect(t).not.toBeNull()
+        return t!
+      })
+      // KNOWN BUG, reported rather than fixed here (StepCard.tsx is frozen
+      // for this task): the tile's own header comment states the intent --
+      // "A step whose attempt documents outnumber its counted attempts (a
+      // merge's CI park is refunded) says `run` and counts the documents
+      // instead" -- but its `counted` check compares the document count (5)
+      // to `task.max_attempts` (10, the allowed CAP), not to the task's own
+      // counted `attempt_count` (1). Within the cap, it is mislabelled
+      // "Attempt 5 of the 10 allowed" -- exactly the refund case this test
+      // exists to catch. This assertion is the intended label; it is
+      // expected to fail until that comparison is fixed.
+      expect(tile.querySelector('.sc-tile-k')?.textContent).toBe('Run')
+      expect(tile.querySelector('.sc-tile-v')?.textContent).toBe('5 / 5')
+      const hint = tile.querySelector('.sc-tile-v')?.getAttribute('title') ?? ''
+      expect(hint).toMatch(/Run 5 of the 5 attempt records this step has/)
+      expect(hint).toContain('count against its attempts')
+      // The timeline's own Previous/Next attempt controls, beside the bar of segments.
+      const tl = document.querySelector<HTMLElement>('.sc-tl')!
+      expect(within(tl).getByRole('button', { name: 'Previous attempt' })).toBeTruthy()
+      expect(within(tl).getByRole('button', { name: 'Next attempt' })).toBeTruthy()
+      // WF-20: a park is not filed under `error`. Step back to a CI park.
+      fireEvent.click(within(tl).getByRole('button', { name: 'Previous attempt' }))
+      // Checked through the timeline's own segment, not the tile's ratio
+      // (whose denominator carries the bug flagged above either way).
+      await waitFor(() => expect(within(tl).getByRole('button', { name: '4' }).getAttribute('aria-pressed')).toBe('true'))
+      const details = document.querySelector<HTMLDetailsElement>('details.sc-more')!
+      fireEvent.click(details.querySelector('summary')!)
+      const keys = [...details.querySelectorAll('dl.sc-facts > dt')].map((d) => d.textContent)
+      expect(keys).toContain('Parked')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
+    }
   })
 })
 
@@ -463,19 +438,25 @@ describe('WF-8: the phone draws a card per workflow, not the desktop table', () 
   const SHEET = `${WF_CSS}\n${STYLES}`
   const at = (el: Element, prop: string, width: number) => cascade(SHEET, el, prop, { width, theme: 'dark' }).winner?.value ?? null
 
-  it('lays each row out as a card at 400 and as a table row at 1440', async () => {
+  // The card was replaced by the picked Work redesign's phone row (frame
+  // graph-workflow-rest-390): state, name, steps and needs on one short row,
+  // no sideways scroller, and the rest in the row's summary in the inspector.
+  it('draws the phone row as state, name, steps and needs at 400, and every column at 1440', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toHaveLength(2))
-    const tr = document.querySelector('tbody tr.wfl-row')!
-    expect(at(tr, 'display', 400)).toBe('grid')
-    expect(at(tr, 'display', 1440)).not.toBe('grid')
-    // The held State column is let go, so it no longer takes 40% of the width.
-    const state = tr.querySelector('td[data-col="state"]')!
-    expect(at(state, 'position', 400)).toBe('static')
-    // The figures the scroller hid are on the card.
-    for (const col of ['done', 'cost', 'owner', 'submitted', 'duration']) {
-      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 400), col).toBe('block')
+    const tr = document.querySelector('tbody tr.wfg-row')!
+    for (const col of ['state', 'workflow', 'steps', 'needs']) {
+      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 400), col).not.toBe('none')
     }
-    expect(at(document.querySelector('.wfl-table thead')!, 'display', 400)).toBe('none')
+    // MUTATION: drop the phone rule and Spent, Owner and Changed push the row past 400.
+    for (const col of ['spent', 'owner', 'changed']) {
+      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 400), col).toBe('none')
+      expect(at(tr.querySelector(`td[data-col="${col}"]`)!, 'display', 1440), col).not.toBe('none')
+    }
+    // The head is not drawn at 400 but stays read.
+    const thead = document.querySelector('.wfg-table thead')!
+    expect(at(thead, 'display', 400)).not.toBe('none')
+    expect(at(thead, 'clip-path', 400)).toBe('inset(50%)')
+    expect(at(thead, 'clip-path', 1440)).toBeNull()
   })
 })

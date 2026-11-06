@@ -33,6 +33,11 @@ call guard. §2.7 says what a person sees; the design is
 [workspaces.md](workspaces.md) (#847), and how it is operated is
 [multi-tenancy §7](multi-tenancy.md#7-a-persons-personal-workspace).
 
+Everything here happens inside a deployment that already exists. A new
+deployment, from an empty Google Cloud project to READY, is installed with
+`swarm install` and finished in the console's Admin › Setup:
+[install.md](install.md).
+
 What it settles, one line each:
 
 * **Mechanism: a SwarmCloud GitHub App with user access tokens (B)**, a
@@ -382,7 +387,7 @@ What each permission is for:
 | `statuses` | read | merge reads `/commits/{sha}/status` to wait for CI; without it every merge fails |
 | `checks` | read | merge and CI fixes can't see check runs |
 | `issues` | write | issue runs and the observer can't read or comment on issues |
-| `actions` | read | ci-flake-hunter and release-health can't read workflow runs |
+| `actions` | write | ci-flake-hunter and release-health can't read workflow runs, and merges can't re-run a flaky run's failed jobs |
 
 Every call is a GET. No installation token is minted, because minting is a
 POST. One org failing becomes that card's `error`; the rest of the answer

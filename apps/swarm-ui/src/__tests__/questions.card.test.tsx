@@ -9,7 +9,7 @@
 // the bell's item unread; draw the Details tab with no count; point the
 // notification back at Artifacts.
 
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import STYLES from '../styles.css?raw'
@@ -164,6 +164,55 @@ describe('the Questions for you card', () => {
     render(<QuestionsCard task={asked()} />)
     const card = await screen.findByRole('region', { name: 'Questions for you' })
     await waitFor(() => expect(card.textContent).toContain('the file served is not JSON'))
+  })
+})
+
+// WHO ASKED (the plugin-step question lane's follow-up, 5 November 2026): a
+// plugin step's bridged question is served with the skill that asked it as
+// `waiting.skill` (`agent_questions.asked_by_skill`), and the card's waiting
+// note names it in a chip, the way Needs you does. A null skill (a question
+// the agent asked itself, or a park recorded before the worker wrote it)
+// adds nothing: no chip and no "not known" line (no new visible prose).
+// MUTATIONS: drop the chip; draw it for a null skill; say "not known".
+describe('the skill that asked, on the waiting note', () => {
+  function waiting(skill: string | null): TaskQuestions {
+    return {
+      ...QUESTIONS,
+      waiting: {
+        open: true,
+        blocking: [0],
+        unanswered: [0],
+        asked_at: '2026-11-05T10:00:00+00:00',
+        expires_at: '2026-11-08T10:00:00+00:00',
+        issue_comment_url: null,
+        skill,
+      },
+    } as unknown as TaskQuestions
+  }
+
+  it('shows a served skill on the card', async () => {
+    api.loadQuestions.mockResolvedValue(ok(waiting('superpowers:brainstorming')))
+    render(<QuestionsCard task={asked()} />)
+    const note = await screen.findByRole('status')
+    const chip = note.querySelector('.c-chip')
+    expect(chip?.textContent).toBe('asked by superpowers:brainstorming')
+    expect(chip?.getAttribute('title')).toContain('superpowers:brainstorming')
+  })
+
+  it('adds no prose for a null skill', async () => {
+    api.loadQuestions.mockResolvedValue(ok(waiting(null)))
+    render(<QuestionsCard task={asked()} />)
+    const note = await screen.findByRole('status')
+    expect(note.querySelector('.c-chip')).toBeNull()
+    expect(note.textContent).not.toContain('asked by')
+    expect(note.textContent).not.toContain('not known')
+    // The same note, word for word, as one served with no `skill` at all.
+    const withNull = note.textContent
+    cleanup()
+    const { skill: _dropped, ...old } = (waiting(null) as unknown as { waiting: Record<string, unknown> }).waiting
+    api.loadQuestions.mockResolvedValue(ok({ ...QUESTIONS, waiting: old } as unknown as TaskQuestions))
+    render(<QuestionsCard task={asked()} />)
+    expect((await screen.findByRole('status')).textContent).toBe(withNull)
   })
 })
 

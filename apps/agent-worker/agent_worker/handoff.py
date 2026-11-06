@@ -19,6 +19,11 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
                            egress (egress_ticket.py; the agent's prompt carries it)
       qa-identity.md       this worker's: present while a task that named the QA
                            identity has no credential in the gate (qa_identity.py)
+      qa-target.md         this worker's: present while the QA target's sign-in left
+                           the browser signed out of it (qa_target.py)
+      qa-target.json       this worker's: the gate's QA sign-in state, public fields
+                           only, which the visual-QA capture copies into its
+                           manifest's `gate_refusals.sign_in` (qa_target.py)
       browser.json         the runner's: the browser tools it registered for the
                            task's `browser_tool`, which this worker forwards to the
                            gate (`browser_tools` on ctl.sock; browser_tools.py)
@@ -295,6 +300,18 @@ GATE_WAIT_REASONS = frozenset({GATE_STARTING, GATE_RESTARTING})
 GATE_WAIT_SECONDS = 15.0
 #: Between two tries while waiting.
 GATE_WAIT_STEP_SECONDS = 1.0
+#: How often the worker's own thread looks for a `swarm-handoff device` or
+#: `theme` request (PHONE-SWITCH). WHY a thread and not the poll: the poll runs
+#: on the lifecycle's loop, after the control poll, the child requests and the
+#: tickets, and never during the periodic checkpoint, which uploads the work
+#: tree (a capture's hundreds of PNGs) with a 60 s timeout per upload. MEASURED
+#: 2026-11-03 (ai-studio-prod, five legs, GKE Autopilot): every phone-390
+#: route of every leg failed with "the worker did not answer the device
+#: switch" or "... theme change" -- the switches came after the desktop
+#: sweep had filled the tree, and the 30 s the command waits
+#: (DEVICE_WAIT_SECONDS) ran out behind the loop. A file look every half
+#: second is not a busy loop.
+SWITCH_POLL_SECONDS = 0.5
 #: The sentence each reason is told to the agent with.
 GATE_REASON_TEXT = {
     GATE_STARTING: "the live browser is still starting; try again in a minute",
@@ -698,6 +715,10 @@ class Gate:
     def __init__(self, client: Any) -> None:
         self._client = client
         self.registered = False
+        #: One call on the channel at a time: L3's client is one connection
+        #: answered line by line, and the switch thread (SWITCH_POLL_SECONDS)
+        #: calls it beside the poll.
+        self._lock = threading.Lock()
 
     def register(self) -> None:
         try:
@@ -712,7 +733,8 @@ class Gate:
         if not self.registered:
             raise GateLost("not registered")
         try:
-            return dict(self._client.call(op, dict(args)) or {})
+            with self._lock:
+                return dict(self._client.call(op, dict(args)) or {})
         except Exception as exc:
             raise self._translate(exc) from None
 
@@ -739,6 +761,20 @@ class Gate:
 
 
 _REFUSAL_CODE = re.compile(r"[a-z0-9_]{1,64}")
+
+#: The gate's refusals of one hand-off request, not of the live path, and
+#: what the agent is told. `qa_identity_host` (livegate/__main__.py, `pause`;
+#: Q7): the page is on the console the browser is signed in to as the QA
+#: identity, where a person's own sign-in would hand the agent their
+#: workspaces. Before #1333 it was caught as a lost gate: answered
+#: `gate_unavailable`, and every later hand-off of the attempt refused.
+#: Any other refusal of `pause` still ends the live path, as it did.
+REQUEST_REFUSALS: dict[str, str] = {
+    "qa_identity_host": (
+        "a hand-off is refused on the console this browser is signed in to as the QA identity; "
+        "carry on without help"
+    ),
+}
 
 
 def _resolve_relay(host: str, port: int) -> Any:
@@ -884,9 +920,19 @@ class HandoffPath:
         vault: Callable[[], Any] | None = None,
         resolve: Callable[[str, int], Any] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        answer_switches_apart: bool | None = None,
     ) -> None:
         self.cfg = cfg
         self._monotonic = monotonic
+        #: PHONE-SWITCH (SWITCH_POLL_SECONDS): device and theme requests answered
+        #: on a thread of their own once the spool is prepared. None is "when the
+        #: gate's client is the real one", so a test driving `tick` with a
+        #: scripted gate answers them on its poll alone, as before.
+        self._switches_apart = gate_client is None if answer_switches_apart is None else answer_switches_apart
+        #: Held while a device or theme spool is answered, by the thread or the poll.
+        self._switch_lock = threading.Lock()
+        self._switch_stop = threading.Event()
+        self._switch_thread: threading.Thread | None = None
         #: When this poll stops waiting for a starting or restarting gate
         #: (GATE_WAIT_SECONDS, one budget per poll); None until it first waits.
         self._gate_wait_until: float | None = None
@@ -1555,6 +1601,7 @@ class HandoffPath:
         root = self.spool(work)
         for name in ("requests", "devices", "themes", "responses"):
             (root / name).mkdir(parents=True, exist_ok=True)
+        self._start_switches(root)
         marker = root / "unavailable"
         if self.offered:
             marker.unlink(missing_ok=True)
@@ -1662,7 +1709,8 @@ class HandoffPath:
         if not self.spooled:
             return None
         root = self.spool(work)
-        self._gate_wait_until = None
+        # First, before any upkeep: a switch is waited on by the agent (30 s).
+        self._answer_switches(root)
         try:
             self._keep_egress(root)
         except Exception as exc:  # egress upkeep never crashes the attempt
@@ -1674,8 +1722,6 @@ class HandoffPath:
         # VQ-4: a running sign-in followed, `swarm-handoff sign-in` answered. Never raises.
         self.qa_target.keep(*self._qa_target_channel()[:3], root)
         try:
-            self._answer_devices(root)
-            self._answer_themes(root)
             self._forward_browser_tools(root)
             if self.active is None:
                 self._answer_requests(root)
@@ -1812,6 +1858,14 @@ class HandoffPath:
         # there is no moment a person is told to come while the agent can act.
         try:
             gate.call("pause", {"request_id": request_id, "expect": expect})
+        except GateRefused as exc:
+            if exc.code not in REQUEST_REFUSALS:
+                self.unavailable = GATE_UNAVAILABLE
+                self.log.warning("the gate did not pause the agent", error=type(exc).__name__)
+                return self._refusal(root, request_id, GATE_UNAVAILABLE, "the live browser is unavailable")
+            # The gate said no to THIS request (#1333): answered with its own
+            # word, and the live path stays open. Not counted: no hold opened.
+            return self._refusal(root, request_id, exc.code, REQUEST_REFUSALS[exc.code])
         except GateLost as exc:
             self.unavailable = GATE_UNAVAILABLE
             self.log.warning("the gate did not pause the agent", error=type(exc).__name__)
@@ -2014,6 +2068,38 @@ class HandoffPath:
         self._browser_tools_sent = state
         self.log.info("browser tools told to the gate", tool_selected=state["tool_selected"],
                       tools=",".join(state["tools_available"]))
+
+    def _start_switches(self, root: Path) -> None:
+        """PHONE-SWITCH: the thread that answers device and theme requests
+        apart from the poll (SWITCH_POLL_SECONDS). Once per attempt, and only
+        with a gate to ask."""
+        if not self._switches_apart or self.gate is None or self._switch_thread is not None:
+            return
+
+        def run() -> None:
+            while not self._switch_stop.wait(SWITCH_POLL_SECONDS):
+                self._answer_switches(root)
+
+        self._switch_thread = threading.Thread(target=run, name="handoff-switches", daemon=True)
+        self._switch_thread.start()
+
+    def _stop_switches(self) -> None:
+        self._switch_stop.set()
+        thread, self._switch_thread = self._switch_thread, None
+        if thread is not None and thread is not threading.current_thread():
+            # A switch in flight is bounded by the gate's own timeouts.
+            thread.join(timeout=GATE_WAIT_SECONDS + 15.0)
+
+    def _answer_switches(self, root: Path) -> None:
+        """Every spooled device and theme request, answered. Never raises.
+        One budget for a starting gate (GATE_WAIT_SECONDS) per pass."""
+        with self._switch_lock:
+            self._gate_wait_until = None
+            for answer in (self._answer_devices, self._answer_themes):
+                try:
+                    answer(root)
+                except Exception as exc:  # a switch never crashes the attempt
+                    self.log.warning("hand-off switch failed", error=type(exc).__name__)
 
     def _answer_devices(self, root: Path) -> None:
         devices = root / "devices"
@@ -2246,6 +2332,7 @@ class HandoffPath:
 
     def close(self) -> None:
         """The `_cleanup` backstop: wipe on every exit, then drop the channel."""
+        self._stop_switches()
         if self.gate is None:
             return
         self.wipe("attempt_end")

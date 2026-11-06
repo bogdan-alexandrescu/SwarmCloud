@@ -264,6 +264,17 @@ function noteInput(): void {
   lastInput = Date.now()
 }
 
+/**
+ * Input that is not a key, a pointer or a wheel: speech. Voice it's Talk pane
+ * calls this on every final caption from either side while a session is live
+ * (docs/design/voice-it.md §3.10), so a person who is only talking is not
+ * taken for someone who left. When the session ends nothing calls it, and the
+ * fifteen-minute rule applies again.
+ */
+export function noteActivity(): void {
+  noteInput()
+}
+
 /** One set of listeners for the whole tab, installed by the first poller. */
 function watchInput(): void {
   if (watchingInput || typeof window === 'undefined') return
@@ -976,10 +987,17 @@ export function PageHead({
   title,
   help,
   headingId,
+  info,
   children,
 }: {
   title: string
   help?: TopicId | readonly TopicId[]
+  /**
+   * The page's (i), drawn beside the title, before the `?` (BGD's no-prose
+   * rule, 2026-11-05; the owner's pick on #3303): what the page is for sits
+   * with the name it explains, not among the actions.
+   */
+  info?: ReactNode
   /** The `<h1>`'s id, for a region that is labelled by it. */
   headingId?: string
   /** The head's actions, right-aligned: the read control first, then anything the page offers. */
@@ -995,6 +1013,7 @@ export function PageHead({
       <div className="head">
         {/* Two lines at most, the whole title in its tooltip (walkthrough C). */}
         <h1 id={headingId} title={title}>{title}</h1>
+        {info}
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
             otherwise its section's question (Q2). A LIST is the screen's
             index of topics, the footer it replaced (VQ-033, BGD

@@ -32,6 +32,7 @@ from agent_worker import lifecycle, workspace as workspace_mod
 
 from test_publish_workflow_files import FakeBroker, _with_broker, own_pushes  # noqa: F401
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     forge,
     local_urls,
@@ -74,7 +75,7 @@ def _run(worker_factory, monkeypatch, origin: Path, tmp_path: Path, broker: Fake
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": task_id, "metadata": {"dispatch": {"strategy": "direct-pr"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     _with_broker(monkeypatch, broker)
     _main_changes_a_workflow(origin, tmp_path)

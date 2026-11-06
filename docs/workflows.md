@@ -49,7 +49,7 @@ costs nothing while it waits.
 | `depends_on` | upstream `step_id`s, up to 50. |
 | `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace. |
 | `resource_class` | optional named class, no larger than the profile's own. |
-| `timeout_seconds` | optional; may only shorten the profile's own default. |
+| `timeout_seconds` | optional; may only shorten the profile's own default. A longer ask is lowered to the profile's cap (a child's, to its parent's) and recorded as the task field `timeout_seconds_asked`, a record the worker reports in its runner's `limits.clamped` and never a limit (contract request 131). |
 | `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
 | `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
 | `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
@@ -58,6 +58,164 @@ costs nothing while it waits.
 | `model_class` | the model class this step's agent runs, by name: `opus` (the default), `fable`, `sonnet` or `haiku`. Never a model ID. See [choosing a step's model](#choosing-a-steps-model-model_class) |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
+
+## What a workflow is about: `description`, `feature` and `started_from`
+
+**Why.** On 4 November 2026 the owner opened a workflow in the console and
+could not tell which feature or repository it worked on, or read what it was
+meant to deliver: a workflow recorded only `metadata.title` (often a bare
+`Visual QA: <target>`), `metadata.unit` (its label) and its repository. He
+picked a short description written by whoever submits, and a head that names
+the repository, the feature, the description, and who started the workflow,
+when and from where.
+
+**What a submission may carry.** Three keys of the workflow's `metadata`,
+checked by `schemas.check_workflow_about` when `WorkflowCreate` is read:
+
+| Key | Rule |
+|---|---|
+| `description` | Plain text, two or three sentences saying what the work delivers. Trimmed; at most 600 characters. Longer is **refused**, never cut, because a cut description says something its author did not. Markup (an HTML tag, a Markdown link, heading, code fence or doubled bold markers) and control characters other than a line break or a tab are refused: the console shows the text as written. |
+| `about` | `{purpose?, goals?, output?}`, at least one (BGD, 2026-11-06): the owner, opening a workflow, asked what the work is for, what it must achieve and what it will produce. `purpose` is one sentence of at most 300 characters, `goals` a list of one to three items of at most 120, `output` one sentence of at most 300 (a pull request, mock-up frames, a report). Each part is one line of plain text, held to the description's markup rule; a refusal names the part (`metadata.about.goals[1]`). The caps are per part because the console draws each as a short labelled line. |
+| `feature` | `{title, url?}`: the feature the work belongs to. `title` is one line of at most 120 characters. `url`, when given, is an `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>` page **of the workflow's own `repository_url`**, in any spelling of that repository (https, `ssh://`, `git@`); another repository's link, or a link on a workflow with no GitHub repository, is refused. |
+
+Neither may be set in a step's `metadata`: a step's metadata is merged over
+the workflow's onto its agent, so a step's own would reach the store
+unchecked. Beside a description or an about swarm-api records
+`description_source: "submitter"`. A caller's own `description_source` is never kept: it is set
+beside a description and dropped without one. It is overwritten rather than
+refused because a validated spec is stored as its dump and read again (a
+custom-prompt schedule's `params.spec`), and that dump holds the value
+swarm-api wrote. An issue run's workflow is submitted with its issue as the
+`feature` and its approved plan's summary as the `description`, so it is a
+submitter's description like any other.
+
+**A workflow submitted without one gets a generated description.** After the
+submission returns, swarm-api writes the same three parts as `metadata.about`
+(and the purpose as `metadata.description`, for readers that take only that),
+held to the same rule, and records `description_source: "generated"` so the
+console marks it. It reads the steps' masked briefs and what the spec says
+about its output: the step ids and labels, the title, the strategy (whether
+the steps publish a pull request), the `merge` setting and whether a merge step
+follows. The model switch ships off (`SWARM_WORKFLOW_DESCRIPTION_MODEL = "off"`
+on swarm-api, terraform/infra/locals.tf), so an extract is written: the purpose
+is the first sentence of the first brief, a goal per step (`<step id>: <first
+sentence>`) when there are two or more, and the expected output what the
+strategy and the merge setting publish; each usage row says outcome
+`extractive`. It turns to `"vertex"`, Claude Haiku on Vertex AI (the owner's
+pick, 2026-11-05), once the owner grants swarm-api's account
+`roles/aiplatform.user`, enables `aiplatform.googleapis.com` and accepts
+Anthropic's Model Garden terms; the model answers the three parts as JSON, and
+a call that fails, times out, is refused or answers parts the rule refuses
+falls back to the same extract. With the switch unset (a unit test, a local
+run) nothing is written: the page shows the title alone, nothing invented.
+Each workflow costs at most one call, recorded with its tokens and outcome in
+one `workflow_description_usage` row (`swarm_api.wfdescription` says why). A
+workflow that already holds a description or an about, an issue run's
+included, is never described over: the hook skips it, and each write re-reads
+the step and leaves one that holds either.
+
+**What every read serves.** `GET /v1/workflows/{id}`, the create reply and
+every `GET /v1/workflows` row, in the `full` and the `summary` view alike,
+carry, off the step agents (the frozen `Workflow` has no metadata, and every
+step agent carries the workflow's):
+
+| Field | Value |
+|---|---|
+| `repository_url` | the repository the steps clone |
+| `title` | `metadata.title`, or null |
+| `description`, `description_source` | as above, or null |
+| `about` | `{purpose, goals, output}`: the submitted or generated about, else a bare `description` as the purpose (`goals: []`, `output: null`), else null |
+| `feature` | `{title, url?}`, or null |
+| `started_from` | where the workflow came from, one of the values below |
+
+Each caller-written string is masked by its agent's masker, as a step's input
+is. The keys are absent, not null, on a row none of whose step agents was read,
+so a reader tells "none" from "not read", as `claude_session`.
+
+**`started_from`: the field that decides each.** Read off what the platform
+already writes on the step agents, the first match winning. Nothing new is
+accepted from a caller to decide it.
+
+| Value | Decided by |
+|---|---|
+| `schedule` | `metadata.schedule`, written only by `schedulefire`; reserved, so a caller's is refused at submission |
+| `quality_check` | `metadata.qa_target` on a browser step, written only by `qatargets.render_run`; reserved likewise |
+| `issue_run` | `metadata.issue_run`, written only by `issueruns` and `issueci`; reserved likewise |
+| `claude_code` | the `claude_session` tag (`sessiontag`), or `metadata.origin == "swarm-mcp"`; both written by the sc plugin's bridge |
+| `console` | none of these: the console's own submissions, and any other API caller's |
+
+`schedule`, `quality_check` and `issue_run` cannot be claimed by a caller:
+each key is in `validation.RESERVED_METADATA_KEYS`, so an agent or workflow that
+sets one is refused at submission with the same 422 (`invalid_dispatch`,
+naming the key in `reserved_metadata_keys`). The platform's own writer gets
+past the check only inside a scoped exemption of the exact value it is about
+to store: `schedule_mark_allowed` for a schedule's firing,
+`qa_target_mark_allowed` for a target's run, and `issue_run_mark_allowed`
+(`issueruns.submitting`) for an issue run's planner, its compiled workflow,
+its CI-fix rounds and its merge (BGD, 2026-11-04).
+
+`claude_code` stays caller-written on purpose. The `claude_session` tag and
+`metadata.origin` are the sc plugin bridge's own metadata, sent by an API
+caller like any other free-form key and served through the agent's masker
+(`sessiontag`); reserving them would refuse the bridge itself. So
+`claude_code` says where the submission says it came from: a word for the
+console, never an authority anything is granted on.
+
+**Who sets them.** The sc plugin passes a spec's top-level `description` and
+`feature` as metadata, checked by the same rules before anything is sent
+(`swarm_mcp.workflows.check_description`, `check_feature`). A quality-check
+leg is titled with its role and environment (`Visual QA: ai-studio,
+moderator, staging`, read off the leg's name, `qaspec.leg_words`), and
+carries a description (the target, the leg's role and environment, how many
+capture groups, what the report is) and the feature `Quality check of
+<target>`. Issue runs fill theirs in a later lane.
+
+## Workflow switches: `dispatch`
+
+Beside `strategy` and `carrier`, a workflow (or an agent) may carry three
+on/off switches that every one of its steps obeys:
+
+```json
+"dispatch": {"code_intelligence": "on", "quality_gates": "off", "jev_judgments": "off"}
+```
+
+| Switch | `off` | `on` |
+|---|---|---|
+| `code_intelligence` | no graph context: nothing staged or pinned, no `swarm-graph` tool, no additional repository's graph | graph context on every step, taken out of the A/B split, wherever the repository's and the workspace's stored `context` resolve on |
+| `quality_gates` | no jev-belay or jev-enforce hooks | the hooks, only where the workspace's signed `quality_gates.jev` is `true` or `"on_request"` |
+| `jev_judgments` | none of the worker's Jev judgments | the judgments on the step's own profile, claude-code included, wherever the workspace lets Jev see code (`code_intelligence.jev`) and its judgment backend can answer; on `typesafe` with the workspace's own key |
+
+**Why they exist.** The owner's experiment (2026-11-01) builds one feature
+four ways at the same moment, as collect-only workflows that push nothing:
+with nothing, with code intelligence, with code intelligence and the Jev
+quality checks and browser, and with all of that plus the worker's Jev
+judgments. Without the switches a step's graph context came from the
+workspace setting plus a sha256(task id) A/B split, so half of a "with code
+intelligence" workflow silently ran without it, and the quality gates were
+the same for every workflow of a workspace.
+
+**They only narrow.** `off` always wins. `on` never turns on what a stored
+setting turned off: a repository or workspace whose `context` is `off` stays
+off, and the quality gates run only where a workspace admin's signed
+`quality_gates.jev` allows them, because they send code to TypeSafe. For a
+workspace that wants the gates only on request, `quality_gates.jev` takes a
+third value, `"on_request"`: every lane runs none unless its switch says
+`on`. The switches are on/off words that name no image, command, resource
+spec or backend (invariant 10).
+
+**Absent is today.** A spec without `dispatch` stores exactly the dispatch
+block it stored before; one with it stores only the keys it set, inside the
+signed `metadata.dispatch` block, so the worker reads them only once the
+spec signature verifies. Any other switch or value is refused with the
+accepted ones named.
+
+**Recorded.** Every attempt records what it ran with and why: the step's
+`.swarm-context/stage.json` names each switch, its value and the deciding
+source (`workflow switch`, `repository`, `workspace` or `default`), and,
+when the block set a switch, the agent's `result_summary.switches` carries
+the same for `code_intelligence` and `jev_judgments`, and
+`result_summary.quality_gates.switch` for the gates. The experiment proves
+each workflow's conditions from these records.
 
 ## What `input` may carry
 
@@ -197,6 +355,21 @@ on-demand (contract request 113). A heavy lane picks it by name when
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code-large -->
+
+`claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
+image (contract request 127): the same runner, inputs, secret slots and
+model classes on the `standard` class, on GKE Autopilot on-demand, with
+Lightpanda, a headless browser that runs JavaScript and draws no pixels,
+for DOM-only browser work: reading, scraping, link checks and form flows.
+It has no live view and no `browser_tool`; a page it cannot read goes to a
+`claude-code-browser` child. It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-lightpanda generated from RUNNER_PROFILES["claude-code-lightpanda"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-lightpanda runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-lightpanda -->
 
 Which browser agent type serves which kind of visual QA, and a workflow that
 sweeps the console at 1440 and 390, light and dark: [browser-qa.md](browser-qa.md).
@@ -459,7 +632,7 @@ ID per class (`local.runner_models`), and the platform runs that pin:
 ```
 
 **Which profiles take one.** `claude-code`, `claude-code-browser`,
-`claude-code-large` and `indexer` accept all four. The retired `claude-code-review` accepts only `opus`. Every
+`claude-code-large`, `claude-code-lightpanda` and `indexer` accept all four. The retired `claude-code-review` accepts only `opus`. Every
 other profile (`codex`, `mock`, `generic`, `browser` and the worker actions)
 runs no Claude model and accepts none. `GET /v1/runtimes`, `swarm_profiles` and
 the console's Runtimes screen list each profile's `model_classes`, its
@@ -1196,6 +1369,70 @@ reuses `DEPENDENCY_INCOMPLETE`; every promoter of that reason checks the
 gate. Contract change request 76 (docs/contract-change-requests.md) asks for
 a typed home.
 
+## A `repository_ref` the forge does not have is refused at submission
+
+**Why it exists.** On 2026-10-29 workflow `wf_81c4f2da` was submitted with
+`repository_ref: swarm/task_77d63ca81cbb423ba839`. That was the branch of a
+pull request that had merged and whose branch GitHub had deleted. Admission
+checked only the ref's shape: `check_repository_ref` refuses an abbreviated
+sha (F4) and nothing else. So the build step took a lease and waited two
+minutes for a GKE pod, then failed in the worker's clone, and
+`on_step_failure: fail_workflow` cancelled the review and fix steps.
+
+**What swarm-api does now.** A branch or tag name is asked about once per
+submission, before any agent is stored and before any lease exists.
+`SubmissionService._check_ref_exists` makes the read with the slot
+`forge.resolve_forge_slot` picks for the submitter (the same read `merge_pr`
+uses). A workflow asks once, not once per step. A batch asks once for each
+distinct `(repository_url, repository_ref)`. The order is
+`git/ref/heads/<ref>`, then `git/ref/tags/<ref>`, then the repository itself.
+The submission is refused only when the branch and the tag are both missing
+and the repository answers. The refusal is 422 `repository_ref_not_found`
+with `detail.field: repository_ref`. When the name is `swarm/<task id>` of an
+agent in the caller's own tenant, the message names that agent and the pull
+request it recorded, says whether it was merged or closed, and suggests
+`continues_task` or the default branch. Another tenant's agent is never named.
+
+Like every new refusal, it ships **report-only** (`swarm_api/refusals.py`).
+While `REFUSAL_REPOSITORY_REF_NOT_FOUND` is unset or `off`, the refusal is
+logged as `refusal report-only code=repository_ref_not_found` and the
+submission is admitted, as before. Set the switch to `on` (terraform's
+`api_refusals` map) once that log shows only refs that really were gone.
+
+**A full sha is asked about too (#3315).** Agent `task_36c8a894` was
+submitted with a full 40-character sha, `feb6013fd58d0e25ac6bcb2ad2aec2d0d3fc0fd2`.
+GitHub's upload-pack does not serve that sha. Admission did not ask about a full
+sha, because the worker fetches one by sha. So the agent took a browser lease
+and a GKE pod, then failed for good in the clone with `not our ref`. A full sha
+is now one read, `commits/<sha>` (`GitHubWriter.commit_head`), in place of the
+branch and tag reads. A workflow still asks once, and a batch asks once for
+each distinct pair. GitHub answers 404 or 422 `No commit found for SHA` when it
+has no such commit. The submission is refused only when the commit is missing
+and the repository itself answers. The refusal goes through the same switch,
+with its own message, and it never names an agent or a pull request. Every
+fail-open case below applies to a full sha unchanged.
+
+**The gap that remains.** The commits API can still answer 200 for a dangling
+object that upload-pack refuses: for example, a commit no branch or tag reaches
+any more. Such a sha is admitted and still fails in the clone. This check
+narrows the gap but does not close it.
+
+A `continues_task`, `merge_pr` or `publish_to_pr` supplies its own
+ref and refuses a `repository_ref` beside it, so none of those is asked
+about either. Neither is a repository that is not on GitHub.
+
+**Why it fails open.** Each of these admits the submission as before:
+
+* no forge reader or credential is configured;
+* GitHub answers 401 or 403, times out, answers 5xx or rate-limits;
+* the repository itself is unreadable, because a 404 for the branch is also
+  what a token that cannot see the repository gets.
+
+The check's job is to save the lease, the pod and the cancelled steps on a
+ref that is plainly gone. It must not let a GitHub outage, or one person's
+missing token, stop every submission. The clone still finds a missing ref
+in those cases, as it did before this check existed.
+
 ## The base pin: a downstream step starts where its parents started
 
 **Why it exists.** On 2026-10-02 workflow `wf_b9b337e107494c10a416`
@@ -1294,10 +1531,13 @@ a harvest that failed or met processes that survived the reap, or a publish
 that raised. Each of these used to read SUCCEEDED. A forge that could not be
 reached at the probe fails the attempt retryably instead (`forge_unreachable`),
 as it already did for a pull-request step. A push whose stderr says the forge
-did not answer (a reset connection, a 5xx, a timeout; git's own words, read by
-`gitops.transient_git_failure`) is tried once more after 5 s
-(`gitops.push_branch`). A refusal is not retried. A second transient failure
-ends the step FAILED as above.
+did not answer (a reset connection, a 5xx or its reason phrase, a timeout;
+git's own words, read by `gitops.transient_git_failure`) is tried again after
+5, 10 and 20 s (`gitops.push_branch`, #2833). A refusal or a non-fast-forward
+is not retried. A push that fails every try fails the attempt retryably
+(`forge_unreachable`), its work kept in `swarm-work.patch` and the final
+checkpoint, and the retry publishes that work without running the agent again
+when the restored clone is still at the head and base the push carried.
 
 These steps still SUCCEED without a branch: one that changed nothing (its
 dependants already step past it), one that declared `allow_empty_diff` or
@@ -1772,7 +2012,19 @@ changed paths (`own_files` when recorded, else `files`) and
 * **The review runs** when any changed path matches a risk path, when the
   lines total more than `min_lines`, or when the change cannot be told: a
   parent that cannot be read, has no line counts, or whose file list was cut.
-  A gate that could not see the diff never waves it through. swarm-api
+  A gate that could not see the diff never waves it through. The review
+  also runs, whatever the line count, when a parent it depends on hands it
+  work that is not code lines: a direct parent whose
+  `metadata.expected_outputs` (the files its dependants stage from it
+  through `input_from`) names anything but `swarm-work.patch` and
+  `verdict.json`, or a direct parent submitted with `allow_empty_diff`
+  whose diff is empty. The gate counts code lines only, and on
+  2026-11-05 it skipped both mock-up reviews of the workflow-graph
+  directions as "0 changed lines" while their parents handed them the whole
+  bundle; the reason now reads "review runs: its parent hands it <name>;
+  the gate counts code lines only". An issue-run implementer (always
+  `allow_empty_diff`, handing only its patch) is still counted on its own
+  diff's lines. swarm-api
   declines the claim (`control_publish.state: declined`, code
   `review_runs`, the decision as the reason) and rings the parent's wake
   again, and the scheduler promotes the review on it. A gate block that
@@ -2300,6 +2552,63 @@ not-started state (a quota park, or a reconciler reclaim back to READY), is
 PARKED or READY when the scheduler next meets it. Under `fail_workflow` it is
 then cancelled like any other step that has not started.
 
+### Re-running a failed step inside its workflow
+
+```bash
+./scripts/api.sh POST "/workflows/$WORKFLOW_ID/steps/$STEP_ID/rerun"
+```
+
+The console's **Needs you** row offers this as **Retry** on a failed step (the
+owner's pick on PR #3123). A lone agent's Retry opens Submit prefilled instead.
+A step's prompt submitted alone as a lone agent is not the step it was: it
+would have no parents' artifacts, no gate, no place in the merge. The step's
+Retry asks first, in the row, naming the step ("Re-run step build inside its
+workflow, with the steps its failure stopped?"), because one press spends what
+every re-run step spends. Accepted, the row names the steps re-run. Refused,
+the row shows the API's message and offers Retry again. The rules that are not
+obvious (`swarm_api/steprerun.py`):
+
+* **A member or above, as cancel is.** A `viewer` is refused 403
+  `role_member_required` before anything is read or written, as on every
+  write.
+
+* **A failed agent stays failed.** FAILED and DEAD_LETTERED are terminal in
+  the frozen state machine, and the old agent's attempts, fencing generation
+  and events belong to the run that happened. So the re-run writes a **new
+  agent** per step, copied from the old one, and moves `WorkflowStep.task_id`
+  to it. The rollup, cancel and the step totals all read steps through that
+  pointer, so the old agent drops out of the workflow's state at once. It can
+  still be read by id, and the new agent's `metadata.rerun_of` names it.
+* **What is re-run:** the failed step, every step the platform cancelled
+  because of a failure (`end_cause` `failed_parent`, or `workflow_sweep`
+  under `fail_workflow`), and everything downstream of those. Without the
+  cancelled ones the workflow could never succeed. A step that SUCCEEDED is
+  never re-run, and a re-run step that reads it reads the same agent's
+  output. A step a person stopped stays stopped.
+* **Only a finished workflow.** It is refused 409 while any step still runs,
+  because the scheduler is still deciding what the failure cancels, and a
+  re-run racing that sweep could be swept by it. It is also refused for a
+  cancelled workflow and for a step that did not fail. The store checks all
+  of this again inside the one transaction that writes, so two people pressing
+  Retry re-run the step once. A second Retry after the first landed is refused
+  409 `workflow_still_running`, because the re-run step is waiting again. Every
+  refusal uses the established `conflict` and `not_found` codes, and
+  `detail.reason` tells them apart, so no new code ships here (a new code
+  would ship switched off, `swarm_api.refusals`).
+* **The spec is the one submitted, signed again.** Every old id in the copy is
+  remapped to its new one (`depends_on`, `metadata.input_from`, the dispatch
+  routing). The copy is then re-signed, because the id is inside the signed
+  bytes. The caller names a step, never a profile or a spec (invariant 10).
+  The new agents are READY, or PARKED on their parents, so they cost nothing
+  until admission leases them (invariants 1 and 3).
+* **The scheduler leaves the replaced agents out.** They still name the
+  workflow, and the `fail_workflow` verdict finds failed steps with a query on
+  `workflow_id`. Counted, the old FAILED agent would sweep the re-run away on
+  the next drain. The workflow document lists the replaced ids in
+  `superseded_task_ids` (a field beside the frozen `Workflow`'s), and
+  `read_workflow_failure` skips them. `GET /v1/workflows/{id}` serves only
+  the new agent of each re-run step.
+
 ## Workflow state
 
 `workflow.state` is **derived from the step agents on every read**, and the stored
@@ -2402,6 +2711,28 @@ examines one page of a tenant's live workflows, reporting `truncated: true` when
 there are more. Request #7 in
 [contract-change-requests.md](contract-change-requests.md) is the alternative
 that would have put this write on the scheduler's own tick.
+
+### A finished workflow's hand-off branches are deleted
+
+A workflow with `carrier: branches` leaves one `swarm/<task_id>` branch per
+step, and none of them has a pull request: on 2026-11-02 they made up most of
+the repository's 2,066 agent branches with no pull request. The merge wake
+tick (`swarm_api/handoffbranches.py`, at most hourly per tenant, fenced by a
+transaction on `branch_sweeps/<tenant>`) deletes them once the workflow is
+SUCCEEDED or CANCELLED and every step's agent is terminal, so no step can read
+them again. FAILED is not finished here, because a retried step starts from
+its parent's hand-off. The work is not lost: the pull request a workflow
+publishes is on a branch built on every hand-off before it (a carrier push is
+a fast-forward), and a workflow that ended without one has nothing left that
+reads them. Each branch is deleted only while GitHub's head is still the one
+the step recorded; one that moved, is protected, is the default branch, is
+under `keep/`, has a pull request that did not merge at that head (open,
+closed without merging, or merged at another head: a continuation can publish
+on a continued step's branch), or is continued by a live agent is kept and
+counted. Only workflows created in the last seven days are read. A step's pull-request branch is left to the merge step
+([merge-step.md §5.5](merge-step.md)). What happened is recorded in
+`branch_cleanups/<workflow_id>`; a failed delete leaves it not `done`, and the
+next sweep retries it.
 
 ## Inspecting
 

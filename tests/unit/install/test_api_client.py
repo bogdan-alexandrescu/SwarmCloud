@@ -125,6 +125,24 @@ def test_error_names_status_and_code_never_the_token() -> None:
     assert adc.minted not in str(raised.value)
 
 
+@pytest.mark.parametrize("body", [
+    # swarm-api's own `ApiError` handler: the flat `to_payload`.
+    {"code": "conflict", "message": "GITHUB_HOOKS_URL is not set", "detail": {"unset": ["GITHUB_HOOKS_URL"]}},
+    # The same refusal nested under `error`, as a front end may wrap it.
+    {"error": {"code": "conflict", "message": "GITHUB_HOOKS_URL is not set",
+               "detail": {"unset": ["GITHUB_HOOKS_URL"]}}},
+])
+def test_error_reads_the_served_code_message_and_detail(body) -> None:
+    """audit 4c M1: the engine read only `error.code`, so swarm-api's flat body
+    gave an empty code and the hook's "not yet" was never recognised."""
+    with pytest.raises(ApiCallError) as raised:
+        _client(FakeAdcSession(), FakeHttp(body, status=409)).activate_hook()
+    assert raised.value.status == 409
+    assert raised.value.code == "conflict"
+    assert raised.value.message == "GITHUB_HOOKS_URL is not set"
+    assert raised.value.detail == {"unset": ["GITHUB_HOOKS_URL"]}
+
+
 def test_for_install_needs_the_recorded_audience() -> None:
     from types import SimpleNamespace
 
@@ -134,3 +152,24 @@ def test_for_install_needs_the_recorded_audience() -> None:
     ctx.outputs["api_iap_audience"] = AUDIENCE
     client = api_client.for_install(ctx, minter=IamCredentials(FakeAdcSession()), http=FakeHttp())
     assert client.base_url == "https://swarm.example.com" and client.audience == AUDIENCE
+
+
+def test_the_doctor_reads_the_probe_through_results(monkeypatch) -> None:
+    """Finding N6: the doctor asks with no pairs and reads swarm-api's
+    `{mode, results}` answer through `ApiClient.groups_probe`, the shape
+    stage 8 reads, not a `groups` key of its own."""
+    from types import SimpleNamespace
+
+    from swarm_install.verbs import doctor as doctor_verb
+
+    http = FakeHttp({"mode": "admin_role", "results": [
+        {"group": "eng@example.com", "state": "met"},
+        {"group": "ops@example.com", "state": "unmet", "reason": "permission_denied"}]})
+    monkeypatch.setattr(api_client, "for_install",
+                        lambda ctx: _client(FakeAdcSession(), http))
+    state = SimpleNamespace(project=PROJECT, hostname="swarm.example.com", outputs={})
+    found = doctor_verb._InstallApi(state).groups_probe()
+    assert found == [{"group": "eng@example.com", "state": "met", "reason": ""},
+                     {"group": "ops@example.com", "state": "unmet", "reason": "permission_denied"}]
+    [(_, _, _, body)] = http.calls
+    assert body == {"groups": []}

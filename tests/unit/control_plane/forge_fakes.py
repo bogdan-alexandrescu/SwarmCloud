@@ -150,6 +150,14 @@ class GitHubWrites:
         #: test that never asked for a re-run sees the round it always did.
         self.reruns: list[int] = []
         self.rerun_answer = 403
+        #: #2841: the Actions workflow runs whose failed jobs a re-run was
+        #: asked of (`actions/runs/<id>/rerun-failed-jobs`), in order; that
+        #: route answers `rerun_answer` too.
+        self.run_reruns: list[int] = []
+        #: The Actions workflow runs `GET actions/runs/<id>` reads, by id
+        #: (#3006: a re-run's latest attempt still `in_progress`); an
+        #: unknown run answers 404.
+        self.runs: dict[int, dict[str, Any]] = {}
         #: The files each pull request changes, and the files its base
         #: changed since the branch left it (`compare/<head>...<base>`).
         self.pull_file_names: dict[int, list[str]] = {}
@@ -158,6 +166,12 @@ class GitHubWrites:
         #: issues/<n>/labels` in order as `(number, labels)` (FR3-HOLDLABEL).
         self.labels: list[str] = ["bug", "enhancement", "needs-owner"]
         self.labelled: list[tuple[int, list[str]]] = []
+        #: The commits `GET commits/<sha>` serves (#3315). Any other sha
+        #: answers `missing_commit`: 404 by default, which the auto-merge head
+        #: walk reads as "not this run's"; 422 is GitHub's "No commit found
+        #: for SHA".
+        self.commits: set[str] = set()
+        self.missing_commit = 404
 
     def writes(self) -> list[tuple[str, str]]:
         return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
@@ -290,6 +304,19 @@ class GitHubWrites:
                 return self.rerun_answer, json.dumps({"message": "refused"}).encode()
             self.reruns.append(int(rest[2]))
             return 201, b"{}"
+        if rest[:2] == ["actions", "runs"] and len(rest) == 3 and method == "GET":
+            run = self.runs.get(int(rest[2]))
+            if run is None:
+                return 404, json.dumps({"message": "Not Found"}).encode()
+            return 200, json.dumps(run).encode()
+        if (rest[:2] == ["actions", "runs"] and len(rest) == 4
+                and rest[3] == "rerun-failed-jobs"):
+            if method != "POST":
+                return 404, b"{}"
+            if self.rerun_answer != 201:
+                return self.rerun_answer, json.dumps({"message": "refused"}).encode()
+            self.run_reruns.append(int(rest[2]))
+            return 201, b"{}"
         if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "files":
             names = self.pull_file_names.get(int(rest[1]), [])
             chunk = names[(page - 1) * per_page: page * per_page]
@@ -298,6 +325,12 @@ class GitHubWrites:
             return 200, json.dumps({"files": [{"filename": n} for n in self.base_changed]}).encode()
         if rest[:2] == ["rules", "branches"]:
             return 200, json.dumps(self.rules).encode()
+        if rest[:1] == ["commits"] and len(rest) == 2 and method == "GET":
+            if rest[1] not in self.commits:
+                if self.missing_commit == 422:
+                    return 422, json.dumps({"message": f"No commit found for SHA: {rest[1]}"}).encode()
+                return self.missing_commit, b"{}"
+            return 200, json.dumps({"sha": rest[1], "commit": {"message": "a commit"}}).encode()
         if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "check-runs":
             runs = self.check_runs.get(rest[1], [])
             chunk = runs[(page - 1) * per_page: page * per_page]
@@ -347,13 +380,18 @@ class GitHubWrites:
     def check(
         self, sha: str, name: str, conclusion: str | None, *, status: str = "completed",
         check_id: int | None = None, output: dict[str, Any] | None = None,
-        app_id: int = 15368, app_slug: str = "github-actions",
+        app_id: int = 15368, app_slug: str = "github-actions", run_id: int | None = None,
     ) -> int:
+        """A check run `name` at `sha`; its id. `run_id`, when given, is the
+        Actions workflow run it is a job of, carried in `details_url` as
+        GitHub gives it (#2841); otherwise there is no `details_url`."""
         self._next += 1
-        run_id = check_id or self._next
+        ident = check_id or self._next
         self.check_runs.setdefault(sha, []).append({
-            "id": run_id, "name": name, "head_sha": sha, "status": status,
+            "id": ident, "name": name, "head_sha": sha, "status": status,
             "conclusion": conclusion, "app": {"id": app_id, "slug": app_slug},
             "output": output or {"title": None, "summary": None, "text": None},
+            **({"details_url": f"https://github.com/example-org/widgets/actions/runs/"
+                               f"{int(run_id)}/job/{ident}"} if run_id is not None else {}),
         })
-        return run_id
+        return ident

@@ -56,6 +56,17 @@ taken the target to 3. Getting from 3 to 40 by additive increase takes
 lent the tenant two more accounts, which AIMD cannot know about, and wanted the
 target at 40.
 
+Since 2026-11-02 the target also **climbs by one for every 5 minutes without a
+tenant 429** (`AIMD_RECOVERY_INTERVAL_SECONDS`, 300), up to the ceiling, so a
+tenant halved to 3 under a pool of 40 is back at 40 in about three hours with
+nobody touching it; the climbs are in `quota_audit` as
+`adaptive_target_recovered`, and `quota/<p>:<t>.recovery_clock_at` says when the
+current count started. Any tenant 429 halves it again and restarts the count.
+The ceiling is now the lower of `configured_hard_max` and the pool's
+`hard_limit`, so the target never reads above the number the console shows. So
+before you reset, check whether the clock is already doing the job: reset only
+when the tenant needs the capacity sooner than that.
+
 `PUT /v1/admin/limits/provider/<p>/tenant/<t>` does not help: it sets the
 pool's `hard_limit`, and the target caps below it. `set_hard_max` does not
 help either: it only ever clamps the target **down**. Until QUOTA-RESET there

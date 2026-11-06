@@ -73,3 +73,51 @@ def test_alerts_unmet_without_a_channel_or_the_flag() -> None:
     detail = alerts.AlertsStep(Deps(gcp=lambda: gcp)).check(ctx).detail
     assert "no notification channel sends to alerts@example.com" in detail
     assert "require_alert_channels is not true" in detail
+
+
+@pytest.mark.parametrize(("passes", "expected"), [
+    (("infra-2", "infra-3", "infra-4"), "infra-4"),
+    (("infra-2", "infra-3", "infra-4", "infra-close"), "infra-close"),
+])
+def test_alerts_redo_applies_the_latest_pass_never_infra_2(monkeypatch: pytest.MonkeyPatch,
+                                                            passes: tuple[str, ...], expected: str) -> None:
+    """A redo after READY (a deleted policy, a changed alert email, --repair
+    monitoring.alert-policies) never re-applies infra-2, whose inputs switch the
+    GitHub App, the forge refresh and the hooks off and put the address back (N12)."""
+    from swarm_install.steps.bootstrap import applied_key
+
+    clock = FakeClock()
+    ctx = FakeCtx(clock=clock)
+    ctx.state.outputs["metric_descriptors_ready"] = True
+    for pass_name in passes:
+        ctx.state.outputs[applied_key(pass_name)] = "digest"
+    applied: list[str] = []
+    monkeypatch.setattr(alerts, "apply_pass", lambda ctx_, deps, pass_name, **kw: applied.append(pass_name))
+    step = alerts.AlertsStep(Deps(gcp=lambda: FakeMonitoring(clock, appears_at=0)))
+    plan = step.plan(ctx)
+    step.apply(ctx, plan)
+    assert applied == [expected]
+    assert expected in plan.summary and "infra pass 2" not in plan.summary
+
+
+def test_descriptors_look_at_names_no_raw_gcloud() -> None:
+    """A wait past its bound sends the person to a page, never raw gcloud (DAYONE-WAIT-LOOK-AT)."""
+    assert "gcloud" not in alerts.DESCRIPTORS.look_at and "--explain" not in alerts.DESCRIPTORS.look_at
+
+
+def test_descriptors_that_never_appear_open_the_log_metrics_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the descriptors' bound the log-based metrics page of this project is
+    opened before the wait's WaitGaveUp pauses the run; nothing is applied."""
+    from swarm_install.waits import WaitGaveUp
+
+    clock = FakeClock()
+    ctx = FakeCtx(clock=clock)
+    gcp = FakeMonitoring(clock, appears_at=clock.now() + 10 * alerts.DESCRIPTORS.bound_s)
+    opened: list[str] = []
+    monkeypatch.setattr(alerts, "open_page", lambda url, *, why, **kw: opened.append(url))
+    monkeypatch.setattr(alerts, "apply_pass", lambda *a, **k: pytest.fail("nothing is applied"))
+    step = alerts.AlertsStep(Deps(gcp=lambda: gcp), expected_metrics=2)
+    with pytest.raises(WaitGaveUp):
+        step.apply(ctx, step.plan(ctx))
+    assert opened == [f"https://console.cloud.google.com/logs/metrics?project={ctx.project}"]
+    assert "metric_descriptors_ready" not in ctx.outputs

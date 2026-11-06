@@ -414,6 +414,25 @@ owner_pinned_job_variable() {
   return 1
 }
 
+# THE TESTS THAT GATE A RELEASE (owner pick on PR 3344, issue 3336: "decouple
+# build, gate the release"). Until then application.yml's `build images`
+# needed these jobs, so a commit whose tests failed was never built and never
+# released -- and the build started 18 to 44 minutes after its push, behind
+# them. Now it starts at once, alongside them, and the release gates instead:
+# scripts/lib/ci-built-images.sh hands a release the build's record only once
+# every job named here, in the same run, concluded success or skipped (by its
+# own paths), and refuses it when one failed or was cancelled.
+# scripts/lib/build-superseded.sh reads the same list. The same three jobs the
+# build needed, by their names in application.yml (`python`, `shell`,
+# `manifests`); tests/unit/scripts/test_ci_built_images.py holds the names to
+# application.yml.
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+CI_RELEASE_TEST_JOBS=(
+  "format / unit tests"
+  "shellcheck"
+  "kubernetes manifests"
+)
+
 # THE PROMOTION MARK. Moving `:<channel>` leaves no trace of the digest it
 # moved away from, so nothing could answer "did some earlier release promote
 # this digest?". push-images.sh therefore also tags every digest it promotes
@@ -1952,6 +1971,121 @@ curl_retry_no_answer() {
   done
 }
 
+#: gh_api_read_retry OUT ERR API_ARGS...
+#:
+#: Run `gh api API_ARGS... --include` as a READ, its body written to OUT and
+#: its stderr to ERR, and retry it while the failure is transient: up to three
+#: more attempts, waiting SWARM_GH_RETRY_DELAYS seconds ("5 15 30") before
+#: each. Returns 0 on the first success, else the exit code of the last
+#: attempt, with that attempt's stderr in ERR and its body in OUT, so the
+#: caller's own failure handling (a 404 read as "not found", a `die` naming
+#: what could not be read) is unchanged. Every retry, its number and its wait
+#: are printed to stderr; so is giving up.
+#:
+#: WHY (#2688, 2026-11-04). The workflow page redesign's pull request was
+#: labelled `ready` at 13:57 UTC; at 14:00 auto-merge.yml's "queue for
+#: auto-merge" check (run 41842863519) failed because
+#: scripts/check-closing-references.sh's `gh api graphql` read hit `dial tcp
+#: ...:443: i/o timeout` on the self-hosted runner. The merge train boards only
+#: pull requests whose checks are all green, so it passed that one over for
+#: eight hours without a word. One blip of the runner's network should not
+#: cost a merge.
+#:
+#: TRANSIENT, AND ONLY THAT. Retried: no answer at all (a connection timeout,
+#: reset or refusal, a DNS failure, a TLS handshake timeout, a dropped
+#: connection); HTTP 502, 503 or 504; and a rate limit -- 429, or a 403 that
+#: carries a rate-limit header (`Retry-After`, or `X-RateLimit-Remaining: 0`)
+#: or whose message says "rate limit" (GitHub's secondary-limit 403 does
+#: not always carry the header). A rate-limited retry waits at least the
+#: `Retry-After` GitHub sent, capped at SWARM_GH_RETRY_AFTER_MAX (120) so a
+#: CI step stays bounded. Never retried: any other answer -- a 404, a 401, a
+#: 403 without a rate-limit header, a 422 -- because asking again gets the
+#: same answer and only reports it late; and a failure with neither a status
+#: nor a network error, which is not known to be a blip. Unlike
+#: curl_retry_no_answer (owner decision 2026-09-30, no HTTP status retried),
+#: 502/503/504 ARE retried here: from GitHub's API they are its own documented
+#: transient gateway errors, not a refusal.
+#:
+#: FAIL CLOSED STAYS THE RULE: a read that never succeeds returns non-zero,
+#: and every caller fails as it did before.
+#:
+#: ONLY READS. A write (`gh issue close`, `gh pr comment`) is not passed
+#: through this: a write whose answer was lost may have happened, and a retry
+#: would do it twice.
+#:
+#: `--include` is how the status and `Retry-After` are seen: gh then prints the
+#: status line and headers before the body. They are split off here, so OUT
+#: holds the body (or the `--jq` output) alone; an answer with no status line
+#: is taken whole.
+gh_api_read_retry() {
+  local out="$1" err="$2" raw hdr first rc attempt=1 attempts status retry_after reason delay
+  local cap="${SWARM_GH_RETRY_AFTER_MAX:-120}"
+  local blip='i/o timeout|timed out|timeout exceeded|deadline exceeded|connection reset|connection refused|no such host|server misbehaving|temporary failure in name resolution|TLS handshake timeout|unexpected EOF|network is unreachable'
+  local -a delays
+  shift 2
+  read -r -a delays <<<"${SWARM_GH_RETRY_DELAYS:-5 15 30}"
+  attempts=$(( ${#delays[@]} + 1 ))
+  raw="${out}.raw"
+  hdr="${out}.headers"
+  while :; do
+    rc=0
+    gh api "$@" --include >"${raw}" 2>"${err}" </dev/null || rc=$?
+    # The status line and headers end at the first empty line. CR is stripped
+    # from them only; the body is copied as it came.
+    first=""
+    IFS= read -r first <"${raw}" || true
+    if [[ "${first}" == HTTP/* ]]; then
+      awk '{ sub(/\r$/, "") } $0 == "" { exit } { print }' "${raw}" >"${hdr}"
+      awk 'body { print; next } { sub(/\r$/, "") } $0 == "" { body = 1 }' "${raw}" >"${out}"
+      status="$(awk 'NR == 1 { print $2 }' "${hdr}")"
+      retry_after="$(awk 'tolower($1) == "retry-after:" { print $2; exit }' "${hdr}")"
+    else
+      : >"${hdr}"
+      cp "${raw}" "${out}"
+      status="$(grep -oE 'HTTP [0-9]{3}' "${err}" | tail -n 1 | awk '{ print $2 }' || true)"
+      retry_after=""
+    fi
+    rm -f "${raw}"
+    if [[ "${rc}" -eq 0 ]]; then
+      rm -f "${hdr}"
+      return 0
+    fi
+    reason=""
+    case "${status}" in
+      502|503|504) reason="HTTP ${status}" ;;
+      429) reason="rate limited (HTTP 429)" ;;
+      403)
+        if [[ -n "${retry_after}" ]] \
+            || grep -qiE '^x-ratelimit-remaining: *0$' "${hdr}" \
+            || grep -qi 'rate limit' "${err}" "${out}"; then
+          reason="rate limited (HTTP 403)"
+        fi
+        ;;
+      "")
+        if grep -qiE "${blip}" "${err}"; then
+          reason="no answer: $(grep -oiE "${blip}" "${err}" | head -n 1 || true)"
+        fi
+        ;;
+    esac
+    rm -f "${hdr}"
+    if [[ -z "${reason}" ]]; then
+      return "${rc}"
+    fi
+    if [[ "${attempt}" -ge "${attempts}" ]]; then
+      warn "gh api ${1:-}: ${reason} on attempt ${attempt} of ${attempts}; giving up"
+      return "${rc}"
+    fi
+    delay="${delays[$(( attempt - 1 ))]}"
+    if [[ "${retry_after}" =~ ^[0-9]+$ ]]; then
+      if (( retry_after > cap )); then retry_after="${cap}"; fi
+      if (( retry_after > delay )); then delay="${retry_after}"; fi
+    fi
+    warn "gh api ${1:-}: ${reason} on attempt ${attempt} of ${attempts}; retry ${attempt} of $(( attempts - 1 )) in ${delay}s"
+    sleep "${delay}"
+    attempt=$(( attempt + 1 ))
+  done
+}
+
 #: Whether the Firestore database exists.
 #:
 #: THREE ANSWERS, NOT TWO. The exit code is the answer:
@@ -2415,7 +2549,12 @@ redact() {
   local v_argc="[]A-Za-z0-9_.,:=*'\" +/%\\[${keep}-]"
   local v_args="(\\(${v_argc}{0,160}(\\(${v_argc}{0,160}\\)${v_argc}{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}|\"[^\"${secretrun}]{0,128}\"|'[^'${secretrun}]{0,128}')\\])"
   local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
-  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )'
+  # `${NAME}` ends where a value ends: a `;`, `)`, `]` or `}` with a literal
+  # glued after it is not an end (`_SHELL_SUBSTITUTION`; the owner's pick
+  # 'tighten' on PR #3448). The character after it is in the marked span, so
+  # the s command puts it back. Nor is a quote after that run with a literal
+  # glued after the quote (`_GLUED_AFTER_QUOTE`): `token=${NAME});'<v>'`.
+  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}([^];)}]|[];)}]+([,[:space:]]|$|["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))|$)|\{\{ )'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -2430,6 +2569,19 @@ redact() {
   # `_CONTAINER` (#2237): an empty `[]`/`{}`/`()` where a value ends, an
   # opening bracket at the end of the line, or `{` and a blank.
   local v_container="(\\[[[:blank:]]*\\]|\\{[[:blank:]]*\\}|\\([[:blank:]]*\\))${v_end}|[[{(][[:blank:]]*\$|\\{[[:blank:]]"
+  # AN `Authorization` VALUE THAT ONLY NAMES A VARIABLE IS CODE
+  # (`swarm_redaction.rules._AUTH_PLACEHOLDER`; the owner's pick 'align' on PR
+  # #3448): after a name holding `authorization`, an optional string prefix
+  # and quote, an optional scheme word, then ONE `{name}`, `${NAME}`, `$NAME`
+  # or `%(name)s`, at most a closing quote, and where a value ends. $keep goes
+  # between the name and its separator, so neither the scheme-word rule nor
+  # the assignment rule takes it. What ends the value is in the marked span.
+  local a_prefix='([bfru]{1,2}\\{0,15}["'"'"']|\\{0,15}["'"'"'])?'
+  local a_scheme='((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:blank:]]+)?'
+  local a_name='(\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|[$]\{[A-Za-z_][A-Za-z0-9_]{0,63}\}|[$][A-Za-z_][A-Za-z0-9_]{0,63}|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])'
+  # A quote after a run with no comma in it ends the value only where the
+  # value ends (`_GLUED_AFTER_QUOTE`): `Bearer {TOKEN});'<v>'` is masked.
+  local a_end='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
   # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
   # restated move for move -- its comment says why each move is there. The
   # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
@@ -2612,8 +2764,9 @@ redact() {
     -e 's/(xox[abprs]-)[A-Za-z0-9-]{8,}/\1********/g' \
     -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
-    -e "s/(authorization(\\*\")?[[:space:]]*[:=][[:space:]]*)((\\*\")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\3/Ig" \
-    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e "s/(authorization(s|s?[-_](access[-_]?key|key|hash))?(\\\\*\")?)([[:blank:]]*[:=][[:blank:]]*${a_prefix}${a_scheme}${a_name}${a_end})/\\1${keep}\\5/Ig" \
+    -e "s/(authorization(\\\\*\")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\\\*\"|\\\\*\")?)((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\4/Ig" \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\*"|\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
     -e "s/(\\\\{1,15})\"${c_qname}(\\\\{1,15})\"/\\1${c_dq}\\2\\4${c_dq}/g" \
     -e "s/\"${c_qname}\"/${c_dq}\\1${c_dq}/g" \
     -e "s/'${c_qname}'/${c_sq}\\1${c_sq}/g" \
@@ -2650,10 +2803,10 @@ redact() {
     -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
     -e "s/${secretrun}//g" \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[^"\\,[:space:]]+/\1'"${keep}"'\7********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1'"${keep}"'\5********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

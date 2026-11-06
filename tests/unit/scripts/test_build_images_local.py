@@ -486,7 +486,10 @@ def _git(cwd: Path, *args: str) -> str:
     [
         ("docs/notes.md", ""),
         ("images/swarm-ui/nginx.conf", "swarm-ui"),
-        ("images/agent-runtime-base/Dockerfile", "agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer"),
+        ("images/agent-runtime-base/Dockerfile",
+         # swarm-voice reads the base's pinned CLAUDE_CODE_VERSION from this file.
+         "agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda"
+         " swarm-voice"),
     ],
 )
 def test_the_plan_builds_only_when_an_image_input_changed(tmp_path, change, expected):

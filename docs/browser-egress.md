@@ -129,7 +129,47 @@ are **not** routed:
 * every other profile, including the headless `browser` runner
   (`runners/browser.py`), which launches its own Playwright Chromium and is not
   the live browser;
+* `claude-code-lightpanda`'s Lightpanda (below);
 * the sites on the bypass list (section 2.3).
+
+**Lightpanda's egress is the pod's own** (`claude-code-lightpanda`, contract
+request 127; [design](design/lightpanda-runtime.md) §6.2; built in
+`apps/agent-worker/agent_worker/lightpanda.py`). Lightpanda runs in the
+`worker` container beside the agent, as a child of the runner, and there is
+no `display` container on that profile, so its page traffic leaves exactly as
+the agent's own `curl` does: through the tenant namespace's
+`swarm-allow-worker-egress` policy (the public internet minus every private
+range, plus cluster DNS, Private Google Access and the metadata server) and
+Cloud NAT. It **does not use this proxy**, and cannot be switched onto it:
+the dispatcher proxies only a profile with `live_browser`
+(`scheduler.dispatch.browser_egress_on` returns false for any other, even
+one listed in `BROWSER_EGRESS_PROFILES`), and `claude-code-lightpanda` has
+`live_browser` false. That is deliberate rather than an omission. The proxy
+exists so that Google's bot checks see a residential address for a person's
+signed-in session in a headed Chromium; Lightpanda is for DOM-only reading
+of public pages, and a page that shows a sign-in, a CAPTCHA or a bot check
+goes to a `claude-code-browser` child, which is routed when its tenant is
+(the runner's prompt note, `LIGHTPANDA_NOTE`). Routing Lightpanda would buy
+nothing that child does not already get, and would spend residential GB on
+pages that need no residential IP.
+
+**What narrows a page's reach instead.** Both Lightpanda processes, the
+`serve` child the runner supervises and the `lightpanda mcp` server the CLI
+starts, run with `--block-private-networks` (`SERVE_ARGS` and `MCP_ARGS`)
+and under `env -i` with only `PATH`, `HOME`, `TMPDIR` and the two
+`LIGHTPANDA_*` switches. The flag is the one that matters for egress: the
+network policy has to leave the metadata server open, because Workload
+Identity takes its token from it, so a hostile page's script loaded by a
+browser in that pod could otherwise ask it for the tenant's token. With the
+flag, Lightpanda itself keeps a page off private networks, the metadata
+server included (design §6.2); that is Lightpanda's own check, read from its
+documentation and not exercised against a pod here. It narrows
+only what a page can reach; the agent's own process reaches the metadata
+server and the internet as `claude-code` does. Lightpanda's own telemetry,
+which is on upstream by default, is switched off in the image and again on
+each process (`LIGHTPANDA_DISABLE_TELEMETRY=true`), so the only traffic it
+makes is the pages it is told to load. How Lightpanda behaves under this
+proxy was not measured (design §3.3), and nothing here needs it to be.
 
 ### 2.2 Recommended shape: a platform forwarder holds the credential, and the pod never sees it
 

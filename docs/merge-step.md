@@ -39,8 +39,197 @@ builds it, and compares every answered question that names `built` -- and a
 merge held on owner questions whose pull request was merged or closed
 outside the workflow finishes on its own -- the third and fourth sections below.**
 **Revised 2026-10-29: the merge step's CI, conflict and pick rounds wait while a
-plain continuation of the lane is live on the same branch -- the first section
+plain continuation of the lane is live on the same branch -- the second section
 below.**
+**Revised 2026-11-03: in a repository whose own merge train is on, the merge
+step labels its pull request `ready` and parks on the train instead of taking
+the merge slot -- the first section below.**
+**Revised 2026-11-05: a re-review that only re-publishes the review's MERGE is
+readied on `claude-code`, never the browser -- the section below.**
+
+## Revised 2026-11-05: the re-review that runs no agent runs on claude-code (part of #2688)
+
+In implement -> review -> fix -> re-review -> merge, a MERGE review means no
+fix runs and the re-review runs no agent: the worker re-publishes the verdict
+it staged, byte for byte (`Worker._republish_staged_verdict`), so the merge
+step reads the same file from the same step either way. Until now the
+re-review of a `browser_if_ui` review inherited the profile the review
+resolved to, so a UI lane's MERGE started a browser pod on GKE only to copy a
+file. In the day to 10:00Z on 5 November 2026, 56 re-reviews ran on
+`claude-code-browser` and 53 of them used no browser. BGD asked for agents
+that start on the browser runtime and barely use it to be fixed.
+
+The rule (`scheduler.runtime.republishes`). When the scheduler readies the
+re-review, it reads the same gate the worker reads: the re-review's
+`metadata.dispatch.verdict_gate`, which is the integrator's own. It also
+reads the verdict the integrator recorded from that review's verdict file,
+`result_summary.verdict_gate` on the step it builds on. Whether the
+integrator's worker or swarm-api's control-plane publish ended that step, the
+record has the same shape. If the verdict is outside `verdict_in`, the
+re-review's gate is shut too, so it resolves to `claude-code` by catalogue
+name, swapped with the spec swarm-api already signed for it, with reason
+`republish_no_agent`. If the gate is open, because a fix ran or the record is
+missing, malformed or names another review, the re-review inherits as
+before. A NOT_YET that the integrator's no-op precheck skipped also inherits:
+the re-review's own precheck needs its clone, so the scheduler cannot know.
+A pinned review's re-review carries no `inherit` (Q-2275) and is not
+touched. The resolution is written into the PARKED -> READY transaction, the
+same write `browser_if_ui` already uses, so admission reserves only
+`claude-code`'s pools, and the READY event and `metadata.runtime.resolved`
+record which runtime ran.
+
+## Revised 2026-11-03: the repository's merge train boards the merge step's pull request (part of #2688)
+
+The owner decided on 14 October 2026 to use a merge train ("A1 Merge train")
+and on 3 November 2026 chose to turn it on. The train is a workflow, not a
+SwarmCloud feature: `.github/workflows/merge-train.yml` runs
+`scripts/merge-train.sh tick`, which boards up to four green `ready` pull
+requests, squashes them in order onto main as `train/<id>`, tests that once,
+and squash-merges each; a red train is bisected and its culprit ejected
+([runbooks/merge-train.md](runbooks/merge-train.md)). Before this change the
+merge step ignored it: it took the repository's merge slot, updated its
+branch and merged by itself, one pull request at a time, re-running CI after
+every other merge -- exactly the cost the train exists to remove. With the
+ruleset change the runbook describes (`merge-train` required), its direct
+merge would be refused outright.
+
+This is a different train from TRAIN-WS (the first paragraph of this page,
+[merge-trains.md](merge-trains.md)): that one is a workspace setting run by
+swarm-api's coordinator, signed into the step as `merge_mode: train`; this one
+is the repository's own GitHub workflow. A step whose target says
+`merge_mode: train` never reads the repository's switch.
+
+**The switch.** One switch, the one both workflows read: the repository
+variable `MERGE_TRAIN`, exactly `on` (`merge-train.sh tick`; auto-merge.yml's
+gate, step 5b). The step reads it with the tenant's `-git` token through
+`GET /repos/{owner}/{repo}/actions/variables/MERGE_TRAIN`
+(`merge.repository_train`), once per green reading. Unset (404), or anything
+but `on`, is the train off. A token without the *Variables: Read* permission
+(401/403) cannot see it: the train is then on only when the base's required
+checks include `merge-train` -- the runbook's ruleset change -- because a
+direct merge into such a base is refused whatever the variable says. The
+switch is read nowhere else: the step stores no copy, so turning the variable
+off takes effect at every step's next green reading.
+
+**With the train on** (`merge._board`). Everything up to the green reading
+runs as before: the verdict, the head walk, conflicts and their fix rounds,
+red checks and their CI-fix rounds, the person-push rule. Then, instead of the
+slot:
+
+1. Not yet `ready`: behind the fencing and cancel recheck, the step adds the
+   `ready` label with the tenant's token (`POST .../issues/{n}/labels`) and
+   parks `merge_train_waiting`. auto-merge.yml's gate then says "Left to the
+   merge train" once and arms nothing, as it does for any `ready` pull request
+   while the train is on.
+2. Already `ready`: parks `merge_train_waiting` again; nothing is written.
+3. The park is the TRAIN-WS park code, so it is handled as that one already
+   is: swarm-api's CI wake tick leaves it alone, the lifecycle counts it as a
+   `train_waits` wake (200, two days at the 15-minute fallback) off the CI
+   clock, so a long train queue never reads as `checks_timeout`. It wakes on
+   the fallback instant. It takes no merge slot, updates no branch and calls
+   no merge; a step that held the slot when the train went on hands it to the
+   next waiter as it boards (`_RELEASE_ON_PARK`).
+
+**The wake.**
+
+* **Merged** at an accepted head: SUCCEEDED. When the train posted its
+  `merge-train` status green at that head, the merge is this step's
+  (`merged_by_this_task`, `merged_through_repository_train`), recorded on the
+  pull request with the train named, its issues closed and its branch
+  deleted, as a direct merge's are. Merged with no `merge-train` status (a
+  person's merge while it waited): `already_merged`, also SUCCEEDED.
+* **Open, `ready` gone, at the head it parked at:** the train ejected it
+  (`merge-train.sh eject_pr`: a comment beginning `**Ejected from the merge
+  train` that lists the failing jobs, `ready` removed) or auto-merge.yml's
+  gate removed `ready` with its reason. This takes the path a refused merge
+  takes: the gate runs first, so a pull request that now conflicts with main
+  goes to its conflict fix round, and a red check at its head to its CI-fix
+  round; a round's new head is labelled `ready` afresh. Green and still not
+  `ready`, which removed it decides (#3313):
+  * **The gate:** FAILED `train_ejected` (`merge_refused`) at once, quoting
+    the latest comment an App wrote. What the gate refused (a closing
+    keyword, a dependency not landed) does not change by waiting.
+  * **The train, first time at this head:** labelled `ready` again, once, and
+    parked `TRAIN_WAITING` again, the re-board recorded in the park's
+    `pending` (`TRAIN_REBOARDED`: the fenced park keeps only the code, head,
+    pull request, `pending` and `failed` of a wait). Why: the head's own
+    checks are green, and a train run of main plus this pull request alone
+    that fails while they are is often a flake -- PR #3212 was ejected
+    because two CPU-bound vitest ladder tests timed out at vitest's 30 s on
+    a loaded shard, while the same code was green on its own head and on
+    main's. The train's ejection comment itself says a flake needs only
+    `ready` added back; before #3313 the step refused instead.
+  * **The train, again at the same head:** a CI-fix round's, when the step
+    asked for rounds and has one left: it parks `train_fix_pending` with the
+    train run's failing jobs in `failed`, and swarm-api's merge wake tick
+    submits the round with them as its excerpt; a round claimed at the head
+    parks `ci_fix_running` until it ends. A round that moves the head is
+    labelled afresh at its new head. A round that ended at this head (it
+    found nothing to change, was refused or never ran), or no round asked
+    or left, ends FAILED `train_ejected` quoting the train's ejection
+    comment, "after one re-board" (and the round). One re-board per head, so
+    a change the train keeps ejecting cannot loop.
+
+  The wait record is tenant-writable: a forged one can at worst re-label
+  once, skip the re-board, or refuse.
+* **Open and `ready`:** parks again.
+
+**With the train off** nothing changes: no label is read or written, the slot,
+the branch update and the merge run exactly as before. The only new call is
+the one variable read at a green reading.
+
+**Invariants.** Invariant 1: the wait is a park, the lease released and no
+capacity held, waking on its fallback instant. Invariant 5: the only new forge
+write, the label -- the re-board's too -- is behind `ctx.recheck()`, the
+fencing recheck every forge write takes; a stale attempt labels nothing and
+parks nothing. The re-board's park and the round's (`train_fix_pending`,
+`ci_fix_running`) hold no lease, capacity or merge slot either
+(`_RELEASE_ON_PARK`). The merge
+itself is GitHub's, made by the train's App token, not by the step.
+
+**What a deployment needs.** The tenant GitHub App's permissions
+(`swarm_api.setup_github.PERMISSIONS`) do not include *Variables: Read*, so a
+fresh deployment's step reads the switch through the `merge-train` required
+check only. Granting it is a question for the owner in this change's pull
+request, outside this lane's files.
+
+## Revised 2026-11-02: advisory owner questions do not hold a merge (part of #2688)
+
+The owner chose on 2 November 2026 that advisory questions stop holding
+merges: over the 14 days before, 251 hours of finished merges sat parked on
+"Waiting for answers to N owner question before merging" for questions the
+asking agent had marked non-blocking (71 holds, 86 hours of them ending only in
+a cancellation). The merge step now goes ahead past an unanswered `needs_owner`
+question that is not blocking, has a `recommended` option, and whose branch
+built that option (its `built` is the recommended label or null; a question
+with no `built` is read as the recommended option built, which agents are told
+to do). It still holds for a blocking question, a question with no recommended
+option, one whose branch built another option, one it cannot read, and any
+question whose text, context or options touch IAM, secrets or credentials,
+tenant isolation, the frozen contract, cost or quota limits, or workflow files
+(`agent_worker.owner_questions.hold_reason`, a deliberately broad keyword
+match: a false hold costs an answer, a false pass merges the owner's decision).
+Why each still holds: those are the decisions CLAUDE.md reserves to the owner.
+A merge that goes past such questions lists them in
+`result_summary.advisory_merged_past` and in the comment that records the
+merge; nothing answers them, and they stay open on the agent that asked them. When the owner
+later answers one with a pick other than what the branch built, the answer
+route (`swarm_api.agent_questions.answer_question`) claims it on the merge's
+`metadata.advisory_pick_fix`, in the answer's own transaction, and submits a
+pick-fix round as the answering member: a full lane from the default branch
+(the pull request is merged, so there is no branch to continue) that builds
+the pick, reports `picks-built.json` and opens its own pull request
+(`mergewake.advisory_pick_fix_round`). The owner picked on 2 November 2026
+that the round is merged by its own review and merge steps rather than left
+open for a person: it is an `integrate` workflow, pick-fix -> review -> fix
+gated on NOT_YET, with `metadata.merge` `"on_merge_verdict"`, so submission
+appends the re-review and the merge step and it merges only on a MERGE
+verdict, as any lane does. Why: a pick the owner already made is not a
+decision a person must make again at the merge, and the review still gates
+it; a second NOT_YET after the one fix leaves the pull request open for a
+person (`REREVIEW_ROUNDS`). The recommended pick,
+or the same pick answered again, starts nothing. Fencing, the merge slot and
+the hold for every other question are unchanged.
 
 ## Revised 2026-10-29: a plain continuation of the lane holds the merge's rounds (part of #2685)
 
@@ -353,10 +542,24 @@ defaulted to 0. What this lane changed, and why:
   mergeable at all, so 0 does not turn them off.
 * **A flake costs no agent.** The first red reading at a head whose every
   failing check is an Actions job asks GitHub to
-  re-run exactly those jobs (`POST actions/jobs/<id>/rerun`, `actions:
-  write`, the tenant's own `-git` token) and spends no round. It is recorded
-  in `metadata.merge_fix.reruns`, claimed under the guard a round is claimed
-  under, once per head. The re-run's check runs are the latest of their name,
+  re-run the failed jobs of each workflow run those checks belong to (`POST
+  actions/runs/<run_id>/rerun-failed-jobs`, once per distinct run, `actions:
+  write`, the tenant's own `-git` token) and spends no round. The run, not
+  the job, because the failing required check is usually the fan-in
+  `ci-gate`, whose `needs:` are every other job: `POST
+  actions/jobs/<id>/rerun` re-runs a job and its dependents, never its
+  needs, so on PR 2790 at d6548f96 the gate alone re-ran, the flaky `unit
+  tests (1/1)` it aggregates never did, the gate read red again and the one
+  re-run was spent (#2841). A run's failed-jobs re-run re-runs every failed
+  job and its dependents, the gate with them. The run id comes from the
+  failing check run itself -- its `workflow_run_id`, stamped from the
+  Actions runs the reading already holds, else the digits of its
+  `details_url` (`.../actions/runs/<run>/job/<the check's own id>`) -- never
+  from a caller; a failing check whose run neither gives is re-run as its
+  own job, as before. It is recorded in `metadata.merge_fix.reruns` (`jobs`,
+  the failing check ids the merge step's `_rerun_settling` matches; `runs`,
+  the runs asked), claimed under the guard a round is claimed under, once
+  per head. The re-run's check runs are the latest of their name,
   so the next reading is the re-run's: green wakes the step to merge, red
   goes to a round if one is left, else wakes the step `red`. The re-run comes
   before the round budget and the branch check, so a merge granted zero
@@ -390,6 +593,27 @@ defaulted to 0. What this lane changed, and why:
   another still settles -- is a failure no waiting changes, so it is
   `checks_failed` at once rather than up to 10 min of parked wakes later
   (PR 2268 re-review).
+  Only an answered re-run is the head's re-run (#3006). Both sides used to
+  read "one free re-run per head" as "any re-run record at the head", so a
+  re-run GitHub refused (the record carries `error`; nothing re-ran) and an
+  accepted re-run whose fixed 10-minute window ran out before its workflow
+  run finished both counted as answered, and the step refused
+  `checks_failed` with no re-run answer: PR #2971 (a1e16b2c) and PR #2973
+  (22ef10c2), the second under a fan-in `ci-gate` whose run was still
+  running. Now, after a no_change round, a head whose every re-run GitHub
+  refused is asked once more (`mergewake._rerun_first`; the worker parks
+  `ci_rerun_due` for it), and the second refusal (`RERUN_REFUSALS_MAX`)
+  wakes the step to refuse naming the last re-run error: a credential
+  without `actions: write` costs one extra request, never a loop. An
+  accepted re-run past `RERUN_SETTLE_SECONDS` still holds the step
+  (`ci_rerun_pending`, the tick waiting) while a workflow run it recorded
+  in `runs` reads not `completed` (`GitHubWriter.read_run`, the latest
+  attempt's status), bounded as every park is by `MERGE_CI_MAX_SECONDS`;
+  when that status cannot be read the 10-minute window is the floor, as
+  before. This is not the wider "more re-runs per head" #2684 left to the
+  owner: it is still one answered re-run per head, with at most one retry of
+  a refusal, and waiting for an accepted re-run's own answer is still that
+  one re-run.
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
@@ -678,6 +902,24 @@ things on the agent:
 * the head it is waiting at;
 * the pending check names, in `blocked_by`;
 * `metadata.merge_wait`: `first_parked_at`, `wakes`, `updates`.
+
+**The CI clock is the wait's, not the park's (#3033).** On 2026-11-01 a merge
+step (task_5c00c810495e4f949212) parked `checks_pending` 56 times at one head
+over 13 hours, and the 6 h `MERGE_CI_MAX_SECONDS` never ended it. Its tenant
+was on the state routes. There the step reads its own document through
+swarm-api's `GET state/upstream`, which serves it as JSON, so
+`first_parked_at` arrived as an ISO string. The limit read only a
+datetime and found nothing on every wake. Now the limit reads either shape,
+on every path that parks for CI again: the CI wait, the merge queue, the CI-fix,
+conflict and pick-fix rounds. Both parks, the worker's and swarm-api's, keep
+one clock. The first CI park of a wait starts it, and every later park at
+the same head carries it. A park at another head starts it again: the old
+wait ended when a fix round or a branch update moved the head. A merge-slot
+or merge-train wait **pauses** the clock (`ci_paused_at`) instead of
+clearing it, and the next CI park moves `first_parked_at` on by the pause.
+Clearing it let a step that kept alternating the two waits wait for CI
+without bound. Running it through a pause would count a queue as slow CI.
+The waiting detail serves `first_parked_at` as `waiting.since`.
 
 It refunds the attempt that admission counted, up to `MERGE_CI_MAX_WAKES`
 (proposed 60). Then it releases the lease and exits 75.
@@ -2924,6 +3166,26 @@ In two places, because they fail differently:
 
 No line in either one carries `Co-Authored-By` or any other attribution. The
 commit is the App's.
+
+### 5.5 The pull request's branch is deleted after the merge
+
+The owner asked on 2026-11-02 for an agent's branch to go once its changes are
+merged: the repository held 4,756 branches, and merges are squashed, so `git
+branch --merged` recognises almost none of them. A merged branch is known by
+its pull request. After a merge (the direct merge call, a landing by the
+merge train or by GitHub's merge queue, or the retry that finds the pull request
+already merged at an accepted head), `_delete_head_branch` deletes the pull
+request's head branch only when it is the workflow's own `swarm/<task>`
+branch in this repository and GitHub still has it at the merged commit. It
+never deletes the default branch, a protected branch, a `keep/` branch, or a
+branch another open pull request is from; a head that moved after the merge
+is kept, because someone pushed work there that the merge did not take. A
+branch already gone (GitHub's auto-delete of merged head branches is on, so
+the delete answers 404 or 422 "Reference does not exist") counts as deleted.
+The merge record carries `branch_deleted` and `branch_cleanup` (`{branch,
+head, outcome, reason}`); a failed delete is `outcome: "failed"`, the step
+still ends SUCCEEDED, and the hand-off sweep retries it once the workflow
+has finished ([workflows.md](workflows.md#a-finished-workflows-hand-off-branches-are-deleted)).
 
 ---
 

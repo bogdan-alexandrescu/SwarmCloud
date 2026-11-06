@@ -680,10 +680,12 @@ def test_the_swarm_verify_image_carries_gnu_sed_for_redact():
     swarm-verify image is Alpine. 13 of the 14 failed live-browser logs read
     2026-10-12..14 print that error once per check, and every verdict reason
     the group pipes through redact came out empty. MUTATION: drop `sed` from
-    the apk line."""
+    every apk line. The image has more than one apk line (the hourly doctor's
+    py3-yaml/py3-pydantic, DAYONE-DOCTOR-1), so any of them may carry it."""
     dockerfile = (ROOT / "images" / "swarm-verify" / "Dockerfile").read_text()
-    (line,) = [l for l in dockerfile.splitlines() if l.startswith("RUN apk add")]
-    assert "sed" in line.split(), line
+    lines = [l for l in dockerfile.splitlines() if l.startswith("RUN apk add")]
+    assert lines, dockerfile
+    assert any("sed" in line.split() for line in lines), lines
 
 
 # --------------------------------------------------------------------------

@@ -31,21 +31,27 @@ from swarm_api.forgeapp import HttpAnswer
 from swarm_api.groups import GroupLookupError, StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.routes import setup as setup_routes
 from swarm_api.setup_github import GitHubSetupApi
 from swarm_api.specsigning import SpecSignature
 from swarm_api.waker import NullWaker
 
 from .conftest import ADMIN_GROUP, ENG_GROUP, PROJECT, NoForgeTokens, api_settings, auth_header
+from .fakes import FakeFirestore
 
 ROOT = "root@example.com"
 ALICE = "alice@example.com"
 CAROL = "carol@example.com"
 WORKSPACE_ADMIN = "wadmin@example.com"
 TEAM_GROUP = "platform-team@example.com"
+SECOND_TEAM = "second-team@example.com"
 DEPLOYER = f"swarm-tf-deployer@{PROJECT}.iam.gserviceaccount.com"
 DOCTOR = f"swarm-doctor@{PROJECT}.iam.gserviceaccount.com"
 ENV = "test"
 ENGINE_DOC = f"swarm-install/{ENV}"
+#: Where swarm-api keeps the team documents: a collection under the env
+#: document, so a path real Firestore accepts (audit 3, A2).
+TEAMS_PREFIX = f"swarm-install/{ENV}/teams/"
 HOSTNAME = "swarm.example.com"
 ORG = "example-org"
 HOOKS_URL = "https://hooks.example.com/github"
@@ -58,6 +64,8 @@ SIGNING_VERSION = (f"projects/{PROJECT}/locations/us-central1/keyRings/swarm-dev
 #: Every `/v1/admin/setup/*` route, with a body that passes validation.
 ROUTES: list[tuple[str, str, Any]] = [
     ("GET", "/v1/admin/setup", None),
+    ("POST", "/v1/admin/setup/sign-in-client", {"client_id": "1-a.apps.googleusercontent.com",
+                                                "client_secret": "x"}),
     ("POST", "/v1/admin/setup/github-app/manifest", {}),
     ("POST", "/v1/admin/setup/github-app/conversion", {"code": "c0de", "state": "st4te"}),
     ("GET", "/v1/admin/setup/github-app/installation", None),
@@ -73,6 +81,7 @@ ROUTES: list[tuple[str, str, Any]] = [
     ("PUT", "/v1/admin/setup/health", {"run_at": "2026-10-29T12:00:00Z"}),
     ("GET", "/v1/admin/setup/health", None),
     ("POST", "/v1/admin/setup/health/groups-probe", None),
+    ("POST", "/v1/admin/setup/addons/brave-search/probe", None),
 ]
 
 
@@ -162,6 +171,10 @@ class FakeGitHubSend:
         self.repositories: list[str] = []
         #: Every installation token minted, built at runtime.
         self.minted: list[str] = []
+        #: `GET /users/<login>`'s `type` by login; any other login is an
+        #: organisation. `users_status` other than 200 is GitHub refusing.
+        self.account_types: dict[str, str] = {}
+        self.users_status = 200
 
     def __call__(self, method, url, headers, body, timeout) -> HttpAnswer:
         self.requests.append({"method": method, "url": url, "headers": dict(headers),
@@ -177,6 +190,12 @@ class FakeGitHubSend:
             rows = [{"full_name": name} for name in self.repositories]
             return HttpAnswer(200, {}, json.dumps({"total_count": len(rows),
                                                    "repositories": rows}).encode())
+        if url.startswith("https://api.github.com/users/"):
+            if self.users_status != 200:
+                return HttpAnswer(self.users_status, {}, b"{}")
+            login = url.rsplit("/", 1)[1]
+            kind = self.account_types.get(login, "Organization")
+            return HttpAnswer(200, {}, json.dumps({"login": login, "type": kind}).encode())
         if url.endswith("/app/hook/config"):
             return HttpAnswer(200, {}, b'{"url": "x", "content_type": "json"}')
         return HttpAnswer(404, {}, b"{}")
@@ -189,6 +208,18 @@ class FakePool:
         self.begun: list[dict[str, Any]] = []
         self.finished: list[dict[str, Any]] = []
         self.accounts: list[dict[str, Any]] = []
+        #: Every `POST /v1/accounts` swarm-api forwarded, credential included,
+        #: so a test can count how often a value reached the broker.
+        self.registered: list[dict[str, Any]] = []
+
+    def register(self, *, owner_tenant, label, provider, lend_to, credential, added_by=None):
+        self.registered.append({"owner_tenant": owner_tenant, "label": label,
+                                "provider": provider, "lend_to": list(lend_to),
+                                "credential": credential, "added_by": added_by})
+        account = {"account_id": f"{owner_tenant}:{label}", "owner_tenant": owner_tenant,
+                   "label": label, "provider": provider, "measured": False}
+        self.accounts.append(account)
+        return {"account": account, "expires_at": None}
 
     def begin_sign_in(self, *, owner_tenant, label, provider, lend_to):
         state = secrets.token_urlsafe(32)
@@ -205,7 +236,7 @@ class FakePool:
         self.accounts.append(account)
         return {"account": account, "expires_at": None}
 
-    def list_accounts(self, tenant_id):
+    def list_accounts(self, tenant_id, include_reserved: bool = False):
         return {"accounts": [a for a in self.accounts if a["owner_tenant"] == tenant_id]}
 
 
@@ -217,10 +248,12 @@ class FakeRuns:
         self.workflows: list[dict[str, Any]] = []
         self.states: dict[str, str] = {}
 
-    def submit_task(self, *, tenant_id, group, repository, prompt, label):
+    def submit_task(self, *, tenant_id, group, repository, prompt, label,
+                    strategy=setup_routes.SMOKE_STRATEGY):
         task_id = f"task-{len(self.tasks) + 1}"
         self.tasks.append({"id": task_id, "tenant": tenant_id, "group": group,
-                           "repository": repository, "prompt": prompt, "label": label})
+                           "repository": repository, "prompt": prompt, "label": label,
+                           "strategy": strategy})
         self.states[task_id] = "running"
         return task_id
 
@@ -228,10 +261,42 @@ class FakeRuns:
         workflow_id = f"wf-{len(self.workflows) + 1}"
         self.workflows.append({"id": workflow_id, "tenant": tenant_id, "group": group,
                                "repository": repository, "label": label})
+        self.states[workflow_id] = "running"
         return workflow_id
 
     def task_state(self, *, tenant_id, task_id):
         return self.states[task_id]
+
+    def workflow_state(self, *, tenant_id, workflow_id):
+        return self.states[workflow_id]
+
+
+class PathCheckingFirestore(FakeFirestore):
+    """The shared fake, refusing what google-cloud-firestore's `verify_path`
+    refuses: a collection path has an odd number of segments, a document
+    path an even one (audit 3, A2: `console/teams` passed the shared fake and
+    500'd on the real client). Only this module's routes run on it."""
+
+    @staticmethod
+    def _check(path: str, *, collection: bool) -> None:
+        parts = path.split("/")
+        if not all(parts) or (len(parts) % 2 == 1) != collection:
+            kind = "collection" if collection else "document"
+            raise ValueError(f"A {kind} must have an {'odd' if collection else 'even'} "
+                             f"number of path elements: {path!r}")
+
+    def collection(self, path: str):
+        self._check(path, collection=True)
+        return super().collection(path)
+
+    def document(self, path: str):
+        self._check(path, collection=False)
+        return super().document(path)
+
+
+@pytest.fixture
+def db() -> PathCheckingFirestore:
+    return PathCheckingFirestore()
 
 
 @pytest.fixture
@@ -244,7 +309,9 @@ def runs(setup_app) -> FakeRuns:
 @pytest.fixture
 def group_map() -> dict[str, tuple[str, ...]]:
     return {
-        ROOT: (ADMIN_GROUP, ENG_GROUP),
+        # The installer (the platform owner) is in the teams it creates: the
+        # first team's check refuses a group they are not in (finding 27).
+        ROOT: (ADMIN_GROUP, ENG_GROUP, TEAM_GROUP, SECOND_TEAM),
         ALICE: (ENG_GROUP, TEAM_GROUP),
         CAROL: (),
         WORKSPACE_ADMIN: (TEAM_GROUP,),
@@ -303,6 +370,9 @@ def setup_app(db, tokens, group_map, objects, directory, fake_secrets, github, p
         metrics=ApiMetrics(),
         objects=objects,
         forge_tokens=NoForgeTokens(),
+        # The real submission path signs each run's spec: a test that sends
+        # `TeamRuns` through it (`setup_runs = None`) needs the key.
+        signer=signer,
     )
     app = create_app(context)
     app.state.workspace_publisher = FakePublisher()
@@ -404,7 +474,7 @@ def test_groups_probe_answers_with_api_identity(setup_client, directory) -> None
         assert all(len(groups) == 1 for _, groups in directory.asked)
         assert {g for _, (g,) in directory.asked} >= {ENG_GROUP, "research@example.com"}
         assert set().union(*(row.keys() for row in body["groups"])) <= {
-            "group", "state", "reason"}
+            "group", "state", "reason", "detail"}
 
 
 def test_engine_identity_admitted_only_on_hook_and_probe(setup_client, fake_secrets,
@@ -449,7 +519,7 @@ def test_a_team_writes_its_workspace_and_team_document(setup_client, db) -> None
     assert response.status_code == 202, response.text
     team_id = response.json()["team"]
     assert db.docs[f"workspaces/{team_id}"]["kind"] == "group"
-    team = db.docs[f"swarm-install/{ENV}/console/teams/{team_id}"]
+    team = db.docs[f"{TEAMS_PREFIX}{team_id}"]
     assert team["group"] == TEAM_GROUP
     assert team["workspace"] == team_id
     assert team["first_admin"] == WORKSPACE_ADMIN
@@ -464,9 +534,11 @@ class PassingAppCheck:
 
 
 def install_app(db, github, repositories: tuple[str, ...] = (f"{ORG}/demo", f"{ORG}/api")):
-    """The App created and installed on ORG, covering `repositories`."""
-    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 4242, "installed_on": ORG}
-    github.installations = [{"id": 77, "account": {"login": ORG},
+    """The App created and installed on ORG, covering `repositories`, and its
+    self-check passed (infra pass 3 has landed)."""
+    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 4242, "installed_on": ORG,
+                                                          "self_check": {"ok": True}}
+    github.installations = [{"id": 77, "account": {"login": ORG, "type": "Organization"},
                              "repository_selection": "selected"}]
     github.repositories = list(repositories)
 
@@ -511,7 +583,7 @@ def test_finish_waits_for_every_console_step(setup_app, setup_client, db, github
 
 
 def team_doc(db, team: str) -> dict[str, Any]:
-    return db.docs[f"swarm-install/{ENV}/console/teams/{team}"]
+    return db.docs[f"{TEAMS_PREFIX}{team}"]
 
 
 def page_team(client: TestClient, team: str) -> dict[str, Any]:
@@ -552,7 +624,7 @@ def test_grant_waits_for_the_app_and_lands_on_a_later_read(setup_client, db, git
 def test_a_second_team_gets_no_grant(setup_client, db, github) -> None:
     install_app(db, github)
     create_team(setup_client)
-    second = create_team(setup_client, group="second-team@example.com")
+    second = create_team(setup_client, group=SECOND_TEAM)
     assert second.status_code in (200, 202), second.text
     assert second.json()["grant"] is None
     assert "grant" not in team_doc(db, second.json()["team"])
@@ -620,7 +692,7 @@ def test_smoke_runs_when_the_first_pool_account_lands(setup_client, db, github, 
     assert smoke["state"] == "running" and smoke["task_id"] == "task-1"
     assert runs.tasks == [{"id": "task-1", "tenant": team, "group": TEAM_GROUP,
                            "repository": f"{ORG}/api", "prompt": runs.tasks[0]["prompt"],
-                           "label": "swarm-install-smoke"}]
+                           "label": "swarm-install-smoke", "strategy": "collect"}]
     page_team(setup_client, team)
     assert len(runs.tasks) == 1, "a second read started a second smoke"
     runs.states["task-1"] = "succeeded"
@@ -669,6 +741,180 @@ def test_verify_runs_start_as_the_first_team_and_are_recorded(setup_client, db, 
     assert len(runs.tasks) == 1 and len(runs.workflows) == 1
 
 
+VERIFY_DOC = f"swarm-install/{ENV}/console/verify_runs"
+
+
+def start_verify(client: TestClient):
+    return client.post("/v1/admin/setup/verify-runs", headers=auth_header("root"))
+
+
+def verify_started(setup_client, db, github) -> str:
+    """The first team, and its two console verify runs started: task-1, wf-1."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert start_verify(setup_client).status_code == 200
+    return team
+
+
+@pytest.mark.parametrize("raw", ["FAILED", "CANCELLED"])
+def test_a_failed_verify_task_starts_again_and_keeps_the_workflow(setup_client, db, github,
+                                                                  runs, raw) -> None:
+    """BGD, 2026-10-30: "swarm-api restarts a failed key". A recorded task
+    that failed or was cancelled counts as missing: a fresh task replaces its
+    id and the running workflow is kept."""
+    from swarm_api.routes.setup import run_state
+
+    team = verify_started(setup_client, db, github)
+    runs.states["task-1"] = run_state(raw)
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    expected = {"console_task": "task-2", "console_workflow": "wf-1"}
+    assert answer.json()["verify_runs"] == expected and answer.json()["started"] is True
+    assert answer.json()["retries"] == {"console_task": 1, "console_workflow": 0}
+    assert db.docs[VERIFY_DOC]["verify_runs"] == expected
+    assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 1, "console_workflow": 0}
+    assert len(runs.tasks) == 2 and len(runs.workflows) == 1
+    assert runs.tasks[1]["tenant"] == team and runs.tasks[1]["label"] == "swarm-install-verify"
+
+
+def test_a_failed_verify_workflow_starts_again_and_keeps_the_task(setup_client, db, github,
+                                                                  runs) -> None:
+    verify_started(setup_client, db, github)
+    runs.states["wf-1"] = "failed"
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    expected = {"console_task": "task-1", "console_workflow": "wf-2"}
+    assert answer.json()["verify_runs"] == expected
+    assert db.docs[VERIFY_DOC]["verify_runs"] == expected
+    assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 0, "console_workflow": 1}
+    assert len(runs.tasks) == 1 and len(runs.workflows) == 2
+
+
+@pytest.mark.parametrize("state", ["running", "succeeded"])
+def test_a_going_or_succeeded_verify_run_is_left_alone(setup_client, db, github, runs,
+                                                       state) -> None:
+    verify_started(setup_client, db, github)
+    runs.states["task-1"] = state
+    runs.states["wf-1"] = state
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["verify_runs"] == {"console_task": "task-1", "console_workflow": "wf-1"}
+    assert answer.json()["started"] is False
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-1",
+                                                  "console_workflow": "wf-1"}
+    assert len(runs.tasks) == 1 and len(runs.workflows) == 1
+
+
+def test_a_verify_run_that_spent_its_retries_starts_nothing(setup_client, db, github,
+                                                            runs) -> None:
+    """Two fresh starts per key; the third failure is answered with why, and
+    nothing is started, not even the other key's failed run."""
+    verify_started(setup_client, db, github)
+    for retry in (2, 3):
+        runs.states[f"task-{retry - 1}"] = "failed"
+        assert start_verify(setup_client).json()["verify_runs"]["console_task"] == f"task-{retry}"
+    runs.states["task-3"] = "failed"
+    runs.states["wf-1"] = "failed"
+    answer = start_verify(setup_client)
+    assert answer.status_code == 409, answer.text
+    assert "task-3" in answer.text and "2 fresh starts" in answer.text
+    assert len(runs.tasks) == 3 and len(runs.workflows) == 1
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-3",
+                                                  "console_workflow": "wf-1"}
+    assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 2, "console_workflow": 0}
+
+
+def finished_install(setup_client, db, github, pool, runs) -> str:
+    """Every console step done and `finish` posted: the App, the first team,
+    its pool account signed in and its smoke passed. Answers the team."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    db.docs[f"swarm-install/{ENV}/console/accounts"] = {"pool-1": {"owner": ALICE}}
+    assert setup_client.post("/v1/admin/setup/finish",
+                             headers=auth_header("root")).status_code == 409
+    runs.states["task-1"] = "succeeded"
+    return team
+
+
+def test_finish_starts_the_console_verify_runs(setup_client, db, github, pool, runs) -> None:
+    """Audit 5b, B1: nothing tells the person to press a button, and swarm
+    install's verify waits for the console's two runs; `finish` starts them
+    itself, as the first team, and answers their ids. Again, it starts none."""
+    team = finished_install(setup_client, db, github, pool, runs)
+    done = setup_client.post("/v1/admin/setup/finish", headers=auth_header("root"))
+    assert done.status_code == 200, done.text
+    expected = {"console_task": "task-2", "console_workflow": "wf-1"}
+    assert db.docs[VERIFY_DOC]["verify_runs"] == expected
+    assert done.json()["verify_runs"]["verify_runs"] == expected
+    assert runs.tasks[1]["tenant"] == team and runs.tasks[1]["label"] == "swarm-install-verify"
+    again = setup_client.post("/v1/admin/setup/finish", headers=auth_header("root"))
+    assert again.status_code == 200 and again.json()["verify_runs"]["started"] is False
+    assert len(runs.tasks) == 2 and len(runs.workflows) == 1
+
+
+def test_after_finish_each_read_restarts_a_failed_verify_run(setup_client, db, github, pool,
+                                                             runs) -> None:
+    """Audit 5b, B1: once handed over, the page's read restarts a failed key,
+    up to MAX_VERIFY_RETRIES, then starts nothing and still answers."""
+    finished_install(setup_client, db, github, pool, runs)
+    assert setup_client.post("/v1/admin/setup/finish",
+                             headers=auth_header("root")).status_code == 200
+    for retry in (3, 4):
+        runs.states[f"task-{retry - 1}"] = "failed"
+        view = setup_client.get("/v1/admin/setup", headers=auth_header("root"))
+        assert view.status_code == 200, view.text
+        assert view.json()["verify_runs"]["verify_runs"]["console_task"] == f"task-{retry}"
+    assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 2, "console_workflow": 0}
+    runs.states["task-4"] = "failed"
+    view = setup_client.get("/v1/admin/setup", headers=auth_header("root"))
+    assert view.status_code == 200, view.text
+    assert view.json()["verify_runs"]["verify_runs"]["console_task"] == "task-4"
+    assert len(runs.tasks) == 4 and len(runs.workflows) == 1
+
+
+def test_finish_starts_verify_runs_it_could_not_start_on_the_next_read(
+        setup_client, db, github, pool, runs) -> None:
+    """A `console/finished` written before `finish` started the runs (an older
+    swarm-api) gets them on the page's next read; before finish, a read
+    starts nothing."""
+    finished_install(setup_client, db, github, pool, runs)
+    setup_client.get("/v1/admin/setup", headers=auth_header("root"))
+    assert VERIFY_DOC not in db.docs
+    db.docs[f"swarm-install/{ENV}/console/finished"] = {"at": "2026-10-30T00:00:00Z", "by": ROOT}
+    view = setup_client.get("/v1/admin/setup", headers=auth_header("root")).json()
+    assert view["verify_runs"]["verify_runs"] == {"console_task": "task-2",
+                                                  "console_workflow": "wf-1"}
+
+
+def test_the_team_row_keeps_the_members_page_and_the_workspace_id(setup_client, db,
+                                                                   directory) -> None:
+    """Audit 5b, M5 and M6: every team row serves its group's members page
+    (the invites made with the team get their link too) and its workspace's
+    `w-` id, which the workspace retry route takes."""
+    team = create_team(setup_client, invites=["bob@example.com"]).json()["team"]
+    row = page_team(setup_client, team)
+    assert row["add_members_url"] == "https://admin.google.com/ac/groups/0idplatformteam/members"
+    assert row["workspace_id"] == db.docs[f"workspaces/{team}"]["workspace_id"]
+    assert row["workspace_id"].startswith("w-")
+
+
+def test_a_failed_first_team_workspace_is_retried_by_its_workspace_id(setup_client, db) -> None:
+    """Audit 5b, M6: asking for the team again answers 409 WORKSPACE_FAILED;
+    the row's `workspace_id` retried through the workspace route re-runs it."""
+    team = create_team(setup_client).json()["team"]
+    db.docs[f"workspaces/{team}"]["state"] = "failed"
+    again = create_team(setup_client)
+    assert again.status_code == 409 and "WORKSPACE_FAILED" in again.text
+    row = page_team(setup_client, team)
+    assert row["workspace_state"] == "failed"
+    retried = setup_client.post(f"/v1/admin/workspaces/{row['workspace_id']}/retry",
+                                headers=auth_header("root"))
+    assert retried.status_code == 200, retried.text
+    assert page_team(setup_client, team)["workspace_state"] == "approved"
+
+
 def test_verify_runs_wait_for_a_granted_repository(setup_client, db, github) -> None:
     install_app(db, github, repositories=())
     create_team(setup_client)
@@ -697,49 +943,934 @@ def test_an_installation_with_no_repository_is_read_again_until_one_lands(
     assert runs.tasks[0]["repository"] == f"{ORG}/demo"
 
 
-class _Submitted:
-    def __init__(self, ident: str) -> None:
-        self.id = ident
-        self.workflow_id = ident
-
-
 class RecordingSubmissions:
-    """`SubmissionService`'s two submit calls, recorded."""
+    """`SubmissionService`'s two submit calls, recorded and then handed to
+    the REAL service, so a spec it refuses is refused here too (audit 4d,
+    F1/F2: a recorder that accepted any spec hid a workflow every real
+    submission answered 422)."""
 
-    def __init__(self) -> None:
+    def __init__(self, real: Any) -> None:
+        self.real = real
         self.calls: list[tuple[str, Any, Any]] = []
 
     def submit_tasks(self, auth, specs):
         self.calls.append(("task", auth, specs))
-        return type("Result", (), {"tasks": [_Submitted("t-1")]})()
+        return self.real.submit_tasks(auth, specs)
 
     def submit_workflow(self, auth, spec):
         self.calls.append(("workflow", auth, spec))
-        return type("Submission", (), {"workflow": _Submitted("w-1")})()
+        return self.real.submit_workflow(auth, spec)
 
 
-def test_team_runs_submit_as_the_team_never_as_a_person() -> None:
+def test_team_runs_submit_as_the_team_never_as_a_person(setup_app, setup_client, db,
+                                                        github) -> None:
     """Decision 3, lesson 43: the runs are submitted in the team's tenant as
     swarm-api's own service account, a service submitter, so the existing
     submission path runs them on the team's own slot and never on the
     admin's (or anyone's) GitHub connection."""
-    from swarm_api.routes import setup as setup_routes
     from swarm_api.validation import is_service_submitter
 
-    submissions = RecordingSubmissions()
-    ctx = type("Ctx", (), {"submissions": submissions,
-                           "settings": api_settings()})()
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    real = setup_app.state.ctx
+    submissions = RecordingSubmissions(real.submissions)
+    ctx = type("Ctx", (), {"submissions": submissions, "settings": real.settings})()
     team_runs = setup_routes.TeamRuns(ctx)
-    assert team_runs.submit_task(tenant_id="platform-team", group=TEAM_GROUP,
-                                 repository=f"{ORG}/demo", prompt="p", label="l") == "t-1"
-    assert team_runs.submit_workflow(tenant_id="platform-team", group=TEAM_GROUP,
-                                     repository=f"{ORG}/demo", label="l") == "w-1"
+    assert team_runs.submit_task(tenant_id=team, group=TEAM_GROUP,
+                                 repository=f"{ORG}/demo", prompt="p", label="l")
+    assert team_runs.submit_workflow(tenant_id=team, group=TEAM_GROUP,
+                                     repository=f"{ORG}/demo", label="l")
     for kind, auth, spec in submissions.calls:
         assert auth.email == f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
         assert is_service_submitter(auth.email)
-        assert auth.tenant_id == "platform-team" and auth.tenant_principal == TEAM_GROUP
+        assert auth.tenant_id == team and auth.tenant_principal == TEAM_GROUP
         assert auth.is_admin is False
         found = spec[0] if kind == "task" else spec
         assert found.repository_url == f"https://github.com/{ORG}/demo"
     assert [kind for kind, _, _ in submissions.calls] == ["task", "workflow"]
     assert [s.step_id for s in submissions.calls[1][2].steps] == ["write", "open"]
+
+
+def _stored_dispatch(db, task_id: str) -> dict[str, Any]:
+    return dict((db.docs[f"tasks/{task_id}"].get("metadata") or {}).get("dispatch") or {})
+
+
+def test_the_console_verify_runs_are_admitted_by_the_real_submission_service(
+        setup_app, setup_client, db, github) -> None:
+    """Audit 4d, F1 and F2: `TeamRuns` through the real `SubmissionService`.
+    The workflow (whose `open` step builds on `write`'s branch) is admitted,
+    as `integrate` with `open` its integrator, and the task is stored as
+    `direct-pr`: each ends in the pull request verify requires. Before, the
+    workflow was refused 422 (`collect` pushes no branch) and the task was a
+    `collect` task whose git tools refuse every push."""
+    setup_app.state.setup_runs = None
+    install_app(db, github)
+    create_team(setup_client)
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    ids = answer.json()["verify_runs"]
+    assert set(ids) == {"console_task", "console_workflow"} and all(ids.values())
+    assert db.docs[VERIFY_DOC]["verify_runs"] == ids
+    assert _stored_dispatch(db, ids["console_task"])["strategy"] == "direct-pr"
+    steps = [d for k, d in db.docs.items() if k.count("/") == 1 and k.startswith("tasks/")
+             and d.get("workflow_id") == ids["console_workflow"]]
+    roles_ = {(d["metadata"]["dispatch"]["strategy"], d["metadata"]["dispatch"].get("role"))
+              for d in steps}
+    assert roles_ == {("integrate", "contributor"), ("integrate", "integrator")}
+
+
+def test_the_smoke_is_admitted_by_the_real_submission_service(setup_app, setup_client, db,
+                                                              github, pool) -> None:
+    """The first team's smoke through the real `SubmissionService`: admitted,
+    and stored `collect` (its prompt asks for no pull request)."""
+    setup_app.state.setup_runs = None
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "running", smoke
+    assert _stored_dispatch(db, smoke["task_id"])["strategy"] == "collect"
+
+
+def _before_pass_3(db) -> None:
+    """The App installed, its self-check answering `app_id_not_configured`:
+    infra pass 3 has not rendered GITHUB_APP_ID yet."""
+    db.docs[f"swarm-install/{ENV}/console/github_app"]["self_check"] = {
+        "ok": False, "reason": "app_id_not_configured"}
+
+
+def test_the_smoke_waits_for_infra_pass_3(setup_client, db, github, pool, runs) -> None:
+    """Audit 4d, F4: before pass 3 no installation token can be minted, so a
+    smoke started then fails to clone. It reads `waiting_for_infra_pass_3`,
+    nothing is submitted or recorded, and it starts on the first read after
+    the self-check passes."""
+    install_app(db, github)
+    _before_pass_3(db)
+    team = create_team(setup_client).json()["team"]
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "waiting_for_infra_pass_3", smoke
+    assert "infra pass 3" in smoke["message"]
+    assert runs.tasks == [] and team_doc(db, team).get("smoke") is None
+    restart = setup_client.post("/v1/admin/setup/smoke", headers=auth_header("root"))
+    assert restart.json()["smoke"]["state"] == "waiting_for_infra_pass_3"
+    assert runs.tasks == []
+    db.docs[f"swarm-install/{ENV}/console/github_app"]["self_check"] = {"ok": True}
+    assert page_team(setup_client, team)["smoke"]["state"] == "running"
+    assert len(runs.tasks) == 1
+
+
+def test_one_persons_smoke_waits_for_infra_pass_3(setup_client, db, github, pool,
+                                                  runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    _before_pass_3(db)
+    tenant = personal_tenant()
+    page(setup_client)
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    assert page(setup_client)["personal"]["smoke"]["state"] == "waiting_for_infra_pass_3"
+    assert runs.tasks == []
+
+
+def test_the_verify_runs_wait_for_infra_pass_3(setup_client, db, github, runs) -> None:
+    """Audit 4d, F4: `start_verify_runs` starts nothing before pass 3 and
+    says so (409, `waiting_for_infra_pass_3`); nothing is recorded, so the
+    engine waits rather than reading a run doomed to fail."""
+    install_app(db, github)
+    _before_pass_3(db)
+    create_team(setup_client)
+    early = start_verify(setup_client)
+    assert early.status_code == 409, early.text
+    assert early.json()["detail"]["state"] == "waiting_for_infra_pass_3"
+    assert runs.tasks == [] and runs.workflows == [] and VERIFY_DOC not in db.docs
+    db.docs[f"swarm-install/{ENV}/console/github_app"]["self_check"] = {"ok": True}
+    assert start_verify(setup_client).status_code == 200
+    assert len(runs.tasks) == 1 and len(runs.workflows) == 1
+
+
+REDEEM = "/v1/setup/links/redeem"
+
+
+def _mint_pool_link(client: TestClient, owner: str = ALICE) -> str:
+    minted = client.post("/v1/admin/setup/links", headers=auth_header("root"), json={
+        "kind": "pool-account", "label": "pool-1", "owner": owner})
+    assert minted.status_code == 201, minted.text
+    return minted.json()["path"].rsplit("/", 1)[1]
+
+
+def _link_used(db) -> bool:
+    links = [d for k, d in db.docs.items() if k.startswith("setup_links/")]
+    assert len(links) == 1
+    return links[0].get("used_at") is not None
+
+
+def test_a_pool_link_is_not_spent_before_its_workspace_is_ready(setup_client, db) -> None:
+    """Audit 4d, F6: the sign-in a pool link leads to names its workspace in
+    X-Swarm-Tenant, refused until the workspace is `ready`. So the redeem
+    answers 409 (retry) WITHOUT consuming the link while it is `approved`,
+    and opens it once it is ready."""
+    team = create_team(setup_client).json()["team"]
+    assert db.docs[f"workspaces/{team}"]["state"] != "ready"
+    token = _mint_pool_link(setup_client)
+    early = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert early.status_code == 409, early.text
+    assert early.json()["detail"] == {**early.json()["detail"], "workspace": team,
+                                      "retry": True}
+    assert "still unused" in early.json()["message"]
+    assert not _link_used(db)
+    db.docs[f"workspaces/{team}"]["state"] = "ready"
+    opened = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("alice"))
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["tenant"] == team and _link_used(db)
+
+
+def test_one_persons_pool_link_waits_for_the_personal_workspace(setup_client, db) -> None:
+    """F6 in one-person mode: the form shows straight after the hand-off,
+    while swarm-workspace-apply is still making the personal workspace."""
+    seed_sized_engine(db)
+    tenant = personal_tenant()
+    token = _mint_pool_link(setup_client, owner=ROOT)
+    early = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("root"))
+    assert early.status_code == 409, early.text
+    assert early.json()["detail"]["workspace"] == tenant
+    assert not _link_used(db)
+    db.docs.setdefault(f"workspaces/{tenant}", {})["state"] = "ready"
+    opened = setup_client.post(REDEEM, json={"token": token}, headers=auth_header("root"))
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["tenant"] == tenant and _link_used(db)
+
+
+# --------------------------------------------------------------------------
+# the install's sizing and mode (lane DAYONE-SETUP-API-3, decision 7)
+# --------------------------------------------------------------------------
+
+PERSONAL_DOC = f"swarm-install/{ENV}/console/personal"
+FINISHED_DOC = f"swarm-install/{ENV}/console/finished"
+
+
+def sizing(mode: str = "individual", members: int = 1) -> dict[str, Any]:
+    """`state.outputs["sizing"]` as the INTERFACE SHEET writes it."""
+    return {
+        "mode": mode, "members": members,
+        "pool_limits": {"global": 4 * members, "default_tenant": 2, "provider_tenant": 2,
+                        "resource_classes": {"small": 2}, "runner_profiles": {"claude-code": 2},
+                        "backends": {"gke": 2}},
+        "service_max_instances": {"swarm-api": 2, "swarm-scheduler": 1,
+                                  "swarm-quota-broker": 1, "swarm-reconciler": 1},
+        "pool_accounts": max(1, members // 4), "budget_usd": 150 * members,
+    }
+
+
+def seed_sized_engine(db, mode: str = "individual", members: int = 1,
+                      installer: str | None = ROOT) -> dict[str, Any]:
+    doc = seed_engine_document(db)
+    doc.update({"sizing": sizing(mode, members), "installer": installer})
+    db.docs[ENGINE_DOC] = dict(doc)
+    return doc
+
+
+def personal_tenant(email: str = ROOT) -> str:
+    from swarm_common.identity import tenant_id_for_user
+
+    return tenant_id_for_user(email)
+
+
+def page(client: TestClient) -> dict[str, Any]:
+    response = client.get("/v1/admin/setup", headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_page_serves_the_installs_sizing_read_only(setup_client, db) -> None:
+    """The status route serves the engine's `sizing` (mode, members,
+    pool_limits, service_max_instances, pool_accounts, budget_usd) and the
+    mode; the engine's document is not written."""
+    written = seed_sized_engine(db, mode="team", members=12)
+    body = page(setup_client)
+    assert body["mode"] == "team"
+    assert body["sizing"] == sizing("team", 12)
+    assert body["steps"]["first_team"]["needed"] is True
+    assert body["steps"]["invites"]["needed"] is True
+    assert body["personal"] is None
+    assert db.docs[ENGINE_DOC] == written
+
+
+def test_an_engine_document_with_no_sizing_reads_as_a_team(setup_client, db) -> None:
+    seed_engine_document(db)
+    body = page(setup_client)
+    assert body["sizing"] is None and body["mode"] == "team"
+    assert PERSONAL_DOC not in db.docs
+
+
+def test_the_sizing_view_carries_only_its_named_fields(setup_client, db) -> None:
+    doc = seed_sized_engine(db, mode="team", members=3)
+    doc["sizing"] = {**doc["sizing"], "stray": "x"}
+    db.docs[ENGINE_DOC] = doc
+    assert set(page(setup_client)["sizing"]) == {
+        "mode", "members", "pool_limits", "service_max_instances", "pool_accounts",
+        "budget_usd"}
+
+
+def test_one_person_needs_no_first_team_and_no_invites(setup_client, db) -> None:
+    """Decision 7: for one person the first workspace is the installer's
+    personal workspace, filed on the page's read, and the first-team and
+    invites steps say they are not needed."""
+    seed_sized_engine(db)
+    body = page(setup_client)
+    assert body["mode"] == "individual"
+    for step in ("first_team", "invites"):
+        assert body["steps"][step] == {"needed": False, "state": "not_needed",
+                                       "reason": "not needed for one person"}
+    tenant = personal_tenant()
+    assert body["personal"]["workspace"] == tenant
+    assert body["personal"]["owner"] == ROOT
+    assert db.docs[PERSONAL_DOC]["workspace"] == tenant
+    assert db.docs[f"workspaces/{tenant}"]["kind"] == "personal"
+    assert body["teams"] == []
+
+
+def test_one_person_refuses_a_team_and_an_invite(setup_client, db) -> None:
+    seed_sized_engine(db)
+    team = create_team(setup_client)
+    assert team.status_code == 409, team.text
+    assert "not needed for one person" in team.text
+    invite = setup_client.post("/v1/admin/setup/teams/platform-team/invites",
+                               json={"email": CAROL}, headers=auth_header("root"))
+    assert invite.status_code == 409, invite.text
+    assert not [k for k in db.docs if k.startswith(TEAMS_PREFIX)]
+
+
+def test_one_persons_smoke_runs_in_the_personal_workspace(setup_client, db, github, pool,
+                                                          runs) -> None:
+    """The smoke runs once the installer's pool account lands in their
+    personal workspace, on a repository of the personal grant, recorded on
+    `console/personal.smoke`."""
+    seed_sized_engine(db)
+    install_app(db, github)
+    tenant = personal_tenant()
+    body = page(setup_client)
+    assert body["personal"]["grant"]["repositories"] == [f"{ORG}/api", f"{ORG}/demo"]
+    assert body["personal"].get("smoke") is None and runs.tasks == []
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    smoke = page(setup_client)["personal"]["smoke"]
+    assert smoke["state"] == "running" and smoke["task_id"] == "task-1"
+    assert runs.tasks[0]["tenant"] == tenant and runs.tasks[0]["group"] == ROOT
+    runs.states["task-1"] = "succeeded"
+    assert page(setup_client)["personal"]["smoke"]["state"] == "succeeded"
+    assert db.docs[PERSONAL_DOC]["smoke"]["state"] == "succeeded"
+
+
+def test_one_persons_pool_account_link_is_the_installers(setup_client, db) -> None:
+    seed_sized_engine(db)
+    headers = auth_header("root")
+    other = setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "pool-account", "label": "pool-1", "owner": ALICE})
+    assert other.status_code == 403, other.text
+    mine = setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "pool-account", "label": "pool-1", "owner": ROOT})
+    assert mine.status_code == 201, mine.text
+    links = [d for k, d in db.docs.items() if k.startswith("setup_links/")]
+    assert [link["tenant_id"] for link in links] == [personal_tenant()]
+    git = setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "team-git", "label": personal_tenant(), "owner": ROOT})
+    assert git.status_code == 201, git.text
+    assert db.docs[PERSONAL_DOC]["progress"]["git_link"]["owner"] == ROOT
+
+
+def test_one_person_finishes_on_the_personal_smoke(setup_app, setup_client, db, github, pool,
+                                                   runs) -> None:
+    """`finish` for one person waits for the App, a pool account signed in to
+    the personal workspace and that workspace's smoke; never for a team."""
+    seed_sized_engine(db)
+    headers = auth_header("root")
+    early = setup_client.post("/v1/admin/setup/finish", headers=headers)
+    assert early.status_code == 409
+    assert set(early.json()["detail"]["missing"]) == {
+        "github_app_installed", "github_app_self_check", "pool_account_signed_in",
+        "personal_smoke"}
+    setup_app.state.forge_app = PassingAppCheck()
+    install_app(db, github)
+    assert setup_client.post("/v1/admin/setup/github-app/self-check",
+                             headers=headers).json()["ok"] is True
+    assert setup_client.post("/v1/admin/setup/links", headers=headers, json={
+        "kind": "pool-account", "label": "pool-1", "owner": ROOT}).status_code == 201
+    tenant = personal_tenant()
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    smoking = setup_client.post("/v1/admin/setup/finish", headers=headers)
+    assert smoking.status_code == 409
+    assert smoking.json()["detail"]["missing"] == ["personal_smoke"]
+    assert FINISHED_DOC not in db.docs
+    assert runs.tasks[0]["tenant"] == tenant
+    runs.states["task-1"] = "succeeded"
+    done = setup_client.post("/v1/admin/setup/finish", headers=headers)
+    assert done.status_code == 200, done.text
+    assert db.docs[FINISHED_DOC]["by"] == ROOT
+    assert not [k for k in db.docs if k.startswith(TEAMS_PREFIX)]
+
+
+def test_one_persons_failed_smoke_starts_again_on_request(setup_client, db, github, pool,
+                                                         runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    tenant = personal_tenant()
+    page(setup_client)
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    page(setup_client)
+    runs.states["task-1"] = "failed"
+    assert page(setup_client)["personal"]["smoke"]["state"] == "failed"
+    again = setup_client.post("/v1/admin/setup/smoke", headers=auth_header("root"))
+    assert again.status_code == 200, again.text
+    assert again.json()["workspace"] == tenant
+    assert again.json()["smoke"]["task_id"] == "task-2"
+    assert runs.tasks[1]["tenant"] == tenant
+
+
+def test_one_persons_verify_runs_run_in_the_personal_workspace(setup_client, db, github,
+                                                               runs) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    answer = setup_client.post("/v1/admin/setup/verify-runs", headers=auth_header("root"))
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["verify_runs"] == {"console_task": "task-1", "console_workflow": "wf-1"}
+    tenant = personal_tenant()
+    assert runs.tasks[0]["tenant"] == tenant and runs.workflows[0]["tenant"] == tenant
+    assert runs.tasks[0]["group"] == ROOT
+    # Recorded as for a team: the engine reads the same two id keys.
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-1",
+                                                  "console_workflow": "wf-1"}
+    assert db.docs[VERIFY_DOC]["repository"] == f"{ORG}/api"
+
+
+def test_one_person_with_no_installer_recorded_uses_the_platform_owner(setup_client,
+                                                                      db) -> None:
+    seed_sized_engine(db, installer=None)
+    assert page(setup_client)["personal"]["owner"] == ROOT
+
+
+# --------------------------------------------------------------------------
+# DAYONE-SETUP-API-6: the groups probe's shape (N6), a signed-in account (N7),
+# the enforced grant (N11), the verify runs' `retries` (3a)
+# --------------------------------------------------------------------------
+
+
+class _TestClientHttp:
+    """`api_client.Http` over the real app: the engine's request reaches the
+    real route as the deployer (the bearer it minted is swapped for the
+    deployer's static token, which is what IAP would have verified)."""
+
+    def __init__(self, client: TestClient) -> None:
+        self.client = client
+        self.sent: list[dict[str, Any]] = []
+
+    def __call__(self, method, url, headers, body):
+        from swarm_install.api_client import Response
+
+        self.sent.append(dict(body))
+        path = url.removeprefix(f"https://{HOSTNAME}")
+        found = self.client.request(method, path, json=dict(body),
+                                    headers=auth_header("deployer"))
+        return Response(found.status_code, found.json())
+
+
+class _Minter:
+    def generate_id_token(self, service_account, audience, *, include_email):
+        return secrets.token_hex(16)
+
+
+def _engine_client(setup_client: TestClient):
+    from swarm_install.api_client import ApiClient
+
+    http = _TestClientHttp(setup_client)
+    return ApiClient(project=PROJECT, base_url=f"https://{HOSTNAME}", audience="aud",
+                     minter=_Minter(), http=http), http
+
+
+def test_the_engines_groups_probe_reads_the_real_routes_answer(setup_app, setup_client,
+                                                               directory) -> None:
+    """Finding N6, a contract test: `ApiClient.groups_probe` against the real
+    route. The route probes exactly the `{group, member}` pairs asked, names
+    each by the name asked, and answers the mode it reads groups in."""
+    client, http = _engine_client(setup_client)
+    directory.unreadable.add(SECOND_TEAM)
+    answer = client.groups_probe([{"group": TEAM_GROUP, "member": ALICE},
+                                  {"group": ENG_GROUP, "member": CAROL},
+                                  {"group": SECOND_TEAM, "member": ROOT}])
+    assert http.sent == [{"groups": [{"group": TEAM_GROUP, "member": ALICE},
+                                     {"group": ENG_GROUP, "member": CAROL},
+                                     {"group": SECOND_TEAM, "member": ROOT}]}]
+    assert answer.mode == setup_app.state.ctx.settings.groups_auth
+    assert answer.of(TEAM_GROUP).state == "met"
+    assert (answer.of(ENG_GROUP).state, answer.of(ENG_GROUP).reason) == ("unmet", "not_a_member")
+    assert (answer.of(SECOND_TEAM).state,
+            answer.of(SECOND_TEAM).reason) == ("unmet", "unreadable")
+    asked = {(member, groups) for member, groups in directory.asked}
+    assert asked == {(ALICE, (TEAM_GROUP,)), (CAROL, (ENG_GROUP,)), (ROOT, (SECOND_TEAM,))}
+
+
+def test_the_groups_probe_answers_admin_role_mode(setup_app, setup_client) -> None:
+    """`identity.groups-reader-role` sees `mode == admin_role` when swarm-api
+    runs in it."""
+    from dataclasses import replace
+
+    ctx = setup_app.state.ctx
+    setup_app.state.ctx = replace(ctx, settings=replace(ctx.settings, groups_auth="admin_role"))
+    client, _ = _engine_client(setup_client)
+    assert client.groups_probe([{"group": TEAM_GROUP, "member": ROOT}]).mode == "admin_role"
+
+
+def test_a_lookup_failures_reason_is_named_never_its_body() -> None:
+    from swarm_api.groups import GroupLookupError
+    from swarm_api.routes.setup import probe_reason
+
+    assert probe_reason(GroupLookupError("cloud identity returned 403: {...}")) == \
+        "permission_denied"
+    assert probe_reason(GroupLookupError("groups:lookup returned no name for x")) == \
+        "group_not_found"
+    assert probe_reason(RuntimeError("delegation refused: unauthorized_client")) == \
+        "unauthorized_client"
+    assert probe_reason(RuntimeError("swarm-api@p may not sign as itself")) == "sign_jwt_denied"
+    assert probe_reason(GroupLookupError("unreadable")) == "unreadable"
+
+
+def test_the_doctor_reads_the_registered_groups_through_results(setup_client,
+                                                                directory) -> None:
+    """With no pairs the route still probes every registered group (the
+    doctor's question), in the same `results` shape."""
+    client, _ = _engine_client(setup_client)
+    directory.unreadable.add(ENG_GROUP)
+    answer = client.groups_probe(())
+    assert answer.of(ENG_GROUP).state == "unmet"
+    assert answer.of("research@example.com").state == "met"
+
+
+def test_a_pool_account_in_the_pool_shows_as_signed_in_on_the_page(setup_client, db,
+                                                                   pool) -> None:
+    """Finding N7: the page's poll stamps `signed_in_at` on each labelled
+    account the first team's pool holds, so "Hand over to swarm install"
+    (which calls `/finish`) appears without `/finish` being called first."""
+    team = create_team(setup_client).json()["team"]
+    assert setup_client.post("/v1/admin/setup/links", headers=auth_header("root"), json={
+        "kind": "pool-account", "label": "pool-1", "owner": ALICE}).status_code == 201
+    body = page(setup_client)
+    assert body["accounts"]["pool-1"].get("signed_in_at") is None
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    body = page(setup_client)
+    stamped = body["accounts"]["pool-1"]["signed_in_at"]
+    assert stamped and body["accounts"]["pool-1"]["owner"] == ALICE
+    assert "link_hash" not in body["accounts"]["pool-1"]
+    assert page(setup_client)["accounts"]["pool-1"]["signed_in_at"] == stamped
+
+
+def test_one_persons_pool_account_shows_as_signed_in_on_the_page(setup_client, db,
+                                                                 pool) -> None:
+    seed_sized_engine(db)
+    assert setup_client.post("/v1/admin/setup/links", headers=auth_header("root"), json={
+        "kind": "pool-account", "label": "pool-1", "owner": ROOT}).status_code == 201
+    tenant = personal_tenant()
+    pool.accounts.append({"account_id": f"{tenant}:pool-1", "owner_tenant": tenant,
+                          "label": "pool-1"})
+    assert page(setup_client)["accounts"]["pool-1"]["signed_in_at"]
+
+
+def _grant_mode(setup_app, tenant: str, email: str, repository: str) -> str | None:
+    from swarm_api.repositories import repo_id_for
+
+    owner, repo = repository.split("/")
+    return setup_app.state.ctx.submissions._grant_mode(tenant, email,
+                                                       repo_id_for(tenant, owner, repo))
+
+
+def test_the_first_teams_grant_is_enforced_for_its_members(setup_app, setup_client, db,
+                                                           github) -> None:
+    """Finding N11: the team-level grant is the one submission reads, so a
+    teammate with no grant of their own may write to each repository the App
+    installation covers, in the first team's workspace and nowhere else."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert team_doc(db, team)["grant"]["enforced_at"]
+    for repository in (f"{ORG}/api", f"{ORG}/demo"):
+        assert _grant_mode(setup_app, team, ALICE, repository) == "write"
+    assert _grant_mode(setup_app, team, ALICE, f"{ORG}/elsewhere") is None
+    assert _grant_mode(setup_app, "another-team", ALICE, f"{ORG}/api") is None
+
+
+def test_a_grant_recorded_before_enforcement_is_enforced_on_the_next_read(
+        setup_app, setup_client, db, github) -> None:
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    for key in [k for k in db.docs if k.startswith("workspace_repository_grants/")]:
+        del db.docs[key]
+    grant = dict(team_doc(db, team)["grant"])
+    grant.pop("enforced_at")
+    team_doc(db, team)["grant"] = grant
+    assert _grant_mode(setup_app, team, ALICE, f"{ORG}/api") is None
+    page_team(setup_client, team)
+    assert _grant_mode(setup_app, team, ALICE, f"{ORG}/api") == "write"
+    assert team_doc(db, team)["grant"]["enforced_at"]
+
+
+def test_one_persons_grant_is_enforced_in_the_personal_workspace(setup_app, setup_client, db,
+                                                                 github) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    page(setup_client)
+    assert _grant_mode(setup_app, personal_tenant(), ROOT, f"{ORG}/demo") == "write"
+
+
+def test_verify_runs_hold_only_the_two_ids_and_retries_has_its_own_field(
+        setup_client, db, github, runs) -> None:
+    """3a: `verify_runs` is exactly the INTERFACE SHEET's two id keys; the
+    counts are `retries`, written from the first start."""
+    verify_started(setup_client, db, github)
+    doc = db.docs[VERIFY_DOC]
+    assert doc["verify_runs"] == {"console_task": "task-1", "console_workflow": "wf-1"}
+    assert doc["retries"] == {"console_task": 0, "console_workflow": 0}
+
+
+def test_an_old_document_with_counts_inside_verify_runs_is_still_read(setup_client, db,
+                                                                      github, runs) -> None:
+    """A document SETUP-API-5 wrote keeps its counts inside `verify_runs`:
+    they are read as the fallback, and the next write moves them out."""
+    verify_started(setup_client, db, github)
+    db.docs[VERIFY_DOC] = {**{k: v for k, v in db.docs[VERIFY_DOC].items() if k != "retries"},
+                           "verify_runs": {"console_task": "task-1", "console_workflow": "wf-1",
+                                           "console_task_retries": 2}}
+    runs.states["task-1"] = "failed"
+    refused = start_verify(setup_client)
+    assert refused.status_code == 409 and "2 fresh starts" in refused.text
+    db.docs[VERIFY_DOC]["verify_runs"]["console_task_retries"] = 1
+    answer = start_verify(setup_client)
+    assert answer.status_code == 200, answer.text
+    assert db.docs[VERIFY_DOC]["verify_runs"] == {"console_task": "task-2",
+                                                  "console_workflow": "wf-1"}
+    assert db.docs[VERIFY_DOC]["retries"] == {"console_task": 2, "console_workflow": 0}
+
+
+# --------------------------------------------------------------------------
+# audit 3 (DAYONE-SETUP-API-7)
+# --------------------------------------------------------------------------
+
+
+def test_the_fake_refuses_the_paths_real_firestore_refuses(db) -> None:
+    with pytest.raises(ValueError):
+        db.collection(f"swarm-install/{ENV}/console/teams")
+    with pytest.raises(ValueError):
+        db.document(f"swarm-install/{ENV}/console")
+    db.collection(f"swarm-install/{ENV}/teams")
+    db.document(f"{TEAMS_PREFIX}platform-team")
+
+
+def test_the_page_and_the_first_team_load_on_real_firestore_paths(setup_client, db,
+                                                                  github) -> None:
+    """A2: the status route lists the teams on every load, and the first team
+    is created, read and granted at a path real Firestore accepts."""
+    seed_engine_document(db)
+    install_app(db, github)
+    assert page(setup_client)["teams"] == []
+    team = create_team(setup_client)
+    assert team.status_code == 202, team.text
+    team_id = team.json()["team"]
+    assert [row["id"] for row in page(setup_client)["teams"]] == [team_id]
+    assert db.docs[f"{TEAMS_PREFIX}{team_id}"]["group"] == TEAM_GROUP
+
+
+def test_the_install_record_names_team_documents_at_a_valid_path() -> None:
+    from swarm_api import install_record as ir
+
+    record = ir.InstallRecord(PathCheckingFirestore(), ENV)
+    assert record.team_path("t1") == f"{TEAMS_PREFIX}t1"
+    assert record.teams() == []
+    ir.check_fields(record.team_path("t1"), ENV, {"group": TEAM_GROUP})
+    with pytest.raises(ir.RecordFieldRefused):
+        ir.check_fields(f"swarm-install/{ENV}/console/teams/t1", ENV, {"group": TEAM_GROUP})
+
+
+@pytest.mark.parametrize("age, running", [(timedelta(seconds=5), True),
+                                          (timedelta(hours=2), False)])
+def test_the_clis_epoch_seconds_heartbeat_reads_as_running(age, running) -> None:
+    """A7: the engine writes `lease.heartbeat` as epoch seconds (a float);
+    a fresh one reads as running, a stale one does not."""
+    from swarm_api.routes import setup as routes
+
+    now = datetime.now(timezone.utc)
+    beat = (now - age).timestamp()
+    assert routes._cli_running({"lease": {"heartbeat": beat}}, now) is running
+    assert routes._cli_running({"lease": {"heartbeat": int(beat)}}, now) is running
+
+
+def test_the_page_says_the_cli_is_running_on_an_epoch_heartbeat(setup_client, db) -> None:
+    import time
+
+    doc = seed_engine_document(db)
+    db.docs[ENGINE_DOC] = {**doc, "lease": {"holder": "laptop", "heartbeat": time.time(),
+                                             "expires": time.time() + 300}}
+    body = page(setup_client)
+    assert body["cli_running"] is True, body
+
+
+def _app_installed(db, tenant: str, owner: str) -> bool:
+    """The submission path's own answer (`SubmissionService._app_installed`,
+    over the real `installation_record_in`), with installation reads on."""
+    from types import SimpleNamespace
+
+    from swarm_api.service import SubmissionService
+
+    probe = SimpleNamespace(_settings=SimpleNamespace(forge_installation_reads=True),
+                            _store=SimpleNamespace(db=db))
+    return SubmissionService._app_installed(probe, tenant, owner)
+
+
+def test_the_first_teams_grant_records_the_app_installation_for_its_workspace(
+        setup_client, db, github) -> None:
+    """A4: the grant also writes the team workspace's own `forge_orgs`
+    document, so a service submission for that workspace is minted an
+    installation token; no other workspace gains one."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert _app_installed(db, team, ORG) is True
+    assert _app_installed(db, "another-team", ORG) is False
+    orgs = [v for k, v in db.docs.items() if k.startswith("forge_orgs/")]
+    assert [(o["tenant_id"], o["owner"], o["installation_id"], o["install_state"],
+             o["owner_type"]) for o in orgs] == [(team, ORG, 77, "installed", "Organization")]
+    assert team_doc(db, team)["grant"]["installation_recorded_at"]
+
+
+def test_a_grant_enforced_before_the_installation_was_recorded_records_it_on_the_next_read(
+        setup_client, db, github) -> None:
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    for key in [k for k in db.docs if k.startswith("forge_orgs/")]:
+        del db.docs[key]
+    grant = dict(team_doc(db, team)["grant"])
+    grant.pop("installation_recorded_at")
+    team_doc(db, team)["grant"] = grant
+    assert _app_installed(db, team, ORG) is False
+    page_team(setup_client, team)
+    assert _app_installed(db, team, ORG) is True
+
+
+def test_one_persons_grant_records_the_app_installation_for_the_personal_workspace(
+        setup_client, db, github) -> None:
+    seed_sized_engine(db)
+    install_app(db, github)
+    page(setup_client)
+    assert _app_installed(db, personal_tenant(), ORG) is True
+
+
+# --------------------------------------------------------------------------
+# no workspace is approved before infra pass 3 turns publishing on
+# (DAYONE-MANIFEST-STEPS-2)
+# --------------------------------------------------------------------------
+
+
+def publishing_off(setup_app) -> FakePublisher:
+    """swarm-api as infra passes 1 and 2 deploy it: `workspace_apply_publish`
+    is false until infra pass 3 (`github.pass-3`), so an approval would only
+    be logged `workspace_stuck` (reason `publishing_off`)."""
+    publisher = setup_app.state.workspace_publisher
+    publisher.enabled = False
+    return publisher
+
+
+def test_the_first_team_waits_for_publishing(setup_app, setup_client, db) -> None:
+    publisher = publishing_off(setup_app)
+    seed_sized_engine(db, mode="team", members=5)
+    step = page(setup_client)["steps"]["first_team"]
+    assert step["needed"] is True and step["state"] == "waiting", step
+    assert "infra pass 3" in step["reason"], step
+    refused = create_team(setup_client, first_admin=WORKSPACE_ADMIN)
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["code"] == "publishing_off", refused.text
+    assert not [k for k in db.docs if k.startswith("workspaces/") or k.startswith(TEAMS_PREFIX)]
+    assert publisher.messages == []
+    # Infra pass 3's revision serves `workspace_apply_publish`: the team is approved and published.
+    publisher.enabled = True
+    assert page(setup_client)["steps"]["first_team"]["state"] == "to_do"
+    created = create_team(setup_client, first_admin=WORKSPACE_ADMIN)
+    assert created.status_code == 202, created.text
+    assert len(publisher.messages) == 1, publisher.messages
+
+
+def test_one_persons_workspace_waits_for_publishing(setup_app, setup_client, db) -> None:
+    publisher = publishing_off(setup_app)
+    seed_sized_engine(db)
+    tenant = personal_tenant()
+    body = page(setup_client)
+    assert body["personal"] == {"owner": ROOT, "workspace": None, "reason": "publishing_off"}
+    assert PERSONAL_DOC not in db.docs and f"workspaces/{tenant}" not in db.docs
+    link = setup_client.post("/v1/admin/setup/links",
+                             json={"kind": "pool-account", "label": "a1", "owner": ROOT},
+                             headers=auth_header("root"))
+    assert link.status_code == 409 and link.json()["code"] == "publishing_off", link.text
+    assert f"workspaces/{tenant}" not in db.docs and publisher.messages == []
+    publisher.enabled = True
+    assert page(setup_client)["personal"]["workspace"] == tenant
+    assert len(publisher.messages) == 1, publisher.messages
+
+
+# --------------------------------------------------------------------------
+# what the console finish's checklist reads beside each mark: verify's
+# cause, when the smoke started, when a link was made, how long a wait
+# usually takes. Each is served when recorded and absent when not.
+# --------------------------------------------------------------------------
+
+
+def _verify_row(**more: Any) -> dict[str, Any]:
+    return {"check": "end-to-end", "done": 9, "total": 11, "started": 1_790_000_000.0,
+            "expected_end": 1_790_001_080.0, "deadline": 1_790_002_700.0, **more}
+
+
+def test_verify_detail_is_served_when_verify_failed(setup_client, db) -> None:
+    """Verify's one-line cause, written by swarm install into the engine
+    document on a failure, is served as `engine.verify.detail`; the stored
+    document is not changed."""
+    written = seed_engine_document(db)
+    cause = "console-workflow (t-1) finished without a pull request"
+    db.docs[ENGINE_DOC]["verify"] = _verify_row(result="failed", detail=cause)
+    stored = json.loads(json.dumps(db.docs[ENGINE_DOC], default=str))
+    assert page(setup_client)["engine"]["verify"]["detail"] == cause
+    assert json.loads(json.dumps(db.docs[ENGINE_DOC], default=str)) == stored
+    assert written["release"] == page(setup_client)["engine"]["release"]
+
+
+@pytest.mark.parametrize("row", [
+    _verify_row(result=None),
+    _verify_row(result="passed"),
+    _verify_row(result=None, detail="a cause left from an earlier failure"),
+    _verify_row(result="failed", detail=""),
+    _verify_row(result="failed", detail="   "),
+    _verify_row(result="failed"),
+])
+def test_verify_detail_is_absent_unless_verify_failed_with_a_cause(setup_client, db, row) -> None:
+    """Absent, never empty: a row that has not failed, or a failed row from
+    before the field existed, is served with no `detail` key."""
+    seed_engine_document(db)
+    db.docs[ENGINE_DOC]["verify"] = dict(row)
+    served = page(setup_client)["engine"]["verify"]
+    assert "detail" not in served
+    assert served["result"] == row["result"] and served["done"] == 9
+
+
+def test_an_engine_document_without_verify_reads_cleanly(setup_client, db) -> None:
+    seed_engine_document(db)
+    engine = page(setup_client)["engine"]
+    assert "verify" not in engine and engine["release"] == "1.0.0"
+
+
+def test_the_smokes_start_time_is_served_once_it_started(setup_client, db, github, pool,
+                                                         runs) -> None:
+    """`teams[].smoke.started_at` is recorded when the smoke is submitted and
+    served on every later read; before it starts there is none."""
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    assert page_team(setup_client, team).get("smoke") is None
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "running" and smoke["started_at"]
+    stored = team_doc(db, team)["smoke"]["started_at"]
+    assert datetime.fromisoformat(smoke["started_at"].replace("Z", "+00:00")) == stored
+    runs.states["task-1"] = "succeeded"
+    assert page_team(setup_client, team)["smoke"]["started_at"] == smoke["started_at"]
+
+
+def test_a_smoke_recorded_without_a_start_time_is_served_without_one(setup_client, db,
+                                                                      github, pool) -> None:
+    install_app(db, github)
+    team = create_team(setup_client).json()["team"]
+    team_doc(db, team)["smoke"] = {"state": "succeeded", "task_id": "task-0",
+                                   "repository": f"{ORG}/api"}
+    pool.accounts.append({"account_id": f"{team}:pool-1", "owner_tenant": team,
+                          "label": "pool-1"})
+    smoke = page_team(setup_client, team)["smoke"]
+    assert smoke["state"] == "succeeded" and "started_at" not in smoke
+
+
+def test_the_link_time_is_stored_when_a_link_is_made(setup_client, db) -> None:
+    """`accounts[].link_made_at` is the link's own creation time, stored
+    with it, not `link_expires` minus a guessed lifetime."""
+    create_team(setup_client)
+    made = setup_client.post("/v1/admin/setup/links", headers=auth_header("root"), json={
+        "kind": "pool-account", "label": "pool-1", "owner": ALICE})
+    assert made.status_code == 201, made.text
+    account = db.docs[f"swarm-install/{ENV}/console/accounts"]["pool-1"]
+    link = next(d for k, d in db.docs.items() if k.startswith("setup_links/") and d["label"] == "pool-1")
+    assert account["link_made_at"] == link["created_at"]
+    served = page(setup_client)["accounts"]["pool-1"]
+    assert datetime.fromisoformat(served["link_made_at"].replace("Z", "+00:00")) == link["created_at"]
+    assert "link_hash" not in served
+
+
+def test_an_account_recorded_before_link_times_is_served_without_one(setup_client, db) -> None:
+    expires = datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc)
+    db.docs[f"swarm-install/{ENV}/console/accounts"] = {
+        "pool-1": {"owner": ALICE, "link_hash": "0" * 64, "link_expires": expires}}
+    served = page(setup_client)["accounts"]["pool-1"]
+    assert "link_made_at" not in served
+    assert served["owner"] == ALICE and served["link_expires"]
+
+
+def test_typical_waits_are_served_with_their_sources(setup_client, db) -> None:
+    """Each wait the page names carries where its number comes from; a wait
+    the platform has no figure for has no `typical_s`, never a made-up one."""
+    seed_engine_document(db)
+    waits = page(setup_client)["typical_waits"]
+    assert set(waits) == {"sign_in_pass", "infra_pass_3", "workspace_build", "smoke", "groups"}
+    for name, wait in waits.items():
+        assert wait["source"], name
+    for name in ("sign_in_pass", "infra_pass_3"):
+        assert "typical_s" not in waits[name] and "expected" not in waits[name]
+        assert waits[name]["source"].startswith("not measured")
+
+
+def test_typical_waits_restate_the_engines_own_figures() -> None:
+    """The numbers are the engine's `WaitSpec`s, restated because swarm-api's
+    image does not carry swarm_install; this fails on any drift."""
+    from swarm_install import team
+    from swarm_install.steps import identity
+
+    specs = {"workspace_build": team.WORKSPACE_WAIT, "smoke": team.SMOKE_WAIT,
+             "groups": identity.GROUPS_WAIT}
+    for name, spec in specs.items():
+        wait = setup_routes.TYPICAL_WAITS[name]
+        assert wait["typical_s"] == spec.expected_s, name
+        assert wait["expected"] == spec.expected, name
+
+
+def test_each_unmeasured_pass_is_served_with_its_start_time(setup_client, db) -> None:
+    """With no usual length for the sign-in pass and infra pass 3, the page
+    shows how long each has run: `passes[name].started_at` from the engine's
+    `passes`, and `ended_at` and `result` once it stopped."""
+    seed_engine_document(db)
+    db.docs[ENGINE_DOC]["passes"] = {
+        "sign_in_pass": {"started_at": 1_790_000_000.0},
+        "infra_pass_3": {"started_at": 1_790_000_100.0, "ended_at": 1_790_000_400.0,
+                         "result": "done"},
+    }
+    passes = page(setup_client)["passes"]
+    assert passes == {
+        "sign_in_pass": {"started_at": 1_790_000_000.0},
+        "infra_pass_3": {"started_at": 1_790_000_100.0, "ended_at": 1_790_000_400.0,
+                         "result": "done"},
+    }
+    assert set(passes) == set(setup_routes.TYPICAL_WAITS) & set(passes)
+    for name in passes:
+        assert setup_routes.TYPICAL_WAITS[name]["source"].startswith("not measured")
+
+
+@pytest.mark.parametrize("stored", [None, {}, {"sign_in_pass": "not a mapping"}])
+def test_a_pass_not_yet_started_is_served_with_no_start_time(setup_client, db, stored) -> None:
+    """Before the engine stamped a pass, or from an engine older than the
+    field, each pass is served with `started_at` None and nothing else."""
+    seed_engine_document(db)
+    if stored is not None:
+        db.docs[ENGINE_DOC]["passes"] = stored
+    assert page(setup_client)["passes"] == {"sign_in_pass": {"started_at": None},
+                                            "infra_pass_3": {"started_at": None}}

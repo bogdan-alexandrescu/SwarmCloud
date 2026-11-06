@@ -156,6 +156,32 @@ def test_indexer_task_drops_a_stored_cost_it_would_not_promote():
     assert f"{repoindex.LSP_COST_LINE}pyright=890\n" in task.input["prompt"] + "\n"
 
 
+def test_the_prompt_states_the_one_line_bound_for_every_free_text_field():
+    # #2978: an agent wrote a note over 300 characters because the prompt
+    # never said so, and the worker's indexspec check failed the whole run.
+    # The figure is read from the model, so the prompt cannot drift from it.
+    bound = next(m.max_length for m in repoindex.Note.model_fields["text"].metadata
+                 if hasattr(m, "max_length"))
+    purpose = next(m.max_length for m in repoindex.Module.model_fields["purpose"].metadata
+                   if hasattr(m, "max_length"))
+    assert purpose == bound == 300
+    prompt = repoindex.indexer_prompt(REPOSITORY, ONE, "main", tenant_id="eng",
+                                      repo_id="repo_" + "0" * 16)
+    line = f"<one line, at most {bound} characters>"
+    # MUTATION: write "<one line>" back into _INDEX_SHAPE and the agent is
+    # never told a note's text or a module's purpose has a length limit.
+    assert f'"text": "{line}"' in prompt
+    assert f'"purpose": "{line}"' in prompt
+    bounds = next(p for p in prompt.split("\n\n") if "Bounds: " in p)
+    bounds = bounds[bounds.index("Bounds: "):]
+    sentence = next(s for s in bounds.split(". ") if f"{bound} characters" in s)
+    # MUTATION: drop a field from the Bounds sentence and the agent may write
+    # that one past the limit.
+    for field in ("purpose", "text", "because", "rule", "started_by", "fallback",
+                  "reason"):
+        assert field in sentence, field
+
+
 def test_the_extractor_version_is_bumped_so_the_first_run_after_release_is_full():
     # Version 4 records each server's grant and cost; a version-3 base graph
     # is refused by `graph_carry_refusal`, so the first run is full and

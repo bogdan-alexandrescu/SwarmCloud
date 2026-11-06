@@ -108,10 +108,10 @@ afterEach(() => {
 })
 
 describe('People and roles: its address', () => {
-  it('is config/people, a Config tab since CONFIG-NAV (part of #2157), and settings/people lands there', () => {
+  it('is the selected workspace page\'s People tab since the admin routes lane (part of #2688), and settings/people lands there', () => {
     const r = fromAddress('settings/people')
-    expect(r).toMatchObject({ sectionId: 'config', tab: 'people' })
-    expect(canonical(r)).toBe('config/people')
+    expect(r).toMatchObject({ sectionId: 'admin', tab: 'workspaces' })
+    expect(canonical(r)).toBe('admin/workspaces?tab=people')
   })
 
   it('leaves the other Settings pages and the old hashes where they were', () => {
@@ -120,15 +120,14 @@ describe('People and roles: its address', () => {
     expect(fromAddress('settings/anything-else')).toMatchObject({ sectionId: 'admin', tab: 'limits' })
   })
 
-  it('opens the page, under its own heading, at #settings/people', async () => {
+  it('opens the page, as the workspace page\'s People tab, at #settings/people', async () => {
     window.history.replaceState(null, '', '/#settings/people')
     const calls = serve((m, url) => (m === 'GET' && url === ROLES_URL ? { status: 200, body: VIEWER } : null))
     vi.stubEnv('VITE_LIVE', '1')
     vi.resetModules()
     const { App } = await import('../App')
     render(<App />)
-    const page = await screen.findByRole('heading', { level: 1, name: 'People and roles' })
-    expect(page.closest('.wp-page'), 'the roles page is not what #settings/people drew').not.toBeNull()
+    await waitFor(() => expect(document.querySelector('.wpg-embed .wp-page'), 'the roles page is not what #settings/people drew').not.toBeNull())
     await screen.findByText('dave@example.com')
     expect(calls.some((c) => c.method === 'GET' && c.url === ROLES_URL)).toBe(true)
   })

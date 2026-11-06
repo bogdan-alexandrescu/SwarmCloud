@@ -2,9 +2,9 @@
 
 WHY EVERY ROUTE HERE IS A PROXY
 -------------------------------
-An account is a Claude subscription the platform runs agents on, and its
-credential is a rotating OAuth pair: refreshing it REVOKES the token it
-replaces. Two components that both write one do not race, they brick it. The
+An account is a Claude subscription or a ChatGPT plan the platform runs agents
+on, and its credential is a rotating OAuth pair: refreshing it REVOKES the
+token it replaces. Two components that both write one do not race, they brick it. The
 quota broker is the platform's single writer, so nothing in this file touches
 Secret Manager; `brokerclient.py` speaks HTTP to that service and this file adds
 the one thing the broker cannot know -- which human is calling.
@@ -35,14 +35,23 @@ resolved tenant and refused when it differs -- and never used as the value
 anything is filed under, so no ordering of checks exists in which a body field
 could put a live credential into somebody else's pool.
 
-ONE KIND OF CREDENTIAL
-----------------------
-The pool holds CLAUDE SUBSCRIPTIONS and nothing else. There is no API-key
-branch here and no credential-kind selector: `provider` is accepted only so a
-caller that names something else is told why, and the single accepted value is
-`anthropic`. The unrelated `POST /v1/tenants/me/credentials`, which writes a
-tenant's own provider API key into that tenant's secret, is a different surface
-and is untouched by this file.
+ONE KIND OF CREDENTIAL, TWO PROVIDERS, AND VOICE IT'S KEY
+--------------------------------------------------------
+The workspace pool holds ROTATING OAUTH PAIRS and nothing else: Claude
+subscriptions (`anthropic`) and, since the owner's choice of 2026-11-01
+(#2688), ChatGPT plans (`openai`, which codex runs on). There is no
+credential-kind selector: `provider` names which of those two pairs an
+account is, a sign-in that names neither is refused by its request model, and
+a registration that names neither is refused by name with the known providers
+in the refusal's detail. The one exception is the broker's
+`VOICE_ONLY_PROVIDERS` split, restated as `schemas.VOICE_ONLY_PROVIDERS`:
+`openai-api`, an OpenAI developer API key for Voice it's Live sessions (the
+owner, 4 November 2026). Only a platform admin may register one, never lent,
+and the broker files it into the Voice it pool alone. A sign-in that sends no provider is a Claude sign-in,
+exactly as before. This file forwards the provider unchanged and never reads
+or holds the pair itself. The unrelated `POST /v1/tenants/me/credentials`,
+which writes a tenant's own provider API key into that tenant's secret, is a
+different surface and is untouched by this file.
 
 WHY OWNERSHIP IS RE-CHECKED HERE RATHER THAN LEFT TO THE BROKER
 ---------------------------------------------------------------
@@ -95,9 +104,10 @@ from ..accountholds import (
     own_page,
     viewer_of,
 )
+from ..admins import AUDIT_COLLECTION
 from ..auth import AuthContext, require_admin
 from ..brokerclient import AccountPool, BrokerClient
-from ..deps import AppContext, current_auth, get_context
+from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..schemas import (
     ACCOUNT_HEALTH_KINDS,
@@ -105,7 +115,8 @@ from ..schemas import (
     ACCOUNT_HEALTH_STATUSES,
     ACCOUNT_HEALTH_WINDOWS,
     ACCOUNT_HOLD_DEADLINE,
-    SUBSCRIPTION_PROVIDER,
+    ACCOUNT_PROVIDERS,
+    VOICE_ONLY_PROVIDERS,
     AccountCreate,
     AccountLending,
     AccountSignInFinish,
@@ -275,12 +286,14 @@ def list_accounts(
     there are five with nothing to say so.
     """
     tenant_id = _tenant_id(ctx, auth)
-    payload = pool.list_accounts(tenant_id)
+    # With the tenant's own Voice-it-only accounts (`include_reserved`), so
+    # the page's Voice it pool section and Pools… can reach a reserved one.
+    payload = pool.list_accounts(tenant_id, include_reserved=True)
     return {
         # Each through `_own_view` (#2222): another tenant's account is never
         # named by a duplicate mark, whatever the broker sent.
         "accounts": [
-            _with_hold_deadline(_with_health_row(_own_view(a, tenant_id)))
+            _with_voice_pool(_with_hold_deadline(_with_health_row(_own_view(a, tenant_id))))
             for a in payload.get("accounts") or []
         ],
         "tenant_id": tenant_id,
@@ -354,6 +367,37 @@ def _with_hold_deadline(account: Any) -> Any:
     return {**account, ACCOUNT_HOLD_DEADLINE: at}
 
 
+#: The broker's pool names (the Voice it pool, owner 2026-11-02): an account
+#: runs workspace agents, is reserved for Voice it, or both.
+ACCOUNT_POOLS = ("workspace", "voice-it")
+VOICE_POOL = "voice-it"
+
+
+def _with_voice_pool(account: Any) -> Any:
+    """A row's three Voice it pool fields, as the broker's `account_to_api`
+    serves them, by the allow-list: `pools` (only the known names; absent or
+    empty reads as ["workspace"], the broker's own default), `voice_it_people`
+    (emails, [] outside the Voice it pool) and `voice_it_holder` (the live
+    Voice it hold, `{voice_session_id, person, since}`, or None). A row whose
+    broker sent none of them -- a broker older than the pool -- is unchanged,
+    so the page tells "not served" from "workspace only"."""
+    if not isinstance(account, dict) or not any(
+            k in account for k in ("pools", "voice_it_people", "voice_it_holder")):
+        return account
+    raw_pools = account.get("pools")
+    pools = [p for p in ACCOUNT_POOLS if isinstance(raw_pools, list) and p in raw_pools] \
+        or ["workspace"]
+    people = account.get("voice_it_people")
+    people = [p for p in people if isinstance(p, str)] if isinstance(people, list) else []
+    holder = account.get("voice_it_holder")
+    if isinstance(holder, dict):
+        holder = {k: holder.get(k) if isinstance(holder.get(k), str) else None
+                  for k in ("voice_session_id", "person", "since")}
+    else:
+        holder = None
+    return {**account, "pools": pools, "voice_it_people": people, "voice_it_holder": holder}
+
+
 def _refresh_sweep(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {"last_completed_at": None, "last_outcome": None, "readable": False}
@@ -373,7 +417,8 @@ def register_account(
     ctx: AppContext = Depends(get_context),
     pool: AccountPool = Depends(account_pool),
 ) -> dict:
-    """Register a subscription into the caller's own pool.
+    """Register a subscription or a ChatGPT plan into the caller's own pool,
+    or, for a platform admin, Voice it's OpenAI API key (`openai-api`).
 
     The credential is taken as pasted and forwarded once. The broker parses it
     BEFORE writing anything, so a credential with no refresh token is refused at
@@ -393,23 +438,30 @@ def register_account(
                 "owner comes from the verified token, so the field can be omitted"
             )
     provider = body.provider.strip().lower()
-    if provider != SUBSCRIPTION_PROVIDER:
-        # THE POOL HOLDS SUBSCRIPTIONS, so this is not a choice -- it is the
-        # one accepted value, checked so a caller naming anything else is told
-        # why rather than having a live credential filed under a provider the
-        # broker cannot refresh. Every account here is an OAuth pair the broker
-        # rotates; there is no API-key path in the account pool at all.
+    if provider in VOICE_ONLY_PROVIDERS:
+        _voice_only_registration(auth, body)
+    elif provider not in ACCOUNT_PROVIDERS:
+        # THE POOL HOLDS ROTATING PAIRS, so this is not a free choice: a
+        # caller naming anything else is told why rather than having a live
+        # credential filed under a provider the broker cannot refresh. The one
+        # API-key kind is Voice it's, a platform admin's, above.
+        known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS
         raise ValidationFailed(
-            "the account pool holds Claude subscriptions only, so provider "
-            f"must be {SUBSCRIPTION_PROVIDER!r}, not {provider!r}",
-            detail={"known_providers": [SUBSCRIPTION_PROVIDER]},
+            "the account pool holds Claude subscriptions and ChatGPT plans (and, "
+            "for Voice it only, an OpenAI API key), so provider must be one of "
+            f"{', '.join(map(repr, known))}, not {provider!r}",
+            detail={"known_providers": list(known)},
         )
+    # Voice it's key is recorded with who added it (the broker writes it on
+    # the key's account); every other kind is registered as before.
+    added = {"added_by": auth.email} if provider in VOICE_ONLY_PROVIDERS else {}
     result = pool.register(
         owner_tenant=tenant_id,
         label=body.label,
         provider=provider,
         lend_to=list(body.lend_to),
         credential=body.credential,
+        **added,
     )
     return {
         "account": _own_view(result.get("account"), tenant_id),
@@ -419,6 +471,22 @@ def register_account(
             "stored write-only; no read path in this API can return key material"
         ),
     }
+
+
+def _voice_only_registration(auth: AuthContext, body: AccountCreate) -> None:
+    """The gate on a Voice-it-only kind (`openai-api`), BEFORE the broker is
+    asked: a PLATFORM admin, and no `lend_to`.
+
+    The broker refuses a non-platform caller itself, but swarm-api IS a
+    platform caller to the broker, so without this check any workspace member
+    could put a key into the pool every Voice it person draws on. `require_admin`
+    with no route is the full-admin rule: a pool admin is refused like any
+    non-admin, as on `PUT .../pools`."""
+    require_admin(auth, None)
+    if body.lend_to:
+        raise ValidationFailed(
+            "an OpenAI API key serves Voice it alone and is never lent; send no lend_to"
+        )
 
 
 @router.post("/authorize")
@@ -439,11 +507,16 @@ def begin_sign_in(
     The tenant comes from the verified token, never from the body -- the same
     rule every other route here follows, and the reason the body has no
     owner_tenant field at all.
+
+    The provider is the body's, forwarded unchanged (`anthropic` when absent,
+    so a Claude sign-in is exactly what it was). The broker's answer names the
+    provider and the redirect it chose, which is how `sc account add
+    --provider openai` knows to listen on its own machine for the callback.
     """
     return pool.begin_sign_in(
         owner_tenant=_writer_tenant_id(ctx, auth),
         label=body.label,
-        provider=SUBSCRIPTION_PROVIDER,
+        provider=body.provider,
         lend_to=list(body.lend_to),
     )
 
@@ -700,6 +773,81 @@ def remove_account(
     """
     _owned(pool, _writer_tenant_id(ctx, auth), account_id)
     return pool.remove(account_id)
+
+
+class AccountPools(StrictModel):
+    """Which pools an account is in (the Voice it pool, owner 2026-11-02), and
+    the account's label typed back. What a pool name may be, and whether the
+    label matches, is the broker's (`PUT /v1/accounts/{id}/pools`): its 400
+    reaches the caller in its own words. The bounds only stop an unbounded
+    body."""
+
+    pools: list[str] = Field(min_length=1, max_length=len(ACCOUNT_POOLS) + 2)
+    confirm_label: str = Field(min_length=1, max_length=256)
+
+
+#: The `admin_audit` action a pool move is recorded under.
+ACCOUNT_POOLS_AUDIT_ACTION = "account_pools_set"
+
+
+@router.put("/{account_id}/pools")
+def set_account_pools(
+    account_id: str,
+    body: AccountPools,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Move an account between the workspace pool and the Voice it pool.
+
+    A PLATFORM ADMIN's only (`admin_auth`, the gate every admin route
+    declares; not in `POOL_ADMIN_ROUTES`, so a pool admin is refused like
+    any non-admin): the Voice it pool is the one ChatGPT plan account the
+    platform reserves for Voice it, and moving it takes it from, or gives it
+    to, every workspace's agents. The account must exist (404 before the
+    broker is asked to change anything). `confirm_label` is forwarded as
+    typed: the broker refuses 400 unless it is the account's label, and 409
+    `pool_in_use` when the move would take a pool the account holds a live
+    lease of; both reach the caller with the broker's sentence.
+
+    AUDITED: one `admin_audit` row once the broker has answered -- who (the
+    admin's verified email, never a body field), the account, the pools
+    before and after.
+    """
+    owner = account_id.split(":", 1)[0] if ":" in account_id else ""
+    before = None
+    if owner:
+        # `include_reserved`: a Voice-it-only account serves no tenant, so
+        # the default listing leaves it out and it could never move back.
+        for row in pool.list_accounts(owner, include_reserved=True).get("accounts") or []:
+            if isinstance(row, dict) and row.get("account_id") == account_id \
+                    and row.get("owner_tenant") == owner:
+                before = row
+                break
+    if before is None:
+        raise NotFound(f"no account {account_id!r} in the pool")
+    result = pool.set_pools(account_id, pools=list(body.pools), confirm_label=body.confirm_label)
+    after = result.get("account") if isinstance(result, dict) else None
+    after = _with_voice_pool(after) if isinstance(after, dict) else None
+    from_pools = (_with_voice_pool({**before, "pools": before.get("pools")}) or {}).get("pools")
+    change = {
+        "account_id": account_id,
+        "label": before.get("label"),
+        "from_pools": from_pools,
+        "to_pools": (after or {}).get("pools", list(body.pools)),
+    }
+    ctx.db.collection(AUDIT_COLLECTION).document().set({
+        "action": ACCOUNT_POOLS_AUDIT_ACTION,
+        "target_tenant_id": owner,
+        "by": auth.email,
+        "at": ctx.now(),
+        "detail": change,
+    })
+    ctx.metrics.admin_actions.labels(action=ACCOUNT_POOLS_AUDIT_ACTION).inc()
+    out = dict(result) if isinstance(result, dict) else {}
+    if after is not None:
+        out["account"] = after
+    return {**out, "change": {**change, "requested_by": auth.email}}
 
 
 # --------------------------------------------------------------------------

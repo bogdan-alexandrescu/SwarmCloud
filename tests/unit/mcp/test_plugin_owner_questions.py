@@ -196,6 +196,24 @@ def test_questions_are_validated_and_capped_and_keep_their_served_index(tmp_path
     assert len(kept) <= 20, len(kept)
 
 
+def test_the_bridges_own_index_is_kept_when_answered_questions_were_left_out(tmp_path):
+    """5 November 2026: the bridge hands on only the OPEN questions
+    (`progress.open_owner_questions`), each under its `index` in
+    questions.json; question 0 answered, the list starts at index 1."""
+    served = [{"index": 1, **_question(2)},
+              {"index": 3, **_question(4), "answer_unknown_because": "its stored answers could not be read"}]
+    got = _per_step(tmp_path, {"step:scan-01": {"state": "SUCCEEDED", "result": _fields("SUCCEEDED", served)}})
+    kept = {row["step_id"]: row for row in got["result"]["steps"]}["scan-01"]["questions"]
+
+    # MUTATION: numbering by place in the served list records swarm_task_answer's
+    # pick for question 1 under question 0, which the owner already answered.
+    assert [q["index"] for q in kept] == [1, 3], kept
+    # MUTATION: dropping the reason makes "could not tell" read as "open".
+    assert "answer_unknown_because" not in kept[0]
+    assert kept[1]["answer_unknown_because"] == "its stored answers could not be read"
+    assert [q["index"] for q in got["result"]["owner_questions"][0]["questions"]] == [1, 3]
+
+
 # --------------------------------------------------------------------------
 # 2. single-task rows
 # --------------------------------------------------------------------------
@@ -290,14 +308,25 @@ def test_a_summary_run_fills_the_questions_whole(tmp_path):
     assert "b · 3 question(s) for the owner · console: https://c.test/agents/task_b" in got["logs"], got["logs"]
 
 
-def test_a_summary_task_batch_carries_owner_questions_by_title(tmp_path):
+def test_at_the_summary_default_a_task_still_has_its_own_row_and_its_questions_by_title(tmp_path):
+    """A batch of single tasks is no longer summed into one row (owner
+    2026-11-04): with `rows: summary` each task still gets its own sc:task
+    row, and that row's questions reach owner_questions under its title."""
     asked = [_question(9)]
-    answers = {"SUMMARY": {"state": "FINISHED", "last_error": None,
-                           "tasks": [_told("task_q", questions=asked)]}}
-    got = _run(tmp_path, {"attach_tasks": [{"task_id": "task_q", "title": "LANE-Q", "console": _LINK}],
-                          "rows": "summary"}, answers)
+    harness = tmp_path / "harness.cjs"
+    harness.write_text(_BY_PROMPT)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(json.dumps({
+        "args": {"attach_tasks": [{"task_id": "task_q", "title": "LANE-Q", "console": _LINK}], "rows": "summary"},
+        "answers": {"task_id: task_q": {"state": "SUCCEEDED", "result": _fields("SUCCEEDED", asked)}},
+    }))
+    done = subprocess.run([_node(), str(harness), str(_RUN_JS), str(fixture)],
+                          capture_output=True, text=True, timeout=60, check=False)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
     assert "error" not in got, got.get("error")
-    # MUTATION: summarizeTasks() not building owner_questions.
+    # MUTATION: a summary row for the task batch -- no `task_id: task_q`
+    # prompt is answered, so no question reaches owner_questions.
     assert got["result"]["owner_questions"] == [{
         "title": "LANE-Q", "task_id": "task_q", "console": _LINK, "questions": [_expected(asked[0], 0)],
     }], got["result"].get("owner_questions")

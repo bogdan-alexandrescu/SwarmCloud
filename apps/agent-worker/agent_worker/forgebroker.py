@@ -65,6 +65,11 @@ GRANT_CAUSES = {
 #: swarm-api's code for an attempt that is not the task's current one.
 SUPERSEDED = "attempt_superseded"
 
+#: swarm-api's code for a service submission's run it minted no installation
+#: token for (`swarm_api.credbroker`, DAYONE-SERVICE-APP-TOKEN): the worker
+#: keeps the run's slot (`secrets.resolve_git_token`).
+APP_INSTALLATION_UNAVAILABLE = "app_installation_unavailable"
+
 #: This worker's own codes, for refusals made before anything is asked.
 NO_ATTEMPT_KEY = "attempt_key_unregistered"
 NO_BROKER = "forge_broker_unconfigured"

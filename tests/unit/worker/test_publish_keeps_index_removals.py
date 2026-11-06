@@ -43,6 +43,7 @@ from swarm_common.states import TaskState
 from worker_seeds import seed_attempt
 from test_publish_commits_in_the_clean_repository import _attempt
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     forge,
     local_urls,
     origin,

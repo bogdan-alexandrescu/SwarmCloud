@@ -31,10 +31,12 @@ import type { Task, TaskPage, TaskState } from '../types'
 
 const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
+  loadTasksInStates: vi.fn(),
   loadTaskEventsPage: vi.fn(),
   loadTaskLogs: vi.fn(),
   loadTranscript: vi.fn(),
   loadLiveSession: vi.fn(),
+  loadTaskDigests: vi.fn(),
   mintLiveTicket: vi.fn(),
   takeLiveControl: vi.fn(),
   returnLiveControl: vi.fn(),
@@ -210,13 +212,37 @@ describe('the Agents list: All | Browsers N', () => {
 
   async function mount() {
     api.loadTasks.mockResolvedValue({ status: 'ok', data: { tasks: rows(), tenant_id: 'u-ada' }, fetchedAt: Date.now() } satisfies Result<TaskPage>)
-    api.loadLiveSession.mockImplementation(async (id: string) =>
+    // The live and waiting states' one read answers from the same rows.
+    api.loadTasksInStates.mockImplementation(async (states: readonly TaskState[]) => ({
+      status: 'ok',
+      data: { tasks: rows().filter((t) => states.includes(t.state)), tenant_id: 'u-ada' },
+      fetchedAt: Date.now(),
+    }) satisfies Result<TaskPage>)
+    const liveOf = (id: string) =>
       id === 'task_needsyou00000000001'
         ? read(session({ device: { preset: 'iphone-15', orientation: 'portrait', touch: true } }))
         : id === 'task_tablet0000000000001'
           ? read(session({ device: { preset: 'ipad-7', orientation: 'landscape', touch: true } }))
-          : read(session({ device: null })),
-    )
+          : read(session({ device: null }))
+    api.loadLiveSession.mockImplementation(async (id: string) => liveOf(id))
+    // The rows' outlines: ONE digests read for every browser row (#2688).
+    api.loadTaskDigests.mockImplementation(async (ids: readonly string[]) => {
+      const reads = ids.map((id) => [id, liveOf(id)] as const)
+      const first = reads[0]?.[1]
+      const presets = first !== undefined && first.status === 'ok' ? first.data.session?.presets ?? [] : []
+      return {
+        status: 'ok',
+        fetchedAt: Date.now(),
+        data: {
+          digests: reads.map(([id, r]) => ({
+            task_id: id,
+            state: 'RUNNING' as const,
+            live: { live_browser: true, session_state: 'open' as const, device: r.status === 'ok' ? r.data.session?.device ?? null : null },
+          })),
+          presets,
+        },
+      }
+    })
     const view = render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(view.container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
     return view
@@ -256,8 +282,9 @@ describe('the Agents list: All | Browsers N', () => {
     // Not reported (LB-SEAM serves null): an outline that says so, not a guessed desktop.
     await waitFor(() => expect(device('task_browser0000000000001')?.getAttribute('data-device')).toBe('unknown'))
     expect(device('task_browser0000000000001')?.getAttribute('aria-label')).toMatch(/not reported/i)
-    // An ordinary agent gets no outline and no session read.
+    // An ordinary agent gets no outline and no session read, alone or batched.
     expect(api.loadLiveSession.mock.calls.map(([id]) => id)).not.toContain('task_coder000000000000001')
+    expect(api.loadTaskDigests.mock.calls.flatMap(([ids]) => ids as string[])).not.toContain('task_coder000000000000001')
 
     const theaterAll = screen.getByRole('link', { name: /watch all browsers/i })
     expect(theaterAll.getAttribute('href')).toBe(theaterPath('task_needsyou00000000001', null))
@@ -302,11 +329,11 @@ describe("the Overview's hand-off card: Take control", () => {
     })
     render(<HandoffCards tasks={[holding(ID)]} now={NOW} onOpen={() => {}} />)
     const banner = document.querySelector('.c-banner') as HTMLElement
-    // The card keeps its reason, site and time left, and its Open →.
+    // The card keeps its reason, site and time left, and its Open button (no arrow since 2026-11-05).
     expect(banner.textContent).toContain('Sign in to GitHub as the bot account')
     expect(banner.textContent).toContain('github.com')
     expect(banner.textContent).toContain('9:00 left')
-    expect(within(banner).getByRole('link', { name: /→/ })).toBeTruthy()
+    expect(within(banner).getByRole('link', { name: 'Open' }).classList.contains('c-btn')).toBe(true)
 
     const take = await within(banner).findByRole('button', { name: /^Take control$/ })
     fireEvent.click(take)

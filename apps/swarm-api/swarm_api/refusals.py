@@ -550,6 +550,56 @@ SWITCHES: dict[str, Switch] = {
         "and offers Reject only to those who may approve",
         default=True,
     ),
+    # #2726 (docs/workflows.md, "A `repository_ref` the forge does not have").
+    # Off, a submission on a branch GitHub says is gone is admitted, as before,
+    # and fails in the worker's clone after a lease and a pod.
+    "repository_ref_not_found": Switch(
+        code="repository_ref_not_found",
+        why="a submission whose repository_ref is neither a branch nor a tag of a repository "
+        "the submitter's forge slot can read, or a full sha GitHub has no commit for (#3315), "
+        "is answered 422 repository_ref_not_found before "
+        "any task is stored. On once the report-only log shows only refs that really were gone",
+    ),
+    # Admin › Setup's first workspace before infra pass 3 (DAYONE-MANIFEST-
+    # STEPS-2, routes/setup.py "NO WORKSPACE BEFORE PUBLISHING"). Filing it
+    # approves it, and an approval while swarm-api's publisher is off is only
+    # logged workspace_stuck (publishing_off) and pages. SHIPS ON
+    # (default=True), unlike a new refusal's usual report-only start: the
+    # console never offers the step before then (its first_team step reads
+    # `waiting`), so no caller it guides can meet the 409, and off, the
+    # workspace is filed and never built. Set REFUSAL_PUBLISHING_OFF=off to
+    # file it before publishing again.
+    "publishing_off": Switch(
+        code="publishing_off",
+        why="Admin › Setup files no first workspace (a team, or one person's personal "
+        "workspace) while swarm-api's workspace publisher is off, which swarm install's "
+        "infra pass 3 turns on; the team route answers 409 publishing_off and writes nothing. "
+        "Ships on: the console shows the step waiting until then",
+        default=True,
+    ),
+    # QA flows that write (docs/design/qa-environments.md §6; BGD, 2026-11-05,
+    # "declared writes plus a switch, on by default"). Both refuse a SAVE of a
+    # QA target, raised by `qatargets` through `refuse`, and both SHIP ON
+    # (default=True) by that decision, with precedent budget_above_limit:
+    # off loses no protection, because a mutating flow without `writes`
+    # renders read-only, and with the workspace's `writing_flows` off every
+    # flow does (`qaspec.leg`). Off, the target is saved and its flow reads
+    # only. Set REFUSAL_QA_FLOW_WRITES_REQUIRED=off or
+    # REFUSAL_QA_WRITING_FLOWS_OFF=off to let the save through again.
+    "qa_flow_writes_required": Switch(
+        code="qa_flow_writes_required",
+        why="a QA target saved with a flow that is mutating and has no non-empty `writes`, the "
+        "one sentence saying what it writes, is refused 422. Ships on by BGD's decision "
+        "2026-11-05; off, the target is saved and that flow renders read-only",
+        default=True,
+    ),
+    "qa_writing_flows_off": Switch(
+        code="qa_writing_flows_off",
+        why="a QA target saved with a mutating flow while its workspace's `writing_flows` QA "
+        "setting is off is refused 422. Ships on by BGD's decision 2026-11-05; off, the "
+        "target is saved and every flow of the workspace still renders read-only",
+        default=True,
+    ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of #2325) have NO switch here, deliberately: join_link_unknown,
     # join_already_member, join_already_reaches, join_not_offered,

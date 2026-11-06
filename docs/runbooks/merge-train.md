@@ -43,6 +43,28 @@ nothing reaches main without having been in a green train.
 * The pull request that adds the train has merged. The train's
   `workflow_run` trigger only works once the workflow file is on the default
   branch.
+* The SwarmCloud worker's merge step reads the same switch (owner decision,
+  2026-11-03; [merge-step.md](../merge-step.md), "Revised 2026-11-03"). With
+  `MERGE_TRAIN` `on`, a merge step that is green and told MERGE adds `ready`
+  to its pull request and parks until the train has merged it; it no longer
+  takes the repository's merge slot or updates its branch. Ejected (the
+  train's comment and `ready` removed), it goes to its fix round if the pull
+  request now conflicts or is red, or else fails `train_ejected` with the
+  train's reason. Nothing else to do for that, with one thing to know: the
+  step reads the variable with the tenant's `-git` token, and the tenant
+  GitHub App does not have the *Variables: Read* permission today. Without
+  it, the step treats the train as on only once step 2's ruleset change
+  requires `merge-train`. So, with `merge-train` required, the step follows
+  the train from the moment the ruleset changes; without that requirement,
+  grant the App *Variables: Read* (App settings, Permissions, Repository
+  permissions, Variables) before step 2, or the step keeps merging directly.
+  A merge step on the train says which in its result summary:
+  `repository_train.on_by` is `variable` when it read the variable, and
+  `required_check` when it could not and followed the ruleset.
+
+* Merge steps parked on the train before the variable is turned off again
+  take the direct path at their next wake (at most 15 minutes later):
+  nothing needs undoing on them.
 
 ## 1. Run a train without landing anything
 
@@ -149,9 +171,10 @@ The train posts `merge-train` on a pull request's head only once that pull
 request has been in a green train. With the context required, **anything that
 merges into main some other way is refused**:
 
-* the SwarmCloud worker's merge step. It merges with the tenant's own token,
-  and this repository's `merge_policy` is `on_merge_verdict`. Its pull
-  requests would then need `ready` and would land through the train;
+* the SwarmCloud worker's merge step, unless it is on the train. Since
+  2026-11-03 it is: with the train on it labels its pull request `ready` and
+  waits for the train instead of merging (see "Before you start"), so this
+  requirement no longer refuses it;
 * a person pressing "Squash and merge";
 * the hotfix lane, if it merges a pull request.
 
@@ -162,8 +185,16 @@ choice is the owner's.
 
 ## 3. Watch the first live trains
 
-* Actions → `merge-train`: each scheduled tick either says what it is waiting
-  for, lands a train, or bisects one.
+* Actions → `merge-train`: each tick either says what it is waiting for,
+  lands a train, or bisects one. With the train on, a tick runs when an
+  application or security run finishes on a train, when one finishes green on
+  any other pull request of this repository, and when `ready` is added to a
+  pull request of this repository (through `auto-merge`'s run on that label;
+  a fork's pull request starts no tick). With no train open, such a tick
+  starts one, as a schedule tick does; a train's own run only judges it. The
+  five-minute schedule is only the fallback, because GitHub ran it only every
+  four to seven hours (2026-11-03). Many events close together make at most two
+  ticks: the one running and one pending behind it.
 * Every landed pull request is marked **merged** by GitHub, with the subject
   `<title> (#N)`. `auto-merge.yml`'s `close-issues` job closes the issues it
   names, as before.

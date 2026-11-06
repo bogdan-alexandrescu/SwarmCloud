@@ -162,7 +162,7 @@ def test_the_setting_reads_15_until_set_and_says_its_bounds(client, db, seeded):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["qa_flows_per_step"] == 15
-    assert body["defaults"] == {"qa_flows_per_step": 15}
+    assert body["defaults"] == {"qa_flows_per_step": 15, "writing_flows": True}
     assert body["bounds"] == {"qa_flows_per_step": {"min": 1, "max": 30}}
     assert body["can_edit"] is False
     selected = client.get("/v1/qa-settings", headers={**auth_header("alice"), "X-Swarm-Tenant": "eng"})

@@ -72,7 +72,7 @@ def test_api_writes_only_console_documents(setup_client, db, github, fake_secret
     row's fields; the engine's document is untouched."""
     engine = seed_engine_document(db)
     root = auth_header("root")
-    github.conversion = {"id": 7, "slug": "s", "client_id": "c", "pem": secrets.token_hex(8),
+    github.conversion = {"id": 7, "slug": "s", "client_id": "c", "name": "n", "pem": secrets.token_hex(8),
                          "client_secret": secrets.token_hex(8),
                          "webhook_secret": secrets.token_hex(8)}
     start = setup_client.post("/v1/admin/setup/github-app/manifest", json={}, headers=root)

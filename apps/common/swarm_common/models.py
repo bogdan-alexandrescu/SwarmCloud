@@ -120,6 +120,50 @@ def pool_names_for(
     return pools
 
 
+#: What a lease takes in each `provider:*` pool, whatever its size. A provider
+#: pool bounds concurrent LLM sessions against that provider's accounts, and an
+#: agent is one session however large its runner is (contract request 129,
+#: #2950). Every other pool bounds compute and takes the resource units.
+PROVIDER_POOL_UNITS = 1
+
+
+def pool_units_for(pool: str, units: int) -> int:
+    """The units a lease of `units` resource units takes in `pool`.
+
+    THE one rule. Reserve, release and every recount of a pool's `active` go
+    through it (or through `held_pool_units`, which applies it), so what is
+    taken and what is given back cannot drift apart.
+
+      * `provider:<p>` and `provider:<p>:tenant:<t>`: 1. One agent is one
+        session against the provider; a large runner is not four sessions.
+      * `global`, `tenant:<t>`, `resource:<c>`, `runner:<p>`, `backend:<b>`:
+        the resource units. Each bounds compute -- the platform's, a tenant's
+        share of it, a size class, a profile, a backend's capacity -- and a
+        large runner is four standard runners' worth of it.
+    """
+    return PROVIDER_POOL_UNITS if pool.startswith("provider:") else units
+
+
+def reserved_pool_units(pools: list[str], units: int) -> dict[str, int]:
+    """Per pool, what a lease reserved under the current rule takes."""
+    return {name: pool_units_for(name, units) for name in pools}
+
+
+def held_pool_units(
+    pools: list[str], units: int, pool_units: dict[str, int] | None
+) -> dict[str, int]:
+    """Per pool, what a STORED lease holds: what release gives back.
+
+    A lease reserved since request 129 records `pool_units`, and holds exactly
+    that. A lease reserved before it has none and took its `units` in every
+    pool, the provider pools included, so it holds `units` in each: giving
+    back the new rule's 1 would leave the difference held for ever.
+    """
+    if pool_units is None:
+        return {name: units for name in pools}
+    return {name: int(pool_units.get(name, units)) for name in pools}
+
+
 # --------------------------------------------------------------------------
 # Leases
 # --------------------------------------------------------------------------
@@ -146,6 +190,14 @@ class Lease:
     heartbeat_at: datetime | None = None
     released_at: datetime | None = None
     release_reason: str | None = None
+    #: What the lease took in each pool (`reserved_pool_units`), written at
+    #: reserve. None on a lease reserved before contract request 129, which
+    #: took `units` in every pool.
+    pool_units: dict[str, int] | None = None
+
+    def held_units(self) -> dict[str, int]:
+        """Per pool, what this lease holds and release gives back."""
+        return held_pool_units(self.pools, self.units, self.pool_units)
 
     @property
     def is_released(self) -> bool:
@@ -620,6 +672,49 @@ class Task:
     #: construction of a task changes meaning; absent on every older
     #: document, which decodes as 0.
     platform_refusals: int = 0
+    #: Contract request 131 (TIMEOUT-ASKED-CONTRACT, part of #2688), the
+    #: owner's "API records the ask" (2026-11-01): the `timeout_seconds` the
+    #: spec asked for, written by swarm-api at submission ONLY when it stored
+    #: a lower `timeout_seconds` (the profile's cap, or a child's parent's).
+    #: A RECORD ONLY: the limit is `timeout_seconds` alone, and nothing reads
+    #: this as one (invariant 10); the worker reports it in the runner's
+    #: `limits.clamped`. Unsigned: written at submission, it chooses nothing.
+    #: None on a task that was not lowered and on every older document. After
+    #: `platform_refusals`, so no positional construction of a task changes
+    #: meaning.
+    timeout_seconds_asked: int | None = None
+    #: Contract request 132 (STORED-TASK-TOTALS, part of #2688), accepted by
+    #: the owner 2026-11-01. A READ-SIDE VIEW ONLY of this task's attempt
+    #: documents: `swarm_api.attempt_totals.attempt_totals()`'s keys plus
+    #: `as_of` ({attempt_id, generation} of the attempt that wrote it).
+    #: Rewritten when an attempt starts, records its spend and ends, so
+    #: `GET /v1/tasks` serves it instead of reading every row's attempts.
+    #: NOTHING in admission, leasing, the scheduler or capacity reads it:
+    #: capacity is reserved all-or-nothing from the pools (invariant 2) and
+    #: concurrency counts from LEASED (invariant 3). Unsigned. None on every
+    #: older document, which a reader derives as before.
+    attempt_totals: dict[str, Any] | None = None
+    #: Contract request 132, accepted 2026-11-01. A READ-SIDE VIEW ONLY of
+    #: this task's account events: the account its current attempt holds,
+    #: `swarm_api.task_accounts`' served shape (`status`, `account_id`,
+    #: `provider`, `attempt_id`, `generation`, `swapped_from`, `swaps`),
+    #: written with each `account_assigned` / `account_unreadable` event.
+    #: Never a token or a secret name. NOTHING in admission, leasing, the
+    #: scheduler or capacity reads it (invariants 2 and 3; the broker's own
+    #: holds are the account capacity). Unsigned. None on every older
+    #: document. Last in the class, after `timeout_seconds_asked`, so no
+    #: positional construction moves.
+    current_account: dict[str, Any] | None = None
+    #: Contract request 133 (CONTRACT-MAXTURNS, part of #2524), accepted by
+    #: the owner 2 November 2026: the attempt's RESOLVED turn cap -- min(the
+    #: step's ask, the profile's `max_turns`), or the profile's when the step
+    #: names none. Written by swarm-api at submission, only for a profile with
+    #: `supports_max_turns`; signed at spec format 7. The worker passes it to
+    #: the agent CLI (claude_code: `--max-turns N`). None: no cap, today's
+    #: behaviour. It only lowers a limit and chooses no resource (invariant
+    #: 10). Last in the class, after `current_account`, so no positional
+    #: construction moves.
+    max_turns: int | None = None
 
     def __post_init__(self) -> None:
         # Only the fields of requests 54 and 95: a document decoded before them
@@ -958,6 +1053,10 @@ class WorkflowStep:
     #: and/or `tokens`, as submitted. Its task's `budget` is what it resolved
     #: to. None: the step set none.
     budget: dict[str, float | int] | None = None
+    #: Contract request 133 (part of #2524), accepted by the owner 2 November
+    #: 2026: the turn cap this step ASKED for, as submitted. Its task's
+    #: `max_turns` is what it resolved to. None: the step set none.
+    max_turns: int | None = None
 
 
 @dataclass

@@ -4,9 +4,10 @@ part of #2157; docs/web-ui/mockups/config-e.html S1).
 `config_setup.secrets` counts what is NEEDED AND NOT STORED -- an MCP server
 whose credential is not stored, a QA entry signing in with its own login and
 no credential, the workspace's TypeSafe slot while Jev reads it -- each item
-naming the console address that sets it. `config_setup.people` is done in a
-group workspace when someone other than the reader holds a role, and does
-not apply in a personal one.
+naming the console address that sets it. `config_setup.people` is left to
+do in a group workspace only while requests to join wait on the reader, an
+admin who decides them; otherwise it does not apply there, since the group
+supplies the people, nor in a personal one.
 
 The attackers these stand in for:
 
@@ -34,6 +35,7 @@ from swarm_api.auth import TENANT_HEADER, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
 from swarm_api.groups import StaticGroups
+from swarm_api.joinrequests import JoinStore
 from swarm_api.main import create_app
 from swarm_api.mcp_servers import COLLECTION as MCP_SERVERS
 from swarm_api.mcp_servers import McpServers, server_id
@@ -80,9 +82,14 @@ def db() -> FakeFirestore:
 
 
 @pytest.fixture
-def client(db, tokens, group_map, objects) -> TestClient:
+def settings() -> Any:
+    return api_settings(settings_key=secrets.token_hex(32))
+
+
+@pytest.fixture
+def client(db, settings, tokens, group_map, objects) -> TestClient:
     ctx = build_context(
-        settings=api_settings(settings_key=secrets.token_hex(32)), db=db,
+        settings=settings, db=db,
         verifier=StaticTokenVerifier(tokens), groups=StaticGroups(group_map),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
         objects=objects, forge_tokens=NoForgeTokens(), now=lambda: AT,
@@ -272,20 +279,68 @@ def test_a_personal_workspace_reports_people_invited_as_not_applying(client):
     assert people["holders"] is None and people["reason"]
 
 
-def test_a_group_workspace_with_only_the_reader_as_admin_reads_0_holders(client):
+def ask_to_join(db: FakeFirestore, settings: Any, requester: str, *,
+                group: str = ENG_GROUP) -> None:
+    """An open request to join eng, signed with the app's own settings key."""
+    JoinStore(db, settings, metrics=ApiMetrics(), now=lambda: AT).ask(
+        tenant_id="eng", group=group, requester=requester)
+
+
+def test_a_group_workspace_with_no_overrides_and_no_requests_has_nothing_to_invite(client):
+    # The spine's Config dot that never cleared (2026-11-01): a group
+    # workspace's people come from its group, so with no request waiting the
+    # step does not apply -- it never reads "not done" -- and says why.
     grant(client, "alice@example.com", "admin")
     people = setup_of(client, "alice", "eng")["people"]
-    assert people["applies"] is True and people["done"] is False
-    assert people["holders"] == 0 and people["admins"] == 0
+    assert people["applies"] is False and people["done"] is None
+    assert people["reason"] and "group" in people["reason"]
+    assert people["holders"] == 0 and people["admins"] == 0 and people["pending"] == 0
 
 
-def test_someone_else_holding_a_role_is_invited(client):
+def test_a_member_who_decides_nothing_has_nothing_to_invite_either(client):
+    people = setup_of(client, "dave", "eng")["people"]
+    assert people["applies"] is False and people["done"] is None and people["reason"]
+
+
+def test_someone_else_holding_a_role_is_still_counted(client):
     grant(client, "alice@example.com", "admin")
     grant(client, "dave@example.com", "member")
     people = setup_of(client, "alice", "eng")["people"]
-    assert people["done"] is True and people["holders"] == 1 and people["admins"] == 0
+    assert people["applies"] is False and people["holders"] == 1 and people["admins"] == 0
     seen_by_dave = setup_of(client, "dave", "eng")["people"]
     assert seen_by_dave["holders"] == 1 and seen_by_dave["admins"] == 1
+
+
+def test_an_open_request_to_join_is_left_for_the_admin_who_decides_it(client, db, settings):
+    grant(client, "alice@example.com", "admin")
+    ask_to_join(db, settings, "lee@example.com")
+    ask_to_join(db, settings, "kim@example.com")
+    people = setup_of(client, "alice", "eng")["people"]
+    assert people["applies"] is True and people["done"] is False
+    assert people["pending"] == 2 and "2 requests to join" in people["reason"]
+    # A platform admin decides it too; a member, who cannot, is not handed it.
+    assert setup_of(client, "root", "eng")["people"]["pending"] == 2
+    seen_by_dave = setup_of(client, "dave", "eng")["people"]
+    assert seen_by_dave["applies"] is False and seen_by_dave["pending"] is None
+    assert seen_by_dave["pending_reason"]
+
+
+def test_a_request_naming_another_group_is_not_this_workspaces(client, db, settings):
+    grant(client, "alice@example.com", "admin")
+    ask_to_join(db, settings, "lee@example.com", group="old-eng@example.com")
+    people = setup_of(client, "alice", "eng")["people"]
+    assert people["applies"] is False and people["pending"] == 0
+
+
+def test_unread_requests_to_join_are_unknown_never_done(client, monkeypatch):
+    def broken(self, tenant_ids):
+        raise RuntimeError("firestore down")
+
+    grant(client, "alice@example.com", "admin")
+    monkeypatch.setattr(JoinStore, "open_for", broken)
+    people = setup_of(client, "alice", "eng")["people"]
+    assert people["applies"] is True and people["done"] is None
+    assert people["pending"] is None and people["reason"]
 
 
 def test_pending_is_null_with_its_reason_where_a_workspace_takes_no_requests(client):

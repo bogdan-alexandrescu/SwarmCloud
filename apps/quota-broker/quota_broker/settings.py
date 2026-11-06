@@ -76,5 +76,13 @@ class BrokerSettings:
                 default_cooldown_seconds=_int("AIMD_DEFAULT_COOLDOWN_SECONDS", 30),
                 max_cooldown_seconds=_int("AIMD_MAX_COOLDOWN_SECONDS", 900),
                 exhaustion_threshold=_int("AIMD_EXHAUSTION_THRESHOLD", 5),
+                # Time-based recovery, on top of AIMD_SUCCESS_THRESHOLD's climb
+                # (owner, 2026-11-02): +1 for every 300 s without a
+                # workspace-wide refusal, up to the ceiling. Successes alone
+                # took about 660 task finishes, days, to bring a workspace
+                # halved to 7 back to 40; at 300 s that is under three hours,
+                # and 300 s is the quota sweep's own tick, so a quiet workspace
+                # climbs on every sweep with no new timer. 0 turns it off.
+                recovery_interval_seconds=_int("AIMD_RECOVERY_INTERVAL_SECONDS", 300),
             ),
         )

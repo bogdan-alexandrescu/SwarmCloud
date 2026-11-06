@@ -3,8 +3,9 @@
 Firestore collection `swarm-install`, document `<env>` and its
 subcollections. **Every document has exactly one writer.** The engine (the
 `swarm install` CLI) writes `swarm-install/<env>`; swarm-api reads it and never
-writes it. swarm-api writes the console's documents and `health/latest` (on
-behalf of `swarm-doctor`), and nothing else under the collection.
+writes it. swarm-api writes the console's documents, the team documents
+(`teams/<id>`) and `health/latest` (on behalf of `swarm-doctor`), and
+nothing else under the collection.
 
 `SWARM_API_DOCUMENTS` restates swarm-api's rows of `swarm_install.record.WRITERS`
 (DAYONE-ENGINE-1). It is restated, not imported, because swarm-api's image does
@@ -27,29 +28,61 @@ COLLECTION = "swarm-install"
 #: is keyed per account label; each label's value holds `ACCOUNT_FIELDS`.
 SWARM_API_DOCUMENTS: dict[str, frozenset[str]] = {
     "swarm-install/{env}/console/github_app": frozenset(
-        {"state_hash", "id", "slug", "client_id", "installed_on", "secrets_written_at",
-         "self_check"}),
+        {"state_hash", "id", "slug", "client_id", "name", "installed_on",
+         "secrets_written_at", "self_check"}),
     "swarm-install/{env}/console/accounts": frozenset(),
-    "swarm-install/{env}/console/teams/{id}": frozenset(
+    #: A collection under the env document: `console/teams/<id>` has five
+    #: segments, which real Firestore refuses as a document (audit 3, A2).
+    "swarm-install/{env}/teams/{id}": frozenset(
         {"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     "swarm-install/{env}/console/finished": frozenset({"at", "by"}),
+    #: A one-person install's first workspace (decision 7, DAYONE-SETUP-API-3):
+    #: the installer's personal workspace, its grant and its smoke.
+    "swarm-install/{env}/console/personal": frozenset(
+        {"owner", "workspace", "progress", "grant", "smoke"}),
     #: The console's two verification runs (DAYONE-SETUP-API-2): `verify_runs`
     #: is `{"console_task": <task id>, "console_workflow": <workflow id>}`,
-    #: which the engine copies into its state's `outputs["verify_runs"]`.
+    #: which the engine copies into its state's `outputs["verify_runs"]`;
+    #: `retries` is `{"console_task": n, "console_workflow": n}`, each key's
+    #: fresh starts (DAYONE-SETUP-API-6).
     "swarm-install/{env}/console/verify_runs": frozenset(
-        {"verify_runs", "repository", "started_at", "by"}),
+        {"verify_runs", "retries", "repository", "started_at", "by"}),
+    #: Admin › Setup's Sign-in client step (issue #2964): the Desktop
+    #: client's id, when and by whom it was saved. Its secret goes to Secret
+    #: Manager (`swarm-iap-desktop-client-secret`) only, never here.
+    "swarm-install/{env}/console/sign_in_client": frozenset({"client_id", "saved_at", "saved_by"}),
     "swarm-install/{env}/health/latest": frozenset({"run_at", "checks", "findings"}),
 }
-ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_expires", "signed_in_at"})
+#: `link_made_at` is when the account's one-time link was made, stored with
+#: it; an account recorded before the field existed has none, and Admin ›
+#: Setup serves it without one rather than guessing it from `link_expires`.
+ACCOUNT_FIELDS = frozenset({"owner", "link_hash", "link_made_at", "link_expires", "signed_in_at"})
 
 #: Read only, never written here.
 ENGINE_DOCUMENT = "swarm-install/{env}"
+#: The engine document's fields Admin › Setup reads by name; each is in the
+#: engine's row of `swarm_install.record.WRITERS` (`test_record_parity`).
+ENGINE_FIELDS_READ = frozenset({"lease", "sizing", "installer", "sign_in_client", "passes"})
+#: The passes the engine times in `passes` (`swarm_install.record.TIMED_PASSES`),
+#: and each one's fields: `started_at`, then `ended_at` and `result` once it
+#: has stopped. Restated, as above; `test_record_parity` holds both alike.
+TIMED_PASSES: tuple[str, ...] = ("sign_in_pass", "infra_pass_3")
+PASS_FIELDS = frozenset({"started_at", "ended_at", "result"})
+#: `sizing`'s fields the status route serves (the INTERFACE SHEET's
+#: `state.outputs["sizing"]`, written in stage 0 by lane SIZING-ASK).
+SIZING_FIELDS: tuple[str, ...] = ("mode", "members", "pool_limits", "service_max_instances",
+                                  "pool_accounts", "budget_usd")
+#: `sizing.mode` for a one-person install (decision 7); anything else is a team.
+INDIVIDUAL = "individual"
+TEAM = "team"
 
 GITHUB_APP = "github_app"
 ACCOUNTS = "accounts"
 FINISHED = "finished"
 TEAMS = "teams"
 VERIFY_RUNS = "verify_runs"
+PERSONAL = "personal"
+SIGN_IN_CLIENT = "sign_in_client"
 
 
 class RecordFieldRefused(ValueError):
@@ -62,8 +95,8 @@ def _template(path: str, env: str) -> str:
     if not path.startswith(prefix):
         raise RecordFieldRefused(f"{path!r} is not under {COLLECTION}/{env}")
     rest = path[len(prefix):]
-    if rest.startswith("console/teams/") and rest.count("/") == 2:
-        return "swarm-install/{env}/console/teams/{id}"
+    if rest.startswith(f"{TEAMS}/") and rest.count("/") == 1:
+        return "swarm-install/{env}/teams/{id}"
     template = "swarm-install/{env}/" + rest
     if template not in SWARM_API_DOCUMENTS:
         raise RecordFieldRefused(f"swarm-api writes no document {path!r}")
@@ -97,8 +130,14 @@ class InstallRecord:
     def console_path(self, name: str) -> str:
         return f"{COLLECTION}/{self.env}/console/{name}"
 
+    def teams_collection(self) -> str:
+        return f"{COLLECTION}/{self.env}/{TEAMS}"
+
     def team_path(self, team_id: str) -> str:
-        return self.console_path(f"{TEAMS}/{team_id}")
+        return f"{self.teams_collection()}/{team_id}"
+
+    def personal_path(self) -> str:
+        return self.console_path(PERSONAL)
 
     def health_path(self) -> str:
         return f"{COLLECTION}/{self.env}/health/latest"
@@ -120,7 +159,7 @@ class InstallRecord:
     def teams(self) -> list[tuple[str, dict[str, Any]]]:
         """Every team document, oldest first (`progress.created_at`)."""
         rows = [(snap.id, dict(snap.to_dict() or {}))
-                for snap in self._db.collection(self.console_path(TEAMS)).stream()]
+                for snap in self._db.collection(self.teams_collection()).stream()]
         return sorted(rows, key=lambda row: (str((row[1].get("progress") or {})
                                                  .get("created_at") or ""), row[0]))
 
@@ -152,12 +191,20 @@ __all__ = [
     "ACCOUNT_FIELDS",
     "COLLECTION",
     "ENGINE_DOCUMENT",
+    "ENGINE_FIELDS_READ",
     "FINISHED",
     "GITHUB_APP",
+    "INDIVIDUAL",
     "InstallRecord",
+    "PASS_FIELDS",
+    "PERSONAL",
     "RecordFieldRefused",
+    "SIGN_IN_CLIENT",
+    "SIZING_FIELDS",
     "SWARM_API_DOCUMENTS",
+    "TEAM",
     "TEAMS",
+    "TIMED_PASSES",
     "VERIFY_RUNS",
     "check_fields",
 ]

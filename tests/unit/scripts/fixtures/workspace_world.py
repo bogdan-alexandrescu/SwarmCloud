@@ -36,7 +36,7 @@ GCLOUD_VALUE_FLAGS = {
 }
 KUBECTL_VALUE_FLAGS = {
     "--context", "-n", "--namespace", "-o", "--output", "-f", "--filename", "--dry-run", "--raw",
-    "--field-selector", "--validate", "--request-timeout", "--type", "-p", "--patch",
+    "--field-selector", "--validate", "--request-timeout", "--type", "-p", "--patch", "--api-group",
 }
 CURL_VALUE_FLAGS = {"-m", "--max-time", "-o", "--output", "-w", "--write-out", "-X", "--request", "-H",
                     "--header", "-K", "--config", "--data-binary"}
@@ -264,6 +264,17 @@ def kubectl(world: dict, argv: list[str], stdin: str) -> int:
     if pos[:2] == ["config", "view"]:
         config = yaml.safe_load(Path(os.environ["KUBECONFIG"]).read_text())
         sys.stdout.write(config["contexts"][0]["context"]["cluster"])
+        return 0
+    if pos[:1] == ["api-resources"]:
+        # Discovery: the world's `api_resources` (resource.group names) is what
+        # the cluster serves; absent, it serves none of them, as a GKE cluster
+        # without FQDN network policy serves no fqdnnetworkpolicies.
+        if world.get("cluster_down"):
+            sys.stderr.write("Unable to connect to the server: dial tcp: i/o timeout\n")
+            return 1
+        group = flag(flags, "--api-group")
+        served = [r for r in world.get("api_resources", []) if not group or r.split(".", 1)[-1] == group]
+        sys.stdout.write("".join(r + "\n" for r in served) if output == "name" else json.dumps(served))
         return 0
     if pos[:1] == ["get"] and "--raw" in flags:
         if world.get("cluster_down"):

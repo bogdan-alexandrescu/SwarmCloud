@@ -275,6 +275,31 @@ class StateStore:
                 state = self.load()
         raise StateConflict(f"the install state kept moving; gave up after {attempts} attempts")
 
+    def rename(self, project: str) -> InstallState:
+        """The install moves to another project id before the project exists
+        (stage 1 found the id taken, audit 4a F1): the local state, every
+        answer stage 0 recorded in it, moves to the new id's file and records
+        the new id; the old file is removed. Only while the state is local:
+        a state bucket is named after its project and is never renamed. An
+        install already recorded under the new id is never overwritten
+        (`FileExistsError`)."""
+        if self.bucket is not None:
+            raise RuntimeError(f"the install state of {self.project} is in its state bucket; it cannot move "
+                               "to another project")
+        target = self.local.with_name(f"{project}.json")
+        if target != self.local and target.exists():
+            raise FileExistsError(f"an install of {project} is already recorded at {target}")
+        state = (self._state or self._read_local() or self._fresh()).model_copy(deep=True)
+        state.project = project
+        data = state.to_bytes()
+        _write_local(target, data)
+        if target != self.local:
+            self.local.unlink(missing_ok=True)
+        self.project = project
+        self.local = target
+        self._state = state.model_copy(deep=True)
+        return state
+
     def attach_bucket(self, bucket: ObjectStore) -> InstallState:
         """The bucket exists now: upload the local state once, then use the bucket.
 

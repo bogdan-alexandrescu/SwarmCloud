@@ -7,18 +7,19 @@ takes if they want it gone:
 
 | Kind | Why it survives |
 |---|---|
-| `oauth-brand` | the IAP brand has no delete method |
+| `oauth-brand` | the OAuth brand (consent screen) has no delete method; it goes with the project |
 | `kms-key-ring` | key rings and keys cannot be deleted; their versions are destroyed |
 | `custom-roles` | a deleted custom role's id is reserved (undeletable for 7 days) |
-| `firestore-database` | a deleted database's id is reusable only after Google's delay |
+| `firestore-database` | deleted by the uninstall, its id reusable only after Google's delay; or, when it was not deleted, kept with its data (infra abandons it) |
 | `desktop-client` | deleting the Desktop OAuth client is a console step; it is kept for reuse |
 | `github-app` | only the organisation can delete its App |
-| `dns-record` | the record is at the company's registrar |
+| `dns-record` | the record is at the company's registrar, or in the project's Cloud DNS zone `edge.dns` wrote it to |
 | `workspace-groups` | the groups, the Groups Reader role assignment or the delegation are org-admin objects |
 
 The record also carries `left`: anything else the uninstall did not remove (a
 resource in Terraform state that carries no `managed-by` label, so it is not
-ours to delete), each with why.
+ours to delete), each with why; a budget the billing account would not let it
+delete; and the project, deleted or kept, when stage 1 created it.
 
 The record is written to the local cache, `~/.config/swarmcloud/install/
 <project>.remains.json`, and printed, before the state bucket is deleted. A
@@ -43,7 +44,6 @@ from .state import LOCAL_DIR, _write_local
 
 KMS_DELETE_DOCS = "https://cloud.google.com/kms/docs/delete-kms-resources"
 CUSTOM_ROLE_DOCS = "https://cloud.google.com/iam/docs/creating-custom-roles#deleting-custom-role"
-BRAND_DOCS = "https://cloud.google.com/iap/docs/reference/rest/v1/projects.brands"
 FIRESTORE_DOCS = "https://cloud.google.com/firestore/docs/manage-databases#delete_a_database"
 
 #: Design §10's eight rows, in its order.
@@ -83,8 +83,9 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
     """The eight survivors of design §10, named from the install state.
 
     `found` holds what the uninstall read from Terraform before destroying it:
-    `custom_roles` (role ids) and `kms_key_ring` (the ring's id), and
-    `firestore_database` (the database id infra's inputs named).
+    `custom_roles` (role ids) and `kms_key_ring` (the ring's id),
+    `firestore_database` (the database id infra's inputs named) and
+    `firestore_deleted` (step 7 deleted it).
     """
     outputs: Mapping[str, Any] = state.outputs
     found = found or {}
@@ -99,19 +100,40 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
     slug = app.get("slug") or "<slug>"
     groups = list(outputs.get("admin_groups") or ())
     delegation = str(outputs.get("groups_auth") or "") == "delegation"
+    host = _text(state.hostname, "the console hostname")
+    zone = str(outputs.get("dns_zone") or "")  # edge.dns wrote the record to the project's Cloud DNS zone
+    dns_record = (
+        (f"edge.dns wrote it to the project's Cloud DNS zone {zone}, whose records the uninstall leaves",
+         f"https://console.cloud.google.com/net-services/dns/zones/{zone}/details?project={project}: "
+         f"delete the A record for {host}")
+        if zone else
+        ("the record is at the company's DNS registrar, which the installer cannot reach",
+         f"at your registrar, delete the A record for {host}"))
     return [
-        Remain("oauth-brand", _text(outputs.get("oauth_brand"), f"projects/{project}/brands/<number>"),
-               f"an OAuth brand cannot be deleted; there is no delete method ({BRAND_DOCS})",
-               "nothing to do: it goes with the project (a reinstall adopts it)"),
+        # No API reads a brand (the IAP OAuth Admin API was shut down on
+        # 2026-03-19): it is named by its console page, never probed.
+        Remain("oauth-brand", _text(outputs.get("oauth_brand"),
+                                    f"https://console.cloud.google.com/auth/branding?project={project}"),
+               "an OAuth brand (consent screen) cannot be deleted; it has no delete method",
+               "nothing to do: it goes with the project (a reinstall reuses it)"),
         Remain("kms-key-ring", ring,
                f"KMS key rings and keys are not deleted here; their key versions were destroyed ({KMS_DELETE_DOCS})",
                "nothing to do: it holds no usable key version (a reinstall imports it and adds a new version)"),
         Remain("custom-roles", ", ".join(roles) or "(none recorded in bootstrap's state)",
                f"a deleted custom role's id stays reserved and can be undeleted for 7 days ({CUSTOM_ROLE_DOCS})",
                "nothing to do: a reinstall inside 7 days undeletes them, later it re-creates them"),
-        Remain("firestore-database", f"projects/{project}/databases/{database}",
-               f"a deleted Firestore database's id is reusable only after Google's delay ({FIRESTORE_DOCS})",
-               "nothing to do: a reinstall waits for the id with a countdown"),
+        # infra abandons its database (deletion_policy = "ABANDON"), so only the
+        # uninstall's own delete removes it; the record says which happened (audit 4e F7).
+        (Remain("firestore-database", f"projects/{project}/databases/{database}",
+                f"it was deleted; a deleted Firestore database's id is reusable only after Google's delay "
+                f"({FIRESTORE_DOCS})",
+                "nothing to do: a reinstall waits for the id with a countdown")
+         if found.get("firestore_deleted") else
+         Remain("firestore-database", f"projects/{project}/databases/{database}",
+                "it is kept, with its data, if the install made it: infra's Terraform abandons the database "
+                "(deletion_policy ABANDON) and this uninstall did not delete it",
+                f"https://console.cloud.google.com/firestore/databases/{database}/data?project={project}: "
+                f"delete the database ({FIRESTORE_DOCS})")),
         Remain("desktop-client", _text(outputs.get("desktop_client_id")),
                "the Desktop OAuth client is deleted only in the console, and is kept for a reinstall to reuse",
                f"https://console.cloud.google.com/auth/clients?project={project}: delete the client with this id"),
@@ -119,8 +141,7 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
                "only the GitHub organisation can delete its App",
                f"https://github.com/organizations/{org}/settings/apps/{slug}/advanced: Delete GitHub App"),
         Remain("dns-record", f"{_text(state.hostname, '<hostname>')} A {_text(outputs.get('global_ip'))}",
-               "the record is at the company's DNS registrar, which the installer cannot reach",
-               f"at your registrar, delete the A record for {_text(state.hostname, 'the console hostname')}"),
+               *dns_record),
         Remain("workspace-groups", ", ".join(groups) or "(none recorded)",
                "Google groups, the Groups Reader admin role assignment and domain-wide delegation are "
                "organisation-admin objects outside the project",

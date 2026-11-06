@@ -55,11 +55,66 @@ def build_record(path: Path, names: list[str] | None = None, **override: dict) -
     return path
 
 
-def assemble(tmp: Path, record: Path, version: str = VERSION) -> subprocess.CompletedProcess:
+def _lightpanda_arg(name: str) -> str:
+    found = re.search(rf"^ARG {name}=(\S+)$", LIGHTPANDA_DOCKERFILE.read_text(), re.M)
+    assert found, f"no ARG {name}= in {LIGHTPANDA_DOCKERFILE}"
+    return found.group(1)
+
+
+# The Lightpanda image's Corresponding Source (AGPL section 6(d); docs/design/
+# lightpanda-runtime.md 6.4): the bundle carries the tag's source archive at
+# the release-home path the image's SOURCE notice names.
+LIGHTPANDA_DOCKERFILE = REPO / "images" / "agent-runtime-lightpanda" / "Dockerfile"
+LIGHTPANDA_VERSION = _lightpanda_arg("LIGHTPANDA_VERSION")
+LIGHTPANDA_SOURCE_SHA256 = _lightpanda_arg("LIGHTPANDA_SOURCE_SHA256")
+LIGHTPANDA_SOURCE = f"third-party/lightpanda/{LIGHTPANDA_VERSION}/source.tar.gz"
+LIGHTPANDA_UPSTREAM = f"https://github.com/lightpanda-io/browser/archive/refs/tags/{LIGHTPANDA_VERSION}.tar.gz"
+#: What the fake curl serves for it. Nothing here downloads the real archive.
+LIGHTPANDA_SOURCE_BODY = b"a stand-in for the lightpanda source archive\n"
+
+# assemble.sh stages the archive with build-mirror.sh's
+# tool_mirror_fetch_upstream: curl, then sha256_of against the Dockerfile's pin.
+# The fake curl logs the URL and writes LIGHTPANDA_SOURCE_BODY; the fake
+# sha256sum answers the pin for the staged download (no test can produce the
+# real archive's bytes offline) unless FAKE_SHA256_HONEST=1, and hashes every
+# other file truly.
+LIGHTPANDA_FAKE_CURL = r'''#!{python}
+import os, sys
+args = sys.argv[1:]
+out = args[args.index("-o") + 1]
+url = [a for a in args if a.startswith("https://")][-1]
+with open(os.environ["FAKE_CURL_LOG"], "a") as fh:
+    fh.write(url + "\n")
+open(out, "wb").write({body!r})
+'''
+LIGHTPANDA_FAKE_SHA256SUM = r'''#!{python}
+import hashlib, os, sys
+for path in sys.argv[1:]:
+    digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    if path.endswith("/source.tar.gz.part") and os.environ.get("FAKE_SHA256_HONEST") != "1":
+        digest = {pin!r}
+    print(f"{digest}  {path}")
+'''
+
+
+def lightpanda_fakes(tmp: Path) -> Path:
+    """A bin directory with the fake curl and sha256sum."""
+    bindir = tmp / "lightpanda-bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    for name, text in (("curl", LIGHTPANDA_FAKE_CURL.replace("{body!r}", repr(LIGHTPANDA_SOURCE_BODY))),
+                       ("sha256sum", LIGHTPANDA_FAKE_SHA256SUM.replace("{pin!r}", repr(LIGHTPANDA_SOURCE_SHA256)))):
+        (bindir / name).write_text(text.replace("{python}", sys.executable))
+        (bindir / name).chmod(0o755)
+    return bindir
+
+
+def assemble(tmp: Path, record: Path, version: str = VERSION, **extra: str) -> subprocess.CompletedProcess:
     # A refusal test must not pass because there is no script to refuse.
     assert ASSEMBLE.is_file(), f"{ASSEMBLE.relative_to(REPO)} does not exist"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CLOUDSDK_", "GOOGLE_"))}
-    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp / "absent.env"))
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp / "absent.env"),
+               PATH=f"{lightpanda_fakes(tmp)}{os.pathsep}{env.get('PATH', '/usr/bin:/bin')}",
+               FAKE_CURL_LOG=str(tmp / "curl.log"), **extra)
     return subprocess.run(
         ["bash", str(ASSEMBLE), "--version", version, "--images", str(record), "--out", str(tmp / "out")],
         env=env, capture_output=True, text=True, timeout=600, check=False,
@@ -93,11 +148,64 @@ def test_module_has_no_tfvars_or_environments(bundle: Path) -> None:
     assert not [n for n in names if "environments" in n.split("/")], "module.tgz carries environments/"
     assert not [n for n in names if n.endswith((".tfvars", ".tfvars.json"))], "module.tgz carries a tfvars file"
     assert not [n for n in names if ".terraform" in n.split("/") or "tfstate" in n]
+    # Outside the three roots, only what they read (test below).
     outside = [n for n in names if not n.startswith(("terraform/bootstrap", "terraform/infra", "terraform/modules"))]
-    assert not outside, outside[:10]
+    assert set(outside) <= set(module_reads()), sorted(set(outside) - set(module_reads()))[:10]
     # The live deployment's bootstrap tfvars exists in the checkout; it is the
     # file this test is about.
     assert (REPO / "terraform" / "bootstrap" / "terraform.tfvars").is_file()
+
+
+MODULE_ROOTS = ("terraform/bootstrap", "terraform/infra", "terraform/modules")
+# A function that reads a file, and the path it is handed, as written.
+READS = re.compile(r'\b(file|templatefile|filebase64|filesha256|fileexists|fileset)\(\s*"([^"]*)"')
+
+
+def module_reads() -> dict[str, str]:
+    """Every file the module roots read through `${path.module}/...`, resolved to
+    its repo path -> the .tf file and line that reads it. A literal path not
+    under path.module (path.root, path.cwd, a bare relative path) fails here, so
+    it is not missed. A path held in a variable (bootstrap's
+    infra_tenants_tfvars) is a deployment's own file, not the module's."""
+    found: dict[str, str] = {}
+    for root in MODULE_ROOTS:
+        for tf in sorted((REPO / root).rglob("*.tf")):
+            rel = tf.relative_to(REPO).as_posix()
+            if "environments" in rel.split("/") or ".terraform" in rel.split("/"):
+                continue
+            for number, line in enumerate(tf.read_text().splitlines(), 1):
+                if line.lstrip().startswith(("#", "//")):
+                    continue
+                for function, arg in READS.findall(line):
+                    assert function != "fileset", f"{rel}:{number} globs with fileset(); list it here"
+                    assert arg.startswith("${path.module}/"), f"{rel}:{number} reads {arg!r}, not a path.module path"
+                    target = os.path.normpath(os.path.join(os.path.dirname(rel), arg[len("${path.module}/"):]))
+                    found[target] = f"{rel}:{number}"
+    return found
+
+
+def test_module_carries_every_file_terraform_reads(bundle: Path) -> None:
+    """Every file terraform/{bootstrap,infra,modules} reads with file() or
+    templatefile() is in module.tgz at its repo path, so `${path.module}/../..`
+    resolves in the unpacked bundle as in the checkout (audit finding N8:
+    pass 2 turns on enable_live_browser and live.tf reads
+    kubernetes/swarm-system/swarm-live.yaml)."""
+    reads = module_reads()
+    outside = {t: w for t, w in reads.items() if not t.startswith(MODULE_ROOTS)}
+    # The scan ran: infra reads these from outside the module today.
+    assert "kubernetes/swarm-system/swarm-live.yaml" in outside, sorted(outside)
+    assert "scripts/acceptance/fixture.html" in outside, sorted(outside)
+    names = set(tar_names(bundle / "module.tgz"))
+    missing = {t: w for t, w in reads.items() if t not in names}
+    # MUTATION: tar only terraform/{bootstrap,infra,modules} again and this fails.
+    assert not missing, missing
+    # Module calls with a relative source resolve inside the bundle too.
+    for root in MODULE_ROOTS:
+        for tf in sorted((REPO / root).rglob("*.tf")):
+            rel = tf.relative_to(REPO).as_posix()
+            for source in re.findall(r'(?m)^\s*source\s*=\s*"(\.\.?/[^"]+)"', tf.read_text()):
+                target = os.path.normpath(os.path.join(os.path.dirname(rel), source))
+                assert any(n.startswith(target + "/") for n in names), f"{rel}: module {source} is not in module.tgz"
 
 
 # -- the wheels (plan R6) -----------------------------------------------------------
@@ -165,8 +273,63 @@ def test_sha256sums_cover_every_file(bundle: Path) -> None:
         assert sums[name] == hashlib.sha256((bundle / name).read_bytes()).hexdigest(), name
     for must in ("module.tgz", "manifest.yaml", "images.json", "kubernetes.tgz", "compat.json",
                  "marketplace.json", "cve-acceptances.json", "RELEASE.md", "install.sh",
-                 "plugin/.claude-plugin/plugin.json", "plugin/compat.json"):
+                 "plugin/.claude-plugin/plugin.json", "plugin/compat.json", "plugin.zip", LIGHTPANDA_SOURCE):
         assert must in sums, must
+
+
+# -- the Lightpanda Corresponding Source (AGPL section 6(d)) ---------------------------------
+
+
+def test_bundle_carries_the_lightpanda_source_archive(bundle: Path) -> None:
+    """The bundle holds the Lightpanda tag's source archive at the path the
+    image's SOURCE notice names under the release home, staged from upstream
+    and listed in SHA256SUMS like every other file, so publish.sh can put it
+    where that URL answers."""
+    from swarm_install.steps.preflight import parse_sums
+
+    notice = _lightpanda_arg("LIGHTPANDA_SOURCE_URL")
+    assert notice == f"https://storage.googleapis.com/swarmcloud/{LIGHTPANDA_SOURCE}", notice
+    # MUTATION: drop the lightpanda_source_stage call from assemble.sh and this fails.
+    staged = bundle / LIGHTPANDA_SOURCE
+    assert staged.is_file(), sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*"))[:20]
+    assert staged.read_bytes() == LIGHTPANDA_SOURCE_BODY
+    sums = parse_sums((bundle / "SHA256SUMS").read_bytes())
+    assert sums[LIGHTPANDA_SOURCE] == hashlib.sha256(LIGHTPANDA_SOURCE_BODY).hexdigest()
+    # Fetched once, from the tag's upstream archive (the fake curl's log).
+    assert (bundle.parent / "curl.log").read_text().split() == [LIGHTPANDA_UPSTREAM]
+    assert not [p for p in bundle.rglob("*.part")]
+
+
+def test_refuses_a_lightpanda_source_archive_that_is_not_the_pinned_one(tmp_path: Path) -> None:
+    """A download whose sha256 is not the Dockerfile's pin is no Corresponding
+    Source of the image: the bundle is not assembled, and nothing is left."""
+    proc = assemble(tmp_path, build_record(tmp_path / "record.json"), FAKE_SHA256_HONEST="1")
+    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-2000:]
+    assert "refusing it" in proc.stderr and "Lightpanda source archive" in proc.stderr, proc.stderr[-2000:]
+    out = tmp_path / "out"
+    assert not out.exists() or not any(out.iterdir()), sorted(p.name for p in out.iterdir())
+
+
+def test_marketplace_names_the_release_plugin_zip_by_url(bundle: Path) -> None:
+    """The release's marketplace.json lists `sc` as an archive source: this
+    release's plugin.zip by absolute URL, with the digest SHA256SUMS holds for
+    it, so a marketplace added by URL resolves it (audit finding N9). The zip
+    is the release's plugin directory, its root at the top."""
+    from swarm_install.steps.preflight import parse_sums
+
+    sums = parse_sums((bundle / "SHA256SUMS").read_bytes())
+    (sc,) = json.loads((bundle / "marketplace.json").read_text())["plugins"]
+    # MUTATION: write the source as "./plugin" again and this fails.
+    assert sc["source"] == {
+        "source": "archive",
+        "url": f"https://storage.googleapis.com/swarmcloud/releases/{VERSION}/plugin.zip",
+        "sha256": sums["plugin.zip"],
+    }
+    with zipfile.ZipFile(bundle / "plugin.zip") as zf:
+        names = set(zf.namelist())
+        for name in names:
+            assert zf.read(name) == (bundle / "plugin" / name).read_bytes(), name
+    assert names == {p.relative_to(bundle / "plugin").as_posix() for p in (bundle / "plugin").rglob("*") if p.is_file()}
 
 
 # -- images.json -------------------------------------------------------------------------
@@ -249,6 +412,23 @@ def test_cve_acceptances_carry_each_expiry(bundle: Path) -> None:
     notes = (bundle / "RELEASE.md").read_text()
     for a in accepted:
         assert a.cve in notes and a.expires.isoformat() in notes, a.cve
+
+
+def test_bundle_ships_the_github_app_permissions(bundle: Path) -> None:
+    """`github-app-permissions.json` is the App manifest's permissions, read from
+    swarm_api.setup_github (never restated), listed in SHA256SUMS, which cosign
+    signs: `swarm upgrade` compares the live App's permissions with it
+    (APP_PERMISSIONS_FILE, DAYONE-RELEASE-2)."""
+    from swarm_api.setup_github import PERMISSIONS
+    from swarm_install.steps.preflight import parse_sums
+    from swarm_install.verbs.upgrade import APP_PERMISSIONS_FILE
+
+    shipped = bundle / APP_PERMISSIONS_FILE
+    # MUTATION: drop the file from assemble.sh and this fails.
+    assert shipped.is_file(), sorted(p.name for p in bundle.iterdir())
+    assert json.loads(shipped.read_text()) == PERMISSIONS
+    sums = parse_sums((bundle / "SHA256SUMS").read_bytes())
+    assert sums.get(APP_PERMISSIONS_FILE) == hashlib.sha256(shipped.read_bytes()).hexdigest()
 
 
 def test_refuses_a_version_that_is_not_a_release_name(tmp_path: Path) -> None:

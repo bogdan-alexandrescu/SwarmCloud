@@ -8,7 +8,7 @@
 # and nothing in a deployment reads it after the install has copied the images
 # (D21). BGD runs this. Until 2026-10-30 nothing in CI held a grant in that
 # project (D22); since BGD's "Move publishing into CI now" (DAYONE-RELEASE-CI)
-# the publish-release workflow's identity holds three, made by
+# the publish-release workflow's identity holds four, made by
 # --ci-publisher below. It creates, in this order, each only if it is not
 # there yet:
 #
@@ -41,7 +41,7 @@
 # admits every member; an unreadable policy is a refusal, not a pass. Then it
 # asks for the project id, typed: SWARM_ASSUME_YES never answers that.
 #
-# With --ci-publisher EMAIL and ONLY then, the three grants that let the
+# With --ci-publisher EMAIL and ONLY then, the four grants that let the
 # publish-release workflow (.github/workflows/publish-release.yml) publish as
 # EMAIL, the service account it authenticates as (vars.GCP_DEPLOY_SA). Each is
 # on one resource; none is on the project:
@@ -51,7 +51,12 @@
 #   * roles/storage.objectAdmin on gs://swarmcloud (publish.sh checks that
 #     releases/V/ is absent, uploads it with --no-clobber);
 #   * roles/cloudkms.signerVerifier on the key swarmcloud-release/cosign
-#     (cosign signs with it and reads its public key).
+#     (cosign signs with it and reads its public key);
+#   * roles/cloudkms.viewer on the same key: before it signs, cosign reads the
+#     key's metadata to pick its hash (cloudkms.cryptoKeys.get), which
+#     signerVerifier does not hold. The first CI publish, run 41114178639 of
+#     2026.10.1-rc.1, failed on exactly that. Viewer reads metadata only; it
+#     cannot sign, encrypt or decrypt.
 #
 # Only a service account is admitted, never one on SHARED_DENY_LIST or of the
 # shared project. A grant already in place is not made again; the ones still
@@ -65,7 +70,7 @@
 #   scripts/release-home.sh                       # registry, bucket, key; no public read
 #   scripts/release-home.sh --public              # ...and the public read, after the check
 #   scripts/release-home.sh --ci-publisher SA@PROJECT.iam.gserviceaccount.com
-#                                                 # ...and the three release roles for CI
+#                                                 # ...and the four release roles for CI
 #   scripts/release-home.sh --project swarmcloud-releases
 #
 # Exit codes: 0 done (or nothing to do), 1 refused or failed, 2 bad arguments.
@@ -110,10 +115,13 @@ POLICY_CONSTRAINT="iam.allowedPolicyMemberDomains"
 PUBLIC_MEMBER="allUsers"
 BUCKET_ROLE="roles/storage.objectViewer"
 REPOSITORY_ROLE="roles/artifactregistry.reader"
-# --ci-publisher: the three release roles, each on its one resource.
+# --ci-publisher: the four release roles, each on its one resource.
 PUBLISHER_REPOSITORY_ROLE="roles/artifactregistry.writer"
 PUBLISHER_BUCKET_ROLE="roles/storage.objectAdmin"
 PUBLISHER_KEY_ROLE="roles/cloudkms.signerVerifier"
+# cosign reads the key's algorithm (cloudkms.cryptoKeys.get) before it signs;
+# signerVerifier lacks it (rc.1 run 41114178639). Metadata only.
+PUBLISHER_KEY_READ_ROLE="roles/cloudkms.viewer"
 
 DRY_RUN=0
 PUBLIC=0
@@ -378,7 +386,7 @@ if [[ "${PUBLIC}" -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 4 (--ci-publisher only): the three release roles, after the typed
+# Phase 4 (--ci-publisher only): the four release roles, after the typed
 # project id.
 # ---------------------------------------------------------------------------
 
@@ -404,9 +412,11 @@ if [[ "${PUBLISHER_SET}" -eq 1 ]]; then
     || PUBLISHER_GRANTS+=("storage buckets add-iam-policy-binding ${BUCKET} --member=${PUBLISHER_MEMBER} --role=${PUBLISHER_BUCKET_ROLE} --project=${PROJECT}")
   iam_policy_binds_member "${WORK}/publisher-key-iam.json" "${PUBLISHER_KEY_ROLE}" "${PUBLISHER_MEMBER}" \
     || PUBLISHER_GRANTS+=("kms keys add-iam-policy-binding ${KEY} --keyring=${KEYRING} --location=${LOCATION} --project=${PROJECT} --member=${PUBLISHER_MEMBER} --role=${PUBLISHER_KEY_ROLE}")
+  iam_policy_binds_member "${WORK}/publisher-key-iam.json" "${PUBLISHER_KEY_READ_ROLE}" "${PUBLISHER_MEMBER}" \
+    || PUBLISHER_GRANTS+=("kms keys add-iam-policy-binding ${KEY} --keyring=${KEYRING} --location=${LOCATION} --project=${PROJECT} --member=${PUBLISHER_MEMBER} --role=${PUBLISHER_KEY_READ_ROLE}")
 
   if [[ ${#PUBLISHER_GRANTS[@]} -eq 0 ]]; then
-    ok "${PUBLISHER} already holds the three release roles"
+    ok "${PUBLISHER} already holds the four release roles"
   else
     if [[ "${DRY_RUN}" -eq 0 ]]; then
       warn "this lets ${PUBLISHER} write the release home: copy images into ${REPOSITORY}, write objects in ${BUCKET}, sign with ${KEYRING}/${KEY}"

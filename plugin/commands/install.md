@@ -43,8 +43,13 @@ the missing ones. Never invent one.
 `{"v": 1, "event": <kind>, "at": <seconds>, ...}`. Show `stage_start` as a
 heading; `step_skip` and `step_done` as one short line each; `step_plan` and
 `step_apply` with their step id; a `wait_countdown` with its `reason`, the
-seconds left and what is `expected`; a `wait_gave_up` with its `look_at`
-exactly; `step_drift` with the step that will repair it; `step_failed` and
+seconds left and what is `expected`, and its `detail` (what the last check
+saw, such as a certificate's state or which run failed) word for word: the
+wait sends `detail` only whenever it changes, so show it each time it comes
+and keep the last one in mind; a `wait_failed` ends the wait at once with its
+`detail`, which says what failed and that no further polling can mend it, so
+show that `detail` word for word and the `step_failed` or `run_end` after it;
+a `wait_gave_up` with its `look_at` exactly; `step_drift` with the step that will repair it; `step_failed` and
 `stage_refused` with their `message` word for word, never paraphrased. A
 human step (`step_paused` with any other reason) carries the instructions
 and the deep link: show them exactly, and when the person says it is done,
@@ -73,7 +78,7 @@ should be replaced.
 **A secret step: `needs_terminal`.** Under Claude Code the engine has no
 terminal to prompt on, so a step that needs a value or a typed answer pauses
 with a `step_paused` event whose `reason` is `needs_terminal` and whose
-`command` is the line to hand on, today `! swarm install --resume`. Give the
+`command` is the line to hand on, today `! swarm install`. Give the
 person that `command` exactly as it came, and say they type it at the prompt
 themselves: the engine then asks at a hidden prompt on their terminal. Never
 ask for the value, never read it from anywhere and never pipe it into the

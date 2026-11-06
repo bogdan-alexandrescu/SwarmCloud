@@ -7,6 +7,12 @@
 # condition a resource block of its own, and says -- with the live listing it
 # was checked against -- why each of the others cannot.
 #
+# ONE MORE GRANT HERE IS CONDITIONED FROM THE START, and is not one of those
+# sixteen: swarmSpeechDeployer, the instance and disk verbs Voice it's speech
+# machine needs, on that machine's names only (the last section of this file,
+# 2026-11-05). It has no project-wide twin to replace, so it is not behind
+# deployer_scoped_roles.
+#
 # NOTHING HERE TAKES EFFECT ON MERGE, and that is the point of the design.
 # Every block below has `count = 0` until its role is named in
 # `deployer_scoped_roles` (terraform.tfvars). Naming one does two things in the
@@ -81,7 +87,7 @@ locals {
   # condition, and "You can't substitute the project ID for the project number"
   # (resource attributes page, above). Read from the project rather than
   # pasted, as wif.tf already does for the Cloud Build service account.
-  deployer_project_number = var.enable_github_wif ? data.google_project.this[0].number : ""
+  deployer_project_number = local.deployer_on ? data.google_project.this[0].number : ""
 
   # role -> the resource types the condition governs, and the name prefixes it
   # admits within them. Rendered into CEL once, below; the tests read these
@@ -470,10 +476,10 @@ locals {
   deployer_scoped = merge(
     {
       for role in keys(local.deployer_conditions) :
-      role => var.enable_github_wif && contains(var.deployer_scoped_roles, role)
+      role => local.deployer_on && contains(var.deployer_scoped_roles, role)
     },
     {
-      "roles/resourcemanager.projectIamAdmin" = var.enable_github_wif && contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin")
+      "roles/resourcemanager.projectIamAdmin" = local.deployer_on && contains(var.deployer_scoped_roles, "roles/resourcemanager.projectIamAdmin")
     },
   )
 }
@@ -589,6 +595,160 @@ resource "google_project_iam_member" "deployer_secrets_scoped" {
     description = "63 of the 77 secrets in this project belong to another team. Refusing setIamPolicy on them is what stops CI granting itself read access to their payloads."
     expression  = local.deployer_conditions["swarmSecretProvisioner"]
   }
+}
+
+# ---------------------------------------------------------------------------
+# THE SPEECH MACHINE, CONDITIONED FROM THE START (owner's decided follow-up,
+# 2026-11-05; docs/design/voice-it-own-speech.md §5.1 and §6, part of #2688).
+#
+# terraform/infra/voice_speech.tf makes Voice it's speech machine -- ONE
+# instance, `<name_prefix>-speech-<zone letter>`, and the boot disk that takes
+# its name -- once voice_speech.enabled and voice_it are on. The release
+# deployer applies that root, and none of its roles holds an instance's create,
+# delete, start or stop: networkAdmin and securityAdmin read and secure VMs,
+# they do not make them. So it gets exactly those verbs here, on that machine's
+# names and on nothing else. Unlike the blocks above this one is NOT behind
+# deployer_scoped_roles: there is no project-wide grant for it to replace, so
+# it is conditioned from the day it exists, and it is applied, like every
+# grant in this root, by the owner (make bootstrap), never by a release.
+#
+# THE ROLE. Custom, because every predefined role that holds instances.create
+# (compute.instanceAdmin.v1, compute.admin) also holds snapshots, images,
+# templates and instance groups, and swarmSpeechDeployer holds only the
+# instance and disk verbs voice_speech.tf's google_compute_instance and its
+# instance-level iam_member (row I1) use:
+#
+#   create, delete, get, start, stop    make it, stop it after creating it
+#                                       (desired_status), restart it for an
+#                                       update (allow_stopping_for_update),
+#                                       read it, destroy it
+#   setMetadata, setTags, setLabels,    the fields it is created with and
+#   setServiceAccount, setScheduling,   updated in place
+#   setDeletionProtection,
+#   setMachineType, update,
+#   updateShieldedVmConfig
+#   getIamPolicy, setIamPolicy          row I1, swarm-api's swarmSpeechOperator
+#                                       on this one instance
+#   disks.create, .get, .setLabels,     its boot disk, made with it and deleted
+#   .delete                             with it (auto_delete)
+#
+# What the create also checks and this role does NOT carry, because the
+# deployer already holds it: compute.subnetworks.use and the internal
+# address's use (roles/compute.networkAdmin; subnetworks and addresses stay
+# project-wide even when that role is scoped), iam.serviceAccounts.actAs on
+# swarm-speech (platform_service_accounts.tf, deployer_acts_as_speech), and the
+# zone operation reads every compute role carries. The Deep Learning VM image
+# is public: its project grants images.useReadOnly to every caller.
+#
+# THE CONDITION. Compute names an instance
+# `projects/<project ID>/zones/<zone>/instances/<name>` and a disk
+# `.../disks/<name>` (docs.cloud.google.com/iam/docs/conditions-resource-attributes,
+# rule 1 above). The zone sits between the project and the name and is
+# voice_speech.zone, a variable of the OTHER root, so a startsWith() cannot
+# reach the name. extract() can: extract("A{z}B") is the text between the first
+# A and the first B after it, "" when either is missing -- the form
+# modules/iam/bindings.tf uses, which iamPolicies:lintPolicy answered `{}` for
+# (matches() it refused, ConditionCompileCheck ERROR). Per kind:
+#
+#   resource.name.extract("projects/<p>/zones/<region>-{zone}/instances/<prefix>") != ""
+#
+# so the name must sit in a zone of var.region (voice_speech.tf checks the
+# machine's zone is in it) and start with `<name_prefix>-speech-`, dash
+# included: `swarm-speechx` is refused. NO TYPE GUARD (rule 2's remedy is the
+# opposite of what this needs): every permission in the role is checked on an
+# instance or a disk, so a request on any other type is meant to be refused.
+# Their three GKE nodes, the regional address `swarm-speech`, an instance of
+# ours of any other name and the same name in another region are all refused;
+# tests/terraform/deployer_iam.tftest.hcl replays each. 1 operator.
+#
+# WHAT IS NOT MEASURED: that Compute evaluates resource.name on
+# instances.create against the instance being created. The documentation says
+# Compute provides resource.name for instances and disks; nobody has watched a
+# create pass under this condition. If it is wrong the failure is the first
+# apply that turns the machine on, loud and named, and nothing else is reached.
+# LINTED 2026-11-05: iamPolicies:lintPolicy on the project, with the
+# expression as rendered for name_prefix "swarm" and us-central1, answered `{}`
+# (the same call answers ConditionCompileCheck ERROR for a broken one). Lint it
+# again (output deployer_speech_machine_condition) before the bootstrap apply
+# that adds it if the prefix, the region or the kinds change.
+locals {
+  # voice_speech.tf's local.speech_machine_prefix, the same text:
+  # tests/unit/terraform/test_voice_speech.py holds the two equal.
+  deployer_speech_machine_prefix = "${var.name_prefix}-speech-"
+
+  # The kinds of resource the machine is: the instance, and the boot disk
+  # that takes the instance's name.
+  deployer_speech_machine_kinds = ["instances", "disks"]
+
+  # One extract() per kind, rendered from these parts; the tftest replays
+  # names against the same parts.
+  deployer_speech_machine_paths = [
+    for k in local.deployer_speech_machine_kinds : {
+      zone_prefix = "projects/${var.project_id}/zones/${var.region}-"
+      name_prefix = "/${k}/${local.deployer_speech_machine_prefix}"
+    }
+  ]
+
+  deployer_speech_machine_condition = join(" || ", [
+    for p in local.deployer_speech_machine_paths :
+    "resource.name.extract(\"${p.zone_prefix}{zone}${p.name_prefix}\") != \"\""
+  ])
+}
+
+resource "google_project_iam_custom_role" "deployer_speech_machine" {
+  count = local.deployer_enabled
+
+  project = var.project_id
+  role_id = "swarmSpeechDeployer"
+  title   = "Swarm Speech Machine Deployer"
+
+  description = "managed-by=swarm-terraform; the release deployer makes, stops and deletes Voice it's speech machine and its boot disk. Granted with a condition on that machine's names only."
+  stage       = "GA"
+
+  permissions = [
+    "compute.disks.create",
+    "compute.disks.delete",
+    "compute.disks.get",
+    "compute.disks.setLabels",
+    "compute.instances.create",
+    "compute.instances.delete",
+    "compute.instances.get",
+    "compute.instances.getIamPolicy",
+    "compute.instances.setDeletionProtection",
+    "compute.instances.setIamPolicy",
+    "compute.instances.setLabels",
+    "compute.instances.setMachineType",
+    "compute.instances.setMetadata",
+    "compute.instances.setScheduling",
+    "compute.instances.setServiceAccount",
+    "compute.instances.setTags",
+    "compute.instances.start",
+    "compute.instances.stop",
+    "compute.instances.update",
+    "compute.instances.updateShieldedVmConfig",
+  ]
+}
+
+resource "google_project_iam_member" "deployer_speech_machine" {
+  count = local.deployer_enabled
+
+  project = var.project_id
+  role    = "projects/${var.project_id}/roles/${google_project_iam_custom_role.deployer_speech_machine[0].role_id}"
+  member  = "serviceAccount:${google_service_account.deployer[0].email}"
+
+  condition {
+    title       = "the speech machine and its disk only"
+    description = "Voice it's one speech instance and its boot disk, named <name_prefix>-speech-<zone letter> in a zone of the platform's region. Their GKE nodes and every other VM are refused."
+    expression  = local.deployer_speech_machine_condition
+  }
+}
+
+# The expression to lint with iamPolicies:lintPolicy before the bootstrap apply
+# that adds it (docs/design/day-one/lessons.md, lesson 10). A string, never a
+# value of anyone's.
+output "deployer_speech_machine_condition" {
+  description = "The release deployer's condition on swarmSpeechDeployer: lint it with iamPolicies:lintPolicy before applying."
+  value       = local.deployer_speech_machine_condition
 }
 
 # ---------------------------------------------------------------------------

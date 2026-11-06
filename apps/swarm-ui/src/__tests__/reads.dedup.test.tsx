@@ -11,6 +11,13 @@
 // once (a 404 for one it does not know, so nothing hangs in flight and turns
 // a later read into a joined one), and the counts are of what reached it.
 //
+// THE APP'S CLOCK RUNS AT A TENTH OF REAL SPEED while it loads (`readsOn`):
+// the reuse window is `REUSE_SETTLED_MS` of `Date.now`, and on a loaded CI
+// runner the page's second wave of reads came more than 2 s of wall-clock
+// after the first answered, so `/v1/resource-classes` was asked twice and the
+// count went red with nothing in the app changed. The window still spans one
+// load and no poll; only the runner's speed no longer decides the count.
+//
 // MUTATIONS: make `arrive` (fetch.ts) send every read on its own, or drop
 // the just-settled reuse -- the agent page's task, attempts and the shell's
 // routes are asked for again, and the counts below go red.
@@ -52,6 +59,9 @@ async function readsOn(path: string, ms = 1_500): Promise<Map<string, number>> {
   vi.resetModules()
   const answers = routes()
   const counts = new Map<string, number>()
+  const realNow = Date.now.bind(Date)
+  const start = realNow()
+  vi.spyOn(Date, 'now').mockImplementation(() => start + Math.floor((realNow() - start) / 10))
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), 'http://ui.test')
     if ((init?.method ?? 'GET') === 'GET') counts.set(url.pathname, (counts.get(url.pathname) ?? 0) + 1)

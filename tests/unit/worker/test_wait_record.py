@@ -236,7 +236,43 @@ def test_a_reader_that_ignores_the_new_fields_reads_what_it_read_before():
         wait = task["metadata"][control_mod.MERGE_WAIT_METADATA_KEY]
         # MUTATION: a `merge_wait` field the scheduler or swarm-api reads goes -> fails.
         assert MERGE_WAIT_FIELDS_BEFORE <= set(wait)
-        assert set(wait) - MERGE_WAIT_FIELDS_BEFORE <= {"failed"}
+        # `ci_paused_at`: the CI clock's pause across a slot wait (#3033), and
+        # `train_entered_at`: a merge-train wait's start (part of #2688), additive.
+        assert set(wait) - MERGE_WAIT_FIELDS_BEFORE <= {"failed", "ci_paused_at", "train_entered_at"}
+
+
+def _train_park(last: dict[str, Any] | None) -> dict[str, Any]:
+    """The direct train park over a task whose last park left `last`."""
+    db = FakeFirestore()
+    seed_attempt(db, state=TaskState.RUNNING, runner_profile="merge")
+    if last is not None:
+        db.doc("tasks/task_1")["metadata"] = {control_mod.MERGE_WAIT_METADATA_KEY: last}
+    _control(db).park_ci_pending(
+        code="merge_train_waiting", head=PINNED, pull_request=NUMBER, pending=[],
+        max_wakes=merge.MERGE_CI_MAX_WAKES, fallback_seconds=merge.MERGE_CI_FALLBACK_SECONDS,
+        counter="train_waits", ci_clock=False)
+    return db.doc("tasks/task_1")["metadata"][control_mod.MERGE_WAIT_METADATA_KEY]
+
+
+def test_the_direct_train_park_records_the_trains_start_and_carries_it():
+    """Part of #2688: the first train park of a run starts it, the next
+    keeps it, and any other park clears it (swarm-api serves it as
+    `waiting.detail.train_since`)."""
+    db = FakeFirestore()
+    _ci_park(db)
+    ci = db.doc("tasks/task_1")["metadata"][control_mod.MERGE_WAIT_METADATA_KEY]
+    # MUTATION: a CI park records a train start -> fails.
+    assert ci["train_entered_at"] is None
+    first = _train_park(ci)
+    # MUTATION: the train park records no start -> None, fails.
+    assert first["train_entered_at"] == first["parked_at"]
+    entered = first["parked_at"] - timedelta(hours=3)
+    again = _train_park({**first, "train_entered_at": entered})
+    # MUTATION: every train park restarts it -> the re-park's instant, fails.
+    assert again["train_entered_at"] == entered
+    # MUTATION: carry a start the last (CI) park did not belong to -> fails.
+    fresh = _train_park({**ci, "train_entered_at": entered})
+    assert fresh["train_entered_at"] == fresh["parked_at"]
 
 
 def _seed_merge(db: FakeFirestore) -> None:

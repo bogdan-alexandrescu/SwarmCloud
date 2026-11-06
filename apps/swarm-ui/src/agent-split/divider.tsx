@@ -37,9 +37,14 @@ export function holdPageScroll(from: Element | null): void {
   setTimeout(() => scroller.removeEventListener('scroll', keep), HOLD_SCROLL_MS)
 }
 
-/** Publishes the list's width, and folds it to its strip while Changes is open. */
-export function useListWidth(snap: ListSnap, onChanges: boolean): void {
+/**
+ * Publishes the list's width, and folds it to its strip while Changes is open.
+ * Off (`on` false) where the agent is hosted in the Agents page's inspector,
+ * whose handle owns the width (work/hostedAgent.ts).
+ */
+export function useListWidth(snap: ListSnap, onChanges: boolean, on = true): void {
   useEffect(() => {
+    if (!on) return
     const root = document.documentElement
     root.style.setProperty('--list-w', SNAP_WIDTH[snap])
     root.dataset.agentList = snap
@@ -47,7 +52,7 @@ export function useListWidth(snap: ListSnap, onChanges: boolean): void {
       root.style.removeProperty('--list-w')
       delete root.dataset.agentList
     }
-  }, [snap])
+  }, [snap, on])
 
   // OPENING CHANGES FOLDS THE LIST TO ITS STRIP (diff-viewer.md §2 variant 2:
   // at 1280 that gives the file about 850px, and split needs 700). REMEMBERED,
@@ -56,14 +61,14 @@ export function useListWidth(snap: ListSnap, onChanges: boolean): void {
   // leaving the tab puts back the width the list had -- unless the reader
   // moved it while on Changes, which is then theirs.
   useEffect(() => {
-    if (!onChanges) return
+    if (!onChanges || !on) return
     const was = listSnap()
     if (was === 'strip') return
     setListSnap('strip', false)
     return () => {
       if (listSnap() === 'strip') setListSnap(was, false)
     }
-  }, [onChanges])
+  }, [onChanges, on])
 }
 
 /** The separator between the list and the agent, and the stops it snaps to while it is dragged. */

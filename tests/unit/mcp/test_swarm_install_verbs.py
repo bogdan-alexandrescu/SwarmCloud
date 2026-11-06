@@ -10,6 +10,7 @@ command; the install's status is `swarm install --status` (review finding 13).
 
 from __future__ import annotations
 
+import importlib.machinery
 import subprocess
 import sys
 import types
@@ -28,7 +29,7 @@ def _hide_swarm_install(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "swarm_install", None)
 
 
-@pytest.mark.parametrize("verb", cli.INSTALL_VERBS)
+@pytest.mark.parametrize("verb", [v for v in cli.INSTALL_VERBS if v not in cli.CLIENT_TIER_VERBS])
 def test_missing_package_prints_one_install_line(verb, monkeypatch, capsys):
     _hide_swarm_install(monkeypatch)
 
@@ -111,3 +112,32 @@ def test_existing_swarm_status_unchanged(monkeypatch, capsys):
     assert "install" not in out
     # `status` is not an installer verb: the install's status is `swarm install --status`.
     assert "status" not in cli.INSTALL_VERBS
+
+
+def test_doctor_without_the_installer_is_the_client_tier(monkeypatch, capsys):
+    # DAYONE-DOCTOR-1: `doctor` is an installer verb, but a teammate's `swarm`
+    # (no `swarm_install`) still answers `swarm doctor` with its client tier
+    # and never with the install line.
+    _hide_swarm_install(monkeypatch)
+    ran: list[str] = []
+    monkeypatch.setattr(cli, "cmd_doctor", lambda client, args: ran.append("client") or 0)
+
+    assert "doctor" in cli.INSTALL_VERBS
+    assert cli.main(["doctor"]) == 0
+    assert ran == ["client"]
+    assert INSTALL_LINE not in capsys.readouterr().err
+
+
+def test_doctor_with_the_installer_goes_to_it(monkeypatch):
+    seen: list[list[str]] = []
+    fake_cli = types.ModuleType("swarm_install.cli")
+    fake_cli.main = lambda argv: seen.append(list(argv)) or 3  # type: ignore[attr-defined]
+    fake_pkg = types.ModuleType("swarm_install")
+    fake_pkg.__path__ = []  # type: ignore[attr-defined]
+    fake_pkg.__spec__ = importlib.machinery.ModuleSpec("swarm_install", None)  # type: ignore[attr-defined]
+    fake_pkg.cli = fake_cli  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "swarm_install", fake_pkg)
+    monkeypatch.setitem(sys.modules, "swarm_install.cli", fake_cli)
+
+    assert cli.main(["doctor", "--project", "p"]) == 3
+    assert seen == [["doctor", "--project", "p"]]

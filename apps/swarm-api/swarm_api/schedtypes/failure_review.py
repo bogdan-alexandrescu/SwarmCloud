@@ -353,7 +353,8 @@ def _ci_excerpt(ctx: Any, token: Callable[[], str]) -> Callable[[Mapping[str, An
         secret = token()
         pull = writer.read_pull(ref, number, secret)
         rules = writer.branch_rules(ref, pull.base_ref, secret) if pull.base_ref else []
-        reading = evaluate(required_status_checks(rules), writer.check_runs(ref, head, secret),
+        reading = evaluate(required_status_checks(rules),
+                           writer.check_runs(ref, head, secret, head_ref=pull.head_ref),
                            writer.commit_statuses(ref, head, secret))
         if not reading.failing_runs and not reading.failing_statuses:
             return None

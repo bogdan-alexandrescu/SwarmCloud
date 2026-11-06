@@ -8,10 +8,13 @@
 3. Recorded done but the check now fails: that is **drift**; it is reported,
    with the step that repairs it (this one), and repaired.
 4. Before anything is applied, every manifest entry the step's entries
-   `depends_on` must already be met. If one is not, the stage refuses and
-   names the entry and the step that satisfies it (lesson 8: infra applied
-   before bootstrap fails on a missing custom role).
-5. `plan`, print it, renew the lease, `apply`; for a human step, open its
+   `depends_on` must already be met: a step that lists it in `satisfies` is
+   done, or the step its entry names (`entry.step`, how the terraform passes
+   own what they make) is. If one is not, the stage refuses and names the
+   entry and the step that satisfies it (lesson 8: infra applied before
+   bootstrap fails on a missing custom role).
+5. `plan`, print it, renew the lease, `apply` (heartbeating the lease and the
+   install record every `HEARTBEAT_SECONDS` while it runs, see `_beating`); for a human step, open its
    page once (`steps.open_page`, before the first poll, never on every poll);
    for a human or wait step, poll the check with a countdown up to the step's bound (running the wait's
    triggered steps on every poll); else re-`check`. Then `verify`.
@@ -30,16 +33,18 @@ not run; 4 paused on a human step or a wait past its bound; 5 refused.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+import threading
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import exitcodes
 from .events import Events
-from .exitcodes import MET, UNKNOWN, ExitCode
-from .lease import Lease, LeaseHeld, LeaseLost, LeaseRefused
-from .manifest import Manifest
-from .record import InstallRecord, RecordConflict
+from .exitcodes import MET, UNKNOWN, UNMET, ExitCode
+from .lease import HEARTBEAT_SECONDS, Lease, LeaseHeld, LeaseLost, LeaseRefused
+from .manifest import Entry, Manifest
+from .record import PASS_TIMES, InstallRecord, RecordConflict, pass_ended, pass_started
 from .state import (
     STEP_DONE,
     STEP_DRIFT,
@@ -65,7 +70,7 @@ from .steps import (
     triggered_of,
     wait_of,
 )
-from .waits import Clock, WaitGaveUp, WaitSpec, wait_until
+from .waits import CheckFailed, Clock, WaitGaveUp, WaitSpec, wait_until
 
 #: A human step that names no bound of its own waits this long for its check.
 HUMAN_WAIT = WaitSpec(
@@ -162,7 +167,15 @@ class Engine:
         self.record = record
         self.dry_run = dry_run
         self.confirm = confirm
+        #: How often, in wall-clock seconds, `_beating` wakes during an apply.
+        self.heartbeat_interval: float = HEARTBEAT_SECONDS
+        # The heartbeat thread and the step loop both renew the lease and write
+        # the install record; one at a time (re-entrant: save() mirrors).
+        self._beat_lock = threading.RLock()
         self.met: set[str] = set()
+        # Step id -> whether this run found it met; a dependency whose manifest
+        # entry names its owning step (`entry.step`) is met once that step is.
+        self._step_met: dict[str, bool] = {}
         self._owner: dict[str, Step] = {}
         self._stage_of: dict[str, int] = {}
         pending: list[Step] = list(steps)
@@ -179,13 +192,15 @@ class Engine:
     def save(self, change: Callable[[InstallState], None]) -> None:
         """Apply `change` to the stored state (re-reading on a conflict) and mirror it."""
         assert self.ctx is not None
-        self.ctx.state = self.store.update(change)
-        self.mirror()
+        with self._beat_lock:
+            self.ctx.state = self.store.update(change)
+            self.mirror()
 
     def mirror(self) -> None:
         if self.record is None or self.ctx is None or self.dry_run:
             return
-        self.record.write(self.ctx.state, self._stage_of, lease=self.lease.as_record())
+        with self._beat_lock:
+            self.record.write(self.ctx.state, self._stage_of, lease=self.lease.as_record())
 
     def _record(self, step: Step, state: str, *, plan: Plan | None = None,
                 outputs: dict[str, Any] | None = None, detail: str | None = None) -> None:
@@ -204,25 +219,75 @@ class Engine:
             s.steps[step.id] = entry
             if outputs:
                 s.outputs.update(outputs)
+            if state in (STEP_DONE, STEP_FAILED, STEP_PAUSED):
+                ended = pass_ended(s.outputs.get(PASS_TIMES) or {}, step.id, state, entry.at)
+                if ended is not None:
+                    s.outputs[PASS_TIMES] = ended
+
+        self.save(change)
+
+    def _pass_starts(self, step: Step) -> None:
+        """Stamp when a timed pass (`record.TIMED_PASSES`) began, before its
+        step applies, so Admin › Setup shows how long it has been running."""
+        if self.dry_run or self.ctx is None:
+            return
+        now = self.clock.now()
+        if pass_started(self.ctx.state.outputs.get(PASS_TIMES) or {}, step.id, now) is None:
+            return
+
+        def change(s: InstallState) -> None:
+            started = pass_started(s.outputs.get(PASS_TIMES) or {}, step.id, now)
+            if started is not None:
+                s.outputs[PASS_TIMES] = started
 
         self.save(change)
 
     def attach_bucket(self, bucket: ObjectStore) -> None:
         assert self.ctx is not None
-        self.ctx.state = self.store.attach_bucket(bucket)
-        if self.dry_run:
-            return
-        moved = Lease(holder=self.holder, store=bucket, clock=self.clock.now)
-        moved.acquire(self.confirm)
-        self.lease = moved
+        with self._beat_lock:
+            self.ctx.state = self.store.attach_bucket(bucket)
+            if self.dry_run:
+                return
+            moved = Lease(holder=self.holder, store=bucket, clock=self.clock.now)
+            moved.acquire(self.confirm)
+            self.lease = moved
 
     # -- the loop ---------------------------------------------------------
 
     def _observe(self, step: Step, what: Callable[[Any], Observation]) -> Observation:
         try:
+            return self._poll(what)
+        except CheckFailed as failed:  # outside a wait, a definite failure reads as unmet
+            return Observation(UNMET, failed.detail)
+
+    def _poll(self, what: Callable[[Any], Observation]) -> Observation:
+        """One check, as the wait loop polls it: a `CheckFailed` is raised on
+        (it ends the wait); any other exception is an `unknown` whose detail
+        is the exception's text, so the countdown shows why the probe fails."""
+        try:
             return what(self.ctx)
+        except CheckFailed:
+            raise
         except Exception as exc:  # a probe that cannot run is unknown, not fine
             return Observation(UNKNOWN, f"{type(exc).__name__}: {exc}")
+
+    def _mark(self, step: Step, met: bool) -> None:
+        self._step_met[step.id] = met
+        if met:
+            self.met.update(step.satisfies)
+
+    def _owning_step_done(self, entry: Entry | None) -> bool:
+        """Whether the step a manifest entry names (`entry.step`) is done: met
+        in this run, or, when this run has not looked at it, recorded done.
+
+        The terraform passes declare no `satisfies`; what they make (the
+        cluster, the service accounts, Firestore, the Scheduler jobs, the
+        platform keys) is owned through `entry.step` alone."""
+        if entry is None or not entry.step:
+            return False
+        if entry.step in self._step_met:
+            return self._step_met[entry.step]
+        return self.ctx is not None and self.ctx.state.done(entry.step)
 
     def _unmet_dependencies(self, step: Step) -> list[str]:
         if self.manifest is None:
@@ -233,19 +298,25 @@ class Engine:
         for entry_id in step.satisfies:
             entry = by_id.get(entry_id)
             for dep in entry.depends_on if entry is not None else ():
-                if dep not in own and dep not in self.met and dep not in needed:
-                    needed.append(dep)
+                if dep in own or dep in self.met or dep in needed:
+                    continue
+                if self._owning_step_done(by_id.get(dep)):
+                    continue
+                needed.append(dep)
         return needed
 
     def _refuse_for(self, step: Step, unmet: list[str]) -> _Stop:
+        by_id = self.manifest.by_id() if self.manifest is not None else {}
         named = []
         for dep in unmet:
             owner = self._owner.get(dep)
-            named.append(
-                f"{dep} (satisfied by step {owner.id}, stage {owner.stage})"
-                if owner is not None
-                else f"{dep} (no step in this release satisfies it)"
-            )
+            entry = by_id.get(dep)
+            if owner is not None:
+                named.append(f"{dep} (satisfied by step {owner.id}, stage {owner.stage})")
+            elif entry is not None and entry.step in self._stage_of:
+                named.append(f"{dep} (made by step {entry.step}, stage {self._stage_of[entry.step]})")
+            else:
+                named.append(f"{dep} (no step in this release satisfies it)")
         message = (
             f"stage {step.stage} refuses: step {step.id} needs {', '.join(named)}, "
             "which is not met. Run swarm install from the earlier stage."
@@ -259,7 +330,7 @@ class Engine:
             self._record(step, STEP_FAILED, plan=plan, detail=verified.detail)
             raise self._failed(step, f"verify is {verified.status}: {verified.detail}")
         self._record(step, STEP_DONE, plan=plan, outputs={**outputs, **dict(verified.outputs)})
-        self.met.update(step.satisfies)
+        self._mark(step, True)
         self.events.emit("step_done", step=step.id, stage=step.stage)
 
     def _failed(self, step: Step, why: str) -> _Stop:
@@ -268,11 +339,52 @@ class Engine:
         return _Stop("failed", step.id, message)
 
     def _heartbeat(self) -> None:
-        if self.dry_run or not self.lease.heartbeat_due():
+        with self._beat_lock:
+            if self.dry_run or not self.lease.heartbeat_due():
+                return
+            self.lease.renew()
+            self.events.emit("lease", holder=self.holder, expires=self.lease.expires)
+            self.mirror()
+
+    @contextmanager
+    def _beating(self) -> Iterator[None]:
+        """Heartbeat the lease and the install record while a step applies.
+
+        A step's apply can run for many minutes with no poll: pass 3 and
+        pass 4 are one Terraform apply each, run inside the hand-off's poll
+        (`_run_triggered`). Admin › Setup reads a `lease.heartbeat` older than
+        2 minutes as "swarm install is not running" and tells the person to run
+        it again, which would take this holder's lease, restart the pass
+        against Terraform's state lock and stop this run (audit 4d, F8). So a
+        thread beats every `heartbeat_interval` seconds until the apply
+        returns. A beat that fails (a network blip) is retried on the next
+        tick; a lease taken over (`LeaseLost`) ends the beating and is raised
+        here once the apply returns, so the step is not recorded done."""
+        if self.dry_run:
+            yield
             return
-        self.lease.renew()
-        self.events.emit("lease", holder=self.holder, expires=self.lease.expires)
-        self.mirror()
+        stop = threading.Event()
+        lost: list[LeaseLost] = []
+
+        def beat() -> None:
+            while not stop.wait(self.heartbeat_interval):
+                try:
+                    self._heartbeat()
+                except LeaseLost as exc:
+                    lost.append(exc)
+                    return
+                except Exception:  # noqa: BLE001 - a missed beat is retried on the next tick
+                    continue
+
+        thread = threading.Thread(target=beat, name="swarm-install-heartbeat", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join()
+        if lost:
+            raise lost[0]
 
     def _run_triggered(self, waiting: Step, done: set[str]) -> None:
         for triggered in triggered_of(waiting):
@@ -281,7 +393,7 @@ class Engine:
             if self.ctx is not None and self.ctx.state.done(triggered.id):
                 if self._observe(triggered, triggered.check).status == MET:
                     done.add(triggered.id)
-                    self.met.update(triggered.satisfies)
+                    self._mark(triggered, True)
                     continue
             if not self._trigger_landed(triggered):
                 continue
@@ -304,11 +416,11 @@ class Engine:
         )
         if observed.status == MET:
             if was_done:
-                self.met.update(step.satisfies)
+                self._mark(step, True)
                 self.events.emit("step_skip", step=step.id, stage=step.stage, state=MET)
                 return
             if self.dry_run:
-                self.met.update(step.satisfies)
+                self._mark(step, True)
                 return
             self._verified(step, None, dict(observed.outputs))
             return
@@ -334,6 +446,7 @@ class Engine:
                     f"step {step.id}'s check could not run: {observed.detail}. "
                     "Nothing was applied; fix access, then run swarm install again.",
                 )
+        self._mark(step, False)
         unmet = self._unmet_dependencies(step)
         plan = self._plan(step)
         if self.dry_run:
@@ -355,7 +468,7 @@ class Engine:
                 except Exception as exc:
                     raise self._failed(step, f"apply raised {type(exc).__name__}: {exc}") from exc
                 if self._observe(step, step.check).status == MET:
-                    self.met.update(step.satisfies)
+                    self._mark(step, True)
             return
         if unmet:
             raise self._refuse_for(step, unmet)
@@ -367,11 +480,17 @@ class Engine:
         )
         self.lease.renew()
         self.events.emit("step_apply", step=step.id, stage=step.stage, explain=step.explain())
+        self._pass_starts(step)
         try:
-            step.apply(self.ctx, plan)
+            with self._beating():
+                step.apply(self.ctx, plan)
         except _Stop:
             raise
-        except (WaitGaveUp, LeaseLost):
+        except WaitGaveUp as gave_up:
+            # A step's own wait (handoff's console answering, a billing link)
+            # pauses the run exactly as the engine's wait below does.
+            raise self._paused(step, plan, gave_up) from gave_up
+        except LeaseLost:
             raise
         except Exception as exc:
             self._record(step, STEP_FAILED, plan=plan, detail=f"{type(exc).__name__}: {exc}")
@@ -383,18 +502,22 @@ class Engine:
             spec = wait_of(step) or HUMAN_WAIT
             done: set[str] = set()
             try:
+                # The whole Observation goes in: its detail is what names the
+                # problem (audit 5b M1), and the countdown prints it.
                 wait_until(
                     step.id,
                     spec,
-                    lambda: self._observe(step, step.check).status,
+                    lambda: self._poll(step.check),
                     clock=self.clock,
                     events=self.events,
                     on_poll=lambda: (self._heartbeat(), self._run_triggered(step, done)),
+                    ctx=self.ctx,
                 )
             except WaitGaveUp as gave_up:
-                self._record(step, STEP_PAUSED, plan=plan, detail=str(gave_up))
-                self.events.emit("step_paused", step=step.id, stage=step.stage, message=str(gave_up))
-                raise _Stop("paused", step.id, str(gave_up)) from gave_up
+                raise self._paused(step, plan, gave_up) from gave_up
+            except CheckFailed as failed:
+                self._record(step, STEP_FAILED, plan=plan, detail=failed.detail)
+                raise self._failed(step, failed.detail) from failed
             rechecked = self._observe(step, step.check)
         else:
             rechecked = self._observe(step, step.check)
@@ -402,6 +525,13 @@ class Engine:
                 self._record(step, STEP_FAILED, plan=plan, detail=rechecked.detail)
                 raise self._failed(step, f"after apply its check is {rechecked.status}: {rechecked.detail}")
         self._verified(step, plan, dict(rechecked.outputs))
+
+    def _paused(self, step: Step, plan: Plan, gave_up: WaitGaveUp) -> _Stop:
+        """A wait past its bound: the step is recorded paused (exit 4); its
+        message names what was waited on and that `swarm install` resumes there."""
+        self._record(step, STEP_PAUSED, plan=plan, detail=str(gave_up))
+        self.events.emit("step_paused", step=step.id, stage=step.stage, message=str(gave_up))
+        return _Stop("paused", step.id, str(gave_up))
 
     def _open_page(self, step: Step, plan: Plan) -> None:
         """A human step's exact page, opened once before its check is polled."""
@@ -429,6 +559,7 @@ class Engine:
         scope = None if stages is None else set(stages)
         self.unknown_in_dry_run = False
         self.met = set()
+        self._step_met = {}
         state = self.store.load()
         self.ctx = Context(
             project=self.store.project,
@@ -506,8 +637,7 @@ class Engine:
         self.events.emit(
             "step_check", step=step.id, stage=step.stage, state=observed.status, detail=observed.detail
         )
-        if observed.status == MET:
-            self.met.update(step.satisfies)
+        self._mark(step, observed.status == MET)
 
     def _end(self, outcome: str, step: str | None, message: str) -> Result:
         code = exitcodes.for_outcome(outcome)

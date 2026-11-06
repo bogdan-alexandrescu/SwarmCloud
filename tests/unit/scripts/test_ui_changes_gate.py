@@ -122,8 +122,10 @@ def test_each_job_runs_only_on_the_gates_output():
     # Every job but the gate's own reads, the aggregators, ci-gate and main's
     # build is listed above: a new job must decide what reaches it.
     # tested-tree reads `changes`' result, not its outputs: it records whatever ran.
+    # plugin-tag runs on a push to main once `python` passed, so `python`'s
+    # result is its gate (test_plugin_tag.py holds its `if:`).
     rest = set(jobs) - set(expected_if) - {"changes", "python", "ui", "ci-gate", "build", "tested-tree",
-                                           "quick-checks"}
+                                           "quick-checks", "plugin-tag"}
     assert not rest, f"jobs that do not read the changes gate: {sorted(rest)}"
 
 
@@ -273,7 +275,9 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
     release timing cuts A and C), which runs only after a release completes on
     main and is read by test_release_acceptance_job.py, plus
     terraform/modules/service_account_ids/main.tf (2026-10-10), which the
-    workspace-apply image copies in. MUTATION: drop any one."""
+    workspace-apply image copies in, plus install/** (2026-10-30,
+    DAYONE-DOCTOR-1), the manifest the swarm-verify image copies in for the
+    hourly doctor. MUTATION: drop any one."""
     assert set(app_paths()) == {
         "apps/**", "images/**", "kubernetes/**", "scripts/**", "tests/**", "docs/**",
         "terraform/modules/monitoring/alerts.tf", "terraform/modules/service_account_ids/main.tf", "plugin/**", ".claude-plugin/**",
@@ -282,7 +286,7 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
         ".github/ISSUE_TEMPLATE/**", ".github/labels.yml", ".github/workflows/iam-refusal-probe.yml",
         ".github/workflows/ci-fix.yml", ".github/workflows/auto-merge.yml", "scripts/ci-gate.sh",
         ".dockerignore", ".gcloudignore", ".github/workflows/hotfix.yml", ".github/actions/**",
-        ".github/workflows/accept.yml",
+        ".github/workflows/accept.yml", "install/**",
     }
 
 

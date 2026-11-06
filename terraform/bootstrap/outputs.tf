@@ -61,6 +61,7 @@ output "platform_service_accounts" {
       (google_service_account.rollup_sweeper.account_id) = google_service_account.rollup_sweeper.email
       (google_service_account.discovery.account_id)      = google_service_account.discovery.email
       (google_service_account.doctor.account_id)         = google_service_account.doctor.email
+      (google_service_account.voice.account_id)          = google_service_account.voice.email
     },
   )
 }

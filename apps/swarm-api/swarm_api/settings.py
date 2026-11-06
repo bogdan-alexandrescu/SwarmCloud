@@ -643,6 +643,20 @@ class ApiSettings:
     #: How long a controller's console has to renew before control lapses
     #: (§4.2): a closed tab stops renewing, and its control ends within this.
     live_control_renew_seconds: int = 60
+    #: Voice it (docs/design/voice-it.md §3.2, §10 phase 1): where swarm-api
+    #: makes swarm-voice's internal start and end calls, from SWARM_VOICE_URL
+    #: (`http://<address>:<port>`, no trailing path). Empty means swarm-voice
+    #: is not deployed, and every Voice it session route answers 503
+    #: `voice_unavailable` before it writes anything.
+    voice_url: str = ""
+    #: The audience of the Google ID token swarm-api presents to swarm-voice,
+    #: from SWARM_VOICE_AUDIENCE; empty means the URL itself.
+    voice_audience: str = ""
+    #: Who may talk to Voice it (lower-cased emails), from VOICE_IT_PEOPLE.
+    #: Version one is BGD's only (voice-it.md §1, "Who uses it"), so unset
+    #: means exactly the platform owner (PLATFORM_OWNER), and with neither
+    #: set nobody may start a session.
+    voice_people: tuple[str, ...] = ()
     #: How long a controller may send no input before control ends (§4.2), and
     #: how far each input moves the hold's deadline (§4.3). 300 is the design's
     #: default: long enough to find a password, short enough that a person who
@@ -911,6 +925,15 @@ class ApiSettings:
     #: of searches each, so 200 is room for dozens of tasks.
     search_daily_queries_per_tenant: int = 200
 
+    # --- generated workflow descriptions (swarm_api.wfdescription, #2688) ---
+    #: SWARM_WORKFLOW_DESCRIPTION_MODEL: "vertex" asks Claude Haiku on Vertex
+    #: AI; "off" (what Terraform ships, terraform/infra/locals.tf) writes the
+    #: extractive fallback alone; empty, the default here and for a variable
+    #: that is absent (a unit test, a local run), writes nothing. The model is
+    #: off unless this says "vertex": it turns on once the owner grants Vertex
+    #: AI (#3346). Any other value is refused at start, not at a submission.
+    workflow_description_model: str = ""
+
     # --- model classes (docs/design/model-per-step.md §4.4, #1435) ---------
     #: Model class -> the ID a step of that class runs (WORKER_CLASS_MODELS,
     #: `parse_worker_class_models`). Empty: no class but a profile's default
@@ -991,6 +1014,15 @@ class ApiSettings:
             raise ValueError(
                 f"SEARCH_PROVIDER must be one of {', '.join(sorted(SEARCH_PROVIDERS))}, "
                 f"got {search_provider!r}"
+            )
+        from .wfdescription import MODEL_SWITCHES
+
+        workflow_description_model = os.environ.get(
+            "SWARM_WORKFLOW_DESCRIPTION_MODEL", "").strip().lower()
+        if workflow_description_model and workflow_description_model not in MODEL_SWITCHES:
+            raise ValueError(
+                "SWARM_WORKFLOW_DESCRIPTION_MODEL must be one of "
+                f"{', '.join(MODEL_SWITCHES)} or unset, got {workflow_description_model!r}"
             )
         from .groups import GROUPS_AUTH_ADMIN_ROLE, parse_groups_auth
 
@@ -1107,6 +1139,10 @@ class ApiSettings:
             live_tunnel_ticket_seconds=_int("LIVE_TUNNEL_TICKET_SECONDS", 60),
             live_viewer_ticket_seconds=_int("LIVE_VIEWER_TICKET_SECONDS", 30),
             live_control_renew_seconds=_int("LIVE_CONTROL_RENEW_SECONDS", 60),
+            voice_url=os.environ.get("SWARM_VOICE_URL", "").strip(),
+            voice_audience=os.environ.get("SWARM_VOICE_AUDIENCE", "").strip(),
+            voice_people=tuple(
+                person.lower() for person in _csv("VOICE_IT_PEOPLE", platform_owner)),
             control_idle_seconds=_int("CONTROL_IDLE_SECONDS", 300),
             live_membership_recheck_seconds=float(
                 _int("LIVE_MEMBERSHIP_RECHECK_SECONDS", 300)),
@@ -1148,6 +1184,7 @@ class ApiSettings:
                 "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
             or "swarm-search-api-key",
             search_daily_queries_per_tenant=_int("SEARCH_DAILY_QUERIES_PER_TENANT", 200),
+            workflow_description_model=workflow_description_model,
             worker_class_models=parse_worker_class_models(
                 os.environ.get("WORKER_CLASS_MODELS", "")
             ),

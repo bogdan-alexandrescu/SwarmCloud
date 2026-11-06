@@ -42,7 +42,14 @@ SCHEDULER = "https://cloudscheduler.googleapis.com/v1"
 RUN = "https://run.googleapis.com/v2"
 SECRET_MANAGER = "https://secretmanager.googleapis.com/v1"
 CONTAINER = "https://container.googleapis.com/v1"
+FIRESTORE = "https://firestore.googleapis.com/v1"
+STORAGE = "https://storage.googleapis.com/storage/v1"
 ENGINE_SECRET_FILTER = "labels.managed-by=swarm-install"
+#: Step 5's lists (audit 4e F7): the engine's secrets, then what swarm-api writes
+#: at run time, each team's -git slot (the GitHub App installation token or a
+#: forge credential) among them, labelled `managed-by=swarm-api`; and every
+#: `swarm-tenant-*` slot whatever its labels.
+SECRET_FILTERS = (ENGINE_SECRET_FILTER, "labels.managed-by=swarm-api", "name:swarm-tenant-")
 #: Tenant namespaces carry this label (kubernetes/namespaces/tenant-namespace.yaml).
 TENANT_LABEL = "swarm-tenant"
 
@@ -189,9 +196,12 @@ class GcpTeardown:
     # 5. secrets ----------------------------------------------------------------------------
 
     def engine_secrets(self, who: str | None) -> list[str]:
-        found = self.api(who)._pages(f"{SECRET_MANAGER}/projects/{self.project}/secrets", "secrets",
-                                     {"filter": ENGINE_SECRET_FILTER})
-        return [str(s["name"]) for s in found]
+        names: list[str] = []
+        for secret_filter in SECRET_FILTERS:
+            found = self.api(who)._pages(f"{SECRET_MANAGER}/projects/{self.project}/secrets", "secrets",
+                                         {"filter": secret_filter})
+            names.extend(str(s["name"]) for s in found)
+        return list(dict.fromkeys(names))
 
     def delete_secret(self, name: str, who: str | None) -> None:
         self.api(who)._call("DELETE", f"{SECRET_MANAGER}/{name}", missing_ok=True)
@@ -216,6 +226,38 @@ class GcpTeardown:
         if changed:
             api.set_iam_policy(self.project, {**policy, "bindings": bindings})
         return changed
+
+    def remove_member_bindings(self, member: str) -> int:
+        """Remove `member` from every project binding; how many bindings named it."""
+        api = self.api(None)
+        policy = dict(api.iam_policy(self.project))  # carries its etag: a moved policy is refused
+        removed = 0
+        bindings = []
+        for binding in policy.get("bindings") or []:
+            if member in (binding.get("members") or []):
+                binding = {**binding, "members": [m for m in binding["members"] if m != member]}
+                removed += 1
+            if binding.get("members"):
+                bindings.append(binding)
+        if removed:
+            api.set_iam_policy(self.project, {**policy, "bindings": bindings})
+        return removed
+
+    def workspace_accounts(self) -> list[str]:
+        """The worker accounts the workspace job made (`swarm-agent-worker-<tenant>`), outside Terraform."""
+        from swarm_common.identity import worker_service_account_id
+
+        from ..steps.preflight import IAM
+
+        prefix = worker_service_account_id("")
+        found = self.api(None)._pages(f"{IAM}/projects/{self.project}/serviceAccounts", "accounts")
+        return [str(a["email"]) for a in found if str(a.get("email", "")).startswith(prefix)]
+
+    def delete_account(self, email: str) -> bool:
+        from ..steps.preflight import IAM
+
+        return self.api(None)._call("DELETE", f"{IAM}/projects/{self.project}/serviceAccounts/{email}",
+                                    missing_ok=True) is not None
 
     def remove_impersonation_grant(self, deployer: str, member: str) -> bool:
         from ..steps.preflight import IAM
@@ -252,7 +294,62 @@ class GcpTeardown:
                 destroyed += 1
         return destroyed
 
-    # 8. the state buckets, as the owner ----------------------------------------------------------
+    # 7. Firestore, as the owner ------------------------------------------------------------------
+
+    def delete_firestore(self, database: str) -> bool:
+        """Delete infra's abandoned database, lifting its delete protection first."""
+        url = f"{FIRESTORE}/projects/{self.project}/databases/{database}"
+        api = self.api(None)
+        found = api._call("GET", url, missing_ok=True)
+        if found is None:
+            return False
+        if found.get("deleteProtectionState") == "DELETE_PROTECTION_ENABLED":
+            api._call("PATCH", url, body={"deleteProtectionState": "DELETE_PROTECTION_DISABLED"},
+                      params={"updateMask": "deleteProtectionState"})
+        api._call("DELETE", url, missing_ok=True)
+        return True
+
+    # 8. the budget, the state buckets and the project, as the owner --------------------------------
+
+    def delete_budgets(self, account: str, display_name: str) -> list[str]:
+        """Delete the account's budgets named `display_name`; the Budgets API needs
+        a quota project, which is the install's (still there in step 8)."""
+        from ..steps.preflight import BUDGETS
+
+        api = self.api(None)
+        found = api._pages(f"{BUDGETS}/billingAccounts/{account}/budgets", "budgets", quota_project=self.project)
+        gone = [str(b["name"]) for b in found if b.get("displayName") == display_name]
+        for name in gone:
+            api._call("DELETE", f"{BUDGETS}/{name}", missing_ok=True, quota_project=self.project)
+        return gone
+
+    def project_made_by_install(self) -> bool:
+        """foundations.project labels the project it creates `managed-by=swarm-install`."""
+        from ..steps.preflight import CRM
+
+        found = self.api(None)._call("GET", f"{CRM}/v1/projects/{self.project}", missing_ok=True) or {}
+        return (found.get("labels") or {}).get("managed-by") == "swarm-install"
+
+    def delete_project(self) -> None:
+        from ..steps.preflight import CRM
+
+        self.api(None)._call("DELETE", f"{CRM}/v1/projects/{self.project}")
+
+    def empty_bucket(self, name: str, who: str | None) -> int:
+        """Delete every object generation in an infra bucket, so its destroy is not
+        refused (`bucket_force_destroy` is false in prod; audit 4e F1)."""
+        from urllib.parse import quote
+
+        api = self.api(who)
+        if api._call("GET", f"{STORAGE}/b/{name}", missing_ok=True) is None:
+            return 0
+        deleted = 0
+        for item in api._pages(f"{STORAGE}/b/{name}/o", "items", {"versions": "true"}):
+            api._call("DELETE", f"{STORAGE}/b/{name}/o/{quote(str(item['name']), safe='')}",
+                      params={"generation": item.get("generation")}, missing_ok=True)
+            deleted += 1
+        return deleted
+
 
     def delete_bucket(self, name: str) -> bool:
         from google.cloud import storage  # lazy: no client at import time

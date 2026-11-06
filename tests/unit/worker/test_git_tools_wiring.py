@@ -114,7 +114,9 @@ def _ctx(tmp_path: Path):
         input_path=tmp_path / "input.json",
         result_path=tmp_path / "result.json",
         quota_path=tmp_path / "quota.json",
-        payload={"prompt": "Rebase onto main and push."},
+        # It names the tools: swarm-git is registered only for a step that
+        # uses it (ONE-PLACE, test_runner_instructions_once.py).
+        payload={"prompt": "Rebase onto main with git_rebase_onto and push with git_push_branch."},
     )
 
 
@@ -185,6 +187,7 @@ def test_the_live_browser_and_the_git_tools_share_one_config(monkeypatch, tmp_pa
     assert _mcp_config(seen) == {"mcpServers": {
         claude_code.MCP_SERVER_NAME: {"type": "stdio", "command": claude_code.PLAYWRIGHT_MCP_BIN,
                                       "args": ["--cdp-endpoint", f"{endpoint}/client/playwright",
+                                               "--image-responses", "omit",
                                                "--output-dir", str(tmp_path / "artifacts" / "screenshots")]},
         shim.SERVER_NAME: _shim_server(spool),
     }}
@@ -602,7 +605,7 @@ def attempt(db, worker_factory, monkeypatch, origin, local_urls, forge):  # noqa
             child_api=routes, child_nonce=NONCE, swarm_api_url="https://swarm-api.example",
             secret_client=_ApiKeySecrets(),
         )
-        monkeypatch.setattr(worker, "_git_token", lambda: None)
+        monkeypatch.setattr(worker, "_git_token", lambda **_: None)
         return worker
 
     return build, routes

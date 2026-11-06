@@ -279,6 +279,14 @@ class AuthContext:
     #: decided is unknown (`Authenticator._with_unread_memberships`), never
     #: guessed.
     memberships_unread: bool = False
+    #: "voice-it" when this request came through a Voice it session grant
+    #: (`voice.grant`, docs/design/voice-it.md §3.6): swarm-voice acting as
+    #: the session's person, in the session's workspace. "" for every other
+    #: caller. A route that writes an audit row stamps it from here.
+    via: str = ""
+    #: The Voice it session id the grant belongs to, beside `via`; "" when
+    #: `via` is "".
+    voice_session: str = ""
 
     @property
     def email(self) -> str:
@@ -494,11 +502,19 @@ class PersonalTenants:
 
     Asked of `email` only, which the caller passes from the verified token.
 
-    Cached per email for `cache_seconds`, both answers, as `AdminRoles` caches
-    a role: two document reads on every request otherwise. A workspace that
-    becomes ready is offered within that window; nothing here can offer one
-    person's tenant to another, so staleness only delays. Raises whatever
-    Firestore raises; `Authenticator` turns that into a 503.
+    Only a READY answer is cached, per email for `cache_seconds`, as
+    `AdminRoles` caches a role: two document reads on every request otherwise.
+    A 'not ready' or absent answer is read again on every request (one read
+    when there is no `tenants/u-<caller>`, two otherwise), because the moment
+    the workspace job finishes is exactly when the person acts: Admin › Setup
+    polls while the workspace is built, and a cached 'not ready' refused the
+    one-person installer's pool-account sign-in 403 for up to the window after
+    it turned ready (E2E-3, DAYONE-PERSONAL-READY). No cap of a few seconds
+    either: the person clicks within one. Nothing refused becomes allowed
+    except by the documents really saying ready, and nothing here can offer
+    one person's tenant to another, so a cached ready only delays a
+    withdrawal by the window. Raises whatever Firestore raises, and caches
+    nothing then; `Authenticator` turns that into a 503.
     """
 
     def __init__(
@@ -516,7 +532,7 @@ class PersonalTenants:
         self._lock = threading.Lock()
 
     def ready(self, email: str) -> bool:
-        return self._cached(self._cache, email, self._read)
+        return self._cached(self._cache, email, self._read, keep_false=False)
 
     def owns_service_tenant(self, email: str) -> bool:
         """Whether `tenants/<tenant_id_for_user(email)>` is `kind: user` with
@@ -531,7 +547,7 @@ class PersonalTenants:
         return self._cached(self._service_cache, email, self._names)
 
     def _cached(self, cache: dict[str, tuple[float, bool]], email: str,
-                read: Callable[[str], bool]) -> bool:
+                read: Callable[[str], bool], *, keep_false: bool = True) -> bool:
         email = (email or "").strip().lower()
         if not email:
             return False
@@ -542,7 +558,10 @@ class PersonalTenants:
             return cached[1]
         answer = read(email)
         with self._lock:
-            cache[email] = (stamp + self._cache_seconds, answer)
+            if answer or keep_false:
+                cache[email] = (stamp + self._cache_seconds, answer)
+            else:
+                cache.pop(email, None)
         return answer
 
     def _names(self, email: str) -> bool:
@@ -703,6 +722,67 @@ class Authenticator:
         ctx = self._with_default(ctx, tenant)
         ctx = self._with_unread_memberships(ctx, tenant)
         return self._select_tenant(ctx, tenant)
+
+    def voice_caller(self, authorization: str | None, iap_assertion: str | None) -> None:
+        """Check that a Voice it grant request comes from swarm-voice itself
+        (`voice.grant.check_caller`), or raise `GrantRefused` (401).
+
+        The bearer goes through this authenticator's own verifier, so the
+        audience is the one every caller's token is pinned to. An IAP
+        assertion is refused: swarm-voice calls from inside the VPC with its
+        own token, and a browser never presents a grant."""
+        from .voice.grant import GrantRefused, check_caller
+
+        if iap_assertion:
+            raise GrantRefused("a Voice it grant is accepted only from swarm-voice's identity")
+        try:
+            tokens = bearer_tokens(authorization)
+        except Unauthenticated:
+            raise GrantRefused("a Voice it grant is accepted only from swarm-voice's identity") from None
+        # Every credential is tried, as on the person path (`bearer_tokens`):
+        # Cloud Run may add its own beside the caller's, so the first that
+        # verifies is not necessarily swarm-voice's.
+        for token in tokens:
+            try:
+                check_caller(self._verifier.verify(token), self._settings)
+            except (AuthError, GrantRefused):
+                continue
+            return
+        raise GrantRefused("a Voice it grant is accepted only from swarm-voice's identity")
+
+    def authenticate_voice_grant(self, session: Any) -> AuthContext:
+        """The session's person in the session's workspace, resolved exactly
+        as their own click is (`authenticate`, with the session's tenant as
+        the requested one), for a grant `voice.grant.resolve` accepted after
+        `voice_caller` passed.
+
+        Their memberships are read again on this request, so a person who
+        left the workspace is refused as their click would be. What the
+        grant does NOT carry is the person's platform-admin power: a
+        workspace they reach only as a platform admin is 403, and the
+        context has `is_admin`, `is_pool_admin` and `is_owner` false, so no
+        admin route or admin-widened read is reachable through Voice it
+        (§3.6) and the platform-admin audit never runs without `via`."""
+        from .voice.grant import VIA, RouteNotGranted
+
+        claims = {"email": session.person, "email_verified": True, "sub": ""}
+        try:
+            ctx = self._from_claims(claims)
+        except Forbidden:
+            raise
+        except AuthError as exc:
+            raise Unauthenticated(str(exc)) from None
+        tenant = session.tenant_id
+        ctx = self._with_own_service_tenant(self._with_own_workspace(ctx, tenant), tenant)
+        ctx = self._with_default(ctx, tenant)
+        ctx = self._with_unread_memberships(ctx, tenant)
+        ctx = self._select_tenant(ctx, tenant)
+        if ctx.tenant_id != tenant or ctx.tenant_via == "platform_admin":
+            raise RouteNotGranted(
+                "a Voice it grant acts only in a workspace its person is a member of")
+        return replace(ctx, is_admin=False, is_pool_admin=False, is_owner=False,
+                       admin_unresolved=False, platform_reach=(),
+                       via=VIA, voice_session=session.session_id)
 
     @staticmethod
     def _with_unread_memberships(ctx: AuthContext, requested: str | None) -> AuthContext:

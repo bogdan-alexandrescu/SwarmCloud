@@ -1,0 +1,8 @@
+# Lane DAYONE-PREFLIGHT-RECORD (part of #2688): with no --version,
+# preflight.release records the release itself (audit #2, #30): the installed
+# wheel's own, else the one the channel install.sh used names. SWARM_CHANNEL is
+# that channel, read the way install/install.sh reads it.
+version: 1
+env:
+  SWARM_CHANNEL:
+    setter: 'internal: the person''s shell, as for install/install.sh (stable when unset, or rc); read by release_channel in apps/swarm-install/swarm_install/steps/preflight.py when the installed wheel carries no release name (a source checkout)'

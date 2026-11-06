@@ -94,11 +94,31 @@ locals {
 }
 
 resource "google_service_account_iam_member" "deployer_admin" {
-  for_each = var.enable_github_wif ? local.deployer_admin_accounts : toset([])
+  for_each = local.deployer_on ? local.deployer_admin_accounts : toset([])
 
   service_account_id = "projects/${var.project_id}/serviceAccounts/${each.key}@${var.project_id}.iam.gserviceaccount.com"
   role               = "roles/iam.serviceAccountAdmin"
   member             = "serviceAccount:${google_service_account.deployer[0].email}"
+
+  # service_account_id names each account by a string, which orders nothing:
+  # on a fresh project the first apply would grant before the account exists
+  # ("does not exist") and pass only on a re-run (audit 3 A10). Every
+  # resource that makes one of bootstrap_platform's accounts is listed.
+  depends_on = [
+    google_service_account.platform,
+    google_service_account.tick,
+    google_service_account.verify,
+    google_service_account.schedule_tick,
+    google_service_account.rollup_sweeper,
+    google_service_account.discovery,
+    google_service_account.doctor,
+    google_service_account.voice,
+    # Not granted on (swarm-speech is modules/service_account_ids' speech_id,
+    # deliberately off bootstrap_platform; its actAs grant is
+    # platform_service_accounts.tf's), listed so every account that file makes
+    # is ordered before this the same way.
+    google_service_account.speech,
+  ]
 
   lifecycle {
     # Only when a file is named: an install names none (section 5.6 of

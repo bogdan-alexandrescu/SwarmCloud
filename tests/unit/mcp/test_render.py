@@ -430,6 +430,40 @@ class TestBindingPool:
         pools = {"global": pool("global", limit=10, active=5)}
         assert binding_pool(["global"], pools, units=2).room == 2
 
+    def test_a_provider_pool_is_divided_by_the_served_share_not_the_units(self):
+        # Contract request 129 (#2950): a large agent takes 4 units in a
+        # compute pool and 1 in a provider pool, and `/v1/capacity` serves
+        # that per profile as `pool_units`. 10 free provider slots are 10
+        # more large agents, not 2; the compute pool's 28 free units are 7, so
+        # `global` binds.
+        pools = {p["name"]: p for p in [
+            pool("global", limit=100, active=72),
+            pool("provider:anthropic", limit=50, active=40),
+        ]}
+        required = ["global", "provider:anthropic"]
+        served = {"global": 4, "provider:anthropic": 1}
+        binding = binding_pool(required, pools, units=4, pool_units=served)
+        assert binding.pool == "global"
+        assert binding.room == 7
+        # Without the field (an API from before request 129, whose admission
+        # took `units` in every pool) `units` is the share everywhere.
+        legacy = binding_pool(required, pools, units=4)
+        assert legacy.pool == "provider:anthropic"
+        assert legacy.room == 2
+
+    def test_the_capacity_table_reads_each_profiles_served_pool_units(self):
+        capacity = {
+            "pools": [pool("provider:anthropic", limit=50, active=44)],
+            "runner_profiles": {
+                "claude-code-large": {
+                    "resource_class": "large", "backend": "GKE_AUTOPILOT", "units": 4,
+                    "pools": ["provider:anthropic"],
+                    "pool_units": {"provider:anthropic": 1},
+                },
+            },
+        }
+        assert "6 more agents fit" in render.capacity_subtitle(capacity, WIDE)
+
     def test_a_paused_pool_binds_immediately(self):
         pools = {p["name"]: p for p in [
             pool("global", limit=100, active=0),
@@ -573,6 +607,28 @@ class TestCapacityView:
         bare.pop("enabled")
         capacity = dict(self.CAPACITY, pools=[bare])
         assert "not reported" in text(render_capacity(capacity, WIDE))
+
+    def test_the_pool_table_shows_the_applied_limit_beside_the_ceiling_and_why(self):
+        # #3047: a cap of 7 against a ceiling of 40 says which input holds it.
+        lowered = pool(
+            "provider:anthropic:tenant:acme", limit=40, active=7,
+            adaptive_target=7, effective_limit=7, available=0,
+            lowered_by=[{"input": "adaptive_target", "value": 7, "set_at": iso()}],
+        )
+        capacity = dict(self.CAPACITY, pools=[pool("global", limit=100, active=10), lowered])
+        lines = render_capacity(capacity, WIDE)
+        assert "CEILING" in text(lines)
+        row = next(line for line in lines if "provider:anthropic:tenant:acme" in line)
+        assert "7/7" in row and "40 adaptive" in row
+        plain = next(line for line in lines if line.strip().startswith("global"))
+        assert "10/100" in plain and "adaptive" not in plain
+
+    def test_an_api_without_lowered_by_still_names_the_input(self):
+        quota = pool("provider:anthropic", limit=40, active=0, quota_derived_limit=0,
+                     effective_limit=0, available=0)
+        row = next(line for line in render_capacity(dict(self.CAPACITY, pools=[quota]), WIDE)
+                   if "provider:anthropic" in line)
+        assert "40 quota" in row
 
     def test_unreadable_capacity_prints_no_ceilings(self):
         out = text(render_capacity(None, WIDE, error="connection refused"))

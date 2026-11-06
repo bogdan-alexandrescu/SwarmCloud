@@ -215,8 +215,14 @@ The permissions it needs, on every repository a tenant submits issues from, are
 tabled in [multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed):
 `Contents` and `Pull requests` read/write (unchanged, for the agents' push and
 the pull request), **`Issues: Read and write`** for the two comments,
-`Checks: Read` and `Commit statuses: Read` for the CI loop, and optionally
-`Actions: Read` for a failing job's log tail.
+`Checks: Read` and `Commit statuses: Read` for the CI loop, and
+**`Actions: Read and write`**: read for a failing job's log tail, write for the
+merge step's re-run of a flaky run's failed jobs (`POST
+actions/runs/<run>/rerun-failed-jobs`, `forgewrite.GitHubWriter.rerun_failed_jobs`).
+A token with `Actions: Read` only gets 403 on the re-run, so a flake is never
+re-run and the merge step fails with `checks_failed`, naming the refusal
+("the credential needs `actions: write` on the repository") when a round
+found nothing to change.
 
 **A forge 403 or 404 fails the planner** (owner decision, 2026-10-01) -- in
 practice it refuses the run before the planner exists: the open-work read
@@ -467,7 +473,19 @@ at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
   readers racing submit one round), then submits it. The red reading that finds
   `fix_rounds` rounds already spent ends the run `FAILED`, with the failing
   output, redacted and bounded to 8 KiB, on the run as `failure_excerpt` and
-  the reason in `error` and on the status comment.
+  the reason in `error` and on the status comment. A red Actions **gate**
+  (`ci-gate`) is not the failure, only its roll-up: its log says `not passed:
+  python-unit (failure)` and nothing about which test. So the excerpt
+  (`issueci.excerpt_at`, the same one every merge-step fix round gets)
+  resolves the gate's workflow run (`forgechecks.workflow_run_of`: its
+  `workflow_run_id`, else its `details_url`) and excerpts that run's failed
+  leaf jobs -- their `FAILED` node ids and `E` lines -- before the gate,
+  within the same five sections. Each section names the events it failed on
+  (`## unit tests (4/10) (failure on push)`), and a job red on push but green
+  on pull_request at the same sha gets one line under the header: the branch
+  is behind a fix on main, merge main. Measured on PR #2888, round 2: the
+  round saw only the gate, never merged main, and main already had the fix
+  (#2937). A jobs or log read that fails leaves the gate's own section.
 * **Review-then-fix rounds inside the compiled workflow** -- but only **one** is
   compiled today, whatever the cap (`COMPILED_REVIEW_ROUNDS`). Under
   `integrate` only the integrator may be gated (and the one re-review

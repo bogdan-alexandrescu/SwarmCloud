@@ -103,8 +103,18 @@ def _arm_task(arm: str) -> str:
     return next(f"task_{i}" for i in range(1000) if graphstage.assign_arm(f"task_{i}") == arm)
 
 
+def _code_intelligence(db: Any, **fields: Any) -> None:
+    """Merge `fields` into the workspace's stored `code_intelligence`, in
+    `workspace_settings`, where swarm-api's Code intelligence screen writes
+    `context`, `context_ab` and `graph_delivery` alike."""
+    path = f"workspace_settings/{TENANT}"
+    doc = dict(db.documents.get(path) or {})
+    doc["code_intelligence"] = {**(doc.get("code_intelligence") or {}), **fields}
+    db.seed(path, doc)
+
+
 def _no_ab(db: Any) -> None:
-    db.seed(f"tenant_settings/{TENANT}", {"code_intelligence": {"context_ab": "off"}})
+    _code_intelligence(db, context_ab="off")
 
 
 # --------------------------------------------------------------------------
@@ -261,11 +271,15 @@ def test_a_repository_turned_off_stages_nothing_and_says_nothing(db, store, clon
 
 
 def test_nothing_in_the_task_input_is_read_by_the_decision():
-    """Invariant 10: `decide` takes the two stored documents and the task id."""
+    """Invariant 10: `decide` takes the two stored documents, the task id and
+    the SIGNED dispatch block's on/off switch (the owner's decision,
+    2026-11-01): never the task's input, and `prepare` reads the switch only
+    through `switch_of`, which accepts nothing but the two words."""
     import inspect
 
     assert set(inspect.signature(graphstage.decide).parameters) == {
-        "repository_override", "workspace_settings", "task_id"}
+        "repository_override", "workspace_settings", "task_id", "switch"}
+    assert graphstage.switch_of({"code_intelligence": "always"}, "code_intelligence") is None
 
 
 # --------------------------------------------------------------------------
@@ -285,7 +299,7 @@ def test_arm_assignment_is_deterministic_and_splits_the_tasks():
 
 def test_under_the_ab_arm_a_stages_nothing_and_arm_b_stages(db, store, clone):
     checkout, first, second = clone
-    db.seed(f"tenant_settings/{TENANT}", {"code_intelligence": {"context_ab": "ab"}})
+    _code_intelligence(db, context_ab="ab")
     _promote(db, store, first)
     argv = ["python", "-m", "agent_worker.runners.claude_code"]
 
@@ -418,8 +432,9 @@ def _run_body(module: Any, monkeypatch: pytest.MonkeyPatch, work: Path,
         return {}
 
     monkeypatch.setattr(module, "run_cli_agent", fake_run)
-    for name in ("SWARM_GIT", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH", "SWARM_CDP_ENDPOINT",
-                 graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV):
+    for name in ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH",
+                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV,
+                 graphstage.SHAPE_ENV):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -443,15 +458,18 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
     work = tmp_path / "work"
     snapshot = str(work / ".swarm-context" / "snapshot")
     seen = _run_body(claude_code, monkeypatch, work, {
-        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context")})
+        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context"),
+        graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS})
     servers = _mcp_servers(seen)
     assert servers == {graphstage.SERVER_NAME: {
         "type": "stdio", "command": sys.executable,
         "args": ["-I", "-m", "agent_worker.graphmcp", "--snapshot", snapshot,
-                 "--workdir", str(work / "repo")]}}
+                 "--workdir", str(work / "repo")], "alwaysLoad": True}}
     assert seen["env"][graphstage.CONTEXT_ENV] == str(work / ".swarm-context")
-    # Its one line on using the graph first (LANE CAPS, part of #2524), and nothing else.
-    assert seen["prompt"] == ("Implement it.\n\n"
+    # What to ask the graph first (AGENTS-USE-TOOLS, 2026-11-02), then its
+    # exploration line (LANE CAPS, part of #2524), and nothing else.
+    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                              + claude_code.GRAPH_FIRST_NOTE + "\n\n"
                               + claude_code.exploration_note(graph=True, children=""))
 
     # The control: nothing staged, no server and no config at all.
@@ -648,7 +666,7 @@ class _FakeTicket:
 
 def _deliver(db: Any, value: Any) -> None:
     """The workspace's stored `graph_delivery`, where swarm-api writes it."""
-    db.seed(f"workspace_settings/{TENANT}", {"code_intelligence": {"graph_delivery": value}})
+    _code_intelligence(db, graph_delivery=value)
 
 
 def _prepare(db: Any, store: Any, checkout: Path, base: str, *, ticket: Any,
@@ -726,6 +744,8 @@ def test_the_default_record_is_the_one_staging_wrote_before_this_lane(db, store,
     after = _prepare(db, store, checkout, second, ticket=_FakeTicket())
     new = _record(checkout)
     old.pop("seconds"), new.pop("seconds")
+    # Timings, as `seconds` is (lane REVIEW-STARTUP-WAIT): the shape is the same.
+    assert set(old.pop("phases")) == set(new.pop("phases"))
     assert before == after and old == new
 
 
@@ -764,7 +784,13 @@ def test_service_pins_instead_of_copying_and_hands_the_runner_the_shims_variable
     assert stage["blobs"] == 0 and stage["bytes"] == len(manifest)
     assert marks == [{"graph": {"delivery": "service", "seconds": stage["seconds"],
                                 "bytes": len(manifest), "blobs": 0,
-                                "reason": stage["reason"]}}]
+                                "reason": stage["reason"], "history_seconds": None,
+                                "phases": stage["phases"]}}]
+    # Every start-up phase the worker runs before the agent, timed, in the
+    # mark and in stage.json (lane REVIEW-STARTUP-WAIT). MUTATION: a phase
+    # left untimed is the next half hour no record can place.
+    assert set(stage["phases"]) == {"stage", "additional", "jev_setup"}
+    assert all(isinstance(v, float) and v >= 0 for v in stage["phases"].values())
 
 
 def test_the_pin_is_what_the_shim_and_the_pack_open(db, store, clone):
@@ -916,7 +942,10 @@ def test_a_rewritten_manifest_is_never_pinned_and_falls_back_to_a_refusal(db, st
     assert "no longer matches" in env[graphstage.UNSTAGED_ENV]
 
 
-def test_an_unreadable_delivery_setting_is_the_default(db, store, clone):
+def test_an_unreadable_settings_document_stages_nothing_and_says_why(db, store, clone):
+    """`context`, `context_ab` and `graph_delivery` are one document's now, so
+    an unreadable one is a staging failure with its reason, as an unreadable
+    `tenant_settings` was before 2026-11-01, never a quiet default."""
     checkout, first, second = clone
     _no_ab(db)
     _promote(db, store, first)
@@ -926,11 +955,11 @@ def test_an_unreadable_delivery_setting_is_the_default(db, store, clone):
             self.inner = inner
 
         def collection(self, name: str) -> Any:
-            if name == graphstage.DELIVERY_SETTINGS_COLLECTION:
+            if name == graphstage.SETTINGS_COLLECTION:
                 raise RuntimeError("unreachable")
             return self.inner.collection(name)
 
     ticket = _FakeTicket()
     env = _prepare(_Settings(db), store, checkout, second, ticket=ticket)
-    assert graphstage.SNAPSHOT_ENV in env and ticket.started == []
-    assert "fallback" not in _record(checkout)
+    assert graphstage.SNAPSHOT_ENV not in env and ticket.started == []
+    assert _record(checkout)["reason"] == "staging failed (RuntimeError)"

@@ -52,6 +52,7 @@ from agent_worker import lifecycle
 
 from test_carrier_branches import BRANCHES, _worker as _carrier_worker
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _attempt,
     _the_agent_titles_its_pull_request,
     agent_does_nothing,
@@ -121,6 +122,8 @@ def test_a_review_that_checks_out_the_reviewed_branch_publishes_nothing(
     assert out["publish_reason"] == (
         f"HEAD moved off this task's branch (to {REVIEWED}); "
         "nothing of this task's was published"
+        "; its commits are kept in the step's artifacts as moved-head.bundle "
+        "(git fetch moved-head.bundle)"
     ), out
     assert out["head_moved"] == REVIEWED
     # MUTATION: count the moved HEAD's commits and the summary claims two
@@ -182,6 +185,8 @@ def test_a_head_on_the_same_branch_that_does_not_descend_from_the_start_publishe
     assert len(head) == 12 and head != (out["base"] or "")[:12], out
     assert out["publish_reason"] == (
         f"HEAD moved off this task's branch (to {head}); nothing of this task's was published"
+        "; its commits are kept in the step's artifacts as moved-head.bundle "
+        "(git fetch moved-head.bundle)"
     )
     assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
 
@@ -318,6 +323,8 @@ def test_a_new_local_branch_that_does_not_descend_from_the_start_publishes_nothi
     assert out["head_moved"] == "elsewhere", out
     assert out["publish_reason"] == (
         "HEAD moved off this task's branch (to elsewhere); nothing of this task's was published"
+        "; its commits are kept in the step's artifacts as moved-head.bundle "
+        "(git fetch moved-head.bundle)"
     )
     assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
 

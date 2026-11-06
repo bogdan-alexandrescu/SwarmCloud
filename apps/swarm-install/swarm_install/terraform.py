@@ -43,8 +43,12 @@ from .steps.preflight import TERRAFORM_VERSION
 #: The env var the google provider and the gcs backend both read to
 #: impersonate a service account.
 IMPERSONATE_ENV = "GOOGLE_IMPERSONATE_SERVICE_ACCOUNT"
-#: The only pass that runs as the person: it creates the deployer.
-AS_PERSON = ("bootstrap-1",)
+#: The passes that run as the person. Pass 1 creates the deployer. Pass 2
+#: applies IAP membership (the accessor bindings and google_iap_settings),
+#: which the deployer by design cannot: it holds no iap.admin, and IAP
+#: membership is applied from bootstrap by the owner
+#: (terraform/bootstrap/deployer_conditions.tf; N4, #2688).
+AS_PERSON = ("bootstrap-1", "bootstrap-2")
 
 HAS_ONLY_MAX = 10
 LOGICAL_OPERATORS_MAX = 12

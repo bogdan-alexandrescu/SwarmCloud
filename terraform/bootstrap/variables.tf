@@ -108,6 +108,41 @@ variable "enable_github_wif" {
   default     = false
 }
 
+variable "enable_deployer" {
+  description = <<-EOT
+    Create the Terraform deployer (`<name_prefix>-tf-deployer`) and its grants
+    without the GitHub pool. A Day One install turns it on: every pass after
+    bootstrap pass 1 runs as the deployer, and an install has no GitHub
+    federation unless the CI add-on asks for it. enable_github_wif implies it,
+    so a root that federates keeps the deployer whatever this says. The
+    default is false so a root that sets neither switch creates nothing.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "deployer_impersonator" {
+  description = <<-EOT
+    `user:<email>` granted roles/iam.serviceAccountTokenCreator on the deployer,
+    ON THE DEPLOYER ALONE: the person who runs `swarm install`, so every pass
+    after bootstrap pass 1 can run as the deployer. Empty (the default) grants
+    nothing; SwarmCloud's own bootstrap leaves it empty, because its deployer
+    is reached through GitHub federation and nobody impersonates it by hand.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.deployer_impersonator == "" || can(regex("^user:[^@\\s]+@[^@\\s]+$", var.deployer_impersonator))
+    error_message = "deployer_impersonator is one person, as user:<email>; a group or a service account may not impersonate the deployer."
+  }
+
+  validation {
+    condition     = var.deployer_impersonator == "" || var.enable_deployer || var.enable_github_wif
+    error_message = "deployer_impersonator needs a deployer to impersonate: set enable_deployer (or enable_github_wif)."
+  }
+}
+
 variable "github_repository" {
   description = "owner/repo allowed to assume the deployer SA. Required when enable_github_wif is true."
   type        = string

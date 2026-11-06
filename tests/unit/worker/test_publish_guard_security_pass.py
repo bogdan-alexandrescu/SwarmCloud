@@ -39,6 +39,7 @@ import pytest
 from agent_worker import lifecycle, workspace as workspace_mod
 
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     forge,
     local_urls,
     origin,
@@ -139,7 +140,7 @@ def test_a_publish_repo_config_changed_before_the_second_reap_publishes_nothing(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-cfg", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None
 
     built: list[Path] = []
@@ -184,7 +185,7 @@ def test_an_unchanged_publish_repo_config_still_publishes(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-cfg-ok", "metadata": {"dispatch": {"strategy": "direct-pr"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None
     worker.reap_before_publish = lambda: ()
     (worker.ws.work / lifecycle.REPO_DIR_NAME / "a.txt").write_text("a\n")

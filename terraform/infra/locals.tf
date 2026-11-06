@@ -127,14 +127,35 @@ locals {
       model_classes       = ["opus", "fable", "sonnet", "haiku"]
       default_model_class = "opus"
     }
+    # Contract request 127, accepted by the owner 2026-10-31 (LIGHTPANDA-CONTRACT,
+    # docs/design/lightpanda-runtime.md): claude-code on agent-runtime-lightpanda,
+    # on the standard class, and nothing else different. A GKE profile, not in
+    # `cloud_run_fallback_profiles`, so no Cloud Run Job is made for it;
+    # mirrored so the catalogue comparison holds, so its
+    # `runner:claude-code-lightpanda` pool exists, and so agent-runtime-lightpanda
+    # is in runner_images: its digest is pinned and handed to the scheduler
+    # with the others.
+    "claude-code-lightpanda" = {
+      image           = "agent-runtime-lightpanda"
+      resource_class  = "standard"
+      backend         = "GKE_AUTOPILOT"
+      provider        = "anthropic"
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
+    }
     # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
     # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
     "codex" = {
-      image           = "agent-runtime-base"
-      resource_class  = "standard"
-      backend         = "GKE_AUTOPILOT"
-      provider        = "openai"
-      secret_env      = { OPENAI_API_KEY = "openai" }
+      image          = "agent-runtime-base"
+      resource_class = "standard"
+      backend        = "GKE_AUTOPILOT"
+      provider       = "openai"
+      # Contract request 130 (owner, 2026-11-01): the tenant's key or a pool
+      # ChatGPT plan's two names, interchangeable (secrets_any_of).
+      secret_env      = { for name in ["OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"] : name => "openai" }
       timeout_seconds = 7200
 
       model_classes       = []
@@ -362,7 +383,7 @@ locals {
   }
 
   # Profile -> the pin of its `default_model_class` (the mirror above), for
-  # every profile that has one: claude-code, claude-code-large,
+  # every profile that has one: claude-code, claude-code-large, claude-code-lightpanda,
   # claude-code-review, indexer and claude-code-browser, all opus, so exactly the map #226 wrote by hand.
   # codex is an OpenAI CLI, where a Claude name would fail every run, and
   # mock, generic, browser, merge, post-verdict, await-input and fix-loop start no
@@ -802,7 +823,10 @@ locals {
     # SETTINGS_MAC_REQUIRED (settings_mac.tf).
     # local.api_graph_stats_env: SWARM_GRAPH_STATS_URL, the graph service's
     # stats address (graph_service.tf).
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, {
+    # local.api_decision_route_env: INTERNAL_DECISION_API_ADDRESS, swarm-api's
+    # route to the decision API through the tailnet egress's internal load
+    # balancer (tailscale.tf; jev-contract.md section 4.1).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, local.api_grant_attestation_env, local.settings_mac_env, local.model_class_env, local.api_graph_stats_env, local.api_day_one_env, local.api_decision_route_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -828,6 +852,10 @@ locals {
       # swarm_api.settings reads them and GET /v1/mcp-servers serves them as
       # `egress_addresses`; "" serves [], which the console says in words.
       MCP_EGRESS_ADDRESSES = join(",", module.network.nat_addresses)
+
+      # Generated workflow descriptions (swarm_api.wfdescription): "off" writes
+      # them extractively; turns to "vertex" once the owner grants Vertex AI.
+      SWARM_WORKFLOW_DESCRIPTION_MODEL = "off"
 
       # The job-made workspaces' Firestore cutover list (variables.tf
       # `worker_firestore_off_tenants`, #1457 design B). swarm_api.settings
@@ -976,6 +1004,14 @@ locals {
       # swarm-api refuses every such submission while this is off.
       SWARM_MCP_SERVERS = var.mcp_servers_enabled ? "on" : "off"
 
+      # The Jev review of a contract at submission (swarm_api.contractreview
+      # MODE_ENV; var.contract_review_mode says what each value does). Until
+      # this line nothing in Terraform set it, so turning it on was a hand
+      # edit the next apply put back. "off" unless the environment's tfvars
+      # sets another value, and the variable's validation admits only the
+      # three values swarm-api reads.
+      SWARM_CONTRACT_REVIEW = var.contract_review_mode
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build
@@ -1107,6 +1143,44 @@ locals {
       # decision 2026-10-11 (b)). See local.live_relay_url. Empty while the
       # relay is off, which swarm_api.settings reads as "no relay".
       SWARM_LIVE_URL = local.live_relay_url
+
+      # Where swarm-api makes swarm-voice's internal start and end calls for
+      # Voice it (docs/design/voice-it.md §10 phase 1): http on 8080 at the
+      # internal load balancer voice.tf reserves (local.voice_url), and the
+      # audience of the ID token swarm-api presents. Empty until voice_it is
+      # "on"; empty is read by swarm_api.settings as "swarm-voice is not
+      # deployed", and every Voice it route answers 503 voice_unavailable.
+      # VOICE_IT_PEOPLE is unset on purpose: PLATFORM_OWNER, BGD alone (§1).
+      SWARM_VOICE_URL = local.voice_url
+
+      # Voice it's own speech machine (voice_speech.tf; docs/design/
+      # voice-it-own-speech.md §3.2, §4, §5.3), read by
+      # swarm_api.voice.speech_machine.SpeechConfig.from_env. All empty while
+      # voice_speech is off: an empty SWARM_SPEECH_ADDR is "the engine is not
+      # deployed", and no speech route touches Compute.
+      #   _PROJECT/_ZONES/_INSTANCE: the one instance swarm-api starts and
+      #     stops (one zone, one machine; a stock-out falls back to text and
+      #     never tries a second zone).
+      #   _ADDR: the reserved internal address the relay dials on 8080.
+      #   _AUDIENCE: the ID token's audience the speech server checks; the
+      #     same constant the voice_speech output names.
+      #   _IMAGE: the release's swarm-speech digest (§5.3), written onto the
+      #     stopped machine at the next start. "" until the release pins it,
+      #     which swarm-api reads as "leave the instance's image as it is".
+      #   _SWEEP_AUDIENCE/_SWEEP_CALLERS: who may POST the two-minute sweep
+      #     (§4.5): a Cloud Scheduler OIDC token for swarm-api's own push
+      #     audience, from the doctor's account (§6 I4: it already holds
+      #     run.invoker on swarm-api, doctor.tf) while the doctor runs, or the
+      #     tick account, the scheduler identity this root already lists as
+      #     a platform caller. Empty callers means every sweep is refused.
+      SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
+      SWARM_SPEECH_ZONES          = local.voice_speech_on ? var.voice_speech.zone : ""
+      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? google_compute_instance.speech[0].name : ""
+      SWARM_SPEECH_ADDR           = local.voice_speech_on ? google_compute_address.speech[0].address : ""
+      SWARM_SPEECH_AUDIENCE       = "swarm-speech"
+      SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
+      SWARM_SPEECH_SWEEP_AUDIENCE = local.voice_speech_on ? local.push_audiences["swarm-api"] : ""
+      SWARM_SPEECH_SWEEP_CALLERS  = local.voice_speech_on ? join(",", concat([module.iam.tick_service_account], local.doctor_on ? [local.doctor_email] : [])) : ""
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
@@ -1344,6 +1418,11 @@ locals {
       # production-shaped in every way except that label. So the guard written
       # to make this impossible was itself disarmed in the only place it ran.
       BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
+
+      # Who a Voice it pool account lists when the pool is added: the
+      # platform owner alone in version one (VOICE_IT_PEOPLE unset on
+      # purpose; quota_broker.main reads it, else this).
+      PLATFORM_OWNER = var.platform_owner
     })
     "swarm-reconciler" = merge(local.common_env, {
       # No GKE_CLUSTER/GKE_LOCATION here: the reconciler talks to the cluster
@@ -1409,8 +1488,13 @@ data "google_service_account" "listed" {
 # setup values are rendered only once they mean something, so the live
 # deployment's environment gains nothing else:
 #   * SETUP_GITHUB_ORG when setup_github_org names an organisation;
-#   * SWARM_HOSTNAME and GITHUB_HOOKS_URL under enable_console_app_setup (the
-#     receiver's URL only while the receiver is deployed).
+#   * SWARM_HOSTNAME and GITHUB_HOOKS_URL under enable_console_app_setup.
+#     GITHUB_HOOKS_URL is the receiver's deterministic URL WITH its route,
+#     /github/events (apps/swarm-github-hooks receiver.py `PATH`; any other path
+#     is a 404), rendered from infra pass 2 on, before the receiver exists: the
+#     App's manifest names it (an empty hook URL may be refused by GitHub after
+#     the App is made), and the hook stays inactive until the engine turns it
+#     on after infra pass 4 makes the receiver.
 # Unset, apps/swarm-api/swarm_api/settings.py explains each one's fallback.
 locals {
   api_day_one_env = merge(
@@ -1420,6 +1504,6 @@ locals {
     # The receiver's deterministic run.app URL (main.tf says why), not its
     # resource's `uri`: the receiver reads swarm-api's URL, so naming its
     # resource here would be a dependency cycle.
-    var.enable_console_app_setup && local.github_hooks_serving ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app" } : {},
+    var.enable_console_app_setup ? { GITHUB_HOOKS_URL = "https://${local.github_hooks_name}-${data.google_project.this.number}.${var.region}.run.app/github/events" } : {},
   )
 }

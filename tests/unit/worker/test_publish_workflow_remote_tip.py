@@ -38,6 +38,7 @@ from agent_worker import lifecycle
 
 from test_publish_workflow_files import FakeBroker, _with_broker
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures are used by name
+    _the_fence_holds,
     _attempt,
     _the_agent_titles_its_pull_request,
     forge,

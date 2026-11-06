@@ -71,6 +71,7 @@ import { SCOPE_WORDS, SHORTCUTS, shortcut } from './shortcuts'
 export type TopicId =
   | 'absent-vs-zero'
   | 'account-health'
+  | 'jev-usage'
   | 'account-label-rules'
   | 'account-owned-by-one-tenant'
   | 'account-removal-is-reversible'
@@ -180,6 +181,7 @@ export type TopicId =
   | 'config-repositories'
   | 'config-setup-strip'
   | 'mcp-servers'
+  | 'agent-plugins'
   | 'platform-secrets'
   | 'runner-sizes'
   | 'secret-scopes'
@@ -1380,6 +1382,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     see: ['absent-vs-zero', 'account-states'],
   },
 
+  'jev-usage': {
+    group: 'reading-a-figure',
+    title: 'Jev’s usage is counted when an attempt settles',
+    short:
+      'Each attempt adds its Jev calls and input tokens to the workspace’s record when it ends. The page sums those records per day and kind, says why each skipped call was skipped, and prices them only at a rate a platform admin has set: until then the dollars are a dash, never zero.',
+    long: [
+      'A kind is who asked: the worker’s judgments, one per question, the quality gate, the agent’s decision tool and the Jev browser. A record that was not split by kind is shown whole, as not split, rather than guessed apart.',
+      'The monthly cap is the workspace’s Code intelligence setting; a call that would take the month past it is skipped, and the skip names the cap as its reason.',
+      'The records hold counts only: never what was sent, what came back or a key.',
+    ],
+    see: ['absent-vs-zero'],
+  },
+
   lending: {
     group: 'an-account',
     title: 'What lending an account does',
@@ -1758,14 +1773,14 @@ const SPECS: Record<TopicId, TopicSpec> = {
   // platform cannot list a Google group's members (workspace-roles.md §4.3).
   'people-and-roles-scope': {
     group: 'administering-the-platform',
-    title: 'People and roles shows the workspaces you administer',
+    title: 'Platform people shows the workspaces you administer',
     short:
       'A platform admin sees every person against every group workspace. A workspace admin sees only the workspaces they administer and the people in them: whoever was last seen there or holds a role there. A personal workspace request and a Claude account loan are a platform admin’s to decide.',
     long: [
       'Each cell is the person’s own role in that workspace when they hold one, else the workspace’s default when they were last seen in it, else none. A dash means that workspace’s roles could not be read, and is never a guessed role.',
       'The platform cannot list a Google group’s members, so being in a workspace is read from the person’s last sign-in. Someone who has not signed in since joining is shown once they hold a role of their own.',
-      'Roles are changed on Config › People and roles, in the workspace itself.',
-      'Two platform roles come from the deployment’s configuration, not from People and roles. The platform owner is the PLATFORM_OWNER setting: no switch on People and roles changes it, and only the owner can. A member of a group named in ADMIN_GROUPS is an admin without a role record, so the Admins card does not list them and their Admin switch reads off.',
+      'Roles are changed on the workspace’s own page, Admin › Workspaces › its Roles tab.',
+      'Two platform roles come from the deployment’s configuration, not from Platform people. The platform owner is the PLATFORM_OWNER setting: no switch on Platform people changes it, and only the owner can. A member of a group named in ADMIN_GROUPS is an admin without a role record, so the Admins card does not list them and their Admin switch reads off.',
     ],
   },
 
@@ -1864,6 +1879,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     see: ['secret-scopes'],
   },
 
+  'agent-plugins': {
+    group: 'configuring-a-workspace',
+    title: 'A step loads a plugin only when its workspace allows it',
+    short:
+      'A plugin adds skills to an agent step, from the platform’s closed catalogue, at one version built into the agent images. A workspace’s owner or admin allows whole plugins; each step names a plugin, a mode and skills by name.',
+    long: [
+      'None is allowed until someone allows one. The choice is signed with the workspace settings key, and a list without a valid signature allows nothing.',
+      'Switching a plugin off refuses every step that names it from the next submission. Steps already running keep what they loaded.',
+      'Only unattended mode runs today: planner and designer interview a person, and wait for the question bridge.',
+    ],
+    see: ['workspace-roles'],
+  },
+
   'workspace-roles': {
     group: 'configuring-a-workspace',
     title: 'A role is viewer, member or admin, and the default covers everyone else',
@@ -1945,18 +1973,20 @@ export const HELP_PLACES = {
   'capacity/holders': 'Holders',
   'capacity/accounts': 'Subscription accounts',
   'capacity/account-health': 'Account health',
+  'capacity/jev-usage': 'Jev usage',
   'capacity/quota': 'Provider quota',
   'admin/limits': 'Pool limits',
   'admin/tenants': 'Tenants',
   'admin/counts': 'Platform counts',
-  'admin/people': 'People and roles',
+  'admin/people': 'Platform people',
   'admin/runner-sizes': 'Runner sizes',
   'admin/platform-secrets': 'Platform secrets',
-  'admin/workspaces': 'Workspaces you admin',
+  'admin/workspaces': 'Workspaces',
   'config/github': 'GitHub access',
   'config/repositories': 'Repositories',
   'config/secrets': 'Secrets',
   'config/mcp-servers': 'MCP servers',
+  'config/plugins': 'Plugins',
   'config/people': 'People and roles',
   'config/workspace': 'Workspace Settings',
   'automate/schedules': 'Schedules',
@@ -2186,8 +2216,8 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     act: { say: 'To free capacity now, cancel work; lowering a ceiling only stops new work being admitted.', at: 'admin/limits' },
   },
   'people-and-roles-scope': {
-    subject: 'Who People and roles shows',
-    act: { say: 'To change a role, open Config › People and roles in that workspace.', at: 'admin/people' },
+    subject: 'Who Platform people shows',
+    act: { say: 'To change a role, open that workspace’s page under Admin › Workspaces.', at: 'admin/workspaces' },
   },
   'lease-and-pool-are-two-records': {
     subject: 'Leases and pool counters',
@@ -2345,6 +2375,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     subject: 'Account health',
     act: { say: 'Open the worst account first: sign in again where re-auth is needed, and wait out a limit until its window resets.', at: 'capacity/account-health' },
   },
+  'jev-usage': {
+    subject: 'Jev usage and cost',
+    act: { say: 'Read the skipped reasons first: a cap or a limit reached is a setting to raise, a failure is the backend.', at: 'capacity/jev-usage' },
+  },
   lending: {
     subject: 'Lending an account',
     act: { say: 'Name the tenants to lend to on the account, and edit the list later as needed.', at: 'capacity/accounts' },
@@ -2437,6 +2471,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     subject: 'Registered MCP servers',
     act: { say: 'Ask a platform admin to register a server; grant its secret on Secrets.', at: 'config/mcp-servers' },
   },
+  'agent-plugins': {
+    subject: 'Agent plugins',
+    act: { say: 'Allow a plugin on Plugins if you own or administer the workspace, then name it on a step.', at: 'config/plugins' },
+  },
   'workspace-roles': {
     subject: 'Roles in a workspace',
     act: { say: 'Set a person’s role, or the default, if you administer the workspace.', at: 'config/people' },
@@ -2500,6 +2538,7 @@ export const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'config/repositories': 'config-repositories',
   'config/secrets': 'secret-scopes',
   'config/mcp-servers': 'mcp-servers',
+  'config/plugins': 'agent-plugins',
   'config/people': 'workspace-roles',
   'config/workspace': 'workspace-settings',
   'admin/limits': 'ceiling-change-evicts-nothing',

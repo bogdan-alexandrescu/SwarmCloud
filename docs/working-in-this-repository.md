@@ -263,7 +263,27 @@ CI-seconds (`unit_test_durations.json`) is not one call: run without
 part alone, and an agent whose command limit is ten minutes runs the n parts
 as n commands, which the script's warning spells out. A narrowed
 area run never reaches those guards, and they were most of the 25% of lane PRs
-red on their first CI run (#642). Any brief, wherever it is written, names it.
+red on their first CI run (#642). Until 2026-11-01 every SwarmCloud agent ran
+it, and any brief, wherever it was written, named it.
+
+**Since 2026-11-01 an agent under the pre-publish gate does not run it.**
+Owner decision, 2026-11-01 (#2981), after the code intelligence experiment
+measured it. The claude-code runner (`claude-code-lightpanda` included; its
+`CliAgentSpec` sets `prepublish=True`, `agent_worker/prepublish.py`) runs
+`scripts/changed-guards.sh` itself in its pre-publish gate after the agent's
+turn, and hands the agent what fails in a fix turn. On eight identical
+workflows whose patch touched 33 files in hot modules, the script selected
+645-681 test files: its first run timed out at the 600 s check limit on all 15
+steps, the gate's rerun as 10 shards took 55-65 minutes on the reviews, and
+the agents, told by their briefs to run it too, hit their own 10-minute
+command limit first, about ten more minutes a step for a result the gate then
+computed again. So an agent on that runner runs the related tests and
+`scripts/publish-scan.sh` and leaves `scripts/changed-guards.sh` to the gate;
+the runner's prompt note (`RELATED_TESTS_NOTE`) and its repeat warning
+(`guards_repeat_hook.py`) say so. A runner without the gate -- codex, the
+only other coding-agent runner (`CliAgentSpec`) -- keeps the rule above: its agent
+runs `scripts/changed-guards.sh` once as its one pre-finish command, and its
+brief names it.
 
 **While it works, that agent runs only the tests related to its change**,
 through **`scripts/related-tests.sh`** (`--run` to run them): it names the
@@ -271,10 +291,14 @@ pytest files that import or name a changed path and the vitest files that
 import a changed UI module, as a few runs of named files. Never vitest without
 file arguments; never pytest over a whole directory or with `-n auto` across
 the suite; never parallel shards or background test batches polled with
-`sleep`; `scripts/changed-guards.sh` once at the end. Owner decision
-2026-10-20 (#1694): 36 unfiltered vitest runs cost 2.05 h, 8 whole-directory
-pytest runs 0.73 h, and both out-of-memory kills came from four vitest shards
-started with `&` ([docs/ci.md](ci.md#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)).
+`sleep`. Owner decision 2026-10-20 (#1694): 36 unfiltered vitest runs cost
+2.05 h, 8 whole-directory pytest runs 0.73 h, and both out-of-memory kills came
+from four vitest shards started with `&`
+([docs/ci.md](ci.md#while-it-works-a-swarmcloud-agent-runs-only-the-related-tests)).
+The rule then ended "`scripts/changed-guards.sh` once at the end"; since
+2026-11-01 (#2981, the paragraph above) that holds only on a runner without
+the pre-publish gate (codex), and under the gate (claude-code) the agent
+leaves the script to the gate.
 
 ---
 
@@ -285,7 +309,13 @@ agent-hours, almost none of it output. Cost is turns × context. Whole-file read
 and waiting inside agents made lanes carry 300-500k tokens on every turn.
 
 * **Read by window.** Never read a whole file over 1,000 lines (a hook refuses it).
-  `grep -n` or `rg` first, then read 100-300 lines around the hit.
+  When the code graph is loaded (a SwarmCloud step with code intelligence on), ask it
+  first where a symbol lives, who calls it and which tests cover it; otherwise
+  `grep -n` or `rg` first. Then read 100-300 lines around the hit. The graph answers
+  in one call what a search takes several to find, and this rule used to say grep
+  first with no exception, which agents followed (experiment batch two, 3 November
+  2026: one graph call in six build steps against 1,910 other tool calls, more than
+  half of them searches).
 * **Never wait or poll.** No `sleep` loops, `gh run watch`, `--watch`, or waiting
   for a PR to merge. The orchestrator waits for CI at zero token cost, and it
   dispatches a dependent lane only after its dependency has merged.

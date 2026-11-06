@@ -156,6 +156,31 @@ def test_the_register_lists_the_gke_metadata_server_address():
 
 
 # --------------------------------------------------------------------------
+# #2688 (LIGHTPANDA-DOCS): Lightpanda's CDP port in the register
+# --------------------------------------------------------------------------
+
+LIGHTPANDA = REPO / "apps" / "agent-worker" / "agent_worker" / "lightpanda.py"
+LIGHTPANDA_RUNNER_TEST = "tests/unit/worker/test_lightpanda_runner.py"
+
+
+def test_the_register_lists_the_lightpanda_cdp_port():
+    """MUTATION: delete the row, or let it name a port `lightpanda.py` does not serve on.
+
+    claude-code-lightpanda's `serve` child listens on a port the runner states
+    and its test restates; it is not the live gate's 9222, and the register is
+    where a reader looks before reusing either."""
+    port = _module_constant(LIGHTPANDA, "CDP_PORT")
+    assert port != 9222, "Lightpanda must not take the live gate's CDP port"
+    covered = _section(_text(MIRRORED), "## Covered elsewhere, deliberately not moved here")
+    rows = [line for line in covered.splitlines() if line.startswith("|") and f"`{port}`" in line]
+    assert len(rows) == 1, f"expected one row naming `{port}`, got {rows}"
+    row = rows[0]
+    assert "`CDP_PORT`" in row and "`claude-code-lightpanda`" in row and "9222" in row
+    assert f"`{LIGHTPANDA_RUNNER_TEST}`" in row and (REPO / LIGHTPANDA_RUNNER_TEST).is_file()
+    assert str(port) in _text(REPO / LIGHTPANDA_RUNNER_TEST)
+
+
+# --------------------------------------------------------------------------
 # #454: issue-runs says the merge is built
 # --------------------------------------------------------------------------
 

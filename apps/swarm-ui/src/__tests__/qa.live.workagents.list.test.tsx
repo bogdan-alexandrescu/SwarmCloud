@@ -249,7 +249,7 @@ describe('WA-9: the Recent state counts follow the profile filter', () => {
       return Number((b.textContent ?? '').replace(/\D+/g, ''))
     }
     expect(count('all')).toBe(5)
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'indexer' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /^profile/ }), { target: { value: 'indexer' } })
     await waitFor(() => expect(drawn()).toHaveLength(2))
     expect(count('all')).toBe(2)
     expect(count('failed')).toBe(1)

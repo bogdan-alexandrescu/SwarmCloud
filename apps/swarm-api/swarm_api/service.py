@@ -31,24 +31,36 @@ later, and the scheduler's credential sweep re-readies it.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 from swarm_common.models import (
+    SlotPool,
     Task,
     Tenant,
     Workflow,
     WorkflowStep,
     new_id,
     pool_names_for,
+    reserved_pool_units,
     utcnow,
 )
 from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backend
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from . import budget as budget_mod
-from . import gitidentity, publishtopr, runnersizes
+from . import (
+    contractreview,
+    gitidentity,
+    plugins as plugins_mod,
+    publishtopr,
+    runnersizes,
+    workcontract,
+)
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix
@@ -59,7 +71,7 @@ from .continuation import (
     resolve_merge_pr,
     with_merge_pr_label,
 )
-from .access import MODES, grant_id_for, org_id_for, via_token
+from .access import MODES, grant_id_for, org_id_for, person_grant_from_workspace, via_token
 from .extrarepos import Limits, Resolver, refuse_unless_enabled, requested_any, runs_an_agent
 from . import refusals
 from .errors import ApiError, BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
@@ -67,6 +79,7 @@ from .browser_logins import refuse_unless_personal
 from .qa_identity import refuse_unless_granted
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
+    GIT_PROVIDER,
     FirestoreSlotIndex,
     ForgeSlot,
     NoForgeCredential,
@@ -74,6 +87,7 @@ from .forge import (
     service_slot,
 )
 from .forgeapp import GRANTS, ORGS, Caller
+from .forge_installation import APP_INSTALLATION_SOURCE, installation_record_in
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .mcp_credentials import (
     OWNER_TASK,
@@ -94,16 +108,18 @@ from .mcp_servers import (
 )
 from .metrics import ApiMetrics
 from .judgment import TYPESAFE_BACKEND, JudgmentSettings, settings_mac
-from .provider_keys import task_key_scope
+from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
-from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import StepBudget, TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
+from . import steprerun
+from . import wfdescription
 from .store import Store, derived_service_account
-from .task_accounts import ACCOUNT_TOKEN_ENV
+from .task_accounts import takes_pool_account
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     AWAIT_STEP_REFUSED_FIELDS,
@@ -131,7 +147,12 @@ from .validation import (
     MergePlan,
     SinglePrPlan,
     StepSpec,
+    IssueRef,
     check_repository_ref,
+    is_full_sha,
+    ref_needs_lookup,
+    repository_ref_not_found,
+    swarm_task_of_ref,
     is_merge_step,
     is_mergeable_forge,
     merge_repository,
@@ -153,6 +174,7 @@ from .validation import (
     resolve_await_input,
     resolve_dispatch_options,
     resolve_input_layout,
+    is_security_review,
     resolve_integrator_step,
     resolve_merge_choice,
     resolve_fix_rounds,
@@ -177,6 +199,9 @@ from .validation import (
     validate_runner_profile,
     validate_step_routing,
     validate_storable,
+    lower_turn_cap,
+    timeout_asked,
+    validate_max_turns,
     validate_timeout,
     workflow_label,
 )
@@ -184,6 +209,18 @@ from .waker import SchedulerWaker, ring
 from .workspaces import Workspaces
 
 log = logging.getLogger(__name__)
+
+
+def _recorded_pull_request(task: Task) -> int | None:
+    """The pull request a task opened, from the worker's record
+    (`result_summary.git.pull_request.number`), else None."""
+    summary = task.result_summary if isinstance(task.result_summary, Mapping) else {}
+    git = summary.get("git")
+    pull = git.get("pull_request") if isinstance(git, Mapping) else None
+    number = pull.get("number") if isinstance(pull, Mapping) else None
+    if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+        return number
+    return None
 
 
 @dataclass(frozen=True)
@@ -267,6 +304,10 @@ class SubmissionService:
         #: registered-mcp-servers.md §4.4), built on first use so constructing
         #: the service opens no connection; a test substitutes one.
         self.mcp_credential_writer: Any = None
+        #: Jev's review of a work contract at submission (`contractreview`),
+        #: built on the first review so constructing the service reads no
+        #: setting; a test substitutes one.
+        self.contract_reviewer: contractreview.ContractReviewer | None = None
 
     @property
     def signer(self) -> SpecSigner | None:
@@ -304,7 +345,16 @@ class SubmissionService:
         GitHub connection (INDEX-CRED: an index run in a personal workspace
         clones with what the owner's Try it checked, not a `-git` slot the
         workspace never had). Which one is recorded in
-        `metadata.forge_credential_source`, so the task says so. A personal
+        `metadata.forge_credential_source`, so the task says so. When the
+        submitter is a platform service account and the repository's owner
+        has the deployment's GitHub App installed for this tenant (`_app_installed`), the source is `app_installation`
+        instead, and the slot is the tenant's `-git` (the frozen
+        `forge_credential` shape has no other name for a minted run; a
+        personal tenant's owner's user slot would park it, as a `git-u-`
+        slot is held to its own person: DAYONE-SERVICE-SLOT-APP), and the broker mints
+        that run an installation token for its one repository at release
+        (`credbroker`, DAYONE-SERVICE-APP-TOKEN; lesson 43), recomputing
+        the decision from the signed fields, never from this label. A personal
         workspace with no credential at all has its task on a repository
         registered as private refused up front (`no_github_credential`)
         rather than dispatched to a clone that cannot succeed. Only a
@@ -324,18 +374,36 @@ class SubmissionService:
         uncredentialed: list[str] = []
         resolved: list[ForgeSlot] = []
 
-        def on_tenants_behalf(task: Task, owner: str, repo: str) -> None:
+        installed: dict[str, bool] = {}
+
+        def app_installed(owner: str) -> bool:
+            # Once per owner per submission, as the slot is once per batch.
+            key = owner.lower()
+            if key not in installed:
+                installed[key] = self._app_installed(tenant_id, owner)
+            return installed[key]
+
+        def on_tenants_behalf(task: Task, owner: str, repo: str, *, app: bool = False) -> None:
             if not resolved:
                 # Resolved once per submission: one rule, one answer per batch.
                 resolved.append(service_slot(tenant, FirestoreSlotIndex(self._store.db)))
             slot = resolved[0]
-            if (not slot.known and tenant.kind == "user"
+            minted = app and app_installed(owner)
+            if (not minted and not slot.known and tenant.kind == "user"
                     and self._registered_private(tenant_id, owner, repo)):
                 uncredentialed.append(f"{owner}/{repo}")
                 return
-            task.forge_credential = slot.provider
+            # A minted run names the tenant's `-git` slot, never a personal
+            # tenant's owner's user slot (DAYONE-SERVICE-SLOT-APP): the
+            # scheduler and the worker hold a `git-u-` slot to its own person,
+            # and a service account is nobody's, so the owner's slot parked
+            # the one-person install's smoke and verify runs for good. If the
+            # broker cannot mint at release, the worker reads `-git`: the
+            # tenant's own, or none, never another person's.
+            task.forge_credential = GIT_PROVIDER if minted else slot.provider
             task.forge_access = SERVICE_FORGE_ACCESS
-            task.metadata[FORGE_SOURCE_METADATA_KEY] = slot.source
+            task.metadata[FORGE_SOURCE_METADATA_KEY] = (
+                APP_INSTALLATION_SOURCE if minted else slot.source)
 
         for task in tasks:
             named = github_repository(task.repository_url)
@@ -343,7 +411,11 @@ class SubmissionService:
                 continue
             owner, repo = named
             if service:
-                on_tenants_behalf(task, owner, repo)
+                # Only a platform service account's own submission: an index
+                # run submitted as the person who registered the repository
+                # (`service_submission`) keeps the slot, as the broker would.
+                on_tenants_behalf(task, owner, repo,
+                                  app=is_service_submitter(task.submitted_by))
                 continue
             mode = self._grant_mode(tenant_id, task.submitted_by or "",
                                     repo_id_for(tenant_id, owner, repo))
@@ -436,6 +508,23 @@ class SubmissionService:
                          tenant.tenant_id, exc.code)
             raise
 
+    def _app_installed(self, tenant_id: str, owner: str) -> bool:
+        """Whether this tenant's own `forge_orgs` say the deployment's GitHub
+        App is installed on `owner` (`forge_installation.installation_record_in`,
+        never a `method: pat` owner): then a service submission's run gets an
+        installation token minted for it at release (DAYONE-SERVICE-APP-TOKEN).
+        False -- today's service rule -- when FORGE_INSTALLATION_READS is off,
+        which is also when the broker has no minter, or when the read fails."""
+        if getattr(self._settings, "forge_installation_reads", False) is not True:
+            return False
+        try:
+            return installation_record_in(self._store.db, tenant_id, owner) is not None
+        except Exception as exc:  # noqa: BLE001 -- the type is enough; fall back
+            log.warning("app installation lookup failed tenant=%s owner=%s (%s); "
+                        "the service rule's slot is used", tenant_id, owner.lower(),
+                        type(exc).__name__)
+            return False
+
     def _registered_private(self, tenant_id: str, owner: str, repo: str) -> bool:
         """Whether the tenant registered `owner/repo` and its registration
         says GitHub served it as private (or internal): read by the id it is
@@ -469,6 +558,14 @@ class SubmissionService:
         checks it: another person's or another tenant's grant is no grant
         (invariant 9). A mode that is neither `read` nor `write` is no grant
         either, so a damaged document refuses rather than writes.
+
+        With no grant of their own, the workspace's grant answers
+        (`access.workspace_grant_mode`): Admin › Setup's team-level grant over
+        the repositories the GitHub App installation covers (decision 3), held
+        by everyone the request was resolved into `tenant_id` as, so a
+        teammate's first task is not refused (DAYONE-SETUP-API-6, N11). It is
+        then recorded as the person's own grant, which the worker re-reads
+        before each clone and push.
         """
         if not email:
             return None
@@ -476,9 +573,11 @@ class SubmissionService:
         snap = self._store.db.collection(GRANTS).document(
             grant_id_for(tenant_id, email, repo_id)).get()
         doc = snap.to_dict() if snap.exists else None
+        if not doc:
+            return person_grant_from_workspace(self._store.db, tenant_id, email, repo_id,
+                                               at=self._now())
         if (
-            not doc
-            or doc.get("tenant_id") != tenant_id
+            doc.get("tenant_id") != tenant_id
             or doc.get("user") != caller.key
             or doc.get("repo_id") != repo_id
         ):
@@ -603,6 +702,69 @@ class SubmissionService:
 
     # -- tasks ------------------------------------------------------------
 
+    def _work_contract(self, spec: TaskCreate, *, tenant: Tenant, step_id: str | None,
+                       repository_url: str | None,
+                       repository_ref: str | None) -> workcontract.Prepared | None:
+        """The step's work contract, prepared (`workcontract.prepare`), or None.
+
+        None while SWARM_WORK_CONTRACTS is off, whatever the metadata holds,
+        and for a step with none. A refusal is a 422 `validation_failed`
+        naming the contract's own code in `detail.work_contract`: the
+        established code, behind the switch, so no new refusal code ships on
+        (`swarm_api.refusals`)."""
+        try:
+            return workcontract.prepare(
+                spec.metadata, tenant_id=tenant.tenant_id, step_id=step_id,
+                step_fields={
+                    "runner_profile": spec.runner_profile,
+                    "model_class": spec.model_class,
+                    "budget": (spec.budget.model_dump(exclude_none=True)
+                               if spec.budget is not None else None),
+                    "max_turns": spec.max_turns,
+                    "timeout_seconds": spec.timeout_seconds,
+                },
+                repository_url=repository_url, repository_ref=repository_ref,
+                environ=os.environ,
+            )
+        except workcontract.WorkContractError as exc:
+            raise ValidationFailed(
+                f"metadata.{workcontract.METADATA_KEY}: {exc.message}",
+                detail={"field": f"metadata.{workcontract.METADATA_KEY}",
+                        "work_contract": exc.code,
+                        **{("contract_field" if k == "field" else k): v
+                           for k, v in exc.detail.items()},
+                        **({"step_id": step_id} if step_id else {})},
+            ) from exc
+
+    def _review_contract(self, contract: workcontract.Prepared, *, tenant: Tenant,
+                         step_id: str | None, submitted_by: str,
+                         switches: Any = ()) -> contractreview.Reviewed:
+        """Jev's review of a prepared contract, under SWARM_CONTRACT_REVIEW
+        and the workspace's signed `contract_review` setting. Off (the
+        default) it reads nothing and returns the contract as it came; in
+        `enforce` mode its refusal is the 422 of jev-contract.md section 4.5.
+        `switches` are the step's workflow switches: `contract_jev: off`
+        skips the review, recorded `skipped:arm` (`contractreview.arm_of`)."""
+        if contractreview.mode(os.environ) == contractreview.MODE_OFF:
+            return contractreview.Reviewed(contract, None)
+        if self.contract_reviewer is None:
+            self.contract_reviewer = contractreview.ContractReviewer(
+                getattr(self._store, "db", None), mac=settings_mac(self._settings),
+                now=self._now, project_id=getattr(self._settings, "project_id", "") or "")
+        return self.contract_reviewer.review(
+            contract, tenant_id=tenant.tenant_id,
+            submitter_tenant_id=submitter_personal_tenant(self._store, submitted_by),
+            step_id=step_id, switches=switches)
+
+    def _workspace_settings(self, tenant_id: str) -> dict[str, Any]:
+        """`workspace_settings/{tenant_id}` as stored, or {} (and with no
+        database, which allows no plugin)."""
+        db = getattr(self._store, "db", None)
+        if db is None:
+            return {}
+        snap = db.collection(plugins_mod.COLLECTION).document(tenant_id).get()
+        return (snap.to_dict() or {}) if snap.exists else {}
+
     def _build_task(
         self,
         *,
@@ -631,7 +793,54 @@ class SubmissionService:
         if submitted_by is None:
             assert ctx is not None
             submitted_by = ctx.email
+        # The step's `plugins` field (the owner's pick on PR #3264): checked
+        # against the catalogue, its runner profile and the workspace's signed
+        # setting, then carried in its work contract, so the contract below
+        # and the digest the dispatch block signs hold them.
+        if spec.plugins:
+            spec = spec.model_copy(update={"metadata": plugins_mod.with_step_plugins(
+                spec.metadata, {n: p.model_dump() for n, p in spec.plugins.items()},
+                tenant_id=tenant.tenant_id, step_id=step_id,
+                runner_profile=validate_runner_profile(spec.runner_profile).name,
+                owner=submitted_by,
+                settings_doc=self._workspace_settings(tenant.tenant_id),
+                mac=settings_mac(self._settings), environ=os.environ,
+            )})
+        # A work contract (docs/design/agent-quality/work-contract.md), only
+        # while SWARM_WORK_CONTRACTS is on: first, because the limits it sets
+        # and the step leaves unset become the step's own fields, which every
+        # check below then resolves as if the caller had named them.
+        contract = self._work_contract(spec, tenant=tenant, step_id=step_id,
+                                       repository_url=repository_url or spec.repository_url,
+                                       repository_ref=repository_ref or spec.repository_ref)
+        # Jev's review of the contract (contractreview; jev-contract.md
+        # section 4): after the mechanical compile, so a contract code has
+        # refused never reaches Jev; before the step fields, so a reviewer's
+        # revision 2 is what the step carries and signs.
+        contract_review: dict[str, Any] | None = None
+        if contract is not None:
+            reviewed = self._review_contract(contract, tenant=tenant, step_id=step_id,
+                                             submitted_by=submitted_by,
+                                             switches=dispatch.switches)
+            contract, contract_review = reviewed.prepared, reviewed.record
+        if contract is not None:
+            update: dict[str, Any] = {**contract.fields, "metadata": dict(contract.metadata)}
+            if "budget" in update:
+                update["budget"] = StepBudget(**update["budget"])
+            spec = spec.model_copy(update=update)
         profile = validate_runner_profile(spec.runner_profile)
+        # The step's plugins (docs/design/agent-plugins.md), from its work
+        # contract's capabilities section: catalogue names its runner profile
+        # can load, in a mode that runs today, and only those the workspace
+        # allowed under a signed settings block. The contract's digest rides
+        # in the signed dispatch block, which signs them with the step.
+        if contract is not None and contract.contract.plugins:
+            plugins_mod.check_step(
+                contract.contract.plugins, tenant_id=tenant.tenant_id,
+                runner_profile=profile.name,
+                settings_doc=self._workspace_settings(tenant.tenant_id),
+                mac=settings_mac(self._settings), step_id=step_id,
+            )
         # An `await-input` step only inside a workflow (docs/design/
         # human-steps.md §4.1): as a task, a batch entry or a child it has no
         # step to answer and no dependant to hand the answer to.
@@ -697,6 +906,10 @@ class SubmissionService:
                    if resource_class_override is not None else None),
         )
         timeout = validate_timeout(profile, spec.timeout_seconds)
+        # THE TURN CAP (contract request 133), beside the timeout and for the
+        # same doors: refused for a profile whose runner passes no cap, and
+        # only lowered by the profile's own `max_turns`.
+        max_turns = validate_max_turns(profile, spec.max_turns, step_id=step_id)
         # THE BUDGET (#2459), for a task, a batch entry, a workflow step and a
         # child alike: the step's own may only LOWER the limit, and the
         # attempt's is min(step, workspace, ceiling), each unit on its own.
@@ -723,6 +936,10 @@ class SubmissionService:
         # and `spec.carrier` are deliberately not read here -- `submit_workflow`
         # synthesises a TaskCreate whose defaults would otherwise silently
         # override the workflow's choice.
+        if contract is not None:
+            # Inside the signed block: `_sign` covers the reference, and the
+            # reference binds the stored document by digest.
+            dispatch = workcontract.attach(dispatch, contract.compiled, environ=os.environ)
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
         # The limits go in the typed `Task.budget` below (contract request
@@ -731,6 +948,10 @@ class SubmissionService:
         # (`reject_reserved_metadata`). Only when there is a budget: with
         # none, the task, its format and its block are byte for byte what
         # they were before #2459.
+        if contract_review is not None:
+            # Beside the contract's reference, inside the signed block no
+            # caller can write, and never inside the contract's own bytes.
+            metadata[DISPATCH_METADATA_KEY][contractreview.DISPATCH_FIELD] = contract_review
         if resolved_budget is not None:
             metadata[DISPATCH_METADATA_KEY][budget_mod.PROVENANCE_KEY] = budget_mod.provenance(
                 step=step_budget, workspace=workspace_budget, ceiling=budget_ceiling)
@@ -754,15 +975,17 @@ class SubmissionService:
             # None for no block, and for a malformed one the switch let past.
             metadata.pop(REVIEW_GATE_METADATA_KEY, None)
         if runtime is not None:
-            metadata[RUNTIME_METADATA_KEY] = {
-                **runtime,
-                "alternate": self._runtime_alternate(
-                    runtime, spec, tenant=tenant, step_id=step_id,
-                    resource_class_override=resource_class_override,
-                    repository_url=repository_url, mcp_credentials=mcp_credentials,
-                    mcp_whole_submission=mcp_whole_submission, mcp_inherited=mcp_inherited,
-                ),
-            }
+            alternate = self._runtime_alternate(
+                runtime, spec, tenant=tenant, step_id=step_id,
+                resource_class_override=resource_class_override,
+                repository_url=repository_url, mcp_credentials=mcp_credentials,
+                mcp_whole_submission=mcp_whole_submission, mcp_inherited=mcp_inherited,
+            )
+            # Contract request 133: the `code` profile's cap is resolved (and
+            # refused) as its timeout is, but `max_turns` is not a swap field:
+            # the task carries ONE cap, the lower of its two profiles'.
+            max_turns = lower_turn_cap(max_turns, alternate.pop("max_turns"))
+            metadata[RUNTIME_METADATA_KEY] = {**runtime, "alternate": alternate}
         # Who the agent's commits name (P37, `gitidentity`): the authenticated
         # caller unless the caller of this method resolved someone else (a
         # child's parent, a service account's continued task). Inside the
@@ -813,6 +1036,10 @@ class SubmissionService:
             timeout_seconds=timeout,
             max_attempts=spec.max_attempts or 3,
             budget=resolved_budget.as_dict() if resolved_budget is not None else None,
+            # Contract request 133: the RESOLVED turn cap, signed at format 7
+            # when set. One field for both profiles of a `browser_if_ui` step
+            # (it is not a swap field), so it is the lower of the two.
+            max_turns=max_turns,
             park_reason=park_reason,
             workflow_id=workflow_id,
             step_id=step_id,
@@ -822,6 +1049,15 @@ class SubmissionService:
             # before classes existed; a stored class is signed at the format
             # that covers it (`specsign.signing_format`).
             model_class=stored_model_class(profile, model_class),
+            # Contract request 131: what the spec asked when every timeout
+            # stored for it is lower (its own and, on a `browser_if_ui` step,
+            # its `code` alternate's). A record only: the limit stays
+            # `timeout_seconds`, and nothing reads this as one (invariant 10).
+            timeout_seconds_asked=timeout_asked(
+                spec.timeout_seconds, timeout,
+                *((metadata[RUNTIME_METADATA_KEY]["alternate"]["timeout_seconds"],)
+                  if runtime is not None else ()),
+            ),
         )
 
     def _runtime_alternate(
@@ -860,6 +1096,10 @@ class SubmissionService:
             "runner_profile": code.name,
             "resource_class": resource_class,
             "timeout_seconds": validate_timeout(code, spec.timeout_seconds),
+            # Contract request 133: refused here when the `code` profile does
+            # not cap turns, as its timeout is checked here. Not a swap field:
+            # `_build_task` pops it and folds it into the task's one cap.
+            "max_turns": validate_max_turns(code, spec.max_turns, step_id=step_id),
             "provider": code.provider,
             "model": resolve_task_model(code, model_class, spec.model, class_models,
                                         step_id=step_id),
@@ -1056,6 +1296,21 @@ class SubmissionService:
         now = self._now()
         budget_scope = self.budget_scope(tenant.tenant_id)
         try:
+            # Each distinct (repository, ref) asked of the forge once, before
+            # any task is built (#2726). A `publish_to_pr` task's ref is the
+            # pull request's head, and one beside it is refused in the build.
+            asked: set[tuple[str | None, str | None]] = set()
+            for spec in specs:
+                pair = (spec.repository_url, spec.repository_ref)
+                if spec.publish_to_pr is not None or pair in asked:
+                    continue
+                asked.add(pair)
+                check_repository_ref(spec.repository_ref)
+                # The platform's own submission (`repoindex`) names the head
+                # sha it has just read from GitHub with the same credential:
+                # asking again is one more read for nothing (#3315).
+                if not service_submission:
+                    self._check_ref_exists(tenant, *pair, person=ctx.email)
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
             tasks = [
@@ -1074,6 +1329,7 @@ class SubmissionService:
                             # batch is at task scale, not workflow scale.
                             scale="task",
                             repository_url=spec.repository_url,
+                            switches=spec.dispatch,
                         ),
                         tenant, spec, person=ctx.email,
                     ),
@@ -1169,12 +1425,28 @@ class SubmissionService:
                     "its upstream change touches UI",
                     detail={"field": f"metadata.{RUNTIME_METADATA_KEY}"},
                 )
+            # A work contract is one step's: copied onto every step, each
+            # would carry the same requirements as its own. Read only while
+            # SWARM_WORK_CONTRACTS is on; off, the key is the caller's.
+            if workcontract.enabled(os.environ) and workcontract.METADATA_KEY in spec.metadata:
+                raise ValidationFailed(
+                    "metadata.work_contract is a step's, not the workflow's: put each "
+                    "step's contract in that step's metadata",
+                    detail={"field": f"metadata.{workcontract.METADATA_KEY}"},
+                )
             # Copied onto every step's task, so refused once, here, without a
             # step id: it is the workflow's (#294).
             reject_non_finite(spec.metadata, label="metadata")
             # Every step clones it, so refused once, here and counted, rather
             # than by `_build_task` on the first step (F4).
             check_repository_ref(spec.repository_ref)
+            # And asked of the forge once, here, not per step (#2726). A
+            # continuation, `merge_pr` or `publish_to_pr` supplies the ref
+            # itself and refuses one beside it below, so it is not asked.
+            if (spec.continues_task is None and spec.merge_pr is None
+                    and spec.publish_to_pr is None):
+                self._check_ref_exists(tenant, spec.repository_url, spec.repository_ref,
+                                       person=ctx.email)
             # Inside the try, because resolving each step's `input_layout`
             # (#75) can refuse, and a refusal is counted like every other.
             step_specs = self._step_specs(spec)
@@ -1216,6 +1488,7 @@ class SubmissionService:
                 carrier=spec.carrier,
                 scale="workflow",
                 repository_url=repository_url,
+                switches=spec.dispatch,
             )
             # Lane SPEED-D3: the pull requests of the workflow's own
             # repository it waits for, once that repository is known.
@@ -1508,8 +1781,10 @@ class SubmissionService:
                            and step_id == merge_plan.merge_step else {}),
                     },
                     timeout_seconds=source.timeout_seconds,
+                    max_turns=source.max_turns,
                     budget=source.budget,
                     model_class=source.model_class,
+                    plugins=source.plugins,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an
                     # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).
@@ -1581,6 +1856,9 @@ class SubmissionService:
                     resource_class=source.resource_class,
                     input_from=dict(source.input_from),
                     timeout_seconds=source.timeout_seconds,
+                    # What the step ASKED for (contract request 133); its
+                    # task's `max_turns` is what that resolved to.
+                    max_turns=source.max_turns,
                     task_id=step_task_id[source.step_id],
                     # Its task's stored class: None for the profile's default.
                     model_class=step_model_class[source.step_id],
@@ -1639,6 +1917,11 @@ class SubmissionService:
         self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
         self._wake("workflow_submitted", tenant_id=tenant.tenant_id, workflow_id=workflow_id)
+        # A workflow submitted without a description gets one written for it,
+        # marked generated (BGD, 2026-11-04), on a thread of its own: this
+        # returns at once and never raises, so it delays and fails nothing.
+        wfdescription.after_submission(getattr(self._store, "db", None), tasks,
+                                       settings=self._settings)
         return WorkflowSubmission(
             workflow=workflow,
             tasks=tasks,
@@ -1685,6 +1968,9 @@ class SubmissionService:
                 runner_profile=s.runner_profile,
                 pr_role=s.pr_role,
                 merges=dict(s.merges) if s.merges is not None else None,
+                # The security review, by its work contract's plugin: a
+                # verdict source after the integrator, staged by the merge.
+                security_review=is_security_review(s.metadata, os.environ),
             )
             for s in spec.steps
         ]
@@ -1995,6 +2281,96 @@ class SubmissionService:
         branch = self._registration(tenant_id, repository_url).get("default_branch")
         return branch if isinstance(branch, str) and branch else None
 
+    def _check_ref_exists(self, tenant: Tenant, repository_url: str | None,
+                          ref: str | None, *, person: str | None) -> None:
+        """Refuse a `repository_ref` the forge has neither as a branch nor as
+        a tag (#2726) -- or, for a full sha, as a commit (#3315) -- once per
+        submission, before any task exists.
+
+        wf_81c4f2da named `swarm/task_77d63ca8...`, a branch deleted after its
+        pull request merged; its step took a lease, waited for a pod and
+        failed in the clone. Asked here with the slot `forge.resolve_forge_slot`
+        picks for `person` -- the tenant's own read, as `_named_pull` -- and
+        refused with `RepositoryRefNotFound` only when GitHub says no such
+        branch, no such tag, AND reads the repository itself -- and only while
+        the `repository_ref_not_found` switch is on (refusals.py); off, the
+        refusal is logged and the submission admitted.
+
+        A full sha is one read, `commit_head` (`GET commits/<sha>`), instead
+        of the branch and tag reads: task_36c8a894 named a sha GitHub does not
+        serve and failed in the clone with "not our ref". The commits API can
+        still answer for a dangling object upload-pack refuses, so this
+        narrows that gap without closing it.
+
+        FAILS OPEN. No forge reader or credential, 401/403, a timeout, a 5xx,
+        a rate limit or an unreadable repository admit as before: the clone
+        still finds a missing ref, and a GitHub outage must not stop
+        admission. A repository off GitHub is not asked.
+        """
+        if self._forge_tokens is None or self._forge_writer is None:
+            return
+        if not ref_needs_lookup(ref):
+            return
+        named = merge_repository(repository_url)
+        if named is None:
+            return
+        assert ref is not None
+        owner, repo = named
+        target = IssueRef(owner=owner, repo=repo, number=0)
+        writer = self._forge_writer
+        full_sha = is_full_sha(ref)
+        task_id = None if full_sha else swarm_task_of_ref(ref)
+        task: Task | None = None
+        if task_id is not None:
+            try:
+                # The caller's own tenant only: another tenant's task is
+                # neither named nor read about (the generic refusal).
+                task = self._store.get_task(tenant.tenant_id, task_id, submitted_by=None)
+            except NotFound:
+                task = None
+        pull_request: int | None = None
+        pull_state: str | None = None
+        try:
+            token = self._forge_tokens.token_for(tenant, person=person)
+            try:
+                if full_sha:
+                    if writer.commit_head(target, ref, token) is not None:
+                        return
+                elif writer.branch_head(target, ref, token) is not None:
+                    return
+                elif writer.tag_head(target, ref, token) is not None:
+                    return
+                # Neither: a 404 is also what a token that cannot see the
+                # repository reads, so the repository itself must answer.
+                default_branch = writer.default_branch(target, token)
+                if task is not None:
+                    pull_request = _recorded_pull_request(task)
+                    if pull_request is not None:
+                        try:
+                            pull = writer.read_pull(target, pull_request, token)
+                            pull_state = ("merged" if pull.merged
+                                          else "closed" if pull.state != "open" else "open")
+                        except (ApiError, OSError):
+                            pull_state = None
+            finally:
+                del token
+        except (ApiError, OSError) as exc:
+            log.info(
+                "repository_ref %r of %s/%s not checked (%s); admitted",
+                ref, owner, repo, type(exc).__name__,
+                extra={"tenant_id": tenant.tenant_id},
+            )
+            return
+        # A new refusal ships report-only (refusals.py): off, it is logged and
+        # the submission goes on, as before this check.
+        refusals.refuse(repository_ref_not_found(
+            ref, f"{owner}/{repo}",
+            task_id=task.id if task is not None else None,
+            pull_request=pull_request, pull_state=pull_state,
+            default_branch=self._registered_base(tenant.tenant_id, repository_url)
+            or default_branch,
+        ))
+
     @staticmethod
     def _step_dispatch(
         dispatch: DispatchOptions,
@@ -2168,7 +2544,12 @@ class SubmissionService:
                     continue
                 if ":tenant:" in pool.name and not pool.name.endswith(own_provider_suffix):
                     continue
-            visible.append(pool_to_api(pool))
+            served = pool_to_api(pool)
+            # THE APPLIED VALUE BESIDE THE CEILING, AND WHY (#3047): the
+            # applied value is `effective_limit`; this says which input holds
+            # it below `hard_limit` and when the broker last set it.
+            served["lowered_by"] = self._pool_lowered_by(pool)
+            visible.append(served)
         visible.sort(key=lambda p: p["name"])
 
         # Units at the CURRENT runner size version, which is what admission
@@ -2220,6 +2601,11 @@ class SubmissionService:
                 "disabled_reason": profile.disabled_reason,
                 "units": units,
                 "pools": required,
+                # What one agent of this profile takes in each pool: `units`
+                # in the compute pools, 1 in each provider pool (contract
+                # request 129, #2950). A client dividing a pool's room by
+                # `units` in every pool undercounts the provider pools.
+                "pool_units": reserved_pool_units(required, units),
                 # What this profile's RUNNER refuses to start without, so a
                 # submit form can refuse locally instead of spending a slot on
                 # an attempt that cannot succeed. Served as data for the same
@@ -2250,6 +2636,131 @@ class SubmissionService:
             "generated_at": self._now(),
         }
 
+    def _pool_lowered_by(self, pool: SlotPool) -> list[dict[str, Any]]:
+        """The inputs that hold a pool's applied limit below its ceiling (#3047).
+
+        Empty when the ceiling applies or is unknown. An input is named when it
+        is below `hard_limit` and equal to `effective_limit`, the minimum the
+        contract's `SlotPool` takes, so two at the same value are both named;
+        an admin override (`quota_audit`) is named when it set that value after
+        the last rate limit. The same rule, and the same record, as the
+        scheduler's `scheduler.limits.lowered_by`; a test holds the two equal.
+
+        `set_at` is when the value was set, with `set_by` saying what set it:
+        the override's audit instant, else the rate limit that last cut the
+        target (`last_429_at`), else null. NOT the quota document's
+        `updated_at`: the broker rewrites that on every success and refresh,
+        so it is served apart as `quota_written_at`. The adaptive target is
+        dated first by the quota document's `target_changed_at`, which the
+        broker writes only when the target moves (owner, 2026-11-02), with
+        `set_by: "climb"` for a rise since the cut; a document written before
+        it is dated by the override or the cut as above. Only a per-tenant
+        provider pool has a quota document; every other pool's instants are
+        null. Read only for a pool that is lowered. Only numbers, a state word
+        and instants are copied, never an audit row's caller or reason.
+        """
+        applied, ceiling = pool.effective_limit, pool.hard_limit
+        if applied is None or ceiling is None or applied >= ceiling:
+            return []
+
+        def moment(value: Any) -> datetime | None:
+            if isinstance(value, str):
+                try:
+                    value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+            if not isinstance(value, datetime):
+                return None
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+        def instant(value: Any) -> str | None:
+            parsed = moment(value)
+            return parsed.isoformat() if parsed is not None else None
+
+        quota: dict[str, Any] = {}
+        override: tuple[int, datetime, str] | None = None
+        parts = pool.name.split(":")
+        if len(parts) == 4 and parts[0] == "provider" and parts[2] == "tenant":
+            db = self._store.db
+            try:
+                snap = db.collection("quota").document(f"{parts[1]}:{parts[3]}").get()
+                quota = (snap.to_dict() or {}) if getattr(snap, "exists", False) else {}
+                # Bounded and unordered, as the scheduler reads it: ordering by
+                # `at` behind two equality filters needs an undeclared index.
+                rows = (
+                    db.collection("quota_audit")
+                    .where(filter=FieldFilter("provider", "==", parts[1]))
+                    .where(filter=FieldFilter("tenant_id", "==", parts[3]))
+                    .limit(50)
+                    .stream()
+                )
+                for row_snap in rows:
+                    row = row_snap.to_dict() or {}
+                    target, at = row.get("to_target"), moment(row.get("at"))
+                    if (row.get("action") not in ("adaptive_target_reset", "hard_max_set")
+                            or isinstance(target, bool) or not isinstance(target, int)
+                            or at is None):
+                        continue
+                    before = row.get("from_target")
+                    if (row["action"] == "hard_max_set" and isinstance(before, int)
+                            and not isinstance(before, bool) and before == target):
+                        # A max that left the target alone did not set it --
+                        # every pool raise through the admin route writes one.
+                        continue
+                    if override is None or at > override[1]:
+                        override = (target, at, str(row["action"]))
+            except Exception as exc:  # noqa: BLE001 - the pool row is still served
+                log.warning("quota document for %s unreadable: %s", pool.name, type(exc).__name__)
+
+        last_cut = moment(quota.get("last_429_at"))
+        override_holds = (
+            override is not None and override[0] == applied
+            and (last_cut is None or override[1] >= last_cut)
+        )
+        if override_holds and override is not None:
+            set_at, set_by = override[1].isoformat(), "override"
+        elif last_cut is not None:
+            set_at, set_by = last_cut.isoformat(), "rate_limit"
+        else:
+            set_at, set_by = None, None
+
+        # The broker's record of the target's own last change, written only
+        # when it moves (owner, 2026-11-02): preferred for the adaptive target,
+        # with what made the change -- the override that still holds it, the
+        # cut (a cut stamps both with one instant), else a climb.
+        changed_at = moment(quota.get("target_changed_at"))
+        target_dating = (set_at, set_by)
+        if changed_at is not None:
+            if override_holds:
+                changed_by = "override"
+            elif last_cut is not None and changed_at <= last_cut:
+                changed_by = "rate_limit"
+            else:
+                changed_by = "climb"
+            target_dating = (changed_at.isoformat(), changed_by)
+
+        out: list[dict[str, Any]] = []
+        for name, value in (
+            ("adaptive_target", pool.adaptive_target),
+            ("quota_derived_limit", pool.quota_derived_limit),
+        ):
+            if value is None or value >= ceiling or max(0, value) != applied:
+                continue
+            at, by = target_dating if name == "adaptive_target" else (set_at, set_by)
+            entry: dict[str, Any] = {
+                "input": name, "value": value, "set_at": at, "set_by": by,
+                "quota_written_at": instant(quota.get("updated_at")),
+            }
+            if name == "adaptive_target" and last_cut is not None:
+                entry["last_rate_limited_at"] = last_cut.isoformat()
+            if name == "quota_derived_limit" and isinstance(quota.get("state"), str):
+                entry["provider_state"] = quota["state"]
+            out.append(entry)
+        if override_holds and override is not None:
+            out.append({"input": "override", "value": override[0],
+                        "set_at": override[1].isoformat(), "action": override[2]})
+        return out
+
     def providers(
         self,
         ctx: AuthContext,
@@ -2265,9 +2776,11 @@ class SubmissionService:
         ran. It is now true when either serves, and `credential_source` says
         which, in admission's own words: `tenant_key` (asked first, as there)
         or `account_pool`. `runnable_profiles` narrows it the same way: an
-        account is a Claude subscription and runs only a profile whose
-        `secrets` take `CLAUDE_CODE_OAUTH_TOKEN`, so `browser` is not runnable
-        on one however many a tenant is lent.
+        anthropic account is a Claude subscription and runs only a profile
+        whose `secrets` take `CLAUDE_CODE_OAUTH_TOKEN`, an openai account a
+        ChatGPT plan and only a profile that takes its two names (`codex`,
+        contract request 130), so `browser` is not runnable on one however
+        many a tenant is lent.
 
         WHICH ACCOUNTS COUNT: one this tenant owns or is lent, for this
         provider, in any state -- `quota_broker.accounts.accounts_serving`,
@@ -2300,7 +2813,7 @@ class SubmissionService:
             on_account = sorted(
                 p.name
                 for p in RUNNER_PROFILES.values()
-                if p.provider == name and ACCOUNT_TOKEN_ENV in (p.secrets or ())
+                if p.provider == name and takes_pool_account(p)
             )
             if name in keyed:
                 source, runnable = "tenant_key", profiles
@@ -2363,6 +2876,26 @@ class SubmissionService:
                 if isinstance(provider, str) and provider:
                     served.add(provider)
         return "read", served
+
+    def rerun_workflow_step(
+        self, ctx: AuthContext, tenant_id: str, workflow_id: str, step_id: str
+    ) -> steprerun.RerunResult:
+        """Re-run a failed step inside its workflow (`swarm_api.steprerun`):
+        new tasks for it and for what its failure cancelled, signed like a
+        submission's, swapped in with one transaction, then a wake so
+        admission sees them now rather than on the safety tick."""
+        result = steprerun.rerun(
+            store=self._store,
+            sign=self._sign,
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            step_id=step_id,
+            by=ctx.email,
+            tenant_member=ctx.tenant_member,
+            now=self._now(),
+        )
+        self._wake("workflow_step_rerun", tenant_id=tenant_id, workflow_id=workflow_id)
+        return result
 
     # -- plumbing ---------------------------------------------------------
 

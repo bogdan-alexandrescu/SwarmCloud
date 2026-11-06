@@ -186,6 +186,8 @@ def test_ready_only_after_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
     assert ctx.state.ready_at is None and said == []
 
     ctx.state.steps["verify.b"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    for switch in handoff.SWITCHES:
+        ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
     ready.apply(ctx, ready.plan(ctx))
     assert ctx.state.ready_at == ctx.clock.now()
     assert said == [f"\nREADY: SwarmCloud answers at https://{HOST}\n"]
@@ -199,3 +201,123 @@ def test_ready_only_after_verify_passes(tmp_path: Path, monkeypatch: pytest.Monk
     result = engine.run()
     assert result.exit_code != 0 and result.step == "verify.a"
     assert rig.bucket.state()["ready_at"] is None
+
+
+def test_ready_needs_the_webhook_pass_and_the_hook(tmp_path: Path) -> None:
+    """Every verify step passed, but pass 4 and the hook have not run: not READY (#17)."""
+    said: list[str] = []
+    ready = handoff.ReadyStep(Deps(gcp=lambda: None), verify_ids=lambda: ["verify.a"], say=said.append)
+    ctx = FakeCtx()
+    for step in ("verify.a", "github.pass-3"):
+        ctx.state.steps[step] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert ready.check(ctx).status == "unmet"
+    with pytest.raises(RuntimeError, match="github.pass-4, github.hook"):
+        ready.apply(ctx, ready.plan(ctx))
+    assert ctx.state.ready_at is None and said == []
+
+    ctx.state.steps["github.pass-4"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    with pytest.raises(RuntimeError, match="github.hook"):
+        ready.apply(ctx, ready.plan(ctx))
+    ctx.state.steps["github.hook"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    ready.apply(ctx, ready.plan(ctx))
+    assert ready.check(ctx).status == "met"
+
+
+def test_console_finished_before_swarm_install_ran_still_gets_pass4_and_hook(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The console finished while no CLI ran: this run turns the App's switches on before READY (#17)."""
+    said: list[str] = []
+    ready = handoff.ReadyStep(Deps(gcp=lambda: None), verify_ids=lambda: [], say=said.append)
+    rig, world, engine, _ = rig_for(tmp_path, monkeypatch, more=(ready,), answers=0, app=0, self_check=0,
+                                    finished=0)
+    result = engine.run()
+    assert result.exit_code == 0, result
+    actions = [line for line in world.log if line not in ("status", "say")]
+    assert actions == ["apply infra-3", "apply infra-4", "POST hook"]
+    state = rig.bucket.state()
+    steps = {k: v["state"] for k, v in state["steps"].items()}
+    assert steps["github.pass-4"] == steps["github.hook"] == steps["handoff.console"] == "done"
+    assert state["outputs"]["github_hook_active"] is True
+    order = [e["step"] for e in rig.events.of_kind("step_done")]
+    assert order.index("github.hook") < order.index("handoff.console") < order.index("handoff.ready")
+    assert state["ready_at"] is not None
+
+
+def test_handoff_is_not_met_while_the_switches_are_off() -> None:
+    """A hand-off recorded done with the hooks still off (an older run) is repaired, not skipped (#17)."""
+    ctx = FakeCtx(console={handoff.FINISHED: {"at": 1.0}})
+    wait = handoff.HandoffStep(Deps(gcp=lambda: None), status=lambda url: 302)
+    ctx.state.steps["handoff.console"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    ctx.state.steps["github.pass-3"] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert wait.check(ctx).status != "met"
+    assert "github.pass-4" in wait.check(ctx).detail and "github.hook" in wait.check(ctx).detail
+    assert wait.verify(ctx).status != "met"
+    for switch in handoff.SWITCHES:
+        ctx.state.steps[switch] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert "handoff.sign-in-client" in wait.check(ctx).detail, "the console's Sign-in client step too (#2964)"
+    for step in handoff.sign_in_triggered(Deps(gcp=lambda: None)):
+        ctx.state.steps[step.id] = StepRecord(state="done", at=1.0, by="admin@example.com")
+    assert wait.check(ctx).status == "met" and wait.verify(ctx).status == "met"
+
+
+def test_console_that_never_answers_pauses_then_resumes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The console answering behind IAP is waited on inside the hand-off's apply;
+    past that wait's bound the install pauses (exit 4) instead of crashing, and
+    the next run resumes at the hand-off (DAYONE-ENGINE-WAIT-PAUSE)."""
+    never = 10 * handoff.CONSOLE_ANSWERS.bound_s
+    rig, world, engine, said = rig_for(tmp_path, monkeypatch, answers=never, app=never, self_check=never,
+                                       finished=never)
+    result = engine.run()
+    assert result.exit_code == 4 and result.outcome == "paused", result
+    assert result.step == "handoff.console"
+    assert handoff.CONSOLE_ANSWERS.reason in result.message and "swarm install again" in result.message
+    assert rig.steps_state()["handoff.console"] == "paused"
+    assert not any(URL in line for line in said), "the console's URL is not printed while it does not answer"
+    assert rig.bucket.state()["hand_off_at"] is None
+
+    elapsed = rig.clock.now() - world.start
+    world.at = {"answers": elapsed + 60, "app": elapsed + 600, "self_check": elapsed + 900,
+                "finished": elapsed + 1500}
+    resumed = rig.engine(engine.steps)
+    resumed.record = world
+    paused_said = len(said)
+    result = resumed.run()
+    assert result.exit_code == 0, result
+    resumed_said = said[paused_said:]
+    assert len(resumed_said) == 1 and re.findall(r"https://\S+", resumed_said[0]) == [URL]
+    assert rig.steps_state()["handoff.console"] == "done"
+
+
+# -- DAYONE-WAIT-LOOK-AT: a wait that gives up names a page or a command that exists ------------------
+
+
+def _named_commands(text: str) -> list[list[str]]:
+    """Every `swarm <verb> [--flag [value]]...` command a look_at line names, as
+    argv without `swarm`; the prose after the verb ("again to resume") is not."""
+    return [match.split() for match in re.findall(r"\bswarm ([a-z][\w-]*(?: --[\w-]+(?: [\w.-]+)?)*)", text)]
+
+
+@pytest.mark.parametrize("spec", [handoff.CONSOLE, handoff.CONSOLE_ANSWERS], ids=["console", "console-answers"])
+def test_handoff_look_at_names_no_raw_gcloud_and_only_commands_that_parse(spec) -> None:
+    """The person past a wait's bound is sent to a page or a `swarm` command that
+    exists: never raw gcloud, and never a flag the real parser refuses."""
+    from swarm_install import cli, verbs
+
+    assert "gcloud" not in spec.look_at and "--explain" not in spec.look_at, spec.look_at
+    parser = cli.build_parser(verbs.discover(verbs.__name__))
+    for argv in _named_commands(spec.look_at):
+        parser.parse_args(argv)
+
+
+def test_console_that_never_answers_opens_the_certificate_page(tmp_path: Path,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past the console-answers bound, the Google Cloud console's certificate
+    page for this project is opened (and printed) before the run pauses."""
+    never = 10 * handoff.CONSOLE_ANSWERS.bound_s
+    rig, world, engine, said = rig_for(tmp_path, monkeypatch, answers=never, app=never, self_check=never,
+                                       finished=never)
+    result = engine.run()
+    assert result.exit_code == 4 and result.outcome == "paused", result
+    urls = [url for line in said for url in re.findall(r"https://\S+", line)]
+    assert urls == [handoff.certificates_page("p-test")], said
+    assert URL not in urls, "the console's own URL is not handed off while it does not answer"

@@ -1,4 +1,4 @@
-import { Banner, Button, ButtonLink, CIcon, Count, ToneMark } from './components'
+import { Button, ButtonLink, CIcon, Chip, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -6,7 +6,9 @@ import {
   loadArtifactContent,
   loadTaskInputOnce,
   loadWorkflow,
+  qualityGatesOf,
   type AgentRun,
+  type QualityGates,
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
@@ -21,6 +23,7 @@ import { UtilisationPanel } from './UtilisationPanel'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
+import { ContractAcceptanceCard } from './ContractJev'
 import { DecisionCard } from './DecisionCard'
 import { AdditionalRepositoryRows } from './Dispatch'
 import { PersonName } from './PersonName'
@@ -30,7 +33,8 @@ import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { backendWord, eventWord, parkWord, stateWord } from './words'
-import { chooseTenant, num, type ApiError, type Result } from './fetch'
+import { num, route, type Result } from './fetch'
+import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { addressToPath } from './paths'
@@ -200,22 +204,24 @@ export function AgentDetailScreen({
       mounted.current = false
     }
   }, [])
-  // THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS TASK (#1194 c15):
-  // set from a 404 whose probe found it (`taskElsewhere`), cleared by any
-  // other answer. Offered under the failed panel, never switched to unasked.
-  const [elsewhere, setElsewhere] = useState<NonNullable<ApiError['elsewhere']> | null>(null)
-  useEffect(() => setElsewhere(null), [taskId])
+  // A 404 FOR THIS TASK ASKS THE PERSON'S OTHER WORKSPACES (#1194 c15; the
+  // owner's pick of 2026-11-04, elsewhere.tsx): set from a read that answered
+  // 404, cleared by any other answer. What they answer is offered under the
+  // failed panel, never switched to unasked.
+  const [missing, setMissing] = useState(false)
+  useEffect(() => setMissing(false), [taskId])
   const load = useCallback(
     () =>
       loadAgentRun(taskId).then((r) => {
         if (mounted.current && shown.current === taskId) {
           if (r.status === 'ok' || r.status === 'stale') setName(agentName(r.data.task))
-          if (r.status !== 'loading') setElsewhere(r.status === 'error' ? (r.error.elsewhere ?? null) : null)
+          if (r.status !== 'loading') setMissing(r.status === 'error' && r.error.kind === 'not_found')
         }
         return r
       }),
     [taskId],
   )
+  const elsewhere = useElsewhere(missing ? route('/v1/tasks/{id}', { id: taskId }) : null)
   // `Screen` owns its own retry nonce and does not expose it to children, so
   // the stop control needs one of its own: bumping this re-keys `Screen`,
   // which remounts it and re-runs the load. It is in the key rather than in a
@@ -268,34 +274,23 @@ export function AgentDetailScreen({
         {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} links={links} lastLine={lastLine} />}
       </Screen>
   )
-  // THE SWITCH IS OFFERED, NOT MADE: the person chose the tenant they are in,
-  // and a link must not move them out of it. Pressing it makes the choice
-  // (`chooseTenant`) and reads the task again under it. Its own top margin
-  // keeps it a separate notice: flush under the failed panel, the two
-  // bordered boxes read as one.
+  // THE SWITCH IS OFFERED, NOT MADE: the person chose the workspace they are
+  // in, and a link must not move them out of it. Pressing it makes the choice
+  // as the switcher does and reads the task again under it. The notice keeps
+  // its own top margin: flush under the failed panel, the two bordered boxes
+  // read as one. The failed panel above is the page's own 404, unchanged.
   const switchEl =
     elsewhere === null ? null : (
-      <div className="tenant-switch-offer" style={{ marginTop: 'var(--ctl-s3)' }}>
-      <Banner
-        tone="info"
-        role="status"
-        title={`This task is in ${elsewhere.display_name}`}
-        actions={
-          <Button
-            kind="primary"
-            onClick={() => {
-              setElsewhere(null)
-              chooseTenant(elsewhere.tenant_id)
-              reload()
-            }}
-          >
-            {`Switch to ${elsewhere.display_name}`}
-          </Button>
-        }
-      >
-        It is one of your workspaces, so it can be read there. This one answers as it would for a task that does not exist.
-      </Banner>
-      </div>
+      <ElsewhereNotice
+        found={elsewhere}
+        what="agent"
+        back={{ onClick: onClose }}
+        notFound={null}
+        onSwitched={() => {
+          setMissing(false)
+          reload()
+        }}
+      />
     )
   if (headed) {
     return (
@@ -514,6 +509,14 @@ export function Run({
           from, what it used, when it was warned, and for a stop that the work
           was kept. Nothing for an agent with no budget. */}
       <BudgetCard task={task} events={events} now={now} />
+      {/* THE QUALITY GATES, ONE LINE (CLD's Jev report, owner's choice
+          2026-11-02): what jev-belay and jev-enforce did, or why they did not
+          run. Nothing for an attempt whose summary has no `quality_gates`. */}
+      <QualityGatesLine task={task} />
+      {/* JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4; the
+          owner's pick on PR #3255): the record the approval screen draws,
+          served on the task detail too. Nothing for a step never judged. */}
+      <ContractAcceptanceCard raw={task.contract_acceptance} />
       {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one
@@ -625,6 +628,74 @@ function endCauseOf(task: Task): EndCause | null {
  * jump between Now, Progress, Resources and Input, while Attempts and
  * Children are `h2`. styles/details.css draws it exactly as the `<b>` was.
  */
+/** The scheduler's and the worker's refusal codes (agent_worker/qualitygates.py), in words. */
+const GATES_REFUSED: Readonly<Record<string, string>> = {
+  unsigned: "the workspace's setting is not signed",
+  mac_mismatch: "the workspace's setting does not match its signature",
+  no_settings_key: 'no settings key was there to check the setting with',
+  settings_mac_off: 'settings signing is off',
+  settings_unreadable: "the workspace's setting could not be read",
+  no_verdict: 'the scheduler gave no verdict on the setting',
+  off_at_dispatch: 'the setting was off when this attempt was dispatched',
+}
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`
+}
+
+/**
+ * THE QUALITY GATES LINE: stops blocked, rules flagged and Jev calls when the
+ * gates ran; why they did not when a stored "on" was refused or they were
+ * off. Counts only, never the hooks' text. Null when the attempt's summary
+ * has no `quality_gates`.
+ */
+export function QualityGatesLine({ task }: { task: Task }) {
+  const gates: QualityGates | null = qualityGatesOf(task)
+  if (gates === null) return null
+  let body: ReactNode
+  if (gates.kind === 'ran') {
+    body =
+      gates.counts === null ? (
+        <span className="dt-note">on · no hook ran in this attempt</span>
+      ) : (
+        <>
+          <Chip tone={gates.counts.stopsBlocked > 0 ? 'park' : undefined}>
+            {plural(gates.counts.stopsBlocked, 'stop blocked', 'stops blocked')}
+          </Chip>
+          <Chip tone={gates.counts.rulesFlagged > 0 ? 'park' : undefined}>
+            {plural(gates.counts.rulesFlagged, 'rule flagged', 'rules flagged')}
+          </Chip>
+          <Chip faint>{plural(gates.counts.jevCalls, 'Jev call', 'Jev calls')}</Chip>
+        </>
+      )
+  } else if (gates.kind === 'refused') {
+    const words = GATES_REFUSED[gates.refused]
+    body = (
+      <span className="dt-note">
+        <ToneMark tone="warn">did not run</ToneMark> · refused: {words ?? <code className="mono">{gates.refused}</code>}
+      </span>
+    )
+  } else {
+    body = (
+      <span className="dt-note">
+        <ToneMark tone="unknown">off</ToneMark>
+        {gates.reason !== null && <> · {gates.reason}</>}
+      </span>
+    )
+  }
+  return (
+    <section className="dt-card dt-gates" aria-label="Quality gates" data-testid="quality-gates">
+      <DtCardHead title="Quality gates" />
+      {/* A wrapping row of its own, not the head's inline slot (`.dt-card-r`
+          does not wrap): on a phone the three chips go to a second line
+          instead of pushing the page sideways. */}
+      <div className="dt-phases" data-testid="quality-gates-body">
+        {body}
+      </div>
+    </section>
+  )
+}
+
 function DtCardHead({ title, children }: { title: ReactNode; children?: ReactNode }) {
   return (
     <div className="dt-card-head">

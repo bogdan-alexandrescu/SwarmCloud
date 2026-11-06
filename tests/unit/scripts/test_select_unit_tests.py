@@ -113,6 +113,135 @@ def test_a_changed_package_init_reaches_every_importer_of_the_package(tmp_path):
     assert "tests/unit/svc/test_core.py" in out["tests"], out
 
 
+# --------------------------------------------------------------------------
+# What an import chain carries (RELATED-NARROW, part of #2688). Measured on
+# main at 0409b8d: one swarm-api route reached 1,428 of 1,707 test files.
+# --------------------------------------------------------------------------
+# A small app: a package whose __init__ imports its app factory lazily, an app
+# that mounts two routers, a route module named like a standard library one,
+# and a worker that imports that standard library module and the package.
+# FACTORY is built, not written: check-contract-parity.sh reads any file that
+# holds the factory's def as an app, and holds it to the health check path.
+FACTORY = "def " + "create_app():\n"
+APP_TREE = {
+    **FILLER,
+    "apps/api/api/__init__.py": FACTORY + "    from .main import create_app as make\n    return make()\n",
+    "apps/api/api/codec.py": "def encode(x):\n    return x\n",
+    "apps/api/api/routes/__init__.py": "",
+    "apps/api/api/routes/budget.py": (
+        "from fastapi import APIRouter\n"
+        "router = APIRouter(prefix='/v1')\n"
+        "BASE = '/workspaces/{tenant_id}/budget'\n"
+        "@router.get('/budget')\ndef read():\n    return 1\n"
+        "@router.put(f'{BASE}/{{field}}')\ndef write():\n    return 2\n"),
+    "apps/api/api/routes/platform.py": (
+        "from fastapi import APIRouter\nrouter = APIRouter()\n"
+        "@router.get('/v1/platform')\ndef read():\n    return 3\n"),
+    "apps/api/api/main.py": (
+        "from fastapi import FastAPI\nfrom .routes import budget, platform\n"
+        + FACTORY + "    app = FastAPI()\n"
+        "    app.include_router(budget.router)\n    app.include_router(platform.router)\n    return app\n"),
+    "apps/worker/worker/startup.py": "import platform\nfrom api import codec\n",
+    "tests/unit/api/conftest.py": "from api.main import create_app\n",
+    "tests/unit/api/test_budget_read.py": "def test_read(client):\n    client.get('/v1/budget')\n",
+    "tests/unit/api/test_budget_write.py": (
+        "def test_write(client):\n    client.put(f'/v1/workspaces/{TENANT}/budget/limit')\n"),
+    "tests/unit/api/test_platform.py": "def test_read(client):\n    client.get('/v1/platform')\n",
+    "tests/unit/api/test_every_route.py": (
+        "from api.main import create_app\n"
+        "def test_routes():\n    assert create_app().routes\n    app = create_app()\n    assert app.routes\n"),
+    "tests/unit/api/test_factory.py": "import api\ndef test_it():\n    api.create_app()\n",
+    "tests/unit/worker/test_startup.py": "from worker import startup\n",
+    "tests/unit/worker/test_codec.py": "from api import codec\n",
+}
+
+
+def test_a_route_change_selects_the_tests_of_its_urls_and_not_the_workers(tmp_path):
+    root = _tree(tmp_path, APP_TREE)
+    got = {t for t in sel.import_closure(root, ["apps/api/api/routes/budget.py"]) if sel.is_test(t)}
+    # MUTATION: drop the URL gate -> test_platform.py, test_factory.py and
+    # both worker tests (through api/__init__ and `from api import codec`)
+    # come back; drop the conftest rule -> the two budget tests are lost.
+    assert got == {
+        "tests/unit/api/test_budget_read.py",     # its URL, through the conftest
+        "tests/unit/api/test_budget_write.py",    # a constant and an f-string path
+        "tests/unit/api/test_every_route.py",     # walks every route the app mounts
+    }, got
+
+
+def test_a_module_named_like_the_standard_library_is_not_reached_by_its_import(tmp_path):
+    root = _tree(tmp_path, {
+        **FILLER,
+        "apps/svc/pkg/__init__.py": "",
+        "apps/svc/pkg/platform.py": "X = 1\n",
+        "apps/svc/pkg/user.py": "from .platform import X\n",
+        "apps/worker/worker/startup.py": "import platform\n",
+        "tests/unit/svc/test_user.py": "from pkg.user import X\n",
+        "tests/unit/worker/test_startup.py": "from worker import startup\n",
+    })
+    got = sel.import_closure(root, ["apps/svc/pkg/platform.py"])
+    # MUTATION: count every suffix of a module's name as an import of it ->
+    # worker/startup.py's `import platform` (the standard library) reads as
+    # an import of pkg/platform.py, and test_startup.py follows.
+    assert "tests/unit/worker/test_startup.py" not in got, got
+    # The control: an import through the package's own name still reaches it.
+    assert "tests/unit/svc/test_user.py" in got, got
+
+
+def test_a_lazy_import_reaches_only_importers_that_call_its_function(tmp_path):
+    root = _tree(tmp_path, APP_TREE)
+    got = sel.import_closure(root, ["apps/api/api/main.py"])
+    # MUTATION: count a lazy import as eager -> `from api import codec` runs
+    # api/__init__, which reads as importing main: test_codec.py follows.
+    assert "tests/unit/api/test_factory.py" in got, got
+    assert "tests/unit/worker/test_codec.py" not in got, got
+    # A docstring naming the function is not a call.
+    _tree(tmp_path, {"tests/unit/worker/test_codec.py": '"""create_app() is not called here."""\nfrom api import codec\n'})
+    assert "tests/unit/worker/test_codec.py" not in sel.import_closure(root, ["apps/api/api/main.py"])
+
+
+def test_a_router_with_a_path_it_cannot_read_is_not_gated(tmp_path):
+    root = _tree(tmp_path, {**APP_TREE, "apps/api/api/routes/budget.py": (
+        "from fastapi import APIRouter\nrouter = APIRouter(prefix='/v1')\n"
+        "@router.get('/budget')\ndef read():\n    return 1\n"
+        "@router.get(compute_path())\ndef other():\n    return 2\n")})
+    # MUTATION: gate by the paths it could read -> test_platform.py, which
+    # may request the computed path, is dropped.
+    got = sel.import_closure(root, ["apps/api/api/routes/budget.py"])
+    assert "tests/unit/api/test_platform.py" in got, got
+
+
+def test_route_urls_reads_prefixes_constants_and_f_strings():
+    assert sel.route_urls(APP_TREE["apps/api/api/routes/budget.py"]) == [
+        "/v1/budget", "/v1/workspaces/{tenant_id}/budget/{field}"]
+    assert sel.route_urls("X = 1\n") == []
+    pattern = sel.url_pattern("/v1/workspaces/{tenant_id}/budget")
+    assert re.search(pattern, 'c.get(f"/v1/workspaces/{T}/budget")')
+    assert re.search(pattern, 'c.get("/v1/workspaces/t1/budget?x=1")')
+    assert not re.search(pattern, 'c.get("/v1/workspaces/t1/budget/more")')
+
+
+def test_a_changed_conftest_reaches_the_tests_under_it(tmp_path):
+    root = _tree(tmp_path, APP_TREE)
+    got = sel.import_closure(root, ["tests/unit/api/conftest.py"])
+    # MUTATION: follow imports only -> no test imports a conftest: nothing.
+    assert {"tests/unit/api/test_platform.py", "tests/unit/api/test_budget_read.py"} <= got, got
+    assert "tests/unit/worker/test_codec.py" not in got, got
+
+
+def test_on_this_repository_one_route_selects_its_tests_and_none_of_the_workers():
+    """The real tree: a change to swarm-api's budget route reaches the tests
+    that request its URLs or walk every route, and not one worker test."""
+    route = "apps/swarm-api/swarm_api/routes/budget_settings.py"
+    if not (REPO / route).is_file():
+        pytest.skip("the budget route moved; pick another route")
+    got = {t for t in sel.import_closure(REPO, [route]) if sel.is_test(t)}
+    assert "tests/unit/control_plane/test_budget_contract_switch.py" in got, got
+    assert not [t for t in got if t.startswith("tests/unit/worker/")], got
+    # MUTATION: any of the rules above undone -> hundreds (1,428 on 0409b8d).
+    assert len(got) < 60, len(got)
+
+
 def test_a_changed_script_reaches_the_tests_of_every_script_that_sources_it(tmp_path):
     root = _tree(tmp_path, {
         **FILLER,

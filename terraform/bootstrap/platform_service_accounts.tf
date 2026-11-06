@@ -111,6 +111,91 @@ resource "google_service_account" "doctor" {
   description  = "managed-by=swarm-terraform; the scheduled read-only doctor. Read-only project roles (viewer, securityReviewer, secretmanager.viewer, clusterViewer on the swarm cluster); posts findings to swarm-api. Writes nothing."
 }
 
+# NEW (2026-11-01). swarm-voice runs the Voice it StatefulSet on GKE through
+# Workload Identity (docs/design/voice-it.md section 3.4; terraform/infra/voice.tf).
+# Made here, holding no role, so deployer_service_accounts.tf's grant on it is
+# made in the same apply; voice.tf reads it as a data source and grants it its
+# own roles. No import block: terraform/infra never created it.
+resource "google_service_account" "voice" {
+  project      = var.project_id
+  account_id   = module.service_account_ids.voice_id
+  display_name = "Swarm Voice"
+  description  = "managed-by=swarm-terraform; the swarm-voice StatefulSet's Workload Identity account (Voice it). No project roles; terraform/infra/voice.tf grants its own."
+}
+
+# NEW (2026-11-05). swarm-speech is the account Voice it's speech machine runs
+# as (docs/design/voice-it-own-speech.md §5.1 and §6; terraform/infra/
+# voice_speech.tf, off until voice_speech.enabled). Made here, holding no
+# role: voice_speech.tf grants its three (artifactregistry.reader on the
+# platform's repository, logging.logWriter, monitoring.metricWriter) when the
+# machine is on. No import block: no root ever made it.
+#
+# Its id is modules/service_account_ids' speech_id, which voice_speech.tf
+# reads too (owner's pick, 2026-11-05: the ids move to the id modules). It is
+# not on that module's bootstrap_platform list, so it gets no
+# serviceAccountAdmin for the deployer (deployer_service_accounts.tf) and is
+# not on deployer.tf's actAs list; the one grant the deployer needs on it,
+# actAs to attach it to the machine, is made below instead.
+resource "google_service_account" "speech" {
+  project      = var.project_id
+  account_id   = module.service_account_ids.speech_id
+  display_name = "Swarm Speech"
+  description  = "managed-by=swarm-terraform; Voice it's speech machine (one stopped L4 VM). No project roles here; terraform/infra/voice_speech.tf grants its image read, log write and metric write."
+}
+
+# Row I1's role: what swarm-api may do to the speech machine, granted on that
+# one instance by voice_speech.tf (google_compute_instance_iam_member), never
+# on the project. Start and stop for a session; get to poll RUNNING and
+# TERMINATED; setMachineType and setMetadata to apply Settings and a new
+# server digest while it is stopped (§4.2 step 1, §11.4); getSerialPortOutput
+# to read a failed boot. No create, no delete, no setIamPolicy, no disk or
+# network permission. Defined here because terraform/infra may not define or
+# read a role (#79); its id is modules/custom_role_ids' speech_operator, the
+# string voice_speech.tf binds.
+resource "google_project_iam_custom_role" "speech_operator" {
+  project = var.project_id
+  role_id = module.custom_role_ids.ids["speech_operator"]
+  title   = "Swarm Speech Operator"
+
+  description = "managed-by=swarm-terraform; swarm-api starts, stops, reads and applies settings to Voice it's speech machine. Granted on that instance only."
+  stage       = "GA"
+
+  permissions = [
+    "compute.instances.get",
+    "compute.instances.getSerialPortOutput",
+    "compute.instances.setMachineType",
+    "compute.instances.setMetadata",
+    "compute.instances.start",
+    "compute.instances.stop",
+  ]
+}
+
+# The release deployer attaches swarm-speech to the machine it creates, which
+# needs actAs on the account (deployer.tf says why for every other account).
+# Granted on this account only, never project-wide.
+resource "google_service_account_iam_member" "deployer_acts_as_speech" {
+  count = local.deployer_on ? 1 : 0
+
+  service_account_id = google_service_account.speech.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.deployer[0].email}"
+}
+
+# Row I2: swarm-api acts as swarm-speech. Compute checks actAs on the attached
+# account for setMetadata on a machine that runs as one (a metadata write can
+# run code as that account); swarm-api writes the image, models and idle
+# minutes there at each start. The account holds only its three write-or-read
+# grants, so this reaches no more than those. If the machine lane's
+# measurement M3 shows start and setMetadata pass without it, the row is
+# dropped.
+resource "google_service_account_iam_member" "api_acts_as_speech" {
+  service_account_id = google_service_account.speech.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${local.platform_sa_email["swarm-api"]}"
+
+  depends_on = [google_service_account.platform]
+}
+
 # ---------------------------------------------------------------------------
 # The adoption from terraform/infra (live deployment only).
 # ---------------------------------------------------------------------------

@@ -4,20 +4,21 @@
 
 | Step | Manifest entries | Kind |
 |---|---|---|
-| `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its `SHA256SUMS` and unpacked; never a checkout |
+| `cluster.bundle` | `other.release-kubernetes-bundle` | engine: the release's `kubernetes.tgz`, checked against its cosign-verified `SHA256SUMS` (`Release.fetch`) and unpacked; never a checkout |
 | `cluster.policies` | `cluster-policy.*` (9), `rbac.provisioner-clusterrole` | engine: `render.py policies` from the bundle, applied before anything a tenant runs |
-| `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: swarm-system's default-deny ingress, only once the policies are in |
-| `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph` | engine: the live relay and the graph service, infra's renders, applied and rolled out in swarm-system |
+| `cluster.swarm-system` | `cluster.swarm-system-namespace` | engine: the swarm-system namespace and its default-deny ingress, only once the policies are in |
+| `cluster.workloads` | `workload.swarm-live`, `workload.swarm-graph`, `workload.swarm-voice` | engine: the live relay, the graph service and Voice it's swarm-voice, infra's renders, applied and rolled out in swarm-system |
 
-**swarm-system's two core workloads are Terraform's renders.** The live
-relay's manifest is terraform/infra's `swarm_live_manifest` output and the
+**swarm-system's core workloads are Terraform's renders.** The live
+relay's manifest is terraform/infra's `swarm_live_manifest` output, the
 graph service's `swarm_graph_manifest` (`kubernetes/apply.sh --swarm-system`
-and `--swarm-graph` apply them; neither is in the release bundle). Stage 10
+and `--swarm-graph` apply those two) and Voice it's `swarm_voice_manifest`;
+none is in the release bundle. Stage 10
 reads them with `terraform output` in the release's infra root, as the
 deployer (`terraform.read_outputs`), applies them with the pinned kubectl and
 waits for their rollouts. Terraform renders null while a workload is switched
-off (`enable_live_browser`, `graph_service.serve`): nothing is applied for it
-and nothing waits on it. The addon workloads (`swarm-egress`,
+off (`enable_live_browser`, `graph_service.serve`, `voice_it`): nothing is
+applied for it and nothing waits on it. The addon workloads (`swarm-egress`,
 `swarm-typesafe-fwd`, `tailscale-egress`) belong to their addons' installs.
 
 **Policies before the code that needs them** (lesson 33): the scheduler once
@@ -25,6 +26,13 @@ shipped sizes the admission policy did not yet admit, and 54 dispatches
 failed. Stage 10 runs before stage 11 (the first team's namespace), and
 `cluster.swarm-system` refuses to apply while the policies differ from the
 render.
+
+**swarm-system is created here.** terraform/infra makes no Kubernetes
+objects, and each workload manifest declares its own copy of the Namespace,
+but `cluster.workloads` runs after this step's ingress policies, which need
+the namespace to exist. `cluster.swarm-system` applies the Namespace first,
+with the labels every `kubernetes/swarm-system/*.yaml` copy carries, so the
+later copies change nothing.
 
 **Subjects by uniqueId, read from IAM** (lesson 29): a RoleBinding whose
 subject is a Google service account's email is never matched by GKE, which
@@ -52,6 +60,18 @@ change takes about a minute to reach the control plane. A kubectl call that
 times out or is refused is polled with a countdown (`CONTROL_PLANE`) until the
 control plane answers; any other error is returned at once.
 
+**Reopened after the closing pass** (finding 16): `kube_for` gives the `Kube`
+`infra.REACH.reopen` for an engine-shaped context (one with `engine`), run once
+before its first kubectl call: when `infra.pass-close` has removed the
+address, an infra pass puts this machine's current `/32` back, and the closing
+pass (or the verb, when it finishes) removes it again. A context with no
+`engine` (uninstall's) is never reopened.
+
+**The bundle is signature-checked** (finding 31): `kubernetes.tgz` is read
+through bootstrap's `Release.fetch`, so `SHA256SUMS` verifies with cosign
+against the pinned release key before the bundle's digest is compared and
+before `render.py` runs, as bootstrap does for `module.tgz`.
+
 **kubectl through `prefer_local_bin`'s rule** (`preflight.find_tool`):
 `SWARM_KUBECTL`, then `~/.local/bin`, then `$PATH`. An old client on `$PATH`
 silently drops manifest fields.
@@ -65,6 +85,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -80,14 +101,31 @@ from ..state import state_bucket
 from ..terraform import Terraform, read_outputs
 from ..waits import Clock, SystemClock, WaitSpec, wait_until
 from . import Observation, Plan
-from .preflight import ASK, COMPUTE, RELEASE_HOME, TOOLS, Ask, Gcp, find_tool, parse_sums
+from .bootstrap import Release
+from .preflight import ASK, COMPUTE, TOOLS, Ask, Gcp, find_tool
 
-#: terraform/infra's cluster (`google_container_cluster.agents`); infra pass 1
-#: records the name it created as `gke_cluster_name`.
-DEFAULT_CLUSTER = "swarm-agents"
+#: terraform/infra's cluster (`google_container_cluster.agents`, named
+#: `${name_prefix}-autopilot`; the engine never renders name_prefix, so its
+#: default "swarm"). Each infra pass records Terraform's own `gke_cluster_name`
+#: output (`bootstrap.apply_pass`); this is the name before one has.
+DEFAULT_CLUSTER = "swarm-autopilot"
 BUNDLE = "kubernetes.tgz"
 RUN_API = "https://run.googleapis.com/v2"
 BUNDLE_MUST_HOLD = ("render.py", "policies/", "swarm-system/", "rbac/")
+
+#: The swarm-system Namespace, with the labels each
+#: kubernetes/swarm-system/*.yaml copy declares, so the workloads' own copies,
+#: applied later, change nothing on it.
+SWARM_SYSTEM_NAMESPACE = """\
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+"""
 
 #: The accounts the cluster-scoped RBAC names (kubernetes/render.py
 #: `policy_values`), each by email and by the uniqueId IAM assigned.
@@ -202,7 +240,10 @@ class Kube:
     plugin: Callable[[], Path] = auth_plugin
     clock: Clock = field(default_factory=SystemClock)
     events: Events | None = None
+    #: Run once before the first kubectl call: reopens the control plane after the close.
+    reach: Callable[[], Any] | None = None
     _credentials: bool = field(default=False, repr=False)
+    _reached: bool = field(default=False, repr=False)
     _plugin_dir: Path | None = field(default=None, repr=False)
 
     @property
@@ -265,6 +306,9 @@ class Kube:
         """kubectl `args`; a control plane that does not answer yet is polled
         with a countdown (`CONTROL_PLANE`), any other answer returned as is."""
         self.credentials()
+        if self.reach is not None and not self._reached:
+            self.reach()
+            self._reached = True
         argv = [self.kubectl(), f"--kubeconfig={self.config}", f"--context={self.context}", *args]
         answer: list[tuple[int, str, str]] = []
 
@@ -277,14 +321,25 @@ class Kube:
         return answer[0]
 
 
-def kube_for(ctx: Any, *, find: Callable[[Any], str | None] = find_tool, run: Run = run_command) -> Kube:
+def reopen_for(ctx: Any) -> Callable[[], Any] | None:
+    """`infra.REACH.reopen` on `ctx`, when `ctx` can apply a pass (it has an `engine`)."""
+    if getattr(ctx, "engine", None) is None:
+        return None
+    from .infra import REACH
+
+    return lambda: REACH.reopen(ctx)
+
+
+def kube_for(ctx: Any, *, find: Callable[[Any], str | None] = find_tool, run: Run = run_command,
+             reach: Callable[[Any], Callable[[], Any] | None] = reopen_for) -> Kube:
     region = ctx.state.region
     if not region:
         raise LookupError("no region is recorded (preflight.region confirms it)")
     return Kube(project=ctx.project, region=str(region), cluster=cluster_name(ctx),
                 deny_list=tuple(ctx.state.deny_list), find=find, run=run,
-                # `swarm team add` builds a context with neither; it waits on the system clock.
-                clock=getattr(ctx, "clock", None) or SystemClock(), events=getattr(ctx, "events", None))
+                # A verb's context may hold neither; it waits on the system clock.
+                clock=getattr(ctx, "clock", None) or SystemClock(), events=getattr(ctx, "events", None),
+                reach=reach(ctx))
 
 
 # -- the release's kubernetes bundle -----------------------------------------
@@ -314,24 +369,24 @@ def bundle_dir(project: str, version: str) -> Path:
 
 @dataclass
 class Bundle:
-    """The release's Kubernetes files, from the release home, checked by digest."""
+    """The release's Kubernetes files, from the release home, through
+    `Release.fetch`: SHA256SUMS cosign-verified, then the bundle's digest."""
 
     gcp: Callable[[], Gcp]
     where: Callable[[str, str], Path] = bundle_dir
+    release: Callable[[Callable[[str], bytes]], Release] = field(
+        default=lambda read_public: Release(read_public=read_public))
 
     def read(self, ctx: Any) -> tuple[bytes, str]:
-        """The bundle's bytes and digest, checked against SHA256SUMS; nothing written."""
+        """The bundle's bytes and digest, checked against the cosign-verified
+        SHA256SUMS; cosign reads the sums and their signature from a temporary
+        directory, removed after, so nothing stays written."""
         version = ctx.state.release
         if not version:
             raise LookupError("no release is recorded (preflight.release reads it)")
-        base = f"{RELEASE_HOME}/releases/{version}"
-        gcp = self.gcp()
-        sums = parse_sums(gcp.read_public(f"{base}/SHA256SUMS"))
-        data = gcp.read_public(f"{base}/{BUNDLE}")
-        digest = hashlib.sha256(data).hexdigest()
-        if sums.get(BUNDLE) != digest:
-            raise ValueError(f"release {version}: {BUNDLE} does not match SHA256SUMS")
-        return data, digest
+        with tempfile.TemporaryDirectory(prefix="swarm-bundle-") as where:
+            data = self.release(self.gcp().read_public).fetch(str(version), BUNDLE, Path(where))
+        return data, hashlib.sha256(data).hexdigest()
 
     def fetch(self, ctx: Any) -> Path:
         """The bundle unpacked into the engine's local cache (a render needs files)."""
@@ -427,7 +482,8 @@ class BundleStep(_Base):
     satisfies = ("other.release-kubernetes-bundle",)
     _explain = (
         "Stage 10, team add, upgrade and uninstall render the release's own Kubernetes files, checked "
-        "against the release's SHA256SUMS: a checkout's files can be any version."
+        "against the release's SHA256SUMS, itself verified with cosign against the pinned release key: a "
+        "checkout's files can be any version."
     )
 
     def check(self, ctx: Any) -> Observation:
@@ -439,7 +495,7 @@ class BundleStep(_Base):
         return Observation(MET, f"{BUNDLE} of release {ctx.state.release}", {"kubernetes_bundle": str(root)})
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan(f"fetch {BUNDLE} of release {ctx.state.release} and check it against SHA256SUMS")
+        return Plan(f"fetch {BUNDLE} of release {ctx.state.release} and check it against its signed SHA256SUMS")
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         self._bundle.fetch(ctx)
@@ -492,20 +548,19 @@ class SwarmSystemStep(_Base):
     satisfies = ("cluster.swarm-system-namespace",)
     _explain = (
         "swarm-system holds the platform's in-cluster services; its default-deny ingress admits only the "
-        "live relay's port from tenant pods and swarm-api's egress range. Terraform creates the namespace; "
-        "this applies its policies, after the admission policies (lesson 33)."
+        "live relay's port from tenant pods and swarm-api's egress range. This creates the namespace and "
+        "applies its policies, after the admission policies (lesson 33)."
     )
 
     def __init__(self, gcp: Callable[[], ClusterGcp], ask: Ask, *, policies: PoliciesStep, **kw: Any) -> None:
         super().__init__(gcp, ask, **kw)
         self._policies = policies
 
-    def egress_cidr(self, ctx: Any) -> str:
-        """swarm-api's Direct VPC egress range, read as kubernetes/apply.sh
-        --swarm-system reads it: the service's subnetwork, then its range."""
-        cidr = ctx.outputs.get("swarm_api_egress_cidr")
-        if cidr:
-            return str(cidr)
+    def egress(self, ctx: Any) -> tuple[str, str]:
+        """swarm-api's Direct VPC egress range and where it was read, as
+        kubernetes/apply.sh --swarm-system reads it: the service's subnetwork,
+        then its range. The source is render.py's documented form,
+        `run/<project>/<region>/<service>/<subnetwork>`."""
         region = str(ctx.state.region)
         service = self.gcp.run_service(ctx.project, region, "swarm-api") or {}
         interfaces = (service.get("template", {}).get("vpcAccess", {}) or {}).get("networkInterfaces") or []
@@ -517,38 +572,41 @@ class SwarmSystemStep(_Base):
         cidr = str((found or {}).get("ipCidrRange") or "")
         if not cidr:
             raise LookupError(f"subnetwork {name} has no ipCidrRange")
-        return cidr
+        return cidr, f"run/{ctx.project}/{region}/swarm-api/{name}"
 
     def rendered(self, ctx: Any) -> str:
-        cidr = self.egress_cidr(ctx)
+        cidr, source = self.egress(ctx)
         return self.render(ctx, "swarm-system", f"--swarm-api-egress-cidr={cidr}",
-                           f"--swarm-api-egress-source=install-state/{ctx.project}/swarm_api_egress_cidr")
+                           f"--swarm-api-egress-source={source}")
 
     def check(self, ctx: Any) -> Observation:
         code, _, _ = self.kube(ctx)("get", "namespace", "swarm-system", "-o", "name")
         if code != 0:
-            return Observation(UNMET, "namespace swarm-system does not exist (infra pass 1 creates it)")
+            return Observation(UNMET, "namespace swarm-system does not exist yet (this step creates it)")
+        problem = self.differs(ctx, SWARM_SYSTEM_NAMESPACE)
+        if problem:
+            return Observation(UNMET, f"namespace swarm-system's labels: {problem}")
         problem = self.differs(ctx, self.rendered(ctx))
         return Observation(UNMET, problem) if problem else Observation(MET, "swarm-system's ingress matches")
 
     def plan(self, ctx: Any) -> Plan:
-        return Plan("apply swarm-system's ingress policies",
-                    tuple(f"{k}/{n}" for k, n in documents(self.rendered(ctx))))
+        return Plan("create the swarm-system namespace and apply its ingress policies",
+                    ("Namespace/swarm-system", *(f"{k}/{n}" for k, n in documents(self.rendered(ctx)))))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         problem = self._policies.differs(ctx, self._policies.rendered(ctx))
         if problem:
             raise RuntimeError(f"the admission policies go first (lesson 33): {problem}")
-        code, _, _ = self.kube(ctx)("get", "namespace", "swarm-system", "-o", "name")
-        if code != 0:
-            raise RuntimeError("namespace swarm-system does not exist; infra pass 1 creates it")
-        self.apply_render(ctx, self.rendered(ctx))
+        rendered = self.rendered(ctx)
+        self.apply_render(ctx, SWARM_SYSTEM_NAMESPACE)
+        self.apply_render(ctx, rendered)
 
 
 #: swarm-system's core workloads: (manifest entry, kind/name, Terraform output).
 CORE_WORKLOADS = (
     ("workload.swarm-live", "statefulset/swarm-live", "swarm_live_manifest"),
     ("workload.swarm-graph", "deployment/swarm-graph", "swarm_graph_manifest"),
+    ("workload.swarm-voice", "statefulset/swarm-voice", "swarm_voice_manifest"),
 )
 #: How long `kubectl rollout status` waits for one workload, inside
 #: `run_command`'s own 600 s.
@@ -575,7 +633,7 @@ class WorkloadsStep(_Base):
     id = "cluster.workloads"
     satisfies = tuple(entry for entry, _, _ in CORE_WORKLOADS)
     _explain = (
-        "The live-browser relay and the shared code graph service run in swarm-system. Their manifests are "
+        "The live-browser relay, the shared code graph service and Voice it's swarm-voice run in swarm-system. Their manifests are "
         "terraform/infra's renders (image digest, bucket, key reference, address), read from its outputs and "
         "applied after the namespace's policies; stage 10 waits for their rollouts and checks every replica "
         "is ready. A workload Terraform has switched off renders null and is skipped."
@@ -639,7 +697,46 @@ class WorkloadsStep(_Base):
                                           f"--timeout={ROLLOUT_TIMEOUT}")
             if code != 0:
                 raise RuntimeError(f"{name} did not roll out in swarm-system: {err.strip()[:300]}; "
-                                   f"kubectl -n swarm-system describe {name} says why")
+                                   f"{self.rollout_reason(ctx, name)}")
+
+    def rollout_reason(self, ctx: Any, name: str) -> str:
+        try:
+            return rollout_reason(self.kube(ctx), name)
+        except Exception as exc:  # noqa: BLE001 - the reason is a help; the rollout's failure is the error
+            return f"why could not be read ({type(exc).__name__}: {str(exc)[:200]})"
+
+
+#: How many of a workload's newest warning events a failed rollout names.
+ROLLOUT_EVENTS = 5
+
+
+def rollout_reason(kube: Callable[..., tuple[int, str, str]], name: str) -> str:
+    """Why `name` (kind/name) did not roll out, read through the engine's own
+    kubeconfig (`Kube`), never the person's current context (lesson 37): the
+    workload's own conditions and the newest warning events of it and its
+    pods (an image pull, a secret mount, an unschedulable pod). The person is
+    never told to run kubectl (audit 5b M8)."""
+    base = name.split("/", 1)[-1]
+    said: list[str] = []
+    code, out, err = kube("get", name, "--namespace=swarm-system", "-o", "json")
+    if code == 0:
+        conditions = (((yaml.safe_load(out or "{}") or {}).get("status") or {}).get("conditions")) or []
+        said += [f"{c.get('type')}={c.get('status')}: {c.get('message')}" for c in conditions
+                 if c.get("message") and str(c.get("status")) != "True"]
+    else:
+        said.append(f"its status could not be read: {err.strip()[:200]}")
+    code, out, err = kube("get", "events", "--namespace=swarm-system", "--field-selector=type=Warning", "-o", "json")
+    if code == 0:
+        events = [e for e in ((yaml.safe_load(out or "{}") or {}).get("items") or [])
+                  if str((e.get("involvedObject") or {}).get("name") or "").startswith(base)]
+        events.sort(key=lambda e: str(e.get("lastTimestamp") or e.get("eventTime") or ""))
+        said += [f"{(e.get('involvedObject') or {}).get('name')}: {e.get('reason')}: {e.get('message')}"
+                 for e in events[-ROLLOUT_EVENTS:]]
+    else:
+        said.append(f"its events could not be read: {err.strip()[:200]}")
+    if not said:
+        return "swarm-system shows no warning event and no failing condition for it"
+    return "swarm-system says: " + "; ".join(said)[:1200]
 
 
 def build_steps(gcp: Callable[[], ClusterGcp] = CLUSTER_GCP, ask: Ask = ASK, *,

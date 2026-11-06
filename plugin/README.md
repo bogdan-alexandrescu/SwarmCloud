@@ -506,8 +506,10 @@ see is a field a session will eventually offer to set.
 A name the catalogue refuses is refused **before anything is dispatched**, and
 the two refusals are kept apart because they need different answers — an unknown
 name is a typo and lists the real names, while a known-but-disabled one quotes
-the catalogue's own reason. `codex` is the live example: disabled rather than
-deleted, so the runs that name it stay readable.
+the catalogue's own reason. `post-verdict` is the live example: disabled
+rather than deleted, so the runs that name it stay readable. (`codex` was the
+example until contract request 130 turned it on, 2026-11-02: it runs on the
+tenant's OpenAI key, else a ChatGPT plan from the pool.)
 
 **Beside the prompt, a caller may send only the inputs a profile declares.**
 `mock` declares its test knobs — `sleep_seconds`, `steps`, `fail`,
@@ -666,6 +668,21 @@ on-demand (contract request 113). A heavy lane picks it by name when
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code-large -->
 
+`claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
+image (contract request 127): the same runner, inputs, secret slots and
+model classes on the `standard` class, on GKE Autopilot on-demand, with
+Lightpanda, a headless browser that runs JavaScript and draws no pixels,
+for DOM-only browser work: reading, scraping, link checks and form flows.
+It has no live view and no `browser_tool`; a page it cannot read goes to a
+`claude-code-browser` child. It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-lightpanda generated from RUNNER_PROFILES["claude-code-lightpanda"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-lightpanda runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-lightpanda -->
+
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
 on a step, points a `claude-code` step at an issue of its repository. The
 issue's text is data for the agent: the worker scrubs it of every secret the
@@ -812,8 +829,8 @@ calls in a row that read nothing), or the sc plugin's server is not connected.
 workflow spec — the same object `swarm workflow` reads — as an object, as JSON
 text, or as the path of the spec file, relative to the session's checkout and
 inside it (the bridge reads no spec file from outside the checkout). A
-workflow script has no filesystem, so given a path one `sc:workflow` agent
-(label `read spec`) has the bridge read the file with `swarm_workflow_spec`,
+workflow script has no filesystem, so given a path one `sc:spec` agent
+(label `read spec`, holding no submit tool) has the bridge read the file with `swarm_workflow_spec`,
 which checks it as `swarm_workflow` would, submits nothing and returns the spec
 with its digest; the script submits the relayed spec only when it digests to
 what the bridge read. Text that begins like JSON and does not parse is reported
@@ -889,10 +906,10 @@ becomes a row with that state, `state_from: "workflow status"` and the row's
 failure in `row_note`. A step still running, or not named, stays a
 `row_error`, which the Result step re-attaches while the workflow runs on.
 
-All seven agents run on **haiku at low effort** (`model` and `effort` in their
+All eight agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
 need — `sc:remote` dispatch and follow, `sc:step`, `sc:task`, `sc:summary` and `sc:finish` follow,
-`sc:workflow` read a spec file, submit and read — and only through the sc plugin's own server (above).
+`sc:spec` read a spec file and nothing else, `sc:workflow` submit and read — and only through the sc plugin's own server (above).
 `sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
 row whose bridge was not connected or not responding, one `sleep 30` through
 Bash, because a workflow script has no timer of its own. A session that asks
@@ -1495,6 +1512,7 @@ are the same value.
   answer, and no refusal names the label, so an agent cannot confirm its own
   removal. A host that cannot ask its human removes nothing and is told to run
   `sc account remove <account>` in a terminal, which asks there.
+* `swarm_task_answers` records up to 200 answers `{task_id, question_index, choice?, text?}` through the single-answer route with `reply=short` (each checked as one answer is; a refusal is its own line and never stops the rest), and `swarm_task_answer` takes `reply: "short"` (6 November 2026).
 * `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
   per task only when it changed, the state `transitions` since `since`, and a
   finished task's `outcome` reduced to the step result's fields. A call holds

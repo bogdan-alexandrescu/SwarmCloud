@@ -65,6 +65,11 @@ WORKER = f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
 SCHEDULER = f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"
 RECONCILER = f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"
 NAMESPACE = f"swarm-tenant-{TENANT}"
+#: The tenant's TypeSafe hostname policy and the resource kubernetes/apply.sh
+#: asks the cluster's discovery for before it renders it
+#: (kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml).
+FQDN_POLICY = "swarm-allow-typesafe-direct"
+FQDN_RESOURCE = "fqdnnetworkpolicies.networking.gke.io"
 BUCKET = f"swarm-artifacts-{PROJECT}"
 SLOT = f"swarm-tenant-{TENANT}-git-u-" + hashlib.sha256(PRINCIPAL.encode()).hexdigest()[:16]
 TWIN = SLOT + "-refresh"
@@ -196,6 +201,10 @@ def _world() -> dict:
         "objects": {},
         "secrets": {},
         "k8s": {},
+        # What the cluster's discovery serves of networking.gke.io: dev's
+        # cluster has FQDN network policy (dev.tfvars), so kubernetes/apply.sh
+        # renders the tenant's hostname policy (docs/runbooks/typesafe-egress.md).
+        "api_resources": [FQDN_RESOURCE],
         "firestore": {
             f"workspaces/{TENANT}": _record(),
             f"admin_roles/{ADMIN}": {"fields": {"role": _s("admin")}, "updateTime": "2026-10-01T00:00:00Z"},
@@ -497,6 +506,8 @@ def test_create_runs_every_step_and_ends_ready(job: Job, created: dict) -> None:
     assert quota["limits.cpu"] == "128", quota
     assert f"Namespace//{NAMESPACE}" in world["k8s"]
     assert f"NetworkPolicy/{NAMESPACE}/swarm-default-deny" in world["k8s"]
+    # The tenant's TypeSafe hostname policy, on a cluster that serves its kind.
+    assert f"FQDNNetworkPolicy/{NAMESPACE}/{FQDN_POLICY}" in world["k8s"], sorted(world["k8s"])
     assert all(k.split("/")[1] in ("", NAMESPACE) for k in world["k8s"]), sorted(world["k8s"])
 
     # A8: the documents, with §8's limits; a new pool holds nothing.
@@ -520,6 +531,7 @@ def test_create_runs_every_step_and_ends_ready(job: Job, created: dict) -> None:
 
 #: kind -> (API group, resource), and kubectl's spellings of each.
 KUBE_KINDS = {
+    "FQDNNetworkPolicy": ("networking.gke.io", "fqdnnetworkpolicies"),
     "Namespace": ("", "namespaces"),
     "ServiceAccount": ("", "serviceaccounts"),
     "ResourceQuota": ("", "resourcequotas"),
@@ -541,7 +553,8 @@ KUBE_WORDS = {
     "daemonset": "DaemonSet", "daemonsets": "DaemonSet", "ds": "DaemonSet",
 }
 KUBE_VALUE_FLAGS = {"--context", "-n", "--namespace", "-o", "--output", "-f", "--filename", "--dry-run",
-                    "--raw", "--field-selector", "-l", "--selector", "--validate", "--request-timeout"}
+                    "--raw", "--field-selector", "-l", "--selector", "--validate", "--request-timeout",
+                    "--api-group"}
 
 
 def _kube_parse(argv: list[str]) -> tuple[list[str], dict[str, str]]:
@@ -579,10 +592,16 @@ def test_the_deployer_rbac_is_exactly_what_a_run_asks_for(created: dict) -> None
     needed: set[tuple[str, str, str]] = set()
     kube_system_reads: set[tuple[str, str, str]] = set()
     applied = 0
+    discovery = 0
     for argv in calls:
         pos, flags = _kube_parse(argv)
         command = pos[:1]
         if command in (["version"], ["config"]):
+            continue
+        if command == ["api-resources"]:
+            # Discovery, which every authenticated caller may read (GKE's
+            # system:discovery): it needs nothing here.
+            discovery += 1
             continue
         assert command in (["get"], ["apply"]), f"a kubectl verb this test does not map to RBAC: {argv}"
         if command == ["apply"]:
@@ -598,6 +617,7 @@ def test_the_deployer_rbac_is_exactly_what_a_run_asks_for(created: dict) -> None
         else:
             needed.add((group, resource, "get"))
     assert applied, "the run applied nothing; the apply's verbs were not compared"
+    assert discovery == 1, "the run did not ask, once, whether the cluster serves the hostname policy's kind"
 
     bound: set[str] = set()
     for name, obj in world["k8s"].items():
@@ -614,9 +634,23 @@ def test_the_deployer_rbac_is_exactly_what_a_run_asks_for(created: dict) -> None
     cluster_role = next(d for d in docs if d["kind"] == "ClusterRole")
     granted: set[tuple[str, str, str]] = set()
     bind_names: set[str] = set()
+    # The tenant's hostname policy (kubernetes/render.py TENANT_FQDN_FILES,
+    # docs/runbooks/typesafe-egress.md) is asked for like every other kind:
+    # get and patch by its one name, and create, which a request names no
+    # object for, bounded by the deployer's scope policy. The run applied that
+    # one name and no other of its kind.
+    hostname = [r for r in cluster_role["rules"] if r["resources"] == ["fqdnnetworkpolicies"]]
+    assert [(r["apiGroups"], sorted(r["verbs"]), r.get("resourceNames")) for r in hostname] == [
+        (["networking.gke.io"], ["get", "patch"], [FQDN_POLICY]),
+        (["networking.gke.io"], ["create"], None),
+    ], hostname
+    assert [n for n in world["k8s"] if n.split("/", 1)[0] == "FQDNNetworkPolicy"] == [
+        f"FQDNNetworkPolicy/{NAMESPACE}/{FQDN_POLICY}"]
     for rule in cluster_role["rules"]:
         triples = {(g, r, v) for g in rule["apiGroups"] for r in rule["resources"] for v in rule["verbs"]}
-        if "resourceNames" in rule:
+        if rule in hostname:
+            granted |= triples
+        elif "resourceNames" in rule:
             assert {v for _, _, v in triples} == {"bind"}, rule
             bind_names |= set(rule["resourceNames"])
         else:
@@ -631,6 +665,23 @@ def test_the_deployer_rbac_is_exactly_what_a_run_asks_for(created: dict) -> None
                    for r in rule["resources"] for n in rule["resourceNames"]}
     assert all(rule["verbs"] == ["get"] for rule in dns_role["rules"]), dns_role["rules"]
     assert dns_granted == kube_system_reads
+
+
+def test_a_cluster_without_fqdn_network_policy_gets_no_hostname_policy(job: Job) -> None:
+    """Every cluster but dev's refuses the FQDNNetworkPolicy kind, and with it
+    the whole apply. So the run asks discovery, under the guard, and on a
+    cluster that does not serve the kind sends no hostname policy and still
+    ends ready."""
+    job.edit(lambda w: w.update(api_resources=[]))
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert not job.stopped(), f"the guard refused a call the job needs:\n{out}"
+    assert _field(job.record(), "state") == "ready", out
+    asked = [c for c in job.calls("kubectl") if "api-resources" in c]
+    assert len(asked) == 1 and "--api-group=networking.gke.io" in asked[0], asked
+    assert not [n for n in job.read()["k8s"] if n.split("/", 1)[0] == "FQDNNetworkPolicy"]
+    assert f"the cluster does not serve {FQDN_RESOURCE}" in proc.stderr, out
 
 
 def test_a_rerun_after_a_failure_makes_only_what_is_missing(job: Job) -> None:

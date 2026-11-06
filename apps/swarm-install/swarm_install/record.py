@@ -22,9 +22,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .state import InstallState, refuse_secrets
+from .state import STEP_DONE, InstallState, refuse_secrets
 
 COLLECTION = "swarm-install"
+#: The Firestore database terraform/infra creates (`firestore_database`);
+#: that variable refuses "(default)", so the record is never there (N1).
+DATABASE = "swarm"
 RECORD_SCHEMA_VERSION = 1
 
 ENGINE = "engine"
@@ -46,28 +49,66 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
                 "verify",
                 "hand_off_at",
                 "ready_at",
+                # The install's sizing (`state.outputs["sizing"]`, lane
+                # SIZING-ASK) and the installer's email: Admin › Setup reads
+                # them to serve the sizing and to know a one-person install
+                # (decision 7) from a team's (DAYONE-SETUP-API-3).
+                "sizing",
+                "installer",
+                # The first team's group stage 8 created (`identity.groups`,
+                # `state.outputs["workspace_groups"]`), as `{"team": <email>}`:
+                # Admin › Setup's first-team step starts from it rather than
+                # asking (N20). None for a one-person install, which has none.
+                "workspace_groups",
+                # The Desktop client the engine's last bootstrap pass put in
+                # IAP's programmatic-clients list, as `{"client_id": <id>}`:
+                # Admin › Setup's Sign-in client step reads `applied` from it
+                # (issue #2964). None until one is.
+                "sign_in_client",
+                # When each pass Admin › Setup times began and, once it has,
+                # ended (`TIMED_PASSES`, `state.outputs["pass_times"]`): the
+                # page shows how long a running pass has taken, since no
+                # usual length is measured for either yet.
+                "passes",
             }
         ),
     ),
     "swarm-install/{env}/console/github_app": (
         SWARM_API,
         frozenset(
-            {"state_hash", "id", "slug", "client_id", "installed_on", "secrets_written_at", "self_check"}
+            {"state_hash", "id", "slug", "client_id", "name", "installed_on", "secrets_written_at", "self_check"}
         ),
     ),
-    # Fields keyed per account label: owner, link_hash, link_expires, signed_in_at.
+    # Fields keyed per account label: owner, link_hash, link_made_at, link_expires, signed_in_at.
     "swarm-install/{env}/console/accounts": (SWARM_API, frozenset()),
-    "swarm-install/{env}/console/teams/{id}": (
+    # A collection under the env document: `console/teams/<id>` has five
+    # segments, which real Firestore refuses as a document (audit 3, A2).
+    "swarm-install/{env}/teams/{id}": (
         SWARM_API,
         frozenset({"group", "workspace", "first_admin", "invites", "progress", "smoke", "grant"}),
     ),
     "swarm-install/{env}/console/finished": (SWARM_API, frozenset({"at", "by"})),
+    # A one-person install's first workspace: the installer's personal
+    # workspace, its grant and its smoke (decision 7, DAYONE-SETUP-API-3).
+    "swarm-install/{env}/console/personal": (
+        SWARM_API,
+        frozenset({"owner", "workspace", "progress", "grant", "smoke"}),
+    ),
     # The console's two verification runs: `verify_runs` is
     # {"console_task": <task id>, "console_workflow": <workflow id>}, copied
-    # into the engine's `state.outputs["verify_runs"]` (DAYONE-SETUP-API-2).
+    # into the engine's `state.outputs["verify_runs"]` (DAYONE-SETUP-API-2);
+    # `retries` is {"console_task": n, "console_workflow": n}, each key's
+    # fresh starts (DAYONE-SETUP-API-6).
     "swarm-install/{env}/console/verify_runs": (
         SWARM_API,
-        frozenset({"verify_runs", "repository", "started_at", "by"}),
+        frozenset({"verify_runs", "retries", "repository", "started_at", "by"}),
+    ),
+    # Admin › Setup's Sign-in client step (issue #2964): the Desktop client's
+    # id, when and by whom the console saved it; its secret is in Secret
+    # Manager only. The engine's hand-off wait reads it.
+    "swarm-install/{env}/console/sign_in_client": (
+        SWARM_API,
+        frozenset({"client_id", "saved_at", "saved_by"}),
     ),
     "swarm-install/{env}/health/latest": (
         SWARM_API_FOR_DOCTOR,
@@ -77,9 +118,75 @@ WRITERS: dict[str, tuple[str, frozenset[str]]] = {
 
 #: Each stage's entry in `stages[0..15]`.
 STAGE_FIELDS = frozenset({"state", "at", "by"})
+#: `detail` is verify's one-line cause, present only while `result` is
+#: "failed": the terminal prints it, and Admin › Setup serves it as
+#: `engine.verify.detail` so the console's verify step says why too.
 VERIFY_FIELDS = frozenset(
-    {"check", "done", "total", "started", "expected_end", "deadline", "result"}
+    {"check", "done", "total", "started", "expected_end", "deadline", "result", "detail"}
 )
+
+#: The passes Admin › Setup times, each by its steps in the order they run:
+#: the sign-in pass (bootstrap pass 2, then the latest infra pass, with the
+#: saved Desktop client) and infra pass 3 (the GitHub App's ids). Neither has a
+#: measured usual length, so the page shows the time since `started_at`.
+TIMED_PASSES: dict[str, tuple[str, ...]] = {
+    "sign_in_pass": ("handoff.sign-in-bootstrap", "handoff.sign-in-infra"),
+    "infra_pass_3": ("github.pass-3",),
+}
+#: The `state.outputs` key the engine keeps the passes' times under.
+PASS_TIMES = "pass_times"
+#: Each pass's entry in `passes`: `started_at` when its first step began
+#: applying, then `ended_at` and `result` (the step's recorded state: done,
+#: failed or paused) once its last step is done or any step of it stops.
+PASS_FIELDS = frozenset({"started_at", "ended_at", "result"})
+
+
+def pass_of(step_id: str) -> str | None:
+    """The timed pass a step belongs to, or None."""
+    for name, steps in TIMED_PASSES.items():
+        if step_id in steps:
+            return name
+    return None
+
+
+def pass_started(times: Mapping[str, Any], step_id: str, now: float) -> dict[str, Any] | None:
+    """`times` with the step's pass started at `now`, or None when nothing
+    changes: the pass is already running (its first step is done and a later
+    one applies) or the step is in no timed pass. A pass's first step, or a
+    pass with no open start (never started, or ended), starts the clock again."""
+    name = pass_of(step_id)
+    if name is None:
+        return None
+    current = times.get(name) if isinstance(times.get(name), Mapping) else {}
+    running = bool(current.get("started_at")) and "ended_at" not in current
+    if running and step_id != TIMED_PASSES[name][0]:
+        return None
+    return {**times, name: {"started_at": now}}
+
+
+def pass_ended(times: Mapping[str, Any], step_id: str, state: str, now: float) -> dict[str, Any] | None:
+    """`times` with the step's pass ended at `now` as `state`, or None when
+    nothing changes: no open start, or a step that is not the pass's last
+    recorded done (the pass runs on)."""
+    name = pass_of(step_id)
+    if name is None:
+        return None
+    current = times.get(name) if isinstance(times.get(name), Mapping) else {}
+    if not current.get("started_at") or "ended_at" in current:
+        return None
+    if state == STEP_DONE and step_id != TIMED_PASSES[name][-1]:
+        return None
+    return {**times, name: {"started_at": current["started_at"], "ended_at": now, "result": state}}
+
+
+def _passes(value: Any) -> dict[str, dict[str, Any]] | None:
+    """`passes` from `state.outputs["pass_times"]`: only the timed passes and
+    their known fields; None before any of them started."""
+    if not isinstance(value, Mapping):
+        return None
+    passes = {name: {key: entry[key] for key in PASS_FIELDS if key in entry}
+              for name, entry in value.items() if name in TIMED_PASSES and isinstance(entry, Mapping)}
+    return passes or None
 
 
 def engine_document(env: str) -> str:
@@ -88,6 +195,11 @@ def engine_document(env: str) -> str:
 
 #: The console document holding the console's verification runs' ids.
 VERIFY_RUNS = "verify_runs"
+#: The console document holding a one-person install's personal workspace.
+PERSONAL = "personal"
+#: The console document holding the Desktop client the console's Sign-in
+#: client step saved.
+SIGN_IN_CLIENT = "sign_in_client"
 
 
 def console_document(env: str, name: str) -> str:
@@ -117,7 +229,7 @@ class DocumentStore(Protocol):
 class FirestoreDocuments:
     """`DocumentStore` on a real Firestore database."""
 
-    def __init__(self, project: str, *, database: str = "(default)", client: Any = None) -> None:
+    def __init__(self, project: str, *, database: str = DATABASE, client: Any = None) -> None:
         if client is None:
             from google.cloud import firestore  # lazy: no client at import time
 
@@ -146,6 +258,29 @@ class FirestoreDocuments:
             self._client.document(path).update(data, option=option)
         except (exceptions.FailedPrecondition, exceptions.NotFound) as exc:
             raise RecordConflict(path) from exc
+
+
+def _sizing(value: Any) -> dict[str, Any] | None:
+    """`state.outputs["sizing"]`, copied whole; None until stage 0 wrote it."""
+    return dict(value) if isinstance(value, Mapping) else None
+
+
+def _workspace_groups(value: Any) -> dict[str, str] | None:
+    """The first team's group from `state.outputs["workspace_groups"]`; None
+    before stage 8 recorded it, or with no team group (one person)."""
+    team = str(value.get("team") or "") if isinstance(value, Mapping) else ""
+    return {"team": team} if team else None
+
+
+def _sign_in_client(value: Any) -> dict[str, str] | None:
+    client = str(value or "")
+    return {"client_id": client} if client else None
+
+
+def open_record(project: str, env: str) -> InstallRecord:
+    """The install record of `env` in `project`'s swarm database, the one
+    place a verb builds it (no Firestore client before it is called)."""
+    return InstallRecord(env, FirestoreDocuments(project))
 
 
 def stages_of(state: InstallState, stage_of_step: Mapping[str, int]) -> list[dict[str, Any] | None]:
@@ -185,6 +320,11 @@ class InstallRecord:
             "lease": dict(lease) if lease is not None else None,
             "hand_off_at": state.hand_off_at,
             "ready_at": state.ready_at,
+            "sizing": _sizing(state.outputs.get("sizing")),
+            "installer": str(state.outputs.get("installer") or "") or None,
+            "workspace_groups": _workspace_groups(state.outputs.get("workspace_groups")),
+            "sign_in_client": _sign_in_client(state.outputs.get("iap_programmatic_client")),
+            "passes": _passes(state.outputs.get(PASS_TIMES)),
         }
         if verify is not None:
             unknown = set(verify) - VERIFY_FIELDS

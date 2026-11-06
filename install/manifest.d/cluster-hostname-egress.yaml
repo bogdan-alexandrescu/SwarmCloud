@@ -1,0 +1,31 @@
+# Lane CLUSTER-HOSTNAME-EGRESS (part of #2688): gke_enable_fqdn_network_policy,
+# the switch that lets SwarmCloud's own Autopilot cluster admit hostname-based
+# egress policy (FQDNNetworkPolicy). swarm-voice's policy in
+# kubernetes/network-policies/ fails closed without it. Default false; dev.tfvars
+# turns it on (owner decision 2026-11-01). Enabling it is an in-place cluster
+# update at no charge; disabling it again replaces the cluster.
+version: 1
+entries:
+- id: declared-value.gke-fqdn-network-policy
+  kind: declared-value
+  scope: core
+  stage: 5
+  provider: engine
+  step: infra.pass-1
+  check: gcloud container clusters describe ${name_prefix}-autopilot --project=$P --region=$R --format='value(networkConfig.enableFqdnNetworkPolicy)'
+  apply: terraform/infra/main.tf module.gke_autopilot enable_fqdn_network_policy = var.gke_enable_fqdn_network_policy -> terraform/modules/gke_autopilot/main.tf google_container_cluster.this.enable_fqdn_network_policy
+  verify: the describe above prints True where the environment's tfvars set gke_enable_fqdn_network_policy = true, and is empty or False where it is unset
+  explain: 'Hostname-based egress for swarm-voice. No charge: GKE''s release note of 2025-09-02 includes FQDN Network Policy in the GKE offering at no additional cost. In place: the google provider sends DesiredEnableFqdnNetworkPolicy in a cluster update; its ForceNewIfChange replaces the cluster only on true -> false.'
+  guards: never set it back to false on a cluster that has it on without planning a cluster rebuild; Dataplane V2 (datapath_provider ADVANCED_DATAPATH) is required and is already the module's fixed value
+  secret_entry: null
+  depends_on:
+  - cluster.autopilot
+  evidence:
+  - terraform/infra/variables.tf
+  - terraform/modules/gke_autopilot/variables.tf
+  - terraform/environments/dev/dev.tfvars
+  - tests/terraform/gke_fqdn_network_policy.tftest.hcl
+  notes: 'null'
+  refs:
+    variable:
+    - infra/gke_enable_fqdn_network_policy

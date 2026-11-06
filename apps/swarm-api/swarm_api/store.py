@@ -49,6 +49,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
@@ -81,6 +82,7 @@ from swarm_common.states import (
     can_transition,
 )
 from swarm_rollup import _TERMINAL_SEVERITY
+from swarm_rollup import settled_unpin
 
 from .codec import (
     attempt_from_dict,
@@ -103,7 +105,63 @@ from .executioncancel import ExecutionTarget
 log = logging.getLogger(__name__)
 
 TASKS = "tasks"
+
+#: Firestore's cap on the values of one `in` filter: `GET /v1/tasks?state=`
+#: names at most this many states in one request.
+STATE_IN_MAX = 30
+
+#: The task document fields `GET /v1/tasks?view=summary` never serves, so its
+#: read leaves them on the server (`Store.list_tasks(fields=...)`, #2688
+#: LOAD-SPEED): `result_summary` (the agent's own summary and artifact list,
+#: the bulk of a finished task's document) and the spec signature triple (the
+#: worker's to check, served by no route). `input` STAYS in the read although
+#: the summary row does not serve it: the task's masker learns from the input
+#: which literals are secret (`task_input.TaskMasking`) and masks them in
+#: `last_error`, the title and the rest of the summary row, so a summary read
+#: without it would serve a credential its input named.
+TASK_SUMMARY_UNREAD: tuple[str, ...] = (
+    "result_summary",
+    "spec_signature",
+    "spec_key_version",
+    "spec_format",
+)
+
+#: The `result_summary` keys a summary row DOES serve, as dotted paths, and
+#: nothing else of `result_summary`:
+#: * `browser_used` and `browser_use`: the codec lifts them out of the summary
+#:   (`codec.browser_use_to_api`, BROWSER-USE-FLAG #2322) so the Agents page's
+#:   list row carries the browser-use mark;
+#: * `cost_incomplete`: the worker's mark that a session's usage was not read,
+#:   so the attempts' cost is a floor. `attempt_totals.totals_for_page` folds
+#:   it from the task document into the row's `cost_incomplete`, so the
+#:   Overview and Agents rows draw "at least" (owner's pick, 2026-11-03,
+#:   part of #2688). Without this path the summary read never fetched it and
+#:   served such a total as complete.
+TASK_SUMMARY_NESTED: tuple[str, ...] = (
+    "result_summary.browser_used",
+    "result_summary.browser_use",
+    "result_summary.cost_incomplete",
+)
+
+#: The field paths a summary page reads: every `Task` field but the four
+#: above, plus the nested `result_summary` paths.
+TASK_SUMMARY_FIELDS: tuple[str, ...] = tuple(
+    f.name for f in dataclass_fields(Task) if f.name not in TASK_SUMMARY_UNREAD
+) + TASK_SUMMARY_NESTED
+
+
+def _state_values(state: TaskState | Sequence[TaskState] | None) -> list[str]:
+    """`list_tasks`' state filter as stored values, de-duplicated, in order."""
+    if state is None:
+        return []
+    if isinstance(state, TaskState):
+        return [state.value]
+    return list(dict.fromkeys(s.value for s in state))
 WORKFLOWS = "workflows"
+#: A field of the workflow DOCUMENT, beside the frozen `Workflow`'s (rule 1):
+#: the task ids a step re-run replaced (`Store.rerun_workflow_steps`). The
+#: scheduler reads the same name (`scheduler.store.SUPERSEDED_TASK_IDS`).
+SUPERSEDED_TASK_IDS = "superseded_task_ids"
 TENANTS = "tenants"
 #: The tenant document's wave-epic field (#638); see `Store.get_findings_epic`.
 TENANT_FINDINGS_EPIC = "findings_epic"
@@ -166,12 +224,19 @@ SETTINGS_DOC = "settings"
 #:                     "off until an admin sets one" (2026-10-26), and a
 #:                     ceiling alone limits nothing until a workspace or a
 #:                     step sets a budget. A malformed unit reads as unset.
+#:   jev_token_rates   Jev's price, `{input, output}` in USD per million
+#:                     tokens, that Capacity › Jev usage prices its calls at
+#:                     (`jevusage`, JEV-USAGE-PAGE). `{}`, no rate, by
+#:                     default: nobody has recorded Jev's price, so the page
+#:                     shows "rate not set" and blank dollars rather than an
+#:                     invented figure. A malformed unit reads as unset.
 PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {
     "merge_by_default": False,
     "max_additional_repositories": 5,
     "additional_repositories_budget_gib": 6,
     "model_prices": modelprices.SEED,
     "agent_budget_ceiling": {},
+    "jev_token_rates": {},
 }
 
 #: The accepted range of each integer setting, inclusive. A stored value
@@ -194,6 +259,11 @@ def _platform_setting(key: str, data: dict[str, Any]) -> Any:
         from .budget import ceiling_of  # lazy: budget imports auth, which imports this module
 
         return ceiling_of(data.get(key)).as_dict()
+    if key == "jev_token_rates":
+        from .jevusage import rates_of
+
+        rates = rates_of(data.get(key))
+        return {unit: rate for unit, rate in rates.items() if rate is not None}
     default = PLATFORM_SETTINGS_DEFAULTS[key]
     if key not in data:
         return default
@@ -1285,15 +1355,28 @@ class Store:
         self,
         tenant_id: str,
         *,
-        state: TaskState | None = None,
+        state: TaskState | Sequence[TaskState] | None = None,
         workflow_id: str | None = None,
         runner_profile: str | None = None,
         limit: int = 50,
         page_token: str | None = None,
         submitted_by: str | None,
         parent_task_id: str | None = None,
+        fields: Sequence[str] | None = None,
     ) -> Page:
         """One page of this tenant's tasks, newest first.
+
+        `state` is one state or several. Several are ONE query, `state IN
+        [...]` (at most `STATE_IN_MAX`, Firestore's cap on an `in`), served by
+        the same `tasks-tenant-state-created` index as one state: Firestore
+        plans an `in` on an indexed field as the equality it is a disjunction
+        of, so no index is added for it (#2688, LOAD-SPEED). One state is the
+        `==` it always was.
+
+        `fields` projects the read (`Query.select`): only those document
+        fields cross the wire, and every other field decodes as its default.
+        `view=summary` passes `TASK_SUMMARY_FIELDS`, which leaves out what a
+        summary row never serves.
 
         `submitted_by` is required, as on `get_task`: `None` reads every
         submitter's tasks; an email narrows the page to that submitter's. It is
@@ -1320,7 +1403,7 @@ class Store:
         """
         owner_in_query = (
             submitted_by is not None
-            and state is None
+            and not _state_values(state)
             and workflow_id is None
             and runner_profile is None
             and parent_task_id is None
@@ -1330,8 +1413,11 @@ class Store:
         )
         if owner_in_query:
             query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
-        if state is not None:
-            query = query.where(filter=FieldFilter("state", "==", state.value))
+        states = _state_values(state)
+        if len(states) == 1:
+            query = query.where(filter=FieldFilter("state", "==", states[0]))
+        elif states:
+            query = query.where(filter=FieldFilter("state", "in", states))
         if workflow_id is not None:
             query = query.where(filter=FieldFilter("workflow_id", "==", workflow_id))
         if runner_profile is not None:
@@ -1340,6 +1426,8 @@ class Store:
             # A parent's children (contract request 14), served by the
             # `tasks-tenant-parent-created` composite index.
             query = query.where(filter=FieldFilter("parent_task_id", "==", parent_task_id))
+        if fields is not None:
+            query = query.select(list(fields))
         page = self._keyset_page(
             query,
             field="created_at",
@@ -1356,6 +1444,69 @@ class Store:
                 next_page_token=page.next_page_token,
             )
         return page
+
+    def notification_tasks(
+        self,
+        tenant_id: str,
+        *,
+        state: TaskState | None = None,
+        submitted_by: str | None,
+        limit: int,
+        fields: Sequence[str] | None = None,
+    ) -> list[Task]:
+        """This tenant's newest `limit` tasks for the notification feed: ONE
+        query, never paged (lane LOAD-SPEED-NOTIFICATIONS, part of #2688).
+
+        The feed reads a window, not a history, so it has no cursor and none
+        of `_keyset_page`'s run reads. `submitted_by` is applied IN the query,
+        also beside `state`, so 200 rows are 200 of the person's, not 200 of
+        the tenant's filtered after: served by tasks-tenant-submitter-created
+        (no state) and tasks-tenant-submitter-state-created (with one), and
+        without a submitter by tasks-tenant-created / tasks-tenant-state-created.
+        `fields` projects the documents (`Query.select`) to what the feed's
+        items use; the decoder's required fields must be among them.
+
+        UNTIL THE FOUR-FIELD INDEX IS BUILT (the release applies it, and an
+        index builds for minutes after the apply) Firestore refuses the query
+        with FailedPrecondition; it is then read as it was before that index,
+        the tenant's newest `limit` in `state`, and narrowed to the submitter
+        after, so a deploy that lands first serves the bell, not a partial one.
+        """
+        try:
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=True)
+        except gexc.FailedPrecondition:
+            if state is None or submitted_by is None:
+                raise
+            log.warning("notification_tasks: tasks-tenant-submitter-state-created not ready; "
+                        "the submitter is filtered after the read")
+            return self._notification_tasks(tenant_id, state=state, submitted_by=submitted_by,
+                                            limit=limit, fields=fields, owner_in_query=False)
+
+    def _notification_tasks(self, tenant_id: str, *, state: TaskState | None,
+                            submitted_by: str | None, limit: int,
+                            fields: Sequence[str] | None, owner_in_query: bool) -> list[Task]:
+        query = self._db.collection(TASKS).where(
+            filter=FieldFilter("tenant_id", "==", tenant_id)
+        )
+        if submitted_by is not None and owner_in_query:
+            query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
+        if state is not None:
+            query = query.where(filter=FieldFilter("state", "==", state.value))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING).limit(limit)
+        # The unit tests' in-memory Firestore has no projection; Firestore's
+        # own query always has `select`, so production always projects.
+        select = getattr(query, "select", None) if fields else None
+        if select is not None:
+            query = select(list(fields))
+        tasks = []
+        for snap in query.stream():
+            task = task_from_dict(snap.to_dict() or {})
+            if task.tenant_id != tenant_id or (state is not None and task.state != state) \
+                    or (submitted_by is not None and task.submitted_by != submitted_by):
+                continue
+            tasks.append(task)
+        return tasks
 
     def list_failures(self, *, limit: int = 50, page_token: str | None = None) -> Page:
         """One page of FAILED tasks across EVERY tenant, newest first (U19).
@@ -1677,6 +1828,7 @@ class Store:
         limit: int = 200,
         page_token: str | None = None,
         descending: bool = False,
+        task: Task | None = None,
     ) -> Page:
         """One page of a task's events, oldest first unless `descending`.
 
@@ -1692,8 +1844,14 @@ class Store:
         `event_id`) -- made explicit, not changed.
 
         `descending` is the end of the run in one request.
+
+        `task` is the task a caller has ALREADY read inside this tenant (the
+        events route reads it for its masker): the tenant check is then made
+        on it rather than by reading the same document a second time, a round
+        trip on every page (#2688, WORK-READS-SPEED).
         """
-        self.get_task(tenant_id, task_id, submitted_by=None)  # tenant check before any read
+        if task is None or task.id != task_id or task.tenant_id != tenant_id:
+            self.get_task(tenant_id, task_id, submitted_by=None)  # tenant check before any read
         order = "desc" if descending else "asc"
         # Bound to the task: a token from another task's history would be a
         # timestamp that means nothing here, served as though it did.
@@ -1711,6 +1869,24 @@ class Store:
                 scope=scope, order=order, at=at, doc_id=doc_id
             ),
         )
+
+    def newest_events(self, task: Task, *, limit: int) -> list[TaskEvent]:
+        """The newest `limit` events of `task`, newest first.
+
+        For a route that reads MANY tasks' heads at once (`GET
+        /v1/tasks/digests`): `task` was read inside its tenant by the caller, in
+        one batched read for all of them, so there is no per-task tenant read
+        here. The same query `list_events(descending=True)` makes for its first
+        page, served by the same single-field index.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .document(task.id)
+            .collection(EVENTS)
+            .order_by("at", direction=firestore.Query.DESCENDING)
+            .limit(limit)
+        )
+        return [event_from_dict(snap.to_dict()) for snap in query.stream()]
 
     @staticmethod
     def artifact_manifest(task: Task) -> "ArtifactManifest":
@@ -2040,7 +2216,9 @@ class Store:
     def set_workflow_state(self, workflow_id: str, state: TaskState) -> None:
         """Write the derived state onto the workflow document.
 
-        The ONLY writer of `workflow.state` after `create_workflow`. It takes a
+        The read paths' and the sweep's writer of `workflow.state` after
+        `create_workflow`; the API's step transitions write it in their own
+        transaction through `rollup.derived_state_write` (#2838). It takes a
         `TaskState`, not a string, so nothing can put `"UNKNOWN"` in a field that
         `workflow_from_dict` decodes with `TaskState(...)` and would then raise on
         for every subsequent read.
@@ -2050,12 +2228,110 @@ class Store:
         never does -- QUEUED straight to RUNNING when the first step is admitted,
         or RUNNING back to PARKED when the last live step parks on quota. Running
         the task machine over it would reject the truth.
+
+        A terminal state clears the workflow's graph pins in the same write
+        (`swarm_rollup.settled_unpin`, #3116).
         """
         (
             self._db.collection(WORKFLOWS)
             .document(workflow_id)
-            .update({"state": state.value, "updated_at": self._now()})
+            .update({"state": state.value, "updated_at": self._now(), **settled_unpin(state)})
         )
+
+    def rerun_workflow_steps(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        replaced: dict[str, str],
+        tasks: Sequence[Task],
+        by: str,
+        tenant_member: str = "",
+    ) -> None:
+        """Write a step re-run's new tasks and point their steps at them, in
+        ONE transaction (`swarm_api.steprerun`).
+
+        `replaced` is step id -> the task id the re-run read for it; `tasks`
+        are the new tasks, signed, each carrying its step id. Inside the
+        transaction, before any write, the workflow is read again and refused
+        409 (`detail.reason` `step_rerun_raced`) unless it is still this tenant's, not cancelled,
+        every replaced step still points at the task the re-run read, and
+        every step's task is terminal -- so two Retries of one step write one
+        set of tasks, and a cancel or a re-run that landed first wins. The
+        old tasks are not written: a FAILED task stays FAILED. The workflow's
+        stored state is set to QUEUED, which is what its new steps derive.
+        """
+        from .steprerun import raced as rerun_raced
+
+        wf_ref = self._db.collection(WORKFLOWS).document(workflow_id)
+        now = self._now()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(wf_ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                raise NotFound(f"workflow {workflow_id!r} not found")
+            workflow = workflow_from_dict(data)
+            pointers = {s.step_id: s.task_id for s in workflow.steps}
+            raced = workflow.cancel_requested or any(
+                pointers.get(step_id) != old for step_id, old in replaced.items()
+            )
+            if not raced:
+                for task_id in (t for t in pointers.values() if t):
+                    task_snap = _snapshot(txn.get(self._db.collection(TASKS).document(task_id)))
+                    state = (task_snap.to_dict() or {}).get("state") if task_snap.exists else None
+                    if state not in {s.value for s in TERMINAL_STATES}:
+                        raced = True
+                        break
+            if raced:
+                raise rerun_raced(workflow_id)
+            new_by_step = {t.step_id: t.id for t in tasks}
+            for task in tasks:
+                ref = self._db.collection(TASKS).document(task.id)
+                txn.set(ref, task_to_firestore(task))
+                event = TaskEvent(
+                    event_id=new_id("ev"),
+                    task_id=task.id,
+                    tenant_id=task.tenant_id,
+                    type=EventType.SUBMITTED,
+                    at=now,
+                    detail=_with_tenant_member(
+                        {
+                            "runner_profile": task.runner_profile,
+                            "resource_class": task.resource_class,
+                            "state": task.state.value,
+                            "workflow_id": task.workflow_id,
+                            "submitted_by": task.submitted_by,
+                            "rerun_of": replaced.get(task.step_id or ""),
+                            "rerun_by": by,
+                        },
+                        tenant_member,
+                    ),
+                )
+                txn.set(ref.collection(EVENTS).document(event.event_id),
+                        event_to_firestore(event))
+            for step in workflow.steps:
+                if step.step_id in new_by_step:
+                    step.task_id = new_by_step[step.step_id]
+            # The fields this write owns and nothing else: the document holds
+            # fields beside the frozen `Workflow`'s, which a whole `set` of
+            # `workflow_to_firestore` would drop. `superseded_task_ids` is the
+            # old tasks: they still name this workflow, and the scheduler's
+            # `fail_workflow` verdict, which finds failed steps by a query on
+            # `workflow_id`, leaves them out (`scheduler.loop.
+            # read_workflow_failure`) -- else the old FAILED task would sweep
+            # the new ones away on the next drain.
+            superseded = [str(t) for t in (data.get(SUPERSEDED_TASK_IDS) or []) if t]
+            superseded += [old for old in replaced.values() if old not in superseded]
+            txn.update(wf_ref, {
+                "steps": workflow_to_firestore(workflow)["steps"],
+                "state": TaskState.QUEUED.value,
+                "updated_at": now,
+                SUPERSEDED_TASK_IDS: superseded,
+            })
+
+        _apply(self._db.transaction())
 
     def cancel_workflow(
         self,
@@ -2588,6 +2864,17 @@ class Store:
             ceiling = changes["agent_budget_ceiling"]
             changes = {**changes, "agent_budget_ceiling": {
                 unit: ceiling.get(unit) for unit in ("usd", "tokens")}}
+        if "jev_token_rates" in changes:
+            from .jevusage import rate_problem
+
+            why = rate_problem(changes["jev_token_rates"])
+            if why is not None:
+                raise ValueError(why)
+            # Both units, the one not named as null, for the reason above:
+            # the rate is replaced whole, so `{}` clears it.
+            rates = changes["jev_token_rates"]
+            changes = {**changes, "jev_token_rates": {
+                unit: rates.get(unit) for unit in ("input", "output")}}
         payload = {**changes, "updated_at": self._now(), "updated_by": by}
         self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
         return self.get_platform_settings()

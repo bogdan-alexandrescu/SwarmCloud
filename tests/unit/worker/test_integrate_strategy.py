@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from agent_worker.gitops import merge_branches
+from test_strategy_end_to_end import _the_fence_holds  # noqa: F401 -- fixture
 
 
 # -- the dispatch block, read in full ---------------------------------------
@@ -403,7 +404,7 @@ def _publish(worker_factory, tmp_path, monkeypatch, dispatch, *, opened):
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = {"task_id": config.task_id, "metadata": {"dispatch": dispatch}}
     worker._repo_url = "https://github.com/acme/widgets.git"
-    monkeypatch.setattr(worker, "_git_token", lambda: "t")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "t")
     return worker._publish_git(repo=tmp_path, work_head="abc123", publish=True)
 
 

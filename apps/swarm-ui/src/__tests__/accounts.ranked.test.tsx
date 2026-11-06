@@ -204,7 +204,9 @@ describe('the verdict', () => {
     expect(verdict.textContent).toContain('and 1 later step waits on them')
     expect(verdict.querySelector('a')?.getAttribute('href')).toBe('#work/running/waiting')
     expect(document.body.textContent).not.toMatch(/\bavailable\b/)
-    expect(screen.getByText(/Floors:/).textContent).toContain('7-day 5% left')
+    // The floors are the (i)'s description beside the verdict (no prose on the surface, 2026-11-05).
+    const rule = screen.getByRole('button', { name: 'About which accounts can take a new agent' })
+    expect(document.getElementById(rule.getAttribute('aria-describedby')!)?.textContent).toContain('7-day 5% left')
   })
 
   it('says a failed waiting read as a dash with its reason, never 0', async () => {
@@ -316,6 +318,33 @@ describe('one subscription twice', () => {
     expect(duplicatePairs([foreign]).map((p) => p.other)).toEqual([null])
   })
 
+  it('says why it is withheld and which kind of identity matched, never its value (#3046)', () => {
+    const extra = acct('team', {
+      can_take_new_agent: false,
+      blocked_by: [{
+        duplicate_of: 'eng:home-personal',
+        reason: 'registered on the same organisation and seat as eng:home-personal',
+        matched_on: 'organisation_and_seat',
+      }],
+      duplicate_of: 'eng:home-personal',
+    })
+    const names = new Map([['eng:home-personal', 'home-personal']])
+    const { container } = render(<>{tableModule.whyOf(extra, 'eng', Date.now(), names)}</>)
+    expect(container.textContent).toBe(
+      'One subscription twice: registered on the same organisation and seat as home-personal ' +
+        '(matched on the provider’s organisation and seat). The pool hands out only the other',
+    )
+    // An older broker's block, with no `matched_on`, still reads as it did.
+    const old = acct('team', {
+      can_take_new_agent: false,
+      blocked_by: [{ duplicate_of: 'eng:home-personal', reason: 'registered on the same organisation as eng:home-personal' }],
+    })
+    const { container: was } = render(<>{tableModule.whyOf(old, 'eng', Date.now(), names)}</>)
+    expect(was.textContent).toBe(
+      'One subscription twice: registered on the same organisation as home-personal. The pool hands out only the other',
+    )
+  })
+
   it('draws the banner with what to do', async () => {
     api.loadTasksInState.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     const foreign = acct('lone', {
@@ -334,7 +363,8 @@ describe('one subscription twice', () => {
       WAIT,
     )
     const box = banner.closest('.acct-dup') as HTMLElement
-    expect(box.textContent).toContain('To fix it:')
+    const why = box.querySelector('button.acct-i')!.getAttribute('aria-describedby')!
+    expect(document.getElementById(why)?.textContent).toContain('To fix it:')
     expect(screen.getByRole('button', { name: 'Open lone' })).toBeTruthy()
     // Mock-up A's second action: the fix the banner names, one click away.
     expect(within(box).getByRole('button', { name: 'Replace the credential' })).toBeTruthy()

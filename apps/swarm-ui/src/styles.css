@@ -489,6 +489,13 @@ body {
    on the next step's --sk-acs band (2.89:1 dark, 2.96:1 light) that no browser
    draws. Restated here, after the floor, for that one button only. */
 .ob-step.is-next .c-btn.is-ghost { border-color: transparent; }
+/* A plain button on that band (Admin › Setup's Invite and "Run the console
+   checks", DAYONE-SETUP-UI-4): --ctl-bd on --sk-acs is 2.89:1 dark, 2.96:1
+   light, under 3:1 in every browser, not only jsdom. The Config lead's
+   10%-toward---text mix below, for the same tint: 3.49:1 dark, 3.47:1 light. */
+.ob-step.is-next .c-btn:not(.is-primary):not(.is-ghost):not(.is-danger):not(.is-danger-filled):not(:disabled):not([aria-disabled='true']) {
+  border-color: color-mix(in srgb, var(--ctl-bd) 90%, var(--text));
+}
 
 /* THE CONFIG LEAD'S BUTTONS (CONFIG-LEAD-TINT; part of #2157). config.css
    draws every Config page's lead (`.ac-lead`) on the --sk-acs info tint, where
@@ -504,6 +511,19 @@ body {
   border-color: color-mix(in srgb, var(--ctl-bd) 90%, var(--text));
 }
 .ac-lead .c-btn.is-primary:not(:disabled):not([aria-disabled='true']) { border-color: var(--sk-ac); }
+/* The lead title's (i) (`InfoTip`, a small ghost icon button; GitHub access's
+   failed-step lead): the same source-order tie as `.ob-step.is-next` above,
+   so the sweep graded a --ctl-bd border on --sk-acs (2.89:1 dark) that no
+   browser draws. The ghost's own transparent edge, restated after the floor. */
+.ac-lead .c-btn.is-ghost { border-color: transparent; }
+
+/* The sign-in callout's "Sign in again" buttons (Capacity › Accounts,
+   `Broken`): --ctl-bd on the callout's --s-warnb tint is 2.74:1 dark, under
+   3:1. The Config lead's 10%-toward---text mix above, for this tint: 3.30:1
+   dark, 3.56:1 light (spacing.accounts). */
+.acct-callout .c-btn:not(.is-primary):not(.is-ghost):not(.is-danger):not(.is-danger-filled):not(:disabled):not([aria-disabled='true']) {
+  border-color: color-mix(in srgb, var(--ctl-bd) 90%, var(--text));
+}
 
 /* The same tie for the one button of an Admin page's lead (ADMIN-LEADS,
    AdminSettings.tsx `AdminLead`, styles/admin.css `.adm-lead`). The primary's
@@ -1665,6 +1685,19 @@ body {
    the other way. It resolves per theme for free, because the mix is expressed
    in `--surface` and `--bg` and those are the tokens the theme swaps. */
 :root { --wf-body-bg: color-mix(in srgb, var(--surface) 55%, var(--bg)); }
+/* VOICE IT, TALK (styles/talk-pane.css): the pane's glass, its line, the
+   ring's desktop size and the level bar's resting fill. On `:root` for the
+   reason `--wf-body-bg` is: the probe reads `:root` tokens only, and a section
+   sheet declares none. The glass is a console token mixed with transparency,
+   so it follows the theme the way `--wf-body-bg` does. `--vt-level` is
+   overwritten on the bar itself as the voice moves (voice/Scope.tsx). */
+:root {
+  --vt-glass: color-mix(in srgb, var(--surface) 70%, transparent);
+  --vt-glass-dim: color-mix(in srgb, var(--surface) 52%, transparent);
+  --vt-glass-line: color-mix(in srgb, var(--info) 22%, var(--line));
+  --vt-ring: 340px;
+  --vt-level: 0%;
+}
 /* It SCROLLS rather than shrinking, and WHICH GRAPHS SCROLL HAS INVERTED WITH
    THE AXIS. Left to right, depth made a graph wide, so a chain -- the commonest
    shape in this product -- was the one that always scrolled. Top to bottom, a
@@ -2513,6 +2546,63 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 /* ------------------------------------------------------------------------ */
 /* Agents screen (Screen A)                                                  */
 /* ------------------------------------------------------------------------ */
+
+/* THE AGENTS PAGE IN THE WORK SECTION'S DOCKED INSPECTOR (the owner's pick of
+   2026-11-03, the Graph Work redesign; Agents.tsx, work/inspectorShell.css).
+   With the wall or an open agent docked the two panes are one viewport tall,
+   the screen's own header in the left pane, each scrolling on its own, so the
+   list never moves. Alone -- no browser live and no agent open -- the list
+   scrolls with the page as it did. */
+.wi[data-screen='agents'].is-alone { height: auto; min-height: 0; }
+.wi[data-screen='agents'].is-alone > .wi-main { overflow: visible; }
+.wi[data-screen='agents'] > .wi-main > .ny { margin-bottom: var(--ctl-s2); }
+/* The wall: every live browser's still, two a row at the inspector's resting width. */
+.ag-wall { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.ag-wall-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); }
+.ag-wall-grid { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--ctl-s2); min-width: 0; }
+.ag-wall-card { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm, 6px); padding: var(--ctl-s1); background: var(--surface); }
+.ag-wall-card.is-your-turn { border-color: var(--warn); }
+.ag-wall-open { display: flex; align-items: center; gap: var(--ctl-s1); min-width: 0; border: 0; background: none; padding: 0; font: inherit; color: var(--text); cursor: pointer; text-align: left; }
+.ag-wall-open:hover .ag-wall-name { text-decoration: underline; }
+.ag-wall-open:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.ag-wall-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: var(--t-meta); }
+.ag-wall-card .wf-live { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ag-wall-card .wf-live-head, .ag-wall-card .wf-live-links { font-size: var(--t-micro); min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--ctl-s1); }
+.ag-wall-card .wf-live-thumb { display: block; width: 100%; aspect-ratio: 16 / 10; height: auto; background: var(--surface-2); border-radius: 4px; }
+.ag-wall-count { white-space: nowrap; }
+/* On a phone the wall is a sheet, opened from this one button over the list. */
+.ag-wall-phone { display: block; margin: 0 0 var(--ctl-s2); border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); padding: var(--ctl-s1) var(--ctl-s2); cursor: pointer; max-width: 100%; }
+/* The row's cost and pull request: their own cell under the time, right-aligned as the design's columns are;
+   muted when not known, never drawn as $0. The link sits above the row's opener (`.cr-open`). */
+.wi[data-screen='agents'] .row.is-compact > .cr-sub { grid-column: name; }
+.wi[data-screen='agents'] .row.is-compact > .when { justify-self: end; }
+.row.is-compact > .cr-figs { grid-column: age; justify-self: end; white-space: nowrap; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.row.is-compact > .cr-figs:empty { display: none; }
+.cr-figs a.cr-pr { position: relative; z-index: 1; }
+.cr-cost, .cr-pr { white-space: nowrap; }
+.cr-cost.is-unknown, .cr-pr.is-unknown { color: var(--text-faint); }
+/* AN OPEN AGENT IN THE INSPECTOR (the owner's pick on #3146, "Host it in the inspector"; work/hostedAgent.ts). The
+   agent's view (`.ag-split.is-hosted`) is the inspector's body, not the fixed overlay or grid column `.drawer` and
+   `.app.has-inspector` make it elsewhere: it fills the dock, the inspector's handle sizes it and its fold folds it, and
+   on a phone the inspector's sheet is the page. Its tab strip and panes keep their own scrolling inside it. */
+.wi[data-screen='agents'] > .wi-dock:has(> .wi-body > .ag-split.is-hosted) { overflow: hidden; }
+.wi[data-screen='agents'] .wi-body:has(> .ag-split.is-hosted) { padding-bottom: 0; min-height: 0; }
+.wi[data-screen='agents'] .wi-body > .ag-split.ctl-drawer.is-hosted {
+  position: static;
+  inset: auto;
+  width: auto;
+  height: auto;
+  max-height: none;
+  flex: 1 1 0;
+  min-height: 0;
+  z-index: auto;
+  border: 0;
+  box-shadow: none;
+  padding-left: 0;
+  padding-right: 0;
+}
+/* Beside the list there is nothing to go back to; on the phone sheet the agent's own back link names the list. */
+.wi[data-screen='agents']:not(.is-sheet) .ag-split.is-hosted > .ctl-agent-back { display: none; }
 
 /* `.filters` IS GONE FROM HERE AND FROM THE NAV BLOCK. It was two unrelated
    rule families 1,300 lines apart -- pill buttons up there, a label-and-select
@@ -9446,6 +9536,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   position: sticky; top: var(--ctl-s3);
   max-height: calc(100vh - var(--ctl-s3) * 2);
   overflow-y: auto; overscroll-behavior: contain;
+  /* Above every layer the canvas paints (the cards at auto, `.node-stop` at
+     2, the sticky rail and a focused card's full note at 3): at `auto` those
+     numbered layers drew over the panel wherever the two met (#2688, the
+     owner's browser at 1280-1512, 2026-11-02). Below the 35 of the phone's
+     bottom sheet and of the console's own overlays. */
+  z-index: 4;
 }
 .wf-panel:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .wf-panel > .wf-inspect { margin-top: 0; }
@@ -11323,72 +11419,15 @@ span.sk-ttile { cursor: default; }
 .node-line > .wf-mk { align-self: center; }
 .wf-mk { display: inline-flex; }
 
-/* The list, full width (workflows.html A). */
-.wfl { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
-.wfl-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
-.wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
-.wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
-/* AT A PHONE EACH PICK TAKES ITS OWN ROW AND SHRINKS TO IT (QA G3-14): the
-   owner select was 424px in a 354px column and pushed `.app` to 440px in a
-   386px viewport. The options print the name before the @, so the widest is
-   short; this holds whatever an option says. */
-/* AND THE STACKED SELECTS SHARE ONE LEFT EDGE (visual QA QA-097, 2026-10-20):
-   as a flex row each select started after its own label -- 57, 56 and 44 px
-   for owner, profile and sort -- so the three made a ragged edge. The label
-   word sits in a fixed track wide enough for "profile", the widest of them. */
-@media (max-width: 560px) {
-  .wfl-pick { flex: 1 1 100%; min-width: 0; max-width: 100%; display: grid; grid-template-columns: 4.5em minmax(0, 1fr); }
-  .wfl-pick select { flex: 1 1 auto; min-width: 0; max-width: 100%; width: 100%; }
-  /* AND THE STATE FILTER RUNS THE COLUMN WIDE (visual QA run 2, work-a-012,
-     2026-10-20): the shared `.c-seg` is `flex: none`, so it stopped 20-60px
-     short of the edge the search box and these selects reach. Its segments
-     already grow (components.css); their labels sit in the middle. */
-  .wfl-filters > .c-seg.wfl-seg { flex: 1 1 100%; }
-  .wfl-filters > .c-seg.wfl-seg > button { justify-content: center; }
-}
-.wfl-scroll { overflow-x: auto; }
-.wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
-.wfl-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.wfl-table td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
-.wfl-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-/* THE HELD STATE CELL KEEPS THE ROW'S TINT (V101, #1038). Below 900px the
-   list's first column is held by the `.is-scroll` rule, which paints the held
-   body cell `--surface` so the cells scrolling under it do not show through --
-   and at three classes and four elements it beat this rule, so a failed row
-   was red everywhere but the one cell that says "failed". `--s-badb` is
-   opaque in both themes, so the held cell paints it instead and still covers
-   what scrolls beneath. */
-.wfl-row.is-failed td,
-.is-scroll > table > tbody > tr.wfl-row.is-failed > td:first-child:not([colspan]) { background: var(--s-badb); }
-/* THE LIST'S HEAD ROW IS FILLED ON `thead`, AS EVERY `.ctl-table` HEAD IS
-   (#178). The held corner below 900px paints `--surface-2` -- it must, or the
-   head labels scrolling under it show through -- and with nothing on this
-   head the corner was the one tinted cell in a white row (V101). The head is
-   the corner's colour now, at every width, and no head cell paints its own. */
-.wfl-table thead { background: var(--surface-2); }
-/* THE NAME CELL IS A TABLE CELL (browser QA N8, 2026-10-04). It was a flex
-   column, which takes a <td> out of the table: the browser wrapped it in an
-   anonymous cell and its own box was 37px in a 56px row, so its bottom border
-   floated ~20px above the row's. Its pieces stack as blocks instead. */
-.wfl-name { min-width: 14em; }
-/* The name, its id and its runners are one line (`.wfl-line`, styles/workflows.css; VQ-013). */
-.wfl-name > .wfl-why { display: block; }
-.wfl-name > * + * { margin-top: 2px; }
+/* The list's why line, done count and notes. Its rows, table and filters are
+   `.wfg`, below; the old `.wfl` table's rules went with it (owner, 2026-11-04). */
 .wfl-why { font-size: var(--t-micro); color: var(--text-dim); }
 .wfl-why.is-bad { color: var(--s-bad); }
 .wfl-why.is-warn { color: var(--s-warn); }
 .wfl-done { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
-.wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
-.wfl-submitted { color: var(--text-dim); white-space: nowrap; }
-.wfl-dur { white-space: nowrap; }
-.wfl-dur.is-absent { color: var(--text-faint); }
-.wfl-filters select:disabled,
-.wfl-filters input:disabled,
-.wfl-seg button:disabled { cursor: progress; }
 /* THE LIST'S LOADING BARS (#113). The shared `.skeleton` is a full-width
    38px row; these are line-height bars inside the real cells. They take the
    same contrast step as `.skeleton` -- `--text-faint` mixed into the card's
@@ -11413,7 +11452,6 @@ span.sk-ttile { cursor: default; }
   animation: ctl-sweep 1.4s linear infinite;
 }
 .wfl-skel.is-sub { height: var(--t-micro); }
-.wfl-table .num .wfl-skel { margin-left: auto; }
 @media (prefers-reduced-motion: reduce) {
   .wfl-skel { animation: none; }
 }
@@ -11428,6 +11466,97 @@ span.sk-ttile { cursor: default; }
 .wfp-confirm-do { display: flex; flex-wrap: wrap; gap: 8px; }
 .wfp-steps { display: flex; flex-direction: column; gap: 6px; margin-top: var(--ctl-gutter); }
 .wfp-missing { color: var(--text-dim); }
+
+/* One workflow's page as two panes (the Graph Work redesign, graph-workflow-*):
+   the head, the Needs-you row, the view switch and the view on the left, the
+   Overview or the picked step in the docked inspector (work/Inspector.tsx).
+   Every row wraps and every strip scrolls inside its own box, so nothing is
+   wider than the viewport at 390. */
+.wfp-main { gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
+.wfp > .wfp-head.wfp-top { display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px; min-width: 0; }
+.wfp-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; font-size: var(--t-body); color: var(--text); }
+.wfp-fig { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wfp-tally { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 0; font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.wfp-t { white-space: nowrap; }
+.wfp-t.is-running { color: var(--s-live); }
+.wfp-t.is-done { color: var(--ok-ink); }
+.wfp-t.is-failed { color: var(--bad-ink); }
+.wfp-t.is-unknown { color: var(--warn-ink); }
+.wfp-viewbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.wfp-viewbar > .wfp-marks { display: inline-flex; flex-wrap: wrap; gap: var(--ctl-s1); }
+.wfp-merge { display: flex; flex-direction: column; gap: 4px; }
+.wfp-merge-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font-size: var(--t-meta); min-width: 0; }
+.wfp-merge-row.is-held { border-color: color-mix(in srgb, var(--s-park) 55%, transparent); }
+.wfp-merge-state { color: var(--text-dim); }
+.wfp-merge-row.is-held .wfp-merge-state { color: var(--s-park); font-weight: 600; }
+.wfp-merge-title { min-width: 0; overflow-wrap: anywhere; }
+.wfp-merge-why { flex: 1 1 14em; min-width: 0; color: var(--text-dim); overflow-wrap: anywhere; }
+.wfp-live { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wfp-live-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 0; font-size: var(--t-meta); font-weight: 600; color: var(--text); }
+.wfp-live-n { font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.wfp-live-hint { font-weight: 400; color: var(--text-dim); }
+.wfp-live-row { display: flex; gap: var(--ctl-s2); overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
+.wfp-still { display: flex; flex-direction: column; gap: 2px; flex: 0 0 11em; min-width: 0; padding: 4px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.wfp-still.is-named { flex-basis: auto; }
+.wfp-still.is-picked { border-color: var(--info); box-shadow: 0 0 0 1px var(--info); }
+.wfp-still-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-size: var(--t-meta); }
+.wfp-still-time { font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.wfp-walk { display: inline-flex; gap: 2px; min-width: 0; }
+/* A walk button carries its stage's name, so it is as wide as its words (the
+   inspector's 28px square cut "Stage 2" to "Stag" over the fold button), up
+   to a cap past which the name ellipses; on a phone the arrow alone. */
+.wfp-walk .wi-btn { display: inline-flex; align-items: center; width: auto; min-width: 28px; max-width: 10em; padding: 0 6px; white-space: nowrap; overflow: hidden; }
+.wfp-walk-to { margin-left: 2px; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-meta); }
+@media (max-width: 759px) {
+  .wfp-walk-to { display: none; }
+}
+/* THE PICKED STEP'S AGENT IN THE INSPECTOR (Workflows.tsx `StepAgent`): the
+   Agents split's own view, in the inspector's flow under the step's card.
+   `.drawer` is a fixed overlay and the split a grid column beside the
+   Agents list; here it is neither. Sticky with no offset, so it sits in flow
+   and `isOverlay` (focus.ts) reads it as a column, not a modal: it takes no
+   focus on open and holds no Tab. No list to resize or go back to, so no
+   divider and no back link; the inspector's own close and walk stay. */
+.wfp-agent { min-width: 0; }
+.wfp-agent > .ag-split.ctl-drawer {
+  position: sticky;
+  top: auto; right: auto; bottom: auto;
+  width: auto;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  border-left: none;
+  box-shadow: none;
+  z-index: auto;
+}
+.wfp-agent > .ag-split > .ag-divider,
+.wfp-agent > .ag-split > .ctl-agent-back { display: none; }
+/* ONE STOP AND ONE CLOSE FOR THE STEP: the step's card above carries Stop
+   (it knows the workflow and what stopping the step does to its dependants)
+   and the inspector's head carries ✕, so the agent header's own two step
+   aside; Copy link and Take control stay. */
+.wfp-agent .ag-head-stop,
+.wfp-agent .ag-head-close { display: none; }
+.wfp-agent > .ag-split > .ag-split-pane { flex: none; overflow: visible; }
+/* A log, a patch and a browser fill the height they are given: in the
+   inspector's scroll that is most of the viewport. */
+.wfp-agent > .ag-split > .ag-split-pane.is-logs,
+.wfp-agent > .ag-split > .ag-split-pane.is-changes,
+.wfp-agent > .ag-split > .ag-split-pane.is-browser { height: 70vh; }
+.wfp-step-state { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-meta); color: var(--text-dim); }
+.wfp-ov { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; font-size: var(--t-meta); }
+.wfp-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+.wfp-dl > dt { color: var(--text-dim); }
+.wfp-dl > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.wfp-dim { color: var(--text-dim); }
+.wfp-details > summary { cursor: pointer; color: var(--text); }
+.wfp-details > p { margin: 4px 0 0; color: var(--text-dim); }
+.wfp-ov > .wfp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+@media (max-width: 720px) {
+  .wfp-dl { grid-template-columns: minmax(0, 1fr); }
+  .wfp-dl > dd { margin-bottom: 4px; }
+}
 
 /* The Recent (5) switcher under Workflows in the panel (workflows.html C). */
 .sk-recent-h { padding: 2px 10px; font-size: var(--t-micro); color: var(--text-faint); }
@@ -11540,13 +11669,8 @@ span.sk-ttile { cursor: default; }
    (lane U1, 2026-10-02), imported by Agents.tsx and AgentSplit.tsx. */
 /* (Agents rules go above this line.) */
 
-/* PHONE ROWS AND TABLES KEEP WHAT TELLS ROWS APART (#109).
-   The workflow list scrolls sideways at 390, so its done, failed and age
-   columns are off the right edge; `.wfl-phone` carries them under the name
-   there (`phoneSummary`), and is not drawn wide, where the cells say it. */
-.wfl-phone { display: none; }
+/* PHONE TABLES KEEP WHAT TELLS ROWS APART (#109). */
 @media (max-width: 560px) {
-  .wfl-phone { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
   /* THE STEP TABLE KEEPS WHAT COMPARES ROWS. Runner and inputs are the two
      columns a reader does not sort by; both are on the step's inspector one
      tap away. The step column is held by the `.is-scroll` rule (≤899). */
@@ -11571,3 +11695,173 @@ span.sk-ttile { cursor: default; }
 .wya-name b { font-weight: 600; overflow-wrap: anywhere; }
 .wya-name small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wya-links { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: var(--t-meta); }
+
+/* ---------------------------------------------------------------------------
+   THE WORKFLOWS LIST (the picked Work redesign, "Graph with a docked
+   inspector", frame graph-workflows-rest; part of #2688). The left pane of the
+   docked inspector (work/Inspector.tsx): buckets, the tools row and one line
+   per workflow. Columns drop by the left pane's own width (`work-main`), so
+   the inspector opening narrows the table without the page moving, and
+   nothing is wider than the viewport. Tokens only, so both themes draw it.
+   --------------------------------------------------------------------------- */
+.wfg { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.wfg > .c-count-note { margin: 0; }
+.wfg-filters { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.wfg-filters > .wfg-seg { max-width: 100%; overflow-x: auto; align-self: flex-start; }
+.wfg-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+/* The search and the pickers are controls: their boundary is --ctl-bd, 3:1 on the ground. */
+.wfg-search { flex: 1 1 220px; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); }
+.wfg-pick { display: inline-flex; min-width: 0; max-width: 100%; }
+.wfg-pick > select { height: 32px; max-width: 100%; padding: 0 6px; border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm, 6px); background: var(--surface); color: var(--text); font: inherit; font-size: var(--t-meta); }
+.wfg-scroll { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.wfg-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); font-variant-numeric: tabular-nums; table-layout: auto; }
+/* The head row is filled on `thead`, as every table head is (#178): no head
+   cell paints its own fill. */
+.wfg-table thead { background: var(--surface-2); }
+.wfg-table th { position: sticky; top: 0; z-index: 1; text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.wfg-table th.num, .wfg-table td.num { text-align: right; }
+.wfg-table td { padding: 4px 8px; height: 34px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; vertical-align: middle; }
+.wfg-table tbody tr.wfg-row { cursor: pointer; }
+.wfg-table tbody tr.wfg-row:hover { background: var(--surface-2); }
+.wfg-table tbody tr.wfg-row:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.wfg-table tbody tr.wfg-row.is-picked { background: color-mix(in srgb, var(--info) 14%, var(--surface)); box-shadow: inset 3px 0 0 var(--info); }
+/* The name takes what the other columns leave and cuts with an ellipsis; its whole text is the link's title. */
+.wfg-table td[data-col="workflow"] { width: 100%; max-width: 1px; min-width: 10em; overflow: hidden; text-overflow: ellipsis; }
+.wfg-table td[data-col="workflow"] > a { color: var(--text); font-weight: 600; text-decoration: none; }
+.wfg-table td[data-col="workflow"] > a:hover, .wfg-table td[data-col="workflow"] > a:focus-visible { color: var(--info); text-decoration: underline; }
+.wfg-table td[data-col="workflow"] > .tag { margin-left: 6px; }
+.wfg-bar { display: inline-flex; align-items: center; gap: 6px; }
+.wfg-bar > .c-bar { width: 120px; flex: none; }
+.wfg-dim { color: var(--text-dim); }
+.wfg-absent { color: var(--text-dim); font-style: italic; }
+.wfg-need { display: inline-block; margin-right: 8px; font-weight: 600; }
+.wfg-need.is-bad { color: var(--bad-ink, var(--s-bad)); }
+.wfg-need.is-park { color: var(--paused-ink, var(--s-park)); }
+.wfg-table td[data-col="owner"] { max-width: 10em; overflow: hidden; text-overflow: ellipsis; }
+/* COLUMNS GIVE WAY BY THE PANE'S WIDTH ALONE (the third review of PR #3147):
+   no rule here keys on a pick being open (`.wfg.has-inspector`). With the
+   inspector folded to its rail `.wi-main` is 1005px at 1440, and its content
+   box, which the container queries measure, is 993px (its 12px
+   padding-right), so the table is laid out fixed (≤1024, below) with Owner,
+   Changed and Spent's coverage note all drawn; open, the pane's own container
+   rules below drop Owner and Changed, and a partial figure never shows
+   without its caveat. */
+/* THE TABLE NEVER EXCEEDS ITS PANE (review finding on PR #3147: beside the
+   open inspector at 1440 the table was 627px in a 578px box, and Spent's
+   "$0.518 3 of 4 reported" set its column to 179px, so the clipping pane cut
+   the header, the figures and the note). An auto table is as wide as its
+   cells' longest lines, which no rule here can bound, so a pane of 1024px or
+   less lays the table out FIXED: every column but the name has a width, the
+   name takes the rest and cuts with its ellipsis, and the thresholds below
+   are where the shown columns' widths stop leaving the name 112px inside the
+   pane's 1px borders (every cell is `box-sizing: border-box`, so its 8px
+   paddings sit inside its width). Columns give way in one order: Owner
+   (≤860), Changed (≤720), the state's word (the phone row, ≤570), Spent's
+   coverage note (≤545), then Spent itself (≤393); the note and Spent go only
+   where the name would lose its floor (below).
+   A content box wider than 1024px keeps the auto table, where everything
+   fits; the folded pane at 1440 (993px) is not one. The widths hold the longest of each: "awaiting input"
+   after its 12px glyph, the 72px bar and "12/12", three need marks, "$12.92"
+   and "3 of 4 reported", a 14-character owner, "not recorded". */
+@container work-main (max-width: 1024px) {
+  .wfg-table { table-layout: fixed; }
+  .wfg-table td { overflow: hidden; text-overflow: ellipsis; }
+  .wfg-table [data-col="state"] { width: 116px; }
+  .wfg-table [data-col="steps"] { width: 116px; }
+  .wfg-table [data-col="needs"] { width: 88px; }
+  .wfg-table [data-col="spent"] { width: 112px; }
+  .wfg-table [data-col="owner"] { width: 112px; }
+  .wfg-table [data-col="changed"] { width: 88px; }
+  .wfg-table td[data-col="workflow"] { min-width: 0; }
+  .wfg-bar > .c-bar { width: 72px; }
+  /* The Steps cell holds the bar and "12/12" on one line; an untrusted
+     census's longer words ("3 steps", "2 of 12 steps unread") go under the
+     bar and wrap at their spaces, never cut mid-word by the column. */
+  .wfg-table td[data-col="steps"] { white-space: normal; }
+  .wfg-table td[data-col="steps"] .wfg-bar { display: flex; flex-wrap: wrap; row-gap: 2px; max-width: 100%; }
+  /* The note never sets the column: it is a line of its own under the
+     figure, sized by the column (`contain: inline-size`), and wraps rather
+     than cuts when its count is longer. */
+  .wfg-table td[data-col="spent"] .wf-spend-cov { display: block; margin-left: 0; white-space: normal; contain: inline-size; }
+}
+@container work-main (max-width: 860px) { .wfg-table [data-col="owner"] { display: none; } }
+@container work-main (max-width: 720px) { .wfg-table [data-col="changed"] { display: none; } }
+/* SPENT'S NOTE GIVES WAY ONLY BELOW THE NAME'S FLOOR (the fourth review of
+   PR #3147: at 1440 beside the docked inspector, a 580px box, a fixed 612px
+   threshold clipped "3 of 4 reported" to 1px with 34px to spare, so a partial
+   figure showed with its caveat drawn nowhere). The threshold is the ladder's
+   own sum: the name's 112px floor + the box's 2px of borders + State 116 +
+   Steps 116 + Needs 88 + Spent at its full 112 = 546px, so the note is drawn
+   at 546px and wider. Narrower, the figure keeps 72px, the note stays read
+   (not drawn), and the figure's title and accessible label carry the caveat
+   ("3 of 4 steps that ran reported a cost", Workflows.tsx's spend cell), so a
+   partial figure never shows without it. */
+@container work-main (max-width: 545px) {
+  .wfg-table [data-col="spent"] { width: 72px; position: relative; }
+  .wfg-table td[data-col="spent"] .wf-spend-cov { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+}
+/* A pane too narrow for the four columns at their full widths draws the
+   phone row (below): the state is its glyph, steps and needs hold their
+   widths, and Spent stays as its figure (≤545, above). */
+@container work-main (max-width: 570px) {
+  .wfg-table thead { position: relative; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .wfg-table thead th { padding: 0; border: 0; }
+  .wfg-table td { height: 40px; padding: 4px 6px; }
+  .wfg-table [data-col="state"] { width: 28px; position: relative; }
+  .wfg-table [data-col="steps"] { width: 92px; }
+  .wfg-table [data-col="needs"] { width: 88px; }
+  .wfg-table [data-col="state"] .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  .wfg-bar > .c-bar { width: 40px; }
+}
+/* SPENT GIVES WAY ONLY WHERE EVEN ITS FIGURE BREAKS THE NAME'S FLOOR (the
+   fifth review of PR #3147, which the owner chose to follow up on 4 November
+   2026: at 1280 beside the docked inspector, a 420px box, the phone row's
+   rule hid Spent on every row before the note's rule above could draw the
+   figure alone). The threshold is the phone row's own sum: the name's 112px
+   floor + the box's 2px of borders + the state's glyph 28 + Steps 92 + Needs
+   88 + the figure-only Spent 72 = 394px, so Spent is drawn at 394px and wider
+   (the name keeps 138px at 420). */
+@container work-main (max-width: 393px) {
+  .wfg-table [data-col="spent"] { display: none; }
+}
+/* VISUALLY HIDDEN, STILL READ: the filters' labels and the Needs-you words.
+   The console's `.vh` is drawn only on the People pages, so the list scopes
+   its own; the box it sits in is positioned so the absolute word is laid out
+   there, not far down the page (see `.ctl-scroll`). */
+.wfg .vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+.wfg-pick, .wfg-need { position: relative; }
+/* THE PHONE ROW: state, name, steps and needs (frame graph-workflow-rest-390); the head is not drawn but stays read.
+   At the phone breakpoint (design-system.md §7.1: 720 is retired); above it
+   the container queries lay the table out by its pane, the phone row at 570. */
+@media (max-width: 560px) {
+  .wfg-table [data-col="spent"], .wfg-table [data-col="owner"], .wfg-table [data-col="changed"] { display: none; }
+  .wfg-table thead { position: relative; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .wfg-table thead th { padding: 0; border: 0; }
+  .wfg-table td { height: 40px; padding: 4px 6px; }
+  /* THE ROW FITS 356px (review finding: it was 411px and Needs was clipped
+     off the edge). Fixed layout: the state is its glyph (the word stays read),
+     steps and needs hold their widths, the name takes the rest and cuts. */
+  .wfg-table { table-layout: fixed; }
+  .wfg-table [data-col="state"] { width: 28px; position: relative; }
+  .wfg-table [data-col="steps"] { width: 92px; }
+  .wfg-table [data-col="needs"] { width: 88px; }
+  .wfg-table td[data-col="workflow"] { min-width: 0; }
+  .wfg-table td[data-col="steps"], .wfg-table td[data-col="needs"] { overflow: hidden; text-overflow: ellipsis; }
+  .wfg-table [data-col="state"] .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+  .wfg-bar > .c-bar { width: 40px; }
+  .wfg-tools .wfg-pick { flex: 1 1 40%; }
+  .wfg-tools .wfg-pick > select { width: 100%; }
+}
+/* The summary in the inspector. */
+.wfg-sum { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.wfg-sum > p { margin: 0; min-width: 0; }
+.wfg-sum-facts { color: var(--text-dim); font-size: var(--t-meta); }
+.wfg-sum > .id { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wfg-sum-why > .wfl-why { display: block; overflow-wrap: anywhere; }
+.wfg-sum-row .wfl-done { display: flex; align-items: center; gap: var(--ctl-s2); }
+.wfg-sum-row .wfl-done > .c-bar { flex: 1 1 auto; min-width: 24px; }
+.wfg-sum-needs { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ctl-s1) var(--ctl-s2); font-size: var(--t-meta); }
+.wfg-sum-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px var(--ctl-s3); margin: 0; font-size: var(--t-meta); }
+.wfg-sum-dl > dt { color: var(--text-dim); }
+.wfg-sum-dl > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.wfg-open { white-space: nowrap; }

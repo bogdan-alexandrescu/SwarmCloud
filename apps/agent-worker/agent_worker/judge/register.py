@@ -1,8 +1,11 @@
 """Set up an attempt's Jev: the shared ledger, and the agent's `jev_decide` tool.
 
-Lane CTXQ-JW wires this into the runners (`runners/claude_code.py`'s
-`write_mcp_config` takes the `servers` mapping this adds to); this lane only
-exposes it.
+The worker calls `prepare` at attempt setup (`judge.attempt.setup`). The
+claude-code runner registers the agent's tool from the config that wrote
+(`server_entry`, `runners/claude_code.write_mcp_config`; lane
+AGENTS-USE-TOOLS, owner's choice 2026-11-02), loaded at the session's start
+rather than behind the CLI's tool search, so the agent's calls and the
+worker's share the attempt's one ledger.
 
 * `prepare` resolves the backend from the stored settings and creates the
   attempt's ledger. The worker's own calls (§5.2's J0-J5) go through
@@ -55,6 +58,8 @@ class Registered:
     ledger_path: Path | None = None
     backend: settings_mod.Backend | None = field(default=None, repr=False)
     hard_stop_paths: tuple[str, ...] = ()
+    #: swarm-api's reservation on the state routes (`judge.account`), or None.
+    grant: budget.Grant | None = None
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -76,7 +81,7 @@ def prepare(*, attempt_dir: Path, settings: settings_mod.JudgeSettings, key: str
             environ: Mapping[str, str] | None = None, hard_stop_paths: Iterable[str] = (),
             secret_env_names: Iterable[str] = (), month_used_tokens: int = 0,
             task_calls: int = 0, task_input_tokens: int = 0,
-            shim_url: str | None = None) -> Registered:
+            shim_url: str | None = None, grant: budget.Grant | None = None) -> Registered:
     """The attempt's Jev, or why there is none. Writes nothing when off.
 
     `month_used_tokens` is the workspace's spend this month, read by the
@@ -84,6 +89,10 @@ def prepare(*, attempt_dir: Path, settings: settings_mod.JudgeSettings, key: str
     `task_input_tokens` carry an earlier attempt's spend on the same task.
     `shim_url` is the worker's TypeSafe shim (`settings.typesafe_url`); with
     it, `key` is the shim's local token and is written where a key would be.
+    `grant` is swarm-api's reservation (`judge.account.reserve`): with it the
+    ledger's limits are the grant's and no monthly cap is read from the file
+    (the reservation already holds the month), and the config carries it, so
+    every client of the attempt admits within it whatever the ledger says.
     """
     chosen = settings_mod.resolve_backend(settings, key=key, environ=environ,
                                           shim_url=shim_url)
@@ -92,10 +101,12 @@ def prepare(*, attempt_dir: Path, settings: settings_mod.JudgeSettings, key: str
     attempt_dir = Path(attempt_dir)
     home = attempt_dir / JUDGE_DIR
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
-    ledger = budget.Ledger.create(home / LEDGER_FILE,
-                                  monthly_cap_tokens=settings.monthly_cap_tokens,
-                                  month_used_tokens=month_used_tokens, calls=task_calls,
-                                  input_tokens=task_input_tokens)
+    limits: dict[str, Any] = {"monthly_cap_tokens": settings.monthly_cap_tokens,
+                              "month_used_tokens": month_used_tokens}
+    if grant is not None:
+        limits = {"max_calls": grant.calls, "max_input_tokens": grant.input_tokens}
+    ledger = budget.Ledger.create(home / LEDGER_FILE, calls=task_calls,
+                                  input_tokens=task_input_tokens, **limits)
     key_path: Path | None = None
     if chosen.key:
         key_path = attempt_dir / KEY_DIR / KEY_FILE
@@ -111,10 +122,11 @@ def prepare(*, attempt_dir: Path, settings: settings_mod.JudgeSettings, key: str
         # NAMES only: the tool process reads the values from the environment
         # it inherits from the agent, which already holds them.
         "secret_env_names": [n for n in secret_env_names if isinstance(n, str) and n],
+        "grant": grant.as_dict() if grant is not None else None,
     }
     config_path = home / CONFIG_FILE
     _write_private(config_path, json.dumps(config, indent=2) + "\n")
-    return Registered(True, None, config_path, ledger.path, chosen, stops)
+    return Registered(True, None, config_path, ledger.path, chosen, stops, grant)
 
 
 def server_argv(config_path: Path, python: str = sys.executable) -> list[str]:
@@ -122,13 +134,22 @@ def server_argv(config_path: Path, python: str = sys.executable) -> list[str]:
     return [python, "-I", "-m", MODULE, "--config", str(config_path)]
 
 
+def server_entry(config_path: Path) -> dict[str, Any]:
+    """The `swarm-jev` entry of the CLI's `--mcp-config`: `server_argv`, no
+    `env` (the key, when there is one, is read from the file the config
+    names, never written here), and `alwaysLoad`, Claude Code's per-server
+    field that puts a server's tools in the prompt from the session's start
+    instead of deferring them behind tool search."""
+    command, *args = server_argv(config_path)
+    return {"type": "stdio", "command": command, "args": args, "alwaysLoad": True}
+
+
 def register_jev_tool(servers: dict[str, Any], **kwargs: Any) -> Registered:
     """`prepare`, then add `swarm-jev` to `servers` (the `mcpServers` mapping).
     Leaves `servers` untouched when Jev is off for this task."""
     done = prepare(**kwargs)
     if done.registered and done.config_path is not None:
-        command, *args = server_argv(done.config_path)
-        servers[SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+        servers[SERVER_NAME] = server_entry(done.config_path)
     return done
 
 
@@ -144,7 +165,8 @@ def worker_client(done: Registered, *, secrets: Iterable[str] = (),
         extra["sleep"] = sleep
     if log is not None:
         extra["log"] = log
-    return client.JudgeClient(done.backend, budget.Ledger(done.ledger_path), transport=transport,
+    ledger = budget.Ledger(done.ledger_path, authority=done.grant)
+    return client.JudgeClient(done.backend, ledger, transport=transport,
                               hard_stop_paths=done.hard_stop_paths,
                               secrets=tuple(s for s in secrets if isinstance(s, str) and s),
                               **extra)

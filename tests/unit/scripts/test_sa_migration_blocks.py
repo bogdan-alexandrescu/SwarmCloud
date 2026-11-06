@@ -137,7 +137,7 @@ def test_infra_declares_no_platform_sa() -> None:
 def test_no_root_declares_an_account_twice() -> None:
     """The ids are spelled once (modules/service_account_ids); the account is made once."""
     ids = _text(TF / "modules" / "service_account_ids" / "main.tf")
-    for key in ("discovery_id", "doctor_id"):
+    for key in ("discovery_id", "doctor_id", "voice_id"):
         assert re.search(rf"^\s*{key}\s*=\s*\"swarm-", ids, re.M), f"{key} is not spelled in service_account_ids"
     bootstrap = _bootstrap_accounts()
     infra = {n for p in (TF / "infra").glob("*.tf") for n in _SA_HEADER.findall(_text(p))}

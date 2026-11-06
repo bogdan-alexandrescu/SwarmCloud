@@ -51,6 +51,7 @@ describe('VQ-055: Help has a group for Automate, Config and Admin', () => {
       'secret-scopes',
       'add-a-secret',
       'mcp-servers',
+      'agent-plugins',
       'workspace-roles',
       'workspace-settings',
     ] as TopicId[]) {
@@ -63,7 +64,7 @@ describe('VQ-055: Help has a group for Automate, Config and Admin', () => {
   })
 
   it('says workspace, never tenant, in every new topic a person reads', () => {
-    for (const id of ['config-setup-strip', 'config-github-access', 'config-repositories', 'secret-scopes', 'add-a-secret', 'mcp-servers', 'workspace-roles', 'workspace-settings', 'runner-sizes', 'platform-secrets', 'workspaces-you-admin'] as TopicId[]) {
+    for (const id of ['config-setup-strip', 'config-github-access', 'config-repositories', 'secret-scopes', 'add-a-secret', 'mcp-servers', 'agent-plugins', 'workspace-roles', 'workspace-settings', 'runner-sizes', 'platform-secrets', 'workspaces-you-admin'] as TopicId[]) {
       const t = HELP[id]
       expect([t.subject, t.title, t.short, ...t.long, t.act.say].join(' '), id).not.toMatch(/tenant/i)
     }
@@ -115,8 +116,15 @@ describe('VQ-055: each Config and Admin page’s `?` opens its own topic', () =>
     ['/config/repositories', 'config-repositories'],
     ['/config/secrets', 'secret-scopes'],
     ['/config/mcp-servers', 'mcp-servers'],
-    ['/config/people', 'workspace-roles'],
-    ['/config/workspace', 'workspace-settings'],
+    ['/config/plugins', 'agent-plugins'],
+    // People and roles and Workspace Settings are the workspace page's tabs since
+    // the admin routes lane (part of #2688). The page draws its own head, which
+    // reads the shell's `?`, and each tab says its own topic (App.tsx `PAGE_TOPIC`).
+    // MUTATION: drop `useContext(SectionHelp)` from WorkspacePage.tsx and no glyph is found.
+    ['/admin/workspaces?tab=people', 'workspace-roles'],
+    ['/admin/workspaces?tab=roles', 'workspace-roles'],
+    ['/admin/workspaces?tab=settings', 'workspace-settings'],
+    ['/admin/workspaces?tab=setup', 'workspace-settings'],
     ['/admin/runner-sizes', 'runner-sizes'],
     ['/admin/platform-secrets', 'platform-secrets'],
   ] as const) {

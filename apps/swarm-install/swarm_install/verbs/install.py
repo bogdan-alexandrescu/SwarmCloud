@@ -4,6 +4,7 @@ install stands (docs/design/day-one-install.md §2.1-§2.5, §6.3).
     swarm install --project P --env prod --version V --domain H
     swarm install --project P --dry-run [--json-events]
     swarm install --project P --status [--json]
+    swarm install --project P --repair <check>
 
 **Run.** The steps come from `swarm_install.steps` (discovered); the engine
 checks each, skips what is done, applies what is not and records the state
@@ -45,10 +46,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import re
-import shutil
 import socket
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -60,7 +58,9 @@ from ..engine import Engine
 from ..events import Events
 from ..exitcodes import MET, UNMET, ExitCode, for_statuses
 from ..lease import Lease
+from .. import record as install_record
 from ..record import stages_of
+from ..repair import RepairEngine, RepairUsage, repair
 from ..state import (
     STATE_OBJECT,
     GcsObjectStore,
@@ -72,6 +72,8 @@ from ..state import (
     state_bucket,
 )
 from ..steps import Step, triggered_of
+from ..steps import preflight
+from ..steps.foundations import PROJECT_ID
 from ..steps.preflight import DEFAULT_REGION, HOSTNAME, REGION
 from ..steps import discover as _discover_steps
 from ..waits import SystemClock
@@ -83,13 +85,28 @@ HELP = "install SwarmCloud into a Google Cloud project, or resume one (--status:
 #: and a company's first deployment is its production one.
 DEFAULT_ENV = "prod"
 
-#: The marketplace a teammate adds (plan §6.4, D28), printed on the ready screen.
+#: The marketplace a teammate adds (plan §6.4, D28), printed on the ready screen:
+#: the stable one at the bucket root; another channel's beside its channel line,
+#: `channels/<channel>.marketplace.json` (N10), so an rc deployment's teammates
+#: get the rc's plugin. Never under a `channels/<channel>/` prefix: that makes
+#: gcloud storage copy the channel line into it (audit 3, A5).
 PLUGIN_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/marketplace.json"
+CHANNEL_MARKETPLACE = "https://storage.googleapis.com/swarmcloud/channels/{channel}.marketplace.json"
 
-#: Google's project id rule: 6-30 characters, lowercase letters, digits and
-#: hyphens, starting with a letter and not ending with a hyphen.
-_PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
-_ENV = re.compile(r"^[a-z][a-z0-9-]{0,29}$")
+#: The step whose apply creates Firestore: once it is done the install record exists.
+RECORD_STEP = "infra.pass-1"
+
+#: Google's project id rule (`foundations.PROJECT_ID`, which the question
+#: asked when an id is taken uses too).
+_PROJECT_ID = PROJECT_ID
+
+#: The environments terraform/infra accepts: its `environment` variable's
+#: validation is `contains(["dev", "staging", "prod"], ...)`, so any other name
+#: would pass stage 0 and fail at the registry pass after bootstrap pass 1 had
+#: made billable resources (audit 4f S3). Each is also within bootstrap's
+#: 20-character `spec_signing_environments` rule. A guard test reads the set
+#: from terraform/infra/variables.tf.
+ENVIRONMENTS = ("dev", "staging", "prod")
 
 #: The state fields a run's flags seed, with the words a refusal uses.
 _SEEDED = {
@@ -110,9 +127,9 @@ def _project(value: str) -> str:
 
 
 def _env(value: str) -> str:
-    if not _ENV.match(value):
+    if value not in ENVIRONMENTS:
         raise argparse.ArgumentTypeError(
-            f"{value!r} is not an environment name (lowercase letters, digits and hyphens)"
+            f"{value!r} is not an environment this release installs: choose {', '.join(ENVIRONMENTS)}"
         )
     return value
 
@@ -143,7 +160,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", default=None, type=_project,
                         help="the Google Cloud project to install into (asked when not given)")
     parser.add_argument("--env", default=DEFAULT_ENV, type=_env,
-                        help=f"the environment's name (default: {DEFAULT_ENV})")
+                        help=f"the environment: one of {', '.join(ENVIRONMENTS)} (default: {DEFAULT_ENV})")
     parser.add_argument("--version", dest="release", default=None,
                         help="the SwarmCloud release to install, e.g. 2026.10.1")
     parser.add_argument("--domain", dest="hostname", default=None,
@@ -159,6 +176,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                       help="check every step and print each unmet step's plan; write nothing")
     mode.add_argument("--status", action="store_true",
                       help="where the install stands, read from its state; write nothing")
+    mode.add_argument("--repair", metavar="CHECK", default=None,
+                      help="re-run the one step that satisfies this manifest entry (swarm doctor names it), "
+                      "after a typed confirmation")
     parser.add_argument("--json-events", action="store_true",
                         help="write the engine's events as one JSON object per line")
     parser.add_argument("--json", action="store_true", help="with --status: one JSON document")
@@ -187,20 +207,11 @@ def open_bucket(project: str) -> ObjectStore:
 
 def holder_identity() -> str:
     """Who holds the lease: the gcloud account (the email another admin types
-    to take over an expired lease), else the local user at this host."""
-    gcloud = shutil.which("gcloud")
-    if gcloud is not None:
-        try:
-            done = subprocess.run(
-                [gcloud, "config", "get-value", "account"],
-                capture_output=True, text=True, timeout=30, check=False,
-            )
-            account = done.stdout.strip()
-            if done.returncode == 0 and "@" in account:
-                return account
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    return f"{getpass.getuser()}@{socket.gethostname()}"
+    to take over an expired lease), else the local user at this host. gcloud
+    is found the way preflight finds it, the SDK it fetched into ~/.swarm
+    included, never by bare name on PATH (audit #3)."""
+    account = preflight.gcloud_account(lambda: preflight.find_gcloud())
+    return account or f"{getpass.getuser()}@{socket.gethostname()}"
 
 
 def _typed(prompt: str) -> str:
@@ -252,7 +263,7 @@ def _ask_missing(args: argparse.Namespace) -> int | None:
         if not tty:
             raise _Usage("no --project given and no terminal to ask on: pass --project")
         args.project = _ask("Google Cloud project to create or use:", _project)
-    if args.status or args.dry_run:
+    if args.status or args.dry_run or getattr(args, "repair", None) is not None:
         return None
     recorded = _recorded(args.project)
     missing = [
@@ -273,7 +284,7 @@ def _ask_missing(args: argparse.Namespace) -> int | None:
     print(f"  Project:   {args.project} (created if it does not exist)")
     print(f"  Hostname:  {hostname}")
     print(f"  Region:    {region}")
-    print(f"  Release:   {release or 'the current stable release'}")
+    print(f"  Release:   {release or preflight.default_release_said()}")
     print(f"  Console:   https://{hostname}/ when the install is done")
     try:
         answer = input("Continue? [Y/n] ").strip().lower()
@@ -369,7 +380,12 @@ def run(args: argparse.Namespace) -> int:
         stopped = _ask_missing(args)
         if stopped is not None:
             return stopped
+        if getattr(args, "repair", None) is not None:
+            return _install(args, repair_check=args.repair)
         return _status(args) if args.status else _install(args)
+    except RepairUsage as exc:
+        print(f"swarm install --repair: {exc}", file=sys.stderr)
+        return ExitCode.USAGE
     except _Usage as exc:
         print(f"swarm install: {exc}", file=sys.stderr)
         return ExitCode.USAGE
@@ -378,7 +394,7 @@ def run(args: argparse.Namespace) -> int:
         return ExitCode.REFUSED
 
 
-def _install(args: argparse.Namespace) -> int:
+def _install(args: argparse.Namespace, repair_check: str | None = None) -> int:
     steps = discover_steps()
     if not steps:
         print(
@@ -406,11 +422,14 @@ def _install(args: argparse.Namespace) -> int:
         seed=seed,
         read_only=args.dry_run,
     )
-    refused = _refusal(store.peek(), args, seed)
+    current = store.peek()
+    refused = _refusal(current, args, seed)
     if refused is not None:
         print(f"swarm install: refused: {refused}", file=sys.stderr)
         return ExitCode.REFUSED
 
+    # Stage 1 on, the billing-budget calls name this project as their quota project (audit #8).
+    preflight.GCP.use_quota_project(args.project)
     clock = SystemClock()
     holder = holder_identity()
     lease = (
@@ -418,7 +437,12 @@ def _install(args: argparse.Namespace) -> int:
         if attached is not None
         else Lease.local(holder, clock.now)
     )
-    engine = Engine(
+    # Firestore exists once pass 1 is done: a resumed run, which skips that
+    # apply, attaches the install record here so the hand-off, the GitHub
+    # passes and verify read the console (N1). Before then pass 1's apply
+    # attaches it (steps/infra.py).
+    record = install_record.open_record(args.project, args.env) if current.done(RECORD_STEP) else None
+    engine = (RepairEngine if repair_check is not None else Engine)(
         steps,
         store=store,
         lease=lease,
@@ -426,10 +450,40 @@ def _install(args: argparse.Namespace) -> int:
         clock=clock,
         holder=holder,
         manifest=manifest,
+        record=record,
         dry_run=args.dry_run,
         confirm=_typed,
     )
-    return int(engine.run(stages=args.stage).exit_code)
+    if repair_check is not None:
+        # The one step the entry names, after its own typed confirmation
+        # (swarm_install.repair); SWARM_ASSUME_YES is never read for it.
+        return int(repair(repair_check, manifest=manifest, engine=engine, confirm=_typed))
+    code = int(engine.run(stages=args.stage).exit_code)
+    if store.project != args.project:
+        # foundations.project found the id taken and the person typed another:
+        # the install, its answers with it, is that project's now.
+        print(
+            f"Project id {args.project} was taken; this install is now {store.project}'s, its state at "
+            f"{store.local}. Resume it with: swarm install --project {store.project} --env {args.env}"
+        )
+    return code
+
+
+def channel_of(release: str | None) -> str:
+    """The deployment's release channel: rc for a release candidate it
+    records (2026.11.3-rc.2), stable for any other release; with none
+    recorded, the channel this installer came from (`SWARM_CHANNEL`)."""
+    if release:
+        return "rc" if "-rc." in release else "stable"
+    try:
+        return preflight.release_channel()
+    except ValueError:
+        return "stable"
+
+
+def plugin_marketplace(release: str | None) -> str:
+    channel = channel_of(release)
+    return PLUGIN_MARKETPLACE if channel == "stable" else CHANNEL_MARKETPLACE.format(channel=channel)
 
 
 def _when(at: float | None) -> str:
@@ -521,7 +575,7 @@ def _status(args: argparse.Namespace) -> int:
         print("Ready.")
         print(f"  Console:    {url}/")
         print(
-            f"  Teammates:  claude plugin marketplace add {PLUGIN_MARKETPLACE}"
+            f"  Teammates:  claude plugin marketplace add {plugin_marketplace(state.release)}"
             f"  (deployment URL: {url})"
         )
         print("  Health:     swarm doctor")

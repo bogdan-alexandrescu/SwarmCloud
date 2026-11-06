@@ -21,7 +21,7 @@ from swarm_install.lease import Lease
 from swarm_install.manifest import Entry, Manifest
 from swarm_install.state import STATE_OBJECT, StateStore
 from swarm_install.steps import Observation, Plan
-from swarm_install.waits import WaitSpec
+from swarm_install.waits import WaitGaveUp, WaitSpec
 
 from .test_state_store import FakeBucket, FakeClock
 
@@ -202,6 +202,116 @@ def test_stage_refuses_while_earlier_entry_unmet(tmp_path: Path) -> None:
     bootstrap.met = True
     assert rig.engine([bootstrap, infra], manifest=manifest).run(stages=[7]).exit_code == 0
     assert "apply infra.pass2" in log and "apply bootstrap.pass1" not in log
+
+
+def _owned_entry(id: str, stage: int, step: str, depends_on: list[str] = []) -> Entry:
+    return Entry(id=id, kind=id.split(".")[0], scope="core", stage=stage, provider="engine",
+                 depends_on=depends_on, step=step)
+
+
+def _pass(id: str, stage: int, *, log: list[str], met: bool = False) -> FakeStep:
+    """A terraform pass: it lists nothing in `satisfies`; the manifest's
+    `entry.step` names it as the owner of what it makes."""
+    step = FakeStep(id, stage, log=log, met=met)
+    step.satisfies = ()
+    return step
+
+
+def test_dependency_met_once_the_step_its_entry_names_is_done(tmp_path: Path) -> None:
+    """Audit finding 1: `cluster.autopilot` is made by infra.pass-1, which
+    declares `satisfies=()`. On a fresh install stage 10 must not refuse."""
+    manifest = Manifest(
+        entries=[
+            _owned_entry("cluster.autopilot", 5, "infra.pass-1"),
+            _entry("cluster-policy.cache-storage-class", 10, ["cluster.autopilot"]),
+        ],
+        ignored={}, env={}, sources={},
+    )
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    infra = _pass("infra.pass-1", 5, log=log)
+    policies = FakeStep("cluster.policies", 10, ("cluster-policy.cache-storage-class",), log=log)
+
+    result = rig.engine([infra, policies], manifest=manifest).run()
+
+    assert result.exit_code == 0, result
+    assert [line for line in log if line.startswith("apply")] == ["apply infra.pass-1", "apply cluster.policies"]
+    assert not rig.events.of_kind("stage_refused")
+
+    # A scoped re-run counts it met from the earlier stage's check.
+    log.clear()
+    infra.met = True
+    policies.met = False
+    assert rig.engine([infra, policies], manifest=manifest).run(stages=[10]).exit_code == 0
+    assert "apply cluster.policies" in log and "apply infra.pass-1" not in log
+
+
+def test_dependency_refused_while_the_step_its_entry_names_is_not_done(tmp_path: Path) -> None:
+    manifest = Manifest(
+        entries=[
+            _owned_entry("cluster.autopilot", 5, "infra.pass-1"),
+            _entry("cluster.swarm-system-namespace", 10, ["cluster.autopilot"]),
+        ],
+        ignored={}, env={}, sources={},
+    )
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    infra = _pass("infra.pass-1", 5, log=log)
+    namespace = FakeStep("cluster.swarm-system", 10, ("cluster.swarm-system-namespace",), log=log)
+
+    result = rig.engine([infra, namespace], manifest=manifest).run(stages=[10])
+
+    assert result.outcome == "blocked" and result.step == "cluster.swarm-system"
+    assert not [line for line in log if line.startswith("apply")], log
+    refused = rig.events.of_kind("stage_refused")
+    assert refused[0]["needs"] == ["cluster.autopilot"]
+    assert "infra.pass-1, stage 5" in refused[0]["message"], "it names the step that makes the entry"
+
+
+def test_fresh_install_reaches_every_stage_with_the_real_manifest(tmp_path: Path) -> None:
+    """Audit finding 1, end to end: every real step (triggered ones included),
+    as a fake that applies, over the real merged manifest on a fresh state.
+    Before the fix, stage 8 refused: `identity.group-read needs sa.swarm-api
+    (no step in this release satisfies it)`."""
+    from swarm_install.manifest import load
+    from swarm_install.steps import discover, triggered_of
+
+    real, pending = [], list(discover())
+    while pending:
+        step = pending.pop(0)
+        real.append(step)
+        pending.extend(triggered_of(step))
+    log: list[str] = []
+    fakes = []
+    for step in real:
+        fake = FakeStep(step.id, step.stage, log=log)
+        fake.satisfies = tuple(step.satisfies)
+        fakes.append(fake)
+    rig = Rig(tmp_path)
+
+    result = rig.engine(fakes, manifest=load()).run()
+
+    assert not rig.events.of_kind("stage_refused"), rig.events.of_kind("stage_refused")[0]["message"]
+    assert result.exit_code == 0, result
+    assert set(rig.steps_state().values()) == {"done"} and len(rig.steps_state()) == len(real)
+
+
+def test_text_mode_prints_a_plans_actions_indented() -> None:
+    """Audit finding 15: a human step's instructions live in its plan's
+    actions; the terminal must show every one, under the plan line."""
+    out = io.StringIO()
+    events = Events(FakeClock().now, out=out)
+    events.emit(
+        "step_plan", step="edge.brand", stage=2, plan="create the OAuth brand",
+        actions=["App name: SwarmCloud\nSupport email: you", "then open .../auth/audience and choose Internal"],
+    )
+    lines = out.getvalue().splitlines()
+    assert lines[0] == "  plan edge.brand -- create the OAuth brand"
+    assert lines[1:] == [
+        "      App name: SwarmCloud",
+        "      Support email: you",
+        "      then open .../auth/audience and choose Internal",
+    ]
 
 
 def test_wait_runs_steps_whose_trigger_lands(tmp_path: Path) -> None:
@@ -417,3 +527,188 @@ def test_human_step_without_deep_link_opens_the_first_url_of_its_plan(tmp_path: 
     result = rig.engine(steps).run()
     assert result.exit_code == ExitCode.OK, result.message
     assert opened == [url]
+
+
+def test_a_wait_inside_apply_that_gives_up_pauses_then_resumes(tmp_path: Path) -> None:
+    """A step's own wait running out pauses the run (exit 4), the way the
+    engine's waits do, and the next run resumes at that step
+    (DAYONE-ENGINE-WAIT-PAUSE)."""
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    spec = WaitSpec(reason="the billing account link", expected="2 min", expected_s=120,
+                    bound_s=600, look_at="Billing > Account management")
+    gives_up = {"now": True}
+
+    def own_wait() -> None:
+        if gives_up["now"]:
+            raise WaitGaveUp("project.billing", spec)
+
+    first = FakeStep("project.create", 1, log=log)
+    billing = FakeStep("project.billing", 1, log=log, on_apply=own_wait)
+    after = FakeStep("project.apis", 2, log=log)
+    result = rig.engine([first, billing, after]).run()
+    assert result.exit_code == ExitCode.PAUSED == 4 and result.outcome == "paused", result
+    assert result.step == "project.billing"
+    assert "the billing account link" in result.message and "swarm install again" in result.message
+    assert rig.steps_state() == {"project.create": "done", "project.billing": "paused"}
+    assert [e["step"] for e in rig.events.of_kind("step_paused")] == ["project.billing"]
+    assert "apply project.apis" not in log, "nothing after the paused step runs"
+
+    log.clear()
+    gives_up["now"] = False
+    resumed = rig.engine([FakeStep("project.create", 1, met=True, log=log), billing, after]).run()
+    assert resumed.exit_code == ExitCode.OK, resumed
+    assert [line for line in log if line.startswith("apply")] == ["apply project.billing", "apply project.apis"]
+    assert rig.steps_state() == {"project.create": "done", "project.billing": "done", "project.apis": "done"}
+
+
+def test_a_triggered_pass_heartbeats_the_record_while_it_applies(tmp_path: Path) -> None:
+    """Audit 4d F8: pass 3 and pass 4 run as one Terraform apply inside the
+    hand-off's poll. The console reads a lease heartbeat older than 2 minutes
+    as "swarm install is not running", so the engine must keep beating while
+    the apply runs, not only between polls."""
+    import threading
+
+    from swarm_install.record import InstallRecord, engine_document
+
+    from .test_record_writers import FakeDocuments
+
+    rig = Rig(tmp_path)
+    documents = FakeDocuments()
+    log: list[str] = []
+    beaten = threading.Event()
+    seen: dict[str, float] = {}
+
+    def record_heartbeat() -> float:
+        found = documents.get(engine_document("dev"))
+        return float(((found or ({}, 0))[0].get("lease") or {}).get("heartbeat", 0.0))
+
+    def long_terraform_apply() -> None:
+        # Ten minutes of Terraform: the console's two-minute window passes.
+        rig.clock.t += 10 * 60
+        seen["apply_started"] = rig.clock.now()
+        deadline = 5.0
+        while deadline > 0 and record_heartbeat() < seen["apply_started"]:
+            beaten.wait(0.01)
+            deadline -= 0.01
+        seen["during_apply"] = record_heartbeat()
+
+    pass3 = FakeStep("handoff.infra-pass3", 9, log=log, trigger=lambda ctx: True,
+                     on_apply=long_terraform_apply)
+    handoff = FakeStep(
+        "handoff.wait", 9, log=log, kind="wait",
+        wait=WaitSpec(reason="the console's people steps", expected="about an hour",
+                      expected_s=3600, bound_s=4 * 3600, look_at="Admin > Setup"),
+        triggered=(pass3,),
+        is_met=lambda: "apply handoff.infra-pass3" in log,
+    )
+    engine = rig.engine([handoff])
+    engine.record = InstallRecord(env="dev", documents=documents)
+    engine.heartbeat_interval = 0.01
+
+    result = engine.run()
+
+    assert result.exit_code == 0, result
+    assert seen["during_apply"] >= seen["apply_started"], (
+        "the install record's lease heartbeat was not refreshed while the triggered "
+        f"apply ran: {seen['apply_started'] - seen['during_apply']:.0f} s stale"
+    )
+
+
+def test_a_lease_lost_while_a_step_applies_stops_the_run(tmp_path: Path) -> None:
+    """Another admin who takes the lease over during a long apply is seen by
+    the heartbeat; the run stops once the apply returns, and the step is not
+    recorded done."""
+    import threading
+
+    from swarm_install.lease import LEASE_OBJECT, LeaseLost
+
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    stolen = threading.Event()
+
+    def taken_over_mid_apply() -> None:
+        generation = rig.bucket.objects[LEASE_OBJECT][1]
+        rig.bucket.write(LEASE_OBJECT, b'{"holder": "other@example.com"}', if_generation_match=generation)
+        rig.clock.t += 10 * 60
+        stolen.wait(5.0)
+
+    step = FakeStep("infra.pass1", 2, log=log, on_apply=taken_over_mid_apply)
+    engine = rig.engine([step])
+    engine.heartbeat_interval = 0.01
+    real_heartbeat = engine._heartbeat
+
+    def heartbeat() -> None:
+        try:
+            real_heartbeat()
+        except LeaseLost:
+            stolen.set()
+            raise
+
+    engine._heartbeat = heartbeat  # type: ignore[method-assign]
+
+    result = engine.run()
+
+    assert stolen.is_set(), "the heartbeat never ran while the step applied"
+    assert result.outcome == "failed" and "taken over" in result.message, result
+    assert "verify infra.pass1" not in log
+    if STATE_OBJECT in rig.bucket.objects:
+        assert "infra.pass1" not in rig.bucket.state().get("steps", {})
+
+
+def _pass_times(rig: Rig) -> dict:
+    return rig.bucket.state()["outputs"].get("pass_times", {})
+
+
+def test_the_sign_in_pass_is_timed_from_its_first_apply_to_its_last_done(tmp_path: Path) -> None:
+    """Admin › Setup has no usual length for the sign-in pass, so it shows the
+    time since the pass started: the engine stamps `started_at` before the
+    first step applies and `ended_at` once the last one is done."""
+    rig = Rig(tmp_path)
+    log: list[str] = []
+    seen: dict[str, dict] = {}
+
+    def first_applies() -> None:
+        seen["first"] = dict(_pass_times(rig).get("sign_in_pass", {}))
+        rig.clock.t += 120
+
+    def second_applies() -> None:
+        seen["second"] = dict(_pass_times(rig).get("sign_in_pass", {}))
+        rig.clock.t += 60
+
+    start = rig.clock.now()
+    steps = [FakeStep("handoff.sign-in-bootstrap", 13, log=log, on_apply=first_applies),
+             FakeStep("handoff.sign-in-infra", 13, log=log, on_apply=second_applies)]
+    assert rig.engine(steps).run().exit_code == 0
+    assert seen["first"] == {"started_at": start}, "started before the first step applies"
+    assert seen["second"] == {"started_at": start}, "the second step runs on the same pass"
+    assert _pass_times(rig)["sign_in_pass"] == {"started_at": start, "ended_at": start + 180,
+                                                "result": "done"}
+    assert "infra_pass_3" not in _pass_times(rig)
+
+
+def test_a_failed_pass_ends_failed_and_its_rerun_starts_the_clock_again(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    log: list[str] = []
+
+    def terraform_fails() -> None:
+        rig.clock.t += 30
+        raise RuntimeError("state lock held")
+
+    start = rig.clock.now()
+    failing = FakeStep("github.pass-3", 9, log=log, on_apply=terraform_fails)
+    assert rig.engine([failing]).run().exit_code != 0
+    assert _pass_times(rig)["infra_pass_3"] == {"started_at": start, "ended_at": start + 30,
+                                                "result": "failed"}
+
+    rig.clock.t += 600
+    again = rig.clock.now()
+    assert rig.engine([FakeStep("github.pass-3", 9, log=log)]).run().exit_code == 0
+    assert _pass_times(rig)["infra_pass_3"] == {"started_at": again, "ended_at": again,
+                                                "result": "done"}
+
+
+def test_a_step_in_no_timed_pass_stamps_nothing(tmp_path: Path) -> None:
+    rig = Rig(tmp_path)
+    assert rig.engine([FakeStep("infra.pass-2", 7, log=[])]).run().exit_code == 0
+    assert _pass_times(rig) == {}

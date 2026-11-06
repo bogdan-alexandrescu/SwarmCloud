@@ -74,10 +74,10 @@ const MINE = [
   { tenant_id: 'labs', display_name: 'labs@example.com', kind: 'group', via: 'platform_admin' },
 ]
 
-async function drawn() {
+async function drawn(profile: Json = PROFILE, mine: Json[] | null = MINE) {
   serve((m, url) => {
-    if (m === 'GET' && url === '/v1/profile') return { status: 200, body: PROFILE }
-    if (m === 'GET' && url === '/v1/tenants/mine') return { status: 200, body: MINE }
+    if (m === 'GET' && url === '/v1/profile') return { status: 200, body: profile }
+    if (m === 'GET' && url === '/v1/tenants/mine') return mine === null ? { status: 503, body: { detail: 'down' } } : { status: 200, body: mine }
     return null
   })
   vi.stubEnv('VITE_LIVE', '1')
@@ -117,6 +117,30 @@ describe('Profile names each group workspace as the switcher does (VQ-056)', () 
     const options = [...document.querySelectorAll<HTMLOptionElement>('form[aria-label="Change your default workspace"] option')].map((o) => o.textContent)
     expect(options).toContain('Engineering')
     expect(options).not.toContain('eng@example.com')
+    const github = document.querySelector<HTMLElement>('[data-profile-section="connections"] li[data-tenant="eng"]')
+    expect(github?.querySelector('b')?.textContent).toBe('Engineering')
+    expect(visible(document.body)).not.toContain('eng@example.com')
+  })
+})
+
+// `GET /v1/profile` now serves a group row's stored name itself, with the
+// group email as `principal` (BGD, 2026-11-04; part of #2688): the page draws
+// that name even when the switcher's read is not there to supply it.
+describe("Profile draws the name GET /v1/profile serves for a group workspace", () => {
+  const SERVED: Json = {
+    ...PROFILE,
+    workspaces: (PROFILE.workspaces as Json[]).map((w) =>
+      w.tenant_id === 'eng' ? { ...w, display_name: 'Engineering', principal: 'eng@example.com' }
+      : w.kind === 'group' ? { ...w, principal: w.display_name } : w),
+  }
+
+  it('names eng by its served name in the list, the default picker and the GitHub card, with the switcher unread', async () => {
+    await drawn(SERVED, null)
+    await waitFor(() => expect(row('eng')?.querySelector('b')?.textContent).toBe('Engineering'))
+    expect(row('smoke')?.querySelector('b')?.textContent).toBe('smoke')
+    expect(row('u-ops')?.querySelector('b')?.textContent).toBe('Your workspace (u-ops)')
+    const options = [...document.querySelectorAll<HTMLOptionElement>('form[aria-label="Change your default workspace"] option')].map((o) => o.textContent)
+    expect(options).toContain('Engineering')
     const github = document.querySelector<HTMLElement>('[data-profile-section="connections"] li[data-tenant="eng"]')
     expect(github?.querySelector('b')?.textContent).toBe('Engineering')
     expect(visible(document.body)).not.toContain('eng@example.com')

@@ -193,6 +193,8 @@ def run_check(tmp_path: Path):
             "GH_REPO": THIS_REPO,
             "GITHUB_STEP_SUMMARY": str(summary),
             "NO_COLOR": "1",
+            # A 502 is retried (gh_api_read_retry); without waiting here.
+            "SWARM_GH_RETRY_DELAYS": "0 0 0",
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_GRAPHQL": str(graphql),
             "FAKE_GH_GRAPHQL_EXIT": str(graphql_exit),

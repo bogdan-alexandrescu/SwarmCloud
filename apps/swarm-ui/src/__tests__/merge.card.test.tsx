@@ -410,29 +410,39 @@ function Routed({ initial }: { initial: string }) {
 
 describe('the workflow page', () => {
   it('draws the merge card in the merge step\'s inspector', async () => {
-    const w = workflow(STEPS)
-    api.loadWorkflowBoard.mockResolvedValue({
-      status: 'ok',
-      data: { workflows: [w], taskById: new Map([['t_impl', opener()], ['t_merge', merged()]]), statesDetail: null },
-      fetchedAt: T0,
-    } satisfies Result<WorkflowBoard>)
-    api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
-    render(<Routed initial="wf=wf_pr" />)
-    const node = await waitFor(() => {
-      const n = document.querySelector<HTMLElement>('button.node[data-step="merge"]')
-      expect(n).toBeTruthy()
-      return n!
-    })
-    if (node.getAttribute('aria-pressed') !== 'true') node.click()
-    const c = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.wf-inspect .wf-merge[data-merge]')
-      expect(el).toBeTruthy()
-      return el!
-    })
-    expect(c.dataset.merge).toBe('merged')
-    expect(c.textContent).toContain(COMMIT.slice(0, 7))
-    expect(c.querySelector('a[data-fact="pull-request"]')!.getAttribute('href')).toBe('https://github.com/acme/widgets/pull/7')
-    // One merge card, not the checklist beside it.
-    expect(document.querySelectorAll('.wf-inspect .wf-merge').length).toBe(1)
+    // The inspector starts folded below 1366px (graph-notes D·8b); this
+    // picks the step in it.
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    try {
+      const w = workflow(STEPS)
+      api.loadWorkflowBoard.mockResolvedValue({
+        status: 'ok',
+        data: { workflows: [w], taskById: new Map([['t_impl', opener()], ['t_merge', merged()]]), statesDetail: null },
+        fetchedAt: T0,
+      } satisfies Result<WorkflowBoard>)
+      api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
+      render(<Routed initial="wf=wf_pr" />)
+      // The canvas is off the page now (brief, "What moved where"): the step
+      // is a chip on the stage grid, and picking it opens the dock.
+      const chip = await waitFor(() => {
+        const n = document.querySelector<HTMLButtonElement>('.sg [data-step="merge"]')
+        expect(n).toBeTruthy()
+        return n!
+      })
+      if (chip.getAttribute('aria-pressed') !== 'true') chip.click()
+      const c = await waitFor(() => {
+        const el = document.querySelector<HTMLElement>('.wi-dock .wf-merge[data-merge]')
+        expect(el).toBeTruthy()
+        return el!
+      })
+      expect(c.dataset.merge).toBe('merged')
+      expect(c.textContent).toContain(COMMIT.slice(0, 7))
+      expect(c.querySelector('a[data-fact="pull-request"]')!.getAttribute('href')).toBe('https://github.com/acme/widgets/pull/7')
+      // One merge card, not the checklist beside it.
+      expect(document.querySelectorAll('.wi-dock .wf-merge').length).toBe(1)
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
+    }
   })
 })

@@ -32,6 +32,11 @@ INSTRUCTIONS = ("Read-only code graph of this repository at the indexed commit. 
                 "since the index or in this step. Answers page at 4 KiB: pass "
                 "next_cursor as cursor. call_graph walks calls; index pages any layer.")
 
+#: The `skill` shape's (tools.SHAPE_SKILL): its one tool sits behind the
+#: code-graph skill, so the server says only what every answer carries.
+SKILL_INSTRUCTIONS = ("Read-only code graph of this repository at the indexed commit; "
+                      "answers start with freshness and page at 4 KiB (cursor).")
+
 PARSE_ERROR = -32700
 INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
@@ -39,9 +44,13 @@ INVALID_PARAMS = -32602
 
 
 class GraphServer:
-    def __init__(self, snapshot: Snapshot, freshness: Freshness) -> None:
+    def __init__(self, snapshot: Snapshot, freshness: Freshness, *,
+                 shape: str | None = None) -> None:
         self.snapshot = snapshot
         self.freshness = freshness
+        #: The step's graph shape (`tools.listed`): what tools/list answers.
+        #: Every handler answers a call whatever the shape.
+        self.shape = shape
 
     def handle(self, message: Any) -> dict | None:
         """The response to one message, or None for a notification."""
@@ -63,12 +72,13 @@ class GraphServer:
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": __version__},
-                "instructions": INSTRUCTIONS,
+                "instructions": (SKILL_INSTRUCTIONS if self.shape == tools.SHAPE_SKILL
+                                 else INSTRUCTIONS),
             })
         if method == "ping":
             return _result(ident, {})
         if method == "tools/list":
-            return _result(ident, {"tools": tools.TOOLS})
+            return _result(ident, {"tools": tools.listed(self.shape)})
         if method == "tools/call":
             name = params.get("name")
             if not isinstance(name, str):

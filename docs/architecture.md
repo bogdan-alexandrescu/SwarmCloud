@@ -135,7 +135,10 @@ the 2026-10-21 system analysis found it running (read-only `gcloud` and
   (contract requests 63-66, for their internet path), and
   `claude-code-browser`, and `claude-code-large` (contract request 113,
   2026-10-22): `claude-code` on the `large` class, 8 CPU and 32 GiB, with a
-  14,400 s timeout, on-demand, for a lane that was OOM-killed or timed out.
+  14,400 s timeout, on-demand, for a lane that was OOM-killed or timed out,
+  and `claude-code-lightpanda` (contract request 127, 2026-10-31):
+  `claude-code` on the `agent-runtime-lightpanda` image and the `standard`
+  class, a headless browser with no live view, for DOM-only browser work.
 * **Cloud Run Jobs runs `mock`**, which reaches no internet, the disabled
   `post-verdict` and `claude-code-review`, and the fallback Jobs Terraform
   still keeps for `claude-code`, `indexer`, `generic`, `codex` and `merge`
@@ -422,7 +425,7 @@ ERROR. `GET /v1/resource-classes` serves the current version, which is how
 the console's pickers and the MCP plugin follow a resize without a deploy.
 
 Only GKE profiles follow: `browser`, `claude-code`, `claude-code-browser`,
-`claude-code-large`, `codex`, `generic`, `indexer` and `merge`. The Cloud Run profiles `mock`,
+`claude-code-large`, `claude-code-lightpanda`, `codex`, `generic`, `indexer` and `merge`. The Cloud Run profiles `mock`,
 `post-verdict` and `claude-code-review` always run at the code defaults,
 because Cloud Run fixes resources on the Job, not on the execution, and
 updating a shared Job in place would race between schedulers; the page lists

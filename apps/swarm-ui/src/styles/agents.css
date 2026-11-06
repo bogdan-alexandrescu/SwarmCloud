@@ -91,7 +91,12 @@
    still ends its last line with company. */
 .ag-tools { flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .ag-tools-tail { flex: none; display: flex; align-items: center; gap: var(--ctl-s2); white-space: nowrap; }
+/* The profile and owner filters are one pair (`.ag-pickers`), no box of its
+   own here: its filters are the group's items, as they were. The phone gives
+   it a line (below). */
+.ag-pickers { display: contents; }
 .ag-tools > .ag-filter,
+.ag-pickers > .ag-filter,
 .ag-tools-tail > .ag-filter,
 .ag-tools-tail > .ag-sort,
 .ag-tools > .c-seg { flex: none; }
@@ -495,7 +500,11 @@
    agent-details-v3.html A5 draws it. 480px was too low: see `.ag-head-row`. */
 @container ctl-inspector (max-width: 639px) {
   .ag-head-title { order: 3; flex-basis: 100%; }
-  .ag-head-hl { order: 4; flex-basis: 100%; }
+  /* ON ITS OWN LINE IT WRAPS AT ITS SPACES (TZ-CLOCKTIME, part of #2391):
+     `ended` is now the person's zone, labelled -- `1h 3m · attempt 10 of 10
+     · ended Oct 24 14:05 GMT+5:30` is about 380px of 13px sans, past a 390
+     phone's 358px column, which clips. Beside the title it stays one line. */
+  .ag-head-hl { order: 4; flex-basis: 100%; white-space: normal; }
 }
 /* NO STICKY HEADER BAND IN THE SPLIT. `.drawer::before` is a 50px strip of
    `--bg` at z-index 3, there to seat a sticky ✕ over a drawer whose content
@@ -1116,11 +1125,20 @@
      the tail's controls are items of the tools group itself (`contents`),
      the profile and the sort lead it, and the select gives way to the sort
      down to 7em (still capped at 16em, V061), its value whole in its title; Recent's state filter and the
-     checkboxes follow on the next row. */
+     checkboxes follow on the next row.
+     THE PROFILE AND THE OWNER SHARE A ROW NOW (#139 at 390, #3146). The Work
+     redesign's owner filter was a 44px line of its own, and with the
+     Needs-you row it put the first agent past the midpoint. The two pickers
+     are one unbreakable line (`.ag-pickers`), each select giving way to the
+     other down to 7em, its value whole in its title (V061); the sort leads
+     the next line with the checkboxes. */
   .ag-list-head .ag-tools-tail { display: contents; }
-  .ag-list-head .ag-tools > .ag-filter-profile { order: -2; flex: 1 1 7em; min-width: 7em; }
-  .ag-list-head .ag-tools > .ag-filter-profile > select { flex: 1 1 auto; width: 100%; }
+  .ag-list-head .ag-tools > .ag-pickers { order: -2; flex: 1 1 100%; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2); }
+  .ag-list-head .ag-pickers > .ag-filter { flex: 1 1 7em; min-width: 0; }
+  .ag-list-head .ag-pickers > .ag-filter > select { flex: 1 1 auto; width: 100%; }
   .ag-list-head .ag-tools-tail > .ag-sort { order: -1; }
+  /* THE NEEDS-YOU ROW AT REST IS ONE LINE on every Work screen now, so its
+     phone rule is in work/needs-you.css (the owner's pick, 4 November 2026). */
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }

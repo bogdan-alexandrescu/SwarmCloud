@@ -2129,6 +2129,23 @@ fi
 # printed, for the reason section 6 gives.
 step "Redaction-filter parity"
 
+# redact_wait_batch -- wait for every redact() started since the last call,
+# pid by pid, and mark a case whose redact() failed with a `.failed` file
+# holding its exit status. The case index is the pid's position counted back
+# from REDACT_SEEN, the count of cases started so far.
+redact_wait_batch() {
+  local n="${#REDACT_PIDS[@]}" k=0 rc
+  while [[ "${k}" -lt "${n}" ]]; do
+    rc=0
+    wait "${REDACT_PIDS[${k}]}" || rc=$?
+    if [[ "${rc}" -ne 0 ]]; then
+      printf '%s' "${rc}" >"${REDACT_DIR}/$(( REDACT_SEEN - n + k )).failed"
+    fi
+    k=$(( k + 1 ))
+  done
+  REDACT_PIDS=()
+}
+
 REDACT_FIXTURE="${REPO_ROOT}/tests/fixtures/redaction-parity.json"
 if [[ ! -s "${REDACT_FIXTURE}" ]]; then
   err "the redaction parity fixture is missing: ${REDACT_FIXTURE}"
@@ -2137,20 +2154,69 @@ else
   REDACT_CASES="$(jq '.cases | length' "${REDACT_FIXTURE}")"
 
   # The shell half: redact() as this file sourced it from common.sh.
+  #
+  # ONE jq CALL READS EVERY CASE. Four jq runs per case cost about 20 s over
+  # 114 cases and pushed this script past changed-guards.sh's PARITY_SECONDS.
+  # Each case is four NUL-terminated fields -- name, text, expected, and the
+  # `never` list one per line -- because texts span lines (the PEM cases) and
+  # NUL is the one byte a bash string cannot hold anyway. The trailing-newline
+  # trim is what `$(jq -r ...)` did to each field before. The records come in
+  # on fd 3 so that nothing in the loop can read them off stdin.
+  #
+  # REDACT() RUNS IN PARALLEL (owner's pick on #3286). One call costs about
+  # 147 ms -- its sed programs, not this loop -- so 114 of them in a row were
+  # about 16.7 s of this section's 17.3 s. The first pass starts each case's
+  # redact() in the background, REDACT_JOBS at a time, writing its output to
+  # a file per case and its exit status beside it; the second pass compares,
+  # in fixture order, exactly as before. A batch is waited on pid by pid, so a
+  # redact() that fails is reported against its case instead of vanishing in a
+  # bare `wait`, which always returns 0. Batches, not `wait -n`: bash 3.2.
+  REDACT_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  [[ "${REDACT_JOBS}" =~ ^[0-9]+$ && "${REDACT_JOBS}" -ge 1 ]] || REDACT_JOBS=4
+  # Capped: past 8 the sed processes only contend for the same few cores a CI
+  # runner has, and the check's own memory stays small.
+  [[ "${REDACT_JOBS}" -le 8 ]] || REDACT_JOBS=8
+  REDACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/redact-parity.XXXXXX")"
+  # shellcheck disable=SC2064 # expand REDACT_DIR now, it is set once
+  trap "rm -rf -- '${REDACT_DIR}'" EXIT
   REDACT_SEEN=0
+  REDACT_PIDS=()
+  while IFS= read -r -d '' -u 3 R_NAME \
+    && IFS= read -r -d '' -u 3 R_TEXT \
+    && IFS= read -r -d '' -u 3 R_WANT \
+    && IFS= read -r -d '' -u 3 R_NEVERS; do
+    printf '%s' "${R_NAME}" >"${REDACT_DIR}/${REDACT_SEEN}.name"
+    printf '%s' "${R_WANT}" >"${REDACT_DIR}/${REDACT_SEEN}.want"
+    printf '%s' "${R_NEVERS}" >"${REDACT_DIR}/${REDACT_SEEN}.never"
+    printf '%s\n' "${R_TEXT}" | redact >"${REDACT_DIR}/${REDACT_SEEN}.got" 3<&- &
+    REDACT_PIDS+=("$!")
+    REDACT_SEEN=$(( REDACT_SEEN + 1 ))
+    if [[ "${#REDACT_PIDS[@]}" -ge "${REDACT_JOBS}" ]]; then
+      redact_wait_batch
+    fi
+  done 3< <(jq -j '.cases[]
+    | (.name | tostring), (.text | tostring | sub("\n+$"; "")),
+      (.expected | tostring | sub("\n+$"; "")),
+      ((.never // []) | map(tostring) | join("\n"))
+    | . + "\u0000"' "${REDACT_FIXTURE}")
+  redact_wait_batch
+
   REDACT_DRIFT=0
   REDACT_AT=0
-  while [[ "${REDACT_AT}" -lt "${REDACT_CASES}" ]]; do
-    R_NAME="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].name' "${REDACT_FIXTURE}")"
-    R_TEXT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].text' "${REDACT_FIXTURE}")"
-    R_WANT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].expected' "${REDACT_FIXTURE}")"
-    R_GOT="$(printf '%s\n' "${R_TEXT}" | redact)"
+  while [[ "${REDACT_AT}" -lt "${REDACT_SEEN}" ]]; do
+    R_NAME="$(<"${REDACT_DIR}/${REDACT_AT}.name")"
+    R_WANT="$(<"${REDACT_DIR}/${REDACT_AT}.want")"
+    R_NEVERS="$(<"${REDACT_DIR}/${REDACT_AT}.never")"
+    R_GOT="$(<"${REDACT_DIR}/${REDACT_AT}.got")"
     R_LEFT=""
     while IFS= read -r R_NEVER; do
       [[ -n "${R_NEVER}" ]] || continue
       [[ "${R_GOT}" != *"${R_NEVER}"* ]] || R_LEFT="${R_NEVER}"
-    done < <(jq -r --argjson i "${REDACT_AT}" '.cases[$i].never[]' "${REDACT_FIXTURE}")
-    if [[ -n "${R_LEFT}" ]]; then
+    done <<<"${R_NEVERS}"
+    if [[ -e "${REDACT_DIR}/${REDACT_AT}.failed" ]]; then
+      err "redact() in common.sh FAILED on case '${R_NAME}' (exit $(<"${REDACT_DIR}/${REDACT_AT}.failed"))"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    elif [[ -n "${R_LEFT}" ]]; then
       err "redact() in common.sh printed what case '${R_NAME}' must never show: ${R_LEFT}"
       REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
     elif [[ "${R_GOT}" != "${R_WANT}" ]]; then
@@ -2159,11 +2225,13 @@ else
       err "    got      : ${R_GOT}"
       REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
     fi
-    REDACT_SEEN=$(( REDACT_SEEN + 1 ))
     REDACT_AT=$(( REDACT_AT + 1 ))
   done
   if [[ "${REDACT_SEEN}" -eq 0 ]]; then
     err "the redaction fixture holds no cases; nothing was compared"
+    FAILED=1
+  elif [[ "${REDACT_SEEN}" -ne "${REDACT_CASES}" ]]; then
+    err "the shell half read ${REDACT_SEEN} of ${REDACT_CASES} cases; the rest were not compared"
     FAILED=1
   elif [[ "${REDACT_DRIFT}" -gt 0 ]]; then
     err "${REDACT_DRIFT} of ${REDACT_SEEN} redaction cases differ in the shell filter"
@@ -2226,6 +2294,281 @@ PY
       ok "swarm_api.redaction gives the fixture's output on all ${PY_SEEN} cases"
     fi
   fi
+fi
+
+# -- 18. claude-code-lightpanda (docs/design/lightpanda-runtime.md §6.5) ----
+# The profile's promise is "never receives Chromium, never claims a live
+# view", and the five facts behind it live in five files no one import joins:
+# the frozen catalogue's entry (live_browser false, no `browser_tool` input),
+# its Terraform mirror (section 13 compares the fields of every entry that
+# exists; this asserts the entry exists), the runner's CDP port (the
+# live-browser pods own 9222, and a Lightpanda on it would be read as a live
+# view), the runner's denied `screenshot` (it crashes on heavy pages and its
+# picture is not a live view), and the image's amd64 pin, which the tool
+# mirror the build verifies against must carry too. The runner module is read
+# with ast, not imported: importing agent_worker needs the worker's
+# dependencies, and this script needs none of them.
+step "claude-code-lightpanda parity"
+
+if ! LIGHTPANDA_PARITY="$(python3 - "${REPO_ROOT}" 2>&1 <<'PY'
+import ast
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+NAME = "claude-code-lightpanda"
+REPORT = []
+
+
+def emit(status, item, detail):
+    REPORT.append("%s|%s|%s" % (status, item, detail.replace("\n", " ")))
+
+
+def read(rel):
+    path = root / rel
+    return path.read_text() if path.is_file() else None
+
+
+sys.path.insert(0, str(root / "apps" / "common"))
+from swarm_common import profiles as frozen_profiles
+
+profile = frozen_profiles.RUNNER_PROFILES.get(NAME)
+if profile is None:
+    emit("DRIFT", NAME, "the frozen catalogue has no %s profile, so nothing below "
+         "has a profile to describe" % NAME)
+else:
+    # 1. No live view and no browser-tool choice.
+    if profile.live_browser is not False:
+        emit("DRIFT", "live_browser", "%s declares live_browser=%r; it has no display "
+             "and must claim no live view" % (NAME, profile.live_browser))
+    else:
+        emit("OK", "live_browser", "%s declares live_browser false" % NAME)
+    if "browser_tool" in (profile.inputs or {}):
+        emit("DRIFT", "browser_tool", "%s declares a browser_tool input; its agents get "
+             "Lightpanda only, never a choice of Chromium tools" % NAME)
+    else:
+        emit("OK", "browser_tool", "%s declares no browser_tool input" % NAME)
+
+    # 2. The Terraform mirror has the entry, with the catalogue image, class
+    # and backend.
+    locals_tf = read("terraform/infra/locals.tf") or ""
+    entry = re.search(r"^    \"" + re.escape(NAME) + r"\" = \{\n(.*?)^    \}", locals_tf, re.M | re.S)
+    if entry is None:
+        emit("DRIFT", "locals.tf", "terraform/infra/locals.tf runner_profiles has no "
+             "%s entry, so Terraform makes no Job for it" % NAME)
+    else:
+        def field(key):
+            found = re.search(r"^\s*" + key + r"\s*=\s*\"([^\"]*)\"", entry.group(1), re.M)
+            return found.group(1) if found else None
+
+        expected = (("image", profile.image), ("resource_class", profile.resource_class),
+                    ("backend", getattr(profile.backend, "value", profile.backend)))
+        wrong = ["%s is %r, the catalogue says %r" % (key, field(key), want)
+                 for key, want in expected if field(key) != want]
+        if wrong:
+            emit("DRIFT", "locals.tf", "the %s entry in terraform/infra/locals.tf: %s"
+                 % (NAME, "; ".join(wrong)))
+        else:
+            emit("OK", "locals.tf", "terraform/infra/locals.tf mirrors %s (%s, %s, %s)"
+                 % (NAME, expected[0][1], expected[1][1], expected[2][1]))
+
+# 3 and 4. The runner module: its CDP_PORT and DISALLOWED_TOOLS.
+RUNNER = "apps/agent-worker/agent_worker/lightpanda.py"
+source = read(RUNNER)
+assigned = {}
+if source is not None:
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            assigned[node.targets[0].id] = node.value
+
+port = assigned.get("CDP_PORT")
+if not (isinstance(port, ast.Constant) and isinstance(port.value, int)):
+    emit("DRIFT", "CDP_PORT", "%s no longer assigns CDP_PORT an integer literal" % RUNNER)
+elif port.value == 9222:
+    emit("DRIFT", "CDP_PORT", "%s CDP_PORT is 9222, the port of the live-browser pods; "
+         "Lightpanda would be taken for a live view" % RUNNER)
+else:
+    emit("OK", "CDP_PORT", "%s CDP_PORT is %d, not the live-browser 9222" % (RUNNER, port.value))
+
+
+def literal_tail(element):
+    # A tool is a plain string or an f-string ending in a literal, e.g.
+    # f"mcp__{MCP_SERVER_NAME}__screenshot"; the tool name itself is that tail.
+    if isinstance(element, ast.Constant) and isinstance(element.value, str):
+        return element.value
+    if isinstance(element, ast.JoinedStr) and element.values:
+        last = element.values[-1]
+        if isinstance(last, ast.Constant) and isinstance(last.value, str):
+            return last.value
+    return None
+
+
+denied = assigned.get("DISALLOWED_TOOLS")
+if not isinstance(denied, (ast.Tuple, ast.List)):
+    emit("DRIFT", "DISALLOWED_TOOLS", "%s no longer assigns DISALLOWED_TOOLS a tuple literal" % RUNNER)
+elif not any(re.search(r"(^|__)screenshot$", literal_tail(e) or "") for e in denied.elts):
+    emit("DRIFT", "DISALLOWED_TOOLS", "%s DISALLOWED_TOOLS does not deny screenshot" % RUNNER)
+else:
+    emit("OK", "DISALLOWED_TOOLS", "%s DISALLOWED_TOOLS denies screenshot" % RUNNER)
+
+# 5. The image pins the amd64 binary, and the tool mirror carries that hash.
+DOCKERFILE = "images/agent-runtime-lightpanda/Dockerfile"
+MIRROR = "images/agent-runtime-base/tool-mirror.sha256"
+pin = re.search(r"^ARG LIGHTPANDA_SHA256_AMD64=([0-9a-f]{64})\s*$", read(DOCKERFILE) or "", re.M)
+mirrored = re.findall(r"^([0-9a-f]{64})\s", read(MIRROR) or "", re.M)
+if pin is None:
+    emit("DRIFT", "LIGHTPANDA_SHA256_AMD64", "%s does not pin LIGHTPANDA_SHA256_AMD64 "
+         "to a sha256" % DOCKERFILE)
+elif pin.group(1) not in mirrored:
+    emit("DRIFT", "LIGHTPANDA_SHA256_AMD64", "%s pins %s, which tool-mirror.sha256 (%s) "
+         "does not carry" % (DOCKERFILE, pin.group(1), MIRROR))
+else:
+    emit("OK", "LIGHTPANDA_SHA256_AMD64", "%s pins %s, and %s carries it"
+         % (DOCKERFILE, pin.group(1)[:12], MIRROR))
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the claude-code-lightpanda parity probe failed to run:"
+  printf '%s\n' "${LIGHTPANDA_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  # Counted and printed, for the reason section 6 gives.
+  LIGHTPANDA_SEEN=0
+  while IFS='|' read -r L_STATUS L_NAME L_DETAIL; do
+    [[ -n "${L_STATUS}" ]] || continue
+    LIGHTPANDA_SEEN=$(( LIGHTPANDA_SEEN + 1 ))
+    case "${L_STATUS}" in
+      OK) ok "${L_NAME}: ${L_DETAIL}" ;;
+      DRIFT)
+        err "${L_NAME} has DRIFTED: ${L_DETAIL}"
+        FAILED=1
+        ;;
+      *)
+        err "unexpected claude-code-lightpanda parity output: ${L_STATUS}|${L_NAME}|${L_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${LIGHTPANDA_PARITY}"
+  if [[ "${LIGHTPANDA_SEEN}" -eq 0 ]]; then
+    err "the claude-code-lightpanda probe printed no assertions at all; nothing was checked"
+    FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 13. A lease's units per pool (contract request 129, #2950), restated in jq.
+# --------------------------------------------------------------------------
+# swarm_common.models.pool_units_for decides what a lease takes in each pool
+# (1 in a provider pool, the resource units elsewhere) and held_pool_units what
+# a stored lease gives back (its `pool_units`, or `units` in every pool on a
+# lease from before the request). Two jq files restate it:
+#   * concurrency-judge.jq's `held_units`, invariant 3's exact pool check;
+#   * pool-units.jq's provider branch, `make pool-check`'s smallest useful limit.
+# The judge is run with every pool's `active` at -1, so every pool is a
+# mismatch and its `lease_units` -- the jq's sum of held units -- is printed.
+POOL_UNIT_CASES='[
+  {"id": "new-large", "task_id": "t1", "units": 4,
+   "pools": ["global", "tenant:eng", "resource:large", "runner:claude-code-large",
+             "backend:GKE_AUTOPILOT", "provider:anthropic", "provider:anthropic:tenant:eng"],
+   "pool_units": {"global": 4, "tenant:eng": 4, "resource:large": 4,
+                  "runner:claude-code-large": 4, "backend:GKE_AUTOPILOT": 4,
+                  "provider:anthropic": 1, "provider:anthropic:tenant:eng": 1}},
+  {"id": "old-large", "task_id": "t2", "units": 4,
+   "pools": ["global", "tenant:eng", "resource:large", "provider:anthropic",
+             "provider:anthropic:tenant:eng"]},
+  {"id": "old-unitless", "task_id": "t3",
+   "pools": ["global", "tenant:eng", "provider:anthropic"]},
+  {"id": "new-standard", "task_id": "t4", "units": 1,
+   "pools": ["global", "tenant:eng", "provider:anthropic"],
+   "pool_units": {"global": 1, "tenant:eng": 1, "provider:anthropic": 1}}
+]'
+JUDGE_HELD="$(
+  jq -c '{at: "2026-11-01T00:00:00Z", leases: ., tasks: [],
+          pools: ([ .[].pools[] ] | unique | map({id: ., active: -1}))}' <<<"${POOL_UNIT_CASES}" \
+  | jq -c --arg mode sample --argjson concurrency '[]' --argjson pending '[]' \
+      --argjson pre_running '[]' --argjson grace 0 -f "${SWARM_LIB_DIR}/concurrency-judge.jq" \
+  | jq -c '.pool_mismatches | map({key: .pool, value: .lease_units}) | from_entries'
+)" || JUDGE_HELD="(concurrency-judge.jq failed)"
+PY_HELD="$(python3 - "${REPO_ROOT}" "${POOL_UNIT_CASES}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import held_pool_units
+
+held = {}
+for lease in json.loads(sys.argv[2]):
+    for name, units in held_pool_units(
+        lease["pools"], int(lease.get("units", 1)), lease.get("pool_units")
+    ).items():
+        held[name] = held.get(name, 0) + units
+print(json.dumps(dict(sorted(held.items())), separators=(",", ":")))
+PY
+)"
+if [[ "$(jq -cS . <<<"${JUDGE_HELD}" 2>/dev/null || true)" == "$(jq -cS . <<<"${PY_HELD}")" ]]; then
+  ok "held_pool_units: concurrency-judge.jq sums what each lease holds as the frozen model does"
+else
+  err "concurrency-judge.jq's held_units has DRIFTED from swarm_common.models.held_pool_units:"
+  err "    frozen model        : ${PY_HELD}"
+  err "    concurrency-judge.jq: ${JUDGE_HELD}"
+  FAILED=1
+fi
+
+UNIT_CATALOGUE="$(python3 - "${REPO_ROOT}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import pool_names_for
+from swarm_common.profiles import RUNNER_PROFILES, default_sizes, resolve_backend
+
+classes = {name: {"units": size.units} for name, size in default_sizes().items()}
+profiles = {
+    name: {"resource_class": p.resource_class, "backend": resolve_backend(p).value,
+           "provider": p.provider}
+    for name, p in RUNNER_PROFILES.items()
+}
+pools = sorted({
+    pool
+    for name, p in RUNNER_PROFILES.items()
+    for pool in pool_names_for(tenant_id="eng", provider=p.provider,
+                               resource_class=p.resource_class, runner_profile=name,
+                               backend=resolve_backend(p).value)
+})
+print(json.dumps({"classes": classes, "profiles": profiles, "pools": pools}))
+PY
+)"
+UNIT_POOLS_SEEN=0
+UNIT_DRIFT=""
+while IFS= read -r U_POOL; do
+  [[ -n "${U_POOL}" ]] || continue
+  UNIT_POOLS_SEEN=$(( UNIT_POOLS_SEEN + 1 ))
+  U_GOT="$(jq -c --argjson classes "$(jq -c .classes <<<"${UNIT_CATALOGUE}")" \
+             --argjson profiles "$(jq -c .profiles <<<"${UNIT_CATALOGUE}")" \
+             --arg pool "${U_POOL}" -n -f "${SWARM_LIB_DIR}/pool-units.jq")"
+  U_WANT="$(python3 - "${REPO_ROOT}" "${U_POOL}" "${U_GOT}" "${UNIT_CATALOGUE}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import pool_units_for
+
+got = json.loads(sys.argv[3])
+classes = json.loads(sys.argv[4])["classes"]
+print("null" if got is None else pool_units_for(sys.argv[2], classes[got["class"]]["units"]))
+PY
+)"
+  if [[ "$(jq -c '.units // null' <<<"${U_GOT}")" != "${U_WANT}" ]]; then
+    UNIT_DRIFT="${UNIT_DRIFT} ${U_POOL}=${U_GOT}(frozen ${U_WANT})"
+  fi
+done < <(jq -r '.pools[]' <<<"${UNIT_CATALOGUE}")
+if [[ "${UNIT_POOLS_SEEN}" -eq 0 ]]; then
+  err "pool_units_for parity read no pools at all; nothing was checked"
+  FAILED=1
+elif [[ -z "${UNIT_DRIFT}" ]]; then
+  ok "pool_units_for: pool-units.jq charges ${UNIT_POOLS_SEEN} catalogue pools as the frozen model does"
+else
+  err "pool-units.jq has DRIFTED from swarm_common.models.pool_units_for:${UNIT_DRIFT}"
+  FAILED=1
 fi
 
 hr

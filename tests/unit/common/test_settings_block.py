@@ -93,9 +93,85 @@ def test_the_covered_fields_are_the_requests():
         ),
         # Contract request 119 (#2459): the workspace's per-agent budget.
         "budget": ("unit", "amount"),
+        # Contract request 128 (JEV-LANES, PR 2905): the lane quality gates.
+        "quality_gates": ("jev",),
+        # Contract request 136 (AQ-WORK-CONTRACT, part of #2688): the catalogue
+        # plugins a workspace's steps may name.
+        "plugins": ("allowed",),
+        # Contract request 138 (JEV-SUBMISSION-REVIEW, part of #2688): the
+        # workspace's opt-in to Jev's review of its work contracts.
+        "contract_review": ("enabled",),
     }
     with pytest.raises(TypeError):
         SETTINGS_MAC_FIELDS["top"] = ()  # type: ignore[index]
+
+
+#: Every block that existed before contract request 136, with the bytes its
+#: MAC covered then. Adding the "plugins" block must not change one of them,
+#: so every MAC already stored still verifies.
+BEFORE_PLUGINS = {
+    "top": ({"judgment_backend": "typesafe"},
+            b'{"block":"top","fields":{"judgment_backend":"typesafe"},'
+            b'"purpose":"swarm.settings/v1","tenant_id":"team-a"}'),
+    "merge": (MERGE,
+              b'{"block":"merge","fields":{"max_train_age_minutes":30,"mode":"train",'
+              b'"train_size":4},"purpose":"swarm.settings/v1","tenant_id":"team-a"}'),
+    "code_intelligence": ({"jev": "on"},
+                          b'{"block":"code_intelligence","fields":{"context":null,'
+                          b'"context_ab":null,"graph_delivery":null,"jev":"on",'
+                          b'"judgment_backend":null},"purpose":"swarm.settings/v1",'
+                          b'"tenant_id":"team-a"}'),
+    "budget": ({"unit": "usd", "amount": 5},
+               b'{"block":"budget","fields":{"amount":5,"unit":"usd"},'
+               b'"purpose":"swarm.settings/v1","tenant_id":"team-a"}'),
+    "quality_gates": ({"jev": "on"},
+                      b'{"block":"quality_gates","fields":{"jev":"on"},'
+                      b'"purpose":"swarm.settings/v1","tenant_id":"team-a"}'),
+}
+
+
+@pytest.mark.parametrize("block", sorted(BEFORE_PLUGINS))
+def test_a_block_without_plugins_signs_the_same_bytes_as_before(block):
+    fields, pinned = BEFORE_PLUGINS[block]
+    assert canonical_settings_block(tenant_id="team-a", block=block, fields=fields) == pinned
+    # A workspace document that carries a plugins list changes no other block's bytes.
+    with_plugins = {**fields, "plugins": {"allowed": ["gstack"]}, "allowed": ["gstack"]}
+    if block != "top":
+        assert canonical_settings_block(
+            tenant_id="team-a", block=block, fields=with_plugins
+        ) == pinned
+
+
+def test_the_plugins_block_signs_the_allowed_list_and_nothing_else():
+    out = canonical_settings_block(
+        tenant_id="team-a", block="plugins",
+        fields={"allowed": ["gstack"], "mode": "unattended"},
+    )
+    assert out == (
+        b'{"block":"plugins","fields":{"allowed":["gstack"]},'
+        b'"purpose":"swarm.settings/v1","tenant_id":"team-a"}'
+    )
+    unset = canonical_settings_block(tenant_id="team-a", block="plugins", fields={})
+    assert json.loads(unset)["fields"] == {"allowed": None}
+    assert canonical_settings_block(
+        tenant_id="team-b", block="plugins", fields={"allowed": ["gstack"]}
+    ) != out
+
+
+def test_the_contract_review_block_signs_enabled_and_nothing_else():
+    """Contract request 138: the bytes swarm-api signed for the block before the
+    frozen list named it (`judgment._canonical_block`), so no MAC changes."""
+    out = canonical_settings_block(
+        tenant_id="eng", block="contract_review",
+        fields={"enabled": True, "set_at": "2026-11-04T00:00:00Z",
+                "set_by": "alice@example.com", "mac": {"v": 1}},
+    )
+    assert out == (
+        b'{"block":"contract_review","fields":{"enabled":true},'
+        b'"purpose":"swarm.settings/v1","tenant_id":"eng"}'
+    )
+    unset = canonical_settings_block(tenant_id="eng", block="contract_review", fields={})
+    assert json.loads(unset)["fields"] == {"enabled": None}
 
 
 @pytest.mark.parametrize("block", ["", "Merge", "tenant", "metadata"])

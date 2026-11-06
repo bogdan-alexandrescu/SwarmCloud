@@ -257,8 +257,20 @@ def resolve_git_token(
     provider: str = GIT_PROVIDER,
     broker: Any | None = None,
     write: bool = False,
+    app_installation: bool = False,
 ) -> str | None:
     """The task's forge token, or None when the tenant has not registered one.
+
+    `app_installation` (DAYONE-SERVICE-APP-TOKEN): the task's SIGNED
+    submitter is a platform service account (`Worker._service_run`), so the
+    broker is asked first, whatever FORGE_BROKER says, for an App
+    installation token minted for this run alone. Its refusal `app_installation_unavailable`, or this
+    worker's own `forge_broker_unconfigured` / `attempt_key_unregistered`
+    (nothing was asked), falls through to the slot read below: today's
+    service rule. Any other refusal -- a superseded attempt, a write on a task
+    signed for read -- raises as it would for a person's slot. swarm-api
+    decides from the same signed fields, and a rewritten one fails its
+    signature check.
 
     `provider` is the suffix `forge_suffix` read from the task's SIGNED
     `forge_credential` (contract request 54): `git`, the tenant's own token,
@@ -304,6 +316,18 @@ def resolve_git_token(
     """
     if not FORGE_CREDENTIAL.fullmatch(provider or ""):
         raise SecretError(f"{provider!r} is not a forge credential suffix")
+    if app_installation and broker is not None:
+        from .forgebroker import (
+            APP_INSTALLATION_UNAVAILABLE, NO_ATTEMPT_KEY, NO_BROKER, ForgeCredentialRefused,
+        )
+
+        try:
+            return broker.fetch(tenant, provider, write=write)
+        except ForgeCredentialRefused as exc:
+            if exc.code not in (APP_INSTALLATION_UNAVAILABLE, NO_BROKER, NO_ATTEMPT_KEY):
+                raise
+            logger.info("no installation token minted for this run; reading its slot",
+                        secret=tenant.secret_name(provider), decision=exc.code)
     if user_slot_hash(provider) is not None:
         from .forgebroker import ForgeCredentialRefused, NO_BROKER
 

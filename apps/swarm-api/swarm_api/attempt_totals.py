@@ -14,8 +14,10 @@ So `GET /v1/tasks/{id}` and `GET /v1/workflows/{id}` serve, on each task:
   attempts                 how many attempt documents the task has;
   attempts_with_cost       how many of them recorded a `cost_usd`;
   cost_usd_total           every recorded `cost_usd`, summed;
-  cost_incomplete          true when any attempt recorded no cost, so the
-                           total is a FLOOR ("at least $X");
+  cost_incomplete          true when any attempt recorded no cost, or the
+                           task's `result_summary.cost_incomplete` is true
+                           (a session's usage the worker could not read), so
+                           the total is a FLOOR ("at least $X");
   duration_s_total         every ended attempt's started_at -> completed_at;
   duration_incomplete      true when any attempt has no start or no end;
   first_started_at         the earliest attempt start;
@@ -37,15 +39,20 @@ comes back at its limit, the task gets every figure null and
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from typing import Any, Iterable, Mapping, Sequence
 
 from google.cloud.firestore_v1.base_query import FieldFilter
-from swarm_common.models import Attempt
+from swarm_common.models import Attempt, Task
 
 from .codec import attempt_from_dict
 from .store import ATTEMPTS
 
 log = logging.getLogger(__name__)
+
+#: A creation time for an attempt document a merge-only write left without one.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 #: Firestore's ceiling on the values of one `in` filter.
 IN_LIMIT = 30
@@ -54,6 +61,9 @@ IN_LIMIT = 30
 #: task's attempts are bounded by its `max_attempts`, which is far below this;
 #: a chunk that reaches it is reported unread rather than summed short.
 PER_TASK_CAP = 50
+
+#: Chunk queries in flight at once: seven covers a full 200-row page.
+MAX_CONCURRENT_CHUNKS = 8
 
 
 def _seconds(attempt: Attempt) -> float | None:
@@ -98,6 +108,21 @@ def attempt_totals(attempts: Iterable[Attempt]) -> dict[str, Any]:
     }
 
 
+#: The figures `attempt_totals` returns, in order: what a stored copy must
+#: carry, every one, to be served.
+TOTAL_KEYS: tuple[str, ...] = (
+    "attempts",
+    "attempts_with_cost",
+    "cost_usd_total",
+    "cost_incomplete",
+    "duration_s_total",
+    "duration_incomplete",
+    "first_started_at",
+    "last_attempt_cost_usd",
+    "last_attempt_duration_s",
+)
+
+
 def unread_totals() -> dict[str, Any]:
     """Every figure null, and why: the attempts could not be read."""
     return {
@@ -121,40 +146,194 @@ def totals_for(db: Any, tenant_id: str, task_ids: Sequence[str]) -> dict[str, di
     serve -- the read `outcomes.Outcomes._attempts` already makes. Every task
     asked for gets an entry: its totals, or `unread_totals()` when its chunk
     could not be read whole.
+
+    THE CHUNKS ARE READ AT ONCE (#2688, LOAD-SPEED): a 200-row page is seven
+    independent queries, and run one after another they were the longest
+    chain of round trips in `GET /v1/tasks`. Each chunk keeps its own failure
+    rule, so one chunk that fails marks only its own tasks unread.
     """
     wanted = list(dict.fromkeys(t for t in task_ids if t))
+    chunks = [wanted[start : start + IN_LIMIT] for start in range(0, len(wanted), IN_LIMIT)]
     out: dict[str, dict[str, Any]] = {}
-    for start in range(0, len(wanted), IN_LIMIT):
-        chunk = wanted[start : start + IN_LIMIT]
-        limit = PER_TASK_CAP * len(chunk)
-        try:
-            query = (
-                db.collection(ATTEMPTS)
-                .where(filter=FieldFilter("tenant_id", "==", tenant_id))
-                .where(filter=FieldFilter("task_id", "in", chunk))
-                .limit(limit)
-            )
-            docs = [snap.to_dict() or {} for snap in query.stream()]
-            if len(docs) >= limit:
-                raise OverflowError(f"{len(docs)} attempt documents for {len(chunk)} task(s)")
-            by_task: dict[str, list[Attempt]] = {t: [] for t in chunk}
-            members = set(chunk)
-            for doc in docs:
-                # The query filters both; restated where a fake or an index
-                # mistake cannot move the tenant boundary.
-                if doc.get("tenant_id") != tenant_id or doc.get("task_id") not in members:
-                    continue
-                by_task[doc["task_id"]].append(attempt_from_dict(doc))
-        except Exception as exc:  # the tasks were read; only their attempts were not
-            log.warning("attempt totals read failed: %s", type(exc).__name__)
-            out.update({t: unread_totals() for t in chunk})
-            continue
-        out.update({t: {**attempt_totals(rows), "attempts_read": "ok"} for t, rows in by_task.items()})
+    if len(chunks) <= 1:
+        for chunk in chunks:
+            out.update(_chunk_totals(db, tenant_id, chunk))
+        return out
+    with ThreadPoolExecutor(max_workers=min(len(chunks), MAX_CONCURRENT_CHUNKS)) as pool:
+        for found in pool.map(lambda chunk: _chunk_totals(db, tenant_id, chunk), chunks):
+            out.update(found)
     return out
 
 
+def _chunk_totals(db: Any, tenant_id: str, chunk: list[str]) -> dict[str, dict[str, Any]]:
+    """One chunk of at most 30 tasks: their totals, or every one unread."""
+    limit = PER_TASK_CAP * len(chunk)
+    try:
+        query = (
+            db.collection(ATTEMPTS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("task_id", "in", chunk))
+            .limit(limit)
+        )
+        docs = [snap.to_dict() or {} for snap in query.stream()]
+        if len(docs) >= limit:
+            raise OverflowError(f"{len(docs)} attempt documents for {len(chunk)} task(s)")
+        by_task: dict[str, list[Attempt]] = {t: [] for t in chunk}
+        members = set(chunk)
+        for doc in docs:
+            # The query filters both; restated where a fake or an index
+            # mistake cannot move the tenant boundary.
+            if doc.get("tenant_id") != tenant_id or doc.get("task_id") not in members:
+                continue
+            by_task[doc["task_id"]].append(attempt_from_dict(doc))
+    except Exception as exc:  # the tasks were read; only their attempts were not
+        log.warning("attempt totals read failed: %s", type(exc).__name__)
+        return {t: unread_totals() for t in chunk}
+    return {t: {**attempt_totals(rows), "attempts_read": "ok"} for t, rows in by_task.items()}
+
+
+def summary_says_incomplete(summary: Any) -> bool:
+    """Whether the worker marked the task's cost a floor in `result_summary`.
+
+    WHY (owner's pick "Worker follow-up", 2026-11-03, part of #2688). The
+    worker writes `result_summary.cost_incomplete: true` when a session's
+    usage was not read, so an attempt can record a PARTIAL `cost_usd`; the
+    attempt count alone would serve that total as complete. Only a literal
+    true counts: a summary without the key keeps the attempts' answer.
+    """
+    return isinstance(summary, Mapping) and summary.get("cost_incomplete") is True
+
+
+def _floored(found: dict[str, Any], summary: Any) -> dict[str, Any]:
+    """`found` with `cost_incomplete` true when the summary says so. Only over
+    read totals: an unread task keeps every figure null."""
+    if found.get("attempts_read") != "ok" or not summary_says_incomplete(summary):
+        return found
+    return {**found, "cost_incomplete": True}
+
+
 def with_totals(row: dict[str, Any], totals: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """`row` (a `task_to_api` row) with its task's totals added beside it."""
-    row.update(totals.get(str(row.get("id")), unread_totals()))
+    """`row` (a `task_to_api` row) with its task's totals added beside it.
+
+    The row's own `result_summary` can mark the cost a floor
+    (`summary_says_incomplete`); the summary view drops that key from the
+    row, so `totals_for_page` folds it in from the task document instead.
+    """
+    found = totals.get(str(row.get("id")), unread_totals())
+    row.update(_floored(found, row.get("result_summary")))
     return row
 
+
+
+# --------------------------------------------------------------------------
+# The stored copy (contract request 132, accepted 2026-11-01)
+# --------------------------------------------------------------------------
+#
+# `Task.attempt_totals` is a READ-SIDE VIEW ONLY: `attempt_totals()` over the
+# task's attempt documents, plus `as_of`, the attempt whose write stored it.
+# Rewritten by whoever owns the task's current attempt when that attempt
+# starts, records its spend and ends (the worker's `control.py` on the direct
+# path, `attemptstate.py` on the state API), each time from the documents
+# themselves, so a lost write is corrected by the next. `GET /v1/tasks`
+# serves it when it is the CURRENT attempt's (`served_totals`) and derives the
+# rest as above. Nothing that admits, leases or counts capacity reads it.
+
+
+def task_attempt_docs(db: Any, tenant_id: str, task_id: str) -> list[dict[str, Any]]:
+    """Every attempt document of one task, in its tenant: one bounded query.
+
+    Raises `OverflowError` at `PER_TASK_CAP`, so a writer never stores a total
+    summed short; a writer that cannot read stores nothing, and the reader
+    derives.
+    """
+    query = (
+        db.collection(ATTEMPTS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("task_id", "==", task_id))
+        .limit(PER_TASK_CAP)
+    )
+    docs = [snap.to_dict() or {} for snap in query.stream()]
+    if len(docs) >= PER_TASK_CAP:
+        raise OverflowError(f"{len(docs)} attempt documents for one task")
+    return [d for d in docs if d.get("tenant_id") == tenant_id and d.get("task_id") == task_id]
+
+
+def stored_totals(
+    docs: Iterable[Mapping[str, Any]],
+    *,
+    attempt_id: str,
+    generation: int,
+    own: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`Task.attempt_totals` as a writer stores it.
+
+    `docs` are the task's attempt documents as read; `own` is what THIS
+    write puts on the writer's own attempt (its end, its spend), merged over
+    the document read, because the write commits beside the stored copy.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for doc in docs:
+        rows[str(doc.get("attempt_id"))] = dict(doc)
+    if own is not None:
+        rows[attempt_id] = {
+            "attempt_id": attempt_id, "generation": generation,
+            **rows.get(attempt_id, {}), **dict(own),
+        }
+    attempts = [attempt_from_dict(_with_defaults(d, attempt_id, generation)) for d in rows.values()]
+    return {**attempt_totals(attempts),
+            "as_of": {"attempt_id": attempt_id, "generation": generation}}
+
+
+def _with_defaults(doc: Mapping[str, Any], attempt_id: str, generation: int) -> dict[str, Any]:
+    """An attempt document `attempt_from_dict` can decode, however partial a
+    merge-only write left it (the end landing before the start)."""
+    out = dict(doc)
+    out.setdefault("attempt_id", attempt_id)
+    out.setdefault("generation", generation)
+    out.setdefault("task_id", "")
+    out.setdefault("tenant_id", "")
+    out.setdefault("lease_id", "")
+    out.setdefault("backend", "")
+    if out.get("created_at") is None:
+        out["created_at"] = out.get("started_at") or out.get("completed_at") or _EPOCH
+    return out
+
+
+def served_totals(task: Task) -> dict[str, Any] | None:
+    """The stored copy, as a row serves it, or None when the reader must derive.
+
+    Served only when it is the CURRENT attempt's (`as_of.generation ==
+    current_generation`): a newer attempt the scheduler has leased since has a
+    document the copy does not count. None too for an older document, one with
+    no copy, or a malformed one.
+    """
+    stored = task.attempt_totals
+    if not isinstance(stored, Mapping):
+        return None
+    as_of = stored.get("as_of")
+    if not isinstance(as_of, Mapping) or as_of.get("generation") != task.current_generation:
+        return None
+    if any(key not in stored for key in TOTAL_KEYS):
+        return None
+    return {**{key: stored[key] for key in TOTAL_KEYS}, "attempts_read": "ok"}
+
+
+def totals_for_page(db: Any, tenant_id: str, tasks: Sequence[Task]) -> dict[str, dict[str, Any]]:
+    """Each task's totals: its stored copy where current, else `totals_for`'s
+    batched read for only the tasks without one."""
+    out: dict[str, dict[str, Any]] = {}
+    pending: list[str] = []
+    for task in tasks:
+        served = served_totals(task) if task.tenant_id == tenant_id else None
+        if served is not None:
+            out[task.id] = served
+        else:
+            pending.append(task.id)
+    if pending:
+        out.update(totals_for(db, tenant_id, pending))
+    # The list's summary view serves no `result_summary` for `with_totals` to
+    # read, so the worker's floor mark is folded in here, off the document.
+    for task in tasks:
+        if task.id in out:
+            out[task.id] = _floored(out[task.id], task.result_summary)
+    return out

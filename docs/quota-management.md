@@ -70,6 +70,23 @@ minutes of under-use.
 one pool account's window is that account's, below. Waiting for a second data point
 means the second data point arrives as a wall of 429s.
 
+**Recovery also runs on the clock, up to the pool's ceiling (owner,
+2026-11-02).** Counting successes alone, a workspace halved from 40 to 7 needed
+about 660 clean agent finishes to climb back, which is days. So, on top of the
+success-based climb, the target rises by one for every
+`AIMD_RECOVERY_INTERVAL_SECONDS` (300) without a workspace-wide refusal. No
+timer does it: the climb is worked out whenever the target is read, from the
+time of the last cut or the last climb, kept on the quota document as
+`recovery_clock_at`, and the quota sweep's existing five-minute tick is the
+read that commits it for a quiet workspace; each time-based climb is recorded in
+`quota_audit` as `adaptive_target_recovered`. A refusal still halves at once and
+restarts the clock, so 5 back to 40 takes 35 quiet intervals, just under three
+hours. The ceiling every target is clamped to is the LOWER of the quota
+document's `configured_hard_max` and the per-tenant pool's own `hard_limit`
+(`provider:<p>:tenant:<t>`, the number the console shows), so halving starts
+from that number; setting the hard max (`PUT /v1/quota/<p>/<t>/hard-max`) moves
+the pool's `hard_limit` to the same value in the same transaction.
+
 ```
        target
          |          .-'|        .-'|
@@ -199,6 +216,7 @@ so a new signal cannot be added that forgets to clamp.
 | `AIMD_ADDITIVE_INCREASE` | 1 | slots added per successful run |
 | `AIMD_MULTIPLICATIVE_DECREASE` | 0.5 | factor applied on a 429 |
 | `AIMD_SUCCESS_THRESHOLD` | 20 | successes required before an increase |
+| `AIMD_RECOVERY_INTERVAL_SECONDS` | 300 | quiet seconds per time-based +1; 0 turns it off |
 | `AIMD_MIN_TARGET` | 1 | never throttle to zero on 429s alone |
 | `AIMD_DEFAULT_COOLDOWN_SECONDS` | 30 | when the provider gives no `Retry-After` |
 | `AIMD_MAX_COOLDOWN_SECONDS` | 900 | ceiling on backoff |
@@ -321,6 +339,24 @@ with `next_eligible_at` set to the broker's reset time, or to a fallback when
 the broker has none: 300 seconds for an account nobody has read lately, 900 for
 a paused one (`lifecycle._park_no_account`).
 
+**An account is withheld as a duplicate only on the provider's own identity**
+(#3046). Two pool accounts are one subscription only when both have a recorded
+organisation **and** seat and the two match
+(`quota_broker.accounts.subscription_identity`). These are opaque digests of
+what the provider's token or profile answer named, and they do not change while
+the sign-in is valid. Of such a pair, the broker hands out only the older
+registration. A label, an owner, a loan or a usage reading never makes two
+accounts one subscription. An account with no recorded identity is never
+withheld: identical readings only flag it as a `possible_duplicate`, which is
+advisory, and a stored mark on it does not count. On the night of 24 to 25
+October 2026, the rule then in force keyed on the organisation alone. It held
+four seats of one Team organisation as duplicates of a seat that was 97% spent,
+while 46 steps waited. Two of those seats ran 15 agents each a few hours later.
+A withheld account's entry in the park's `accounts` block reads
+`withheld: {same_subscription_as, reason, matched_on: "organisation_and_seat"}`,
+and Capacity › Accounts gives the same reason and kind. Neither ever shows the
+identity's value.
+
 **Every quota window binds every attempt, whatever its model class** (#1435,
 owner's answer to Q5 of [model-per-step.md](design/model-per-step.md#47-accounts-and-quota-windows-windows-unchanged-classes-served-per-account),
 2026-10-17). An account's headroom is the minimum over all its windows
@@ -401,6 +437,25 @@ without one is promoted only once its `next_eligible_at` has passed, and a park
 with no `next_eligible_at` at all is left where it is. See section 4 for why a
 tenant that runs on a pool account usually has no such pool.
 
+**A released account wakes the agents parked on a full pool** (#3042). An agent
+that found no free pool account parks for up to five minutes, because no clock
+says when another agent will give an account back. Every release closes the
+broker's hold record in `account_holds` with `released_at`, whether the agent
+that let go ended, parked or failed back to `READY`. Each scheduler
+pass (the one-minute tick and every wake) reads the records closed since the
+last pass (`apps/scheduler/scheduler/loop.py::Scheduler._wake_on_releases`). It
+returns to `READY` the oldest parks of the tenants the freed account serves,
+for its provider, as many as the pool has free slots (each one claims the
+account it would get, so the next is asked about one slot fewer), and only
+when the broker's own `choose()` would hand that agent an account. The finish event does the same for
+the account of an agent that ended. Only the pool's own reasons wake this way:
+`accounts_full`, `no_recent_reading` and `no_account_available`. A paused pool,
+or a grant an administrator has to fix, waits for a person. The wake changes
+eligibility only: the admission pass that follows reserves capacity in its one
+all-or-nothing transaction, as it does for any `READY` agent. So the wait after
+a release is now one scheduler pass, at most the one-minute tick, where it was
+up to five minutes (or three, when the prewarm sweep reached the park first).
+
 ---
 
 ## 6. Operating it
@@ -451,7 +506,89 @@ original state on every exit path.
 
 ---
 
-## 7. What to look at when it misbehaves
+## 6a. Pools: the workspace pool and the Voice it pool
+
+An account's `pools` is a set (owner, 2026-11-02, "A separate Voice it
+pool"; 2026-11-03, "We should allow accounts to be in more than one pool at
+a time"). A document without the field is in `workspace` alone, so nothing
+changed for an existing account.
+
+* **`workspace`.** Agents of the owner's workspace and of the workspaces in
+  `lend_to` lease it through `/v1/accounts/assign`, as before.
+* **`voice-it`.** Only swarm-voice leases it, through `/v1/voice/lease`,
+  for a Voice it session of a person in `voice_it_people`. Version one lists
+  the platform owner only (`VOICE_IT_PEOPLE`, else `PLATFORM_OWNER`).
+* **In `voice-it` only, the account is reserved.** `Account.may_serve` (and
+  `_raw_may_serve`, where a hold commits) refuses it to every tenant. So
+  `accounts_serving` never lists it, admission never counts it as a
+  workspace's pool, no agent of any workspace or profile is handed it,
+  and the lending route refuses to lend it.
+* **In both, the account is shared.** Both sides lease it. Its `max_agents`,
+  its one-agent-before-a-reading rule and its window floors hold across both,
+  because a Voice it hold is one more entry in the same `holds`. A Voice it
+  hold carries `pool: voice-it`, its person and its session, and no tenant.
+  It is therefore no workspace's capacity, and it makes no demand on any
+  capacity pool (`pool_limits`). The capacity invariants are unchanged: only
+  leased or running work creates demand, and every lease is counted on its
+  account.
+* **Moving an account between pools.** `PUT /v1/accounts/{id}/pools`
+  `{pools, confirm_label}` is for platform callers only. The label must be
+  typed back, at least one pool stays, and the change is audited in the log
+  with the caller (swarm-api also writes an `admin_audit` row). It is refused
+  with 409 `pool_in_use` while the account holds a live lease of a pool being
+  removed, and with 409 `pool_lent` when the move would leave the account in
+  `voice-it` only while it is still lent. A borrower's worker can read a
+  lent account's secret until the loan ends, so a reserved account must not
+  be lent: end the loan first, which revokes the borrowers' read, then move
+  it. The broker is still the only writer of the account document and
+  keeps refreshing the plan whichever pool it is in.
+* **Who sees a reserved account.** The default scoped `GET /v1/accounts`
+  leaves a `voice-it`-only account out, because it serves no tenant. Every
+  count of a workspace's capacity reads that default listing (admission,
+  setup, the profile). Capacity › Accounts and the pool move ask with
+  `include_reserved=true`, and see the scope's own reserved accounts only,
+  never another workspace's. Without that, a reserved account could never be
+  shown or moved back. The page's verdict, rule line and forecast still
+  count only accounts in `workspace`.
+
+
+
+**Every refusal on a limit says which value it applied, and why (#3047).** On
+24 October 2026 admission refused up to 48 steps on the provider concurrency
+limit while 6 or 7 agents ran against a configured ceiling of 40, and nothing
+recorded the limit applied: the adaptive target and the quota-derived limit are
+current values only, so "about 7" had to be inferred from the agents running.
+Now the scheduler writes, on each refused agent's `blocked_by` entry, the
+limit's name (`limit_name`, the pool), the value admission applied (`applied`,
+the transaction's own `effective_limit`), the configured ceiling (`ceiling`,
+the pool's `hard_limit`), the units in use (`in_use`), and, when `applied` is
+below `ceiling`, `lowered_by`: each input that holds it there (`adaptive_target`,
+`quota_derived_limit`, or `override` for a target an admin set after the last
+rate limit) with its value and what dates it. The broker writes
+`target_changed_at` on the quota document only when `adaptive_target` changes
+(a cut, a +1-per-successes step, a time-based recovery, an admin override or a
+max's clamp), never on a success that leaves the target alone, so
+`set_at` for the adaptive target is that instant, and `set_by` says what made
+the change: `override` when an override still holds the value, `rate_limit`
+when the change was the last cut (a cut stamps both with one instant), and
+`climb` for a target that rose after the last cut. A quota document written
+before the broker kept `target_changed_at` has none, and its target falls back
+to the override's audit instant when an override still holds the value, else
+the 429 that last cut it (`last_rate_limited_at`). It is never the quota
+document's `updated_at`: the broker rewrites that on every success and refresh,
+so for a target that has held 7 for hours it reads minutes ago; it is kept
+apart as `quota_written_at`.
+The ceiling and inputs are read just after the refusal, outside the admission
+transaction, so recording them cannot change who is admitted. The `drain
+finished` log line sums the same per limit (`limits`: refusals, the lowest
+value applied, the most units in use, the ceiling and what lowered it), so a
+busy period can be read back from Cloud Logging. Capacity › Pools draws the
+applied value with `/ceiling` beside it, its title naming the input and when it
+was set (`since the rate limit at <at>`, `raised <at>` for a climb, `set <at>`
+for an override); `sc capacity` prints a CEILING column (`40 adaptive`). Note that AIMD
+clamps to the quota document's `configured_hard_max` (default 50), not to the
+pool's `hard_limit`: three tenant-scoped 429s take a target 50 -> 25 -> 12 ->
+6, and one more slot needs `AIMD_SUCCESS_THRESHOLD` (20) successful agents.
 
 | Symptom | Likely cause | Check |
 |---|---|---|

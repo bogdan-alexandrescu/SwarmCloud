@@ -168,7 +168,28 @@ source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 # reasons: terraform/infra/github_hooks.tf deploys the Cloud Run service only
 # once image_refs has its digest (docs/design/graph-service.md §6.2). It
 # copies apps/common and apps/redaction in, and nothing of the worker.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks workspace-apply)
+#
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS, part of #2688) is
+# agent-runtime-base by digest plus Lightpanda, images/agent-runtime-lightpanda
+# (docs/design/lightpanda-runtime.md 5.D and 6.4). Beside agent-runtime-indexer,
+# the other image its checked-in recipe builds FROM the base, so it is built
+# after the base (build_after) and rebuilt with it (affected_images). No
+# runner profile names it until contract request 127 is applied; until then it
+# is built and promoted, and never dispatched.
+# swarm-voice (VOICE-STATEFULSET, part of #2688) is Voice it's GPT-Live
+# session holder, apps/swarm-voice/Dockerfile, beside its app as swarm-live's
+# recipe is: the nearest precedent, a swarm-system service on GKE holding
+# long-lived sockets. terraform/infra/voice.tf renders swarm_voice_manifest
+# only once image_refs has its digest (docs/design/voice-it.md section 10,
+# phase one). It copies apps/common in, and nothing else of ours.
+# swarm-speech (part of #2688) is Voice it's own speech server,
+# apps/swarm-speech/Dockerfile, beside its app as swarm-voice's recipe is.
+# Not deployed by terraform: its image_refs digest reaches swarm-api as
+# SWARM_SPEECH_IMAGE, which swarm-api writes into the stopped speech machine's
+# swarm-speech-image metadata at the next start, and the machine pulls it on
+# boot (docs/design/voice-it-own-speech.md §5.3, §14 L3). It copies only
+# apps/swarm-speech in.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built
@@ -214,7 +235,8 @@ find_recipe() {
 # agent-runtime-base-nocodex:<tag> in its first step and builds FROM that
 # digest, so submitting it before that base has been pushed fails with
 # manifest-unknown. images/agent-runtime-indexer/cloudbuild.yaml does the same
-# with agent-runtime-base:<tag> (#625). When builds ran one at a
+# with agent-runtime-base:<tag> (#625), and so does
+# images/agent-runtime-lightpanda/cloudbuild.yaml (LIGHTPANDA-IMAGE). When builds ran one at a
 # time this was satisfied by ALL_TARGETS happening to list the base first --
 # which a targeted `build-images.sh agent-runtime-browser agent-runtime-base`
 # did not, and which concurrency would not either.
@@ -226,6 +248,7 @@ build_after() {
   case "$1" in
     agent-runtime-browser) printf '%s' "agent-runtime-base-nocodex" ;;
     agent-runtime-indexer) printf '%s' "agent-runtime-base" ;;
+    agent-runtime-lightpanda) printf '%s' "agent-runtime-base" ;;
     *) : ;;
   esac
 }

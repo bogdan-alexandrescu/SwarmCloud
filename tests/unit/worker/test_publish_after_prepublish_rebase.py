@@ -31,6 +31,7 @@ from agent_worker import lifecycle, prepublish, workspace as workspace_mod
 
 from test_publish_scan_after_merging_main import _advance_main
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     forge,
     local_urls,
@@ -57,7 +58,7 @@ def _cloned(worker_factory, monkeypatch, origin: Path, *, task_id: str, dispatch
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": task_id, "metadata": {"dispatch": dispatch}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None, "the clone did not land"
     return worker, config
 

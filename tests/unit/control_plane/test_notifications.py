@@ -113,6 +113,15 @@ def _task(db, task_id: str, *, tenant_id: str = "eng", by: str = ALICE, state: s
     return doc
 
 
+def _workflow(db, workflow_id: str = "wf_open", *, state: str = "RUNNING", by: str = ALICE) -> None:
+    """A workflow document in `state`: an ended step's open questions ring
+    only while it has not finished (BGD's pick, 6 November 2026)."""
+    db.docs[f"workflows/{workflow_id}"] = {
+        "workflow_id": workflow_id, "tenant_id": "eng", "created_at": _ago(hours=1),
+        "updated_at": _ago(minutes=3), "state": state, "submitted_by": by, "steps": [],
+        "on_step_failure": "fail_workflow", "priority": 0, "cancel_requested": False}
+
+
 def _approval(db, key: str, *, tenant_id: str = "eng", kind: str = approvals.RUN,
               approvers: Any = "members", state: str = approvals.PENDING) -> str:
     approval_id = approvals.approval_id(kind, key)
@@ -358,8 +367,9 @@ def test_a_member_scoped_reader_is_told_of_their_own_hand_offs_only(db):
 
 
 def test_an_agents_questions_are_a_needs_you_item(db):
-    _task(db, "task_q", result_summary={"questions": 2})
-    _task(db, "task_none", result_summary={"questions": 0})
+    _workflow(db)
+    _task(db, "task_q", result_summary={"questions": 2}, workflow_id="wf_open")
+    _task(db, "task_none", result_summary={"questions": 0}, workflow_id="wf_open")
     items = notif.agent_questions(_reading(db, _viewer()))
     assert _ids(items) == ["task:questions:task_q"]
     assert items[0]["needs_you"] is True
@@ -370,8 +380,10 @@ def test_a_questions_item_names_the_step_not_only_the_task_id(db):
     """QA14-UI (owner QA 2026-10-13): the item said "Task <id>" and nothing
     about which agent asked. It leads with the step's name, or the runner
     profile when the task is no workflow step."""
-    _task(db, "task_step", result_summary={"questions": 1}, step_id="fix-heartbeat")
-    _task(db, "task_lone", result_summary={"questions": 1}, step_id=None)
+    _workflow(db)
+    _task(db, "task_step", result_summary={"questions": 1}, step_id="fix-heartbeat",
+          workflow_id="wf_open")
+    _task(db, "task_lone", result_summary={"questions": 1}, step_id=None, workflow_id="wf_open")
     by_id = {i["id"]: i for i in notif.agent_questions(_reading(db, _viewer()))}
     assert by_id["task:questions:task_step"]["detail"] == "fix-heartbeat · Task task_step"
     assert by_id["task:questions:task_lone"]["detail"] == "mock · Task task_lone"
@@ -386,11 +398,14 @@ def test_a_task_whose_every_question_is_answered_is_no_longer_listed(db):
         return {"question_index": index, "question": "q", "choice": "a", "text": None,
                 "by": ALICE, "at": _now().isoformat(), "history": []}
 
+    _workflow(db)
     _task(db, "task_all", result_summary={"questions": 2},
-          metadata={KEY: [answer(0), answer(1)]})
-    _task(db, "task_half", result_summary={"questions": 2}, metadata={KEY: [answer(1)]})
+          metadata={KEY: [answer(0), answer(1)]}, workflow_id="wf_open")
+    _task(db, "task_half", result_summary={"questions": 2}, metadata={KEY: [answer(1)]},
+          workflow_id="wf_open")
     # An answer to an index beyond the count does not close a real question.
-    _task(db, "task_odd", result_summary={"questions": 1}, metadata={KEY: [answer(3)]})
+    _task(db, "task_odd", result_summary={"questions": 1}, metadata={KEY: [answer(3)]},
+          workflow_id="wf_open")
     items = notif.agent_questions(_reading(db, _viewer()))
     assert sorted(_ids(items)) == ["task:questions:task_half", "task:questions:task_odd"]
 
@@ -546,9 +561,10 @@ def test_another_tenants_and_another_persons_work_never_appears(client, db):
 
 def test_read_marks_persist_and_survive_re_derivation(client, db):
     _task(db, "task_ok")
-    _task(db, "task_q", result_summary={"questions": 1})
+    _workflow(db)
+    _task(db, "task_q", result_summary={"questions": 1}, workflow_id="wf_open")
     first = _feed(client)
-    assert first["unread_needs_you"] == 1 and first["unread_updates"] == 2
+    assert first["unread_needs_you"] == 1 and first["unread_updates"] == 1
     ids = [i["id"] for i in first["items"]]
     assert ids == [i["id"] for i in _feed(client)["items"]]  # stable
 
@@ -581,16 +597,19 @@ def test_a_resolved_request_drops_out_of_the_feed(client, db):
 
 
 def test_the_order_is_needs_you_oldest_first_then_updates_newest_first(client, db):
-    _task(db, "task_q_new", result_summary={"questions": 1}, ended=_ago(minutes=1))
-    _task(db, "task_q_old", result_summary={"questions": 1}, ended=_ago(hours=5))
+    _workflow(db)
+    _task(db, "task_q_new", result_summary={"questions": 1}, ended=_ago(minutes=1),
+          workflow_id="wf_open")
+    _task(db, "task_q_old", result_summary={"questions": 1}, ended=_ago(hours=5),
+          workflow_id="wf_open")
     _task(db, "task_upd_old", ended=_ago(hours=4))
     _task(db, "task_upd_new", ended=_ago(minutes=2))
     ids = [i["id"] for i in _feed(client)["items"]]
     assert ids[:2] == ["task:questions:task_q_old", "task:questions:task_q_new"]
     updates = [i for i in ids if i.startswith("finished:")]
-    # The tasks that asked also finished: every update, newest first.
-    assert updates == ["finished:task:task_q_new:SUCCEEDED", "finished:task:task_upd_new:SUCCEEDED",
-                       "finished:task:task_upd_old:SUCCEEDED", "finished:task:task_q_old:SUCCEEDED"]
+    # The steps that asked are told by their workflow, still running: every
+    # update, newest first.
+    assert updates == ["finished:task:task_upd_new:SUCCEEDED", "finished:task:task_upd_old:SUCCEEDED"]
 
 
 def test_at_most_50_updates(client, db):
@@ -733,6 +752,10 @@ def test_platform_secrets_unset_is_read_once_per_period_not_per_feed(db, catalog
     assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 1
     assert meta.calls == calls
     clock[0] += notif.PLATFORM_SECRETS_TTL + timedelta(seconds=1)
+    # Past the period the last count is served while one background read
+    # refreshes it (LOAD-SPEED-NOTIFICATIONS); the next feed has the new one.
+    assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 1
+    assert notif.wait_platform_secrets_refresh(meta, timeout=10)
     assert service.feed(_viewer(ROOT, admin=True))["platform_secrets_unset"] == 2
 
 

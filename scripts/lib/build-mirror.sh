@@ -31,9 +31,10 @@
 #   tools   a GCS bucket, gs://${BUILD_MIRROR_BUCKET}, holding each release
 #           file at its upstream URL without `https://`. The list, with the
 #           sha256 the Dockerfile checks, is TOOL_MIRROR_MANIFEST. Cloud Build
-#           copies them into build/tool-mirror (tool_mirror_step_yaml) before
-#           the docker build, which bind-mounts that directory. An object
-#           that is not there fails the step, naming it.
+#           copies them into build/tool-mirror (tool_mirror_step_yaml),
+#           reading the manifest from the build's source, before the docker
+#           build, which bind-mounts that directory. An object that is not
+#           there fails the step, naming it.
 #
 # A PULL REQUEST'S BUILD (`--build-only --local`, on a GitHub runner) has no
 # Google identity by the owner's decision of 2026-10-05, so it can read
@@ -166,16 +167,34 @@ sha256_of() {
 # object from gs://${BUILD_MIRROR_BUCKET} into build/tool-mirror and checks
 # each against its sha256, as a `steps:` list item.
 #
-# The script carries no `$` at all: Cloud Build reads every `$NAME` in a
-# config as a substitution, and refuses one it was not given. Each object is
-# one literal line, so a missing one is named by the line that failed.
+# THE STEP READS THE MANIFEST FROM THE BUILD'S SOURCE, which `builds submit`
+# uploads from the repository root, rather than carrying a line per row.
+# Cloud Build refuses a step argument of 10,000 characters or more, and the
+# inlined rows passed that once the security audit plugin's archive joined
+# them: from commit aece23abe (2026-11-04) every release that rebuilt
+# agent-runtime-base failed at "build step 0 arg 1 too long (max: 10000)".
+# The script is now the same few lines however many rows there are.
+#
+# What it still guarantees. It reads exactly the rows tool_mirror_rows checked
+# here: the manifest's own sha256 is written into the step, and a source whose
+# manifest differs, or carries none, fails the step before anything is
+# copied. Each object comes from the project's bucket and nowhere else, a
+# missing one fails the step naming it, and every file is checked against its
+# sha256 (`sha256sum -c --strict`) before the Dockerfile reads it.
+#
+# A `$` is a Cloud Build substitution, and one it was not given fails the
+# build, so every shell `$` in the script is written `$$`, which Cloud Build
+# hands to bash as one `$`. The script names no substitution.
 tool_mirror_step_yaml() {
-  local sha obj rows
+  local manifest manifest_sha
   [[ "${BUILD_MIRROR_BUCKET}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "BUILD_MIRROR_BUCKET is not a bucket name: ${BUILD_MIRROR_BUCKET}"
-  rows="$(tool_mirror_rows)"
+  tool_mirror_rows >/dev/null
+  manifest="${TOOL_MIRROR_MANIFEST#"${REPO_ROOT}/"}"
+  manifest_sha="$(sha256_of "${TOOL_MIRROR_MANIFEST}")"
   cat <<YAML
-  # Generated from ${TOOL_MIRROR_MANIFEST#"${REPO_ROOT}/"} (scripts/lib/build-mirror.sh):
-  # the release files the Dockerfile bind-mounts from ${TOOL_MIRROR_CONTEXT_DIR}.
+  # Stages the release files the Dockerfile bind-mounts from
+  # ${TOOL_MIRROR_CONTEXT_DIR}, listed in the build source's
+  # ${manifest}, pinned by its sha256 (scripts/lib/build-mirror.sh).
   - id: tool-mirror
     name: gcr.io/cloud-builders/gcloud
     entrypoint: bash
@@ -183,19 +202,29 @@ tool_mirror_step_yaml() {
       - -c
       - |
         set -euo pipefail
-        rm -rf ${TOOL_MIRROR_CONTEXT_DIR}
+        bucket='${BUILD_MIRROR_BUCKET}'
+        manifest='${manifest}'
+        dir='${TOOL_MIRROR_CONTEXT_DIR}'
+        printf '%s  %s\\n' '${manifest_sha}' "\$\${manifest}" | sha256sum -c --strict --status - || {
+          echo "\$\${manifest} in the build's source is missing or is not the one this config was generated from (sha256 ${manifest_sha}): run scripts/build-images.sh again from the same checkout" >&2
+          exit 1
+        }
+        sums="\$\$(mktemp)"
+        rm -rf "\$\${dir}"
+        while read -r sha obj || [ -n "\$\${sha}" ]; do
+          case "\$\${sha}" in '' | '#'*) continue ;; esac
+          mkdir -p "\$\${dir}/\$\$(dirname "\$\${obj}")"
+          gcloud storage cp "gs://\$\${bucket}/\$\${obj}" "\$\${dir}/\$\${obj}" || {
+            echo "build mirror object gs://\$\${bucket}/\$\${obj} is missing or unreadable: run scripts/refresh-build-mirror.sh (docs/runbooks/build-mirror.md)" >&2
+            exit 1
+          }
+          printf '%s  %s\\n' "\$\${sha}" "\$\${obj}" >>"\$\${sums}"
+        done <"\$\${manifest}"
+        (cd "\$\${dir}" && sha256sum -c --strict -) <"\$\${sums}" || {
+          echo "a build mirror object does not match its sha256 in \$\${manifest}: run scripts/refresh-build-mirror.sh --force" >&2
+          exit 1
+        }
 YAML
-  while read -r sha obj; do
-    printf "        mkdir -p '%s/%s'\n" "${TOOL_MIRROR_CONTEXT_DIR}" "$(dirname "${obj}")"
-    printf "        gcloud storage cp 'gs://%s/%s' '%s/%s' || { echo 'build mirror object gs://%s/%s is missing or unreadable: run scripts/refresh-build-mirror.sh (docs/runbooks/build-mirror.md)' >&2; exit 1; }\n" \
-      "${BUILD_MIRROR_BUCKET}" "${obj}" "${TOOL_MIRROR_CONTEXT_DIR}" "${obj}" "${BUILD_MIRROR_BUCKET}" "${obj}"
-  done <<<"${rows}"
-  printf "        (cd %s && sha256sum -c --strict -) <<'SUMS' || { echo 'a build mirror object does not match its sha256 in %s: run scripts/refresh-build-mirror.sh --force' >&2; exit 1; }\n" \
-    "${TOOL_MIRROR_CONTEXT_DIR}" "${TOOL_MIRROR_MANIFEST#"${REPO_ROOT}/"}"
-  while read -r sha obj; do
-    printf '        %s  %s\n' "${sha}" "${obj}"
-  done <<<"${rows}"
-  printf '        SUMS\n'
 }
 
 # tool_mirror_fetch_upstream SHA OBJECT DEST -- download https://OBJECT to
@@ -236,6 +265,60 @@ tool_mirror_stage_upstream() {
     n=$((n + 1))
   done <<<"${rows}"
   info "staged ${n} release file(s) from upstream into ${TOOL_MIRROR_CONTEXT_DIR}, each matching its pinned sha256"
+}
+
+# LIGHTPANDA'S CORRESPONDING SOURCE (LIGHTPANDA-BUILD-SCRIPTS, part of #2688;
+# docs/design/lightpanda-runtime.md 5.D and 6.4). agent-runtime-lightpanda
+# ships Lightpanda, which is AGPL-3.0, so whoever conveys the image offers the
+# source of the exact tag (section 6(d)). Its two release assets and the tag's
+# source archive are rows of TOOL_MIRROR_MANIFEST, so refresh-build-mirror.sh
+# mirrors all three and every build reads them from the mirror; the image's
+# SOURCE notice names LIGHTPANDA_SOURCE_URL, the archive's public copy under
+# the release home. A version bump changes the Dockerfile's ARGs and the
+# manifest rows together; these read both and refuse a disagreement.
+LIGHTPANDA_DOCKERFILE_REL="images/agent-runtime-lightpanda/Dockerfile"
+LIGHTPANDA_RELEASE_HOME="https://storage.googleapis.com/swarmcloud"
+
+# dockerfile_arg_default DOCKERFILE NAME -- the default of `ARG NAME=VALUE`, or
+# nothing.
+dockerfile_arg_default() {
+  sed -n "s/^ARG $2=\\([^[:space:]]*\\)[[:space:]]*\$/\\1/p" "$1" | head -n 1
+}
+
+# lightpanda_source_row -- `<sha256> <mirror object> <release object>` for the
+# tag's source archive: the sha256 the Dockerfile pins, the object the tool
+# mirror holds it at, and where the release home serves it (relative to
+# LIGHTPANDA_RELEASE_HOME). Dies when the Dockerfile and the manifest disagree,
+# or when the image's SOURCE notice would point outside the release home.
+lightpanda_source_row() {
+  local df="${REPO_ROOT}/${LIGHTPANDA_DOCKERFILE_REL}" version sha url obj release rows
+  [[ -f "${df}" ]] || die "no Dockerfile at ${LIGHTPANDA_DOCKERFILE_REL}"
+  version="$(dockerfile_arg_default "${df}" LIGHTPANDA_VERSION)"
+  sha="$(dockerfile_arg_default "${df}" LIGHTPANDA_SOURCE_SHA256)"
+  url="$(dockerfile_arg_default "${df}" LIGHTPANDA_SOURCE_URL)"
+  [[ "${version}" =~ ^[0-9A-Za-z._-]+$ ]] || die "${LIGHTPANDA_DOCKERFILE_REL}: LIGHTPANDA_VERSION is not a version: ${version}"
+  [[ "${sha}" =~ ^[0-9a-f]{64}$ ]] || die "${LIGHTPANDA_DOCKERFILE_REL}: LIGHTPANDA_SOURCE_SHA256 is not a sha256: ${sha}"
+  obj="github.com/lightpanda-io/browser/archive/refs/tags/${version}.tar.gz"
+  release="third-party/lightpanda/${version}/source.tar.gz"
+  [[ "${url}" == "${LIGHTPANDA_RELEASE_HOME}/${release}" ]] \
+    || die "${LIGHTPANDA_DOCKERFILE_REL}: LIGHTPANDA_SOURCE_URL is ${url}, not ${LIGHTPANDA_RELEASE_HOME}/${release}, where the release serves the source archive"
+  rows="$(tool_mirror_rows)" || exit 1
+  grep -qxF "${sha} ${obj}" <<<"${rows}" \
+    || die "${TOOL_MIRROR_MANIFEST#"${REPO_ROOT}/"} has no row '${sha}  ${obj}': the source archive ${LIGHTPANDA_DOCKERFILE_REL} pins is not mirrored"
+  printf '%s %s %s\n' "${sha}" "${obj}" "${release}"
+}
+
+# lightpanda_source_stage DIR -- the tag's source archive from upstream into
+# DIR/<release object> (lightpanda_source_row), checked against its sha256, so
+# a release bundle carries it beside the image. Dies naming the archive, and
+# leaves nothing at its path, when the download fails or is not the one pinned.
+lightpanda_source_stage() {
+  local dir="$1" row sha obj release
+  row="$(lightpanda_source_row)" || exit 1
+  read -r sha obj release <<<"${row}"
+  tool_mirror_fetch_upstream "${sha}" "${obj}" "${dir}/${release}" \
+    || die "the Lightpanda source archive could not be staged: ${obj}"
+  info "staged ${release}: the Lightpanda ${obj##*/} source archive, matching its pinned sha256"
 }
 
 # mirror_build_args_yaml DOCKERFILE -- mirror_build_args as YAML list items

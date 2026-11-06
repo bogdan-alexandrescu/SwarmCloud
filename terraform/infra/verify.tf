@@ -88,7 +88,7 @@ resource "google_cloud_run_v2_service_iam_member" "verify_invokes_api" {
   # `service_names` is a sorted LIST of keys, not a map -- indexing it by
   # string is the error terraform test caught here. The service name is the
   # map key itself, so take it from the map-shaped output.
-  name   = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  name   = [for k, _ in module.cloud_run_api.service_ids : k if k == "swarm-api"][0]
   role   = "roles/run.invoker"
   member = "serviceAccount:${local.verify_email}"
 }
@@ -169,7 +169,7 @@ resource "google_cloud_run_v2_job" "verify" {
         # It argued that this job "talks to swarm-api and to the metadata
         # server, both reachable without routing egress through Cloud NAT".
         # The address it talks to swarm-api on is
-        # module.cloud_run.service_urls["swarm-api"] -- a PUBLIC *.run.app
+        # module.cloud_run_api.service_urls["swarm-api"] -- a PUBLIC *.run.app
         # hostname (see the API_URL env below). A public hostname is not in a
         # private range, so under PRIVATE_RANGES_ONLY the request never left
         # the VPC. This repository had already measured that exact refusal from
@@ -203,11 +203,11 @@ resource "google_cloud_run_v2_job" "verify" {
         # describe`, and there is deliberately no gcloud in this image.
         env {
           name  = "API_URL"
-          value = module.cloud_run.service_urls["swarm-api"]
+          value = module.cloud_run_api.service_urls["swarm-api"]
         }
         env {
           name  = "API_AUDIENCE"
-          value = module.cloud_run.service_urls["swarm-api"]
+          value = module.cloud_run_api.service_urls["swarm-api"]
         }
         env {
           name  = "PROJECT_ID"
@@ -238,6 +238,16 @@ resource "google_cloud_run_v2_job" "verify" {
           for_each = var.acceptance_console_url == "" ? [] : [var.acceptance_console_url]
           content {
             name  = "SWARM_ACCEPTANCE_CONSOLE_URL"
+            value = env.value
+          }
+        }
+        # The sandbox the acceptance groups push to. Rendered only when set:
+        # unset, config.sh keeps its own default and the live deployment's
+        # plan shows no change.
+        dynamic "env" {
+          for_each = var.acceptance_sandbox_repository_url == null ? [] : [var.acceptance_sandbox_repository_url]
+          content {
+            name  = "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"
             value = env.value
           }
         }

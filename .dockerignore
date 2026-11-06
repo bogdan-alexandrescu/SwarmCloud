@@ -12,6 +12,11 @@
 .env
 docs/
 scripts/
+# The one script an image build reads: the agent-runtime-base and
+# agent-runtime-browser gstack-build stages bind-mount it to check gstack's
+# closure against the checked-in lists (part of #2688). Without this line the
+# mount has no source and both builds fail.
+!scripts/gstack_packaging_measure.py
 terraform/
 kubernetes/
 tests/

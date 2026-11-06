@@ -33,7 +33,10 @@ ADVISORY = "Jev is advisory: no answer this time; continue with your own judgeme
 TOOL = {
     "name": TOOL_NAME,
     "description": (
-        "Ask Jev, a fast judgement model, typed questions about `state`. Each question is "
+        "Ask Jev, a fast judgement model, typed questions about `state`. Call it when "
+        "choosing between options the brief leaves open, for the acceptance check of each "
+        "stated requirement before finishing, and when a check fails and it is unclear "
+        "whether the code or the test is wrong; not for facts you can check. Each question is "
         "{type, instructions, criteria}: `noul` answers p(yes); `choice` picks one option and "
         "needs criteria as {option: description-or-null} (at most 255); `score` needs criteria "
         "as a list of strings. Refer to parts of state by name in backticks. Credential-shaped "
@@ -80,7 +83,8 @@ class JevServer:
             key = Path(key_file).read_text().strip() if key_file else None
             backend = Backend(str(spec["name"]), str(spec["url"]), str(spec["model"]),
                               stringify_state=bool(spec["stringify_state"]), key=key or None)
-            ledger = budget.Ledger(Path(config["ledger"]))
+            ledger = budget.Ledger(Path(config["ledger"]),
+                                   authority=budget.Grant.from_mapping(config.get("grant")))
             stops = tuple(p for p in config.get("hard_stop_paths") or [] if isinstance(p, str))
             names = [n for n in config.get("secret_env_names") or [] if isinstance(n, str)]
         except (OSError, ValueError, KeyError, TypeError) as exc:

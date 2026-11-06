@@ -74,7 +74,7 @@ resource "google_project_iam_member" "api_github_app_secrets" {
 }
 
 resource "google_iap_web_backend_service_iam_member" "deployer_api_accessor" {
-  count = local.wif_enabled == 1 && contains(var.frontend_iap_backends, local.deployer_api_backend) ? 1 : 0
+  count = local.deployer_on && contains(var.frontend_iap_backends, local.deployer_api_backend) ? 1 : 0
 
   project             = var.project_id
   web_backend_service = data.google_compute_backend_service.frontend_iap[local.deployer_api_backend].name

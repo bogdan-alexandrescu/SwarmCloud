@@ -26,8 +26,6 @@ class FakeGcp:
         self.roles: list[dict] = []
         self.undelete_refused: set[str] = set()
         self.undeleted: list[str] = []
-        self.brands: list[dict] = []
-        self.clients: list[dict] = []
         self.databases: list[dict | None] = []
 
     def key_ring(self, project, location, name):
@@ -43,12 +41,6 @@ class FakeGcp:
         if name.rsplit("/", 1)[-1] in self.undelete_refused:
             raise ApiError(400, "FAILED_PRECONDITION", "the role was deleted more than 7 days ago")
         self.undeleted.append(name)
-
-    def iap_brands(self, project_number):
-        return list(self.brands)
-
-    def oauth_clients(self, brand):
-        return list(self.clients)
 
     def firestore_database(self, project, database):
         return self.databases.pop(0) if len(self.databases) > 1 else self.databases[0]
@@ -84,28 +76,12 @@ def test_custom_roles_undeleted_within_7_days() -> None:
     assert adopt.ROLE_UNDELETE_DAYS == 7
 
 
-def test_brand_found_and_adopted() -> None:
-    gcp = FakeGcp()
-    assert adopt.brand(gcp, "123") is None
-    gcp.brands = [{"name": "projects/123/brands/123"}]
-    assert adopt.brand(gcp, "123") == "projects/123/brands/123"
-
-
-def test_desktop_client_adopted_or_asked() -> None:
-    gcp = FakeGcp()
-    brand = "projects/123/brands/123"
-    never = lambda prompt: pytest.fail("asked with nothing to choose")  # noqa: E731
-    assert adopt.desktop_client(gcp, brand, never) is None, "no client: a new one is made"
-    gcp.clients = [{"name": f"{brand}/identityAwareProxyClients/a1", "displayName": "other"},
-                   {"name": f"{brand}/identityAwareProxyClients/d1", "displayName": adopt.DESKTOP_CLIENT_NAME}]
-    assert adopt.desktop_client(gcp, brand, never) == "d1", "the one named swarm-desktop is adopted"
-    gcp.clients = gcp.clients[:1]
-    asked: list[str] = []
-    assert adopt.desktop_client(gcp, brand, lambda p: asked.append(p) or "a1\n") == "a1"
-    assert asked and "a1" in asked[0]
-    assert adopt.desktop_client(gcp, brand, lambda p: "") is None
-    with pytest.raises(ValueError, match="not one of"):
-        adopt.desktop_client(gcp, brand, lambda p: "zz")
+def test_desktop_client_adopted_from_the_record() -> None:
+    """No API lists OAuth clients any more: the recorded id is adopted."""
+    client = "123456789012-abc123.apps.googleusercontent.com"
+    assert adopt.desktop_client({"desktop_client_id": client}) == client
+    assert adopt.desktop_client({"desktop_client_id": "not-an-id"}) is None
+    assert adopt.desktop_client({}) is None and adopt.desktop_client(None) is None
 
 
 def test_github_app_reuse_or_new_name() -> None:

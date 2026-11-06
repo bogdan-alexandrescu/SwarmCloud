@@ -147,7 +147,8 @@ def test_every_store_command_in_the_runbook_reads_stdin() -> None:
         # Added to the App on 2026-10-23 (#2029): the per-repository
         # workflow-file push token. The old "No access" is not kept.
         "Workflows: Read and write",
-        # mergewake.py re-runs a failed CI job (GitHubWriter.rerun_job,
+        # mergewake.py re-runs a red CI run's failed jobs
+        # (GitHubWriter.rerun_failed_jobs, else GitHubWriter.rerun_job;
         # forgewrite.ACTIONS_WRITE); held since before 2026-10-23.
         "Actions: Read and write",
         "Webhook",

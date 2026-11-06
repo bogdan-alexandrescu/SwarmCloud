@@ -2,12 +2,13 @@
 DAYONE-SETUP-API-1, part of #2688).
 
     GET  /v1/admin/setup                          the page's whole state
+    POST /v1/admin/setup/sign-in-client           the Desktop client: id to the record, secret to Secret Manager
     POST /v1/admin/setup/github-app/manifest      the App manifest and form target
     POST /v1/admin/setup/github-app/conversion    state check, code exchange, 3 secrets
     GET  /v1/admin/setup/github-app/installation  is the App on the org yet
     POST /v1/admin/setup/github-app/self-check    the `/admin/forge/app` check, recorded
     POST /v1/admin/setup/github-app/hook          turn the webhook on (engine or admin)
-    POST /v1/admin/setup/links                    a one-time link, three kinds
+    POST /v1/admin/setup/links                    a one-time link, four kinds
     POST /v1/admin/setup/teams                    a team: its workspace record and `teams/<id>`
     POST /v1/admin/setup/teams/{id}/invites       an invite and its Google Admin members page
     POST /v1/admin/setup/smoke                    the first team's smoke, again after a failure
@@ -16,6 +17,7 @@ DAYONE-SETUP-API-1, part of #2688).
     PUT  /v1/admin/setup/health                   `health/latest` (swarm-doctor only)
     GET  /v1/admin/setup/health                   `health/latest`
     POST /v1/admin/setup/health/groups-probe      registered groups readable, met/unmet
+    POST /v1/admin/setup/addons/brave-search/probe  one real search as swarm-api (routes/addon_probe.py)
     POST /v1/setup/links/redeem                   a link's named person opens it
 
 WHO MAY CALL (§5.2, §5.3). Every `/v1/admin/setup/*` route is a PLATFORM
@@ -39,7 +41,30 @@ pool account lands, swarm-api runs its smoke, one small task on a granted
 repository, recorded as `teams/<id>.smoke`; `finish` waits for it to pass.
 The smoke and the console's verify runs are submitted as swarm-api's own
 service account in the team's tenant, so they run on the team's own slot and
-never on a person's GitHub connection. No answer, log record or Firestore field carries a
+never on a person's GitHub connection.
+
+ONE PERSON OR A TEAM (lane DAYONE-SETUP-API-3, decision 7). The page serves
+the install's `sizing` (`state.outputs["sizing"]`, which the engine copies
+into its document) read-only, and its `mode`. For one person
+(`sizing.mode == "individual"`) the first workspace is the installer's
+personal workspace, recorded as `console/personal`: it gets the grant, its
+pool accounts and the smoke the first team gets for a team; the first-team
+and invites steps say they are not needed, and `finish` waits for the
+personal workspace's smoke. An engine document with no `sizing` reads as a
+team, as every install before this lane did.
+
+NO WORKSPACE BEFORE PUBLISHING (lane DAYONE-MANIFEST-STEPS-2). Filing the
+first workspace approves it, and an approval publishes to
+swarm-workspace-apply only once `workspace_apply_publish` is on, which swarm
+install's infra pass 3 (`github.pass-3`) turns on after the console's GitHub
+step. Approved before it, the workspace would only be logged
+`workspace_stuck` (reason `publishing_off`) and page. So while swarm-api's own
+publisher is off the first-team step says it waits (`steps.first_team.state
+== "waiting"`), the team route answers 409 `publishing_off` and writes
+nothing, and for one person the personal workspace is not filed: the page's
+`personal.reason` is `publishing_off` until it is.
+
+No answer, log record or Firestore field carries a
 secret: the App's three secrets go from GitHub's answer straight into Secret
 Manager, and a link's value straight into its one container.
 """
@@ -47,7 +72,8 @@ Manager, and a link's value straight into its one container.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -57,16 +83,19 @@ from fastapi.responses import JSONResponse
 from pydantic import Field
 
 from .. import install_record as ir
-from .. import roles
+from .. import refusals, roles
 from .. import setup_links as sl
 from .. import workspaces as ws
+from ..access import record_workspace_installation, write_workspace_grants
 from ..auth import TENANT_HEADER, AuthContext, bearer_tokens, require_admin
+from ..brokerclient import AccountPool
 from ..codec import console_origin
 from ..deps import AppContext, admin_auth, current_auth, get_context
 from ..errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from ..groups import GroupLookupError, MembershipResolver, check_group_readable
 from ..people import People
-from ..schemas import StrictModel
+from ..publish_workspace import WorkspacePublisher
+from ..schemas import VOICE_API_KEY_PROVIDER, StrictModel
 from ..setup_github import (
     GitHubSetupApi,
     ManifestFlow,
@@ -75,7 +104,7 @@ from ..setup_github import (
     SetupUnconfigured,
 )
 from .accounts import account_pool
-from .people import name_first_admin, people_service, workspace_directory
+from .people import name_first_admin, people_service, workspace_directory, workspace_publisher
 
 log = logging.getLogger(__name__)
 
@@ -261,6 +290,12 @@ SMOKE_PROMPT = ("Add a file SMOKE.md saying this deployment's first team ran its
 VERIFY_TASK_PROMPT = ("Add a file VERIFY.md saying this deployment ran a single task from the "
                       "console, and open a pull request titled 'swarm install verify'.")
 RUN_PROFILE = "claude-code"
+#: The dispatch strategies of the runs this module submits: the smoke only
+#: has to finish, the console's verify task and workflow must each end in a
+#: pull request (`verify.end-to-end` reports a run without one as a problem).
+SMOKE_STRATEGY = "collect"
+VERIFY_TASK_STRATEGY = "direct-pr"
+VERIFY_WORKFLOW_STRATEGY = "integrate"
 SMOKE_LABEL = "swarm-install-smoke"
 VERIFY_LABEL = "swarm-install-verify"
 
@@ -304,12 +339,16 @@ class TeamRuns:
             tenant_id=tenant_id, is_admin=False, tenant_principal=group)
 
     def submit_task(self, *, tenant_id: str, group: str, repository: str, prompt: str,
-                    label: str) -> str:
+                    label: str, strategy: str = SMOKE_STRATEGY) -> str:
+        """One task. The smoke keeps `collect` (it opens nothing); the
+        console's verify task is `direct-pr`, because verify needs its pull
+        request and a `collect` task's git tools refuse every push (audit 4d,
+        F2)."""
         from ..schemas import TaskCreate
 
         spec = TaskCreate(runner_profile=RUN_PROFILE, input={"prompt": prompt},
                           repository_url=f"https://github.com/{repository}",
-                          metadata={"unit": label})
+                          metadata={"unit": label}, strategy=strategy)
         result = self._ctx.submissions.submit_tasks(self._auth(tenant_id, group), [spec])
         return str(result.tasks[0].id)
 
@@ -320,6 +359,10 @@ class TeamRuns:
         spec = WorkflowCreate.model_validate({
             "repository_url": f"https://github.com/{repository}",
             "metadata": {"unit": label},
+            # `open` builds on `write`'s branch, which only a strategy whose
+            # every step pushes allows; `integrate` has the final step open
+            # the one pull request verify reads (audit 4d, F1).
+            "strategy": VERIFY_WORKFLOW_STRATEGY,
             "steps": [
                 {"step_id": "write", "runner_profile": RUN_PROFILE,
                  "input": {"prompt": "Add a file VERIFY.md saying this deployment ran a "
@@ -336,6 +379,10 @@ class TeamRuns:
     def task_state(self, *, tenant_id: str, task_id: str) -> str:
         task = self._ctx.store.get_task(tenant_id, task_id, submitted_by=None)
         return run_state(task.state)
+
+    def workflow_state(self, *, tenant_id: str, workflow_id: str) -> str:
+        workflow = self._ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+        return run_state(workflow.state)
 
 
 def setup_runs(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
@@ -374,21 +421,70 @@ def installation_repositories(flow: ManifestFlow, github: GitHubSetupApi,
         names += [str(r["full_name"]) for r in rows]
         if len(rows) < 100:
             break
+    kind = (found.get("account") or {}).get("type")
     return {"installation_id": found["id"], "account": org,
+            "owner_type": kind if isinstance(kind, str) else None,
             "selection": found.get("repository_selection"), "repositories": sorted(set(names))}
+
+
+def _grant_held(grant: dict[str, Any]) -> bool:
+    """Whether a granted grant is fully on the submission path: enforced,
+    and its App installation recorded for the workspace when it names one."""
+    return bool(grant.get("enforced_at")) and (
+        not grant.get("installation_id") or bool(grant.get("installation_recorded_at")))
+
+
+def enforce_grant(db: Any, tenant: str, grant: dict[str, Any], *, now: datetime
+                  ) -> dict[str, Any]:
+    """The recorded grant made the one the submission path reads (finding N11):
+    the workspace's grant documents (`access.write_workspace_grants`), which
+    `SubmissionService._grant_mode` honours for everyone in the workspace, so
+    a teammate's first task on these repositories is not refused under
+    `repository_grants_enforced`. Marked `enforced_at` once written; a grant
+    recorded before this existed is written on its next read.
+
+    The App installation it came from is recorded as the workspace's own
+    `forge_orgs` document (`access.record_workspace_installation`; audit 3,
+    A4), so a service submission for this workspace -- the first team's
+    smoke, the console's verification runs -- is minted an installation
+    token (`SubmissionService._app_installed`). Marked
+    `installation_recorded_at`; keyed by `tenant` alone (invariant 9)."""
+    if grant.get("state") != "granted" or not grant.get("repositories") or _grant_held(grant):
+        return grant
+    if not grant.get("enforced_at"):
+        write_workspace_grants(db, tenant, list(grant["repositories"]),
+                               mode=str(grant.get("mode") or "write"), by=str(grant.get("by") or ""),
+                               at=now, source="admin-setup")
+        grant = {**grant, "enforced_at": now}
+    installation = grant.get("installation_id")
+    if installation and not grant.get("installation_recorded_at"):
+        record_workspace_installation(
+            db, tenant, owner=str(grant.get("account") or ""), installation_id=installation,
+            owner_type=grant.get("owner_type"), selection=grant.get("selection"),
+            by=str(grant.get("by") or ""), at=now)
+        grant = {**grant, "installation_recorded_at": now}
+    return grant
 
 
 def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
                  flow: ManifestFlow, github: GitHubSetupApi, org: str, by: str,
-                 now: datetime) -> dict[str, Any]:
+                 now: datetime, db: Any, path: str | None = None) -> dict[str, Any]:
     """Decision 3: the first team's team-level grant over the repositories the
     App installation covers, recorded on `teams/<id>.grant` and shown on the
     page. Written once the App is installed on at least one repository; until
     then `state: waiting_for_app` (not installed) or `waiting_for_repositories`
     (installed on none, as a new organisation is), and the next read of the
-    page tries again. A grant already recorded is kept as it is."""
+    page tries again. A grant already recorded is kept as it is. `path` is the
+    document it is recorded on: the team's, or for one person
+    `console/personal`. A grant is enforced as it is recorded (`enforce_grant`):
+    its workspace holds it on the submission path, not only on the page."""
+    path = path or record.team_path(team_id)
+    tenant = str(team.get("workspace") or team_id)
     grant = dict(team.get("grant") or {})
     if grant.get("state") == "granted" and grant.get("repositories"):
+        if not _grant_held(grant):
+            grant = enforce_grant(db, tenant, grant, now=now)
+            record.write(path, {"grant": grant})
         return grant
     try:
         found = installation_repositories(flow, github, org)
@@ -404,10 +500,11 @@ def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *
             grant.update({"installation_id": found["installation_id"],
                           "account": found["account"], "selection": found["selection"]})
     else:
-        grant = {"state": "granted", "mode": "write", "at": now, "by": by, **found}
+        grant = enforce_grant(db, tenant, {"state": "granted", "mode": "write", "at": now,
+                                           "by": by, **found}, now=now)
         log.info("first team granted the App's repositories team=%s repositories=%d",
                  team_id, len(found["repositories"]))
-    record.write(record.team_path(team_id), {"grant": grant})
+    record.write(path, {"grant": grant})
     return grant
 
 
@@ -442,13 +539,36 @@ def _pool_labels(request: Request, ctx: AppContext, tenant: str) -> list[str]:
                    if isinstance(a, dict) and a.get("owner_tenant") == tenant} - {""})
 
 
+def mark_signed_in(record: ir.InstallRecord, pool_accounts: list[str], *,
+                   now: datetime) -> None:
+    """Finding N7: each labelled account the first workspace's pool holds
+    (`_pool_labels`) is signed in, so `console/accounts.<label>.signed_in_at`
+    is stamped here, on the read the page polls, as `finish` stamps it; the
+    page's "Hand over to swarm install" waits on it, and the link page that
+    signed it in writes nothing of its own. A stamp already there is kept."""
+    if not pool_accounts:
+        return
+    accounts = record.read(record.console_path(ir.ACCOUNTS)) or {}
+    newly = {label: {**(accounts.get(label) or {}), "signed_in_at": now}
+             for label in pool_accounts if not (accounts.get(label) or {}).get("signed_in_at")}
+    if newly:
+        record.write(record.console_path(ir.ACCOUNTS), newly)
+        log.info("setup page: pool accounts signed in labels=%s", ",".join(sorted(newly)))
+
+
 def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
-                  runs: Any, pool_accounts: list[str], now: datetime) -> dict[str, Any] | None:
+                  runs: Any, pool_accounts: list[str], now: datetime,
+                  path: str | None = None, principal: str | None = None
+                  ) -> dict[str, Any] | None:
     """The first team's smoke (plan §5, stage 12): once its first pool account
     has landed and its grant names a repository, ONE small task on that
     repository, as the team; then its state, read live until it ends. The
     result is `teams/<id>.smoke`, which `finish` waits for. A failed smoke is
-    started again only by `POST /v1/admin/setup/smoke`."""
+    started again only by `POST /v1/admin/setup/smoke`. For one person it is
+    the personal workspace's, on `console/personal` (`path`), submitted with
+    the installer as the tenant's principal (`principal`)."""
+    path = path or record.team_path(team_id)
+    group = principal if principal is not None else str(team.get("group") or "")
     smoke = dict(team.get("smoke") or {})
     tenant = str(team.get("workspace") or team_id)
     if smoke.get("task_id"):
@@ -463,14 +583,17 @@ def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], 
             smoke["state"] = state
             if state != RUNNING:
                 smoke["finished_at"] = now
-            record.write(record.team_path(team_id), {"smoke": smoke})
+            record.write(path, {"smoke": smoke})
         return smoke
     repositories = list((team.get("grant") or {}).get("repositories") or [])
     if not pool_accounts or not repositories:
         return smoke or None
+    if not app_self_checked(record):
+        return {"state": SELF_CHECK_WAITING, "repository": repositories[0],
+                "message": PASS_3_WAIT}
     repository = repositories[0]
     try:
-        task_id = runs.submit_task(tenant_id=tenant, group=str(team.get("group") or ""),
+        task_id = runs.submit_task(tenant_id=tenant, group=group,
                                    repository=repository, prompt=SMOKE_PROMPT,
                                    label=SMOKE_LABEL)
     except ApiError as exc:
@@ -479,8 +602,8 @@ def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], 
     else:
         smoke = {"state": RUNNING, "task_id": task_id, "repository": repository,
                  "started_at": now}
-        log.info("first team smoke started team=%s task=%s", team_id, task_id)
-    record.write(record.team_path(team_id), {"smoke": smoke})
+        log.info("first workspace smoke started workspace=%s task=%s", tenant, task_id)
+    record.write(path, {"smoke": smoke})
     return smoke
 
 
@@ -503,16 +626,198 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
         pool_accounts = []
     row = dict(team)
     row.update({"id": team_id, "workspace_state": workspace.get("state"),
+                # The record's `w-` id, which POST /v1/admin/workspaces/{id}/retry
+                # takes: a failed workspace is retried there, not by asking for
+                # the team again (audit 5b, M6).
+                "workspace_id": workspace.get("workspace_id"),
+                # The group's members page on every row, so the invites made
+                # with the team keep their link (audit 5b, M5).
+                "add_members_url": admin_members_url(directory, group) if group else None,
                 "members": [{"email": e, "member": m} for e, m in members.items()],
                 "pool_accounts": pool_accounts, "first": first})
     if first:
         now = ctx.now()
+        mark_signed_in(record, pool_accounts, now=now)
         team = {**team, "grant": ensure_grant(
             record, team_id, team, flow=flow, github=github,
-            org=ctx.settings.setup_github_org, by=by, now=now)}
+            org=ctx.settings.setup_github_org, by=by, now=now, db=ctx.db)}
         row["grant"] = team["grant"]
         row["smoke"] = advance_smoke(record, team_id, team, runs=runs,
                                      pool_accounts=pool_accounts, now=now)
+    return row
+
+
+# --------------------------------------------------------------------------
+# one person or a team (lane DAYONE-SETUP-API-3, decision 7)
+# --------------------------------------------------------------------------
+
+#: What the first-team and invites steps say for a one-person install.
+NOT_NEEDED = "not needed for one person"
+
+
+def install_mode(engine: dict[str, Any] | None) -> str:
+    """`individual` when the engine's `sizing.mode` says so; anything else,
+    an absent `sizing` included (an install from before sizing), is a team."""
+    sizing = (engine or {}).get("sizing")
+    mode = sizing.get("mode") if isinstance(sizing, dict) else None
+    return ir.INDIVIDUAL if mode == ir.INDIVIDUAL else ir.TEAM
+
+
+def sizing_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The install's sizing as the page serves it, read-only: its named
+    fields and nothing else; None until the engine has written it."""
+    sizing = (engine or {}).get("sizing")
+    if not isinstance(sizing, dict):
+        return None
+    return {name: sizing.get(name) for name in ir.SIZING_FIELDS}
+
+
+#: What the first workspace waits for while swarm-api publishes nothing: an
+#: approval before infra pass 3 is logged `workspace_stuck` (reason
+#: `publishing_off`) and pages (DAYONE-MANIFEST-STEPS-2).
+PUBLISHING_WAIT = ("waiting for swarm install’s infra pass 3, which turns on workspace "
+                   "publishing: a workspace approved before it is never built")
+
+
+class PublishingOff(Conflict):
+    """No workspace is filed (and so approved) while publishing is off."""
+
+    code = "publishing_off"
+
+
+def refuse_before_publishing(publisher: WorkspacePublisher, step: str) -> None:
+    """409 `publishing_off`, nothing written, until swarm-api's publisher is on
+    (a switched refusal, on by default: `refusals.SWITCHES`)."""
+    if not getattr(publisher, "enabled", False):
+        refusals.refuse(PublishingOff(f"the first workspace is {PUBLISHING_WAIT}",
+                                      detail={"step": step, "reason": "publishing_off"}))
+
+
+def steps_view(mode: str, teams: list[tuple[str, dict[str, Any]]], *,
+               publishing: bool) -> dict[str, Any]:
+    """The first-team and invites steps: needed for a team, and for one
+    person `not_needed` with the reason the page shows. With no team yet and
+    publishing off, the first team `waiting`, with what it waits for."""
+    if mode == ir.INDIVIDUAL:
+        skipped = {"needed": False, "state": "not_needed", "reason": NOT_NEEDED}
+        return {"first_team": dict(skipped), "invites": dict(skipped)}
+    if not teams and not publishing:
+        first_team = {"needed": True, "state": "waiting", "reason": PUBLISHING_WAIT}
+    else:
+        first_team = {"needed": True, "state": "done" if teams else "to_do"}
+    return {"first_team": first_team,
+            "invites": {"needed": True,
+                        "state": "done" if any(t.get("invites") for _, t in teams)
+                        else "to_do"}}
+
+
+def installer_of(ctx: AppContext, engine: dict[str, Any] | None) -> str:
+    """The installer's email: the engine's `installer` (state.outputs), else
+    the deployment's platform owner; "" when neither is set."""
+    found = str((engine or {}).get("installer") or ctx.settings.platform_owner or "")
+    return found.strip().lower()
+
+
+def _refuse_for_one_person(record: ir.InstallRecord, step: str) -> None:
+    if install_mode(record.read_engine()) == ir.INDIVIDUAL:
+        raise Conflict(f"a team is {NOT_NEEDED}: this install is for one person, whose "
+                       "first workspace is their personal workspace",
+                       detail={"mode": ir.INDIVIDUAL, "step": step})
+
+
+def ensure_personal(record: ir.InstallRecord, ctx: AppContext, people: People, *,
+                    installer: str, by: str, is_owner: bool,
+                    publisher: WorkspacePublisher) -> dict[str, Any] | None:
+    """A one-person install's first workspace: the installer's personal
+    workspace, filed through the existing workspace path (`People.create`,
+    as `POST /v1/admin/workspaces`; 200 and nothing written when it stands),
+    and recorded once as `console/personal`. None while no installer is
+    known; `PublishingOff` while publishing is off, since filing it approves
+    it."""
+    path = record.personal_path()
+    doc = record.read(path) or {}
+    if doc.get("workspace") and (not installer or doc.get("owner") == installer):
+        return doc
+    if not installer:
+        return None
+    refuse_before_publishing(publisher, "personal")
+    _, workspace = people.create(
+        ctx.submissions.workspaces, kind=ws.PERSONAL, principal=installer, display_name=None,
+        limits=None, by=by, is_owner=is_owner)
+    tenant = str(workspace.get("tenant_id") or ws.personal_tenant_id(installer))
+    progress = dict(doc.get("progress") or {})
+    progress.setdefault("created_at", ctx.now())
+    progress["workspace_state"] = workspace.get("state")
+    log.info("one-person install: the installer's personal workspace is the first "
+             "workspace=%s", tenant)
+    return record.write(path, {"owner": installer, "workspace": tenant, "progress": progress})
+
+
+@dataclass(frozen=True)
+class FirstWorkspace:
+    """Where the grant, the pool accounts, the smoke and the verify runs go:
+    the first team's workspace, or for one person the personal workspace."""
+
+    key: str  # the team id, or the personal workspace's tenant id
+    doc: dict[str, Any]
+    path: str
+    principal: str  # the team's group, or the installer
+    personal: bool
+
+    @property
+    def tenant(self) -> str:
+        return str(self.doc.get("workspace") or self.key)
+
+
+def first_workspace(record: ir.InstallRecord, ctx: AppContext, people: People, *,
+                    caller: SetupCaller, flow: ManifestFlow, github: GitHubSetupApi,
+                    publisher: WorkspacePublisher, engine: dict[str, Any] | None = None,
+                    mode: str | None = None) -> FirstWorkspace | None:
+    """The first workspace for this install's mode, or None while there is
+    none. For one person it is filed and granted here (`ensure_personal`,
+    `ensure_grant`), so no step waits on a page read."""
+    if mode is None:
+        engine = record.read_engine() if engine is None else engine
+        mode = install_mode(engine)
+    if mode != ir.INDIVIDUAL:
+        first = _first_team(record)
+        if first is None:
+            return None
+        team_id, team = first
+        return FirstWorkspace(key=team_id, doc=team, path=record.team_path(team_id),
+                              principal=str(team.get("group") or ""), personal=False)
+    installer = installer_of(ctx, engine if engine is not None else record.read_engine())
+    auth = caller.auth
+    doc = ensure_personal(record, ctx, people, installer=installer, by=caller.email,
+                          is_owner=bool(auth.is_owner) if auth is not None else False,
+                          publisher=publisher)
+    if doc is None:
+        return None
+    path = record.personal_path()
+    tenant = str(doc["workspace"])
+    doc = {**doc, "grant": ensure_grant(record, tenant, doc, flow=flow, github=github,
+                                        org=ctx.settings.setup_github_org, by=caller.email,
+                                        now=ctx.now(), db=ctx.db, path=path)}
+    return FirstWorkspace(key=tenant, doc=doc, path=path, principal=installer, personal=True)
+
+
+def personal_row(request: Request, ctx: AppContext, record: ir.InstallRecord,
+                 first: FirstWorkspace, *, runs: Any) -> dict[str, Any]:
+    """The personal workspace's row, read live: its workspace's state now,
+    its pool accounts, its grant and its smoke, advanced on this read."""
+    tenant = first.tenant
+    workspace = ctx.submissions.workspaces.get(tenant) or {}
+    try:
+        pool_accounts = _pool_labels(request, ctx, tenant)
+    except ApiError as exc:
+        log.info("setup page: the pool could not be read code=%s", exc.code)
+        pool_accounts = []
+    row = dict(first.doc)
+    row.update({"workspace_state": workspace.get("state"), "pool_accounts": pool_accounts})
+    mark_signed_in(record, pool_accounts, now=ctx.now())
+    row["smoke"] = advance_smoke(record, first.key, first.doc, runs=runs,
+                                 pool_accounts=pool_accounts, now=ctx.now(), path=first.path,
+                                 principal=first.principal)
     return row
 
 
@@ -522,6 +827,14 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
 
 
 def _as_datetime(value: Any) -> datetime | None:
+    """A datetime, an ISO string, or epoch seconds (int or float): the engine
+    writes `lease.heartbeat`, `hand_off_at`, `ready_at` and `stages[].at` as
+    epoch seconds (`swarm_install.lease`, `state`; audit 3, A7)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
@@ -539,10 +852,54 @@ def _cli_running(engine: dict[str, Any] | None, now: datetime) -> bool:
     return beat is not None and now - beat <= LEASE_STALE
 
 
+#: The self-check's states (audit finding 28). Before swarm install's infra
+#: pass 3 renders GITHUB_APP_ID into swarm-api, `check_app_key` answers
+#: `app_id_not_configured`: that is a wait for the pass, never a reason to
+#: create the App again (pass 4 then waits on a passing check).
+SELF_CHECK_PASSED = "passed"
+SELF_CHECK_FAILED = "failed"
+SELF_CHECK_WAITING = "waiting_for_infra_pass_3"
+#: The `check_app_key` reasons that mean pass 3 has not landed yet.
+BEFORE_PASS_3 = frozenset({"app_id_not_configured", "app_slug_not_configured"})
+
+
+#: What a run that waits for infra pass 3 says (audit 4d, F4).
+PASS_3_WAIT = ("waiting for swarm install's infra pass 3: until it gives swarm-api the "
+               "App's id, no installation token can be minted for the run to clone with")
+
+
+def app_self_checked(record: ir.InstallRecord) -> bool:
+    """Whether `console/github_app.self_check` passed: the pass-3 signal the
+    page already shows. The smoke and the console's verify runs clone with
+    the App installation token, which `forgeapp.signed_app_jwt` mints only
+    once pass 3 has rendered GITHUB_APP_ID into swarm-api; started before,
+    the broker refuses (`app_installation_unavailable`) and the run fails
+    (audit 4d, F4). So neither is submitted until this answers true."""
+    app = record.read(record.console_path(ir.GITHUB_APP)) or {}
+    return bool((app.get("self_check") or {}).get("ok"))
+
+
+def self_check_view(result: dict[str, Any]) -> dict[str, Any]:
+    """A recorded or fresh self-check with its `state` and the sentence the
+    page shows; one recorded before the states existed is read the same way."""
+    reason = result.get("reason")
+    if result.get("ok"):
+        state, message = SELF_CHECK_PASSED, "the App's private key signs and GitHub knows the App"
+    elif reason in BEFORE_PASS_3:
+        state = SELF_CHECK_WAITING
+        message = ("waiting for swarm install's infra pass 3, which gives swarm-api the "
+                   "App's id; the check can run once that pass has")
+    else:
+        state, message = SELF_CHECK_FAILED, f"the App's key self-check failed: {reason}"
+    return {**result, "state": state, "message": message}
+
+
 def _github_view(doc: dict[str, Any] | None) -> dict[str, Any] | None:
     if doc is None:
         return None
     view = {k: v for k, v in doc.items() if k != "state_hash"}
+    if isinstance(view.get("self_check"), dict):
+        view["self_check"] = self_check_view(view["self_check"])
     view["started"] = bool(doc.get("state_hash")) or bool(doc.get("id"))
     return view
 
@@ -551,6 +908,127 @@ def _accounts_view(doc: dict[str, Any] | None) -> dict[str, Any]:
     """Per label: owner, link expiry, signed-in time. Never the link hash."""
     return {label: {k: v for k, v in (value or {}).items() if k != "link_hash"}
             for label, value in (doc or {}).items()}
+
+
+# --------------------------------------------------------------------------
+# the Sign-in client (issue #2964)
+# --------------------------------------------------------------------------
+
+#: The Desktop client's secret: the engine made the container in stage 2
+#: (`edge.client-secret-container`), and infra grants swarm-api
+#: secretVersionAdder on it alone. swarm-api adds versions; it never reads one.
+SIGN_IN_CLIENT_SECRET = "swarm-iap-desktop-client-secret"
+#: A Desktop OAuth client's id: digits, a dash, then Google's suffix.
+SIGN_IN_CLIENT_ID = re.compile(r"^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$")
+WAITING_CLIENT = "waiting"
+SAVED_CLIENT = "saved"
+APPLIED_CLIENT = "applied"
+
+
+class ClientIdInvalid(ValidationFailed):
+    code = "client_id_invalid"
+
+
+def sign_in_links(project_id: str) -> dict[str, str | None]:
+    """The three Google Cloud console pages, in the order the step walks
+    them: no API makes the OAuth brand or a Desktop client (Google shut the
+    IAP OAuth Admin API down on 2026-03-19). Null without a project id."""
+    if not project_id:
+        return {"branding": None, "audience": None, "create_client": None}
+    base = "https://console.cloud.google.com/auth"
+    return {"branding": f"{base}/branding?project={project_id}",
+            "audience": f"{base}/audience?project={project_id}",
+            "create_client": f"{base}/clients/create?project={project_id}"}
+
+
+def sign_in_client_view(project_id: str, doc: dict[str, Any] | None,
+                        engine: dict[str, Any] | None) -> dict[str, Any]:
+    """`waiting` until the console saved a client; `saved` once its id and
+    secret are stored; `applied` once the engine's bootstrap pass put that id
+    in IAP's programmatic-clients list (the engine document's
+    `sign_in_client`). A client the terminal recorded before this step
+    existed has no console document and reads `applied` from the engine's."""
+    applied = str(((engine or {}).get("sign_in_client") or {}).get("client_id") or "")
+    saved = str((doc or {}).get("client_id") or "")
+    client = saved or applied
+    if not client:
+        state = WAITING_CLIENT
+    elif client == applied:
+        state = APPLIED_CLIENT
+    else:
+        state = SAVED_CLIENT
+    return {"state": state, "client_id": client or None,
+            "saved_at": (doc or {}).get("saved_at") if saved else None,
+            "saved_by": (doc or {}).get("saved_by") if saved else None,
+            "links": sign_in_links(project_id)}
+
+
+# --------------------------------------------------------------------------
+# what the checklist reads beside the marks (the console finish's checklist)
+# --------------------------------------------------------------------------
+
+#: How long each wait the page names usually takes, with where the number
+#: comes from, so the page's "usually" text is served rather than invented.
+#: A number is restated from the engine's own `WaitSpec` (swarm-api's image
+#: does not carry `apps/swarm-install`); `test_setup_routes` imports both and
+#: fails on any difference. A wait the platform has no figure for carries no
+#: `typical_s` at all, and its `source` says so: never a made-up value.
+#: For those (the sign-in pass, infra pass 3) the page shows the time since
+#: the pass started instead, from `passes` (`passes_view`), until one is measured.
+TYPICAL_WAITS: dict[str, dict[str, Any]] = {
+    "sign_in_pass": {
+        "source": "not measured: swarm install's sign-in pass (bootstrap pass 2 putting the saved Desktop "
+                  "client in IAP's programmatic clients) is a Terraform apply with no wait of its own",
+    },
+    "infra_pass_3": {
+        "source": "not measured: swarm install's infra pass 3 (the GitHub App's ids into swarm-api) is one "
+                  "Terraform apply with no wait of its own",
+    },
+    "workspace_build": {
+        "typical_s": 10 * 60, "expected": "2 to 10 min",
+        "source": "swarm_install.team.WORKSPACE_WAIT: swarm-workspace-apply making the team's identity, "
+                  "slots and namespace",
+    },
+    "smoke": {
+        "typical_s": 5 * 60, "expected": "1 to 5 min",
+        "source": "swarm_install.team.SMOKE_WAIT: a team's smoke agent to finish",
+    },
+    "groups": {
+        "typical_s": 5 * 60, "expected": "1 to 5 min after they are saved",
+        "source": "swarm_install.steps.identity.GROUPS_WAIT: a change saved in the Admin console reaching "
+                  "the Groups API",
+    },
+}
+
+
+def passes_view(engine: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Each timed pass (`ir.TIMED_PASSES`) as the page reads it: `started_at`
+    from the engine's `passes`, None until the engine stamped one (a pass not
+    yet run, or an engine from before the field), and `ended_at` and `result`
+    once it stopped. With no measured usual length (`TYPICAL_WAITS`), the page
+    shows a running pass's elapsed time from `started_at` instead."""
+    stored = (engine or {}).get("passes")
+    stored = stored if isinstance(stored, dict) else {}
+    view: dict[str, dict[str, Any]] = {}
+    for name in ir.TIMED_PASSES:
+        entry = stored.get(name) if isinstance(stored.get(name), dict) else {}
+        view[name] = {"started_at": entry.get("started_at"),
+                      **{key: entry[key] for key in ("ended_at", "result") if key in entry}}
+    return view
+
+
+def engine_view(engine: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The engine's document as the page reads it: `verify.detail`, verify's
+    one-line cause, only while `verify.result` is "failed" and the cause is
+    not empty; otherwise the field is absent. The stored document is never
+    changed: swarm-api does not write it."""
+    if engine is None or not isinstance(engine.get("verify"), dict):
+        return engine
+    verify = dict(engine["verify"])
+    detail = verify.pop("detail", None)
+    if verify.get("result") == FAILED and isinstance(detail, str) and detail.strip():
+        verify["detail"] = detail
+    return {**engine, "verify": verify}
 
 
 @router.get("", dependencies=[Depends(admin_auth)])
@@ -563,28 +1041,96 @@ def setup_state(
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     """The page's whole state. Each team's row is read live (`team_row`), and
-    the first team's grant and smoke are advanced on the read the page polls."""
+    the first team's grant and smoke are advanced on the read the page polls.
+    It serves the install's `sizing` and `mode` read-only; for one person the
+    personal workspace's row (`personal`) takes the first team's place."""
     engine = record.read_engine()
+    mode = install_mode(engine)
     teams = record.teams()
+    personal = None
+    if mode == ir.INDIVIDUAL:
+        try:
+            first = first_workspace(record, ctx, people, caller=caller, flow=flow,
+                                    github=github, publisher=publisher, engine=engine, mode=mode)
+        except ApiError as exc:
+            log.info("setup page: the personal workspace could not be filed code=%s", exc.code)
+            personal = {"owner": installer_of(ctx, engine) or None, "workspace": None,
+                        "reason": exc.code}
+        else:
+            if first is not None:
+                personal = personal_row(request, ctx, record, first, runs=runs)
+    finished = record.read(record.console_path(ir.FINISHED))
+    if finished is not None:
+        # Once handed over, each read starts a verify run `finish` could not
+        # start and restarts a failed one, up to MAX_VERIFY_RETRIES (B1).
+        try:
+            handed = first_workspace(record, ctx, people, caller=caller, flow=flow,
+                                     github=github, publisher=publisher, engine=engine,
+                                     mode=mode)
+        except ApiError as exc:
+            log.info("setup page: the first workspace could not be read code=%s", exc.code)
+        else:
+            keep_verify_runs(record, ctx, handed, runs=runs, by=caller.email)
     return {
         "env": record.env,
-        "engine": engine,
+        "engine": engine_view(engine),
+        "mode": mode,
+        "sizing": sizing_view(engine),
+        "steps": steps_view(mode, teams, publishing=bool(getattr(publisher, "enabled", False))),
+        "personal": personal,
         "cli_running": _cli_running(engine, ctx.now()),
         "github_app": _github_view(record.read(record.console_path(ir.GITHUB_APP))),
+        "sign_in_client": sign_in_client_view(ctx.settings.project_id,
+                                              record.read(record.console_path(ir.SIGN_IN_CLIENT)), engine),
         "teams": [team_row(request, ctx, record, team_id, doc, directory=directory,
                            first=index == 0, runs=runs, flow=flow, github=github,
                            by=caller.email)
                   for index, (team_id, doc) in enumerate(teams)],
         "verify_runs": record.read(record.console_path(ir.VERIFY_RUNS)),
         "accounts": _accounts_view(record.read(record.console_path(ir.ACCOUNTS))),
-        "finished": record.read(record.console_path(ir.FINISHED)),
+        "finished": finished,
         "addons": [{"name": name, "enable": f"swarm addon enable {name}",
                     "secret_link": name in sl.ADDON_SECRETS} for name in ADDONS],
         "hostname": ctx.settings.install_hostname or None,
         "github_org": ctx.settings.setup_github_org or None,
+        "typical_waits": TYPICAL_WAITS,
+        "passes": passes_view(engine),
     }
+
+
+class SignInClient(StrictModel):
+    client_id: str = Field(max_length=256)
+    client_secret: str = Field(min_length=1, max_length=1024)
+
+
+@router.post("/sign-in-client", dependencies=[Depends(admin_auth)])
+def save_sign_in_client(
+    body: SignInClient,
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+    secrets_: SetupSecrets = Depends(setup_secrets),
+) -> dict:
+    """The Desktop client's id to the install record and its secret, as a new
+    version, to Secret Manager; the secret is never answered, logged or
+    stored anywhere else. A second save replaces the id and adds a version.
+    The engine's hand-off wait sees the record and runs the passes that put
+    the id in IAP's programmatic-clients list (`applied`)."""
+    client_id = body.client_id.strip()
+    if not SIGN_IN_CLIENT_ID.match(client_id):
+        raise ClientIdInvalid("client_id must be a Desktop OAuth client id, ending .apps.googleusercontent.com")
+    secrets_.add_version(SIGN_IN_CLIENT_SECRET, body.client_secret)
+    doc = record.write(record.console_path(ir.SIGN_IN_CLIENT),
+                       {"client_id": client_id, "saved_at": ctx.now(), "saved_by": caller.email})
+    log.info("sign-in client saved by the console client_id=%s by=%s", client_id, caller.email)
+    # A save always answers `saved` (the route contract): even for the id the
+    # engine already applied, the new secret version is not taken in until
+    # the hand-off sees this record.
+    return {**sign_in_client_view(ctx.settings.project_id, doc, record.read_engine()), "state": SAVED_CLIENT}
 
 
 # --------------------------------------------------------------------------
@@ -637,6 +1183,20 @@ def github_app_installation(
     return flow.installation(ctx.settings.setup_github_org)
 
 
+@router.get("/github-app/permissions", dependencies=[Depends(admin_auth)])
+def github_app_permissions(
+    caller: SetupCaller = Depends(admin_setup_caller),  # noqa: ARG001 - the gate
+    ctx: AppContext = Depends(get_context),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+) -> dict:
+    """The App's and its installation's permissions, read as the App, for
+    `swarm upgrade` (`setup_app_read`): no token, key or secret field."""
+    from ..setup_app_read import app_permissions
+
+    return app_permissions(flow, github, org=ctx.settings.setup_github_org)
+
+
 @router.post("/github-app/self-check", dependencies=[Depends(admin_auth)])
 def github_app_self_check(
     request: Request,
@@ -645,9 +1205,11 @@ def github_app_self_check(
     record: ir.InstallRecord = Depends(install_record),
 ) -> dict:
     """`ForgeApp.check_app_key` (the `/v1/admin/forge/app` check), recorded as
-    `github_app.self_check`. It answers `{ok, app_id, slug, reason}` only."""
+    `github_app.self_check`. It answers `{ok, reason, at, state, message}`
+    only; before infra pass 3 the state is `waiting_for_infra_pass_3`."""
     checked = request.app.state.forge_app.check_app_key()
-    result = {"ok": bool(checked.get("ok")), "reason": checked.get("reason"), "at": ctx.now()}
+    result = self_check_view({"ok": bool(checked.get("ok")), "reason": checked.get("reason"),
+                              "at": ctx.now()})
     record.write(record.console_path(ir.GITHUB_APP), {"self_check": result})
     return result
 
@@ -671,6 +1233,30 @@ def github_app_hook(
 # --------------------------------------------------------------------------
 
 
+def check_team_group(directory: MembershipResolver | None, installer: str,
+                     group: str) -> None:
+    """Audit finding 27: before a team is created, swarm-api must be able to
+    read its group and the installer must be in it; the verify runs look for
+    a team the installer is in. One per-group membership question, past the
+    cache (`check_group_readable`). Either failure is a 409 whose detail names
+    the reason and the Google Admin groups page; nothing is written."""
+    detail: dict[str, Any] = {"group": group, "installer": installer,
+                              "admin_groups_url": ADMIN_GROUPS}
+    try:
+        if directory is None:
+            raise GroupLookupError("this deployment has no group directory to ask")
+        member = check_group_readable(directory, installer, group)
+    except GroupLookupError:
+        raise Conflict(f"swarm-api cannot read the group {group}: create it, or check its "
+                       f"address, in Google Admin ({ADMIN_GROUPS}), then try again",
+                       detail={**detail, "reason": "group_unreadable"}) from None
+    if not member:
+        raise Conflict(f"{installer} is not a member of {group}: add them to it in Google "
+                       f"Admin ({ADMIN_GROUPS}), then try again",
+                       detail={**detail, "reason": "installer_not_member",
+                               "add_members_url": admin_members_url(directory, group)})
+
+
 class TeamCreate(StrictModel):
     group: str = Field(min_length=3, max_length=254)
     display_name: str | None = Field(default=None, max_length=ws.MAX_DISPLAY_NAME)
@@ -688,6 +1274,7 @@ def create_team(
     directory: MembershipResolver | None = Depends(workspace_directory),
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> JSONResponse:
     """A team: the group workspace through the existing workspace path
     (`People.create`, as `POST /v1/admin/workspaces`; `swarm-workspace-apply`
@@ -697,7 +1284,17 @@ def create_team(
     The FIRST team also gets its team-level grant over the App installation's
     repositories (decision 3, `ensure_grant`). Each invite comes back with the
     Google Admin page that adds the person to the group (decision 4); the
-    page's row then polls their membership through the Groups API."""
+    page's row then polls their membership through the Groups API.
+
+    A one-person install has no team (decision 7): 409, nothing written. A
+    group swarm-api cannot read, or one the installer is not in, is refused
+    the same way, with the Google Admin groups page (`check_team_group`).
+    Before infra pass 3 turns publishing on, 409 `publishing_off`: the
+    workspace this approves would never be built."""
+    _refuse_for_one_person(record, "first_team")
+    refuse_before_publishing(publisher, "first_team")
+    installer = installer_of(ctx, record.read_engine()) or caller.email.strip().lower()
+    check_team_group(directory, installer, body.group.strip().lower())
     first_admin = roles.subject_for_write(body.first_admin) if body.first_admin else None
     auth = caller.auth
     status, workspace = people.create(
@@ -727,7 +1324,8 @@ def create_team(
     grant = None
     if first is None or first[0] == team_id:
         grant = ensure_grant(record, team_id, team, flow=flow, github=github,
-                             org=ctx.settings.setup_github_org, by=caller.email, now=ctx.now())
+                             org=ctx.settings.setup_github_org, by=caller.email, now=ctx.now(),
+                             db=ctx.db)
     members_url = admin_members_url(directory, group) if invites else None
     return JSONResponse(status_code=status, content=jsonable_encoder({
         "team": team_id, "workspace": content, "first_admin": granted, "grant": grant,
@@ -755,7 +1353,8 @@ def invite(
     """Decision 4: record the invite and answer the Google Admin page that adds
     the person to the team's group. swarm-api holds Groups Reader only, so it
     adds no one; the page's row polls the membership (`GET /v1/admin/setup`)
-    until the Groups API says they are in."""
+    until the Groups API says they are in. A one-person install has none: 409."""
+    _refuse_for_one_person(record, "invites")
     team = record.read(record.team_path(team_id))
     if team is None:
         raise NotFound(f"no team {team_id!r}")
@@ -770,41 +1369,165 @@ def invite(
             "member": _membership(directory, email, group)}
 
 
-def _granted_repository(record: ir.InstallRecord) -> tuple[str, dict[str, Any], str]:
-    """(team id, team, repository): the first team and the first repository of
-    its grant, which every run Admin › Setup starts uses (decision 3)."""
-    first = _first_team(record)
+def _granted_repository(first: FirstWorkspace | None) -> tuple[FirstWorkspace, str]:
+    """(first workspace, repository): the first team (for one person, the
+    personal workspace) and the first repository of its grant, which every
+    run Admin › Setup starts uses (decision 3)."""
     if first is None:
         raise Conflict("create the first team first")
-    team_id, team = first
-    repositories = list((team.get("grant") or {}).get("repositories") or [])
+    grant = first.doc.get("grant") or {}
+    repositories = list(grant.get("repositories") or [])
     if not repositories:
-        raise Conflict("the first team has no granted repository yet: install the GitHub "
+        whose = "the personal workspace" if first.personal else "the first team"
+        raise Conflict(f"{whose} has no granted repository yet: install the GitHub "
                        "App on the organisation, on at least one repository",
-                       detail={"grant": (team.get("grant") or {}).get("state")})
-    return team_id, team, repositories[0]
+                       detail={"grant": grant.get("state")})
+    return first, repositories[0]
 
 
 @router.post("/smoke", dependencies=[Depends(admin_auth)])
 def restart_smoke(
     request: Request,
-    caller: SetupCaller = Depends(admin_setup_caller),  # noqa: ARG001 - the gate
+    caller: SetupCaller = Depends(admin_setup_caller),
     ctx: AppContext = Depends(get_context),
     record: ir.InstallRecord = Depends(install_record),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
-    """Start the first team's smoke again after it failed; a running or passed
-    smoke is answered as it is."""
-    team_id, team, _ = _granted_repository(record)
-    smoke = dict(team.get("smoke") or {})
-    if smoke.get("state") == FAILED:
-        team = {**team, "smoke": None}
-    tenant = str(team.get("workspace") or team_id)
-    smoke = advance_smoke(record, team_id, team, runs=runs,
-                          pool_accounts=_pool_labels(request, ctx, tenant), now=ctx.now())
+    """Start the first team's (for one person, the personal workspace's)
+    smoke again after it failed; a running or passed smoke is answered as it
+    is."""
+    first, _ = _granted_repository(first_workspace(record, ctx, people, caller=caller,
+                                                   flow=flow, github=github, publisher=publisher))
+    doc = first.doc
+    if (doc.get("smoke") or {}).get("state") == FAILED:
+        doc = {**doc, "smoke": None}
+    smoke = advance_smoke(record, first.key, doc, runs=runs,
+                          pool_accounts=_pool_labels(request, ctx, first.tenant), now=ctx.now(),
+                          path=first.path, principal=first.principal)
     if smoke is None:
-        raise Conflict("the first team's smoke waits for its first pool account")
-    return {"team": team_id, "smoke": smoke}
+        raise Conflict("the first workspace's smoke waits for its first pool account")
+    return {"team": None if first.personal else first.key, "workspace": first.tenant,
+            "smoke": smoke}
+
+
+#: The console's two verify runs, by their `verify_runs` key.
+VERIFY_KEYS = ("console_task", "console_workflow")
+#: Fresh runs started per key after the recorded one failed or was cancelled
+#: (BGD, 2026-10-30: "swarm-api restarts a failed key"). The engine waits for
+#: a new id at most twice too (VERIFY-ENGINE-2), so a third would go unread.
+MAX_VERIFY_RETRIES = 2
+#: A key's retry count lives in the document's own `retries` field,
+#: `{console_task: n, console_workflow: n}` (BGD, 2026-10-30), so
+#: `verify_runs` holds exactly the INTERFACE SHEET's two id keys. A document
+#: written before that kept each count beside its id, as `<key>_retries`:
+#: it is still read (`_verify_retries`), and the next write moves it.
+LEGACY_RETRIES_SUFFIX = "_retries"
+
+
+def _verify_ids(runs: dict[str, Any]) -> dict[str, str]:
+    """The two ids of a `verify_runs` value, without any legacy retry count."""
+    return {key: str(runs[key]) for key in VERIFY_KEYS if runs.get(key)}
+
+
+def _verify_retries(done: dict[str, Any]) -> dict[str, int]:
+    """Each key's retry count: the `retries` field, else the count an older
+    document kept inside `verify_runs`."""
+    found = done.get("retries")
+    if isinstance(found, dict):
+        return {key: int(found.get(key) or 0) for key in VERIFY_KEYS}
+    legacy = done.get("verify_runs") or {}
+    return {key: int(legacy.get(key + LEGACY_RETRIES_SUFFIX) or 0) for key in VERIFY_KEYS}
+
+
+def _verify_run_state(runs: Any, key: str, tenant: str, run_id: str) -> str:
+    """A recorded verify run's state as `run_state` says it (CANCELLED and
+    DEAD_LETTERED read as failed)."""
+    if key == "console_task":
+        return runs.task_state(tenant_id=tenant, task_id=run_id)
+    return runs.workflow_state(tenant_id=tenant, workflow_id=run_id)
+
+
+def _submit_verify_run(runs: Any, key: str, tenant: str, group: str, repository: str) -> str:
+    if key == "console_task":
+        return runs.submit_task(tenant_id=tenant, group=group, repository=repository,
+                                prompt=VERIFY_TASK_PROMPT, label=VERIFY_LABEL,
+                                strategy=VERIFY_TASK_STRATEGY)
+    return runs.submit_workflow(tenant_id=tenant, group=group, repository=repository,
+                                label=VERIFY_LABEL)
+
+
+def ensure_verify_runs(record: ir.InstallRecord, ctx: AppContext, first: FirstWorkspace | None,
+                       *, runs: Any, by: str) -> dict[str, Any]:
+    """The console's two verification runs, one task and one workflow, as the
+    first team (for one person, in the personal workspace) on a repository of
+    its grant (decision 3: the team's own slot, never a person's token). Their
+    ids go to `console/verify_runs` as `verify_runs: {console_task,
+    console_workflow}`, which the engine copies into
+    `state.outputs["verify_runs"]`, so nobody pastes an id.
+
+    Idempotent: each recorded run is read, and one that failed or was
+    cancelled counts as missing and a fresh run of its shape replaces its id,
+    the other key kept; one still going, or succeeded, is left alone. Each
+    key's fresh starts are counted in the document's `retries` field and
+    answered as `retries`; a key that failed after `MAX_VERIFY_RETRIES` of
+    them is a 409 saying so, and nothing is started. `finish`, the status
+    route (once `console/finished` exists) and `POST /verify-runs` all call
+    this, so the runs start without anyone pressing a button (audit 5b, B1)."""
+    path = record.console_path(ir.VERIFY_RUNS)
+    done = record.read(path) or {}
+    started = _verify_ids(dict(done.get("verify_runs") or {}))
+    retries = _verify_retries(done)
+    first, repository = _granted_repository(first)
+    tenant = first.tenant
+    group = first.principal
+    missing: list[str] = []
+    for key in VERIFY_KEYS:
+        if not started.get(key):
+            missing.append(key)
+        elif _verify_run_state(runs, key, tenant, started[key]) == FAILED:
+            if retries[key] >= MAX_VERIFY_RETRIES:
+                raise Conflict(
+                    f"the console's verify {key.removeprefix('console_')} run {started[key]} "
+                    f"failed after {MAX_VERIFY_RETRIES} fresh starts, so none is started "
+                    "again: read that run for why",
+                    detail={"key": key, "run": started[key], "retries": retries[key]})
+            missing.append(key)
+    if not missing:
+        return {"verify_runs": started, "retries": retries,
+                "repository": done.get("repository"), "started": False}
+    if not app_self_checked(record):
+        raise Conflict(f"the console's verify runs are {PASS_3_WAIT}",
+                       detail={"state": SELF_CHECK_WAITING, "missing": missing})
+    for key in missing:
+        if started.get(key):
+            retries[key] += 1
+        started[key] = _submit_verify_run(runs, key, tenant, group, repository)
+        record.write(path, {"verify_runs": dict(started), "retries": dict(retries),
+                            "repository": repository,
+                            "started_at": done.get("started_at") or ctx.now(),
+                            "by": by})
+    log.info("console verify runs started %s task=%s workflow=%s retries=%s by=%s",
+             ",".join(missing), started["console_task"], started["console_workflow"],
+             retries, by)
+    return {"verify_runs": started, "retries": retries, "repository": repository,
+            "started": True}
+
+
+def keep_verify_runs(record: ir.InstallRecord, ctx: AppContext, first: FirstWorkspace | None,
+                     *, runs: Any, by: str) -> dict[str, Any] | None:
+    """`ensure_verify_runs` for a step that must not fail on it (`finish`,
+    the status route): its answer, or None with the reason logged (a key
+    whose retries are spent, a read that failed); the page then serves the
+    document as it stands."""
+    try:
+        return ensure_verify_runs(record, ctx, first, runs=runs, by=by)
+    except ApiError as exc:
+        log.info("console verify runs not started code=%s", exc.code)
+        return None
 
 
 @router.post("/verify-runs", dependencies=[Depends(admin_auth)])
@@ -813,34 +1536,17 @@ def start_verify_runs(
     ctx: AppContext = Depends(get_context),
     record: ir.InstallRecord = Depends(install_record),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
-    """The console's two verification runs, one task and one workflow, as the
-    first team on a repository of its grant (decision 3: the team's own slot,
-    never a person's token). Their ids go to `console/verify_runs` as
-    `verify_runs: {console_task, console_workflow}`, which the engine copies
-    into `state.outputs["verify_runs"]`, so nobody pastes an id. Called again,
-    it answers the runs already started and starts nothing."""
-    path = record.console_path(ir.VERIFY_RUNS)
-    done = record.read(path) or {}
-    started = dict(done.get("verify_runs") or {})
-    if started.get("console_task") and started.get("console_workflow"):
-        return {"verify_runs": started, "repository": done.get("repository"), "started": False}
-    team_id, team, repository = _granted_repository(record)
-    tenant = str(team.get("workspace") or team_id)
-    group = str(team.get("group") or "")
-    if not started.get("console_task"):
-        started["console_task"] = runs.submit_task(
-            tenant_id=tenant, group=group, repository=repository, prompt=VERIFY_TASK_PROMPT,
-            label=VERIFY_LABEL)
-        record.write(path, {"verify_runs": dict(started), "repository": repository,
-                            "started_at": ctx.now(), "by": caller.email})
-    started["console_workflow"] = runs.submit_workflow(
-        tenant_id=tenant, group=group, repository=repository, label=VERIFY_LABEL)
-    record.write(path, {"verify_runs": dict(started), "repository": repository,
-                        "started_at": done.get("started_at") or ctx.now(), "by": caller.email})
-    log.info("console verify runs started task=%s workflow=%s by=%s",
-             started["console_task"], started["console_workflow"], caller.email)
-    return {"verify_runs": started, "repository": repository, "started": True}
+    """`ensure_verify_runs`, on request: `finish` and the status route start
+    and restart the runs themselves, so the page offers this only once a
+    key's retries are spent (a 409 says so)."""
+    first = first_workspace(record, ctx, people, caller=caller, flow=flow, github=github,
+                            publisher=publisher)
+    return ensure_verify_runs(record, ctx, first, runs=runs, by=caller.email)
 
 
 # --------------------------------------------------------------------------
@@ -849,8 +1555,9 @@ def start_verify_runs(
 
 
 class LinkCreate(StrictModel):
-    kind: Literal["pool-account", "team-git", "addon-secret"]
-    #: The pool account's label, the add-on's name; for `team-git`, the team.
+    kind: Literal["pool-account", "team-git", "addon-secret", "voice-api-key"]
+    #: The pool account's label, the add-on's name; for `team-git`, the team;
+    #: for `voice-api-key`, the label the key's account gets in the Voice it pool.
     label: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
     #: The person the link is for: their verified email opens it.
     owner: str = Field(min_length=3, max_length=320)
@@ -873,13 +1580,45 @@ def mint_link(
     record: ir.InstallRecord = Depends(install_record),
     links: sl.SetupLinks = Depends(links_service),
     directory: MembershipResolver | None = Depends(workspace_directory),
+    people: People = Depends(people_service),
+    flow: ManifestFlow = Depends(manifest_flow),
+    github: GitHubSetupApi = Depends(setup_github_api),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
-    """One route, three kinds (review finding 21). The token is in this answer
-    and nowhere else; Firestore keeps its digest."""
+    """One route, four kinds (review finding 21). The token is in this answer
+    and nowhere else; Firestore keeps its digest.
+
+    `voice-api-key` (Admin › Accounts, the owner, 4 November 2026) is the
+    minting admin's own: `owner` must be the caller, and the account is filed
+    under the caller's own resolved workspace, recorded now so the redeem
+    cannot be pointed at another. It lasts ten minutes (`sl.VOICE_KEY_TTL`).
+
+    For one person (decision 7) a pool account is owned by the installer's
+    personal workspace and its link is the installer's alone, and the
+    `team-git` link names the personal workspace."""
     owner = roles.subject_for_write(body.owner)
     tenant_id: str | None = None
     team_id: str | None = None
-    if body.kind == sl.POOL_ACCOUNT:
+    progress_path: str | None = None
+    if body.kind == sl.VOICE_API_KEY:
+        return _mint_voice_key_link(body, owner, caller=caller, ctx=ctx, links=links)
+    engine = record.read_engine()
+    personal = None
+    if install_mode(engine) == ir.INDIVIDUAL and body.kind in (sl.POOL_ACCOUNT, sl.TEAM_GIT):
+        personal = first_workspace(record, ctx, people, caller=caller, flow=flow,
+                                   github=github, publisher=publisher, engine=engine,
+                                   mode=ir.INDIVIDUAL)
+        if personal is None:
+            raise Conflict("this one-person install names no installer yet")
+    if personal is not None and body.kind == sl.POOL_ACCOUNT:
+        if owner != personal.principal:
+            raise Forbidden(f"a one-person install's pool accounts are the installer's; "
+                            f"{owner} is not {personal.principal}")
+        team_id, tenant_id = personal.key, personal.tenant
+    elif personal is not None and body.kind == sl.TEAM_GIT and body.label == personal.key:
+        team_id, tenant_id = personal.key, personal.tenant
+        progress_path = personal.path
+    elif body.kind == sl.POOL_ACCOUNT:
         first = _first_team(record)
         if first is None:
             raise Conflict("create the first team first: a pool account is owned by it")
@@ -894,6 +1633,7 @@ def mint_link(
             raise NotFound(f"no team {body.label!r}")
         team_id = body.label
         tenant_id = str(team.get("workspace") or team_id)
+        progress_path = record.team_path(team_id)
     elif body.label not in sl.ADDON_SECRETS:
         raise ValidationFailed(f"no add-on secret for {body.label!r}",
                                detail={"addons": sorted(sl.ADDON_SECRETS)})
@@ -901,13 +1641,14 @@ def mint_link(
                              tenant_id=tenant_id, team_id=team_id)
     if body.kind == sl.POOL_ACCOUNT:
         record.write(record.console_path(ir.ACCOUNTS), {body.label: {
-            "owner": owner, "link_hash": sl.digest(token), "link_expires": link["expires_at"],
+            "owner": owner, "link_hash": sl.digest(token), "link_made_at": link["created_at"],
+            "link_expires": link["expires_at"],
         }})
-    elif body.kind == sl.TEAM_GIT and team_id is not None:
-        team = record.read(record.team_path(team_id)) or {}
+    elif body.kind == sl.TEAM_GIT and progress_path is not None:
+        team = record.read(progress_path) or {}
         progress = dict(team.get("progress") or {})
         progress["git_link"] = {"owner": owner, "expires_at": link["expires_at"]}
-        record.write(record.team_path(team_id), {"progress": progress})
+        record.write(progress_path, {"progress": progress})
     path = sl.FORMS[body.kind].format(token=token)
     base = console_origin(ctx.settings.console_url)
     log.info("minted a setup link kind=%s label=%s", body.kind, body.label)
@@ -916,9 +1657,31 @@ def mint_link(
             "expires_at": link["expires_at"].isoformat()}
 
 
+def _mint_voice_key_link(body: LinkCreate, owner: str, *, caller: SetupCaller, ctx: AppContext,
+                         links: sl.SetupLinks) -> dict:
+    """A `voice-api-key` link, for the minting platform admin alone.
+
+    `admin_auth` has already refused anyone but a platform admin. The owner
+    named in the body must BE that admin: a link another person could open
+    would let the key be pasted by someone the console never asked."""
+    if caller.auth is None or owner != caller.email.strip().lower():
+        raise Forbidden("a Voice it API key link is for the platform admin who makes it; "
+                        "name yourself as its owner")
+    tenant_id = ctx.submissions.tenant_for(caller.auth).tenant_id
+    token, link = links.mint(kind=body.kind, label=body.label, owner=owner, by=caller.email,
+                             tenant_id=tenant_id)
+    path = sl.FORMS[body.kind].format(token=token)
+    base = console_origin(ctx.settings.console_url)
+    log.info("minted a setup link kind=%s label=%s", body.kind, body.label)
+    return {"kind": body.kind, "label": body.label, "owner": owner, "tenant": tenant_id,
+            "url": f"{base}{path}" if base else None, "path": path,
+            "expires_at": link["expires_at"].isoformat()}
+
+
 class LinkRedeem(StrictModel):
     token: str = Field(min_length=16, max_length=128)
-    #: The team git slot's or the add-on's value, for those kinds only.
+    #: The team git slot's, the add-on's or the Voice it API key's value, for
+    #: those kinds only. Write-only: no answer, log line or document carries it.
     value: str | None = Field(default=None, min_length=1, max_length=16384)
 
 
@@ -928,20 +1691,51 @@ def redeem_link(
     auth: AuthContext = Depends(current_auth),
     links: sl.SetupLinks = Depends(links_service),
     secrets_: SetupSecrets = Depends(setup_secrets),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
 ) -> dict:
     """Open a link as the person it was minted for, once.
 
     `pool-account` answers the first team's workspace id and the label; the
     console then runs the existing sign-in (`POST /v1/accounts/authorize`,
     then `/exchange`) with that id as `X-Swarm-Tenant`, so the account lands
-    in the first team. `team-git` and `addon-secret` take the value in the same
+    in the first team. Until that workspace is `ready` the sign-in would be
+    refused, so a `pool-account` link is answered 409 (`retry: true`) and NOT
+    consumed; the page asks again. `team-git` and `addon-secret` take the value in the same
     request and write it straight into their one container; it is never
     returned or logged. Their link is consumed only AFTER the write, so a
     missing value or a failed write leaves it usable. A team's git container
-    is created on first use (an install has no Terraform tenant to make it)."""
+    is created on first use (an install has no Terraform tenant to make it).
+
+    `voice-api-key` is opened only by the platform admin who minted it, still a
+    platform admin, with its value. Its link is consumed BEFORE the value is
+    forwarded, so the value reaches the broker's `POST /v1/accounts` (provider
+    `openai-api`) at most once per link, even for two submits racing; a key
+    the broker refuses spends the link, and Admin › Accounts makes another.
+
+    The two refusals that keep the link unused, the 409 and the missing
+    value's 422, carry its `expires_at` (ISO 8601, universal time) so the
+    page shows the time left. Only the named person reaches them (`peek`
+    checks the owner first); the 404 for a used, expired or unknown link
+    stays one answer with no expiry, so a probe learns nothing."""
     peeked = links.peek(body.token, email=auth.email)
     kind = peeked.get("kind")
+    if kind == sl.VOICE_API_KEY:
+        return _redeem_voice_key(body, auth, links=links, pool=pool)
+    expires_at = peeked["expires_at"].astimezone(timezone.utc).isoformat()
     if kind == sl.POOL_ACCOUNT:
+        tenant_id = str(peeked.get("tenant_id") or "")
+        state = (ctx.submissions.workspaces.get(tenant_id) or {}).get("state")
+        if state != ws.READY:
+            # The sign-in that follows names this tenant in X-Swarm-Tenant,
+            # which is refused until the workspace is ready: consuming the
+            # link now would spend it on a 403 (audit 4d, F6). The page
+            # retries this route until it answers.
+            raise Conflict(
+                "this link's workspace is not ready yet, so its sign-in would be refused; "
+                "the link is still unused, open it again in a moment",
+                detail={"workspace": tenant_id, "workspace_state": state,
+                        "retry": True, "expires_at": expires_at})
         link = links.redeem(body.token, email=auth.email)
         return {"kind": kind, "label": link.get("label"), "tenant": link.get("tenant_id"),
                 "sign_in": {"authorize": "/v1/accounts/authorize",
@@ -949,7 +1743,8 @@ def redeem_link(
                             "header": TENANT_HEADER}}
     if body.value is None:
         raise ValidationFailed(f"a {kind} link is opened with its value; the link is still "
-                               "unused, open it again with the value")
+                               "unused, open it again with the value",
+                               detail={"expires_at": expires_at})
     labels: dict[str, str] | None = None
     if kind == sl.TEAM_GIT:
         tenant_id = str(peeked.get("tenant_id"))
@@ -961,6 +1756,36 @@ def redeem_link(
     link = links.redeem(body.token, email=auth.email)
     log.info("a setup link wrote its secret kind=%s label=%s", kind, link.get("label"))
     return {"kind": kind, "label": link.get("label"), "secret": secret_id, "written": True}
+
+
+def _redeem_voice_key(body: LinkRedeem, auth: AuthContext, *, links: sl.SetupLinks,
+                      pool: AccountPool) -> dict:
+    """Forward Voice it's OpenAI API key to the broker, once, and keep nothing.
+
+    The value is in this frame alone: not logged, not in the link's record, not
+    in the answer, and not in a refusal (the broker's sentences never quote a
+    key, and `type(exc)` is all a failure is logged as)."""
+    require_admin(auth, None)
+    if body.value is None:
+        raise ValidationFailed(f"a {sl.VOICE_API_KEY} link is opened with its value; the link is "
+                               "still unused, open it again with the value")
+    link = links.redeem(body.token, email=auth.email)
+    label = str(link.get("label") or "")
+    tenant_id = str(link.get("tenant_id") or "")
+    try:
+        result = pool.register(owner_tenant=tenant_id, label=label,
+                               provider=VOICE_API_KEY_PROVIDER, lend_to=[],
+                               credential=body.value.strip(), added_by=auth.email)
+    except ApiError as exc:
+        log.info("a setup link's key was refused by the account pool kind=%s label=%s code=%s",
+                 sl.VOICE_API_KEY, label, exc.code)
+        raise
+    account = result.get("account") if isinstance(result, dict) else None
+    account_id = (account or {}).get("account_id") if isinstance(account, dict) else None
+    log.info("a setup link registered its account kind=%s label=%s", sl.VOICE_API_KEY, label)
+    return {"kind": sl.VOICE_API_KEY, "label": label, "tenant": tenant_id,
+            "account_id": account_id or f"{tenant_id}:{label}",
+            "provider": VOICE_API_KEY_PROVIDER, "pool": "voice-it", "written": True}
 
 
 # --------------------------------------------------------------------------
@@ -977,14 +1802,29 @@ def finish(
     flow: ManifestFlow = Depends(manifest_flow),
     github: GitHubSetupApi = Depends(setup_github_api),
     runs: Any = Depends(setup_runs),
+    people: People = Depends(people_service),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     """Write `console/finished` once every required console step is done: the
     App installed and its self-check passed, a first team, a pool account
     signed in to it, and the first team's smoke passed (`advance_smoke`,
-    started here too if the page has not started it yet). A labelled account seen in the first team's pool gets its
-    `signed_in_at` here. The CLI starts verify when this document exists."""
+    started here too if the page has not started it yet). A labelled account
+    seen in the first team's pool gets its `signed_in_at` here. It then
+    starts the console's two verify runs (`keep_verify_runs`, idempotent),
+    answered as `verify_runs`; the CLI starts verify when `finished` exists
+    and reads their ids from `console/verify_runs`.
+
+    For one person (decision 7) the personal workspace takes the first team's
+    place: no team, no invites; its pool account and its smoke
+    (`personal_smoke`) are what `finish` waits for."""
     app = record.read(record.console_path(ir.GITHUB_APP)) or {}
-    first = _first_team(record)
+    engine = record.read_engine()
+    mode = install_mode(engine)
+    try:
+        first = first_workspace(record, ctx, people, caller=caller, flow=flow, github=github,
+                                publisher=publisher, engine=engine, mode=mode)
+    except PublishingOff:
+        first = None
     accounts = record.read(record.console_path(ir.ACCOUNTS)) or {}
     missing: list[str] = []
     if not app.get("installed_on"):
@@ -992,10 +1832,10 @@ def finish(
     if not (app.get("self_check") or {}).get("ok"):
         missing.append("github_app_self_check")
     if first is None:
-        missing.append("first_team")
+        missing.append("personal_workspace" if mode == ir.INDIVIDUAL else "first_team")
     signed = {label for label, value in accounts.items() if (value or {}).get("signed_in_at")}
     if first is not None and accounts:
-        tenant = str(first[1].get("workspace") or first[0])
+        tenant = first.tenant
         listing = account_pool(request, ctx).list_accounts(tenant)
         present = {str(a.get("label") or "") for a in listing.get("accounts") or []
                    if isinstance(a, dict) and a.get("owner_tenant") == tenant}
@@ -1009,24 +1849,28 @@ def finish(
         missing.append("pool_account_signed_in")
     smoke_passed = False
     if first is not None and signed:
-        team_id, team = first
-        grant = (team.get("grant") or {})
+        doc = first.doc
+        grant = (doc.get("grant") or {})
         if grant.get("state") != "granted" or not grant.get("repositories"):
-            grant = ensure_grant(record, team_id, team, flow=flow, github=github,
+            grant = ensure_grant(record, first.key, doc, flow=flow, github=github,
                                  org=ctx.settings.setup_github_org, by=caller.email,
-                                 now=ctx.now())
-            team = {**team, "grant": grant}
-        smoke = advance_smoke(record, team_id, team, runs=runs, pool_accounts=sorted(signed),
-                              now=ctx.now()) or {}
+                                 now=ctx.now(), db=ctx.db, path=first.path)
+            doc = {**doc, "grant": grant}
+            first = replace(first, doc=doc)
+        smoke = advance_smoke(record, first.key, doc, runs=runs, pool_accounts=sorted(signed),
+                              now=ctx.now(), path=first.path, principal=first.principal) or {}
         smoke_passed = smoke.get("state") == SUCCEEDED
     if not smoke_passed:
-        missing.append("first_team_smoke")
+        missing.append("personal_smoke" if mode == ir.INDIVIDUAL else "first_team_smoke")
     if missing:
         raise Conflict("setup is not finished yet", detail={"missing": missing})
     done = record.read(record.console_path(ir.FINISHED))
     if done is None:
         done = record.write(record.console_path(ir.FINISHED), {"at": ctx.now(), "by": caller.email})
-    return {"finished": done}
+    # The console's two verify runs start here, not on a button nobody is
+    # told to press (audit 5b, B1): swarm install's verify waits for them.
+    verify = keep_verify_runs(record, ctx, first, runs=runs, by=caller.email)
+    return {"finished": done, "verify_runs": verify}
 
 
 # --------------------------------------------------------------------------
@@ -1060,17 +1904,46 @@ def get_health(
     return {"latest": record.read(record.health_path())}
 
 
-@router.post("/health/groups-probe")
-def groups_probe(
-    caller: SetupCaller = Depends(setup_caller),
-    ctx: AppContext = Depends(get_context),
-    directory: MembershipResolver | None = Depends(workspace_directory),
-) -> dict:
-    """Stage 8's and the doctor's re-probe, asked with swarm-api's OWN group
-    identity (review finding 12): one per-group membership question per
-    registered group (`searchTransitiveGroups` 403s here), past the cache. Any
-    answer proves the group readable (`met`); a failed lookup is `unmet`. The
-    answer is met/unmet per group, never a member list or a membership."""
+class GroupProbe(StrictModel):
+    group: str = Field(min_length=3, max_length=320)
+    member: str = Field(min_length=3, max_length=320)
+
+
+class GroupsProbeRequest(StrictModel):
+    #: The `{group, member}` pairs to probe (stage 8's identity steps). Empty
+    #: or absent: every registered group, readability only (the doctor).
+    groups: list[GroupProbe] = Field(default_factory=list, max_length=50)
+
+
+#: A failed lookup's reason, by what its error says; the engine's `why_unmet`
+#: turns each into the sentence a person can act on. The message itself
+#: (Cloud Identity's error body) is never answered.
+_PROBE_REASONS: tuple[tuple[str, str], ...] = (
+    ("unauthorized_client", "unauthorized_client"),
+    ("may not sign as itself", "sign_jwt_denied"),
+    ("signjwt", "sign_jwt_denied"),
+    ("returned 403", "permission_denied"),
+    ("returned 404", "not_found"),
+    ("returned no name", "group_not_found"),
+)
+
+
+def probe_reason(exc: BaseException) -> str:
+    text = str(exc).lower()
+    return next((reason for needle, reason in _PROBE_REASONS if needle in text), "unreadable")
+
+
+def probe_member(directory: MembershipResolver, member: str, group: str) -> bool:
+    """One `checkTransitiveMembership`, past the cache. `is_member` when the
+    directory has it (`CloudIdentityGroups`), so its error keeps Cloud
+    Identity's status for `probe_reason`; else `groups_for` on one group."""
+    ask = getattr(directory, "is_member", None)
+    if callable(ask):
+        return bool(ask(member, group, fresh=True))
+    return check_group_readable(directory, member, group)
+
+
+def _registered_groups(ctx: AppContext) -> list[str]:
     authenticator = ctx.authenticator
     registered = getattr(authenticator, "registered_group_workspaces", None)
     groups: list[str] = list(ctx.settings.tenant_groups) + list(ctx.settings.admin_groups)
@@ -1079,24 +1952,60 @@ def groups_probe(
             groups += list(registered().values())
         except Exception:  # noqa: BLE001 - the configured groups still answer
             log.warning("groups probe: the registry could not be read")
-    seen: list[str] = []
-    for group in groups:
-        key = group.strip().lower()
-        if key and key not in seen:
-            seen.append(key)
-    results = []
-    for group in seen:
+    return groups
+
+
+@router.post("/health/groups-probe")
+def groups_probe(
+    body: GroupsProbeRequest | None = None,
+    caller: SetupCaller = Depends(setup_caller),
+    ctx: AppContext = Depends(get_context),
+    directory: MembershipResolver | None = Depends(workspace_directory),
+) -> dict:
+    """Stage 8's and the doctor's re-probe, asked with swarm-api's OWN group
+    identity (review finding 12), one per-group membership question each
+    (`searchTransitiveGroups` 403s here), past the cache.
+
+    Asked with `{"groups": [{group, member}]}` (stage 8, `ApiClient.groups_probe`)
+    it probes exactly those pairs: `met` when the member is in the group,
+    `unmet` with `not_a_member` when the group answered no, and `unmet` with
+    the failure's reason when it could not be read. Asked with none (the
+    doctor), it probes every registered group as the caller: any answer is
+    `met`. The answer is `{"mode": <GROUPS_AUTH>, "results": [...]}` (finding
+    N6), with `groups` (the same rows) and `met` kept for the doctor's older
+    readers; never a member list."""
+    pairs: list[tuple[str, str | None]] = [
+        (p.group.strip(), p.member.strip().lower()) for p in (body.groups if body else [])]
+    if not pairs:
+        pairs = [(group.strip().lower(), None) for group in _registered_groups(ctx)]
+    # Each group is answered under the name it was asked by (the engine's
+    # `GroupsProbe.of` matches it exactly), once per (group, member).
+    seen: list[tuple[str, str | None]] = []
+    keys: set[tuple[str, str | None]] = set()
+    for group, member in pairs:
+        key = (group.lower(), member)
+        if group and key not in keys:
+            keys.add(key)
+            seen.append((group, member))
+    results: list[dict[str, Any]] = []
+    for group, member in seen:
         if directory is None:
             results.append({"group": group, "state": "unmet", "reason": "no_directory"})
             continue
         try:
-            check_group_readable(directory, caller.email, group)
+            found = probe_member(directory, member or caller.email, group)
+        except Exception as exc:  # noqa: BLE001 - every failure is this group's unmet
+            results.append({"group": group, "state": "unmet", "reason": probe_reason(exc),
+                            "detail": type(exc).__name__})
+            continue
+        if member is not None and not found:
+            results.append({"group": group, "state": "unmet", "reason": "not_a_member"})
+        else:
             results.append({"group": group, "state": "met"})
-        except GroupLookupError:
-            results.append({"group": group, "state": "unmet", "reason": "unreadable"})
     log.info("groups probe by=%s groups=%d unmet=%d", caller.kind, len(results),
              sum(1 for r in results if r["state"] != "met"))
-    return {"groups": results, "met": all(r["state"] == "met" for r in results)}
+    return {"mode": ctx.settings.groups_auth, "results": results, "groups": results,
+            "met": all(r["state"] == "met" for r in results)}
 
 
 __all__ = ["admin_setup_caller", "links_router", "router", "setup_caller"]

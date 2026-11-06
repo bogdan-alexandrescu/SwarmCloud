@@ -19,6 +19,7 @@ import {
   poolLabel,
   poolLabelAmong,
   setBy,
+  unitsIn,
   type AdminPool,
   type Capacity,
   type Me,
@@ -32,8 +33,10 @@ import {
   type Pool,
   type PoolKind,
   type QuotaState,
+  type Weight,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+import { jevRateOf, parseJevRate, saveJevRate, type JevRate } from './jevUsage'
 // The Config pages' lead (`.ws-lead`, WS-SETTINGS-PAGE), which every Admin
 // page's lead draws with (`AdminLead` below).
 import './styles/workspace-settings.css'
@@ -193,6 +196,7 @@ export function AdminSettingsScreen() {
           when wanted. Each card drawn on its own is open (`FoldCard`). */}
       <AdditionalRepositoryLimitsCard fold />
       <AgentBudgetCeilingCard fold />
+      <JevRateCard fold />
       <ModelPricesCard admin={admin} fold />
       <FallbackTokenCard fold />
     </>
@@ -579,16 +583,22 @@ function limitText(pool: Pool): string {
  * about the CEILING, which is a property of the limits alone. The two name
  * different pools whenever one pool is busier than another with a higher
  * limit, so reading the served list here would mark the wrong operand.
+ *
+ * EACH POOL'S LIMIT IS DIVIDED BY WHAT ONE AGENT TAKES IN THAT POOL
+ * (`unitsIn`, contract request 129, #2950): `units` is the profile, whose
+ * served `pool_units` puts a provider pool at 1. A provider limit of 50 is
+ * 50 large agents, not 12.
  */
 function arithmetic(
   pools: string[],
-  units: number,
+  units: Weight,
   byName: Map<string, Pool>,
 ): { operands: Operand[]; ceiling: number | null; binding: string[]; unset: boolean } {
-  const w = units > 0 ? units : 1
   const operands: Operand[] = pools.map((pool) => {
     const p = byName.get(pool)
     if (p !== undefined && p.effective_limit === null) return { pool, agents: null, unset: true }
+    const share = unitsIn(units, pool)
+    const w = share !== null && share > 0 ? share : 1
     return { pool, agents: p ? Math.floor(p.effective_limit as number / w) : null, unset: false }
   })
 
@@ -784,8 +794,8 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
     .filter(([, prof]) => prof.pools.includes(pool.name))
     .sort(([a], [b]) => a.localeCompare(b))
   for (const [name, prof] of profiles) {
-    const before = arithmetic(prof.pools, prof.units, byName).ceiling
-    const now = arithmetic(prof.pools, prof.units, changed)
+    const before = arithmetic(prof.pools, prof, byName).ceiling
+    const now = arithmetic(prof.pools, prof, changed)
     if (before !== now.ceiling) {
       const binds: Sentence = now.binding.length === 0 ? [] : [`, ${now.unset ? 'no limit set on' : 'binds on'} `, ...operands(now.binding)]
       moved.push([`${name} ${before ?? '—'} → ${now.ceiling ?? '—'}`, ...binds])
@@ -2687,6 +2697,114 @@ export function AdditionalRepositoryLimitsCard({ fold = false }: { fold?: boolea
           Saved: at most {savedAt.max_additional_repositories} additional{' '}
           {savedAt.max_additional_repositories === 1 ? 'repository' : 'repositories'} per step,{' '}
           {savedAt.additional_repositories_budget_gib} GiB in total.
+        </p>
+      )}
+    </FoldCard>
+  )
+}
+
+/**
+ * JEV'S RATE (JEV-USAGE-PAGE, part of #2688): `jev_token_rates` in the platform settings, `{input, output}` in USD per
+ * million tokens, that Capacity › Jev usage prices Jev's calls at. No default: nobody has recorded Jev's price, so
+ * until it is set the page says "rate not set" and prints no dollars, never $0. Replaced whole; a blank direction has
+ * no rate, and both blank clears it. What the save did is read off its RESPONSE, as the cards above read theirs.
+ */
+export function JevRateCard({ fold = false }: { fold?: boolean } = {}) {
+  const id = useId()
+  const inFlight = useRef(false)
+  const [read, setRead] = useState<Result<PlatformSettings> | null>(null)
+  const [stored, setStored] = useState<JevRate | null>(null)
+  const [typed, setTyped] = useState<Record<keyof JevRate, string>>({ input: '', output: '' })
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  const take = (r: JevRate) => {
+    setStored(r)
+    setTyped({ input: r.input === null ? '' : String(r.input), output: r.output === null ? '' : String(r.output) })
+  }
+  useEffect(() => {
+    let live = true
+    void settle(() => loadPlatformSettings()).then((r) => {
+      if (!live) return
+      setRead(r)
+      if (r.status === 'ok' || r.status === 'stale') take(jevRateOf(r.data))
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  const asked: JevRate = {
+    input: typed.input.trim() === '' ? null : parseJevRate(typed.input),
+    output: typed.output.trim() === '' ? null : parseJevRate(typed.output),
+  }
+  const bad = (k: keyof JevRate) => typed[k].trim() !== '' && asked[k] === null
+  const invalid = bad('input') || bad('output')
+  const nothing = stored !== null && stored.input === asked.input && stored.output === asked.output
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    if (inFlight.current || invalid || nothing) return
+    inFlight.current = true
+    setBusy(true)
+    setRefused(null)
+    setSaved(false)
+    const r = await saveJevRate(asked)
+    inFlight.current = false
+    setBusy(false)
+    if (r.status === 'error') {
+      setRefused(r.error)
+      return
+    }
+    if (r.status === 'ok' || r.status === 'stale') {
+      take(r.data)
+      setSaved(true)
+    }
+  }
+
+  return (
+    <FoldCard fold={fold} className="adm-jev-rate" title="Jev’s rate">
+      {read === null || read.status === 'loading' ? (
+        <p className="ur-small">Reading…</p>
+      ) : read.status !== 'ok' && read.status !== 'stale' ? (
+        read.status === 'error' && read.error.httpStatus === 403 ? (
+          <p className="ur-small">Platform admins only.</p>
+        ) : (
+          <p className="warn-text" role="alert"
+            title={read.status === 'error' ? `${errorHeading(read.error)}: ${read.error.message}` : undefined}>
+            Not read
+          </p>
+        )
+      ) : (
+        <form className="adm-token-form" aria-label="Jev’s rate" onSubmit={(e) => void save(e)}>
+          <p className="ur-small">
+            What Jev costs, in dollars per million tokens. Capacity › Jev usage prices its calls at this rate; until it
+            is set, that page says &ldquo;rate not set&rdquo; and shows no dollars.
+          </p>
+          {(['input', 'output'] as const).map((k) => (
+            <label key={k} htmlFor={`${id}-${k}`} className="ur-small">
+              {k === 'input' ? 'Dollars per million tokens in' : 'Dollars per million tokens out'}
+              <input id={`${id}-${k}`} type="text" inputMode="decimal" className="mono" autoComplete="off"
+                placeholder="rate not set" value={typed[k]} disabled={busy} aria-invalid={bad(k) || undefined}
+                onChange={(e) => {
+                  setSaved(false)
+                  const value = e.target.value
+                  setTyped((was) => ({ ...was, [k]: value }))
+                }} />
+            </label>
+          ))}
+          {invalid && <p className="warn-text" role="alert">A rate is a number of dollars, 0 or more.</p>}
+          <Button type="submit" kind="primary" size="sm" busy={busy} disabled={invalid || nothing}>
+            Save rate
+          </Button>
+        </form>
+      )}
+      {refused !== null && <Refusal error={refused} title="The rate was not saved" />}
+      {saved && stored !== null && (
+        <p className="ur-small" role="status">
+          {stored.input === null ? 'Saved: rate not set.' : `Saved: $${stored.input} per million tokens in${
+            stored.output === null ? '' : `, $${stored.output} out`}.`}
         </p>
       )}
     </FoldCard>

@@ -57,6 +57,37 @@ enable_gke_autopilot        = true
 gke_release_channel         = "RAPID"
 gke_enable_private_endpoint = false
 
+# Hostname-based egress policy (FQDNNetworkPolicy), on by owner decision of
+# 2026-11-01: swarm-voice's policy in kubernetes/network-policies/ fails closed
+# without it, leaving swarm-voice only DNS and the metadata server. The owner
+# set two conditions, and both hold:
+#   * no charge -- GKE's release note of 2025-09-02 lists FQDN Network Policy
+#     among the features "included in the GKE offering at no additional cost";
+#     GKE has had no paid edition since;
+#   * in place -- the google provider (6.50.0, pinned) enables it with a cluster
+#     update. It REPLACES the cluster only on true -> false, so never set this
+#     back to false without planning a cluster rebuild.
+gke_enable_fqdn_network_policy = true
+
+# Voice it's swarm-voice (terraform/infra/voice.tf), step 3 of its three:
+# "on". The owner picked the Voice it pool on 2 Nov 2026 ("Pool only, wait for
+# it"): swarm-voice reads NO secret -- no Secret Manager grant at all -- and
+# only leases a ChatGPT plan account from the quota broker for each session.
+# So "on" grants it exactly the Workload Identity binding, run.invoker on
+# swarm-api and run.invoker on swarm-quota-broker (which admits swarm-voice's
+# own service account to the voice lease, renew and release routes), and reserves its
+# internal address. These are IAM changes: the release carrying them waits at
+# the IAM gate for the owner.
+voice_it = "on"
+
+# Voice it's own speech engine (terraform/infra/voice_speech.tf): OFF. Its one
+# stopped L4 machine, firewall pair and grants are made only once the owner
+# turns this on, with voice_it "on" and a pinned Deep Learning VM image
+# (docs/design/voice-it-own-speech.md section 5). Off, it makes nothing.
+voice_speech = {
+  enabled = false
+}
+
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.
 #
@@ -227,6 +258,10 @@ pool_limits = {
     # Stated rather than left to fall back to `global`, which is 180 now and
     # would say nothing about browser: resource:browser's 100.
     claude-code-browser = 100
+    # DOM-only browser agents on `standard` (contract request 127). Equal to
+    # claude-code-browser's ceiling, so moving work here never lowers the
+    # browser ceiling; resource:standard (80) still binds below it.
+    claude-code-lightpanda = 100
   }
 
   # GKE_AUTOPILOT 40 -> 100: owner, 2026-10-07, accepting contract request 53
@@ -1018,9 +1053,27 @@ enable_typesafe_forwarder = true
 # forwarder forwards nothing until the owner names tenants (step 3), and pods
 # reach it only once SWARM_TYPESAFE_INJECT is set and the owner has re-applied
 # `kubernetes/apply.sh --policies` for allow-typesafe-fwd (PR 1409).
+#
+# Step 3 of 3, 2026-11-02 (the owner chose to build every improvement proposal
+# in CLD's Jev report, the forwarder one among them): `enabled` with `eng` the
+# one tenant. The forwarder's ConfigMap and the scheduler's
+# TYPESAFE_FORWARDER_ENABLED/_TENANTS read these same two values, so an eng
+# GKE pod on the TypeSafe judgment backend (a live browser, or a step whose
+# signed switch says `jev_judgments: on`) is labelled `swarm-typesafe: inject`,
+# its worker gets SWARM_TYPESAFE_INJECT=on and runs the loopback shim, and no
+# key file is written. Every other tenant, and eng on an internal backend,
+# keeps today's path. Checked the same day: the key's version and the
+# bootstrap read are above; the release has applied allow-typesafe-fwd to
+# every tenant namespace since 2026-10-23 (scripts/apply-tenant-network-policies.sh).
+# A group task's ticket names only the WORKSPACE's key
+# (swarm-tenant-eng-typesafe), never the submitter's own, so eng needs that
+# key stored and its judgment backend set to TypeSafe: owner steps,
+# docs/runbooks/typesafe-forwarder.md, which also shows one call go through.
+# Rollback: `enabled = false` (or drop eng); the next release re-renders both.
 typesafe_forwarder = {
   serve   = true
-  enabled = false
+  enabled = true
+  tenants = ["eng"]
 }
 
 # The shared graph service (#1384, docs/design/graph-service.md;
@@ -1073,3 +1126,31 @@ swarm_workers_log_view_enabled = true
 # public bucket. This deployment runs the acceptance suite, so it stays on and
 # the live plan shows no change.
 enable_acceptance_fixture = true
+
+# Settings signing, step one (docs/design/tenant-settings-integrity.md; #1457). The
+# key's first version was generated 2026-11-01 by scripts/create-secrets.sh
+# --settings-mac-key, so swarm-api and the scheduler may now reference it as
+# SWARM_SETTINGS_KEY. No tenant is cut over by this: scripts/resign-workspace-settings.sh
+# runs against the deployed key first, and only then does a second change add
+# Engineering to settings_mac_tenants and turn settings_mac_required on. Owner decision
+# 2026-11-01: sign settings so the Jev quality checks can run on request for the
+# code intelligence experiment.
+settings_mac_key_ready = true
+
+# Settings signing, step two: Engineering is cut over and the scheduler refuses
+# an unsigned or badly signed setting for it. scripts/resign-workspace-settings.sh
+# --tenant eng --apply signed Engineering's two stored blocks on 2026-11-01 after
+# its dry run's covered values were read against Engineering's admin_audit rows
+# (judgment backend typesafe set 10-23, Jev on 10-23, graph delivery service
+# 10-28, both context fields never set); a second dry run found nothing left to
+# sign. Only Engineering: every other workspace stays unsigned and unverified
+# until it is re-signed and listed here. Owner decision 2026-11-01 ("Sign
+# settings; checks on request").
+settings_mac_tenants  = ["eng"]
+settings_mac_required = true
+
+# The Jev review of a contract at submission (swarm-api's SWARM_CONTRACT_REVIEW,
+# terraform/infra/variables.tf contract_review_mode). Rendered from 2026-11-04
+# (owner's choice) and left off, what swarm-api read while it was unset, so the
+# live plan changes no behaviour. "report" reviews and logs; "enforce" refuses.
+contract_review_mode = "off"

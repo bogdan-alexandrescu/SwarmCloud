@@ -16,7 +16,7 @@
 //     both listed in the summary.
 //
 // Rendered against the development fixture (mock 15 room, generic 10,
-// claude-code 0, browser 0; codex disabled).
+// claude-code 0, browser 0; codex enabled since contract request 130).
 
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -172,12 +172,12 @@ describe('the task form is F1', () => {
     expect(visible(runnerCard(container, 'browser').querySelector('.sb-runner-size'))).toBe('browser · 1 unit · GKE Autopilot')
     // A measured zero is a digit, and it names the pool holding it down.
     expect(visible(runnerCard(container, 'claude-code').querySelector('.sbf-runner-room'))).toMatch(/^0 can start now · held by \S+/)
-    // A disabled runner stays listed with its reason in place of the room.
+    // codex is offered since contract request 130 (owner, 2026-11-02): a
+    // card that can be picked, with its room in place of a refusal.
     const codex = runnerCard(container, 'codex')
-    expect(codex.querySelector('input')!.disabled).toBe(true)
-    // One short line (walkthrough E); the platform's words are its tooltip.
-    expect(visible(codex.querySelector('.sbf-runner-off'))).toBe('Not enabled yet. Use claude-code')
-    expect(codex.querySelector('.sbf-runner-off')!.getAttribute('title')).toMatch(/codex is disabled on this platform/)
+    expect(codex.querySelector('input')!.disabled).toBe(false)
+    expect(codex.querySelector('.sbf-runner-off')).toBeNull()
+    expect(visible(codex.querySelector('.sbf-runner-room'))).toMatch(/can start now/)
   })
 
   it('draws steps 2 and 3 as cards, dimmed until a runner is chosen', async () => {
@@ -227,9 +227,10 @@ describe('the workflow form is G1', () => {
     const names = [...select.options].map((o) => o.value)
     expect(names).toEqual(['', 'browser', 'claude-code', 'claude-code-browser', 'codex', 'generic', 'mock'])
     const codex = [...select.options].find((o) => o.value === 'codex')!
-    expect(codex.disabled).toBe(true)
-    // The card's own words, not a lowercased copy (QA G4-30).
-    expect(codex.textContent).toBe('codex · Not enabled yet. Use claude-code')
+    // Offered since contract request 130 (owner, 2026-11-02), under its own
+    // name with no refusal beside it.
+    expect(codex.disabled).toBe(false)
+    expect(codex.textContent).not.toMatch(/Not enabled/)
     expect(step.classList.contains('is-bad'), 'an unchosen step is not flagged').toBe(true)
 
     fireEvent.change(select, { target: { value: 'mock' } })

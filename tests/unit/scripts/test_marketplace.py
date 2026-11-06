@@ -9,9 +9,12 @@ supports, which the bridge reads at start (swarm_mcp.discovery).
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import secrets
 import shutil
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -41,22 +44,53 @@ def plugin(tmp_path: Path) -> Path:
 
 
 def test_marketplace_names_plugin_sc_at_version() -> None:
-    """One plugin, `sc`, at the release's version, from the release's plugin
-    directory; the marketplace is named `swarmcloud`, so the install line is
-    `sc@swarmcloud` (D28)."""
+    """One plugin, `sc`, at the release's version; the marketplace is named
+    `swarmcloud`, so the install line is `sc@swarmcloud` (D28)."""
     module = _load()
-    root = module.marketplace(VERSION, f"./releases/{VERSION}/plugin")
+    digest = secrets.token_hex(32)
+    root = module.marketplace(VERSION, digest)
     assert root["name"] == "swarmcloud"
     assert [p["name"] for p in root["plugins"]] == ["sc"]
     (sc,) = root["plugins"]
     assert sc["version"] == VERSION
-    assert sc["source"] == f"./releases/{VERSION}/plugin"
     assert root["owner"]["name"]
-    pinned = module.marketplace(VERSION, "./plugin")
-    assert pinned["plugins"][0]["source"] == "./plugin"
     # A version that is not a release name is refused.
     with pytest.raises(ValueError):
-        module.marketplace("main", "./plugin")
+        module.marketplace("main", digest)
+
+
+def test_marketplace_names_the_plugin_by_its_absolute_release_url() -> None:
+    """A teammate adds the marketplace BY URL, and Claude Code then fetches only
+    marketplace.json, so a relative plugin path cannot resolve (audit finding
+    N9). The plugin is an `archive` source: the release's plugin.zip by its
+    absolute URL, with the digest Claude Code checks before installing."""
+    module = _load()
+    digest = secrets.token_hex(32)
+    (sc,) = module.marketplace(VERSION, digest)["plugins"]
+    # MUTATION: write `./releases/V/plugin` or `./plugin` again and this fails.
+    assert sc["source"] == {"source": "archive", "url": f"{HOME}/releases/{VERSION}/plugin.zip", "sha256": digest}
+    assert module.plugin_archive_url(VERSION) == f"{HOME}/releases/{VERSION}/plugin.zip"
+    # Never a relative path, whatever the caller passes.
+    for bad in ("./plugin", f"./releases/{VERSION}/plugin", "", "0" * 63, "g" * 64):
+        with pytest.raises(ValueError):
+            module.marketplace(VERSION, bad)
+
+
+def test_plugin_zip_is_the_plugin_at_its_root_and_reproducible(plugin: Path, tmp_path: Path) -> None:
+    """plugin.zip holds the prepared plugin with its root at the top of the
+    archive (where Claude Code looks for .claude-plugin/), and one plugin is
+    one digest, so the marketplace's sha256 is stable."""
+    module = _load()
+    first, second = tmp_path / "a.zip", tmp_path / "b.zip"
+    digest = module.zip_plugin(plugin, first)
+    assert digest == hashlib.sha256(first.read_bytes()).hexdigest()
+    assert module.zip_plugin(plugin, second) == digest
+    with zipfile.ZipFile(first) as zf:
+        names = set(zf.namelist())
+        assert json.loads(zf.read(".claude-plugin/plugin.json"))["version"] == VERSION
+    expected = {p.relative_to(plugin).as_posix() for p in plugin.rglob("*") if p.is_file()}
+    assert names == expected
+    assert "compat.json" in names
 
 
 def test_plugin_bundle_carries_supported_deployment_range(plugin: Path) -> None:

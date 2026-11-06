@@ -290,7 +290,7 @@ describe('the Sky spine shell', () => {
     // The fixture caller administers nothing, so no Admin (NAV-ADMIN-ROLE).
     render(<App />)
     // MUTATION: draw Profile under the Hive again, or API reads in the foot.
-    expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
+    expect(spineLabels()).toEqual(['Submit', 'Home', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Help', 'Profile'])
   })
 
   it('draws Admin after Capacity for a platform admin', async () => {
@@ -298,7 +298,9 @@ describe('the Sky spine shell', () => {
     const { LiveApp } = await liveApp()
     render(<LiveApp />)
     // MUTATION: move `admin` in SPINE and it leaves its place after Capacity.
-    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Help', 'Profile']))
+    // Voice it follows Admin: a platform admin is who the identity read can name
+    // as the person Voice it is open to until swarm-api's session routes say so.
+    await waitFor(() => expect(spineLabels()).toEqual(['Submit', 'Home', 'Overview', 'Work', 'Automate', 'Capacity', 'Config', 'Admin', 'Voice it', 'Help', 'Profile']))
   })
 
   it('lists the open section\'s pages in the panel, with the open page\'s children', async () => {
@@ -307,7 +309,7 @@ describe('the Sky spine shell', () => {
     const panel = document.querySelector('.sk-panel')!
     const pages = [...panel.querySelectorAll('.sk-pk .sk-pl')].map((e) => e.textContent)
     // MUTATION: drop API reads from PANEL_PAGES.capacity (NAV-FOOT, #1672).
-    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'API reads'])
+    expect(pages).toEqual(['Pools', 'Runtimes', 'Holders', 'Accounts', 'Jev usage', 'API reads'])
     const kids = [...panel.querySelectorAll('.sk-kid')].map((e) => e.textContent)
     expect(kids).toEqual(['Ceilings', 'By runner profile'])
     expect(panel.querySelector('.sk-kid.is-on')?.textContent).toBe('By runner profile')

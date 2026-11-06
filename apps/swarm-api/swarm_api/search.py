@@ -288,7 +288,20 @@ PROVIDERS: dict[str, Callable[[], SearchProvider]] = {
 
 class KeyUnavailable(Exception):
     """The platform's search key could not be read. The message names the
-    secret and the reason class, never a value."""
+    secret and the reason class, never a value. `kind` is that class as data
+    (`KEY_DENIED`, `KEY_MISSING`, `KEY_EMPTY`, `KEY_ERROR`), so a caller that
+    must tell "swarm-api may not read it" from the rest never reads the
+    sentence (the admin probe, `routes.addon_probe`)."""
+
+    def __init__(self, message: str, *, kind: str = "error") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+KEY_DENIED = "denied"
+KEY_MISSING = "missing"
+KEY_EMPTY = "empty"
+KEY_ERROR = "error"
 
 
 class KeySource(Protocol):
@@ -317,17 +330,18 @@ class SecretManagerKey:
         try:
             version = self.client.access_secret_version(request={"name": name})
         except (gexc.NotFound, gexc.FailedPrecondition):
-            raise KeyUnavailable(f"{self.secret} has no enabled version") from None
+            raise KeyUnavailable(f"{self.secret} has no enabled version", kind=KEY_MISSING) from None
         except gexc.PermissionDenied:
-            raise KeyUnavailable(f"swarm-api may not read {self.secret}") from None
+            raise KeyUnavailable(f"swarm-api may not read {self.secret}", kind=KEY_DENIED) from None
         except Exception as exc:
-            raise KeyUnavailable(f"{self.secret} could not be read ({type(exc).__name__})") from None
+            raise KeyUnavailable(f"{self.secret} could not be read ({type(exc).__name__})",
+                                 kind=KEY_ERROR) from None
         try:
             value = bytes(version.payload.data).decode("utf-8").strip()
         except Exception:
             value = ""
         if not value:
-            raise KeyUnavailable(f"{self.secret} is empty")
+            raise KeyUnavailable(f"{self.secret} is empty", kind=KEY_EMPTY)
         return value
 
 

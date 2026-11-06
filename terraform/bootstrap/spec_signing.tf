@@ -73,7 +73,7 @@ locals {
   # verify through KMS, or change the key's IAM policy.
   spec_deployer_reader_roles = ["roles/cloudkms.publicKeyViewer", "roles/cloudkms.viewer"]
 
-  spec_deployer_reader_grants = var.enable_github_wif ? {
+  spec_deployer_reader_grants = local.deployer_on ? {
     for pair in setproduct(sort(tolist(var.spec_signing_environments)), local.spec_deployer_reader_roles) :
     "${pair[0]} ${pair[1]}" => { environment = pair[0], role = pair[1] }
   } : {}

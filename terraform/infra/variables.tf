@@ -166,6 +166,16 @@ variable "gke_allow_open_master_authorized_network" {
   default     = false
 }
 
+variable "gke_enable_fqdn_network_policy" {
+  description = <<-EOT
+    Admit hostname-based egress policy (FQDNNetworkPolicy) on the cluster.
+    Default false, today's value; turning it off once on replaces the cluster.
+    The full note is on the gke_autopilot module's enable_fqdn_network_policy.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "gke_master_authorized_cidrs" {
   type = list(object({
     cidr_block   = string
@@ -530,6 +540,26 @@ variable "acceptance_console_url" {
   validation {
     condition     = var.acceptance_console_url == "" || can(regex("^https://[a-z0-9.-]+/?$", var.acceptance_console_url))
     error_message = "acceptance_console_url is https://<host> (the environment's console), or empty to skip the QA identity case."
+  }
+}
+
+variable "acceptance_sandbox_repository_url" {
+  description = <<-EOT
+    The sandbox repository the release acceptance pushes to and opens pull
+    requests on (SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL on the swarm-verify
+    job; scripts/acceptance/config.sh). Without it config.sh falls back to the
+    live deployment's sandbox, so another company's deployment sets its own
+    here and its acceptance never touches the live one's.
+
+    Null by default, and null renders no env at all, so a deployment that does
+    not set it plans no change (DAYONE-VERIFY-SANDBOX-ENV, part of #2688).
+  EOT
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.acceptance_sandbox_repository_url == null || can(regex("^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+$", var.acceptance_sandbox_repository_url))
+    error_message = "acceptance_sandbox_repository_url is an https:// clone URL (https://github.com/<org>/<repo>.git), or null to keep the acceptance's default."
   }
 }
 
@@ -993,6 +1023,28 @@ variable "platform_admin_reach" {
   default     = false
 }
 
+variable "contract_review_mode" {
+  description = <<-EOT
+    swarm-api's SWARM_CONTRACT_REVIEW (apps/swarm-api/swarm_api/contractreview.py;
+    docs/design/agent-quality/jev-contract.md Q7, owner's answer 7): the Jev
+    review of a contract at submission. "off" runs no review; "report"
+    reviews and logs the refusal it would make; "enforce" refuses. It runs
+    only for a workspace whose own contract_review setting is on. OFF by
+    default, the state swarm-api reads when the variable is unset, so the live
+    plan shows one new variable and no behaviour change; the owner turns it on
+    per environment (owner's choice, 2026-11-04). contractreview.mode() reads a
+    typo as off; the validation refuses one instead, so a misspelt "enforce"
+    never ships as a silent off.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "report", "enforce"], var.contract_review_mode)
+    error_message = "contract_review_mode is off, report or enforce (swarm_api.contractreview.MODES)."
+  }
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
@@ -1429,4 +1481,68 @@ variable "setup_github_org" {
   EOT
   type        = string
   default     = ""
+}
+
+variable "voice_speech" {
+  description = <<-EOT
+    Voice it's own speech engine: the one speech machine (voice_speech.tf;
+    docs/design/voice-it-own-speech.md §5). It is made only while `voice_it`
+    is "on" as well, and it is made STOPPED: swarm-api starts it for a session
+    and stops it after.
+
+      enabled       false: nothing is made. Off in every environment's tfvars
+                    until the owner turns it on; the installer offers it.
+      zone          "us-central1-a": the one zone the machine lives in. One
+                    zone, one machine (owner, 2026-11-05): a stock-out falls
+                    back to text mode, no second machine. Must be in
+                    var.region and offer L4s.
+      machine_type  "g2-standard-4": 4 vCPU, 16 GB, one NVIDIA L4, about
+                    $0.71 an hour while running (§1 pick 1). Terraform sets it
+                    at create only; swarm-api applies Settings' pick
+                    afterwards.
+      image         "" until set: a Deep Learning VM image BY NAME,
+                    projects/deeplearning-platform-release/global/images/<name>,
+                    with the NVIDIA driver and the container toolkit on it.
+                    Never a /family/ path, which moves under a stopped machine
+                    and would replace it at the next plan. Required once
+                    enabled; the installer pins the newest image of the family
+                    at install time.
+      disk_gb       150: the boot disk (pd-balanced, about $15 a month, idle
+                    or not), sized for the image with its driver (~50 GB), the
+                    server image (~20 GB), the models' weights (~8 GB) and one
+                    previous server image during an update (§5.1).
+      idle_minutes  5: the session ends after this long without speech or
+                    tool activity, and the machine stops (§4.4, pick 1).
+                    Written to the machine's metadata at create; Settings
+                    change it afterwards.
+  EOT
+  type = object({
+    enabled      = optional(bool, false)
+    zone         = optional(string, "us-central1-a")
+    machine_type = optional(string, "g2-standard-4")
+    image        = optional(string, "")
+    disk_gb      = optional(number, 150)
+    idle_minutes = optional(number, 5)
+  })
+  default = {}
+
+  validation {
+    condition     = !var.voice_speech.enabled || can(regex("^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$", var.voice_speech.image))
+    error_message = "voice_speech.enabled needs voice_speech.image: a Deep Learning VM image by name (projects/deeplearning-platform-release/global/images/<name>), never a /family/ path."
+  }
+
+  validation {
+    condition     = can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", var.voice_speech.zone))
+    error_message = "voice_speech.zone is one zone, e.g. us-central1-a."
+  }
+
+  validation {
+    condition     = startswith(var.voice_speech.machine_type, "g2-standard-")
+    error_message = "voice_speech.machine_type is a g2 type (the L4 comes with it)."
+  }
+
+  validation {
+    condition     = var.voice_speech.disk_gb >= 100 && var.voice_speech.idle_minutes >= 1
+    error_message = "voice_speech.disk_gb is at least 100 (the image alone is about 50 GB) and idle_minutes at least 1."
+  }
 }

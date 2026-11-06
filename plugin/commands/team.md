@@ -25,7 +25,10 @@ waits for a pool account, and read its output as it arrives.
 `{"v": 1, "event": <kind>, "at": <seconds>, ...}`, the same events as
 `/sc:install`: show `step_done` and `step_skip` as one short line each, a
 `wait_countdown` with its `reason`, the seconds left and what is `expected`,
-and `step_failed`, `stage_refused` and `wait_gave_up` with their `message`
+and its `detail` (what the last check saw) word for word, which the wait sends
+only whenever it changes, so show it each time it comes, a `wait_failed`,
+which ends the wait at once, with its `detail` word for word (what failed, and
+no further polling can mend it), and `step_failed`, `stage_refused` and `wait_gave_up` with their `message`
 and `look_at` word for word. `run_end` carries the `outcome` and the
 `exit_code`: 0 the team is ready and its smoke is green; 1 a step failed and
 its `message` says how to go on; 3 not met or not checked; 4 paused, resumed
@@ -42,7 +45,7 @@ transcript and should be replaced.
 **A step that needs a terminal: `needs_terminal`.** A step that needs a
 value or a typed answer pauses with a `step_paused` event whose `reason` is
 `needs_terminal` and whose `command` is the line to hand on, today
-`! swarm install --resume`. Give the person that `command` exactly as it
+`! swarm install`. Give the person that `command` exactly as it
 came, to type at the prompt themselves: the engine then asks at a hidden
 prompt on their terminal. Never ask for the value, never read it from
 anywhere and never pipe it into the engine. When they say it is done, run the

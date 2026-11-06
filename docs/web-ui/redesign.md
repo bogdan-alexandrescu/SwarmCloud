@@ -69,7 +69,7 @@ agent's attempt history, because of four missing lines of routing.
 
 ## 2. The new architecture
 
-Five sections and a landing screen. Each section is a question someone arrives
+Six sections and a landing screen. Each section is a question someone arrives
 with, not a route. The id in the first column is the first hash segment, so it
 is also the address people paste — the two are given together because they have
 drifted apart twice, and both times the drift routed a saved link somewhere the
@@ -83,12 +83,31 @@ label did not name.
 | **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
 | **Config** | `config` | What may SwarmCloud reach on GitHub as you, which repositories, secrets and MCP servers does this workspace hold, who has which role in it, and how far is its setup? | GitHub access · Repositories · Secrets · MCP servers · People and roles · Workspace Settings |
 | **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many agents are in each state and how many ran over time, for how long and at what estimated cost, what does the platform run on its own, who is waiting for a workspace, and which group workspaces do you administer? | Pool limits · Tenants · Platform counts · People · Workspaces you admin |
+| **Voice it** | `voice` | What do I want built next, can I talk it through out loud until it is planned and shipped, which of those talks can I pick up again, and what does Voice it remember about how I work? | Talk · Projects · Preferences |
 
 **Automate** was added on 2026-10-08 by the owner's decision SD1
 ([schedules.md §6.1](../schedules.md#61-placement-sd1)): a different question
 from Work's, over two pages of its own, rather than a widening of Work. The
 note at the top of `SECTIONS` in `apps/swarm-ui/src/App.tsx` records why it
 passes the membership test the collapse below set.
+
+**Voice it** was added on 2026-11-01 by the owner's decision (BGD; the
+design is [voice-it.md](../design/voice-it.md), and this is §10's first
+phase-one lane). It is a new section rather than a widening, and it passes
+the membership test on its own terms: the other five each ask what the
+platform holds or is doing, and none asks for a conversation that turns into
+work. Its three panes answer its question in tab order: **Talk** (talk it
+through, with captions of both sides), **Projects** (the talks you can pick up
+again) and **Preferences** (what it remembers about how you work). Projects and
+Preferences say on the page that they arrive in phase four, and Talk draws the
+presence layout at rest until the Talk pane's lane lands. **Version one is one
+person's**, so the section's spine item is drawn only for the people Voice it
+is open to; until swarm-api's session routes serve that answer, the console
+reads it from `/v1/tenants/me` (a platform admin), in one function,
+`voiceItOpen` in `apps/swarm-ui/src/voice/Section.tsx`, which is what switches
+when they land. Someone else who types a Voice it address keeps the address
+and is told in place that Voice it is not open to them. It sits last on the
+spine, after Admin, so nobody else's spine moves.
 
 **Admin's question was widened a second time on 2026-10-11**, by one clause,
 when Admin › Schedules joined it ([schedules.md §5.3](../schedules.md#53-the-admin-view)):

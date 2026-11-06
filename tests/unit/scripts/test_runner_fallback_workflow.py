@@ -74,12 +74,12 @@ def judge_script(workflow) -> dict:
 def test_the_judge_runs_on_github_hosted_never_on_the_pool(workflow):
     judge = workflow["jobs"]["judge"]
     assert judge["runs-on"] == "ubuntu-24.04"
-    assert "bogdan-ci" not in str(judge["runs-on"])
+    assert "SWARM_CI_RUNNER_LABEL" not in str(judge["runs-on"])
     assert "SELF_HOSTED_CI" not in str(judge["runs-on"]), "the judge must not follow the hatch it sets"
 
 
 def test_only_the_probe_asks_for_the_pool_and_only_while_the_hatch_is_off(workflow):
-    on_pool = sorted(n for n, j in workflow["jobs"].items() if "bogdan-ci" in str(j.get("runs-on")))
+    on_pool = sorted(n for n, j in workflow["jobs"].items() if "SWARM_CI_RUNNER_LABEL" in str(j.get("runs-on")))
     assert on_pool == ["probe"]
     probe = workflow["jobs"]["probe"]
     assert probe["if"] == "vars.SELF_HOSTED_CI == 'off'"
@@ -116,7 +116,7 @@ def test_the_mint_never_asks_for_the_variables_key_github_does_not_have(workflow
 
 def test_it_flips_the_documented_variable_and_label(workflow):
     assert workflow["env"]["VARIABLE"] == "SELF_HOSTED_CI"
-    assert workflow["env"]["POOL_LABEL"] == "bogdan-ci"
+    assert workflow["env"]["POOL_LABEL"] == "${{ vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci' }}"
     assert "vars.SELF_HOSTED_CI == 'off'" in CI_DOC.read_text()
 
 

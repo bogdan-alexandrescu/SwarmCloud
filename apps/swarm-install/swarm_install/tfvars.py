@@ -18,9 +18,9 @@ The four applies (design §5) and the two after the hand-off (plan §5.5):
 | `bootstrap-1` | bootstrap | roles, the deployer, KMS; no adoption, no broker lister, no log view |
 | `registry` | infra | `-target` the registry only, so stage 4 can copy images into it |
 | `infra-1` | infra | everything, every key-gated switch off (lesson 39) |
-| `infra-2` | infra | each key switch on exactly when its key has an ENABLED version; `enable_console_app_setup`, `require_alert_channels`, `tenant_job_vpc_egress` |
-| `bootstrap-2` | bootstrap | the log view grant, the IAP programmatic client and the backends it applies to |
-| `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh` |
+| `infra-2` | infra | each key switch on exactly when its key has an ENABLED version; `enable_console_app_setup`, `require_alert_channels`, `tenant_job_vpc_egress`, `platform_admin_reach` |
+| `bootstrap-2` | bootstrap | the log view grant, the IAP programmatic client and the backends it applies to; swarm-api's grants (`API_GRANT_SWITCHES`); the workspace deployer and its kinds, with the workspace-apply image |
+| `infra-3` | infra | the console's GitHub App ids, `enable_github_app`, `enable_forge_refresh`; `workspace_apply_publish`, `mcp_servers_enabled`, `forge_broker` (with `enable_child_tasks`) |
 | `infra-4` | infra | `enable_github_hooks` |
 | `infra-close` | infra | infra-4's inputs without the installer's control-plane CIDR (after stage 14's last kubectl) |
 
@@ -28,6 +28,24 @@ The four applies (design §5) and the two after the hand-off (plan §5.5):
 `user:`, the QA identity's account, and, for programmatic sign-in, the
 deployment's own Desktop client; swarm-api's `ALLOWED_DOMAINS` is
 `[org_domain]`. Workspace membership still comes from the Google groups.
+For one person (`sizing.mode == "individual"`, decision 7) IAP admits the
+installer's `user:` and no `domain:` member; the QA identity and the Desktop
+client stay (bootstrap refuses `enable_qa_identity` without the QA account),
+and `ALLOWED_DOMAINS` is still `[org_domain]`.
+
+**Sizing (decision 7).** Stage 0 records `outputs["sizing"]`; its
+`pool_limits` and `service_max_instances` become infra's variables of the same
+names on every infra pass, checked here against infra's own validations so a
+proposal Terraform would refuse fails before any plan. An install state with
+no `sizing` (older than the question) keeps Terraform's defaults.
+
+**Add-ons.** Every pass merges `addons.inputs_for(outputs, root)` over the
+core inputs, so an add-on's recorded phase survives a later install or
+upgrade apply instead of being turned back off by core's defaults. The CI
+add-on's recorded `sandbox_repository` becomes infra's
+`acceptance_sandbox_repository_url`, the same clone URL `swarm addon enable ci`
+sets as the repository variable, so the swarm-verify job's acceptance pushes to
+the company's own sandbox; without one the input stays unset (null, no env).
 
 **Cluster reach (decision 2).** Every infra pass before `infra-close` puts the
 installer's public address (`installer_cidr`) in `gke_master_authorized_cidrs`
@@ -36,6 +54,28 @@ as `swarm-install`, so the cluster stages (10, 11) and stage 14's verify reads
 plane, whose module admits no public Google range; `infra-close`, the last
 pass, leaves it out.
 
+**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). Stage 0's
+`infra.voice-it` records `outputs["voice_it"]` as `{"enabled": bool}`. A no
+renders `voice_it` "off" on every infra pass. A yes renders voice.tf's three
+steps in its order: "off" on the registry pass, "account" on infra-1 (bootstrap
+pass 1 made swarm-voice; this root only reads it), "on" from infra-2, once
+infra-1 has made the cluster whose workload pool the Workload Identity binding
+names, with the release's swarm-voice digest in `image_refs` (a release
+without one is a `LookupError`, never a silent "off"). voice.tf's middle step,
+a ChatGPT plan account in the Voice it pool, is added in the console; swarm-voice
+reads no secret. An install state with no answer (older than the question)
+keeps Terraform's default, off.
+
+**Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
+`infra.voice-speech`, asked only after a yes to Voice it, records `outputs["voice_speech"]` as `{"enabled": bool}`;
+for a yes, stage 1's `infra.voice-speech-zone` adds the zone (the first of the
+region's zones offering the L4) and the Deep Learning VM image it pinned by
+name. Every infra pass renders infra's `voice_speech` with `enabled`, `zone`
+and `image` from that, checked against infra's own validations; no would-be
+machine is made while `voice_it` is not "on" (voice_speech.tf), and after a no
+to Voice it `voice_speech` renders off whatever was recorded. An install
+state with no answer (older than the question) keeps Terraform's default, off.
+
 A value a pass needs that the state does not hold yet is a `LookupError` that
 names the step recording it, never a default.
 """
@@ -43,10 +83,12 @@ names the step recording it, never a default.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from . import addons
 from .api_client import ADMIN_ROLE, DELEGATION, deployer_email
 from .state import ObjectStore, PreconditionFailed
 
@@ -61,8 +103,10 @@ INPUTS_PREFIX = "swarm-install/inputs/"
 
 #: The release-home registry images are copied from (D21, RELHOME-1).
 RELEASE_REGISTRY = "us-docker.pkg.dev/swarmcloud-prod/swarmcloud"
-#: The project's own repository (`var.artifact_registry_repository`'s default).
-REPOSITORY = "swarm"
+#: The project's own repository, terraform/infra's `artifact_registry_repository`
+#: default. Stage 4 copies into it and every infra pass names it, so the registry
+#: pass creates the repository the copy pushes to and `image_refs` validates.
+REPOSITORY = "swarm-images"
 
 #: Platform keys and the switch each one gates (design §5.4, lesson 39).
 KEY_SWITCHES: dict[str, str] = {
@@ -73,7 +117,21 @@ KEY_SWITCHES: dict[str, str] = {
     # The graph service serves only with its ticket key and its image's digest.
     "swarm-graph-ticket-key": "graph_service.serve",
 }
-#: The IAP Desktop client's secret (stage 2, `edge.desktop-client`).
+#: bootstrap's switches that grant swarm-api a role (forge user slots, browser
+#: logins, provider keys, workspace secrets, MCP credentials, secret status).
+#: Each grant names `serviceAccount:swarm-api@...` by a string, which orders
+#: nothing, so they go on from bootstrap pass 2, after pass 1 made the account.
+API_GRANT_SWITCHES = (
+    "enable_forge_user_slots",
+    "enable_browser_logins",
+    "enable_provider_keys",
+    "enable_workspace_secrets",
+    "enable_mcp_credentials",
+    "enable_platform_secret_status",
+)
+#: The IAP Desktop client's secret: made empty in stage 2
+#: (`edge.client-secret-container`), its versions added by the console's
+#: Sign-in client step (issue #2964).
 DESKTOP_SECRET = "swarm-iap-desktop-client-secret"
 #: The three secrets swarm-api writes from the console's App step (plan §5.5).
 APP_SECRETS = (
@@ -103,8 +161,26 @@ DISCOVERY_NAME = "SwarmCloud"
 #: discovery (`swarm_mcp/discovery.py`) landed, the first that reads it.
 PLUGIN_MIN_VERSION = "0.5.74"
 #: The hourly doctor runs DAYONE-DOCTOR-1's code in the swarm-verify image.
-#: Off until that code ships: DOCTOR-1 flips this one value (review finding 12).
-SCHEDULED_DOCTOR_SHIPPED = False
+#: On from infra pass 2: BGD turned it on (DAYONE-TFVARS-2, review finding 12).
+SCHEDULED_DOCTOR_SHIPPED = True
+
+#: swarm-api's SWARM_CONTRACT_REVIEW (infra's `contract_review_mode`): off, as
+#: on the live deployment, until the deployment's owner turns it on (owner's
+#: choice, 2026-11-04). Rendered on every infra pass, so a fresh deployment
+#: carries the same environment as the live one.
+CONTRACT_REVIEW_MODE = "off"
+
+#: `sizing.mode` (decision 7): one person, or a team of `members` people.
+INDIVIDUAL = "individual"
+TEAM = "team"
+#: terraform/infra's `pool_limits` attributes (variables.tf, var.pool_limits).
+POOL_LIMIT_NUMBERS = ("global", "default_tenant", "provider_tenant")
+POOL_LIMIT_MAPS = ("resource_classes", "runner_profiles", "backends", "providers")
+#: terraform/infra's `service_max_instances` default (variables.tf). Its
+#: validation needs every control-plane service named; sizing names the four
+#: it scales, so swarm-ui keeps its default.
+SERVICE_MAX_DEFAULTS = {"swarm-api": 20, "swarm-scheduler": 3, "swarm-quota-broker": 3,
+                        "swarm-reconciler": 2, "swarm-ui": 2}
 
 #: Which step records each state key a pass needs, for the LookupError.
 RECORDED_BY = {
@@ -114,8 +190,30 @@ RECORDED_BY = {
     "github_org": "stage 0 (preflight)",
     "org_domain": "stage 0 (preflight)",
     "installer_cidr": "stage 0 (preflight)",
-    "desktop_client_id": "stage 2 (edge.desktop-client)",
+    "voice_speech": "stage 1 (infra.voice-speech-zone)",
+    "swarm-voice": "stage 4 (images.copy, from the release's images.json)",
 }
+
+#: The install state's key for stage 0's Voice it choice, `{"enabled": bool}`.
+VOICE_IT = "voice_it"
+#: The release image Voice it's "on" needs (voice.tf `voice_it_has_an_image`).
+VOICE_IMAGE = "swarm-voice"
+
+#: terraform/infra's `voice_speech` validations (variables.tf): one zone, and a
+#: Deep Learning VM image by name, never a /family/ path, which moves under the
+#: stopped machine and would replace it at the next plan.
+SPEECH_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
+SPEECH_IMAGE = re.compile(r"^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$")
+
+
+def desktop_client(state: Any) -> str:
+    """The Desktop client's id, or "" until the console's Admin › Setup step
+    Sign-in client saved one and the hand-off took it in (stage 13,
+    `handoff.sign-in-client`; issue #2964). The passes before it run without
+    one: no discovery service and an empty programmatic-clients list, which
+    Terraform reads as "create neither"; the hand-off re-runs bootstrap-2 and
+    the latest infra pass with it."""
+    return str(state.outputs.get("desktop_client_id") or "")
 
 
 def _order(pass_name: str) -> int:
@@ -160,10 +258,136 @@ def org_domain(state: Any) -> str:
     return domain
 
 
+def sizing(state: Any) -> dict[str, Any] | None:
+    """Stage 0's `sizing`, or None for an install state recorded before it."""
+    found = state.outputs.get("sizing")
+    if not found:
+        return None
+    if not isinstance(found, Mapping):
+        raise ValueError(f"the install state's sizing is {type(found).__name__}, not a mapping; rerun stage 0")
+    mode = found.get("mode")
+    if mode not in (INDIVIDUAL, TEAM):
+        raise ValueError(f"the install state's sizing mode is {mode!r}; one of {INDIVIDUAL!r}, {TEAM!r}")
+    return dict(found)
+
+
+def individual(state: Any) -> bool:
+    """Decision 7: the deployment is for one person."""
+    found = sizing(state)
+    return bool(found) and found["mode"] == INDIVIDUAL
+
+
+def _positive(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def pool_limits(found: Mapping[str, Any]) -> dict[str, Any]:
+    """infra's `pool_limits` from the sizing, refused where infra would refuse it."""
+    limits = found.get("pool_limits")
+    if not isinstance(limits, Mapping):
+        raise ValueError("the install state's sizing has no pool_limits mapping; rerun stage 0")
+    unknown = sorted(set(limits) - set(POOL_LIMIT_NUMBERS) - set(POOL_LIMIT_MAPS))
+    if unknown:
+        raise ValueError(f"the sizing's pool_limits name {unknown}, which terraform/infra's pool_limits does not "
+                         f"declare; it declares {[*POOL_LIMIT_NUMBERS, *POOL_LIMIT_MAPS]}")
+    out: dict[str, Any] = {}
+    for key in POOL_LIMIT_NUMBERS:
+        if key in limits:
+            if not _positive(limits[key]):
+                raise ValueError(f"the sizing's pool_limits.{key} is {limits[key]!r}; it must be a positive number")
+            out[key] = limits[key]
+    for key in POOL_LIMIT_MAPS:
+        if key in limits:
+            values = limits[key]
+            if not isinstance(values, Mapping) or not all(_positive(v) for v in values.values()):
+                raise ValueError(f"the sizing's pool_limits.{key} is {values!r}; it must map names to positive "
+                                 "numbers")
+            out[key] = {str(k): v for k, v in values.items()}
+    # terraform/infra's provider validation: a provider's platform-wide pool
+    # (providers[p], else global) is at least (tenants holding it) x
+    # provider_tenant. Installs declare no Terraform tenants, so the tenants are
+    # the workspaces the sizing serves: one for one person, `members` for a team.
+    # `global` is every provider's pool that `providers` does not name.
+    tenants = 1 if found["mode"] == INDIVIDUAL else int(found.get("members") or 1)
+    per_tenant = out.get("provider_tenant", 10)
+    ceiling = out.get("global", 100)
+    for name, value in {"global (every provider not named)": ceiling, **out.get("providers", {})}.items():
+        if value < tenants * per_tenant:
+            raise ValueError(f"the sizing breaks terraform/infra's pool_limits validation: provider_tenant "
+                             f"{per_tenant} x {tenants} tenants = {tenants * per_tenant} is more than the "
+                             f"provider-wide pool {name} = {value}; lower provider_tenant or raise that pool "
+                             "in the sizing")
+    return out
+
+
+def service_max_instances(found: Mapping[str, Any]) -> dict[str, Any]:
+    """infra's `service_max_instances`: the sizing's ceilings over infra's default."""
+    chosen = found.get("service_max_instances") or {}
+    if not isinstance(chosen, Mapping):
+        raise ValueError("the install state's sizing has no service_max_instances mapping; rerun stage 0")
+    out = dict(SERVICE_MAX_DEFAULTS)
+    for name, value in chosen.items():
+        if not _positive(value) or int(value) != value:
+            raise ValueError(f"the sizing's service_max_instances[{name!r}] is {value!r}; every service needs a "
+                             "positive whole max-instances")
+        out[str(name)] = int(value)
+    return out
+
+
+def voice_it_chosen(state: Any) -> bool | None:
+    """Stage 0's Voice it answer, or None for an install state recorded before the question."""
+    found = state.outputs.get(VOICE_IT)
+    if found is None:
+        return None
+    if not isinstance(found, Mapping) or not isinstance(found.get("enabled"), bool):
+        raise ValueError(f"the install state's voice_it is {found!r}, not {{\"enabled\": true or false}}; "
+                         "rerun stage 0")
+    return bool(found["enabled"])
+
+
+def voice_it(state: Any, pass_name: str) -> str | None:
+    """infra's `voice_it` for `pass_name`: voice.tf's steps in its order for a
+    yes ("off" on the registry pass, "account" on infra-1, "on" from infra-2),
+    "off" for a no, None for an install state recorded before the question."""
+    chosen = voice_it_chosen(state)
+    if chosen is None:
+        return None
+    if not chosen or not after(pass_name, "infra-1"):
+        return "off"
+    return "on" if after(pass_name, "infra-2") else "account"
+
+
+def voice_speech(state: Any) -> dict[str, Any] | None:
+    """infra's `voice_speech` from the own-speech choice, or None for an
+    install state recorded before the question (Terraform's default, off).
+    Off after a no to Voice it: the engine is offered only under a yes."""
+    found = state.outputs.get("voice_speech")
+    if found is None:
+        return None
+    if not isinstance(found, Mapping):
+        raise ValueError(f"the install state's voice_speech is {type(found).__name__}, not a mapping; rerun stage 0")
+    if found.get("enabled") is not True or voice_it_chosen(state) is False:
+        return {"enabled": False}
+    zone, image = found.get("zone"), found.get("image")
+    if not zone or not image:
+        raise LookupError(f"the install state has no voice_speech zone and image yet; {RECORDED_BY['voice_speech']} "
+                          "records them")
+    region = _required(state, "region")
+    if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
+        raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    if not SPEECH_IMAGE.match(str(image)):
+        raise ValueError(f"voice_speech image {image!r} is not a Deep Learning VM image by name "
+                         "(projects/deeplearning-platform-release/global/images/<name>)")
+    return {"enabled": True, "zone": str(zone), "image": str(image)}
+
+
 def iap_members(state: Any, installer: str) -> list[str]:
-    """Decision 1: the organisation's domain, the installer, the QA identity."""
-    members = [f"domain:{org_domain(state)}", f"user:{installer}",
-               f"serviceAccount:{QA_ACCOUNT}@{state.project}.iam.gserviceaccount.com"]
+    """Decision 1: the organisation's domain, the installer, the QA identity.
+
+    Decision 7: for one person, no `domain:` member.
+    """
+    members = [] if individual(state) else [f"domain:{org_domain(state)}"]
+    members += [f"user:{installer}", f"serviceAccount:{QA_ACCOUNT}@{state.project}.iam.gserviceaccount.com"]
     return list(dict.fromkeys(members))
 
 
@@ -185,6 +409,31 @@ def _set_switch(inputs: dict[str, Any], switch: str, on: bool) -> None:
         inputs[switch] = on
 
 
+def _with_addons(inputs: dict[str, Any], state: Any, root: str) -> dict[str, Any]:
+    """Every add-on's recorded phase over the core inputs (addons.inputs_for)."""
+    _overlay(inputs, addons.inputs_for(state.outputs, root))
+    return inputs
+
+
+def acceptance_sandbox(state: Any) -> str | None:
+    """The CI add-on's sandbox clone URL for the swarm-verify job, or None when none is recorded."""
+    choices = (addons.recorded(state.outputs).get("ci") or {}).get("choices") or {}
+    if not isinstance(choices, Mapping) or not choices.get("sandbox_repository"):
+        return None
+    # One format for the repository variable and the job's env (addons.CI_VARIABLES["sandbox"]).
+    return addons.Flow._ci_variable("sandbox", choices)
+
+
+def _overlay(into: dict[str, Any], overlay: Mapping[str, Any]) -> None:
+    for key, value in overlay.items():
+        if isinstance(value, Mapping) and isinstance(into.get(key), Mapping):
+            merged = dict(into[key])
+            _overlay(merged, value)
+            into[key] = merged
+        else:
+            into[key] = dict(value) if isinstance(value, Mapping) else value
+
+
 def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str, Any]:
     """bootstrap's inputs for `bootstrap-1` or `bootstrap-2`."""
     if ROOT_OF[pass_name] != "bootstrap":
@@ -195,6 +444,9 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
     inputs: dict[str, Any] = {
         "project_id": project,
         "region": region,
+        # Stage 1 created the state bucket in the install's region; bootstrap imports it
+        # with this location, which cannot change in place (default US-CENTRAL1).
+        "location": region.upper(),
         # Lesson 8: the first bootstrap adopts nothing and grants nothing infra creates.
         "adopt_from_infra_states": [],
         "infra_tenants_tfvars": "",
@@ -203,6 +455,11 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
         "grant_broker_secret_lister": second,
         "swarm_workers_log_view_exists": second,
         "enable_github_wif": False,
+        # The deployer without the GitHub pool: every pass after bootstrap-1
+        # runs as it (N2), and the installer may mint its tokens (N3), on the
+        # deployer alone; `swarm uninstall` removes exactly this grant.
+        "enable_deployer": True,
+        "deployer_impersonator": f"user:{installer}",
         "ci_fix_service_account": "",
         "frontend_iap_members": iap_members(state, installer),
         # The live-browser QA identity; its account is in frontend_iap_members.
@@ -212,14 +469,25 @@ def bootstrap_inputs(state: Any, *, pass_name: str, installer: str) -> dict[str,
         # The backends exist only after infra pass 1 (a data lookup on a missing
         # one fails the plan), so bootstrap pass 1 names none.
         "frontend_iap_backends": list(IAP_BACKENDS) if second else [],
-        "frontend_iap_programmatic_clients": [_required(state, "desktop_client_id")] if second else [],
+        # Empty until the console saved the Desktop client (issue #2964).
+        "frontend_iap_programmatic_clients": [desktop_client(state)] if second and desktop_client(state) else [],
     }
     digests = state.outputs.get("image_digests") or {}
     if "workspace-apply" in digests:
         inputs["workspace_apply_image"] = image_refs(project, region, {"workspace-apply": digests["workspace-apply"]})[
             "workspace-apply"
         ]
-    return inputs
+    # Audit 3 A1: swarm-api's grants (each names the account by a string, so
+    # they wait for the pass after the one that creates it) and the workspace
+    # deployer, whose job needs the image and infra's Workflows and Eventarc.
+    for switch in API_GRANT_SWITCHES:
+        inputs[switch] = second
+    workspaces = second and "workspace_apply_image" in inputs
+    inputs["enable_workspace_deployer"] = workspaces
+    # K2 and K3 only: K1 also needs swarmFrontDoorAdmitter in
+    # workspace_deployer_roles, which an install leaves at its default.
+    inputs["enable_workspace_kinds"] = workspaces
+    return _with_addons(inputs, state, "bootstrap")
 
 
 def infra_inputs(state: Any, *, pass_name: str, installer: str,
@@ -250,7 +518,9 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "discovery": {
             "name": DISCOVERY_NAME,
             "version": _required(state, "release"),
-            "oauth_client_id": _required(state, "desktop_client_id"),
+            # "" until the console saved the Desktop client: no discovery
+            # service until then (terraform/infra/discovery.tf, issue #2964).
+            "oauth_client_id": desktop_client(state),
             "plugin_min_version": PLUGIN_MIN_VERSION,
         },
         # Decision 2: reach for the cluster stages, removed by infra-close.
@@ -260,8 +530,23 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "repository_grants_enforced": True,
         "workspace_gate": True,
         "groups_auth": groups_auth(outputs),
+        "contract_review_mode": CONTRACT_REVIEW_MODE,
+        "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }
+    found = sizing(state)
+    if found:
+        inputs["pool_limits"] = pool_limits(found)
+        inputs["service_max_instances"] = service_max_instances(found)
+    voice = voice_it(state, pass_name)
+    if voice is not None:
+        if voice == "on" and VOICE_IMAGE not in inputs["image_refs"]:
+            raise LookupError(f"Voice it is on but the install state has no {VOICE_IMAGE} image digest; "
+                              f"{RECORDED_BY[VOICE_IMAGE]} records it")
+        inputs["voice_it"] = voice
+    speech = voice_speech(state)
+    if speech is not None:
+        inputs["voice_speech"] = speech
     if outputs.get("admin_groups"):
         inputs["admin_groups"] = list(outputs["admin_groups"])
     if inputs["groups_auth"] == DELEGATION and outputs.get("groups_impersonate_user"):
@@ -287,6 +572,10 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     inputs["enable_console_app_setup"] = second
     # Lesson 35: scheduler-created Jobs reach the internal API.
     inputs["tenant_job_vpc_egress"] = second
+    # Owner's pick (PR #2854, question 0): a platform admin may enter a
+    # registered group workspace as its admin, each request audited (never a
+    # person's own workspace), from infra-2 on, as dev has it.
+    inputs["platform_admin_reach"] = second
     app = outputs.get("github_app") or {}
     third = after(pass_name, "infra-3") and bool(app.get("id"))
     app_keys = all(versions.get(s) for s in APP_SECRETS)
@@ -298,9 +587,44 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
                               ("name", "github_app_name")):
             if app.get(key):
                 inputs[variable] = str(app[key])
+    # Audit 3 A1: approving a workspace publishes to swarm-workspace-apply
+    # once bootstrap pass 2 has made its job (with the image); infra-3 is the
+    # first infra pass after it.
+    inputs["workspace_apply_publish"] = after(pass_name, "infra-3") and "workspace-apply" in (
+        outputs.get("image_digests") or {})
+    # swarm-api reads a stored MCP credential through bootstrap pass 2's
+    # enable_mcp_credentials grant, which is in place by infra-3.
+    inputs["mcp_servers_enabled"] = after(pass_name, "infra-3")
+    # Owner's pick (PR #2854, question 1): the forge broker (#1041) is on
+    # from infra-3, after bootstrap pass 2's enable_forge_user_slots. It
+    # proves an attempt with the child path's key, so it goes on only with
+    # enable_child_tasks (child_tasks.tf refuses it otherwise).
+    inputs["forge_broker"] = after(pass_name, "infra-3") and inputs["enable_child_tasks"] is True
     inputs["enable_github_hooks"] = (after(pass_name, "infra-4") and inputs["enable_github_app"]
                                      and bool(versions.get("swarm-github-app-webhook-secret")))
-    return inputs
+    sandbox = acceptance_sandbox(state)
+    if sandbox:
+        inputs["acceptance_sandbox_repository_url"] = sandbox
+    return _with_addons(inputs, state, "infra")
+
+
+#: `swarm uninstall`'s overlay on infra's stored inputs (audit 4e F1). The
+#: cluster and the Cloud Run services carry `deletion_protection =
+#: var.deletion_protection`, true by default, and prod refuses false without
+#: `allow_unprotected_prod` (terraform/infra/variables.tf), so a destroy with the
+#: install's own inputs is refused by every one of them. The person typed the
+#: project id to approve deleting the deployment; that is the deliberate
+#: override the variable asks for. `bucket_force_destroy` stays as rendered
+#: (prod refuses it): the uninstall empties the buckets through the Storage API.
+UNINSTALL_OVERLAY: dict[str, dict[str, Any]] = {
+    "infra": {"deletion_protection": False, "allow_unprotected_prod": True},
+    "bootstrap": {},
+}
+
+
+def uninstall_inputs(root: str, inputs: Mapping[str, Any]) -> dict[str, Any]:
+    """A root's stored inputs with the uninstall's overlay; the stored copy is never changed."""
+    return {**dict(inputs), **UNINSTALL_OVERLAY.get(root, {})}
 
 
 def refuse_unsafe(inputs: Mapping[str, Any]) -> None:

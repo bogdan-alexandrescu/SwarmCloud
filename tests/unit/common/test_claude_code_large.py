@@ -58,12 +58,14 @@ NAME = "claude-code-large"
 
 #: The catalogue as it stood on main before request 113 (ea899e1), per
 #: profile: (class, backend, timeout_seconds, checkpoint_interval_seconds,
-#: available). Request 113 adds one key and changes none of these.
+#: available). Request 113 adds one key and changes none of these. codex's
+#: `available` has been True since request 130 turned it on (owner,
+#: 2026-11-02); its other fields are as they stood.
 BEFORE = {
     "mock": ("standard", Backend.CLOUD_RUN_JOB, 600, 30, True),
     "generic": ("standard", Backend.GKE_AUTOPILOT, 3600, 120, True),
     "claude-code": ("standard", Backend.GKE_AUTOPILOT, 7200, 120, True),
-    "codex": ("standard", Backend.GKE_AUTOPILOT, 7200, 120, False),
+    "codex": ("standard", Backend.GKE_AUTOPILOT, 7200, 120, True),
     "browser": ("browser", Backend.GKE_AUTOPILOT, 5400, 120, True),
     "merge": ("standard", Backend.GKE_AUTOPILOT, 600, 120, True),
     "post-verdict": ("standard", Backend.CLOUD_RUN_JOB, 300, 120, False),
@@ -145,8 +147,9 @@ def test_every_other_profile_is_unchanged(name):
 
 def test_the_catalogue_gains_exactly_one_profile():
     # MUTATION: add a second entry (or drop one) and the names differ.
-    # fix-loop came later, by contract request 124 (FL-CONTRACT).
-    assert set(RUNNER_PROFILES) == set(BEFORE) | {NAME} | {"fix-loop"}
+    # fix-loop came later, by contract request 124 (FL-CONTRACT), and
+    # claude-code-lightpanda by contract request 127 (LIGHTPANDA-CONTRACT).
+    assert set(RUNNER_PROFILES) == set(BEFORE) | {NAME} | {"fix-loop", "claude-code-lightpanda"}
 
 
 @pytest.fixture

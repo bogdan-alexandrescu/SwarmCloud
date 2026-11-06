@@ -8,12 +8,17 @@
 # the build record scripts/build-images.sh writes (and the release-images
 # action has scanned): every image's name, digest and source ref. DIR must not
 # exist or be empty. Nothing here reaches Google Cloud; the publish is
-# scripts/release/publish.sh, run by a person (D22).
+# scripts/release/publish.sh, run by a person (D22). The one download is the
+# Lightpanda source archive, from github.com (below).
 #
-# DIR then holds exactly what is uploaded to gs://swarmcloud/releases/V/:
+# DIR then holds exactly what is uploaded to gs://swarmcloud/releases/V/, and
+# third-party/, which goes to the bucket's root:
 #
 #   module.tgz            terraform/{bootstrap,infra,modules}: no tfvars, no
-#                         environments/ (design 5.1: the engine writes its own)
+#                         environments/ (design 5.1: the engine writes its own);
+#                         plus, at their repo paths, the files those read
+#                         through ${path.module}/../.. (kubernetes/swarm-system/
+#                         manifests, scripts/acceptance/fixture.html)
 #   swarm_mcp-V-*.whl     the bridge: `swarm`, `sc`, the plugin's MCP server
 #   swarm_install-V-*.whl the engine (two tool wheels, plan R6)
 #   swarm_common-V-*.whl, swarm_redaction-V-*.whl
@@ -30,11 +35,27 @@
 #   plugin/               the plugin, its bridge pointed at this release's
 #                         wheels, with compat.json (plan 6.4-6.5)
 #   compat.json           the deployment versions the plugin supports
-#   marketplace.json      the marketplace pinned to V (source ./plugin)
+#   plugin.zip            plugin/, zipped reproducibly: what Claude Code installs
+#   marketplace.json      the marketplace pinned to V: plugin `sc` is an archive
+#                         source, releases/V/plugin.zip by absolute URL and sha256
+#                         (a marketplace added by URL cannot resolve a relative
+#                         path)
 #   cve-acceptances.json  every accepted CVE of .trivyignore.yaml, with its
 #                         expiry (lesson 27; preflight.release reads it)
-#   install.sh            install/install.sh, promoted to the bucket's root
+#   install.sh            install/install.sh, copied to the bucket's root by every publish
+#   github-app-permissions.json
+#                         the GitHub App manifest's permissions, from
+#                         swarm_api.setup_github.PERMISSIONS; `swarm upgrade`
+#                         compares the live App's with it
 #   RELEASE.md            the commit, the digests, the accepted CVEs, the notes
+#   third-party/lightpanda/<version>/source.tar.gz
+#                         the Corresponding Source of agent-runtime-lightpanda's
+#                         Lightpanda (AGPL section 6(d)): the tag's source
+#                         archive, from upstream, checked against the sha256 the
+#                         image's Dockerfile pins (lib/build-mirror.sh
+#                         lightpanda_source_stage). publish.sh puts third-party/
+#                         at the bucket ROOT, the URL the image's SOURCE notice
+#                         names, not under releases/V/
 #   SHA256SUMS            every file above; publish.sh signs it
 #
 # Only files git tracks are shipped: a local tfvars, a .terraform/ directory or
@@ -47,6 +68,9 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR/..
+# shellcheck source=lib/build-mirror.sh
+source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 
 usage() {
   sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -76,6 +100,7 @@ if [[ -e "${OUT}" ]] && [[ -n "$(ls -A "${OUT}")" ]]; then
 fi
 require_cmd git
 require_cmd uv
+require_cmd curl
 
 COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 DIRTY=0
@@ -94,6 +119,13 @@ fail_clean() { rm -rf "${OUT:?}"/* "${OUT:?}"/.[!.]* 2>/dev/null || true; }
 trap 'fail_clean; cleanup' ERR
 
 step "Assembling SwarmCloud ${VERSION} from ${COMMIT:0:12}"
+# The Lightpanda image's Corresponding Source, staged before SHA256SUMS is
+# written so it is listed like every other file. In a subshell: the staging
+# exits on a refusal, and the bundle must still be cleaned.
+if ! (lightpanda_source_stage "${OUT}"); then
+  fail_clean
+  die "release ${VERSION} was not assembled: it must carry the Lightpanda source archive the image's SOURCE notice names"
+fi
 read -r -a PY <<<"$(swarm_python)"
 
 if ! REPO_ROOT="${REPO_ROOT}" OUT="${OUT}" WORK="${WORK}" VERSION="${VERSION}" IMAGES="${IMAGES}" \
@@ -238,10 +270,29 @@ def configures_a_deployment(f):
     return ("environments" in parts or ".terraform" in parts or "tfstate" in f
             or f.endswith((".tfvars", ".tfvars.json")))
 
-module = [(f, REPO / f) for root in ("terraform/bootstrap/", "terraform/infra/", "terraform/modules/")
-          for f in under(root) if not configures_a_deployment(f)]
+MODULE_ROOTS = ("terraform/bootstrap/", "terraform/infra/", "terraform/modules/")
+module = [(f, REPO / f) for root in MODULE_ROOTS for f in under(root) if not configures_a_deployment(f)]
+# What a root reads from outside the three directories, at its repo path, so
+# `${path.module}/../../kubernetes/...` resolves inside the unpacked bundle as
+# in the checkout (infra/live.tf reads kubernetes/swarm-system/swarm-live.yaml
+# the first pass enable_live_browser is on; audit finding N8).
+READ = re.compile(r'\b(?:file|templatefile|filebase64|filesha256|fileexists)\(\s*"\$\{path\.module\}/([^"$]+)"')
+outside, unreadable = set(), []
+for f, source in module:
+    if not f.endswith(".tf"):
+        continue
+    for rel in READ.findall(source.read_text()):
+        target = os.path.normpath(os.path.join(os.path.dirname(f), rel))
+        if target.startswith(MODULE_ROOTS):
+            continue
+        if target not in tracked:
+            unreadable.append(f"{f} reads {target}, which git does not track")
+        outside.add(target)
+if unreadable:
+    raise SystemExit("assemble: module.tgz refused: " + "; ".join(sorted(unreadable)))
+module += [(f, REPO / f) for f in sorted(outside)]
 tgz(OUT / "module.tgz", module)
-say(f"module.tgz: {len(module)} files")
+say(f"module.tgz: {len(module)} files, {len(outside)} of them read from outside terraform/")
 
 # -- kubernetes.tgz (review finding 3) ------------------------------------------------------------
 kube = [(f[len("kubernetes/"):], REPO / f) for f in under("kubernetes/")]
@@ -276,9 +327,18 @@ for f in under("plugin/"):
     shutil.copy2(REPO / f, target)
 marketplace.prepare_plugin(OUT / "plugin", VERSION, REPO / "install" / "compat.json")
 shutil.copy2(OUT / "plugin" / "compat.json", OUT / "compat.json")
-(OUT / "marketplace.json").write_text(json.dumps(marketplace.marketplace(VERSION, "./plugin"), indent=2) + "\n")
+# A marketplace added by URL fetches only marketplace.json, so the plugin is
+# the release's plugin.zip by absolute URL and digest (audit finding N9).
+archive_sha256 = marketplace.zip_plugin(OUT / "plugin", OUT / marketplace.PLUGIN_ARCHIVE)
+(OUT / "marketplace.json").write_text(json.dumps(marketplace.marketplace(VERSION, archive_sha256), indent=2) + "\n")
 shutil.copy2(REPO / "install" / "install.sh", OUT / "install.sh")
 compat = json.loads((OUT / "compat.json").read_text())["deployments"]
+
+# -- github-app-permissions.json: what the App manifest asks for, read from the one place it is set --
+from swarm_api.setup_github import PERMISSIONS
+
+(OUT / "github-app-permissions.json").write_text(json.dumps(dict(sorted(PERMISSIONS.items())), indent=2) + "\n")
+say(f"github-app-permissions.json: {len(PERMISSIONS)} permissions")
 
 # -- RELEASE.md ---------------------------------------------------------------------------------------------
 notes_file = os.environ.get("NOTES") or ""

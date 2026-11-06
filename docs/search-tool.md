@@ -85,6 +85,25 @@ to search in the live browser instead.
    variables yet (`terraform/infra/locals.tf`, swarm-api's environment); until
    it does, the deployed service keeps the default, off.
 
+**How `swarm addon enable brave-search` knows it is on.** It asks swarm-api, as
+the platform admin signed in with `swarm login`, to run one search: `POST
+/v1/admin/setup/addons/brave-search/probe` (`swarm_api.routes.addon_probe`).
+swarm-api reads `swarm-search-api-key` with its own identity and sends one
+query of one result to the provider, exactly the path an agent's search takes,
+and answers `{ok, reason, status, results}`: `ok: false` with a reason when the
+running revision has the flag off (nothing is read), when swarm-api cannot read
+the key (its accessor grant is named), or when the provider refuses it (the
+provider's error kind and HTTP status from §4). The add-on is not reported on
+until the answer is `ok: true`. A swarm-api older than the route answers 404;
+only then does the check fall back to the key's IAM policy for swarm-api's read
+grant, and it says so. An IAM-policy read was the only check before; it was
+replaced (owner pick, 2026-10-31) because a binding says nothing about whether
+Brave accepts the key or whether the flag reached the revision. The probe
+spends no tenant's daily cap and writes no audit row (it is no tenant's
+search), and its answer never carries the key, a result or the provider's body.
+It is a platform admin's route only: a pool admin, a workspace admin, a member,
+the deployer and the doctor are refused.
+
 ## 4. Limits, errors and the audit
 
 | what | value | why |

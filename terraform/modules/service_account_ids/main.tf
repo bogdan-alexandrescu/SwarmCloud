@@ -72,6 +72,25 @@ locals {
   # D27). Read-only roles from terraform/bootstrap/doctor_roles.tf, and
   # run.invoker on swarm-api to post its findings.
   doctor_id = "swarm-doctor"
+  # swarm-voice is the identity of the one-replica Voice it StatefulSet in
+  # swarm-system (docs/design/voice-it.md section 3.4; terraform/infra/voice.tf,
+  # behind its voice_it switch). terraform/infra binds on it -- Workload
+  # Identity, and its actAs -- which needs the deployer's serviceAccountAdmin
+  # on it, so it is on this list (owner decision 2026-11-01: a follow-up here,
+  # not a hand-made binding). Created by terraform/bootstrap like every account
+  # on bootstrap_platform, so the grant is made in the same apply as the account
+  # and a fresh install's first bootstrap pass never grants on an account that
+  # does not exist yet. It holds no role until voice.tf gives it its own.
+  voice_id = "swarm-voice"
+  # swarm-speech is the account Voice it's speech machine runs as
+  # (docs/design/voice-it-own-speech.md §5.1 and §6; terraform/infra/
+  # voice_speech.tf). Created by terraform/bootstrap
+  # (platform_service_accounts.tf) and read by terraform/infra, both from here.
+  # Deliberately NOT on bootstrap_platform, so the deployer holds no
+  # serviceAccountAdmin on it (deployer_service_accounts.tf): the one grant it
+  # needs there is actAs, to attach the account to the machine, which
+  # bootstrap makes on this account alone.
+  speech_id = "swarm-speech"
 
   # scripts/register-tenant.sh and kubernetes/render.py spell this too; they
   # are not Terraform and cannot read it.
@@ -82,7 +101,7 @@ locals {
   # The platform accounts terraform/bootstrap creates (platform_service_accounts.tf).
   bootstrap_platform = sort(concat(
     keys(local.platform),
-    [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id, local.discovery_id, local.doctor_id],
+    [local.tick_id, local.verify_id, local.rollup_sweeper_id, local.schedule_tick_id, local.discovery_id, local.doctor_id, local.voice_id],
   ))
 
   # Every account terraform/infra deploys as or grants on: bootstrap's platform

@@ -10,24 +10,39 @@ import {
   setAccountModelClasses,
   setAccountName,
   setAccountState,
+  loadMe,
+  mintSetupLink,
   type AccountsBoard,
   type ServedAccount,
 } from './api'
 import { accountName } from './accountName'
 import { agentName } from './agentlist'
-import { errorHeading, read, route, type ApiError, type Result } from './fetch'
+import { errorHeading, read, route, write, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
-import { Button, CIcon, Chip, Dialog, ToneMark, WarnMark } from './components'
+import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { AccountsTable } from './AccountsTable'
+import { linkRefusal, redeemSetupLink } from './SetupLink'
+import {
+  ACCOUNT_POOLS,
+  AccountsTable,
+  POOL_WORD,
+  ProviderName,
+  WindowCell,
+  inVoiceItPool,
+  poolsOf,
+  poolsWord,
+  voiceItHolderOf,
+  voiceItPeopleOf,
+  type AccountPoolName,
+} from './AccountsTable'
 import { AcctState } from './AccountState'
-import { DuplicateBanner, Forecast, RuleLine, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
+import { DuplicateBanner, Forecast, Info, Verdict, usePoolWaiting, type WaitRead } from './AccountsVerdict'
 import { agoPastDay, utcAt, type PoolAccount } from './accountsPool'
 import { AgentCap, SheetAccount, SheetDuplicate, SheetForecast, SheetHealth, SheetVerdict, SheetWindows } from './AccountSheet'
 import { AccountsTimeline, ViewToggle } from './AccountsTimeline'
@@ -404,7 +419,10 @@ function Body({
   // and if not, when. Re-read with the board, so the two agree.
   const waiting = usePoolWaiting(board.readAt)
   const scope = board.page.tenant_id
-  const pool = accounts as PoolAccount[]
+  // THE WORKSPACE'S OWN CAPACITY: a Voice-it-only account is listed (its
+  // pools, its Pools… panel) but serves no workspace task, so the verdict
+  // and the rule line never count it (the owner, 2026-11-02).
+  const pool = (accounts as PoolAccount[]).filter(servesWorkspace)
   // ON A PHONE THE OPENED ACCOUNT IS THE SCREEN (#2222, mock-up A P3): the
   // list steps aside (capacity.css `.is-detail`), and so does the page's lead
   // -- the verdict, the floors and the banners -- which sat above the sheet and
@@ -425,7 +443,6 @@ function Body({
             <Verdict accounts={pool} scope={scope} shortfall={shortfall(board)} now={Date.now()} waiting={waiting} />
             <ViewToggle view={pageView} hrefOf={viewHref} onChange={chooseView} />
           </div>
-          {accounts.length > 0 && <RuleLine accounts={pool} />}
           <DuplicateBanner accounts={pool} scope={scope} onOpen={choose} />
           <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
         </>
@@ -568,6 +585,9 @@ function shownAccount(accounts: Account[], chosen: string | null, scope: string 
   return first === null ? null : { account: first, explicit: false }
 }
 
+/** The reason an account that needs a sign-in carries on its tick. */
+const REAUTH_WHY = 'needs someone to sign in again; it gives out nothing until then'
+
 /**
  * The accounts a timer will never fix, at the top, before anything else.
  *
@@ -602,29 +622,24 @@ function Broken({
   const names = (xs: Account[]) => xs.map((a) => accountName(a)).join(', ')
   return (
     <div className="acct-callout" role="status">
-      <WarnMark />
+      {/* Each own account carries its own tick; a lent-only callout keeps the one. */}
+      {mine.length === 0 && <WarnMark />}
       <div className="acct-callout-body">
-        {mine.length > 0 && (
-          <p>
-            <b>{names(mine)}</b> need{mine.length === 1 ? 's' : ''} someone to sign in again.{' '}
-            {mine.length === 1 ? 'It gives' : 'They give'} out nothing until then.{' '}
-            {/* ONE LINK PER ACCOUNT, SEPARATED (visual QA V016): two or more ran
-                together as "Sign in again to aSign in again to b". */}
-            {mine.map((a, i) => (
-              <span key={a.account_id}>
-                {i > 0 && <span aria-hidden="true"> &middot; </span>}
-                <button
-                  type="button"
-                  className="acct-link"
-                  aria-label={`Sign in again to ${accountName(a)}`}
-                  onClick={() => onOpen(a.account_id)}
-                >
-                  {mine.length === 1 ? 'Sign in again' : `Sign in again to ${accountName(a)}`}
-                </button>
-              </span>
-            ))}
+        {/* ONE TICK AND ONE BUTTON PER ACCOUNT (no prose on the surface, 5
+            November 2026): the tick's reason is "needs someone to sign in
+            again; it gives out nothing until then", and the action is a real
+            button, each apart (visual QA V016: two links once ran together as
+            "Sign in again to aSign in again to b"). */}
+        {mine.map((a) => (
+          <p key={a.account_id} className="acct-callout-row">
+            <ToneMark tone="warn" title={REAUTH_WHY} label={`${accountName(a)}: ${REAUTH_WHY}`}>
+              {accountName(a)}
+            </ToneMark>
+            <Button size="sm" aria-label={`Sign in again to ${accountName(a)}`} onClick={() => onOpen(a.account_id)}>
+              Sign in again
+            </Button>
           </p>
-        )}
+        ))}
         {lent.length > 0 && (
           <p>
             <b>{names(lent)}</b> need{lent.length === 1 ? 's' : ''} a sign-in by{' '}
@@ -943,6 +958,9 @@ function Pool({
         <div className="acct-list-head">
           <h2>
             Subscription accounts
+            {/* HOW TO READ THE TABLE IS THE HEADING'S (i), not a line over it
+                (no prose on the surface, 5 November 2026). */}
+            <Info about="Subscription accounts" tip="Ranked by when each can take a new agent. Times are UTC." />
             {/* THE QUALIFIER SLOT, NOT A CHIP (CP-22). */}
             <span className="ctl-card-note is-end">{pluralise(accounts.length, 'account')}</span>
           </h2>
@@ -952,7 +970,6 @@ function Pool({
             desktop, a card each on a phone. The name is the `acct-open`
             button the list was, so choosing one opens the same detail under
             it, with every control the page had. */}
-        <p className="acct-rank-note">Ranked by when each can take a new agent. Times are UTC.</p>
         <AccountsTable
           accounts={accounts as PoolAccount[]}
           scope={board.page.tenant_id}
@@ -1003,7 +1020,11 @@ function Pool({
               topic is what may and may not be concluded from it. */}
           <HelpCard topic="projected-not-measured" />
         </p>
-        <Forecast accounts={accounts as PoolAccount[]} scope={board.page.tenant_id} now={now} />
+        <Forecast accounts={(accounts as PoolAccount[]).filter(servesWorkspace)} scope={board.page.tenant_id} now={now} />
+        {/* THE VOICE IT POOL (the owner, 2026-11-02): drawn only when an
+            account is in it, so a pool without one reads as it always did. */}
+        <VoiceItPool accounts={accounts} now={now} phone={phone} />
+        <VoiceKeyLink />
       </section>
       {sheet}
     </div>
@@ -1337,6 +1358,9 @@ function Detail({
   const [lending, setLending] = useState(false)
 
   const lent = (account.lend_to ?? []).length > 0
+  // POOLS… IS A PLATFORM ADMIN'S (PUT /v1/accounts/{id}/pools refuses anyone
+  // else), on any account the admin can open, owned or borrowed.
+  const admin = usePlatformAdmin()
   return (
     <div className="acct-detail">
       {/* THE HEAD: the label, WHOSE it is -- the line that decides whether the
@@ -1345,8 +1369,10 @@ function Detail({
         <NameHead account={account} owned={owned} reload={reload} />
         <div className="acct-dhead-row">
           <AcctState state={account.state} />
+          {/* The provider in words (#2688): `ChatGPT plan`, `Claude
+              subscription`, or an unknown provider's own id -- never a guess. */}
           <Chip>
-            {account.provider} &middot; {lent ? 'lending on' : 'lending off'}
+            <ProviderName provider={account.provider} /> &middot; {lent ? 'lending on' : 'lending off'}
           </Chip>
         </div>
         {/* AN ID IS ONE WORD (visual QA V070): `u-bogdan` broke at its hyphen
@@ -1455,10 +1481,14 @@ function Detail({
           <Reauth account={account} ui={ui} patch={patch} reload={reload} />
           <RefreshControl account={account} ui={ui} patch={patch} reload={reload} />
           <ModelClasses account={account} reload={reload} />
+          {admin && <PoolsControl account={account} reload={reload} />}
           <Remove account={account} reload={reload} />
         </>
       ) : (
-        <Borrowed account={account} />
+        <>
+          <Borrowed account={account} />
+          {admin && <PoolsControl account={account} reload={reload} />}
+        </>
       )}
     </div>
   )
@@ -2819,6 +2849,425 @@ function ModelClasses({ account, reload }: { account: Account; reload: () => voi
         </p>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pools: the workspace pool and the Voice it pool (the owner, 2026-11-02)
+// ---------------------------------------------------------------------------
+
+/**
+ * `PUT /v1/accounts/{account_id}/pools`, platform admins only. The label is
+ * typed back as `confirm_label`, which the broker checks again; it answers
+ * 409 `pool_in_use` when a live lease holds the account in a pool being
+ * removed, and the dialog says so where it was asked.
+ */
+export const ACCOUNT_POOLS_ROUTE = '/v1/accounts/{account_id}/pools'
+
+export function setAccountPools(accountId: string, pools: readonly string[], confirmLabel: string): Promise<Result<unknown>> {
+  return write(route(ACCOUNT_POOLS_ROUTE, { account_id: accountId }), 'PUT', { pools: [...pools], confirm_label: confirmLabel })
+}
+
+/** Who may use a Voice it pool account, version one (the owner, 2026-11-02). */
+export const VOICE_IT_PEOPLE_NOTE = 'Version one: the platform owner only'
+
+/**
+ * WHETHER THE READER IS A PLATFORM ADMIN, for the one admin-only control here.
+ * `null` is "not known yet, or the read failed", which draws no control: the
+ * server is the real gate. The read is the frame's own `loadMe`; a test that
+ * mocks `api` without it draws no control rather than throwing.
+ */
+function usePlatformAdmin(): boolean {
+  return usePlatformPrincipal().admin
+}
+
+/** The platform admin's own verified email, or null for anyone else (and while unknown). */
+function usePlatformAdminEmail(): string | null {
+  const p = usePlatformPrincipal()
+  return p.admin ? p.email : null
+}
+
+function usePlatformPrincipal(): { admin: boolean; email: string | null } {
+  const [admin, setAdmin] = useState<{ admin: boolean; email: string | null }>({ admin: false, email: null })
+  useEffect(() => {
+    let live = true
+    let answer: unknown
+    try {
+      answer = loadMe({ frame: true })
+    } catch {
+      return
+    }
+    Promise.resolve(answer as ReturnType<typeof loadMe> | undefined).then(
+      (r) => {
+        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) {
+          const p = r.data.principal
+          setAdmin({ admin: p?.is_admin === true, email: typeof p?.email === 'string' && p.email !== '' ? p.email : null })
+        }
+      },
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+  }, [])
+  return admin
+}
+
+/** Whether a 409 is the broker's "a live lease holds it in that pool". */
+export function poolInUse(e: ApiError): boolean {
+  const d = e.detail as { reason?: unknown } | null | undefined
+  return e.httpStatus === 409 && (d?.reason === 'pool_in_use' || e.code === 'pool_in_use')
+}
+
+/** The pools to send: the ticked ones, in the canonical order. */
+export function poolsToSave(checked: readonly string[]): AccountPoolName[] {
+  return ACCOUNT_POOLS.filter((p) => checked.includes(p))
+}
+
+/**
+ * POOLS…: which pools an account serves, for a platform admin. A checkbox per
+ * pool, the Voice it people read-only, and the label typed back -- the same
+ * typed confirm Remove uses, because taking an account out of a pool takes it
+ * away from everyone who leases through that pool. At least one pool stays
+ * ticked: an account in no pool is one nobody can lease, and the broker
+ * refuses it besides.
+ */
+function PoolsControl({ account, reload }: { account: Account; reload: () => void }) {
+  const served = poolsOf(account) ?? ['workspace']
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState<string[]>(served)
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<ApiError | null>(null)
+  const [saved, setSaved] = useState(false)
+  const whyId = useId()
+
+  const willSave = poolsToSave(draft)
+  const dirty = willSave.join(' ') !== poolsToSave(served).join(' ')
+  const armed = typed === account.label
+  const why =
+    willSave.length === 0
+      ? 'keep at least one pool ticked'
+      : !dirty
+        ? 'no change to save'
+        : !armed
+          ? `off until you type ${account.label} below`
+          : null
+  const people = voiceItPeopleOf(account)
+
+  const close = () => {
+    if (busy) return
+    setOpen(false)
+    setTyped('')
+    setError(null)
+  }
+
+  const save = async () => {
+    if (why !== null) return
+    setBusy(true)
+    setError(null)
+    const res = await setAccountPools(account.account_id, willSave, typed)
+    setBusy(false)
+    if (res.status === 'ok') {
+      setOpen(false)
+      setTyped('')
+      setSaved(true)
+      reload()
+    } else if (res.status === 'error' || res.status === 'stale') {
+      setError(res.error)
+    }
+  }
+
+  return (
+    <div className="acct-action">
+      <h4>Pools</h4>
+      <span className="limit-edit">
+        <span data-pools={poolsToSave(served).join(' ')}>{poolsWord(served)}</span>
+        <button
+          type="button"
+          onClick={() => {
+            setDraft(served)
+            setSaved(false)
+            setError(null)
+            setOpen(true)
+          }}
+        >
+          Pools…
+        </button>
+        {saved && <ToneMark tone="is-ok">saved</ToneMark>}
+      </span>
+      {open && (
+        <Dialog
+          title={`Pools for ${accountName(account)}`}
+          onClose={close}
+          actions={
+            <>
+              <Button kind="ghost" onClick={close}>
+                Leave them
+              </Button>
+              <Button
+                kind="primary"
+                disabled={why !== null}
+                aria-describedby={why === null ? undefined : whyId}
+                busy={busy ? 'Saving…' : false}
+                onClick={() => void save()}
+              >
+                Save pools
+              </Button>
+            </>
+          }
+        >
+          <fieldset className="acct-classes" disabled={busy} aria-label={`Pools ${account.account_id} serves`}>
+            {ACCOUNT_POOLS.map((p) => (
+              <label key={p} className="acct-class">
+                <input
+                  type="checkbox"
+                  checked={draft.includes(p)}
+                  onChange={(e) => setDraft(e.target.checked ? [...draft, p] : draft.filter((d) => d !== p))}
+                />{' '}
+                {POOL_WORD[p]}
+              </label>
+            ))}
+          </fieldset>
+          <ul className="ctl-facts">
+            <li className="ctl-fact">
+              <b>account</b>
+              <Id>{account.account_id}</Id>
+            </li>
+            <li className="ctl-fact rt-fact-wide">
+              <b>Voice it people</b>
+              <span>
+                {people.length > 0 ? <span className="mono">{people.join(', ')}</span> : 'set by the broker when Voice it is added'}{' '}
+                <span className="muted small">({VOICE_IT_PEOPLE_NOTE})</span>
+              </span>
+            </li>
+          </ul>
+          <label className="c-field">
+            <span className="c-lbl">Type {account.label} to confirm</span>
+            <input
+              type="text"
+              className="c-inp mono"
+              value={typed}
+              disabled={busy}
+              placeholder={account.label}
+              aria-label={`Type ${account.label} to confirm the pools`}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          </label>
+          {why !== null && (
+            <p className="client-side" id={whyId}>
+              Save is {why}.
+            </p>
+          )}
+          {error && (
+            <p className="c-hint" role="alert">
+              {poolInUse(error)
+                ? 'Pool in use: a live lease holds this account in a pool you are removing. Wait for it to end, then try again.'
+                : errorHeading(error)}{' '}
+              &mdash; {error.message} The pools were not changed.
+            </p>
+          )}
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
+/** Whether an account serves workspace tasks: an older broker that sends no
+ * pools means the workspace pool, as every account was before. */
+export function servesWorkspace(a: object): boolean {
+  return (poolsOf(a) ?? ['workspace']).includes('workspace')
+}
+
+/**
+ * THE VOICE IT POOL: the accounts whose pools include Voice it -- the
+ * provider, both windows as the table draws them, who may use it (read-only)
+ * and which Voice it session holds it now, or `free`.
+ */
+export function VoiceItPool({ accounts, now, phone }: { accounts: readonly Account[]; now: number; phone: boolean }) {
+  const rows = (accounts as PoolAccount[]).filter((a) => inVoiceItPool(a))
+  if (rows.length === 0) return null
+  const holder = (a: PoolAccount) => {
+    const h = voiceItHolderOf(a)
+    if (h === null) return <span data-holder="free">free</span>
+    return (
+      <span data-holder={h.voice_session_id}>
+        <span className="mono">{h.voice_session_id}</span>
+        {h.person !== '' && <> &middot; {h.person}</>}
+        {h.since !== null && <> &middot; since {givenAt(h.since, now)}</>}
+      </span>
+    )
+  }
+  const people = (a: PoolAccount) => {
+    const p = voiceItPeopleOf(a)
+    return p.length === 0 ? '—' : <span className="mono">{p.join(', ')}</span>
+  }
+  return (
+    <section className="acct-voice-it" aria-label="Voice it pool">
+      <h3>
+        Voice it pool{' '}
+        <span className="ctl-card-note is-end">{pluralise(rows.length, 'account')}</span>
+      </h3>
+      {phone ? (
+        <div className="acct-cards">
+          {rows.map((a) => (
+            <article key={a.account_id} className="acct-card" data-account={a.account_id}>
+              <div className="acct-card-top">
+                <span className="acct-nm">{accountName(a)}</span>
+                <span className="acct-prov" data-provider={a.provider}>
+                  <ProviderName provider={a.provider} />
+                </span>
+              </div>
+              <div className="acct-card-w2">
+                <WindowCell a={a} k={FIVE_HOUR} now={now} />
+                <WindowCell a={a} k={SEVEN_DAY} now={now} />
+              </div>
+              <p className="acct-card-meta">Who may use it: {people(a)}</p>
+              <p className="acct-card-meta">Held by: {holder(a)}</p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <Table
+          caption="Voice it pool"
+          rows={rows}
+          rowKey={(a) => a.account_id}
+          columns={[
+            { key: 'account', head: 'Account', cell: (a) => <span className="acct-nm">{accountName(a)}</span> },
+            {
+              key: 'provider',
+              head: 'Provider',
+              cell: (a) => (
+                <span className="acct-prov" data-provider={a.provider}>
+                  <ProviderName provider={a.provider} />
+                </span>
+              ),
+            },
+            { key: '5h', head: '5-hour', cell: (a) => <WindowCell a={a} k={FIVE_HOUR} now={now} /> },
+            { key: '7d', head: '7-day', cell: (a) => <WindowCell a={a} k={SEVEN_DAY} now={now} /> },
+            { key: 'people', head: 'Who may use it', cell: people },
+            { key: 'holder', head: 'Held by', cell: holder },
+          ]}
+        />
+      )}
+    </section>
+  )
+}
+
+/** The label Voice it's key account gets unless the admin types another. */
+export const VOICE_KEY_LABEL = 'openai-key'
+/** The block's accessible name. */
+export const VOICE_KEY_BUTTON = 'Add an OpenAI API key for Voice it'
+/** The masked key field's accessible name. */
+export const VOICE_KEY_FIELD = 'OpenAI API key'
+const VOICE_KEY_TIP =
+  'Voice it’s Live sessions run on an OpenAI developer API key, not a ChatGPT plan. The key goes from here to the account pool once, into a secret only the pool reads, and is never shown again.'
+
+/**
+ * ADD AN OPENAI API KEY FOR VOICE IT, IN ONE STEP (the owner, 4 and 6
+ * November 2026). A Live session runs on an OpenAI developer API key alone,
+ * so the Voice it pool needs one. The admin types the key here and presses
+ * Add: the console mints a one-time `voice-api-key` link for the admin
+ * themself (`POST /v1/admin/setup/links`) and at once redeems its token with
+ * the key through SetupLink.tsx's `redeemSetupLink`, the one redemption path,
+ * so swarm-api forwards it once to the quota broker and keeps nothing. Nothing
+ * navigates: the link page that spoke of Claude is never shown. The key lives
+ * only in the field's state until the redeem call returns, and is cleared
+ * then, on success and on failure; it is never put in a URL, storage or a
+ * message. The label sits behind the pencil. Drawn for a platform admin only;
+ * the server is the real gate.
+ */
+export function VoiceKeyLink() {
+  const email = usePlatformAdminEmail()
+  const id = useId()
+  const [key, setKey] = useState('')
+  const [label, setLabel] = useState(VOICE_KEY_LABEL)
+  const [naming, setNaming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<string | null>(null)
+  const [added, setAdded] = useState<string | null>(null)
+  if (email === null) return null
+  const valid = /^[a-z0-9][a-z0-9-]{0,63}$/.test(label)
+
+  async function add(e: FormEvent) {
+    e.preventDefault()
+    if (busy || !valid || key === '' || email === null) return
+    setBusy(true)
+    setRefused(null)
+    setAdded(null)
+    const asked = label
+    const m = await mintSetupLink({ kind: 'voice-api-key', label: asked, owner: email })
+    if (m.status === 'error') {
+      setKey('')
+      setBusy(false)
+      setRefused(`The key was not sent: ${m.error.message}`)
+      return
+    }
+    if (m.status !== 'ok' && m.status !== 'stale') {
+      setKey('')
+      setBusy(false)
+      return
+    }
+    const token = m.data.path.split('/').pop() ?? ''
+    const r = await redeemSetupLink(token, key)
+    setKey('')
+    setBusy(false)
+    if (r.status === 'error') setRefused(linkRefusal(r.error).line)
+    else setAdded(asked)
+  }
+
+  return (
+    <section className="acct-voice-key" aria-label={VOICE_KEY_BUTTON}>
+      <form className="pk-form-row" autoComplete="off" onSubmit={(e) => void add(e)}>
+        <input
+          id={`${id}-key`}
+          className="c-inp mono"
+          type="password"
+          aria-label={VOICE_KEY_FIELD}
+          placeholder={VOICE_KEY_FIELD}
+          autoComplete="off"
+          spellCheck={false}
+          value={key}
+          onChange={(e) => setKey(e.target.value.trim())}
+        />
+        {naming ? (
+          <input
+            className="c-inp mono"
+            aria-label="Account name in the Voice it pool"
+            autoComplete="off"
+            spellCheck={false}
+            value={label}
+            onChange={(e) => setLabel(e.target.value.trim().toLowerCase())}
+          />
+        ) : (
+          <button
+            type="button"
+            className="acct-i"
+            aria-label={`Change the account name (${label})`}
+            title={`Account name: ${label}`}
+            onClick={() => setNaming(true)}
+          >
+            ✎
+          </button>
+        )}
+        <Button kind="primary" type="submit" busy={busy ? 'Adding…' : false} disabled={!valid || key === ''}>
+          Add
+        </Button>
+        <Info about="the OpenAI API key" tip={VOICE_KEY_TIP} />
+      </form>
+      {!valid && <p className="ur-small">Lowercase letters, digits and dashes, starting with a letter or digit.</p>}
+      {added !== null && (
+        <p className="acct-clause" role="status">
+          <CIcon name="check" /> <span className="mono">{added}</span> is in the Voice it pool{' '}
+          <Info about="the added key" tip="The key is never shown again." />
+        </p>
+      )}
+      {refused !== null && (
+        <p className="ur-small" role="alert">
+          {refused}
+        </p>
+      )}
+    </section>
   )
 }
 
@@ -4483,6 +4932,72 @@ function SignInDone({
 // Sign in again, on a row that already exists
 // ---------------------------------------------------------------------------
 
+/** routes/accounts.py's ChatGPT-plan provider (#2688): codex runs on it. */
+const PLAN_PROVIDER = 'openai'
+
+/** A word a POSIX shell reads as itself; anything else is single-quoted. */
+function shellWord(word: string): string {
+  return /^[A-Za-z0-9._:@/-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * THE COMMAND THAT SIGNS A PLAN IN AGAIN: `sc account add`, aimed at this
+ * label, with the provider and every loan. Re-registering a label REPLACES
+ * `lend_to` rather than merging it (the reason `Reauth` sends it back), so
+ * a command without each `--lend-to` would revoke every loan as a side effect.
+ */
+export function planSignInCommand(account: Pick<Account, 'label' | 'lend_to'>): string {
+  const loans = (account.lend_to ?? []).map((t) => ` --lend-to ${shellWord(t)}`).join('')
+  return `sc account add --label ${shellWord(account.label)} --provider ${PLAN_PROVIDER}${loans}`
+}
+
+/**
+ * The sign-in section of a ChatGPT plan: what happens, and the command.
+ *
+ * THE STATE NEEDS NO SECOND CALL HERE. The broker clears REAUTH_REQUIRED
+ * itself when a sign-in registers a working pair (`_provision_and_register`
+ * in quota_broker/main.py), and this page reads the pool on its own poll, so
+ * the account's new state appears here without anyone saying they are done.
+ */
+function PlanReauth({ account, broken }: { account: Account; broken: boolean }) {
+  return (
+    <div className="acct-action" data-replace={account.account_id} data-plan-sign-in="">
+      <h4>{broken ? 'Sign in again' : 'Replace the credential'}</h4>
+      <p className="muted small">
+        {broken ? (
+          <>
+            <strong>Only a person can replace this.</strong> The refresh token
+            behind <Id className="mono">{account.account_id}</Id> is gone or unreadable.
+          </>
+        ) : (
+          <>
+            Replaces the credential behind <Id className="mono" after=".">{account.account_id}</Id>{' '}
+            Nothing here needs doing on a healthy account.
+          </>
+        )}
+      </p>
+      <p className="muted small">
+        A ChatGPT plan&rsquo;s sign-in finishes on your own computer, not in this browser
+        tab: the plan sends its code to <span className="mono">localhost:1455</span>, where{' '}
+        <span className="mono">sc</span> listens. Run this in a terminal on the computer
+        this browser runs on:
+      </p>
+      <p>
+        <code className="acct-hs-msg" data-cmd="">
+          {planSignInCommand(account)}
+        </code>
+      </p>
+      <p className="muted small">
+        It opens the sign-in page and registers the plan under the same label, with the same
+        loans.{' '}
+        {broken
+          ? 'The account leaves REAUTH_REQUIRED as soon as it registers, and this page shows it on its next read.'
+          : 'This page shows the new credential’s expiry on its next read.'}
+      </p>
+    </div>
+  )
+}
+
 /**
  * The same sign-in, aimed at a label that is already in the pool.
  *
@@ -4515,12 +5030,24 @@ function Reauth({
     patch((p) => ({ ...p, reauth: { ...p.reauth, [account.account_id]: next } }))
   const broken = needsAHuman(account)
 
-  // A CONTROL THAT WOULD REWRITE A FIELD IT CANNOT SEND. The sign-in swarm-api
-  // performs produces a `SUBSCRIPTION_PROVIDER` credential and its request body
-  // has no provider field, so re-registering a row that says anything else
-  // would file the account under a provider nobody chose on this screen -- the
-  // silent rewrite the removed `provider: account.provider` argument existed to
-  // prevent. Refused and named, rather than offered and surprising.
+  // A CHATGPT PLAN SIGNS IN ON THE PERSON'S OWN MACHINE (#2688). swarm-api's
+  // sign-in start takes `provider: "openai"` now, but the plan's OAuth client
+  // has one registered redirect, `http://localhost:1455/auth/callback`
+  // (quota_broker/openai_plan.py, measured), and only `sc account add` listens
+  // there. A browser control would open a page whose code lands on a port
+  // nothing is listening on, so this section says so and gives the command
+  // instead -- and posts nothing, least of all a Claude sign-in.
+  if (account.provider === PLAN_PROVIDER) {
+    return <PlanReauth account={account} broken={broken} />
+  }
+
+  // A CONTROL THAT WOULD REWRITE A FIELD IT CANNOT SEND. The sign-in below
+  // produces a `SUBSCRIPTION_PROVIDER` credential and its request body carries
+  // no provider, so re-registering a row that says anything else -- a provider
+  // the API cannot sign in at all -- would file the account under a provider
+  // nobody chose on this screen, the silent rewrite the removed
+  // `provider: account.provider` argument existed to prevent. Refused and
+  // named, rather than offered and surprising.
   if (account.provider !== SUBSCRIPTION_PROVIDER) {
     return (
       <div className="acct-action">
@@ -4560,14 +5087,11 @@ function Reauth({
   const start = async () => {
     set({ kind: 'starting' })
     const res = await beginAccountSignIn({
-      // NEITHER THE TENANT NOR THE PROVIDER IS OURS TO SEND. swarm-api resolves
-      // the tenant from the verified token -- and this control renders only on
-      // a row this tenant owns -- and it fixes the provider itself;
-      // `AccountSignInStart` has a field for neither and forbids extra keys, so
-      // sending `account.owner_tenant` and `account.provider`, which this call
-      // used to do, is a 422 from validation rather than a sign-in. The
-      // provider that used to be sent here is now checked above instead: a row
-      // carrying anything else is refused rather than quietly re-registered.
+      // NEITHER THE TENANT NOR THE PROVIDER IS SENT. swarm-api resolves the
+      // tenant from the verified token -- and this control renders only on a
+      // row this tenant owns -- and a sign-in with no provider is a Claude
+      // sign-in, which is the only kind that reaches this call: a plan is
+      // sent to `PlanReauth` above and any other provider is refused.
       label: account.label,
       lend_to: account.lend_to,
     })

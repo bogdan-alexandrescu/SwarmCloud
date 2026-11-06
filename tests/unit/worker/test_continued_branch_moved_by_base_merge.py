@@ -58,6 +58,7 @@ from agent_worker import expected_outputs as expected_mod
 from agent_worker import gitops, lifecycle, merge as merge_mod
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
+    _the_fence_holds,
     _attempt,
     _the_agent_titles_its_pull_request,
     assert_only_the_worker_wrote,

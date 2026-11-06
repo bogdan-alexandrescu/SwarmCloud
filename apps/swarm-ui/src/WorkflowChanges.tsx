@@ -5,6 +5,7 @@ import { patchWindow } from './ArtifactViewer'
 import { publishRefusals } from './AgentDetail'
 import { Button } from './components'
 import { DiffView, httpUrl, type DiffPin } from './diff/DiffView'
+import { RenderedOrDiff, renderKind, type RenderSource } from './RenderedFile'
 import { parseUnifiedDiff, type DiffFile } from './diff/parse'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { agentPath } from './OverviewRegions'
@@ -26,7 +27,8 @@ import {
   type Workflow,
 } from './types'
 import { stateWord } from './words'
-import { SEVERITY_LABEL, placeFinding, reviewFindings, type Placement, type ReviewFinding, type ShownPatch } from './wfreview'
+import { SEVERITY_LABEL, placeFinding, reviewFindings, withVerdictTriage, type Placement, type ReviewFinding, type ShownPatch } from './wfreview'
+import { TriageChip, useVerdictTriages } from './DecisionCard'
 import './styles/changes.css'
 
 /**
@@ -386,9 +388,11 @@ export function PatchChanges({
     onFileChange: onFile,
     ...(pullRequest === undefined ? {} : { pullRequest }),
   }
-  return (
-    <div className="chg-patch">
-      {summary}
+  // THE OPEN FILE, RENDERED WHEN IT IS A PAGE, AN SVG OR AN IMAGE (BGD,
+  // 2026-11-06), as the matrix's file pane draws it; Diff is the viewer below.
+  const rendered = file !== null && renderKind(file) !== null
+  const sections = rendered ? patchSections(w === null ? data.content : w.patch).sections : null
+  const viewer = (
       <div className="chg-diff">
         {w === null ? (
           <DiffView patch={data.content} {...view} />
@@ -418,6 +422,15 @@ export function PatchChanges({
           />
         )}
       </div>
+  )
+  return (
+    <div className="chg-patch">
+      {summary}
+      {rendered ? (
+        <RenderedOrDiff key={file} path={file} source={{ taskId, section: sections?.get(file) ?? null }} framesSource={{ taskId, section: sections?.get(`${file.slice(0, file.lastIndexOf('/') + 1)}frames.json`) ?? null }} diff={viewer} />
+      ) : (
+        viewer
+      )}
     </div>
   )
 }
@@ -1241,6 +1254,10 @@ function ReviewFindings({
   rows: readonly string[]
   onOpen: (path: string, key: string | null) => void
 }) {
+  // Jev's triage, from each review's own verdict file (CLD's Jev report,
+  // 2026-11-02): one read per review, laid over the gate's record by index.
+  const triage = useVerdictTriages(findings.map((f) => ({ review: f.review, file: f.verdictFile })))
+  const shown = findings.map((f) => withVerdictTriage([f], triage.get(f.review))[0]!)
   const count = (k: Placement['kind']) => placements.filter((p) => p.kind === k).length
   const pinned = count('pinned')
   const earlier = count('earlier')
@@ -1256,12 +1273,17 @@ function ReviewFindings({
         {unplaced > 0 && <span>{unplaced} not placed</span>}
       </p>
       <ol className="chg-fd-list">
-        {findings.map((f, i) => {
+        {shown.map((f, i) => {
           const p = placements[i]!
           const where = f.file === null ? null : f.line === null ? f.file : `${f.file} · ${f.side} ${f.line}`
           return (
             <li key={f.id} className={`chg-fd-item is-${p.kind}`} data-finding={f.id}>
               <span className={`chg-fd-sev is-${TONE[f.severity]}`}>{SEVERITY_LABEL[f.severity]}</span> <span className="chg-fd-text">{f.summary}</span>{' '}
+              {f.triage !== null && (
+                <>
+                  <TriageChip triage={f.triage} />{' '}
+                </>
+              )}
               <span className="chg-fd-where">
                 {p.kind === 'pinned' ? (
                   <button type="button" className="chg-mx-file" onClick={() => onOpen(p.file, p.key)}>
@@ -1481,15 +1503,24 @@ function FileByStep({
       ))}
     </div>
   )
-  return (
-    <section className="chg-mx-file-view" aria-label={`${path}, by step`}>
-      <p className="chg-sum">
-        <span className="mono">{path}</span>
-        <span>changed by {changedBy.join(', ')}</span>
-      </p>
-      {parts.length === 0 ? (
-        meta
-      ) : (
+  // A PAGE, AN SVG OR AN IMAGE OPENS RENDERED (BGD, 2026-11-06), as the last
+  // shown step that changed it left it: its checkpoint, else its patch.
+  let source: RenderSource | null = null
+  let framesSource: RenderSource | null = null
+  if (renderKind(path) !== null) {
+    const framesPath = `${path.slice(0, path.lastIndexOf('/') + 1)}frames.json`
+    for (let i = cols.length - 1; i >= 0 && source === null; i--) {
+      const f = facts[i]!
+      if (!shown[i] || cellOf(f, path).kind !== 'count') continue
+      const sections = f.kind === 'patch' && f.read?.kind === 'ok' ? f.read.sections : null
+      source = { taskId: cols[i]!.taskId, section: sections?.get(path) ?? null }
+      framesSource = { taskId: cols[i]!.taskId, section: sections?.get(framesPath) ?? null }
+    }
+  }
+  const diff =
+    parts.length === 0 ? (
+      meta
+    ) : (
         <div className="chg-diff chg-mx-diff">
           <DiffView
             key={path}
@@ -1505,7 +1536,14 @@ function FileByStep({
             {...(pullRequest === null ? {} : { pullRequest })}
           />
         </div>
-      )}
+      )
+  return (
+    <section className="chg-mx-file-view" aria-label={`${path}, by step`}>
+      <p className="chg-sum">
+        <span className="mono">{path}</span>
+        <span>changed by {changedBy.join(', ')}</span>
+      </p>
+      {source === null ? diff : <RenderedOrDiff key={path} path={path} source={source} framesSource={framesSource} diff={diff} />}
     </section>
   )
 }

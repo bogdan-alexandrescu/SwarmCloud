@@ -45,6 +45,7 @@ import pytest
 from agent_worker import lifecycle, workspace as workspace_mod
 
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_fence_holds,
     _the_agent_titles_its_pull_request,
     assert_only_the_worker_wrote,
     forge,
@@ -136,7 +137,7 @@ def _round(worker_factory, monkeypatch, origin: Path, *, task_id: str, edit,
         metadata["merge_conflict_round"] = dict(ROUND)
     task = {"task_id": task_id, "repository_ref": "lane", "metadata": metadata}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     cloned = worker._maybe_clone(task)
     assert cloned is not None and cloned["commit"], "the clone did not land"
     repo = worker.ws.work / lifecycle.REPO_DIR_NAME
@@ -332,7 +333,7 @@ def test_an_unsigned_round_record_alone_asks_for_no_check(
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     task = {"task_id": "t-unsigned", "repository_ref": "lane", "metadata": worker_metadata}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None
     edit(worker.ws.work / lifecycle.REPO_DIR_NAME)
     out = worker._harvest_git(publish=True)

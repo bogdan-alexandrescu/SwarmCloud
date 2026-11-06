@@ -128,7 +128,10 @@ a review of the head, which a re-review gives. A NOT_YET with no
 ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
 (ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
 `needs_owner` question is answered, the step reads the validated
-`questions.json` of every step of its workflow it depends on and compares
+`questions.json` of every step of its workflow it depends on, and of every
+fix round appended to it since (`ci-fix:<n>`, `conflict-fix:<n>`,
+`pick-fix:<n>`, which the merge depends on none of: PR 2878 merged past a
+ci-fix:1 question's answer, #2898), and compares
 each ANSWERED question's `choice` with its `built`, the option label the
 asking agent said its branch implements -- the `needs_owner` ones and every
 other answered one, such as a question the owner answered before the review
@@ -137,7 +140,8 @@ different option, or free text that names none, is an unbuilt pick
 (`unbuilt_picks`), found before any credential. `built: null` (the answer
 changes nothing the branch builds) passes, and so does a question with no
 `built` at all, written before this check, so a lane parked on its answers is
-not stranded. On 2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B,
+not stranded. A round's blocking question still unanswered holds the merge
+as a `needs_owner` one does. On 2026-10-26 three lanes (VQ-CAPACITY, VQ-CONFIG-B,
 BROWSER-POOL-100) would have merged the opposite of the owner's pick without
 it.
 
@@ -148,8 +152,10 @@ reads that park as it reads a CI or conflict park and submits a claude-code
 round on the pull request's branch whose brief names each pick. The round
 builds it, pushes to the same pull request and writes `picks-built.json`;
 the merge then runs again. A round counts only for the picks its report says
-it built, at a head it pushed; one that pushed nothing, did not succeed, or
-left a pick it was sent for unbuilt refuses `owner_pick_not_built`, and at
+it built, at a head it pushed -- or, pushing nothing, for the picks it was
+sent for that its report says the branch already builds (#2858); one that did
+not succeed, or left a pick it was sent for unbuilt, refuses
+`owner_pick_not_built`, and at
 most MERGE_PICK_ROUNDS_MAX are run, so the step never loops (`_pick_fix`).
 
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
@@ -174,6 +180,7 @@ from . import mergeslot
 from . import mergetrain
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
+from . import security_review as security_review_mod
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
 from .expected_outputs import NO_CHANGE_SUMMARY_KEY, left_nothing
@@ -199,6 +206,14 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: The `result_summary` key listing each unanswered advisory question this
+#: merge went ahead past (owner decision, 2 November 2026): `{task_id,
+#: step_id, question_index, question, recommended, built}`. swarm-api's answer
+#: route reads it from a SUCCEEDED merge to start a pick-fix round against the
+#: default branch when the owner later picks another option
+#: (`swarm_api.agent_questions.ADVISORY_MERGED_PAST_KEY`, held equal by
+#: tests/unit/worker/test_merge_advisory_questions.py).
+ADVISORY_MERGED_PAST_KEY = "advisory_merged_past"
 #: The code a merge refuses with when the owner picked an option the asking
 #: branch did not build (ANSWER-CONTENT-CHECK, owner decision 2026-10-26), the
 #: `result_summary` key naming each such pick, and the code for a counted
@@ -300,6 +315,15 @@ MERGE_CI_FALLBACK_SECONDS = 900
 #: traffic: a burst of hand merges during one CI run should not fail a
 #: step, while five of them, each costing a CI run (10-20 min here) with the
 #: slot held and the queue behind it waiting, is a question for a person.
+#: Read again on 2026-11-02, when main's ruleset began requiring branches to
+#: be up to date (#2999): every lane behind now takes the catch-up, which is
+#: not counted. Even if all of main's ~54 merges a day landed outside the
+#: slot (Poisson, one per ~27 min), a held update is behind again after one
+#: CI run (median 944 s, plus about two minutes for the wake tick and the
+#: attempt) with p ~= 1 - exp(-54 * 1124 / 86400) ~= 0.5, so six in a row,
+#: the refusal, is p^6 ~= 1.6% of steps at worst; merges the slot serialises
+#: never count. Raising it would hold the slot, and the queue, longer for a
+#: base that is outrunning CI. Kept at 5.
 MERGE_MAX_BRANCH_UPDATES = 5
 
 #: How many of GitHub's base merges the first-parent walk accepts on top of
@@ -352,17 +376,33 @@ MERGE_FIX_ROUNDS_MAX = 5
 #: GitHub has not replaced yet, not the re-run's answer, so a wake inside it
 #: (the MERGE_CI_FALLBACK_SECONDS fallback, any other) parks rather than
 #: refusing on them: task_076d1ae89d014e4688ce refused `checks_failed` on one
-#: flaky shard a re-run would have passed (PR #2229).
+#: flaky shard a re-run would have passed (PR #2229). Past the window it
+#: still holds while a workflow run the re-run named (`runs`) has a latest
+#: attempt that has not completed (#3006: PR #2973 refused at 22ef10c2 while
+#: its re-run was still running); the window alone decides when that cannot
+#: be read. A record with `error` re-ran nothing: after a no_change round
+#: it is not the head's free re-run (`_rerun_due`).
 RERUNS_KEY = "reruns"
 RERUN_SETTLE_SECONDS = 600
+#: How many re-runs GitHub refused at one head before the step stops
+#: parking for another (#3006): the tick asks again at most once.
+RERUN_REFUSALS_MAX = 2
 
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
 #: left and the tick has not claimed the next one yet, or one is running at
 #: this head. Never `checks_failed` while either holds.
 CI_FIX_PENDING = "ci_fix_pending"
 CI_FIX_RUNNING = "ci_fix_running"
+#: The park code of a green head the repository's merge train ejected twice
+#: (#3313): the step's free re-board at that head is spent and a CI-fix round
+#: is left, so swarm-api's merge wake tick submits one with the train run's
+#: failing jobs (`failed`, `train_ejection_failed`) as its excerpt. A round
+#: claimed at the head parks CI_FIX_RUNNING, as a red reading's does.
+TRAIN_FIX_PENDING = "train_fix_pending"
 #: The park code of a red reading whose failing jobs the tick re-ran at this
-#: head less than RERUN_SETTLE_SECONDS ago: the re-run has not answered yet.
+#: head less than RERUN_SETTLE_SECONDS ago, or whose re-run's workflow run
+#: attempt is still running past that (#3006): the re-run has not answered
+#: yet. MERGE_CI_MAX_SECONDS bounds it.
 CI_RERUN_PENDING = "ci_rerun_pending"
 #: The park code of a red reading with no CI-fix round left to ask for and no
 #: re-run recorded at this head (#2351, BGD 2026-10-27): swarm-api's wake
@@ -374,7 +414,11 @@ CI_RERUN_PENDING = "ci_rerun_pending"
 #: re-run (the tick found no Actions job to re-run) refuses `checks_failed`.
 #: A CI-fix round that ended at the red head with `no_change` reaches it too
 #: (#2684): task_d2698b60 diagnosed a flaky shard on PR #2603 and asked for
-#: a re-run, and the step refused without one (task_69eb7362).
+#: a re-run, and the step refused without one (task_69eb7362). There a
+#: re-run GitHub refused (`error`) re-ran nothing, so it is not the head's
+#: free re-run (#3006, PR #2971 at a1e16b2c): the step parks again while
+#: fewer than RERUN_REFUSALS_MAX refusals are recorded at the head, then
+#: refuses naming the last refusal's error.
 CI_RERUN_DUE = "ci_rerun_due"
 #: The park code of a red reading no CI-fix round can fix (#2046): the
 #: publish that wrote this head -- the opener's, or the CI-fix round's that
@@ -469,6 +513,46 @@ BRANCH_UPDATE_PENDING = "branch_update_pending"
 #: tests/unit/control_plane/test_merge_wake.py).
 MERGE_QUEUED = "merge_queued"
 
+#: The repository's own merge train (owner decisions 2026-10-14 "A1 Merge
+#: train" and 2026-11-03, turning it on): .github/workflows/merge-train.yml
+#: and scripts/merge-train.sh board green `ready` pull requests, test them
+#: together on the base and squash-merge each. ONE SWITCH, the same one both
+#: workflows read: the repository variable `MERGE_TRAIN`, exactly `on`
+#: (`merge-train.sh tick`, auto-merge.yml's gate step 5b). Anything else, or
+#: no variable, is the train off and this step exactly as before.
+REPOSITORY_TRAIN_VARIABLE = "MERGE_TRAIN"
+REPOSITORY_TRAIN_ON = "on"
+#: The label the train boards by (`merge-train.sh select`).
+REPOSITORY_TRAIN_LABEL = "ready"
+#: The commit status the train posts on each head it lands, which the
+#: runbook's ruleset change requires (`merge-train.sh` TRAIN_CONTEXT).
+REPOSITORY_TRAIN_CONTEXT = "merge-train"
+#: How the train's ejection comment begins (`merge-train.sh eject_pr`).
+REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
+#: The line a park after the step's one free re-board at a head carries in
+#: its `pending` (#3313). The fenced park (`ControlPlane.park_ci_pending`)
+#: keeps only the code, head, pull request, `pending` and `failed` of a
+#: wait, so the re-board is recorded where `metadata.merge_wait` keeps it;
+#: swarm-api's wake tick reads it only to tell a CI_FIX_RUNNING park on a
+#: train round (green at its head, `mergewake.TRAIN_REBOARDED`, held equal
+#: by test_merge_wake_train_round.py) from a red head's, and never rewrites
+#: it; a CI park's `pending` is replaced by its own reading. Tenant-writable: a
+#: forged one can at worst skip the re-board, which refuses or asks for a
+#: round sooner.
+TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
+#: A failing line of the ejection comment: `- [name](url)` as `eject_pr`
+#: writes it, or `* name: url`.
+_EJECTION_FAILED = re.compile(
+    r"^\s*[-*]\s+(?:\[(?P<link>[^\]]+)\]\(\S+\)|(?P<named>.+?):\s+\S+://\S+)\s*$")
+#: The train's "does not board" comment (`merge-train.sh tell_skip`,
+#: SKIP_MARKER and SKIP_HEADLINE, held equal by
+#: tests/unit/worker/test_merge_train_skip_reason.py): its first line is
+#: `<!-- merge-train-skip head=<sha> reason=<key> -->`, its second
+#: `**The merge train skips it: <why>.**`. The train decides why it passes
+#: over a `ready` pull request; the step only reads what it said, at its head.
+REPOSITORY_TRAIN_SKIP = "<!-- merge-train-skip"
+REPOSITORY_TRAIN_SKIP_HEADLINE = "**The merge train skips it: "
+
 #: Who commits GitHub's own merge commits -- `update-branch`, the web UI --
 #: and signs them, so `verification.verified` is true. A two-parent commit
 #: anyone else made can carry any tree, so the walk takes one of those only
@@ -521,6 +605,8 @@ PURE_BASE_MERGES_KEY = "pure_base_merges"
 _OUT_OF_DATE = re.compile(r"out of date|not up to date|is behind", re.IGNORECASE)
 #: A 405/422 (merge) or 422 (update-branch) that names a merge conflict.
 _CONFLICT = re.compile(r"conflict", re.IGNORECASE)
+#: A 422 from a branch delete that means the branch is already gone.
+_REF_GONE = re.compile(r"reference does not exist", re.IGNORECASE)
 #: A 405/422 from the merge call that means the base merges only through a
 #: merge queue: GitHub's "Changes must be made through the merge queue",
 #: alone (405) or under "Repository rule violations found" (422).
@@ -646,6 +732,12 @@ class ActionsSuite(NamedTuple):
     #: A newer Actions run of the same workflow and event, from the same
     #: branch, is at the sha: the run that concurrency cancelled this one.
     superseded: bool = False
+    #: The Actions run's id, and its LATEST attempt's status and number
+    #: (GitHub serves the newest attempt): what holds a re-run the tick asked
+    #: for while that run is still running (`_rerun_running`, #3006).
+    run_id: int | None = None
+    status: str | None = None
+    run_attempt: int | None = None
 
 
 _NO_SUITE = ActionsSuite(None, None)
@@ -674,7 +766,9 @@ def actions_suites(runs: Iterable[Any]) -> dict[int | None, ActionsSuite]:
             and _str(other.get("head_branch")) == branch
             and (_int(other.get("id")) or 0) > run_id
             for other in rows)
-        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded)
+        suites[suite] = ActionsSuite(event, branch, _str(run.get("conclusion")), superseded,
+                                     run_id, _str(run.get("status")),
+                                     _int(run.get("run_attempt")))
     return suites
 
 
@@ -969,6 +1063,9 @@ class PullRequestFacts:
     #: The people on the pull request: its author and its assignees, each a
     #: login GitHub says is a `User` account (`_person_pusher`, #2505).
     people: tuple[str, ...] = ()
+    #: The pull request's label names: `ready` boards the repository's merge
+    #: train (`_board`).
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1001,6 +1098,10 @@ class CheckFacts:
     #: (#2582). None and False when the Actions runs were not read.
     workflow_conclusion: str | None = None
     workflow_superseded: bool = False
+    #: That Actions run's id and its latest attempt's status (#3006): None
+    #: when the Actions runs were not read.
+    workflow_run_id: int | None = None
+    workflow_status: str | None = None
 
     def as_run(self) -> dict[str, Any]:
         return {"name": self.name, "status": self.status, "conclusion": self.conclusion,
@@ -1008,6 +1109,70 @@ class CheckFacts:
                 "check_suite_id": self.check_suite_id,
                 "workflow_conclusion": self.workflow_conclusion,
                 "workflow_superseded": self.workflow_superseded}
+
+
+#: What an Actions run may conclude and not have FAILED (`unreported_failure`):
+#: a run that passed produced every check it would, and a cancelled one waits
+#: for its re-run (#1778).
+RUN_NOT_FAILED = OTHER_TOLERATED | {CANCELLED_CONCLUSION}
+
+
+def unreported_failure(checks: Iterable[CheckFacts]) -> list[CheckFacts] | None:
+    """For a required check NO check run at the head reports: the failing jobs
+    of the finished Actions runs that would have reported it, or None while
+    it may still report (#2999).
+
+    PR #2959 at 5a5d673b7: both `application` runs concluded `failure` on a
+    red shard and ended without a `ci-gate` check run, so the absent check
+    read pending and this step parked 13 hours on CI_PENDING for a check no
+    run would produce. Which workflow produces a check is read from the runs
+    (`checks_at` stamps each check run with its Actions run, read whenever a
+    check finished red): a run superseded by a newer run of its workflow,
+    event and branch decides nothing; while any other run has no conclusion
+    (queued, in progress, a re-run's attempt under way) the check may still
+    come, None. Once every one has concluded, those that concluded other
+    than `success`, `skipped`, `neutral` or `cancelled` would have produced
+    it, and their finished jobs not green are what is red. None when no run
+    failed, the Actions runs were not read, or a failed run left no failing
+    job to name. swarm-api's `forgechecks.unreported_failure` is the same
+    rule, held equal by tests/unit/control_plane/test_unreported_required_check.py.
+    """
+    by_run: dict[int, list[CheckFacts]] = {}
+    for check in checks:
+        if check.workflow_run_id is not None:
+            by_run.setdefault(check.workflow_run_id, []).append(check)
+    failing: list[CheckFacts] = []
+    for jobs in by_run.values():
+        if any(job.workflow_superseded for job in jobs):
+            continue
+        conclusion = jobs[0].workflow_conclusion
+        if not conclusion:
+            return None
+        if conclusion in RUN_NOT_FAILED:
+            continue
+        failing += [job for job in jobs
+                    if check_run_finished(job.as_run()) and not cancelled_run(job.as_run())
+                    and (job.conclusion or "") not in OTHER_TOLERATED]
+    return failing or None
+
+
+def unreported_label(context: str, jobs: list[CheckFacts]) -> str:
+    """What a required check no run reported is failed as: the Actions runs
+    that ended without it and their failing jobs (`unreported_failure`)."""
+    runs = sorted({job.workflow_run_id for job in jobs if job.workflow_run_id is not None})
+    names = sorted({job.name for job in jobs})
+    return (f"{context} (not reported: Actions run {', '.join(str(r) for r in runs)} "
+            f"concluded failure; failing jobs: {', '.join(names)})")
+
+
+def workflow_run_states(checks: Iterable[CheckFacts]) -> dict[int, str | None] | None:
+    """The status of each Actions run's latest attempt the checks at a head
+    were read with, by run id (#3006); None when no check carries one: the
+    Actions runs were not read (`checks_at` reads them for a red reading),
+    or a credential without `actions: read` could not read them."""
+    states = {check.workflow_run_id: check.workflow_status for check in checks
+              if check.workflow_run_id is not None}
+    return states or None
 
 
 @dataclass(frozen=True)
@@ -1111,6 +1276,14 @@ class EnqueueAnswer:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class BranchFacts:
+    """A branch as GitHub reads it: its head commit and whether it is protected."""
+
+    sha: str | None
+    protected: bool
+
+
 class ForgeMerger(Protocol):
     """What the merge step asks of a forge. One implementation: `GitHubMerger`."""
 
@@ -1147,6 +1320,20 @@ class ForgeMerger(Protocol):
     def closing_issues(self, number: int) -> ClosingReferences: ...
 
     def close_issue(self, number: int, *, comment: str) -> bool: ...
+
+    def branch_facts(self, name: str) -> BranchFacts | None: ...
+
+    def open_pulls_from(self, name: str) -> int: ...
+
+    def delete_branch(self, name: str) -> bool: ...
+
+    def repository_variable(self, name: str) -> str | None: ...
+
+    def add_label(self, number: int, name: str) -> None: ...
+
+    def train_ejection(self, number: int) -> str | None: ...
+
+    def train_skip(self, number: int, head: str) -> str | None: ...
 
 
 class UnsupportedForge(ValueError):
@@ -1247,6 +1434,9 @@ class GitHubMerger:
             people=tuple(login for login in (
                 _user_login(account) for account in
                 [data.get("user"), *(data.get("assignees") or [])]) if login),
+            labels=tuple(name for name in (
+                _str(_mapping(label).get("name")) for label in (data.get("labels") or []))
+                if name),
         )
 
     def required_checks(self, branch: str) -> RequiredChecks:
@@ -1347,7 +1537,8 @@ class GitHubMerger:
         if len(names) != len(set(names)) or red:
             suites = self._suite_events(sha)
             out = [replace(check, event=suite.event, workflow_conclusion=suite.conclusion,
-                           workflow_superseded=suite.superseded)
+                           workflow_superseded=suite.superseded, workflow_run_id=suite.run_id,
+                           workflow_status=suite.status)
                    for check in out
                    for suite in (suites.get(check.check_suite_id, _NO_SUITE),)
                    if not _other_branch_push(suites.get(check.check_suite_id), head_ref)]
@@ -1530,6 +1721,105 @@ class GitHubMerger:
             payload={"state": "closed", "state_reason": "completed"},
         )
         return commented and answer.status == 200
+
+    def branch_facts(self, name: str) -> BranchFacts | None:
+        """The branch's head and protection; None when the branch is gone."""
+        answer = self._client.get(f"{self._base}/branches/{quote(name, safe='')}")
+        if answer.status == 404:
+            return None
+        if answer.status != 200:
+            raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/branches",
+                                          forge_mod._message_of(answer.data))
+        data = _mapping(answer.data)
+        return BranchFacts(sha=_str(_mapping(data.get("commit")).get("sha")),
+                           protected=data.get("protected") is True)
+
+    def open_pulls_from(self, name: str) -> int:
+        """How many open pull requests have `name`, in this repository, as their head."""
+        pulls = self._client.get_ok(f"{self._base}/pulls",
+                                    query={"state": "open", "head": f"{self.owner}:{name}"})
+        return len(pulls) if isinstance(pulls, list) else 0
+
+    def delete_branch(self, name: str) -> bool:
+        """Delete the branch: True when this call deleted it, False when it was
+        already gone (after GitHub's auto-delete of merged head branches a
+        delete answers 404, or 422 "Reference does not exist"). Raises on any
+        other answer."""
+        path = f"{self._base}/git/refs/heads/{quote(name, safe='/')}"
+        answer = self._client.request("DELETE", path)
+        message = forge_mod._message_of(answer.data)
+        if answer.status == 204:
+            return True
+        if answer.status == 404 or (answer.status == 422 and _REF_GONE.search(message)):
+            return False
+        raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/git/refs/heads", message)
+
+    def repository_variable(self, name: str) -> str | None:
+        """An Actions repository variable's value (`vars.<name>`), None when it
+        is not set (404). Any other answer raises: a 403 is a token without
+        the *Variables: Read* permission, which `repository_train` reads."""
+        path = f"{self._base}/actions/variables/{quote(name, safe='')}"
+        answer = self._client.get(path)
+        if answer.status == 404:
+            return None
+        if answer.status != 200:
+            raise forge_mod.ForgeAnswered(answer.status, f"{self._base}/actions/variables",
+                                          forge_mod._message_of(answer.data))
+        value = _mapping(answer.data).get("value")
+        return value if isinstance(value, str) else None
+
+    def add_label(self, number: int, name: str) -> None:
+        """Add one label to the pull request (its issue); raises unless GitHub took it."""
+        path = f"{self._base}/issues/{number}/labels"
+        answer = self._client.request("POST", path, payload={"labels": [name]})
+        if answer.status != 200:
+            raise forge_mod.ForgeAnswered(answer.status, path, forge_mod._message_of(answer.data))
+
+    def train_ejection(self, number: int) -> str | None:
+        """Why the pull request lost `ready`, as its comments say: the latest
+        comment that is either the merge train's ejection
+        (`REPOSITORY_TRAIN_EJECTED`, scripts/merge-train.sh `eject_pr`) or one
+        an App wrote (auto-merge.yml's gate says why it removed `ready`), else
+        None. The latest of the two, never an ejection ahead of a newer App
+        comment: an earlier ejection must not turn the gate's later removal
+        into the train's, which `_board` re-boards instead of refusing. The
+        train's own "does not board" comment (`REPOSITORY_TRAIN_SKIP`), which
+        the workflow's bot writes on a pull request still `ready`, is neither:
+        it never says why `ready` was lost."""
+        comments = self._client.paginate(f"{self._base}/issues/{number}/comments")
+        latest = None
+        for comment in comments:
+            comment = _mapping(comment)
+            body = _str(comment.get("body"))
+            if body is None or body.startswith(REPOSITORY_TRAIN_SKIP):
+                continue
+            if (body.startswith(REPOSITORY_TRAIN_EJECTED)
+                    or _mapping(comment.get("user")).get("type") == "Bot"):
+                latest = body
+        return latest
+
+    def train_skip(self, number: int, head: str) -> str | None:
+        """Why the merge train passes over the pull request at `head`, as the
+        train's latest "does not board" comment at that head says
+        (`REPOSITORY_TRAIN_SKIP`); None when it said nothing there."""
+        return train_skip_reason(self._client.paginate(f"{self._base}/issues/{number}/comments"),
+                                 head)
+
+
+def train_skip_reason(comments: Iterable[Any], head: str) -> str | None:
+    """The reason in the latest of `comments` that is the merge train's
+    "does not board" comment at `head`, e.g. "`queue for auto-merge` failed";
+    None when there is none. A comment at another head is not this head's."""
+    marker = f"{REPOSITORY_TRAIN_SKIP} head={head} "
+    why = None
+    for comment in comments:
+        lines = (_str(_mapping(comment).get("body")) or "").splitlines()
+        if len(lines) < 2 or not lines[0].startswith(marker):
+            continue
+        said = lines[1].strip()
+        if said.startswith(REPOSITORY_TRAIN_SKIP_HEADLINE) and said.endswith(".**"):
+            why = said[len(REPOSITORY_TRAIN_SKIP_HEADLINE):-len(".**")].strip() or why
+    return why
 
 
 def _queue_entry(entry: Mapping[str, Any]) -> QueueFacts:
@@ -1719,7 +2009,8 @@ class _Run:
     def wait_for_owner(self, held: list[dict[str, Any]], *, unreadable: int) -> ActionOutcome:
         """The owner's questions are a hold no tick can clear: park for a person.
 
-        `held` is each still-unanswered `needs_owner` question, `unreadable`
+        `held` is each still-unanswered `needs_owner` question, or each
+        unanswered blocking question a fix round asked (#2898), `unreadable`
         how many entries could not be read. The lifecycle writes the park in
         one fenced transaction (`handoff.park_human_required`), releases the
         lease and exits 75.
@@ -1729,8 +2020,8 @@ class _Run:
         if unreadable:
             named.append(f"{unreadable} needs_owner entr{'y' if unreadable == 1 else 'ies'} "
                          "the merge cannot read")
-        message = ("the review said these owner questions hold the merge, and they are "
-                   "unanswered: " + "; ".join(named))
+        message = ("the review, or a blocking question of a fix round, says these owner "
+                   "questions hold the merge, and they are unanswered: " + "; ".join(named))
         wait = {"code": OWNER_QUESTIONS_OPEN, "questions": held, "unreadable": unreadable}
         self.summary["wait"] = {"code": OWNER_QUESTIONS_OPEN, "message": message}
         return _outcome(
@@ -1739,7 +2030,7 @@ class _Run:
         )
 
     def wait(self, code: str, message: str, *, head: str, pull_request: int,
-             pending: list[str]) -> ActionOutcome:
+             pending: list[str], failed: list[str] | None = None) -> ActionOutcome:
         """A fact that may change by itself: park CI_PENDING, holding nothing.
 
         Not a retry: the lifecycle writes the park, the refund and the
@@ -1754,7 +2045,8 @@ class _Run:
         a red reading's waits do -- the reading's pending ones, so a park on a
         red check still says what else is running. A wait made before any
         check was read at `head` records no `failed` at all: not read is not
-        none failed.
+        none failed. A caller that names `failed` (a train ejection's failing
+        jobs, #3313) records those instead of the reading's.
         """
         self.summary["wait"] = {"code": code, "message": message}
         ci_wait: dict[str, Any] = {"code": code, "head": head, "pull_request": pull_request,
@@ -1763,6 +2055,8 @@ class _Run:
             _, read_pending, read_failed = self.reading
             ci_wait["pending"] = sorted(pending) or list(read_pending)
             ci_wait["failed"] = list(read_failed)
+        if failed is not None:
+            ci_wait["failed"] = list(failed)
         return _outcome(
             TaskState.PARKED, None, self.summary, f"{code}: {message}",
             exit_code=ExitCode.PARKED,
@@ -1837,17 +2131,36 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # #2070: the owner questions the review said hold the merge, each
         # answer re-read; then the ones it said need not, listed if open.
         held = _unanswered(ctx, verdict.needs_owner)
+        # 2 November 2026: an advisory question -- not blocking, with a
+        # recommended option the branch built, about nothing sensitive
+        # (`owner_questions.hold_reason`) -- no longer holds the merge. It
+        # is merged past, recorded, and stays open for the owner.
+        held, past = _advisory_split(ctx, held)
         if held or verdict.needs_owner_unreadable:
             return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+        if past:
+            summary[ADVISORY_MERGED_PAST_KEY] = past
         # ANSWER-CONTENT-CHECK: answered is not enough; the pick must be
         # the option the asking branch built -- for every answered question
         # that names `built`, held or not (PICK-FIX-ROUND). One it did not
-        # build is a pick-fix round's to build, bounded.
+        # build is a pick-fix round's to build, bounded. #2898: the merge's
+        # own fix rounds (`ci-fix:<n>`, `conflict-fix:<n>`, `pick-fix:<n>`)
+        # ran after the review, so their questions are read here, and a
+        # blocking one still unanswered holds the merge as `needs_owner` does.
         try:
-            unbuilt = _unbuilt_picks(ctx, target, verdict.needs_owner)
+            asked_by_rounds = _round_questions(ctx, target, opener)
+            # A merged-past question is unanswered: no pick to check yet.
+            merged_past = {(q["task_id"], q["question_index"]) for q in past}
+            unbuilt = _unbuilt_picks(ctx, target, tuple(
+                ref for ref in verdict.needs_owner
+                if (ref.task_id, ref.question_index) not in merged_past), asked_by_rounds)
         except InputUnavailable as exc:
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
+        held = [_held_row(row) for row in asked_by_rounds
+                if row.get("blocking") is True and row.get("answer") is None]
+        if held:
+            return run.wait_for_owner(held, unreadable=0)
         if unbuilt:
             fixing = _pick_fix(run, target, opener, unbuilt)
             if fixing is not None:
@@ -1865,6 +2178,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
             summary["open_questions"] = still_open
+
+    # The optional security review (docs/design/security-review-step.md): a
+    # merge that staged its verdict requires it beside the review's.
+    held_by_security = _security_hold(ctx, run, target, opener, summary)
+    if held_by_security is not None:
+        return held_by_security
 
     number = pull_request_number(opener)
     if number is None:
@@ -1894,6 +2213,98 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
         own=own, fix_heads=fix_heads,
     )
+
+
+#: The merge refusals the security review's verdict adds.
+SECURITY_VERDICT_UNREADABLE = "security_verdict_unreadable"
+SECURITY_VERDICT_NOT_MERGE = "security_verdict_not_merge"
+SECURITY_FIX_REQUESTED = "security_fix_requested"
+
+
+def _security_hold(ctx: ActionContext, run: _Run, target: MergeTarget,
+                   opener: Mapping[str, Any], summary: dict[str, Any]) -> ActionOutcome | None:
+    """The security review's say in the merge, or None to go on (owner, 4 November 2026).
+
+    Only when this step staged `security_review.VERDICT_FILE`: its signed
+    `input_from` named the security review, so the workflow has one. A merge
+    that staged none reads exactly as it did before.
+
+    MERGE goes on: no confirmed critical or high finding (confirmed medium,
+    low and informational ones are reported, `needs_validation` never
+    blocks). NOT_YET names an owner question per blocking finding in
+    `needs_owner`: held for a person on the same park as the review's
+    (`wait_for_owner`) until each is answered, re-read from the security
+    review's own task. Then every answer must accept the risk or mark a false
+    positive; any other answer -- "Fix it now", or free text naming no option
+    -- refuses `security_fix_requested`, so the finding is fixed and reviewed
+    before anything merges. A NOT_YET naming no question, or a verdict that
+    does not read, refuses: an unreadable security review is not a pass.
+    """
+    staged = ctx.staged.get(security_review_mod.VERDICT_FILE)
+    if staged is None:
+        return None
+    try:
+        verdict = verdict_mod.read_verdict(
+            staged, task_id="the security review", filename=security_review_mod.VERDICT_FILE)
+    except InputUnavailable as exc:
+        return run.refuse(SECURITY_VERDICT_UNREADABLE, str(exc))
+    record: dict[str, Any] = {"verdict": verdict.verdict}
+    summary[security_review_mod.SUMMARY_KEY] = record
+    if verdict.verdict == "MERGE":
+        return None
+    found = f" ({len(verdict.findings)} blocking finding(s))" if verdict.findings else ""
+    if not (verdict.needs_owner or verdict.needs_owner_unreadable):
+        return run.refuse(
+            SECURITY_VERDICT_NOT_MERGE,
+            f"the security review's verdict is {verdict.verdict}{found} and names no owner "
+            "question to answer",
+        )
+    if target.review is None:
+        # The review's own path already asked; this merge has no review.
+        ended = _ended_outside(run, target, opener)
+        if ended is not None:
+            return ended
+    held = _unanswered(ctx, verdict.needs_owner)
+    if held or verdict.needs_owner_unreadable:
+        return run.wait_for_owner(held, unreadable=verdict.needs_owner_unreadable)
+    answers = _security_answers(ctx, verdict.needs_owner)
+    record["answers"] = answers
+    fix = [row for row in answers
+           if security_review_mod.disposition(row.get("answer")) != "merge"]
+    if fix:
+        named = "; ".join(f"question {row['question_index']}: {row['question']}" for row in fix)
+        return run.refuse(
+            SECURITY_FIX_REQUESTED,
+            f"the security review's verdict is NOT_YET{found}, and the owner did not accept "
+            f"the risk or mark a false positive for {named}",
+        )
+    return None
+
+
+def _security_answers(ctx: ActionContext, refs: tuple[verdict_mod.OwnerQuestionRef, ...]
+                      ) -> list[dict[str, Any]]:
+    """Each `needs_owner` question with the owner's answer, read again from its task.
+
+    Fail closed, as `_unanswered` does: a task that cannot be read, or is not
+    a step of this workflow, gives the question no answer, which is not one
+    that lets the merge go on.
+    """
+    rows: list[dict[str, Any]] = []
+    for ref in refs:
+        try:
+            doc = _mapping(ctx.fetch_upstream(ref.task_id))
+        except InputUnavailable:
+            doc = {}
+        answer: dict[str, Any] | None = None
+        if ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id:
+            for entry in _mapping(doc.get("metadata")).get(OWNER_ANSWERS_KEY) or ():
+                if (isinstance(entry, Mapping) and type(entry.get("question_index")) is int
+                        and entry.get("question_index") == ref.question_index):
+                    answer = {"choice": entry.get("choice"), "text": entry.get("text")}
+        rows.append({"task_id": ref.task_id, "step_id": ref.step_id,
+                     "question_index": ref.question_index, "question": ref.question,
+                     "answer": answer})
+    return rows
 
 
 def _ended_outside(run: _Run, target: MergeTarget,
@@ -1985,7 +2396,8 @@ def _answered(doc: Mapping[str, Any], index: int) -> bool:
 
 
 def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
-                   refs: tuple[verdict_mod.OwnerQuestionRef, ...]) -> list[dict[str, Any]]:
+                   refs: tuple[verdict_mod.OwnerQuestionRef, ...],
+                   asked_by_rounds: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Each answered question whose pick is not the option its branch built.
 
     Which questions: every `refs` question -- the review's `needs_owner`,
@@ -1995,13 +2407,19 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
     task document, or from its signed target's review and opener when that
     cannot be read): one answered before the review ran is in neither of the
     review's lists, and its pick binds the merge all the same (PICK-FIX-ROUND,
-    BGD 2026-10-26). Each step's validated `questions.json` is read again
+    BGD 2026-10-26). And every answered question in `asked_by_rounds`, the
+    questions this merge's own fix rounds asked (`_round_questions`): a round
+    is a step appended to the workflow after the merge, which depends on none
+    of them (#2898). Each step's validated `questions.json` is read again
     (`owner_questions.questions_of`, which raises `InputUnavailable` for a
     counted file it cannot read, as the walk does for a parent it cannot).
 
     A question passes when its asker wrote no `built` (a file from before this
     check), `built: null` (the answer changes nothing the branch builds), or
-    the answer's `choice` is `built`. Anything else -- another option, or free
+    the answer's `choice` is `built` -- as the LATEST step that asked the same
+    question (`owner_questions.normalised` text) records it, nearest step
+    first, so a fix step that built the other option after the question was
+    asked decides it (#2858). Anything else -- another option, or free
     text with no option -- is a row naming the question, the pick (None for
     free text, with the answer's `text`) and the build.
     """
@@ -2024,18 +2442,30 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
     if not start.get("depends_on"):
         start = {"workflow_id": ctx.workflow_id,
                  "depends_on": [t for t in (target.review, target.pull_request) if t]}
-    for row in owner_questions_mod.workflow_questions(
-            start, fetch=ctx.fetch_upstream, store=ctx.store, tenant_id=ctx.tenant_id):
+    # The latest build of each question, by its text: the walk is nearest
+    # step first, so a fix step that asked the same question again after it
+    # built the other option is read before the step that first asked it
+    # (#2858: PR 2855's fix built 'apply' after implement recorded
+    # 'follow-up', and the owner's 'apply' was refused).
+    # The rounds ran after every step the merge depends on, so they are read
+    # first, newest first, as `_round_questions` orders them.
+    latest: dict[str, str] = {}
+    for row in [*asked_by_rounds, *owner_questions_mod.workflow_questions(
+            start, fetch=ctx.fetch_upstream, store=ctx.store, tenant_id=ctx.tenant_id)]:
         asked.setdefault(row["task_id"], {}).setdefault(row["question_index"], row)
         key = (row["task_id"], row["question_index"])
         if row.get("answer") is not None and key not in keys:
             keys.append(key)
+        text = owner_questions_mod.normalised(row.get("question"))
+        if text and isinstance(row.get(owner_questions_mod.BUILT_KEY), str):
+            latest.setdefault(text, row[owner_questions_mod.BUILT_KEY])
     out: list[dict[str, Any]] = []
     for task_id, index in keys:
         row = asked.get(task_id, {}).get(index)
         built = row.get(owner_questions_mod.BUILT_KEY) if row is not None else None
         if row is None or not isinstance(built, str):
             continue
+        built = latest.get(owner_questions_mod.normalised(row.get("question")), built)
         answer = _mapping(row.get("answer"))
         choice = answer.get("choice")
         if choice == built:
@@ -2052,6 +2482,62 @@ def _unbuilt_picks(ctx: ActionContext, target: MergeTarget,
             found["text"] = answer["text"]
         out.append(found)
     return out
+
+
+#: `merge_fix`'s round lists and the step each kind is appended to the
+#: workflow as (`swarm_api.mergewake.round_step_id`: `<kind>-fix:<n>`).
+_ROUND_STEP_KINDS = (("rounds", "ci"), (CONFLICT_ROUNDS_KEY, "conflict"),
+                     (PICK_ROUNDS_KEY, "pick"))
+
+
+def _round_questions(ctx: ActionContext, target: MergeTarget,
+                     opener: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every question this merge's own fix rounds asked, newest round first (#2898).
+
+    swarm-api's wake tick appends each CI-fix, conflict fix and pick-fix round
+    to the merge's workflow as a step (`ci-fix:<n>`, `conflict-fix:<n>`,
+    `pick-fix:<n>`) AFTER the merge step, so the merge depends on none of them
+    and the `depends_on` walk never reaches them: PR 2878 merged with a
+    ci-fix:1 exemption the owner had answered "forbid". The rounds are named
+    by the step's own `merge_fix` record, and each is held to what
+    `_pick_round_doc` holds any round to (the tenant-gated read, this tenant,
+    its signed spec, its signed `continues` the branch's root), so a forged
+    entry adds no question. A round that fails that, or names no task yet,
+    asked nothing this merge reads. Its validated `questions.json` is read as
+    any step's is (`owner_questions.questions_of`, raising `InputUnavailable`
+    for a counted file it cannot read); each row's `step_id` is the step the
+    round is on the workflow as.
+    """
+    assert target.pull_request is not None
+    own = _own_doc(ctx)
+    root = _branch_task(opener, target.pull_request)
+    entries: list[tuple[str, Mapping[str, Any]]] = []
+    for key, kind in _ROUND_STEP_KINDS:
+        entries += [(kind, entry) for entry in reversed(_fix_rounds(own, key))]
+    # Newest first across the kinds: the claim instants are ISO strings, and
+    # sorted() is stable, so a kind's own order holds where they tie.
+    entries.sort(key=lambda item: str(item[1].get("claimed_at") or ""), reverse=True)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for kind, entry in entries:
+        task_id = _task_id(entry.get("task_id"))
+        if task_id is None or task_id in seen:
+            continue
+        doc = _pick_round_doc(ctx, entry, root=root, target=target.pull_request)
+        if doc is None:
+            continue
+        seen.add(task_id)
+        step = f"{kind}-fix:{entry.get('round')}"
+        for row in owner_questions_mod.questions_of(
+                task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id):
+            rows.append({**row, "step_id": step})
+    return rows
+
+
+def _held_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """An unanswered blocking round question as an owner hold names it."""
+    return {"task_id": row.get("task_id"), "step_id": row.get("step_id"),
+            "question_index": row.get("question_index"), "question": row.get("question")}
 
 
 def _picks_named(rows: list[Mapping[str, Any]]) -> str:
@@ -2128,6 +2614,13 @@ def _round_pushed(doc: Mapping[str, Any], entry: Mapping[str, Any]) -> str | Non
     return pushed if pushed is not None and pushed != start else None
 
 
+def _round_picks(entry: Mapping[str, Any]) -> set[tuple[Any, Any]]:
+    """The `(task, question index)` picks round `entry` was sent for; empty if none."""
+    picks = entry.get("picks")
+    return set() if not isinstance(picks, list) else {
+        (_mapping(p).get("task_id"), _mapping(p).get("question_index")) for p in picks}
+
+
 def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
               unbuilt: list[dict[str, Any]]) -> ActionOutcome | None:
     """Picks the branch did not build: a pick-fix round's, or `owner_pick_not_built`.
@@ -2145,9 +2638,15 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
         (`owner_questions.picks_built`) says it builds THAT pick -- the
         owner's option as now answered, or the free text -- and the head it
         pushed is accepted by the merge like any round's (`_fix_round_heads`);
+      * a round that SUCCEEDED and pushed nothing counts as finding a pick
+        it was sent for ALREADY built when its `picks-built.json` says the
+        branch builds THAT pick: the merge goes on, and the summary says so
+        (`picks_already_built`, #2858) -- the question's recorded `built`
+        can be stale, a fix step having built the other option since;
       * once the last round has ended, a round that did not succeed, pushed
-        nothing, or left a pick it was sent for unbuilt, refuses: no pick is
-        sent to a second round, so the step never loops;
+        nothing and reported no pick built, or left a pick it was sent for
+        unbuilt, refuses: no pick is sent to a second round, so the step
+        never loops;
       * a pick no round was sent for (answered after the last one) parks
         OWNER_PICK_FIX_PENDING for the next round, at most
         MERGE_PICK_ROUNDS_MAX of them; past that, `owner_pick_not_built`.
@@ -2177,7 +2676,7 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
 
     def wait(code: str, rows: list[dict[str, Any]], why: str) -> ActionOutcome:
         summary[UNBUILT_PICKS_KEY] = rows
-        waited = _ci_wait_age(ctx)
+        waited = _ci_wait_age(ctx, pinned)
         if waited is not None:
             return refuse(rows, f"{why}, and the step has waited {int(waited // 60)} min, "
                                 f"past {MERGE_CI_MAX_SECONDS // 3600} h")
@@ -2196,19 +2695,35 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
                         f"pick fix round {n} ({task_id}) is running")
 
     # Every ended round's report, oldest first, so a later round's word wins.
+    # A round that pushed nothing reports picks the branch ALREADY built at
+    # the head it started from (#2858): its finding is the build, not the
+    # question's stale `built`; it counts only for picks it was sent for.
     reports: dict[tuple[str, int], tuple[str | None, bool]] = {}
+    already: set[tuple[str, int]] = set()
     for entry in rounds:
         doc = _pick_round_doc(ctx, entry, root=root, target=target.pull_request)
-        if (doc is None or doc.get("state") != TaskState.SUCCEEDED.value
-                or _round_pushed(doc, entry) is None):
+        if doc is None or doc.get("state") != TaskState.SUCCEEDED.value:
+            continue
+        pushed = _round_pushed(doc, entry) is not None
+        sent = _round_picks(entry)
+        if not pushed and not sent:
             continue
         round_task = str(_task_id(entry.get("task_id")))
         try:
-            reports.update(owner_questions_mod.picks_built(
-                round_task, doc, store=ctx.store, tenant_id=ctx.tenant_id))
+            report = owner_questions_mod.picks_built(
+                round_task, doc, store=ctx.store, tenant_id=ctx.tenant_id)
         except Exception as exc:  # noqa: BLE001 - an unread report built nothing
             why = str(exc)[:300] if isinstance(exc, InputUnavailable) else type(exc).__name__
             summary.setdefault("pick_reports_unread", []).append(f"{round_task}: {why}")
+            continue
+        if not pushed:
+            report = {key: value for key, value in report.items() if key in sent}
+        for key, value in report.items():
+            reports[key] = value
+            if pushed:
+                already.discard(key)
+            else:
+                already.add(key)
 
     def built(row: Mapping[str, Any]) -> bool:
         reported = reports.get((row["task_id"], row["question_index"]))
@@ -2216,9 +2731,12 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
 
     still = [row for row in unbuilt if not built(row)]
     if not still:
+        done = [{"task_id": row["task_id"], "question_index": row["question_index"],
+                 "picked": row.get("picked")} for row in unbuilt]
         summary["picks_built_by_rounds"] = [
-            {"task_id": row["task_id"], "question_index": row["question_index"],
-             "picked": row.get("picked")} for row in unbuilt]
+            row for row in done if (row["task_id"], row["question_index"]) not in already]
+        summary["picks_already_built"] = [
+            row for row in done if (row["task_id"], row["question_index"]) in already]
         return None
 
     if last is not None:
@@ -2236,8 +2754,7 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
             return refuse(still, f"pick fix round {n} ({task_id}) changed nothing: it pushed "
                                  "no new head")
         picks = last.get("picks")
-        sent = None if not isinstance(picks, list) else {
-            (_mapping(p).get("task_id"), _mapping(p).get("question_index")) for p in picks}
+        sent = _round_picks(last) if isinstance(picks, list) else None
         repeated = [row for row in still
                     if sent is None or (row["task_id"], row["question_index"]) in sent]
         if repeated:
@@ -2294,6 +2811,43 @@ def _unanswered(ctx: ActionContext,
     return out
 
 
+def _advisory_split(ctx: ActionContext, held: list[dict[str, Any]]
+                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(still held, merged past)`: the `_unanswered` rows split by `hold_reason`.
+
+    Owner decision, 2 November 2026: advisory questions stop holding merges.
+    Each row's question is read again from its asking task's own validated
+    `questions.json` (`owner_questions.questions_of`), never from the
+    review's copy. FAIL CLOSED: a task that cannot be read, is not a step of
+    this workflow, or holds no such question still holds, as does any
+    question `owner_questions.hold_reason` names a reason for. Nothing is
+    answered here: a merged-past question stays open for the owner.
+    """
+    kept: list[dict[str, Any]] = []
+    past: list[dict[str, Any]] = []
+    asked: dict[str, dict[int, Mapping[str, Any]] | None] = {}
+    for row in held:
+        task_id = row.get("task_id")
+        if isinstance(task_id, str) and task_id not in asked:
+            try:
+                doc = ctx.fetch_upstream(task_id)
+                ours = ctx.workflow_id is not None and doc.get("workflow_id") == ctx.workflow_id
+                asked[task_id] = ({q["question_index"]: q for q in owner_questions_mod.questions_of(
+                    task_id, doc, store=ctx.store, tenant_id=ctx.tenant_id)} if ours else None)
+            except InputUnavailable:
+                asked[task_id] = None
+        question = (asked.get(task_id) or {}).get(row.get("question_index")) \
+            if isinstance(task_id, str) else None
+        if question is None or not owner_questions_mod.merges_past(question):
+            kept.append(row)
+            continue
+        past.append({**row, "question": question.get("question") or row.get("question"),
+                     "recommended": question.get("recommended"),
+                     "built": question.get(owner_questions_mod.BUILT_KEY,
+                                           question.get("recommended"))})
+    return kept, past
+
+
 def _asked_questions(ctx: ActionContext, task_id: str,
                      doc: Mapping[str, Any]) -> dict[int, Any]:
     """`{question_index: question text}` as task `task_id` asked them; {} unreadable."""
@@ -2321,6 +2875,28 @@ def open_questions_lines(rows: list[Mapping[str, Any]]) -> list[str]:
         where = row.get("step_id") or row.get("task_id")
         lines.append(f"- step {where} question {row.get('question_index')} "
                      f"(task {row.get('task_id')}): {text}".replace("```", "ʼʼʼ"))
+    lines.append("```")
+    return lines
+
+
+def advisory_lines(rows: list[Mapping[str, Any]]) -> list[str]:
+    """The comment's section listing the advisory questions this merge went past.
+
+    Untrusted agent text, fenced as `open_questions_lines` fences it. Each
+    names the recommended option the branch builds: an answer picking
+    another one starts a pick-fix round against the default branch.
+    """
+    if not rows:
+        return []
+    lines = ["", "", "Merged past these advisory owner questions, building each one's "
+             "recommended option; they stay open (answer them on their task: another "
+             "pick starts a pick-fix round against the default branch):", "", "```text"]
+    for row in rows:
+        text = " ".join(str(row.get("question") or "").split())
+        where = row.get("step_id") or row.get("task_id")
+        lines.append(f"- step {where} question {row.get('question_index')} "
+                     f"(task {row.get('task_id')}), recommended {row.get('recommended')!r}: "
+                     f"{text}".replace("```", "ʼʼʼ"))
     lines.append("```")
     return lines
 
@@ -2495,7 +3071,27 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         train_provenance(ctx, merger, number=number, head=pr.head_sha,
                                          base=default, train=landed.get("train_id")))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
+            if _on_repository_train(ctx, own):
+                # Merged while this step waited on the repository's train:
+                # the train's merge when it posted `merge-train` green at
+                # this head, recorded as the direct merge's is; anyone
+                # else's is `already_merged` below. Either way SUCCEEDED.
+                checks = merger.checks_at(pr.head_sha, head_ref=pr.head_ref)
+                if any(c.name == REPOSITORY_TRAIN_CONTEXT and c.conclusion == "success"
+                       for c in checks):
+                    summary["merged_by_this_task"] = True
+                    summary["merged_through_repository_train"] = True
+                    summary["merge_commit"] = pr.merge_commit_sha
+                    _record(summary, merger, number,
+                            repository_train_provenance(ctx, merger, number=number,
+                                                        head=pr.head_sha, base=default))
+                    _close_issues(run, merger, number)
+                    _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                        default=default)
+                    return _outcome(TaskState.SUCCEEDED, None, summary, "")
             if _queued_by_this_step(own):
                 # The merge queue merged what this step enqueued (C3H): this
                 # step's merge, recorded as the direct merge's is.
@@ -2506,6 +3102,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                         queued_provenance(ctx, merger, number=number, head=pr.head_sha,
                                           base=default))
                 _close_issues(run, merger, number)
+                _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                    default=default)
                 return _outcome(TaskState.SUCCEEDED, None, summary, "")
             # A lost attempt that merged, or another merger after this step's
             # update: the merge stands, and the issues it closes are closed
@@ -2513,6 +3111,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             summary["already_merged"] = True
             summary["merge_commit"] = pr.merge_commit_sha
             _close_issues(run, merger, number)
+            _delete_head_branch(summary, merger, pr, head=pr.head_sha, branch=branch,
+                                default=default)
             return _outcome(TaskState.SUCCEEDED, None, summary, "")
         return run.refuse("merged_at_other_head",
                           f"pull request #{number} was merged at {pr.head_sha}, not {pinned}")
@@ -2574,7 +3174,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         slot.renew(updates=updates)
 
     def wait(code: str, message: str, pending: list[str]) -> ActionOutcome:
-        waited = _ci_wait_age(ctx)
+        waited = _ci_wait_age(ctx, head)
         if waited is not None:
             return run.refuse("checks_timeout",
                               f"CI has not settled in {int(waited // 60)} min, past "
@@ -2600,34 +3200,63 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     checks = merger.checks_at(head, head_ref=pr.head_ref)
     summary["required_checks"] = sorted({c.context for c in required.checks})
     summary["required_checks_source"] = required.source
+    # A base that requires the train's own `merge-train` (the runbook's
+    # ruleset change, #3179): the train posts it only on a pull request it
+    # boarded, and it boards only `ready` ones, which `_board` labels below.
+    # With the train on, the gate leaves it out, so a green head reaches
+    # `_board` instead of parking CI_PENDING on it forever. Every other
+    # required check still gates; with the train off it is an ordinary one.
+    # Read here only where it matters, so every other step reads the switch
+    # where it always did, and a workspace train (TRAIN-WS) never does.
+    switch: dict[str, Any] | None = None
+    switch_read = False
+    gated = list(required.checks)
+    if (parse_merge_target(ctx.dispatch).merge_mode != mergetrain.TRAIN
+            and any(c.context == REPOSITORY_TRAIN_CONTEXT for c in required.checks)):
+        switch, switch_read = repository_train(merger, required), True
+        if switch is not None:
+            gated = [c for c in required.checks if c.context != REPOSITORY_TRAIN_CONTEXT]
+            checks = [c for c in checks if c.name != REPOSITORY_TRAIN_CONTEXT]
     pending: list[str] = []
     failed: list[str] = []
     #: None once a failing check is one no re-run replaces (`failing_run_ids`).
     failing_ids: set[int] | None = set()
     #: The runs of each check the decision judges, for `cancelled_since`.
     judged: list[list[dict[str, Any]]] = []
-    if required.checks:
-        run.reading = (head, *latest_reading(
+    if gated:
+        read_pending, read_failed = latest_reading(
             {check.context: [c for c in checks if c.name == check.context
                              and (check.app_id is None or c.app_id == check.app_id)]
-             for check in required.checks},
+             for check in gated},
             REQUIRED_GREEN,
-        ))
-        for check in required.checks:
+        )
+        for check in gated:
             mine = [c.as_run() for c in checks if c.name == check.context
                     and (check.app_id is None or c.app_id == check.app_id)]
             judged.append(mine)
             state = required_check_state(mine)
-            if state == "pending":
+            # Reported by nothing at all: failed once every Actions run at
+            # the head has finished and one that failed ended without it
+            # (#2999), so the round and the free re-run go to its failing jobs.
+            jobs = None if mine else unreported_failure(checks)
+            if jobs is not None:
+                failed.append(unreported_label(check.context, jobs))
+                ids = {job.run_id for job in jobs if job.run_id is not None}
+                failing_ids = _with_failing(failing_ids, ids if len(ids) == len(jobs) else None)
+                read_pending = [n for n in read_pending if n != check.context]
+                read_failed = sorted({*read_failed, check.context})
+            elif state == "pending":
                 pending.append(check.context)
             elif state == "failed":
                 failed.append(f"{check.context} ({required_check_label(mine)})")
                 failing_ids = _with_failing(failing_ids, failing_run_ids(mine, REQUIRED_GREEN))
+        run.reading = (head, read_pending, read_failed)
     else:
         # No protection, or protection that requires no check, or a plan that
         # has neither rulesets nor protection to read (`required.source`
         # `none_plan_limited_all_checks`): every check reported at the head
-        # must be green, and there must be one.
+        # must be green, and there must be one. So too a base whose only
+        # required check is `merge-train` with the train on (`gated` above).
         by_name: dict[str, list[CheckFacts]] = {}
         for check in checks:
             by_name.setdefault(check.name, []).append(check)
@@ -2644,7 +3273,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             failing_ids = _with_failing(failing_ids, failing_run_ids(runs, OTHER_TOLERATED))
         judged = list(by_check.values())
     if failed:
-        return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait)
+        return _red(run, own, head=head, failed=failed, failing_ids=failing_ids, wait=wait,
+                    run_states=workflow_run_states(checks))
     if pending:
         since = cancelled_since(judged)
         if since is not None:
@@ -2665,6 +3295,15 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # conflicts and fix rounds included, ran exactly as in direct mode.
     if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
         return _train(run, merger, title=pr.title, number=number, head=head, base=default)
+
+    # Green, in a repository whose own merge train is on: the train is its
+    # one merger. The step labels the pull request `ready` and parks; it
+    # takes no slot and updates no branch (docs/merge-step.md "The
+    # repository's merge train").
+    if not switch_read:
+        switch = repository_train(merger, required)
+    if switch is not None:
+        return _board(run, merger, own, pr=pr, head=head, base=default, switch=switch)
 
     # Green: from here on this step updates and merges, which only the
     # holder of the repository's merge slot may do. Waiting is a park.
@@ -2751,6 +3390,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # answer; each failure is recorded, never raised.
     _record(summary, merger, number, message)
     _close_issues(run, merger, number)
+    _delete_head_branch(summary, merger, pr, head=head, branch=branch, default=default)
     return _outcome(TaskState.SUCCEEDED, None, summary, "")
 
 
@@ -2797,6 +3437,221 @@ def _train(run: _Run, merger: ForgeMerger, *, title: str, number: int, head: str
                     head=head, pull_request=number, pending=[])
 
 
+def repository_train(merger: ForgeMerger, required: RequiredChecks) -> dict[str, Any] | None:
+    """The repository's merge train switch, read as merge-train.sh reads it;
+    None when the train is off.
+
+    `vars.MERGE_TRAIN` exactly `on` is on; unset or anything else is off.
+    A token without *Variables: Read* (401/403) cannot see the variable: the
+    train is then on only when the base requires the train's own
+    `merge-train` status -- the runbook's ruleset change -- because a direct
+    merge into such a base is refused whatever the variable says.
+    """
+    try:
+        value = merger.repository_variable(REPOSITORY_TRAIN_VARIABLE)
+    except forge_mod.ForgeAnswered as exc:
+        if getattr(exc, "status", None) not in (401, 403):
+            raise
+        if any(c.context == REPOSITORY_TRAIN_CONTEXT for c in required.checks):
+            return {"switch": "unreadable", "on_by": "required_check"}
+        return None
+    if value != REPOSITORY_TRAIN_ON:
+        return None
+    return {"switch": value, "on_by": "variable"}
+
+
+def _on_repository_train(ctx: ActionContext, own: Mapping[str, Any], *,
+                         head: str | None = None) -> bool:
+    """Whether this step's last park was on the repository's merge train
+    (at `head`, when named): `TRAIN_WAITING` -- the train park lifecycle and
+    swarm-api already keep off the CI clock -- in a step whose signed target
+    is not a workspace train (TRAIN-WS, `_train`). The record is
+    tenant-writable: a forged one can at worst refuse `train_ejected`, or
+    credit this step with a merge GitHub already shows."""
+    if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
+        return False
+    wait = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    if wait.get("code") != mergetrain.TRAIN_WAITING:
+        return False
+    return head is None or wait.get("head") == head
+
+
+def _reboarded(ctx: ActionContext, own: Mapping[str, Any], *, head: str) -> bool:
+    """Whether this step's last park at `head` came after its one free
+    re-board there (`TRAIN_REBOARDED` in its `pending`, #3313), in a step
+    whose signed target is not a workspace train. The record is
+    tenant-writable: a forged one can at worst skip the re-board."""
+    if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
+        return False
+    wait = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    pending = wait.get("pending")
+    return (wait.get("head") == head and isinstance(pending, list)
+            and TRAIN_REBOARDED in pending)
+
+
+def train_ejection_failed(body: str | None) -> list[str]:
+    """The failing jobs the merge train's ejection comment names, in its order
+    (`merge-train.sh eject_pr`: `- [name](url)`); [] for any other comment."""
+    if not body or not body.startswith(REPOSITORY_TRAIN_EJECTED):
+        return []
+    names: list[str] = []
+    for line in body.splitlines():
+        matched = _EJECTION_FAILED.match(line)
+        name = (matched.group("link") or matched.group("named")).strip() if matched else ""
+        if name and name not in names:
+            names.append(name[:200])
+    return names[:20]
+
+
+def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRequestFacts,
+           head: str, base: str, switch: Mapping[str, Any]) -> ActionOutcome:
+    """Board the repository's merge train: label `ready`, then park.
+
+    Green at `head` with the review's MERGE, so the pull request is what the
+    train boards (`merge-train.sh select`). Already `ready`: park again. A
+    conflict or a red check at the head never reaches here: the gate above
+    sends it to its fix round first, and a round's new head is labelled
+    afresh.
+
+    Not `ready` though this step parked on the train at this same head: the
+    train ejected it, or auto-merge.yml's gate took `ready` off. Which one,
+    the comment `GitHubMerger.train_ejection` answers says: only one that
+    begins `REPOSITORY_TRAIN_EJECTED` is the train's.
+
+      * The gate's removal is a refusal at once, `train_ejected`, with the
+        gate's comment: what it refused does not change by waiting.
+      * The train's ejection gets the path a red head gets (#3313). The head
+        is green here -- its own checks were read green above -- so a train
+        run of main plus this pull request alone that failed is often a
+        flake (#3212: two ladder tests timed out at vitest's 30 s on a
+        loaded shard). The FIRST ejection at a head is labelled `ready`
+        again, once, and parks `TRAIN_WAITING` with `TRAIN_REBOARDED`
+        recorded at the head; the SECOND is a CI-fix round's
+        (`_train_round`); only after it, or with no round to ask for, is it
+        refused `train_ejected` with the train's reason. One re-board per
+        head, so a change the train keeps ejecting cannot loop.
+
+    Every label is behind the fencing and cancel recheck, as every forge
+    write is: a superseded attempt labels nothing (invariant 5). Every park
+    -- `TRAIN_WAITING` off the CI clock, waking on the fallback instant, or
+    the round's -- holds no lease, capacity or merge slot (invariant 1). The
+    wait record is tenant-writable: a forged one can at worst re-label once
+    or refuse.
+    """
+    ctx, summary = run.ctx, run.summary
+    number = pr.number
+    record: dict[str, Any] = {**switch, "head": head, "label": REPOSITORY_TRAIN_LABEL}
+    summary["repository_train"] = record
+    reboarded = _reboarded(ctx, own, head=head)
+    skips = None
+    if REPOSITORY_TRAIN_LABEL in pr.labels:
+        record["labelled"] = False
+        # Already `ready` and still here: the train may be passing over it
+        # for a reason that will not clear by itself (a red check the gate
+        # above does not hold it for, a conflict GitHub has not reported to
+        # the step yet). The train said so on the pull request; the waiting
+        # line carries it. A read that fails leaves the plain line.
+        try:
+            skips = merger.train_skip(number, head)
+        except forge_mod.ForgeError as exc:
+            record["skip_unread"] = type(exc).__name__
+        if skips:
+            record["skips"] = skips
+    elif reboarded or _on_repository_train(ctx, own, head=head):
+        why = merger.train_ejection(number)
+        said = why.strip()[:1000] if why else "no comment on it says why"
+        message = (f"pull request #{number} lost `{REPOSITORY_TRAIN_LABEL}` while it waited in "
+                   f"{base}'s merge train at {head}: {said}")
+        if not why or not why.startswith(REPOSITORY_TRAIN_EJECTED):
+            return run.refuse("train_ejected", message)
+        record["ejection"] = said
+        if reboarded:
+            return _train_round(run, own, number=number, head=head, message=message,
+                                failed=train_ejection_failed(why))
+        if ctx.recheck():
+            return cancelled(summary)
+        merger.add_label(number, REPOSITORY_TRAIN_LABEL)
+        record.update(labelled=True, reboarded=True)
+        return run.wait(mergetrain.TRAIN_WAITING,
+                        f"pull request #{number} was ejected from {base}'s merge train at "
+                        f"{head}, green there, and is `{REPOSITORY_TRAIN_LABEL}` again: its one "
+                        "re-board at this head", head=head, pull_request=number,
+                        pending=[TRAIN_REBOARDED])
+    else:
+        if ctx.recheck():
+            return cancelled(summary)
+        merger.add_label(number, REPOSITORY_TRAIN_LABEL)
+        record["labelled"] = True
+    return run.wait(mergetrain.TRAIN_WAITING,
+                    f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` for {base}'s merge "
+                    f"train at {head}" + (f"; the train skips it: {skips}" if skips else ""),
+                    head=head, pull_request=number,
+                    pending=[TRAIN_REBOARDED] if reboarded else [])
+
+
+def _train_round(run: _Run, own: Mapping[str, Any], *, number: int, head: str, message: str,
+                 failed: list[str]) -> ActionOutcome:
+    """The merge train ejected a green `head` again after the step's re-board
+    there (#3313): a CI-fix round's, or `train_ejected`.
+
+    As `_red` reads a red head's round: with a round asked and left, park
+    `TRAIN_FIX_PENDING` naming the train run's failing jobs (`failed`), which
+    swarm-api's merge wake tick submits the round with; a round claimed at
+    this head and not ended parks `CI_FIX_RUNNING`. A round that ended at
+    this head -- it found nothing to change, was refused, or was never run --
+    or no round to ask for refuses. A round that moved the head reaches
+    `_board` at its new head, which is labelled afresh. Every park keeps
+    `TRAIN_REBOARDED`, so the next wake reads the same head's re-board, and
+    is bounded by MERGE_CI_MAX_SECONDS.
+    """
+    rounds = _fix_rounds(own)
+    last = rounds[-1] if rounds else {}
+
+    def wait(code: str, why: str) -> ActionOutcome:
+        waited = _ci_wait_age(run.ctx, head)
+        if waited is not None:
+            return run.refuse("train_ejected",
+                              f"{message}; after one re-board, {why}, and the step has waited "
+                              f"{int(waited // 60)} min, past {MERGE_CI_MAX_SECONDS // 3600} h")
+        return run.wait(code, f"{message}; after one re-board, {why}", head=head,
+                        pull_request=number, pending=[TRAIN_REBOARDED], failed=failed)
+
+    if rounds and last.get("head") == head:
+        n = last.get("round")
+        error = last.get("error")
+        if error:
+            return run.refuse("train_ejected",
+                              f"{message}; after one re-board and after CI fix round {n}, "
+                              f"which was not run: {str(error)[:300]}")
+        task_id = _task_id(last.get("task_id"))
+        if task_id is None:
+            return wait(CI_FIX_RUNNING, f"CI fix round {n} is being submitted")
+        if not _ended(run.ctx, task_id):
+            return wait(CI_FIX_RUNNING, f"CI fix round {n} ({task_id}) is running")
+        return run.refuse("train_ejected",
+                          f"{message}; after one re-board and after CI fix round {n} "
+                          f"({task_id}) ended at this head")
+    asked = _rounds_asked(own)
+    if len(rounds) < asked:
+        return wait(TRAIN_FIX_PENDING, f"CI fix round {len(rounds) + 1} of {asked} is due")
+    return run.refuse("train_ejected",
+                      f"{message}; after one re-board"
+                      + (f" and {len(rounds)} CI fix round(s), all this step asked for"
+                         if asked else ", and this step asked for no CI fix round"))
+
+
+def repository_train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int,
+                                head: str, base: str) -> str:
+    """The pull request comment for a merge the repository's train made. No attribution."""
+    return "\n".join([
+        f"Merged by SwarmCloud task {ctx.task_id} (workflow {ctx.workflow_id}, "
+        f"attempt {ctx.attempt_id}) into {merger.full_name}#{number},",
+        f"through {base}'s merge train, which this task boarded by labelling it "
+        f"`{REPOSITORY_TRAIN_LABEL}` at {head}, the head the train squashed after its checks "
+        f"were green on {base} with this change on it.",
+    ])
+
+
 def _landed_by_train(ctx: ActionContext, own: Mapping[str, Any], *,
                      head: str) -> Mapping[str, Any] | None:
     """This step's entry, when its last park was on the train and the train
@@ -2830,11 +3685,77 @@ def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: 
     rows = summary.get("open_questions")
     if isinstance(rows, list) and rows:
         message = message + "\n".join(open_questions_lines(rows))
+    past = summary.get(ADVISORY_MERGED_PAST_KEY)
+    if isinstance(past, list) and past:
+        message = message + "\n".join(advisory_lines(past))
     try:
         summary["recorded_on_pull_request"] = merger.comment(number, message)
     except forge_mod.ForgeError as exc:
         summary["recorded_on_pull_request"] = False
         summary["recorded_on_pull_request_reason"] = str(exc)[:300]
+
+
+#: The merge record's key: whether the pull request's head branch is gone
+#: after the merge (deleted by this step, or already gone).
+BRANCH_DELETED_KEY = "branch_deleted"
+#: The merge record's key: what the step did with the head branch and why
+#: (`_delete_head_branch`). `outcome` "failed" is retried by swarm-api's
+#: hand-off branch sweep (`swarm_api.handoffbranches`) once the workflow ends.
+BRANCH_CLEANUP_KEY = "branch_cleanup"
+#: The prefix of a branch the owner keeps: never deleted.
+KEEP_BRANCH_PREFIX = "keep/"
+
+
+def _delete_head_branch(summary: dict[str, Any], merger: ForgeMerger, pr: PullRequestFacts, *,
+                        head: str | None, branch: str | None, default: str | None) -> None:
+    """After a merge, delete the pull request's head branch under the owner's
+    rule (2026-11-02): only a branch the platform created (the workflow's own
+    `swarm/<task>` branch, in this repository), only while its head is still
+    the merged commit (nothing pushed after the merge), never the default
+    branch, a protected branch, a `keep/` branch or one another open pull
+    request is from. A branch already gone (GitHub's auto-delete) counts as
+    deleted. The merge stands whatever this answers: a failure is recorded
+    as `outcome` "failed", for swarm-api's hand-off branch sweep to retry,
+    never raised."""
+    name = pr.head_ref
+    record: dict[str, Any] = {"branch": name, "head": head}
+    summary[BRANCH_CLEANUP_KEY] = record
+    summary[BRANCH_DELETED_KEY] = False
+
+    def kept(reason: str) -> None:
+        record.update(outcome="kept", reason=reason)
+
+    if name is None or branch is None or name != branch:
+        return kept("not_platform_branch")
+    if pr.head_repo is None or pr.head_repo.lower() != (pr.base_repo or "").lower():
+        return kept("not_platform_branch")
+    if name == default or name.startswith(KEEP_BRANCH_PREFIX):
+        return kept("kept_branch")
+    if head is None:
+        return kept("head_unknown")
+    try:
+        facts = merger.branch_facts(name)
+        if facts is None:
+            summary[BRANCH_DELETED_KEY] = True
+            record["outcome"] = "already_deleted"
+            return None
+        if facts.protected:
+            return kept("protected")
+        if facts.sha != head:
+            record["branch_head"] = facts.sha
+            return kept("head_moved")
+        if merger.open_pulls_from(name) > 0:
+            return kept("open_pull_request")
+        deleted = merger.delete_branch(name)
+    except forge_mod.ForgeError as exc:
+        record.update(outcome="failed", reason=str(exc)[:300])
+        return None
+    except Exception as exc:  # noqa: BLE001 - the merge stands; the type is enough
+        record.update(outcome="failed", reason=type(exc).__name__)
+        return None
+    summary[BRANCH_DELETED_KEY] = True
+    record["outcome"] = "deleted" if deleted else "already_deleted"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -3257,10 +4178,13 @@ def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
 # ---------------------------------------------------------------------------
 
 #: The park codes on which a holder gives the slot back: a CI-fix or conflict
-#: fix round runs an agent for as long as it takes, and a merge queue
-#: serialises the merges itself. The next green reading takes the slot again.
-_RELEASE_ON_PARK = frozenset({CI_FIX_PENDING, CI_FIX_RUNNING, CONFLICT_FIX_PENDING,
-                              CONFLICT_FIX_RUNNING, MERGE_QUEUED})
+#: fix round runs an agent for as long as it takes, and a merge queue or a
+#: merge train serialises the merges itself (a step that held the slot when
+#: the repository's train was turned on hands it on as it boards). The next
+#: green reading takes the slot again.
+_RELEASE_ON_PARK = frozenset({CI_FIX_PENDING, CI_FIX_RUNNING, TRAIN_FIX_PENDING,
+                              CONFLICT_FIX_PENDING, CONFLICT_FIX_RUNNING, MERGE_QUEUED,
+                              mergetrain.TRAIN_WAITING})
 
 
 def _slot_use(ctx: ActionContext, repository: str,
@@ -3424,33 +4348,44 @@ def _with_failing(ids: set[int] | None, more: set[int] | None) -> set[int] | Non
     return None if ids is None or more is None else ids | more
 
 
-def _rerun_settling(own: Mapping[str, Any], head: str,
-                    failing_ids: set[int] | None) -> datetime | None:
-    """When the tick's last re-run at `head` was requested, while it settles.
+def _rerun_settling(own: Mapping[str, Any], head: str, failing_ids: set[int] | None,
+                    run_states: Mapping[int, str | None] | None = None) -> datetime | None:
+    """When the tick's last accepted re-run at `head` was requested, while it settles.
 
-    None unless GitHub accepted it (no `error`) less than
-    RERUN_SETTLE_SECONDS ago, and EVERY failing run this step reads
-    (`failing_ids`) is one of the jobs it re-ran: the reading is still the
-    one the re-run replaces. A red check it did not re-run -- another job,
-    a commit status (`failing_ids` None), or a re-run job's own red answer
-    under a new id -- is a failure no waiting changes, so it holds nothing
-    even while another re-run job settles (PR 2268 re-review; the tick's
-    `_rerunnable` likewise re-runs only a reading made wholly of Actions
-    jobs). The document is tenant-writable, so only an
-    instant the tick could have written counts: a tz-aware datetime not in
-    the future, or its ISO 8601 text, which is how swarm-api's state routes
-    serve a Firestore instant (`attemptstate.jsonable`). A forged one can at
-    most make the step wait that long.
+    None unless GitHub accepted it (the last record at `head` with no
+    `error`) and EVERY failing run this step reads (`failing_ids`) is one of
+    the jobs it re-ran: the reading is still the one the re-run replaces. A
+    red check it did not re-run -- another job, a commit status
+    (`failing_ids` None), or a re-run job's own red answer under a new id --
+    is a failure no waiting changes, so it holds nothing even while another
+    re-run job settles (PR 2268 re-review; the tick's `_rerunnable` likewise
+    re-runs only a reading made wholly of Actions jobs).
+
+    It settles for RERUN_SETTLE_SECONDS after `requested_at`, and past that
+    for as long as a workflow run it re-ran (`runs`) has a latest attempt
+    this reading says has not completed (`run_states`, `_rerun_running`):
+    PR #2973 refused at 22ef10c2 while its re-run's attempt was still
+    running (#3006). The window is the floor whenever that status cannot be
+    read -- no `runs` recorded, or no Actions runs read (403/404).
+
+    The document is tenant-writable, so only an instant the tick could have
+    written counts: a tz-aware datetime not in the future, or its ISO 8601
+    text, which is how swarm-api's state routes serve a Firestore instant
+    (`attemptstate.jsonable`). A forged instant, or forged `runs` naming a
+    run still going, can at most make the step wait, which
+    MERGE_CI_MAX_SECONDS bounds.
     """
-    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
-    if not mine or mine[-1].get("error"):
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head
+            and not r.get("error")]
+    if not mine:
         return None
-    jobs = mine[-1].get("jobs")
+    entry = mine[-1]
+    jobs = entry.get("jobs")
     asked = {j for j in jobs if isinstance(j, int) and not isinstance(j, bool)} if isinstance(
         jobs, list) else set()
     if not failing_ids or not failing_ids <= asked:
         return None
-    since = mine[-1].get("requested_at")
+    since = entry.get("requested_at")
     if isinstance(since, str):
         try:
             since = datetime.fromisoformat(since)
@@ -3459,27 +4394,60 @@ def _rerun_settling(own: Mapping[str, Any], head: str,
     if not isinstance(since, datetime) or since.tzinfo is None:
         return None
     age = (utcnow() - since).total_seconds()
-    return since if 0 <= age < RERUN_SETTLE_SECONDS else None
+    if age < 0:
+        return None
+    return since if age < RERUN_SETTLE_SECONDS or _rerun_running(entry, run_states) else None
 
 
-def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None) -> bool:
+def _rerun_running(entry: Mapping[str, Any], run_states: Mapping[int, str | None] | None) -> bool:
+    """Whether a workflow run a re-run record names (`runs`) has a latest
+    attempt that has not completed, as this reading's Actions runs say
+    (#3006). False when either is missing: the settle window decides."""
+    runs = entry.get("runs")
+    if not run_states or not isinstance(runs, list):
+        return False
+    return any(isinstance(r, int) and not isinstance(r, bool) and r in run_states
+               and run_states[r] != "completed" for r in runs)
+
+
+def _rerun_due(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, *,
+               after_no_change: bool = False) -> bool:
     """Whether a red reading at `head` parks `CI_RERUN_DUE` for the tick's free re-run (#2351).
 
-    Only while nothing at this head has answered it: no re-run recorded at
-    `head` (answered, refused or settling -- `_rerun_settling` holds the
-    last), and this step's own last park (`merge_wait`) was not already
-    `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to re-run
-    and woke the step red is answered with the refusal, not a second park.
+    Only while nothing at this head has answered it: no re-run GitHub
+    accepted is recorded at `head` (answered or settling -- `_rerun_settling`
+    holds the latter), and this step's own last park (`merge_wait`) was not
+    already `CI_RERUN_DUE` at `head`, so a tick that found no Actions job to
+    re-run and woke the step red is answered with the refusal, not a second
+    park. After a CI-fix round ended at `head` with nothing to change
+    (`after_no_change`), a re-run GitHub refused (`error`) re-ran nothing,
+    so it is not the head's free re-run (#3006, PR #2971 at a1e16b2c): the
+    step parks again while fewer than RERUN_REFUSALS_MAX refusals are
+    recorded at `head` -- the tick asks again only then -- so a credential
+    that cannot re-run costs one more request, not a loop. Without a round,
+    a refused re-run hands the red to a round or refuses, as before.
     Never for a failing run no re-run replaces (`failing_ids` None, a commit
     status): waiting changes nothing. The document is tenant-writable; a
-    forged record can at most refuse at once, as before #2351, or park once.
+    forged record can at most refuse at once, as before #2351, or park,
+    which MERGE_CI_MAX_SECONDS bounds.
     """
     if not failing_ids:
         return False
-    if any(r.get("head") == head for r in _fix_rounds(own, RERUNS_KEY)):
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
+    if not after_no_change:
+        if mine:
+            return False
+    elif any(not r.get("error") for r in mine) or len(mine) >= RERUN_REFUSALS_MAX:
         return False
     parked = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
     return not (parked.get("code") == CI_RERUN_DUE and parked.get("head") == head)
+
+
+def _rerun_refused(own: Mapping[str, Any], head: str) -> str | None:
+    """The error of the last re-run recorded at `head`, when GitHub refused it (#3006)."""
+    mine = [r for r in _fix_rounds(own, RERUNS_KEY) if r.get("head") == head]
+    error = mine[-1].get("error") if mine else None
+    return str(error) if error else None
 
 
 def _rounds_asked(own: Mapping[str, Any]) -> int:
@@ -3732,7 +4700,7 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
                           "fix round can push to it")
 
     def wait(code: str, why: str) -> ActionOutcome:
-        waited = _ci_wait_age(run.ctx)
+        waited = _ci_wait_age(run.ctx, head)
         if waited is not None:
             return run.refuse("merge_conflict",
                               f"{message}; {why}, and the step has waited {int(waited // 60)} "
@@ -3779,7 +4747,8 @@ def _ended(ctx: ActionContext, task_id: str) -> bool:
 
 
 def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
-         failing_ids: set[int] | None, wait: Any) -> ActionOutcome:
+         failing_ids: set[int] | None, wait: Any,
+         run_states: Mapping[int, str | None] | None = None) -> ActionOutcome:
     """A failing required check at `head`: a CI-fix round's to fix, or `checks_failed`.
 
     docs/merge-step.md "Revised 2026-10-06" §1: with rounds left the tick
@@ -3791,11 +4760,13 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
 
     Before the budget is read, a re-run of the failing Actions jobs the tick
     asked GitHub for at this head (#2257), accepted and inside
-    RERUN_SETTLE_SECONDS, parks `CI_RERUN_PENDING` whatever the budget, even
-    none, while every failing run is one it re-ran (`failing_ids`): the
-    reading is the one the re-run replaces. Once any of it answers red -- a
-    failing run is a new id, inside the window or not -- or a check it did
-    not re-run is red, this refuses (or hands it to a round) as before.
+    RERUN_SETTLE_SECONDS -- or past it while a workflow run it re-ran is
+    still running by this reading's Actions runs (`run_states`, #3006) --
+    parks `CI_RERUN_PENDING` whatever the budget, even none, while every
+    failing run is one it re-ran (`failing_ids`): the reading is the one the
+    re-run replaces. Once any of it answers red -- a failing run is a new
+    id, inside the window or not -- or a check it did not re-run is red,
+    this refuses (or hands it to a round) as before.
 
     With no round left to ask for, the FIRST red reading at a head with no
     re-run recorded there parks once `CI_RERUN_DUE` (#2351), so the tick's
@@ -3804,7 +4775,10 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     `_round_left_nothing`) gets the same: the re-run settling parks
     `CI_RERUN_PENDING`, none recorded at the head parks `CI_RERUN_DUE` once,
     and anything else refuses after the round (#2684). Still one free re-run
-    per head: a head the tick re-ran before the round refuses.
+    per head: a head the tick re-ran before the round refuses. A re-run
+    GitHub refused re-ran nothing, so it is not that one (#3006, PR #2971 at
+    a1e16b2c): the step parks `CI_RERUN_DUE` for one more request, and a
+    second refusal refuses `checks_failed` naming its error.
 
     A head written by a publish swarm-api refused WORKFLOW_SCOPE_MISSING --
     the opener's pinned head, or the head a round ended at -- parks
@@ -3832,22 +4806,29 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
         if _round_left_nothing(run.ctx, task_id):
             parked = _rerun_wait(own, head, failing_ids, wait,
                                  f"{message}; CI fix round {number} ({task_id}) found "
-                                 "nothing to change")
+                                 "nothing to change", run_states=run_states,
+                                 after_no_change=True)
             if parked is not None:
                 return parked
+            rerun_error = _rerun_refused(own, head)
+            if rerun_error is not None:
+                return run.refuse("checks_failed",
+                                  f"{message}, after CI fix round {number} ({task_id}) ended at "
+                                  f"this head; its re-run was refused: {rerun_error[:300]}")
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
     if run.refused_publish is not None and run.refused_publish[1] == head:
         opener, _, refused = run.refused_publish
         return _await_workflow_patch(run, message, opener, refused, wait)
-    parked = _rerun_wait(own, head, failing_ids, wait, message, due=False)
+    parked = _rerun_wait(own, head, failing_ids, wait, message, due=False,
+                         run_states=run_states)
     if parked is not None:
         return parked
     asked = _rounds_asked(own)
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,
                     f"{message}; CI fix round {len(rounds) + 1} of {asked} is due", [])
-    parked = _rerun_wait(own, head, failing_ids, wait, message)
+    parked = _rerun_wait(own, head, failing_ids, wait, message, run_states=run_states)
     if parked is not None:
         return parked
     if asked:
@@ -3856,20 +4837,24 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
 
 
 def _rerun_wait(own: Mapping[str, Any], head: str, failing_ids: set[int] | None, wait: Any,
-                message: str, *, due: bool = True) -> ActionOutcome | None:
+                message: str, *, due: bool = True,
+                run_states: Mapping[int, str | None] | None = None,
+                after_no_change: bool = False) -> ActionOutcome | None:
     """The park a red reading at `head` owes the tick's free re-run, or None.
 
     `CI_RERUN_PENDING` while a re-run at `head` settles (`_rerun_settling`);
     then, with `due`, `CI_RERUN_DUE` once when none is recorded there
     (`_rerun_due`). One rule for a red reading with no round at the head and
-    for a round that ended there with nothing to change (#2684).
+    for a round that ended there with nothing to change (#2684). `run_states`
+    is this reading's Actions runs (`workflow_run_states`): a re-run whose
+    run is still going holds past the window (#3006).
     """
-    requested_at = _rerun_settling(own, head, failing_ids)
+    requested_at = _rerun_settling(own, head, failing_ids, run_states)
     if requested_at is not None:
         return wait(CI_RERUN_PENDING,
                     f"{message}; the failing jobs were re-run at {requested_at.isoformat()}, "
                     "and the re-run has not answered yet", [])
-    if due and _rerun_due(own, head, failing_ids):
+    if due and _rerun_due(own, head, failing_ids, after_no_change=after_no_change):
         return wait(CI_RERUN_DUE,
                     f"{message}; the failing jobs are due their one free re-run at this head", [])
     return None
@@ -3947,28 +4932,59 @@ def _await_workflow_patch(run: _Run, message: str, task_id: str, refused: Mappin
                 "step reads the pull request again once its head moves", [])
 
 
-def _ci_wait_age(ctx: ActionContext) -> float | None:
-    """Seconds since this step first parked for CI, when past MERGE_CI_MAX_SECONDS.
+def _ci_wait_age(ctx: ActionContext, head: str) -> float | None:
+    """Seconds this step has waited for CI at `head`, when past MERGE_CI_MAX_SECONDS.
 
     `merge_wait.first_parked_at` on the step's own document, written by the
-    fenced park (`control.ControlPlane.park_ci_pending`). The document is
+    fenced park (`control.ControlPlane.park_ci_pending`, or swarm-api's
+    `attemptstate` CI park on the state routes). The document is
     tenant-writable, so a forged instant can at worst end the step early as a
     refusal, which changes nothing on the forge; an unreadable one waits on,
     and `max_attempts` still bounds the wakes.
+
+    THE INSTANT IS READ IN EITHER SHAPE (#3033). Direct Firestore hands back
+    a datetime; a tenant on the state routes reads its own document through
+    `GET state/upstream`, which serves it as JSON (`attemptstate.jsonable`),
+    so the same instant arrives as an ISO string. Reading only the datetime
+    returned None on every wake of an `eng` merge step (dev's
+    `state_via_api_tenants`): task_5c00c810495e4f949212 parked 56 times at
+    one head over 13 hours and the 6 h limit never fired.
+
+    THE CLOCK IS THIS HEAD'S. A record left at another head is a wait that
+    ended (a fix round or a branch update moved the head), so the wait about
+    to park at `head` starts afresh and reads no age; a record naming no head
+    is read as this head's. A clock paused by a
+    merge-slot or merge-train wait (`ci_paused_at`) counts only to the pause:
+    a queue for the slot is not CI time.
     """
     try:
         doc = ctx.fetch_upstream(ctx.task_id)
     except Exception:  # noqa: BLE001 - an unreadable record is no timeout
         return None
     wait = _mapping(_mapping(_mapping(doc).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
-    first = wait.get("first_parked_at")
-    if not isinstance(first, datetime):
+    recorded = wait.get("head")
+    if recorded and recorded != head:
         return None
-    try:
-        waited = (utcnow() - first).total_seconds()
-    except TypeError:  # a naive instant: not one the park wrote
+    first = _stored_instant(wait.get("first_parked_at"))
+    if first is None:
         return None
+    paused = _stored_instant(wait.get("ci_paused_at"))
+    waited = ((paused if paused is not None else utcnow()) - first).total_seconds()
     return waited if waited > MERGE_CI_MAX_SECONDS else None
+
+
+def _stored_instant(value: Any) -> datetime | None:
+    """An aware instant from a task document: a datetime as Firestore hands it
+    back, or the ISO string the state routes serve. Anything else -- naive,
+    unparseable, absent -- is None: not one a park wrote."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        return None
+    return value
 
 
 def _close_issues(run: _Run, merger: ForgeMerger, number: int) -> None:

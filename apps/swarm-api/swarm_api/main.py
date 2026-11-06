@@ -50,6 +50,7 @@ from .routes import (
     budget_settings,
     checkpoints,
     children,
+    contract_review,
     credentials,
     codeintel,
     failurefindings,
@@ -61,6 +62,7 @@ from .routes import (
     graph_ticket,
     health,
     issues,
+    jev_usage,
     judgment,
     leases,
     live,
@@ -73,9 +75,11 @@ from .routes import (
     provider_keys,
     people,
     platform,
+    plugin_settings,
     qa_identity,
     qa_settings,
     qatargets,
+    quality_gates,
     repositories,
     review_gate_settings,
     roles,
@@ -98,6 +102,11 @@ from .routes import actions_secrets
 from .routes import secrets_overview
 from .routes import join_requests
 from .routes import setup
+from .routes import addon_probe
+from .routes import voice
+from .routes import voice_readback
+from .routes import voice_settings
+from .routes import voice_visuals
 from .qa_identity import QaIdentityOrigin
 from .validation import FORBIDDEN_CALLER_FIELDS
 
@@ -177,6 +186,9 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/admin/setup/github-app/conversion",
     "/v1/admin/setup/links",
     "/v1/setup/links/redeem",
+    # The Desktop sign-in client's secret (day-one-plan.md §5.6, part of
+    # #2964), which the route adds to Secret Manager and nowhere else.
+    "/v1/admin/setup/sign-in-client",
 })
 
 # --------------------------------------------------------------------------
@@ -415,6 +427,15 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's visual-QA settings: how many flows one live-browser step
     # runs when a run names none (QA-FLOWS-CAP): its owner or admin, audited.
     app.include_router(qa_settings.router)
+    # A workspace's quality gates: whether its claude-code lanes run
+    # jev-belay and jev-enforce (JEV-LANES): its owner or admin, audited.
+    app.include_router(quality_gates.router)
+    # A workspace's opt-in to Jev's review of its work contracts at
+    # submission (contractreview): its owner or admin, audited.
+    app.include_router(contract_review.router)
+    # A workspace's allowed agent plugins, from the platform's closed
+    # catalogue (docs/design/agent-plugins.md): its owner or admin, audited.
+    app.include_router(plugin_settings.router)
     # A workspace's per-agent budget, which a step may only lower and the
     # platform ceiling caps (BUDGET-CAP, #2459): its owner or admin, audited.
     app.include_router(budget_settings.router)
@@ -457,6 +478,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
     # audited (swarm_api.judgment, lane JUDGE-SELECT).
     app.include_router(judgment.router)
+    # Jev's usage and cost per workspace and day, read-only (swarm_api.jevusage,
+    # lane JEV-USAGE-PAGE): Capacity › Jev usage draws it.
+    app.include_router(jev_usage.router)
     # Each workspace's Code intelligence switch -- whether Jev is ever sent
     # code, OFF by default -- one field of workspace_settings/{tenant_id}, its
     # owner's or an admin's to change, audited (CTXQ-UI, context-quality §4.7).
@@ -573,6 +597,25 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # redemption is any signed-in person's, for their own link.
     app.include_router(setup.router)
     app.include_router(setup.links_router)
+    # The brave-search add-on's probe (lane DAYONE-SEARCH-PROBE): a platform
+    # admin's, one fixed search with swarm-api's own key, a count back.
+    app.include_router(addon_probe.router)
+    # Voice it's session routes (docs/design/voice-it.md §10 phase 1): the
+    # people VOICE_IT_PEOPLE names (else the platform owner) only, in the
+    # console's selected workspace; 503 while swarm-voice is not deployed.
+    app.include_router(voice.router)
+    # Its read-backs (docs/design/voice-it-own-speech.md §7): a spoken
+    # cancel, merge, deploy, delete or approve waits for a "go".
+    app.include_router(voice_readback.router)
+    # Voice it's Settings (docs/design/voice-it-own-speech.md §11): read by a
+    # Voice it person or an admin, written by a platform admin alone.
+    app.include_router(voice_settings.router)
+    # Its visuals and notes (docs/design/voice-it-own-speech.md §8.3): the
+    # planner's draws and spoken notes, stored under the tenant's prefix; the
+    # planner draws and notes through the session grant, which reaches only
+    # the visual and note writes (voice.grant.WRITE_ROUTES); the page reads,
+    # points and edits; a code or log body is read here, never sent.
+    app.include_router(voice_visuals.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this
     # API in 48 h uncompressed, a build-board task page averaging 1.43 MB and

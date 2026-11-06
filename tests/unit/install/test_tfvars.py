@@ -4,6 +4,7 @@ design §5.1, §5.4; plan R7, R8; lessons 5, 11, 28, 35; Q2)."""
 from __future__ import annotations
 
 import builtins
+import copy
 import inspect
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from swarm_install import terraform as tfmod
+from swarm_install import sizing as sizes
 from swarm_install import tfvars
 from swarm_install.api_client import ADMIN_ROLE, DELEGATION
 
@@ -46,7 +48,7 @@ def test_generated_never_from_committed_tfvars(monkeypatch: pytest.MonkeyPatch) 
     assert boot["frontend_iap_members"] == ["domain:example.com", "user:admin@example.com",
                                             f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com"]
     assert boot["workspace_apply_image"] == (
-        f"europe-west1-docker.pkg.dev/{PROJECT}/swarm/workspace-apply@{DIGEST}"
+        f"europe-west1-docker.pkg.dev/{PROJECT}/swarm-images/workspace-apply@{DIGEST}"
     ), "the workspace-apply image is the release's digest in the project's own registry"
     assert infra["tenants"] == {}, "design §5.6: installs declare no Terraform tenants"
     for value in _strings(boot) + _strings(infra):
@@ -106,6 +108,20 @@ def test_groups_auth_admin_role_for_installs() -> None:
     assert chosen["groups_impersonate_user"] == "it@example.com"
     assert "groups_impersonate_user" not in tfvars.infra_inputs(
         install_state(groups_impersonate_user="it@example.com"), pass_name="infra-2", installer="a@example.com")
+
+
+def test_contract_review_mode_renders_off_on_every_infra_pass() -> None:
+    # The owner's 2026-11-04 follow-up: a fresh deployment renders
+    # SWARM_CONTRACT_REVIEW like the live one, off until its owner turns it on.
+    import re
+
+    variables = (Path(__file__).resolve().parents[3] / "terraform" / "infra" / "variables.tf").read_text()
+    body = re.search(r'(?ms)^variable "contract_review_mode" \{(.*?)^\}', variables)
+    assert body, "terraform/infra declares contract_review_mode"
+    assert re.search(r'(?m)^  default\s*=\s*"off"\s*$', body.group(1)), "infra's default is off"
+    assert tfvars.CONTRACT_REVIEW_MODE == "off"
+    for pass_name in ("registry", "infra-1", "infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, EVERY_VERSION)["contract_review_mode"] == "off", pass_name
 
 
 def test_tenant_job_vpc_egress_true() -> None:
@@ -182,6 +198,17 @@ def test_discovery_from_desktop_client_id() -> None:
     assert all(discovery.values())
 
 
+def test_passes_before_the_consoles_sign_in_client_run_without_one() -> None:
+    """Issue #2964: the Desktop client comes from the console's Sign-in client
+    step, after the hand-off, so every pass before it runs with no client: no
+    discovery service and no programmatic-clients list, which Terraform reads
+    as "create neither"."""
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, desktop_client_id="")["discovery"]["oauth_client_id"] == "", pass_name
+    assert _boot("bootstrap-2", desktop_client_id="")["frontend_iap_programmatic_clients"] == []
+    assert _boot("bootstrap-2")["frontend_iap_programmatic_clients"] == [DESKTOP_CLIENT_ID]
+
+
 def test_discovery_serves_secret_only_with_its_version() -> None:
     assert _infra("infra-1", EVERY_VERSION)["discovery_serves_client_secret"] is False, "pass 1: every switch off"
     assert _infra("infra-2", {})["discovery_serves_client_secret"] is False, "no version of the secret yet"
@@ -219,10 +246,12 @@ def test_graph_service_with_its_key_and_image() -> None:
     assert on["graph_service"] == {"serve": True, "enabled": True}
 
 
-def test_scheduled_doctor_generated_and_gated() -> None:
-    for pass_name in INFRA_PASSES:
+def test_scheduled_doctor_on_from_infra_pass_2() -> None:
+    # DAYONE-TFVARS-2: BGD turned the hourly doctor on; pass 1 keeps every switch off.
+    for pass_name in ("registry", "infra-1"):
         assert _infra(pass_name, EVERY_VERSION)["enable_scheduled_doctor"] is False, pass_name
-    assert tfvars.SCHEDULED_DOCTOR_SHIPPED is False, "DOCTOR-1 flips this one value when its code ships"
+    for pass_name in ("infra-2", "infra-3", "infra-4", "infra-close"):
+        assert _infra(pass_name, {})["enable_scheduled_doctor"] is True, pass_name
 
 
 def test_cluster_reach_until_the_closing_pass() -> None:
@@ -241,11 +270,11 @@ def test_cluster_reach_until_the_closing_pass() -> None:
 
 
 @pytest.mark.parametrize(("key", "stage"), [("github_org", "stage 0"), ("org_domain", "stage 0"),
-                                            ("installer_cidr", "stage 0"), ("desktop_client_id", "stage 2")])
+                                            ("installer_cidr", "stage 0")])
 def test_missing_key_names_the_stage_that_records_it(key: str, stage: str) -> None:
     with pytest.raises(LookupError, match=f"no {key} yet; {stage}"):
         _infra("infra-1", **{key: ""})
-    if key in ("org_domain", "desktop_client_id"):
+    if key == "org_domain":
         with pytest.raises(LookupError, match=f"no {key} yet; {stage}"):
             _boot("bootstrap-2", **{key: ""})
 
@@ -263,7 +292,8 @@ def _declared(root: str) -> set[str]:
 def test_every_generated_input_is_a_declared_variable() -> None:
     # A name the root does not declare is a warning Terraform prints and an input it never applies.
     digests = {"image_digests": {"swarm-api": DIGEST, "workspace-apply": DIGEST, "swarm-graph": DIGEST},
-               "admin_groups": ["swarm-admins@example.com"], "github_app": {"id": "42", "slug": "s"}}
+               "admin_groups": ["swarm-admins@example.com"], "github_app": {"id": "42", "slug": "s"},
+               "sizing": _sizing(), "addons": EVERY_ADDON_ON}
     for pass_name in tfvars.PASSES:
         root = tfvars.ROOT_OF[pass_name]
         if root == "bootstrap":
@@ -271,3 +301,214 @@ def test_every_generated_input_is_a_declared_variable() -> None:
         else:
             inputs = _infra(pass_name, EVERY_VERSION, **digests)
         assert set(inputs) <= _declared(root), (pass_name, sorted(set(inputs) - _declared(root)))
+
+
+# -- DAYONE-TFVARS-2: sizing, one-person admission, add-ons --------------------------------
+
+QA_MEMBER = f"serviceAccount:qa-console@{PROJECT}.iam.gserviceaccount.com"
+EVERY_ADDON_ON = {
+    "bright-data-egress": {"phase": "on"},
+    "tailscale": {"phase": "on", "choices": {"tailscale_egress_target": "egress.tailnet.ts.net"}},
+    "typesafe": {"phase": "on"},
+    "brave-search": {"phase": "on"},
+    "ci": {"phase": "on", "choices": {"github_repository": "acme/swarm", "sandbox_repository": "acme/sandbox",
+                                      "runner_label": "swarm-ci"}},
+}
+
+
+#: The sizes the tests render: one person, a small team, and the reference team (sizing.py).
+ONE_PERSON = (sizes.INDIVIDUAL, 1)
+TEAM_OF_5 = (sizes.TEAM, 5)
+TEAM_OF_50 = (sizes.TEAM, sizes.REFERENCE_MEMBERS)
+EVERY_SIZE = (ONE_PERSON, TEAM_OF_5, TEAM_OF_50)
+
+
+def _sizing(mode: str = sizes.TEAM, members: int = 5) -> dict:
+    # What SIZING-ASK records in stage 0: the real proposal, never hand-written
+    # numbers (a hand-written global 60 against 8 x 6 hid audit finding N5).
+    return dict(sizes.propose(mode, members))
+
+
+def _changed(sizing: dict, **pool_limits) -> dict:
+    # The proposal with pool_limits changed, as a person's edit or a corrupt state would.
+    changed = copy.deepcopy(sizing)
+    changed["pool_limits"].update(pool_limits)
+    return changed
+
+
+@pytest.mark.parametrize("size", EVERY_SIZE, ids=lambda size: f"{size[0]}-{size[1]}")
+def test_sizing_sets_pool_limits_on_every_infra_pass(size: tuple[str, int]) -> None:
+    sizing = _sizing(*size)
+    assert sizes.problems(sizing) == [], "the proposal is one terraform takes"
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, sizing=sizing)["pool_limits"] == sizing["pool_limits"], pass_name
+
+
+@pytest.mark.parametrize("size", EVERY_SIZE, ids=lambda size: f"{size[0]}-{size[1]}")
+def test_sizing_sets_service_max_instances_keeping_swarm_ui(size: tuple[str, int]) -> None:
+    sizing = _sizing(*size)
+    inputs = _infra("infra-2", sizing=sizing)
+    # infra refuses a map that does not name every control-plane service; sizing has no swarm-ui.
+    assert "swarm-ui" not in sizing["service_max_instances"]
+    assert inputs["service_max_instances"] == {**sizing["service_max_instances"],
+                                               "swarm-ui": tfvars.SERVICE_MAX_DEFAULTS["swarm-ui"]}
+
+
+def test_no_sizing_keeps_todays_inputs() -> None:
+    # An install state from before SIZING-ASK: terraform's own defaults stand.
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name)
+        assert "pool_limits" not in inputs and "service_max_instances" not in inputs, pass_name
+
+
+def test_sizing_breaking_provider_validation_fails_before_any_plan() -> None:
+    sizing = _sizing(*TEAM_OF_5)
+    members, ceiling = sizing["members"], sizing["pool_limits"]["global"]
+    # One more per tenant than fits: members x provider_tenant > the provider-wide pool,
+    # which is global when `providers` does not name the provider.
+    over = ceiling // members + 1
+    assert members * over > ceiling
+    with pytest.raises(ValueError, match=rf"provider_tenant {over} x {members} .* = {ceiling}\b"):
+        _infra("infra-1", sizing=_changed(sizing, provider_tenant=over))
+    per_tenant = sizing["pool_limits"]["provider_tenant"]
+    with pytest.raises(ValueError, match="provider"):
+        _infra("infra-1", sizing=_changed(sizing, providers={"anthropic": members * per_tenant - 1}))
+    # global is the pool of every provider `providers` does not name, so it is checked too.
+    named = {"anthropic": members * over}
+    with pytest.raises(ValueError, match="global"):
+        _infra("infra-1", sizing=_changed(sizing, provider_tenant=over, providers=named))
+    ok = _infra("infra-1", sizing=_changed(sizing, provider_tenant=over, providers=named,
+                                           **{"global": members * over}))
+    assert ok["pool_limits"]["providers"] == named
+    # One person is one tenant: their provider_tenant is the whole global, which a team refuses.
+    alone = _sizing(*ONE_PERSON)
+    assert alone["pool_limits"]["provider_tenant"] == alone["pool_limits"]["global"]
+    assert _infra("infra-1", sizing=alone)["pool_limits"] == alone["pool_limits"]
+    with pytest.raises(ValueError, match="provider_tenant"):
+        _infra("infra-1", sizing=_changed(sizing, provider_tenant=ceiling))
+
+
+@pytest.mark.parametrize("bad", [{"global": 0}, {"global": -1}, {"provider_tenant": "ten"}, {"surplus": 3}])
+def test_sizing_pool_limits_refused_when_infra_would_refuse_them(bad: dict) -> None:
+    with pytest.raises(ValueError, match="sizing"):
+        _infra("infra-1", sizing=_changed(_sizing(), **bad))
+
+
+def test_sizing_service_max_instances_must_be_positive() -> None:
+    sizing = _sizing()
+    sizing["service_max_instances"]["swarm-api"] = 0
+    with pytest.raises(ValueError, match="sizing.*swarm-api"):
+        _infra("infra-1", sizing=sizing)
+    with pytest.raises(ValueError, match="sizing.*mode"):
+        _infra("infra-1", sizing=dict(_sizing(), mode="company"))
+
+
+def test_individual_iap_admits_only_the_installer() -> None:
+    # Decision 7: one person; no domain: member and no team group. The QA identity stays:
+    # terraform/bootstrap refuses enable_qa_identity without it (qa_identity.tf).
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        members = _boot(pass_name, sizing=_sizing(*ONE_PERSON))["frontend_iap_members"]
+        assert members == ["user:admin@example.com", QA_MEMBER], pass_name
+        assert not [m for m in members if m.startswith(("domain:", "group:"))]
+    second = _boot("bootstrap-2", sizing=_sizing(*ONE_PERSON))
+    assert second["frontend_iap_programmatic_clients"] == [DESKTOP_CLIENT_ID], "the Desktop client still signs in"
+
+
+def test_individual_allowed_domains_stays_the_org_domain() -> None:
+    for pass_name in INFRA_PASSES:
+        assert _infra(pass_name, sizing=_sizing(*ONE_PERSON))["allowed_domains"] == ["example.com"], pass_name
+
+
+def test_team_iap_keeps_decision_1() -> None:
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        members = _boot(pass_name, sizing=_sizing(*TEAM_OF_5))["frontend_iap_members"]
+        assert members == ["domain:example.com", "user:admin@example.com", QA_MEMBER], pass_name
+
+
+def test_addon_overlay_in_every_infra_pass() -> None:
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name, EVERY_VERSION, addons=EVERY_ADDON_ON)
+        assert inputs["enable_browser_egress"] is True, pass_name
+        assert inputs["enable_tailscale_egress"] is True and inputs["search_tool_enabled"] is True, pass_name
+        assert inputs["enable_typesafe_forwarder"] is True, pass_name
+        assert inputs["typesafe_forwarder"]["serve"] is True, pass_name
+        assert inputs["enable_acceptance_fixture"] is True, pass_name
+
+
+def test_addon_overlay_in_every_bootstrap_pass() -> None:
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        inputs = _boot(pass_name, addons=EVERY_ADDON_ON)
+        # Core sets enable_github_wif false; the ci add-on's recorded phase wins.
+        assert inputs["enable_github_wif"] is True, pass_name
+        assert inputs["github_repository"] == "acme/swarm", pass_name
+        assert inputs["enable_typesafe_forwarder_read"] is True, pass_name
+
+
+def test_no_addon_leaves_core_inputs_alone() -> None:
+    assert _boot("bootstrap-1")["enable_github_wif"] is False
+    assert _boot("bootstrap-1", addons={}) == _boot("bootstrap-1")
+    assert _infra("infra-2", EVERY_VERSION, addons={}) == _infra("infra-2", EVERY_VERSION)
+    off = _infra("infra-2", EVERY_VERSION, addons={"brave-search": {"phase": "off"}})
+    assert off["search_tool_enabled"] is False
+
+
+# -- DAYONE-TFVARS-3: the CI add-on's acceptance sandbox ---------------------------------
+
+
+def test_ci_sandbox_repository_reaches_the_verify_job_on_every_infra_pass() -> None:
+    # The swarm-verify job's SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL is the same URL the CI add-on
+    # sets as the repository variable, so the acceptance never falls back to the live deployment's.
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name, EVERY_VERSION, addons=EVERY_ADDON_ON)
+        assert inputs["acceptance_sandbox_repository_url"] == "https://github.com/acme/sandbox.git", pass_name
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        assert "acceptance_sandbox_repository_url" not in _boot(pass_name, addons=EVERY_ADDON_ON), pass_name
+
+
+def test_no_ci_sandbox_repository_leaves_the_input_unset() -> None:
+    # Unset is Terraform's null default: no env on the job, no change planned.
+    no_ci = {name: record for name, record in EVERY_ADDON_ON.items() if name != "ci"}
+    no_sandbox = {"ci": {"phase": "on", "choices": {"github_repository": "acme/swarm"}}}
+    for addons in ({}, no_ci, no_sandbox):
+        for pass_name in INFRA_PASSES:
+            inputs = _infra(pass_name, EVERY_VERSION, addons=addons)
+            assert "acceptance_sandbox_repository_url" not in inputs, (pass_name, addons)
+    assert "acceptance_sandbox_repository_url" not in _infra("infra-2", EVERY_VERSION)
+
+
+# -- DAYONE-TF-NAMES: the registry repository and the state bucket's location -----------------
+
+
+def _variable_default(root: str, name: str) -> str:
+    import re
+
+    tf = Path(__file__).resolve().parents[3] / "terraform" / root
+    for path in tf.glob("*.tf"):
+        found = re.search(rf'^variable\s+"{name}"\s*\{{(.*?)^\}}', path.read_text(), flags=re.M | re.S)
+        if found:
+            default = re.search(r'^\s*default\s*=\s*"([^"]*)"', found.group(1), flags=re.M)
+            assert default, f"terraform/{root}'s {name} has no string default"
+            return default.group(1)
+    raise AssertionError(f"terraform/{root} declares no {name}")
+
+
+def test_repository_is_infras_artifact_registry_repository_default() -> None:
+    # Audit finding 4: stage 4 copies into REPOSITORY and infra validates image_refs against
+    # var.artifact_registry_repository; a different name fails the copy and the plan.
+    assert tfvars.REPOSITORY == _variable_default("infra", "artifact_registry_repository")
+
+
+def test_every_infra_pass_names_the_repository_the_images_were_copied_into() -> None:
+    digests = {"image_digests": {"swarm-api": DIGEST}}
+    for pass_name in INFRA_PASSES:
+        inputs = _infra(pass_name, EVERY_VERSION, **digests)
+        assert inputs["artifact_registry_repository"] == tfvars.REPOSITORY, pass_name
+        prefix = f"europe-west1-docker.pkg.dev/{PROJECT}/{inputs['artifact_registry_repository']}/"
+        assert inputs["image_refs"]["swarm-api"].startswith(prefix), pass_name
+
+
+def test_bootstrap_keeps_the_state_bucket_in_the_install_region() -> None:
+    # Audit finding 5: stage 1 creates the bucket in the install's region; bootstrap imports it
+    # with var.location (default US-CENTRAL1), and a location cannot change in place.
+    for pass_name in ("bootstrap-1", "bootstrap-2"):
+        assert _boot(pass_name)["location"] == "EUROPE-WEST1", pass_name

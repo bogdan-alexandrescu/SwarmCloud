@@ -58,7 +58,13 @@ REPO = Path(__file__).resolve().parents[3]
 WORKFLOW = REPO / ".github" / "workflows" / "application.yml"
 # agent-runtime-base-nocodex is the base's Dockerfile built with INSTALL_CODEX=0
 # (BROWSER-NO-CODEX): the base's inputs are its inputs.
-WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
+# by digest, as the indexer is, so whatever reaches the base reaches it.
+WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer",
+          "agent-runtime-lightpanda"}
+# swarm-voice (VOICE-STATEFULSET) copies the base's Dockerfile in to read its pinned
+# CLAUDE_CODE_VERSION, so a change to that file rebuilds it with the base's family.
+BASE_DOCKERFILE_READERS = WORKER | {"swarm-voice"}
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
 
 pytestmark = pytest.mark.skipif(
@@ -324,13 +330,13 @@ def test_a_base_change_rebuilds_the_images_built_from_it(box):
     head = box.commit("base", box.append("images/agent-runtime-base/Dockerfile"))
     proc, manifest, events = box.build(box.record(box.first))
     assert proc.returncode == 0, proc.stderr[-4000:]
-    assert _submitted(events) == WORKER
-    assert _retagged(events) == set(IMAGES) - WORKER
+    assert _submitted(events) == BASE_DOCKERFILE_READERS
+    assert _retagged(events) == set(IMAGES) - BASE_DOCKERFILE_READERS
     _assert_whole(manifest, head)
 
 
 @pytest.mark.parametrize(("base", "built_from_it"), [
-    ("agent-runtime-base", {"agent-runtime-indexer"}),
+    ("agent-runtime-base", {"agent-runtime-indexer", "agent-runtime-lightpanda"}),
     # BROWSER-NO-CODEX: the browser is built FROM the codex-less base.
     ("agent-runtime-base-nocodex", {"agent-runtime-browser"}),
 ])

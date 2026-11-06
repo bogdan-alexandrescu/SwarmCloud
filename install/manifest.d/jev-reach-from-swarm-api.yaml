@@ -1,0 +1,49 @@
+# Lane JEV-REACH-API (part of #2688; docs/design/agent-quality/jev-contract.md
+# section 4.1, the owner's answer to Q1, 3 November 2026): swarm-api reaches a
+# workspace's internal Jev backend through its Direct VPC egress and an
+# internal passthrough load balancer, decision-api-internal, in front of the
+# tailnet egress in swarm-system. The tailscale add-on carries it: its infra
+# pass reserves the load balancer's address (terraform/infra/tailscale.tf
+# google_compute_address.decision_api_route) and gives swarm-api
+# INTERNAL_DECISION_API_ADDRESS, and its workload step applies the rendered
+# tailscale_egress_manifest, which now holds the second Service and admits
+# swarm-api's egress range to the forwarder. No IAM changes.
+version: 1
+entries:
+- id: workload.tailscale-egress
+  kind: namespace-object
+  scope: addon:tailscale
+  stage: 10
+  provider: engine
+  check: kubectl --context $E -n swarm-system get deployment decision-api-egress and service decision-api-internal, its
+    load balancer ingress the address terraform/infra's tailscale_egress.swarm_api_address output names
+  apply: terraform output -raw tailscale_egress_manifest (kubernetes/swarm-system/tailscale-egress.yaml:108(Namespace),120(SA),140(NetworkPolicy),182+212(Service
+    x2),235(Deployment)), applied by the tailscale add-on's workload step
+  verify: kubectl -n swarm-system get pods -l app.kubernetes.io/name=decision-api-egress shows Running; the tailnet
+    device registers (docs/runbooks/tailscale-egress.md); service decision-api-internal reports the reserved address
+  explain: the internal judge's tailnet forwarder workload (5 of ~5, lane JUDGE-NET), and swarm-api's route to it
+    through the internal passthrough load balancer decision-api-internal (jev-contract.md section 4.1)
+  guards: 'null'
+  secret_entry: 'null'
+  depends_on:
+  - cluster.swarm-system-namespace
+  - secret.swarm-tailscale-oauth.value
+  evidence:
+  - kubernetes/swarm-system/tailscale-egress.yaml:108
+  - kubernetes/swarm-system/tailscale-egress.yaml:120
+  - kubernetes/swarm-system/tailscale-egress.yaml:140
+  - kubernetes/swarm-system/tailscale-egress.yaml:182
+  - kubernetes/swarm-system/tailscale-egress.yaml:212
+  - kubernetes/swarm-system/tailscale-egress.yaml:235
+  - terraform/infra/tailscale.tf:167
+  notes: null A swarm-system GKE workload, not a Cloud Run job.
+  step: cluster.workloads
+  replace: true
+  refs:
+    kubernetes:
+    - swarm-system/tailscale-egress.yaml
+    terraform:
+    - infra/google_compute_address.decision_api_route
+env:
+  INTERNAL_DECISION_API_ADDRESS:
+    setter: terraform/infra/tailscale.tf:151

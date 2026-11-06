@@ -383,12 +383,13 @@ entries:
 - id: switch.grant_broker_secret_lister
   kind: switch
   scope: core
-  stage: 3
+  stage: 7
   provider: engine
-  step: bootstrap.pass-1
+  step: bootstrap.pass-2
   check: grep -n grant_broker_secret_lister terraform/bootstrap/variables.tf terraform/bootstrap/terraform.tfvars
   apply: terraform/bootstrap/variables.tf:591-601, default TRUE; not set in terraform.tfvars
-  verify: true everywhere, a fresh project included, since the account is bootstrap's own (DAYONE-BOOT-2)
+  verify: false in bootstrap pass 1 and true from bootstrap pass 2 (tfvars.py renders it from the second
+    pass), since platform_roles.tf names swarm-quota-broker by a string (DAYONE-MANIFEST-STEPS-2)
   explain: Default true. Since DAYONE-BOOT-2 terraform/bootstrap creates swarm-quota-broker, so the switch
     no longer waits for terraform/infra; it is retired once platform_roles.tf orders the grant after the
     account (asked in the BOOT-2 PR).

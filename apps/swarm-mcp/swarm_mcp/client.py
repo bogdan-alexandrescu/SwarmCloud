@@ -2320,6 +2320,7 @@ class SwarmClient:
         auto_merge: bool = False,
         fix_rounds: int | None = None,
         model_class: str | None = None,
+        security_review: bool = False,
     ) -> dict[str, Any]:
         """Plan `issue` (`owner/repo#N` or its URL). DATA only (invariant 10):
         no profile, image or command -- the planner and every step are the
@@ -2329,7 +2330,12 @@ class SwarmClient:
         `model_class` is the PLANNER's class, by name (#1435); each plan step's
         class is the planner's to write (R1). Sent only when named, and a
         deployment that does not take it yet refuses it with a 422 that is
-        passed back as it came."""
+        passed back as it came.
+
+        `security_review` adds the optional security review after the fix
+        (docs/design/security-review-step.md). Sent only when asked, so a
+        run that did not ask sends exactly the body it sent before, and the
+        API's default (off) decides."""
         payload: dict[str, Any] = {
             "issue": issue,
             "plan_approval": plan_approval,
@@ -2337,6 +2343,8 @@ class SwarmClient:
         }
         if fix_rounds is not None:
             payload["fix_rounds"] = fix_rounds
+        if security_review:
+            payload["security_review"] = True
         if model_class:
             payload["model_class"] = model_class
         # The session that asked (SC-SESSION-SCOPE). swarm-api copies it onto

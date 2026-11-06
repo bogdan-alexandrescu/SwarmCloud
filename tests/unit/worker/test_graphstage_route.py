@@ -118,9 +118,9 @@ def served(seed: FakeFirestore, *, settings: dict[str, Any] | None = None) -> di
         "registration": registration,
         "versions": [{"id": path[len(prefix):], **doc} for path, doc in
                      sorted(seed.documents.items()) if path.startswith(prefix)],
-        "tenant_settings": settings if settings is not None else
+        "tenant_settings": None,
+        "workspace_settings": settings if settings is not None else
         {"code_intelligence": {"context": "on", "context_ab": "off"}},
-        "workspace_settings": None,
     }
 
 
@@ -239,7 +239,7 @@ def test_the_direct_path_makes_no_listing_call_and_still_stages_the_promoted_ind
     checkout, first, second = clone
     db = FakeFirestore()
     _promote(db, store, first)
-    db.seed(f"tenant_settings/{TENANT}", {"code_intelligence": {"context_ab": "off"}})
+    db.seed(f"workspace_settings/{TENANT}", {"code_intelligence": {"context_ab": "off"}})
 
     env = prepare(checkout.parent, checkout, second, db=db, store=store,
                   route=route_of(Api(), keyed=False))
@@ -254,7 +254,7 @@ def test_a_route_that_is_not_answered_falls_back_to_reads_by_id(store, clone, li
     checkout, first, second = clone
     db = FakeFirestore()
     _promote(db, store, first)
-    db.seed(f"tenant_settings/{TENANT}", {"code_intelligence": {"context_ab": "off"}})
+    db.seed(f"workspace_settings/{TENANT}", {"code_intelligence": {"context_ab": "off"}})
     api = Api(error=ChildApiError(404, "not_found", "no such route", retryable=False))
 
     env = prepare(checkout.parent, checkout, second, db=db, store=store, route=route_of(api))

@@ -1,0 +1,403 @@
+"""swarm-voice: GPT-Live sessions for Voice it (docs/design/voice-it.md §3.2, §3.4;
+section 10, phase one).
+
+A one-replica StatefulSet in `swarm-system` on the GKE cluster (§3.4), so a
+voice session's sideband is held by exactly one process for the length of the
+conversation, which no request-shaped service can do. It holds no data
+authority: no Firestore client, no storage client. The browser never reaches it;
+swarm-api calls it inside the VPC.
+
+Routes:
+
+* `POST /internal/sessions` -- swarm-api starts a voice session. Body:
+  `voice_session_id` (swarm-api's session id), `person` (the signed-in person's
+  email) and `offer` (the browser's SDP offer). swarm-voice leases a ChatGPT
+  plan account from the quota broker's Voice it pool for `person`
+  (accountlease.py; owner, 2026-11-02: "pool only, wait for it"), creates the
+  GPT-Live session on that lease, attaches its sideband and answers
+  `201 {voice_session_id, live_session_id, answer}`. When the broker leases
+  nothing, nothing starts: 403 `{"code": "voice_pool_refused", "message"}` for
+  a person outside the pool, 409 `{"code": "voice_pool_busy" |
+  "voice_pool_refused", "message"}` when its account is in use or none is
+  registered, `message` being one sentence the voice can say. 409 also when
+  the voice session already has a live one; 502 when OpenAI or the broker
+  failed. When OpenAI itself refused, the 502 says why: `{"code":
+  "openai_refused", "message", "openai_status", "openai_code", "openai_type"}`,
+  OpenAI's error code and type held to a closed pattern (live.openai_error;
+  never its message, which may quote the request), `openai_status` null for a
+  refusal sent on the sideband. The lease is released when the session ends, when
+  its start fails and when OpenAI closes it; if swarm-voice dies, the broker's
+  hold expires on its own (ten-minute TTL, renewed every four minutes).
+  No person's own ChatGPT sign-in is read: there is no Secret Manager path for
+  the OpenAI credential any more.
+  Optionally, together, `project_id` and `grant`: the session grant
+  (grant.py, docs/design/voice-it.md §3.6), held in memory on the live session
+  until it ends and presented only to swarm-api. A grant without a project, a
+  grant for another session or one swarm-api did not mint is 422, and the
+  refusal never carries it.
+  `mode` (default `live`) is what swarm-api picked from the pool: `text` when
+  the Voice it pool holds no OpenAI API key (owner, 4 November 2026: "both
+  paths"). A text start carries no offer: swarm-voice leases the pool's
+  ChatGPT plan (`capability: text`), holds the conversation (textchat.py) and
+  answers `201 {voice_session_id, mode: "text"}`, with no SDP; the pool
+  refusals are the same. A Live start answers with `mode: "live"` beside the
+  fields above.
+* `POST /internal/sessions/{voice_session_id}/turns` -- one turn of a text
+  conversation: `{"text": <1..4000 chars>}` -> `200 {"turn_id", "reply",
+  "cards"}`, `cards` being what the planner drew when the turn delegated. 404
+  for a session this process holds no text conversation for (a Live one, an
+  ended one, one lost to a restart); 429 `{"code": "usage_limit_reached",
+  "message", "resets_at"}` when the plan's usage limit refused it; 502 as a
+  start's. The text is never logged.
+* `POST /internal/sessions/{voice_session_id}/end` -- closes the GPT-Live
+  session and its sideband, which stops OpenAI's per-second billing, or ends
+  the text conversation and gives its plan back.
+  `200 {voice_session_id, ended, usage_seconds, reason}`, 404 for a session
+  this process does not hold.
+* `GET /healthz` -- counts only.
+
+THE CALLER. Each `/internal/` call carries a Google ID token minted for
+`SWARM_VOICE_AUDIENCE`; only the service accounts in `SWARM_VOICE_CALLERS`
+(swarm-api's) are admitted. The audience is required: google-auth skips the
+`aud` check when it is None (swarm_api/auth.py, GoogleTokenVerifier).
+
+NOTHING SECRET LEAVES. A response carries the SDP answer and ids, never a
+credential; an error carries a status, never a body; the leased token is held
+in memory only (accountlease.PoolCredential) and never logged.
+
+Configuration, read once at start (never at import):
+
+* `PROJECT_ID` -- this deployment's project.
+* `QUOTA_BROKER_URL` (and `QUOTA_BROKER_AUDIENCE`) -- the quota broker, whose
+  Voice it pool leases each session's account and whose workspace pool leases
+  each planner turn's Claude account (plannerlease.py). Required: without it
+  no session could start.
+* `SWARM_VOICE_AUDIENCE` -- the audience swarm-api mints its ID token for.
+* `SWARM_VOICE_CALLERS` -- comma-separated service account emails admitted.
+* `SWARM_API_URL` (and optionally `SWARM_API_AUDIENCE`) -- swarm-api's
+  in-cluster address, where the planner (planner.build_planner) reads and
+  draws cards as the session's person through the session grant. Unset, no
+  session offers delegation. Each turn runs Claude Code (`CLAUDE_CODE_BIN`,
+  `claude` on PATH) on a pool lease; a full pool is a spoken refusal.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import os
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, SecretStr, field_validator
+
+from .accountlease import NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused, build_broker
+from .claudefront import FRONT_MODELS
+from .claudeturn import admitted_model
+from .credential import CredentialError
+from .grant import GrantInvalid, SessionGrant
+from .live import MAX_OFFER_BYTES, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
+from .planner import build_planner
+from .textchat import MAX_TURN_CHARS, CodexApi, TextSessionEnded, TextSessions, UsageLimited
+
+log = logging.getLogger("swarm_voice")
+
+VOICE_ID = r"^[A-Za-z0-9_-]{8,128}$"
+
+CallerCheck = Callable[[str], Awaitable[str]]
+
+
+class StartRequest(BaseModel):
+    voice_session_id: str = Field(pattern=VOICE_ID)
+    person: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
+    #: `live` (a GPT-Live session from `offer`) or `text` (the plan's text
+    #: conversation, no offer). swarm-api picks it from the Voice it pool.
+    mode: Literal["live", "text"] = "live"
+    offer: str | None = Field(default=None, min_length=4, max_length=MAX_OFFER_BYTES, pattern=r"^v=0\r?\n")
+    #: The session grant and its project (grant.py). A SecretStr with no
+    #: constraint, so neither its repr nor a validation error carries it: its
+    #: shape is checked by `SessionGrant`, whose refusal names no value.
+    project_id: str | None = Field(default=None, max_length=64)
+    grant: SecretStr | None = None
+    #: The planner model for this session: Voice it › Settings'
+    #: `planner_model`, its class's pin, read by swarm-api at the start. Only
+    #: an id of one of MODEL_CLASSES is accepted; absent, the planner keeps
+    #: VOICE_PLANNER_MODEL.
+    planner_model: str | None = Field(default=None, max_length=64)
+
+    @field_validator("planner_model")
+    @classmethod
+    def _a_class_pin(cls, value: str | None) -> str | None:
+        if value is not None and not admitted_model(value):
+            raise ValueError("planner_model must be the id of one of the pool's model classes")
+        return value
+
+    #: The fast front's model for this session: Voice it › Settings'
+    #: `conversation_model`, read by swarm-api at the start. Only an id of the
+    #: curated list (claudefront.FRONT_MODELS) is accepted; absent, the front
+    #: keeps VOICE_FRONT_MODEL.
+    conversation_model: str | None = Field(default=None, max_length=64)
+
+    @field_validator("conversation_model")
+    @classmethod
+    def _a_curated_model(cls, value: str | None) -> str | None:
+        if value is not None and value not in FRONT_MODELS:
+            raise ValueError("conversation_model must be one of the curated conversation models")
+        return value
+
+
+class TurnRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=MAX_TURN_CHARS)
+
+
+def session_grant(body: StartRequest) -> SessionGrant | None:
+    """The start call's grant, or None when swarm-api sent none; 422 when it is
+    incomplete, for another session, or not one swarm-api mints."""
+    if body.grant is None and body.project_id is None:
+        return None
+    if body.grant is None or body.project_id is None:
+        raise HTTPException(422, "a session grant needs both project_id and grant")
+    try:
+        grant = SessionGrant(project_id=body.project_id, session_id=body.voice_session_id,
+                             value=body.grant.get_secret_value())
+    except GrantInvalid as exc:
+        raise HTTPException(422, str(exc)) from None
+    return grant
+
+
+#: What swarm-api is told when the Voice it pool leases no account: (status, code,
+#: one sentence the voice or the page can say). Nothing starts on any of them.
+#: A Live session runs on an OpenAI developer API key alone (OpenAI refused the
+#: ChatGPT plan, 4 November 2026), so each sentence names the key, never a plan.
+POOL_REFUSALS: dict[str, tuple[int, str, str]] = {
+    NOT_IN_POOL: (403, "voice_pool_refused",
+                  "Voice it's OpenAI API key isn't available to you, so this conversation can't start."),
+    NONE_AVAILABLE: (409, "voice_pool_busy",
+                     "Voice it's OpenAI API key is in use by another session; try again when it ends."),
+}
+POOL_REFUSED_DEFAULT = (409, "voice_pool_refused",
+                        "Voice it has no OpenAI API key in its pool yet, so this conversation can't start.")
+
+
+def openai_refusal(exc: LiveRefused) -> JSONResponse:
+    """swarm-voice's 502 for a Live call OpenAI refused: its status, code and type."""
+    return JSONResponse(status_code=502, content={
+        "code": "openai_refused", "message": str(exc), "openai_status": exc.status,
+        "openai_code": exc.code, "openai_type": exc.type})
+
+
+def pool_refusal(reason: str) -> JSONResponse:
+    status, code, message = POOL_REFUSALS.get(reason, POOL_REFUSED_DEFAULT)
+    return JSONResponse(status_code=status, content={"code": code, "message": message})
+
+
+def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
+    """An ID-token check pinned to `audience` that admits only `callers`."""
+    if not audience:
+        raise RuntimeError("SWARM_VOICE_AUDIENCE is required: without it the token's audience is not checked")
+    if not callers:
+        raise RuntimeError("SWARM_VOICE_CALLERS is empty: nothing could call swarm-voice")
+    request_holder: list[Any] = []
+
+    def verify(token: str) -> str:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token
+
+        if not request_holder:
+            request_holder.append(google_requests.Request())
+        try:
+            claims = id_token.verify_oauth2_token(token, request_holder[0], audience=audience)
+        except ValueError:
+            # google-auth's message may echo token content: never propagated.
+            raise PermissionError("id token verification failed") from None
+        email = claims.get("email")
+        if not email or claims.get("email_verified") is False or email not in callers:
+            raise PermissionError("the caller is not admitted")
+        return str(email)
+
+    async def check(token: str) -> str:
+        return await asyncio.to_thread(verify, token)
+
+    return check
+
+
+def build_sessions(http: Any) -> Sessions:
+    # Every session's account is leased from the quota broker's Voice it pool;
+    # without QUOTA_BROKER_URL this raises and the process does not start.
+    leases = build_broker(http)
+    # The planner (§3.3) reaches swarm-api at SWARM_API_URL through the session
+    # grant; without that address it is None and no session offers delegation.
+    # Each planner turn leases its Claude account through the same broker client.
+    return Sessions(LiveApi(http), leases=leases, planner=build_planner(http, broker=leases))
+
+
+def build_texts(http: Any, sessions: Sessions) -> TextSessions:
+    """The text conversations (textchat.py), on the Live sessions' broker client
+    and planner: a text turn delegates exactly as a Live one does."""
+    return TextSessions(CodexApi(http), leases=sessions._leases,  # noqa: SLF001 -- one broker client
+                        planner=sessions._planner)  # noqa: SLF001 -- one planner
+
+
+def build_caller_check() -> CallerCheck:
+    callers = frozenset(c.strip() for c in os.environ.get("SWARM_VOICE_CALLERS", "").split(",") if c.strip())
+    return google_caller_check(os.environ.get("SWARM_VOICE_AUDIENCE", "").strip(), callers)
+
+
+def usage_limited(exc: UsageLimited) -> JSONResponse:
+    """swarm-voice's 429 for a turn the ChatGPT plan's usage limit refused."""
+    return JSONResponse(status_code=429, content={
+        "code": "usage_limit_reached", "resets_at": exc.resets_at,
+        "message": "Voice it's ChatGPT plan has reached its usage limit"
+                   + (f"; it resets at {exc.resets_at}." if exc.resets_at else "; try again later.")})
+
+
+def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck | None = None,
+               texts: TextSessions | None = None) -> FastAPI:
+    """The app. With no arguments (uvicorn's `--factory`), everything is built from
+    the environment when the app starts, never at import."""
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        http = None
+        if app.state.sessions is None:
+            import httpx
+
+            http = httpx.AsyncClient()
+            app.state.sessions = build_sessions(http)
+            if app.state.texts is None:
+                app.state.texts = build_texts(http, app.state.sessions)
+        if app.state.verify_caller is None:
+            app.state.verify_caller = build_caller_check()
+        try:
+            yield
+        finally:
+            # A shutdown closes every session: one left open would bill with no sideband.
+            await app.state.sessions.end_all()
+            if app.state.texts is not None:
+                await app.state.texts.end_all()
+            if http is not None:
+                await http.aclose()
+
+    app = FastAPI(title="swarm-voice", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.sessions = sessions
+    app.state.verify_caller = verify_caller
+    app.state.texts = texts
+
+    async def caller(request: Request) -> str:
+        header = request.headers.get("authorization", "")
+        scheme, _, token = header.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(401, "an ID token is required")
+        try:
+            return await app.state.verify_caller(token.strip())
+        except PermissionError:
+            raise HTTPException(401, "the caller is not admitted") from None
+
+    @app.post("/internal/sessions", status_code=201)
+    async def start(body: StartRequest, _caller: str = Depends(caller)) -> Any:
+        grant = session_grant(body)
+        if body.mode == "text":
+            return await start_text(body, grant)
+        if body.offer is None:
+            raise HTTPException(422, "a live session needs the browser's SDP offer")
+        if app.state.texts is not None and app.state.texts.get(body.voice_session_id) is not None:
+            raise HTTPException(409, "this voice session already has a live session")
+        try:
+            session = await app.state.sessions.start(
+                body.voice_session_id, person=body.person, offer=body.offer, grant=grant,
+                planner_model=body.planner_model)
+        except SessionExists:
+            raise HTTPException(409, "this voice session already has a live session") from None
+        except VoicePoolRefused as exc:
+            log.info("voice session %s: the Voice it pool leased no account (%s)",
+                     body.voice_session_id, exc.reason)
+            return pool_refusal(exc.reason)
+        except LiveRefused as exc:
+            log.warning("voice session %s: start failed: %s", body.voice_session_id, exc)
+            return openai_refusal(exc)
+        except (CredentialError, LiveError) as exc:
+            log.warning("voice session %s: start failed: %s", body.voice_session_id, exc)
+            raise HTTPException(502, str(exc)) from None
+        return {"voice_session_id": session.voice_id, "mode": "live", "live_session_id": session.live_id,
+                "answer": session.answer}
+
+    async def start_text(body: StartRequest, grant: Any) -> Any:
+        texts = app.state.texts
+        if texts is None:
+            raise HTTPException(503, "this swarm-voice holds no text conversations")
+        try:
+            session = await texts.start(body.voice_session_id, person=body.person, grant=grant,
+                                        exists=lambda voice_id: app.state.sessions.get(voice_id) is not None,
+                                        planner_model=body.planner_model)
+        except SessionExists:
+            raise HTTPException(409, "this voice session already has a live session") from None
+        except VoicePoolRefused as exc:
+            log.info("voice session %s: the Voice it pool leased no plan (%s)", body.voice_session_id, exc.reason)
+            return pool_refusal(exc.reason)
+        except CredentialError as exc:
+            log.warning("voice session %s: text start failed: %s", body.voice_session_id, exc)
+            raise HTTPException(502, str(exc)) from None
+        return JSONResponse(status_code=201, content={"voice_session_id": session.voice_id, "mode": "text"})
+
+    @app.post("/internal/sessions/{voice_session_id}/turns")
+    async def turn(voice_session_id: str, body: TurnRequest, _caller: str = Depends(caller)) -> Any:
+        texts = app.state.texts
+        if texts is None:
+            raise HTTPException(404, "no such text conversation")
+        try:
+            answered = await texts.turn(voice_session_id, body.text)
+        except TextSessionEnded:
+            raise HTTPException(404, "no such text conversation") from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except UsageLimited as exc:
+            log.info("voice session %s: the plan's usage limit refused a turn (resets %s)",
+                     voice_session_id, exc.resets_at)
+            return usage_limited(exc)
+        except LiveRefused as exc:
+            return openai_refusal(exc)
+        except (CredentialError, LiveError) as exc:
+            log.warning("voice session %s: text turn failed: %s", voice_session_id, exc)
+            raise HTTPException(502, str(exc)) from None
+        return {"turn_id": answered.turn_id, "reply": answered.reply, "cards": answered.cards}
+
+    @app.post("/internal/sessions/{voice_session_id}/end")
+    async def end(voice_session_id: str, _caller: str = Depends(caller)) -> dict:
+        texts = app.state.texts
+        if texts is not None and texts.get(voice_session_id) is not None:
+            ended = await texts.end(voice_session_id)
+            if ended is not None:
+                return {"voice_session_id": voice_session_id, "ended": True,
+                        "usage_seconds": ended.usage_seconds, "reason": ended.reason}
+        try:
+            session = await app.state.sessions.end(voice_session_id)
+        except (CredentialError, LiveError) as exc:
+            log.warning("voice session %s: end failed: %s", voice_session_id, exc)
+            raise HTTPException(502, str(exc)) from None
+        if session is None:
+            raise HTTPException(404, "no such live session")
+        return {"voice_session_id": voice_session_id, "ended": session.ended,
+                "usage_seconds": session.usage_seconds, "reason": session.reason}
+
+    @app.get("/healthz")
+    async def healthz() -> JSONResponse:
+        sessions_ = app.state.sessions
+        counts = sessions_.counts() if sessions_ is not None else {"sessions": 0, "attached": 0}
+        texts_ = app.state.texts
+        return JSONResponse({**counts, **(texts_.counts() if texts_ is not None else {"text_sessions": 0})})
+
+    return app
+
+
+def main() -> None:
+    import uvicorn
+
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    uvicorn.run("swarm_voice.main:create_app", factory=True, host="0.0.0.0",
+                port=int(os.environ.get("PORT", "8080")))
+
+
+if __name__ == "__main__":
+    main()

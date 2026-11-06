@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
@@ -12,17 +12,21 @@ import { TaskIdLine } from './TaskIdLine'
 import { BrowserUseMark, browserUseOf, browserUseSay } from './BrowserUse'
 import { BudgetRowMark, budgetRowSay, budgetStopLine, stoppedAtBudgetRow, useBudgetWarning } from './AgentBudget'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, workflowHref, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
+import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadTask, loadTaskDigests, loadTasks, loadTasksInStates, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
-import type { Result } from './fetch'
-import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
+import { pageReads, type Result } from './fetch'
+import { handoffOf, isLiveBrowser, liveBrowserRows, needsYou, ownerQuestionsHold } from './Handoff'
 import { presetLabel } from './LiveBrowser'
-import { theaterPath } from './LiveThumb'
+import { LiveThumb, theaterPath } from './LiveThumb'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
+import { listMayStart, panelWaiters, wakePanelWaiters } from './agentPanel'
 import { focusSplitOnOpen } from './agent-split/focus'
 import { tabStep } from './agent-split/tabs'
 import './styles/agents.css'
+import { HostedAgent } from './work/hostedAgent'
+import { Inspector, startsFolded, useIsPhone, type WidthClass } from './work/Inspector'
+import { NeedsYou, heldName, type NeedItem } from './work/NeedsYou'
 import { PARK_WORD, Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
 import { publishListCounts } from './Spine'
@@ -112,12 +116,44 @@ export function browserRows(tasks: readonly Task[]): Task[] {
   return [...liveBrowserRows(tasks), ...tasks.filter((t) => t.state === 'STARTING' && isLiveBrowser(t))]
 }
 
+/** What a browser row's outline draws: its session's device, and the presets that size it. */
+type RowDevice = Pick<LiveSession, 'device' | 'presets'>
+
 /**
- * THE LIST'S READ TIME, FOR THE ROWS THAT READ ON THE LIST'S POLL (QA12-29):
- * the device outline. A context rather than a prop through every row
- * component, because one cell of one kind of row uses it.
+ * EVERY BROWSER ROW'S DEVICE, FROM ONE READ PER LIST READ (#2688,
+ * WORK-READS-SPEED). Each row read its own `GET /v1/tasks/{id}/live/session`
+ * on every list poll -- 15-20 at the same instant on the owner's list, each a
+ * transaction on the server -- for an outline. The list now reads them all in
+ * one `GET /v1/tasks/digests?include=live` (`useRowDevices`); the open
+ * viewer keeps its own session read. A context rather than a prop through
+ * every row component, because one cell of one kind of row uses it.
  */
-const ListReadAt = createContext<number | null>(null)
+const RowDevices = createContext<ReadonlyMap<string, RowDevice> | null>(null)
+
+/**
+ * The browser rows' devices, re-read with each list read (`readAt`) so an
+ * outline follows a device switch (QA12-29). The outlines drawn stay until
+ * the next read answers; a failed read keeps them.
+ */
+function useRowDevices(taskIds: readonly string[], readAt: number | null): ReadonlyMap<string, RowDevice> | null {
+  const [got, setGot] = useState<ReadonlyMap<string, RowDevice> | null>(null)
+  const key = [...taskIds].sort().join(',')
+  useEffect(() => {
+    if (key === '') return
+    let live = true
+    void loadTaskDigests(key.split(','), ['live']).then((r) => {
+      if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+      const presets = r.data.presets ?? []
+      const next = new Map<string, RowDevice>()
+      for (const d of r.data.digests) next.set(d.task_id, { device: d.live?.device ?? null, presets })
+      setGot(next)
+    })
+    return () => {
+      live = false
+    }
+  }, [key, readAt])
+  return got
+}
 
 /**
  * EACH WORKFLOW STEP'S WORKFLOW TITLE (VQ-009, BGD's visual QA 2026-10-26):
@@ -125,7 +161,7 @@ const ListReadAt = createContext<number | null>(null)
  * Overview's Running now named the same agents `<title> · implement`. The
  * list reads the titles the way Overview does (`useRowTitles`: one full read
  * per workflow, once a session, at most 12 at a time, a shared cache), so the
- * two pages name an agent one way. A context, as `ListReadAt`, because only
+ * two pages name an agent one way. A context, as `RowDevices`, because only
  * the row's name uses it. A lone agent is never read for it: reading every
  * lone row in full would be a read per row, so its title comes on the summary
  * row itself (`ownTitle`, SUMMARY-TITLE).
@@ -262,6 +298,7 @@ export function pollInterval(page: TaskPage | null): number {
  * readers.
  */
 export { PHONE_PAGE_LIMIT }
+export { agentPanelGone, agentPanelOpening, agentPanelShown, listMayStart } from './agentPanel'
 
 /** A page of the list, and the page size that read asked for. */
 interface AgentsPage extends TaskPage {
@@ -326,12 +363,109 @@ function appendPage(held: readonly Task[], got: TaskPage | null, token: string |
   return { tasks: [...held, ...rows], token }
 }
 
-async function loadAgentsPage(): Promise<Result<AgentsPage>> {
+/**
+ * THE LIST'S POLL PLAN (load-speed investigation, the owner's pick 2026-11-01,
+ * part of #2688). Measured in the owner's browser, `GET /v1/tasks?limit=200&
+ * view=summary` took 5.3 s on first load and 1.1-2.1 s on every poll, almost
+ * all of it server time, and the list re-read that page every 5 s while Live
+ * held a row -- then, only once it had answered, read the live and waiting
+ * states one `?state=` read each.
+ *
+ * NOW A 5 s POLL IS ONE READ: the live and waiting states together, as one
+ * `?state=A,B,...` list (`GET /v1/tasks` takes several states in one `in`
+ * query, #2998), merged into the page already held. The 200-row page itself is
+ * re-read every `PAGE_REREAD_MS`, and when it is, the state read is started at
+ * the same instant beside it rather than after it. A live agent changes on the
+ * order of seconds and every one of them is in the state read; a finished
+ * agent's row no longer changes, so its page can be 30 s old.
+ *
+ * A ROW THAT LEFT THE LIVE AND WAITING STATES -- held as live or waiting, absent
+ * from a whole state read -- finished, or was cancelled, since the page was
+ * read. Its new row is the page's to bring, so it leaves Live at once and the
+ * next poll re-reads the page (`due`), rather than drawing a finished agent as
+ * running for up to 30 s or guessing the state it ended in.
+ */
+export const PAGE_REREAD_MS = IDLE_POLL_MS
+
+/** The page the list holds between page reads, and when that page was read. */
+export interface HeldPage {
+  page: AgentsPage
+  /** When the page read started. */
+  at: number
+  /** A row left the live and waiting states: the next poll re-reads the page. */
+  due: boolean
+}
+
+/**
+ * THE STATES ONE STATE READ ASKS FOR: every live state and every waiting state
+ * a task is ever in. QUEUED is a workflow's state and never a task's
+ * (`NEVER_WRITTEN`), so it is not asked for (VQ-012).
+ */
+const WAITING_READ: readonly TaskState[] = [...WAITING_STATES].filter((s) => !NEVER_WRITTEN.has(s))
+export const LIVE_AND_WAITING: readonly TaskState[] = [...CONCURRENCY_STATES, ...WAITING_READ]
+const IN_STATE_READ: ReadonlySet<TaskState> = new Set(LIVE_AND_WAITING)
+
+/** Whether the list must read its 200-row page on this read, rather than the states alone. */
+export function pageDue(held: HeldPage | null, now: number = Date.now()): boolean {
+  return held === null || held.due || now - held.at >= PAGE_REREAD_MS
+}
+
+/**
+ * ONE `?state=` READ OF THE LIVE AND WAITING STATES, summary rows, through
+ * `loadTasksInStates`: one `state=A,B,...` request, which the route takes as
+ * one `state IN [...]` query. A FIXTURE BUILD filters its one fixture page.
+ *
+ * A read that throws or answers nothing is a failed read, never an empty
+ * state, as the header's attempt read treats one (AgentSplit.tsx). Called
+ * WITHOUT a microtask in front of it, so the read starts inside `pageReads`
+ * (CH-2) when the page's load calls it.
+ */
+function readLiveAndWaiting(): Promise<Result<TaskPage> | null> {
+  try {
+    return loadTasksInStates(LIVE_AND_WAITING, { view: 'summary' }).then((r) => r ?? null, () => null)
+  } catch {
+    return Promise.resolve(null)
+  }
+}
+
+/** The state read as rows, and whether it holds every live and waiting task. */
+function stateRows(r: Result<TaskPage> | null): { tasks: Task[]; whole: boolean; ok: boolean } {
+  if (r !== null && r.status === 'empty') return { tasks: [], whole: true, ok: true }
+  if (r !== null && r.status === 'ok') return { tasks: r.data.tasks, whole: !r.data.next_page_token, ok: true }
+  if (r !== null && r.status === 'stale') return { tasks: r.data.tasks, whole: false, ok: false }
+  return { tasks: [], whole: false, ok: false }
+}
+
+/** `rows` with every row of `extra` whose id it does not already hold after them. */
+function joinRows(rows: readonly Task[], extra: readonly Task[]): Task[] {
+  const held = new Set(rows.map((t) => t.id))
+  return [...rows, ...extra.filter((t) => !held.has(t.id))]
+}
+
+/**
+ * READ THE LIST: the page and the state read together when the page is due,
+ * the state read alone otherwise. `held` is the screen's own (`AgentsScreen`),
+ * written here after every read, so a tenant switch -- which remounts the
+ * screen -- starts from no page.
+ */
+export async function loadAgentsPage(held: { current: HeldPage | null }): Promise<Result<AgentsPage>> {
+  const last = held.current
+  if (!pageDue(last) && last !== null) return pollStates(last, held)
+  const startedAt = Date.now()
   const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
   // The summary view (#168): no row on this screen draws `input`, `metadata`
   // or `result_summary` -- the inspector reads its own task, full, through
   // `loadTask` -- and the trap in `drawer.reread.test.tsx` holds that.
-  const read = await loadTasks(asked, { view: 'summary' })
+  // BOTH READS START HERE, before the first `await`.
+  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
+  // there is no capped page to read the states beside, and the state read would
+  // be the same fixture rows again.
+  const [read, states] = await Promise.all([
+    loadTasks(asked, { view: 'summary' }),
+    USE_FIXTURES ? Promise.resolve(null) : readLiveAndWaiting(),
+  ])
+  const fresh = stateRows(states)
+  let page: AgentsPage
   // AN EMPTY READ IS A PAGE OF NO ROWS, NOT A DIFFERENT SCREEN (V151, visual
   // QA #1038). Handed to `Screen` as `empty`, it replaced the whole body with
   // one panel: the tab strip, the search and the filters went with it, so the
@@ -339,79 +473,72 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
   // see a minute later. The body draws each tab's own real zero, mark and
   // all, under the same chrome it always has.
   if (read.status === 'empty') {
-    return { status: 'ok', data: { tasks: [], next_page_token: null, asked }, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
+    page = { tasks: fresh.ok ? fresh.tasks : [], next_page_token: null, asked, liveWhole: true, waitingWhole: true }
+    held.current = { page, at: startedAt, due: false }
+    return { status: 'ok', data: page, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
   }
   if (read.status !== 'ok' && read.status !== 'stale') return read
-  if (!read.data.next_page_token) return { ...read, data: { ...read.data, asked, liveWhole: true, waitingWhole: true } }
-  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
-  // there is no capped page to read the live states beside, and its `?state=`
-  // reads are the same fixture rows again, not a second population.
-  if (USE_FIXTURES) return { ...read, data: { ...read.data, asked, liveWhole: false, waitingWhole: false } }
-  const [live, waiting] = await Promise.all([readStates([...CONCURRENCY_STATES]), readStates(WAITING_READ)])
-  const held = new Set(read.data.tasks.map((t) => t.id))
-  const extra: Task[] = []
-  for (const t of [...live.tasks, ...waiting.tasks]) {
-    if (held.has(t.id)) continue
-    held.add(t.id)
-    extra.push(t)
+  // A PAGE WITH NO TOKEN HOLDS EVERY ROW, live ones included (QA12-20). A
+  // capped one holds every live and waiting row only when the state read beside
+  // it was whole; a failed or capped state read leaves Live and Waiting lower
+  // bounds, as they were. The state read's rows are the newer of the two for
+  // a task both hold only by a hair, so the page's own row is kept.
+  const capped = Boolean(read.data.next_page_token)
+  page = {
+    ...read.data,
+    tasks: joinRows(read.data.tasks, fresh.tasks),
+    asked,
+    liveWhole: !capped || fresh.whole,
+    waitingWhole: !capped || fresh.whole,
   }
-  return {
-    ...read,
-    data: {
-      ...read.data,
-      tasks: [...read.data.tasks, ...extra],
-      asked,
-      liveWhole: live.whole,
-      waitingWhole: waiting.whole,
-    },
-  }
+  if (read.status === 'ok') held.current = { page, at: startedAt, due: false }
+  return { ...read, data: page }
 }
 
 /**
- * THE WAITING STATES, READ IN FULL TOO (VQ-012, BGD's visual QA 2026-10-26):
- * over a capped page the tab read `Waiting 38+` beside the panel's `Waiting
- * 38` -- the panel counts by state over every task (`/v1/stats`, Spine.tsx
- * D27), the tab over the newest page -- so one figure was drawn with and
- * without its `+`. Read whole, as the live states are, the tab's figure is
- * every waiting agent and needs no `+`; a failed or capped read keeps it a
- * lower bound. QUEUED is a workflow's state and never a task's
- * (`NEVER_WRITTEN`), so it is not asked for.
+ * A 5 s POLL: the state read alone, merged into the page held. A row the read
+ * holds takes the read's row; a row held as live or waiting that a WHOLE read
+ * no longer holds is dropped and the page marked `due`; every other row is the
+ * page's. A failed state read is a failed read of the list: `Screen` keeps the
+ * rows on screen, dimmed with their age, and backs off.
  */
-const WAITING_READ: readonly TaskState[] = [...WAITING_STATES].filter((s) => !NEVER_WRITTEN.has(s))
+async function pollStates(last: HeldPage, held: { current: HeldPage | null }): Promise<Result<AgentsPage>> {
+  const states = await readLiveAndWaiting()
+  const fresh = stateRows(states)
+  if (!fresh.ok) {
+    if (states !== null && states.status === 'error') return states
+    return {
+      status: 'error',
+      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The live and waiting agents could not be read.' },
+    }
+  }
+  const byId = new Map(fresh.tasks.map((t) => [t.id, t]))
+  let left = false
+  const kept: Task[] = []
+  for (const t of last.page.tasks) {
+    const now = byId.get(t.id)
+    if (now !== undefined) kept.push(now)
+    else if (fresh.whole && IN_STATE_READ.has(t.state)) left = true
+    else kept.push(t)
+  }
+  const page: AgentsPage = {
+    ...last.page,
+    tasks: joinRows(kept, fresh.tasks),
+    liveWhole: fresh.whole,
+    waitingWhole: fresh.whole,
+  }
+  held.current = { page, at: last.at, due: last.due || left }
+  const at = states !== null && (states.status === 'ok' || states.status === 'empty') ? states : null
+  return { status: 'ok', data: page, fetchedAt: at?.fetchedAt ?? Date.now(), ...(at?.serverAt !== undefined ? { serverAt: at.serverAt } : {}) }
+}
 
 /**
- * THE LIVE STATES, READ IN FULL (live-browser QA p12, QA12-20). Live was
- * counted over the newest 200 rows, so with more beyond them it read `Live
- * 5+` with exactly five live, offered `Load 200 more` under five rows, and a
- * resumed task older than the page -- the case p12 measured -- was not on it
- * at all. A live agent holds a pool slot, so the live states are bounded by
- * concurrency (invariant 3), not by the page: one `?state=` read each, summary
- * rows, made only when the page is capped. A failed or capped read leaves
- * Live a lower bound, as it was.
+ * WHILE AN AGENT IS OPEN THE LIST POLLS AT THE IDLE CADENCE: the reader is on
+ * the agent, whose own reads keep it current, and the list beside it is
+ * context. 5 s returns when the agent is closed and Live holds a row.
  */
-async function readStates(states: readonly TaskState[]): Promise<{ tasks: Task[]; whole: boolean }> {
-  const reads = await Promise.all(
-    // A read that throws or answers nothing is a failed read, never an
-    // empty state, as the header's attempt read treats one (AgentSplit.tsx).
-    states.map((state) =>
-      Promise.resolve()
-        .then(() => loadTasksInState(state, { view: 'summary' }))
-        .then((r) => r ?? null, () => null),
-    ),
-  )
-  let whole = true
-  const tasks: Task[] = []
-  for (const r of reads) {
-    if (r !== null && r.status === 'empty') continue
-    if (r === null || r.status !== 'ok') {
-      whole = false
-      if (r !== null && r.status === 'stale') tasks.push(...r.data.tasks)
-      continue
-    }
-    tasks.push(...r.data.tasks)
-    if (r.data.next_page_token) whole = false
-  }
-  return { tasks, whole }
+export function listPollInterval(page: TaskPage | null, open: string | null): number {
+  return open !== null ? IDLE_POLL_MS : pollInterval(page)
 }
 
 /**
@@ -431,6 +558,134 @@ async function readStates(states: readonly TaskState[]): Promise<{ tasks: Task[]
  * `onList` and App writes the address -- this screen never touches the hash.
  * Both optional, for the same reason `taskId` is.
  */
+/*
+ * THE WORK REDESIGN'S AGENTS PAGE (the owner's pick of 2026-11-03, "Graph
+ * with a docked inspector, plus the Attention inbox's row of what needs you";
+ * part of #2688). The list is the left pane of the Work section's docked
+ * inspector (work/Inspector.tsx); with no agent open the inspector is the
+ * wall of live browser stills, and the Needs-you row sits over the list.
+ * Every count below is read from the rows this page already holds: nothing is
+ * read for it that the list did not read before, and nothing is counted by
+ * hand.
+ */
+
+/** A row column that gives way as the left pane narrows. */
+export type DroppedColumn = 'attempt' | 'owner' | 'cost' | 'pr'
+
+/**
+ * Which row columns the left pane drops at a width class: attempt and owner
+ * first, then cost and the pull request, so beside a wide inspector a row is
+ * its state, agent and time. Beside the wall at rest (`WALL_WIDTH`) the list
+ * is at least `medium` from 1280 up and keeps every column (graph-fixes.md,
+ * finding 8); they go as the inspector is dragged wider or an agent opens
+ * beside the list. The cells carry the matching `wi-hide-*` class
+ * (inspectorShell.css), whose container queries use `widthClassOf`'s bounds.
+ */
+export function droppedColumns(cls: WidthClass): DroppedColumn[] {
+  if (cls === 'wide' || cls === 'medium') return []
+  if (cls === 'narrow') return ['attempt', 'owner']
+  return ['attempt', 'owner', 'cost', 'pr']
+}
+
+/** The `wi-hide-*` class a column's cell carries: the width class it leaves at. */
+export const DROP_CLASS: Readonly<Record<DroppedColumn, string>> = {
+  attempt: 'wi-hide-narrow',
+  owner: 'wi-hide-narrow',
+  cost: 'wi-hide-slim',
+  pr: 'wi-hide-slim',
+}
+
+/** The wall's resting width: two stills a row, and every column kept beside it (the design's 340). */
+export const WALL_WIDTH = 340
+
+/**
+ * WHAT WAITS ON THE PERSON AMONG THE ROWS READ, for the Needs-you row: a
+ * failed agent, a merge held by owner questions (and each question it names,
+ * once), a browser hand-off. Approvals are not read by this page, so the row
+ * says "not known" for them (`approvals={null}`), never 0.
+ */
+export function agentNeeds(tasks: readonly Task[], title: (t: Task) => string): NeedItem[] {
+  const items: NeedItem[] = []
+  const asked = new Set<string>()
+  for (const t of tasks) {
+    const hold = ownerQuestionsHold(t)
+    if (hold !== null) {
+      items.push({ kind: 'merge', task: t, title: title(t), approval: null })
+      for (const q of hold.questions) {
+        const key = `${q.task_id}:${q.question_index}`
+        if (asked.has(key)) continue
+        asked.add(key)
+        items.push({ kind: 'question', taskId: q.task_id, index: q.question_index, title: heldName(q), question: q.question })
+      }
+    } else if (t.state === 'FAILED') {
+      items.push({ kind: 'failed', task: t, title: title(t), why: t.last_error ?? null })
+    } else if (handoffOf(t) !== null) {
+      items.push({ kind: 'handoff', task: t, title: title(t) })
+    }
+  }
+  return items
+}
+
+/** The row's cost: the measured spend, "+" when some attempt has not reported, "not known" when none measured it (never $0). */
+export function costCell(t: Pick<Task, 'cost_usd_total' | 'cost_incomplete'>): { text: string; say: string } {
+  const usd = t.cost_usd_total
+  if (usd === null || usd === undefined || !Number.isFinite(usd)) return { text: 'cost not known', say: 'Cost not known: no attempt of this agent has reported what it spent' }
+  const v = `$${usd.toFixed(2)}`
+  return t.cost_incomplete === true
+    ? { text: `${v}+`, say: `At least ${v}: an attempt has not reported what it spent yet` }
+    : { text: v, say: `Spent ${v}` }
+}
+
+/** The row's owner, as the owner filter offers it: the address before its @. */
+function ownerOf(t: Pick<Task, 'submitted_by'>): string | null {
+  return t.submitted_by?.split('@')[0] || null
+}
+
+/** The order the "most spent first" box puts rows in: the most spent first, an unmeasured cost last. */
+export function bySpent(a: Pick<Task, 'cost_usd_total'>, b: Pick<Task, 'cost_usd_total'>): number {
+  const x = a.cost_usd_total ?? null
+  const y = b.cost_usd_total ?? null
+  if (x === null || y === null) return Number(x === null) - Number(y === null)
+  return y - x
+}
+
+/**
+ * THE INSPECTOR WITH NO AGENT OPEN: every live browser's still, the one
+ * waiting on the person first (`liveBrowserRows`), each opening its agent.
+ * A starting browser has no picture yet and is counted, not drawn.
+ */
+export function LiveWall({ tasks, onOpen, title }: { tasks: readonly Task[]; onOpen: (taskId: string) => void; title: (t: Task) => string }) {
+  const live = liveBrowserRows(tasks)
+  const starting = tasks.filter((t) => t.state === 'STARTING' && isLiveBrowser(t)).length
+  return (
+    <div className="ag-wall" data-live={live.length}>
+      {starting > 0 && (
+        <p className="ag-wall-note">
+          +{starting} starting, no picture yet
+        </p>
+      )}
+      {live.length === 0 ? (
+        <p className="ag-wall-note">No browser is live right now.</p>
+      ) : (
+        <ul className="ag-wall-grid" aria-label="Live browsers">
+          {live.map((t) => {
+            const yours = handoffOf(t) !== null
+            return (
+              <li key={t.id} className={`ag-wall-card${yours ? ' is-your-turn' : ''}`} data-task-id={t.id}>
+                <button type="button" className="ag-wall-open" onClick={() => onOpen(t.id)} title={`${title(t)} · ${t.id}`}>
+                  <span className="ag-wall-name">{title(t)}</span>
+                  {yours && <ToneMark tone="wait">your turn</ToneMark>}
+                </button>
+                <LiveThumb taskId={t.id} workflowId={t.workflow_id ?? null} />
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function AgentsScreen({
   onOpen,
   taskId = null,
@@ -483,6 +738,40 @@ export function AgentsScreen({
   const [more, setMore] = useState<MorePages | null>(null)
   const [moreRead, setMoreRead] = useState<MoreRead>({ kind: 'idle' })
   const busy = useRef(false)
+  // THE PAGE HELD BETWEEN PAGE READS (`loadAgentsPage`), and the first read's
+  // wait for the agent panel (`listMayStart`). `open` is read through a ref so
+  // the wait sees the address as it is when it wakes, not when it began.
+  const held = useRef<HeldPage | null>(null)
+  const open = useRef(taskId)
+  open.current = taskId
+  const waits = useRef(new Set<() => void>())
+  useEffect(() => {
+    wakePanelWaiters()
+  }, [taskId])
+  useEffect(
+    () => () => {
+      for (const wake of waits.current) panelWaiters.delete(wake)
+      waits.current.clear()
+    },
+    [],
+  )
+  const load = async (): Promise<Result<AgentsPage>> => {
+    if (held.current === null && !listMayStart(open.current)) {
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          if (!listMayStart(open.current)) return
+          panelWaiters.delete(wake)
+          waits.current.delete(wake)
+          resolve()
+        }
+        panelWaiters.add(wake)
+        waits.current.add(wake)
+      })
+      // Past the wait the reads are still the page's (CH-2).
+      return pageReads(() => loadAgentsPage(held))
+    }
+    return loadAgentsPage(held)
+  }
   const loadMore = async (page: AgentsPage) => {
     const token = more !== null ? more.token : (page.next_page_token ?? null)
     if (token === null || busy.current) return
@@ -502,18 +791,68 @@ export function AgentsScreen({
     }
   }
 
+  // THE DOCKED INSPECTOR IS AROUND THE WHOLE LIST, read or not (#3146). It
+  // holds the wall while no agent is open and a browser is live or starting,
+  // and AN OPEN AGENT IS HOSTED IN IT (the owner's pick on #3146, "Host it in
+  // the inspector"): App builds the agent's view and hands it here
+  // (`HostedAgent`), so the inspector's drag handle sizes it, its fold folds
+  // it, and on a phone it is the inspector's sheet with its back control; the
+  // list stays the left pane and never moves. It is outside `Screen` because
+  // the list's first read waits for the agent panel (`listMayStart`): inside
+  // the list's body the panel would wait for the list it holds back.
+  const agent = useContext(HostedAgent)
+  // The rows the body holds (`onRows`), for the wall and the title. The same
+  // rows twice are no change, so a page rebuilt per render does not loop.
+  const [rows, setRows] = useState<readonly Task[]>([])
+  const onRows = useCallback((tasks: readonly Task[]) => {
+    setRows((was) => (was.length === tasks.length && was.every((t, i) => t === tasks[i]) ? was : tasks))
+  }, [])
+  // The rows' titles: a lone agent's title, else the step's workflow and step
+  // as the row draws them. One read for the wall, the Needs-you row and the title.
+  const allTitles = useRowTitles(rows.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
+  const nameOf = useCallback((t: Task): string => ownTitle(t) ?? rowLabel(t, stepWorkflowTitle(t, allTitles)), [allTitles])
+  const phone = useIsPhone()
+  // ON A PHONE THE WALL IS A SHEET, opened from the toolbar and closed by its back control.
+  const [wallOpen, setWallOpen] = useState(false)
+  const wallTasks = useMemo(() => browserRows(rows), [rows])
+  const wall = taskId === null && wallTasks.length > 0 ? <LiveWall tasks={rows} onOpen={onOpen} title={nameOf} /> : null
+  const [foldAtRest] = useState(() => typeof window !== 'undefined' && startsFolded(window.innerWidth))
+  const openRowTask = agent === null ? undefined : rows.find((t) => t.id === agent.taskId)
+
   return (
     <>
+    <Inspector
+      screen="agents"
+      initialWidth={WALL_WIDTH}
+      {...(agent !== null
+        ? {
+            label: 'Agent inspector',
+            title: openRowTask !== undefined ? nameOf(openRowTask) : agent.taskId,
+            subject: agent.taskId,
+            // The phone sheet's way back and Escape are the agent's own
+            // (`.ctl-agent-back`, naming the list it goes back to).
+            phoneOpen: true,
+          }
+        : {
+            label: 'Live browsers',
+            title: 'Live browsers',
+            state: <span className="ag-wall-count">{wallTasks.length} live</span>,
+            phoneOpen: wallOpen,
+            onBack: () => setWallOpen(false),
+          })}
+      startFolded={foldAtRest}
+      backLabel="Agents"
+      main={
       <Screen
         title="Agents"
-        load={loadAgentsPage}
+        load={load}
         // THE LIST RE-READS (AG-1). It read once and never again, while its
         // clock went on adding to every row: a finished agent read `running`
         // and was counted in Live. `Screen` owns the timer, the pause while the
         // tab is hidden, the back-off and the stop on an answer only a person
         // can change; this screen owns the cadence, which is a function of the
         // rows it holds.
-        pollMs={pollInterval}
+        pollMs={(page) => listPollInterval(page, open.current)}
         summary={(first) => {
           const d = withMorePages(first, more)
           const live = d.tasks.filter((t) => tabOf(t) === 'live').length
@@ -540,7 +879,7 @@ export function AgentsScreen({
             // screen hands over the last GOOD read's time, which is the one the
             // rows describe.
             readAt={reading.fetchedAt}
-            interval={reading.pollMs ?? pollInterval(d)}
+            interval={reading.pollMs ?? listPollInterval(d, taskId)}
             tab={tab}
             setTab={setTab}
             recentState={recentState}
@@ -556,15 +895,23 @@ export function AgentsScreen({
             setFailedFirst={setFailedFirst}
             browserUnused={browserUnused}
             setBrowserUnused={setBrowserUnused}
+            nameOf={nameOf}
+            onRows={onRows}
+            watchWall={phone && wall !== null ? () => setWallOpen(true) : null}
           />
         )}
       </Screen>
+      }
+    >
+      {agent !== null ? agent.view : wall}
+    </Inspector>
       {/* A SCRIM WHILE AN AGENT IS OPEN (BT-017, #2423): from 760px to 1099px
           the agent is an overlay on this list, and with no backdrop its edge
           cut the rows mid-word (`…NOT_YET, not`) as if they were one page.
           Drawn only in that band (agents.css `.ag-scrim`); it takes no pointer,
-          so a row under it still opens, as it did. */}
-      {taskId !== null && <div className="ag-scrim" aria-hidden="true" />}
+          so a row under it still opens, as it did. An agent hosted in the
+          inspector (#3146) is beside the list, never over it: no scrim. */}
+      {taskId !== null && agent === null && <div className="ag-scrim" aria-hidden="true" />}
     </>
   )
 }
@@ -602,6 +949,9 @@ function AgentsBody({
   setFailedFirst,
   browserUnused,
   setBrowserUnused,
+  nameOf,
+  onRows,
+  watchWall,
 }: {
   onOpen: (taskId: string) => void
   openTaskId: string | null
@@ -632,6 +982,12 @@ function AgentsBody({
   /** Only the browser agents whose browser was not used (`?browser=unused`, #2322). */
   browserUnused: boolean
   setBrowserUnused: (b: boolean) => void
+  /** A row's name, as the wall and the Needs-you row draw it. */
+  nameOf: (t: Task) => string
+  /** Told the rows this page holds, for the wall and the inspector's title around the list. */
+  onRows: (tasks: readonly Task[]) => void
+  /** Open the wall's phone sheet; null where there is no sheet to open. */
+  watchWall: (() => void) | null
 }) {
   // One clock for every ticking duration on the screen, so a hundred rows do
   // not each hold their own interval. The SHARED 1s clock (useNow.ts), the
@@ -728,6 +1084,14 @@ function AgentsBody({
   // `BROWSERS`, NOT `LIVE` (live-browser QA p12, QA12-20): the option read
   // `Live` inside the Live tab, one word for two different sets on one line.
   const [browsersOnly, setBrowsersOnly] = useState(false)
+  // THE OWNER FILTER AND "MOST SPENT FIRST" (the Work redesign's tools row):
+  // a reader's scratch over the loaded rows, held here as the started sort is.
+  const [owner, setOwner] = useState('')
+  const [spentFirst, setSpentFirst] = useState(false)
+  const owners = useMemo(
+    () => Array.from(new Set(page.tasks.map(ownerOf).filter((o): o is string => o !== null))).sort(),
+    [page.tasks],
+  )
   const browsers = shown === 'live' && browsersOnly
   const liveBrowsers = useMemo(() => browserRows(page.tasks).length, [page.tasks])
   const sort: SortControl = {
@@ -741,17 +1105,23 @@ function AgentsBody({
           // not reorder it; the profile and the search still narrow it.
           browserRows(page.tasks)
             .filter((t) => profile === '' || t.runner_profile === profile)
+            .filter((t) => owner === '' || ownerOf(t) === owner)
             .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
             .filter((t) => needle === '' || matchesQuery(t, needle))
         : page.tasks
         .filter((t) => tabOf(t) === shown)
         .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
+        .filter((t) => owner === '' || ownerOf(t) === owner)
         // Only an explicit `false` from the worker: a null verdict is not
         // "not used" (BrowserUse.tsx), so it is never listed here.
         .filter((t) => !browserUnused || browserUseOf(t)?.kind === 'unused')
         .filter((t) => needle === '' || matchesQuery(t, needle))
         .sort((a, b) => {
+          if (spentFirst) {
+            const bySpend = bySpent(a, b)
+            if (bySpend !== 0) return bySpend
+          }
           if (failFirst) {
             const byFailed = Number(b.state === 'FAILED') - Number(a.state === 'FAILED')
             if (byFailed !== 0) return byFailed
@@ -759,7 +1129,7 @@ function AgentsBody({
           if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
           return listOrder(a, b, shown)
         }),
-    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers, browserUnused],
+    [page.tasks, shown, stateFilter, profile, owner, needle, failFirst, spentFirst, startedSort, browsers, browserUnused],
   )
 
   // EVERY ROW READ, BY ID, not only the ones this tab and its filters keep
@@ -849,6 +1219,23 @@ function AgentsBody({
   }
   const idQuery = WHOLE_TASK_ID.test(needle) ? needle : null
 
+  // A PASTED WHOLE TASK ID OPENS THAT AGENT (the Work redesign, graph-notes
+  // A2): when the tab's rows hold it, its view opens in the inspector. Once
+  // per id, so a reader who closes it is not sent back on the next re-read;
+  // an id the rows do not hold is still looked up by `IdLookup` below.
+  const pastedOpened = useRef<string | null>(null)
+  useEffect(() => {
+    if (idQuery === null) {
+      pastedOpened.current = null
+      return
+    }
+    if (pastedOpened.current === idQuery || openTaskId === idQuery) return
+    if (!rows.some((t) => t.id === idQuery)) return
+    pastedOpened.current = idQuery
+    openRow(idQuery)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idQuery, rows, openTaskId])
+
   // THE OPEN AGENT'S ROW IS SCROLLED INTO VIEW, ONCE, when it is first drawn
   // (live QA WA-15). A deep link marked the row `aria-current` and left it at
   // y=2030, below the fold. Once per agent: a reader who then scrolls the
@@ -928,11 +1315,27 @@ function AgentsBody({
         : `${sortWord}; press for the list’s own order, ${ownOrder}`
   // The workflow titles of the steps on screen (VQ-009, `RowTitleOf`).
   const titleOf = useRowTitles(rows.filter((t) => isStep(t) && stepWorkflowTitle(t, null) === null))
+  // The browser rows' outlines, one read for all of them (`RowDevices`).
+  const devices = useRowDevices(rows.filter((t) => t.state === 'RUNNING' && isLiveBrowser(t)).map((t) => t.id), readAt)
   const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
+  // THE NEEDS-YOU ROW reads the rows this page holds, nothing more, named as
+  // the wall names them (`nameOf`, AgentsScreen's).
+  const needs = useMemo(() => agentNeeds(page.tasks, nameOf), [page.tasks, nameOf])
+  // The wall and the inspector's title are AgentsScreen's, which holds the
+  // inspector around the list (#3146): they read the rows this page holds.
+  useEffect(() => onRows(page.tasks), [page.tasks, onRows])
+  const hosting = useContext(HostedAgent) !== null
+
   return (
-    <ListReadAt.Provider value={readAt}>
+    <RowDevices.Provider value={devices}>
     <RowTitleOf.Provider value={titleOf}>
+      <NeedsYou items={needs} approvals={null} />
+      {watchWall !== null && (
+        <button type="button" className="ag-wall-phone" onClick={watchWall}>
+          Watch {liveBrowsers} live {liveBrowsers === 1 ? 'browser' : 'browsers'}
+        </button>
+      )}
       {/* THE SECTION'S PAGES AS A STRIP (agents.html V1; #503 at 390): Live,
           Waiting and Recent with their counts, underlined rather than boxed.
           On a phone it sticks under the header, so the reader can change tab
@@ -977,8 +1380,10 @@ function AgentsBody({
         {/* THE COLLAPSE TOGGLE IS THE LIST'S (#503): it sat as a boxed button
             at the top of the detail. « folds the list to its 64px strip of
             state marks and » brings it back, as `[` does; only beside an
-            open agent, where there is a detail to give the room to. */}
-        {openTaskId !== null && <AgCollapse />}
+            open agent, where there is a detail to give the room to. Not
+            where the agent is hosted in the inspector (#3146): its handle
+            and fold give the room there. */}
+        {openTaskId !== null && !hosting && <AgCollapse />}
 
         {/* THE SCOPE RIDES WITH THE SEARCH (V147, visual QA #1038). It was the
             toolbar's last, `is-end` item, and whenever the toolbar wrapped
@@ -1017,6 +1422,12 @@ function AgentsBody({
             the checkboxes and `Started` are one unbreakable tail inside the
             group, so a narrow list never strands the last control either. */}
         <div className="ag-tools">
+          {/* THE TWO PICKERS ARE ONE PAIR (#139 at 390, #3146). Everywhere but
+              the phone the pair is no box (`display: contents`) and its
+              filters are the tools group's own items; on a phone they share
+              one line, so the owner filter the redesign added takes no line
+              of its own and the first row stays above the midpoint. */}
+          <div className="ag-pickers">
           <label className="ag-filter ag-filter-profile">
             <span className="ag-filter-k">profile:</span>
             {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
@@ -1030,6 +1441,18 @@ function AgentsBody({
               ))}
             </select>
           </label>
+          <label className="ag-filter ag-filter-owner">
+            <span className="ag-filter-k">owner:</span>
+            <select value={owner} title={owner === '' ? 'anyone' : owner} aria-label="Owner" onChange={(e) => setOwner(e.target.value)}>
+              <option value="">anyone</option>
+              {owners.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </label>
+          </div>
 
           {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
               filters the tab it sits beside, it is not a fourth tab. Counts are
@@ -1129,6 +1552,10 @@ function AgentsBody({
           )}
 
           <div className="ag-tools-tail">
+            <label className="ag-filter check">
+              <input type="checkbox" checked={spentFirst} onChange={(e) => setSpentFirst(e.target.checked)} />
+              Most spent first
+            </label>
             {failFirstOffered && (
               <label className="ag-filter check">
                 <input
@@ -1288,7 +1715,7 @@ function AgentsBody({
         </div>
       )}
     </RowTitleOf.Provider>
-    </ListReadAt.Provider>
+    </RowDevices.Provider>
   )
 }
 
@@ -1940,12 +2367,20 @@ const RUNS_HELD = 500
 
 /**
  * HOW MANY TIMES A ROW'S TASK RAN, read as the task header reads it
- * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for a row
- * that shows the figure -- live, or over its cap -- and re-read only when the
+ * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for THE ROW
+ * THE INSPECTOR HAS OPEN, when it shows the figure -- live, or over its cap --
+ * and re-read only when the
  * task says its attempts changed (its generation, its counter or its state),
  * the header's own key, never on every list poll. Until the documents are
  * read, or when the read fails, the task's own counter, as the header falls
  * back to it.
+ *
+ * EVERY OTHER ROW TAKES ITS TOTAL FROM THE ROW (load-speed investigation, the
+ * owner's pick 2026-11-01): one `/attempts` read per live row made a list of
+ * twelve live agents twelve more requests on every key change, beside the
+ * page. The row's `attempt_count` is the task's own counter, the figure the
+ * header falls back to; the open row is the one drawn beside that header, so
+ * it alone reads the documents and cannot contradict it.
  *
  * UNTIL THE FIRST READ LANDS, NULL (visual QA QA-026): the counter is the
  * figure only once a read has FAILED, never while one is in flight -- in
@@ -2153,7 +2588,7 @@ function CompactRow({
         ? `${sinceSubmit} since it was submitted at ${new Date(submitted).toISOString().slice(0, 16).replace('T', ' ')}Z: nothing records when it was ${task.state.toLowerCase()}`
         : undefined
   const ran = finished && el.phase !== 'unknown' ? (el.phase === 'ran' ? `ran ${el.text}` : el.text) : null
-  const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
+  const tries = attemptsUsed(task, useRuns(task, open && (live || task.attempt_count > task.max_attempts)))
   // EVERY LIVE AND WAITING ROW SAYS ITS STATE IN WORDS (visual QA pass 1,
   // overview-agents-11, -56): a running row was told only by its dot, and a
   // waiting row's `queued` or `ready` was in its accessible name and nowhere
@@ -2205,6 +2640,7 @@ function CompactRow({
   // the budget stopped. No read and no mark for an agent with no budget.
   const { warning: budgetWarning } = useBudgetWarning(task)
   const budgetSay = budgetRowSay(task, budgetWarning, live)
+  const cost = costCell(task)
   const cardId = `ag-card-${task.id}`
 
   const show = (row: HTMLElement) => {
@@ -2236,7 +2672,7 @@ function CompactRow({
     live || tries.over ? tries.say : null,
     startingBrowser ? 'browser starting' : null,
     cancelling ? 'cancelling' : null,
-    waitsForYou ? 'needs you' : null,
+    waitsForYou ? 'your turn' : null,
     budgetSay,
     cancelSpan ? CANCEL_SPAN : null,
     why.text === '' ? null : whySaid(why),
@@ -2255,11 +2691,13 @@ function CompactRow({
     profile,
     browserMark !== null ? browserUseSay(browserMark) : null,
     task.submitted_by ?? 'no owner recorded',
+    cost.say,
+    'pull request not known',
     ran,
     !live && !waitingRow && wordOnly ? el.text : null,
     !live && tries.over ? tries.text : null,
     cancelling ? 'cancelling' : null,
-    waitsForYou ? 'needs you' : null,
+    waitsForYou ? 'your turn' : null,
     cancelSpan ? CANCEL_SPAN : null,
   ]
     .filter((p): p is string => p !== null && p !== undefined && p !== '')
@@ -2381,13 +2819,14 @@ function CompactRow({
             {' · '}
           </>
         )}
+        {/* The attempt gives way first as the inspector widens (`droppedColumns`). */}
         {live && (
-          <>
+          <span className={DROP_CLASS.attempt}>
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
               {tries.text}
             </span>
             {' · '}
-          </>
+          </span>
         )}
         {/* THE BUDGET MARK COMES BEFORE THE PROFILE (#2459): the line is cut
             at its end on a desktop row, and this is what the row is watched
@@ -2399,15 +2838,19 @@ function CompactRow({
           </>
         )}
         <span className="cr-profile">{profile}</span>
-        {' · '}
         {browserMark !== null && (
           <>
-            <BrowserUseMark view={browserMark} />
             {' · '}
+            <BrowserUseMark view={browserMark} />
           </>
         )}
-        <span className="cr-owner" title={task.submitted_by ?? undefined}>
-          {owner ?? <Em />}
+        {/* THE OWNER, COST AND PULL REQUEST carry their separator inside, so
+            a column the narrowed pane drops leaves no stray dot behind. */}
+        <span className={DROP_CLASS.owner}>
+          {' · '}
+          <span className="cr-owner" title={task.submitted_by ?? undefined}>
+            {owner ?? <Em />}
+          </span>
         </span>
         {ran !== null && (
           <>
@@ -2444,7 +2887,7 @@ function CompactRow({
         {waitsForYou && (
           <>
             {' · '}
-            <ToneMark tone="wait">needs you</ToneMark>
+            <ToneMark tone="wait">your turn</ToneMark>
           </>
         )}
         {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), as a short mark on
@@ -2459,6 +2902,26 @@ function CompactRow({
             </span>
           </>
         )}
+      </span>
+      {/* COST AND PULL REQUEST, the design's right-hand columns: their own
+          cell under the time, so the line beside them keeps its order --
+          profile, owner, the run, and a cancelled run's note last. Each
+          gives way as the inspector widens (`droppedColumns`). THE PULL
+          REQUEST IS NOT KNOWN HERE: it is in the result summary, which the
+          list's summary read does not serve (#168), so the row never reads
+          `result_summary` and says so rather than guessing. */}
+      <span className="cr-figs">
+        <span className={DROP_CLASS.cost}>
+          <span className={`cr-cost${cost.text === 'cost not known' ? ' is-unknown' : ''}`} title={cost.say}>
+            {cost.text}
+          </span>
+        </span>
+        <span className={DROP_CLASS.pr}>
+          {' · '}
+          <span className="cr-pr is-unknown" title="Pull request not known: the list's read does not carry it; the agent's Changes tab does">
+            PR not known
+          </span>
+        </span>
       </span>
       {/* THE REASON IS CLAMPED AND WHOLE IN ITS TITLE (V061): a failed row
           printed its whole multi-line error. ON A FAILED ROW IT IS RED, as the
@@ -2537,23 +3000,14 @@ export function deviceShape(session: Pick<LiveSession, 'device' | 'presets'> | n
  * RE-READ WITH THE LIST'S POLL (live-browser QA p12, QA12-29). It was read
  * once, when the row first drew, on the reasoning that the device moves only
  * when someone switches it -- and after a switch the row went on drawing the
- * old device for as long as the list was open. Still one small session read
- * per live browser row, never a socket; each list read (`ListReadAt`) brings
- * the next, and the outline drawn stays until it answers.
+ * old device for as long as the list was open. Each list read brings the
+ * next (`useRowDevices`), and the outline drawn stays until it answers.
+ *
+ * NO READ OF ITS OWN (#2688, WORK-READS-SPEED): it was one session read per
+ * row per poll; the list reads every row's device at once (`RowDevices`).
  */
 function DeviceThumb({ taskId }: { taskId: string }) {
-  const [got, setGot] = useState<{ taskId: string; session: LiveSession | null } | null>(null)
-  const polledAt = useContext(ListReadAt)
-  useEffect(() => {
-    let live = true
-    void loadLiveSession(taskId).then((r) => {
-      if (live && (r.status === 'ok' || r.status === 'stale')) setGot({ taskId, session: r.data.session ?? null })
-    })
-    return () => {
-      live = false
-    }
-  }, [taskId, polledAt])
-  const session = got !== null && got.taskId === taskId ? got.session : null
+  const session = useContext(RowDevices)?.get(taskId) ?? null
   const shape = deviceShape(session)
   const device = session?.device ?? null
   // A desktop is landscape and a phone portrait unless the session says otherwise.

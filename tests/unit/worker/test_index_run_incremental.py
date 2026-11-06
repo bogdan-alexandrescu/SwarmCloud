@@ -327,3 +327,72 @@ def test_the_worker_and_the_api_name_the_same_base_files_and_keys():
         HEAD, "full",
     )
     assert indexrun.requested_base(full.input) is None
+
+
+# --------------------------------------------------------------------------
+# A weekly full run is given the last promoted index too (part of #2991,
+# owner 2026-11-01), by its own line, so it resolves only the changed and
+# never-covered files with the servers and still rebuilds the tree-sitter
+# half whole (`--base-lsp-only`).
+# --------------------------------------------------------------------------
+
+def test_a_full_run_given_a_base_stages_it_and_carries_only_the_servers_answers(
+    db, store, worker_factory, index_tools, checkout, recheck_bypassed
+):
+    _seed(db, store, kind="full", prompt=f"index it\n{indexrun.LSP_BASE_LINE}{BASE}\n")
+    worker, _, _ = worker_factory(runner_profile="indexer", timeout_seconds=1800,
+                                  repository_url=URL)
+
+    worker.run()
+
+    rows = _order(index_tools)
+    # MUTATION: read only BASE_LINE in `requested_base` and a full run is
+    # staged nothing: it starts from no answers, every week.
+    assert [name for name, _ in rows] == ["read", "extract", "agent", "graph_write"], rows
+    extract = rows[1][1]["argv"]
+    assert _flag(extract, "--base-sha") == BASE
+    # MUTATION: drop the flag and the extractor carries the base's
+    # tree-sitter half too, which a full run exists to rebuild.
+    assert "--base-lsp-only" in extract
+    assert _phases(db)["stage_base"]["status"] == "ok"
+
+
+def test_an_incremental_run_is_not_told_to_carry_only_the_servers_answers(
+    db, store, worker_factory, index_tools, checkout, recheck_bypassed
+):
+    _seed(db, store)
+    worker, _, _ = worker_factory(runner_profile="indexer", timeout_seconds=900,
+                                  repository_url=URL)
+
+    worker.run()
+
+    assert "--base-lsp-only" not in _order(index_tools)[1][1]["argv"]
+
+
+def test_the_lsp_base_line_is_read_from_the_signed_prompt_only():
+    line = f"{indexrun.LSP_BASE_LINE}{BASE}"
+    assert indexrun.requested_base({"prompt": f"index\n{line}\n"}) == BASE
+    assert indexrun.base_lsp_only({"prompt": f"index\n{line}\n"}) is True
+    assert indexrun.base_lsp_only({"prompt": f"index\n{indexrun.BASE_LINE}{BASE}\n"}) is False
+    # Both kinds of line at once are no request at all.
+    both = f"{line}\n{indexrun.BASE_LINE}{BASE}"
+    assert indexrun.requested_base({"prompt": both}) is None
+    assert indexrun.base_lsp_only({"prompt": both}) is False
+    assert indexrun.requested_base({"prompt": f"index {line}"}) is None, "a line of its own"
+    assert indexrun.base_lsp_only({"lsp_base_sha": BASE}) is False
+
+
+def test_the_worker_and_the_api_name_the_same_lsp_base_line():
+    assert repoindex.LSP_BASE_LINE == indexrun.LSP_BASE_LINE
+    task = repoindex.indexer_task(
+        {"owner": OWNER, "repo": REPO, "default_branch": "main", "tenant_id": TENANT,
+         "repo_id": REPO_ID, "repository_url": URL},
+        HEAD, "full", lsp_base_sha=BASE,
+    )
+    assert indexrun.requested_base(task.input) == BASE
+    assert indexrun.base_lsp_only(task.input) is True
+    assert task.metadata["index_kind"] == "full" and "base_sha" not in task.metadata
+    assert task.metadata["lsp_base_sha"] == BASE
+    argv = indexrun.extractor_argv("x", checkout=Path("/c"), work=Path("/w"), lsp_total=60,
+                                   base_sha=BASE, base_lsp_only=True)
+    assert "--base-lsp-only" in argv

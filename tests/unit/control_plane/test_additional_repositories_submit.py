@@ -551,7 +551,10 @@ def test_which_profiles_take_them_is_read_from_the_catalogue():
 
     assert INDEXER_PROFILE == REPOINDEX_INDEXER
     taking = sorted(n for n, p in RUNNER_PROFILES.items() if takes_additional_repositories(p))
-    assert taking == ["browser", "claude-code", "claude-code-browser", "claude-code-large", "codex", "generic"]
+    assert taking == [
+        "browser", "claude-code", "claude-code-browser", "claude-code-large", "claude-code-lightpanda",
+        "codex", "generic",
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -304,7 +304,7 @@ resource "google_logging_log_view" "verify" {
 }
 
 resource "google_project_iam_member" "deployer_reads_verify_logs" {
-  count = local.wif_enabled
+  count = local.deployer_enabled
 
   project = var.project_id
   role    = "roles/logging.viewAccessor"

@@ -170,6 +170,20 @@ def test_ci_pending_serves_the_pr_head_checks_and_recheck_schedule():
     assert w["read_at"] == READ_AT
 
 
+def test_ci_pending_serves_a_merge_train_waits_start_as_train_since():
+    """Part of #2688: `/sc check` ages a train wait from `train_since`; the
+    train pauses the CI clock, so `since` cannot age it."""
+    t, events = ci_task()
+    # MUTATION: serving a train start no park recorded -> not None, red.
+    assert build_waiting(t, events=events, as_of=READ_AT)["detail"]["train_since"] is None
+    entered = FIRST_PARK - timedelta(hours=3)
+    t.metadata["merge_wait"].update({"code": "merge_train_waiting", "train_entered_at": entered})
+    w = build_waiting(t, events=events, as_of=READ_AT)
+    # MUTATION: not serving `merge_wait.train_entered_at` -> None, red.
+    assert w["detail"]["train_since"] == entered
+    assert w["since"] == FIRST_PARK, "the CI clock is served as before"
+
+
 def test_ci_pending_past_its_check_says_it_is_still_parked_and_why():
     """'Eligible since X but still parked' explains itself (decision 2)."""
     t, events = ci_task()
@@ -560,6 +574,123 @@ def test_a_malformed_owner_question_record_serves_no_invented_question():
     assert w["detail"]["unreadable"] == 3
     assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
     assert w["summary"].startswith("Waiting for the owner questions the review named before merging")
+
+
+# --------------------------------------------------------------------------
+# HUMAN_REQUIRED on the task's own blocking questions: an answer, not a sign-in (#2859)
+# --------------------------------------------------------------------------
+
+ASKED_AT = READ_AT - timedelta(hours=3)
+LONG_QUESTION = ("Should the verdict step refuse a merge when the review names a blocking "
+                 "owner question that was asked by a step outside the workflow, or only warn?")
+
+
+def question_park(*, blocking: list[int] | None = None) -> dict[str, Any]:
+    """The park the worker writes (`agent_worker.lifecycle._park_for_answers`)."""
+    return {"reason": "HUMAN_REQUIRED", "park_phase": "question_wait",
+            "question_wait": {
+                "questions": [
+                    {"question": LONG_QUESTION, "options": [{"label": "refuse", "description": "r"}],
+                     "recommended": "refuse", "context": "c", "blocking": True},
+                    {"question": "Name the flag?", "options": [], "recommended": None,
+                     "context": None},
+                    {"question": "Keep the old route?", "options": [], "recommended": None,
+                     "context": None, "blocking": True},
+                ],
+                "blocking": [0, 2] if blocking is None else blocking,
+                "attempt_id": "att_ask", "asked_at": ASKED_AT.isoformat()}}
+
+
+def question_task(**extra: Any) -> Task:
+    return task(park_reason=ParkReason.HUMAN_REQUIRED, next_eligible_at=ASKED_AT,
+                workflow_id="wf_verdict", step_id="implement",
+                blocked_by=[question_park()], **extra)
+
+
+def test_a_question_wait_says_it_waits_for_the_owners_answer_not_a_sign_in():
+    # task_aaf56ef0026746928cdf, 2026-10-30: `park_phase: question_wait` served the hand-off line.
+    ev = [event(EventType.PARKED, ASKED_AT, question_park())]
+    w = build_waiting(question_task(), events=ev, as_of=READ_AT)
+    d = w["detail"]
+    # MUTATION: today's sign-in sentence on a question wait turns this red.
+    assert "sign in" not in w["summary"]
+    # MUTATION: counting every question, not the blocking unanswered ones, says 3 and turns this red.
+    assert w["summary"].startswith("Waiting for the owner's answer to 2 questions: \u201cShould the verdict")
+    # MUTATION: quoting the question whole turns this red.
+    assert LONG_QUESTION not in w["summary"]
+    assert "\u2026\u201d" in w["summary"]
+    # MUTATION: naming no answer path turns this red.
+    assert w["summary"].endswith("; answer on its console page (Questions) or in Claude Code with /sc check")
+    assert d["park_phase"] == "question_wait"
+    # MUTATION: serving the human-ready route, which resumes it unanswered, turns this red.
+    assert d["answer_route"] == "POST /v1/tasks/task_w/answers"
+    assert d["questions_route"] == "GET /v1/tasks/task_w/questions"
+    assert d["blocking"] == [0, 2] and d["unanswered"] == [0, 2]
+    assert [q["question_index"] for q in d["questions"]] == [0, 2]
+    assert d["questions"][1]["question"] == "Keep the old route?"
+    assert d["who_may_answer"]["submitted_by"] == "alice@example.com"
+    assert d["expires_at"] == ASKED_AT + timedelta(hours=72)
+    assert w["since"] == ASKED_AT
+    assert w["resumes_when"] == ("the owner answers the last blocking question (it resumes on its own); "
+                                 "unanswered for 72 hours it is dead-lettered")
+
+
+def test_a_question_wait_counts_only_the_questions_still_unanswered():
+    adopted = question_park()["question_wait"]
+    answers = [{"question_index": 0, "choice": "refuse"}]
+    t = question_task(metadata={"question_wait": adopted, "owner_answers": answers})
+    w = build_waiting(t, events=None, as_of=READ_AT)
+    # MUTATION: ignoring the stored answer still says 2 and quotes question 0.
+    assert w["summary"].startswith("Waiting for the owner's answer to 1 question: \u201cKeep the old route?\u201d;")
+    assert w["detail"]["unanswered"] == [2]
+
+
+def test_answers_to_an_earlier_wait_do_not_count_for_this_one():
+    earlier = {**question_park()["question_wait"], "attempt_id": "att_before"}
+    t = question_task(metadata={"question_wait": earlier,
+                                "owner_answers": [{"question_index": 0, "choice": "refuse"}]})
+    w = build_waiting(t, events=None, as_of=READ_AT)
+    # MUTATION: reading another attempt's answers as this wait's says 1.
+    assert w["summary"].startswith("Waiting for the owner's answer to 2 questions:")
+
+
+def test_a_question_wait_quotes_its_question_redacted():
+    value = "ghp_" + secrets.token_hex(18)
+    park = question_park()
+    park["question_wait"]["questions"][0]["question"] = f"Rotate {value}?"
+    t = task(park_reason=ParkReason.HUMAN_REQUIRED, next_eligible_at=ASKED_AT, blocked_by=[park])
+    w = build_waiting(t, events=None, as_of=READ_AT)
+    # MUTATION: quoting the question unredacted turns this red.
+    assert value not in json.dumps(w, default=str)
+    assert w["summary"].startswith("Waiting for the owner's answer to 2 questions: \u201cRotate ")
+
+
+def test_a_hand_off_park_keeps_the_sign_in_line():
+    park = {"reason": "HUMAN_REQUIRED", "park_phase": "human_wait", "cause": "captcha"}
+    t = task(park_reason=ParkReason.HUMAN_REQUIRED, next_eligible_at=ASKED_AT, blocked_by=[park])
+    w = build_waiting(t, events=None, as_of=READ_AT)
+    # MUTATION: the question line on a hand-off turns this red.
+    assert w["summary"] == "Waiting for a person: sign in on its console page, then say it is ready"
+    assert w["detail"]["answer_route"] == "POST /v1/tasks/task_w/human-ready"
+
+
+def test_get_task_serves_a_question_waits_line(client, db):
+    seed_tenant(db, "eng", max_active=20)
+    seed_task(db, task_id="task_ask", tenant_id="eng", state="PARKED", park_reason="HUMAN_REQUIRED",
+              next_eligible_at=ASKED_AT, workflow_id="wf_verdict")
+    db.docs["tasks/task_ask"]["blocked_by"] = [question_park()]
+    ev = event(EventType.PARKED, ASKED_AT, question_park(), task_id="task_ask")
+    db.docs[f"tasks/task_ask/events/{ev.event_id}"] = event_to_firestore(ev)
+    res = client.get("/v1/tasks/task_ask", headers=auth_header("alice"))
+    assert res.status_code == 200, res.text
+    w = res.json()["task"]["waiting"]
+    assert w["reason"] == "HUMAN_REQUIRED"
+    # MUTATION: the route serving the hand-off line for a question wait turns this red.
+    assert w["summary"].startswith("Waiting for the owner's answer to 2 questions: ")
+    assert w["detail"]["answer_route"] == "POST /v1/tasks/task_ask/answers"
+    rows = {t["id"]: t for t in client.get("/v1/tasks", headers=auth_header("alice")).json()["tasks"]}
+    # MUTATION: the listing's one line keeping the sign-in text turns this red.
+    assert rows["task_ask"]["waiting"]["summary"] == w["summary"]
 
 
 # --------------------------------------------------------------------------

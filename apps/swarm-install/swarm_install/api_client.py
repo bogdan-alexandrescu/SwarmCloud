@@ -48,6 +48,28 @@ DELEGATION = "delegation"
 GROUPS_MODES = (ADMIN_ROLE, DELEGATION)
 
 
+CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
+
+
+def application_default(scopes: Sequence[str] | None = None) -> Any:
+    """The person's application-default credentials, carrying no quota project.
+
+    `gcloud auth application-default login` without `--disable-quota-project`
+    (every sign-in before issue 2942's fix) writes the laptop's gcloud project
+    into the credentials file as their quota project, and
+    GOOGLE_CLOUD_QUOTA_PROJECT can name one; google-auth then sends it as
+    `x-goog-user-project` on every call: a project unrelated to the install,
+    whose disabled APIs refuse it. Every place the installer builds its own
+    credentials loads them here, so none sends it; a call that bills to the
+    install's project names it itself, in its own header."""
+    import google.auth  # lazy: no credentials needed to import the engine
+
+    credentials, _ = google.auth.default(scopes=list(scopes) if scopes else None)
+    if getattr(credentials, "quota_project_id", None):
+        credentials = credentials.with_quota_project(None)
+    return credentials
+
+
 def deployer_email(project: str) -> str:
     return f"{DEPLOYER}@{project}.iam.gserviceaccount.com"
 
@@ -60,11 +82,15 @@ class ApiCallError(RuntimeError):
     """swarm-api (or IAP in front of it) answered with an error. The message
     carries the status and swarm-api's error code, never a header."""
 
-    def __init__(self, status: int, code: str, path: str) -> None:
-        super().__init__(f"{path} answered HTTP {status}" + (f" ({code})" if code else ""))
+    def __init__(self, status: int, code: str, path: str, *, message: str = "",
+                 detail: Mapping[str, Any] | None = None) -> None:
+        super().__init__(f"{path} answered HTTP {status}" + (f" ({code})" if code else "")
+                         + (f": {message}" if message else ""))
         self.status = status
         self.code = code
         self.path = path
+        self.message = message
+        self.detail: Mapping[str, Any] = detail or {}
 
 
 class IdTokenMinter(Protocol):
@@ -82,11 +108,9 @@ class IamCredentials:
     @property
     def session(self) -> Any:
         if self._session is None:
-            import google.auth  # lazy: no credentials needed to import the engine
-            from google.auth.transport.requests import AuthorizedSession
+            from google.auth.transport.requests import AuthorizedSession  # lazy, as application_default
 
-            credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-            self._session = AuthorizedSession(credentials)
+            self._session = AuthorizedSession(application_default([CLOUD_PLATFORM]))
         return self._session
 
     def generate_id_token(self, service_account: str, audience: str, *, include_email: bool) -> str:
@@ -148,6 +172,20 @@ class GroupsProbe:
         return GroupResult(group, "unknown", "absent", f"swarm-api's answer did not name {group}")
 
 
+def refusal(status: int, body: Any, path: str) -> ApiCallError:
+    """swarm-api's `ApiError` handler serves the flat `{code, message, detail?}`
+    (swarm_api/errors.py `to_payload`); a body nested under `error` (IAP, or a
+    front end in between) is read too, so neither shape loses the code."""
+    error: Any = body if isinstance(body, Mapping) else {}
+    if "code" not in error and "error" in error:
+        error = error["error"]
+    if not isinstance(error, Mapping):
+        return ApiCallError(status, str(error or ""), path)
+    detail = error.get("detail")
+    return ApiCallError(status, str(error.get("code") or ""), path, message=str(error.get("message") or ""),
+                        detail=detail if isinstance(detail, Mapping) else None)
+
+
 @dataclass
 class ApiClient:
     project: str
@@ -166,9 +204,7 @@ class ApiClient:
         found = self.http(method, self.base_url.rstrip("/") + path,
                           {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, body)
         if not 200 <= found.status < 300:
-            error = found.body.get("error") if isinstance(found.body, Mapping) else None
-            code = str((error or {}).get("code", "") if isinstance(error, Mapping) else error or "")
-            raise ApiCallError(found.status, code, path)
+            raise refusal(found.status, found.body, path)
         return found.body
 
     def activate_hook(self) -> Mapping[str, Any]:
