@@ -297,3 +297,24 @@ describe('the decision', () => {
     expect(go).toHaveBeenCalledWith(`work/runs?run=${RUN}`)
   })
 })
+
+describe('the planner’s design doc', () => {
+  it('is drawn folded, in an empty-sandbox frame, from the run’s planner_documents', async () => {
+    const docs = { task_id: 'task_planner1', design_docs: [{ name: 'design.md', bytes: 40, content_type: 'text/markdown', read_url: '/v1/tasks/task_planner1/artifacts/raw?name=design.md' }], diagrams: [] }
+    await mount((m, url) => {
+      const path = url.split('?')[0]!
+      if (m === 'GET' && path === `/v1/runs/${RUN}`) return { status: 200, body: { run: { id: RUN, state: 'awaiting_approval', plan: SECTIONS, planner_documents: docs } } }
+      if (m === 'GET' && path === '/v1/tasks/task_planner1/artifacts/content')
+        return { status: 200, body: { task_id: 'task_planner1', tenant_id: 'eng', attempt_id: 'a1', artifact: { name: 'design.md', bytes: 40, uri: null }, status: 'ok', detail: null, key: null, uri: null, content: '# Overlap refs\n\nRead the train.', truncated: false } }
+      return routes(LEGACY, SECTIONS)(m, url, null)
+    })
+    await head()
+    const fold = await screen.findByTestId('ab-design', undefined, WAIT)
+    // MUTATION: draw the doc open on the surface, or in a frame that may run script.
+    expect(fold.tagName).toBe('DETAILS')
+    expect(fold.hasAttribute('open')).toBe(false)
+    const frame = within(fold).getByTitle('Design doc: design.md')
+    expect(frame.getAttribute('sandbox')).toBe('')
+    expect(frame.getAttribute('srcdoc')).toContain('Overlap refs')
+  })
+})
