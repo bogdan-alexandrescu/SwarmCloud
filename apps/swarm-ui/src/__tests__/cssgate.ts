@@ -629,6 +629,24 @@ export function flatRules(source: string): FlatRule[] {
 }
 
 /**
+ * A flattened rule's declarations, parsed once (5 November 2026). `cascade`
+ * read every rule's body again on every call -- about 70% of its time, and
+ * agent.header.actions.test.tsx makes some forty calls a test. `flatRules`
+ * keeps one array of rules per sheet, so a rule is a stable key; the parse is
+ * `declarations`, unchanged, and nothing here writes to what it returns.
+ */
+const DECLARED = new WeakMap<FlatRule, ReturnType<typeof declarations>>()
+
+function declared(rule: FlatRule): ReturnType<typeof declarations> {
+  let hit = DECLARED.get(rule)
+  if (hit === undefined) {
+    hit = declarations(rule.body)
+    DECLARED.set(rule, hit)
+  }
+  return hit
+}
+
+/**
  * The declaration a browser would use for `property` on `el` (or on its
  * `pseudo`-element), with the shipped sheet, at `env`.
  *
@@ -657,7 +675,7 @@ export function cascade(
 
   for (const rule of flatRules(source)) {
     if (!rule.conditions.every((c) => conditionHolds(c, env))) continue
-    const decls = declarations(rule.body).filter((d) => props.has(d.property))
+    const decls = declared(rule).filter((d) => props.has(d.property))
     if (decls.length === 0) continue
 
     let best: { branch: string; spec: [number, number, number] } | null = null
