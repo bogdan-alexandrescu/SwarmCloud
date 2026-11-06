@@ -167,3 +167,51 @@ describe('Tight rectangles are decoded and painted in order', () => {
     expect(fakeCtx.fillStyle).toBe('rgb(200, 100, 50)')
   })
 })
+
+describe('one update is painted in order, and a JPEG that fails to decode ends the stream', () => {
+  function update(...rects: number[][]): Uint8Array {
+    return Uint8Array.from([...HANDSHAKE, 0, 0, ...u16(rects.length), ...rects.flat()])
+  }
+  const jpegRect = (x: number, byte: number) => [...u16(x), ...u16(0), ...u16(10), ...u16(10), ...i32(7), 0x90, 1, byte]
+
+  it('paints the first JPEG before the second even when the second decodes first', async () => {
+    const drawn: number[] = []
+    let releaseFirst: () => void = () => {}
+    const decodeJpeg = (bytes: Uint8Array<ArrayBuffer>) =>
+      bytes[0] === 1
+        ? new Promise<ImageBitmap>((done) => {
+            releaseFirst = () => done({ id: 1 } as unknown as ImageBitmap)
+          })
+        : Promise.resolve({ id: 2 } as unknown as ImageBitmap)
+    const sink: ThumbSink = {
+      resize() {}, fillRect() {}, drawRaw() {}, commit() {},
+      drawImage(bitmap) {
+        drawn.push((bitmap as unknown as { id: number }).id)
+      },
+    }
+    const rfb = new RfbThumb({ send: () => {}, sink, now: () => 0, later: () => () => {}, decodeJpeg })
+    rfb.feed(update(jpegRect(0, 1), jpegRect(20, 2)))
+    await Promise.resolve()
+    expect(drawn).toEqual([])
+    releaseFirst()
+    await new Promise((done) => setTimeout(done, 0))
+    expect(drawn).toEqual([1, 2])
+    expect(rfb.frames).toBe(1)
+  })
+
+  it('a rejected decode calls onError and sends no further request', async () => {
+    const sent: Uint8Array[] = []
+    const onError = vi.fn()
+    const sink: ThumbSink = { resize() {}, fillRect() {}, drawRaw() {}, drawImage() {}, commit() {} }
+    const later = vi.fn(() => () => {})
+    const rfb = new RfbThumb({
+      send: (b) => sent.push(b), sink, now: () => 0, later, onError,
+      decodeJpeg: () => Promise.reject(new Error('not a JPEG')),
+    })
+    rfb.feed(update(jpegRect(0, 9)))
+    await new Promise((done) => setTimeout(done, 0))
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(later).not.toHaveBeenCalled()
+    expect(rfb.frames).toBe(0)
+  })
+})

@@ -383,6 +383,8 @@ export interface RfbThumbOptions {
   thumbWidthPx?: () => number
   /** Decodes one Tight JPEG rectangle's bytes. Defaults to `createImageBitmap`. */
   decodeJpeg?: (bytes: Uint8Array<ArrayBuffer>) => Promise<ImageBitmap>
+  /** A JPEG the browser could not decode: the card ends the stream, as for a parse error. */
+  onError?: (why: unknown) => void
 }
 
 type Rect = { x: number; y: number; w: number; h: number; row: number }
@@ -663,7 +665,13 @@ export class RfbThumb {
   private updateDone(): Phase {
     const paints = this.pending
     this.pending = []
-    void this.paint(paints)
+    this.paint(paints).catch((why: unknown) => {
+      // A rejected decode would otherwise leave no request outstanding and
+      // the card frozen: end the stream instead, and the card reconnects.
+      if (this.stopped) return
+      this.stop()
+      this.o.onError?.(why)
+    })
     return { k: 'message' }
   }
 
@@ -681,8 +689,10 @@ export class RfbThumb {
       // the paint rather than draw into a sink whose canvas is gone.
       if (p.kind === 'bitmap') {
         const bitmap = await p.bitmap
+        if (!this.stopped) this.o.sink.drawImage(bitmap, p.x, p.y, p.w, p.h)
+        // Ten a second per card: free each decoded image at once, not at GC.
+        bitmap.close?.()
         if (this.stopped) return
-        this.o.sink.drawImage(bitmap, p.x, p.y, p.w, p.h)
       } else if (this.stopped) {
         return
       } else if (p.kind === 'fill') {
@@ -867,6 +877,7 @@ export function LiveThumb({
     const rfb = new RfbThumb({
       send: (b) => sock.send(b),
       sink,
+      // The canvas is laid out at the card's full width (width: 100%).
       thumbWidthPx: () => thumbWidth(canvas.current?.getBoundingClientRect().width ?? 0, window.devicePixelRatio),
       now: () => Date.now(),
       later: (fn, ms) => {
@@ -875,6 +886,7 @@ export function LiveThumb({
       },
       minIntervalMs: () => thumbIntervalMs(thumbsOnScreen()),
       paused: () => !shown.current,
+      onError: () => finish(),
     })
     client.current = rfb
     const finish = (why?: unknown) => {
