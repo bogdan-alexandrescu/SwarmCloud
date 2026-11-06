@@ -20,7 +20,7 @@
 .wq-vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
 .wq { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; margin-top: var(--ctl-s2); }
-.wq-h { margin: 0; display: flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body, 14px); font-weight: 600; }
+.wq-h { margin: 0; display: flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body); font-weight: 600; }
 .wq-n { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 var(--ctl-s1); border-radius: 999px; background: var(--s-park); color: var(--surface); font-size: var(--t-meta); font-weight: 700; font-variant-numeric: tabular-nums; box-sizing: border-box; }
 .wq-step { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); scroll-margin-top: var(--ctl-s2); }
 .wq-step:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }

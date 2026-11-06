@@ -6627,7 +6627,18 @@ function Board({
   // the one the list's bar and row read). The merge strip's "Answer N
   // questions" and the grid's asks-you mark jump to the step's questions.
   const needItems = useMemo(() => workflowNeedItems(workflow, taskById, (stepId) => stepId), [workflow, taskById])
+  // The asking steps the merge strip's Answer keeps bright on the grid, the
+  // rest dimmed, until a chip is picked or nothing asks any more.
+  const [brightPick, setBright] = useState<ReadonlySet<string> | null>(null)
+  const bright = needItems.some((i) => i.kind === 'question' || (i.kind === 'merge' && ownerQuestionsHold(i.task) !== null)) ? brightPick : null
   const answerQuestions = useCallback(() => {
+    // The questions' own steps and the steps a held merge names as asking.
+    const ids = new Set<string>()
+    for (const i of needItems) {
+      if (i.kind === 'question') ids.add(i.taskId)
+      if (i.kind === 'merge') for (const q of ownerQuestionsHold(i.task)?.questions ?? []) ids.add(q.task_id)
+    }
+    setBright(new Set(workflow.steps.filter((s) => s.task_id && ids.has(s.task_id)).map((s) => s.step_id)))
     // The held merge's own block, whose card names each asking step.
     for (const i of needItems) {
       if (i.kind !== 'merge' || ownerQuestionsHold(i.task) === null) continue
@@ -6674,8 +6685,10 @@ function Board({
   }, [pick, choosePick])
 
   const pickStep = useCallback(
-    (stepId: string) =>
-      choosePick(picked === stepId ? null : { workflowId: id, stepId, focus: null }),
+    (stepId: string) => {
+      setBright(null)
+      choosePick(picked === stepId ? null : { workflowId: id, stepId, focus: null })
+    },
     [picked, id, choosePick],
   )
   const closeStep = useCallback(() => choosePick(null), [choosePick])
@@ -6719,6 +6732,7 @@ function Board({
             taskById={taskById}
             selected={picked}
             onSelect={pickStep}
+            bright={bright}
             now={now}
             // A STAGE'S TALLY OPENS THE TABLE AT THAT STAGE, every state.
             onOpenStage={(stage) => focus.onStageTable(stage.index, STAGE_ANY_STATE)}

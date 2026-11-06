@@ -127,8 +127,9 @@ export function WorkflowNeedsCard({
           <b>Needs you</b>
           {counts.map(({ k, n }) => (
             <span key={k} className={`wq-mark is-${k}`} data-kind={k} title={`${CARD_WORD[k]}: ${n}`}>
-              <span aria-hidden>{CARD_GLYPH[k]}</span> {n}
-              <span className="wq-vh"> {CARD_WORD[k]}</span>
+              <span aria-hidden>{CARD_GLYPH[k]}</span>
+              <span className="wq-vh">{CARD_WORD[k]} </span>
+              {n}
             </span>
           ))}
           {unknown.length > 0 && (
