@@ -15,13 +15,29 @@
 //     usual time the route does not serve is never a constant;
 //   * one person: "Your workspace", and no team step or invites;
 //   * Hand over is offered only once the smoke agent has succeeded, and Send
-//     is locked until verify passes.
+//     is locked until verify passes;
+//   * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+//     what the panel follows, what verify prints at the end, which checks the
+//     console runs, how the add-ons are turned on and where every mark comes
+//     from are tooltips or an (i), never a sentence on the page, and "Follow
+//     the next step again" is a real button, drawn only when it does something.
 //
 // Stubbed fetch only (every read answers 404); no network, no credentials.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+
+/** The text a reader sees: tooltips and hidden descriptions left out. */
+function shown(el: Element | null): string {
+  if (el === null) return ''
+  const copy = el.cloneNode(true) as Element
+  for (const off of Array.from(copy.querySelectorAll('[role="tooltip"], [hidden]'))) off.remove()
+  return visible(copy)
+}
+
+/** The tooltip of the host around `el`. */
+const tipOf = (el: Element | null) => visible(el?.closest('.c-tip-host')?.querySelector('[role="tooltip"]') ?? null)
 
 type Json = Record<string, unknown>
 
@@ -52,6 +68,8 @@ const item = (key: string) => list().querySelector(`[data-step="${key}"]`) as HT
 const keys = () => [...list().querySelectorAll('[data-step]')].map((li) => li.getAttribute('data-step'))
 const status = () => visible(screen.getByRole('status', { name: 'What swarm install is doing' }))
 const panel = () => document.querySelector('.cfc-panel') as HTMLElement
+const kicker = () => panel().querySelector('.cfc-kicker')
+const follows = 'The panel follows the next step you can act on.'
 
 afterEach(() => {
   cleanup()
@@ -84,7 +102,8 @@ describe('the console finish: the checklist', () => {
     expect(item('cloud').className).toContain('is-done')
     for (const k of ['sign-in-client', 'github', 'team', 'accounts', 'smoke', 'verify', 'send']) expect(item(k).className).not.toContain('is-done')
     expect(status()).toContain('1 of 8 done')
-    expect(visible(panel())).toMatch(/Step 2 of 8 · the panel follows the next step you can act on/)
+    expect(shown(kicker())).toBe('Step 2 of 8')
+    expect(tipOf(kicker()?.querySelector('.asm-explained') ?? null)).toBe(follows)
     // The step's own controls are today's: the client id field and the hidden secret.
     expect(within(panel()).getByLabelText(/Client ID/i)).toBeTruthy()
     const secret = within(panel()).getByLabelText(/Client secret/i) as HTMLInputElement
@@ -111,18 +130,48 @@ describe('the console finish: the panel', () => {
 
   it('stays on a picked step as the record moves, until Follow the next step again', async () => {
     const { rerender, AdminSetupPage, stateOf } = await draw('github-installed')
-    const follow = screen.getByText('Follow the next step again') as HTMLButtonElement
-    expect(follow.hidden).toBe(true)
+    // MUTATION: draw the button while the panel already follows -> it does nothing, and this fails.
+    expect(screen.queryByRole('button', { name: 'Follow the next step again' })).toBeNull()
     fireEvent.click(within(item('cloud')).getByRole('button'))
     expect(panel().getAttribute('aria-label')).toBe('Step 1: Cloud')
-    expect(visible(panel())).toContain('picked by you')
-    expect(follow.hidden).toBe(false)
+    expect(shown(kicker())).toBe('Step 1 of 8 · picked by you')
+    // A real button in the theme's style, not a text link.
+    const follow = screen.getByRole('button', { name: 'Follow the next step again' })
+    expect(follow.className).toContain('c-btn')
     // MUTATION: re-follow on every read -> the next read moves the panel and this fails.
     rerender(<AdminSetupPage state={stateOf('accounts-waiting')} now={NOW} />)
     expect(panel().getAttribute('aria-label')).toBe('Step 1: Cloud')
     fireEvent.click(follow)
     expect(panel().getAttribute('aria-label')).toBe('Step 6: Smoke agent')
-    expect(visible(panel())).toContain('the panel follows the next step you can act on')
+    expect(shown(kicker())).toBe('Step 6 of 8')
+    expect(tipOf(kicker()?.querySelector('.asm-explained') ?? null)).toBe(follows)
+    expect(screen.queryByRole('button', { name: 'Follow the next step again' })).toBeNull()
+  })
+
+  it('keeps every explanation behind a tooltip or an (i), each still in the page', async () => {
+    await draw('verify-running')
+    const page = document.querySelector('.cfc-finish') as HTMLElement
+    const said: [string, string][] = [
+      ['It prints its ready line when every check passes.', 'swarm install is running verify · check 3 of 8'],
+      ['The console task and workflow below are two of them.', '2 of 8 checks passed'],
+    ]
+    for (const [tip, label] of said) {
+      // MUTATION: print the sentence beside its label again.
+      expect(shown(page)).not.toContain(tip)
+      const host = [...page.querySelectorAll('.asm-explained')].find((el) => shown(el).startsWith(label)) ?? null
+      expect(host, label).not.toBeNull()
+      expect(tipOf(host)).toBe(tip)
+    }
+    const abouts: [string, string][] = [
+      ['About Terminal', 'Every mark comes from the install record, read every 5 s; nothing here is ticked by hand.'],
+      ['About Add-ons', 'Each is turned on from the terminal later; the panel lists them.'],
+    ]
+    for (const [name, tip] of abouts) {
+      expect(shown(page)).not.toContain(tip)
+      expect(tipOf(screen.getByRole('button', { name }))).toBe(tip)
+    }
+    // The must-stay facts stay on the surface.
+    expect(shown(page)).toContain('Add-ons: optional, off.')
   })
 
   it('offers Hand over only once the smoke agent has succeeded, and Send only once verify passed', async () => {

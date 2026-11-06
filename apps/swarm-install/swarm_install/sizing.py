@@ -76,13 +76,20 @@ REFERENCE_RUNNER_PROFILES = {"claude-code": 80, "claude-code-browser": 100, "cla
 #: The live backend:<backend> ceilings.
 REFERENCE_BACKENDS = {"CLOUD_RUN_JOB": 100, "GKE_AUTOPILOT": 180}
 #: Team members per swarm-api instance, and the floor (two: one can roll).
-MEMBERS_PER_API_INSTANCE = 10
+#: 10 -> 7 (2026-11-06, part of #2688): the reference team of 50 kept the live
+#: 5 instances at 5 of 5 for 359 of 360 minutes, and BGD's pick for it is 8
+#: (of 2 vCPU and 2 GiB, terraform/infra/main.tf); ceil(50 / 7) = 8. One
+#: uvicorn process an instance, so the second vCPU does not double what one
+#: instance carries.
+MEMBERS_PER_API_INSTANCE = 7
 MIN_API_INSTANCES = 2
 #: From this many members the scheduler and the quota broker run two instances.
 HA_FROM_MEMBERS = 10
 #: The monthly budget: the fixed floor (the cluster, NAT, swarm-api's minimum
 #: instances, Firestore) plus the expected agents' pods for the working hours.
-BUDGET_FLOOR_USD = 300
+#: 300 -> 400 (2026-11-06): swarm-api's two warm instances went from ~$105 to
+#: ~$210 a month at 2 vCPU and 2 GiB (steps/foundations.py, MONTHLY_FLOOR_USD).
+BUDGET_FLOOR_USD = 400
 #: One standard pod on Autopilot in us-central1: 4 vCPU x $0.0445 + 8 GiB x $0.0049.
 USD_PER_AGENT_HOUR = 0.22
 #: 8 hours x 22 working days.

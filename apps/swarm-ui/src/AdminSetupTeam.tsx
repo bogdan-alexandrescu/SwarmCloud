@@ -12,10 +12,11 @@
  * Nothing here takes a credential: the team's git slot is filled through a
  * one-time link its owner opens (CLAUDE.md forge-token rule), never this form.
  */
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { createSetupTeam, type ApiError, type SetupTeam } from './api'
+import { About } from './AdminSetupHealth'
 import { Facts, type Fact } from './AdminSetupSteps'
-import { Button, Card, CodeBlock } from './components'
+import { Button, Card, CodeBlock, Tooltip } from './components'
 
 /** One value of the line, quoted for a POSIX shell when it holds anything but an address's characters. */
 function arg(v: string): string {
@@ -61,6 +62,26 @@ function teamFact(t: SetupTeam): Fact {
   return { state: failed ? 'failed' : done ? 'done' : 'in_progress', name: t.workspace, text: parts.join(' · ') }
 }
 
+/**
+ * One field of the form. ITS HINT IS ITS TOOLTIP (BGD's no-prose rule,
+ * 2026-11-05): it opens over the label and the input on hover, and when the
+ * input takes focus, and it stays the input's description for a screen reader.
+ */
+function Field({ label, hint, value, placeholder, onChange }: { label: string; hint: string; value: string; placeholder: string; onChange: (v: string) => void }) {
+  const hintId = useId()
+  return (
+    <label className="c-field">
+      <Tooltip tip={hint}>
+        <span className="c-lbl asm-explained">{label}</span>
+        <input className="c-inp" aria-describedby={hintId} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+      </Tooltip>
+      <span id={hintId} data-help-description="" hidden>
+        {hint}
+      </span>
+    </label>
+  )
+}
+
 /** Add a team: the form, the line beside it, and the teams the deployment has. */
 export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onChanged?: () => void }) {
   const [group, setGroup] = useState('')
@@ -74,19 +95,16 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
   const form = { group, name, admin, invites }
   const line = teamAddLine(form)
   const field = (label: string, value: string, set: (v: string) => void, hint: string, placeholder: string) => (
-    <label className="c-field">
-      <span className="c-lbl">{label}</span>
-      <input
-        className="c-inp"
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => {
-          set(e.target.value)
-          setCopied(false)
-        }}
-      />
-      <p className="c-hint">{hint}</p>
-    </label>
+    <Field
+      label={label}
+      hint={hint}
+      value={value}
+      placeholder={placeholder}
+      onChange={(v) => {
+        set(v)
+        setCopied(false)
+      }}
+    />
   )
   const submit = () => {
     const body = teamBody(form)
@@ -108,7 +126,13 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
   }
   return (
     <section className="ws-grid is-setup asm-team" role="region" aria-label="Add a team">
-      <Card title="Add a team" foot="The same call swarm team add makes: the team’s record, then swarm-workspace-apply makes its namespace, quota, verify-keys and worker identity.">
+      <Card
+        title={
+          <>
+            Add a team <About label="Add a team" tip="The same call swarm team add makes: the team’s record, then swarm-workspace-apply makes its namespace, quota, verify-keys and worker identity." />
+          </>
+        }
+      >
         <form
           className="asm-form"
           onSubmit={(e) => {
@@ -141,8 +165,13 @@ export function AdminSetupTeam({ teams, onChanged }: { teams: SetupTeam[]; onCha
         </form>
       </Card>
       <div className="ws-col">
-        <Card title="From a terminal">
-          <p className="ur-hint">The same steps, from the machine swarm install runs on. It follows the form as you type.</p>
+        <Card
+          title={
+            <>
+              From a terminal <About label="From a terminal" tip="The same steps, from the machine swarm install runs on. It follows the form as you type." />
+            </>
+          }
+        >
           <div role="group" aria-label="From a terminal">
             <CodeBlock
               title="Same steps"

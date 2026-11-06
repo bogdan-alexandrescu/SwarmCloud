@@ -96,11 +96,11 @@ describe('a held plan’s decision page (automate2-04, automate2-05, automate2-0
     await mount('approval=apr_hold', routes(INBOX, held()))
     const d = await page()
     await within(d).findByRole('region', { name: 'Why it is held' }, WAIT)
-    const cards = [...d.querySelectorAll<HTMLElement>('.ad-card')]
-    // MUTATION: put "Why it is held" back in the right column, and the DOM
-    // reads 1, 3, 2, 4.
-    expect(cards.map((c) => Number(c.getAttribute('data-n')))).toEqual(cards.map((_, i) => i + 1))
-    expect(cards.map((c) => c.getAttribute('aria-label'))).toEqual(['The plan', 'Why it is held', 'What you approve', 'What asked for it'])
+    // The plan as a brief (BGD, 6 November 2026): the header card, then why it
+    // is held, before where it changes and the steps.
+    // MUTATION: draw the hold after the steps, and a reader meets it last.
+    const cards = [...d.querySelectorAll<HTMLElement>('.ab-head, .ab-card')]
+    expect(cards.map((c) => c.getAttribute('aria-label') ?? c.querySelector('h3')!.textContent)).toEqual(['The plan in brief', 'Why it is held', 'Where it changes', 'Steps', 'What asked for it'])
   })
 
   it('leads the hold with its words, the code only as a title', async () => {

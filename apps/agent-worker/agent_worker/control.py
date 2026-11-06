@@ -388,6 +388,92 @@ def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
+#: The merge task's record of its fix rounds (`merge.MERGE_FIX_METADATA_KEY`,
+#: written by swarm-api's wake tick) and the two kinds of round in it.
+_MERGE_FIX_KEY = "merge_fix"
+_ROUND_KINDS = ("rounds", "conflict_rounds")
+#: Bounds on `merge_wait.failed_heads`: the document is tenant-writable and
+#: the record is carried park to park.
+FAILED_HEADS_MAX_NAMES = 40
+FAILED_HEADS_MAX_PER_NAME = 10
+
+
+def _instant(value: Any) -> datetime | None:
+    """An aware instant: a datetime as Firestore hands it back, or ISO text."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return value if isinstance(value, datetime) and value.tzinfo is not None else None
+
+
+def round_heads(metadata: Mapping[str, Any]) -> set[str]:
+    """The heads a fix round (CI or conflict) was claimed at: the red or
+    conflicting heads the platform's own repair rounds worked from."""
+    fix = metadata.get(_MERGE_FIX_KEY)
+    fix = fix if isinstance(fix, Mapping) else {}
+    heads: set[str] = set()
+    for kind in _ROUND_KINDS:
+        rounds = fix.get(kind)
+        for entry in rounds if isinstance(rounds, list) else []:
+            if isinstance(entry, Mapping) and isinstance(entry.get("head"), str) and entry["head"]:
+                heads.add(entry["head"])
+    return heads
+
+
+def ci_wait_span(metadata: Mapping[str, Any], last: Mapping[str, Any], head: str,
+                 failed: Sequence[str] | None, now: datetime) -> dict[str, Any]:
+    """The whole CI wait a merge step's park continues (#2688, 2026-11-06).
+
+    Every re-check is a new attempt and a new park, and `first_parked_at`
+    restarts whenever the head moves, so a step whose own repair rounds kept
+    moving the head re-checked 28 times over 8 hours and never read as old.
+    This is the wait as a person lives it:
+
+      * `wait_started_at`, the first park of the wait, carried by every CI
+        park (slot and train waits included) while the last record is at
+        this head or at a head a repair round was claimed at (the round's
+        push is the new head); restarted by any other head move, and by a
+        person's "I'm ready" after it (`human_ready.at`): their return ends
+        the wait the stuck park handed them;
+      * `rechecks`, how many parks the wait has made, this one included;
+      * `failed_heads`, each check that has failed in the wait and the heads
+        it failed at, bounded, so "the same check fails after a repair
+        round" can be read off the record.
+    """
+    started = _instant(last.get("wait_started_at"))
+    previous = last.get("head")
+    if started is not None and previous and previous != head and previous not in round_heads(metadata):
+        started = None
+    ready = metadata.get("human_ready")
+    returned = _instant(ready.get("at")) if isinstance(ready, Mapping) else None
+    if started is not None and returned is not None and returned > started:
+        started = None
+    carried = started is not None
+    heads: dict[str, list[str]] = {}
+    old = last.get("failed_heads") if carried else None
+    for name, seen in (old.items() if isinstance(old, Mapping) else []):
+        if isinstance(seen, list) and len(heads) < FAILED_HEADS_MAX_NAMES:
+            heads[str(name)[:256]] = [str(h)[:64] for h in seen if isinstance(h, str)][-FAILED_HEADS_MAX_PER_NAME:]
+    for name in failed or []:
+        key = str(name)[:256]
+        if key not in heads and len(heads) >= FAILED_HEADS_MAX_NAMES:
+            continue
+        seen = heads.setdefault(key, [])
+        if head not in seen:
+            seen.append(head)
+            del seen[:-FAILED_HEADS_MAX_PER_NAME]
+    return {
+        "wait_started_at": started if started is not None else now,
+        "rechecks": (_count(last.get("rechecks")) if carried else 0) + 1,
+        "failed_heads": heads,
+        # swarm-api's wake tick's reading that the default branch is red on
+        # the same checks (`mergewake._red_on_default`), kept for the wait.
+        "main_red": dict(last["main_red"]) if carried and isinstance(last.get("main_red"), Mapping) else None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # The task's read-side views (contract request 132, accepted 2026-11-01)
 # ---------------------------------------------------------------------------
@@ -2781,6 +2867,11 @@ class ControlPlane:
         swarm-api's park (`attemptstate`, the state routes) keeps the same
         clock.
 
+        THE WHOLE WAIT (part of #2688). `wait_started_at`, `rechecks` and
+        `failed_heads` (`ci_wait_span`) span the re-checks across the heads
+        the step's own repair rounds pushed: what `/sc check` ages a stuck
+        wait from, and what the merge step reads to hand it to a person.
+
         THE TRAIN'S START (part of #2688). `train_entered_at` is set by the
         first train park (`counter` "train_waits") of an unbroken run of
         them and carried by every train park after it; any other park
@@ -2854,6 +2945,7 @@ class ControlPlane:
                 "ci_paused_at": paused,
                 "train_entered_at": train,
                 "parked_at": now,
+                **ci_wait_span(metadata, last, head, failed, now),
                 **recorded,
             }
             payload: dict[str, Any] = {

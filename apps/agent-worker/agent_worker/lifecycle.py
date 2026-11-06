@@ -174,6 +174,7 @@ from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
+from . import flow_output as flow_output_mod
 from . import qa_identity as qa_identity_mod
 from . import redact as redact_mod
 from . import extrarepos as extrarepos_mod
@@ -265,6 +266,7 @@ from .gitops import (
     commit_tree_onto,
     fetch_branch_tip,
     fold_agent_commits,
+    forge_holds_commit,
     hide_from_git,
     is_branch_ref_name,
     is_full_refname,
@@ -1213,6 +1215,8 @@ class Worker:
         self._ui_review_paths: list[str] | None = None
         # What `verdict.gate_rendered_review` found, for `result_summary`.
         self._rendered_review: dict[str, Any] | None = None
+        # What `flow_output.normalise` found for a QA flow step, for `result_summary`.
+        self._flow_output: dict[str, Any] | None = None
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -2809,16 +2813,19 @@ class Worker:
         keeps no workspace.
         """
         wait = dict(outcome.owner_wait or {})
+        # A CI wait handed to a person (`merge.CI_WAIT_STUCK`, part of #2688)
+        # names its own phase, and its evidence rides under it; the owner
+        # questions' hold keeps `owner_questions`.
+        phase = str(wait.pop("park_phase", None) or "owner_questions")
         uploaded = self._upload_outputs().get("artifacts")
-        self.log.info("the merge waits on the owner's questions; parking for a person",
+        self.log.info("the merge waits for a person; parking", phase=phase,
                       action=action.value, questions=len(wait.get("questions") or []),
                       unreadable=wait.get("unreadable"))
         with self._metrics_after_the_record():
             park = handoff_mod.park_human_required(
                 self.control,
                 max_resumes=self.handoff.max_resumes,
-                detail={"park_phase": "owner_questions",
-                        "owner_questions": self._scrub(wait)},
+                detail={"park_phase": phase, phase: self._scrub(wait)},
                 uploads=uploaded if isinstance(uploaded, list) else None,
             )
         if park.returned_by is not None:
@@ -4919,6 +4926,8 @@ class Worker:
                 summary["pull_request_text_from"] = dict(self._pr_text_from)
             if self._rendered_review is not None:
                 summary[verdict_mod.RENDERED_REVIEW_KEY] = self._scrub(dict(self._rendered_review))
+            if self._flow_output is not None:
+                summary[flow_output_mod.SUMMARY_KEY] = self._scrub(dict(self._flow_output))
 
             runner_result = self._add_runner_block(summary)
             self._record_quality_gates(summary)
@@ -7958,6 +7967,18 @@ class Worker:
         except InputUnavailable:
             return None
         return verdict_mod.ui_paths_in_own_files(upstream.get("result_summary"))
+
+    def _normalise_flow_output(self) -> None:
+        """Rename a QA flow step's lone stray tar to its `<step>.tar` (`flow_output`; PR #3521)."""
+        ws = self.ws
+        if ws is None or not self._expected_outputs:
+            return
+        record = flow_output_mod.normalise(
+            ws.artifacts, (self._task or {}).get("step_id"), self._expected_outputs)
+        self._flow_output = record
+        if record is not None:
+            for line in record["lines"]:
+                (self.log.info if record["ok"] else self.log.warning)(line)
 
     def _hold_ui_review_to_rendered(self) -> None:
         """Rewrite this UI-gated review's MERGE to NOT_YET unless it rendered (#2184)."""
@@ -12728,6 +12749,8 @@ class Worker:
                 self.log.warning("could not read the series clock", error=f"{type(exc).__name__}: {exc}")
         return {
             "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
+            # The working set (`metrics.working_set_bytes`), page cache
+            # excluded: the figure the reconciler's memory judgement reads.
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
             "checkpoints": self.checkpoints.seq,
             "cpu_seconds": round(cpu_seconds, 3) if cpu_seconds is not None else None,
@@ -13524,6 +13547,24 @@ class Worker:
             base=base,
         )
         return floor
+
+    def _forge_holder(self, *, url: str, token: str) -> Callable[[str], bool]:
+        """Whether the forge serves a commit (`forge_holds_commit`), each sha
+        asked once: the replay and the fold ask of every merged head (#3359)."""
+        ws = self.ws
+        assert ws is not None
+        answers: dict[str, bool] = {}
+
+        def holds(sha: str) -> bool:
+            if sha not in answers:
+                answers[sha] = forge_holds_commit(
+                    url=url, sha=sha, token=token, private_dir=ws.private,
+                    logs_dir=ws.logs, timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                    logger=self.log,
+                )
+            return answers[sha]
+
+        return holds
 
     def _default_branch_tip(
         self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
@@ -15313,6 +15354,9 @@ class Worker:
                 logger=self.log,
                 allow_unknown_base=allow_unknown_base,
                 confirm_on_origin=self._origin_confirmer(fenced),
+                # A merge the agent left in progress is concluded as a merge
+                # by `commit_dirty`, never squashed (#3359).
+                carry_merge=True,
             )
         finally:
             # `prepare_publish_repo` reads a confirmer that raised as "origin
@@ -16244,6 +16288,9 @@ class Worker:
                     ),
                 )
             else:
+                # A merged branch the forge already holds stays a parent
+                # whatever its commits say: it is published already (#3359).
+                on_forge = self._forge_holder(url=url, token=token)
                 try:
                     replayed = replay_agent_commits(
                         repo=publish_repo,
@@ -16268,6 +16315,7 @@ class Worker:
                         leaks=self._leaks_in_added_text,
                         overlap=self._scan_overlap(),
                         upstream=scan_floor or "",
+                        on_forge=on_forge,
                     )
                     if replayed is not None:
                         kept = replayed
@@ -16305,6 +16353,7 @@ class Worker:
                                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                                 logger=self.log,
                             ),
+                            on_forge=on_forge,
                         )
                         # The worker's own auto-commit is among what was replaced
                         # when there was one; the rest were the agent's.
@@ -18010,6 +18059,11 @@ class Worker:
             # After the harvest's reap, so the agent can no longer write it,
             # and before the upload, so what goes up is the verdict that counts.
             self._hold_ui_review_to_rendered()
+        if defer_publish:
+            # A QA flow step's stray tar (re-run 8's flow-1.tar for flows-1)
+            # is renamed to its owed `<step>.tar` after the reap and before the
+            # upload, so the missing-output check and the flow report read it.
+            self._normalise_flow_output()
         # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
         # decision of 2026-09-26): at most `max_artifact_files`, a declared
         # output first, no name past the manifest's bound; see
@@ -18649,6 +18703,7 @@ class Worker:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
                 peak_rss_bytes=usage.peak_rss_bytes,
+                peak_memory_current_bytes=usage.peak_memory_current_bytes,
                 limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
                 resource_class=self._memory_class(),
             )
@@ -18676,6 +18731,7 @@ class Worker:
                 name=kill.get("name"),
                 rss_bytes=kill.get("rss_bytes"),
                 memory_current_bytes=kill.get("memory_current_bytes"),
+                working_set_bytes=kill.get("working_set_bytes"),
                 memory_max_bytes=kill.get("memory_max_bytes"),
             )
 
@@ -20299,6 +20355,7 @@ def replay_agent_commits(
     leaks: LeakPredicate | None = None,
     overlap: int = SCAN_OVERLAP_CHARS,
     upstream: str = "",
+    on_forge: Callable[[str], bool] | None = None,
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
 
@@ -20342,7 +20399,10 @@ def replay_agent_commits(
     fix round's `git merge origin/main` reached the forge with one parent,
     GitHub kept the old merge base and the pull request still conflicted;
     dropping train/an's was #3359, every conflict the lane resolved raised
-    again when its pull request merged back.
+    again when its pull request merged back. A parent `on_forge` says the
+    forge holds is kept whatever its commits say: it is published already
+    (#3359 again, 6 November 2026, a train branch with one attributed
+    commit made outside the platform).
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -20456,7 +20516,7 @@ def replay_agent_commits(
             raise GitError(f"could not read the tree of commit {sha[:12]}")
         merged = _published_merge_parents(
             run, g, header, upstream=upstream, base=floor, logger=logger,
-            history_leaks=history_leaks,
+            history_leaks=history_leaks, on_forge=on_forge,
         )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
@@ -20505,6 +20565,7 @@ def _published_merge_parents(
     base: str,
     logger: Any,
     history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """The merge parents of a commit (its `header`) the replay keeps (#1321, #3359).
 
@@ -20517,7 +20578,8 @@ def _published_merge_parents(
     without its history, and merging the pull request back raised every
     conflict the lane had resolved again (#3359). A side branch the agent
     committed on as Claude is still dropped: its commits would be pushed as
-    they were written. So is one `history_leaks` finds a credential in.
+    they were written. So is one `history_leaks` finds a credential in --
+    unless `on_forge` says the forge holds it already.
     """
     parents = [line[len("parent "):].strip() for line in header.split("\n")
                if line.startswith("parent ")]
@@ -20526,7 +20588,7 @@ def _published_merge_parents(
         if not _SHA_RE.match(other):
             continue
         if merged_head_kept(run, g, other, base=base, upstream=upstream, logger=logger,
-                            history_leaks=history_leaks):
+                            history_leaks=history_leaks, on_forge=on_forge):
             kept.append(other)
     return kept
 
