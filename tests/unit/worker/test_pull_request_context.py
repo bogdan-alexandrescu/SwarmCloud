@@ -33,7 +33,7 @@ WORKFLOW = "wf_review_reads_its_pr"
 AUTHOR = "task_author42"
 REVIEW = "task_review42"
 NUMBER = 42
-BASE = f"/repos/octo/widgets"
+BASE = "/repos/octo/widgets"
 
 
 def _token() -> str:
@@ -311,3 +311,34 @@ def test_a_pull_request_the_forge_refuses_is_named_unread_and_the_agent_still_ru
     assert text.startswith(f"# Pull request #{NUMBER}: not read")
     assert "no such pull request" in text
     assert pull_request_mod.FILE_NAME in runner_inputs[-1]["prompt"]
+
+
+def test_a_single_pr_reader_reads_the_pull_request_its_author_opened(db, worker_factory):
+    """A `single-pr` reader builds on nothing: its pull request is its signed
+    `pr_author` step's."""
+    _seed_author(db)
+    seed_attempt(db, task_id=REVIEW, attempt_id="att_r", lease_id="lease_r",
+                 task_input={"prompt": "review the change"})
+    worker, _config, _exporter = worker_factory(
+        task_id=REVIEW, attempt_id="att_r", lease_id="lease_r")
+    worker._task = {
+        "id": REVIEW, "workflow_id": WORKFLOW, "input": {"prompt": "review the change"},
+        "metadata": {"dispatch": {"strategy": "single-pr", "pr_role": "reader",
+                                  "pr_author": AUTHOR}},
+    }
+
+    # MUTATION: read only `builds_on`, and a reader names no pull request.
+    assert worker._requested_pull_request() == NUMBER
+
+
+def test_a_step_with_no_brief_names_no_pull_request(db, worker_factory):
+    _seed_author(db)
+    seed_attempt(db, task_id=REVIEW, attempt_id="att_r", lease_id="lease_r")
+    worker, _config, _exporter = worker_factory(
+        task_id=REVIEW, attempt_id="att_r", lease_id="lease_r")
+    worker._task = {
+        "id": REVIEW, "workflow_id": WORKFLOW, "input": {},
+        "metadata": {"dispatch": {"builds_on": AUTHOR}},
+    }
+
+    assert worker._requested_pull_request() is None
