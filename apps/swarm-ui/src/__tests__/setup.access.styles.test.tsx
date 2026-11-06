@@ -226,6 +226,12 @@ const OVERVIEW = {
   ],
 }
 
+// THE FIRST LOAD OF THE GRID'S SCREEN, AT COLLECTION. `renderGrants` imports
+// it afresh after `vi.resetModules()`, which re-runs modules already fetched;
+// without this the first grid case paid the cold fetch and transform of its
+// whole graph inside its own 30 s.
+await import('../ReachableRepositories')
+
 async function renderGrants(): Promise<HTMLElement> {
   serve((m, url) => {
     if (m === 'GET' && url === '/v1/access') return { status: 200, body: OVERVIEW }
