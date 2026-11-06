@@ -1,0 +1,20 @@
+{
+  "name": "probe",
+  "version": "0.0.1",
+  "description": "The loading spike's probe: one of every component, each leaving a marker",
+  "userConfig": {
+    "region": {
+      "type": "string",
+      "title": "Region",
+      "description": "A non-sensitive required option",
+      "required": true
+    },
+    "api_token": {
+      "type": "string",
+      "title": "API token",
+      "description": "A sensitive required option",
+      "sensitive": true,
+      "required": true
+    }
+  }
+}
