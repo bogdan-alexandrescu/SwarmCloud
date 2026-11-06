@@ -258,9 +258,9 @@ def test_a_skip_is_found_at_its_file_test_and_kind_with_the_reason_its_source_gi
         ("tests/test_a.py", "test_a", "skipif", "git is not installed"),
         ("tests/test_b.py", "Checks.test_b", "skip_call", "node is not installed"),
         ("tests/unit/test_m.py", "<module>", "skipif", "module wide"),
-        ("tests/unit/test_m.py", "<module>", "importorskip", "cryptography"),
+        ("tests/unit/test_m.py", "<module>", "importorskip", "cryptography is not importable"),
         ("tests/unit/test_m.py", "test_c", "xfail", "E2E-2"),
-        ("tests/unit/test_m.py", "test_c", "skip_call", "f'no {x}'"),
+        ("tests/unit/test_m.py", "test_c", "skip_call", "no {x}"),
     ]
 
 
