@@ -680,14 +680,22 @@ def _read_body(response: Any, limit: int | None = None) -> bytes:
 USER_AGENT_PRODUCT = "swarm-mcp"
 
 
-def client_version() -> str:
-    """This package's version, or "0" for a working copy not installed as one."""
+def _installed_version() -> str:
     from importlib import metadata
 
     try:
         return metadata.version("swarm-mcp")
     except metadata.PackageNotFoundError:
         return "0"
+
+
+#: Read ONCE, at import: a request is no reason to read package metadata.
+_CLIENT_VERSION = _installed_version()
+
+
+def client_version() -> str:
+    """This package's version, or "0" for a working copy not installed as one."""
+    return _CLIENT_VERSION
 
 
 def user_agent(kind: str) -> str:
