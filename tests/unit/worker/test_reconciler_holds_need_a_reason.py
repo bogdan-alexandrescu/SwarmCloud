@@ -445,15 +445,25 @@ def _held_long(db: FakeFirestore, minutes_past_ttl: int) -> None:
 
 
 def _shift(rec: Reconciler, seconds: int) -> None:
-    """Every later snapshot is taken `seconds` later than the wall clock."""
+    """Every later snapshot is taken `seconds` later than the wall clock.
+
+    Both reads: a held lease is past its TTL, so the incremental pass between
+    full sweeps reads it too, and must see the same clock."""
     real = rec._store.snapshot
+    real_incremental = rec._store.incremental_snapshot
 
     def later() -> Any:
         snapshot = real()
         snapshot.taken_at = snapshot.taken_at + timedelta(seconds=seconds)
         return snapshot
 
+    def later_incremental(**window: Any) -> Any:
+        snapshot = real_incremental(**window)
+        snapshot.taken_at = snapshot.taken_at + timedelta(seconds=seconds)
+        return snapshot
+
     rec._store.snapshot = later  # type: ignore[method-assign]
+    rec._store.incremental_snapshot = later_incremental  # type: ignore[method-assign]
 
 
 def test_a_lease_held_past_its_ttl_too_long_is_an_error_once_an_hour(db, config):
