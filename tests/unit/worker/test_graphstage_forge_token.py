@@ -152,6 +152,34 @@ def test_the_token_file_is_0600_in_the_private_dir_and_gone_after_the_fetch(tmp_
         i for i, a in enumerate(argv) if a.startswith("credential.helper=store"))
 
 
+def test_the_commit_history_holds_the_token_as_the_deepen_does(tmp_path):
+    lane = _Lane(tmp_path)
+    binary, log = _recorder(tmp_path)
+    # The scratch repository is made by the real git; the fetch is recorded.
+    source = binary.read_text().replace("if 'config' in argv:", "if 'init' in argv:")
+    binary.write_text(source)
+    token = secrets.token_hex(20)
+
+    got = gitops.fetch_commit_history(url=URL, base_sha=lane.base, private_dir=lane.private,
+                                      token=token, git_binary=str(binary))
+
+    assert got == lane.private / gitops.ANCESTRY_HISTORY_DIR
+    seen = json.loads(log.read_text())
+    argv = seen["argv"]
+    assert "--filter=blob:none" in argv and argv[-1] == lane.base
+    # MUTATION: the token not handed on leaves a private repository unprovable.
+    assert len(seen["files"]) == 1 and seen["modes"] == [0o600]
+    held = Path(seen["files"][0])
+    assert held.parent == lane.private
+    # MUTATION: skipping `_remove_credentials` leaves the token on disk.
+    assert not held.exists() and _files_holding(tmp_path, token) == []
+    # MUTATION: a token in argv is readable through /proc.
+    assert all(token not in a for a in argv)
+    assert argv[argv.index("http.proxy=") - 1] == "-c"
+    assert argv.index("credential.helper=") < next(
+        i for i, a in enumerate(argv) if a.startswith("credential.helper=store"))
+
+
 def test_prepare_holds_the_token_only_with_a_private_dir(db, store, tmp_path, monkeypatch):
     lane = _Lane(tmp_path)
     _no_ab(db)
@@ -164,6 +192,15 @@ def test_prepare_holds_the_token_only_with_a_private_dir(db, store, tmp_path, mo
         return "the history fetch failed (git exit 128)"
 
     monkeypatch.setattr(gitops, "fetch_base_history", capture)
+    # The commit-only history goes first; refused offline, as the forge would
+    # refuse a private repository, so the fallback is asked too.
+    history_asked: list[dict[str, Any]] = []
+
+    def no_history(**kwargs: Any) -> str:
+        history_asked.append(kwargs)
+        return "the commit history fetch failed (git exit 128)"
+
+    monkeypatch.setattr(gitops, "fetch_commit_history", no_history)
     for private_dir in (lane.private, None):
         graphstage.prepare(lane.checkout.parent, profile_name="claude-code",
                            runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
@@ -179,6 +216,9 @@ def test_prepare_holds_the_token_only_with_a_private_dir(db, store, tmp_path, mo
     # the files the agent reads.
     assert asked[1]["token"] is None
     assert asked[1]["private_dir"] == lane.checkout.parent / graphstage.CONTEXT_DIR_NAME
+    # The commit-only history holds the token exactly as the deepen does.
+    assert [(a["token"], a["private_dir"]) for a in history_asked] == [
+        (token, lane.private), (None, lane.checkout.parent / graphstage.CONTEXT_DIR_NAME)]
 
 
 # --------------------------------------------------------------------------
@@ -290,6 +330,15 @@ def test_a_token_read_that_raises_is_a_reason_and_the_attempt_goes_on(db, store,
         raise PermissionError("secret manager said no")
 
     monkeypatch.setattr(gitops, "fetch_base_history", capture)
+    # The commit-only history goes first; refused offline, as the forge would
+    # refuse a private repository, so the fallback is asked too.
+    history_asked: list[dict[str, Any]] = []
+
+    def no_history(**kwargs: Any) -> str:
+        history_asked.append(kwargs)
+        return "the commit history fetch failed (git exit 128)"
+
+    monkeypatch.setattr(gitops, "fetch_commit_history", no_history)
     env = graphstage.prepare(lane.checkout.parent, profile_name="claude-code",
                              runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
                              db=db, store=store, tenant_id=TENANT, repository_url=URL,
