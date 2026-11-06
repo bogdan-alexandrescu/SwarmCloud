@@ -14,16 +14,20 @@ cloud credential) and says what no longer holds, so these tests hold:
     with never citing one that does not exist);
   * every model id in terraform/infra/locals.tf `runner_models` is the one
     baseline.md states for its class;
-  * the skip, expected-failure and quarantine counts known-failures.md states
-    are the ones the tree has;
+  * known-failures.md lists every skip, expected failure and quarantined test
+    by where it is (file, enclosing test, kind) with its reason, and nothing
+    the tree no longer has. It holds no count: a count two green changes each
+    bump conflicts when they land together, and a list two changes each add a
+    row to does not (BGD, 6 November 2026: merge-safe whole-tree checks);
   * every capability matrix row has its four columns, and its live-verified
     cell names a record, says "not read from here" or says why it does not
     apply ("n/a: ..."); a bare "none", "no" or "yes" is refused, because an
     unknown is recorded as unknown, never as zero.
 
-BREAK IT: rename a cited test function, re-pin a model class in locals.tf or
-add a `pytest.mark.xfail` under tests/, or write `none` in a live-verified
-cell: the matching test below names it.
+BREAK IT: rename a cited test function, re-pin a model class in locals.tf,
+add a `pytest.mark.xfail` under tests/ without its row, delete a skipped test
+and leave its row, or write `none` in a live-verified cell: the matching test
+below names it.
 """
 
 from __future__ import annotations
@@ -201,6 +205,152 @@ def test_the_report_counts_matrix_rows_and_fails_on_an_unnamed_live_cell(tmp_pat
     assert report["missing"] == []
 
 
+# --- the skip table: listed by location, never counted ---------------------
+
+_TABLE_HEAD = (
+    "| File | Test | Kind | Reason |\n"
+    "|---|---|---|---|\n"
+)
+_ROW_A = "| `tests/test_a.py` | `test_a` | `skipif` | git is not installed |\n"
+_ROW_B = "| `tests/test_b.py` | `Checks.test_b` | `skip_call` | node is not installed |\n"
+_SKIP_A = (
+    "import shutil\nimport pytest\n\n"
+    "@pytest.mark.skipif(shutil.which('git') is None, reason='git is not installed')\n"
+    "def test_a():\n    pass\n"
+)
+_SKIP_B = (
+    "import shutil\nimport pytest\n\n"
+    "class Checks:\n"
+    "    def test_b(self):\n"
+    "        if shutil.which('node') is None:\n"
+    "            pytest.skip('node is not installed')\n"
+)
+
+
+def _tree(root: Path, files: dict[str, str]) -> Path:
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return root
+
+
+def test_a_skip_is_found_at_its_file_test_and_kind_with_the_reason_its_source_gives(tmp_path):
+    _tree(
+        tmp_path,
+        {
+            "tests/test_a.py": _SKIP_A,
+            "tests/test_b.py": _SKIP_B,
+            "tests/unit/test_m.py": (
+                "import pytest\n"
+                "pytestmark = pytest.mark.skipif(True, reason='module wide')\n"
+                "cryptography = pytest.importorskip('cryptography')\n"
+                "@pytest.mark.xfail(strict=True, reason='E2E-2')\n"
+                "def test_c():\n"
+                "    # pytest.skip('a comment is not a skip')\n"
+                "    x = \"pytest.mark.skip in a string is not one\"\n"
+                "    pytest.skip(f'no {x}')\n"
+                "    pytest.skip('twice in one test is one row')\n"
+            ),
+        },
+    )
+    assert [tuple(s) for s in inv.skip_sites(tmp_path)] == [
+        ("tests/test_a.py", "test_a", "skipif", "git is not installed"),
+        ("tests/test_b.py", "Checks.test_b", "skip_call", "node is not installed"),
+        ("tests/unit/test_m.py", "<module>", "skipif", "module wide"),
+        ("tests/unit/test_m.py", "<module>", "importorskip", "cryptography"),
+        ("tests/unit/test_m.py", "test_c", "xfail", "E2E-2"),
+        ("tests/unit/test_m.py", "test_c", "skip_call", "f'no {x}'"),
+    ]
+
+
+def test_a_new_skip_the_table_does_not_list_fails_naming_it_and_the_row_to_add(tmp_path):
+    _tree(tmp_path, {"tests/test_a.py": _SKIP_A, "tests/test_b.py": _SKIP_B})
+    assert inv.skip_table_drift(tmp_path, _TABLE_HEAD + _ROW_A) == [
+        "unlisted skip tests/test_b.py Checks.test_b skip_call; add the row: "
+        + _ROW_B.strip()
+    ]
+
+
+def test_two_changes_that_each_add_a_listed_skip_pass_alone_and_together(tmp_path):
+    base = _tree(tmp_path / "base", {"tests/test_base.py": "def test_ok():\n    pass\n"})
+    assert inv.skip_table_drift(base, _TABLE_HEAD) == []
+    change_a = _tree(tmp_path / "a", {"tests/test_a.py": _SKIP_A})
+    assert inv.skip_table_drift(change_a, _TABLE_HEAD + _ROW_A) == []
+    change_b = _tree(tmp_path / "b", {"tests/test_b.py": _SKIP_B})
+    assert inv.skip_table_drift(change_b, _TABLE_HEAD + _ROW_B) == []
+    # Both landed: each brought its file and its own row; neither edited a
+    # number the other also edited, so the merged tree passes as each did.
+    both = _tree(tmp_path / "both", {"tests/test_a.py": _SKIP_A, "tests/test_b.py": _SKIP_B})
+    assert inv.skip_table_drift(both, _TABLE_HEAD + _ROW_A + _ROW_B) == []
+    assert inv.skip_table_drift(both, _TABLE_HEAD + _ROW_B + _ROW_A) == []
+
+
+def test_a_removed_skip_still_listed_fails_naming_the_stale_line(tmp_path):
+    _tree(tmp_path, {"tests/test_a.py": "def test_a():\n    pass\n"})
+    doc = "# Known failures\n\n" + _TABLE_HEAD + _ROW_A
+    assert inv.skip_table_drift(tmp_path, doc) == [
+        "stale row at line 5, no such skip in the tree: " + _ROW_A.strip()
+    ]
+
+
+def test_a_listed_skip_with_no_reason_is_named(tmp_path):
+    _tree(tmp_path, {"tests/test_a.py": _SKIP_A})
+    doc = _TABLE_HEAD + "| `tests/test_a.py` | `test_a` | `skipif` |  |\n"
+    assert inv.skip_table_drift(tmp_path, doc) == [
+        "row at line 3 gives no reason: | `tests/test_a.py` | `test_a` | `skipif` |  |"
+    ]
+
+
+def test_a_table_of_another_shape_is_not_read_as_skip_rows():
+    doc = (
+        "| Test | Condition | Area |\n|---|---|---|\n"
+        "| `tests/unit/worker/test_x.py` | node is installed | Jev |\n"
+        "| `tests/test_a.py` | `test_a` | `not_a_kind` | why |\n"
+    )
+    assert inv.listed_skips(doc) == []
+
+
+def test_a_quarantined_test_must_be_listed_and_a_listed_one_must_be_quarantined(tmp_path):
+    _tree(
+        tmp_path,
+        {"tests/flaky.txt": "# header\ntests/unit/test_x.py::test_y #123 2026-11-01\n"},
+    )
+    assert inv.quarantine_drift(tmp_path, "nothing quarantined\n") == [
+        "unlisted quarantine tests/unit/test_x.py::test_y; add the row: "
+        "| `tests/unit/test_x.py::test_y` | quarantined | #123 2026-11-01 |"
+    ]
+    listed = "| `tests/unit/test_x.py::test_y` | quarantined | #123 |\n"
+    assert inv.quarantine_drift(tmp_path, listed) == []
+    (tmp_path / "tests" / "flaky.txt").write_text("# header\n")
+    assert inv.quarantine_drift(tmp_path, "intro\n" + listed) == [
+        "stale row at line 2, not in tests/flaky.txt: " + listed.strip()
+    ]
+
+
+def test_the_report_exits_non_zero_on_an_unlisted_skip(tmp_path):
+    _tree(
+        tmp_path,
+        {
+            "tests/test_a.py": _SKIP_A,
+            "docs/design/agent-quality/known-failures.md": _TABLE_HEAD,
+            "terraform/infra/locals.tf": "locals {\n}\n",
+        },
+    )
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "--root", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 1, done.stderr
+    report = json.loads(done.stdout)
+    assert report["missing"] == []
+    assert report["skip_table"] == [
+        "unlisted skip tests/test_a.py test_a skipif; add the row: " + _ROW_A.strip()
+    ]
+
+
 # --- the documents, against this tree -----------------------------------------
 
 
@@ -226,12 +376,11 @@ def test_the_baseline_states_each_class_s_model_as_locals_tf_pins_it():
         assert f"| `{cls}` | `{model}` |" in baseline, f"baseline.md does not pin {cls} to {model}"
 
 
-def test_known_failures_states_the_tree_s_marker_counts_and_quarantine():
+def test_known_failures_lists_every_skip_and_quarantine_on_this_tree_and_nothing_else():
     known = (DOCS / "known-failures.md").read_text()
-    for kind, count in inv.marker_counts(REPO).items():
-        assert f"| `{kind}` | {count} |" in known, f"known-failures.md does not say {kind}: {count}"
-    entries = inv.quarantined(REPO)
-    assert f"| `tests/flaky.txt` entries | {len(entries)} |" in known
+    assert inv.skip_table_drift(REPO, known) == []
+    assert inv.quarantine_drift(REPO, known) == []
+    assert "| Count |" not in known, "known-failures.md lists skips; it never counts them"
 
 
 def test_every_matrix_row_has_four_columns_and_a_named_or_unknown_live_cell():
