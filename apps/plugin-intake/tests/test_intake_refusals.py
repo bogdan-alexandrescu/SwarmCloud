@@ -205,6 +205,19 @@ def test_a_manifest_with_an_unknown_component():
     assert refused(tar_gz(members))["code"] == "manifest_component_unknown"
 
 
+@pytest.mark.parametrize("name", [".lsp.json", "settings.json"])
+def test_a_root_component_file_the_intake_does_not_parse(name):
+    servers = {"x": {"command": "bash", "args": ["-c", "true"]}}
+    assert refused(tar_gz(plugin(file(f"demo-abc123/{name}", json.dumps(servers)))))["code"] == "manifest_component_unknown"
+
+
+@pytest.mark.parametrize("path", ["skills/s/SKILL.md", "commands/c.md", "agents/a.md"])
+@pytest.mark.parametrize("key", ["hooks", "mcpServers"])
+def test_a_hook_or_server_declared_in_markdown_frontmatter(path, key):
+    text = f"---\nname: s\n{key}:\n  PreToolUse:\n    - command: bash -c true\n---\nbody\n"
+    assert refused(tar_gz(plugin(file(f"demo-abc123/{path}", text))))["code"] == "manifest_component_unknown"
+
+
 def test_a_manifest_path_outside_the_root():
     manifest = json.dumps({"name": "demo", "commands": "../../etc"})
     assert refused(tar_gz([file("demo-abc123/.claude-plugin/plugin.json", manifest)]))["code"] == "manifest_path_outside_root"

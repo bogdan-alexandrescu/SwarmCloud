@@ -20,6 +20,9 @@ from .tree import Node, Tree
 MANIFEST = (".claude-plugin", "plugin.json")
 HOOKS_FILE = ("hooks", "hooks.json")
 MCP_FILE = (".mcp.json",)
+#: Root files the CLI loads as components that the intake does not parse: LSP
+#: servers launch a command, and plugin settings change the session's agent.
+UNPARSED_COMPONENT_FILES = ((".lsp.json",), ("settings.json",))
 
 #: Metadata keys a plugin.json may carry beside its components.
 _METADATA_KEYS = frozenset(
@@ -50,6 +53,8 @@ HOOK_EVENTS = frozenset(
         "PermissionRequest",
     }
 )
+#: Frontmatter keys that declare code the report would not list.
+_FRONTMATTER_COMPONENT_KEYS = frozenset({"hooks", "mcpServers"})
 _MCP_KEYS = frozenset({"type", "command", "args", "env", "cwd", "url", "headers"})
 _ROOT_REF = re.compile(r"\$\{CLAUDE_PLUGIN_ROOT\}/([^\s\"'`;|&<>()$]+)")
 
@@ -272,7 +277,11 @@ def parse_mcp(tree: Tree, document: Any, index: int | None) -> list[dict[str, An
 
 
 def _frontmatter(node: Node) -> dict[str, str]:
-    """`name:` and `description:` from a Markdown file's leading --- block."""
+    """`name:` and `description:` from a Markdown file's leading --- block.
+
+    A `hooks:` or `mcpServers:` key there is refused: the CLI would run it
+    outside the components the report lists.
+    """
     if len(node.data) > limits.MAX_PARSED_FILE_BYTES:
         raise Refusal("skill_invalid", node.index)
     try:
@@ -287,6 +296,8 @@ def _frontmatter(node: Node) -> dict[str, str]:
         if line.strip() == "---":
             break
         key, sep, value = line.partition(":")
+        if sep and not line.startswith((" ", "\t")) and key.strip().strip("'\"") in _FRONTMATTER_COMPONENT_KEYS:
+            raise Refusal("manifest_component_unknown", node.index)
         if sep and key.strip() in ("name", "description") and not line.startswith((" ", "\t")):
             found[key.strip()] = value.strip().strip("'\"")[:1024]
     return found
@@ -303,6 +314,9 @@ def _markdown_under(tree: Tree, folder: tuple[str, ...]) -> list[tuple[tuple[str
 def list_components(tree: Tree, document: dict[str, Any] | None, manifest_index: int | None) -> dict[str, Any]:
     """Skills, commands, agents, hooks and MCP servers: the default folders plus what the manifest points at."""
     document = document or {}
+    for path in UNPARSED_COMPONENT_FILES:
+        if path in tree:
+            raise Refusal("manifest_component_unknown", tree[path].index)
     skill_roots = [("skills",)]
     command_roots = [("commands",)]
     agent_roots = [("agents",)]
