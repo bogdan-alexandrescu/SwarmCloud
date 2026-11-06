@@ -699,11 +699,33 @@ _CLOSED_CALL = (
 #: Nor is a quote after that run with a literal glued after the quote:
 #: `Authorization: Bearer {TOKEN});'<v>'` was served whole (the security
 #: re-review of PR #3448); a quote ends the value only where the value ends.
+#:
+#: EACH IS KEPT ONLY AS A WHOLE, CLOSED CONSTRUCT WHERE THE VALUE ENDS (BGD,
+#: 6 November 2026, the attacker-lens review of PR #3448; part of #2688).
+#: Only `$(` and `${{ ` were read, so `token = $(cat f);<v>` and
+#: `token = ${{ secrets.T }};<v>` were served whole; and `${NAME}` ended
+#: before any character but a `;)]}` run, so `${NAME}<v>`, `${NAME}"<v>` and
+#: `${NAME},<v>` were too. The construct must close (`$(` at its `)`, with
+#: no parenthesis inside; `${{` at its `}}`) and then end the way a
+#: placeholder does (`_VALUE_ENDS`). `_CLOSED_CONSTRUCT` lets the key/value
+#: rule mask a construct with a literal glued after it as ONE value.
 _GLUED_AFTER_QUOTE = r"[;)\]}]++[\"'`][;)\]}\"'`\\]*+[^\s,;)\]}\"'`\\]"
-_SHELL_SUBSTITUTION = (
-    r"\"?\$(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}[ )]"
-    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}(?![;)\]}]++[^\s,\"'`]|" + _GLUED_AFTER_QUOTE + r")|\{\{ )"
+_VALUE_ENDS = (
+    r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}]++(?![^\s\"'`]))(?!" + _GLUED_AFTER_QUOTE + r")"
 )
+_CLOSED_CONSTRUCT = r"\$(?:\([^()\n]{0,256}\)|\{\{[^{}\n]{0,256}\}\})"
+_SHELL_SUBSTITUTION = (
+    r"\"?\$(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}(?: [^()\n]{0,256})?\)"
+    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}"
+    r"|\{\{ [^{}\n]{0,256}\}\})" + _VALUE_ENDS
+)
+#: A LITERAL AFTER A `;)]}` AND A DOUBLE QUOTE OR A COMMA IS IN THE SAME
+#: VALUE (the same review). The masked run stopped at the first `"` or `,`,
+#: so `token=${NAME};"<v>"`, `Bearer {TOKEN});"<v>` and `${NAME},<v>`
+#: served `<v>`. One `;)]}` then a quote (escaped or not) or a comma, with a
+#: value character after any further `;)]}` run, continues the run; a
+#: JSON `"x"},"next"` does not, since a quote follows the comma.
+_GLUED_RUN = r"[;)\]}](?:\\*\"|,)(?=[;)\]}]*[^\s,\"\\;)\]}])"
 _EXPRESSION_PASSWORD = (
     r"(?-i:={1,2}[ \t]|(?:await|new|not)[ \t]"
     + r"|(?:None|True|False|null|undefined|\{\}|\[\]|\(\)|" + _DOTTED + r"|" + _KEYWORD_WORD + r")"
@@ -803,7 +825,7 @@ _CONTAINER = (
 _PLACEHOLDER = (
     r"(?:\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|\$\{[A-Za-z_][A-Za-z0-9_]{0,63}\}"
     r"|\$[A-Za-z_][A-Za-z0-9_]{0,63}+|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])"
-    r"(?:\\{0,15}[\"'`])?(?=\s|$|[,;)\]}]++(?![^\s\"'`]))(?!" + _GLUED_AFTER_QUOTE + r")"
+    + _VALUE_ENDS
 )
 _AUTH_SCHEME = r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)"
 #: Under the `authorization` key: an optional string prefix (`f`, `rb`) and
@@ -841,8 +863,8 @@ KEY_VALUE = _rule(
     r"|"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
-    r"(?(plural)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\]))"
-    r"[^\",\s]*)",
+    r"(?:" + _CLOSED_CONSTRUCT + r"|(?(plural)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\])))"
+    r"(?:" + _GLUED_RUN + r"|[^\",\s])*)",
     re.IGNORECASE,
 )
 
@@ -1045,7 +1067,7 @@ RULES: tuple[Rule, ...] = (
         + _AUTH_SCHEME + r"[ \t]+)"
         r"(?![^\"\\,\s]*\*\*\*\*\*\*\*\*)"
         r"(?!" + _PLACEHOLDER + r")"
-        r"[^*\"\\,\s][^\"\\,\s]*",
+        r"[^*\"\\,\s](?:" + _GLUED_RUN + r"|[^\"\\,\s])*",
         re.IGNORECASE,
     ),
     KEY_VALUE,
