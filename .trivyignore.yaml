@@ -726,3 +726,59 @@ vulnerabilities:
     purls:
       - pkg:pypi/pillow@12.3.0
     expired_at: 2026-12-17
+
+  # Vendored non-Python content inside two of those wheels, found by the same
+  # image scans and not by the purls above: ray 2.60.0 (a vLLM dependency)
+  # ships a Java jar with jackson 2.18.8 and guava 32.0.1, and gradio 6.17.3
+  # (a qwen-asr dependency) ships a Node build with follow-redirects 1.16.0.
+  # Neither has a fixed release we can take without leaving qwen-asr's pins.
+  # Scoped by path to the one file each was found in, so no other image's
+  # jackson, guava or follow-redirects is accepted, and the repository gate
+  # (which copies only apps/swarm-speech/uv.lock entries) never reads them.
+  # Measured 2026-11-06 with trivy 0.76.1 over the lock installed into
+  # /opt/venv: these 9 findings without the entries, none with them.
+  - id: CVE-2026-89407
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-89425
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-68497
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-91776
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-91777
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-102554
+    statement: "ray 2.60.0's Java jar (jackson, guava), in vLLM 0.14.0's closure (pinned exactly by qwen-asr 0.0.6); the speech server runs vLLM in-process with no Ray and no JVM, so nothing loads the jar."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/ray/jars/ray_dist.jar
+    expired_at: 2026-12-17
+  - id: CVE-2026-111755
+    statement: "follow-redirects 1.16.0 in gradio 6.17.3's bundled Node build, a qwen-asr dependency; the speech server never launches gradio or Node, so nothing runs it."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/gradio/templates/node/build/node_modules/follow-redirects/package.json
+    expired_at: 2026-12-17
+  - id: CVE-2026-111756
+    statement: "follow-redirects 1.16.0 in gradio 6.17.3's bundled Node build, a qwen-asr dependency; the speech server never launches gradio or Node, so nothing runs it."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/gradio/templates/node/build/node_modules/follow-redirects/package.json
+    expired_at: 2026-12-17
+  - id: CVE-2026-116689
+    statement: "follow-redirects 1.16.0 in gradio 6.17.3's bundled Node build, a qwen-asr dependency; the speech server never launches gradio or Node, so nothing runs it."
+    paths:
+      - opt/venv/lib/python3.11/site-packages/gradio/templates/node/build/node_modules/follow-redirects/package.json
+    expired_at: 2026-12-17
