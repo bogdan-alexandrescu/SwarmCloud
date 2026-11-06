@@ -1,9 +1,10 @@
 /**
  * THE WORKFLOW'S FACTS CARD (the picked workflow-clarity variant, part of
  * #2688; Bogdan, 2026-11-05). Under the page's state row: the description on
- * the left (held to five lines, Show all only when the clamp cut text; a
- * generated one marked by its chip, the dim ink and a line saying a model
- * wrote it) and labelled facts on the right (Repository, Feature, Started by,
+ * the left, in three labelled lines (Purpose, Goals, Expected output; BGD,
+ * 2026-11-06), held to about five lines with More only when the clamp cut
+ * text, a generated one marked by its chip, the dim ink and an (i); nothing
+ * when none is served) and labelled facts on the right (Repository, Feature, Started by,
  * From, When). The count line and the inspector no longer repeat who and
  * when; the list gets a narrow Repository column; every surface names a
  * workflow by its served title, falling back to its label.
@@ -120,17 +121,33 @@ function board(): WorkflowBoard {
     title: null,
     description: 'Bumps every dependency the lockfile pins.',
     description_source: 'generated',
+    about: {
+      purpose: 'Bumps every dependency the lockfile pins.',
+      goals: ['bump: Update the lockfile.', 'test: Run the suite.'],
+      output: 'A pull request on example-org/nightly, merged by its merge step.',
+    },
     feature: null,
     started_from: 'schedule',
   })
   // Submitted before these fields existed: no key is served.
   const old = workflow('wf_old', 't_c', {})
+  // Submitted without a description, and none generated: served as null.
+  const bare = workflow('wf_bare', 't_d', {
+    repository_url: 'https://github.com/example-org/bare',
+    title: 'Tidy the bucket',
+    description: null,
+    description_source: null,
+    about: null,
+    feature: null,
+    started_from: 'console',
+  })
   const tasks = new Map<string, Task>([
     ['t_a', task('t_a', 'RUNNING', { metadata: { unit: 'ckpt-mv', issue_run: { run_id: 'ir_1', issue: 'example-org/agent-swarm-infra#3201' } } })],
     ['t_b', task('t_b', 'RUNNING', { metadata: { unit: 'deps-n', schedule: { schedule_id: 'nightly-deps', firing_id: 'f1' } } })],
     ['t_c', task('t_c', 'RUNNING', { metadata: { unit: 'old-label' } })],
+    ['t_d', task('t_d', 'RUNNING', { metadata: { unit: 'bare-label' } })],
   ])
-  return { workflows: [titled, generated, old], taskById: tasks, statesDetail: null }
+  return { workflows: [titled, generated, old, bare], taskById: tasks, statesDetail: null }
 }
 
 const realWidth = window.innerWidth
@@ -190,7 +207,15 @@ describe('the served fields, read as swarm-api serves them', () => {
     const [titled, generated, old] = b.workflows
     expect(facts.aboutOf(titled!)).toMatchObject({ title: 'Move checkpoints to the shared bucket', generated: false, startedFrom: 'issue_run' })
     expect(facts.aboutOf(generated!)).toMatchObject({ title: null, feature: null, generated: true, startedFrom: 'schedule' })
-    expect(facts.aboutOf(old!)).toMatchObject({ title: undefined, description: undefined, feature: undefined, startedFrom: undefined })
+    expect(facts.aboutOf(old!)).toMatchObject({ title: undefined, description: undefined, parts: undefined, feature: undefined, startedFrom: undefined })
+    // A bare description is the purpose; a served about is read part by part.
+    expect(facts.aboutOf(titled!).parts).toEqual({ purpose: LONG, goals: [], output: null })
+    expect(facts.aboutOf(generated!).parts).toEqual({
+      purpose: 'Bumps every dependency the lockfile pins.',
+      goals: ['bump: Update the lockfile.', 'test: Run the suite.'],
+      output: 'A pull request on example-org/nightly, merged by its merge step.',
+    })
+    expect(facts.aboutOf(b.workflows[3]!)).toMatchObject({ parts: null, generated: false })
     // MUTATION: drop the description check and a source with no description reads as generated.
     expect(facts.aboutOf(workflow('wf_x', 't_x', { description: null, description_source: 'generated' })).generated).toBe(false)
   })
@@ -216,8 +241,11 @@ describe('the served fields, read as swarm-api serves them', () => {
 describe('the facts card under the state row', () => {
   it('draws the description and the five facts, the feature and the repository as links, From as a chip with its reference', async () => {
     const card = await page('wf_titled')
-    expect(card.querySelector('.wff-text')!.textContent).toBe(LONG)
+    // A spec's bare description is drawn as the purpose, the one labelled line.
+    expect([...card.querySelectorAll('.wff-part-label')].map((l) => l.textContent)).toEqual(['Purpose'])
+    expect(card.querySelector('.wff-part .wff-text')!.textContent).toBe(LONG)
     expect(card.querySelector('.wff-gen')).toBeNull()
+    expect(within(card).queryByRole('button', { name: /About the generated/ })).toBeNull()
     expect([...card.querySelectorAll('dt')].map((d) => d.textContent)).toEqual(['Repository', 'Feature', 'Started by', 'From', 'When'])
     const repo = fact(card, 'Repository').querySelector('a')!
     expect(repo.getAttribute('href')).toBe('https://github.com/example-org/agent-swarm-infra')
@@ -231,11 +259,21 @@ describe('the facts card under the state row', () => {
     expect(fact(card, 'When').textContent).toBe('Nov 3 12:00Z')
   })
 
-  it('marks a generated description by its chip, the dim ink and a line saying a model wrote it; no feature reads none', async () => {
+  it('draws the three labelled lines, the goals as a list, and marks a generated block by its chip, the dim ink and an (i); no feature reads none', async () => {
     const card = await page('wf_gen')
+    expect([...card.querySelectorAll('.wff-part-label')].map((l) => l.textContent)).toEqual(['Purpose', 'Goals', 'Expected output'])
+    expect([...card.querySelectorAll('.wff-goals li')].map((l) => l.textContent)).toEqual(['bump: Update the lockfile.', 'test: Run the suite.'])
+    expect(within(card).getByText('A pull request on example-org/nightly, merged by its merge step.')).toBeTruthy()
     expect(card.querySelector('.wff-label .c-chip')!.textContent).toBe('generated')
-    expect(card.querySelector('.wff-text')!.classList.contains('is-generated')).toBe(true)
-    expect(within(card).getByText(/A model wrote this from the steps' prompts/)).toBeTruthy()
+    expect(card.querySelector('.wff-parts')!.classList.contains('is-generated')).toBe(true)
+    // THE EXPLANATION IS BEHIND THE (i), never a line of prose on the card.
+    const info = within(card).getByRole('button', { name: 'About the generated description' })
+    const tip = document.getElementById(info.getAttribute('aria-describedby')!)!
+    expect(tip.textContent).toBe(facts.GENERATED_TIP)
+    expect(tip.hidden).toBe(true)
+    fireEvent.click(info)
+    expect(tip.hidden).toBe(false)
+    expect(within(card).queryByText(/A model wrote this/)).toBeNull()
     expect(fact(card, 'Feature').querySelector('.ctl-mark.is-zero')!.textContent).toBe('none')
     expect(fact(card, 'From').querySelector('.c-chip')!.textContent).toBe('Schedule')
     expect(fact(card, 'From').textContent).toContain('nightly-deps')
@@ -250,26 +288,35 @@ describe('the facts card under the state row', () => {
     expect(card.querySelector('.wff-desc .ctl-mark.is-absent')!.textContent).toBe('not recorded')
   })
 
-  it('offers Show all only when the clamp cut the text, and Show less once open', async () => {
+  it('draws nothing of a description when none is served: the title stands alone, nothing invented', async () => {
+    const card = await page('wf_bare')
+    expect(card.querySelector('.wff-desc')).toBeNull()
+    expect(card.querySelector('.wff-parts')).toBeNull()
+    expect(card.classList.contains('is-facts-only')).toBe(true)
+    expect(within(card).queryByText(/none submitted|Purpose|generated/)).toBeNull()
+    expect([...card.querySelectorAll('dt')].map((d) => d.textContent)).toEqual(['Repository', 'Feature', 'Started by', 'From', 'When'])
+  })
+
+  it('offers More only when the clamp cut the text, and Less once open', async () => {
     // jsdom lays nothing out: a clamped paragraph reports a taller scroll box than its client box only when told.
     const tall = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(200)
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(120)
     const card = await page('wf_titled')
-    const more = await within(card).findByRole('button', { name: 'Show all' })
-    expect(card.querySelector('.wff-text')!.classList.contains('is-clamped')).toBe(true)
+    const more = await within(card).findByRole('button', { name: 'More' })
+    expect(card.querySelector('.wff-parts')!.classList.contains('is-clamped')).toBe(true)
     fireEvent.click(more)
-    expect(card.querySelector('.wff-text')!.classList.contains('is-clamped')).toBe(false)
-    expect(within(card).getByRole('button', { name: 'Show less' }).getAttribute('aria-expanded')).toBe('true')
+    expect(card.querySelector('.wff-parts')!.classList.contains('is-clamped')).toBe(false)
+    expect(within(card).getByRole('button', { name: 'Less' }).getAttribute('aria-expanded')).toBe('true')
     tall.mockReturnValue(120)
-    fireEvent.click(within(card).getByRole('button', { name: 'Show less' }))
-    await waitFor(() => expect(within(card).queryByRole('button', { name: /Show/ })).toBeNull())
+    fireEvent.click(within(card).getByRole('button', { name: 'Less' }))
+    await waitFor(() => expect(within(card).queryByRole('button', { name: /^(More|Less)$/ })).toBeNull())
   })
 
-  it('draws no Show all when the whole description fits', async () => {
+  it('draws no More when the whole description fits', async () => {
     vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(60)
     vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(60)
     const card = await page('wf_titled')
-    expect(within(card).queryByRole('button', { name: /Show/ })).toBeNull()
+    expect(within(card).queryByRole('button', { name: /^(More|Less)$/ })).toBeNull()
   })
 })
 

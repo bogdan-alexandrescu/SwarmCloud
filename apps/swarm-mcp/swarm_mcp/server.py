@@ -5936,6 +5936,8 @@ def _call(
             # Nor a description or a feature (BGD, 2026-11-04).
             description=fields.get("description"),
             feature=fields.get("feature"),
+            # Nor its three-part about (BGD, 2026-11-06).
+            about=fields.get("about"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,

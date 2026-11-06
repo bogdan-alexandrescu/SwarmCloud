@@ -1,10 +1,12 @@
 """A generated description for a workflow submitted without one (BGD, 2026-11-04).
 
-When a workflow arrives with no `metadata.description`, swarm-api writes one
-after the submission returns: Claude Haiku on Vertex AI behind
-SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform ships it "off"), else the first
-sentence of each masked step brief, marked `description_source: "generated"`
-either way. One ledger row per workflow counts the call and caps it at one.
+When a workflow arrives with no `metadata.description` or `metadata.about`,
+swarm-api writes the three parts (purpose, goals, expected output; BGD,
+2026-11-06) after the submission returns: Claude Haiku on Vertex AI behind
+SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform ships it "off"), else an
+extract of the masked step briefs and what the strategy publishes, marked
+`description_source: "generated"` either way. Unset, it writes nothing. One
+ledger row per workflow counts the call and caps it at one.
 
 Offline: the real routes over FakeFirestore, and a fake model in place of
 Vertex AI.
@@ -12,6 +14,7 @@ Vertex AI.
 
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import threading
@@ -21,7 +24,7 @@ from typing import Any
 import pytest
 
 from swarm_api import wfdescription
-from swarm_api.schemas import DESCRIPTION_MAX_CHARS
+from swarm_api.schemas import ABOUT_GOAL_MAX_CHARS, ABOUT_PURPOSE_MAX_CHARS
 from swarm_api.store import TASKS
 from swarm_api.wfdescription import (
     MAX_OUTPUT_TOKENS,
@@ -29,9 +32,12 @@ from swarm_api.wfdescription import (
     MODEL_SWITCH_ENV,
     USAGE_COLLECTION,
     Summary,
+    StepFacts,
     SummaryRefused,
     VertexSummariser,
+    after_submission,
     generate,
+    output_of,
     summariser_from_env,
     usage_id,
 )
@@ -39,8 +45,19 @@ from swarm_api.wfdescription import (
 from .conftest import auth_header
 
 REPO = "https://github.com/octo-org/widget-shop.git"
-MODEL_TEXT = ("Adds a size chart to the product page. Shoppers pick a size without leaving the "
-              "page, and the chart reads from the catalogue.")
+MODEL_ABOUT = {
+    "purpose": "Adds a size chart to the product page so shoppers pick a size without leaving it.",
+    "goals": ["The chart reads sizes from the catalogue", "The chart matches the design"],
+    "output": "Each step's result on the workflow page.",
+}
+MODEL_TEXT = json.dumps(MODEL_ABOUT)
+#: What the extract writes for BRIEFS under the default `collect` strategy.
+EXTRACT_ABOUT = {
+    "purpose": "Build the size chart component for the product page.",
+    "goals": ["s0: Build the size chart component for the product page.",
+              "s1: Check the chart against the design."],
+    "output": "Each step's result and artifacts on this page; no pull request.",
+}
 BRIEFS = ("Build the size chart component for the product page. It reads sizes from the catalogue.",
           "## Review\nCheck the chart against the design. Then approve.")
 
@@ -90,6 +107,12 @@ class FakeModel:
         return Summary(text=self.text, input_tokens=812, output_tokens=41)
 
 
+@pytest.fixture(autouse=True)
+def switched_off(monkeypatch):
+    """The switch as Terraform ships it: the extract writes."""
+    monkeypatch.setenv(MODEL_SWITCH_ENV, "off")
+
+
 @pytest.fixture
 def model(monkeypatch) -> FakeModel:
     """The switch on, with a fake model where Vertex AI would be."""
@@ -110,24 +133,35 @@ def held(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_with_the_switch_off_the_first_sentence_of_each_brief_is_the_description(client, db, monkeypatch):
-    monkeypatch.delenv(MODEL_SWITCH_ENV, raising=False)
+def test_with_the_switch_off_the_briefs_give_the_three_parts(client, db):
     workflow = _post(client)
     served = _read(client, workflow)
-    assert served["description"] == ("Build the size chart component for the product page. "
-                                     "Check the chart against the design.")
+    assert served["about"] == EXTRACT_ABOUT
+    assert served["description"] == EXTRACT_ABOUT["purpose"]
     assert served["description_source"] == "generated"
     row = _row(db, workflow)
     assert row["outcome"] == "extractive" and row["calls"] == 0 and row["kind"] == "workflow_description"
     assert row["tenant_id"] == workflow["tenant_id"] and row["settled_at"] is not None
 
 
-def test_with_the_switch_on_the_models_text_is_the_description_and_its_call_is_counted(client, db, model):
+def test_unset_writes_nothing_and_the_page_shows_the_title_alone(client, db, monkeypatch):
+    monkeypatch.delenv(MODEL_SWITCH_ENV, raising=False)
     workflow = _post(client)
     served = _read(client, workflow)
-    assert served["description"] == MODEL_TEXT
+    assert served["about"] is None and served["description"] is None
+    assert served["description_source"] is None and _row(db, workflow) is None
+
+
+def test_with_the_switch_on_the_models_parts_are_the_about_and_its_call_is_counted(client, db, model):
+    workflow = _post(client)
+    served = _read(client, workflow)
+    assert served["about"] == MODEL_ABOUT
+    assert served["description"] == MODEL_ABOUT["purpose"]
     assert served["description_source"] == "generated"
     assert len(model.prompts) == 1 and "Step 2 brief:" in model.prompts[0]
+    # The facts beside the briefs: the step ids and what the strategy publishes.
+    assert "Steps: s0, s1" in model.prompts[0]
+    assert "Expected output: Each step's result and artifacts on this page" in model.prompts[0]
     row = _row(db, workflow)
     assert {k: row[k] for k in ("calls", "model", "input_tokens", "output_tokens", "outcome")} == {
         "calls": 1, "model": "claude-haiku-fake", "input_tokens": 812, "output_tokens": 41,
@@ -138,7 +172,8 @@ def test_every_step_task_carries_the_generated_description(client, db, model, ap
     workflow = _post(client)
     _read(client, workflow)
     for task in _tasks(api_context, workflow):
-        assert task.metadata["description"] == MODEL_TEXT
+        assert task.metadata["about"] == MODEL_ABOUT
+        assert task.metadata["description"] == MODEL_ABOUT["purpose"]
         assert task.metadata["description_source"] == "generated"
 
 
@@ -152,6 +187,14 @@ def test_a_workflow_submitted_with_a_description_is_never_summarised(client, db,
     served = _read(client, workflow)
     assert served["description"] == "The submitter's own two sentences. They stay."
     assert served["description_source"] == "submitter"
+    assert model.prompts == [] and _row(db, workflow) is None
+
+
+def test_a_workflow_submitted_with_an_about_is_never_summarised(client, db, model):
+    about = {"purpose": "Ships the size chart.", "goals": ["Reads the catalogue"], "output": "A pull request."}
+    workflow = _post(client, about=about)
+    served = _read(client, workflow)
+    assert served["about"] == {**about} and served["description_source"] == "submitter"
     assert model.prompts == [] and _row(db, workflow) is None
 
 
@@ -182,7 +225,7 @@ def test_the_submission_returns_while_the_model_is_still_answering(client, db, m
         assert _row(db, workflow)["outcome"] == "started"
     finally:
         gate.set()
-    assert _read(client, workflow)["description"] == MODEL_TEXT
+    assert _read(client, workflow)["about"] == MODEL_ABOUT
 
 
 @pytest.mark.parametrize("error", [TimeoutError("read timed out"), SummaryRefused("vertex_http_403")])
@@ -192,18 +235,25 @@ def test_a_failed_model_call_falls_back_to_the_extract_and_says_why(client, db, 
     monkeypatch.setattr(wfdescription, "summariser_from_env", lambda environ, *, project_id: failing)
     workflow = _post(client)
     served = _read(client, workflow)
-    assert served["description"].startswith("Build the size chart component")
+    assert served["about"] == EXTRACT_ABOUT
     assert served["description_source"] == "generated"
     row = _row(db, workflow)
     assert row["calls"] == 1 and row["outcome"].startswith("extractive:model_")
 
 
-def test_model_text_the_rule_refuses_falls_back_to_the_extract(client, db, monkeypatch):
-    marked = FakeModel(text="**Adds** a [chart](https://example.invalid).")
+@pytest.mark.parametrize("text", [
+    "**Adds** a [chart](https://example.invalid).",
+    json.dumps({"purpose": "Adds a [chart](https://example.invalid)."}),
+    json.dumps({"purpose": "Adds a chart.", "goals": ["a", "b", "c", "d"]}),
+    json.dumps({"purpose": "x" * (ABOUT_PURPOSE_MAX_CHARS + 1)}),
+    json.dumps({"summary": "Adds a chart."}),
+])
+def test_model_text_the_rule_refuses_falls_back_to_the_extract(client, db, monkeypatch, text):
+    marked = FakeModel(text=text)
     monkeypatch.setenv(MODEL_SWITCH_ENV, "vertex")
     monkeypatch.setattr(wfdescription, "summariser_from_env", lambda environ, *, project_id: marked)
     workflow = _post(client)
-    assert _read(client, workflow)["description"].startswith("Build the size chart component")
+    assert _read(client, workflow)["about"] == EXTRACT_ABOUT
     assert _row(db, workflow)["outcome"] == "extractive:model_text_refused"
 
 
@@ -216,11 +266,11 @@ def test_a_hook_that_cannot_start_still_returns_the_submission(client, monkeypat
     assert response.status_code == 201, response.text
 
 
-def test_nothing_to_summarise_leaves_it_empty_and_the_row_says_so(client, db, monkeypatch):
-    monkeypatch.delenv(MODEL_SWITCH_ENV, raising=False)
+def test_nothing_to_summarise_leaves_it_empty_and_the_row_says_so(client, db):
     workflow = _post(client, "```\n```")
     served = _read(client, workflow)
     assert served["description"] is None and served["description_source"] is None
+    assert served["about"] is None
     assert _row(db, workflow)["outcome"] == "failed:no_text"
 
 
@@ -245,13 +295,56 @@ def test_the_models_input_is_capped(client, db, held, api_context):
     assert len(fake.prompts[0]) <= MAX_PROMPT_CHARS
 
 
-def test_the_extract_is_held_to_the_600_character_rule(client, db, held, api_context):
-    long_sentences = [f"Step {n} changes {'many things ' * 20}today." for n in range(8)]
+def test_the_extract_is_held_to_each_parts_cap(client, db, held, api_context):
+    long_sentences = [f"Step {n} changes {'many things ' * 40}today." for n in range(8)]
     workflow = _post(client, *long_sentences)
     generate(db, _tasks(api_context, workflow), summariser=None)
-    served = _read(client, workflow)
-    assert 0 < len(served["description"]) <= DESCRIPTION_MAX_CHARS
-    assert served["description"].endswith("…")
+    about = _read(client, workflow)["about"]
+    assert 0 < len(about["purpose"]) <= ABOUT_PURPOSE_MAX_CHARS and about["purpose"].endswith("…")
+    assert len(about["goals"]) == 3
+    assert all(len(goal) <= ABOUT_GOAL_MAX_CHARS and goal.endswith("…") for goal in about["goals"])
+
+
+def _facts(**over: Any) -> StepFacts:
+    base = dict(title=None, step_ids=("build",), labels=(), strategy="direct-pr", merge=None,
+                merge_step=False, repository="octo-org/widget-shop", agent_steps=1)
+    return StepFacts(**{**base, **over})
+
+
+def test_the_expected_output_says_what_the_strategy_and_the_merge_setting_publish():
+    assert output_of(_facts()) == "A pull request on octo-org/widget-shop."
+    assert output_of(_facts(merge_step=True)) == (
+        "A pull request on octo-org/widget-shop, merged by its merge step once its checks pass.")
+    assert output_of(_facts(merge="off")) == "A pull request on octo-org/widget-shop, left open for review."
+    assert output_of(_facts(agent_steps=3)) == "A pull request per step on octo-org/widget-shop."
+    assert output_of(_facts(strategy="integrate", agent_steps=3)) == "A pull request on octo-org/widget-shop."
+    assert output_of(_facts(strategy="collect")) == "Each step's result and artifacts on this page; no pull request."
+
+
+def test_a_pull_request_workflow_says_it_publishes_one(client, db):
+    spec = {**_spec(BRIEFS[0]), "strategy": "direct-pr"}
+    response = client.post("/v1/workflows", headers=auth_header("alice"), json=spec)
+    assert response.status_code == 201, response.text
+    about = _read(client, response.json()["workflow"])["about"]
+    assert about["output"].startswith("A pull request on octo-org/widget-shop")
+    assert "goals" not in about or about["goals"] == []
+
+
+def test_after_submission_starts_nothing_while_the_switch_is_unset(client, api_context, held):
+    workflow = _post(client)
+    started: list[Any] = []
+    monkey_thread = type("T", (), {"__init__": lambda self, **k: started.append(k), "start": lambda self: None,
+                                   "is_alive": lambda self: False})
+    real = wfdescription.threading.Thread
+    wfdescription.threading.Thread = monkey_thread
+    try:
+        after_submission(object(), _tasks(api_context, workflow), settings=None, environ={})
+        after_submission(object(), _tasks(api_context, workflow), settings=None, environ={MODEL_SWITCH_ENV: " "})
+        assert started == []
+        after_submission(object(), _tasks(api_context, workflow), settings=None, environ={MODEL_SWITCH_ENV: "off"})
+        assert len(started) == 1
+    finally:
+        wfdescription.threading.Thread = real
 
 
 class FakeResponse:
@@ -333,4 +426,12 @@ def test_a_secret_in_a_brief_reaches_neither_the_model_nor_the_description(clien
     workflow = _post(client, f"Deploy with DB_PASSWORD={value} set. Then check the page.")
     served = _read(client, workflow)
     assert value not in model.prompts[0]
-    assert value not in (served["description"] or "")
+    assert value not in (served["description"] or "") and value not in json.dumps(served["about"])
+
+
+def test_a_secret_in_a_brief_never_reaches_the_extract(client, db):
+    value = secrets.token_hex(12)
+    workflow = _post(client, f"Deploy with DB_PASSWORD={value} set. Then check the page.", BRIEFS[1])
+    served = _read(client, workflow)
+    assert served["description_source"] == "generated"
+    assert value not in json.dumps(served["about"])

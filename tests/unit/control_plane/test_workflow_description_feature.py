@@ -208,9 +208,11 @@ def test_every_list_row_serves_it_in_both_views(client, view):
     assert row["started_from"] == "console"
 
 
-def test_a_workflow_without_them_serves_nulls_and_a_generated_description(client):
+def test_a_workflow_without_them_serves_nulls_and_a_generated_description(client, monkeypatch):
     # No feature and no title are made up. The description is written for
-    # it after the submission returns, marked generated (`wfdescription`).
+    # it after the submission returns, marked generated (`wfdescription`),
+    # with the switch as Terraform ships it.
+    monkeypatch.setenv(wfdescription.MODEL_SWITCH_ENV, "off")
     workflow = _post(client)
     assert wfdescription.wait_pending(10)
     read = client.get(f"/v1/workflows/{workflow['workflow_id']}", headers=auth_header("alice")).json()
