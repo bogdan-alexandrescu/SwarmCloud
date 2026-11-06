@@ -38,11 +38,10 @@ RED, BLUE = (200, 10, 10), (10, 10, 200)
 
 def _halves(width: int, height: int) -> Frame:
     """Red on the left half, blue on the right: what a scale must keep apart."""
-    frame = Frame.blank(width, height, RED)
+    frame, blue = Frame.blank(width, height, RED), Frame.blank(width, height, BLUE)
     for y in range(height):
-        for x in range(width // 2, width):
-            at = y * frame.stride + x * 4
-            frame.pixels[at:at + 3] = bytes(BLUE)
+        at = y * frame.stride + width // 2 * 4
+        frame.pixels[at:y * frame.stride + width * 4] = blue.pixels[at:y * blue.stride + width * 4]
     return frame
 
 
@@ -171,18 +170,18 @@ def test_an_unchanged_frame_sends_nothing_and_a_change_is_sent_scaled() -> None:
         await viewer.read_update()  # the whole thumbnail
         viewer.request(True, 128, 64)
         await viewer.writer.drain()
-        hub.publish(_noise(0))  # the same pixels, published again
+        hub.publish(_noise(0, 0, 0, 8, 8))  # the same pixels, published again
         try:
             got = await asyncio.wait_for(viewer.reader.read(1), 0.6)
         except TimeoutError:
             got = b""
         assert got == b"", "an unchanged frame was sent"
-        hub.publish(_noise(9, 0, 0, 64, 64))  # the top-left quarter changes
+        hub.publish(_noise(9, 0, 0, 128, 64))  # the left half of the page changes
         rects = await viewer.read_update()
         # Only the changed part of the 128x64 thumbnail: its left half.
         assert rects and all(x + w <= 64 for _k, x, _y, w, _h, _p in rects)
 
-    _run(body, _noise(0))
+    _run(body, _noise(0, 0, 0, 8, 8))
 
 
 #: The Browser tab's full-size Tight bytes for `_full_size_session`, from the
