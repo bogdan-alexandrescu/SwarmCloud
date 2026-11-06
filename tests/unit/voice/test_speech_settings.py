@@ -154,7 +154,9 @@ def test_the_own_speech_engine_names_no_openai_model(client):
 def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has(client):
     """The owner's answer (2026-11-05): "selected from a curated list that we
     have available". Every entry is a Claude model the platform prices, so
-    each pick runs on the pool and is costed; Haiku 4.5 is the default."""
+    each pick runs on the pool and is costed. The default is the haiku
+    class's pin, the model the front runs with no setting (BGD, 6 November
+    2026); every other entry is one the platform's price seed lists."""
     from swarm_api import modelprices
 
     body = client.get("/v1/voice/settings/catalogue", headers=_as(ALICE)).json()
@@ -162,10 +164,29 @@ def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has
 
     assert len(listed) > 1
     assert [m["name"] for m in listed][0] == body["defaults"]["conversation_model"]
-    assert body["defaults"]["conversation_model"] == "claude-haiku-4-5"
-    for m in listed:
+    assert body["defaults"]["conversation_model"] == "claude-haiku-5-5"
+    assert listed[0]["model"] == _runner_models()["haiku"]
+    for m in listed[1:]:
         assert m["name"] in modelprices.SEED, m
+    for m in listed:
         assert m["model"].startswith(m["name"]) and m["label"], m
+
+
+def _runner_models() -> dict[str, str]:
+    """Terraform's `local.runner_models`, read from locals.tf."""
+    locals_tf = Path(__file__).resolve().parents[3] / "terraform" / "infra" / "locals.tf"
+    block = re.search(r"runner_models = \{(.*?)\n  \}", locals_tf.read_text(), re.S)
+    assert block, "locals.tf has no runner_models map"
+    return dict(re.findall(r'^\s*(\w+)\s*=\s*"([^"]+)"', block.group(1), re.M))
+
+
+def test_a_stored_conversation_model_no_longer_listed_reads_as_the_pin(db):
+    """A deployment that stored the old default (claude-haiku-4-5) reads the
+    pin now: an entry removed from the list never reaches a session."""
+    service = vsettings.VoiceSettings(db, now=lambda: NOW, zones=("us-central1-a",))
+    db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set(
+        {"conversation_model": "claude-haiku-4-5", "version": 1})
+    assert service.read()["settings"]["conversation_model"] == "claude-haiku-5-5"
 
 
 def test_an_admin_picks_another_listed_conversation_model_and_an_unlisted_one_is_refused(
