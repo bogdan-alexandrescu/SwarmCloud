@@ -89,9 +89,17 @@ def test_ten_polls_of_a_five_step_workflow_read_the_workflow_ten_times_and_only_
     api.script = {3: {"t0": "DISPATCHED"}, 6: {"t0": "STARTING"}, 10: {"t2": "LEASED"}}
     reply = _summary(api, clock, since=since, wait=1800)
     assert api.workflow_reads == 10
-    # One read by id to learn the workflow, then one per step that changed.
-    assert api.task_reads == ["t0", "t0", "t0", "t2"]
+    # The token names the workflow, so no read by id finds it: one per change.
+    assert api.task_reads == ["t0", "t0", "t2"]
     assert reply["transitions"]
+
+
+def test_the_first_call_finds_the_workflow_with_one_task_read():
+    api = _Api(START)
+    _summary(api, _Clock())
+    # t0 by id names the workflow; its one read serves the four others.
+    assert api.task_reads == ["t0"]
+    assert api.workflow_reads == 1
 
 
 def test_a_quiet_hold_backs_off_and_any_change_resets_it():
