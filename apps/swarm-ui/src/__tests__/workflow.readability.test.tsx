@@ -518,7 +518,7 @@ describe('#111: the workflows list sorts, and shows start and duration', () => {
     const heads = [...document.querySelectorAll('.wfg-table thead th')].map((th) => th.textContent)
     // The one-line row (frame graph-workflows-rest) keeps Changed; Submitted
     // (QA G3-20) and Duration moved into the inspector's summary.
-    expect(heads).toEqual(['State', 'Workflow', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
+    expect(heads).toEqual(['State', 'Workflow', 'Repository', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
     expect(heads).not.toContain('Age')
     expect((await summaryFact('wf_one', 'Duration')).textContent).toBe('20m 0s')
     expect((await summaryFact('wf_one', 'Submitted')).getAttribute('title')).toMatch(/submitted/)
