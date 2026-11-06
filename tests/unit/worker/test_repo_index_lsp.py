@@ -1584,6 +1584,65 @@ def test_a_carried_only_language_with_no_recorded_install_starts_its_server_once
     assert _language(facts, "python")["lsp"]["server_version"] == "1.0.0"
 
 
+# --------------------------------------------------------------------------
+# A server that runs out before it reports its version (BGD's pick after the
+# code intelligence report, 2026-11-06). Index builds reused 56-85% of files
+# and carried only 0-3.8% of the servers' answers: the most expensive server
+# goes last (`run_order`), its grant often runs out before initialize
+# answers, and every carried answer of its languages was dropped -- the next
+# run's base then recorded no version and no covered file, so nothing was
+# carried after either. With the same install (`server_build`) as the base,
+# the version is the base's, as the known-version shortcut reads it.
+# --------------------------------------------------------------------------
+
+
+def _starved(tool: Any, lsp: Any, tmp_path: Path, *, same_build: bool) -> Any:
+    repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
+    base = _covered_base(tool, lsp, tmp_path, repo, uncovered="src/z.py", version="1.0.0")
+    spec = _fake(lsp, tmp_path, {"definitions": CARRY_DEFINITIONS,
+                                 "server_info": {"name": "fake-lsp", "version": "1.0.0"},
+                                 "slow_methods": {"initialize": 5.0}})
+    build = lsp.driver.server_build(spec, lsp.DEFAULT_BIN_DIR)
+    for row in base.graph["languages"]:
+        if row["language"] == "python":
+            row["lsp"]["server_build"] = build if same_build else "sha256:" + "0" * 64
+    _commit(repo, {"src/a.py": A_CHANGED})
+    return tool.extract(repo, tool.Budget(), base=base, base_lsp_only=True, lsp=_options(
+        lsp, spec, server_budget_seconds=1.5, warmup_timeout_seconds=30.0,
+        total_budget_seconds=1.5))
+
+
+def test_an_unchanged_files_answer_is_carried_when_the_same_install_ran_out_first(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    facts = _starved(tool, lsp, tmp_path, same_build=True)
+    python = _language(facts, "python")
+    assert python["status"] == "timed_out", python["reason"]
+    carry = facts["extractor"]["lsp_carry"]
+    # MUTATION: drop every carried answer when no version was learnt (the
+    # old rule) and c.py, unchanged, loses its answer: carried 0.
+    assert carry["not_carried"] == {}
+    assert carry["carried_files"] == 3
+    rows = _file_rows(facts)
+    assert rows["src/c.py"]["lsp"] is True
+    assert _edge(facts, "src/c.py#third", "src/b.py#helper")["evidence"] == "lsp"
+    # The changed file was not answered this run: never carried, never covered.
+    assert rows["src/a.py"]["lsp"] is False
+    # MUTATION: keeping the answers but recording no version breaks the
+    # chain: the next run compares against None and drops them all.
+    assert python["lsp"]["server_version"] == "1.0.0"
+
+
+def test_a_starved_server_of_another_install_still_carries_nothing(
+        tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # The control: another install could report another version, so no
+    # answer stands for it.
+    facts = _starved(tool, lsp, tmp_path, same_build=False)
+    carry = facts["extractor"]["lsp_carry"]
+    assert carry["carried_files"] == 0
+    assert "before this run's server version was learnt" in carry["not_carried"]["python"]
+    assert _file_rows(facts)["src/c.py"]["lsp"] is False
+
+
 def test_the_driver_reads_a_known_version_instead_of_starting_the_server(
         tool: Any, lsp: Any, tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", CARRY_APP)
