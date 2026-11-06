@@ -1,13 +1,12 @@
-// THE APP-WIDE PROSE RATCHET: every page the console's nav reaches, one ceiling
-// each (BOGDAN'S RULE, 2026-11-05, standing, every console page: no
-// explanatory prose on the surface; docs/web-ui/design-system.md).
+// THE APP-WIDE PROSE RATCHET: no console page may show more words than it did
+// before the change (BOGDAN'S RULE, 2026-11-05, standing, every console page:
+// no explanatory prose on the surface; docs/web-ui/design-system.md).
 //
 // The four screen files (prose.budget, prose.budget.capacity, prose.operator,
 // prose.runs) each mount one screen on hand-built mocks. This walks the whole
 // App on the fixture build instead, the way the spacing sweep does
 // (spacingsweep.tsx), so a page added to the nav is a page measured: PAGES is
-// derived from SECTIONS, and prose.app.test.tsx fails when a page has no row
-// in prose.ceilings.json.
+// derived from SECTIONS.
 //
 // WHAT IS COUNTED. The same words prose.budget.test.tsx counts: the
 // whitespace-separated tokens of the document's text with
@@ -16,32 +15,35 @@
 // And a second number: the links whose visible text carries an arrow (→ or ›),
 // an action drawn as a text link where the rule wants a button.
 //
-// WHY THE CLOCK AND THE ZONE ARE PINNED. The fixtures date everything from FIXTURE_CLOCK, and
-// a page's "3 h ago" becomes "2 days ago" if the real clock moves on; the
-// count must be the same on every run for a ceiling at today's count to hold.
+// WHAT IT IS COMPARED WITH (BGD's pick, 2026-11-06, part of #2688): the same
+// page on the change's base, rendered in the same test from a copy of the
+// base's src (prosebase.ts says which commit and why). A page fails when its
+// words or its arrow links went up, and the message names the words that are
+// new. There used to be a table of per-page ceilings that lanes lowered by
+// hand; a change that lowered one and a change that added words under the
+// old number were each green and red together. A delta has no such pair, so
+// the table is gone: the base is the ceiling. A page the base did not have is
+// measured and reported, and passes: there is nothing to compare it with.
 //
-// THE CEILINGS ARE IN prose.ceilings.json, A HISTORY PER PAGE, and may only go
-// down (prose.app.test.tsx holds both the history and the previous commit's
-// table). The words each ceiling was set from are in prose.words.json, so a
-// failure names the words that are new rather than only a number. To lower a
-// ceiling after removing prose, run the page's slice with
-// PROSE_RECORD_DIR=<dir>; each page's measurement is written there as JSON.
+// WHY THE CLOCK, THE ZONE AND THE STORAGE ARE PINNED. The fixtures date
+// everything from FIXTURE_CLOCK, and a page's "3 h ago" becomes "2 days ago"
+// if the real clock moves on; each render starts at its own tree's
+// FIXTURE_CLOCK with empty storage, so the base and the head differ only in
+// what the change did.
 
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render } from '@testing-library/react'
 
 import { App, SECTIONS } from '../App'
-import { FIXTURE_CLOCK } from '../api'
-import CEILINGS from './prose.ceilings.json'
-import WORDS from './prose.words.json'
+import { chooseBase, ensureCommit, extractApp, type BaseTree, type ProseBase } from './prosebase'
 
 type Persona = 'platform-admin'
 
 export interface ProsePage {
-  /** The row's key in prose.ceilings.json: the nav address, or a named state of a page. */
+  /** The page's name in a failure: the nav address, or a named state of a page. */
   key: string
   /** The slice (prose.app.<group>.test.tsx) that measures it. */
   group: string
@@ -97,7 +99,7 @@ export const PAGES: readonly ProsePage[] = [
 export interface Measure {
   words: number
   arrows: number
-  /** The counted tokens in document order; prose.words.json keeps their `pieces` at each ceiling. */
+  /** The counted tokens in document order. */
   tokens: string[]
   /** The visible text of each arrow link. */
   arrowLinks: string[]
@@ -118,7 +120,7 @@ export function measure(root: HTMLElement): Measure {
 
 /**
  * The tokens cut where a lower-case letter meets a capital: `usageAgainst` is
- * two elements' text run together, and prose.words.json keeps the two words.
+ * two elements' text run together, and a failure names the two words.
  * Kept whole, a run-together pair can spell a name a guard refuses (the
  * company-name guard in test/no-company-name.test.mjs did, once), and the
  * failure message reads better in words than in runs.
@@ -140,35 +142,28 @@ export function newWords(now: readonly string[], then: readonly string[]): strin
   return out
 }
 
-export interface CeilingRow {
-  /** Every ceiling this page has had, oldest first; the last is the one in force. */
-  words: number[]
-  arrows: number[]
-}
-
-export const TABLE = CEILINGS.pages as Record<string, CeilingRow>
-const BASELINE = WORDS.pages as Record<string, string>
-
-export function ceilingOf(key: string): { words: number; arrows: number } {
-  const row = TABLE[key]
-  if (row === undefined) throw new Error(`no row for ${key} in prose.ceilings.json`)
-  return { words: row.words.at(-1) ?? 0, arrows: row.arrows.at(-1) ?? 0 }
-}
-
-/** The failure message: the page, its count, its ceiling and what is new since the ceiling was set. */
-export function overWords(key: string, m: Measure): string {
-  const extra = newWords(pieces(m.tokens), (BASELINE[key] ?? '').split(' ').filter(Boolean))
-  return (
-    `${key} shows ${m.words} words; its ceiling is ${ceilingOf(key).words}. ` +
-    `New since the ceiling (${extra.length}): ${extra.join(' ')}`
-  )
-}
-
-export function overArrows(key: string, m: Measure): string {
-  return (
-    `${key} draws ${m.arrows} text links with an arrow; its ceiling is ${ceilingOf(key).arrows}. ` +
-    `Make each a button: ${m.arrowLinks.map((t) => JSON.stringify(t)).join(', ')}`
-  )
+/**
+ * What `head` shows that `base` did not, as failure messages; none is a pass.
+ * A null base is a page the base did not have.
+ */
+export function proseDelta(key: string, base: Measure | null, head: Measure): string[] {
+  if (base === null) return []
+  const out: string[] = []
+  if (head.words > base.words) {
+    const extra = newWords(pieces(head.tokens), pieces(base.tokens))
+    out.push(
+      `${key} shows ${head.words} words, ${head.words - base.words} more than the ${base.words} on the base. ` +
+        `New words (${extra.length}): ${extra.join(' ')}. Move any explanation behind a tooltip, an (i) or a status tick.`,
+    )
+  }
+  if (head.arrows > base.arrows) {
+    const extra = newWords(head.arrowLinks, base.arrowLinks)
+    out.push(
+      `${key} draws ${head.arrows} text links with an arrow, ${base.arrows} on the base. ` +
+        `Make each new one a button: ${extra.map((t) => JSON.stringify(t)).join(', ')}`,
+    )
+  }
+  return out
 }
 
 /** Past every fixture delay (30-220 ms) and short of the 1 s refresh intervals, as spacingsweep.tsx explains. */
@@ -198,31 +193,91 @@ function openAt(open: string): void {
   }
 }
 
-/** Register one slice: an `it` per page in `group`, each holding its page to its row. */
+const HERE = dirname(fileURLToPath(import.meta.url))
+/** The app directory: src/__tests__ is two below it. */
+const APP_DIR = join(HERE, '..', '..')
+
+interface Tree {
+  src: string | null
+  App: typeof App
+  sections: typeof SECTIONS
+  clock: string
+}
+
+/**
+ * The App, its nav and its fixture clock from `src` (null: the head's own),
+ * imported afresh. Afresh for every page and both trees: the fixture modules
+ * keep state (a read counter, what an earlier page opened), and a page
+ * measured after another would otherwise differ between the base and the
+ * head for no change of theirs.
+ */
+async function load(src: string | null): Promise<Tree> {
+  vi.resetModules()
+  if (src === null) {
+    const app = await import('../App')
+    const api = await import('../api')
+    return { src, App: app.App, sections: app.SECTIONS, clock: api.FIXTURE_CLOCK }
+  }
+  const app = (await import(/* @vite-ignore */ join(src, 'App.tsx'))) as typeof import('../App')
+  const api = (await import(/* @vite-ignore */ join(src, 'api.ts'))) as typeof import('../api')
+  return { src, App: app.App, sections: app.SECTIONS, clock: api.FIXTURE_CLOCK }
+}
+
+/** Whether the base drew `page` at all: a nav page is there when the base's nav has its tab. */
+function baseHas(page: ProsePage, sections: typeof SECTIONS): boolean {
+  if (page.key !== page.open) return true
+  const [section, tab] = page.key.split('/')
+  return sections.some((s) => s.id === section && s.tabs.some((t) => t.id === tab))
+}
+
+/** Render `Shown` at `page`, let it settle, and measure what the document shows. */
+async function renderPage(tree: Tree, page: ProsePage): Promise<Measure> {
+  localStorage.clear()
+  sessionStorage.clear()
+  vi.setSystemTime(new Date(tree.clock))
+  openAt(page.open)
+  const Shown = tree.App
+  const { unmount } = render(<Shown />)
+  try {
+    await settle()
+    if (page.then !== undefined) {
+      page.then()
+      await settle()
+    }
+    return measure(document.body)
+  } finally {
+    unmount()
+  }
+}
+
+/** Register one slice: an `it` per page in `group`, each holding its page to what the base showed. */
 export function proseGroup(group: string): void {
   const pages = PAGES.filter((p) => p.group === group)
   if (pages.length === 0) throw new Error(`no prose pages in group ${group}`)
   const persona = pages[0]?.persona
   if (pages.some((p) => p.persona !== persona)) throw new Error(`group ${group} mixes personas`)
 
-  describe(`the prose ceilings: ${group}`, () => {
-    let Shown: typeof App = App
+  describe(`the prose ratchet: ${group}`, () => {
+    let base: Tree
+    let chosen: ProseBase
+    let tree: BaseTree | undefined
     let zone: string | undefined
     beforeAll(async () => {
+      chosen = chooseBase(APP_DIR)
+      ensureCommit(APP_DIR, chosen.sha)
+      tree = extractApp(APP_DIR, chosen.sha)
+      console.log(`PROSE BASE: ${chosen.sha} (${chosen.why})`)
       // The zone, for the clock's reason: Settings › Profile names the
       // browser's own zone, and "Asia/Calcutta" is one token where "UTC" is
       // another sentence's worth. Node applies a TZ set at run time.
       zone = process.env.TZ
       process.env.TZ = 'UTC'
-      if (persona !== undefined) {
-        document.cookie = `swarm_qa_persona=${persona}; path=/`
-        vi.resetModules()
-        Shown = (await import('../App')).App
-      }
+      if (persona !== undefined) document.cookie = `swarm_qa_persona=${persona}; path=/`
+      base = await load(join(tree.app, 'src'))
       vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
-      vi.setSystemTime(new Date(FIXTURE_CLOCK))
-    })
+    }, 120_000)
     afterAll(() => {
+      tree?.remove()
       if (zone === undefined) delete process.env.TZ
       else process.env.TZ = zone
       vi.useRealTimers()
@@ -233,32 +288,20 @@ export function proseGroup(group: string): void {
     })
 
     for (const page of pages) {
-      it(`${page.key} stays under its word and arrow-link ceilings`, async () => {
-        openAt(page.open)
-        const { unmount } = render(<Shown />)
-        await settle()
-        if (page.then !== undefined) {
-          page.then()
-          await settle()
-        }
-        const m = measure(document.body)
-        unmount()
+      it(`${page.key} shows no more words or arrow links than on the base`, async () => {
+        const was = baseHas(page, base.sections) ? await renderPage(await load(base.src), page) : null
+        const now = await renderPage(await load(null), page)
+        console.log(
+          `PROSE ${page.key}: ${was === null ? 'new page' : `${was.words} words, ${was.arrows} arrows`} on ${chosen.sha.slice(0, 12)}; ` +
+            `${now.words} words, ${now.arrows} arrows now`,
+        )
 
-        const dir = process.env.PROSE_RECORD_DIR
-        if (dir !== undefined && dir !== '') {
-          mkdirSync(dir, { recursive: true })
-          writeFileSync(
-            join(dir, `${page.key.replace(/\//g, '__')}.json`),
-            JSON.stringify({ key: page.key, words: m.words, arrows: m.arrows, tokens: pieces(m.tokens).join(' ') }),
-          )
-        }
-
-        // A page that drew nothing would pass any ceiling: the shell alone is
-        // over this, so a screen that stopped rendering fails here instead.
-        expect(m.words, `${page.key} rendered almost nothing`).toBeGreaterThan(20)
-        expect(m.words, overWords(page.key, m)).toBeLessThanOrEqual(ceilingOf(page.key).words)
-        expect(m.arrows, overArrows(page.key, m)).toBeLessThanOrEqual(ceilingOf(page.key).arrows)
-      }, 120_000)
+        // A page that drew nothing would pass any comparison: the shell alone
+        // is over this, so a screen that stopped rendering fails here instead.
+        expect(now.words, `${page.key} rendered almost nothing`).toBeGreaterThan(20)
+        const up = proseDelta(page.key, was, now)
+        expect(up, up.join('\n')).toEqual([])
+      }, 240_000)
     }
   })
 }

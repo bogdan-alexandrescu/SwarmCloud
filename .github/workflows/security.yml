@@ -111,6 +111,15 @@ jobs:
           trivy fs --download-db-only --db-repository "${DB_UPSTREAM}" --no-progress . \
             || { echo "::error::the trivy vulnerability DB could not be downloaded from ${DB_MIRROR} or ${DB_UPSTREAM}"; exit 1; }
 
+      - name: write the accept list for the filesystem scan
+        # The gate's own filtered copy of .trivyignore.yaml: unexpired entries
+        # scoped to apps/swarm-speech/uv.lock alone (BGD, 2026-11-05, #2688),
+        # so code scanning's alerts honour the same list and the same expiry
+        # as the gate. One filter, in scripts/trivy-new-findings.sh.
+        run: |
+          set -euo pipefail
+          scripts/trivy-new-findings.sh accept-list "${RUNNER_TEMP}/trivy-fs.trivyignore.yaml"
+
       - name: trivy filesystem scan
         # Report everything (exit 0); the gate is the step after the upload.
         # --skip-db-update: the step above fetched the DB; a second download
@@ -119,6 +128,7 @@ jobs:
           set -euo pipefail
           trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
             --ignore-unfixed --format sarif --output trivy-fs.sarif \
+            --ignorefile "${RUNNER_TEMP}/trivy-fs.trivyignore.yaml" \
             --exit-code 0 --skip-db-update --no-progress .
 
       - name: upload SARIF
@@ -566,7 +576,8 @@ jobs:
           # swarm-graph too (GS-ROLL, part of #1384): it verifies every agent's graph ticket and serves every tenant's index.
           # swarm-voice too (VOICE-ROLL, part of #2688): it holds the platform owner's OpenAI subscription credential in memory and relays the voice session.
           # swarm-github-hooks too (GS-HOOKS, part of #1384): the one public service, running as the rollup sweeper account.
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-lightpanda agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-voice swarm-github-hooks; do
+          # swarm-speech too (part of #2688, docs/design/voice-it-own-speech.md §5.3, §14 L3): the speech machine pulls the digest the release pins, and it carries vLLM and torch, the largest third-party Python surface we ship.
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-lightpanda agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-voice swarm-github-hooks swarm-speech; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1

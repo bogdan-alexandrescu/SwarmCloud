@@ -181,6 +181,7 @@ export type TopicId =
   | 'config-repositories'
   | 'config-setup-strip'
   | 'mcp-servers'
+  | 'agent-plugins'
   | 'platform-secrets'
   | 'runner-sizes'
   | 'secret-scopes'
@@ -1878,6 +1879,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     see: ['secret-scopes'],
   },
 
+  'agent-plugins': {
+    group: 'configuring-a-workspace',
+    title: 'A step loads a plugin only when its workspace allows it',
+    short:
+      'A plugin adds skills to an agent step, from the platform’s closed catalogue, at one version built into the agent images. A workspace’s owner or admin allows whole plugins; each step names a plugin, a mode and skills by name.',
+    long: [
+      'None is allowed until someone allows one. The choice is signed with the workspace settings key, and a list without a valid signature allows nothing.',
+      'Switching a plugin off refuses every step that names it from the next submission. Steps already running keep what they loaded.',
+      'Only unattended mode runs today: planner and designer interview a person, and wait for the question bridge.',
+    ],
+    see: ['workspace-roles'],
+  },
+
   'workspace-roles': {
     group: 'configuring-a-workspace',
     title: 'A role is viewer, member or admin, and the default covers everyone else',
@@ -1972,6 +1986,7 @@ export const HELP_PLACES = {
   'config/repositories': 'Repositories',
   'config/secrets': 'Secrets',
   'config/mcp-servers': 'MCP servers',
+  'config/plugins': 'Plugins',
   'config/people': 'People and roles',
   'config/workspace': 'Workspace Settings',
   'automate/schedules': 'Schedules',
@@ -2456,6 +2471,10 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
     subject: 'Registered MCP servers',
     act: { say: 'Ask a platform admin to register a server; grant its secret on Secrets.', at: 'config/mcp-servers' },
   },
+  'agent-plugins': {
+    subject: 'Agent plugins',
+    act: { say: 'Allow a plugin on Plugins if you own or administer the workspace, then name it on a step.', at: 'config/plugins' },
+  },
   'workspace-roles': {
     subject: 'Roles in a workspace',
     act: { say: 'Set a person’s role, or the default, if you administer the workspace.', at: 'config/people' },
@@ -2519,6 +2538,7 @@ export const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'config/repositories': 'config-repositories',
   'config/secrets': 'secret-scopes',
   'config/mcp-servers': 'mcp-servers',
+  'config/plugins': 'agent-plugins',
   'config/people': 'workspace-roles',
   'config/workspace': 'workspace-settings',
   'admin/limits': 'ceiling-change-evicts-nothing',

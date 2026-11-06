@@ -91,9 +91,11 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from .accountlease import NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused, build_broker
+from .claudefront import FRONT_MODELS
+from .claudeturn import admitted_model
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
 from .live import MAX_OFFER_BYTES, LiveApi, LiveError, LiveRefused, SessionExists, Sessions
@@ -119,6 +121,31 @@ class StartRequest(BaseModel):
     #: shape is checked by `SessionGrant`, whose refusal names no value.
     project_id: str | None = Field(default=None, max_length=64)
     grant: SecretStr | None = None
+    #: The planner model for this session: Voice it › Settings'
+    #: `planner_model`, its class's pin, read by swarm-api at the start. Only
+    #: an id of one of MODEL_CLASSES is accepted; absent, the planner keeps
+    #: VOICE_PLANNER_MODEL.
+    planner_model: str | None = Field(default=None, max_length=64)
+
+    @field_validator("planner_model")
+    @classmethod
+    def _a_class_pin(cls, value: str | None) -> str | None:
+        if value is not None and not admitted_model(value):
+            raise ValueError("planner_model must be the id of one of the pool's model classes")
+        return value
+
+    #: The fast front's model for this session: Voice it › Settings'
+    #: `conversation_model`, read by swarm-api at the start. Only an id of the
+    #: curated list (claudefront.FRONT_MODELS) is accepted; absent, the front
+    #: keeps VOICE_FRONT_MODEL.
+    conversation_model: str | None = Field(default=None, max_length=64)
+
+    @field_validator("conversation_model")
+    @classmethod
+    def _a_curated_model(cls, value: str | None) -> str | None:
+        if value is not None and value not in FRONT_MODELS:
+            raise ValueError("conversation_model must be one of the curated conversation models")
+        return value
 
 
 class TurnRequest(BaseModel):
@@ -279,7 +306,8 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             raise HTTPException(409, "this voice session already has a live session")
         try:
             session = await app.state.sessions.start(
-                body.voice_session_id, person=body.person, offer=body.offer, grant=grant)
+                body.voice_session_id, person=body.person, offer=body.offer, grant=grant,
+                planner_model=body.planner_model)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except VoicePoolRefused as exc:
@@ -301,7 +329,8 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             raise HTTPException(503, "this swarm-voice holds no text conversations")
         try:
             session = await texts.start(body.voice_session_id, person=body.person, grant=grant,
-                                        exists=lambda voice_id: app.state.sessions.get(voice_id) is not None)
+                                        exists=lambda voice_id: app.state.sessions.get(voice_id) is not None,
+                                        planner_model=body.planner_model)
         except SessionExists:
             raise HTTPException(409, "this voice session already has a live session") from None
         except VoicePoolRefused as exc:

@@ -1,5 +1,7 @@
 """The planner's Claude subscription account, leased from the quota broker for
-ONE delegation turn (docs/design/voice-it.md §3.6).
+ONE delegation turn (docs/design/voice-it.md §3.6), and own speech's fast
+front's, leased for the WHOLE session (docs/design/voice-it-own-speech.md
+§14.1): the same routes, told apart by `holder`.
 
 THE OWNER'S CHOICE (2 November 2026): "we have a pool of account for
 anthropic, lets use one of the accounts there". The planner runs on a Claude
@@ -48,8 +50,11 @@ from .credential import Bearer, CredentialError
 log = logging.getLogger("swarm_voice.plannerlease")
 
 PROVIDER = "anthropic"
-#: Who holds the lease, as the broker records it on the hold.
+#: Who holds the lease, as the broker records it on the hold: the planner, per
+#: delegation turn, or the fast front (claudefront.py), for the session.
 HOLDER = "voice-planner"
+FRONT_HOLDER = "voice-front"
+HOLDERS = (HOLDER, FRONT_HOLDER)
 #: The broker's voice hold lives ten minutes; a turn renews every four.
 RENEW_SECONDS = 240.0
 
@@ -90,16 +95,25 @@ class PlannerLease:
 
 
 class PlannerAccounts:
-    """Assign, renew and release one turn's account, over VoiceBroker's client."""
+    """Assign, renew and release one holder's account, over VoiceBroker's client."""
 
-    def __init__(self, broker: VoiceBroker, *, renew_seconds: float = RENEW_SECONDS) -> None:
+    def __init__(self, broker: VoiceBroker, *, holder: str = HOLDER,
+                 renew_seconds: float = RENEW_SECONDS) -> None:
+        if holder not in HOLDERS:
+            raise ValueError(f"holder is one of {', '.join(HOLDERS)}")
         self._broker = broker
+        self.holder = holder
         self.renew_seconds = renew_seconds
 
-    async def assign(self, *, person: str, voice_session_id: str) -> PlannerLease:
-        status, body = await self._broker.call("/v1/accounts/assign", {
-            "provider": PROVIDER, "holder": HOLDER, "person": person,
-            "voice_session_id": voice_session_id})
+    async def assign(self, *, person: str, voice_session_id: str,
+                     exclude: tuple[str, ...] = ()) -> PlannerLease:
+        """Hold one account. `exclude` names accounts this session already
+        held and could not use (the broker never offers them again)."""
+        payload: dict[str, Any] = {"provider": PROVIDER, "holder": self.holder, "person": person,
+                                   "voice_session_id": voice_session_id}
+        if exclude:
+            payload["exclude"] = list(exclude)
+        status, body = await self._broker.call("/v1/accounts/assign", payload)
         if status != 200 or not isinstance(body, dict):
             # The status only: an error body may quote the request.
             raise LeaseFailed(f"the quota broker refused the planner's account lease (HTTP {status})", status)

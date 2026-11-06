@@ -12,7 +12,12 @@ report:
   runner_models     terraform/infra/locals.tf `runner_models`, class -> id;
   markers           skip / expected-failure markers under tests/, by kind,
                     counted in code only (comments and strings are not code);
+  skip_table        every skip, expected failure or importorskip under tests/
+                    (by file, enclosing test and kind) that known-failures.md
+                    does not list, with the row to add, and every row it lists
+                    that the tree no longer has or that gives no reason;
   quarantined       tests/flaky.txt's entries;
+  quarantine_table  the same for tests/flaky.txt's entries;
   cited_pytest_ids  how many `tests/...py::test_name` ids the documents cite;
   cited_vitest_files how many console test files they cite;
   missing           every cited id whose file or test function is not there;
@@ -22,7 +27,12 @@ report:
                     like) instead of a named record, "not read from here" or
                     "n/a: <why>".
 
-It exits 1 when anything cited is missing or a row is unnamed, so a renamed test can never keep
+known-failures.md lists skips and never counts them: two green changes that
+each add a skip and its row pass together, where two that each bump a count
+conflict or fail (BGD, 6 November 2026: merge-safe whole-tree checks).
+
+It exits 1 when anything cited is missing, a row is unnamed or a skip or
+quarantine row is missing or stale, so a renamed test can never keep
 reading as "behaviourally tested". What it cannot check is named in the
 documents themselves: a vitest case's title, a configuration value read from a
 live deployment, and anything live-verified.
@@ -33,6 +43,7 @@ Usage: scripts/agent_quality_inventory.py [--root REPO]
 from __future__ import annotations
 
 import argparse
+import ast
 import io
 import json
 import re
@@ -44,6 +55,7 @@ from pathlib import Path
 DOCS = Path("docs") / "design" / "agent-quality"
 LOCALS = Path("terraform") / "infra" / "locals.tf"
 FLAKY = Path("tests") / "flaky.txt"
+KNOWN = DOCS / "known-failures.md"
 
 #: A test module is `test_*.py`; `apps/x/cache.py::ResultCache` cites code.
 _PYTEST_ID = re.compile(
@@ -140,6 +152,199 @@ def marker_counts(root: Path) -> dict[str, int]:
     return counts
 
 
+#: A marker that is an attribute (a decorator or `pytestmark = ...`).
+_MARK_KINDS = {
+    "pytest.mark.skipif": "skipif",
+    "pytest.mark.skip": "skip",
+    "pytest.mark.xfail": "xfail",
+}
+#: A marker that is a call inside a test or at module level.
+_CALL_KINDS = {
+    "pytest.skip": "skip_call",
+    "pytest.xfail": "xfail",
+    "pytest.importorskip": "importorskip",
+}
+#: A known-failures.md skip row: `| `path` | `test` | `kind` | reason |`.
+_SKIP_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([a-z_]+)`\s*\|(.*)\|\s*$")
+#: A known-failures.md quarantine row: `| `path::test` | quarantined | why |`.
+_QUARANTINE_ROW = re.compile(r"^\|\s*`([^`]+::[^`]+)`\s*\|\s*quarantined\s*\|")
+
+
+#: A proposed row quotes at most this much of the source's reason.
+_REASON_CAP = 160
+
+
+class Site(tuple):
+    """One skip: (path, test, kind, reason); test is `Class.test` or `<module>`."""
+
+    __slots__ = ()
+
+    def __new__(cls, path: str, scope: str, kind: str, reason: str):
+        return super().__new__(cls, (path, scope, kind, reason))
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return self[0], self[1], self[2]
+
+    def row(self) -> str:
+        reason = " ".join(self[3].split())
+        if len(reason) > _REASON_CAP:
+            reason = reason[:_REASON_CAP].rsplit(" ", 1)[0] + " ..."
+        reason = reason.replace("|", "\\|") or "(say why)"
+        return f"| `{self[0]}` | `{self[1]}` | `{self[2]}` | {reason} |"
+
+
+def _dotted(node: ast.AST) -> str:
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def _reason(node: ast.AST) -> str:
+    """The reason a marker's source gives: `reason=`, else its first argument."""
+    if not isinstance(node, ast.Call):
+        return ""
+    for kw in node.keywords:
+        if kw.arg in ("reason", "msg"):
+            return _text(kw.value)
+    if node.args:
+        # skipif's first argument is its condition, never its reason.
+        if _dotted(node.func) == "pytest.mark.skipif":
+            return ""
+        if _dotted(node.func) == "pytest.importorskip":
+            return f"{_text(node.args[0])} is not importable"
+        return _text(node.args[0])
+    return ""
+
+
+def _text(node: ast.AST) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        # f"x {y}" reads as x {y}: the row says why, not how it is spelt.
+        return ast.unparse(node)[2:-1]
+    return ast.unparse(node)
+
+
+def _sites_in(source: str) -> list[tuple[int, int, str, str, str]]:
+    """(line, column, test, kind, reason) for each marker in code."""
+    found = []
+
+    def visit(node: ast.AST, scope: list[str], parent: ast.AST | None) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            scope = scope + [node.name]
+        name = _dotted(node) if isinstance(node, ast.Attribute) else ""
+        at = ".".join(scope) or "<module>"
+        if name in _MARK_KINDS:
+            call = parent if isinstance(parent, ast.Call) and parent.func is node else None
+            found.append((node.lineno, node.col_offset, at, _MARK_KINDS[name], _reason(call)))
+        elif name in _CALL_KINDS and isinstance(parent, ast.Call) and parent.func is node:
+            found.append((node.lineno, node.col_offset, at, _CALL_KINDS[name], _reason(parent)))
+        for child in ast.iter_child_nodes(node):
+            visit(child, scope, node)
+
+    visit(ast.parse(source), [], None)
+    return sorted(found)
+
+
+def skip_sites(root: Path) -> list[Site]:
+    """Every skip under tests/, once per (file, test, kind), in source order.
+
+    A test that skips twice for the same kind is one site: the table says
+    which tests may skip and why, not how often.
+    """
+    sites: list[Site] = []
+    seen: set = set()
+    tests = root / "tests"
+    for path in sorted(tests.rglob("*.py")) if tests.is_dir() else []:
+        rel = path.relative_to(root).as_posix()
+        source = path.read_text(errors="replace")
+        # Every marker's name holds "skip" or "xfail": a file without either
+        # has none, and is not parsed.
+        if "skip" not in source and "xfail" not in source:
+            continue
+        try:
+            found = _sites_in(source)
+        except SyntaxError:
+            found = [(0, 0, "<unparsed>", kind, "") for kind, n in _counts(path).items() if n]
+        for _line, _col, scope, kind, reason in found:
+            if (rel, scope, kind) not in seen:
+                seen.add((rel, scope, kind))
+                sites.append(Site(rel, scope, kind, reason))
+    return sites
+
+
+def _counts(path: Path) -> dict[str, int]:
+    code = _code(path.read_text(errors="replace"))
+    return {kind: len(pattern.findall(code)) for kind, pattern in MARKERS.items()}
+
+
+def listed_skips(text: str) -> list[tuple[int, Site]]:
+    """(line number, site) for each skip row known-failures.md lists."""
+    rows = []
+    for number, line in enumerate(text.splitlines(), 1):
+        match = _SKIP_ROW.match(line.strip())
+        if match and match.group(3) in MARKERS:
+            path, scope, kind, reason = match.groups()
+            rows.append((number, Site(path, scope, kind, reason.strip())))
+    return rows
+
+
+def skip_table_drift(root: Path, text: str) -> list[str]:
+    """Each live skip the table does not list, and each row that is stale or
+    gives no reason. Set against set, never a count, so two changes that each
+    add a skip and its row pass together as each passed alone."""
+    listed = listed_skips(text)
+    keys = {site.key for _, site in listed}
+    live = skip_sites(root)
+    live_keys = {site.key for site in live}
+    out = [
+        f"unlisted skip {' '.join(site.key)}; add the row: {site.row()}"
+        for site in live
+        if site.key not in keys
+    ]
+    lines = text.splitlines()
+    for number, site in listed:
+        if site.key not in live_keys:
+            out.append(
+                f"stale row at line {number}, no such skip in the tree: {lines[number - 1].strip()}"
+            )
+        elif not site[3]:
+            out.append(f"row at line {number} gives no reason: {lines[number - 1].strip()}")
+    return out
+
+
+def quarantine_drift(root: Path, text: str) -> list[str]:
+    """tests/flaky.txt's entries against known-failures.md's quarantine rows."""
+    entries = {}
+    for entry in quarantined(root):
+        test_id, _, why = entry.partition(" ")
+        entries.setdefault(test_id, why.strip())
+    rows = []
+    for number, line in enumerate(text.splitlines(), 1):
+        match = _QUARANTINE_ROW.match(line.strip())
+        if match:
+            rows.append((number, match.group(1), line.strip()))
+    listed = {test_id for _, test_id, _ in rows}
+    out = [
+        f"unlisted quarantine {test_id}; add the row: "
+        f"| `{test_id}` | quarantined | {why or '(say why)'} |"
+        for test_id, why in entries.items()
+        if test_id not in listed
+    ]
+    out += [
+        f"stale row at line {number}, not in tests/flaky.txt: {line}"
+        for number, test_id, line in rows
+        if test_id not in entries
+    ]
+    return out
+
+
 def quarantined(root: Path) -> list[str]:
     """tests/flaky.txt's entries: every line that is not blank or a comment."""
     path = root / FLAKY
@@ -203,11 +408,14 @@ def report(root: Path) -> dict:
     missing += [f"{f} (no such file)" for f in vitest if not (root / f).is_file()]
     locals_tf = root / LOCALS
     matrix = (root / MATRIX).read_text() if (root / MATRIX).is_file() else ""
+    known = (root / KNOWN).read_text() if (root / KNOWN).is_file() else ""
     return {
         "commit": commit(root),
         "runner_models": runner_models(locals_tf.read_text()) if locals_tf.is_file() else {},
         "markers": marker_counts(root),
+        "skip_table": skip_table_drift(root, known),
         "quarantined": quarantined(root),
+        "quarantine_table": quarantine_drift(root, known),
         "cited_pytest_ids": len(ids),
         "cited_vitest_files": len(vitest),
         "missing": missing,
@@ -227,7 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     result = report(args.root)
     print(json.dumps(result, indent=2))
-    return 1 if result["missing"] or result["unnamed_live_verified"] else 0
+    failed = ("missing", "unnamed_live_verified", "skip_table", "quarantine_table")
+    return 1 if any(result[key] for key in failed) else 0
 
 
 if __name__ == "__main__":

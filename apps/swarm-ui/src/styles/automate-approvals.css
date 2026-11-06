@@ -38,6 +38,8 @@
 /* The oldest waiting row is the one to open first: its edge says so. */
 .apl-card[data-testid='apl-waiting'] tbody tr:first-child > td:first-child { box-shadow: inset 3px 0 0 var(--s-warn); }
 .apl-kind { font-weight: 600; white-space: nowrap; }
+/* The empty inbox's "Nothing of any kind": the kinds are its hover (Approvals.tsx). */
+.apl-every { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
 .apl-open { color: var(--sk-ac); font-weight: 600; }
 .apl-dim { color: var(--text-dim); }
 /* nowrap: the cell carries overflow-wrap:anywhere, and an auto-layout column

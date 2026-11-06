@@ -1073,6 +1073,11 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         publish_to_pr=spec["publish_to_pr"],
         # The workflow switches (2026-11-01), as the spec named them.
         dispatch=spec["dispatch"],
+        # What the workflow delivers and its feature (BGD, 2026-11-04).
+        description=spec["description"],
+        feature=spec["feature"],
+        # Its purpose, goals and expected output (BGD, 2026-11-06).
+        about=spec["about"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")

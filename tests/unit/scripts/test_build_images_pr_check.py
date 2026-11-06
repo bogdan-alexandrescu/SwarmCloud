@@ -77,10 +77,12 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # the worker package in (docs/design/graph-service.md §2.4), and
 # swarm-github-hooks (GS-HOOKS, apps/swarm-github-hooks/Dockerfile), which
 # copies only the contract and redaction in, and swarm-voice (VOICE-STATEFULSET,
-# apps/swarm-voice/Dockerfile), which copies only the contract in.
+# apps/swarm-voice/Dockerfile), which copies only the contract in, and
+# swarm-speech (own speech L3, apps/swarm-speech/Dockerfile), which copies
+# nothing of ours but its own app.
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
-                                  "swarm-voice", "workspace-apply"}
+                                  "swarm-voice", "swarm-speech", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -196,6 +198,12 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-voice/swarm_voice/main.py"], {"swarm-voice"}),
         (["apps/swarm-voice/uv.lock"], {"swarm-voice"}),
         (["apps/swarm-voice/Dockerfile"], {"swarm-voice"}),
+        # Voice it's own speech server (own speech L3): the same shape again,
+        # copying nothing of ours but itself, so a contract change above does
+        # not reach it.
+        (["apps/swarm-speech/swarm_speech/server.py"], {"swarm-speech"}),
+        (["apps/swarm-speech/uv.lock"], {"swarm-speech"}),
+        (["apps/swarm-speech/Dockerfile"], {"swarm-speech"}),
         # The quota broker redacts account health messages on write, so its
         # image and the scheduler's (which installs the broker's package)
         # copy apps/redaction in too (ACCOUNT-429-FOLLOWUP).

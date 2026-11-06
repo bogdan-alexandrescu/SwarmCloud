@@ -105,7 +105,9 @@ def test_the_profile_is_claude_code_on_the_browser_image():
     extra = dict(profile.inputs)
     assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
     assert extra.pop("qa_identity").choices == ("console",)
-    assert extra == dict(claude.inputs)
+    # pull_request is the owner's pick on #3470 for claude-code, codex and
+    # claude-code-review alone.
+    assert extra == {k: v for k, v in claude.inputs.items() if k != "pull_request"}
     assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
     assert profile.image == RUNNER_PROFILES["browser"].image

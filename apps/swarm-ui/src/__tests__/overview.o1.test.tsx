@@ -226,7 +226,10 @@ describe('O1: Needs a look is a row of check cards', () => {
       expect(c.querySelector('.sk-st[data-mark]'), 'a check card has no mark').not.toBeNull()
       expect(text(c.querySelector('.ov-att-t b')).length).toBeGreaterThan(0)
       expect(text(c.querySelector('.ov-att-t small')).length).toBeGreaterThan(0)
-      expect(text(c.querySelector('.ov-att-go'))).toMatch(/→$/)
+      // A button in the theme's style, never an arrow link (BGD's standing rule, 2026-11-05).
+      // MUTATION: put the `&rarr;` back after the card's link words.
+      expect(text(c.querySelector('.ov-att-go'))).not.toMatch(/→/)
+      expect(c.querySelector('.ov-att-go')!.classList.contains('c-btn'), 'the card’s way out is not drawn as a button').toBe(true)
     }
     expect(lead.querySelector('.ov-dial, .ctl-dial'), 'the lead still draws a figure over a bar').toBeNull()
     expect(lead.querySelector('ul'), 'the lead still draws a bulleted list').toBeNull()
@@ -265,7 +268,7 @@ describe('O1: the lifecycle band breaks each figure down by state', () => {
   it('counts waiting and holding from /v1/stats, each state under its own mark', async () => {
     const el = await mount()
     const cells = [...el.querySelectorAll('#ov-band .ov-lc')]
-    expect(cells.map((c) => text(c.querySelector('.ov-lc-h span')))).toEqual(['Waiting', 'Holding capacity', 'Finished today'])
+    expect(cells.map((c) => text(c.querySelector('.ov-lc-k')))).toEqual(['Waiting', 'Holding capacity', 'Finished today'])
     const parts = (c: Element) =>
       [...c.querySelectorAll('.ov-lc-p')].map((p) => [p.querySelector('.sk-st')?.getAttribute('data-mark'), text(p.querySelector('.sk-st-w')), text(p.querySelector('b'))])
     expect(text(cells[0]!.querySelector('.ov-lc-n'))).toBe('37')

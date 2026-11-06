@@ -639,7 +639,7 @@ def _run_lane(worker_factory: Any, monkeypatch: pytest.MonkeyPatch, **config: An
     worker, _config, _exporter = worker_factory(runner_profile="claude-code", **config)
     # No tenant git credential: a `file://` remote needs none, and the fake
     # secret client would otherwise hand back a made-up token.
-    monkeypatch.setattr(worker, "_git_token", lambda: None)
+    monkeypatch.setattr(worker, "_git_token", lambda **_: None)
     return worker.run()
 
 

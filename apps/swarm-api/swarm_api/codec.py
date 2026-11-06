@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from urllib.parse import quote
 
@@ -544,7 +544,10 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     The free text was redacted before it was stored; it is masked again here
     as every collected text is (`task_input.COLLECTED_METADATA_KEYS`). `via`
     and `session` say where it was answered (ANSWER-SYNC), null on an answer
-    stored before they were.
+    stored before they were. Each `history` entry carries the `question` it
+    answered (#3349): a later attempt may ask another question at the same
+    index, and the earlier answer is read with its own; null on an entry
+    moved to history before it was kept.
     """
 
     def text(value: Any) -> str | None:
@@ -553,6 +556,7 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     def one(e: dict[str, Any]) -> dict[str, Any]:
         at = e.get("at")
         return {
+            "question": text(e.get("question")),
             "choice": text(e.get("choice")),
             "text": text(e.get("text")),
             "by": text(e.get("by")),
@@ -565,7 +569,6 @@ def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str
     masked, _ = masking.leaves(
         {
             "question_index": entry.get("question_index"),
-            "question": text(entry.get("question")),
             **one(entry),
             "history": [one(h) for h in history if isinstance(h, dict)],
         }
@@ -1746,12 +1749,35 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
       the worker validated, `result_summary.questions`, at most
       `MAX_ARTIFACT_QUESTIONS`) with no stored answer, whose words are in
       that artifact and not served here; the task's page reads them
-      (`GET /v1/tasks/{id}/questions`).
+      (`GET /v1/tasks/{id}/questions`). The artifact is not read here: an
+      answer counts only while the worker's digest of the question at its
+      index (`result_summary.question_digests`) is the one it was given for
+      (`agent_questions.unanswered_indices`); a task summarised before the
+      digests counts by index.
     * `pull_request`: `{number, url}` off `result_summary.git.pull_request`.
+    * `plugin_ask`: for a plugin step PARKED on a question wait only (its work
+      contract's `capabilities.plugins` names at least one plugin with a
+      mode), `{plugins, repository_url, asked_at, expires_at, skill}`: each
+      plugin `{name, mode}`, the repository it runs on, the wait's clock as
+      `GET /v1/tasks/{id}/questions` serves it (`agent_questions.asked_at`,
+      `wait_max_seconds`), and the skill that asked as the worker recorded it
+      (`agent_questions.asked_by_skill`; null when not known); else null. Needs you tells a plugin step's question
+      from it, with no read of the task or its questions (the owner's pick on
+      PR #3262, "Serve them in step_needs").
     """
     from swarm_common.states import TERMINAL_STATES
 
-    from .agent_questions import blocking_unanswered, current_wait, parked_wait, question_count, unanswered_indices
+    from .agent_questions import (
+        asked_at,
+        asked_by_skill,
+        blocking_unanswered,
+        current_wait,
+        parked_wait,
+        question_count,
+        question_digests,
+        unanswered_indices,
+        wait_max_seconds,
+    )
 
     def masked(value: Any) -> str | None:
         return masking.text(value)[0] if isinstance(value, str) else None
@@ -1806,6 +1832,26 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
                 "options": options,
                 "recommended": masked(entry.get("recommended")),
             })
+    plugin_ask: dict[str, Any] | None = None
+    if question_wait is not None:
+        contract = (task.metadata or {}).get("work_contract")
+        caps = contract.get("capabilities") if isinstance(contract, dict) else None
+        stored = caps.get("plugins") if isinstance(caps, dict) else None
+        plugins = [
+            {"name": masked(name), "mode": masked(p.get("mode"))}
+            for name, p in (stored.items() if isinstance(stored, dict) else ())
+            if isinstance(name, str) and isinstance(p, dict) and isinstance(p.get("mode"), str) and p["mode"]
+        ]
+        if plugins:
+            began = asked_at(task, question_wait)
+            plugin_ask = {
+                "plugins": plugins,
+                "repository_url": masked(task.repository_url),
+                "asked_at": began.isoformat() if began else None,
+                "expires_at": (began + timedelta(seconds=wait_max_seconds(question_wait))).isoformat()
+                if began else None,
+                "skill": asked_by_skill(question_wait, masking),
+            }
     git = (task.result_summary or {}).get("git") if isinstance(task.result_summary, dict) else None
     pr = git.get("pull_request") if isinstance(git, dict) else None
     number = pr.get("number") if isinstance(pr, dict) else None
@@ -1822,10 +1868,12 @@ def step_needs(task: Task, masking: TaskMasking) -> dict[str, Any]:
         "question_wait": question_wait is not None,
         "questions": open_questions,
         "questions_unread": (
-            unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata)
+            unanswered_indices(min(question_count(task.result_summary), MAX_ARTIFACT_QUESTIONS), task.metadata,
+                               digests=question_digests(task.result_summary))
             if task.state in TERMINAL_STATES else []
         ),
         "pull_request": pull_request,
+        "plugin_ask": plugin_ask,
     }
 
 

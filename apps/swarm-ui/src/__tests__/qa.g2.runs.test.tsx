@@ -180,9 +180,9 @@ describe('G2-17: Open agent routes by the task\'s state', () => {
       return c
     }, WAIT)
     const row = (step: string) => card.querySelector<HTMLElement>(`.rn-srow[data-step="${step}"]`)!
-    const done = within(row('impl')).getByRole('link', { name: /Open agent/ })
+    const done = within(row('impl')).getByRole('link', { name: /^Agent$/ })
     expect(done.getAttribute('href')).toBe('/agents/recent/task_impl')
-    const parked = within(row('review')).getByRole('link', { name: /Open agent/ })
+    const parked = within(row('review')).getByRole('link', { name: /^Agent$/ })
     expect(parked.getAttribute('href')).toBe('/agents/waiting/task_review')
     fireEvent.click(done)
     expect(go).toHaveBeenLastCalledWith('/agents/recent/task_impl')

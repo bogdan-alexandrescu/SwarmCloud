@@ -197,6 +197,7 @@ from .issueruns import (
     OUTCOME_ALREADY_ON_MAIN,
     REREVIEW_STEP,
     REVIEW_STEP,
+    SECURITY_REVIEW_STEP,
     STEP_PROFILE,
     VERDICT_FILE,
     VERIFICATION_FILE,
@@ -208,6 +209,7 @@ from .issueruns import (
     iam_patch_hits,
     merge_hold,
     requirements_finding,
+    submitting,
     verification_finding,
     verification_text,
 )
@@ -220,7 +222,9 @@ from .reviewcontext import EARLIER_FIXES, read_fix_context
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
 from . import sessiontag
-from .validation import DISPATCH_METADATA_KEY, MERGE_METADATA_KEY, MERGE_STEP_ID, IssueRef
+from .validation import (
+    DISPATCH_METADATA_KEY, MERGE_METADATA_KEY, MERGE_STEP_ID, SECURITY_VERDICT_FILE, IssueRef,
+)
 
 log = logging.getLogger(__name__)
 
@@ -379,31 +383,34 @@ def _review_task_id(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> s
 
 
 def _read_review_verdict(
-    ctx: Any, tenant_id: str, task_id: str | None
+    ctx: Any, tenant_id: str, task_id: str | None, *,
+    name: str = VERDICT_FILE, step: str = REVIEW_STEP, what: str = "review",
 ) -> tuple[str | None, str | None]:
     """`(content, problem)`: the review's verdict.json, through the API's masked reader.
 
     The same reader, under the run's tenant, that `routes/runs._read_plan`
     reads the plan with. A verdict that cannot be read whole is a problem,
     never a guess: `requirements_finding` turns it into "not all met".
+    `name`, `step` and `what` read the security review's
+    `SECURITY_VERDICT_FILE` the same way (`_security_verdict`).
     """
     if not task_id:
-        return None, f"the run's workflow has no {REVIEW_STEP!r} step to read"
+        return None, f"the run's workflow has no {step!r} step to read"
     try:
         window = ctx.inspection.read_artifact(
-            tenant_id, task_id, submitted_by=None, name=VERDICT_FILE,
+            tenant_id, task_id, submitted_by=None, name=name,
             limit_bytes=MAX_VERDICT_BYTES,
         )
     except NotFound:
-        return None, f"the review task {task_id} wrote no {VERDICT_FILE}"
+        return None, f"the {what} task {task_id} wrote no {name}"
     except Gone:
-        return None, f"the review task's {VERDICT_FILE} is no longer in the bucket"
+        return None, f"the {what} task's {name} is no longer in the bucket"
     except ApiError as exc:
-        return None, f"the review task's {VERDICT_FILE} could not be read ({exc.code})"
+        return None, f"the {what} task's {name} could not be read ({exc.code})"
     if window.get("status") != "ok":
-        return None, f"the review task's {VERDICT_FILE} is not text"
+        return None, f"the {what} task's {name} is not text"
     if window.get("truncated"):
-        return None, f"the review task's {VERDICT_FILE} is larger than {MAX_VERDICT_BYTES} bytes"
+        return None, f"the {what} task's {name} is larger than {MAX_VERDICT_BYTES} bytes"
     return str(window.get("content") or ""), None
 
 
@@ -1555,7 +1562,8 @@ def _start_round(
         # The run's own tenant's index only (invariant 9); None is today's prompt.
         context = read_fix_context(ctx, tenant_id, claimed, excerpt)
         spec = ci_fix_workflow(claimed, round_no, excerpt, head, context)
-        submission = ctx.submissions.submit_workflow(owner, spec)
+        with submitting(spec):
+            submission = ctx.submissions.submit_workflow(owner, spec)
     except PrFixInFlight as exc:
         # Another writer (the platform's CI fixer, a conflict fix) holds this
         # pull request (#2535). That is a wait, not a failure: its push moves
@@ -2012,20 +2020,56 @@ def merge_gate(
 
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
     """`(verdict, why not)`: the review's `verdict`, read as `evaluate_requirements` reads it."""
-    import json
-
     content, problem = _read_review_verdict(
         ctx, tenant_id, _review_task_id(ctx, tenant_id, run, None)
     )
+    return _verdict_of(content, problem, what="review", name=VERDICT_FILE)
+
+
+def _security_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
+    """`(verdict, why not)`: the security review's, for a run that asked for one.
+
+    The run's merge is a merge-only continuation of the task that pushed
+    the green head, in a workflow of its own, so it can stage no file from
+    the run's workflow: this loop reads the verdicts for it, the security
+    review's `SECURITY_VERDICT_FILE` beside the re-review's `verdict.json`,
+    and submits the merge only when both are MERGE. A verdict that does not
+    read is not a pass (`agent_worker.merge._security_hold` holds a staged
+    one to the same rule). `(None, "")` for a run that asked for none.
+    """
+    if not run.security_review:
+        return None, ""
+    task_id = None
+    if run.workflow_id:
+        try:
+            workflow = ctx.store.get_workflow(tenant_id, run.workflow_id, submitted_by=None)
+        except NotFound:
+            workflow = None
+        task_id = next((
+            getattr(step, "task_id", None) for step in getattr(workflow, "steps", None) or []
+            if getattr(step, "step_id", None) == SECURITY_REVIEW_STEP
+        ), None)
+    content, problem = _read_review_verdict(
+        ctx, tenant_id, task_id, name=SECURITY_VERDICT_FILE, step=SECURITY_REVIEW_STEP,
+        what="security review",
+    )
+    return _verdict_of(content, problem, what="security review", name=SECURITY_VERDICT_FILE)
+
+
+def _verdict_of(content: str | None, problem: str | None, *, what: str,
+                name: str) -> tuple[str | None, str]:
+    """`(verdict, why not)` from a verdict file's text as `_read_review_verdict` read it."""
+    import json
+
     if content is None:
-        return None, problem or f"the review's {VERDICT_FILE} could not be read"
+        return None, problem or f"the {what}'s {name} could not be read"
     try:
         data = json.loads(content)
     except ValueError:
-        return None, f"the review's {VERDICT_FILE} is not JSON"
+        return None, f"the {what}'s {name} is not JSON"
     verdict = data.get("verdict") if isinstance(data, Mapping) else None
     if not isinstance(verdict, str):
-        return None, f"the review's {VERDICT_FILE} states no verdict"
+        return None, f"the {what}'s {name} states no verdict"
     return verdict, ""
 
 
@@ -2213,6 +2257,17 @@ def _merge(
     verdict, why = _review_verdict(ctx, tenant_id, run)
     if verdict != "MERGE":
         return _fail(f"the review's verdict is {verdict}, not MERGE" if verdict else why)
+    if run.security_review:
+        # The security review's say (docs/design/security-review-step.md): a
+        # NOT_YET's blocking findings are owner questions on that review's
+        # task, and the pull request stays open for a person to settle them.
+        verdict, why = _security_verdict(ctx, tenant_id, run)
+        if verdict != "MERGE":
+            return _fail(
+                f"the security review's verdict is {verdict}, not MERGE: its blocking "
+                "findings are the owner questions on the security review's task"
+                if verdict else why
+            )
     try:
         pushed_by, not_ours = through_base_merges(
             writer, run.issue, token, head=head, base=base,
@@ -2251,7 +2306,9 @@ def _merge(
 
     runs.patch(tenant_id, run.id, _claim)
     try:
-        submission = ctx.submissions.submit_workflow(owner, merge_workflow(run, pushed_by, head))
+        merge_spec = merge_workflow(run, pushed_by, head)
+        with submitting(merge_spec):
+            submission = ctx.submissions.submit_workflow(owner, merge_spec)
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: merge refused at submission (%s)", run.id, reason)

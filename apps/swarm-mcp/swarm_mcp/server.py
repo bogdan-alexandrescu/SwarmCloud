@@ -907,13 +907,20 @@ TOOLS: list[dict[str, Any]] = [
             "`artifacts_unavailable_because` says why.\n"
             "\n"
             "`owner_questions` is what the task's agent asks the owner instead of "
-            "guessing: the items of its questions.json the worker validated, each "
-            "{question, options: [{label, description}], recommended, context}, "
-            "read through the same redacted artifact read as swarm_artifact. It "
-            "is absent when the agent asked none, and a file the worker rejected "
-            "is never served. `questions_unavailable_because` means the worker "
-            "counted questions this read could not get. They are for a person "
-            "to answer: show them; never pick an option yourself.\n"
+            "guessing and nobody has answered yet: the items of its questions.json "
+            "the worker validated that have no stored answer, each {index, question, "
+            "options: [{label, description}], recommended, context}, `index` its "
+            "0-based place in the file (swarm_task_answer's `question_index`), read "
+            "through the same redacted artifact read as swarm_artifact. It is absent "
+            "when the agent asked none or every question is answered, and a file the "
+            "worker rejected is never served. A question carrying "
+            "`answer_unknown_because` is listed because its stored answer could not "
+            "be read, not because it is known to be open. `questions_unavailable_because` "
+            "means the worker counted questions this read could not get. They are for "
+            "a person to answer: show them; never pick an option yourself. "
+            "`owner_questions_asked` is EVERY question, answered ones included, each "
+            "with `answered` (true, false, or null when it could not be told), for a "
+            "person browsing the task; never put an answered one to them again.\n"
             "\n"
             "`owner_answers` is what the owner answered, in the console, to "
             "those questions: [{question_index, question, choice, text, by, at, "
@@ -1980,6 +1987,14 @@ TOOLS: list[dict[str, Any]] = [
                 "plan_approval": {"type": "string", "enum": ["required", "auto"], "default": "required"},
                 "auto_merge": {"type": "boolean", "default": False},
                 "fix_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+                "security_review": {
+                    "type": "boolean", "default": False,
+                    "description": (
+                        "Add the security review step after the fix (the security-audit "
+                        "skill over the pull request's diff); the merge then needs its "
+                        "verdict too. Off by default: it costs more than a code review."
+                    ),
+                },
                 "model_class": {
                     **_MODEL_CLASS_SCHEMA,
                     "description": (
@@ -2978,7 +2993,8 @@ TOOLS: list[dict[str, Any]] = [
             "shows it as answered in Claude Code; neither changes who may answer: the "
             "task's submitter or an admin, a viewer never. Re-answering replaces the "
             "answer and keeps the earlier one in its history. Answers with the questions "
-            "as the API now serves them, or the API's refusal word for word."
+            "as the API now serves them (`reply: \"short\"`: only the answer's record), or "
+            "the API's refusal word for word."
         ),
         "inputSchema": {
             "type": "object",
@@ -2996,8 +3012,49 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "The person's own words, or what they chose (at most 2,000 characters).",
                 },
+                "reply": {
+                    "type": "string",
+                    "enum": ["short", "full"],
+                    "description": (
+                        "`full` (the default): the task's questions as the API now serves them. "
+                        "`short`: only {status, task_id, question_index, recorded_at, by}."
+                    ),
+                },
             },
             "required": ["task_id", "question_index"],
+        },
+    },
+    {
+        "name": "swarm_task_answers",
+        "description": (
+            "Record many answers at once (at most 200): each entry goes through the same "
+            "route as swarm_task_answer with the short reply, as you, so each is checked "
+            "as a single answer is -- the task's submitter or an admin, a viewer never. "
+            "The same rule holds: only the person's own pick or words (or their decision, "
+            "such as closing finished tasks' questions as moot), never an answer the agent "
+            "chose itself. A refused entry does not stop the rest. Answers with counts and "
+            "one line per entry: {task_id, question_index, status} or {..., refused: <code>}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "maxItems": 200,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "question_index": {"type": "integer"},
+                            "choice": {"type": "string"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["task_id", "question_index"],
+                    },
+                    "description": "Up to 200 {task_id, question_index, choice?, text?}.",
+                },
+            },
+            "required": ["entries"],
         },
     },
     {
@@ -4056,9 +4113,23 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # none -- which is also every file the worker rejected. A counted file
     # that could not be read says so in `questions_unavailable_because`.
     # Data for the reader, never acted on.
+    #
+    # ONLY THE OPEN ONES (5 November 2026): a question answered with
+    # swarm_task_answer or in the console was handed back as if it were not,
+    # and the session asked the person again. `owner_questions` is the ones
+    # with no stored answer, each with its `index`, read from the questions
+    # route on every call (`progress.open_owner_questions`); one whose answer
+    # could not be read stays, with `answer_unknown_because`.
+    # `owner_questions_asked` is every question, `answered` on each -- for a
+    # person browsing the task, never to be put to them again.
     asked = progress.owner_questions(client, task)
-    if asked["questions"]:
-        described["owner_questions"] = asked["questions"]
+    every = progress.asked_with_answers(client, task, asked)
+    if every:
+        described["owner_questions_asked"] = every
+        open_ = [{k: v for k, v in q.items() if k != "answered"} for q in every if q["answered"] is not True]
+        if open_:
+            described["owner_questions"] = open_
+        described["questions_answered"] = len(every) - len(open_)
     if asked.get("questions_unavailable_because"):
         described["questions_unavailable_because"] = asked["questions_unavailable_because"]
     # WHAT THE OWNER ANSWERED (TASK-ANSWERS, owner decision 2026-10-13): the
@@ -4079,6 +4150,11 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     browser = progress.browser_words(task)
     if browser is not None:
         described["browser"] = browser
+    # A LIVE-BROWSER RUN THAT NEVER USED IT (2026-11-05): one line, advice
+    # only; no key for true, null or a non-browser profile.
+    unused = progress.browser_unused_line(task)
+    if unused is not None:
+        described["browser_unused"] = unused
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
@@ -4642,6 +4718,7 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             plan_approval=approval,
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
+            security_review=_flag(args, "security_review"),
             **({"model_class": model_class} if model_class is not None else {}),
         )
         return json.dumps(_run_summary(client, run), indent=2, default=str)
@@ -5424,7 +5501,12 @@ def _call(
         # what the agent actually produced.
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
-                task["result"] = describe_task(client.task(task["task_id"]), client)
+                read = client.task(task["task_id"])
+                task["result"] = describe_task(read, client)
+                # A live-browser run that never used it (2026-11-05).
+                unused = progress.browser_unused_line(read)
+                if unused is not None:
+                    task["result"]["browser_unused"] = unused
         # The same position as `cursor`, as one token, for a caller that would
         # rather not copy a nested object back by hand.
         report["since"] = progress.encode_since(
@@ -5450,10 +5532,13 @@ def _call(
             # (SC-ROWS), which `/sc status` prints first on the task's line.
             # `waiting`/`waiting_line` (#1782): why a waiting task waits, in
             # the API's words, printed after the state; absent otherwise.
-            rows.append(with_console(
-                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
-                 "masked": masked_counts(task), **progress.waiting_fields(task)}, task
-            ))
+            row = {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                   "masked": masked_counts(task), **progress.waiting_fields(task)}
+            # A FINISHED live-browser run that never used it (2026-11-05).
+            unused = progress.browser_unused_line(task)
+            if unused is not None:
+                row["browser_unused"] = unused
+            rows.append(with_console(row, task))
         return json.dumps(rows, indent=2)
 
     if name == "swarm_wait":
@@ -5890,6 +5975,11 @@ def _call(
             publish_to_pr=publish_to_pr,
             # Only a whole spec carries the workflow switches (2026-11-01).
             dispatch=fields.get("dispatch"),
+            # Nor a description or a feature (BGD, 2026-11-04).
+            description=fields.get("description"),
+            feature=fields.get("feature"),
+            # Nor its three-part about (BGD, 2026-11-06).
+            about=fields.get("about"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
@@ -5937,6 +6027,12 @@ def _call(
                 describe=_describe_step if name == "swarm_workflow_result" else None,
             ),
         )
+        if name == "swarm_workflow_result":
+            # The steps that ran on a live browser and never used it, once
+            # each (2026-11-05); no key when there is none.
+            unused = workflows.browser_unused_steps(envelope)
+            if unused:
+                reported["browser_unused"] = unused
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
 
@@ -6115,6 +6211,13 @@ def _call(
         from . import answers
 
         return json.dumps(answers.record(client, args), indent=2)
+
+    if name == "swarm_task_answers":
+        # One POST per entry through the same route, `reply=short`; a
+        # refusal is that entry's line and the next is still sent.
+        from . import answers
+
+        return json.dumps(answers.record_many(client, args), indent=2)
 
     if name == "swarm_cancel":
         for task_id in args["task_ids"]:

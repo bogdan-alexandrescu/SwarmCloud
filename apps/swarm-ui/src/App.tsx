@@ -43,6 +43,7 @@ import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
 import { McpServersScreen } from './McpServers'
+import { ConfigPluginsScreen } from './ConfigPlugins'
 import { SecretsScreen } from './Secrets'
 import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
 import { SetupStrip } from './ConfigSetup'
@@ -74,6 +75,8 @@ import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { QaRunGroupScreen } from './QaRunGroup'
+import { InterviewRoute } from './InterviewPage'
+import { interviewPageOf } from './interviewPaths'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
@@ -519,6 +522,9 @@ export const SECTIONS: SectionDef[] = [
       // Every old address and one-time link lands here (paths.ts).
       { id: 'secrets', label: 'Secrets' },
       { id: 'mcp-servers', label: 'MCP servers' },
+      // The owner picked the settings table for the workspace's allowed agent
+      // plugins on 4 November 2026 (part of #2688; docs/design/agent-plugins.md).
+      { id: 'plugins', label: 'Plugins' },
       // PEOPLE AND ROLES AND WORKSPACE SETTINGS ARE A WORKSPACE'S OWN PAGE
       // since the admin routes lane (part of #2688; the owner picked a page
       // per workspace for administration): Admin › Workspaces › <workspace>,
@@ -2290,6 +2296,7 @@ const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
   'config/repositories': 'config-repositories',
   'config/secrets': 'secret-scopes',
   'config/mcp-servers': 'mcp-servers',
+  'config/plugins': 'agent-plugins',
   'config/people': 'workspace-roles',
   'config/workspace': 'workspace-settings',
   'admin/limits': 'ceiling-change-evicts-nothing',
@@ -2499,6 +2506,10 @@ function SectionBody({
   // Config › Repositories › QA targets: its address is that tab's `qarun=<id>`.
   const qarun = `${sectionId}/${tab}` === 'config/repositories' && view !== null ? new URLSearchParams(view).get('qarun') : null
   if (qarun !== null && qarun !== '') return <QaRunGroupScreen groupId={qarun} go={go} />
+  // A plugin step's interview (`/runs?interview=<task>`) and a planner run's
+  // proposal (`/runs?proposal=<run>`), full pages on the Runs tab's query.
+  const interview = `${sectionId}/${tab}` === 'work/runs' ? interviewPageOf(view) : null
+  if (interview !== null) return <InterviewRoute at={interview} go={go} />
   // One workspace's page under Admin › Workspaces (`/admin/workspaces/<tenant>`).
   const wsPage = workspacePageOf({ sectionId, tab, view })
   if (wsPage !== null) return <WorkspacePageRoute tenant={wsPage.tenant} tab={wsPage.tab} onView={onView} go={go} />
@@ -2556,6 +2567,8 @@ function SectionBody({
       return <SecretsScreen view={view} token={secretsLink} />
     case 'config/mcp-servers':
       return <McpServersScreen />
+    case 'config/plugins':
+      return <ConfigPluginsScreen />
     case 'config/workspace':
       return <WorkspaceSettingsScreen part={workspacePartOf(view)} go={go} />
 

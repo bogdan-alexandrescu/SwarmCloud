@@ -172,7 +172,11 @@ describe('admin-shell-05: the members-unread note is in words and leaves the rol
       ),
     )
     await waitFor(() => expect(document.querySelectorAll('.pp-joined-unread')).toHaveLength(1), WAIT)
-    const note = visible(document.querySelector('.pp-joined-unread'))
+    const line = document.querySelector<HTMLElement>('.pp-joined-unread')!
+    // BGD's no-prose rule (2026-11-05): one short line; the sentence is its (i).
+    // MUTATION: draw the whole sentence in the line again.
+    expect(line.firstChild?.textContent?.trim()).toBe('Join-by-request mark unavailable: members unread')
+    const note = visible(document.getElementById(line.querySelector('button')!.getAttribute('aria-describedby')!))
     // MUTATION: print `${name} (${read.why})` again -> "not_found" is back.
     expect(note).not.toContain('not_found')
     expect(note).toContain('Example Team and Example Labs columns')
@@ -234,20 +238,26 @@ describe('admin-shell-17: no configuration variable names in reader-facing text'
     // owner setting' repeated itself, and 'holds no admin role' read as if a
     // group admin were not one.
     // MUTATION: restore 'set by the platform owner setting' -> fails.
-    expect(visible(card)).toContain('set in the deployment’s configuration')
+    // BGD's no-prose rule (2026-11-05): where the owner is set is the chip's tooltip,
+    // and the card's rules are the (i) beside its title.
+    expect(card.querySelector('.pp-owner')?.getAttribute('title')).toBe('Set in the deployment’s configuration.')
     expect(visible(card)).not.toContain('set by the platform owner setting')
-    expect(visible(card)).toContain('An admin through a group has no role recorded here')
+    const info = within(card).getByRole('button', { name: 'About Admins' })
+    expect(visible(document.getElementById(info.getAttribute('aria-describedby')!))).toContain('An admin through a group has no role recorded here')
+    expect(card.querySelector(':scope > p.ur-hint')).toBeNull()
   })
 })
 
 describe('admin-shell-20: a request with no limits says what approving sets', () => {
-  it('reads "No ceiling was asked for: approving sets the default"', async () => {
+  it('says "No ceiling was asked for: approving sets the default" as Approve\'s tooltip', async () => {
     const doc = platform()
     ;(doc.people as Json[])[0] = person('jo@example.com', ws('requested', 'w-0j0000', { limits: {} }), { team: 'none', labs: 'none' })
     await mount(people(doc))
     const row = document.querySelector<HTMLElement>('.pp-waiting li.pp-req[data-kind="workspace"][data-email="jo@example.com"]') as HTMLElement
     // MUTATION: restore "the record carries no limits" -> fails.
     expect(visible(row)).not.toContain('the record carries no limits')
-    expect(visible(row)).toContain('No ceiling was asked for: approving sets the default, 8 agents at once')
+    // BGD's no-prose rule (2026-11-05). MUTATION: draw the sentence in the row again.
+    expect(visible(row)).not.toContain('No ceiling was asked for')
+    expect(within(row).getByRole('button', { name: 'Approve' }).getAttribute('title')).toBe('No ceiling was asked for: approving sets the default, 8 agents at once.')
   })
 })

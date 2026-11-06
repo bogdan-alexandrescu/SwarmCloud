@@ -198,16 +198,17 @@ describe('D30: the same-step scrubber keeps its arrows with the position', () =>
   it('holds ◀ position ▶ in one unit that never wraps, and cuts the shape after it', async () => {
     const wrap = await steps()
     fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
-    const row = await waitFor(() => {
-      const r = document.querySelector<HTMLElement>('[data-scrub="workflow"]')
-      expect(r).not.toBeNull()
-      return r!
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): THE FIXTURE'S WORKFLOWS ARE EACH OF THEIR OWN SHAPE, so it
+    // draws no same-step row at all -- no pager, no sentence -- and the
+    // scrubber below is the board inspector's.
+    const card = await waitFor(() => {
+      const c = document.querySelector<HTMLElement>('.sc-card')
+      expect(c).not.toBeNull()
+      return c!
     })
-    // THE FIXTURE'S WORKFLOWS ARE EACH OF THEIR OWN SHAPE, so this row has
-    // nothing to page: since QA1-FIX-29 (overview-agents-67) it is one
-    // sentence, with no arrows, the shape in its title.
-    expect(row.querySelector(':scope > .wf-scrub-nav')).toBeNull()
-    expect(row.querySelector(':scope > .wf-scrub-pos')?.getAttribute('title')).toMatch(/^This workflow’s shape: .* Only workflows of this shape are compared.$/)
+    expect(card.querySelector('[data-scrub="workflow"]')).toBeNull()
+    expect([...card.querySelectorAll('.sc-facts dt')].map((d) => d.textContent)).not.toContain('Other workflows')
     // With more than one, the unit is drawn by the sheet as before: built
     // here, since no fixture workflow shares a shape (workflow.views.test.tsx
     // U5 pages two of one shape and holds the DOM order).

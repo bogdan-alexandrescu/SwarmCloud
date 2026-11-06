@@ -45,7 +45,7 @@ from swarm_api.issueruns import (
     plan_digest,
 )
 from swarm_api.schemas import RunCreate
-from swarm_api.validation import IssueRef, PullRequestReference, parse_issue_ref
+from swarm_api.validation import IssueRef, PullRequestReference, issue_run_mark_allowed, parse_issue_ref
 
 from . import forge_fakes
 from .conftest import api_settings, auth_header
@@ -740,6 +740,85 @@ def test_a_long_title_is_cut_to_the_cap():
     assert title.startswith("example-org/widgets#42: x") and title.endswith("…")
 
 
+def test_an_issue_runs_workflow_belongs_to_its_issue_and_says_what_its_plan_delivers():
+    """BGD, 2026-11-04: the workflow page heads with the feature the work
+    belongs to and a description of what it delivers. An issue run's feature
+    is its issue, by title and URL; its description is the approved plan's
+    summary."""
+    spec = compile_plan(_stored_run(issue_read={"title": "Widgets  cannot\nbe sorted"}))
+    assert spec.metadata["feature"] == {
+        "title": "Widgets cannot be sorted",
+        "url": "https://github.com/example-org/widgets/issues/42",
+    }
+    assert spec.metadata["description"] == "Make the widget list sortable by name."
+    assert spec.metadata["description_source"] == "submitter"
+
+
+def test_with_no_issue_title_the_feature_is_named_by_the_issue_reference():
+    spec = compile_plan(_stored_run(issue_read=None))
+    assert spec.metadata["feature"] == {
+        "title": "example-org/widgets#42",
+        "url": "https://github.com/example-org/widgets/issues/42",
+    }
+
+
+def test_a_long_issue_title_is_cut_to_the_feature_titles_cap():
+    spec = compile_plan(_stored_run(issue_read={"title": "y" * 400}))
+    title = spec.metadata["feature"]["title"]
+    assert len(title) == issueruns.FEATURE_TITLE_MAX_CHARS == 120
+    assert title.endswith("…")
+
+
+def test_the_description_is_the_summarys_first_three_sentences_in_plain_text():
+    """A summary is a paragraph the planner wrote, often in Markdown; the
+    description is two or three sentences of plain text, which the spec check
+    refuses markup in rather than cut. Headings and fenced code are dropped,
+    a link keeps its text, a tag and emphasis markers go."""
+    summary = (
+        "## Plan\n\nMake the **widget list** sortable by [name](https://example.com/n). "
+        "The <b>header</b> toggles the `order`.\n\n```\nsort()\n```\n"
+        "Tests cover __both__ orders! A fourth sentence is left out. So is a fifth."
+    )
+    plan = {**PLAN, "summary": summary}
+    spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
+    assert spec.metadata["description"] == (
+        "Make the widget list sortable by name. The header toggles the `order`. "
+        "Tests cover both orders!"
+    )
+
+
+def test_a_summary_of_one_long_sentence_is_cut_to_600_characters():
+    plan = {**PLAN, "summary": "word " * 700}
+    spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
+    description = spec.metadata["description"]
+    assert len(description) <= issueruns.DESCRIPTION_MAX_CHARS == 600
+    assert description.startswith("word word") and description.endswith("…")
+
+
+def test_a_summary_with_no_text_left_gives_no_description():
+    plan = {**PLAN, "summary": "<br/> ** __ ```"}
+    spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
+    assert "description" not in spec.metadata
+    assert "description_source" not in spec.metadata
+
+
+def test_every_step_task_of_an_approved_run_carries_the_feature_and_description(client, db, objects):
+    run = _planned(client, db, objects)
+    response = _approve(client, run["id"], run["plan_digest"])
+    assert response.status_code == 200, response.text
+    workflow_id = response.json()["run"]["workflow_id"]
+    tasks = [d for d in _docs(db, "tasks").values() if d.get("workflow_id") == workflow_id]
+    assert tasks
+    feature = issueruns.workflow_feature(
+        issueruns.IssueRun.from_firestore(db.docs[f"issue_runs/{run['id']}"])
+    )
+    assert feature["url"] == "https://github.com/example-org/widgets/issues/42"
+    for task in tasks:
+        assert task["metadata"]["feature"] == feature
+        assert task["metadata"]["description"] == "Make the widget list sortable by name."
+        assert task["metadata"]["description_source"] == "submitter"
+
+
 def test_every_step_task_of_an_approved_run_carries_the_title_and_label(client, db, objects):
     run = _planned(client, db, objects)
     response = _approve(client, run["id"], run["plan_digest"])
@@ -756,11 +835,31 @@ def test_every_step_task_of_an_approved_run_carries_the_title_and_label(client, 
         assert task["metadata"]["unit"] == "issue-42"
 
 
+def test_an_approved_runs_workflow_carries_the_mark_and_reads_as_started_from_an_issue_run(
+        client, db, objects):
+    # `metadata.issue_run` is reserved from every caller (test_issue_run_reserved.py),
+    # so the issue-run code is what still writes it: every step task of the
+    # approved run's workflow carries the run's id, and the console's "where it
+    # was started" reads it.
+    run = _planned(client, db, objects)
+    response = _approve(client, run["id"], run["plan_digest"])
+    assert response.status_code == 200, response.text
+    workflow_id = response.json()["run"]["workflow_id"]
+    tasks = [d for d in _docs(db, "tasks").values() if d.get("workflow_id") == workflow_id]
+    assert tasks
+    assert all(t["metadata"]["issue_run"]["run_id"] == run["id"] for t in tasks)
+    read = client.get(f"/v1/workflows/{workflow_id}", headers=auth_header("alice"))
+    assert read.status_code == 200, read.text
+    assert read.json()["workflow"]["started_from"] == "issue_run"
+
+
 def test_an_auto_merge_run_submits_its_workflow_with_no_merge_step(client):
     client.put("/v1/admin/settings", headers=auth_header("root"), json={"merge_by_default": True})
     spec = compile_plan(_stored_run(auto_merge=True))
-    response = client.post("/v1/workflows", headers=auth_header("alice"),
-                           json=spec.model_dump(exclude_none=True))
+    # The issue-run code's exemption: `metadata.issue_run` is reserved.
+    with issue_run_mark_allowed(spec.metadata["issue_run"]):
+        response = client.post("/v1/workflows", headers=auth_header("alice"),
+                               json=spec.model_dump(exclude_none=True))
     assert response.status_code == 201, response.text
     assert not [s for s in response.json()["workflow"]["steps"] if s["runner_profile"] == "merge"]
 
@@ -768,8 +867,10 @@ def test_an_auto_merge_run_submits_its_workflow_with_no_merge_step(client):
 def test_a_run_without_auto_merge_submits_no_merge_step_even_when_the_default_is_on(client):
     client.put("/v1/admin/settings", headers=auth_header("root"), json={"merge_by_default": True})
     spec = compile_plan(_stored_run(auto_merge=False))
-    response = client.post("/v1/workflows", headers=auth_header("alice"),
-                           json=spec.model_dump(exclude_none=True))
+    # The issue-run code's exemption: `metadata.issue_run` is reserved.
+    with issue_run_mark_allowed(spec.metadata["issue_run"]):
+        response = client.post("/v1/workflows", headers=auth_header("alice"),
+                               json=spec.model_dump(exclude_none=True))
     assert response.status_code == 201, response.text
     assert not [s for s in response.json()["workflow"]["steps"] if s["runner_profile"] == "merge"]
 
@@ -932,6 +1033,11 @@ def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
     # And its title and label (RUNS, 2026-10-12): what the console names it by.
     assert dumped["metadata"].pop("title") == "example-org/widgets#42: Make the widget list sortable by name."
     assert dumped["metadata"].pop("unit") == "issue-42"
+    # And what it is about (BGD, 2026-11-04): its issue, and its plan's summary.
+    assert dumped["metadata"].pop("feature") == {
+        "title": "example-org/widgets#42", "url": "https://github.com/example-org/widgets/issues/42"}
+    assert dumped["metadata"].pop("description") == "Make the widget list sortable by name."
+    assert dumped["metadata"].pop("description_source") == "submitter"
     # And the re-review of the fix's head (#2217), appended after the rest.
     assert dumped["steps"].pop()["step_id"] == "re-review"
     assert dumped == CHAIN_AS_BEFORE

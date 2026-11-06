@@ -582,9 +582,23 @@ the token therefore needs:
 | `Issues: Read and write` | the plan comment and the status comment |
 | `Checks: Read` | the CI loop reading the required checks at the head sha |
 | `Commit statuses: Read` | the CI loop reading a required check reported as a commit status (`forgewrite.STATUSES_READ`) |
-| `Actions: Read` | the CI loop reading a failing run's log excerpt |
+| `Actions: Read and write` | the CI loop reading a failing run's log excerpt (read); the merge step re-running the failed jobs of a run whose failure was a flake (write: `GitHubWriter.rerun_failed_jobs` in `swarm_api/forgewrite.py` asks `POST actions/runs/<run>/rerun-failed-jobs`, from `mergewake._rerun_first`) |
 
-A classic token's `repo` scope carries all six. Why the run is built this way
+A classic token's `repo` scope carries all six.
+
+**Why `Actions` is Read and write** (owner decision, 2026-11-05): a red check
+that is a flake costs no agent, because the merge step first asks GitHub to
+re-run the failed jobs of its workflow run, and that request needs
+`actions: write`. With `Actions: Read` only, GitHub answers 403 (the
+Engineering workspace's token did), the re-run is recorded refused in
+`merge_fix.reruns` with the sentence "GitHub refused the tenant's forge
+credential for a re-run of the failed jobs of Actions run <run> (HTTP 403):
+the credential needs `actions: write` on the repository", and the flake is
+never re-run: the merge step goes on to a CI-fix round if one is left, else
+fails with `checks_failed`, after a round that found nothing to change
+with "…; its re-run was refused: " and that sentence
+(`agent_worker/merge.py`). The GitHub App's
+[runbook](runbooks/github-app.md) asks for the same `Actions: Read and write`. Why the run is built this way
 is in [issue-runs.md](issue-runs.md#the-tenants-credential-and-what-it-must-be-allowed). **Without `Issues: write` the
 run still runs**: the write-back never fails or blocks a run, because the run's
 truth is its Firestore document, not the comment. The failure is recorded on

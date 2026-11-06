@@ -347,7 +347,11 @@ describe('a card says what it opens, and a count is not a verdict', () => {
       const href = `#${pathToAddress(pathname!, search)?.address ?? path}`
       const label = tabLabel(href)
       expect(label, `${href} names no tab declared in App.tsx SECTIONS`).not.toBeNull()
-      const word = (a.textContent ?? '').replace('→', '').trim().toLowerCase()
+      // A BUTTON IN THE THEME'S STYLE, NEVER AN ARROW LINK (BGD's standing rule, 2026-11-05).
+      // MUTATION: put `&rarr;` back after CardHead's `cta`, or draw it with `ctl-link` alone.
+      expect(a.textContent ?? '', `the link to ${href} still carries an arrow`).not.toContain('→')
+      expect(a.classList.contains('c-btn'), `the link to ${href} is not drawn as a button`).toBe(true)
+      const word = (a.textContent ?? '').trim().toLowerCase()
       const list = /^#work\/running(?:\/(live|waiting|recent))?/.exec(href)
       const want = list ? `all ${list[1] ?? 'live'}` : label!.toLowerCase()
       expect(word, `the link to ${href} reads "${word}", not "${want}"`).toBe(want)
@@ -365,7 +369,7 @@ describe('a card says what it opens, and a count is not a verdict', () => {
       tasks: { tasks: [liveTask()], next_page_token: null },
       stats: { ...EMPTY_STATS, tasks_by_state: { RUNNING: 5, LEASED: 0, DISPATCHED: 0, STARTING: 0 } },
     })
-    const cell = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Holding capacity')
+    const cell = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
     expect(cell, 'the Holding figure is not in the band').toBeDefined()
     const figure = cell!.querySelector('.ov-lc-n')!
     expect(text(figure)).toBe('5')
@@ -760,7 +764,7 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
 
   it('is silent about a fresh count’s age, and shows it in the head as every 20 s', async () => {
     const el = await mountWith({ loadStats: ok({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } }) })
-    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Holding capacity')
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
     expect(holding, 'the band has no Holding capacity figure').toBeDefined()
     expect(holding!.querySelector('.ov-lc-foot'), 'a fresh count prints its age in the tile').toBeNull()
     // The fresh age is the head's one age, on the control that renews it.
@@ -779,7 +783,7 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
     const el = await mountWith({
       loadStats: okFrom({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } }, 6 * 60_000),
     })
-    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Holding capacity')
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
     expect(holding, 'the band has no Holding capacity figure').toBeDefined()
     expect(text(holding!.querySelector('.ov-lc-foot'))).toBe('counted from 6 min ago')
     const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
@@ -796,7 +800,7 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
         error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' },
       },
     })
-    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Holding capacity')
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
     expect(holding, 'the band has no Holding capacity figure').toBeDefined()
     expect(text(holding!.querySelector('.ov-lc-foot'))).toMatch(/^counted from 4\d s ago$/)
   })

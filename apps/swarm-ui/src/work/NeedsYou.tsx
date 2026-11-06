@@ -36,14 +36,45 @@
  * it covers (`onSelect`), so a page can dim the grid cells that do not match.
  * Mounted by the Work pages; it reads nothing on its own but the masked
  * prompt a Retry carries over.
+ *
+ * A PLUGIN STEP'S PARKED QUESTION (the plugins console's picked interview,
+ * direction B's Needs-you screen, 4 November 2026; docs/design/agent-plugins.md
+ * and agent-plugins-question-bridge.md). A step that runs a plugin parks on a
+ * question its agent could not answer itself, and nobody's answer is guessed:
+ * unanswered for its wait (24 hours for a bridged question), the step ends
+ * with the question open. Its row says which plugin and mode asked, the skill
+ * that asked and the time left; beside the list, one card per parked plugin
+ * step. What tells one is in the list read (the owner's pick on PR #3262,
+ * "Serve them in step_needs"): a step's `task_summary.needs.plugin_ask`
+ * (`codec.step_needs`), served for a plugin step PARKED on a question wait
+ * only -- the plugins and modes of its work contract's `capabilities.plugins`,
+ * its repository, the wait's `asked_at` and `expires_at` as
+ * `GET /v1/tasks/{id}/questions` serves them, and the skill that asked. `stepNeedItems` puts it on the
+ * step's question rows (`plugin`); no task or questions are read for it, so
+ * every parked plugin step in the read is told, however many there are.
+ * The skill that asked is the worker's record of the last `Skill` call before
+ * the question (the owner's pick of 4 November 2026); a park with none
+ * recorded reads "not known", and so does a clock the wait did not serve,
+ * never 0. A
+ * planner or designer step's card opens its interview, a full page
+ * (InterviewPage.tsx), and links its run's page beside it.
  */
 import { useEffect, useId, useRef, useState, type MouseEvent } from 'react'
-import { answerQuestion, approveApproval, loadTaskInputOnce, rerunWorkflowStep, type ApprovalItem, type QuestionOption } from '../api'
+import {
+  answerQuestion,
+  approveApproval,
+  loadTaskInputOnce,
+  rerunWorkflowStep,
+  type ApprovalItem,
+  type QuestionOption,
+} from '../api'
 import { Button, buttonClass } from '../components'
 import { errorHeading, type ApiError } from '../fetch'
 import { handoffOf, humanReady, ownerQuestionsHold, timeLeft, type HeldQuestion } from '../Handoff'
+import { interviewAddress } from '../interviewPaths'
 import { addressToPath } from '../paths'
 import { useRoleGate } from '../Profile'
+import { type StepNeeds } from '../stepviews'
 import { prefillTask } from '../submitPrefill'
 import { type Task } from '../types'
 import { useNow } from '../useNow'
@@ -88,6 +119,8 @@ export interface QuestionNeed {
    * and Answer is disabled: nobody answers a question they cannot read.
    */
   onItsPage?: boolean
+  /** Its step runs a plugin and is parked on this question: served in the list read (`pluginAskOf`). */
+  plugin?: PluginAsk
 }
 
 /** A merge step waiting. What holds it is read from the task's park (`ownerQuestionsHold`). */
@@ -171,12 +204,200 @@ export function mergeHeldBecause(item: MergeNeed): string | null {
   return null
 }
 
+/** One plugin a step runs, by catalogue name, and its mode, as its work contract holds it. */
+export interface StepPlugin {
+  name: string
+  mode: string
+}
+
+/** A plugin step parked on a question, as its task and its wait were read. */
+export interface PluginAsk {
+  taskId: string
+  workflowId: string | null
+  stepId: string | null
+  repository: string | null
+  plugins: readonly StepPlugin[]
+  /** When the wait began and when it ends, ms; null when the wait served neither. */
+  askedAt: number | null
+  expiresAt: number | null
+  /** The skill that asked, as the worker recorded it; null when not known. */
+  skill: string | null
+}
+
+/** The modes' words, as the catalogue's picker says them. */
+const MODE_WORD: Readonly<Record<string, string>> = { unattended: 'Unattended', planner: 'Planner', designer: 'Designer' }
+const modeWord = (mode: string): string => MODE_WORD[mode] ?? mode
+/** The modes that run an interview with a person, whose questions are its pages. */
+const INTERVIEW_MODES: readonly string[] = ['planner', 'designer']
+
+const isMap = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+const msOf = (v: unknown): number | null => {
+  const ms = typeof v === 'string' ? Date.parse(v) : NaN
+  return Number.isFinite(ms) ? ms : null
+}
+
+/**
+ * A parked plugin step's ask, from its task and its step's needs block:
+ * `plugin_ask` (`codec.step_needs`), served for a plugin step PARKED on a
+ * question wait only. Null for any other step, and for a block that served
+ * none (an API older than it): the row is then plain, nothing guessed. A
+ * plugin not `{name, mode}` is no plugin.
+ */
+export function pluginAskOf(task: Task, needs: StepNeeds | null): PluginAsk | null {
+  const served: unknown = needs?.plugin_ask
+  if (!isMap(served) || task.state !== 'PARKED') return null
+  const plugins = (Array.isArray(served.plugins) ? served.plugins : []).flatMap((p: unknown) =>
+    isMap(p) && typeof p.name === 'string' && p.name !== '' && typeof p.mode === 'string' && p.mode !== '' ? [{ name: p.name, mode: p.mode }] : [],
+  )
+  if (plugins.length === 0) return null
+  return {
+    taskId: task.id,
+    workflowId: task.workflow_id ?? null,
+    stepId: task.step_id ?? null,
+    repository: typeof served.repository_url === 'string' && served.repository_url !== '' ? served.repository_url : (task.repository_url ?? null),
+    plugins,
+    askedAt: msOf(served.asked_at),
+    expiresAt: msOf(served.expires_at),
+    skill: typeof served.skill === 'string' && served.skill.trim() !== '' ? served.skill.trim() : null,
+  }
+}
+
+/** The time a wait has left, "23 h 22 min"; null once it has passed or when its end is not known. */
+export function leftOfWait(expiresAt: number | null, now: number): string | null {
+  if (expiresAt === null) return null
+  const ms = expiresAt - now
+  if (ms <= 0) return null
+  const min = Math.floor(ms / 60_000)
+  if (min < 1) return 'under a minute'
+  const h = Math.floor(min / 60)
+  return h === 0 ? `${min} min` : `${h} h ${min % 60} min`
+}
+
+/** The whole wait in hours, "24 h", when both ends were served. */
+function spanOf(ask: PluginAsk): string | null {
+  if (ask.askedAt === null || ask.expiresAt === null || ask.expiresAt <= ask.askedAt) return null
+  return `${Math.round((ask.expiresAt - ask.askedAt) / 3_600_000)} h`
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+/** "19 Oct, 11:22 UTC". */
+function atUtc(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}, ${String(d.getUTCHours()).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')} UTC`
+}
+
+/** "example-org/contacts-app" for a forge URL; the value as served otherwise. */
+function repoName(url: string): string {
+  const m = /^https?:\/\/[^/]+\/(.+?)(?:\.git)?\/?$/.exec(url)
+  return m?.[1] ?? url
+}
+
+/** "gstack · Unattended", each plugin the step runs. */
+const pluginWords = (ask: PluginAsk): string => ask.plugins.map((p) => `${p.name} · ${modeWord(p.mode)}`).join(', ')
+
+/** The time left as a row and a card say it. */
+function leftWords(ask: PluginAsk, now: number): string {
+  if (ask.expiresAt === null) return 'time left not known'
+  const left = leftOfWait(ask.expiresAt, now)
+  if (left === null) return 'time is up'
+  const span = spanOf(ask)
+  return span === null ? `${left} left` : `${left} left of ${span}`
+}
+
+/** Each parked plugin step's ask, by task, off the question rows that carry one (`QuestionNeed.plugin`). */
+function pluginAsksOf(items: NeedItems): ReadonlyMap<string, PluginAsk> {
+  const out = new Map<string, PluginAsk>()
+  for (const i of items) if (i.kind === 'question' && i.plugin !== undefined && !out.has(i.taskId)) out.set(i.taskId, i.plugin)
+  return out
+}
+
+/** The line a plugin step's question row adds: plugin and mode, the skill that asked, the time left. */
+function PluginLine({ ask }: { ask: PluginAsk }) {
+  const now = useNow(30_000)
+  return (
+    <span className="ny-plugin" title={ask.expiresAt === null ? undefined : `It ends, the question open, at ${atUtc(ask.expiresAt)}`}>
+      <b>{pluginWords(ask)}</b> · {ask.skill === null ? 'skill that asked: not known' : `asked by ${ask.skill}`} · <span className="ny-plugin-left">{leftWords(ask, now)}</span> · never answered for anyone
+    </span>
+  )
+}
+
+/** One card per parked plugin step, beside the list (direction B's Needs-you screen). */
+function ParkedPluginSteps({ asks, rows }: { asks: readonly PluginAsk[]; rows: ReadonlyMap<string, QuestionNeed> }) {
+  const now = useNow(30_000)
+  const spans = new Set(asks.map(spanOf))
+  const span = spans.size === 1 ? [...spans][0] : null
+  return (
+    <aside className="ny-parked" aria-label="Plugin steps parked on a question">
+      <h3 className="ny-parked-h">
+        Plugin steps parked <span className="ny-n">{asks.length}</span>
+      </h3>
+      <p className="ny-parked-lead">
+        Each holds no machine while it waits. Unanswered {span === '24 h' ? 'in 24 hours' : 'in its time'}, it ends with the question open: nobody&rsquo;s
+        answer is guessed.
+      </p>
+      {asks.map((a) => {
+        const row = rows.get(a.taskId)
+        const interview = a.plugins.some((p) => INTERVIEW_MODES.includes(p.mode))
+        const left = leftOfWait(a.expiresAt, now)
+        return (
+          <article key={a.taskId} className="ny-park" aria-label={`${a.stepId ?? a.taskId}, parked`}>
+            <span className="ny-park-h">
+              <b>{a.stepId ?? a.taskId}</b>
+              {a.workflowId !== null && <span className="ny-dim"> in {a.workflowId}</span>}
+            </span>
+            {a.repository !== null ? <code className="ny-park-repo">{repoName(a.repository)}</code> : <span className="ny-dim">repository not known</span>}
+            <span className="ny-park-chip">
+              {a.plugins.map((p) => (
+                <span key={p.name} className="ny-park-seg">
+                  <b>{p.name}</b>
+                  <span>{modeWord(p.mode)}</span>
+                </span>
+              ))}
+              <span className="ny-park-seg is-skill">{a.skill === null ? 'asked by: not known' : `asked by ${a.skill}`}</span>
+            </span>
+            <span className="ny-park-time">
+              {a.expiresAt === null ? (
+                <span className="ny-dim">time left not known</span>
+              ) : left === null ? (
+                <b>time is up</b>
+              ) : (
+                <>
+                  <b>{left}</b> <span className="ny-dim">left{a.askedAt !== null && ` · asked ${atUtc(a.askedAt)}`}</span>
+                </>
+              )}
+            </span>
+            {interview ? (
+              <span className="ny-park-act">
+                <a className={buttonClass({ size: 'sm', kind: 'primary' })} href={addressToPath(interviewAddress(a.taskId))}
+                  aria-label={`Open the interview: ${a.stepId ?? a.taskId}`}>
+                  Open the interview
+                </a>{' '}
+                <a className={buttonClass({ size: 'sm', kind: 'secondary' })} href={openPath(a.taskId)} aria-label={`Open its run: ${a.stepId ?? a.taskId}`}>
+                  Open its run
+                </a>
+              </span>
+            ) : (
+              <span className="ny-park-act ny-dim">
+                It ran unattended
+                {row !== undefined && (row.recommended === null || row.recommended === undefined) ? ' and this question has no recommended answer' : ''}, so it
+                waits for you: answer it in its row (Question, {row?.title ?? a.stepId ?? a.taskId}).
+              </span>
+            )}
+          </article>
+        )
+      })}
+    </aside>
+  )
+}
+
 export function NeedsYou({
   items,
   approvals,
   selected,
   onSelect,
   onChanged,
+  cardStep,
 }: {
   items: NeedItems
   /** The approvals waiting, or null when the page could not read them ("not known"). */
@@ -187,11 +408,14 @@ export function NeedsYou({
   onSelect?: (pick: NeedSelection | null) => void
   /** An action was accepted (an answer saved, an approval given, I'm ready): the page reads again. */
   onChanged?: () => void
+  /** The step the workflow page's step card shows, which already says why it failed. */
+  cardStep?: string | null
 }) {
   const [own, setOwn] = useState<NeedKind | null>(null)
   const [unfolded, setUnfolded] = useState(false)
   const kind = selected === undefined ? own : selected
   const listId = useId()
+  const asks = pluginAsksOf(items)
 
   const count = (k: NeedKind): number | null => {
     if (k === 'approval') return approvals === null ? null : approvals.length
@@ -207,6 +431,24 @@ export function NeedsYou({
     const ids = k === 'approval' ? [] : items.filter((i) => i.kind === k).flatMap(taskIdsOf)
     onSelect({ kind: k, taskIds: [...new Set(ids)] })
   }
+
+  const list = (
+    <NeedsList
+      id={listId}
+      items={items}
+      approvals={approvals ?? []}
+      kind={kind}
+      unfolded={unfolded}
+      asks={asks}
+      onUnfold={(k) => (k === null ? setUnfolded(true) : pick(k))}
+      onChanged={onChanged}
+      cardStep={cardStep ?? null}
+    />
+  )
+  // The cards stand beside the questions: hidden while a chip picks another kind.
+  const parked = kind === null || kind === 'question' ? [...asks.values()] : []
+  const firstRows = new Map<string, QuestionNeed>()
+  for (const i of items) if (i.kind === 'question' && !firstRows.has(i.taskId)) firstRows.set(i.taskId, i)
 
   return (
     <section className={`ny${total > 0 ? ' has-some' : ''}`} aria-label="Needs you">
@@ -259,7 +501,14 @@ export function NeedsYou({
           )
         })}
       </div>
-      <NeedsList id={listId} items={items} approvals={approvals ?? []} kind={kind} unfolded={unfolded} onUnfold={(k) => (k === null ? setUnfolded(true) : pick(k))} onChanged={onChanged} />
+      {parked.length > 0 ? (
+        <div className="ny-body has-parked">
+          {list}
+          <ParkedPluginSteps asks={parked} rows={firstRows} />
+        </div>
+      ) : (
+        list
+      )}
     </section>
   )
 }
@@ -270,16 +519,20 @@ function NeedsList({
   approvals,
   kind,
   unfolded,
+  asks,
   onUnfold,
   onChanged,
+  cardStep,
 }: {
   id: string
   items: NeedItems
   approvals: readonly ApprovalItem[]
   kind: NeedKind | null
   unfolded: boolean
+  asks: ReadonlyMap<string, PluginAsk>
   onUnfold: (k: NeedKind | null) => void
   onChanged?: () => void
+  cardStep: string | null
 }) {
   if (items.length === 0 && approvals.length === 0) {
     // A KIND THE READ COULD NOT COUNT IS NOT A QUIET ONE: with questions or a
@@ -288,9 +541,13 @@ function NeedsList({
     const unknown = (items.unknownKinds ?? []).filter((k) => k !== 'approval')
     return (
       <p className="ny-quiet" id={id}>
-        {unknown.length === 0
-          ? 'Nothing waits on you here'
-          : `Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`}
+        {/* 'NOTHING FOUND' (owner's pick, 2026-11-05): the chips already say
+            which kinds are not known here, so the sentence is its tooltip. */}
+        {unknown.length === 0 ? (
+          'Nothing waits on you here'
+        ) : (
+          <span title={`Nothing this screen read waits on you; ${unknown.map((k) => NEED_WORD[k]).join(', ')} not known here`}>Nothing found</span>
+        )}
       </p>
     )
   }
@@ -301,7 +558,7 @@ function NeedsList({
     const all: JSX.Element[] =
       k === 'approval'
         ? approvals.map((a) => <ApprovalRow key={`approval:${a.approval_id}`} a={a} />)
-        : items.filter((i) => i.kind === k).map((i) => <NeedRow key={keyOf(i)} item={i} onChanged={onChanged} />)
+        : items.filter((i) => i.kind === k).map((i) => <NeedRow key={keyOf(i)} item={i} ask={i.kind === 'question' ? asks.get(i.taskId) : undefined} onChanged={onChanged} cardStep={cardStep} />)
     const shown = kind === null && !unfolded ? all.slice(0, FOLD_AT) : all
     rows.push(...shown)
     if (shown.length < all.length) folded.push({ kind: k, n: all.length - shown.length })
@@ -361,12 +618,12 @@ function OpenLink({ href, name }: { href: string; name: string }) {
   )
 }
 
-function NeedRow({ item, onChanged }: { item: NeedItem; onChanged?: () => void }) {
+function NeedRow({ item, ask, onChanged, cardStep }: { item: NeedItem; ask?: PluginAsk; onChanged?: () => void; cardStep: string | null }) {
   switch (item.kind) {
     case 'failed':
-      return <FailedRow item={item} onChanged={onChanged} />
+      return <FailedRow item={item} onChanged={onChanged} cardStep={cardStep} />
     case 'question':
-      return <QuestionRow item={item} onChanged={onChanged} />
+      return <QuestionRow item={item} ask={ask} onChanged={onChanged} />
     case 'merge':
       return <MergeRow item={item} onChanged={onChanged} />
     case 'handoff':
@@ -374,17 +631,23 @@ function NeedRow({ item, onChanged }: { item: NeedItem; onChanged?: () => void }
   }
 }
 
-function FailedRow({ item, onChanged }: { item: FailedNeed; onChanged?: () => void }) {
+function FailedRow({ item, onChanged, cardStep }: { item: FailedNeed; onChanged?: () => void; cardStep: string | null }) {
   const workflowId = item.task.workflow_id ?? null
   const stepId = item.task.step_id ?? null
   const [failed, setFailed] = useState<ApiError | null>(null)
+  // THE STEP CARD SAYS IT ALREADY (owner's pick, 2026-11-05): while the
+  // workflow page's card is open on this step, the row drops its copy of the
+  // error; on another step, with no card, or on another page it keeps it.
+  const onCard = stepId !== null && stepId === cardStep
   return (
     <li className="ny-row is-failed">
       <Kind k="failed" />
       <b className="ny-title">{item.title}</b>
-      <span className="ny-text" title={item.why ?? undefined}>
-        {item.why ?? 'No error was read'}
-      </span>
+      {!onCard && (
+        <span className="ny-text" title={item.why ?? undefined}>
+          {item.why ?? 'No error was read'}
+        </span>
+      )}
       <Pr pr={item.pr} />
       <span className="ny-acts">
         {workflowId === null ? (
@@ -413,7 +676,7 @@ function FailedRow({ item, onChanged }: { item: FailedNeed; onChanged?: () => vo
  * with Retry back to press again. Accepted, the row names the steps re-run
  * (the answer's `replaced`) and the page reads again.
  */
-function StepRetryButton({
+export function StepRetryButton({
   workflowId,
   stepId,
   name,
@@ -533,7 +796,7 @@ const OTHER = '__own_words__'
 /** The longest free-text answer the API takes (`agent_questions.MAX_ANSWER_CHARS`), as QuestionsCard holds it. */
 const MAX_ANSWER_CHARS = 2000
 
-function QuestionRow({ item, onChanged }: { item: QuestionNeed; onChanged?: () => void }) {
+function QuestionRow({ item, ask, onChanged }: { item: QuestionNeed; ask?: PluginAsk; onChanged?: () => void }) {
   const [open, setOpen] = useState(false)
   const [pick, setPick] = useState<string | null>(null)
   const [text, setText] = useState('')
@@ -576,7 +839,7 @@ function QuestionRow({ item, onChanged }: { item: QuestionNeed; onChanged?: () =
   }
 
   return (
-    <li className={`ny-row is-question${open ? ' is-open' : ''}`}>
+    <li className={`ny-row is-question${open ? ' is-open' : ''}${ask ? ' is-plugin' : ''}`}>
       <Kind k="question" />
       <b className="ny-title">{item.title}</b>
       <span className="ny-text" title={item.question ?? undefined}>
@@ -598,6 +861,7 @@ function QuestionRow({ item, onChanged }: { item: QuestionNeed; onChanged?: () =
         )}
         <OpenLink href={openPath(item.taskId)} name={item.title} />
       </span>
+      {ask !== undefined && <PluginLine ask={ask} />}
       {open && !saved && (
         <div className="ny-answer" ref={boxRef} role="group" aria-label={`Your answer to ${name}`}>
           {item.question !== null && <p className="ny-q">{item.question}</p>}

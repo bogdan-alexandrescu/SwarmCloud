@@ -103,14 +103,18 @@ describe('overview-automate-003: the lifecycle band is three figures across at 3
     // By design, owner 2026-10-21 (the O1 390 frame, owner pick 2026-10-01).
     // MUTATION: give the phone band one tile per line (`grid-template-columns: minmax(0, 1fr)`).
     expect(painted(band, 'grid-template-columns', PHONE)).toBe('repeat(3, minmax(0, 1fr))')
+    // Holding capacity draws no caption since 2026-11-05: its definition is
+    // the name's tooltip (BGD's standing no-prose rule).
+    expect(tiles.filter((t) => t.querySelector('.ov-lc-h small') !== null).length).toBe(2)
     for (const t of tiles) {
+      const small = t.querySelector('.ov-lc-h small')
       // MUTATION: show `.ov-lc-h small` ("costs nothing") in overview.css's 560px block.
-      expect(painted(t.querySelector('.ov-lc-h small')!, 'display', PHONE)).toBe('none')
+      if (small !== null) expect(painted(small, 'display', PHONE)).toBe('none')
       // MUTATION: show `.ov-lc-ps` (the per-state breakdown) in the 560px block.
       expect(painted(t.querySelector('.ov-lc-ps')!, 'display', PHONE)).toBe('none')
       // The desktop draws both.
       // MUTATION: hide the caption at desktop width.
-      expect(painted(t.querySelector('.ov-lc-h small')!, 'display', WIDE)).not.toBe('none')
+      if (small !== null) expect(painted(small, 'display', WIDE)).not.toBe('none')
     }
     const foot = document.createElement('span')
     foot.className = 'ov-lc-foot'
