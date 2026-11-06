@@ -56,8 +56,8 @@
  * the question (the owner's pick of 4 November 2026); a park with none
  * recorded reads "not known", and so does a clock the wait did not serve,
  * never 0. A
- * planner or designer step's interview has no console route yet: its card
- * says the interview opens from its run's page, and links that page.
+ * planner or designer step's card opens its interview, a full page
+ * (InterviewPage.tsx), and links its run's page beside it.
  */
 import { useEffect, useId, useRef, useState, type MouseEvent } from 'react'
 import {
@@ -71,6 +71,7 @@ import {
 import { Button, buttonClass } from '../components'
 import { errorHeading, type ApiError } from '../fetch'
 import { handoffOf, humanReady, ownerQuestionsHold, timeLeft, type HeldQuestion } from '../Handoff'
+import { interviewAddress } from '../interviewPaths'
 import { addressToPath } from '../paths'
 import { useRoleGate } from '../Profile'
 import { type StepNeeds } from '../stepviews'
@@ -368,7 +369,10 @@ function ParkedPluginSteps({ asks, rows }: { asks: readonly PluginAsk[]; rows: R
             </span>
             {interview ? (
               <span className="ny-park-act">
-                Its interview opens from its run&rsquo;s page.{' '}
+                <a className={buttonClass({ size: 'sm', kind: 'primary' })} href={addressToPath(interviewAddress(a.taskId))}
+                  aria-label={`Open the interview: ${a.stepId ?? a.taskId}`}>
+                  Open the interview
+                </a>{' '}
                 <a className={buttonClass({ size: 'sm', kind: 'secondary' })} href={openPath(a.taskId)} aria-label={`Open its run: ${a.stepId ?? a.taskId}`}>
                   Open its run
                 </a>

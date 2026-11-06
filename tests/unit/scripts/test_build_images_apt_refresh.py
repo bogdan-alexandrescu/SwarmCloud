@@ -66,7 +66,7 @@ UPGRADES = {
     "agent-runtime-base", "agent-runtime-base-nocodex", "swarm-api", "swarm-scheduler",
     "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-live", "swarm-egress",
     "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks", "swarm-voice",
-    "workspace-apply",
+    "swarm-speech", "workspace-apply",
 }
 # agent-runtime-lightpanda (LIGHTPANDA-BUILD-SCRIPTS) is built FROM the base
 # by digest, as the indexer is.
