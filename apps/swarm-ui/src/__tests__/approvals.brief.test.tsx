@@ -318,3 +318,32 @@ describe('the planner’s design doc', () => {
     expect(frame.getAttribute('srcdoc')).toContain('Overlap refs')
   })
 })
+
+describe('the overlaps', () => {
+  it('compare an overlapping pull request’s shared files, read off the run’s open work', async () => {
+    const openWork = { repository: 'example-org/example-api', read_at: hoursFromNow(-1), issues: [], issues_truncated: false, pull_requests: [{ number: 3496, title: 'Runs route serves lane progress', files: [`${API}/routes/runs.py`, 'docs/runs.md'], files_truncated: false }], pull_requests_truncated: false }
+    await mount((m, url) => {
+      if (m === 'GET' && url.split('?')[0] === `/v1/runs/${RUN}`) return { status: 200, body: { run: { id: RUN, state: 'awaiting_approval', plan: SECTIONS, planner_documents: null, open_work: openWork } } }
+      return routes(LEGACY, SECTIONS)(m, url, null)
+    })
+    await head()
+    const over = screen.getByRole('region', { name: 'Overlaps' })
+    // Only the pull request whose files the run read can be compared.
+    // MUTATION: offer Compare on every row, and two of them open nothing.
+    const compare = within(over).getAllByRole('button', { name: /^Show the files shared with/ })
+    expect(compare.map((b) => b.getAttribute('aria-label'))).toEqual(['Show the files shared with example-org/example-api#3496'])
+    fireEvent.click(compare[0]!)
+    const d = within(over).getByTestId('ab-over-d')
+    expect(visible(d)).toContain(`${API}/routes/runs.py`)
+    expect(visible(d)).toContain('GET /v1/runs/{id} serves plan.overlaps, [] when none')
+    expect(visible(d)).not.toContain('docs/runs.md')
+  })
+
+  it('folds the plan’s requirements under Validation as Done when', async () => {
+    await mount(routes(LEGACY, SECTIONS))
+    await head()
+    const fold = within(screen.getByRole('region', { name: 'Validation' })).getByText(/^Done when/).closest('details')!
+    expect(fold.hasAttribute('open')).toBe(false)
+    expect(fold.textContent).toContain('A run’s plan lists each train PR that shares a file with a step')
+  })
+})
