@@ -628,6 +628,20 @@ locals {
 # ---------------------------------------------------------------------------
 
 locals {
+  # The classes a Cloud Run Job can be made with: those of a Cloud Run profile
+  # or a fallback one. A GKE-only class never reaches the module, so its
+  # vCPU need not be one Cloud Run accepts: `medium`'s 6 (contract request 139)
+  # is not, and the module's 1/2/4/8 validation stays in force for the rest.
+  cloud_run_resource_classes = {
+    for name, rc in local.resource_classes : name => rc
+    if anytrue([
+      for profile_name, profile in local.runner_profiles :
+      profile.resource_class == name
+      && (profile.backend == "CLOUD_RUN_JOB" || contains(local.cloud_run_fallback_profiles, profile_name))
+      && !contains(local.profiles_without_a_job, profile_name)
+    ])
+  }
+
   job_matrix = flatten([
     for tenant_id, cfg in var.tenants : [
       for profile_name, profile in local.runner_profiles : {
