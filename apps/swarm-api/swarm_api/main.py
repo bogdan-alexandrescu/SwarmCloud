@@ -611,8 +611,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Voice it person or an admin, written by a platform admin alone.
     app.include_router(voice_settings.router)
     # Its visuals and notes (docs/design/voice-it-own-speech.md §8.3): the
-    # same Voice it guards, and the session grant reaches only the two writes
-    # `voice.grant.WRITE_ROUTES` names.
+    # same Voice it guards, stored under the tenant's prefix, and the session
+    # grant reaches only the visual and note writes `voice.grant.WRITE_ROUTES`
+    # names.
     app.include_router(voice_visuals.router)
 
     # Gzip for a caller that asks (#1822, lane API-GZIP): 3.23 GB left this

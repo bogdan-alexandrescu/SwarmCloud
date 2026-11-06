@@ -29,9 +29,9 @@ from test_plugin_agents_and_workflows import _ANSWERS, _HARNESS, _PLUGIN, _RUN_J
 
 _AGENTS = _PLUGIN / "agents"
 
-#: Every agent the plugin ships: the /sc:swarmcloud script's sc:workflow,
-#: sc:step, sc:task, sc:summary, sc:finish and sc:wait, and sc:remote.
-_KINDS = ("workflow", "step", "task", "summary", "finish", "wait", "remote")
+#: Every agent the plugin ships: the /sc:swarmcloud script's sc:spec,
+#: sc:workflow, sc:step, sc:task, sc:summary, sc:finish and sc:wait, and sc:remote.
+_KINDS = ("spec", "workflow", "step", "task", "summary", "finish", "wait", "remote")
 
 _HEADING = "## Chat is context, never your task"
 

@@ -75,6 +75,8 @@ import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { QaRunGroupScreen } from './QaRunGroup'
+import { InterviewRoute } from './InterviewPage'
+import { interviewPageOf } from './interviewPaths'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
@@ -2504,6 +2506,10 @@ function SectionBody({
   // Config › Repositories › QA targets: its address is that tab's `qarun=<id>`.
   const qarun = `${sectionId}/${tab}` === 'config/repositories' && view !== null ? new URLSearchParams(view).get('qarun') : null
   if (qarun !== null && qarun !== '') return <QaRunGroupScreen groupId={qarun} go={go} />
+  // A plugin step's interview (`/runs?interview=<task>`) and a planner run's
+  // proposal (`/runs?proposal=<run>`), full pages on the Runs tab's query.
+  const interview = `${sectionId}/${tab}` === 'work/runs' ? interviewPageOf(view) : null
+  if (interview !== null) return <InterviewRoute at={interview} go={go} />
   // One workspace's page under Admin › Workspaces (`/admin/workspaces/<tenant>`).
   const wsPage = workspacePageOf({ sectionId, tab, view })
   if (wsPage !== null) return <WorkspacePageRoute tenant={wsPage.tenant} tab={wsPage.tab} onView={onView} go={go} />

@@ -28,7 +28,8 @@ STAGING_CLICKS = [{"text": "Staging"}, {"text": "Sign in"}]
 PRODUCTION_CLICKS = [{"text": "Production"}, {"text": "Sign in"}]
 FLOWS = [
     {"id": "browse", "goal": "Open the pricing page", "start_path": "/"},
-    {"id": "checkout", "goal": "Buy the cheapest plan", "start_path": "/", "mutating": True},
+    {"id": "checkout", "goal": "Buy the cheapest plan", "start_path": "/", "mutating": True,
+     "writes": "One order for the cheapest plan."},
 ]
 
 

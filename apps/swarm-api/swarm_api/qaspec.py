@@ -46,6 +46,16 @@ byte for byte as before. Of a target with several, a `production` leg, and a
 `non_production` leg sharing an origin with a `production` one, render no
 mutating flow: a production leg reads only.
 
+A FLOW THAT WRITES SAYS WHAT IT WRITES (docs/design/qa-environments.md §6;
+BGD, 2026-11-05, "declared writes plus a switch, on by default"). A flow with
+`mutating: true` carries `writes`, one plain sentence of at most
+`WRITES_MAX` characters; its step's brief states that sentence as the limit
+of what it may write, and its report repeats it word for word under "This
+flow wrote". `qatargets` refuses a save without one; one stored before that
+rule renders read-only (`_flows`), and the workspace's `writing_flows`
+setting, off, renders every flow read-only (`leg`). Both only ever turn a
+write off.
+
 EVERY CAPTURE STEP DISCOVERS WHILE IT CAPTURES (docs/design/qa-environments.md
 §3.1, §3.5; lane QAENV-RUN; BGD's Q3 (a), 2026-10-23). A capture step runs
 `swarm_qa capture --crawl` (lane QAENV-CRAWL): its prompt carries the WHOLE
@@ -142,6 +152,10 @@ MAX_SEGMENTS = 120
 #: as an agent's prompt, and the capture tool (`swarm_qa`) never reads one, so
 #: there is no second statement to hold equal (docs/mirrored-values.md).
 MAX_FLOWS = 150
+#: A writing flow's `writes` (BGD, 2026-11-05, "declared writes plus a
+#: switch"): one plain sentence saying what the flow writes, held to this
+#: length so it reads as one sentence in a prompt and on the console's row.
+WRITES_MAX = 300
 #: How many read-only flows one flow-batch step runs (`flows_per_step`): the
 #: run's own value (`:run`'s `flows_per_step`), else the workspace's
 #: `qa_flows_per_step` (`qasettings`), else 15 (BGD, 2026-10-26). One agent
@@ -654,7 +668,15 @@ def shares_production_origin(target: Mapping[str, Any], name: str) -> bool:
                and mine & _leg_origins(e) for e in environments(target))
 
 
-def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
+def declared_writes(flow: Mapping[str, Any]) -> str | None:
+    """The flow's `writes` sentence, stripped, when it has a non-empty one;
+    None otherwise. Its form is `_flows`' to check."""
+    writes = flow.get("writes")
+    return writes.strip() if isinstance(writes, str) and writes.strip() else None
+
+
+def leg(target: Mapping[str, Any], name: str | None = None, *,
+        writing_flows: bool | None = None) -> dict[str, Any]:
     """The target as its leg `name` sees it: the app's fields, and that
     entry's per-leg fields where a target of one origin keeps them, so every
     rule here applies to a leg unchanged. Nothing of another entry is in it.
@@ -662,7 +684,13 @@ def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
     A target with no `environments` is its own one leg: the view is the
     target itself, with `LEG_NAME`. Of a target with several entries, a leg
     that is `production`, or shares an origin with a `production` entry, is
-    rendered with no mutating flow (§1.5, §6: a production leg reads only)."""
+    rendered with no mutating flow (§1.5, §6: a production leg reads only).
+
+    `writing_flows` is the workspace's setting, given by a run and by the
+    gate's issue: False renders every flow read-only, and True or False
+    renders read-only a mutating flow that declares no `writes` (§6). None,
+    what a save checks, is the leg as stored, so a production leg's refusal
+    of a mutating flow is unchanged."""
     entry = entry_named(target, name)
     migrated = is_migrated(target)
     view = {k: v for k, v in target.items() if k not in LEG_FIELDS and k not in ("environments", MIGRATED)}
@@ -674,6 +702,12 @@ def leg(target: Mapping[str, Any], name: str | None = None) -> dict[str, Any]:
             (entry.get("environment") or "production") == "production"
             or shares_production_origin(target, entry["name"])):
         view["flows"] = [f for f in view["flows"] if not (isinstance(f, Mapping) and f.get("mutating") is True)]
+    if writing_flows is not None and isinstance(view.get("flows"), list):
+        view["flows"] = [
+            {**f, "mutating": False}
+            if isinstance(f, Mapping) and f.get("mutating") is True
+            and (writing_flows is not True or declared_writes(f) is None) else f
+            for f in view["flows"]]
     return view
 
 
@@ -687,7 +721,7 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
     flows: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, Mapping):
-            raise _invalid("a flow must be {id, goal, start_path, mutating?}")
+            raise _invalid("a flow must be {id, goal, start_path, mutating?, writes?}")
         fid = item.get("id")
         if not isinstance(fid, str) or not _NAME.fullmatch(fid) or "--" in fid or fid == "report":
             raise _invalid("a flow id must be lower-case letters, digits and single hyphens, and not 'report'")
@@ -699,6 +733,14 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
             # that writes. Refused here, before anything is admitted.
             raise QaSpecError("qa_mutating_flow_on_production",
                               f"flow {fid} is mutating and the target's environment is production")
+        writes = declared_writes(item)
+        if writes is not None:
+            writes = _text(writes, f"flow {fid}'s writes", limit=WRITES_MAX)
+        elif item.get("writes") is not None and not isinstance(item.get("writes"), str):
+            raise _invalid(f"flow {fid}'s writes must be one line of text")
+        # §6: a mutating flow stored before `writes` was required declares
+        # nothing it may write, so it renders read-only. Only ever a write off.
+        mutating = mutating and writes is not None
         start = _path(item.get("start_path", "/"), f"flow {fid}'s start_path")
         # `start_path` is relative to the base and exclusions to the origin,
         # so both readings are checked: `/logout` under `/app` is `/app/logout`.
@@ -706,7 +748,7 @@ def _flows(target: Mapping[str, Any]) -> list[dict[str, Any]]:
         if _excluded(start, excluded) or _excluded(opened, excluded):
             raise QaSpecError("qa_screen_excluded", f"flow {fid} starts on an excluded path")
         flows.append({"id": fid, "goal": _text(item.get("goal"), f"flow {fid}'s goal", limit=500),
-                      "start_path": start, "mutating": mutating})
+                      "start_path": start, "mutating": mutating, **({"writes": writes} if mutating else {})})
     if len({f["id"] for f in flows}) != len(flows):
         raise _invalid("two flows share an id")
     return flows
@@ -1129,11 +1171,13 @@ def _gate_report_line() -> str:
     )
 
 
-def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False) -> str:
+def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False,
+            declared: str | None = None) -> str:
     paths, controls = _exclusions(target)
     writes = (
-        "This flow may submit forms on the target, whose environment is non-production; it still never "
-        "sends anything to another origin."
+        "This flow may submit forms on the target, whose environment is non-production, and only to do "
+        f"what it declares it writes, which is the limit of what it may write: \"{declared}\" Write nothing "
+        "else; it still never sends anything to another origin."
         if mutating else
         "Submit no form and send no write: the live browser refuses any POST, PUT, PATCH or DELETE to the "
         "target, and anything but GET to any other origin."
@@ -1271,9 +1315,17 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
         f"screenshot taken with browser_take_screenshot and no filename (it is saved under "
         f"$SWARM_ARTIFACTS_DIR/screenshots). List in flow-{fid}.json every screenshot you take, by its file "
         f"name, with what it shows. Bundle flow-{fid}.json, the flows/flow-{fid}-*.gif recordings and the "
-        f"screenshots into flow-{fid}.tar under $SWARM_ARTIFACTS_DIR. "
-        f"{_safety(target, _origin(base), mutating=flow['mutating'])} {NO_CHANGE}"
+        f"screenshots into flow-{fid}.tar under $SWARM_ARTIFACTS_DIR. {_wrote_line(flow)}"
+        f"{_safety(target, _origin(base), mutating=flow['mutating'], declared=flow.get('writes'))} {NO_CHANGE}"
     )
+
+
+def _wrote_line(flow: Mapping[str, Any]) -> str:
+    """A writing flow's report repeats its `writes` word for word (§6)."""
+    if not flow["mutating"]:
+        return ""
+    return (f"Set flow-{flow['id']}.json's `this_flow_wrote` to this sentence, word for word: "
+            f"{flow['writes']} ")
 
 
 def _flow_batch_prompt(target: Mapping[str, Any], base: str, batch_id: str, flows: Sequence[Mapping[str, Any]],
@@ -1359,13 +1411,16 @@ def _flow_report_prompt(flows: Sequence[Mapping[str, Any]],
         staged.append(f"{batch_id}.tar, holding {inner}")
     staged += [f"flow-{f['id']}.tar" for f in flows if f["id"] not in batched]
     order = ", ".join(f"`{f['id']}`" for f in flows)
+    wrote = "".join(
+        f" In the section of `{f['id']}`, first, the line \"This flow wrote: {f['writes']}\", word for word."
+        for f in flows if f["mutating"])
     return (
         f"Write the visual QA report of the flows. Unpack every staged tar, and every flow tar a batch tar "
         f"holds, each flow's into its own directory: {'; '.join(staged)}. A flow tar that is missing, from "
         f"its batch tar or because the batch tar is missing, is itself a finding, naming the flow. The "
         f"flows, in order: {order}. Write flows.md: one section per flow, and in it, for each "
         f"width, whether the goal was reached, the steps, and every finding with its screenshot embedded by "
-        f"relative link; a screenshot no json describes is listed as one nobody described. Copy every "
+        f"relative link; a screenshot no json describes is listed as one nobody described.{wrote} Copy every "
         f"screenshot and recording to $SWARM_ARTIFACTS_DIR next to flows.md. {NO_CHANGE}"
     )
 

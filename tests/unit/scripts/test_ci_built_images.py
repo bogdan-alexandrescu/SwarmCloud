@@ -90,6 +90,9 @@ IMAGES = [
     # Voice it's GPT-Live session holder (VOICE-STATEFULSET, part of #2688),
     # apps/swarm-voice/Dockerfile.
     "swarm-voice",
+    # Voice it's own speech server (own speech L3, part of #2688),
+    # apps/swarm-speech/Dockerfile.
+    "swarm-speech",
     "workspace-apply",
 ]
 
