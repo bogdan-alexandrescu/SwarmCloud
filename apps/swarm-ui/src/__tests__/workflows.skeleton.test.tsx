@@ -326,6 +326,7 @@ describe('#113: every `.ctl-pending` loading bar is visible in both themes', () 
       'ArtifactViewer.tsx',
       'Artifacts.tsx',
       'CheckpointBrowser.tsx',
+      'RenderedFile.tsx',
       'WorkflowChanges.tsx',
     ])
     expect(found.get('ol-pending')).toEqual(['../Activity.tsx'])

@@ -91,8 +91,15 @@ def _run_reads(*runs: dict) -> dict:
     return {"reads": [{"workflow_runs": [run]} for run in runs]}
 
 
-def _jobs(build_conclusion: str | None) -> dict:
+# The jobs that gate the release (CI_RELEASE_TEST_JOBS, scripts/lib/common.sh).
+TEST_JOBS = ("format / unit tests", "shellcheck", "kubernetes manifests")
+
+
+def _jobs(build_conclusion: str | None, tests: str | None = "success") -> dict:
+    """`tests` is every gating test job's conclusion, None for not listed."""
     jobs = [{"name": "unit tests (1/4)", "conclusion": "cancelled"}]
+    if tests is not None:
+        jobs += [{"name": name, "conclusion": tests} for name in TEST_JOBS]
     if build_conclusion is not None:
         jobs.append({"name": "build images", "conclusion": build_conclusion})
     return {"jobs": jobs}
@@ -150,10 +157,44 @@ def test_the_wait_is_bounded_and_an_unconcluded_run_stays_red(tmp_path):
 
 @pytest.mark.parametrize("build_conclusion", ["success", "failure"])
 def test_a_build_that_finished_stops_the_wait_red(tmp_path, build_conclusion):
-    """A build that succeeded or failed is never a supersession: no point waiting."""
+    """A build that failed, or succeeded with the tests that gate the release
+    passed, is never a supersession: no point waiting."""
     responses = {COMPARE: {"status": "ahead"}, APP_RUNS: _run_reads(IN_PROGRESS), APP_JOBS: _jobs(build_conclusion)}
     proc, calls = _run(tmp_path, responses, wait=600, poll=600)
     assert proc.returncode == 1
+    assert calls.count(APP_RUNS) == 1
+
+
+@pytest.mark.parametrize("tests", ["cancelled", None])
+def test_a_build_whose_gating_tests_the_cancel_stopped_counts(tmp_path, tests):
+    """Owner pick on PR 3344 ("decouple build, gate the release"): `build
+    images` no longer waits for main's tests, so it can succeed and the newer
+    push cancel the tests that gate the release. The stage refused the record
+    for those tests, and the newer commit ships the change: superseded. A
+    build that succeeded no longer stops the wait on its own: it reads on
+    until the run concludes. MUTATION: keep `success` out of the final case."""
+    responses = {
+        COMPARE: {"status": "ahead"},
+        APP_RUNS: _run_reads(IN_PROGRESS, IN_PROGRESS, CANCELLED),
+        APP_JOBS: _jobs("success", tests=tests),
+    }
+    proc, calls = _run(tmp_path, responses)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(RUN_ID)
+    assert calls.count(APP_RUNS) == 3, "it judged a succeeded build before the run concluded"
+
+
+@pytest.mark.parametrize("build_conclusion", ["success", "cancelled"])
+def test_a_gating_test_that_failed_stops_the_wait_red(tmp_path, build_conclusion):
+    """A failed test is the release's real refusal, never a supersession."""
+    responses = {
+        COMPARE: {"status": "ahead"},
+        APP_RUNS: _run_reads(IN_PROGRESS),
+        APP_JOBS: _jobs(build_conclusion, tests="failure"),
+    }
+    proc, calls = _run(tmp_path, responses, wait=600, poll=600)
+    assert proc.returncode == 1
+    assert "failed" in proc.stderr
     assert calls.count(APP_RUNS) == 1
 
 
@@ -164,6 +205,10 @@ def test_a_build_that_finished_stops_the_wait_red(tmp_path, build_conclusion):
         ("compare-unreadable", {APP_RUNS: _run_reads(CANCELLED), APP_JOBS: _jobs("cancelled")}),
         ("build-failed", {COMPARE: {"status": "ahead"}, APP_RUNS: _run_reads(CANCELLED), APP_JOBS: _jobs("failure")}),
         ("build-succeeded", {COMPARE: {"status": "ahead"}, APP_RUNS: _run_reads(CANCELLED), APP_JOBS: _jobs("success")}),
+        (
+            "tests-failed",
+            {COMPARE: {"status": "ahead"}, APP_RUNS: _run_reads(CANCELLED), APP_JOBS: _jobs("cancelled", tests="failure")},
+        ),
         (
             "run-failed",
             {

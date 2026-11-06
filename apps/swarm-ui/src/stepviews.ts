@@ -2002,7 +2002,8 @@ export interface StepNeedQuestion {
  * counts from, a running browser hand-off, a merge held by the owner's
  * questions, whether it parks on a question wait, that wait's open
  * questions, the indices of the questions only its artifact holds
- * (`questions_unread`: their words are on its page), and its pull request.
+ * (`questions_unread`: their words are on its page), its pull request, and
+ * a parked plugin step's plugins and wait clock (`plugin_ask`).
  */
 export interface StepNeeds {
   park_reason?: string | null
@@ -2014,6 +2015,19 @@ export interface StepNeeds {
   questions?: StepNeedQuestion[]
   questions_unread?: number[]
   pull_request?: { number: number; url: string | null } | null
+  /**
+   * A plugin step PARKED on a question wait: the plugins and modes its work
+   * contract runs, its repository and the wait's clock (the owner's pick on
+   * PR #3262, "Serve them in step_needs"); null for every other step.
+   */
+  plugin_ask?: {
+    plugins: { name: string | null; mode: string | null }[]
+    repository_url: string | null
+    asked_at: string | null
+    expires_at: string | null
+    /** The skill that asked, as the worker recorded it (the last `Skill` call before the question); null when not known. */
+    skill?: string | null
+  } | null
 }
 
 /** The step's needs block, when the list served one. */

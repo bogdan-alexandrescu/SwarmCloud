@@ -1,7 +1,7 @@
 """Per-run copies of `/sc:swarmcloud`'s script, each titled after its SwarmCloud workflow.
 
 Owner, 2026-10-04: every SwarmCloud workflow run in Claude Code is titled
-after its workflow -- since 2026-10-05 `SC · <name> · N steps`, at most 150
+after its workflow -- since 2026-11-04 `SC ∴ <name> · N steps`, at most 150
 characters (the task panel shows ~28; Enter shows the whole) -- instead of
 the fixed `swarmcloud` and its generic description. A workflow script's `meta` must be a
 PURE LITERAL -- Claude Code reads the name before the script runs, and a
@@ -34,8 +34,8 @@ running workflow and the session launches each.
 THE WORKSPACE IS IN THE DESCRIPTION, NOT THE NAME (SC-WS-DESC, owner request
 2026-10-14, seeing the rows after plugin 0.5.35: "instead of [eng@example.com] in
 the main row name, we should have it in the description of the workflow or
-task instead"). The name is `SC · <name> · N steps` or `SC · <label> ·
-task`, and the description STARTS with `Workspace: <workspace> (<tenant>) · `
+task instead"). The name is `SC ∴ <name> · N steps` or `SC · <label>`
+(`TASK_MARK`, `WORKFLOW_MARK`), and the description STARTS with `Workspace: <workspace> (<tenant>) · `
 -- first, because DESCRIPTION_CHARS clips the end, so a long description
 loses its tail and never the workspace -- or `Workspace: not reported` when
 the API named none.
@@ -103,10 +103,12 @@ of that name, and only such a line.
 
 SINGLE TASKS (#830, owner 2026-10-07). A task sent with `swarm_dispatch`
 belongs to no workflow, so it never had a row. `for_tasks` writes ONE copy
-whose args are `{attach_tasks: [...]}`: run.js starts one `sc:task` row per
-task in it, titled from the task's label. `for_all` adds that copy for the
-caller's running single tasks, and `swarm_dispatch` hands one back for the
-task ids it just sent, so a dispatched task gets a row without anyone asking.
+PER TASK (owner 2026-11-04: one row each, whatever the `rows` setting), whose
+args are `{attach_tasks: [<that task>]}`: run.js starts its one `sc:task`
+row, and the run is titled from the task's label, `SC · <label>`. `for_all`
+adds those copies for the caller's running single tasks, and
+`swarm_dispatch` hands them back for the task ids it just sent, so a
+dispatched task gets a row without anyone asking.
 
 ONE SUMMARY ROW, OR PER-STEP ROWS SPLIT OVER RUNS (PLUGIN-ROW-SPLIT, #1809,
 owner decision 2026-10-21). Each live row is one Claude Code agent, and Claude
@@ -118,7 +120,7 @@ the whole workflow with one `sc:summary` row -- one agent, never queued, a
 line only when the step counts change. `per-step`: one row per unfinished
 step, as before, but when there are more than `rows_per_run()` the bridge --
 which runs on Claude Code's host, so it can read the core count -- writes one
-copy per share, titled `SC · <name> · N steps · rows 1-8`, `rows 9-16`...,
+copy per share, titled `SC ∴ <name> · N steps · rows 1-8`, `rows 9-16`...,
 each told its steps in `row_share`; the first reports the finished steps.
 `max_live_rows` still caps the total of step rows. `swarm_workflow_launch`'s
 `rows` argument picks the mode for one launch, an attach or an attach-all
@@ -168,7 +170,8 @@ prompts made this launch answer 94,498 characters -- over Claude Code's
 tool-output limit, so the reply landed in a file -- and the session was told
 to pass `args` as given, the whole spec included, which it cannot retype. So
 `args` are `{spec_handle, details, rows, titled_copy}`: run.js has one
-sc:workflow row read the handle's OUTLINE with `swarm_workflow_spec
+sc:spec row (no submit tool: on 2026-11-05 an sc:workflow read row submitted
+the spec instead) read the handle's OUTLINE with `swarm_workflow_spec
 {spec_handle, spec_digest}` (the digest checked where the bytes are read),
 and the submit row passes the handle again. Args from before this change,
 with `spec` beside the handle, still submit from the handle.
@@ -439,13 +442,55 @@ def write_script(title: str, description: str) -> Path:
     return target
 
 
+# THE RUN'S KIND, RIGHT AFTER `SC` (owner 2026-11-04 23:00: Claude Code's
+# panel cuts a run's title at about 28 characters, so the kind has to be seen
+# before the name). ONE dot for one single task, THREE dots -- a tiny graph of
+# three nodes -- for a workflow: `SC · <label>` and `SC ∴ <name> · N steps`.
+# A batch of several single tasks no longer has a run of its own: each task
+# has its own (`for_tasks`). The two marks are defined here once; run.js holds
+# the same two (TASK_MARK, WORKFLOW_MARK) and a unit test holds them equal.
+TASK_MARK = "\u00b7"
+WORKFLOW_MARK = "\u2234"
+
+
+def _run_title(mark: str, name: Any, tail: str = "") -> str:
+    """`SC <mark> <name><tail>`, at most workflows.TITLE_CHARS characters:
+    the NAME is cut, never the tail, at the last word boundary that fits,
+    with `…`, as workflows.workflow_title cuts it."""
+    prefix = f"SC {mark} "
+    room = max(1, workflows.TITLE_CHARS - len(prefix) - len(tail))
+    flat = workflows._flat(name) or "workflow"
+    if len(flat) > room:
+        head = flat[: room - 1]
+        if flat[room - 1] != " " and " " in head:
+            head = head[: head.rindex(" ")]
+        flat = head.rstrip() + "…"
+    return prefix + flat + tail
+
+
+def workflow_run_title(name: Any, steps: int | None) -> str:
+    """`SC ∴ <name> · N steps`: the count is the number of steps SwarmCloud
+    runs, as the served workflow holds them (the steps it appends included).
+    `steps` None -- a spec not submitted yet, to which SwarmCloud may still
+    append a re-review, a merge or a CI-fix round -- leaves the count out,
+    `SC ∴ <name>`, rather than show a wrong one (owner 2026-11-04 23:05)."""
+    tail = "" if steps is None else " · " + (f"{steps} step" if steps == 1 else f"{steps} steps")
+    return _run_title(WORKFLOW_MARK, name, tail)
+
+
+def task_run_title(entry: dict[str, Any]) -> str:
+    """`SC · <label>`: one single task's run, titled from its own label (else
+    its id). No ` · task` tail: the one dot already says it is a task."""
+    return _run_title(TASK_MARK, _task_name(entry))
+
+
 def slug(title: str) -> str:
     """`title` as a file-name slug: ASCII letters, digits and single hyphens,
     at most SLUG_CHARS, `run` when nothing of it is left. Accents fold to
     their letter (`ünï` -> `uni`); every other run of characters, the `·`
-    separators included, is one hyphen. The title's own leading `SC · ` is
-    dropped: the file name already starts `SC-`."""
-    title = re.sub(r"^\s*SC\s*·\s*", "", title)
+    separators included, is one hyphen. The title's own leading `SC · ` or
+    `SC ∴ ` is dropped: the file name already starts `SC-`."""
+    title = re.sub(r"^\s*SC\s*[" + TASK_MARK + WORKFLOW_MARK + r"]\s*", "", title)
     folded = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode("ascii")
     text = re.sub(r"[^A-Za-z0-9]+", "-", folded).strip("-")
     text = text[:SLUG_CHARS].rstrip("-")
@@ -692,6 +737,11 @@ def record(kind: str, *, title: str, workflow_id: str | None = None, task_id: st
     line, never the launch -- the work is already in SwarmCloud."""
     from . import session
 
+    if task_id is None and title.startswith(workflows.TITLE_PREFIX):
+        # A workflow's line shows the run's kind as its run does: server.py's
+        # submission still titles it with workflows.workflow_title, whose
+        # prefix is the one dot of a single task.
+        title = f"SC {WORKFLOW_MARK} " + title[len(workflows.TITLE_PREFIX):]
     line: dict[str, Any] = (
         {"task_id": task_id} if task_id is not None else {"workflow_id": workflow_id}
     )
@@ -907,7 +957,9 @@ def for_spec(
     spec = workflows.read_spec(document, where="the spec")
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
-    title = workflows.workflow_title(name, steps)
+    # No count: SwarmCloud has not answered, and may append steps the spec
+    # does not hold (workflow_run_title).
+    title = workflow_run_title(name, None)
     mode = layout.row_mode(None)
     description = (
         f"{title}: each step runs in SwarmCloud and is shown here as one [SwarmCloud] row, "
@@ -1018,15 +1070,15 @@ def _open_steps(envelope: dict[str, Any]) -> list[str]:
 
 
 def share_title(name: str, steps: int, first: int, last: int) -> str:
-    """`SC · <name> · N steps · rows <first>-<last>`, at most
+    """`SC ∴ <name> · N steps · rows <first>-<last>`, at most
     workflows.TITLE_CHARS: the name is cut further, never the count or the
     share."""
     suffix = f" · rows {first}-{last}"
-    title = workflows.workflow_title(name, steps)
+    title = workflow_run_title(name, steps)
     over = len(title) + len(suffix) - workflows.TITLE_CHARS
     if over > 0:
         flat = workflows._flat(name) or "workflow"
-        title = workflows.workflow_title(_clip(flat, max(1, len(flat) - over)), steps)
+        title = workflow_run_title(_clip(flat, max(1, len(flat) - over)), steps)
     return title + suffix
 
 
@@ -1061,7 +1113,7 @@ def _attach_launches(
     if repository is None and envelope is not None:
         repository = next((t.get("repository_url") for t in envelope.get("tasks") or []
                            if isinstance(t, dict) and t.get("repository_url")), None)
-    title = workflows.workflow_title(name, steps)
+    title = workflow_run_title(name, steps)
     base: dict[str, Any] = {"attach": workflow_id, "title": name, "rows": mode}
     if workspace:
         # The workspace the API's document names: the attach run's results
@@ -1224,20 +1276,6 @@ def _tasks_workspace(entries: list[dict[str, Any]]) -> str | None:
     return ", ".join(seen) or None
 
 
-def tasks_title(entries: list[dict[str, Any]]) -> str:
-    """`SC · <label> · task` for one task, `SC · <first label> +N · N tasks`
-    for several, at most workflows.TITLE_CHARS: the name is cut, never the
-    count. The workspace is in the run's description (SC-WS-DESC)."""
-    count = len(entries)
-    name = _task_name(entries[0]) if entries else "tasks"
-    if count > 1:
-        name = f"{name} +{count - 1}"
-    title = workflows.workflow_title(name, count)
-    # workflow_title ends in ` · N step(s)`; a single task is a task.
-    head, _, _ = title.rpartition(" · ")
-    return head + (" · task" if count == 1 else f" · {count} tasks")
-
-
 def _read_tasks(client: SwarmClient, entries: list[dict[str, Any]]) -> None:
     """Give each entry with no `task` its task document (`GET /v1/tasks/{id}`),
     at most eight reads at a time; an entry whose read fails keeps none, and
@@ -1260,10 +1298,18 @@ def _read_tasks(client: SwarmClient, entries: list[dict[str, Any]]) -> None:
 
 def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, *,
               dispatched: bool = True, rows: str | None = None) -> dict[str, Any]:
-    """ONE titled copy that starts an `sc:task` row per task in `entries` --
-    each `{task_id, label?, console?, workspace?, tenant_id?, task?}` -- up to
-    the live-row cap (`max_live_rows()`, 100 unless the plugin's option says
-    otherwise). The rest come back in `not_followed`. Submits nothing.
+    """ONE titled copy PER TASK in `entries` -- each `{task_id, label?,
+    console?, workspace?, tenant_id?, task?}` -- each starting one `sc:task`
+    row titled from that task alone (`SC · <label>`), up to the live-row cap
+    (`max_live_rows()`, 100 unless the plugin's option says otherwise). The
+    rest come back in `not_followed`. Submits nothing.
+
+    ONE ROW EACH, WHATEVER THE `rows` SETTING (owner 2026-11-04, seeing twelve
+    running single tasks as two rows, `SC · oracle-train-am-rereview +7 · 8
+    tasks 0/1`): a summary row of a batch read `0/1` and showed counts, not
+    lanes. `launches` holds every copy, one Workflow call each; the reply's
+    own fields are the first copy's, so a caller that reads one launch still
+    starts a right one.
 
     `task`, the task document as the API served it, gives each row its
     DETAILS (`details.line`); it is read off the row, never copied into the
@@ -1272,34 +1318,31 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
 
     `dispatched`: the tasks were just sent (`swarm_dispatch`'s rows, the one
     caller that does not say), so each gets its line in the project record
-    -- every one, followed or not, and before the copy is written, so a copy
-    that cannot be written still leaves the record. `for_all` attaches tasks
-    already running and says False.
+    -- every one, followed or not, and before the copies are written, so a
+    copy that cannot be written still leaves the record. `for_all` attaches
+    tasks already running and says False.
 
-    `rows`, the mode (`layout.row_mode` when None): `for_all` hands on
-    the one its caller asked for."""
+    `rows`, the mode (`layout.row_mode` when None): only the band layout,
+    which starts no row, changes what is written."""
     cap = max_live_rows()
-    # `rows`: the mode, read before the name is reused for the task rows.
     mode = layout.row_mode(rows)
-    if mode == config.ROWS_PANE:
-        # A batch of single tasks has no stages to follow: the pane layout
-        # shows it as the one summary row it already is.
-        mode = config.ROWS_SUMMARY
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
     if dispatched:
         for entry in wanted:
             task = entry.get("task") if isinstance(entry.get("task"), dict) else {}
-            record("dispatch", title=tasks_title([entry]), task_id=str(entry["task_id"]),
+            record("dispatch", title=task_run_title(entry), task_id=str(entry["task_id"]),
                    repository=task.get("repository_url") or entry.get("repository_url"))
     if mode == layout.ROWS_BAND:
         # Recorded above, as every dispatch is; no row (the strip follows them).
         return _banded(task_ids=[str(e["task_id"]) for e in wanted])
+    if not wanted:
+        raise SwarmError("no task to give a row: every entry needs a `task_id`")
     follow = wanted[:cap]
     labels: dict[str, str] = {}
     if client is not None and follow:
         _read_tasks(client, follow)
         labels = details.account_labels(client)
-    rows = []
+    launches = []
     for entry in follow:
         row: dict[str, Any] = {"task_id": str(entry["task_id"]), "title": _task_name(entry)}
         if isinstance(entry.get("workspace"), str) and entry["workspace"].strip():
@@ -1308,33 +1351,32 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
             row["console"] = entry["console"].strip()
         shown = workspace_shown(entry.get("workspace"), entry.get("tenant_id")) if entry.get("workspace") else None
         row["details"] = details.line(shown, details.for_task(entry.get("task")), labels)
-        rows.append(row)
-    title = tasks_title(follow)
-    description = (
-        f"{title}: each SwarmCloud single task is shown here as one [SwarmCloud] row, "
-        "titled from its label, with its console link. Nothing is submitted"
-    )
-    # `max_rows`: the cap this bridge used, so run.js -- which caps the rows
-    # it starts too, at 100 when told nothing -- follows every task handed it.
-    facts = details.merge(details.for_task(e.get("task")) for e in follow)
-    # `rows`: the sc plugin's setting (PLUGIN-ROW-SPLIT). `summary` follows the
-    # whole batch with ONE row; `per-step` starts a row per task, as before.
-    if mode == config.ROWS_SUMMARY:
+        title = task_run_title(entry)
         description = (
-            f"{title}: the SwarmCloud single tasks are shown here as ONE [SwarmCloud] summary row, "
-            "a line each time their counts change. Nothing is submitted"
+            f"{title}: this SwarmCloud single task is shown here as one [SwarmCloud] row, "
+            "titled from its label, with its console link. Nothing is submitted"
         )
-    out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap, "rows": mode},
-                  _tasks_workspace(follow), facts, labels)
-    out["rows"] = mode
-    out["task_ids"] = [row["task_id"] for row in rows]
+        # `max_rows` 1: the copy is this task's alone. `rows` reaches run.js
+        # for the band layout's sake; a task row is one row in every other.
+        copy = _launch(title, description, {"attach_tasks": [row], "max_rows": 1, "rows": mode},
+                       _tasks_workspace([entry]), details.for_task(entry.get("task")), labels)
+        copy["rows"] = mode
+        copy["task_ids"] = [row["task_id"]]
+        launches.append(copy)
+    out = dict(launches[0])
+    out["launches"] = launches
+    out["task_ids"] = [row_id for copy in launches for row_id in copy["task_ids"]]
     remember_attached(out["task_ids"])
     out["not_followed"] = [
         {"task_id": str(e["task_id"]), "workspace": e.get("workspace"), "label": e.get("label"),
          "follow_with": "swarm_follow"}
         for e in wanted[cap:]
     ]
-    out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+    out["launch_with"] = (
+        "one Workflow call per entry of `launches`, each {scriptPath: <script_path>, args: <args>}: "
+        "every single task is a run of its own, titled from its label, with one row"
+        if len(launches) > 1 else "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+    )
     return out
 
 
@@ -1656,7 +1698,8 @@ def for_all(
     elif singles and singles["tasks"]:
         task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)),
                                 client, dispatched=False, rows=mode)
-        launches.append(task_launch)
+        # One run per single task (for_tasks): every copy is a launch.
+        launches.extend(task_launch["launches"])
         forget_person_wait(str(t.get("task_id")) for t in singles["tasks"] if str(t.get("task_id")) in resumed_tasks)
         out["single_tasks"] = len(singles["tasks"])
         not_followed.extend(task_launch.pop("not_followed"))
@@ -1668,7 +1711,7 @@ def for_all(
         "one Workflow call per entry of `launches`, each {scriptPath: <script_path>, args: "
         "<args>}: one Claude Code run per SwarmCloud workflow (per share of its rows, "
         "`rows 1-8`, `rows 9-16`..., when per-step rows are more than one run shows), and one "
-        "for your running single tasks (args `attach_tasks`)"
+        "per running single task (args `attach_tasks`), each titled from its own task"
     )
     out["session"] = {**session.describe(sid), "left_out": left_out}
     if project:

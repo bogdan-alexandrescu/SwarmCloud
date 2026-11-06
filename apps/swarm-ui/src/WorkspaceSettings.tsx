@@ -12,6 +12,7 @@ import {
   loadWorkspaceRoles,
   parseBudgetAmount,
   putQaSettings,
+  putQaWritingFlows,
   putWorkspaceBudget,
   renameWorkspace,
   type BudgetLimits,
@@ -26,6 +27,7 @@ import type { ApiError } from './fetch'
 import { Refusal } from './GitHubConnect'
 import { NewWorkspaceForm, STEP_LABEL as JOB_STEP_LABEL, STEP_ORDER as JOB_STEP_ORDER } from './NewWorkspace'
 import { ACCESS as GITHUB_ACCESS_ADDRESS, OnboardingScreen, STEP_LABEL, countLabel } from './Onboarding'
+import { InfoTip } from './People'
 import { GitHubPermissions } from './PermissionCards'
 import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
 import { notServed } from './RepositoriesData'
@@ -527,7 +529,12 @@ function QaSettingsCard() {
   return (
     <Card title="Visual QA" action={servedRefresh(qa)}>
       <UrRegion state={qa.state} route="GET /v1/qa-settings" what="the Visual QA settings" onRetry={qa.reload}>
-        {(d) => <QaFlowsPerStep key={`${d.tenant_id}:${d.qa_flows_per_step}`} read={d} />}
+        {(d) => (
+          <>
+            <QaFlowsPerStep key={`${d.tenant_id}:${d.qa_flows_per_step}`} read={d} />
+            <QaWritingFlows key={`${d.tenant_id}:${String(d.writing_flows)}`} read={d} />
+          </>
+        )}
       </UrRegion>
     </Card>
   )
@@ -558,8 +565,8 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
   return (
     <>
       <p className="ur-hint">
-        A QA run&rsquo;s read-only flows run in batches, one live-browser step to a batch. This is the batch size a run
-        uses when it names none of its own; a run may pick another beside Run on the QA targets page.
+        A QA run&rsquo;s read-only flows run in batches, one live-browser step each. This is the batch size a run
+        uses unless it names its own; a run may pick another beside Run on the QA targets page.
       </p>
       {/* ONE LABELLED FIGURE (visual QA pass 1, config-30; part of #2596): for someone who may edit it, the field
           below is the figure and its hint notes the default, so the read-out above it said both twice. It is
@@ -626,6 +633,53 @@ function QaFlowsPerStep({ read }: { read: QaSettings }) {
         <p className="ur-small">{`Only the workspace’s owner or admin, or a platform admin, can change this (${bound}).`}</p>
       )}
     </>
+  )
+}
+
+/**
+ * WRITING FLOWS (part of #2688; BGD, 2026-11-05, "declared writes plus a switch, on by default"): the workspace's
+ * `writing_flows`. One toggle, its reason in the (i)'s tooltip and no visible prose. Off, every QA flow of the
+ * workspace reads only and a target with a mutating flow is refused at save (422 `qa_writing_flows_off`). The same
+ * gate as the batch size: its owner or admin, or a platform admin; anyone else sees the toggle disabled.
+ */
+const WRITING_FLOWS_TIP =
+  'On: a flow marked mutating, on a non-production environment, may write what its writes sentence declares, and ' +
+  'nothing else. Off: every flow of this workspace only reads, and a flow marked mutating cannot be saved.'
+
+function QaWritingFlows({ read }: { read: QaSettings }) {
+  const [saved, setSaved] = useState<QaSettings | null>(null)
+  const d = saved ?? read
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const flip = async (on: boolean) => {
+    if (busy || !d.can_edit || on === d.writing_flows) return
+    setBusy(true)
+    setRefused(null)
+    const r = await putQaWritingFlows(d.tenant_id, on)
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'stale') setSaved(r.data)
+    else if (r.status === 'error') setRefused(r.error)
+  }
+  return (
+    <div className="ws-kv" data-qa-writing-flows={d.writing_flows ? 'on' : 'off'}>
+      <label className="c-field">
+        <input
+          type="checkbox"
+          role="switch"
+          name="writing_flows"
+          aria-label="Writing flows"
+          checked={d.writing_flows}
+          disabled={!d.can_edit || busy}
+          onChange={(e) => void flip(e.target.checked)}
+        />{' '}
+        <span className="c-lbl">Writing flows</span> <InfoTip about="writing flows" tip={WRITING_FLOWS_TIP} />
+      </label>
+      {refused !== null && (
+        <p className="ur-small ob-issue" role="alert" data-code={refused.code ?? undefined}>
+          {refused.code !== null && <b className="ur-bad">{refused.code}</b>} {refused.message}
+        </p>
+      )}
+    </div>
   )
 }
 

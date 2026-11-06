@@ -32,6 +32,7 @@ import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, clockTime, type AttemptRow, type LogStream, type Task, type TaskTranscript } from './types'
 import { useNow } from './useNow'
 import { Button, Segmented, ToneMark } from './components'
+import { Trace } from './trace/Trace'
 
 /**
  * THE LOGS TAB (owner decision 2026-10-04; replaces viewers.html pick A's
@@ -122,8 +123,9 @@ export async function readTranscriptWindow(
   task: Task,
   attemptId: string | null,
   fromStart: boolean,
+  includeRaw = false,
 ): Promise<Result<TaskTranscript>> {
-  const attempt = attemptId === null ? {} : { attemptId }
+  const attempt = { ...(attemptId === null ? {} : { attemptId }), ...(includeRaw ? { includeRaw } : {}) }
   const first = await loadTranscript(task.id, { ...attempt, source: 'auto' })
   if (fromStart || !TERMINAL_STATES.has(task.state) || first.status !== 'ok') return first
   const s = first.data.stream
@@ -136,8 +138,17 @@ export async function readTranscriptWindow(
   return last.status === 'ok' ? last : first
 }
 
-/** One read of an attempt's logs: the transcript and the polled streams, each with its own answer. */
-async function readFeed(task: Task, attemptId: string | null, fromStart: boolean): Promise<Result<LogFeed>> {
+/**
+ * One read of an attempt's logs: the transcript and the polled streams, each
+ * with its own answer. `traced`: the Transcript view is the trace (trace/),
+ * which reads the transcript itself, with its records; nothing is read here
+ * for it.
+ */
+async function readFeed(task: Task, attemptId: string | null, fromStart: boolean, traced = false): Promise<Result<LogFeed>> {
+  if (traced) {
+    const since = Date.now()
+    return { status: 'ok', data: { task, attemptId, transcript: { status: 'loading', since }, logs: { status: 'loading', since } }, fetchedAt: since }
+  }
   const attempt = attemptId === null ? {} : { attemptId }
   const [transcript, logs] = await Promise.all([
     readTranscriptWindow(task, attemptId, fromStart),
@@ -365,14 +376,30 @@ export function AgentLogs({ task }: { task: Task }) {
 
   // THE READ. One transcript read and one polled-streams read per tick, for
   // the picked attempt. Each keeps its own answer.
-  const readKey = `${readId ?? 'latest'}:${fromStart ? 'start' : 'end'}:${tick}`
-  const held = useRead<LogFeed, boolean>(() => readFeed(task, readId, fromStart), taskId, readKey, fromStart)
+  // THE AGENT PAGE'S TRANSCRIPT IS A TRACE (owner pick, 2026-11-05, part of
+  // #2688): in the agent's own Logs pane the Transcript view is the timeline
+  // of every event beside the picked one in full (trace/Trace.tsx). The log
+  // drawn beside the live browser (LiveBrowser) keeps the stream view: its
+  // column has no room for two panes. Where this tab sits is read off the
+  // page before the first paint; until then nothing is read for it.
+  const [place, setPlace] = useState<'pane' | 'other' | null>(null)
+  useLayoutEffect(() => {
+    if (place === null) setPlace(root.current?.closest('.ag-split-pane') != null ? 'pane' : 'other')
+  }, [place])
+  const traced = view === 'transcript' && place === 'pane'
+  const readKey = `${readId ?? 'latest'}:${fromStart ? 'start' : 'end'}:${place === null ? 'placing' : traced ? 'trace' : 'streams'}:${tick}`
+  const held = useRead<LogFeed, boolean>(() => readFeed(task, readId, fromStart, place === null || traced), taskId, readKey, fromStart)
   // ONLY A READ OF THE PICKED ATTEMPT IS ITS LOG. `useRead` keeps the last
   // answer on screen until the next lands, which for a new pick is the
   // previous attempt's -- so that one is "reading", never shown as this one.
   // So is a read of the other end of a finished transcript (`held.asked`).
   const landed = okFeed(held.state)
-  const latest = landed !== null && landed.attemptId === readId && held.asked === fromStart ? landed : null
+  // A read made while the trace was on screen holds no stream (`readFeed`'s
+  // `traced`: both answers still `loading`), so a stream view never draws it,
+  // nor is paused on it; it waits, "reading", for its own.
+  const placeholder = place === null || traced
+  const latest =
+    landed !== null && landed.attemptId === readId && held.asked === fromStart && (placeholder || landed.logs.status !== 'loading') ? landed : null
   const latestAt = latest !== null && held.state.status === 'ok' ? held.state.fetchedAt : null
   // THE TASK ON THE FEED IS ALWAYS THE ONE ON SCREEN: the views read its
   // state to tell "not yet" from "never", and the split re-reads it.
@@ -401,7 +428,7 @@ export function AgentLogs({ task }: { task: Task }) {
   // newest window of one finished transcript are two different records.
   const [frozen, setFrozen] = useState<{ feed: LogFeed; at: number; fromStart: boolean } | null>(null)
   useEffect(() => {
-    if (follow) setFrozen(null)
+    if (follow || placeholder) setFrozen(null)
     else if (feedNow !== null) {
       setFrozen((f) =>
         f !== null && f.feed.attemptId === feedNow.attemptId && f.fromStart === fromStart
@@ -412,7 +439,7 @@ export function AgentLogs({ task }: { task: Task }) {
     // On the switch, and on the first read of a newly picked attempt; `feedNow`
     // is rebuilt each render, so its identity is not the dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [follow, latest === null, readId, fromStart])
+  }, [follow, latest === null, readId, fromStart, placeholder])
   const shown =
     follow || frozen === null || frozen.feed.attemptId !== readId || frozen.fromStart !== fromStart
       ? feedNow
@@ -577,6 +604,8 @@ export function AgentLogs({ task }: { task: Task }) {
   // never while another control outside the log (a tab, a button, a link)
   // holds focus: a letter typed there is not addressed to the log.
   useEffect(() => {
+    // The trace has its own keys (j/k, e, f, /).
+    if (traced) return
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const t = e.target as HTMLElement | null
@@ -593,7 +622,7 @@ export function AgentLogs({ task }: { task: Task }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [toggleFollow, jump, targets.errors])
+  }, [toggleFollow, jump, targets.errors, traced])
 
   const onScroll = () => {
     const el = body.current
@@ -781,6 +810,35 @@ export function AgentLogs({ task }: { task: Task }) {
     </Button>
   )
 
+  if (traced) {
+    return (
+      <Trace
+        task={task}
+        attemptId={readId}
+        fromStart={fromStart}
+        onFromStart={setFromStart}
+        query={needle}
+        onQuery={setNeedle}
+        load={() => readTranscriptWindow(task, readId, fromStart, true)}
+        streams={
+          <Segmented
+            label="Which log"
+            className="ag-logs-streams"
+            small
+            value={view}
+            options={LOG_VIEWS.map((o) => ({ key: o.id, title: o.label, label: <LogWords long={o.label} short={SHORT_VIEW[o.id]} /> }))}
+            onChange={(k) => setView(k)}
+          />
+        }
+        tools={
+          <>
+            {attemptPicker}
+            {unreadNote}
+          </>
+        }
+      />
+    )
+  }
   return (
     <LogMarksContext.Provider value={marks}>
       <section ref={root} className="ag-logs" aria-label="Logs" data-follow={follow ? 'on' : 'off'}>

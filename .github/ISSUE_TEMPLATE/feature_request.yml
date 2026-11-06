@@ -68,6 +68,7 @@ body:
         - "Web UI · Config › Repositories (/config/repositories)"
         - "Web UI · Config › Secrets (/config/secrets)"
         - "Web UI · Config › MCP servers (/config/mcp-servers)"
+        - "Web UI · Config › Plugins (/config/plugins)"
         - "Web UI · Config › Workspace Settings (/config/workspace)"
         - "Web UI · Admin › Pool limits (/admin/limits)"
         - "Web UI · Admin › Runner sizes (/admin/runner-sizes)"

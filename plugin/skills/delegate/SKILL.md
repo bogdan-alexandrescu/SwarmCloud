@@ -345,11 +345,18 @@ code, but not one the worker reads as a rate limit, a refused credential or a
 cancellation; `swarm_profiles` names those, with every key's bounds, so do
 not quote a bound from memory. `browser` takes a `url` and `actions`, and
 `generic` a required `command` from its runner's catalogue; `swarm_profiles`
-lists every key and each action shape. For an agent that has to SEE a page --
-visual QA, a screenshot of what a change rendered, a UI bug reproduced from its
-report -- name `claude-code-browser`: `claude-code` with Chromium beside it,
-at the cost of a `browser` class; `browser` itself only replays a scripted
-`url` or `actions`. `claude-code`, `claude-code-browser` and `codex` declare
+lists every key and each action shape. Plain `claude-code` runs a
+repository's headless Playwright suite (`npx playwright install chromium`,
+then `npx playwright test`) and has Postgres 16, with the same 7,200 s limit,
+so a code change, a merge or a hotfix whose only browser need is a
+mock-backed Playwright spec goes to `claude-code`. Name `claude-code-browser`
+only for an agent that must SEE a page in the live browser -- visual QA, a
+mock-up review, a UI bug reproduced from its report: it is `claude-code`
+with Chromium beside it, at the cost of a browser pod and a `browser`-class
+share for the whole run, whether or not the agent opens the page. A finished
+`claude-code-browser` task that never used its browser says so in its result,
+with how long it ran. `browser` itself only replays a scripted `url` or
+`actions`. `claude-code`, `claude-code-browser` and `codex` declare
 one input, `issue`: the number of a GitHub issue in the repository the step
 clones. The worker fetches that issue's title, body and comments read-only
 into `issue.md` in the workspace and names it in the prompt, so point a step
@@ -394,13 +401,20 @@ the other agent started" describes something the agent cannot do.
 ## Following a run
 
 **A dispatched task shows as a row without anyone asking (#830).** Every
-`swarm_dispatch` reply carries `rows`: a titled copy of the `/sc:swarmcloud`
-script whose args are `{attach_tasks: [...]}`. Launch it AT ONCE, before
-anything else, with the Workflow tool — `{scriptPath: <rows.script_path>,
-args: <rows.args>}` — exactly as `rows.start_now` says. It submits nothing and
-starts one `[SwarmCloud]` row per task just sent, titled from its `label`, that
-follows the task (`sc:task`, `swarm_follow` without `step_id`) until it
-finishes. So give every dispatched task a short `label`: it is the row's name.
+`swarm_dispatch` reply carries `rows`: ONE titled copy of the `/sc:swarmcloud`
+script PER TASK just sent, in `rows.launches`, each with args `{attach_tasks:
+[<that task>]}` and its run titled `SC · <label>` from that task alone (the
+reply's own `script_path` and `args` are the first entry's). Launch them AT
+ONCE, before anything else, with the Workflow tool — one call per entry of
+`rows.launches`, `{scriptPath: <its script_path>, args: <its args>}` (one task
+sent: `{scriptPath: <rows.script_path>, args: <rows.args>}`, as
+`rows.start_now` says). Each submits nothing and starts ONE `[SwarmCloud]` row,
+titled from its task's `label`, that follows the task (`sc:task`,
+`swarm_follow` without `step_id`) until it finishes -- one row per task,
+whatever the plugin's `rows` setting: a batch of tasks is never one summary
+row. Never launch a copy with other tasks' args: it is refused, because its
+title names the task it was written for. So give every dispatched task a
+short `label`: it is the row's name and its run's.
 When `rows.error` is set instead, the copy could not be written (a bridge
 started outside the plugin); say so in one line and run `/sc attach --all`,
 which lists your running single tasks and gives each a row. `sc:remote` is

@@ -211,7 +211,7 @@ def test_a_pull_request_step_with_only_a_blocking_question_parks_instead_of_publ
     # rather than as a missing title.
     monkeypatch.setattr(lifecycle.Worker, "_title_owed", lambda self, task: False)
     worker, _config, _ = worker_factory(runner_profile="claude-code")
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
 
     # MUTATION: drop the STEP 9b' call in `_execute` and this is FAILED.
     assert worker.run() == ExitCode.PARKED

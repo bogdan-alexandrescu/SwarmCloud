@@ -14,7 +14,7 @@
  *   Failed     every FAILED or DEAD_LETTERED step; Retry re-runs it inside
  *              its workflow.
  *   Question   one row per open question: the wait's, with its words and
- *              options, then the artifact's, whose words are on the step's
+ *              options (and, for a plugin step, its `plugin_ask`), then the artifact's, whose words are on the step's
  *              page (`onItsPage`): its Answer waits until they are read there.
  *   Merge      a merge held by the owner's questions (`ownerQuestionsHold`).
  *              An approval the merge asks for is not in the read, so a merge
@@ -30,8 +30,8 @@
  */
 import { handoffOf, ownerQuestionsHold } from '../Handoff'
 import { stepNeedsOf, summaryTask, type StepNeeds } from '../stepviews'
-import { type Task, type Workflow } from '../types'
-import { type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest } from './NeedsYou'
+import { TERMINAL_STATES, type Task, type Workflow } from '../types'
+import { pluginAskOf, type NeedItem, type NeedItems, type NeedKind, type NeedPullRequest, type QuestionNeed } from './NeedsYou'
 
 function prOf(task: Task): NeedPullRequest | null {
   const git = task.result_summary?.git
@@ -56,6 +56,7 @@ export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string
     const why = task.last_error?.split('\n')[0]?.trim() ?? ''
     out.push({ kind: 'failed', task, title, why: why === '' ? null : why, pr })
   }
+  const plugin = pluginAskOf(task, needs)
   for (const q of needs?.questions ?? []) {
     out.push({
       kind: 'question',
@@ -65,6 +66,7 @@ export function stepNeedItems(task: Task, needs: StepNeeds | null, title: string
       question: q.question,
       options: q.options,
       recommended: q.recommended,
+      ...(plugin !== null ? { plugin } : {}),
     })
   }
   for (const index of needs?.questions_unread ?? []) {
@@ -109,8 +111,57 @@ export function workflowNeedItems(
   taskById: ReadonlyMap<string, Task> | null,
   title: (stepId: string) => string,
 ): NeedItems {
-  const out: NeedItem[] = []
+  const { items, blind, blindLive, unread } = classified(w, taskById, title)
+  // A FINISHED WORKFLOW's ended step asks nothing that counts, so only a
+  // block-less step that has not ended -- it may be a held merge -- leaves
+  // the block's kinds not known there.
+  const ended = workflowFinished(w) && !items.some((i) => i.kind === 'merge')
+  const unknownKinds = unread ? LIST_KINDS : (ended ? blindLive : blind) ? NEEDS_BLOCK_KINDS : []
+  return Object.assign(items, { unknownKinds })
+}
+
+/**
+ * ONLY WHAT STILL HOLDS WORK (BGD's pick, 6 November 2026): a workflow that
+ * has finished -- SUCCEEDED, FAILED, CANCELLED or DEAD_LETTERED, its derived
+ * state -- waits on nobody's answer, so its unanswered questions are neither
+ * Needs you nor the list's "?". Its page shows them as one quiet tick beside
+ * its state (`finishedQuestionsOf`). A merge held by owner questions is
+ * still work, and a held merge keeps every question in its workflow counted.
+ * The bell's task question source (`notifications._asked_item`) counts by the
+ * same rule.
+ */
+export const FINISHED_WORKFLOW_STATES: ReadonlySet<string> = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED'])
+
+export function workflowFinished(w: Workflow): boolean {
+  return FINISHED_WORKFLOW_STATES.has(w.state)
+}
+
+/**
+ * A question's words as two steps compare them: case and spacing aside. An
+ * implement step and its fix step often ask the same question with other
+ * option labels, so the text alone is matched (the server's
+ * `notifications._question_key` reads the same).
+ */
+export function questionKey(text: string): string {
+  return text.split(/\s+/).filter((t) => t !== '').join(' ').toLowerCase()
+}
+
+/**
+ * The one walk both reads take: every step's rows, a question asked again by
+ * a later step in step order dropped (its words matched by `questionKey`;
+ * a row whose words are only on its page cannot be matched and stays), and,
+ * for a finished workflow with no held merge, its question rows moved to
+ * `quiet`.
+ */
+function classified(
+  w: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+  title: (stepId: string) => string,
+): { items: NeedItem[]; quiet: QuestionNeed[]; blind: boolean; blindLive: boolean; unread: boolean } {
+  const all: NeedItem[] = []
+  const asked = new Set<string>()
   let blind = false
+  let blindLive = false
   let unread = false
   for (const step of w.steps) {
     if (!step.task_id) continue
@@ -121,9 +172,34 @@ export function workflowNeedItems(
       unread = true
       continue
     }
-    out.push(...stepNeedItems(task, needs, title(step.step_id)))
+    if (needs === null && !TERMINAL_STATES.has(task.state)) blindLive = true
+    for (const item of stepNeedItems(task, needs, title(step.step_id))) {
+      if (item.kind === 'question' && item.question !== null) {
+        const key = questionKey(item.question)
+        if (asked.has(key)) continue
+        asked.add(key)
+      }
+      all.push(item)
+    }
   }
-  return Object.assign(out, { unknownKinds: unread ? LIST_KINDS : blind ? NEEDS_BLOCK_KINDS : [] })
+  if (!workflowFinished(w) || all.some((i) => i.kind === 'merge')) return { items: all, quiet: [], blind, blindLive, unread }
+  return {
+    items: all.filter((i) => i.kind !== 'question'),
+    quiet: all.filter((i): i is QuestionNeed => i.kind === 'question'),
+    blind,
+    blindLive,
+    unread,
+  }
+}
+
+/**
+ * A FINISHED workflow's unanswered questions, which no longer count as Needs
+ * you: its page's quiet tick beside its state counts them, and opens each
+ * asking step's questions, still answerable there. Empty for a workflow that
+ * has not finished, or whose merge is held: its questions are Needs you.
+ */
+export function finishedQuestionsOf(w: Workflow, taskById: ReadonlyMap<string, Task> | null): QuestionNeed[] {
+  return classified(w, taskById, (stepId) => stepId).quiet
 }
 
 /**

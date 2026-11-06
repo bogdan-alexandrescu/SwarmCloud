@@ -182,7 +182,14 @@ source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 # long-lived sockets. terraform/infra/voice.tf renders swarm_voice_manifest
 # only once image_refs has its digest (docs/design/voice-it.md section 10,
 # phase one). It copies apps/common in, and nothing else of ours.
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice workspace-apply)
+# swarm-speech (part of #2688) is Voice it's own speech server,
+# apps/swarm-speech/Dockerfile, beside its app as swarm-voice's recipe is.
+# Not deployed by terraform: its image_refs digest reaches swarm-api as
+# SWARM_SPEECH_IMAGE, which swarm-api writes into the stopped speech machine's
+# swarm-speech-image metadata at the next start, and the machine pulls it on
+# boot (docs/design/voice-it-own-speech.md §5.3, §14 L3). It copies only
+# apps/swarm-speech in.
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer agent-runtime-lightpanda swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-github-hooks swarm-voice swarm-speech workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built

@@ -212,10 +212,10 @@ class FakePool:
         #: so a test can count how often a value reached the broker.
         self.registered: list[dict[str, Any]] = []
 
-    def register(self, *, owner_tenant, label, provider, lend_to, credential):
+    def register(self, *, owner_tenant, label, provider, lend_to, credential, added_by=None):
         self.registered.append({"owner_tenant": owner_tenant, "label": label,
                                 "provider": provider, "lend_to": list(lend_to),
-                                "credential": credential})
+                                "credential": credential, "added_by": added_by})
         account = {"account_id": f"{owner_tenant}:{label}", "owner_tenant": owner_tenant,
                    "label": label, "provider": provider, "measured": False}
         self.accounts.append(account)

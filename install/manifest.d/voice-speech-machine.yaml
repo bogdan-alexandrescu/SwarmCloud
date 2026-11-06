@@ -1,0 +1,272 @@
+# Lane L1 of Voice it's own speech engine (docs/design/voice-it-own-speech.md
+# section 14, "The speech machine exists, stopped, on swarm-vpc"; part of
+# #2688). terraform/bootstrap makes the swarm-speech account, the
+# swarmSpeechOperator role and the two actAs grants on the account, and
+# terraform/bootstrap/deployer_conditions.tf the release deployer's
+# swarmSpeechDeployer, conditioned to the machine's instance and disk names;
+# terraform/infra/voice_speech.tf makes the one stopped L4 machine, its
+# internal address, its firewall pair, its grants and the samples' TTL. All of
+# infra's part is off until voice_speech.enabled and voice_it is "on"; the
+# installer's choice to turn it on is lane L11's (install/manifest.d/
+# voice-speech-install.yaml). The IAM entries are IAM changes, so the release
+# that carries them waits at the IAM gate for the owner.
+#
+# swarm-api reads the machine's SWARM_SPEECH_* variables
+# (swarm_api/voice/speech_machine.py SpeechConfig.from_env); terraform/infra/
+# locals.tf sets them, empty while voice_speech is off.
+version: 1
+env:
+  SWARM_SPEECH_ADDR:
+    setter: terraform/infra/locals.tf:1175
+  SWARM_SPEECH_AUDIENCE:
+    setter: terraform/infra/locals.tf:1176
+  SWARM_SPEECH_IMAGE:
+    setter: terraform/infra/locals.tf:1177
+  SWARM_SPEECH_INSTANCE:
+    setter: terraform/infra/locals.tf:1174
+  SWARM_SPEECH_PROJECT:
+    setter: terraform/infra/locals.tf:1172
+  SWARM_SPEECH_SWEEP_AUDIENCE:
+    setter: terraform/infra/locals.tf:1178
+  SWARM_SPEECH_SWEEP_CALLERS:
+    setter: terraform/infra/locals.tf:1179
+entries:
+- id: sa.swarm-speech
+  kind: service-account
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts describe swarm-speech@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf google_service_account.speech
+  verify: account exists with managed-by=swarm-terraform in its description
+  explain: The account Voice it's speech machine runs as. No role from bootstrap; terraform/infra/voice_speech.tf
+    grants its image read, log write and metric write when the machine is on.
+  guards: 'no create_ignore_already_exists (#334): a 409 fails the apply rather than adopting someone
+    else''s account'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account.speech
+- id: role.custom.swarmSpeechOperator
+  kind: custom-role
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam roles describe swarmSpeechOperator --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf google_project_iam_custom_role.speech_operator
+  verify: permissions == [compute.instances.get, .getSerialPortOutput, .setMachineType, .setMetadata, .start, .stop]
+    only
+  explain: What swarm-api may do to the speech machine (design section 6, row I1), granted on that one instance by
+    terraform/infra; no create, delete, setIamPolicy, disk or network permission.
+  guards: '#79: terraform/infra may not define or read a custom role'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_custom_role.speech_operator
+- id: iam-binding.swarm-speech-act-as
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam service-accounts get-iam-policy swarm-speech@$P.iam.gserviceaccount.com --project=$P
+  apply: terraform/bootstrap/platform_service_accounts.tf google_service_account_iam_member.deployer_acts_as_speech
+    (while the deployer is on) and .api_acts_as_speech
+  verify: roles/iam.serviceAccountUser on swarm-speech for swarm-api and, where CI deploys, the release deployer;
+    no other member
+  explain: The deployer attaches swarm-speech to the machine it creates (actAs); swarm-api writes the machine's
+    metadata at each start, which Compute checks actAs for on a machine that runs as an account (row I2).
+  guards: granted on the swarm-speech account only, never project-wide
+  secret_entry: null
+  depends_on:
+  - sa.swarm-speech
+  - sa.swarm-api
+  evidence:
+  - terraform/bootstrap/platform_service_accounts.tf
+  refs:
+    terraform:
+    - bootstrap/google_service_account_iam_member.deployer_acts_as_speech
+    - bootstrap/google_service_account_iam_member.api_acts_as_speech
+- id: role.custom.swarmSpeechDeployer
+  kind: custom-role
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud iam roles describe swarmSpeechDeployer --project=$P
+  apply: terraform/bootstrap/deployer_conditions.tf google_project_iam_custom_role.deployer_speech_machine (while
+    the deployer is on)
+  verify: permissions == compute.instances.{create, delete, get, getIamPolicy, setDeletionProtection, setIamPolicy,
+    setLabels, setMachineType, setMetadata, setScheduling, setServiceAccount, setTags, start, stop, update,
+    updateShieldedVmConfig} and compute.disks.{create, delete, get, setLabels} only
+  explain: What the release deployer may do to Voice it's speech machine and its boot disk, so a release can make,
+    stop and delete it when voice_speech is turned on. Owner's decided follow-up, 2026-11-05.
+  guards: '#79: defined by terraform/bootstrap, which the owner applies, never by terraform/infra'
+  secret_entry: null
+  depends_on:
+  - api.iam
+  evidence:
+  - terraform/bootstrap/deployer_conditions.tf
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_custom_role.deployer_speech_machine
+- id: iam-binding.deployer-speech-machine
+  kind: iam-binding
+  scope: core
+  stage: 3
+  provider: engine
+  step: bootstrap.pass-1
+  check: gcloud projects get-iam-policy $P --flatten=bindings --filter=bindings.role:swarmSpeechDeployer
+    --format='value(bindings.members,bindings.condition.expression)'
+  apply: terraform/bootstrap/deployer_conditions.tf google_project_iam_member.deployer_speech_machine (while the
+    deployer is on), applied by the owner in the bootstrap pass, never by a release
+  verify: 'the release deployer (<name_prefix>-tf-deployer) holds swarmSpeechDeployer with the condition
+    resource.name.extract("projects/$P/zones/$REGION-{zone}/instances/<name_prefix>-speech-") != "" ||
+    resource.name.extract("projects/$P/zones/$REGION-{zone}/disks/<name_prefix>-speech-") != "", and no
+    unconditioned binding of it'
+  explain: The release deployer applies terraform/infra/voice_speech.tf, which creates, stops and deletes the
+    speech machine and its boot disk; this grants exactly those verbs on names starting <name_prefix>-speech- in a
+    zone of the region, and nothing on any other VM or disk in the project.
+  guards: conditioned from the start, on the speech machine's instance and disk names; lint the expression
+    (bootstrap output deployer_speech_machine_condition) with iamPolicies:lintPolicy before the apply that adds it
+  secret_entry: null
+  depends_on:
+  - role.custom.swarmSpeechDeployer
+  evidence:
+  - terraform/bootstrap/deployer_conditions.tf
+  refs:
+    terraform:
+    - bootstrap/google_project_iam_member.deployer_speech_machine
+- id: compute.voice-speech-machine
+  kind: other
+  scope: core
+  stage: 6
+  provider: engine
+  step: infra.pass-1
+  check: gcloud compute instances describe ${name_prefix}-speech-a --zone=us-central1-a --project=$P --format='value(status,scheduling.provisioningModel)'
+  apply: terraform/infra/voice_speech.tf google_compute_instance.speech, data.google_service_account.speech, once
+    voice_speech.enabled and voice_it is "on"
+  verify: status TERMINATED, provisioningModel STANDARD, no accessConfigs, tag ${name_prefix}-speech, labels
+    managed-by=swarm-terraform and component=voice-speech
+  explain: Voice it's own speech engine's one g2-standard-4 (one L4), on-demand, made stopped; swarm-api starts it
+    for a session and stops it after. The installer never starts it.
+  guards: 'invariant 6 (Spot off): provisioning_model STANDARD; desired_status TERMINATED with ignore_changes so a
+    plan never stops a machine mid-session'
+  secret_entry: null
+  depends_on:
+  - api.compute
+  - network.subnet
+  - sa.swarm-speech
+  - iam-binding.swarm-speech-act-as
+  - iam-binding.deployer-speech-machine
+  - network.voice-speech-address
+  evidence:
+  - terraform/infra/voice_speech.tf
+  notes: A Deep Learning VM image by name is required once enabled (variable voice_speech.image); the installer's
+    lane L11 pins it, and preflight checks NVIDIA_L4_GPUS in the region.
+  refs:
+    terraform:
+    - infra/google_compute_instance.speech
+    - infra/data.google_service_account.speech
+- id: network.voice-speech-address
+  kind: network
+  scope: core
+  stage: 6
+  provider: engine
+  step: infra.pass-1
+  check: gcloud compute addresses describe ${name_prefix}-speech --region=$REGION --project=$P
+  apply: terraform/infra/voice_speech.tf google_compute_address.speech, once voice_speech is on
+  verify: an INTERNAL address on the subnet
+  explain: swarm-api's fixed path to the speech machine over Direct VPC egress (design section 3.2).
+  guards: null
+  secret_entry: null
+  depends_on:
+  - network.subnet
+  evidence:
+  - terraform/infra/voice_speech.tf
+  refs:
+    terraform:
+    - infra/google_compute_address.speech
+- id: network.fw-voice-speech
+  kind: network
+  scope: core
+  stage: 6
+  provider: engine
+  step: infra.pass-1
+  check: gcloud compute firewall-rules describe ${name_prefix}-fw-allow-speech --project=$P && gcloud compute
+    firewall-rules describe ${name_prefix}-fw-deny-speech --project=$P
+  apply: terraform/infra/voice_speech.tf google_compute_firewall.allow_speech_from_subnet (940) and
+    .deny_speech_other (950), once voice_speech is on
+  verify: TCP 8080 from the subnet admitted to tag ${name_prefix}-speech; all other ingress to it refused ahead of
+    allow-internal
+  explain: Shuts the GKE pod ranges and every other internal source out of the speech machine; the ID token
+    check on the server is the real gate (design section 3.2).
+  guards: on swarm-vpc only, through module.network; names no other network
+  secret_entry: null
+  depends_on:
+  - network.vpc
+  evidence:
+  - terraform/infra/voice_speech.tf
+  refs:
+    terraform:
+    - infra/google_compute_firewall.allow_speech_from_subnet
+    - infra/google_compute_firewall.deny_speech_other
+- id: iam-binding.voice-speech
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-1
+  check: gcloud compute instances get-iam-policy ${name_prefix}-speech-a --zone=us-central1-a --project=$P | grep
+    swarmSpeechOperator
+  apply: terraform/infra/voice_speech.tf google_compute_instance_iam_member.api_speech_operator,
+    google_artifact_registry_repository_iam_member.speech_reader, google_project_iam_member.speech_log_writer and
+    .speech_metric_writer, once voice_speech is on
+  verify: swarm-api holds swarmSpeechOperator on the speech instance only; swarm-speech holds
+    artifactregistry.reader on the platform repository, logging.logWriter and monitoring.metricWriter, nothing
+    else
+  explain: Rows I1, I3 and the owner's answer 2 (2026-11-05) of the design's section 6.
+  guards: no project-level compute role for anyone
+  secret_entry: null
+  depends_on:
+  - compute.voice-speech-machine
+  - role.custom.swarmSpeechOperator
+  - registry.swarm
+  - sa.swarm-api
+  evidence:
+  - terraform/infra/voice_speech.tf
+  refs:
+    terraform:
+    - infra/google_compute_instance_iam_member.api_speech_operator
+    - infra/google_artifact_registry_repository_iam_member.speech_reader
+    - infra/google_project_iam_member.speech_log_writer
+    - infra/google_project_iam_member.speech_metric_writer
+- id: firestore.voice-speech-samples-ttl
+  kind: firestore
+  scope: core
+  stage: 6
+  provider: engine
+  step: infra.pass-1
+  check: gcloud firestore fields ttls list --collection-group=samples --database=$FIRESTORE_DB --project=$P
+  apply: terraform/infra/voice_speech.tf google_firestore_field.voice_speech_samples_ttl, once voice_speech is on
+  verify: the samples collection group's expire_at field has an ACTIVE TTL policy
+  explain: Deletes the speech telemetry's 5-second samples 30 days on (design section 12.3).
+  guards: null
+  secret_entry: null
+  depends_on:
+  - firestore.main
+  evidence:
+  - terraform/infra/voice_speech.tf
+  refs:
+    terraform:
+    - infra/google_firestore_field.voice_speech_samples_ttl

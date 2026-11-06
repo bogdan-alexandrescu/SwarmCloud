@@ -65,6 +65,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field, replace
 
@@ -93,7 +94,8 @@ from ..errors import (
     UpstreamUnavailable,
     ValidationFailed,
 )
-from .. import issueci
+from .. import issueci, workcontract
+from ..agent_output import AgentOutputService
 from ..forge import ForgeReadError, preview, read_open_work
 from .. import approvals
 from ..issueruns import (
@@ -115,6 +117,7 @@ from ..issueruns import (
     plan_digest,
     plan_files,
     plan_hold,
+    planner_documents,
     planner_task,
     sign_owner,
     auto_merge_default,
@@ -288,6 +291,37 @@ def with_plan_advisory(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict
     if run.plan is not None and run.planner_task_id:
         advisory = served_plan_advisory(read_plan_advisory(ctx, tenant_id, run.planner_task_id))
     row["plan_advisory"] = advisory
+    return row
+
+
+#: How much of the planner's manifest `planner_documents` looks through: the
+#: worker's own cap on the files one attempt uploads, so none is missed.
+PLANNER_LISTING_LIMIT = 500
+
+
+def with_planner_documents(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict) -> dict:
+    """`row` with `planner_documents`: the planner's design docs and diagrams
+    (`issueruns.planner_documents`), by name, size and read link, for the
+    proposal page (BGD, 6 November 2026: "Serve them on the run").
+
+    `None` while the planner has not finished (its artifacts are uploaded at
+    the end of its attempt, so an empty list then would be a "none" nobody
+    found) or when its listing cannot be read. The listing is the task's own,
+    in this run's tenant, through the same service `GET /v1/tasks/{id}/artifacts`
+    uses; no object is read. Read-only, like `plan_advisory`.
+    """
+    served = None
+    if run.planner_task_id:
+        try:
+            listing = AgentOutputService(ctx.inspection).list_artifacts(
+                tenant_id, run.planner_task_id, limit=PLANNER_LISTING_LIMIT, submitted_by=None
+            )
+        except ApiError as exc:
+            log.warning("issue run %s: planner listing not read (%s)", run.id, exc.code)
+            listing = None
+        if listing is not None and listing.get("complete"):
+            served = planner_documents(run.planner_task_id, listing.get("artifacts") or [])
+    row["planner_documents"] = served
     return row
 
 
@@ -522,8 +556,9 @@ def _approve(
         review = read_review_context(ctx, tenant_id, approved)
         # The deployment's pinned classes: the requirements check runs the
         # cheap one only where it is pinned (#2524, `issueruns._check_class`).
-        submission = ctx.submissions.submit_workflow(auth, compile_plan(
-            approved, review, class_models=ctx.settings.worker_class_models))
+        compiled = compile_plan(approved, review, class_models=ctx.settings.worker_class_models)
+        with issueruns_module.submitting(compiled):
+            submission = ctx.submissions.submit_workflow(auth, compiled)
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         runs.transition(
@@ -1070,7 +1105,7 @@ def create_run(
     run = start_run(
         ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
         auto_merge=auto_merge, fix_rounds=body.fix_rounds, claude_session=body.claude_session,
-        model_class=model_class,
+        model_class=model_class, security_review=body.security_review,
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return {"run": run.to_api()}
@@ -1090,6 +1125,7 @@ def start_run(
     merge_approval: str | None = None,
     claude_session: str | None = None,
     model_class: str | None = None,
+    security_review: bool = False,
 ) -> IssueRun:
     """The planner task, then the run document, then the first write-back.
 
@@ -1116,9 +1152,23 @@ def start_run(
     checked by the caller (`refuse_planner_model_class`), and by
     `submit_tasks` once lane MODEL-API's `TaskCreate` carries it. None runs the profile's default (`opus`). The plan's
     steps take theirs from the plan (`issueruns.PlanStep.model_class`).
+
+    `security_review` (`RunCreate.security_review`, off by default) is stored
+    on the run, inside its signed owner fields, and compiles the security
+    review step after the fix (`issueruns._with_security_review`). The step
+    loads its plugin through a signed work contract, so with
+    SWARM_WORK_CONTRACTS off it is refused here, before the planner is paid
+    for, rather than at compile time after it.
     """
     if merge_approval not in (None, "required"):
         raise ValueError(f"merge_approval is 'required' or None, not {merge_approval!r}")
+    if security_review and not workcontract.enabled(os.environ):
+        raise ValidationFailed(
+            "security_review loads the security-audit plugin through a signed work "
+            "contract, and work contracts are off in this deployment "
+            "(SWARM_WORK_CONTRACTS). Nothing was created.",
+            detail={"field": "security_review"},
+        )
     run_id = new_id("run")
     # The issue and the tenant's own index of its repository BEFORE the
     # planner (lane KG1): the issue's words are what the planner's REPO GRAPH
@@ -1150,6 +1200,7 @@ def start_run(
         schedule=dict(schedule) if schedule else None,
         merge_approval=merge_approval,
         claude_session=claude_session,
+        security_review=security_review,
     )
     draft.owner_signature = sign_owner(ctx.submissions.signer, draft)
     issue_read, issue_read_error = _read_issue(ctx, auth, tenant_id, ref)
@@ -1158,10 +1209,10 @@ def start_run(
     # The planner next, carrying the run's id: a planner without its run is
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
-    submission = ctx.submissions.submit_tasks(
-        auth, [planner_task(ref, run_id, open_work, context=context.section,
-                            claude_session=claude_session, model_class=model_class)]
-    )
+    planner_spec = planner_task(ref, run_id, open_work, context=context.section,
+                                claude_session=claude_session, model_class=model_class)
+    with issueruns_module.submitting(planner_spec):
+        submission = ctx.submissions.submit_tasks(auth, [planner_spec])
     planner = submission.tasks[0]
     now = ctx.now()
     run = _runs(ctx).create(
@@ -1243,7 +1294,8 @@ def get_run(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     run = advance_run(ctx, tenant_id, _runs(ctx).get(tenant_id, run_id))
-    return {"run": with_plan_advisory(ctx, tenant_id, run, run.to_api())}
+    row = with_plan_advisory(ctx, tenant_id, run, run.to_api())
+    return {"run": with_planner_documents(ctx, tenant_id, run, row)}
 
 
 @router.post("/{run_id}/plan:approve")

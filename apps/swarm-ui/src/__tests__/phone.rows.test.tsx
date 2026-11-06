@@ -6,9 +6,8 @@
 //         standalone task is named by its id (`agentName`), the profile is on
 //         the sub-line (O1's "Agent · profile"), and the whole id is the
 //         link's title.
-//   #109  At 390 the workflow list scrolls sideways and its done, failed and
-//         age columns sit off the right edge: `.wfl-phone` carries
-//         `9/30 · 4✕ · 2h ago` under the name. The step Table drops runner and
+//   #109  At 390 a workflow row's done, failed and age read as one line,
+//         `9/30 · 4✕ · 2h ago` (`phoneSummary`). The step Table drops runner and
 //         inputs, keeps the step column held (`.is-scroll`, ≤899), and fades
 //         its right edge with a mask while columns are off that edge. The
 //         board-level Rows/Graph switch went with #432, so a workflow page has
@@ -106,13 +105,6 @@ describe('#109: a phone workflow row says how it ended and when', () => {
     const w = wf({})
     w.rollup = { ...w.rollup!, complete: false }
     expect(phoneSummary(w, NOW)).toBe('30 steps · 2h ago')
-  })
-
-  it('is drawn at 390 and not at 1440, where the cells say it', () => {
-    const el = document.createElement('span')
-    el.className = 'wfl-phone'
-    expect(display(el, PHONE)).toBe('block')
-    expect(display(el, WIDE)).toBe('none')
   })
 })
 

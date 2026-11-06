@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from swarm_api import contractevidence as ce
 from swarm_api import contractjudge as cj
 from swarm_api import contractreask as cr
@@ -255,6 +257,28 @@ def test_the_forge_judge_asks_nothing_for_a_workspace_that_sends_no_code(db):
                           forge=None, forge_tokens=None)
     result = cr.ForgeJudge(ctx)(db.docs[f"tasks/{TASK}"], contract, acceptance(db))
     assert result.outcome == cr.OUTCOME_NOT_RUN and result.reason == "not_opted_in"
+
+
+def test_the_forge_judge_asks_nothing_under_contract_jev_off(db):
+    """The experiment's arm off (jev-contract.md section 11): the worker's
+    JC2 posted `skipped:arm`, and the re-ask reads nothing and calls nobody,
+    even for a workspace that sends code."""
+    contract = seed_pending(db)
+    db.docs["workspace_settings/eng"] = {"tenant_id": "eng",
+                                         "code_intelligence": {"jev": True}}
+    db.docs[f"tasks/{TASK}"]["metadata"]["dispatch"]["contract_jev"] = "off"
+    ctx = SimpleNamespace(db=db, settings=settings(), now=lambda: T0, store=None,
+                          forge=None, forge_tokens=None)
+    result = cr.ForgeJudge(ctx)(db.docs[f"tasks/{TASK}"], contract, acceptance(db))
+    assert result.outcome == cr.OUTCOME_NOT_RUN and result.reason == "skipped:arm"
+    assert result.call_id is None
+
+
+@pytest.mark.parametrize("arm, off", [("off", True), ("on", False), (None, False)])
+def test_the_arm_is_read_from_the_signed_dispatch_block(arm, off):
+    dispatch = {} if arm is None else {"contract_jev": arm}
+    assert cr.arm_off({"metadata": {"dispatch": dispatch}}) is off
+    assert cr.arm_off({}) is False
 
 
 # --- the re-ask's Jev calls are counted and capped (owner, 4 November 2026) ---

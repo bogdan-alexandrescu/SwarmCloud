@@ -3,7 +3,8 @@
 WHY A FILE. Two processes call Jev for one attempt: the worker (at staging,
 the gate and the post-steps) and the agent's `jev_decide` MCP server (owner
 override of context-quality.md §5.1). The owner's budget -- at most 8 calls
-and 120k input tokens per task (§8 Q4) -- and §5.5's breaker are per task,
+and 120k input tokens per task (§8 Q4), plus JC2's reserve of one call and
+30k tokens on top (jev-contract.md, the owner's answer 8) -- and §5.5's breaker are per task,
 not per process, so both read and write one ledger under an exclusive
 `flock`. A call is admitted by reserving its slot under that lock, so two
 processes racing for the eighth call cannot both get it.
@@ -70,9 +71,23 @@ from typing import Any, Callable, Iterator, Mapping, Protocol
 
 from swarm_jev.client import MEASURED_TOKENS_PER_CALL
 
-#: Owner decision 2026-10-14 (§8 Q4 A): hard per-task limits.
-MAX_CALLS_PER_TASK = 8
-MAX_INPUT_TOKENS_PER_TASK = 120_000
+#: Owner decision 2026-10-14 (§8 Q4 A): hard per-task limits on what the
+#: agent's `jev_decide` and J0-J5 may spend.
+SHARED_CALLS_PER_TASK = 8
+SHARED_INPUT_TOKENS_PER_TASK = 120_000
+#: The owner's answer 8 (docs/design/agent-quality/jev-contract.md section 14,
+#: 3 November 2026): JC2, the end-of-step contract judgment, gets a reserve ON
+#: TOP of the shared limits, not carved out of them -- one call and 30,000
+#: input tokens that only a ledger built `for_reserve()` may spend, so a
+#: talkative agent can never leave its own acceptance judgment nothing.
+RESERVED_CALLS = 1
+RESERVED_INPUT_TOKENS = 30_000
+#: The ledger's totals, 9 calls and 150,000 input tokens: what swarm-api's
+#: grant (`swarm_api.jevaccount`, held equal by test_jev_account.py) allows.
+MAX_CALLS_PER_TASK = SHARED_CALLS_PER_TASK + RESERVED_CALLS
+MAX_INPUT_TOKENS_PER_TASK = SHARED_INPUT_TOKENS_PER_TASK + RESERVED_INPUT_TOKENS
+#: The ledger kind JC2's calls are audited and settled under.
+RESERVE_KIND = "contract_judgment"
 #: What a call is assumed to cost before it is made, MEASURED_TOKENS_PER_CALL
 #: (imported above): jev-browser's measured average (RESULTS.md, 2026-09-17).
 #: Stated once, in `swarm_jev.client` (owner, 4 November 2026). A character
@@ -114,13 +129,26 @@ class Grant:
 
 
 class Ledger:
-    def __init__(self, path: Path, *, authority: Grant | None = None) -> None:
+    def __init__(self, path: Path, *, authority: Grant | None = None,
+                 reserve: bool = False) -> None:
         self.path = Path(path)
         #: The trusted grant: the file's limits only narrow it.
         self.authority = authority
+        #: Whether this ledger may spend RESERVED_CALLS and
+        #: RESERVED_INPUT_TOKENS: only JC2's (`for_reserve`). Every other
+        #: ledger -- the worker's for J0-J5, the `jev_decide` process's --
+        #: admits a call only while the reserve stays unspent.
+        self.reserve = reserve
         #: The highest counts this process has seen: the file cannot lower them.
         self._floor_calls = 0
         self._floor_tokens = 0
+
+    def for_reserve(self) -> "Ledger":
+        """This ledger, for JC2 alone: the same file, grant and floors, and
+        the reserve on top of what is left of the shared limits."""
+        ledger = Ledger(self.path, authority=self.authority, reserve=True)
+        ledger._floor_calls, ledger._floor_tokens = self._floor_calls, self._floor_tokens
+        return ledger
 
     @classmethod
     def create(cls, path: Path, *, max_calls: int = MAX_CALLS_PER_TASK,
@@ -199,7 +227,8 @@ class Ledger:
         `budget_tokens` or `budget_monthly`."""
         with self._locked() as state:
             self._held(state)
-            reason = _refusal(state, max(estimate, MEASURED_TOKENS_PER_CALL))
+            reason = _refusal(state, max(estimate, MEASURED_TOKENS_PER_CALL),
+                              reserve=self.reserve)
             if reason is None:
                 state["calls"] = int(state["calls"]) + 1
             self._seen(state)
@@ -257,13 +286,23 @@ class Ledger:
             state["settled_audit"] = max(0, int(state.get("settled_audit") or 0) - rows)
 
 
-def _refusal(state: Mapping[str, Any], estimate: int) -> str | None:
+def _refusal(state: Mapping[str, Any], estimate: int, *, reserve: bool = False) -> str | None:
+    """Why a call may not be admitted, or None. A ledger without the reserve
+    stops RESERVED_CALLS short of the call limit and never spends past the
+    task's SHARED_INPUT_TOKENS_PER_TASK, so the reserve is there for JC2
+    whatever J0-J5 and `jev_decide` spent. The reserve is the TASK's: a grant
+    the month narrowed below the task's totals (`budget_monthly` at
+    swarm-api's reserve) is spent first come, as the month always was."""
     if state.get("breaker_open"):
         return "breaker_open"
-    if int(state["calls"]) >= int(state["max_calls"]):
+    max_calls, max_tokens = int(state["max_calls"]), int(state["max_input_tokens"])
+    if not reserve:
+        max_calls -= RESERVED_CALLS
+        max_tokens = min(max_tokens, SHARED_INPUT_TOKENS_PER_TASK)
+    if int(state["calls"]) >= max_calls:
         return "budget_calls"
     spent = int(state["input_tokens"])
-    if spent + estimate > int(state["max_input_tokens"]):
+    if spent + estimate > max_tokens:
         return "budget_tokens"
     cap = state.get("monthly_cap_tokens")
     if cap is not None:

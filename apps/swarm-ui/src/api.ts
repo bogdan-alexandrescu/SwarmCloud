@@ -9,12 +9,13 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { chosenTenant, noteFixtureProbe, read, readGeneration, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { chosenTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
 // four states, not a second list written out here.
 import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
+import { PLUGIN_MODES, type CataloguePlugin, type PluginModeOffer, type WorkspacePlugins } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
@@ -388,73 +389,6 @@ export interface AgentDetail {
   eventsDetail: string | null
 }
 
-/**
- * HOW MANY OF THE CALLER'S OTHER TENANTS A TASK 404 ASKS (#1194 c15). The
- * probes run one after another, so a caller in many groups costs this many
- * reads at most, once per task and chosen tenant (`ELSEWHERE_KEEP_MS`, and
- * until a write or sign-out: `readGeneration`), never a burst against the
- * 20 rps per-principal budget. A chosen value: a task in a tenant past the
- * eighth is drawn as today's 404, which is never a wrong answer.
- */
-export const ELSEWHERE_PROBE_CAP = 8
-
-/**
- * How long one probe's answer is kept for the same task under the same chosen
- * tenant. The drawer re-reads a failed task on its back-off, and asking every
- * other tenant again on each of those reads would multiply the probe by the
- * poll; a minute covers the reads a person waits through before they act.
- */
-export const ELSEWHERE_KEEP_MS = 60_000
-
-const elsewhereKept = new Map<string, { at: number; answer: Promise<TenantChoice | null> }>()
-
-/**
- * THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS `taskId`, or null.
- *
- * `GET /v1/tasks/{id}` answers the same 404 for a task that does not exist and
- * for one in another tenant (store.py), and this does not widen that answer:
- * it asks ONLY under the tenants `GET /v1/tenants/mine` lists for this caller
- * -- each with that tenant's own `X-Swarm-Tenant`, which the API honours only
- * for a membership it confirmed -- one at a time and at most
- * `ELSEWHERE_PROBE_CAP`. Exactly one 200 names the tenant; none, or more than
- * one (a task id is unique, so that would be a confused API), is null and the
- * 404 is drawn as it always was. The choice itself is never changed here.
- */
-export function taskElsewhere(taskId: string): Promise<TenantChoice | null> {
-  const chosen = chosenTenant()
-  const key = `${readGeneration()}\n${chosen ?? ''}\n${taskId}`
-  const kept = elsewhereKept.get(key)
-  if (kept !== undefined && Date.now() - kept.at < ELSEWHERE_KEEP_MS) return kept.answer
-  const answer = (async (): Promise<TenantChoice | null> => {
-    const mine = await loadMyTenants()
-    if (mine.status !== 'ok' && mine.status !== 'stale') return null
-    // The chosen tenant already answered 404. With no choice the API applied
-    // the caller's default, which /v1/tenants/me names and this does not
-    // read; asking it again under its own header costs one read and is safe.
-    const others = mine.data.filter((t) => t.tenant_id !== chosen).slice(0, ELSEWHERE_PROBE_CAP)
-    const holders: TenantChoice[] = []
-    for (const t of others) {
-      const r = await read<unknown>(route('/v1/tasks/{id}', { id: taskId }), () => false, { tenant: t.tenant_id, frame: true })
-      if (r.status === 'ok') holders.push(t)
-    }
-    return holders.length === 1 ? (holders[0] ?? null) : null
-  })()
-  elsewhereKept.set(key, { at: Date.now(), answer })
-  return answer
-}
-
-/**
- * A task read's failure, with `elsewhere` set when it was a 404 and one other
- * tenant of the caller's holds the task (`taskElsewhere`). Every other failure
- * is returned as it came.
- */
-async function withElsewhere(taskId: string, failed: { status: 'error'; error: ApiError }): Promise<{ status: 'error'; error: ApiError }> {
-  if (failed.error.kind !== 'not_found') return failed
-  const found = await taskElsewhere(taskId)
-  if (found === null) return failed
-  return { ...failed, error: { ...failed.error, elsewhere: { tenant_id: found.tenant_id, display_name: found.display_name } } }
-}
-
 export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   if (USE_FIXTURES) return fixtureAgentDetail(taskId)
 
@@ -465,8 +399,8 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
   ])
 
   if (task.status === 'loading') return task
-  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
-  if (task.status === 'error') return withElsewhere(taskId, task)
+  // A 404 is the page's to look for elsewhere (elsewhere.tsx), once, not each loader's.
+  if (task.status === 'error') return task
   if (task.status === 'empty') {
     return {
       status: 'error',
@@ -2317,6 +2251,7 @@ async function fixtureArtifactContent(
   }
   // The Jev review's verdict file, with `p_real` on its findings.
   if (taskId === FIXTURE_JEV_REVIEW) bodies['verdict.json'] = FIXTURE_JEV_VERDICT
+  if (name === FIXTURE_MOCKUP_PATCH) bodies[name] = await fixtureMockupPatch()
   const content = bodies[name] ?? `fixture artifact ${name}\n`
   const bytes = new TextEncoder().encode(content).length
   return {
@@ -2696,8 +2631,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
       : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
   if (task.status === 'loading') return task
-  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
-  if (task.status === 'error') return withElsewhere(taskId, task)
+  // A 404 is the page's to look for elsewhere (elsewhere.tsx), once, not each loader's.
+  if (task.status === 'error') return task
   if (task.status === 'empty') {
     return {
       status: 'error',
@@ -5581,6 +5516,180 @@ const FIXTURE_JEV_FINDINGS = [
 /** The review's `verdict.json` as Jev's post-step left it. */
 const FIXTURE_JEV_VERDICT = JSON.stringify({ verdict: 'NOT_YET', findings: FIXTURE_JEV_FINDINGS }, null, 2)
 
+// ---------------------------------------------------------------------------
+// A step's mock-ups, for the Changes view's Rendered pane (BGD, 2026-11-06)
+// ---------------------------------------------------------------------------
+//
+// The ux-mockups kit's shape: a desktop frame recorded at 1440x900, a phone
+// frame named `-390`, a frames.json beside them, and a PNG. The frames set
+// their theme from a `?theme=` script, which the console's sandbox never runs:
+// the pane writes `data-theme` on the html element instead, and the CSS below
+// keys on it. The PNG and its `GIT binary patch` literal are BUILT at load
+// time (CompressionStream), never written here as base85, which reads as
+// credential-shaped text to the publish scan.
+
+const FIXTURE_MOCKUP_PATCH = 'mockups.patch'
+const FIXTURE_MOCKUP_DIR = 'docs/design/mocks/settings-parity/frames'
+
+const FIXTURE_MOCKUP_FRAMES_JSON = JSON.stringify(
+  [
+    { name: 'sp1-a-rest', viewport: { width: 1440, height: 900 } },
+    { name: 'sp1-a-rest-390', viewport: { width: 390, height: 844 } },
+  ],
+  null,
+  2,
+)
+
+const fixtureLines = (text: string) => text.split('\n').length
+
+const FIXTURE_MOCKUP_FILES = [
+  { path: `${FIXTURE_MOCKUP_DIR}/frames.json`, old_path: null, status: 'A', insertions: fixtureLines(FIXTURE_MOCKUP_FRAMES_JSON), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.html`, old_path: null, status: 'A', insertions: fixtureLines(fixtureMockupFrame('Settings · rest', false)), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest-390.html`, old_path: null, status: 'A', insertions: fixtureLines(fixtureMockupFrame('Settings · rest · phone', true)), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.png`, old_path: null, status: 'A', insertions: null, deletions: null, binary: true },
+]
+
+function fixtureMockupFrame(title: string, phone: boolean): string {
+  const width = phone ? 390 : 1440
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    `<meta name="viewport" content="width=${width}">`,
+    `<title>${title}</title>`,
+    '<style>',
+    ':root { --bg: #f7f7f5; --fg: #1d1d1b; --card: #fff; --line: #e2e2dc; --accent: #3a5bd9 }',
+    'html[data-theme="dark"] { --bg: #16171a; --fg: #ececea; --card: #212226; --line: #34353a; --accent: #8aa2ff }',
+    'body { margin: 0; font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg) }',
+    `main { padding: ${phone ? 16 : 40}px; display: grid; gap: 16px; grid-template-columns: ${phone ? '1fr' : '240px 1fr'} }`,
+    '.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px }',
+    'button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px }',
+    '</style>',
+    // The kit's theme script: inert in the sandbox, which is the point.
+    "<script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') || 'light'</script>",
+    '</head>',
+    '<body>',
+    '<main>',
+    '<nav class="card">Settings<br>Profile<br>Workspaces<br>Tokens</nav>',
+    '<section class="card"><h1>Profile</h1><p>Name, e-mail and the default workspace.</p><button>Save</button></section>',
+    '</main>',
+    '</body>',
+    '</html>',
+  ].join('\n')
+}
+
+function fixtureAddedSection(path: string, text: string): string {
+  const lines = text.split('\n')
+  return [`diff --git a/${path} b/${path}`, 'new file mode 100644', '--- /dev/null', `+++ b/${path}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => `+${l}`)].join('\n') + '\n'
+}
+
+async function fixtureDeflate(data: Uint8Array): Promise<Uint8Array> {
+  const out = await new Response(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(data)
+        c.close()
+      },
+    }).pipeThrough(new CompressionStream('deflate') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>),
+  ).arrayBuffer()
+  return new Uint8Array(out)
+}
+
+function fixtureCrc32(bytes: Uint8Array): number {
+  let c = 0xffffffff
+  for (const b of bytes) {
+    c ^= b
+    for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1
+  }
+  return (c ^ 0xffffffff) >>> 0
+}
+
+/** A 96x64 PNG: two bands and a block, so a reviewer can tell it was decoded, not just named. */
+async function fixtureMockupPng(): Promise<Uint8Array> {
+  const w = 96
+  const h = 64
+  const raw = new Uint8Array(h * (1 + w * 3))
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 3)] = 0
+    for (let x = 0; x < w; x++) {
+      const at = y * (1 + w * 3) + 1 + x * 3
+      const block = x > 56 && x < 84 && y > 20 && y < 48
+      const rgb = block ? [58, 91, 217] : y < 14 ? [29, 29, 27] : [247, 247, 245]
+      raw.set(rgb, at)
+    }
+  }
+  const chunk = (type: string, data: Uint8Array): Uint8Array => {
+    const out = new Uint8Array(12 + data.length)
+    const view = new DataView(out.buffer)
+    view.setUint32(0, data.length)
+    out.set(new TextEncoder().encode(type), 4)
+    out.set(data, 8)
+    view.setUint32(8 + data.length, fixtureCrc32(out.subarray(4, 8 + data.length)))
+    return out
+  }
+  const ihdr = new Uint8Array(13)
+  const hv = new DataView(ihdr.buffer)
+  hv.setUint32(0, w)
+  hv.setUint32(4, h)
+  ihdr.set([8, 2, 0, 0, 0], 8)
+  const parts = [Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', await fixtureDeflate(raw)), chunk('IEND', new Uint8Array(0))]
+  const png = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+  let at = 0
+  for (const p of parts) {
+    png.set(p, at)
+    at += p.length
+  }
+  return png
+}
+
+const FIXTURE_B85 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~'
+
+/** Bytes as `git diff --binary` writes them: 52 to a line, a length letter first. */
+function fixtureBase85Lines(data: Uint8Array): string[] {
+  const out: string[] = []
+  for (let at = 0; at < data.length; at += 52) {
+    const chunk = data.subarray(at, at + 52)
+    const padded = new Uint8Array(Math.ceil(chunk.length / 4) * 4)
+    padded.set(chunk)
+    let line = String.fromCharCode(chunk.length <= 26 ? 64 + chunk.length : 96 + chunk.length - 26)
+    for (let i = 0; i < padded.length; i += 4) {
+      let acc = ((padded[i]! << 24) >>> 0) + (padded[i + 1]! << 16) + (padded[i + 2]! << 8) + padded[i + 3]!
+      let group = ''
+      for (let j = 0; j < 5; j++) {
+        group = FIXTURE_B85[acc % 85]! + group
+        acc = Math.floor(acc / 85)
+      }
+      line += group
+    }
+    out.push(line)
+  }
+  return out
+}
+
+async function fixtureMockupPatch(): Promise<string> {
+  const png = await fixtureMockupPng()
+  const pngPath = `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.png`
+  const binary =
+    [
+      `diff --git a/${pngPath} b/${pngPath}`,
+      'new file mode 100644',
+      'index 0000000..5d3c1e0',
+      'GIT binary patch',
+      `literal ${png.length}`,
+      ...fixtureBase85Lines(await fixtureDeflate(png)),
+      '',
+      'literal 0',
+      ...fixtureBase85Lines(await fixtureDeflate(new Uint8Array(0))),
+      '',
+    ].join('\n') + '\n'
+  return (
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/frames.json`, FIXTURE_MOCKUP_FRAMES_JSON) +
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/sp1-a-rest.html`, fixtureMockupFrame('Settings · rest', false)) +
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/sp1-a-rest-390.html`, fixtureMockupFrame('Settings · rest · phone', true)) +
+    binary
+  )
+}
+
 /**
  * `result_summary.quality_gates` as `agent_worker/lifecycle.py`
  * `_record_quality_gates` writes it when the hooks ran.
@@ -6034,6 +6143,14 @@ function fixtureTaskRows(): Task[] {
       workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
       dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+      // THE MOCK-UPS IN THE CHANGES VIEW (BGD, 2026-11-06): this step's patch
+      // adds a desktop frame, a phone frame and a PNG, so the file pane's
+      // Rendered view is looked at in development (`FIXTURE_MOCKUP_PATCH`).
+      result_summary: {
+        artifacts: 1,
+        checkpoints: 2,
+        git: { base: 'd41f0c9a7b', patch: FIXTURE_MOCKUP_PATCH, files: FIXTURE_MOCKUP_FILES },
+      },
     }),
     mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
       workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
@@ -6215,10 +6332,14 @@ export function fixtureStepNeeds(t: Task): StepNeeds {
   // THE WAIT THE TASK IS PARKED ON NOW (`agent_questions.parked_wait`); its
   // stored answers are its own only once adopted (`current_wait`).
   let parked: ReturnType<typeof fixtureWaitShape> = null
+  let parkedRaw: Record<string, unknown> | null = null
   if (humanPark) {
     for (const b of blockers) {
       parked = fixtureWaitShape(b.question_wait)
-      if (parked !== null) break
+      if (parked !== null) {
+        parkedRaw = b.question_wait as Record<string, unknown>
+        break
+      }
     }
   }
   const metadata = isRecord(t.metadata) ? t.metadata : null
@@ -6259,6 +6380,41 @@ export function fixtureStepNeeds(t: Task): StepNeeds {
     questions,
     questions_unread,
     pull_request,
+    plugin_ask: parkedRaw === null ? null : fixturePluginAsk(t, metadata, parkedRaw),
+  }
+}
+
+/** `agent_questions.BRIDGE_WAIT_MAX_SECONDS` and `QUESTION_WAIT_MAX_SECONDS`, in ms. */
+const FIXTURE_BRIDGE_WAIT_MS = 24 * 3600_000
+const FIXTURE_QUESTION_WAIT_MS = 72 * 3600_000
+
+/**
+ * A fixture plugin step's `plugin_ask`, as `codec.step_needs` builds it for a
+ * task parked on `wait`: its work contract's plugins with a mode, and the
+ * wait's clock from the earliest instant the park names
+ * (`agent_questions.asked_at`) and the skill that asked off the wait's bridge
+ * block (`agent_questions.asked_by_skill`); null for a step that runs no plugin.
+ */
+function fixturePluginAsk(t: Task, metadata: Record<string, unknown> | null, wait: Record<string, unknown>): StepNeeds['plugin_ask'] {
+  const contract = metadata?.work_contract
+  const caps = isRecord(contract) ? contract.capabilities : null
+  const stored = isRecord(caps) ? caps.plugins : null
+  const plugins = isRecord(stored)
+    ? Object.entries(stored).flatMap(([name, p]) => (isRecord(p) && typeof p.mode === 'string' && p.mode !== '' ? [{ name, mode: p.mode }] : []))
+    : []
+  if (plugins.length === 0) return null
+  const moments = [t.next_eligible_at, wait.asked_at, t.updated_at]
+    .map((v) => (typeof v === 'string' ? Date.parse(v) : NaN))
+    .filter((ms) => Number.isFinite(ms))
+  const began = moments.length > 0 ? Math.min(...moments) : null
+  const span = isRecord(wait.bridge) ? FIXTURE_BRIDGE_WAIT_MS : FIXTURE_QUESTION_WAIT_MS
+  const skill = isRecord(wait.bridge) && typeof wait.bridge.skill === 'string' && wait.bridge.skill.trim() !== '' ? wait.bridge.skill.trim() : null
+  return {
+    plugins,
+    repository_url: t.repository_url ?? null,
+    asked_at: began === null ? null : new Date(began).toISOString(),
+    expires_at: began === null ? null : new Date(began + span).toISOString(),
+    skill,
   }
 }
 
@@ -8965,7 +9121,7 @@ function fixtureCodeIntelligence(): unknown {
 /** `GET /v1/qa-settings` (QA-FLOWS-UI): no value stored, so the default 15; the owner may change it. */
 function fixtureQaSettings(): unknown {
   return {
-    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, defaults: { qa_flows_per_step: 15 },
+    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, writing_flows: true, defaults: { qa_flows_per_step: 15, writing_flows: true },
     bounds: { qa_flows_per_step: { min: 1, max: 30 } }, set_at: null, set_by: null, can_edit: true,
   }
 }
@@ -11444,6 +11600,7 @@ export function budgetRefusalWords(error: ApiError): string | null {
  * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
  * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
  * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
+ * And `writing_flows` (part of #2688; BGD, 2026-11-05): whether the workspace's flows may write at all, on by default.
  */
 export interface QaSettings {
   tenant_id: string
@@ -11453,6 +11610,8 @@ export interface QaSettings {
   default_flows_per_step: number
   min_flows_per_step: number
   max_flows_per_step: number
+  /** Whether a mutating flow, its `writes` declared, may write on a non-production leg; off, every flow reads only. */
+  writing_flows: boolean
   /** The workspace's owner or admin, or a platform admin; the API is the gate. */
   can_edit: boolean
   set_at: string | null
@@ -11474,6 +11633,8 @@ function normQaSettings(raw: unknown): QaSettings {
     default_flows_per_step: fallback,
     min_flows_per_step: qaInt(bound.min, 1),
     max_flows_per_step: qaInt(bound.max, 30),
+    // On unless the API says off: the default is on (`qasettings.WRITING_DEFAULT`).
+    writing_flows: r.writing_flows !== false,
     can_edit: r.can_edit === true,
     set_at: keyField(r.set_at),
     set_by: keyField(r.set_by),
@@ -11492,6 +11653,12 @@ export async function loadQaSettings(): Promise<Result<QaSettings>> {
  */
 export async function putQaSettings(tenantId: string, flowsPerStep: number): Promise<Result<QaSettings>> {
   const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { qa_flows_per_step: flowsPerStep })
+  return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
+}
+
+/** The same PUT with `{writing_flows}` alone: the same gate, the flows-per-step setting untouched. */
+export async function putQaWritingFlows(tenantId: string, on: boolean): Promise<Result<QaSettings>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { writing_flows: on })
   return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
 }
 
@@ -12859,12 +13026,125 @@ export interface ApprovalDetail {
     requirements_unmet?: string[]
     files_checked_head?: string | null
   }
+  /**
+   * The step's `contract_acceptance` record (jev-contract.md sections 5.4 and
+   * 8.2), where the item decides a step whose work contract Jev judged: read
+   * by `ContractJev.contractAcceptance`, and drawn as Jev's, never as the
+   * platform's.
+   */
+  contract_acceptance?: unknown
 }
 
 export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
   const target = route('/v1/approvals/{id}', { id: itemId })
-  if (USE_FIXTURES) return scheduleNotServed(target)
+  if (USE_FIXTURES) {
+    const made = fixtureContractApproval(itemId)
+    if (made === null) return scheduleNotServed(target)
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: made }
+  }
   return read(target, () => false)
+}
+
+/**
+ * THE FIXTURE BUILD'S JEV JUDGMENTS (jev-contract.md lane 7), each a merge
+ * waiting on its owner and opened by address, `/automate/approvals/<id>`: the
+ * inbox stays empty, as the fixture build's inbox always is.
+ *
+ *   * `apr_fixture_contract_judged`: Jev judged three requirements, one unmet,
+ *     and the step was already sent back twice;
+ *   * `apr_fixture_contract_not_run`: Jev did not run, and the control plane's
+ *     three re-asks did not get a verdict either;
+ *   * `apr_fixture_contract_cannot_judge`: Jev could not judge one requirement
+ *     after the three re-asks.
+ *
+ * The records are the shape `contractreask.ACCEPTANCE_FIELD` stores. Digests
+ * and commits are built, never written as literals.
+ */
+export const FIXTURE_CONTRACT_APPROVALS = ['apr_fixture_contract_judged', 'apr_fixture_contract_not_run', 'apr_fixture_contract_cannot_judge'] as const
+
+function fixtureContractApproval(itemId: string): ApprovalDetail | null {
+  if (!(FIXTURE_CONTRACT_APPROVALS as readonly string[]).includes(itemId)) return null
+  const at = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString()
+  const commit = '4be1d07' + '3'.repeat(33)
+  const changed = ['apps/swarm-api/swarm_api/leases.py', 'tests/unit/control_plane/test_leases.py', 'docs/leases.md']
+  const mechanical = [{ kind: 'unit_tests', passed: true, named: ['tests/unit/control_plane/test_leases.py'] }, { kind: 'ci', passed: null }]
+  const spent = { tries: 3, first_at: at(-1), next_at: at(-0.6), deadline: at(-0.5), last: { try: 3, at: at(-0.6), outcome: 'not_run', reason: 'timeout', call_id: null } }
+  const base = {
+    status: 'judgment_pending', waiting_on: 'owner', attempt_id: 'att_fixture_contract', generation: 2,
+    contract_id: 'wc-lease-release', revision: 2, digest: '9d'.repeat(32), commit, outcome: 'judged', reason: null,
+    call_id: 'jc2-fixture-0001', changed, mechanical, at: at(-0.5),
+    // The text of each cited hunk, as the record stores it (the owner's pick
+    // on PR #3255); `i1` is not cited by any fixture verdict, so it has none.
+    hunks: {
+      i0: '@@ -88,6 +88,9 @@ def cancel(lease):\n     if lease.released_at is not None:\n         return lease\n+    lease.released_at = now()\n+    capacity.release(lease.reservation)\n+    return lease',
+      i2: '@@ -12,3 +12,5 @@ Leases\n A lease holds capacity until it ends.\n+\n+Cancelling a task releases its lease at once.',
+    },
+  }
+  const acceptance =
+    itemId === 'apr_fixture_contract_judged'
+      ? {
+          ...base, owner_reason: 'send_back_cap', reask: null,
+          verdicts: [
+            { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i0', p: 0.92 },
+            { requirement_id: 'REQ-2', verdict: 'unmet', reason: 'partially_done', evidence_item: 'i2', p: 0.81 },
+            { requirement_id: 'REQ-3', verdict: 'met', reason: 'satisfied', evidence_item: 'm0', p: 0.88 },
+          ],
+        }
+      : itemId === 'apr_fixture_contract_not_run'
+        ? { ...base, owner_reason: 'reask_exhausted', outcome: 'not_run', reason: 'skipped:budget_calls', call_id: null, verdicts: [], reask: spent }
+        : {
+            ...base, owner_reason: 'reask_exhausted', reask: { ...spent, last: { ...spent.last, outcome: 'judged', call_id: 'jc2-fixture-0004' } },
+            call_id: 'jc2-fixture-0004',
+            verdicts: [
+              { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i0', p: 0.9 },
+              { requirement_id: 'REQ-2', verdict: 'cannot_judge', reason: 'evidence_missing', evidence_item: null, p: 0.45 },
+            ],
+          }
+  return {
+    approval: {
+      approval_id: itemId, kind: 'merge',
+      subject: { run_id: 'run_fixture_contract', issue: 'example-org/example-api#2364' },
+      digest: { head_sha: commit, verdict: 'MERGE' },
+      summary: 'example-org/example-api#2364: pull request #2392 releases a lease on cancel',
+      approvers: 'owner_only', state: 'pending', requested_at: at(-0.5), expires_at: at(71.5),
+      may_decide: { approve: true, reject: true, why: null, deciders: ['owner_only'] },
+    } as ApprovalDetail['approval'],
+    merge: {
+      green_sha: commit,
+      pull_request: { number: 2392, url: 'https://github.com/example-org/example-api/pull/2392' },
+      requirements_met: true, requirements_unmet: [], files_checked_head: commit,
+    },
+    contract_acceptance: acceptance,
+  }
+}
+
+/**
+ * THE FIXTURE BUILD'S CONTRACT REFUSAL (jev-contract.md section 4.5): the task
+ * form's submit answers it when the prompt is exactly this sentence, so the
+ * refusal can be seen and measured without a work contract editor. Any other
+ * submit is the fixture's 201, as before.
+ */
+export const FIXTURE_CONTRACT_REFUSAL_PROMPT = 'Show Jev’s contract refusal'
+
+export function fixtureContractRefusal(body: Record<string, unknown>): { code: string; message: string; detail: Record<string, unknown> } | null {
+  const input = body.input
+  if (typeof input !== 'object' || input === null || (input as Record<string, unknown>).prompt !== FIXTURE_CONTRACT_REFUSAL_PROMPT) return null
+  noteFixtureProbe(route('/v1/tasks'), 0, true)
+  return {
+    code: 'validation_failed',
+    message: 'contract wc-lease-release is strict, and Jev found requirements no worker could enforce: REQ-2, REQ-4',
+    detail: {
+      reason: 'work_contract_not_enforceable', contract_id: 'wc-lease-release', revision: 1, digest: '5e'.repeat(32), unenforced: [],
+      jev: {
+        call_id: 'jc1-fixture-0001', backend: 'internal-jev',
+        requirements: [
+          { id: 'REQ-2', class: 'unenforceable', reason: 'vague_outcome', p: 0.83 },
+          { id: 'REQ-4', class: 'unenforceable', reason: 'depends_on_a_later_event', p: 0.71 },
+        ],
+      },
+    },
+  }
 }
 
 /**
@@ -14670,4 +14950,125 @@ export function fixtureSetupHealth(): Record<string, unknown> {
       findings: rows.filter((r) => r.status !== 'met'),
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Config › Plugins (docs/design/agent-plugins.md): the catalogue and the
+// workspace's signed setting, `swarm_api.routes.plugin_settings`.
+// ---------------------------------------------------------------------------
+
+const PLUGINS_SELECTED = '/v1/plugins'
+const PLUGINS_OF = '/v1/workspaces/{tenant_id}/plugins'
+
+function pluginStrings(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string' && s !== '') : []
+}
+
+function pluginRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+}
+
+function normCataloguePlugin(raw: unknown): CataloguePlugin | null {
+  const r = pluginRecord(raw)
+  if (typeof r.name !== 'string' || r.name === '') return null
+  const served = pluginRecord(r.modes)
+  const modes: Partial<Record<(typeof PLUGIN_MODES)[number], PluginModeOffer>> = {}
+  for (const m of PLUGIN_MODES) {
+    if (!(m in served)) continue
+    const o = pluginRecord(served[m])
+    // Only an explicit true runs: an unread flag is never offered as running.
+    modes[m] = { skills: pluginStrings(o.skills), available: o.available === true, reason: typeof o.reason === 'string' && o.reason !== '' ? o.reason : null }
+  }
+  return {
+    name: r.name,
+    version: typeof r.version === 'string' ? r.version : '',
+    runner_profiles: pluginStrings(r.runner_profiles),
+    modes,
+  }
+}
+
+/** What `GET /v1/plugins` and both forms of the workspace route answer (`swarm_api.plugins.view`). */
+export function normWorkspacePlugins(raw: unknown): WorkspacePlugins {
+  const r = pluginRecord(raw)
+  const defaults = pluginRecord(pluginRecord(r.defaults).plugins)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    allowed: pluginStrings(pluginRecord(r.plugins).allowed),
+    default_allowed: Array.isArray(defaults.allowed) ? pluginStrings(defaults.allowed) : null,
+    set_at: typeof r.set_at === 'string' && r.set_at !== '' ? r.set_at : null,
+    set_by: typeof r.set_by === 'string' && r.set_by !== '' ? r.set_by : null,
+    // Only an explicit true may edit: an unread flag never offers a live switch.
+    can_edit: r.can_edit === true,
+    catalogue: (Array.isArray(r.catalogue) ? r.catalogue : []).map(normCataloguePlugin).filter((p): p is CataloguePlugin => p !== null),
+  }
+}
+
+/**
+ * The fixture build's plugins setting: the platform's catalogue as
+ * `swarm_api.plugincatalogue` holds it (gstack and Cloudflare's security
+ * audit skill, planner and designer refused until the question bridge
+ * lands), gstack allowed, and a save that holds for the tab (the API signs
+ * it; the fixture stores what was asked).
+ */
+const FIXTURE_PLUGIN_BRIDGE = 'runs an interview with a person, which needs the question bridge; until it lands only unattended mode runs'
+const FIXTURE_PLUGIN_PROFILES = ['claude-code', 'claude-code-large', 'claude-code-review', 'claude-code-browser', 'claude-code-lightpanda']
+let fixturePluginsSaved: { allowed: string[]; set_at: string; set_by: string } | null = null
+
+function fixturePlugins(): Record<string, unknown> {
+  const later = (m: Record<string, unknown>) => ({ ...m, available: false, reason: FIXTURE_PLUGIN_BRIDGE })
+  return {
+    tenant_id: 'u-bogdan',
+    plugins: { allowed: fixturePluginsSaved?.allowed ?? ['gstack'] },
+    defaults: { plugins: { allowed: [] } },
+    set_at: fixturePluginsSaved?.set_at ?? new Date(FIXTURE_NOW - 26 * 3_600_000).toISOString(),
+    set_by: fixturePluginsSaved?.set_by ?? 'bogdan@example.com',
+    can_edit: true,
+    catalogue: [
+      {
+        name: 'gstack', version: '1.92.55.0', runner_profiles: FIXTURE_PLUGIN_PROFILES,
+        modes: {
+          unattended: {
+            available: true,
+            skills: ['review', 'investigate', 'health', 'qa-only', 'qa', 'design-review', 'document-generate', 'document-release', 'ship', 'plan-eng-review', 'plan-design-review', 'autoplan'],
+          },
+          planner: later({ skills: ['office-hours', 'plan-ceo-review', 'plan-eng-review', 'plan-devex-review', 'autoplan', 'spec'] }),
+          designer: later({ skills: ['design-consultation', 'plan-design-review', 'design-review', 'design-html'] }),
+        },
+      },
+      {
+        name: 'security-audit', version: 'c1c8a8c1471069fb0e188eeaff69b8e8db6564a8', runner_profiles: FIXTURE_PLUGIN_PROFILES,
+        modes: { unattended: { available: true, skills: ['security-audit'] } },
+      },
+    ],
+  }
+}
+
+/** `GET /v1/plugins`: the selected workspace's plugins, the catalogue, and whether this caller may change them. */
+export async function loadWorkspacePlugins(): Promise<Result<WorkspacePlugins>> {
+  const target = route(PLUGINS_SELECTED)
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normWorkspacePlugins(fixturePlugins()) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
+  return r
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/plugins` with `{allowed}`, catalogue names
+ * only: the API signs the block under the settings key and audits the change.
+ * It answers the same view as the GET, so the page draws what is now in force.
+ */
+export async function saveWorkspacePlugins(tenantId: string, allowed: readonly string[]): Promise<Result<WorkspacePlugins>> {
+  const target = route(PLUGINS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 60, true)
+    fixturePluginsSaved = { allowed: [...new Set(allowed)].sort(), set_at: new Date().toISOString(), set_by: 'bogdan@example.com' }
+    return { status: 'ok', fetchedAt: Date.now(), data: normWorkspacePlugins(fixturePlugins()) }
+  }
+  const r = await write(target, 'PUT', { allowed: [...allowed] })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
+  return r
 }

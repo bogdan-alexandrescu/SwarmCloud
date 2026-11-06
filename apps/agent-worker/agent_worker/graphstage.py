@@ -1169,8 +1169,10 @@ def switches_summary(work: Path, dispatch: Mapping[str, Any] | None
     the step (no `stage.json`), each set switch with its value alone. Never
     raises."""
     from .judge import attempt as judge_attempt
+    from .judge import poststeps
 
-    names = (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH, "quality_gates")
+    names = (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH, "quality_gates",
+             poststeps.CONTRACT_JEV_SWITCH)
     set_ = {name: switch_of(dispatch, name) for name in names}
     shape = shape_of(dispatch)
     if not any(set_.values()) and not shape:
@@ -1190,6 +1192,13 @@ def switches_summary(work: Path, dispatch: Mapping[str, Any] | None
         record = stored.get(SWITCH_GRAPH_SHAPE)
         summary[SWITCH_GRAPH_SHAPE] = (record if isinstance(record, Mapping)
                                        else {"value": shape})
+    arm = set_[poststeps.CONTRACT_JEV_SWITCH]
+    if arm:
+        # The Jev work-contract experiment's arm, only when the block set it,
+        # so `scripts/benchstat.py contract-jev` can tell the arms apart.
+        record = stored.get(poststeps.CONTRACT_JEV_SWITCH)
+        summary[poststeps.CONTRACT_JEV_SWITCH] = (record if isinstance(record, Mapping)
+                                                  else {"value": arm})
     return summary
 
 
