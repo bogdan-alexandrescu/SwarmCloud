@@ -26,6 +26,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadApprovals } from './api'
 import type { Result } from './fetch'
 import { Button, Dash } from './components'
+import { Explained } from './OverviewRegions'
 import { PersonName } from './PersonName'
 import { Absent as AbsentState } from './primitives'
 import { InApp, untilWords } from './Schedules'
@@ -361,7 +362,17 @@ function EmptyInbox({ kind, elsewhere, go }: { kind: string | null; elsewhere: n
       say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
     >
       {kind === null ? (
-        `No ${EVERY_KIND} waits for a person: the inbox was read and is empty.`
+        // THE KINDS ARE THE TOOLTIP (BGD's standing rule, 5 November 2026: no
+        // explanatory prose on the surface). The list grew a kind (contract
+        // judgment, PR #3255) and took the page past its prose ceiling; it is
+        // the drawn words' hover and accessible description now, still named
+        // from the chips' table (QA-048).
+        <>
+          <Explained className="apl-every" tip={`No ${EVERY_KIND} waits for a person.`}>
+            Nothing of any kind
+          </Explained>{' '}
+          is waiting: the inbox was read and is empty.
+        </>
       ) : elsewhere !== null && elsewhere > 0 ? (
         <span data-testid="apl-elsewhere">
           Nothing of this kind is waiting for a person. {pluralise(elsewhere, 'item')} {elsewhere === 1 ? 'waits' : 'wait'} under other kinds.{' '}
