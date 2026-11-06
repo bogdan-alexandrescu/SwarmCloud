@@ -138,6 +138,11 @@ def test_a_project_folder_that_cannot_be_written_falls_back_to_temp(where, monke
     assert "could not be written" in capsys.readouterr().err
 
 
+def test_the_slug_drops_either_kind_mark_with_sc():
+    assert launch.slug("SC ∴ nightly · 3 steps") == "nightly-3-steps"
+    assert launch.slug("SC · lane-a") == "lane-a"
+
+
 @pytest.mark.parametrize("title", [
     "SC · it's \"quoted\" / with\\slashes · 2 steps",
     "SC ∴ ünïcödé 中文 😀 · 1 step",
@@ -146,11 +151,6 @@ def test_a_project_folder_that_cannot_be_written_falls_back_to_temp(where, monke
     "SC · " + "x" * 400 + " · 1 step",
     "中文",
 ])
-def test_the_slug_drops_either_kind_mark_with_sc():
-    assert launch.slug("SC ∴ nightly · 3 steps") == "nightly-3-steps"
-    assert launch.slug("SC · lane-a") == "lane-a"
-
-
 def test_any_title_gives_a_valid_ascii_slug(title):
     slug = launch.slug(title)
     assert re.fullmatch(r"[A-Za-z0-9]+(-[A-Za-z0-9]+)*", slug), slug
@@ -210,7 +210,7 @@ def test_every_launch_path_appends_exactly_one_record_line(where, monkeypatch):
     assert len(lines) == 4
 
     submit, attach, attach_all, dispatch = lines
-    assert submit == {"workflow_id": "wf_1", "kind": "submit", "title": "SC · nightly · 3 steps",
+    assert submit == {"workflow_id": "wf_1", "kind": "submit", "title": "SC ∴ nightly · 3 steps",
                       "claude_session": SESSION, "repository": "github.com/acme/ci-runners",
                       "launched_at": submit["launched_at"], "name": "nightly"}
     assert (attach["workflow_id"], attach["kind"], attach["title"]) == ("wf_9", "attach", "SC ∴ attached one · 2 steps")

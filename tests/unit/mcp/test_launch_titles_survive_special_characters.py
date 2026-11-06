@@ -142,7 +142,13 @@ def test_every_hostile_title_names_a_valid_file_in_the_project_and_a_record_line
         server._call(_Recorder(), "swarm_workflow", {"spec": spec})
     lines = (folder / launch.RECORD_FILE).read_text(encoding="utf-8").split("\n")
     assert lines[-1] == "" and len(lines) == len(HOSTILE_TITLES) + 1, "one line per launch, none split"
-    assert [json.loads(line)["title"] for line in lines[:-1]] == [r["title"] for r in replies]
+    # The launch's title leaves the count out (SwarmCloud may still append
+    # steps); the submission's line, written once the workflow is served, has it.
+    assert [r["title"] for r in replies] == [launch.workflow_run_title(workflows.title_name(title=t), None)
+                                            for t in HOSTILE_TITLES]
+    assert [json.loads(line)["title"] for line in lines[:-1]] == [
+        launch._clip(launch.workflow_run_title(workflows.title_name(title=t), 3), launch.RECORD_TITLE_CHARS)
+        for t in HOSTILE_TITLES]
 
 
 def test_the_meta_lines_hold_no_raw_separator_or_surrogate_and_stay_readable(_plugin_root):
@@ -163,7 +169,7 @@ def test_a_spec_launch_with_a_hostile_title_parses_and_names_its_run(_plugin_roo
     got = _read(tmp_path, [Path(r["script_path"]) for r in replies])
     for title, reply, meta in zip(HOSTILE_TITLES, replies, got):
         assert meta["parses"] is True, (title, meta["parses"])
-        assert meta["name"] == reply["title"] == launch.workflow_run_title(workflows.title_name(title=title), 3)
+        assert meta["name"] == reply["title"] == launch.workflow_run_title(workflows.title_name(title=title), None)
 
 
 def test_an_attach_with_a_hostile_stored_title_parses_and_hands_the_name_back_as_an_arg(_plugin_root, tmp_path):
@@ -213,13 +219,14 @@ def test_attach_all_with_hostile_titles_writes_a_parsing_copy_per_workflow(_plug
 
 def test_single_task_rows_with_hostile_labels_parse_and_carry_each_label(_plugin_root, tmp_path):
     entries = [{"task_id": f"task_{i}", "label": title} for i, title in enumerate(HOSTILE_TITLES)]
-    reply = launch.for_tasks(entries)
-    meta = _read(tmp_path, [Path(reply["script_path"])])[0]
-    assert meta["parses"] is True, meta["parses"]
-    assert meta["name"] == reply["title"]
-    rows = json.loads(json.dumps(reply["args"]))["attach_tasks"]
-    assert [r["title"] for r in rows] == [workflows.title_name(stored=t) for t in
-                                          HOSTILE_TITLES[: launch.MAX_ATTACHED_TASKS]]
+    launches = launch.for_tasks(entries)["launches"]
+    assert len(launches) == len(HOSTILE_TITLES), "one copy per task"
+    got = _read(tmp_path, [Path(one["script_path"]) for one in launches])
+    for entry, one, meta in zip(entries, launches, got):
+        assert meta["parses"] is True, (entry["label"], meta["parses"])
+        assert meta["name"] == one["title"] == launch.task_run_title(entry)
+        rows = json.loads(json.dumps(one["args"]))["attach_tasks"]
+        assert [r["title"] for r in rows] == [workflows.title_name(stored=entry["label"])]
 
 
 def test_the_plugin_version_moved_past_the_release_before_h3_rows():

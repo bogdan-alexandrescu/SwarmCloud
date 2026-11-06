@@ -737,6 +737,11 @@ def record(kind: str, *, title: str, workflow_id: str | None = None, task_id: st
     line, never the launch -- the work is already in SwarmCloud."""
     from . import session
 
+    if task_id is None and title.startswith(workflows.TITLE_PREFIX):
+        # A workflow's line shows the run's kind as its run does: server.py's
+        # submission still titles it with workflows.workflow_title, whose
+        # prefix is the one dot of a single task.
+        title = f"SC {WORKFLOW_MARK} " + title[len(workflows.TITLE_PREFIX):]
     line: dict[str, Any] = (
         {"task_id": task_id} if task_id is not None else {"workflow_id": workflow_id}
     )

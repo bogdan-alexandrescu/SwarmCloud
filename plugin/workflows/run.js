@@ -41,8 +41,8 @@ export const meta = {
 //
 // THE RUN IS NAMED AFTER THE WORKFLOW. `meta` is a literal and a running
 // script cannot rename its run, so the plugin launches each run from a copy
-// of this script whose meta.name is `SC · <name> · N steps` (`SC · <label> ·
-// task` for single tasks) and whose meta.description starts with its DETAILS
+// of this script whose meta.name is `SC ∴ <name> · N steps` (`SC · <label>`
+// for a single task) and whose meta.description starts with its DETAILS
 // -- `Workspace: <workspace> (<tenant>) · Started by: ... · Profiles: ... ·
 // LLM: ... · Browser tool: ... · Session: ...` (SC-WS-DESC, then
 // SC-DESC-DETAILS, owner 2026-10-14) -- never with the workspace in the name
