@@ -138,6 +138,37 @@ def test_the_setting_is_seeded_with_todays_figures_from_code(client):
     assert opus["as_of"] == "2026-10-05"
 
 
+def test_the_seed_prices_sonnet_5_5_and_haiku_5_5_from_the_saved_pricing_page():
+    """BGD, 6 November 2026: the seed lists the sonnet and haiku classes'
+    pins at the provider's published figures, Haiku 5.5 with both of its
+    prompt-length tiers, each sourced to the page and dated the day it was
+    read (the saved copy, `pricing_page_2026-10-19.md`)."""
+    from swarm_api.schedtypes import model_prices_refresh as refresh
+
+    sonnet = modelprices.SEED["claude-sonnet-5-5"]
+    haiku = modelprices.SEED["claude-haiku-5-5"]
+
+    assert tuple(sonnet[r] for r in modelprices.RATES) == (2.0, 10.0, 0.10, 2.5)
+    assert "tiers" not in sonnet
+    assert tuple(haiku[r] for r in modelprices.RATES) == (0.10, 0.50, 0.01, 0.125)
+    assert haiku["tiers"] == [
+        {"up_to_prompt_tokens": 100_000, "input": 0.10, "output": 0.50, "cache_read": 0.01,
+         "cache_write": 0.125},
+        {"up_to_prompt_tokens": None, "input": 0.50, "output": 2.50, "cache_read": 0.05,
+         "cache_write": 0.625},
+    ]
+    for price in (sonnet, haiku):
+        assert price["source"] == refresh.PRICING_PAGE_URL
+        assert price["as_of"] == "2026-10-19"
+    # Every seeded entry is one the setting itself accepts, unchanged.
+    for name, price in modelprices.SEED.items():
+        assert modelprices.entry(price) == price, name
+    # A stopped attempt on either is estimated from the seed, not "cost not reported".
+    seeded = modelprices.table(None, present=False)
+    assert modelprices.estimate_cost({"claude-haiku-5-5": USAGE}, seeded) is not None
+    assert modelprices.estimate_cost({"claude-sonnet-5-5": USAGE}, seeded) is not None
+
+
 def test_a_malformed_stored_entry_prices_nothing():
     stored = {"claude-opus-5-5": _entry(input="4"), "claude-haiku-4-5": _entry()}
 
@@ -330,7 +361,8 @@ def test_a_malformed_tier_list_is_refused_and_a_stored_one_prices_nothing(client
 
     assert response.status_code == 422, response.text
     body = client.get("/v1/settings/model-prices", headers=auth_header("root")).json()
-    assert "claude-haiku-5-5" not in body["model_prices"]
+    # The refused PUT wrote nothing: the seed's entry stands.
+    assert body["model_prices"]["claude-haiku-5-5"] == modelprices.SEED["claude-haiku-5-5"]
     # Written straight to Firestore, it is dropped whole, never priced at its first tier.
     stored = modelprices.table({"claude-haiku-5-5": _entry(**HAIKU_55_LOW, tiers=tiers)},
                                present=True)

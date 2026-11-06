@@ -176,7 +176,7 @@ def test_a_step_waiting_on_its_parents_makes_no_streaming_read_and_says_why_once
     assert set(spy.calls) == {"task"}, f"a waiting row read more than the task: {spy.calls}"
     assert got["progress"] == [] and got["changed"] is False
     assert sum(clock.slept) == 600, "ONE call holds the whole wait"
-    assert max(clock.slept) <= 30, "a pending task is re-read at most every 30 s"
+    assert max(clock.slept) <= compact.IDLE_POLL_CAP_SECONDS, "a quiet task is re-read at most every minute"
     assert len(spy.calls) <= 25, f"{len(spy.calls)} task reads in ten minutes is a poll loop"
 
 

@@ -51,6 +51,7 @@ import {
   type StepState,
 } from '../AdminSetupSteps'
 import { restartSetupSmoke, type SetupState } from '../api'
+import { About, Explained } from '../AdminSetupHealth'
 import { Button, Chip, CodeBlock } from '../components'
 import '../styles/admin-setup.css'
 import '../styles/console-finish.css'
@@ -318,6 +319,8 @@ function TerminalLine({ state, ls, nowMs }: { state: SetupState; ls: Line[]; now
   let tone: 'ok' | 'live' | 'bad' | 'warn' = 'live'
   let head: ReactNode
   let line: ReactNode
+  // What the head means, behind it (BGD's no-prose rule, 2026-11-05).
+  let headTip: string | null = null
   if (ready !== null && host !== null) {
     tone = 'ok'
     head = 'swarm install finished and printed its ready line'
@@ -346,7 +349,8 @@ function TerminalLine({ state, ls, nowMs }: { state: SetupState; ls: Line[]; now
     head = `swarm install is running verify · check ${v.done + 1} of ${v.total}, ${checkWords(v.check)}`
     const left = v.expected_end === null ? null : v.expected_end * 1000 - nowMs
     const dl = v.deadline === null ? null : v.deadline * 1000 - nowMs
-    line = `${left === null ? 'End not recorded' : left > 0 ? `About ${spanWords(left / 1000)} left` : `${spanWords(-left / 1000)} past the expected end`}${dl === null ? '' : ` · stops at its deadline, in ${spanWords(Math.max(0, dl) / 1000)}`} · seen ${seen}. It prints its ready line when every check passes.`
+    headTip = 'It prints its ready line when every check passes.'
+    line = `${left === null ? 'End not recorded' : left > 0 ? `About ${spanWords(left / 1000)} left` : `${spanWords(-left / 1000)} past the expected end`}${dl === null ? '' : ` · stops at its deadline, in ${spanWords(Math.max(0, dl) / 1000)}`} · seen ${seen}.`
   } else if (state.finished !== null) {
     head = 'swarm install has the hand-over and is starting verify'
     line = `Seen ${seen}.${verifyUsual === null ? '' : ` Verify ${verifyUsual.replace('usually about', 'usually takes about')}.`}`
@@ -365,7 +369,8 @@ function TerminalLine({ state, ls, nowMs }: { state: SetupState; ls: Line[]; now
       </span>
       <div className="cfc-status-main">
         <p className="cfc-status-h">
-          <span className="cfc-status-k">Terminal</span> {head}
+          <span className="cfc-status-k">Terminal</span>
+          <About label="Terminal" tip="Every mark comes from the install record, read every 5 s; nothing here is ticked by hand." /> {headTip === null ? head : <Explained tip={headTip}>{head}</Explained>}
         </p>
         <p className="cfc-status-l">{line}</p>
       </div>
@@ -450,10 +455,13 @@ function CompactList({ ls, selected, following, onPick, nowMs, onePerson }: { ls
         <span className="cfc-addon-mark" aria-hidden>
           +
         </span>
-        Add-ons: optional, off. Each is turned on from the terminal later; the panel lists them.
-        <button type="button" className="cfc-link" onClick={() => onPick(null)} hidden={following}>
-          Follow the next step again
-        </button>
+        Add-ons: optional, off.
+        <About label="Add-ons" tip="Each is turned on from the terminal later; the panel lists them." />
+        {!following && (
+          <Button size="sm" kind="secondary" onClick={() => onPick(null)}>
+            Follow the next step again
+          </Button>
+        )}
       </p>
       {onePerson && <p className="cfc-note">One-person install: no team step and no invites. Your admins group was still made.</p>}
     </nav>
@@ -597,17 +605,20 @@ function VerifyBody({ state, onChanged }: { state: SetupState; onChanged: () => 
         />
       )}
       <p className="cfc-row-line">
-        {v.done} of {v.total} checks passed{v.result === null ? `; now ${checkWords(v.check)}` : ''}. The console task and workflow below are two of them.
+        <Explained tip="The console task and workflow below are two of them.">
+          {v.done} of {v.total} checks passed
+        </Explained>
+        {v.result === null ? `; now ${checkWords(v.check)}` : ''}.
       </p>
       <ConsoleChecks state={state} onChanged={onChanged} />
     </>
   )
 }
 
-function PanelHead({ kicker, line, children }: { kicker: string; line: Line; children?: ReactNode }) {
+function PanelHead({ kicker, tip, line, children }: { kicker: string; tip?: string; line: Line; children?: ReactNode }) {
   return (
     <header className="cfc-panel-head">
-      <p className="cfc-kicker">{kicker}</p>
+      <p className="cfc-kicker">{tip === undefined ? kicker : <Explained tip={tip}>{kicker}</Explained>}</p>
       <h2 className={`cfc-panel-h is-${line.state}`}>
         <StepMark state={line.state} />
         {line.name}
@@ -639,7 +650,7 @@ function Panel({ line, n, total, state, rows, nowMs, onChanged, following }: { l
   }
   return (
     <section className="cfc-panel" aria-label={`Step ${n}: ${line.name}`}>
-      <PanelHead kicker={`Step ${n} of ${total}${following ? ' · the panel follows the next step you can act on' : ' · picked by you'}`} line={line}>
+      <PanelHead kicker={`Step ${n} of ${total}${following ? '' : ' · picked by you'}`} tip={following ? 'The panel follows the next step you can act on.' : 'Follow the next step again, under the list, returns the panel to the next step you can act on.'} line={line}>
         <p className="cfc-panel-who">
           {line.state === 'done' ? (
             <span className="cfc-done">Done{line.since === null ? '' : ` at ${clock(line.since)}`}, from the install record</span>
@@ -745,7 +756,6 @@ export function ChecklistFinish({ state, now, onChanged, callback }: { state: Se
             <Panel line={line} n={i + 1} total={ls.length} state={state} rows={rows} nowMs={nowMs} onChanged={reread} following={following} />
           )}
           <ThisInstall state={state} />
-          <p className="cfc-prov">Every mark comes from the install record, read every 5 s; nothing here is ticked by hand.</p>
         </div>
       </div>
     </section>

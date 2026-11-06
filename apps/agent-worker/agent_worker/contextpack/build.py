@@ -57,6 +57,7 @@ from ..graphmcp.snapshot import (
     load_freshness_record,
 )
 from . import DELIVERY_SERVICE, PIN_FILE, PIN_MANIFEST_FILE, retrieve
+from .answer import brief_answer
 from .layout import (
     ARTIFACT_NAME,
     BUDGET_BYTES,
@@ -486,6 +487,9 @@ def _build(where: Path, snap: Snapshot, record: dict | None, source: Any, delive
     territory = list(dict.fromkeys(
         [*seeds.paths(), *(c.path for c in pool.rows() if c.kind == "caller" and c.hops == 1)]))
     in_flight = retrieve.in_flight(pool, read_json(where / INFLIGHT_FILE), territory)
+    # The graph's answer for the brief (`answer`), after the last check: a
+    # search the deadline cuts short is a section saying so, not a lost pack.
+    graph_answer = brief_answer(snap, seeds.brief)
     retrieve.cannot_push(pool, stage, blocked)
     retrieve.normalise_bm25(pool)
 
@@ -501,7 +505,7 @@ def _build(where: Path, snap: Snapshot, record: dict | None, source: Any, delive
     ranked = select(rows, kind)
     header = {"task_type": kind, "freshness": freshness, "jev": _jev(stage, j1),
               "seeds": seeds.as_dict()}
-    text, shown, paged = render_markdown(header, rows, ranked, in_flight)
+    text, shown, paged = render_markdown(header, rows, ranked, in_flight, answer=graph_answer)
     size = len(text.encode("utf-8"))
     tokens = -(-size // 4)
     arm = _arm(stage)
@@ -528,8 +532,12 @@ def _build(where: Path, snap: Snapshot, record: dict | None, source: Any, delive
         "delivery": delivery,
         "shards_read": source.shards_read,
         "bytes_read": source.bytes_read,
+        # Whether CONTEXT.md carried the graph's files, and how many: the next
+        # report tells an answer the agent ignored from one it never got.
+        "graph_answer": graph_answer.record(),
+        "graph_files": graph_answer.shown,
         "summary": (f"Context pack: {f'arm {arm}, ' if arm else ''}{shown_count} rows, "
-                    f"{tokens / 1000:.1f}k tokens"),
+                    f"{graph_answer.shown} graph files, {tokens / 1000:.1f}k tokens"),
     }
     write_atomically(where / CONTEXT_FILE, text.encode("utf-8"))
     write_atomically(where / PACK_FILE, dumps(pack))
