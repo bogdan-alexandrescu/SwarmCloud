@@ -162,6 +162,25 @@ def infra(world: World, cloud: Cloud, project: str, inputs: dict[str, Any], targ
     for key in keys:
         cloud.secrets.setdefault((project, key), {"name": f"projects/{cloud.number(project)}/secrets/{key}",
                                                   "labels": {"managed-by": "swarm-terraform"}})
+    # plugins.tf: the plugins bucket and its grants; the intake job only once
+    # the release carries its image. Installs declare no Terraform tenants, so
+    # no tenant read is made here (register-tenant.sh's, asked for).
+    plugins = f"{project}-swarm-plugins"
+    world.buckets.setdefault(plugins, {"name": plugins, "projectNumber": cloud.number(project),
+                                       "labels": {"managed-by": "swarm-terraform"}})
+    account = f"serviceAccount:{{}}@{project}.iam.gserviceaccount.com".format
+    cloud.bucket_policies[plugins] = {"etag": "BwE2E", "bindings": [
+        {"role": "roles/storage.objectUser", "members": [account("swarm-api")]},
+        {"role": "roles/storage.objectViewer", "members": [account("swarm-reconciler")]},
+        *({"role": "roles/storage.objectViewer", "members": [account(f"swarm-agent-worker-{t}")],
+           "condition": {"title": f"swarm-plugins-read-{t}", "expression":
+                         f'resource.name.startsWith("projects/_/buckets/{plugins}/objects/platform/")'}}
+          for t in inputs.get("tenants") or {}),
+    ]}
+    if (inputs.get("image_refs") or {}).get("swarm-plugin-intake"):
+        cloud.run_jobs["swarm-plugin-intake"] = {
+            "name": f"projects/{project}/locations/{region}/jobs/swarm-plugin-intake"}
+    outputs["plugins_bucket"] = plugins
     if hasattr(world, "make_namespace"):  # infra's kubernetes provider makes swarm-system
         world.make_namespace("swarm-system")  # type: ignore[attr-defined]
     hostname = str(inputs.get("frontend_hostname") or inputs.get("hostname") or world.hostname)
