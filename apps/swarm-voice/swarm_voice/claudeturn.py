@@ -36,7 +36,10 @@ planning class, `VOICE_PLANNER_MODEL` (Terraform's `local.runner_models.fable`),
 on both engines; own speech's fast front runs the haiku class,
 `VOICE_FRONT_MODEL` (`local.runner_models.haiku`), picked by first-reply
 latency. Both are set on the pod by voice.tf; the defaults below are the same
-pins, for a process started without them.
+pins, for a process started without them. A session may plan on another
+class's pin: Voice it › Settings' `planner_model`, which swarm-api reads at the
+session's start and sends in its start body (`admitted_model` checks it,
+`ClaudeCode.with_model` runs it); a session started without one keeps the pin.
 
 ONE WARM CHILD PER SESSION (`ClaudeCode.converse`, the front's): the same
 rules -- built environment, `--tools ""`, `--strict-mcp-config` with only the
@@ -54,6 +57,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import hmac
 import json
 import logging
@@ -66,6 +70,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+
+from swarm_common.profiles import MODEL_CLASSES
 
 from . import mcp_server, prompts
 
@@ -108,6 +114,12 @@ def planner_model() -> str:
 def front_model() -> str:
     """The fast front's model: VOICE_FRONT_MODEL, else the haiku class's pin."""
     return os.environ.get(FRONT_MODEL_ENV, "").strip() or FRONT_MODEL
+
+
+def admitted_model(model: str) -> bool:
+    """Whether `model` is the id of one of the pool's model classes
+    (`MODEL_CLASSES`' own rule): the only ids a start body may name."""
+    return any(c.admits(model) for c in MODEL_CLASSES.values())
 
 
 #: (tool name, arguments) -> (the text the model gets, whether it is an error).
@@ -210,6 +222,15 @@ class ClaudeCode:
         self.max_turns = max_turns
         self.python = python or sys.executable
         self.tmp_root = tmp_root
+
+    def with_model(self, model: str) -> "ClaudeCode":
+        """This launcher on `model`, for one session's turns; itself when it
+        already runs it."""
+        if model == self.model:
+            return self
+        other = copy.copy(self)
+        other.model = model
+        return other
 
     def args(self, *, system: str, mcp_config: str) -> list[str]:
         return [self.binary, "-p", "--model", self.model, "--output-format", "stream-json", "--verbose",
