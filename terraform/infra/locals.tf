@@ -1152,6 +1152,35 @@ locals {
       # deployed", and every Voice it route answers 503 voice_unavailable.
       # VOICE_IT_PEOPLE is unset on purpose: PLATFORM_OWNER, BGD alone (§1).
       SWARM_VOICE_URL = local.voice_url
+
+      # Voice it's own speech machine (voice_speech.tf; docs/design/
+      # voice-it-own-speech.md §3.2, §4, §5.3), read by
+      # swarm_api.voice.speech_machine.SpeechConfig.from_env. All empty while
+      # voice_speech is off: an empty SWARM_SPEECH_ADDR is "the engine is not
+      # deployed", and no speech route touches Compute.
+      #   _PROJECT/_ZONES/_INSTANCE: the one instance swarm-api starts and
+      #     stops (one zone, one machine; a stock-out falls back to text and
+      #     never tries a second zone).
+      #   _ADDR: the reserved internal address the relay dials on 8080.
+      #   _AUDIENCE: the ID token's audience the speech server checks; the
+      #     same constant the voice_speech output names.
+      #   _IMAGE: the release's swarm-speech digest (§5.3), written onto the
+      #     stopped machine at the next start. "" until the release pins it,
+      #     which swarm-api reads as "leave the instance's image as it is".
+      #   _SWEEP_AUDIENCE/_SWEEP_CALLERS: who may POST the two-minute sweep
+      #     (§4.5): a Cloud Scheduler OIDC token for swarm-api's own push
+      #     audience, from the doctor's account (§6 I4: it already holds
+      #     run.invoker on swarm-api, doctor.tf) while the doctor runs, or the
+      #     tick account, the scheduler identity this root already lists as
+      #     a platform caller. Empty callers means every sweep is refused.
+      SWARM_SPEECH_PROJECT        = local.voice_speech_on ? var.project_id : ""
+      SWARM_SPEECH_ZONES          = local.voice_speech_on ? var.voice_speech.zone : ""
+      SWARM_SPEECH_INSTANCE       = local.voice_speech_on ? google_compute_instance.speech[0].name : ""
+      SWARM_SPEECH_ADDR           = local.voice_speech_on ? google_compute_address.speech[0].address : ""
+      SWARM_SPEECH_AUDIENCE       = "swarm-speech"
+      SWARM_SPEECH_IMAGE          = local.voice_speech_on ? lookup(var.image_refs, "swarm-speech", "") : ""
+      SWARM_SPEECH_SWEEP_AUDIENCE = local.voice_speech_on ? local.push_audiences["swarm-api"] : ""
+      SWARM_SPEECH_SWEEP_CALLERS  = local.voice_speech_on ? join(",", concat([module.iam.tick_service_account], local.doctor_on ? [local.doctor_email] : [])) : ""
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, local.scheduler_typesafe_fwd_env, local.scheduler_settings_mac_env, local.model_class_env, {
       # local.scheduler_browser_egress_env: the browser egress switch the
