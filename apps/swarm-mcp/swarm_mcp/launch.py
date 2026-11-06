@@ -135,7 +135,8 @@ first), every copy for a workflow says `rows: "pane"`: ONE sc:finish row per
 workflow, whose only job is to notice the finish -- it holds each follow
 until the workflow's stage changes -- while the SwarmCloud pane beside the
 chat browses stages, agents and details with direct MCP calls and no model
-tokens. A batch of single tasks keeps its one summary row.
+tokens. A single task keeps its own run and its one sc:task row, in this
+layout as in every other but the band.
 
 THE BAND LAYOUT (SC-BAND, part of #2318; BGD, 2026-10-26). With the layout
 set to `band` (`/sc layout band`) the SwarmCloud view is a strip above the
