@@ -215,7 +215,9 @@ def test_each_writers_fields_are_the_ones_the_module_writes():
     assert judgment.unowned_covered_keys("top") == ()
     assert judgment.unowned_covered_keys("merge") == ()
     assert judgment.WRITER_FIELDS["plugins"] == (plugins.ALLOWED,)
-    assert judgment.unowned_covered_keys("plugins") == ()
+    # Contract request 140 covers the block's every-step defaults and settings
+    # digest; no swarm-api path writes them yet, so they are unowned.
+    assert judgment.unowned_covered_keys("plugins") == ("defaults", "configs_digest")
 
 
 # -- the readers ------------------------------------------------------------------
@@ -430,6 +432,27 @@ def test_a_resigned_document_reads_the_same_once_cut_over(client, seeded, api_co
     assert get_backend(client, "eng") == "typesafe"
     assert get_merge(client, "eng")["mode"] == "train"
     assert get_ci(client, "eng")["jev"] is True
+
+
+def test_the_plugins_writer_never_signs_a_planted_default():
+    """Contract request 140: `defaults` and `configs_digest` are covered, and
+    no swarm-api path writes them yet, so a value there was planted by a direct
+    write. `PluginsStore.put` drops it rather than signing it with the list
+    the admin chose."""
+    db = FakeFirestore()
+    key = new_key()
+    db.docs["workspace_settings/eng"] = {
+        "tenant_id": "eng",
+        "plugins": {"allowed": [], "defaults": ["gstack"], "configs_digest": "0" * 64,
+                    "note": "kept"},
+    }
+    store = plugins.PluginsStore(db, now=lambda: datetime(2026, 11, 6, tzinfo=UTC),
+                                 mac=judgment.SettingsMac(keys=(key,)))
+    store.put("eng", ["gstack"], by="root@example.com")
+    block = db.docs["workspace_settings/eng"]["plugins"]
+    assert "defaults" not in block and "configs_digest" not in block
+    assert block["note"] == "kept"  # a key outside the MAC is carried over, as before
+    assert reference_verifies(key, "eng", "plugins", block)
 
 
 def test_a_key_rotation_re_signs_the_plugins_list_the_route_wrote():
