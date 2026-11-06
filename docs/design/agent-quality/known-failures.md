@@ -271,6 +271,8 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_release_assemble.py` | `test_install_sh_is_posix_and_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_home.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_publish.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
+| `tests/unit/scripts/test_release_skips_switched_off_images.py` | `test_a_dev_release_whose_switch_is_not_literally_off_builds_it` | `skip_call` | root reads a file whatever its mode |
+| `tests/unit/scripts/test_release_skips_switched_off_images.py` | `test_a_manifest_holding_speech_with_its_switch_not_off_scans_and_promotes_it` | `skip_call` | root reads a file whatever its mode |
 | `tests/unit/scripts/test_resign_workspace_settings.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_roll_voice_workflows.py` | `<module>` | `skipif` | no workflow names swarm-voice yet: {PATCH_HINT} |
 | `tests/unit/scripts/test_sandbox_sync_git_failures.py` | `<module>` | `skipif` | git and jq are required |
