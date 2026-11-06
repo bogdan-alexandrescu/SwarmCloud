@@ -31,7 +31,7 @@ def test_one_text_key_per_question_its_words_alone(tmp_path: Path):
     folder = _write(tmp_path, [
         {"question": "Which database  should it use?", "options": [{"label": "Postgres"}]},
         {"question": "which database should it use?", "options": [{"label": "SQLite (small)"}]},
-        {"question": "Which region?", "options": []},
+        {"question": "Which region?", "options": [{"label": "eu"}]},
     ])
     summary = questions.summarise(folder, uploaded={questions.NAME})
     keys = summary[TEXT_DIGESTS_KEY]

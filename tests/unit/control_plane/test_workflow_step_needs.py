@@ -181,7 +181,8 @@ def test_answers_to_an_earlier_wait_never_hide_a_new_waits_questions(client, db)
     needs = _needs(client, "wf_new_wait")
 
     assert needs["question_wait"] is True
-    assert needs["questions"] == [{"index": 0, "question": "Which bucket?", "options": [], "recommended": None}]
+    assert needs["questions"] == [{"index": 0, "question": "Which bucket?", "options": [], "recommended": None,
+                                   "text_digest": hashlib.sha256(b"which bucket?").hexdigest()[:16]}]
 
 
 def test_questions_unread_is_bounded_by_the_workers_cap(client, db):
