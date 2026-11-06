@@ -41,7 +41,7 @@ vi.mock('../CheckpointBrowser', async (importOriginal) => {
   return { ...actual, ...ckpt }
 })
 
-const { WorkflowChangesTab } = await import('../WorkflowChanges')
+const { WorkflowChangesTab, AgentChanges } = await import('../WorkflowChanges')
 const { frameViewport, withTheme, decodeGitBase85, RENDER_CAP_BYTES } = await import('../RenderedFile')
 
 // ---------------------------------------------------------------------------
@@ -363,5 +363,23 @@ describe('the dev fixture: one desktop frame, one phone frame and one PNG', () =
     render(<Tab file={png} git={git} />)
     const img = await screen.findByRole('img', { name: png })
     expect(img.getAttribute('src')).toMatch(/^blob:/)
+  })
+})
+
+describe('the agent’s own Changes tab', () => {
+  it('opens an HTML file on Rendered, in the same empty sandbox; Diff draws the patch', async () => {
+    render(<AgentChanges task={stepTask('t_mock')} attempts={[attempt(1)]} file={DESK} onFile={() => {}} />)
+    const f = await frame()
+    expect(f.getAttribute('sandbox')).toBe('')
+    expect(f.hasAttribute('src')).toBe(false)
+    expect(f.getAttribute('srcdoc')).toContain('<h1>Settings</h1>')
+    fireEvent.click(screen.getByRole('button', { name: 'Diff' }))
+    expect(await screen.findByRole('region', { name: 'Diff lines' })).toBeTruthy()
+  })
+
+  it('a non-rendered file keeps today’s viewer alone', async () => {
+    render(<AgentChanges task={stepTask('t_mock')} attempts={[attempt(1)]} file={`${DIR}/frames.json`} onFile={() => {}} />)
+    expect(await screen.findByRole('region', { name: 'Diff lines' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Rendered' })).toBeNull()
   })
 })
