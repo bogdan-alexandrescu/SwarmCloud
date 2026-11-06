@@ -16757,3 +16757,55 @@ before the change verifies after it.
 
 Requested by the pull request that adds this section, on the owner's
 (BGD) answer of 4 November 2026 to its second question.
+
+## 139. `profiles.py`: `pull_request` declared as a runner input of claude-code, codex and claude-code-review (PR-CONTEXT-INPUT, pull request #3470, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026, picking "declare"
+on pull request #3470's question, and APPLIED by that pull request.
+
+### What is true today
+
+Read on that pull request's branch on 2026-11-06. The worker stages the
+pull request a step works on as `work/pull_request.md`
+(`agent_worker/pull_request.py`) and finds its number from the signed
+`publish_to_pr`, or the pull request its `builds_on` (or, for a single-pr
+reader or amender, its `pr_author`) step recorded opening. Before this
+change no profile declared `input.pull_request`, so swarm-api refused it
+with 422 `invalid_input` and a caller could not name the pull request
+itself.
+
+### The change
+
+`_PULL_REQUEST_INPUTS` declares `pull_request`, an integer 1..999999 (the
+`issue` input's bound, for the same reason), on claude-code and codex
+(`_CLI_AGENT_PR_INPUTS`) and claude-code-review
+(`_CLI_AGENT_REVIEW_INPUTS`). `pull_request.from_input` reads it only where
+the agent's profile declares it; it is read first, before `publish_to_pr`
+and `builds_on`. claude-code-large, claude-code-lightpanda,
+claude-code-browser and indexer do not gain it: the question named the
+three.
+
+### What it would break if accepted
+
+Nothing: a key a caller could not send before is now accepted on three
+profiles. The generated input tables in `docs/workflows.md` and
+`plugin/README.md` and the UI fixture's input contracts gain the row.
+
+### Invariants
+
+Invariant 10: the caller names a pull request by number, data, never an
+image, a command or a resource spec; the worker reads it read-only with the
+tenant's own forge credential, in the agent's own repository (invariant 9),
+and no token reaches the container.
+
+### How it is tested
+
+`tests/unit/mcp/test_runner_inputs.py` pins which profiles declare it and
+holds the key to the worker module that reads it;
+`tests/unit/worker/test_pull_request_context.py` reads it through
+`from_input` on the three and not on the others;
+`tests/unit/mcp/test_runner_input_prose.py` holds the generated tables.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, answering pull request #3470's question.

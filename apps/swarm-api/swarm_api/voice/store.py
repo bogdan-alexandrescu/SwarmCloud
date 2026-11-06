@@ -716,7 +716,15 @@ class VoiceStore:
         for snap in sessions:
             refs.extend(e.reference for e in snap.reference.collection(EVENTS).stream())
             refs.append(snap.reference)
-        for collection in (CARDS, TURNS):
+        # The visuals lane's documents (visuals.py names them; imported here
+        # because visuals.py imports this module). A visual's notes go before
+        # the visual, as a session's events go before the session, so a
+        # partial failure never orphans notes a retry could no longer list.
+        from . import visuals as vvis
+        for visual in project_ref.collection(vvis.VISUALS).stream():
+            refs.extend(n.reference for n in visual.reference.collection(vvis.NOTES).stream())
+            refs.append(visual.reference)
+        for collection in (CARDS, TURNS, vvis.POINTERS):
             refs.extend(s.reference for s in project_ref.collection(collection).stream())
         refs.extend(s.reference for s in self._starts(tenant_id, project_id)
                     if self._mine(s.to_dict(), tenant_id, person))

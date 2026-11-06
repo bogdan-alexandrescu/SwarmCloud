@@ -1151,6 +1151,14 @@ settings_mac_required = true
 
 # The Jev review of a contract at submission (swarm-api's SWARM_CONTRACT_REVIEW,
 # terraform/infra/variables.tf contract_review_mode). Rendered from 2026-11-04
-# (owner's choice) and left off, what swarm-api read while it was unset, so the
-# live plan changes no behaviour. "report" reviews and logs; "enforce" refuses.
-contract_review_mode = "off"
+# (owner's choice) and left off until BGD chose REPORT on 2026-11-06: each
+# contract is reviewed and the refusal or amendment it would make is logged,
+# never applied. It reviews only for a workspace whose own signed
+# contract_review setting is on. "enforce" refuses.
+contract_review_mode = "report"
+
+# Work contracts (swarm-api's SWARM_WORK_CONTRACTS, terraform/infra/variables.tf
+# work_contracts). On by BGD's choice of 2026-11-06, after he enabled gstack and
+# security-audit on Config > Plugins: off, swarm-api refuses every step that
+# names a plugin. A step with no contract and no plugins submits as before.
+work_contracts = "on"

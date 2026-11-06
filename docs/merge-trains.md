@@ -277,7 +277,12 @@ again; a second ejection at the same head is a CI-fix round's
 (`train_fix_pending`, the train run's failing jobs as its excerpt) when the
 step has rounds left; only after that round ends at the same head, or with no
 round, does it end FAILED `train_ejected` with the train's reason. One
-re-board per head, so it cannot loop. A `ready` removed by auto-merge.yml's
+re-board per head, so it cannot loop. Since 6 November 2026 (BGD: keep the
+train and fix red trains), that train ejects less often. It first re-runs a
+red train's failed jobs once. If the train is red again while main is red on
+the same checks, it closes `Held: main is red on <names>` and ejects nobody.
+Only otherwise does it bisect and eject
+([runbook](runbooks/merge-train.md#a-red-train)). A `ready` removed by auto-merge.yml's
 gate rather than the train still refuses at once. The step's wait record is
 tenant-writable: a forged one can at worst re-label once or refuse
 (docs/merge-step.md, "Revised 2026-11-03").

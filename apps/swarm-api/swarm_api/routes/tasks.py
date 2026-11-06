@@ -36,7 +36,7 @@ from starlette.concurrency import run_in_threadpool
 from swarm_common.models import Attempt, Task
 from swarm_common.states import TaskState
 
-from .. import agent_questions, contractreask, mergewake, roles
+from .. import agent_questions, contractreask, mergewake, roles, route_scope
 from ..agent_output import AgentOutputService
 from ..attempt_totals import IN_LIMIT as ATTEMPTS_IN_LIMIT
 from ..attempt_totals import PER_TASK_CAP as ATTEMPTS_PER_TASK_CAP
@@ -222,6 +222,7 @@ def _owner_filter(requested: str | None, auth: AuthContext, forced: str | None) 
 
 
 @router.get("")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_tasks(
     state: list[str] | None = Query(
         default=None,
@@ -794,6 +795,7 @@ def list_digests(
 
 
 @router.get("/{task_id}")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def get_task(
     task_id: str,
     tenant_id: str = Depends(tenant_scope),
@@ -1018,6 +1020,7 @@ def human_ready(
 
 
 @router.get("/{task_id}/events")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_events(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -1105,6 +1108,7 @@ def read_utilisation(
 
 
 @router.get("/{task_id}/attempts")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_attempts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -1160,6 +1164,7 @@ def list_attempts(
 
 
 @router.get("/{task_id}/artifacts")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_artifacts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -1197,6 +1202,7 @@ def list_artifacts(
 
 
 @router.get("/{task_id}/artifacts/content")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_artifact(
     task_id: str,
     name: str = Query(..., min_length=1, max_length=512),
@@ -1249,6 +1255,7 @@ def read_artifact(
 
 
 @router.get("/{task_id}/artifacts/raw", response_class=StreamingResponse)
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_artifact_raw(
     task_id: str,
     name: str = Query(..., min_length=1, max_length=512),
@@ -1315,6 +1322,7 @@ def read_artifact_raw(
 
 
 @router.get("/{task_id}/checkpoints")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def list_checkpoints(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -1363,6 +1371,7 @@ def list_checkpoints(
 
 
 @router.get("/{task_id}/logs")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_logs(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -1430,6 +1439,7 @@ def read_logs(
 
 
 @router.get("/{task_id}/transcript")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_transcript(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -1465,6 +1475,7 @@ def read_transcript(
 
 
 @router.get("/{task_id}/answer")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_answer(
     task_id: str,
     attempt_id: str | None = Query(default=None),
@@ -1516,6 +1527,7 @@ def read_questions(
 def answer_question(
     task_id: str,
     body: agent_questions.AnswerBody,
+    reply: Literal["full", "short"] = Query("full"),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
@@ -1546,18 +1558,43 @@ def answer_question(
     A `viewer` answers nothing (`role_member_required`, through its switch),
     their own task's agent included: the submitter's rule is on top of the
     role, never instead of it (workspace-roles.md §4.8).
+
+    `?reply=short` answers only `{status: "recorded", task_id,
+    question_index, recorded_at, by}`, no question text: a whole task's
+    questions are about 4,000 tokens, and closing ~400 finished tasks'
+    questions one by one cost ~1.6 million (AI Studio, 6 November 2026,
+    part of #2688). The answer is checked and stored exactly as with the
+    default `reply=full`, which is unchanged.
     """
     require_member(ctx, auth, fresh=True)
-    return agent_questions.answer_question(
+    now = ctx.now()
+    served = agent_questions.answer_question(
         ctx.store, service, ctx.db, tenant_id, task_id, body,
-        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
+        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=now,
         # A pick other than the one a merge went past starts a pick-fix
         # round against the default branch, as the answering member.
         start_pick_fix=lambda merge, claim: mergewake.advisory_pick_fix(ctx, auth, merge, claim),
     )
+    if reply == "full":
+        return served
+    # The stored answer as served; the moment and the caller this request
+    # stored it with when the read no longer shows it (a later attempt's
+    # question at that index).
+    questions = served.get("questions") or []
+    index = body.question_index
+    stored = questions[index].get("answer") if 0 <= index < len(questions) else None
+    stored = stored if isinstance(stored, dict) else {}
+    return {
+        "status": "recorded",
+        "task_id": task_id,
+        "question_index": index,
+        "recorded_at": stored.get("at") or now.isoformat(),
+        "by": stored.get("by") or auth.email,
+    }
 
 
 @router.get("/{task_id}/input")
+@route_scope.reachable_by(route_scope.CONTINUATION)
 def read_input(
     task_id: str,
     tenant_id: str = Depends(tenant_scope),
