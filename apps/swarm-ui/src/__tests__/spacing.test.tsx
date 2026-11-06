@@ -14,6 +14,8 @@
 // exactly one slice, every slice has a file that runs it, and the slices'
 // floors still add up to the 800 shapes the single sweep required.
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { SECTIONS } from '../App'
@@ -57,5 +59,24 @@ describe('spacing: the slices', () => {
     expect(SPACING_FLOOR_TOTAL).toBe(800)
     for (const g of SPACING_GROUPS) expect(g.floor, `${g.name} has no floor`).toBeGreaterThan(0)
     expect(SPACING_GROUPS.reduce((n, g) => n + g.floor, 0)).toBeGreaterThanOrEqual(SPACING_FLOOR_TOTAL)
+  })
+
+  // THE SLICES' RECORDED WEIGHTS (part of #2688, 2026-11-06). The CI split
+  // (scripts/lib/ui_shards.py) places a file by its weight in
+  // ui_test_durations.json and gives an unrecorded one 2.9 s, so a slice with
+  // no figure lands on a shard as if it were light: admin-setup had none and
+  // ran 670 s beside a full share of other files. A slice over a third of its
+  // 900 s timeout is one loaded runner from that timeout: accounts recorded
+  // 485 s and passed 900 s in six runs, its findings complete.
+  it('records every slice’s CI weight, each inside a third of its 900 s timeout', () => {
+    const weights = JSON.parse(
+      readFileSync(resolve(__dirname, '../../../../tests/unit/scripts/ui_test_durations.json'), 'utf8'),
+    ) as Record<string, number>
+    const files = SPACING_GROUPS.map((g) => `src/__tests__/spacing.${g.name}.test.tsx`)
+    expect(files.filter((f) => weights[f] === undefined), 'slices with no recorded weight').toEqual([])
+    expect(
+      files.filter((f) => weights[f] > 900 / 3).map((f) => `${f}: ${weights[f]} s`),
+      'slices over a third of the timeout: split them',
+    ).toEqual([])
   })
 })
