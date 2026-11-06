@@ -145,7 +145,9 @@ def test_an_undelivered_graph_is_one_line_saying_why_and_no_pack(tmp_path, monke
 
 # --- 3. the record: carried or not, and how many ----------------------------------
 
-def test_the_artifact_records_whether_the_pack_carried_graph_files(work, tmp_path):  # noqa: F811
+def test_the_artifact_records_whether_the_pack_carried_graph_files(  # noqa: F811
+        work, tmp_path, monkeypatch):
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
     ctx = _ctx(work, tmp_path, {"prompt": BRIEF})
     assert contextpack.prepare(ctx, work / "repo")
     record = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
@@ -161,6 +163,7 @@ def test_a_pack_that_failed_records_no_graph_files(work, tmp_path, monkeypatch):
         raise build.SnapshotError("broken")
 
     monkeypatch.setattr(build, "build_pack", broken)
+    monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
     ctx = _ctx(work, tmp_path, {"prompt": BRIEF})
     contextpack.prepare(ctx, work / "repo")
     record = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
