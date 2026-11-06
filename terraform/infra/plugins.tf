@@ -103,6 +103,26 @@ resource "google_storage_bucket" "plugins" {
 
   labels = merge(local.labels, { component = "plugins" })
 
+  # A pinned copy deleted by mistake (or by a wrong GC pass) is recoverable for
+  # a week; the reconciler's deletes leave a noncurrent version that ages out.
+  versioning {
+    enabled = true
+  }
+
+  logging {
+    log_bucket        = module.storage.access_log_bucket_name
+    log_object_prefix = "${var.name_prefix}-plugins"
+  }
+
+  lifecycle_rule {
+    condition {
+      days_since_noncurrent_time = 7
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
   # Intake leftovers: a quarantine object is deleted by swarm-api once its
   # intake ends, and staging/ is copied out; whatever a crash leaves goes after
   # a day. platform/ and tenants/ are the reconciler's (§9.3), never aged here.
@@ -145,7 +165,7 @@ resource "google_storage_bucket_iam_member" "plugins_intake_read" {
     expression  = local.plugins_prefix.quarantine
   }
 
-  depends_on = [google_service_account.plugin_intake]
+  depends_on = [data.google_service_account.plugin_intake]
 }
 
 # ...and creates its report and the normalised tar under staging/: create
@@ -161,7 +181,7 @@ resource "google_storage_bucket_iam_member" "plugins_intake_stage" {
     expression  = local.plugins_prefix.staging
   }
 
-  depends_on = [google_service_account.plugin_intake]
+  depends_on = [data.google_service_account.plugin_intake]
 }
 
 # Garbage collection (§9.3): the reconciler's daily sweep lists the pinned
@@ -237,20 +257,23 @@ resource "google_project_iam_member" "plugins_api_secret_versions" {
 # The intake job's account and network.
 # ---------------------------------------------------------------------------
 
-resource "google_service_account" "plugin_intake" {
-  project      = var.project_id
-  account_id   = local.plugin_intake_name
-  display_name = "Swarm plugin intake"
-  description  = "managed-by=swarm-terraform; the plugin intake job unpacks and checks one quarantined archive. Reads quarantine/, creates under staging/ of the plugins bucket; no project role, no secret, no database, no egress."
+# The account is a platform account, so terraform/bootstrap creates it
+# (bootstrap/plugin_intake.tf; plan §8) and this root reads it.
+data "google_service_account" "plugin_intake" {
+  project    = var.project_id
+  account_id = local.plugin_intake_name
 }
 
 # Deploying a job that runs as the account needs actAs on it.
 resource "google_service_account_iam_member" "plugin_intake_deployer_acts_as" {
   count = local.deployer_member != "" ? 1 : 0
 
-  service_account_id = google_service_account.plugin_intake.name
+  # Spelled, so the plan knows it; the read orders it after the account exists.
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${local.plugin_intake_email}"
   role               = "roles/iam.serviceAccountUser"
   member             = local.deployer_member
+
+  depends_on = [data.google_service_account.plugin_intake]
 }
 
 resource "google_compute_network" "plugin_intake" {
@@ -270,6 +293,13 @@ resource "google_compute_subnetwork" "plugin_intake" {
   # Cloud Storage through Google's network; no other route leaves it.
   private_ip_google_access = true
   description              = "managed-by=swarm-terraform; the plugin intake job's subnetwork, Private Google Access only."
+
+  # A job an archive takes over shows up here as refused connections.
+  log_config {
+    aggregation_interval = "INTERVAL_10_MIN"
+    flow_sampling        = 1
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "plugin_intake_deny_egress" {
@@ -379,7 +409,7 @@ resource "google_cloud_run_v2_job" "plugin_intake" {
 
   depends_on = [
     module.project_services,
-    google_service_account.plugin_intake,
+    data.google_service_account.plugin_intake,
     google_service_account_iam_member.plugin_intake_deployer_acts_as,
   ]
 }

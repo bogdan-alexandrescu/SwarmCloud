@@ -170,10 +170,10 @@ entries:
 - id: sa.swarm-plugin-intake
   kind: service-account
   scope: core
-  stage: 7
+  stage: 3
   provider: engine
   check: gcloud iam service-accounts describe swarm-plugin-intake@$P.iam.gserviceaccount.com
-  apply: terraform/infra/plugins.tf google_service_account.plugin_intake
+  apply: terraform/bootstrap/plugin_intake.tf google_service_account.plugin_intake (terraform/infra/plugins.tf reads it)
   verify: account exists and holds no project role
   explain: 'the intake job runs as it: no secret, no database, no egress (section 2.2)'
   guards: null
@@ -181,12 +181,14 @@ entries:
   depends_on:
   - api.iam
   evidence:
+  - terraform/bootstrap/plugin_intake.tf
   - terraform/infra/plugins.tf
   notes: null
-  step: infra.pass-1
+  step: bootstrap.pass-1
   refs:
     terraform:
-    - infra/google_service_account.plugin_intake
+    - bootstrap/google_service_account.plugin_intake
+    - infra/data.google_service_account.plugin_intake
 - id: iam-binding.plugin-intake-deployer-acts-as
   kind: iam-binding
   scope: core

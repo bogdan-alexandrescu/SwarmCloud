@@ -230,6 +230,24 @@ run "the_bucket_and_its_grants" {
   }
 }
 
+run "the_bucket_keeps_a_week_of_deleted_copies_and_logs_access" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition = (
+      google_storage_bucket.plugins.versioning[0].enabled == true
+      && length([for r in google_storage_bucket.plugins.lifecycle_rule : r if one(r.condition).days_since_noncurrent_time == 7 && one(r.action).type == "Delete"]) == 1
+      && google_storage_bucket.plugins.logging[0].log_object_prefix == "swarm-plugins"
+      && google_compute_subnetwork.plugin_intake.log_config[0].flow_sampling == 1
+    )
+    error_message = "the plugins bucket is versioned (noncurrent copies kept 7 days) with access logs, and the intake subnetwork logs every flow"
+  }
+}
+
 run "the_intake_job_has_no_egress_and_no_secret" {
   command = plan
 
