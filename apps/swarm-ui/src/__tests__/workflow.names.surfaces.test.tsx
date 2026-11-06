@@ -147,11 +147,11 @@ describe('the fixture workflows carry the about-fields swarm-api serves', () => 
     return (r as { data: import('../api').WorkflowBoard }).data
   }
 
-  it('a fixture facts card draws a description, one submitted and one generated, and one workflow has none', async () => {
+  it('a fixture facts card draws a submitted description, the same one marked when generated, and one workflow has none', async () => {
     const { workflows, taskById } = await board()
     const abouts = new Map(workflows.map((w) => [w.workflow_id, aboutOf(w)]))
     const sources = workflows.map((w) => (w as unknown as Record<string, unknown>).description_source).filter((s) => typeof s === 'string')
-    expect(new Set(sources)).toEqual(new Set(['submitted', 'generated']))
+    expect(new Set(sources)).toEqual(new Set(['submitted']))
     const none = [...abouts.values()].filter((a) => a.title === undefined && a.description === undefined)
     expect(none.length, "one fixture workflow keeps 'not recorded'").toBeGreaterThanOrEqual(1)
 
@@ -167,7 +167,10 @@ describe('the fixture workflows carry the about-fields swarm-api serves', () => 
     expect(container.querySelector('.wff-gen')).toBeNull()
     cleanup()
 
-    const generated = workflows.find((w) => (w as unknown as Record<string, unknown>).description_source === 'generated')!
+    // The generated mark is drawn on the submitted fixture with its source
+    // turned: the fixture that could carry one is the prose ratchet's page,
+    // whose card stays as main draws it (api.ts, the about-fields comment).
+    const generated = { ...submitted, description_source: 'generated' } as typeof submitted
     const g = render(<WorkflowFacts workflow={generated} taskById={taskById} started={null} now={Date.now()} />)
     expect(g.container.querySelector('.wff-gen'), 'a generated description is marked').not.toBeNull()
     expect(words(g.container.querySelector('.wff-text'))).toBe(aboutOf(generated).description)

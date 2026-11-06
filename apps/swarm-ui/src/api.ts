@@ -6599,9 +6599,13 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
   // WHAT SWARM-API SERVES ABOUT EACH WORKFLOW (`routes/workflows.py`
   // `workflow_about`; the facts card's follow-up, part of #2688): read off its
   // first step task, so the title is the one its steps carry and the
-  // repository is theirs. One submitted description, one a model generated;
-  // wf_bcdc9180e4fb4a209f31 stands for an API older than the route and
-  // carries none of the keys, so the card's 'not recorded' is still drawn.
+  // repository is theirs. wf_audit_01 carries a submitted description and
+  // every fact. wf_5e5ad3b6f7da4299a839 carries its title alone: the prose
+  // ratchet's workflow pages (proseapp.tsx) and the overscroll test render it,
+  // and its facts card stays as main draws it, so a fixture adds no words and
+  // no box to those pages. wf_bcdc9180e4fb4a209f31 stands for an API older
+  // than the route and carries none of the keys, so the card's 'not recorded'
+  // is still drawn.
   const repositoryUrl = 'https://github.com/example-org/agent-swarm-infra'
   const about: Record<string, Record<string, unknown>> = {
     wf_audit_01: {
@@ -6615,12 +6619,6 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
     },
     wf_5e5ad3b6f7da4299a839: {
       title: FIXTURE_WORKFLOW_TITLES.wf_5e5ad3b6f7da4299a839,
-      description:
-        'Checks five contract invariants in parallel (cold start, fencing, all-or-nothing reservation, checkpoints, absent-is-zero), then writes one synthesis of what holds and what does not.',
-      description_source: 'generated',
-      feature: null,
-      started_from: 'console',
-      repository_url: repositoryUrl,
     },
   }
   for (let i = 0; i < workflows.length; i++) {
