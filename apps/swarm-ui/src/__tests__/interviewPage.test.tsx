@@ -53,8 +53,8 @@ function questions(over: Partial<InterviewQuestions> = {}): InterviewQuestions {
         answer: { question_index: 1, question: 'Show the price breakdown?', choice: 'Yes', text: null, by: 'kenji.sato@example.com', at: '2026-10-19T10:30:00Z', via: null, session: null, history: [] } },
       { question: 'Where does the timer sit?', context: 'The hold on a room lasts 10 minutes.', recommended: 'Summary (Recommended)',
         options: [
-          { label: 'Summary (Recommended)', description: 'In the order summary', preview: design('summary') } as never,
-          { label: 'Header', description: 'In the page header', preview: design('header') } as never,
+          { label: 'Summary (Recommended)', description: 'In the order summary', preview: design('summary') },
+          { label: 'Header', description: 'In the page header', preview: design('header') },
           { label: 'Footer', description: 'Pinned at the foot' },
         ],
         answer: null, blocking: true },
@@ -129,6 +129,55 @@ describe('the pending question', () => {
     expect(footer.textContent).toContain('No design came with this option.')
   })
 
+  it('gives every design frame a sandbox attribute that is exactly empty, and its HTML as srcdoc, never src', () => {
+    draw()
+    const frames = [...document.querySelectorAll('iframe')]
+    expect(frames).toHaveLength(2)
+    for (const f of frames) {
+      expect(f.hasAttribute('sandbox')).toBe(true)
+      expect(f.getAttribute('sandbox')).toBe('')
+      expect(f.hasAttribute('srcdoc')).toBe(true)
+      expect(f.hasAttribute('src')).toBe(false)
+    }
+  })
+
+  it('runs no script a design carries', () => {
+    const ran = window as unknown as { __ivDesignRan?: boolean }
+    delete ran.__ivDesignRan
+    const q = questions()
+    const hostile = '<!doctype html><html><body><p id="d-hostile">x</p><script>window.__ivDesignRan = true; window.parent.__ivDesignRan = true; top.__ivDesignRan = true</script><img src="x" onerror="parent.__ivDesignRan = true"></body></html>'
+    q.questions[2] = { ...q.questions[2]!, options: [{ label: 'Summary (Recommended)', description: null, preview: hostile }, { label: 'Header', description: null }] }
+    draw(q)
+    const frame = document.querySelector('iframe')!
+    expect(frame.getAttribute('sandbox')).toBe('')
+    expect(frame.getAttribute('srcdoc')).toContain('<script>')
+    expect(ran.__ivDesignRan).toBeUndefined()
+    expect(document.getElementById('d-hostile')).toBeNull()
+    expect(document.querySelector('script, img[onerror]')).toBeNull()
+  })
+
+  it('keeps the reason a design was dropped behind an (i), and draws no frame for it', () => {
+    const q = questions()
+    const reason = 'the preview is larger than the 8192 characters one option may show'
+    q.questions[2] = { ...q.questions[2]!, options: [
+      { label: 'Summary (Recommended)', description: null, preview: design('summary') },
+      { label: 'Header', description: null, preview: null, preview_dropped: reason },
+    ] }
+    draw(q)
+    const header = screen.getAllByRole('listitem').find((li) => li.textContent?.includes('Header'))!
+    expect(header.querySelector('iframe')).toBeNull()
+    const tip = within(header).getByRole('button', { name: 'About the design' })
+    const box = document.getElementById(tip.getAttribute('aria-describedby')!)!
+    expect(box.hidden).toBe(true)
+    expect(box.textContent).toBe(reason)
+    fireEvent.click(tip)
+    expect(box.hidden).toBe(false)
+    // An option that served no design keeps today's card, with no (i).
+    const summary = screen.getAllByRole('listitem').find((li) => li.textContent?.includes('Summary'))!
+    expect(summary.querySelector('iframe')).not.toBeNull()
+    expect(within(summary).queryByRole('button', { name: 'About the design' })).toBeNull()
+  })
+
   it('enlarges a design to full size, still sandboxed', () => {
     draw()
     fireEvent.click(screen.getAllByRole('button', { name: 'Enlarge' })[1]!)
@@ -177,6 +226,17 @@ describe('the rail', () => {
     expect(items[2]!.textContent).toContain('Waiting for an answer')
     const head = within(rail).getByLabelText('Where they were answered')
     expect(head.textContent).toBe('Console 1where: not recorded 1')
+  })
+
+  it('shows an answer given by voice as Voice it', () => {
+    const q = questions()
+    q.questions[1] = { ...q.questions[1]!, answer: { ...q.questions[1]!.answer!, via: 'voice-it' } }
+    draw(q)
+    const rail = screen.getByRole('navigation', { name: 'Questions answered so far' })
+    const items = within(rail).getAllByRole('listitem')
+    expect(items[1]!.querySelector('.iv-via')!.textContent).toBe('Voice it')
+    expect(items[1]!.querySelector('.iv-via')!.className).toContain('is-voice-it')
+    expect(within(rail).getByLabelText('Where they were answered').textContent).toBe('Console 1Voice it 1')
   })
 
   it('words every place an answer can come from', () => {
