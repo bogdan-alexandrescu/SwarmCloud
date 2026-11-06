@@ -232,7 +232,7 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
     expect(at(table, 'width')).toBe('100%')
     expect(at(wrap, 'overflow')).toBe('hidden')
     const heads = [...document.querySelectorAll('.wfg-table thead th')]
-    expect(heads.map((h) => h.textContent)).toEqual(['State', 'Workflow', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
+    expect(heads.map((h) => h.textContent)).toEqual(['State', 'Workflow', 'Repository', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
     expect(heads.filter((h) => at(h, 'display') === 'none')).toEqual([])
     // The name's cell takes every pixel the others leave, and is cut there
     // with its whole text in its link's title; no cell wraps.
