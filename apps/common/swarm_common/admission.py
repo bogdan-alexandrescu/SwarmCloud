@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 from .models import (
     Lease,
@@ -151,55 +151,14 @@ class TransactionLike(Protocol):
     def update(self, ref: Any, data: dict[str, Any]) -> None: ...
 
 
-def acquire_lease_in_transaction(
-    txn: TransactionLike,
-    *,
-    db: Any,
-    task: Task,
-    units: int,
-    backend: str,
-    config: AdmissionConfig,
-    now: datetime | None = None,
-) -> Lease:
-    """Reserve every required pool and mint a lease, atomically.
-
-    Raises AdmissionDenied if the task is no longer READY or any pool is full.
-    The caller runs this inside `firestore.transactional`, so a concurrent
-    winner causes Firestore to abort and re-run this function against fresh
-    reads -- which is what makes the last-slot race resolve to exactly one
-    winner rather than two.
-    """
-    now = now or utcnow()
-
-    task_ref = db.collection("tasks").document(task.id)
-    snapshot = _snapshot(txn.get(task_ref))
-    if not snapshot.exists:
-        raise AdmissionDenied([{"reason": "task_missing"}])
-
-    current = snapshot.to_dict()
-
-    # Re-read rather than trusting the caller's copy: the task may have been
-    # cancelled or admitted by another scheduler since it was queried.
-    if current.get("state") != TaskState.READY.value:
-        raise AdmissionDenied([{"reason": "not_ready", "state": current.get("state")}])
-    if current.get("cancel_requested"):
-        raise AdmissionDenied([{"reason": "cancel_requested"}])
-
-    required = pool_names_for(
-        tenant_id=task.tenant_id,
-        provider=task.provider,
-        resource_class=task.resource_class,
-        runner_profile=task.runner_profile,
-        backend=backend,
-    )
-
-    taken = reserved_pool_units(required, units)
-    pool_refs = {name: db.collection("pools").document(name) for name in required}
+def _read_pools(txn: TransactionLike, pool_refs: dict[str, Any]) -> dict[str, SlotPool]:
+    """Read each pool once. A pool with no document is absent: unlimited, and
+    never written."""
     pools: dict[str, SlotPool] = {}
     for name, ref in pool_refs.items():
         snap = _snapshot(txn.get(ref))
         if snap.exists:
-            d = snap.to_dict()
+            d = snap.to_dict() or {}
             # A missing or null `hard_limit` is None: no ceiling was set, and
             # `evaluate_capacity` refuses with POOL_LIMIT_UNSET (request 38).
             pools[name] = SlotPool(
@@ -210,14 +169,47 @@ def acquire_lease_in_transaction(
                 active=d.get("active", 0),
                 enabled=d.get("enabled", True),
             )
+    return pools
 
-    blockers = evaluate_capacity(pools, required, units)
-    if blockers:
-        raise AdmissionDenied(blockers)
 
+def _readiness_denial(current: dict[str, Any] | None) -> AdmissionDenied | None:
+    """Why a re-read task cannot be admitted, or None when it can.
+
+    Re-read rather than trusting the caller's copy: the task may have been
+    cancelled or admitted by another scheduler since it was queried.
+    """
+    if current is None:
+        return AdmissionDenied([{"reason": "task_missing"}])
+    if current.get("state") != TaskState.READY.value:
+        return AdmissionDenied([{"reason": "not_ready", "state": current.get("state")}])
+    if current.get("cancel_requested"):
+        return AdmissionDenied([{"reason": "cancel_requested"}])
+    return None
+
+
+def _required_pools(task: Task, backend: str) -> list[str]:
+    return pool_names_for(
+        tenant_id=task.tenant_id,
+        provider=task.provider,
+        resource_class=task.resource_class,
+        runner_profile=task.runner_profile,
+        backend=backend,
+    )
+
+
+def _mint_lease(
+    task: Task,
+    current: dict[str, Any],
+    *,
+    required: list[str],
+    units: int,
+    taken: dict[str, int],
+    config: AdmissionConfig,
+    now: datetime,
+) -> Lease:
     generation = int(current.get("current_generation", 0)) + 1
     attempt_id = new_id("att")
-    lease = Lease(
+    return Lease(
         lease_id=new_id("lease"),
         task_id=task.id,
         attempt_id=attempt_id,
@@ -232,15 +224,17 @@ def acquire_lease_in_transaction(
         expires_at=now + timedelta(seconds=config.lease_timeout_seconds),
     )
 
-    # Reserve every pool. Because this runs inside the transaction, either all of
-    # these increments land or none of them do. Each takes what `taken` says,
-    # and the lease records it, so release gives back exactly this.
-    for name in required:
-        pool = pools.get(name)
-        if pool is None:
-            continue
-        txn.update(pool_refs[name], {"active": pool.active + taken[name], "updated_at": now})
 
+def _write_lease_and_task(
+    txn: TransactionLike,
+    *,
+    db: Any,
+    task_ref: Any,
+    lease: Lease,
+    current: dict[str, Any],
+    now: datetime,
+) -> None:
+    """The lease document and the task's READY -> LEASED write."""
     txn.set(
         db.collection("leases").document(lease.lease_id),
         {
@@ -267,13 +261,180 @@ def acquire_lease_in_transaction(
         {
             "state": TaskState.LEASED.value,
             "current_lease_id": lease.lease_id,
-            "current_generation": generation,
+            "current_generation": lease.generation,
             "attempt_count": int(current.get("attempt_count", 0)) + 1,
             "blocked_by": [],
             "updated_at": now,
         },
     )
+
+
+def acquire_lease_in_transaction(
+    txn: TransactionLike,
+    *,
+    db: Any,
+    task: Task,
+    units: int,
+    backend: str,
+    config: AdmissionConfig,
+    now: datetime | None = None,
+) -> Lease:
+    """Reserve every required pool and mint a lease, atomically.
+
+    Raises AdmissionDenied if the task is no longer READY or any pool is full.
+    The caller runs this inside `firestore.transactional`, so a concurrent
+    winner causes Firestore to abort and re-run this function against fresh
+    reads -- which is what makes the last-slot race resolve to exactly one
+    winner rather than two.
+    """
+    now = now or utcnow()
+
+    task_ref = db.collection("tasks").document(task.id)
+    snapshot = _snapshot(txn.get(task_ref))
+    current = (snapshot.to_dict() or {}) if snapshot.exists else None
+    denial = _readiness_denial(current)
+    if denial is not None:
+        raise denial
+    assert current is not None
+
+    required = _required_pools(task, backend)
+    taken = reserved_pool_units(required, units)
+    pool_refs = {name: db.collection("pools").document(name) for name in required}
+    pools = _read_pools(txn, pool_refs)
+
+    blockers = evaluate_capacity(pools, required, units)
+    if blockers:
+        raise AdmissionDenied(blockers)
+
+    lease = _mint_lease(
+        task, current, required=required, units=units, taken=taken, config=config, now=now
+    )
+
+    # Reserve every pool. Because this runs inside the transaction, either all of
+    # these increments land or none of them do. Each takes what `taken` says,
+    # and the lease records it, so release gives back exactly this.
+    for name in required:
+        pool = pools.get(name)
+        if pool is None:
+            continue
+        txn.update(pool_refs[name], {"active": pool.active + taken[name], "updated_at": now})
+
+    _write_lease_and_task(txn, db=db, task_ref=task_ref, lease=lease, current=current, now=now)
     return lease
+
+
+@dataclass(frozen=True)
+class AdmissionRequest:
+    """One task of a batched admission (`acquire_leases_in_transaction`): the
+    units and backend `acquire_lease_in_transaction` takes as arguments."""
+
+    task: Task
+    units: int
+    backend: str
+
+
+def acquire_leases_in_transaction(
+    txn: TransactionLike,
+    *,
+    db: Any,
+    requests: Sequence[AdmissionRequest],
+    config: AdmissionConfig,
+    now: datetime | None = None,
+    before_writes: Callable[[list[Lease | AdmissionDenied]], None] | None = None,
+) -> list[Lease | AdmissionDenied]:
+    """Admit a batch of tasks in ONE transaction. One outcome per request, in order.
+
+    Contract request 139. `acquire_lease_in_transaction` reads, then writes,
+    so it cannot run twice in one transaction (Firestore refuses a read after
+    a write). This is the same admission for many tasks, with every pool
+    document the batch needs READ ONCE and WRITTEN ONCE, with the sum of what
+    the admitted tasks take: the per-task transaction wrote `pools/global`
+    once per task, against Firestore's sustained ceiling of about one write
+    per second per document.
+
+    EACH TASK IS STILL ALL-OR-NOTHING (invariant 2). The requests are judged
+    in the order given, each against the pools as the tasks before it in this
+    batch left them, by `evaluate_capacity`. A task that fits takes its share
+    in EVERY pool it needs; one that does not takes nothing, stays READY and
+    gets its `AdmissionDenied` (returned, not raised); the rest of the batch
+    still admits. Firestore commits the batch whole or not at all, so no task
+    is ever half-reserved.
+
+    The per-task rules are the single function's, through the same helpers:
+    the task is re-read and must be READY with no cancel requested; the pools
+    are `pool_names_for`; the shares are `reserved_pool_units`; a missing pool
+    is unlimited and not written; the fencing generation is
+    `current_generation + 1` (invariant 5); the lease document and the task's
+    write are the same code. A request repeated in one batch is admitted
+    once; its repeat is denied `not_ready`, as the next transaction would.
+
+    `before_writes`, when given, is called with the outcomes after every read
+    and decision and before the first write, so a caller can make its own
+    reads in this transaction (a workflow's derived state) and write after
+    this returns.
+    """
+    now = now or utcnow()
+    if not requests:
+        return []
+
+    # EVERY READ BEFORE ANY WRITE: the tasks, then each pool once.
+    task_refs = [db.collection("tasks").document(r.task.id) for r in requests]
+    stored: list[dict[str, Any] | None] = []
+    for ref in task_refs:
+        snap = _snapshot(txn.get(ref))
+        stored.append((snap.to_dict() or {}) if snap.exists else None)
+    required = [_required_pools(r.task, r.backend) for r in requests]
+    pool_refs = {
+        name: db.collection("pools").document(name) for names in required for name in names
+    }
+    pools = _read_pools(txn, pool_refs)
+    stored_active = {name: pool.active for name, pool in pools.items()}
+
+    outcomes: list[Lease | AdmissionDenied] = []
+    admitted: list[tuple[int, Lease]] = []
+    seen: set[str] = set()
+    for i, request in enumerate(requests):
+        task, current = request.task, stored[i]
+        if current is not None and task.id in seen:
+            outcomes.append(
+                AdmissionDenied([{"reason": "not_ready", "state": TaskState.LEASED.value}])
+            )
+            continue
+        denial = _readiness_denial(current)
+        if denial is not None:
+            outcomes.append(denial)
+            continue
+        assert current is not None
+        # Judged against the pools AS THIS BATCH HAS LEFT THEM so far.
+        blockers = evaluate_capacity(pools, required[i], request.units)
+        if blockers:
+            outcomes.append(AdmissionDenied(blockers))
+            continue
+        taken = reserved_pool_units(required[i], request.units)
+        for name in required[i]:
+            pool = pools.get(name)
+            if pool is not None:
+                pool.active += taken[name]
+        seen.add(task.id)
+        lease = _mint_lease(
+            task, current, required=required[i], units=request.units, taken=taken,
+            config=config, now=now,
+        )
+        outcomes.append(lease)
+        admitted.append((i, lease))
+
+    if before_writes is not None:
+        before_writes(list(outcomes))
+
+    # The writes. Each pool once, with the batch's sum.
+    for name, pool in pools.items():
+        if pool.active != stored_active[name]:
+            txn.update(pool_refs[name], {"active": pool.active, "updated_at": now})
+    for i, lease in admitted:
+        _write_lease_and_task(
+            txn, db=db, task_ref=task_refs[i], lease=lease, current=stored[i] or {}, now=now
+        )
+    return outcomes
 
 
 def release_lease_in_transaction(

@@ -57,9 +57,10 @@ from google.cloud.firestore_v1.field_path import FieldPath
 from swarm_common.admission import (
     AdmissionConfig,
     AdmissionDenied,
+    AdmissionRequest,
     _snapshot,
     acquire_lease_in_transaction,
-    evaluate_capacity,
+    acquire_leases_in_transaction,
     release_lease_in_transaction,
 )
 from swarm_common.models import (
@@ -73,8 +74,6 @@ from swarm_common.models import (
     Tenant,
     Workflow,
     new_id,
-    pool_names_for,
-    reserved_pool_units,
     retries_exhausted,
     utcnow,
 )
@@ -199,16 +198,6 @@ def platform_refusal_backoff(parks: int) -> timedelta:
 #: fenced this attempt and the task still points at its lease.
 _RECLAIM_PENDING = "pending"    # lease unreleased: left for the reconciler
 _RECLAIM_FINISHED = "finished"  # lease released, task not returned: finished here
-
-
-@dataclass(frozen=True)
-class AdmissionRequest:
-    """One task of a batched admission (`SchedulerStore.acquire_leases`): the
-    units and backend `acquire_lease` takes as arguments."""
-
-    task: Task
-    units: int
-    backend: str
 
 
 @dataclass(frozen=True)
@@ -2078,17 +2067,17 @@ class SchedulerStore:
         admits. Firestore commits the batch whole or not at all, so no task
         is ever half-reserved: an abort writes nothing for any of them.
 
-        THE SAME RULES AS THE FROZEN `acquire_lease_in_transaction`, which
-        reads then writes per task and so cannot run twice in one transaction
-        (Firestore refuses a read after a write): the task is re-read and must
-        be READY with no cancel requested; the pools are `pool_names_for`;
-        the shares are `reserved_pool_units`; a missing pool is unlimited and
-        not written; the fencing generation is `current_generation + 1`
-        (invariant 5); the lease, its documents and the task's write are the
-        frozen function's field for field. Concurrency still counts from the
-        LEASED task (invariant 3). A two-scheduler race is the same race as
-        before: each pool this read is in the read set, so a commit by anyone
+        THE ADMISSION IS THE FROZEN `acquire_leases_in_transaction` (contract
+        request 139, the owner's pick on PR 3493), which shares its per-task
+        checks, lease document and task write with `acquire_lease_in_transaction`
+        rather than this store restating them: the task is re-read and must be
+        READY with no cancel requested; the fencing generation is
+        `current_generation + 1` (invariant 5). Concurrency still counts from
+        the LEASED task (invariant 3). A two-scheduler race is the same race as
+        before: each pool it read is in the read set, so a commit by anyone
         else aborts this one and Firestore re-runs it against fresh reads.
+        This store adds only the workflows' derived state, read through the
+        frozen function's `before_writes` hook.
 
         A request repeated in one batch is admitted once; its repeat is denied
         `not_ready`, as it would be by the next transaction.
@@ -2108,147 +2097,38 @@ class SchedulerStore:
             nonlocal runs
             runs += 1
             now = self._now()
-            # EVERY READ BEFORE ANY WRITE: the tasks, each pool once, then the
-            # workflows of what was admitted.
-            task_refs = [self._db.collection(TASKS).document(r.task.id) for r in requests]
-            stored: list[dict[str, Any] | None] = []
-            for ref in task_refs:
-                snap = _snapshot(txn.get(ref))
-                stored.append((snap.to_dict() or {}) if snap.exists else None)
-            required = [
-                pool_names_for(
-                    tenant_id=r.task.tenant_id,
-                    provider=r.task.provider,
-                    resource_class=r.task.resource_class,
-                    runner_profile=r.task.runner_profile,
-                    backend=r.backend,
-                )
-                for r in requests
-            ]
-            pool_refs = {
-                name: self._db.collection(POOLS).document(name)
-                for names in required
-                for name in names
-            }
-            pools: dict[str, SlotPool] = {}
-            for name, ref in pool_refs.items():
-                snap = _snapshot(txn.get(ref))
-                if snap.exists:
-                    d = snap.to_dict() or {}
-                    pools[name] = SlotPool(
-                        name=name,
-                        hard_limit=d.get("hard_limit"),
-                        adaptive_target=d.get("adaptive_target"),
-                        quota_derived_limit=d.get("quota_derived_limit"),
-                        active=d.get("active", 0),
-                        enabled=d.get("enabled", True),
+            workflows: list[Any] = []
+
+            def _read_workflows(outcomes: list[Lease | AdmissionDenied]) -> None:
+                # READY -> LEASED moves each workflow's derived state (#2838),
+                # as `acquire_lease` writes it; one write per workflow, derived
+                # with every step of it this batch admits. Read here, after
+                # the frozen admission's reads and before its first write:
+                # Firestore refuses a read after a write.
+                changed: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+                for request, outcome in zip(requests, outcomes):
+                    task = request.task
+                    if isinstance(outcome, Lease) and task.workflow_id:
+                        changed.setdefault((task.tenant_id, task.workflow_id), {})[task.id] = {
+                            "workflow_id": task.workflow_id, "tenant_id": task.tenant_id,
+                            "state": TaskState.LEASED.value,
+                        }
+                workflows.extend(
+                    derived_state_write(
+                        txn, self._db, tenant_id=tenant_id, workflow_id=workflow_id,
+                        now=now, changed=docs,
                     )
-            stored_active = {name: pool.active for name, pool in pools.items()}
+                    for (tenant_id, workflow_id), docs in changed.items()
+                )
 
-            outcomes: list[Lease | AdmissionDenied] = []
-            admitted: list[tuple[int, Lease]] = []
-            seen: set[str] = set()
-            for i, request in enumerate(requests):
-                task, current = request.task, stored[i]
-                if current is None:
-                    outcomes.append(AdmissionDenied([{"reason": "task_missing"}]))
-                    continue
-                if task.id in seen:
-                    outcomes.append(AdmissionDenied(
-                        [{"reason": "not_ready", "state": TaskState.LEASED.value}]))
-                    continue
-                if current.get("state") != TaskState.READY.value:
-                    outcomes.append(AdmissionDenied(
-                        [{"reason": "not_ready", "state": current.get("state")}]))
-                    continue
-                if current.get("cancel_requested"):
-                    outcomes.append(AdmissionDenied([{"reason": "cancel_requested"}]))
-                    continue
-                # Judged against the pools AS THIS BATCH HAS LEFT THEM so far.
-                blockers = evaluate_capacity(pools, required[i], request.units)
-                if blockers:
-                    outcomes.append(AdmissionDenied(blockers))
-                    continue
-                taken = reserved_pool_units(required[i], request.units)
-                for name in required[i]:
-                    pool = pools.get(name)
-                    if pool is not None:
-                        pool.active += taken[name]
-                seen.add(task.id)
-                generation = int(current.get("current_generation", 0)) + 1
-                lease = Lease(
-                    lease_id=new_id("lease"),
-                    task_id=task.id,
-                    attempt_id=new_id("att"),
-                    tenant_id=task.tenant_id,
-                    generation=generation,
-                    pools=required[i],
-                    units=request.units,
-                    pool_units=taken,
-                    state=TaskState.LEASED,
-                    created_at=now,
-                    dispatch_deadline=now + timedelta(seconds=config.dispatch_timeout_seconds),
-                    expires_at=now + timedelta(seconds=config.lease_timeout_seconds),
-                )
-                outcomes.append(lease)
-                admitted.append((i, lease))
-
-            # READY -> LEASED moves each workflow's derived state (#2838), as
-            # `acquire_lease` writes it; one write per workflow, derived with
-            # every step of it this batch admits.
-            changed: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
-            for i, _lease in admitted:
-                task = requests[i].task
-                if task.workflow_id:
-                    changed.setdefault((task.tenant_id, task.workflow_id), {})[task.id] = {
-                        "workflow_id": task.workflow_id, "tenant_id": task.tenant_id,
-                        "state": TaskState.LEASED.value,
-                    }
-            workflows = [
-                derived_state_write(
-                    txn, self._db, tenant_id=tenant_id, workflow_id=workflow_id,
-                    now=now, changed=docs,
-                )
-                for (tenant_id, workflow_id), docs in changed.items()
-            ]
-
-            # The writes. Each pool once, with the batch's sum.
-            for name, pool in pools.items():
-                if pool.active != stored_active[name]:
-                    txn.update(pool_refs[name], {"active": pool.active, "updated_at": now})
-            for i, lease in admitted:
-                current = stored[i] or {}
-                txn.set(
-                    self._db.collection(LEASES).document(lease.lease_id),
-                    {
-                        "lease_id": lease.lease_id,
-                        "task_id": lease.task_id,
-                        "attempt_id": lease.attempt_id,
-                        "tenant_id": lease.tenant_id,
-                        "generation": lease.generation,
-                        "pools": lease.pools,
-                        "units": lease.units,
-                        "pool_units": lease.pool_units,
-                        "state": lease.state.value,
-                        "created_at": lease.created_at,
-                        "dispatch_deadline": lease.dispatch_deadline,
-                        "expires_at": lease.expires_at,
-                        "heartbeat_at": None,
-                        "released_at": None,
-                    },
-                )
-                assert_transition(TaskState.READY, TaskState.LEASED)
-                txn.update(
-                    task_refs[i],
-                    {
-                        "state": TaskState.LEASED.value,
-                        "current_lease_id": lease.lease_id,
-                        "current_generation": lease.generation,
-                        "attempt_count": int(current.get("attempt_count", 0)) + 1,
-                        "blocked_by": [],
-                        "updated_at": now,
-                    },
-                )
+            outcomes = acquire_leases_in_transaction(
+                txn,
+                db=self._db,
+                requests=requests,
+                config=config,
+                now=now,
+                before_writes=_read_workflows,
+            )
             for workflow in workflows:
                 if workflow is not None:
                     txn.update(*workflow)

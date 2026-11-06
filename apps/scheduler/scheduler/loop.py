@@ -57,7 +57,7 @@ from quota_broker.accounts import (
     eligibility,
     withheld_mark,
 )
-from swarm_common.admission import AdmissionConfig, AdmissionDenied
+from swarm_common.admission import AdmissionConfig, AdmissionDenied, AdmissionRequest
 from swarm_common.models import (
     PLATFORM_REFUSED_MAX_PARKS,
     EndCause,
@@ -104,7 +104,7 @@ from .dispatch import PLATFORM_REFUSAL_CODES, BackendRouter, DispatchError, live
 from .fairness import AgingConfig, round_robin_order
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
-from .store import AdmissionRequest, GuardedWrite, ParentEnd, SchedulerStore
+from .store import GuardedWrite, ParentEnd, SchedulerStore
 
 log = logging.getLogger(__name__)
 
