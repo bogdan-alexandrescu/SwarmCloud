@@ -585,7 +585,7 @@ module "cloud_run_jobs" {
   # that stops one tenant's worker connecting to another's on the shared subnet.
   network_tags = [module.network.worker_network_tag]
 
-  resource_classes = local.resource_classes
+  resource_classes = local.cloud_run_resource_classes
   jobs             = local.jobs
 
   artifact_bucket = module.storage.artifact_bucket_name

@@ -340,6 +340,16 @@ class WorkflowStepCreate(StrictModel):
     #: included, which a nested model would answer with pydantic's generic
     #: shape. Stored normalised in `metadata.dispatch.await_input`, signed.
     await_input: Any = None
+    #: On a `fix-loop` step only, and required there: the review whose verdict
+    #: starts the loop (`review`), the integrator that is round 1's fix under
+    #: `integrate` (`fix`, absent under `direct-pr`), `max_rounds` (1-5,
+    #: default 3), and optional `fix_round` / `re_review` overrides, each a
+    #: `runner_profile` by name, a `model_class` and a `prompt` and nothing
+    #: else (invariant 10; docs/design/fix-loop.md §4.1). A free-form object
+    #: here, checked by `validation.resolve_fix_loop`, for the same reason as
+    #: `await_input`: every refusal then names the step and its field. Stored
+    #: in the loop task's signed `metadata.dispatch.fix_loop`.
+    fix_loop: Any = None
     #: This step's own list of additional repositories (#1434). It REPLACES
     #: the workflow's `additional_repositories`, never merges with it, and
     #: `[]` means none (owner's Q6, 2026-10-17): what a step reads is answered

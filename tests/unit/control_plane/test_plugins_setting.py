@@ -58,12 +58,12 @@ def _audit(db: Any) -> list[dict[str, Any]]:
 # -- the catalogue ----------------------------------------------------------------
 
 
-def test_the_catalogue_offers_gstack_pinned_on_the_five_claude_code_profiles_without_cso():
+def test_the_catalogue_offers_gstack_pinned_on_the_six_claude_code_profiles_without_cso():
     entry = plugincatalogue.CATALOGUE["gstack"]
     assert entry.version == "1.92.55.0"
     assert entry.install_path == "/opt/swarm/plugins/gstack"
-    assert entry.runner_profiles == ("claude-code", "claude-code-large", "claude-code-review",
-                                     "claude-code-browser", "claude-code-lightpanda")
+    assert entry.runner_profiles == ("claude-code", "claude-code-large", "claude-code-medium",
+                                     "claude-code-review", "claude-code-browser", "claude-code-lightpanda")
     # MUTATION: keep `cso` in the unattended list and this fails.
     assert all("cso" not in skills for skills in entry.skills.values())
     assert "cso" not in wc.PLUGIN_CATALOGUE["gstack"]["unattended"]

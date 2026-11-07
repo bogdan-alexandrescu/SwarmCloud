@@ -78,12 +78,15 @@ def test_the_catalogue_is_what_the_amendment_describes():
     # request 113 (owner, 2026-10-22), claude-code on the large class.
     # claude-code-lightpanda: contract request 127 (owner, 2026-10-31),
     # claude-code on the Lightpanda image, the standard class.
+    # claude-code-medium: contract request 147 (owner, 2026-11-06), claude-code
+    # on the medium class.
     assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {
         "browser",
         "claude-code-browser",
         "claude-code",
         "claude-code-large",
         "claude-code-lightpanda",
+        "claude-code-medium",
         "indexer",
         "generic",
         "codex",

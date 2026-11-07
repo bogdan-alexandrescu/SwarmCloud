@@ -36,7 +36,7 @@ def test_proposal_has_the_interface_sheet_shape(mode: str, members: int) -> None
     assert found["mode"] == mode and found["members"] == members
     assert set(found["pool_limits"]) == POOL_KEYS
     assert set(found["service_max_instances"]) == SERVICES
-    assert set(found["pool_limits"]["resource_classes"]) == {"standard", "browser", "large"}
+    assert set(found["pool_limits"]["resource_classes"]) == {"standard", "browser", "medium", "large"}
     assert set(found["pool_limits"]["backends"]) == {"CLOUD_RUN_JOB", "GKE_AUTOPILOT"}
     assert "mock" not in found["pool_limits"]["runner_profiles"]
     for path, value in sizing.rows(found):
@@ -119,7 +119,7 @@ def test_a_team_the_live_size_lands_above_the_live_values() -> None:
     found = sizing.propose("team", sizing.REFERENCE_MEMBERS)
     assert found["pool_limits"] == {
         "global": 270, "default_tenant": 60, "provider_tenant": 5,  # 270 // 50 tenants
-        "resource_classes": {"standard": 120, "browser": 150, "large": 60},
+        "resource_classes": {"standard": 120, "browser": 150, "medium": 60, "large": 60},
         "runner_profiles": {"claude-code": 120, "claude-code-browser": 150, "claude-code-lightpanda": 150, "codex": 30,
                             "generic": 30, "browser": 30},
         "backends": {"CLOUD_RUN_JOB": 150, "GKE_AUTOPILOT": 270},

@@ -263,3 +263,24 @@ test('a step that starts waiting for a person is one turn; a read that only move
   await settle(() => engine.queued.length > 0)
   expect(engine.queued).toEqual(['/sc status wf_1 · integrate waits for a person'])
 })
+
+// FL-PLUGIN (docs/design/fix-loop.md §6.3, part of #2509): a fix loop parked
+// for a person counts with the steps that wait on you and is one turn naming
+// its phase; a loop whose round is running holds nothing and waits on no one.
+test('a fix loop parked for a person waits on you and names its phase; a loop with a round running does not', async ($, on) => {
+  const called: Called[] = []
+  const loop = (park_reason: string, extra: Record<string, unknown> = {}) => ({
+    ...WORKFLOW, steps: WORKFLOW.steps.map((s) => (s.step_id === 'integrate' ? { ...s, state: 'PARKED', park_reason, ...extra } : s)),
+  })
+  let list: unknown[] = [loop('FIX_ROUNDS_RUNNING')]
+  on('mcp.call', server(called, 'band', () => list) as never)
+  const engine = beneath(on)
+  await $.command.run({ command: 'sc', args: 'layout band' })
+  await settle(() => engine.ticks.length > 0)
+  expect(engine.statuses[engine.statuses.length - 1]).toBe('SC 1 running')
+  list = [loop('HUMAN_REQUIRED', { park_phase: 'fix_loop_exhausted' })]
+  await tick(engine, called)
+  await settle(() => engine.queued.length > 0)
+  expect(engine.statuses[engine.statuses.length - 1]).toBe('SC 1 running · 1 waits on you')
+  expect(engine.queued).toEqual(['/sc status wf_1 · integrate: fix loop waits for you (fix_loop_exhausted)'])
+})

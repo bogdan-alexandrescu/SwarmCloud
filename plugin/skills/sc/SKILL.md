@@ -380,7 +380,7 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    |---|---|---|
    | `no_heartbeat` | RUNNING/STARTING with no heartbeat and no event for more than the window | a beat or an event inside it |
    | `waiting_for_capacity` | READY/QUEUED longer than the window, with the pool that binds it | a task that entered the state recently. It holds nothing while it waits (invariant 1): report it as waiting, not as broken |
-   | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed | any other park reason: a quota window or a retry backoff is the platform waiting by design |
+   | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed; a fix loop parked HUMAN_REQUIRED on any phase (see "A fix loop that waits for you") | any other park reason: a quota window or a retry backoff is the platform waiting by design; a fix loop with a round running (FIX_ROUNDS_RUNNING), whatever its age -- the 90-minute rule is CI_PENDING's alone |
    | `merge_train_stalled` | a merge step waiting on the merge train (CI_PENDING, code `merge_train_waiting`) more than 60 min, aged from the train's start the API serves (`waiting.detail.train_since`), else from the first train park of its unbroken run (`evidence.in_state_since`, exact or "at least"; `evidence.age_source` says which); the train boards only pull requests whose checks are all green | a train park under 60 min; a train park never counts toward the CI_PENDING 90 min. Name `evidence.failed_checks` (the PR's failed or cancelled checks at its head, read from GitHub's public API); when it is null, say the checks were NOT read (`checks_unread_because` says why). `next` is the PR link |
    | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed`, and its PR is still open | any other failure, and a PR that has since MERGED or CLOSED (the check reads the PR's state from GitHub's public API). When `pull_request_state` is null, say the PR's state was NOT read (its `pull_request_state_unread_because` says why), and give its link |
    | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
@@ -492,6 +492,37 @@ unticked. A refusal that names the console link means this host cannot ask
 its human: give the link and stop; never offer to answer for them. A reply
 that says the step was already answered is final (the first answer wins);
 a correction is a new round in the workflow, not a second answer.
+
+### A fix loop that waits for you
+
+A workflow's `fix-loop` step (docs/design/fix-loop.md) runs review-fix
+rounds until a review says MERGE. Its row, `/sc status` and the band's agent
+note read `round k of N` (round k of N), then the half running (`fix
+running`, `re-review running`), or `waiting for you: <phase>`, or `MERGE
+after k rounds`. Each round is an ordinary agent, shown as its own step
+`review-fix:<k>` or `re-review:<k>`. A loop with a round running holds
+nothing and is never flagged.
+
+When its rounds are spent without a MERGE (`fix_loop_exhausted`), a fix
+changed nothing (`fix_changed_nothing`), a round failed or was refused
+(`round_failed`, `round_refused`) or a verdict did not read
+(`review_unreadable`), the loop parks HUMAN_REQUIRED for a person. `check`
+flags it STUCK with that phase, the round counter and the last verdict's
+finding count; the band counts it with what waits on you; and its row ends
+with the command. Show the developer the phase and the counter, then ask
+which they want -- never pick for them:
+
+* add a round: ONE `swarm_fix_loop {workflow_id, action: "add_round"}`, with
+  `rounds` when they ask for more than one and `note` (at most 4 KiB) only
+  with guidance THEY wrote for the next fix. Any member may; a loop never
+  runs more than 10 rounds in all.
+* stop: ONE `swarm_fix_loop {workflow_id, action: "stop"}`. The loop ends
+  FAILED `fix_loop_exhausted`, and a merge step behind it refuses
+  `verdict_not_merge`, leaving the pull request open.
+
+`swarm_fix_loop` CHANGES STATE: call it only on the developer's word. Never
+`human-ready` a loop (the API refuses it). Left alone, the park expires after
+7 days and the loop ends FAILED `fix_loop_exhausted`.
 
 ### Answers given here are recorded on the task
 
@@ -868,6 +899,14 @@ this session supplies.
    Once a workflow exists, the reply's `arm_watch` is set too: end with
    [Arming the watch](#arming-the-watch) (the attach would arm it anyway, and
    step 1 there makes sure only once).
+
+### Runner size
+
+Start a step at `claude-code` (the standard class). Name
+`claude-code-medium` (6 CPU, 16 GiB) only for a step that was OOM-killed or
+ran out of time there, and `claude-code-large` only for one that failed on
+medium: 96% of large attempts fit medium (7 days to 6 November 2026). A
+large step is still submitted; relay the answer's `warnings` line.
 
 ### Model classes
 

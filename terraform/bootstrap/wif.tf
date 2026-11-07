@@ -313,11 +313,19 @@ resource "google_project_iam_member" "deployer_secrets" {
 # in-flight release has deployed. Applying an IAM condition to the role the build
 # depends on, while that build is running, is the mistake this comment exists to
 # avoid repeating.
+# The managed plugins' bucket is named <project>-swarm-plugins by default
+# (terraform/infra/plugins.tf), which no `swarm-` prefix admits. It is admitted by
+# exact name, derived from the project, unless a prefix already covers it.
 locals {
+  deployer_plugins_bucket = var.plugins_bucket_name != "" ? var.plugins_bucket_name : "${var.project_id}-swarm-plugins"
+  deployer_buckets_exact = distinct(concat(
+    var.deployer_storage_buckets_exact,
+    anytrue([for p in var.deployer_storage_bucket_prefixes : startswith(local.deployer_plugins_bucket, p)]) ? [] : [local.deployer_plugins_bucket],
+  ))
   deployer_storage_condition = join(" || ", concat(
     [for b in var.deployer_storage_bucket_prefixes :
     "resource.name.startsWith(\"projects/_/buckets/${b}\")"],
-    flatten([for b in var.deployer_storage_buckets_exact : [
+    flatten([for b in local.deployer_buckets_exact : [
       "resource.name == \"projects/_/buckets/${b}\"",
       "resource.name.startsWith(\"projects/_/buckets/${b}/objects/\")",
     ]]),
@@ -332,7 +340,7 @@ resource "google_project_iam_member" "deployer_storage" {
   member  = "serviceAccount:${google_service_account.deployer[0].email}"
 
   condition {
-    title       = "swarm buckets and the Cloud Build staging bucket only"
+    title       = "swarm buckets, the plugins bucket and the Cloud Build staging bucket only"
     description = "Refuses every bucket this platform does not own. Three buckets in this project belong to another team, one of them their terraform state."
     expression  = local.deployer_storage_condition
   }

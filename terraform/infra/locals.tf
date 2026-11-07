@@ -41,6 +41,7 @@ locals {
   resource_classes = {
     standard = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
     browser  = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
+    medium   = { cpu = 6, memory_gib = 16, disk_gib = 8, units = 2 }
     large    = { cpu = 8, memory_gib = 32, disk_gib = 16, units = 4 }
   }
 
@@ -123,6 +124,21 @@ locals {
       provider        = "anthropic"
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 14400
+
+      model_classes       = ["opus", "fable", "sonnet", "haiku"]
+      default_model_class = "opus"
+    }
+    # Contract request 147, accepted by the owner 2026-11-06: claude-code on the
+    # `medium` class, the size 96% of the large attempts fit. A GKE profile, not
+    # in `cloud_run_fallback_profiles`; mirrored so the catalogue comparison
+    # holds and so its `runner:claude-code-medium` pool exists.
+    "claude-code-medium" = {
+      image           = "agent-runtime-base"
+      resource_class  = "medium"
+      backend         = "GKE_AUTOPILOT"
+      provider        = "anthropic"
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
 
       model_classes       = ["opus", "fable", "sonnet", "haiku"]
       default_model_class = "opus"
@@ -383,7 +399,7 @@ locals {
   }
 
   # Profile -> the pin of its `default_model_class` (the mirror above), for
-  # every profile that has one: claude-code, claude-code-large, claude-code-lightpanda,
+  # every profile that has one: claude-code, claude-code-large, claude-code-medium, claude-code-lightpanda,
   # claude-code-review, indexer and claude-code-browser, all opus, so exactly the map #226 wrote by hand.
   # codex is an OpenAI CLI, where a Claude name would fail every run, and
   # mock, generic, browser, merge, post-verdict, await-input and fix-loop start no
@@ -612,6 +628,20 @@ locals {
 # ---------------------------------------------------------------------------
 
 locals {
+  # The classes a Cloud Run Job can be made with: those of a Cloud Run profile
+  # or a fallback one. A GKE-only class never reaches the module, so its
+  # vCPU need not be one Cloud Run accepts: `medium`'s 6 (contract request 147)
+  # is not, and the module's 1/2/4/8 validation stays in force for the rest.
+  cloud_run_resource_classes = {
+    for name, rc in local.resource_classes : name => rc
+    if anytrue([
+      for profile_name, profile in local.runner_profiles :
+      profile.resource_class == name
+      && (profile.backend == "CLOUD_RUN_JOB" || contains(local.cloud_run_fallback_profiles, profile_name))
+      && !contains(local.profiles_without_a_job, profile_name)
+    ])
+  }
+
   job_matrix = flatten([
     for tenant_id, cfg in var.tenants : [
       for profile_name, profile in local.runner_profiles : {

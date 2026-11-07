@@ -63,7 +63,8 @@ run "resource_classes_match_the_frozen_catalogue" {
     source = "../../terraform/infra"
   }
 
-  # RESOURCE_CLASSES: standard 4/8/4, browser 4/8/4 (contract request 79), large 8/32/16.
+  # RESOURCE_CLASSES: standard 4/8/4, browser 4/8/4 (contract request 79),
+  # medium 6/16/8 (contract request 147), large 8/32/16.
   assert {
     condition     = output.resource_classes["standard"].cpu == 4 && output.resource_classes["standard"].memory_gib == 8 && output.resource_classes["standard"].disk_gib == 4
     error_message = "the standard class is 4 vCPU / 8 GiB / 20 GiB"
@@ -77,6 +78,11 @@ run "resource_classes_match_the_frozen_catalogue" {
   assert {
     condition     = output.resource_classes["large"].cpu == 8 && output.resource_classes["large"].memory_gib == 32 && output.resource_classes["large"].disk_gib == 16
     error_message = "the large class is 8 vCPU / 32 GiB / 100 GiB"
+  }
+
+  assert {
+    condition     = output.resource_classes["medium"].cpu == 6 && output.resource_classes["medium"].memory_gib == 16 && output.resource_classes["medium"].disk_gib == 8 && output.resource_classes["medium"].units == 2
+    error_message = "the medium class is 6 vCPU / 16 GiB / 8 GiB at 2 units (contract request 147)"
   }
 
   # units: 1, 1, 4 -- heavier classes cost more scheduling budget; browser
@@ -158,8 +164,8 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 14
-    error_message = "fourteen runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input, contract request 113's claude-code-large, contract request 124's fix-loop and contract request 127's claude-code-lightpanda"
+    condition     = length(output.runner_backends) == 15
+    error_message = "fifteen runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input, contract request 113's claude-code-large, contract request 124's fix-loop, contract request 127's claude-code-lightpanda and contract request 147's claude-code-medium"
   }
 
   # Contract request 127 (owner, 2026-10-31): claude-code on the Lightpanda
@@ -210,7 +216,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
 
   assert {
     condition = alltrue([
-      for c in ["resource:standard", "resource:browser", "resource:large"] : contains(output.pool_names, c)
+      for c in ["resource:standard", "resource:browser", "resource:medium", "resource:large"] : contains(output.pool_names, c)
     ])
     error_message = "every resource class needs a pool"
   }
@@ -443,13 +449,13 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.resource_classes) == 3
-    error_message = "expected 3 resource classes in profiles.py (standard, browser, large); the parser read a different number, so it no longer matches the file's literal form"
+    condition     = length(output.resource_classes) == 4
+    error_message = "expected 4 resource classes in profiles.py (standard, browser, medium, large); the parser read a different number, so it no longer matches the file's literal form"
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 14
-    error_message = "expected 14 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, claude-code-lightpanda, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
+    condition     = length(output.runner_profiles) == 15
+    error_message = "expected 15 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, claude-code-medium, claude-code-lightpanda, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;

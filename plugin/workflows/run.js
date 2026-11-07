@@ -562,6 +562,22 @@ function personWait(given) {
     const [asked] = ownerQuestions([entry])
     questions.push(Object.assign({ task_id: entry.task_id, step_id: text(entry.step_id, LABEL_TEXT_CHARS), question_index: index }, asked, { index: index }))
   }
+  // A FIX LOOP PARKED FOR A PERSON (FL-PLUGIN, docs/design/fix-loop.md §4.5,
+  // §6.3): nobody signs in and no question is open; the row carries its
+  // phase, its `round k of N` and the swarm_fix_loop calls that answer it.
+  if (given.kind === 'fix_loop') {
+    return {
+      kind: 'fix_loop',
+      since: text(given.since, 40),
+      since_clock: text(given.since_clock, 20),
+      questions: [],
+      console: consoleLink(given.console) || null,
+      park_phase: text(given.park_phase, 40),
+      fix_loop: text(given.fix_loop, 120),
+      add_round: text(given.add_round, 200),
+      stop: text(given.stop, 200),
+    }
+  }
   return {
     kind: given.kind === 'owner_questions' ? 'owner_questions' : 'hand_off',
     since: text(given.since, 40),
@@ -1191,6 +1207,22 @@ const DETAILS_CHARS = 600
 const NOT_REPORTED = 'not reported'
 const BROWSER_PROFILE = 'claude-code-browser'
 
+// A step that asks for claude-code-large (BGD, 2026-11-06): submitted as
+// written, with one warning line naming the medium profile and the measured
+// share. swarm_mcp.workflows' LARGE_PROFILE, MEDIUM_PROFILE and
+// LARGE_FIT_MEDIUM_SHARE, restated because a script cannot import them;
+// tests/unit/mcp/test_large_step_warning.py holds the two equal.
+const LARGE_PROFILE = 'claude-code-large'
+const MEDIUM_PROFILE = 'claude-code-medium'
+const LARGE_FIT_MEDIUM_SHARE = '96%'
+
+function largeStepWarnings(steps) {
+  return (steps || [])
+    .filter((step) => step && flatText(step.runner_profile) === LARGE_PROFILE)
+    .map((step) => 'step ' + step.step_id + ' asks for ' + LARGE_PROFILE + '; ' + LARGE_FIT_MEDIUM_SHARE +
+      ' of large attempts over 7 days fit ' + MEDIUM_PROFILE + ': name it unless this step was OOM-killed on it')
+}
+
 function detailsText(text) {
   const flat = flatText(text)
   return flat ? clip(flat, DETAILS_CHARS) : null
@@ -1311,7 +1343,9 @@ function narrate(stepId, result, submittedLink) {
     // WAITING ON A PERSON since <HH:MMZ> · <n> owner questions (#2441).
     const waiting = result.waiting_on_person
     const head = stepId + ' ' + (result.state || 'PARKED') + ' · WAITING ON A PERSON' + (waiting.since_clock ? ' since ' + waiting.since_clock : '')
-    const what = waiting.kind === 'owner_questions'
+    const what = waiting.kind === 'fix_loop'
+      ? 'fix loop ' + (waiting.fix_loop || 'waits for you') + (waiting.add_round ? ' · add a round: ' + waiting.add_round : '')
+      : waiting.kind === 'owner_questions'
       ? waiting.questions.length + ' owner question' + (waiting.questions.length === 1 ? '' : 's')
       : 'hand-off: sign in on its console page, then say it is ready' + (waiting.human_ready_route ? ' (' + waiting.human_ready_route + ')' : '')
     return head + ' · ' + what + consoleSuffix(waiting.console || (result && result.console) || submittedLink)
@@ -3050,6 +3084,7 @@ if (given.path || (given.handle && !given.spec)) {
 
 if (!digest) digest = specDigest(spec)
 const specLabel = flatText(spec.label)
+for (const line of largeStepWarnings(spec.steps)) log(line)
 
 let submitted = null
 let submitFailure = null
