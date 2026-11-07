@@ -224,6 +224,21 @@ SWITCHES: dict[str, Switch] = {
     # off, each is answered with the same status and message under the
     # established code (`conflict` 409, `forbidden` 403), as the egress codes
     # below are.
+    # Lane FL-DRIVE (docs/design/fix-loop.md §4.5): a person's add-round or
+    # stop on a fix loop. The refusals are ALWAYS made; off, each is answered
+    # 409 `conflict` with the same message (`fixloop._refused`).
+    "fix_loop_not_parked": Switch(
+        code="fix_loop_not_parked",
+        why="an add-round or stop on a fix loop that is not parked for a person is answered "
+        "409 fix_loop_not_parked instead of 409 conflict with the same message. On once the "
+        "console and swarm_fix_loop read the code",
+    ),
+    "fix_loop_rounds_ceiling": Switch(
+        code="fix_loop_rounds_ceiling",
+        why="an add-round on a fix loop already at its 10-round ceiling is answered 409 "
+        "fix_loop_rounds_ceiling instead of 409 conflict with the same message. On once the "
+        "console and swarm_fix_loop read the code",
+    ),
     "workflow_finished": Switch(
         code="workflow_finished",
         why="a re-store of a finished workflow's MCP credentials is answered 409 "
