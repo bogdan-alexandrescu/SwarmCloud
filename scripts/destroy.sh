@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Tear down the swarm's own infrastructure -- and nothing else.
 #
-# saga-agents-staging is a SHARED project. It holds a live GKE cluster
-# (agents-staging), a VPC (agents-staging-vpc), three buckets and twelve service
-# accounts belonging to promptlab, crawler, aipipeline, external-secrets and
-# tournament-digest. A `terraform destroy` that touched any of those would take
-# down other teams' production work.
+# The project may be SHARED: it can hold another team's live GKE cluster, VPC,
+# buckets and service accounts, every one on the deployment's never-touch list
+# (config/<env>/deny-list.json, read by deny_list_load in lib/common.sh). A
+# `terraform destroy` that touched any of those would take down other teams'
+# production work.
 #
 # So this script never runs a bare destroy. It:
 #
@@ -256,20 +256,11 @@ verify_shared_resources() {
   VERIFY_MISSING=()
   VERIFY_UNVERIFIED=()
 
-  # `clusters list --filter`, never `clusters describe --location`: a location
-  # guessed wrong answers NOT_FOUND for a cluster that is running, and this
-  # script must not be able to say a live cluster is deleted. The zone was
-  # hard-coded to us-central1-a here while CONTRACT.md only pins the region.
-  _verify list "gke/agents-staging" \
-    gcloud container clusters list --project "${PROJECT_ID}" \
-      --filter="name=agents-staging" --format='value(name)'
-
-  local net
-  for net in agents-staging-vpc default; do
-    _verify describe "network/${net}" \
-      gcloud compute networks describe "${net}" --project "${PROJECT_ID}" \
-        --format='value(name)'
-  done
+  # The project's default network is checked whatever the list says; the
+  # neighbours' own clusters and networks are read out of the list below.
+  _verify describe "network/default" \
+    gcloud compute networks describe default --project "${PROJECT_ID}" \
+      --format='value(name)'
 
   # Named one by one rather than counted. The count came from
   # `SA_COUNT="$(gcloud iam service-accounts list ... 2>/dev/null | wc -l)"`,
@@ -278,21 +269,35 @@ verify_shared_resources() {
   #
   # Read OUT OF the deny-list, not restated beside it. The restatement had
   # already drifted: it listed eleven of the twelve, and the one it dropped was
-  # 209012342332-compute@developer.gserviceaccount.com -- the only address on
+  # <project-number>-compute@developer.gserviceaccount.com -- the only address on
   # the list that is not <name>@<project>.iam, because it is the project's
   # DEFAULT COMPUTE service account. That is the identity Cloud Run falls back
   # to when a Job names none (scheduler.dispatch.assert_tenant_identity refuses
   # to dispatch rather than use it), so it is the shared account whose loss
   # would be felt furthest and the one nobody was looking at.
   #
-  # Buckets and Cloud Run services are read out of it the same way, by the kind
-  # shared_resource_kind gives them. The buckets were a hand-written list of
+  # Clusters, networks, buckets and Cloud Run services are read out of it the
+  # same way, by the kind shared_resource_kind gives them. The buckets were a hand-written list of
   # three until 2026-10-21, and the three buckets added to the deny-list that
   # day were exactly the three it never looked at.
   local entry kind
   for entry in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     kind="$(shared_resource_kind "${entry}")" || kind=""
     case "${kind}" in
+      cluster)
+        # `clusters list --filter`, never `clusters describe --location`: a
+        # location guessed wrong answers NOT_FOUND for a cluster that is
+        # running, and this script must not be able to say a live cluster is
+        # deleted. CONTRACT.md pins the region, never a zone.
+        _verify list "gke/${entry}" \
+          gcloud container clusters list --project "${PROJECT_ID}" \
+            --filter="name=${entry}" --format='value(name)'
+        ;;
+      network)
+        _verify describe "network/${entry}" \
+          gcloud compute networks describe "${entry}" --project "${PROJECT_ID}" \
+            --format='value(name)'
+        ;;
       sa)
         _verify describe "serviceAccount/${entry%%@*}" \
           gcloud iam service-accounts describe "${entry}" \
