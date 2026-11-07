@@ -3,7 +3,8 @@ as server-sent events (docs/design/voice-it.md §3.5, §3.7, §10 phase 2).
 
     GET /v1/voice/sessions/{session_id}/events[?after=N]
         text/event-stream: `card.upsert`, `card.remove`, `session.state`,
-        `meter.update`, each with `id: <seq>`
+        `meter.update`, and the stage's `visual.upsert`, `note.upsert` and
+        `focus` (visuals.py), each with `id: <seq>`
 
 FIRESTORE IS THE MEETING POINT, NOT A RELAY. Every event is stored before it
 is sent (`store.VoiceStore.append_event`, numbered from the session's
@@ -36,7 +37,11 @@ Another tenant's session, another person's, and a missing one are the same
 
 NOTHING SECRET. A frame carries the event's own fields less the tenant and
 the person; cards were checked on write (`cards.validate`, which refuses a
-credential-shaped string). Logs name session ids and sequence numbers only.
+credential-shaped string). The stage's events are cut again to what the
+visual and note reads serve (`visuals.visual_view`, `visuals.note_view`; a
+focus is its visual id, anchor and caption), so a visual's frame names its
+body's key, never the body, and a field a writer added is never sent. Logs
+name session ids and sequence numbers only.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ from ..errors import NotFound, ValidationFailed
 from . import cards as vcards
 from . import sessions as vs
 from . import store as vstore
+from . import visuals as vvis
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +68,11 @@ log = logging.getLogger(__name__)
 #: and logged by sequence, never sent.
 SESSION_STATE = "session.state"
 METER_UPDATE = "meter.update"
-EVENT_TYPES = (vcards.CARD_UPSERT, vcards.CARD_REMOVE, SESSION_STATE, METER_UPDATE)
+#: The stage's three (visuals.py writes them): a visual drawn or drawn again,
+#: a note pinned, edited, resolved or made work, and the planner's focus.
+STAGE_TYPES = (vvis.VISUAL_UPSERT, vvis.NOTE_UPSERT, vvis.FOCUS)
+EVENT_TYPES = (vcards.CARD_UPSERT, vcards.CARD_REMOVE, SESSION_STATE, METER_UPDATE,
+               *STAGE_TYPES)
 
 #: What a `session.state` event may say.
 VOICE_STATES = ("listening", "thinking", "speaking", "working", "ended")
@@ -156,6 +166,35 @@ def resume_after(last_event_id: str | None, after: int | None) -> int:
 # ---- one frame --------------------------------------------------------------
 
 
+def _id(value: Any) -> bool:
+    return isinstance(value, str) and value != ""
+
+
+def stage_payload(event: dict[str, Any]) -> dict[str, Any] | None:
+    """A stage event's payload as the reads serve it, or None when the row is
+    not one `visuals.Visuals` writes (no id, a kind or state it never has)."""
+    kind = event.get("type")
+    if kind == vvis.VISUAL_UPSERT:
+        visual = event.get("visual")
+        if not isinstance(visual, dict) or not _id(visual.get("visual_id")) \
+                or visual.get("kind") not in vvis.KINDS:
+            return None
+        return {"visual": vvis.visual_view(visual)}
+    if kind == vvis.NOTE_UPSERT:
+        note = event.get("note")
+        if not isinstance(note, dict) or not _id(note.get("note_id")) \
+                or not _id(note.get("visual_id")) or note.get("state") not in vvis.NOTE_STATES:
+            return None
+        return {"note": vvis.note_view({k: v for k, v in note.items() if k not in _PRIVATE})}
+    if kind == vvis.FOCUS:
+        anchor, caption = event.get("anchor"), event.get("caption")
+        if not _id(event.get("visual_id")) or not (anchor is None or isinstance(anchor, dict)) \
+                or not (caption is None or isinstance(caption, str)):
+            return None
+        return {"visual_id": event["visual_id"], "anchor": anchor, "caption": caption}
+    return None
+
+
 def frame(event: dict[str, Any], *, session_id: str) -> str | None:
     """One stored event as an SSE frame, or None when it is not one the
     stream carries (logged by sequence)."""
@@ -173,7 +212,14 @@ def frame(event: dict[str, Any], *, session_id: str) -> str | None:
     if kind == SESSION_STATE and event.get("state") not in VOICE_STATES:
         log.warning("voice stream skipped a session state session=%s seq=%s", session_id, seq)
         return None
-    data = {k: v for k, v in event.items() if k not in _PRIVATE}
+    if kind in STAGE_TYPES:
+        payload = stage_payload(event)
+        if payload is None:
+            log.warning("voice stream skipped a stage event session=%s seq=%s", session_id, seq)
+            return None
+        data = {"type": kind, "seq": seq, "at": event.get("at"), **payload}
+    else:
+        data = {k: v for k, v in event.items() if k not in _PRIVATE}
     data["at"] = vcards._iso(data.get("at"))
     body = json.dumps(data, default=str, separators=(",", ":"))
     return f"id: {seq}\nevent: {kind}\ndata: {body}\n\n"
