@@ -2,51 +2,51 @@
 
 **Who:** the deployment's owner, once. **Takes:** one merge, two releases and
 one bootstrap apply — in that order, on paper. **What actually ran, live on
-`saga-agents-staging`, took a merge, one bootstrap apply that partly failed, a
+`example-project`, took a merge, one bootstrap apply that partly failed, a
 follow-up fix PR, and a second targeted apply**, because GCP refused part of
 the first apply; see "What actually happened" below. **Changes:** who manages
 nine existing objects — no permission of any role changes, and nothing is
 created or deleted — and one binding is removed: `roles/iam.roleAdmin` from
-`swarm-tf-deployer`. PR #73's `projectIamAdmin` scoping is live and, as of
-#275/#277, its condition is not one `hasOnly()` call but two, one per chunk of
+`swarm-tf-deployer`. The projectIamAdmin-scoping PR's `projectIamAdmin` scoping is live and, as of
+the hasOnly-limit issue and its chunked-condition fix, its condition is not one `hasOnly()` call but two, one per chunk of
 at most ten roles (GCP's IAM linter refuses a longer list).
 
-The worked values are this repository's `dev` deployment (`saga-agents-staging`, state
+The worked values are this repository's `dev` deployment (`example-project`, state
 prefix `infra/dev`). **Most of this page was written as "derived" — read from
 the code and the provider's documentation, before any plan or apply ran.**
 Where a plan or apply has since actually run, that is called out by date, and
 it is what governs: the "Plan: 9 to import, 1 to add, 0 to change, 2 to
-destroy" shape derived below assumed PR #73's single-condition
+destroy" shape derived below assumed the projectIamAdmin-scoping PR's single-condition
 `deployer_project_iam_admin[0]` already existed in `terraform/bootstrap`'s
 state and would be *replaced*. It never had — the resource did not exist in
 that state until the owner's apply tried to *create* it for the first time,
 in the same batch as the nine imports and the `roleAdmin` destroy. That create
-is what GCP's `hasOnly()` 10-element limit refused (#275); see "What actually
+is what GCP's `hasOnly()` 10-element limit refused; see "What actually
 happened."
 
 ## What actually happened (dates)
 
-1. **2026-09-28 20:15Z — #239 merged and released.** `terraform/infra`'s
+1. **2026-09-28 20:15Z — the custom-roles-ownership release merged and released.** `terraform/infra`'s
    `removed`/`moved` blocks ran in that release's `terraform apply (dev)`,
    exactly as Step 1 below describes: the nine objects left `infra/dev`'s
    state, nothing live changed, and `custom_roles_owner` became
    `"terraform/bootstrap"`.
 2. **2026-09-28 23:21:22–23:21:40Z — the owner's first bootstrap apply
-   (as `bogdan@saga.xyz`), targeting all four resources in Step 2.** The nine
+   (as `owner@example.com`), targeting all four resources in Step 2.** The nine
    imports and the `roleAdmin` destroy succeeded exactly as derived. Creating
    `google_project_iam_member.deployer_project_iam_admin[0]` failed:
    `Error 400: LintValidationUnits/ListLengthCheck: The list argument to
-   hasOnly() cannot have more than 10 elements` — PR #73's single condition
+   hasOnly() cannot have more than 10 elements` — the projectIamAdmin-scoping PR's single condition
    named all fifteen `deployer_grantable_project_roles` in one `hasOnly()`
    call, a limit the mock-provider `terraform test` cannot see (filed as
-   [#275](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/275)). The
+   the hasOnly-limit issue). The
    same apply had already destroyed the deployer's unconditioned
    `projectIamAdmin` before attempting to create its replacement, so for about
    one minute CI held no `projectIamAdmin` grant at all. The operator restored
    the unconditioned grant by hand at ~23:22Z
    (`gcloud projects add-iam-policy-binding … --condition=None`) — live, but
    not in bootstrap state.
-3. **2026-09-29 02:30:17Z — [#277](https://github.com/bogdan-alexandrescu/SwarmCloud/pull/277) merged to `main`** (`2ef21b8`, closing #275).
+3. **2026-09-29 02:30:17Z — the chunked-condition fix merged to `main`** (`2ef21b8`, closing the hasOnly-limit issue).
    `deployer_project_iam_admin` became a `for_each` of
    `chunklist(local.deployer_grantable_project_roles, 10)`, one conditioned
    binding per chunk (two chunks today, 10 roles and 4), each with its own
@@ -55,8 +55,8 @@ happened."
    `terraform test` now holds every `hasOnly()` list at 10 or fewer and the
    chunks' union equal to the grantable set.
 4. **This PR rebased onto that `main`.**
-5. **2026-09-29 ~02:35Z — the owner's second apply (`bogdan@saga.xyz`, from
-   `main` at `0356b39`, #277 merged), following #277's docs/ci.md six-step
+5. **2026-09-29 ~02:35Z — the owner's second apply (`owner@example.com`, from
+   `main` at `0356b39`, the chunked-condition fix merged), following the chunked-condition fix's docs/ci.md six-step
    order:**
    1. `DEPLOYER=$(terraform -chdir=terraform/bootstrap output -raw github_deployer_service_account)`
    2. `scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'`
@@ -72,7 +72,7 @@ happened."
       chunk 2 of 2, nothing else.
    6. The next release's `terraform apply (dev)` is the proof of the admitted
       side. It is release run
-      [36514377555](https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/36514377555)
+      [36514377555](https://github.com/example-org/example-repo/actions/runs/36514377555)
       (`main` at `77014f0`, this PR's merge), created 2026-09-29 02:49Z, the
       first successful release after this apply: its `terraform apply (dev)`
       job ran 03:29:55–03:32:26Z with its `plan`, `shared-project guard` and
@@ -88,52 +88,53 @@ happened."
    of the first apply and were never affected by the `projectIamAdmin`
    failure or its retry.
 
-This PR (#150) merges once CI is green on the rebased branch; nothing further
+This PR merges once CI is green on the rebased branch; nothing further
 needs to be applied for it.
 
 ## Why
 
-Owner decisions of 2026-09-25, recorded on #79, #69, #68 and #80:
+Owner decisions of 2026-09-25, recorded as the roleAdmin removal, the quota-broker grant move,
+the custom-roles-to-bootstrap move and the bootstrap-ordering rule:
 
-* **#79.** `roles/iam.roleAdmin` comes off the CI deployer. Its
+* **The roleAdmin removal.** `roles/iam.roleAdmin` comes off the CI deployer. Its
   `iam.roles.update` cannot be conditioned: IAM names no role in a condition,
   and a role has no allow policy of its own. While CI held it, one update could
   add `resourcemanager.projects.setIamPolicy` to a custom role CI already held
   unconditioned (`swarmSecretProvisioner`, `swarmDeployerProjectBuckets`). CI's
   next project `setIamPolicy`, `roles/owner` included, would then be authorised
-  by that binding, and the scoped `projectIamAdmin` (#68) would never be
+  by that binding, and the scoped `projectIamAdmin` would never be
   evaluated. So every custom role `terraform/infra` defined now lives in
   `terraform/bootstrap`. Changing one is an owner apply, and the owner accepted
   that cost.
-* **#69.** The quota broker's `swarmSecretLister` grant moves to
+* **The quota-broker grant move.** The quota broker's `swarmSecretLister` grant moves to
   `terraform/bootstrap`, and the role leaves `deployer_grantable_project_roles`.
   The role carries project-wide `secrets.setIamPolicy`, which reaches the other
   team's 63 secrets. The scoped `projectIamAdmin` limits *which* roles CI may
   modify, never *whose* member it adds, so while the role was on the list CI
   could grant it to itself.
-* **#80's order.** One bootstrap change per release. This is step 4: after
-  PR #63's IAP clients, after #80's six changes and their release, and after
-  PR #73's `projectIamAdmin` scoping and its release.
+* **The bootstrap-ordering rule.** One bootstrap change per release. This is step 4: after
+  the IAP-clients PR's IAP clients, after the bootstrap-ordering rule's six changes and their release, and after
+  the projectIamAdmin-scoping PR's `projectIamAdmin` scoping and its release.
 
 ## What moves
 
 | object | `terraform/infra` address (forgotten) | `terraform/bootstrap` address (imported) | import id |
 |---|---|---|---|
-| `swarmJobDispatcher` | `module.iam.google_project_iam_custom_role.job_dispatcher` | `google_project_iam_custom_role.platform["job_dispatcher"]` | `projects/saga-agents-staging/roles/swarmJobDispatcher` |
-| `swarmJobReaper` | `module.iam.google_project_iam_custom_role.job_reaper` | `…platform["job_reaper"]` | `projects/saga-agents-staging/roles/swarmJobReaper` |
-| `swarmGkeDispatcher` | `module.iam.google_project_iam_custom_role.gke_dispatcher[0]` | `…platform["gke_dispatcher"]` | `projects/saga-agents-staging/roles/swarmGkeDispatcher` |
-| `swarmGkeReaper` | `module.iam.google_project_iam_custom_role.gke_reaper[0]` | `…platform["gke_reaper"]` | `projects/saga-agents-staging/roles/swarmGkeReaper` |
-| `swarmSecretLister` | `module.iam.google_project_iam_custom_role.secret_lister` | `…platform["secret_lister"]` | `projects/saga-agents-staging/roles/swarmSecretLister` |
-| `swarmTenantWorkerFirestore` | `module.tenancy.google_project_iam_custom_role.worker_firestore` | `…platform["worker_firestore"]` | `projects/saga-agents-staging/roles/swarmTenantWorkerFirestore` |
-| `swarmBucketMetadataReader` | `module.tenancy.google_project_iam_custom_role.bucket_metadata_reader` | `…platform["bucket_metadata_reader"]` | `projects/saga-agents-staging/roles/swarmBucketMetadataReader` |
-| `swarmImagePuller` | `module.artifact_registry.google_project_iam_custom_role.image_puller[0]` | `…platform["image_puller"]` | `projects/saga-agents-staging/roles/swarmImagePuller` |
-| broker's `swarmSecretLister` grant | `module.iam.google_project_iam_member.plain["swarm-quota-broker:projects/saga-agents-staging/roles/swarmSecretLister"]`, moved to `…broker_secret_lister_moved_to_bootstrap` and forgotten | `google_project_iam_member.broker_secret_lister["swarm-quota-broker"]` | `saga-agents-staging projects/saga-agents-staging/roles/swarmSecretLister serviceAccount:swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com` |
+| `swarmJobDispatcher` | `module.iam.google_project_iam_custom_role.job_dispatcher` | `google_project_iam_custom_role.platform["job_dispatcher"]` | `projects/example-project/roles/swarmJobDispatcher` |
+| `swarmJobReaper` | `module.iam.google_project_iam_custom_role.job_reaper` | `…platform["job_reaper"]` | `projects/example-project/roles/swarmJobReaper` |
+| `swarmGkeDispatcher` | `module.iam.google_project_iam_custom_role.gke_dispatcher[0]` | `…platform["gke_dispatcher"]` | `projects/example-project/roles/swarmGkeDispatcher` |
+| `swarmGkeReaper` | `module.iam.google_project_iam_custom_role.gke_reaper[0]` | `…platform["gke_reaper"]` | `projects/example-project/roles/swarmGkeReaper` |
+| `swarmSecretLister` | `module.iam.google_project_iam_custom_role.secret_lister` | `…platform["secret_lister"]` | `projects/example-project/roles/swarmSecretLister` |
+| `swarmTenantWorkerFirestore` | `module.tenancy.google_project_iam_custom_role.worker_firestore` | `…platform["worker_firestore"]` | `projects/example-project/roles/swarmTenantWorkerFirestore` |
+| `swarmBucketMetadataReader` | `module.tenancy.google_project_iam_custom_role.bucket_metadata_reader` | `…platform["bucket_metadata_reader"]` | `projects/example-project/roles/swarmBucketMetadataReader` |
+| `swarmImagePuller` | `module.artifact_registry.google_project_iam_custom_role.image_puller[0]` | `…platform["image_puller"]` | `projects/example-project/roles/swarmImagePuller` |
+| broker's `swarmSecretLister` grant | `module.iam.google_project_iam_member.plain["swarm-quota-broker:projects/example-project/roles/swarmSecretLister"]`, moved to `…broker_secret_lister_moved_to_bootstrap` and forgotten | `google_project_iam_member.broker_secret_lister["swarm-quota-broker"]` | `example-project projects/example-project/roles/swarmSecretLister serviceAccount:swarm-quota-broker@example-project.iam.gserviceaccount.com` |
 
 That is eight roles, counted from the code: `grep -rn 'resource "google_project_iam_custom_role"'`
 over `terraform/infra` and `terraform/modules` on `origin/main` at `89f2e09`.
 The live project has nine custom roles. The ninth, `swarmSecretProvisioner`,
 was always `terraform/bootstrap`'s. The eight infra addresses above are the
-ones in `gs://swarm-tfstate-saga-agents-staging/infra/dev/default.tfstate`
+ones in `gs://swarm-tfstate-example-project/infra/dev/default.tfstate`
 (read-only `gcloud storage cat`, 2026-09-25). It is the only `terraform/infra`
 state in the bucket.
 
@@ -197,7 +198,7 @@ release carries (image digests, and so on) come on top.
   # module.iam.google_project_iam_custom_role.job_reaper will no longer be managed by Terraform
   # module.iam.google_project_iam_custom_role.secret_lister will no longer be managed by Terraform
   # module.iam.google_project_iam_member.broker_secret_lister_moved_to_bootstrap will no longer be managed by Terraform
-  #   (moved from module.iam.google_project_iam_member.plain["swarm-quota-broker:projects/saga-agents-staging/roles/swarmSecretLister"])
+  #   (moved from module.iam.google_project_iam_member.plain["swarm-quota-broker:projects/example-project/roles/swarmSecretLister"])
   # module.tenancy.google_project_iam_custom_role.bucket_metadata_reader will no longer be managed by Terraform
   # module.tenancy.google_project_iam_custom_role.worker_firestore will no longer be managed by Terraform
 
@@ -224,7 +225,7 @@ roles' ids are camelCase. That warning is expected.
 **Check step 1 landed** (read-only):
 
 ```bash
-gcloud storage cat gs://swarm-tfstate-saga-agents-staging/infra/dev/default.tfstate \
+gcloud storage cat gs://swarm-tfstate-example-project/infra/dev/default.tfstate \
   | jq '{owner: .outputs.custom_roles_owner.value,
          roles: [.resources[] | select(.type=="google_project_iam_custom_role")] | length,
          lister: [.resources[] | select(.name=="plain") | .instances[] | select(.index_key|tostring|test("SecretLister"))] | length}'
@@ -237,7 +238,7 @@ Expected: `{"owner": "terraform/bootstrap", "roles": 0, "lister": 0}`.
 From the checkout that holds `terraform/bootstrap/terraform.tfstate`, on a
 `main` that contains this merge, between releases, in zsh.
 
-(Written while bootstrap state was a local file. Since #827 it is in the state
+(Written while bootstrap state was a local file. Since the remote-state-bucket migration it is in the state
 bucket at `bootstrap/`, and any up-to-date `main` checkout reads it. See
 [operations](../operations.md#the-bootstrap-layers-state).)
 
@@ -246,14 +247,14 @@ bucket at `bootstrap/`, and any up-to-date `main` checkout reads it. See
 ```bash
 cd <the checkout with the bootstrap state>
 git fetch origin && git status && git log -1 --oneline origin/main
-gh run list --repo bogdan-alexandrescu/SwarmCloud --branch main --status in_progress
-gh run list --repo bogdan-alexandrescu/SwarmCloud --branch main --status queued
+gh run list --repo example-org/example-repo --branch main --status in_progress
+gh run list --repo example-org/example-repo --branch main --status queued
 echo "SWARM_ASSUME_YES=${SWARM_ASSUME_YES-<unset>}"
 ```
 
 * Both run lists must be empty, and `SWARM_ASSUME_YES` must print `<unset>`.
 * Step 1's check above must print the expected object.
-* #80's six changes and PR #73's scoping must already be applied. Otherwise the
+* The bootstrap-ordering rule's six changes and the projectIamAdmin-scoping PR's scoping must already be applied. Otherwise the
   untargeted plan shows them too, and one change per release is broken.
 
 **The apply**, targeted, with a typed `apply`:
@@ -266,11 +267,11 @@ scripts/bootstrap.sh \
   --target 'google_project_iam_member.deployer_project_iam_admin'
 ```
 
-The quotes are needed, because zsh globs `[...]`. The last target is PR #73's
-conditioned grant. Before #73's apply it has no instance and plans nothing.
+The quotes are needed, because zsh globs `[...]`. The last target is the projectIamAdmin-scoping PR's
+conditioned grant. Before its apply it has no instance and plans nothing.
 
 **The plan, as derived on 2026-09-25, before any apply.** This shape is
-**wrong about `deployer_project_iam_admin`** — it assumed PR #73's single
+**wrong about `deployer_project_iam_admin`** — it assumed the projectIamAdmin-scoping PR's single
 conditioned resource already existed in `terraform/bootstrap`'s state and
 would be *replaced*. It never had; kept here only as the historical record of
 what was expected going in, and because "what changed and why" below explains
@@ -288,7 +289,7 @@ exactly how reality diverged from it.
   # google_project_iam_member.broker_secret_lister["swarm-quota-broker"] will be imported
   # google_project_iam_member.deployer_project_iam_admin[0] must be replaced
       ~ condition {
-          ~ expression = "api.getAttribute(…).hasOnly([… \"projects/saga-agents-staging/roles/swarmSecretLister\", …])"
+          ~ expression = "api.getAttribute(…).hasOnly([… \"projects/example-project/roles/swarmSecretLister\", …])"
                       -> "api.getAttribute(…).hasOnly([…])"   # forces replacement
         }
   # google_project_iam_member.deployer_roles["roles/iam.roleAdmin"] will be destroyed
@@ -306,10 +307,10 @@ apparently matched the derived shape, since Terraform's mock-free plan cannot
 see GCP's `hasOnly()` element-count lint). The nine imports and the `roleAdmin`
 destroy applied cleanly; the create failed at the API with GCP's
 `LintValidationUnits/ListLengthCheck` — `hasOnly()` refuses a list over 10
-elements, and PR #73's single condition named all fifteen
+elements, and the projectIamAdmin-scoping PR's single condition named all fifteen
 `deployer_grantable_project_roles` in one call. Filed as
-[#275](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/275); fixed by
-[#277](https://github.com/bogdan-alexandrescu/SwarmCloud/pull/277), which
+the hasOnly-limit issue; fixed by
+the chunked-condition fix, which
 replaced the single conditioned resource with a `for_each` of one binding per
 chunk of at most 10 roles (`deployer_project_iam_admin_conditions` in
 `deployer_conditions.tf`). See "What actually happened" above for the full
@@ -318,11 +319,11 @@ timeline, including the one-minute gap and the hand restore, and
 for the six-step order that landed the chunked grants without repeating that
 gap.
 
-**For a fresh project applying today's code** (#277 already merged, so
+**For a fresh project applying today's code** (the chunked-condition fix already merged, so
 `deployer_project_iam_admin` is always the chunked `for_each`), there is no
 prior unconditioned live grant to transition away from by hand, so the
 out-of-band gcloud dance in docs/ci.md does not apply — it exists only to
-retire *this* project's hand-restored grant from #275's incident. A first
+retire *this* project's hand-restored grant from the hasOnly-limit incident. A first
 apply that includes `deployer_project_iam_admin` in the target set creates
 both chunk bindings directly: `Plan: 9 to import, 2 to add, 0 to change, 1 to
 destroy` (the two chunks created, `roleAdmin` destroyed, no replace).
@@ -408,7 +409,7 @@ Wait at least 7 minutes after the apply for IAM to propagate, then check it
 structurally (read-only):
 
 ```bash
-P=saga-agents-staging
+P=example-project
 gcloud projects get-iam-policy "$P" --flatten=bindings \
   --filter='bindings.members:swarm-tf-deployer@' \
   --format='table(bindings.role,bindings.condition.title)'
@@ -427,9 +428,9 @@ over all eight (it does not split an unquoted variable).
 
 * **The first table** has no `roles/iam.roleAdmin` row. `roles/resourcemanager.
   projectIamAdmin` appears exactly twice, conditioned, titled "only the roles
-  terraform infra grants (chunk 1 of 2)" and "…(chunk 2 of 2)" (#277) — never
+  terraform infra grants (chunk 1 of 2)" and "…(chunk 2 of 2)" — never
   with an empty condition title, which would mean the unconditioned grant is
-  still live (this project's #275 hand restore was removed 2026-09-29; see
+  still live (this project's hasOnly-limit hand restore was removed 2026-09-29; see
   "What actually happened" above).
 * **The second** prints the broker, `serviceAccount:swarm-quota-broker@…`.
 * **Each etag** equals the table under "What moves". A changed etag means a
@@ -459,7 +460,7 @@ The next release, whatever it carries, proves the rest.
   * Grants on single resources (`iam.serviceAccountUser` on service accounts,
     object roles on buckets) are not counted. `iam.roles.get` on a project's
     custom role is checked against the project's policy.
-  `gh run view <id> --repo bogdan-alexandrescu/SwarmCloud --log | grep -c google_project_iam_custom_role`
+  `gh run view <id> --repo example-org/example-repo --log | grep -c google_project_iam_custom_role`
   should print `0`.
 * **It does not prove that CI is refused `iam.roles.update`.** Nothing in the
   pipeline attempts it. Only a deliberate probe as the deployer would, and
@@ -470,13 +471,13 @@ The next release, whatever it carries, proves the rest.
 **Fast, out of band**, if something in CI turns out to need a role permission:
 
 ```bash
-P=saga-agents-staging
+P=example-project
 gcloud projects add-iam-policy-binding "$P" \
   --member="serviceAccount:swarm-tf-deployer@${P}.iam.gserviceaccount.com" \
   --role=roles/iam.roleAdmin --condition=None
 ```
 
-Terraform does not see this binding and will not remove it. Record it on #79.
+Terraform does not see this binding and will not remove it. Record it in the roleAdmin removal.
 
 **Never revert the code with a plain `git revert` and an apply.** The roles
 would leave `terraform/bootstrap`'s configuration while they are still in its
@@ -494,17 +495,17 @@ revert is this move in mirror image:
 
 ## Now verified, live (2026-09-28/29) — superseding the plans above
 
-* **Both roots have now actually been planned and applied.** #239's release
+* **Both roots have now actually been planned and applied.** The custom-roles-ownership release
   (2026-09-28 20:15Z) ran `terraform/infra`'s `removed`/`moved` chain for real;
   the owner's two bootstrap applies (2026-09-28 23:21Z and 2026-09-29 ~02:35Z)
   ran for real. See "What actually happened" above for the exact sequence,
   including the one divergence from what was derived (`deployer_project_iam_
-  admin[0]` was a *create*, not a *replace* — #275).
+  admin[0]` was a *create*, not a *replace* — the hasOnly-limit issue).
 * **The nine imports had no diff**, exactly as derived: no permission, title,
   description or member change on any of the eight custom roles or the
   broker's grant.
 * **The `moved` plus `removed` chain worked for the broker's single `for_each`
-  instance** (the pattern from hashicorp/terraform#34439) — #239's release
+  instance** (the pattern from hashicorp/terraform#34439) — the custom-roles-ownership release
   applied clean.
 * **The deployer's `roleAdmin` binding is gone**, confirmed structurally.
 
@@ -515,13 +516,13 @@ revert is this move in mirror image:
 * **Nothing measured that CI is refused `iam.roles.update` after step 2.**
   That is the deliberate probe in
   [docs/ci.md](../ci.md#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches),
-  owner-dispatched separately, and [#276](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/276)
+  owner-dispatched separately, and the probe-script issue
   notes the probe script itself does not yet expect two chunked
   `projectIamAdmin` bindings.
 * **`swarmDeployerProjectBuckets` carrying no `iam.roles.*` permission is
   derived, not measured.** The role is not live yet. Once its bootstrap apply
   has run, `gcloud iam roles describe swarmDeployerProjectBuckets --project
-  saga-agents-staging` is the measurement.
+  example-project` is the measurement.
 * **The next ordinary release's `terraform apply (dev)`** — the proof that the
   admitted side (imports, `roleAdmin` gone, the two chunked
   `projectIamAdmin` grants) plans and applies clean with no custom role and no

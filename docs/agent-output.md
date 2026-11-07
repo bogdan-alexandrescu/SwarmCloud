@@ -2,7 +2,7 @@
 
 The agent drawer has three panes: Details, Attempts and Artifacts. The
 Artifacts pane shows an agent's inputs, its outputs and its logs, and updates
-every 5 seconds while the agent runs (#184, owner decisions of 2026-09-25).
+every 5 seconds while the agent runs (owner decisions of 2026-09-25).
 This document covers the backend half: what the worker writes, what the API
 serves, and the reasons for both, including where an agent is told to put its
 deliverables and what an agent with no repository uploads from its working
@@ -64,7 +64,7 @@ could be split. The paged routes withhold such a run instead, but a download
 cannot withhold part of a file without corrupting it.
 
 **A window boundary never falls inside a secret that holds whitespace**
-(security pass SEC-REDACT-A, #227). The download used to cut at the last
+(security pass SEC-REDACT-A). The download used to cut at the last
 whitespace, as the paged routes still must when a line is longer than the page
 asked for, and whitespace is not a boundary everywhere: a learned literal
 holding a newline, cut at that newline, served both halves, neither of which
@@ -82,7 +82,7 @@ that holds nothing but such a span is withheld with a `detail`, as a token
 longer than the window is.
 
 **A JSON line the masker does not decode still has its credentials masked
-whole** (#227). A line over `JSON_LINE_MAX_CHARS`, one with a duplicate key,
+whole**. A line over `JSON_LINE_MAX_CHARS`, one with a duplicate key,
 one a window cut, or one with text before its JSON, is masked by the text
 rules, whose key/value rule takes a value up to its first space. Such text
 now has every credential-named member's string, list or object masked whole,
@@ -92,7 +92,7 @@ twice escaped (`\"`, `\\`, `\u00e9` and raw UTF-8), not only as written: in
 text nothing decoded, a literal holding a quote, a backslash or a non-ASCII
 character was never found.
 
-**Text that is not UTF-8 downloads as itself** (#188 review). A window is
+**Text that is not UTF-8 downloads as itself** (the HEARTBEAT CPU-reporting change review). A window is
 decoded with `surrogateescape` and encoded back the same way, so a byte that
 is not UTF-8 passes through exactly as stored and only a credential-shaped run
 changes. It used to be decoded with `errors="replace"`, so a Latin-1 CSV came
@@ -102,7 +102,7 @@ string cannot carry such a byte, so the paged routes (`/artifacts/content`,
 `/v1/tasks/{id}/checkpoints/{n}/files/{path}`) still show it as U+FFFD, but
 they now count it: `invalid_utf8_bytes` on every window read, with a sentence
 in `detail` when it is not 0, and null when nothing was read. The checkpoint
-member read decoded with `errors="replace"` and counted nothing until #207;
+member read decoded with `errors="replace"` and counted nothing until the checkpoint-member-UTF-8-count fix;
 it now cuts, looks back and decodes each window with the same `inspect`
 helpers as the other two, imported rather than copied, because a second copy
 of the window logic is how this route fell behind them in the first place.
@@ -115,7 +115,7 @@ key: JSON writes the key's newlines as the two characters `\n`, so the key is
 one line. Once the line is **decoded**, the newlines are real, and the same
 rule masked the BEGIN line and served the base64 body in clear. `/transcript`
 and `/answer`, which redact after `json.loads`, were therefore weaker than
-`/logs` over the same bytes (#188 review). A key printed as plain text
+`/logs` over the same bytes (the HEARTBEAT CPU-reporting change review). A key printed as plain text
 (`cat id_rsa`) had the same hole on every route.
 
 `swarm_api.redaction.mask_private_keys` masks a key as a block. It runs before
@@ -136,7 +136,7 @@ every other rule, so no other rule masks pieces of a key's body first:
   lines are masked (`redact(inside_key=True)`). The download route carries an
   open key whole into its next window instead, so the key is masked in one
   piece.
-* **A key split over JSON strings, in any container** (#385). A document can
+* **A key split over JSON strings, in any container**. A document can
   hold a key as an object's values, a list of objects, nested lists, or an
   object's *keys* (a PEM pasted into a `.properties` file stores each body
   line as a key with an empty value). With the END within 64 KiB, the strings
@@ -149,7 +149,7 @@ every other rule, so no other rule masks pieces of a key's body first:
   do not end it; it stops at an END string, at the first string *value* that
   is not body-shaped, or after 64 KiB. That is the text path's no-END rule
   (stop at the first line that is not key body) restated for JSON. Before
-  #385 only a flat list of strings was followed, so the object, nested-list,
+  the JSON-masker container-coverage fix only a flat list of strings was followed, so the object, nested-list,
   list-of-objects and object-key layouts served every body line in clear.
 
   **Why a length floor.** After a truncated key the next string is as likely
@@ -175,8 +175,8 @@ every other rule, so no other rule masks pieces of a key's body first:
 
 **A key split over a JSON document's containers** is masked from the string
 holding its BEGIN through the one holding its END, within 64 KiB of string
-content, whatever containers either sits in, on every route (#361). The
-artifact path has done this since #378. `JsonMasker`, which `/logs` and
+content, whatever containers either sits in, on every route. The
+artifact path has done this since the artifact-path cross-container masking change. `JsonMasker`, which `/logs` and
 `/input` mask a decoded document with, followed a key only through a flat
 list, so `{"secret": [BEGIN], "x": <body>, "z": END}`, with the BEGIN inside a
 value masked whole under a credential's name, served the body. It now applies
@@ -193,14 +193,14 @@ and agent output can take that shape.
 
 ## Where an agent's deliverables go, and an agent with no repository
 
-The post-deploy QA of #184 found a hole the Artifacts tab could not show
+The post-deploy QA of the deliverables-location change found a hole the Artifacts tab could not show
 around. `task_0e5b1f8b7bc1448fafdf`, a claude-code agent with no repository,
 wrote `answer.md` and `primes.txt` in its working folder. Only
 `$SWARM_ARTIFACTS_DIR` was ever uploaded, so the agent SUCCEEDED and its
 Outputs held the runner's logs and nothing the agent made. No prompt had told
-it where a deliverable goes unless a later workflow step expected one (#149).
+it where a deliverable goes unless a later workflow step expected one.
 
-The owner decided three things on 2026-09-26 (recorded on #184):
+The owner decided three things on 2026-09-26 (recorded on the deliverables-location change):
 
 1. **Every claude-code and codex prompt ends with one line** naming the
    directory:
@@ -215,14 +215,14 @@ The owner decided three things on 2026-09-26 (recorded on #184):
    agent's deliverable is its diff or pull request: an agent asked to write
    `docs/design.md`, and told last thing to write deliverables to the
    artifacts folder, can put the document there and leave the pull request
-   empty (#225 review). A test holds a repository agent's prompt to this one
+   empty (the working-folder-outputs PR review). A test holds a repository agent's prompt to this one
    line and no order.
 
    It is built once, by `expected_outputs.deliverables_line`, and appended by
    `with_instructions`, which `cliagent.run_cli_agent` calls for both runners.
    When later steps expect files, their list follows the line and says "write
    each one there" -- the one order the text gives, because a dependant cannot
-   run without those files (#149) -- so the directory is named once. The path
+   run without those files -- so the directory is named once. The path
    is absolute beside the variable's name, because an agent has already
    reported the variable as unset and written nothing. A prompt is no longer
    passed through byte for byte when nothing is expected; that was the old
@@ -264,7 +264,7 @@ What decision 2 does, and the reason for each rule:
   redaction, and no route changed. The prefix keeps a file of the same name in
   `$SWARM_ARTIFACTS_DIR` in its place (if the artifacts folder holds
   `workdir/<path>` itself, that file wins and the working-folder copy is
-  listed with the reason). It also keeps #149's rejected option (c) rejected:
+  listed with the reason). It also keeps the workdir-outputs design's rejected option (c) rejected:
   a dependant's `input_from` and the expected-outputs check both match by
   exact name, so `scan-01.md` left in the working folder is
   `workdir/scan-01.md` and does not satisfy a later step that stages
@@ -286,11 +286,11 @@ What decision 2 does, and the reason for each rule:
   build logged the first 50 too, so past 50 a name was nowhere.
 * **Not in `artifacts_skipped`.** Every reader of that list reads a name in it
   as a file of the artifacts folder: the tab's note on that folder's file list
-  ("dropped at the size cap" until #228, "skipped" since), a dependant's
+  ("dropped at the size cap" until the artifacts-cap change, "skipped" since), a dependant's
   "exceeded its artifact size cap". A working-folder file
   is dropped by another cap, or for a reason that is no cap at all, so the
   first build's copy there mislabelled a file the 50-file cap dropped.
-* **Listed and not uploaded, with the reason** (#225 review):
+* **Listed and not uploaded, with the reason** (the working-folder-outputs PR review):
   * *A name that is not UTF-8* (`name is not valid UTF-8`). `os.walk` decodes
     such a name into a str holding lone surrogates. GCS names objects in
     UTF-8, a protobuf string field -- so a Firestore write -- cannot carry a
@@ -307,7 +307,7 @@ What decision 2 does, and the reason for each rule:
     256 characters, so 50 of them cannot take the summary near 1 MiB --
     scrubbed of any registered secret BEFORE the cut, not after, so a key
     that happens to cross that character cannot survive in the fragment kept
-    (#232 review).
+    (the declared-name-cap PR review).
   * *A core dump*: `core` or `core.<pid>`, at any depth. A program the agent
     built and ran crashes with the working folder as its cwd, and its core
     holds its memory, environment block included, which inherited the CLI's
@@ -374,11 +374,11 @@ It is `cliagent.PUBLISH_PARAGRAPH`, appended once in `run_cli_agent` for both
 CLIs, and fixed text, so a test holds it and it carries none of the rate-limit
 or credential markers a CLI that echoes its prompt would trip. An agent with no
 repository does not get it, and neither does a resumed session, which already
-holds it. In a claude-code prompt the context-ceiling note (#2524, below) sits
+holds it. In a claude-code prompt the context-ceiling note (below) sits
 between the questions sentence and the time-limit line. It goes to every step with a repository, a review included: the
 worker's strategy, not the agent, decides whether anything is pushed.
 
-**The no-change sentence (#2140)** names the file the worker reads as
+**The no-change sentence** names the file the worker reads as
 "nothing to change, and here is why": an agent that finds its work already
 done and writes only `pr-body.md` fails `published_nothing` and cancels its
 dependants, as build-170 did. See "Or the agent says why: `verification.md`
@@ -388,7 +388,7 @@ A CI-fix round (`scripts/ci-fix.sh`) is told the same file for "no change on
 this branch can fix it"; that ends the fix step `no_change`, and the pull
 request it was fixing stays red, so nothing merges it.
 
-**The last sentence is the descent rule (#2277).** The worker discards a moved
+**The last sentence is the descent rule.** The worker discards a moved
 HEAD that does not descend from the commit the step was cloned at
 (`Worker._head_moved`), and the paragraph used to say only that the worker
 publishes the committed branch: an agent ran `git checkout -B fix-516
@@ -398,7 +398,7 @@ branch that does not descend from the step's start is not this step's work --
 so the prompt states the rule instead: merge another branch in, never move
 onto it.
 
-**The step's wall clock comes just before the paragraph (#2139).** On
+**The step's wall clock comes just before the paragraph.** On
 2026-10-23 three claude-code agents started their tenant's whole pytest suite
 in the background, polled it with ~600 s `sleep` calls, and were killed
 mid-sleep at their 7200 s limit (exit 137); one had given its suite a
@@ -439,7 +439,7 @@ The prefix is the point: a fallback title is the worker's, and a reviewer has
 to be able to tell it from one the agent chose. A title a later step declared
 it will stage is never excused, issue or not: that step needs the file.
 
-**A publishing step that committed nothing is told how to end (#3265).** The
+**A publishing step that committed nothing is told how to end.** The
 worker reads "no change plus a non-blank `verification.md`" as SUCCEEDED
 `no_change` (Proposal J), but a step that committed nothing and wrote no
 verification failed `published_nothing` with no warning. Measured on
@@ -460,15 +460,15 @@ those). `SWARM_STEP_PUBLISHES` is still `1` for a contributor, amender or
 carrier step, for which no change is not a failure: there the turn is one
 cheap turn whose `verification.md` also makes the worker record `no_change`.
 
-## Sessions and resumes: the context ceiling (#2524)
+## Sessions and resumes: the context ceiling
 
-Nothing used to end a session as its context grew. In the week BGD measured
+Nothing used to end a session as its context grew. In the week [the owner] measured
 (2026-10-20 to 10-27) the longest lanes ran 300-640 turns at a 250-390k mean
 context, the spend in the 60-150 and 150+ turn buckets was most of the week's
 total, and one account-swap resume (task_98d001a3) started at 452,706 tokens
 and wrote 1.33M tokens to cache in 8 turns. Every turn re-reads the whole
 context, so a long session costs roughly the square of its length, and
-`--resume` carries all of it over. BGD decided on 2026-10-27 (#2524 item 3):
+`--resume` carries all of it over. [the owner] decided on 2026-10-27:
 **200k tokens of context or 150 tool calls, whichever comes first.**
 
 * **The watch.** The claude-code runner reads its CLI's stream as it is
@@ -489,14 +489,14 @@ context, so a long session costs roughly the square of its length, and
   the recent commits, the agent's own note if it wrote one
   (`$SWARM_ARTIFACTS_DIR/handoff.md`, which every claude-code prompt says it
   may keep), and then the prompt the first session got, less its
-  time-limit line (#2139): a handoff with nothing else to ask ends with a
+  time-limit line: a handoff with nothing else to ask ends with a
   limit line naming what is left of the step instead. The step
   continues inside its own timeout. An attempt starts at most
   `MAX_FRESH_SESSIONS` (4) fresh sessions. After that the ceiling stops
   nothing, and the last session runs to its end, so a lane stuck in a loop
   cannot restart forever. A stop with less than a minute of the step left
   starts nothing, and the result stands.
-* **No session tail by default (BGD, 2026-11-06).** The handoff also lists
+* **No session tail by default ([the owner], 2026-11-06).** The handoff also lists
   the notes files and the last todo list. It does **not** carry the previous
   session's own last messages unless `SWARM_CEILING_SESSION_TAIL=1`. That
   text is the previous session's own assistant output fed back in as user
@@ -515,7 +515,7 @@ context, so a long session costs roughly the square of its length, and
   session channel (in `private/`). A restart that asks it to `--resume` a
   session that ended over the ceiling (an account swap, a credential reload)
   starts a fresh session from a handoff instead. So do the runner's own
-  finish pass, wrap-up pass (#2139), repair turns and pre-publish gate
+  finish pass, wrap-up pass, repair turns and pre-publish gate
   turns, whose handoff ends with what that pass was going to ask.
 * **The record.** `result_summary.runner.output.context_ceiling` holds the
   limits, the fresh sessions started, and one entry per stop: where it
@@ -570,9 +570,9 @@ the repair turns, while the session can still be continued
    | `*.sh` | `shellcheck -x <files>` |
    | `*.py`, where the repository configures ruff | `ruff format --check` and `ruff check` on the files |
    | an image's `Dockerfile` or `tool-mirror.sha256` | the build mirror's manifest-vs-Dockerfile tests |
-   | a file the graph's `tests` layer, a changed test or a sibling `X.test.tsx` covers (CTXQ-G) | `graph-pytest`: those Python test files `changed-guards.sh --list` did not already select, with `pytest -n auto`. When the staged graph's manifest lists `symbol_test_map` or `file_test_map` as `truncated`, the graph names only part of a module's tests, so `scripts/related-tests.sh`'s import pick is added (up to 60 files) and the check says how many it added (owner's pick, PR #3105); `vitest`: the JavaScript ones, with the package's own `node_modules/.bin/vitest run`, from the package |
+   | a file the graph's `tests` layer, a changed test or a sibling `X.test.tsx` covers (CTXQ-G) | `graph-pytest`: those Python test files `changed-guards.sh --list` did not already select, with `pytest -n auto`. When the staged graph's manifest lists `symbol_test_map` or `file_test_map` as `truncated`, the graph names only part of a module's tests, so `scripts/related-tests.sh`'s import pick is added (up to 60 files) and the check says how many it added (owner's pick); `vitest`: the JavaScript ones, with the package's own `node_modules/.bin/vitest run`, from the package |
    | a `.ts`/`.tsx` file of a package with a `tsconfig.json` | `tsc` with the package's own `typecheck` arguments |
-   | any file of a package whose `package.json` declares a `test:node` script (apps/swarm-ui) | `node-tests`: `npm run test:node`, from the package. Its node:test `.mjs` files run nowhere else before publish -- the `vitest` selection drops `.mjs`/`.cjs` -- and four lanes (#2429, #2430, #2433, #2437) went red in CI's ui-build on `no-company-name.test.mjs` (#2455) |
+   | any file of a package whose `package.json` declares a `test:node` script (apps/swarm-ui) | `node-tests`: `npm run test:node`, from the package. Its node:test `.mjs` files run nowhere else before publish -- the `vitest` selection drops `.mjs`/`.cjs` -- and four lanes went red in CI's ui-build on `no-company-name.test.mjs` |
    | `*.tf` anywhere | `terraform fmt -check -diff <files>` |
 
    A check that cannot run is `skipped` with its reason and never sent to the
@@ -588,7 +588,7 @@ the repair turns, while the session can still be continued
    and formatting excludes every file, so `ruff format --check` passes
    whatever a lane touched and `ruff check` is the one that can fail.
 
-   **A service the tests need** (#1605, #1627). A `graph-pytest` run in which
+   **A service the tests need**. A `graph-pytest` run in which
    every selected test errored at setup on a refused connection to a local
    address, and none passed or failed on its own, is `skipped`: "a service
    the tests need is unreachable (127.0.0.1:5432); every selected test errored
@@ -648,7 +648,7 @@ rebase: the decision is made at the fresh clone. The checks still run.
 
 ## At most 500 files from `$SWARM_ARTIFACTS_DIR`
 
-Found by reading on 2026-09-26 (#228), not measured: every file in the
+Found by reading on 2026-09-26, not measured: every file in the
 artifacts folder that fitted `max_artifact_bytes` became one entry in
 `result_summary.artifacts`, with no count cap. `result_summary` is a field of
 the agent's Firestore document, which Firestore limits to 1 MiB. An entry is
@@ -656,10 +656,10 @@ about 160 bytes at ordinary name lengths, so an agent that left about 6,000
 small files there would have taken the document past the limit: `finish`
 refused, `_safe_finish` refused again, and the agent lost a result that may
 have succeeded. The fake Firestore the unit tests use does not enforce the
-limit, which is why nothing caught it. Since #225 every CLI prompt names the
+limit, which is why nothing caught it. Since the working-folder-outputs PR every CLI prompt names the
 folder, so more agents write there.
 
-The owner decided on 2026-09-26, recorded on #228:
+The owner decided on 2026-09-26, recorded on the artifacts-cap change:
 
 * **At most 500 files are uploaded per attempt** (`artifact_manifest.MAX_FILES`,
   `WorkerConfig.max_artifact_files`). The rest are not uploaded. The summary
@@ -668,10 +668,10 @@ The owner decided on 2026-09-26, recorded on #228:
   fitted, so a reader never draws a zero as something dropped.
 * **Every name is in the worker log**, 100 to a WARNING line headed "files in
   $SWARM_ARTIFACTS_DIR were not uploaded", each as `<name>: not uploaded: over
-  cap`. It is the same helper #225's working-folder cap logs through
+  cap`. It is the same helper the working-folder-outputs PR's working-folder cap logs through
   (`Worker._log_not_uploaded`), so the two caps cannot drift apart.
 * **Artifacts > Outputs** shows "not uploaded from $SWARM_ARTIFACTS_DIR" with
-  the count, and #225's count line: "N over the 500-file cap, named in the
+  the count, and the working-folder-outputs PR's count line: "N over the 500-file cap, named in the
   worker log". The cap is read from the summary, not restated in the UI.
 
 The rules this needed, and why:
@@ -683,7 +683,7 @@ The rules this needed, and why:
   Then the files the platform writes into the folder: the agent CLI's stream
   captures and transcript, which `agent_streams` and the tab's answer and
   transcript read, and the harvest's patch. Then everything else, shallowest
-  first and then by path, the rule #225 chose for the working folder, so a
+  first and then by path, the rule the working-folder-outputs PR chose for the working folder, so a
   top-level report is not pushed out by a generated tree beside it. The byte
   cap is applied in the same order.
 * **The manifest is still listed by path.** The order decides which files
@@ -691,13 +691,13 @@ The rules this needed, and why:
   them the listing route's first page holds.
 * **A name longer than 256 bytes is not uploaded**
   (`artifact_manifest.MAX_NAME_BYTES`) -- UNLESS a later step declared it
-  (#232 review, `artifact_manifest.MAX_DECLARED_NAMES`). A declared name is
+  (the declared-name-cap PR review, `artifact_manifest.MAX_DECLARED_NAMES`). A declared name is
   only put first, not excused from upload: holding it to this bound too made
   a declared output over 256 bytes fail every attempt as "written but not
-  uploaded" -- worse than before #228, because `_publish_withheld` had by then
+  uploaded" -- worse than before the artifacts-cap change, because `_publish_withheld` had by then
   already published, so the retry's push was refused as a non-fast-forward. A
   declared name is held only to GCS's own object-name limit, 1,024 bytes,
-  same as the pre-#228 code and same as any other upload that is too long for
+  same as the code before the artifacts-cap change and same as any other upload that is too long for
   GCS: it fails at upload time and is counted in `artifacts_skipped` like any
   other upload error, not turned away here.
 * **The 256-byte bound exists because the count cap alone does not bound the
@@ -708,19 +708,19 @@ The rules this needed, and why:
   held only to the GCS length instead, so the manifest's worst case is 49
   entries at about 2,238 bytes (107 KiB) plus 451 at 702 bytes (309 KiB):
   about 416 KiB. The worst case of everything else the document can hold is
-  the input (256 KiB -- see the caveat below), #225's working-folder block
+  the input (256 KiB -- see the caveat below), the working-folder-outputs PR's working-folder block
   (about 155 KiB), the two skipped lists (about 67 KiB) and the runner
   envelope (about 12 KiB). That is about 906 KiB in all, leaving about
   118 KiB. At 512 bytes the manifest alone would pass that, and the sum would
   pass 1 MiB. 256 bytes is a nested path: Linux allows 255 bytes for one file
   name. A name over the bound (not declared) is logged with the reason `name
   is longer than the manifest's 256 bytes`, and listed in `artifacts_skipped`,
-  both cut to 256 characters as #225 cuts a name it lists -- scrubbed of any
+  both cut to 256 characters as the working-folder-outputs PR cuts a name it lists -- scrubbed of any
   registered secret BEFORE the cut, not after, so a key that happens to cross
-  that character cannot survive in the fragment that is kept (#232 review). A
+  that character cannot survive in the fragment that is kept (the declared-name-cap PR review). A
   path can be 4,096 bytes, and 100 of those would pass Cloud Logging's 256 KiB
   entry.
-  * **The caveat this budget does not cover (#232 review, tracked on the wave
+  * **The caveat this budget does not cover (the declared-name-cap PR review, tracked on the wave
     epic, not fixed here):** "the input costs at most 256 KiB" assumes the
     submitted bytes are roughly what Firestore ends up storing. Firestore
     counts a number as a flat 8 bytes whatever its digit count, so an input
@@ -741,7 +741,7 @@ renders the longest URI a deployment makes.
 ## A step's environment: where the agent starts, HOME, and the model
 
 The owner compared a dispatched workflow with the same workflow run in a local
-Claude Code lane and decided, on 2026-09-26 (#226), that a step behaves like
+Claude Code lane and decided, on 2026-09-26, that a step behaves like
 the local lane wherever the difference is a choice rather than a constraint.
 Two differences were choices.
 
@@ -774,14 +774,14 @@ still runs in `work/`; only the agent moves. The rules, and why:
   the agent changes nothing about what a resume restores.
 * **Staged inputs stay in `work/`, and the prompt names them.** They cannot move
   into the checkout without becoming part of the agent's diff. The prompt line
-  the worker adds (`expected_outputs.agent_instructions`, the one place #184 put
+  the worker adds (`expected_outputs.agent_instructions`, the one place the deliverables-location change put
   it) gains, only for a repository agent with staged inputs, "Earlier steps of
   this workflow gave you these files, which are outside the repository:" and
   one absolute path per file. An agent with no repository keeps its prompt
   exactly: it starts in `work/`, where "read scan-01.md" already works. A
   caller's own `input.staged_inputs` is dropped with a WARNING, like
   `input.expected_outputs`, because the line speaks for the platform.
-* **`./artifacts` works from the checkout.** #149's net catches the agent that
+* **`./artifacts` works from the checkout.** the workdir-outputs design's net catches the agent that
   reads `$SWARM_ARTIFACTS_DIR` and writes `./artifacts/<name>` anyway, and from
   the checkout that path is `work/repo/artifacts`. So the worker makes the same
   link there, and hides it with the clone's own `.git/info/exclude` (local to
@@ -796,7 +796,7 @@ still runs in `work/`; only the agent moves. The rules, and why:
 **The code profile runs a pinned model, and a step picks which by class.** No
 Job set `MODEL`, so the CLI's default ran: the QA agent of 2026-09-26 ran
 `claude-sonnet-5`, not the `claude-opus-5-5` the operator's local lanes run.
-#226 pinned one model per profile. Since #1435 (design B, owner decisions of
+The input-model-drop change pinned one model per profile. Since the model-per-step design (design B, owner decisions of
 2026-10-17, [design/model-per-step.md](design/model-per-step.md)) a step may
 also name a **model class**, one of four classes from the frozen
 `MODEL_CLASSES`, and the class, never the caller, decides the model ID:
@@ -846,15 +846,15 @@ How a step gets its model, and what refuses it:
 * **A caller never chooses the model ID (invariant 10).** Until 2026-09-26 the
   runner read `input.model` first, ahead of the Job's value, and the API and
   the console's Submit form both let a caller send it, so a caller did choose
-  the model. Two changes closed that. #213 (contract request 25) made the API
+  the model. Two changes closed that. The input-key-refusal change (contract request 25) made the API
   refuse every key a profile's `RunnerProfile.inputs` does not declare, and
   claude-code declares none, so `input.model` gets 422 `invalid_input` on an
   agent, a batch and a workflow step, and nothing is created
   (`tests/unit/control_plane/test_input_model_is_refused.py` pins it for this
-  key). #226 made the runner never read `input.model` at all, and the worker
+  key). The input-model-drop change made the runner never read `input.model` at all, and the worker
   drops a stored one with a WARNING: an agent queued before the refusal
   shipped, or a profile whose inputs are not declared yet (`browser`,
-  `generic`, #218), which the API bounds by size alone. What a caller may
+  `generic`), which the API bounds by size alone. What a caller may
   send is `model_class`, a name from a four-word vocabulary; an ID sent as a
   class is `unknown_model_class`. The top-level `model` is filled by swarm-api
   from the step's class pin; the refusals are in
@@ -875,7 +875,7 @@ How a step gets its model, and what refuses it:
 * Changing a class's model is an edit to `local.runner_models` and a release;
   nothing a caller sends changes it.
 
-### The agent is told its memory budget (#2504)
+### The agent is told its memory budget
 
 Five claude-code attempts (f-013, f-014, f-039, f-040, f-041) ran `pytest -n
 8`, `tsc` with `NODE_OPTIONS=--max-old-space-size=5000` and resident dev
@@ -906,7 +906,7 @@ before the platform's instructions, for an agent with a repository or without:
 the budget in GiB, stop the dev servers before tsc or the tests, and never pass
 `pytest -n` above the worker count.
 
-That line also carries #2507's four rules, because the OOM kills came from the
+That line also carries the OOM-avoidance-rules change's four rules, because the OOM kills came from the
 shape of the work as much as from its size:
 
 1. run one heavy command (a test run, tsc, a build) at a time;
@@ -916,7 +916,7 @@ shape of the work as much as from its size:
    starting another, since its children outlive it;
 4. never set `--max-old-space-size` above the limit less 1.5 GiB
    (`OLD_SPACE_HEADROOM_BYTES`), stated in MiB: 6656 of 8 GiB, 3584 of 5 GiB,
-   never below 256. The whole limit, which #2504's line allowed, leaves nothing
+   never below 256. The whole limit, which the budget-line change's line allowed, leaves nothing
    for the worker and the CLI that share the container.
 
 A resumed session is not told again; the session already holds the line. An
@@ -1028,7 +1028,7 @@ every case.
 Under stream-json, claude-code's stdout is the whole conversation, including
 every tool result. It is still captured under `max_stdout_bytes` (32 MiB). The
 capture used to write the first 32 MiB and discard the rest. The `result`
-event is always the last line, so a long session lost it (#188 review). With
+event is always the last line, so a long session lost it (the HEARTBEAT CPU-reporting change review). With
 it went four things:
 
 * the answer, so `/answer` fell back to the runner's 2,000-character summary;
@@ -1127,7 +1127,7 @@ open question for the owner.
 * **Decoded strings are masked at least as far as their raw line.** Every
   string is redacted with `decoded=True` (see the section on private keys).
 * **A tool's input and an event's record are masked by their structure**
-  (#221, owner decision 2026-09-26). Both used to be `json.dumps` of a decoded
+  (owner decision 2026-09-26). Both used to be `json.dumps` of a decoded
   object, redacted as one string: JSON text, where a quote inside a string is
   `\"`. An agent's `export DB_PASSWORD="<v>"` was served with its backslash
   masked and `<v>` in clear, under a count of 1, and a curl body's
@@ -1166,7 +1166,7 @@ The answer route gives one of four answers:
 
 ## The agent's input is masked too, with a count
 
-The owner decided on 2026-09-25 (#184) that the Artifacts pane's Inputs and
+The owner decided on 2026-09-25 that the Artifacts pane's Inputs and
 the drawer's Details show "a read-time-redacted copy of the task's input,
 with 'masked N', like every other output". Both used to draw `task.input`
 straight off `GET /v1/tasks/{id}`. The Artifacts pane said so
@@ -1205,8 +1205,7 @@ one set of rules. It is not a second one. It is applied by
    line holds a marker. A key with **no END in reach**, split over an
    object's values, a list of objects, nested lists or an object's keys, is
    followed in document order by the same run the artifact token path uses
-   (see [Private keys are masked as blocks](#private-keys-are-masked-as-blocks-not-lines),
-   #385), on `/input` and on `/logs` alike: one shared rule, so the three
+   (see [Private keys are masked as blocks](#private-keys-are-masked-as-blocks-not-lines)), on `/input` and on `/logs` alike: one shared rule, so the three
    routes cannot disagree about which string ends a truncated key.
 4. A literal that any of those masked (a value under a credential's name, or a
    value the key/value rule found beside `NAME=` in a string or a key) is
@@ -1218,7 +1217,7 @@ The served text is `json.dumps(indent=2)` of the masked value, so it is always
 the input's JSON.
 
 **Why not a rule over the JSON text.** The route first served one `redact()`
-over the JSON text, and the PR #210 review found the hole. JSON text writes a
+over the JSON text, and the input-masking-screens PR's review found the hole. JSON text writes a
 quote inside a string as `\"`, and the key/value rule reads a quote as a
 quote. A prompt holding `{"api_key": "<bare>"}` or `PASSWORD="<bare>"` came out
 masked in `prompt` and in clear in `full`, under a count of 0. The fix-up
@@ -1246,7 +1245,7 @@ run of name characters starts, which masks exactly what it masked before. A
 which the module's docstring had claimed and the rule did not catch; the
 shell filter in `scripts/lib/common.sh` still does not take the hyphen.
 
-**The key/value rule reads an escaped quote as a quote** (#221, owner decision
+**The key/value rule reads an escaped quote as a quote** (owner decision
 2026-09-26). `/logs` serves raw stream-json lines, where there is no decoded
 document to walk: an agent's `export DB_PASSWORD="<v>"` sits in the line as
 `DB_PASSWORD=\"<v>\"`, and a curl body's pair as `\"api_key\": \"<v>\"`. The
@@ -1264,7 +1263,7 @@ both over the same lines and holds their output **equal**, not merely both
 masked. The superset relation (everything the shell filter masks, the API
 masks) still holds, and is now equality on every key/value line the tests name.
 
-**At any depth of escaping** (the PR #229 review). A command that quotes its
+**At any depth of escaping** (the structural-JSON-masking PR's review). A command that quotes its
 own quotes -- `bash -c "export DB_PASSWORD=\"<v>\""`, `curl -d "{\"api_key\":
 ...}"` -- sits in a stream-json line one level deeper, as `\\\"`: three
 backslashes, then the quote. The first version took exactly one backslash, so
@@ -1275,7 +1274,7 @@ the two-level `bash -c` and `curl -d` lines. The run before the key is bounded
 at 15 in Python, because that group is tried at every position of the text; a
 longer run still matches, from a later start, with the same output.
 
-**`/logs` masks a JSON line by its structure** (the PR #229 review). The rule
+**`/logs` masks a JSON line by its structure** (the structural-JSON-masking PR's review). The rule
 over the text can only guess where a value ends inside JSON text: a list under
 a credential's name served every element after the first, an object served its
 strings, and a value holding a space or a backslash served the rest. So a log
@@ -1293,10 +1292,10 @@ later elements are served.
 
 **A list's first element.** The same change lets the value start after a `[`,
 so `{"password": ["<v>"]}` masks `<v>` rather than the bracket (the reach
-limit PR #210 reported). In free text that is still the first element only:
+limit the input-masking-screens PR reported). In free text that is still the first element only:
 `["a", "b"]` serves `b`, and an object under a credential's name serves its
 strings. A line or document the API can decode goes through `JsonMasker`,
-which masks either whole -- on `/logs` too, since the PR #229 review.
+which masks either whole -- on `/logs` too, since the structural-JSON-masking PR's review.
 
 `prompt_key` (`string`, `missing`, `other`) says what shape the input has, so
 a screen never goes back to the raw document to find out. Under a string
@@ -1312,9 +1311,9 @@ input blocks.
 
 ### Masked everywhere: every route that serves an agent (2026-09-26)
 
-PR #210 masked what the screens drew and left `GET /v1/tasks/{id}` serving
+The input-masking-screens PR masked what the screens drew and left `GET /v1/tasks/{id}` serving
 the input as submitted, to the tenant that submitted it. The owner closed
-that on #184: "The API never serves a credential-shaped string back, even to
+that on the deliverables-location change: "The API never serves a credential-shaped string back, even to
 the submitter." So `codec.task_to_api`, the one serializer every task route
 goes through, serves the input `task_input.TaskMasking` masks, with
 `input_redaction_count` beside it. That covers the agent, the agent list, the
@@ -1330,19 +1329,18 @@ none of whose step agents were read serves its step inputs as `null` with
 `input_masked_by: "not_read"`. The task document is unchanged: masking is at
 read time, and the runner reads what was submitted.
 
-**What else carries the input, and how each is masked** (the PR #229 review,
+**What else carries the input, and how each is masked** (the structural-JSON-masking PR's review,
 which found "nothing serves the raw input" false as first written):
 
 | where | what it held | now |
 |---|---|---|
 | `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the agent's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
-| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids (`task_input.LOOKUP_KEYS`, in `result_summary` and in an event's `detail`) are masked by `TaskMasking.name`, the function that masks `metadata.input_from` and `metadata.expected_outputs` (#296), and counted. A client matches these exactly, and the text rules would take `eye-tracking-summary.md` for a JWT, so `name` leaves a clean name byte for byte. They were once served as stored, which served a credential-shaped filename, or one carrying a literal the agent named, in clear beside its masked declared copy; the API never serves a credential-shaped string back (owner decision 2026-09-26). Because `name` is deterministic and masks both copies, a masked staged or produced name still equals the masked declared one: mask, then match. The artifact listing (`GET /v1/tasks/{id}/artifacts`) still serves names as stored, because `/artifacts/content` is fetched by that exact name. |
+| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids (`task_input.LOOKUP_KEYS`, in `result_summary` and in an event's `detail`) are masked by `TaskMasking.name`, the function that masks `metadata.input_from` and `metadata.expected_outputs`, and counted. A client matches these exactly, and the text rules would take `eye-tracking-summary.md` for a JWT, so `name` leaves a clean name byte for byte. They were once served as stored, which served a credential-shaped filename, or one carrying a literal the agent named, in clear beside its masked declared copy; the API never serves a credential-shaped string back (owner decision 2026-09-26). Because `name` is deterministic and masks both copies, a masked staged or produced name still equals the masked declared one: mask, then match. The artifact listing (`GET /v1/tasks/{id}/artifacts`) still serves names as stored, because `/artifacts/content` is fetched by that exact name. |
 | `repository_url` | a caller-supplied URL, often with the forge token in it | refused at submission when it carries userinfo that can hold a credential (`validation.check_repository_url`, a 422 naming the tenant's git secret as the way to clone a private repository); one stored before is served with the userinfo masked, `repository_url_redaction_count` beside it |
-| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the agent's masker. The prompt is still in the archive, in the CLI's session transcript: see the #244 paragraph below |
+| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the agent's masker. The prompt is still in the archive, in the CLI's session transcript: see the paragraph below |
 | the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the agent's literals in every window |
 
-**One path still serves it as stored, and the owner has ruled** (issue #244,
-2026-09-27): the whole checkpoint archive (`GET /v1/tasks/{id}/checkpoints/
+**One path still serves it as stored, and the owner has ruled** (2026-09-27): the whole checkpoint archive (`GET /v1/tasks/{id}/checkpoints/
 {n}/content`) is served byte for byte and unredacted, to the tenant that owns
 the agent (owner decision 2026-09-24). Excluding `input.json` does not close
 that. `HOME` is `work/`, so a CLI runner writes its OWN session transcript
@@ -1371,8 +1369,8 @@ A literal the agent named is masked when it comes back as a JSON **number**,
 on every route, by one rule: `JsonMasker.number`. An agent that submits
 eight or more digits as a string under a credential's name, and whose agent
 echoes `{"n": <the same digits>}`, gets the number served as the JSON string `"********"` and counted,
-whether it is the number itself, inside a longer one, or `N.0`. Before #387
-the artifact routes masked it (PR #378) through their own copy of the rule,
+whether it is the number itself, inside a longer one, or `N.0`. Before the number-masking-unification change
+the artifact routes masked it through their own copy of the rule,
 while `JsonMasker` returned every number untouched, so `/input`, `GET
 /v1/tasks/{id}` and `/logs` served the digits in clear: on a log line the
 structural walk masked anything else in, `redact_lines` skips its text pass
@@ -1415,7 +1413,7 @@ would be a place to store a secret the API serves raw.
 **What this costs.** Every agent a route serves is masked on the way out: the
 list route masks up to a page of inputs, each up to `max_input_bytes`
 (256 KiB). The rules are linear on 256 KiB (about 25 ms for the key/value
-rule, PR #210) and at most 256 learned literals are carried, but a page of
+rule) and at most 256 learned literals are carried, but a page of
 large inputs has not been measured on Cloud Run.
 
 **One known difference.** A workflow step's input is masked with the step's
@@ -1428,11 +1426,11 @@ The worker already sampled CPU (`agent_worker.metrics`), but nothing
 displayed the figures. The mean existed only after a runner stopped, and the
 limit was recorded nowhere.
 
-#188 put the figures on HEARTBEAT events, because the frozen `Attempt` had no
+The HEARTBEAT CPU-reporting change put the figures on HEARTBEAT events, because the frozen `Attempt` had no
 CPU fields. `GET /v1/tasks/{id}/attempts?include=usage` read them back with
 one descending events read per request. That was the interim path.
 
-**Contract request #15 was accepted on #184 (2026-09-25), and it replaces the
+**Contract request 15 was accepted on the deliverables-location change (2026-09-25), and it replaces the
 interim path.** `Attempt` carries four fields: `cpu_seconds`,
 `peak_cpu_cores`, `mean_cpu_cores` and `cpu_limit_cores`. Each is the
 attempt's, meaning every runner it started, combined.
@@ -1452,11 +1450,11 @@ attempt's, meaning every runner it started, combined.
   is the catalogue cpu of the class the container was *sized* with, which is
   the agent's own class and not the profile's. Which of the two supplied it is
   no longer recorded (see below).
-* **The HEARTBEAT event is back to what it carried before #188:**
+* **The HEARTBEAT event is back to what it carried before the HEARTBEAT CPU-reporting change:**
   `elapsed_seconds`, `peak_rss_bytes`, `checkpoints`, the cumulative
   `cpu_seconds` and `cpu_source`. The reconciler's stuck-browser judgement
   (`reconciler.progress`) turns two consecutive `cpu_seconds` into a rate,
-  and it is the reason those two stay. The `final` HEARTBEAT that #188 emitted
+  and it is the reason those two stay. The `final` HEARTBEAT that the HEARTBEAT CPU-reporting change emitted
   when a runner was reaped is gone.
 * **The API serves the four fields on every attempt row** (`attempt_to_api`),
   with no opt-in, because serving them costs no read the route was not already
@@ -1468,12 +1466,12 @@ attempt's, meaning every runner it started, combined.
   the agent, its lease and its event stream, none of which this touches. The
   tenant-mismatch exit writes nothing.
 
-### When the reading was taken, and where its limit came from (request #26)
+### When the reading was taken, and where its limit came from (request 26)
 
-The four fields of request #15 carried no time and no limit source, so a live
+The four fields of request 15 carried no time and no limit source, so a live
 reading said `age not recorded`, and a limit that was not its class's said
 `reported limit`. A worker that had stopped writing an hour ago looked exactly
-like one that wrote a second ago. **Contract request #26 was accepted on #184
+like one that wrote a second ago. **Contract request 26 was accepted on the deliverables-location change
 (2026-09-26)**: `Attempt` carries `cpu_measured_at` and `cpu_limit_source`.
 
 * **The worker dates every write that carries a figure** (`cpu_measured_at`,
@@ -1487,7 +1485,7 @@ like one that wrote a second ago. **Contract request #26 was accepted on #184
 * **The API ages the reading on its own clock**:
   `cpu_reading_age_seconds` is the route's `read_at` minus
   `cpu_measured_at`, clamped at zero for a worker clock that runs ahead. Both
-  attempt routes serve `read_at`. The #187 review's point still holds: an age
+  attempt routes serve `read_at`. The browser-clock-age review's point still holds: an age
   taken from the browser's clock would be a guess drawn as a measurement, so
   the UI never computes one from `cpu_measured_at`.
 * **Details says it**: `live reading · 20s ago` in the strip every width
@@ -1496,20 +1494,20 @@ like one that wrote a second ago. **Contract request #26 was accepted on #184
   ceiling, from the typed source.
 * **An attempt from before the change** keeps the old words, `age not
   recorded` and `reported limit`, and the legacy heartbeat reader below stays
-  (the owner kept it on #184).
+  (the owner kept it on the deliverables-location change).
 
 ### Attempts from before the typed fields
 
-Attempts that ran between #188's deploy to dev (about 23:08 UTC on
+Attempts that ran between the HEARTBEAT CPU-reporting change's deploy to dev (about 23:08 UTC on
 2026-09-25) and this change's deploy carry their CPU only on HEARTBEAT
 events. A read-only look at dev's Firestore at 23:16 UTC that day visited the
 40 newest agents. It found one such agent, `task_49dde08b768b49748588` (mock,
-the #188 deploy's smoke), with two interim readings, one of them `final`.
+the HEARTBEAT CPU-reporting change's deploy's smoke), with two interim readings, one of them `final`.
 Every attempt that runs before this change deploys adds another.
 
-**Attempts from before #188 were measured too.** Every HEARTBEAT before #188
-carried `cpu_seconds` and `cpu_source`, and no cores. #188's reader drew those
-cpu-seconds on main. The PR #210 review found that the legacy reader asked for
+**Attempts from before the HEARTBEAT CPU-reporting change were measured too.** Every HEARTBEAT before the HEARTBEAT CPU-reporting change
+carried `cpu_seconds` and `cpu_source`, and no cores. The HEARTBEAT CPU-reporting change's reader drew those
+cpu-seconds on main. The input-masking-screens PR's review found that the legacy reader asked for
 `peak_cpu_cores` only, so those attempts read `never measured`, with a sentence
 saying no heartbeat on the page carried a figure while the page held one.
 

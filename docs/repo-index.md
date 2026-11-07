@@ -24,7 +24,7 @@ GitNexus measured against the indexer, are in
 [design/knowledge-graph.md](design/knowledge-graph.md). That design amends
 request (A) of §6.3 rather than adding a request.
 
-**Related 2026-10-09 to 2026-10-11 (#940):** a step whose commit was already
+**Related 2026-10-09 to 2026-10-11:** a step whose commit was already
 known cloned it from a one-commit bundle under
 `tenants/<tenant>/bundles/<repo_id>/`, keyed by the same `repo_id` as this
 index. The bundles were retired on 2026-10-11, once plain forge clones
@@ -88,7 +88,7 @@ says what changed and where, so a reader of RI0's version can find it.
   commit/PR impact query (§4.3a) turns a diff into changed symbols, their
   transitive callers and the tests that cover them, each with a reason; §4.4
   sets out three policies (P1, P2, P3) for how that selection becomes what a
-  pull request must pass before the merge step (#295, lane M1a) may merge it.
+  pull request must pass before the merge step (lane M1a) may merge it.
   The policy is the owner's to pick, by picking a screen.
 * **(d) Git tokens per repository and per user, and what each can do.**
   Written as a sibling document, [git-tokens.md](git-tokens.md), because a
@@ -171,7 +171,7 @@ whichever token resolves for the registering admin under the order the owner
 picks (git-tokens.md §3.1). The repository's Settings show that token and its
 capability row (mock-ups, section 11).
 
-**Built for #780 (read 2026-10-09): a person's own slots, and who keeps the
+**Built for the onboarding epic (read 2026-10-09): a person's own slots, and who keeps the
 tenant token.** Onboarding ([onboarding.md](onboarding.md)) built the per-user
 half of that registry. A person who connects GitHub gets an App slot,
 `git-u-<16 hex>`. For an org that will not install the App, they get a second
@@ -199,7 +199,7 @@ registration:
 
 So the tenant token cannot be retired while the tenant indexes repositories:
 step 2 of "retire the tenant token" in [git-tokens.md](git-tokens.md) ("Built
-for #780") checks for exactly this, and the index runs are its commonest
+for the onboarding epic") checks for exactly this, and the index runs are its commonest
 reader.
 
 **How it relates to today.** Nothing that works today changes. An agent with a
@@ -361,7 +361,7 @@ prompt (`KEEP_LINE`, beside `BASE_LINE`). The worker reads no database for
 it. Until 2026-10-20 the worker read `index_versions` from Firestore itself;
 for a tenant not switched to the state routes that read was PermissionDenied
 on every run (logged since at least 2026-10-15), so no keep set was ever
-passed and nothing was ever retired: measured on ai-studio
+passed and nothing was ever retired: measured on peer-app
 (repo_d754779d0cf31b44), 163 manifests and about 880 MB were held where 20
 versions were kept. Without the line -- a run submitted before this, or one
 whose versions swarm-api could not read -- the sweep does not run, and the
@@ -370,7 +370,7 @@ run's `index_sweep` phase says why.
 **The sweep is its own phase.** The graph write runs `write --no-sweep`; the
 worker then runs `swarm-repo-graph sweep --keep-commit ...` as the
 `index_sweep` phase, with its own reserve (5% of the run's timeout, at least
-60 s, plus what the write left of its 10%). On ai-studio the write's own
+60 s, plus what the write left of its 10%). On peer-app the write's own
 sweep timed out in 19 of 19 runs, reading 163 manifests one at a time after
 a write of 86-97 s. The sweep is best effort: a sweep that fails or runs out
 of time is recorded with its reason and never fails the run. It deletes
@@ -594,9 +594,9 @@ behalf through the same signed `submit_tasks` path every agent takes:
 | runner profile | `claude-code` | the only enabled agent profile; a purpose-built profile would be a frozen-contract change (§6.3, optional request B) and is not needed to start |
 | resource class | the profile's own, `standard` | indexing is reading and one tool run, not a build |
 | `repository_url` / `repository_ref` | the registration's URL and the exact sha being indexed | the index describes a commit, not a moving branch |
-| `timeout_seconds` | 1,800 for a full run, 900 for an incremental one; since lane INDEX-BUDGETS (#1693) sized by the promoted index's source files, §3.5 | may only shorten the profile's timeout. A fixed 30 minutes held until the LSP pass existed; with it, pyright on a 3,795-file repository needed more than the 270 s a fixed run could give it (`repoindex.index_timeout_seconds`) |
+| `timeout_seconds` | 1,800 for a full run, 900 for an incremental one; since lane INDEX-BUDGETS sized by the promoted index's source files, §3.5 | may only shorten the profile's timeout. A fixed 30 minutes held until the LSP pass existed; with it, pyright on a 3,795-file repository needed more than the 270 s a fixed run could give it (`repoindex.index_timeout_seconds`) |
 | `priority` | −50 | below the tenant's default-0 work: an index makes work better, it is not the work |
-| `model_class` | `sonnet` (#2524; the profile's default, `opus`, before) | BGD, 2026-10-27: indexing is extraction and summary over the tool's own output, and 845 Opus index runs in one week was the pool's to spend on work. Named only where the deployment pins a sonnet model (`WORKER_CLASS_MODELS`); where nothing is pinned (the local emulator) the run names no class and takes the profile's default instead of being refused (`repoindex.index_model_class`) |
+| `model_class` | `sonnet` (the profile's default, `opus`, before) | [the owner], 2026-10-27: indexing is extraction and summary over the tool's own output, and 845 Opus index runs in one week was the pool's to spend on work. Named only where the deployment pins a sonnet model (`WORKER_CLASS_MODELS`); where nothing is pinned (the local emulator) the run names no class and takes the profile's default instead of being refused (`repoindex.index_model_class`) |
 | `metadata` | `{"repo_index": "<repo_id>", "commit_sha": "<sha>", "index_kind": "full"}` | how the promotion path (§2.3) finds a finished index run |
 | prompt | fixed, composed by swarm-api; never a caller's text | invariant 10: the caller chooses a repository and a schedule, nothing that runs |
 
@@ -649,15 +649,15 @@ Each registration carries:
 |---|---|---|---|
 | `index.interval_hours` | 24 | 1-168, or `off` | the backstop: a repository whose pushes are never detected is still re-indexed |
 | `index.on_change` | `poll` | `poll`, `webhook` (phase 3), `off` | the default branch moving is the event the owner named |
-| `index.min_change_interval_minutes` | 120 (30 until #2524) | 10-1,440 | a busy repository merging every five minutes is indexed by change at most once every two hours; the interval still applies. BGD, 2026-10-27 (#2524): 845 index runs in the week 2026-10-20..27, mostly change-triggered, so the default went to 120 and an index up to two hours behind its head is the accepted price. A value a registration sets wins, even 30. Reads are literal (BGD, 2026-10-28): a stored 30 reads 30 and is applied as 30 (`repositories.min_change_interval_of`); see *Moving the old default* below |
+| `index.min_change_interval_minutes` | 120 (30 until the min-change-interval default change) | 10-1,440 | a busy repository merging every five minutes is indexed by change at most once every two hours; the interval still applies. [the owner], 2026-10-27: 845 index runs in the week 2026-10-20..27, mostly change-triggered, so the default went to 120 and an index up to two hours behind its head is the accepted price. A value a registration sets wins, even 30. Reads are literal ([the owner], 2026-10-28): a stored 30 reads 30 and is applied as 30 (`repositories.min_change_interval_of`); see *Moving the old default* below |
 | `index.full_every_days` | 7 | 1-30 | incremental runs drift; a weekly full run resets them |
 | `index.paused` | false | — | an operator stops all indexing of the repository without deleting the record |
 
 **Moving the old default: a one-time migration, not a read-time rule.**
-Every registration created before #2524 stored the then-default 30 in its
+Every registration created before the min-change-interval default change stored the then-default 30 in its
 document (`_index_defaults` writes the value, it does not leave a gap), so
 changing the constant moved only registrations created afterwards. A
-read-time rule that read a stored 30 as 120 was built and removed (BGD,
+read-time rule that read a stored 30 as 120 was built and removed ([the owner],
 2026-10-28: "a ONE-TIME MIGRATION, not a read-time rule. Reads of
 min_change_interval_minutes stay literal"). Such a rule makes the document
 lie about what the poll applies, cannot tell an old default from a person
@@ -675,8 +675,8 @@ precondition, so a registration edited between the listing and the write is
 skipped and reported, not overwritten. A registration whose owner chose 30
 is indistinguishable in the data and is moved too; it can be set back by
 `PATCH /v1/repositories/{repo_id}`. **The operator run against a deployed
-environment waits for BGD's go-ahead**; until it runs, a pre-#2524
-registration reads, serves and polls at 30.
+environment waits for [the owner]'s go-ahead**; until it runs, a registration created
+before the min-change-interval default change reads, serves and polls at 30.
 
 **Polling the forge (phase 1).** A per-tenant Cloud Scheduler job,
 `repo_index_poll`, calls `POST /v1/admin/repositories/poll?tenant_id=<tenant>`
@@ -694,8 +694,7 @@ registration it read — the head is what staleness is measured against
 (`current_sha`), the minimum change interval has passed since the newest run
 was queued, and no run is in flight. The interval trigger is checked in the
 same pass: `last_indexed_at + interval_hours` passed means queue one — of a
-head the index has not built. **An unchanged head starts nothing** (#2524,
-BGD 2026-10-27): where the head is the built index (`current_sha`), the
+head the index has not built. **An unchanged head starts nothing** ([the owner] 2026-10-27): where the head is the built index (`current_sha`), the
 interval used to rebuild it in full, the same index again; now `choose_kind`
 answers `none`, the claim is released, the tick holds it as `unchanged`, and
 the registration records `index.last_skip` (`at`, `head_sha`, `trigger`,
@@ -750,7 +749,7 @@ the language of each module, the import graph that grounds `test_map`
 `import` edges, the naming-convention edges (`src/x/y.py` ↔
 `tests/**/test_y.py`), the co-change pairs and the hot-spot counts from `git
 log --numstat --since=90.days` are deterministic and cheap. Lane RI3 ships
-them as one script in the `agent-runtime-indexer` image (in `agent-runtime-base` until #625; see [worker-images.md](worker-images.md)), which the worker
+them as one script in the `agent-runtime-indexer` image (in `agent-runtime-base` until the indexer-image split; see [worker-images.md](worker-images.md)), which the worker
 runs before the agent (§3.6; until 2026-10-06 the prompt told the agent to
 run it); the agent then spends its tokens on what
 needs reading: purposes, territory, notes, and checking the edges the tool
@@ -879,7 +878,7 @@ versions covering only about 15 hours. Three rules changed together.
   refused.
 * **Every full run on a carriable graph is given it for the servers'
   answers.** Until now only the weekly full run named the promoted index on
-  `LSP_BASE_LINE` (#2991). Now `choose_kind` gives it to every full run
+  `LSP_BASE_LINE`. Now `choose_kind` gives it to every full run
   after the graph passes `graph_carry_refusal`: no full run recorded, the
   weekly one, GitHub unable to say how the head relates, a head the base is
   not an ancestor of, and 300 or more changed files. The extractor compares
@@ -902,7 +901,7 @@ versions covering only about 15 hours. Three rules changed together.
   version, however old, until the holder reaches a terminal state; then the
   pin is deleted and the version goes at the next prune and sweep. Without
   it, a workflow running past the day's floor found the graph its steps were
-  pinned to swept (owner's pick `record-pins`, PR #3105). Pins that cannot be
+  pinned to swept (owner's pick `record-pins`). Pins that cannot be
   read prune nothing and name no keep set.
 
 Expected effect on SwarmCloud's repository: a change run becomes
@@ -944,7 +943,7 @@ consumer can trust below the file. The indexer runs, in order:
    kept and derived from it, so its consumers do not change.
 
 **Which server serves which language, and how each is budgeted** *(revised
-2026-10-20, lane INDEX-LANGS, part of #1693)*. Every language the extractor
+2026-10-20, lane INDEX-LANGS)*. Every language the extractor
 lists has a server (`LANGUAGE_SERVERS` in `repo_index_extract.py`, the specs
 in `lsp/servers.py`), all four installed in `agent-runtime-indexer` and
 resolved only from `/opt/repo-index/servers/bin`:
@@ -1012,7 +1011,7 @@ forces a full run for that language.
 | 2,000 - 10,000 | 60 min | 20 min | 30 min, 10 s per request | one size up |
 | over 10,000 | 120 min | 30 min | 45 min, 10 s per request | the largest the indexer profile allows |
 
-*Revised 2026-10-20 (lane INDEX-BUDGETS, part of #1693):* the timeouts
+*Revised 2026-10-20 (lane INDEX-BUDGETS):* the timeouts
 swarm-api submits are `repoindex.index_timeout_seconds`, by the promoted
 index's source-file count (its `languages` rows with a grammar, recorded at
 promotion as `index.source_files`): under 2,000, 1,800 s full and 900 s
@@ -1027,14 +1026,14 @@ and named to the worker in the signed prompt's `swarm-index-lsp-cost:` line),
 capped at the per-server row above; a server with no measurement needs the
 equal share, so with no history this is the equal split. A cut server's cost
 is its grant scaled by the sites it had over the requests it managed: on
-ai-studio pyright's 270 s x 86,805 / 26,562 is ~882 s. Why: a fixed 1,800 s
+peer-app pyright's 270 s x 86,805 / 26,562 is ~882 s. Why: a fixed 1,800 s
 gave pyright 270 s there, and it timed out in 16 of 16 full runs while it was
 healthy. The cost: a full run of a repository over 2,000 source files may
 hold its indexer pod up to twice as long (four times over 10,000), only while
 it still has work. The extractor version went to 4 with it, so the first run
 after the release is full and measures every server.
 
-*Revised 2026-10-20 (lane INDEX-SITES, part of #1693):* the pass asks less.
+*Revised 2026-10-20 (lane INDEX-SITES):* the pass asks less.
 A site whose name is neither the simple name of a symbol in the repository
 nor bound by an import in its file (`rows.append()`, `os.getcwd()`, `len()`)
 is not asked: a definition becomes an edge only at a known symbol's name, and
@@ -1044,7 +1043,7 @@ to such a site was discarded. It stays `ast` and is counted per language as
 (`lsp/servers.py` `LSP_EXCLUDED_PATHS`: `**/migrations/**`,
 `**/alembic/versions/**`, `docs/**`, gitignore semantics) are parsed by
 tree-sitter as before but never opened in a server, counted as
-`lsp.files_excluded` and `lsp.sites_excluded`. Why: on ai-studio pyright had
+`lsp.files_excluded` and `lsp.sites_excluded`. Why: on peer-app pyright had
 at least 86,805 sites for its budget, and every request spent on an answer
 that could not be kept, or on a migration impact never selects a test by, was
 one not spent on application code. The cost: an excluded file is never
@@ -1058,12 +1057,12 @@ resource class is sized for the server, not for bursting past it. A server
 that hangs, crashes or exceeds its memory is stopped; its language is marked
 `timed_out` or `failing` in `languages` with the reason, its edges stay
 `ast`, and the run still succeeds. A server whose budget runs out while it is
-still answering keeps the files it finished (revised 2026-10-20, #1693): the
+still answering keeps the files it finished (revised 2026-10-20): the
 language is `partial` ("pyright reached N of M files (K of S sites) in its
 270-second budget"), with `files_covered`, every file row says `lsp: true`
 or `false`, and impact trusts a changed file of that language only when its
 row is `true`. Before this, a cut threw away every answer -- 7,106 resolved
-sites from a healthy pyright on ai-studio -- and every Python change there
+sites from a healthy pyright on peer-app -- and every Python change there
 answered the full suite. A crash or a memory stop still keeps nothing: a
 server that was failing may have answered from a half-built program, and
 nothing says from which answer on. A timeout is never a failed index: it is
@@ -1074,8 +1073,8 @@ every other file's edges, and its `lsp` flag, from the base. So unless it
 re-asked every parsed file of a language, the language's status is the WORSE
 of its own and the base's (`ok` < `partial` < `timed_out` < `failing` <
 `unsupported`), and the reason says how many files this run asked about and
-how many are covered (revised 2026-10-20, #1693). Taking the run's own status
-made the console's banner flip with every run on ai-studio: each full run
+how many are covered (revised 2026-10-20). Taking the run's own status
+made the console's banner flip with every run on peer-app: each full run
 timed out, each incremental run between them asked pyright about a handful of
 files, got `ok`, and read `partial` -- about an index whose other 1,400 Python
 files were exactly as unanswered as before. The files it did answer still
@@ -1099,7 +1098,7 @@ rest, more steps per index). The recommendation is the single image for
 phase 1. Either way it is a pinned image in the platform's registry, not
 something a caller names (invariant 10).
 
-*Revised 2026-10-05 (#625):* the single image exists as
+*Revised 2026-10-05:* the single image exists as
 `images/agent-runtime-indexer`, built FROM `agent-runtime-base` by digest.
 The toolchain had shipped in the base, where it added +188 MB (compressed)
 to every agent start and only an index run used it. Contract request 48 (the
@@ -1121,10 +1120,10 @@ indexrun.py`):
 
 | phase | what | timeout, of a 1,800 s full run |
 |---|---|---|
-| `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | sized from the base graph's size, which its index's `graph.symbols` and `graph.edges` give at 600 bytes each: 20 s + 1.5 s a MB, at most half the extractor's budget (180 s of an incremental run's 360), which is also what an index without counts gets (#1469) |
+| `stage_base` *(incremental runs only, lane IX2, §3.4)* | the base's `repo-index.json` by the staged-input path, then `swarm-repo-graph read --commit <base_sha> --manifest-digest <recorded> --out $SWARM_WORK_DIR/repo-graph.base.json` | sized from the base graph's size, which its index's `graph.symbols` and `graph.edges` give at 600 bytes each: 20 s + 1.5 s a MB, at most half the extractor's budget (180 s of an incremental run's 360), which is also what an index without counts gets |
 | `extract` | `swarm-repo-index --repo <checkout> --out $SWARM_WORK_DIR/repo-index.extract.json --graph-out $SWARM_WORK_DIR/repo-graph.json --lsp-total-budget-seconds <extract - 180>`, and one `--lsp-server-cost <server>=<seconds>` for each cost the signed prompt names (§3.5) | 0.4 of the agent's timeout, 720 s: twice the ~6 minutes measured |
 | `agent` | the runner, from the extractor's output | what is left, less the write's reserve |
-| `index_check` *(lane INDEX-ROUTES, #1693)* | the agent's `repo-index.json` against `RepoIndexSpec`, by the worker's restatement (`agent_worker/indexspec.py`) | none: a pure check, milliseconds |
+| `index_check` *(lane INDEX-ROUTES)* | the agent's `repo-index.json` against `RepoIndexSpec`, by the worker's restatement (`agent_worker/indexspec.py`) | none: a pure check, milliseconds |
 | `graph_write` | `swarm-repo-graph write --graph ... --index $SWARM_ARTIFACTS_DIR/repo-index.json --repo-id <r> --destination tenants/<t>/repos/<r>/graph` | 0.15 of the agent's timeout, 270 s, reserved before the agent starts |
 
 Why each rule:
@@ -1140,8 +1139,8 @@ Why each rule:
   `graph.manifest_digest`, which promotion reads as "no graph"; the write is
   resumable, so the next run completes it. A timeout is a less certain
   index, never a lost one (§3.5).
-* **The one phase that does fail the run is `index_check`** (#1693).
-  Measured on ai-studio, 2026-10-20: 3 of 19 runs were refused at promotion
+* **The one phase that does fail the run is `index_check`**.
+  Measured on peer-app, 2026-10-20: 3 of 19 runs were refused at promotion
   (`routes.N.kind` missing, `routes.520.handler` empty, `modules.4.purpose`
   over 300 characters), after the agent had exited, so the whole run was
   spent for nothing. Now the claude-code runner checks the document with
@@ -1179,7 +1178,7 @@ lane IX2 (§3.4).
 
 ## 4. How the index is consumed
 
-### 4.1 The issue-run planner (#454)
+### 4.1 The issue-run planner
 
 `POST /v1/runs` already reads the forge for the planner and puts the open work
 in its prompt between two delimiter lines carrying the run id, as data
@@ -1262,7 +1261,7 @@ Who calls it:
   phase 2 through the staged JSON, which carries the whole map so the agent
   can select for its own diff after it is written. CLAUDE.md asks an agent to
   run the offline unit tests for what it touched; this is how it knows which.
-* **the merge step** (docs/merge-step.md, gated on #342) — before merging, it
+* **the merge step** (docs/merge-step.md, gated on the step-spec-signing gate) — before merging, it
   asks for the pull request's changed paths and records in its checklist
   which selected tests ran in CI and which did not. **Advisory in v1**: the
   merge step's gate stays the required GitHub checks (merge-step.md §5.2); a
@@ -1369,8 +1368,8 @@ green for a required check (merge-step.md §5.2). A check run can only be
 created by a GitHub App, so the poster is either a SwarmCloud checks App or
 GitHub Actions itself — the two execution modes below.
 
-**How the merge step reads it.** The merge step (#295, lane M1a; the owner's
-decisions are recorded on #295) already reads the branch's required checks
+**How the merge step reads it.** The merge step (lane M1a; the owner's
+decisions are recorded on the merge-step design) already reads the branch's required checks
 from GitHub's rules endpoint, each pinned to an `app_id`, and requires every
 one to be completed with `success` or `skipped` at the pinned sha
 (merge-step.md §5.2); a required check with no `app_id` is refused. So the
@@ -1470,8 +1469,8 @@ changed.
   it to that run's queued time (the head moved on no earlier), and a
   promotion at the head clears it. The console's meta line says "behind
   since <time>". This replaced "behind by more than 200 commits" (revised
-  2026-10-20, #1693): GitHub's compare counts a merged branch commit by
-  commit, so ai-studio's "77 commits behind" was one merge (its PR #713) --
+  2026-10-20): GitHub's compare counts a merged branch commit by
+  commit, so peer-app's "77 commits behind" was one merge (a single merged pull request) --
   a count says how much merged, not how long the index has been out of date.
 * **unknown** — the head has never been read (polling off, or the token lost
   access): the freshness is a dash with that reason, never "current".
@@ -1657,7 +1656,7 @@ the tool pass runs as a worker-run step, as `merge` and `post-verdict` do, so
 no agent in the tenant writes the graph a merge gate reads. The agent's
 reading (purposes, territory, notes) stays a `claude-code` step after it.
 
-*Revised 2026-10-05 (#625):* the image half of (B) is contract request 48,
+*Revised 2026-10-05:* the image half of (B) is contract request 48,
 accepted by the owner: the `indexer` profile is `claude-code` on
 `agent-runtime-indexer` (same resource class, timeouts and inputs), and index
 runs are submitted as it. The agent-free, worker-run shape above is still
@@ -1709,7 +1708,7 @@ registration.
 |---|---|---|---|---|
 | RI1 | 1 | registrations: the `repositories` module, `POST/GET/PATCH/DELETE /v1/repositories`, the registration forge read, tenant scoping, unit tests | new `repositories.py` and `routes/repositories.py` in `apps/swarm-api/swarm_api/`, the router line in `main.py`, tests | — |
 | RI2 | 1 | index runs and promotion: `RepoIndexSpec`, the indexer prompt, `index:run`, promotion with the sha-order rule and digest, `repo_index_runs`, the markdown renderer, `GET .../index`, `tests:select` | new `repoindex.py` in `apps/swarm-api/swarm_api/`, the index routes in `routes/repositories.py`, tests | RI1 |
-| RI3 | 1 | *(revised 2026-10-04)* the mechanical extractor, now a **tree-sitter** pass: one parse per file for Python, TypeScript/TSX, JavaScript, Go and HCL; `symbols` with line ranges, routes, `import` and candidate `ast` edges, naming edges, co-change, hot-spots, the `languages` table; and its tests | `images/agent-runtime-indexer/` (moved out of `images/agent-runtime-base/` by #625), `tests/unit/worker/` | — |
+| RI3 | 1 | *(revised 2026-10-04)* the mechanical extractor, now a **tree-sitter** pass: one parse per file for Python, TypeScript/TSX, JavaScript, Go and HCL; `symbols` with line ranges, routes, `import` and candidate `ast` edges, naming edges, co-change, hot-spots, the `languages` table; and its tests | `images/agent-runtime-indexer/` (moved out of `images/agent-runtime-base/` by the indexer-image split), `tests/unit/worker/` | — |
 | RI4 | 2 | triggers: `POST /v1/admin/repositories/poll`, ETag polling, interval check, in-flight coalescing; the per-tenant `repo_index_poll` Cloud Scheduler job (description says `managed-by=swarm-terraform`) and its OIDC grant | the poll in `repoindex.py`, `terraform/modules/scheduler/` | RI2 |
 | RI5 | 2 | consumption: the planner's REPO INDEX section and `index_sha` on the run, `tests:select` slices in compiled step prompts, the `swarm_repo_tests` MCP tool | `apps/swarm-api/swarm_api/issueruns.py`, `plugin/` | RI2 |
 | RI6 | 2 | the console section from the owner's pick in the mock-ups: Repositories list, Register form, repository detail, the "context used" chip on a run and in an agent's Details | `apps/swarm-ui/` | RI1, RI2 |

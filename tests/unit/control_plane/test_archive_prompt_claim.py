@@ -1,13 +1,13 @@
 """Every description of the checkpoint archive says it carries the prompt.
 
-Issue #244, owner decision 2026-09-27: the CLI session transcripts stay in
+Owner decision 2026-09-27: the CLI session transcripts stay in
 every checkpoint archive, and the whole-archive download stays byte for byte
 and unredacted. Leaving `input.json` out of the archive therefore does NOT keep
 the prompt out of it: `HOME` is `work/`, so Claude Code's transcript
 (`work/.claude/projects/...`) and Codex's (`work/.codex/sessions/...`) hold the
 prompt as their first user message. The fix is documentation, and this pins
 it: each place that describes what the archive holds must name both
-transcripts and the issue, so none of them can read again as "the archive is
+transcripts and the date of the decision, so none of them can read again as "the archive is
 free of the prompt".
 
 Source text only -- no imports of the modules, no clients, no credentials.
@@ -28,8 +28,8 @@ WORKER_CHECKPOINT = ROOT / "apps/agent-worker/agent_worker/checkpoint.py"
 AGENT_OUTPUT_DOC = ROOT / "docs/agent-output.md"
 
 #: What each description must name: both CLIs' transcript locations and the
-#: issue whose decision keeps them in the archive.
-REQUIRED = (".claude/projects", ".codex/sessions", "#244")
+#: date of the owner's decision that keeps them in the archive.
+REQUIRED = (".claude/projects", ".codex/sessions", "2026-09-27")
 
 
 def _module_docstring(path: Path) -> str:
@@ -64,7 +64,7 @@ def test_every_description_of_the_archive_names_the_cli_transcript(where: str) -
     assert not missing, (
         f"{where} describes the checkpoint archive without {missing}: it must "
         "say the archive carries the prompt in the CLI's session transcript "
-        "(issue #244, owner decision 2026-09-27)"
+        "(owner decision 2026-09-27)"
     )
 
 

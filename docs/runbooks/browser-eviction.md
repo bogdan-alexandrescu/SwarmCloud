@@ -12,7 +12,7 @@ browser pods, and why.
 ## Why this exists
 
 Browser pods carry `cluster-autoscaler.kubernetes.io/safe-to-evict=false`
-(PR #31). That annotation stops the autoscaler moving a browser run in the
+. That annotation stops the autoscaler moving a browser run in the
 middle of its work. It also means nothing in the cluster will ever reclaim one:
 a browser pod holds its node for as long as it runs. A browser attempt holds
 1 capacity unit and a 4 vCPU / 8 GiB pod (contract request 79; 2 units and
@@ -158,7 +158,7 @@ gcloud logging read \
    AND resource.labels.service_name="swarm-reconciler"
    AND jsonPayload.component="reconciler"
    AND jsonPayload.message="evicted a GKE job"' \
-  --project saga-agents-staging --freshness=1d --format=json
+  --project example-project --freshness=1d --format=json
 ```
 
 The same outcome is stored on the persisted pass. Each `reconciler_passes`

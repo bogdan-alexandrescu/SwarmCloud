@@ -70,6 +70,6 @@ def test_the_index_row_for_33_says_the_amendment_is_applied_in_full():
 
 def test_merge_step_keeps_the_r8_correction():
     text = _flat(MERGE_STEP.read_text())
-    assert "Corrected (2026-09-30, #364)" in text
+    assert "Corrected (2026-09-30): this is not the \"no portable secret\" case" in text
     assert "R8" in text
     assert "carries no portable secret" not in text

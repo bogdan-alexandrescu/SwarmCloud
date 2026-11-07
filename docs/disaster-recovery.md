@@ -29,7 +29,7 @@ document is really about:
 
 ### Firestore's recovery point
 
-What protects the database `swarm` since #1818 (the owner chose option (b) on
+What protects the database `swarm` since the Firestore-backups change (the owner chose option (b) on
 2026-10-21; lane FS-BACKUPS):
 
 * **Point-in-time recovery, 7 days.** The database keeps a version of every
@@ -62,12 +62,12 @@ What protects the database `swarm` since #1818 (the owner chose option (b) on
 
 How to list the backups, and restore one, is in §4.
 
-**Before #1818, as read on 2026-10-21.** This row said "last export" until
-2026-10-21. The system analysis of that day (epic #1822) read the live project
+**Before the Firestore-backups change, as read on 2026-10-21.** This row said "last export" until
+2026-10-21. The system analysis of that day read the live project
 with read-only `gcloud` and found that there was no export to fall back to.
 `gcloud firestore backups schedules list --database=swarm` returned `[]`: no
 backup schedule existed. **No export has ever been taken**:
-`gs://swarm-artifacts-saga-agents-staging/backups/` does not exist, and that
+`gs://swarm-artifacts-example-project/backups/` does not exist, and that
 prefix is where `purge-data.sh` writes its pre-delete export. Delete
 protection was off, because the database followed dev's
 `deletion_protection = false`, and the point-in-time versions are deleted with
@@ -87,7 +87,7 @@ execution disappears
   -> reconciler: invalidate generation -> terminate -> confirm -> release
   -> task returns to READY
   -> scheduler admits a new attempt, new generation
-  -> worker restores the checkpoint the earlier attempt RECORDED (#347)
+  -> worker restores the checkpoint the earlier attempt RECORDED
   -> work resumes, having lost at most one checkpoint interval
 ```
 
@@ -115,8 +115,8 @@ gcloud run services update swarm-api \
 
 Or revert the commit and let `.github/workflows/application.yml` redeploy.
 
-**Never roll `swarm-api` back to a build from before PR #44 (contract request
-17), and never revert #44.** From that release on, `swarm-api` records a
+**Never roll `swarm-api` back to a build from before the cancel-event change (contract request
+17), and never revert the cancel-event change.** From that release on, `swarm-api` records a
 cancel that is only requested as a `cancel_requested` event. No `swarm-api`
 image built before it can decode one: `EventType(data["type"])` raises
 `ValueError`, and `GET /v1/tasks/{id}/events` returns 500 for every page that
@@ -125,7 +125,7 @@ since the deploy. The events are permanent, so this lasts as long as the
 rollback does, not just one rollout. The console Timeline, `swarm_follow` and
 `swarm tail` report that history as unreadable, in the middle of the incident
 you are rolling back for. Roll forward instead: revert the change that broke
-the service, not #44, and let the release deploy it.
+the service, not the cancel-event change, and let the release deploy it.
 
 Check a rollback target before deploying it. The manifest's `tag` is the commit
 its images were built from:
@@ -156,9 +156,9 @@ While it is broken:
 
 ### Prevention
 
-Three things protect the data (§1, since #1818): point-in-time recovery for
+Three things protect the data (§1, since the Firestore-backups change): point-in-time recovery for
 7 days, delete protection on the database, and a daily backup kept 7 days
-that outlives the database. Before #1818 point-in-time recovery was the only
+that outlives the database. Before the Firestore-backups change point-in-time recovery was the only
 one, and it is deleted with the database.
 
 `purge-data.sh` exports the database to GCS before deleting anything, unless
@@ -253,7 +253,7 @@ undrilled step as for a point-in-time restore above (import it into
 `module "firestore"`'s state, then change `firestore_database`). With work in
 flight, pause and drain first exactly as above: a backup's `pools/*` carry
 that day's `active` counts. Whether a restore brings the indexes and TTL
-policies with it was not verified (#1818); compare against
+policies with it was not verified; compare against
 `terraform/modules/firestore/indexes.tf` before any service uses it.
 
 ### Restore drill
@@ -262,7 +262,7 @@ No restore of either kind has been drilled. A drill restores the newest backup
 into `swarm-restore-drill-<date>`, reads it, and deletes it. It creates a
 database and **bills a restore** (charged per GiB restored), so it runs only
 with the owner's separate OK, never as a side effect of a release or of this
-runbook. Approving #1818 did not approve a drill.
+runbook. Approving the Firestore-backups change did not approve a drill.
 
 ### What is actually lost
 
@@ -313,7 +313,7 @@ terraform -chdir=terraform/infra plan -var-file=../environments/dev/dev.tfvars
 An empty plan means you recovered the right generation.
 
 The bootstrap layer's state is in the same bucket, at
-`bootstrap/default.tfstate`, since #827. Until then it was a local file in a
+`bootstrap/default.tfstate`, since the bootstrap-state-migration change. Until then it was a local file in a
 single laptop checkout, with no versions and no copy
 ([operations](operations.md#the-bootstrap-layers-state) says why it moved and
 gives the one-time `scripts/bootstrap.sh --migrate-state`). Recover it the same
@@ -389,7 +389,7 @@ make build push deploy
 make smoke
 
 # Tenants and keys are not in Terraform:
-make register-tenant GROUP=eng@saga.xyz
+make register-tenant GROUP=eng@example.com
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin
 make add-provider TENANT=eng PROVIDER=anthropic   # one per provider the tenant had
 ```

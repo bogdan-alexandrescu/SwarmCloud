@@ -1,6 +1,6 @@
 # Workspace-secret grant attestation: turn it on, rotate the key
 
-SEC-GRANT-ATTEST, part of #1347. Design:
+SEC-GRANT-ATTEST. Design:
 [docs/design/workspace-secrets.md](../design/workspace-secrets.md), "What
 SEC-GRANT-ATTEST built".
 
