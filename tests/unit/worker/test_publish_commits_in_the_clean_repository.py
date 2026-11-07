@@ -543,7 +543,7 @@ def test_head_is_resolved_from_the_files_the_way_git_would_or_refused(
 ):
     """A detached HEAD and a branch that lives only in `packed-refs` publish
     the agent's commit as before. The detached one descends from the start
-    sha and stands on no `refs/remotes/origin/*` tip, so #2094's rule, as BGD
+    sha and stands on no `refs/remotes/origin/*` tip, so #2094's rule, as the owner
     relaxed it on 2026-10-23, does not call it a move. A HEAD that
     is a symbolic ref to anything outside `refs/heads/` is refused, with a
     reason naming HEAD, and nothing is pushed: the worker reads the ref files

@@ -1,4 +1,4 @@
-"""What a workflow is about, and where it came from (BGD, 2026-11-04).
+"""What a workflow is about, and where it came from (the owner, 2026-11-04).
 
 Opening a workflow in the console, the owner could not tell what feature or
 repository it works on, nor read what it is meant to deliver. A submission's

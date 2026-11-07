@@ -1,9 +1,9 @@
 """A pool account is an ORGANISATION, and one organisation is one account (#2222).
 
-POOL-DUP-DETECT. On 2026-10-24 eng:team and eng:saga-personal read identical
+POOL-DUP-DETECT. On 2026-10-24 eng:team and eng:org-personal read identical
 figures: one subscription registered twice. eng:team was replaced by
-eng:saga-team, and that read the same again. The cause: the claude.ai login
-belonged to TWO organisations, "Saga" (Team) and "Personal" (Max), and the
+eng:org-team, and that read the same again. The cause: the claude.ai login
+belonged to TWO organisations, "Example" (Team) and "Personal" (Max), and the
 sign-in authorised whichever was selected -- Personal, both times. So:
 
   * the broker records which organisation a credential runs on, at add and at
@@ -17,7 +17,7 @@ sign-in authorised whichever was selected -- Personal, both times. So:
   * two existing accounts on one organisation are both marked `duplicate_of`
     on refresh, and `choose()` hands out only the older registration.
 
-AND ONE AGENT UNTIL MEASURED (BGD, 2026-10-24 ~10:55Z): a never-observed
+AND ONE AGENT UNTIL MEASURED (the owner, 2026-10-24 ~10:55Z): a never-observed
 account reads as fully free, so it won every pick until the poller read it.
 It now takes one agent, and its first reading decides the rest.
 
@@ -107,7 +107,7 @@ def test_the_identity_is_the_organisation_hashed_never_the_id_or_the_login():
     assert login["uuid"] not in found.identity and login["email_address"] not in repr(found)
     assert (found.name, found.plan) == ("Personal", "Max")
     # One login, another organisation: another identity.
-    other = organisation_from_payload(_token_payload(_org_id(), name="Saga", kind="claude_team",
+    other = organisation_from_payload(_token_payload(_org_id(), name="Example", kind="claude_team",
                                                      login=login))
     assert other.identity != found.identity and other.plan == "Team"
 
@@ -156,12 +156,12 @@ def test_every_refresh_carries_the_organisation_it_ran_on():
 
     class _Exchange:
         def exchange(self, refresh_token):
-            return _token_payload(org_id, name="Saga", kind="claude_team")
+            return _token_payload(org_id, name="Example", kind="claude_team")
 
     old = Credential("a", "r", NOW)
     fresh = refresh(old, _Exchange(), now=NOW)
     assert (fresh.organisation.identity, fresh.organisation.name, fresh.organisation.plan) == (
-        organisation_identity(org_id), "Saga", "Team")
+        organisation_identity(org_id), "Example", "Team")
 
 
 # --------------------------------------------------------------------------
@@ -207,7 +207,7 @@ def broker_app(broker, monkeypatch):
 
     monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@p.iam.gserviceaccount.com")
+    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv("WORKER_SERVICE_ACCOUNT_TEMPLATE",
                        "swarm-agent-worker-{tenant}@p.iam.gserviceaccount.com")
     app = create_app(broker, identity=_Identity(), account_store=AccountStore(broker.db))
@@ -233,11 +233,11 @@ def _add(client, app, payload, *, owner=ENG, label="team"):
 
 def test_the_exchange_answer_names_the_organisation_and_plan_it_registered(broker_app, broker_client):
     org_id = _org_id()
-    r = _add(broker_client, broker_app, _token_payload(org_id), label="saga-team")
+    r = _add(broker_client, broker_app, _token_payload(org_id), label="org-team")
     assert r.status_code == 201, r.text
     body = r.json()
-    # MUTATION: dropping `registered` hides that the sign-in authorised Personal, not Saga.
-    assert body["registered"] == "registered eng:saga-team: organisation Personal (Max)"
+    # MUTATION: dropping `registered` hides that the sign-in authorised Personal, not Example.
+    assert body["registered"] == "registered eng:org-team: organisation Personal (Max)"
     assert body["organisation"] == {"name": "Personal", "plan": "Max"}
     listed = broker_client.get("/v1/accounts").json()["accounts"][0]
     assert listed["organisation"] == {"name": "Personal", "plan": "Max"}
@@ -250,17 +250,17 @@ def test_a_second_add_on_the_same_organisation_is_refused_naming_the_existing_la
     # One seat (#2282): a second seat of the organisation registers, see test_account_seat.
     org_id, login = _org_id(), _login()
     assert _add(broker_client, broker_app, _token_payload(org_id, login=login),
-                label="saga-personal").status_code == 201
+                label="org-personal").status_code == 201
     secrets_before = dict(broker_app.state.secret_store.created)
 
-    again = _add(broker_client, broker_app, _token_payload(org_id, login=login), label="saga-team")
+    again = _add(broker_client, broker_app, _token_payload(org_id, login=login), label="org-team")
 
     # MUTATION: removing `refuse_duplicate_organisation` registers the subscription twice.
     assert again.status_code == 422, again.text
-    assert "saga-personal" in again.json()["message"]
+    assert "org-personal" in again.json()["message"]
     assert "Personal (Max)" in again.json()["message"]
     labels = [a["label"] for a in broker_client.get("/v1/accounts").json()["accounts"]]
-    assert labels == ["saga-personal"]
+    assert labels == ["org-personal"]
     # Refused before any secret was created for the new label.
     assert broker_app.state.secret_store.created == secrets_before
 
@@ -268,7 +268,7 @@ def test_a_second_add_on_the_same_organisation_is_refused_naming_the_existing_la
 def test_another_owner_on_the_same_organisation_is_refused_naming_nothing_of_theirs(
     broker_app, broker_client
 ):
-    """BGD, 2026-10-24 17:26Z (Q2): "Name it only within the same tenant"."""
+    """the owner, 2026-10-24 17:26Z (Q2): "Name it only within the same tenant"."""
     org_id, login = _org_id(), _login()
     assert _add(broker_client, broker_app, _token_payload(org_id, login=login),
                 label="mine").status_code == 201
@@ -292,16 +292,16 @@ def test_one_login_with_two_organisations_is_two_accounts_and_neither_is_flagged
     login = _login()
     personal = _add(broker_client, broker_app,
                     _token_payload(_org_id(), name="Personal", kind="claude_max", login=login),
-                    label="saga-personal")
+                    label="org-personal")
     team = _add(broker_client, broker_app,
-                _token_payload(_org_id(), name="Saga", kind="claude_team", login=login),
-                label="saga-team")
+                _token_payload(_org_id(), name="Example", kind="claude_team", login=login),
+                label="org-team")
     # MUTATION: keying the identity on the login refuses the second, legitimate subscription.
     assert personal.status_code == 201, personal.text
     assert team.status_code == 201, team.text
     listed = broker_client.get("/v1/accounts").json()["accounts"]
     assert {a["label"]: a["duplicate_of"] for a in listed} == {
-        "saga-personal": None, "saga-team": None}
+        "org-personal": None, "org-team": None}
     assert all(a["can_take_new_agent"] for a in listed)
 
 
@@ -313,12 +313,12 @@ def test_replacing_a_credential_on_its_own_organisation_is_not_a_duplicate(broke
 
 
 def test_a_re_sign_in_into_another_organisation_records_it(broker_app, broker_client):
-    """The 10:35Z re-sign-in of eng:saga-team, this time with Saga selected."""
-    assert _add(broker_client, broker_app, _token_payload(_org_id()), label="saga-team").status_code == 201
-    r = _add(broker_client, broker_app, _token_payload(_org_id(), name="Saga", kind="claude_team"),
-             label="saga-team")
+    """The 10:35Z re-sign-in of eng:org-team, this time with Example selected."""
+    assert _add(broker_client, broker_app, _token_payload(_org_id()), label="org-team").status_code == 201
+    r = _add(broker_client, broker_app, _token_payload(_org_id(), name="Example", kind="claude_team"),
+             label="org-team")
     assert r.status_code == 201, r.text
-    assert r.json()["registered"] == "registered eng:saga-team: organisation Saga (Team)"
+    assert r.json()["registered"] == "registered eng:org-team: organisation Example (Team)"
 
 
 def test_an_add_the_provider_says_nothing_about_is_accepted_and_says_so(broker_app, broker_client):
@@ -380,38 +380,38 @@ class _Refresher:
 def test_two_accounts_on_one_organisation_are_both_flagged_on_refresh(broker):
     clock = [NOW - timedelta(days=3), NOW - timedelta(hours=2)]
     store = AccountStore(broker.db, now=lambda: clock.pop(0) if clock else NOW)
-    store.register(ENG, "saga-personal")
+    store.register(ENG, "org-personal")
     store.register(ENG, "team")
     store.register(ENG, "devops-team")
     shared = organisation_from_payload(_token_payload(_org_id()))
     own = organisation_from_payload(_token_payload(_org_id(), name="Devops", kind="claude_max"))
 
     result = _sweep_account_pool(
-        _Refresher({"eng:saga-personal": shared, "eng:team": shared, "eng:devops-team": own}),
+        _Refresher({"eng:org-personal": shared, "eng:team": shared, "eng:devops-team": own}),
         store, NOW)
 
     by_id = {a.account_id: a for a in store.list()}
     # MUTATION: not calling `mark_duplicates` after the sweep leaves both unmarked.
-    assert by_id["eng:saga-personal"].duplicate_of == "eng:team"
-    assert by_id["eng:team"].duplicate_of == "eng:saga-personal"
+    assert by_id["eng:org-personal"].duplicate_of == "eng:team"
+    assert by_id["eng:team"].duplicate_of == "eng:org-personal"
     assert by_id["eng:devops-team"].duplicate_of is None
-    assert (by_id["eng:saga-personal"].duplicate_withheld, by_id["eng:team"].duplicate_withheld) == (
+    assert (by_id["eng:org-personal"].duplicate_withheld, by_id["eng:team"].duplicate_withheld) == (
         False, True)
-    assert sorted(result["duplicates"]) == ["eng:saga-personal", "eng:team"]
+    assert sorted(result["duplicates"]) == ["eng:org-personal", "eng:team"]
 
     listed = {a["label"]: a for a in (account_to_api(a, now=NOW) for a in by_id.values())}
-    assert listed["team"]["duplicate_of"] == "eng:saga-personal"
+    assert listed["team"]["duplicate_of"] == "eng:org-personal"
     assert listed["team"]["can_take_new_agent"] is False
-    assert {"duplicate_of": "eng:saga-personal",
-            "reason": "registered on the same organisation and seat as eng:saga-personal",
+    assert {"duplicate_of": "eng:org-personal",
+            "reason": "registered on the same organisation and seat as eng:org-personal",
             "matched_on": "organisation_and_seat"} in listed["team"]["blocked_by"]
-    assert listed["saga-personal"]["duplicate_of"] == "eng:team"
+    assert listed["org-personal"]["duplicate_of"] == "eng:team"
 
     # choose() offers only the older registration, however the headroom reads.
     accounts = [a for a in by_id.values() if a.label != "devops-team"]
-    assert choose(accounts, ENG, NOW).label == "saga-personal"
+    assert choose(accounts, ENG, NOW).label == "org-personal"
     paused = AccountStore(broker.db)
-    paused.set_state("eng:saga-personal", AccountState.PAUSED)
+    paused.set_state("eng:org-personal", AccountState.PAUSED)
     accounts = [a for a in paused.list() if a.label != "devops-team"]
     # MUTATION: dropping the withheld check from choose() hands out the newer one.
     assert choose(accounts, ENG, NOW) is None
@@ -419,7 +419,7 @@ def test_two_accounts_on_one_organisation_are_both_flagged_on_refresh(broker):
 
     # And a re-sign-in into its own organisation releases the newer one.
     store.record_organisation("eng:team", organisation_from_payload(
-        _token_payload(_org_id(), name="Saga", kind="claude_team")))
+        _token_payload(_org_id(), name="Example", kind="claude_team")))
     _sweep_account_pool(_NoRefresher(), store, NOW)
     assert {a.duplicate_of for a in store.list()} == {None}
 
@@ -450,13 +450,13 @@ def _acct(label, *, org=None, seat=None, registered=None, holds=0, observed=NOW,
 def test_choose_hands_out_only_the_older_of_a_pair_the_sweep_has_not_marked_yet():
     # One organisation AND one seat, both recorded (#2282, #3046).
     shared, seat = organisation_identity(_org_id()), seat_identity(_org_id())
-    older = _acct("saga-personal", org=shared, seat=seat, registered=NOW - timedelta(days=9),
+    older = _acct("org-personal", org=shared, seat=seat, registered=NOW - timedelta(days=9),
                   holds=2)
     newer = _acct("team", org=shared, seat=seat, registered=NOW - timedelta(hours=1))
     # The newer has more room by every measure; only the pair rule skips it.
-    assert choose([older, newer], ENG, NOW).label == "saga-personal"
+    assert choose([older, newer], ENG, NOW).label == "org-personal"
     assert duplicates([older, newer]) == {
-        "eng:saga-personal": ("eng:team", False), "eng:team": ("eng:saga-personal", True)}
+        "eng:org-personal": ("eng:team", False), "eng:team": ("eng:org-personal", True)}
     # A document registered before `registered_at` existed is the older one.
     legacy = _acct("legacy", org=shared, seat=seat, registered=None)
     assert duplicates([newer, legacy])["eng:legacy"] == ("eng:team", False)
@@ -472,52 +472,52 @@ def test_accounts_with_no_recorded_organisation_are_never_a_pair():
 
 
 def test_a_never_observed_account_holding_one_agent_is_skipped():
-    new = _acct("saga-team", observed=None, windows=False, holds=1)
+    new = _acct("org-team", observed=None, windows=False, holds=1)
     measured = _acct("devops-team", holds=3)
     assert MAX_AGENTS_BEFORE_READING == 1
     assert new.headroom(NOW) > measured.headroom(NOW)
     # MUTATION: dropping `awaits_first_reading` from choose() hands it every agent until read.
     assert choose([new, measured], ENG, NOW).label == "devops-team"
     # With nothing held it is usable at once.
-    assert choose([_acct("saga-team", observed=None, windows=False)], ENG, NOW).label == "saga-team"
+    assert choose([_acct("org-team", observed=None, windows=False)], ENG, NOW).label == "org-team"
 
 
 def test_after_its_first_reading_it_is_offered_again_up_to_max_agents():
-    read = _acct("saga-team", holds=1)
-    assert choose([read], ENG, NOW).label == "saga-team"
-    assert choose([_acct("saga-team", holds=5)], ENG, NOW).label == "saga-team"
-    assert choose([_acct("saga-team", holds=6)], ENG, NOW) is None
+    read = _acct("org-team", holds=1)
+    assert choose([read], ENG, NOW).label == "org-team"
+    assert choose([_acct("org-team", holds=5)], ENG, NOW).label == "org-team"
+    assert choose([_acct("org-team", holds=6)], ENG, NOW) is None
 
 
 def test_a_pool_whose_only_free_account_awaits_its_first_reading_waits_on_the_poll():
-    new = _acct("saga-team", observed=None, windows=False, holds=1)
+    new = _acct("org-team", observed=None, windows=False, holds=1)
     full = _acct("devops-team", holds=6)
     assert choose([new, full], ENG, NOW) is None
     # MUTATION: without the first-reading branch this answers `accounts_full`.
     assert eligibility([new, full], ENG, NOW) == (Unavailable.NO_RECENT_READING, None)
     # Its cap of one is the first reading's, not a full account's.
-    one = _acct("saga-team", observed=None, windows=False, holds=1, max_agents=1)
+    one = _acct("org-team", observed=None, windows=False, holds=1, max_agents=1)
     assert eligibility([one], ENG, NOW)[0] is Unavailable.NO_RECENT_READING
 
 
 def test_the_listing_says_the_first_reading_is_pending():
-    shown = account_to_api(_acct("saga-team", observed=None, windows=False, holds=1), now=NOW)
+    shown = account_to_api(_acct("org-team", observed=None, windows=False, holds=1), now=NOW)
     assert shown["can_take_new_agent"] is False
     assert shown["blocked_by"] == [
         {"first_reading": "pending", "assigned": 1, "max_before_reading": 1}]
-    assert account_to_api(_acct("saga-team", observed=None, windows=False), now=NOW)[
+    assert account_to_api(_acct("org-team", observed=None, windows=False), now=NOW)[
         "can_take_new_agent"] is True
 
 
 def test_the_hold_transaction_refuses_a_second_agent_before_the_first_reading(broker):
     store = AccountStore(broker.db)
-    store.register(ENG, "saga-team")
-    assert acquire_hold(broker.db, "eng:saga-team", tenant_id=ENG, now=NOW) is not None
+    store.register(ENG, "org-team")
+    assert acquire_hold(broker.db, "eng:org-team", tenant_id=ENG, now=NOW) is not None
     # MUTATION: dropping the observed_at cap from `_raw_has_room` lets a racing assign take a second.
-    assert acquire_hold(broker.db, "eng:saga-team", tenant_id=ENG, now=NOW) is None
-    store.record_reading("eng:saga-team", {
+    assert acquire_hold(broker.db, "eng:org-team", tenant_id=ENG, now=NOW) is None
+    store.record_reading("eng:org-team", {
         "five_hour": WindowReading(0.05, NOW + timedelta(hours=3))}, NOW)
-    assert acquire_hold(broker.db, "eng:saga-team", tenant_id=ENG, now=NOW) is not None
+    assert acquire_hold(broker.db, "eng:org-team", tenant_id=ENG, now=NOW) is not None
 
 
 # --------------------------------------------------------------------------
@@ -564,20 +564,20 @@ def test_swarm_api_names_the_organisation_and_carries_the_refusal(
         return api.post("/v1/accounts/exchange", headers=auth_header("alice"),
                         json={"state": r.json()["state"], "code": "code-x"})
 
-    first = add("saga-personal")
+    first = add("org-personal")
     assert first.status_code == 201, first.text
-    assert first.json()["registered"] == "registered eng:saga-personal: organisation Personal (Max)"
+    assert first.json()["registered"] == "registered eng:org-personal: organisation Personal (Max)"
     assert first.json()["organisation"] == {"name": "Personal", "plan": "Max"}
     assert first.json()["account"]["organisation"] == {"name": "Personal", "plan": "Max"}
 
-    second = add("saga-team")
+    second = add("org-team")
     assert second.status_code == 422, second.text
-    assert "saga-personal" in second.text
+    assert "org-personal" in second.text
     assert org_id not in second.text + first.text
 
 
 # --------------------------------------------------------------------------
-# Another workspace's account is never named (BGD, Q2)
+# Another workspace's account is never named (the owner, Q2)
 # --------------------------------------------------------------------------
 #
 # "Name it only within the same tenant": a refusal, the listing's
@@ -746,7 +746,7 @@ def test_sc_never_prints_a_duplicate_field():
 
 
 # --------------------------------------------------------------------------
-# Identical readings on two polls: a possible duplicate (BGD, Q1)
+# Identical readings on two polls: a possible duplicate (the owner, Q1)
 # --------------------------------------------------------------------------
 #
 # "Build it as a safety net": nothing has yet confirmed the provider returns
@@ -770,13 +770,13 @@ def _poll(store, at, *, a=None, b=None):
     from quota_broker.main import mark_possible_duplicates
 
     _reading(store, "eng:team", at, **(a or {}))
-    _reading(store, "eng:saga-personal", at + timedelta(seconds=20), **(b or {}))
+    _reading(store, "eng:org-personal", at + timedelta(seconds=20), **(b or {}))
     return mark_possible_duplicates(store)
 
 
 def _two(broker):
     store = AccountStore(broker.db)
-    store.register(ENG, "saga-personal")
+    store.register(ENG, "org-personal")
     store.register(ENG, "team")
     return store
 
@@ -791,21 +791,21 @@ def test_identical_readings_on_two_polls_mark_a_possible_duplicate(broker):
     second = {"skew": timedelta(seconds=1)}
     # MUTATION: flagging on the first match calls one coincidence a duplicate.
     assert _poll(store, NOW, b=second) == []
-    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+    assert _flags(store) == {"eng:org-personal": None, "eng:team": None}
 
     flagged = _poll(store, NOW + timedelta(minutes=5), b=second)
 
-    assert sorted(flagged) == ["eng:saga-personal", "eng:team"]
-    assert _flags(store) == {"eng:saga-personal": "eng:team", "eng:team": "eng:saga-personal"}
+    assert sorted(flagged) == ["eng:org-personal", "eng:team"]
+    assert _flags(store) == {"eng:org-personal": "eng:team", "eng:team": "eng:org-personal"}
     # A possible duplicate is not the organisation-proven kind.
     assert {a.duplicate_of for a in store.list()} == {None}
 
     shown = account_to_api(store.get("eng:team"), now=NOW + timedelta(minutes=6))
     assert shown["possible_duplicate"] == {
-        "of": "eng:saga-personal", "reason": "identical readings on two polls"}
+        "of": "eng:org-personal", "reason": "identical readings on two polls"}
     assert shown["duplicate_of"] is None
-    assert {"possible_duplicate": "eng:saga-personal", "advisory": True,
-            "reason": "identical readings on two polls with eng:saga-personal"} in shown[
+    assert {"possible_duplicate": "eng:org-personal", "advisory": True,
+            "reason": "identical readings on two polls with eng:org-personal"} in shown[
         "blocked_by"]
     # FLAGGED, NOT WITHHELD: readings can coincide, and an inference must not
     # take a real subscription out of the pool.
@@ -826,8 +826,8 @@ def test_one_reading_counted_twice_is_still_one_poll(broker):
     # A new reading of ONE side is not a second poll of the pair either.
     _reading(store, "eng:team", NOW + timedelta(minutes=5))
     assert mark_possible_duplicates(store) == []
-    _reading(store, "eng:saga-personal", NOW + timedelta(minutes=6))
-    assert sorted(mark_possible_duplicates(store)) == ["eng:saga-personal", "eng:team"]
+    _reading(store, "eng:org-personal", NOW + timedelta(minutes=6))
+    assert sorted(mark_possible_duplicates(store)) == ["eng:org-personal", "eng:team"]
 
 
 @pytest.mark.parametrize("second", [
@@ -841,7 +841,7 @@ def test_readings_that_differ_anywhere_are_never_a_possible_duplicate(broker, se
     # MUTATION: comparing one window, or resets without a tolerance, flags these.
     assert _poll(store, NOW + timedelta(minutes=5), b=second) == []
     assert _poll(store, NOW + timedelta(minutes=10), b=second) == []
-    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+    assert _flags(store) == {"eng:org-personal": None, "eng:team": None}
 
 
 def test_a_match_broken_by_a_differing_poll_starts_counting_again(broker):
@@ -852,7 +852,7 @@ def test_a_match_broken_by_a_differing_poll_starts_counting_again(broker):
     assert len(_poll(store, NOW + timedelta(minutes=15))) == 2
     # And a later differing poll clears the flag.
     _poll(store, NOW + timedelta(minutes=20), b={"five": 0.9})
-    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+    assert _flags(store) == {"eng:org-personal": None, "eng:team": None}
 
 
 def test_two_idle_accounts_are_not_a_pair(broker):
@@ -876,11 +876,11 @@ def test_a_differing_recorded_organisation_wins_over_identical_readings(broker):
     _poll(store, NOW)
     assert len(_poll(store, NOW + timedelta(minutes=5))) == 2
     store.record_organisation("eng:team", organisation_from_payload(_token_payload(_org_id())))
-    store.record_organisation("eng:saga-personal", organisation_from_payload(
-        _token_payload(_org_id(), name="Saga", kind="claude_team")))
+    store.record_organisation("eng:org-personal", organisation_from_payload(
+        _token_payload(_org_id(), name="Example", kind="claude_team")))
     # MUTATION: ignoring the organisations keeps two known subscriptions flagged.
     assert _poll(store, NOW + timedelta(minutes=10)) == []
-    assert _flags(store) == {"eng:saga-personal": None, "eng:team": None}
+    assert _flags(store) == {"eng:org-personal": None, "eng:team": None}
 
 
 def test_a_possible_duplicate_in_another_workspace_is_not_named(broker):
@@ -918,7 +918,7 @@ def test_the_sweep_marks_possible_duplicates_after_its_usage_poll(broker):
         def poll_round(self, accounts, keep_going=None):
             at = polls.pop(0)
             _reading(store, "eng:team", at)
-            _reading(store, "eng:saga-personal", at + timedelta(seconds=4))
+            _reading(store, "eng:org-personal", at + timedelta(seconds=4))
             return []
 
     class _Refresher(_NoRefresher):
@@ -934,5 +934,5 @@ def test_the_sweep_marks_possible_duplicates_after_its_usage_poll(broker):
     assert first.status_code == 200, first.text
     second = client.post("/v1/quota/sweep").json()
     # MUTATION: not calling `mark_possible_duplicates` in the sweep leaves both unflagged.
-    assert sorted(second["possible_duplicates"]) == ["eng:saga-personal", "eng:team"]
-    assert _flags(store) == {"eng:saga-personal": "eng:team", "eng:team": "eng:saga-personal"}
+    assert sorted(second["possible_duplicates"]) == ["eng:org-personal", "eng:team"]
+    assert _flags(store) == {"eng:org-personal": "eng:team", "eng:team": "eng:org-personal"}

@@ -41,7 +41,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 VERIFY_GSA = f"swarm-verify@{PROJECT}.iam.gserviceaccount.com"
 #: Shaped like a uniqueId; not any real account's.
 VERIFY_UID = "100000000000000000077"
@@ -131,7 +131,7 @@ def test_without_a_unique_id_nothing_is_rendered():
         f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com",  # another identity
         VERIFY_GSA,  # the email is already the first subject; this slot is the number
         f"{VERIFY_UID}\n  - kind: Group",  # YAML injection
-        "agents-staging",
+        "peer-cluster",
     ],
 )
 def test_a_verify_uid_that_is_not_swarm_verifys_is_refused(uid):
@@ -219,7 +219,7 @@ def test_verify_read_names_the_account_exactly_where_the_read_is_rendered(tenant
 def test_the_rbac_file_names_no_other_identity_and_no_other_cluster():
     text = (KUBERNETES / "rbac" / "verify-rbac.yaml").read_text()
     live = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-    assert "agents-staging" not in live
+    assert "peer-cluster" not in live
     # Only the two verify placeholders are subjects; no literal identity.
     assert "@" not in live, "an identity is spelled literally; it must come from __VERIFY_GSA__/__VERIFY_UID__"
     assert "__VERIFY_GSA__" in live and "__VERIFY_UID__" in live

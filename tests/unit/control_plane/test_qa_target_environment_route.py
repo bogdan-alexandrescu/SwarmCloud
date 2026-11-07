@@ -13,7 +13,7 @@ attempt key (test_live_api's harness, as test_qa_target_attempt_route.py):
     exactly as a missing target;
   * `mutating` is false on a `non_production` entry that shares an origin
     with a `production` entry, whatever its flow declares (§1.5's
-    shared-origin rule, AI Studio's case under F-1), and true on one that
+    shared-origin rule, a peer application's case under F-1), and true on one that
     shares none;
   * a run started before the migration is refused: the migration bumps the
     revision;
@@ -181,7 +181,7 @@ def test_a_mark_that_does_not_name_one_entry_answers_as_missing(
 def test_mutating_is_false_on_a_non_production_entry_sharing_an_origin_with_production(
         client, ldb, store, running):
     attempt, doc = running
-    # AI Studio's case (F-1): both legs on one origin, the chooser's toggle picks the backend.
+    # A peer application's case (F-1): both legs on one origin, the chooser's toggle picks the backend.
     seed_legs(ldb, staging_base=SHOP, flows=FLOWS)
     store.values["eng"] = {f"{TARGET}/{name}": value for name, value in legs_secret().items()}
     mark(ldb, doc, environment="staging", step_id="flow-checkout")

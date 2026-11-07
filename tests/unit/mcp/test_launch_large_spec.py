@@ -1,6 +1,6 @@
 """A spec of any size launches through `swarm_workflow_launch` (LAUNCH-LARGE-SPEC, #2875).
 
-MEASURED, 2026-10-31 (product-oracle-2f): a 24-step spec with about 90 KB of
+MEASURED, 2026-10-31 (peer-service-2f): a 24-step spec with about 90 KB of
 prompts made `swarm_workflow_launch {spec_path}` answer 94,498 characters, over
 Claude Code's tool-output limit, because its `args` embedded the whole spec
 beside `spec_handle`; the documented fallback, the titled script given the

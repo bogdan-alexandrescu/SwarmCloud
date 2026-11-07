@@ -115,7 +115,7 @@ def _task(db, task_id: str, *, tenant_id: str = "eng", by: str = ALICE, state: s
 
 def _workflow(db, workflow_id: str = "wf_open", *, state: str = "RUNNING", by: str = ALICE) -> None:
     """A workflow document in `state`: an ended step's open questions ring
-    only while it has not finished (BGD's pick, 6 November 2026)."""
+    only while it has not finished (the owner's pick, 6 November 2026)."""
     db.docs[f"workflows/{workflow_id}"] = {
         "workflow_id": workflow_id, "tenant_id": "eng", "created_at": _ago(hours=1),
         "updated_at": _ago(minutes=3), "state": state, "submitted_by": by, "steps": [],

@@ -39,7 +39,7 @@ from quota_broker.settings import BrokerSettings
 
 from .fakes import FakeFirestore
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 REGION = "us-central1"
 
 ENG_GROUP = "eng@example.com"
@@ -404,7 +404,7 @@ GRANTED_MEMBERS = ("alice@example.com", "bob@example.com", "carol@example.com", 
 #: The GitHub repositories the suite's submissions name.
 TEST_REPOSITORIES = (
     "example-org/example", "example-org/widgets", "example-org/payments", "octo-org/widget-shop",
-    "acme/widgets", "bogdan-alexandrescu/SwarmCloud", "o/r",
+    "acme/widgets", "example-org/example-repo", "o/r",
 )
 
 

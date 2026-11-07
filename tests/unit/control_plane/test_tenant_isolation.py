@@ -233,7 +233,7 @@ def collision_client(db, second_group: str, member: str):
 
 
 def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
-    """`eng@example.com` and `eng@partner.com` both slug to tenant `eng`.
+    """`eng@example.com` and `eng@example.org` both slug to tenant `eng`.
 
     The frozen `tenant_id_for_group` keeps the LOCAL PART only, and
     ALLOWED_DOMAINS is explicitly a comma-separated list, so this needs no
@@ -242,7 +242,7 @@ def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
     Secret Manager secret, its GCS prefix and its namespace, and every member of
     it can list the first group's tasks and overwrite its provider key.
     """
-    client = collision_client(db, "eng@partner.com", "mallory@partner.com")
+    client = collision_client(db, "eng@example.org", "mallory@example.org")
 
     first = client.post(
         "/v1/tasks", headers={"Authorization": "Bearer token-alice"},
@@ -260,7 +260,7 @@ def test_a_second_group_cannot_inherit_the_first_groups_tenant(db):
     body = stolen.json()
     assert body["code"] == "conflict"
     assert body["detail"]["registered_principal"] == "eng@example.com"
-    assert body["detail"]["requested_principal"] == "eng@partner.com"
+    assert body["detail"]["requested_principal"] == "eng@example.org"
 
     # Nothing of theirs was written, and the tenant still belongs to the first.
     assert db.docs["tenants/eng"]["principal"] == "eng@example.com"
@@ -314,7 +314,7 @@ def test_a_personal_tenant_records_the_user_as_its_principal(client, db):
 
 
 def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
-    client = collision_client(db, "eng@partner.com", "mallory@partner.com")
+    client = collision_client(db, "eng@example.org", "mallory@example.org")
     mallory = {"Authorization": "Bearer token-mallory"}
 
     created = client.post(

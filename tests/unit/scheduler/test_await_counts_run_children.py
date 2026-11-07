@@ -7,7 +7,7 @@ when every child has ended. The scheduler's await sweep read only `tasks`, so
 a parent waiting on run children alone was promoted on the next drain, with
 its runs still going.
 
-Decided 2026-10-22 08:59Z under BGD's overnight rule: a ledger row that has
+Decided 2026-10-22 08:59Z under the owner's overnight rule: a ledger row that has
 not ended -- HELD, STARTING, or STARTED with its run or workflow not terminal
 -- counts as outstanding, exactly as an unfinished agent child does, read in
 the parent's tenant only (invariant 9).

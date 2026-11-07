@@ -1,7 +1,7 @@
 """The worker normalises a QA flow step's stray tar before the upload (QA-FLOW-CAPTURE, part of #2688).
 
 The owner's pick on PR #3521 (2026-11-06, `worker-normalise`): two legs of the
-AI Studio session's QA re-run 8 wrote their batch as flow-1.tar, not
+A peer application session's QA re-run 8 wrote their batch as flow-1.tar, not
 flows-1.tar. The worker, at the end of a flow step whose `<step>.tar` is owed,
 renames a lone stray tar to it with a line saying so, so the missing-output
 check passes and the flow report stages it; several are refused, named, and the

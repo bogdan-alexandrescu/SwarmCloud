@@ -1,6 +1,6 @@
 """An index run's repo-index.json is checked against `RepoIndexSpec` before promotion (#1693).
 
-Measured 2026-10-20 on ai-studio (repo_d754779d0cf31b44): 3 of 19 index runs
+Measured 2026-10-20 on peer-app (repo_d754779d0cf31b44): 3 of 19 index runs
 were refused at promotion -- `routes.N.kind` missing, `routes.520.handler`
 empty, `modules.4.purpose` over 300 characters. The agent had exited by then,
 so the whole run, extractor, language servers and agent, was spent for
@@ -107,13 +107,13 @@ def _with(path: str, value: Any, *, delete: bool = False) -> dict[str, Any]:
     return doc
 
 
-#: The three refusals measured on ai-studio, then one of every kind of rule
+#: The three refusals measured on peer-app, then one of every kind of rule
 #: RepoIndexSpec holds: the worker's restatement must agree with the API on
 #: each, line for line.
 CORPUS: list[tuple[str, Any]] = [
-    ("the ai-studio route without kind", _with("routes.0.kind", None, delete=True)),
-    ("the ai-studio empty handler", _with("routes.0.handler", "")),
-    ("the ai-studio long purpose", _with("modules.0.purpose", "p" * 301)),
+    ("the peer-app route without kind", _with("routes.0.kind", None, delete=True)),
+    ("the peer-app empty handler", _with("routes.0.handler", "")),
+    ("the peer-app long purpose", _with("modules.0.purpose", "p" * 301)),
     ("the extractor's own route keys", _with("routes.0", {
         "id": "src/pkg/users.py#GET /users", "method": "GET", "path": "/users",
         "file": "src/pkg/users.py", "handler": None, "start_line": 3, "end_line": 5,

@@ -1,6 +1,6 @@
 """The gate raises the hand-off itself when a CAPTCHA appears on the agent's page (CAPTCHA-HANDOFF; part of #2058).
 
-docs/design/live-browser.md §4.1. Owner decision, BGD 2026-10-23: "when the
+docs/design/live-browser.md §4.1. Owner decision, the owner 2026-10-23: "when the
 gate sees a challenge on an agent's page it raises the hand-off itself; the
 console bell is the only channel". The gate detects with the lists it already
 has (mask.py `SHOWN_IN_CONTROL`, read by `challenge_host` and tabs.py), never

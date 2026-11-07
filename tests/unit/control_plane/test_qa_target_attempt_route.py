@@ -21,7 +21,7 @@ attempt key (test_live_api's harness):
   * `mutating` is true only for a flow step of the rendered run (the task's
     own server-written `step_id`, `flow-<id>`) whose flow the stored target
     declares `mutating: true`, on a `non_production` target (§3; lane
-    VQ4-MUTATING, BGD 2026-10-22). Every other step answers false, and a
+    VQ4-MUTATING, the owner 2026-10-22). Every other step answers false, and a
     caller's `mutating` in the request is refused, never read.
 """
 

@@ -8,7 +8,7 @@ created HELD -- no run, no planner, no workflow, so no capacity (invariant 1)
 its PR merged". AU6-CHILD-RUNS (PR 1950) built the release
 (`children.release_held_runs`); nothing called it.
 
-Decided 2026-10-22 08:59Z under BGD's overnight rule: the existing
+Decided 2026-10-22 08:59Z under the owner's overnight rule: the existing
 per-tenant `issue_run_advance` tick calls it after advancing the tenant's
 runs, and returns its counts as `held`. So the tick that moves a predecessor
 to DONE starts its held successor in the same response.
@@ -35,7 +35,7 @@ from .test_child_runs import github  # noqa: F401 -- a fixture
 from .test_child_tasks_api import Attempt, ready_parent, worker_tokens  # noqa: F401
 from .conftest import seed_tenant
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_TOKEN = "token-sweeper"
 
 

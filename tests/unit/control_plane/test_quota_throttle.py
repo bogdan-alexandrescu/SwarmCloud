@@ -498,7 +498,7 @@ class LimitedGitHub(FakeGitHub):
 
 def _service(github: FakeGitHub, clock: list[float]) -> ForgePermissions:
     jwt = "jwt." + secrets.token_hex(12)
-    return ForgePermissions(app_jwt=lambda: jwt, app_slug="swarmcloud-saga", send=github,
+    return ForgePermissions(app_jwt=lambda: jwt, app_slug="swarmcloud-app", send=github,
                             clock=lambda: clock[0])
 
 

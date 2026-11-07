@@ -1,6 +1,6 @@
-"""BGD's four answers to COUNTS-TIME-VIEW's questions, as `GET /v1/outcomes` serves them (COUNTS-API-ADDS, part of #2149).
+"""the owner's four answers to COUNTS-TIME-VIEW's questions, as `GET /v1/outcomes` serves them (COUNTS-API-ADDS, part of #2149).
 
-BGD, 2026-10-24 17:26Z, each a change to the `usage` block:
+the owner, 2026-10-24 17:26Z, each a change to the `usage` block:
 
 1. PER-BUCKET GROUP ROWS. Each grouping carries `series`: agents and retries
    per bucket for the five busiest keys of the WHOLE span (the same five in

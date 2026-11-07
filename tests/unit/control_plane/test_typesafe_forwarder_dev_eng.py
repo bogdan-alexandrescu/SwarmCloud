@@ -177,7 +177,7 @@ def _worker_key_env(environ: dict[str, str], private: Path) -> dict[str, str]:
         shim_file.write_text("shim", encoding="utf-8")
     return jevkey.prepare(
         endpoint="127.0.0.1:9222", db=_Untouchable(), client=_Untouchable(), tenant_id="eng",
-        submitted_by="u-bogdan", private_dir=private, logger=_Log(), backend="typesafe",
+        submitted_by="u-owner", private_dir=private, logger=_Log(), backend="typesafe",
         inject=inject, shim_file=shim_file if inject else None)
 
 

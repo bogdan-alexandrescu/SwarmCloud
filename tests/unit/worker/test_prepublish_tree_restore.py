@@ -1,6 +1,6 @@
 """The pre-publish checks run uv outside the clone and leave the tree as they found it (#1964).
 
-Lane PREPUB-UV-OUTSIDE. Measured 2026-10-22 on sagaxyz/ai-studio
+Lane PREPUB-UV-OUTSIDE. Measured 2026-10-22 on example-org/peer-app
 (task_2df71fc1d5d34997957a, task_65d0f0328cc6464f8358): the gate's
 `uv run pytest`, run from `runner/` inside the agent's clone with no
 `UV_PROJECT_ENVIRONMENT`, created `runner/.venv` and an untracked
@@ -193,7 +193,7 @@ def test_every_uv_a_check_runs_gets_a_project_environment_outside_the_clone(tmp_
 
 
 class Recorder:
-    """A `prepublish.Runner` for ai-studio's shape: records each call's argv,
+    """A `prepublish.Runner` for peer-app's shape: records each call's argv,
     cwd and the environment it was given; every run passes."""
 
     def __init__(self) -> None:

@@ -155,8 +155,8 @@ def test_the_conversation_model_is_a_curated_list_of_the_models_the_platform_has
     """The owner's answer (2026-11-05): "selected from a curated list that we
     have available". Every entry is a Claude model the platform prices, so
     each pick runs on the pool and is costed. The default is the haiku
-    class's pin, the model the front runs with no setting (BGD, 6 November
-    2026), and it too is one the platform's price seed lists (BGD, 6 November
+    class's pin, the model the front runs with no setting (the owner, 6 November
+    2026), and it too is one the platform's price seed lists (the owner, 6 November
     2026: the seed lists claude-haiku-5-5)."""
     from swarm_api import modelprices
 
@@ -212,7 +212,7 @@ PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", "sonnet": "claud
 
 def test_the_planner_model_is_the_pools_model_classes_and_the_planning_class_by_default(
         client, monkeypatch):
-    """BGD, 2026-11-05: the planner runs the planning class, "make it
+    """the owner, 2026-11-05: the planner runs the planning class, "make it
     configurable as well". The names are the frozen MODEL_CLASSES, each shown
     with the pin Terraform's runner_models gives it; never a model id."""
     from swarm_common.profiles import MODEL_CLASSES

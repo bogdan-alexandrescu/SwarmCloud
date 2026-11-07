@@ -1,6 +1,6 @@
 """A gate-raised hand-off goes through the worker's own path (CAPTCHA-HANDOFF; part of #2058).
 
-docs/design/live-browser.md §4.1. Owner decision, BGD 2026-10-23: when the
+docs/design/live-browser.md §4.1. Owner decision, the owner 2026-10-23: when the
 gate sees a CAPTCHA on the agent's page it raises the hand-off itself. The
 gate puts the request in its `status` (test_captcha_handoff_gate.py); the
 worker raises it through exactly the path `swarm-handoff request` takes --

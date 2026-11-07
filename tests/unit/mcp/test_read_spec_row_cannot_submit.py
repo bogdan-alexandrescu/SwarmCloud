@@ -1,6 +1,6 @@
 """The `setup · read spec` row cannot submit, and a submission it made anyway is THE submission.
 
-AI Studio's session, 5 November 2026 (plugin 0.5.79): twice a run ended
+A peer application's session, 5 November 2026 (plugin 0.5.79): twice a run ended
 NOT_SUBMITTED with "the row reading <spec_handle path> did not hand back the
 spec_ref, spec_digest and outline the bridge returns, so nothing was
 submitted", yet the workflow existed and ran, and a relaunch made a

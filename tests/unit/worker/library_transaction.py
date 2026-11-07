@@ -150,7 +150,7 @@ class TransactionalFirestore(FakeFirestore):
     """
 
     #: What `Transaction` puts in each RPC request. Any string does.
-    _database_string = "projects/swarm-test/databases/swarm"
+    _database_string = "projects/example-project/databases/swarm"
     _rpc_metadata: tuple[Any, ...] = ()
 
     def __init__(self) -> None:

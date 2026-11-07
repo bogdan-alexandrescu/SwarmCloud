@@ -520,7 +520,7 @@ def test_a_run_body_is_logged_nowhere_as_a_prompt(client, db, seeded):
 
 
 # --------------------------------------------------------------------------
-# The flows' browser tool (lane VQ9-TOOL; BGD, 2026-10-23: flows default to
+# The flows' browser tool (lane VQ9-TOOL; the owner, 2026-10-23: flows default to
 # Playwright, after batch bench3-2026-10-23; a target, or one run, may choose Jev)
 # --------------------------------------------------------------------------
 
@@ -606,7 +606,7 @@ def test_an_unknown_flows_browser_tool_is_refused_at_registration_and_at_run(cli
 
 
 # --------------------------------------------------------------------------
-# Start clicks at registration (§2.2; BGD, 2026-10-23)
+# Start clicks at registration (§2.2; the owner, 2026-10-23)
 # --------------------------------------------------------------------------
 
 _LOGIN = {"kind": "own_login", "login_path": "/", "signed_in_selector": "nav .me"}

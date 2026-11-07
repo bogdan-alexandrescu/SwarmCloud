@@ -21,10 +21,10 @@ minutes seventeen. The one run that would have proved the platform works was
 killed by the platform. Confirmed in the audit log:
 
     Executions.CancelExecution
-    swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com
+    swarm-reconciler@example-project.iam.gserviceaccount.com
     .../jobs/swarm-verify/executions/swarm-verify-6q2wq
 
-AND WHY IT MATTERS MORE THAN AN OWN GOAL. saga-agents-staging is SHARED with
+AND WHY IT MATTERS MORE THAN AN OWN GOAL. example-project is SHARED with
 another team. The only things between this loop and one of their Cloud Run jobs
 are a name prefix and a label, neither of which they are obliged to avoid.
 CLAUDE.md's second non-negotiable rule is that nothing here may modify their

@@ -432,7 +432,7 @@ def covered_graph(status: str, covered: set[str]) -> dict:
 
 @pytest.mark.parametrize("status", ["partial", "timed_out"])
 def test_a_covered_file_of_a_partial_language_is_trusted(writer, objects, tmp_path, status):
-    """#1693: pyright covered most of ai-studio's files before its budget
+    """#1693: pyright covered most of peer-app's files before its budget
     ran out, and every Python change still answered the full suite.
 
     MUTATION: drop the `file_covered` check from `plan_impact` (any

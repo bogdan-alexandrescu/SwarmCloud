@@ -1,5 +1,5 @@
 """The planner's answer act tool and the act ledger (docs/design/voice-it.md §3.9;
-BGD's pick of 6 November 2026; swarm_voice/tools_act.py, actledger.py, planner.py).
+the owner's pick of 6 November 2026; swarm_voice/tools_act.py, actledger.py, planner.py).
 
 Against a fake swarm-api on an `httpx.MockTransport`, this holds that:
 

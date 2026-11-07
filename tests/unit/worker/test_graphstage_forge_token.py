@@ -1,7 +1,7 @@
 """Graph staging deepens a private repository's clone with the workspace's forge token (lane GRAPH-TOKEN-2563, part of #2540).
 
 The ancestry fetch (`gitops.fetch_base_history`, lane GRAPH-ANCESTRY) was
-anonymous, so it proved only a public repository's steps. BGD, 2026-10-27:
+anonymous, so it proved only a public repository's steps. the owner, 2026-10-27:
 hand it the forge token. This is a credential path, so what this file holds is
 mostly where the token must NOT go:
 

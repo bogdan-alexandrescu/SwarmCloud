@@ -308,8 +308,8 @@ def test_a_ready_service_record_without_a_unique_id_admits_nobody():
 
 
 @pytest.mark.parametrize("account", [
-    "mallory@gmail.com",                                     # a person, past the domain check
-    "ci-bot@other-project.iam.gserviceaccount.com",          # another project's account
+    "mallory@example.net",                                     # a person, past the domain check
+    "ci-bot@example-shared-project.iam.gserviceaccount.com",          # another project's account
     f"secrets-admin@{PROJECT}.iam.gserviceaccount.com",      # SECRET_ADMIN_PRINCIPALS
     f"swarm-api@{PROJECT}.iam.gserviceaccount.com",          # a platform account
     f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",

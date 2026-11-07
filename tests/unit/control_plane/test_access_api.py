@@ -213,7 +213,7 @@ def api(db, tokens, group_map, objects, clock, github, slots, tenant_tokens,
         forge=forge.GitHubIssues(send=issues_transport), now=clock,
     )
     app = forgeapp.ForgeApp(
-        db, config=forgeapp.AppConfig(client_id=CLIENT_ID, app_id="12345", slug="swarmcloud"),
+        db, config=forgeapp.AppConfig(client_id=CLIENT_ID, app_id="123456", slug="swarmcloud"),
         secrets=FakeAppSecret("s" + "x" * 39), slots=slots, send=github, now=clock)
     service = access.AccessService(db, app, send=github, now=clock)
     return TestClient(create_app(ctx, forge_app=app, access_service=service),
@@ -887,7 +887,7 @@ def test_a_refused_check_on_access_fails_setup_naming_the_repository(api, github
     assert failed["issues"][0]["capabilities"] == ["push", "open_pull_requests"]
 
 
-# -- the App's name, from config (SAGA-APP-NAME; part of #1647) ----------------------
+# -- the App's name, from config (APP-NAME; part of #1647) ----------------------
 
 
 @pytest.fixture
@@ -902,7 +902,7 @@ def named_api(db, tokens, group_map, objects, clock, github, slots, tenant_token
         forge=forge.GitHubIssues(send=issues_transport), now=clock,
     )
     config = forgeapp.AppConfig.from_env({"GITHUB_APP_CLIENT_ID": CLIENT_ID,
-                                          "GITHUB_APP_ID": "12345",
+                                          "GITHUB_APP_ID": "123456",
                                           "GITHUB_APP_SLUG": "swarmcloud",
                                           "GITHUB_APP_NAME": " SwarmCloud "})
     app = forgeapp.ForgeApp(db, config=config, secrets=FakeAppSecret("s" + "x" * 39),

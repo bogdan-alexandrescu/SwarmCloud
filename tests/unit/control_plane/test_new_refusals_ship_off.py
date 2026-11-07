@@ -526,7 +526,7 @@ NOT_SWITCHABLE_CODES = frozenset({
     # or was confirmed for another call or another session.
     "readback_refused",
     "readback_not_pending",
-    # A checkpoint member read as an image (routes/checkpoints.py, BGD
+    # A checkpoint member read as an image (routes/checkpoints.py, the owner
     # 2026-11-06, part of #2688): raised
     # only for a read that sends `?format=image`, which that change introduces
     # -- a read without it is the text read, as it always was -- so no

@@ -54,7 +54,7 @@ PROMPT = f"deploy with DB_PASSWORD={SECRET}"
 SK_KEY = "sk-proj-" + "x" * 40
 SK_NAME = SK_KEY + ".md"
 STAGED = f"notes-{SECRET}.md"
-URI_PREFIX = "gs://bucket/tenants/eng/tasks/task_a/attempts/att_1/artifacts/"
+URI_PREFIX = "gs://swarm-artifacts-example-project/tenants/eng/tasks/task_a/attempts/att_1/artifacts/"
 
 #: The platform's id shapes (`swarm_common.models.new_id`: prefix + 20 hex).
 TASK_ID = "task_" + "0f3a9c1b2d4e5f60718a"

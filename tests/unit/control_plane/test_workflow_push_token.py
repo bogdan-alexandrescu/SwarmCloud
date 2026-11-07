@@ -1,6 +1,6 @@
 """The App's write mint for a workflow-touching push (#2029, WF-APP-TOKEN).
 
-BGD, 2026-10-22: "can we use the github app creds for this?" A push whose new
+the owner, 2026-10-22: "can we use the github app creds for this?" A push whose new
 commits touch `.github/workflows/**` or `.github/actions/**` is made with an
 installation token swarm-api mints at push time. What these tests hold:
 

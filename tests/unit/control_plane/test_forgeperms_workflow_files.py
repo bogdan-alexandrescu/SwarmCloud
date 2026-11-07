@@ -1,6 +1,6 @@
 """forgeperms reports `workflows: write` missing ONLY where `workflow_files` is on (#2029).
 
-BGD, 2026-10-22 (WF-APP-TOKEN, decision 4): the App asks for "Workflows: Read
+the owner, 2026-10-22 (WF-APP-TOKEN, decision 4): the App asks for "Workflows: Read
 and write"; an installation that has not accepted it reads as "Workflows: not
 granted" in the console -- on a repository whose `workflow_files` switch is
 on, and nowhere else. `REQUIRED`, what every other repository needs, is
@@ -30,8 +30,8 @@ def _row(answer, repo):
 def _setup(granted: dict[str, str]) -> FakeGitHub:
     github = FakeGitHub()
     _app(github, {**FULL, "workflows": "write"})
-    _installed(github, "sagaxyz", "on", 7)
-    _installed(github, "sagaxyz", "off", 7)
+    _installed(github, "example-org", "on", 7)
+    _installed(github, "example-org", "off", 7)
     _installation(github, 7, granted)
     return github
 
@@ -46,9 +46,9 @@ def test_required_is_unchanged_for_every_other_repository():
 
 def test_not_granted_is_reported_on_the_switched_on_repository_only():
     github = _setup(FULL)  # the installation has not accepted Workflows
-    answer = _read(_service(github), [_repo("sagaxyz", "on", workflow_files=True),
-                                      _repo("sagaxyz", "off", workflow_files=False)])
-    on, off = _row(answer, "sagaxyz/on"), _row(answer, "sagaxyz/off")
+    answer = _read(_service(github), [_repo("example-org", "on", workflow_files=True),
+                                      _repo("example-org", "off", workflow_files=False)])
+    on, off = _row(answer, "example-org/on"), _row(answer, "example-org/off")
     # MUTATION: never check the switched-on requirement and this is True.
     assert on["capabilities"]["workflow_files"] is False
     assert [gap["permission"] for gap in on["blocked_by"]] == ["workflows"]
@@ -63,8 +63,8 @@ def test_not_granted_is_reported_on_the_switched_on_repository_only():
 
 def test_a_granted_installation_reads_workflow_files_true_on_the_switched_on_repository():
     github = _setup({**FULL, "workflows": "write"})
-    answer = _read(_service(github), [_repo("sagaxyz", "on", workflow_files=True)])
-    row = _row(answer, "sagaxyz/on")
+    answer = _read(_service(github), [_repo("example-org", "on", workflow_files=True)])
+    row = _row(answer, "example-org/on")
     # MUTATION: compare to "admin" and a write grant reads not granted.
     assert row["capabilities"]["workflow_files"] is True
     assert row["blocked_by"] == []
@@ -92,8 +92,8 @@ def test_the_route_reads_the_switch_from_the_registration(db):
 
     now = datetime(2026, 10, 23, tzinfo=timezone.utc)
     for repo, on in (("on", True), ("off", None), ("str", "true")):
-        repo_id = repo_id_for("eng", "sagaxyz", repo)
-        doc = {"repo_id": repo_id, "tenant_id": "eng", "owner": "sagaxyz", "repo": repo,
+        repo_id = repo_id_for("eng", "example-org", repo)
+        doc = {"repo_id": repo_id, "tenant_id": "eng", "owner": "example-org", "repo": repo,
                "default_branch": "main", "index": {}}
         if on is not None:
             doc["workflow_files"] = on

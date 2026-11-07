@@ -1,7 +1,7 @@
 """The state reads accept the child-purpose proof too (docs/design/agent-autonomy.md
 §3.4; lane AU4-WIRE, part of #1933).
 
-BGD, 2026-10-22 08:54Z: "Also accept the child-purpose proof
+the owner, 2026-10-22 08:54Z: "Also accept the child-purpose proof
 (swarm-child-req/v1) on the read route". A tenant not switched to the state
 routes registers its attempt key at `/child-key`, for the `child` purpose
 only, so its worker can sign the reads only under `swarm-child-req/v1`.

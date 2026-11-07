@@ -1,6 +1,6 @@
 """Contract request 147: the `medium` resource class and `claude-code-medium` (part of #2688).
 
-Accepted by the owner (BGD) on 6 November 2026, after the 7-day load
+Accepted by the owner on 6 November 2026, after the 7-day load
 analysis: 771 large attempts (4.8% of 16,103) held 46% of all capacity
 unit-hours and used about a third of the CPU and memory they reserved;
 measured without page cache, 96% fit 6 CPU and 16 GiB and only 31 needed

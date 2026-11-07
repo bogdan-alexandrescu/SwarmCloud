@@ -1,6 +1,6 @@
 """A cancelled-only reading waits at most 60 minutes, then refuses `checks_cancelled` (#1778).
 
-BGD's answer of 2026-10-27 ("refuse after a shorter bound", 60 min): a
+the owner's answer of 2026-10-27 ("refuse after a shorter bound", 60 min): a
 cancelled latest run is pending, not failed, but when it is the ONLY problem
 in a reading -- nothing failed, nothing still running -- the merge step waits
 `MERGE_CI_CANCELLED_MAX_SECONDS` from the first such reading at the head,

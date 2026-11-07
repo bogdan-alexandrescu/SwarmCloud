@@ -1,7 +1,7 @@
 """A QA target's IdP token path is set by a platform admin where the extra
 origin is approved, and nowhere else (QA-IDP-POST; part of #2067).
 
-BGD decided on 2026-10-23: the live gate lets exactly `POST
+the owner decided on 2026-10-23: the live gate lets exactly `POST
 <extra_origin><idp_token_path>` through once its own sign-in has completed
 (livegate/qatarget.py). That widens a security gate, so the path is held here
 to what only the platform admin's `:approve-host` sets:

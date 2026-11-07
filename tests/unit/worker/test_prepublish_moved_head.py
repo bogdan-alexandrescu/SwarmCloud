@@ -1,6 +1,6 @@
 """A HEAD the agent moved off its branch is handed back to it once, by the gate.
 
-REPORTED by Product Oracle's session on 5 November 2026 (about 06:20
+REPORTED by a peer application's session on 5 November 2026 (about 06:20
 Pacific): task_884a993427ce44feb7a6 FAILED with "published_nothing: HEAD moved
 off this task's branch (to rebuild/pr-1233)". Its agent merged a train branch
 into its own branch, then checked out another branch; the harvest's moved-HEAD
@@ -182,7 +182,7 @@ def test_a_detached_head_that_left_the_start_is_handed_back_naming_its_commit(tm
 def test_a_head_that_descends_from_the_start_takes_no_turn(tmp_path, move):
     repo, base = _world(tmp_path)
     if move == "new_branch":
-        # An agent's own `checkout -b` from its start is its work (BGD,
+        # An agent's own `checkout -b` from its start is its work (the owner,
         # 2026-10-23), not a move.
         _git(repo, "checkout", "-q", "-b", "mine")
     _commit(repo, "mine.txt")

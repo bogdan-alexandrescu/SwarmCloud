@@ -1,6 +1,6 @@
 """The sc plugin's third layout, the band above the prompt (SC-BAND, part of #2318).
 
-BGD decided on 2026-10-26 (about 16:00Z): the SwarmCloud view moves from the
+the owner decided on 2026-10-26 (about 16:00Z): the SwarmCloud view moves from the
 right-docked pane into a HORIZONTAL STRIP ABOVE THE PROMPT, with a one-line
 summary BELOW the prompt, and in that layout the plugin starts no /workflows
 rows at all. What this file holds, with no engine, no network and no
