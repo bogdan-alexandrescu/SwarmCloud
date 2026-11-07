@@ -137,12 +137,30 @@
 #        TARGET defaults to every image the repo knows how to build.
 
 set -euo pipefail
+# --affected-by and --inputs touch no project: they read the checkout, and
+# the pull-request job runs them before it authenticates, with no PROJECT_ID.
+# They say so, so common.sh (no default project, DAYONE-DESAGA-2) does not
+# stop on an unset PROJECT_ID. Every other mode still needs one; combining
+# either with another flag is refused below, before anything is built.
+# --local too: it is a mode of --build-only (refused below without it) that
+# builds on this machine's docker as swarm-build-only/<image>, reads no
+# registry and submits nothing, and the build-check job runs it with no
+# PROJECT_ID. --build-only alone submits to Cloud Build and still needs one.
+for arg in "$@"; do
+  case "${arg}" in
+    --affected-by|--inputs|--local) SWARM_NO_PROJECT=1 ;;
+  esac
+done
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/build-mirror.sh
 source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
+# Which images an environment's tfvars switches off, shared with push-images.sh.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/image-switches.sh
+source "${REPO_ROOT}/scripts/lib/image-switches.sh"
 
 # swarm-egress (EGRESS-BUILD, owner decision 2026-10-14) is the browser egress
 # forwarder, apps/swarm-egress/Dockerfile: beside its app as swarm-live's
@@ -495,6 +513,31 @@ if [[ -n "${REUSE_CI}" ]]; then
     || die "--reuse-ci tags a build from the commit, exactly as CI does; drop --tag ${TAG}"
   [[ "${DIGESTS_ONLY}" -eq 0 && "${ASYNC}" -eq 0 ]] \
     || die "--reuse-ci cannot be combined with --digests-only or --async"
+fi
+# A RELEASE DOES NOT REBUILD WHAT ITS ENVIRONMENT SWITCHES OFF (Bogdan's pick,
+# 2026-11-06). The release of 2026-11-06 11:28 UTC rebuilt swarm-speech for 29
+# of its ~75 minutes, and scanned it, for dev, where voice_speech is off and
+# nothing runs it. Under --reuse-ci, outside prod, an image whose switch
+# lib/image-switches.sh reads as literally off is dropped from this run's
+# images: not built, and left out of build/images-<env>.json, so the
+# promotion (push-images.sh --manifest) neither scans nor promotes it.
+# Every other path is unchanged: main's own build (application.yml, no
+# --reuse-ci) still builds it, so its recipe stays checked; prod, a switch on,
+# absent or unreadable, rebuild it exactly as before. Every reader of the
+# manifest takes it without the image: terraform's image_refs lists it as
+# gated, used only while voice_speech is on.
+SWITCHED_OFF=()
+if [[ -n "${REUSE_CI}" && "${ENVIRONMENT}" != prod && "${ENVIRONMENT}" != production ]]; then
+  kept=()
+  for target in "${ALL_TARGETS[@]}"; do
+    if switch="$(image_switched_off "${target}" "${ENVIRONMENT}")"; then
+      SWITCHED_OFF+=("${target}")
+      info "${target}: not deployed in ${ENVIRONMENT} (${switch} is off in ${ENVIRONMENT}.tfvars): not rebuilt, and left out of build/images-${ENVIRONMENT}.json"
+    else
+      kept+=("${target}")
+    fi
+  done
+  ALL_TARGETS=(${kept[@]+"${kept[@]}"})
 fi
 # --incremental is main's build of EVERY image, some of them by re-tagging the
 # digest an earlier build made. Anything that narrows, retags, defers or
@@ -1054,6 +1097,14 @@ if [[ -n "${REUSE_CI}" ]]; then
     --out "${BUILD_DIR}/images-${ENVIRONMENT}.json" --if-absent "${if_absent}" || reuse_rc=$?
   case "${reuse_rc}" in
     0)
+      # CI's record holds every image main built; a switched-off one is
+      # dropped from it before anything below reads it (SWITCHED_OFF above).
+      if [[ "${#SWITCHED_OFF[@]}" -gt 0 ]]; then
+        jq --argjson off "$(printf '%s\n' "${SWITCHED_OFF[@]}" | jq -R . | jq -sc .)" \
+          '.images |= map(select(.name as $n | ($off | index($n)) == null))' \
+          "${BUILD_DIR}/images-${ENVIRONMENT}.json" >"${BUILD_DIR}/images-${ENVIRONMENT}.json.kept"
+        mv -f "${BUILD_DIR}/images-${ENVIRONMENT}.json.kept" "${BUILD_DIR}/images-${ENVIRONMENT}.json"
+      fi
       # ...and only when every image that upgrades OS packages was built by
       # THIS run (APT_REFRESH): a release rebuilds them otherwise, below.
       if jq -e --arg c "${COMMIT}" --arg a "${APT_REFRESH}" --argjson up "$(os_upgrading_targets_json)" '

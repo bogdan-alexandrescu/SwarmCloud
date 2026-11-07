@@ -244,6 +244,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_image_sizes.py` | `<module>` | `skipif` | image-sizes.sh needs bash and jq |
 | `tests/unit/scripts/test_install_sh_uv.py` | `<module>` | `skipif` | no pinned uv for this platform |
 | `tests/unit/scripts/test_install_sh_uv.py` | `_run` | `skip_call` | a real uv in /usr/bin or /bin would be found first |
+| `tests/unit/scripts/test_join_acceptance_probe.py` | `<module>` | `skipif` | the probe needs bash, jq and base64 |
 | `tests/unit/scripts/test_lightpanda_build_scripts.py` | `test_target_selection_reaches_the_lightpanda_image_for_its_inputs_and_its_base` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_live_browser_acceptance.py` | `test_the_qa_identity_case_skips_every_check_unless_both_settings_are_set` | `skip_call` | bash is required |
 | `tests/unit/scripts/test_live_browser_acceptance.py` | `_stuck` | `skip_call` | bash and jq are required |
@@ -271,6 +272,8 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_release_assemble.py` | `test_install_sh_is_posix_and_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_home.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
 | `tests/unit/scripts/test_release_publish.py` | `test_shellcheck_clean` | `skipif` | shellcheck not installed |
+| `tests/unit/scripts/test_release_skips_switched_off_images.py` | `test_a_dev_release_whose_switch_is_not_literally_off_builds_it` | `skip_call` | root reads a file whatever its mode |
+| `tests/unit/scripts/test_release_skips_switched_off_images.py` | `test_a_manifest_holding_speech_with_its_switch_not_off_scans_and_promotes_it` | `skip_call` | root reads a file whatever its mode |
 | `tests/unit/scripts/test_resign_workspace_settings.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_roll_voice_workflows.py` | `<module>` | `skipif` | no workflow names swarm-voice yet: {PATCH_HINT} |
 | `tests/unit/scripts/test_sandbox_sync_git_failures.py` | `<module>` | `skipif` | git and jq are required |

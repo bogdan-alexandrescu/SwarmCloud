@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react'
 
 import { USE_FIXTURES, loadCheckpoints } from './api'
-import { loadCheckpointFile } from './CheckpointBrowser'
+import { loadCheckpointFile, memberHref } from './CheckpointBrowser'
 import { Segmented, buttonClass } from './components'
+import { apiHeaders, chosenTenant, dropRefusedTenant, encoded, route } from './fetch'
 import type { PatchSection } from './WorkflowChanges'
 
 /**
@@ -12,11 +13,13 @@ import type { PatchSection } from './WorkflowChanges'
  * with Diff one click away and unchanged.
  *
  * WHERE THE BYTES COME FROM, in order: the step's own checkpoint, through the
- * checkpoint file route (`GET /v1/tasks/{id}/checkpoints/{n}/files/{path}`,
- * text only, redacted at read time); then the step's patch -- the added lines
- * of a newly added text file, or the `GIT binary patch` literal of an image
- * (the worker diffs with `--binary`, gitops.py). Anything else is one line
- * saying why it was not read, and Diff still works.
+ * checkpoint file route (`GET /v1/tasks/{id}/checkpoints/{n}/files/{path}`:
+ * text redacted at read time; an image as its bytes with `format=image`, which
+ * the API serves only when they carry the signature of the type the name says);
+ * then the step's patch -- the added lines of a newly added text file, or the
+ * `GIT binary patch` literal of an image (the worker diffs with `--binary`,
+ * gitops.py). Anything else is one line saying why it was not read, and Diff
+ * still works.
  *
  * THE AGENT'S HTML NEVER TOUCHES THE CONSOLE'S DOM. It is drawn only in an
  * iframe whose `sandbox` attribute is EMPTY (no scripts, no same-origin, no
@@ -260,7 +263,7 @@ const byteLength = (s: string) => new TextEncoder().encode(s).length
  * pointer names, else the newest listed. The archive is the work directory, so
  * a repository file is `repo/<path>`; the bare path is tried after it.
  */
-async function fromCheckpoint(taskId: string, path: string): Promise<{ text: string } | { tooBig: number } | { why: string }> {
+async function newestCheckpoint(taskId: string): Promise<{ attempt_id: string; checkpoint_id: string } | { why: string }> {
   // The fixtures' checkpoint archive holds no file of the fixture workflows'
   // patches (CheckpointBrowser's fixtureFile answers every path with a line of
   // its own), so development reads the patch, as a step without a checkpoint does.
@@ -268,8 +271,12 @@ async function fromCheckpoint(taskId: string, path: string): Promise<{ text: str
   const page = await loadCheckpoints(taskId)
   if (page.status !== 'ok' && page.status !== 'stale') return { why: page.status === 'error' ? `the checkpoint list was not read: ${page.error.message}` : 'no checkpoint holds it' }
   const rows = page.data.checkpoints
-  const row = rows.find((c) => c.is_latest_pointer) ?? rows[0]
-  if (row === undefined) return { why: 'this step wrote no checkpoint' }
+  return rows.find((c) => c.is_latest_pointer) ?? rows[0] ?? { why: 'this step wrote no checkpoint' }
+}
+
+async function fromCheckpoint(taskId: string, path: string): Promise<{ text: string } | { tooBig: number } | { why: string }> {
+  const row = await newestCheckpoint(taskId)
+  if ('why' in row) return row
   let why = 'its checkpoint does not hold it'
   for (const member of [`repo/${path}`, path]) {
     const r = await loadCheckpointFile(taskId, row.attempt_id, row.checkpoint_id, member)
@@ -291,6 +298,52 @@ async function fromCheckpoint(taskId: string, path: string): Promise<{ text: str
   return { why }
 }
 
+const IMAGE_READ = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
+
+/**
+ * An image member's BYTES, through the file route's `format=image` read: a
+ * fetch with the tenant header, since `read` takes only JSON. The API serves
+ * a png, jpeg, webp or gif only when its first bytes are that type's
+ * signature; the type it answers must still be the one the name says.
+ */
+async function imageFromCheckpoint(taskId: string, path: string): Promise<{ bytes: Uint8Array; type: string } | { tooBig: number } | { why: string }> {
+  const row = await newestCheckpoint(taskId)
+  if ('why' in row) return row
+  const named = IMAGE_TYPES[extOf(path)]
+  for (const member of [`repo/${path}`, path]) {
+    const href = memberHref(member)
+    if (href === null) return { why: 'its path cannot be requested' }
+    const query = new URLSearchParams({ attempt_id: row.attempt_id, format: 'image' })
+    const url = route('/v1/tasks/{id}/checkpoints/{n}/files/{path}', { id: taskId, n: row.checkpoint_id, path: encoded(href) }, query).url
+    const tenant = chosenTenant()
+    let res: Response
+    try {
+      res = await fetch(url, { credentials: IMAGE_READ.sameOrigin, headers: apiHeaders({}, tenant) })
+    } catch {
+      return { why: 'its checkpoint was not read' }
+    }
+    if (res.status === 404) continue
+    if (!res.ok) {
+      let env: { code?: unknown; message?: unknown; detail?: { bytes?: unknown } } = {}
+      try {
+        const parsed: unknown = await res.json()
+        if (typeof parsed === 'object' && parsed !== null) env = parsed as typeof env
+      } catch {
+        env = {}
+      }
+      dropRefusedTenant(res.status, typeof env.code === 'string' ? env.code : null, tenant)
+      if (res.status === 413 && typeof env.detail?.bytes === 'number') return { tooBig: env.detail.bytes }
+      return { why: typeof env.message === 'string' ? env.message : `its checkpoint answered ${res.status}` }
+    }
+    const type = (res.headers.get('Content-Type') ?? '').split(';')[0]!.trim().toLowerCase()
+    if (type !== named) return { why: `its checkpoint served it as ${type || 'no type'}` }
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    if (bytes.length > RENDER_CAP_BYTES) return { tooBig: bytes.length }
+    return { bytes, type }
+  }
+  return { why: 'its checkpoint does not hold it' }
+}
+
 /** The step's copy of the file, from its checkpoint, else its patch, else the reasons neither gave it. */
 export async function readRendered(path: string, kind: RenderKind, source: RenderSource): Promise<RenderedContent> {
   const why: string[] = []
@@ -307,22 +360,30 @@ export async function readRendered(path: string, kind: RenderKind, source: Rende
     why.push(s === null ? 'its patch section is not in hand' : 'the patch holds only the changed lines of a file that already existed')
     return { kind: 'unread', reason: why.join('; ') }
   }
-  // The checkpoint file route serves text only, so an image's bytes are the patch's.
+  // A changed image's patch is a delta against bytes it does not carry, so the
+  // checkpoint comes first; a newly added one's literal is the fallback.
+  if (source.taskId !== null) {
+    const c = await imageFromCheckpoint(source.taskId, path)
+    if ('bytes' in c) return { kind: 'bytes', bytes: c.bytes, type: c.type }
+    if ('tooBig' in c) return { kind: 'too-big', bytes: c.tooBig }
+    why.push(c.why)
+  }
+  const unread = (reason: string): RenderedContent => ({ kind: 'unread', reason: [...why, reason].join('; ') })
   const s = source.section
-  if (s === null) return { kind: 'unread', reason: 'its patch section is not in hand' }
-  if (!s.file.binary) return { kind: 'unread', reason: 'the patch holds no bytes for this image' }
+  if (s === null) return unread('its patch section is not in hand')
+  if (!s.file.binary) return unread('the patch holds no bytes for this image')
   const lit = binaryLiteral(s)
-  if (typeof lit === 'string') return { kind: 'unread', reason: lit }
+  if (typeof lit === 'string') return unread(lit)
   if (lit.size > RENDER_CAP_BYTES) return { kind: 'too-big', bytes: lit.size }
   const packed = decodeGitBase85(lit.lines)
-  if (packed === null) return { kind: 'unread', reason: 'the patch’s binary section is not valid base85' }
-  if (typeof DecompressionStream === 'undefined') return { kind: 'unread', reason: 'this browser cannot inflate the patch’s bytes' }
+  if (packed === null) return unread('the patch’s binary section is not valid base85')
+  if (typeof DecompressionStream === 'undefined') return unread('this browser cannot inflate the patch’s bytes')
   try {
     const bytes = await inflate(packed)
-    if (bytes.length !== lit.size) return { kind: 'unread', reason: `the patch’s bytes inflate to ${bytes.length}, not the ${lit.size} it declares` }
+    if (bytes.length !== lit.size) return unread(`the patch’s bytes inflate to ${bytes.length}, not the ${lit.size} it declares`)
     return { kind: 'bytes', bytes, type: IMAGE_TYPES[extOf(path)] ?? 'application/octet-stream' }
   } catch {
-    return { kind: 'unread', reason: 'the patch’s bytes did not inflate' }
+    return unread('the patch’s bytes did not inflate')
   }
 }
 

@@ -37,7 +37,7 @@ from typing import Any
 import pytest
 
 from agent_worker import lifecycle, secrets as secrets_mod, workspace as workspace_mod
-from swarm_api import forgeapp, gittokens, repositories
+from swarm_api import forgeapp, gittokens, repositories, setup_links
 from swarm_common.states import EventType, TaskState
 
 from fakes import FakeSecretClient
@@ -503,7 +503,8 @@ def test_the_grant_is_tenant_scoped(db):
 #
 # Never a token, a prefix of one or a hash of one. Every fake token here is
 # built at runtime (`stdlib_secrets.token_hex`), never written as one literal.
-TENANT_SECRET = f"swarm-tenant-{TENANT}-git"
+# The name swarm-api gives a team's forge secret, read from the one helper.
+TENANT_SECRET = setup_links.team_git_secret(TENANT)
 
 
 def _fake(prefix_letters: str) -> str:

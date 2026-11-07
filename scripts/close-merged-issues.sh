@@ -47,6 +47,10 @@
 # to GH_REPO. A summary is appended to GITHUB_STEP_SUMMARY when it is set.
 
 set -euo pipefail
+# This script touches no project: it reads and closes GitHub issues. It
+# says so, so common.sh (no default project, DAYONE-DESAGA-2) does not stop on
+# an unset PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"

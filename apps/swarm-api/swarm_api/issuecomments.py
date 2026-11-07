@@ -65,6 +65,7 @@ from .issueruns import (
     IssueRun,
     RunState,
 )
+from .plansections import size_line
 from .redaction import redact
 
 #: GitHub refuses a comment or a body over 65,536 characters; this leaves room.
@@ -296,7 +297,115 @@ def _overlap_line(item: dict, literals: Sequence[str]) -> str:
     else:
         label = prose(ref, 160, literals=literals, one_line=True)
     note = prose(item.get("note") or "", MAX_LINE_CHARS, literals=literals, one_line=True)
-    return f"- {label} ({kind}): {note}"
+    line = f"- {label} ({kind}): {note}"
+    if item.get("theirs"):
+        line += " — theirs: " + prose(item["theirs"], MAX_LINE_CHARS, literals=literals,
+                                      one_line=True)
+    return line
+
+
+#: What a graph edge is drawn as in the comment's Mermaid block.
+_GRAPH_ARROWS = {"calls": "-->", "imports": "-.->", "tests": "==>"}
+#: A Mermaid label keeps only these; anything else is a space, so a label can
+#: neither close its quotes nor carry markup.
+_GRAPH_LABEL_DROP = re.compile(r"[^A-Za-z0-9_.:/ -]")
+
+
+def _lead_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    """What the plan does, why, how big and how risky: the comment's first lines
+    (BGD, 6 November 2026). Only what the plan has; an older plan has none."""
+    lines = []
+    if plan.get("purpose"):
+        lines.append(f"**{prose(plan['purpose'], 300, literals=literals, one_line=True)}**")
+    if plan.get("why"):
+        lines.append("**Why:** " + prose(plan["why"], 600, literals=literals, one_line=True))
+    if not lines and not plan.get("risk") and not plan.get("changes"):
+        return []
+    lines.append("**Size:** " + size_line(plan))
+    risk = plan.get("risk")
+    if risk:
+        line = f"**Risk:** {risk['level']}"
+        if risk.get("blast_radius"):
+            line += " — " + prose(risk["blast_radius"], 200, literals=literals, one_line=True)
+        lines.append(line)
+        detail = []
+        for factor in risk.get("factors") or []:
+            detail.append("- factor: " + prose(factor, 200, literals=literals, one_line=True))
+        if "invariants" in risk:
+            touched = ", ".join(str(n) for n in risk["invariants"]) or "none"
+            detail.append(f"- CONTRACT.md invariants touched: {touched}")
+        for step in risk.get("mitigations") or []:
+            detail.append("- mitigation: " + prose(step, 200, literals=literals, one_line=True))
+        if risk.get("rollback"):
+            detail.append("- rollback: " + prose(risk["rollback"], 200, literals=literals,
+                                                 one_line=True))
+        if detail:
+            lines += ["", "<details><summary>Risk profile</summary>", "", *detail, "",
+                      "</details>"]
+    return [*("" if not line else line + ("  " if line.startswith("**") else "")
+              for line in lines), ""]
+
+
+def _changes_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    changes = plan.get("changes")
+    if not changes:
+        return []
+    out = ["#### What changes, where"]
+    for change in changes:
+        out.append(
+            f"- {change['kind']} {code(change['file'], 300, literals=literals)} "
+            f"({prose(change['area'], 120, literals=literals, one_line=True)}): "
+            + prose(change["what"], 200, literals=literals, one_line=True)
+        )
+    return [*out, ""]
+
+
+def _validation_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    validation = plan.get("validation")
+    if not validation:
+        return []
+    tests, qa = validation.get("tests") or [], validation.get("qa") or []
+    out = [
+        f"**Validation:** {len(tests)} test{'' if len(tests) == 1 else 's'}, "
+        f"{len(qa)} QA check{'' if len(qa) == 1 else 's'}",
+        "",
+        "<details><summary>Test and QA plan</summary>",
+        "",
+    ]
+    for test in tests:
+        line = (f"- test {code(test['file'], 300, literals=literals)}: "
+                + prose(test["proves"], 200, literals=literals, one_line=True))
+        if test.get("requirements"):
+            line += " (requirements " + ", ".join(str(n) for n in test["requirements"]) + ")"
+        out.append(line)
+    for check in qa:
+        out.append(
+            "- QA: " + prose(check["check"], 200, literals=literals, one_line=True)
+            + " — " + prose(check["where"], 120, literals=literals, one_line=True)
+            + ", " + prose(check["when"], 120, literals=literals, one_line=True)
+        )
+    return [*out, "", "</details>", ""]
+
+
+def _graph_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    """The change graph as a Mermaid block, which GitHub draws. Nodes are
+    renamed `n0`, `n1`, ... and labels keep only safe characters, so nothing
+    the planner wrote is Mermaid or Markdown syntax here."""
+    graph = plan.get("graph")
+    if not graph or not graph.get("nodes"):
+        return []
+    names = {node["id"]: f"n{i}" for i, node in enumerate(graph["nodes"])}
+    out = ["<details><summary>Change graph</summary>", "", "```mermaid", "flowchart LR"]
+    for node in graph["nodes"]:
+        label = " ".join(_GRAPH_LABEL_DROP.sub(" ", plain(node["label"], 120,
+                                                          literals=literals,
+                                                          one_line=True)).split())
+        out.append(f'  {names[node["id"]]}["{label or node["kind"]} ({node["kind"]})"]')
+    for edge in graph.get("edges") or []:
+        if edge["from"] in names and edge["to"] in names:
+            arrow = _GRAPH_ARROWS.get(edge["kind"], "-->")
+            out.append(f'  {names[edge["from"]]} {arrow} {names[edge["to"]]}')
+    return [*out, "```", "", "</details>", ""]
 
 
 def render_plan_comment(
@@ -308,6 +417,7 @@ def render_plan_comment(
         marker(run.id, PLAN_KIND),
         f"### SwarmCloud plan for #{run.issue.number}",
         "",
+        *_lead_lines(plan, literals),
         _approval_line(run, literals),
         "",
     ]
@@ -343,6 +453,10 @@ def render_plan_comment(
     else:
         out.append("_The plan does not say._")
     out.append("")
+
+    out += _changes_lines(plan, literals)
+    out += _validation_lines(plan, literals)
+    out += _graph_lines(plan, literals)
 
     out.append("#### Steps")
     for n, step in enumerate(plan.get("steps") or [], start=1):

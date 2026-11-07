@@ -26,10 +26,10 @@ from worker_seeds import TENANT, seed_attempt
 
 
 def test_the_worker_reads_the_layout_qaspec_states():
-    # MUTATION: rename a layout entry in qaspec and the worker reads another name.
-    assert flow_output.BATCH_TAR == qaspec.FLOW_LAYOUT["batch_tar"]
-    assert flow_output.FLOW_TAR == qaspec.FLOW_LAYOUT["flow_tar"]
-    assert flow_output.FLOW_JSON == qaspec.FLOW_LAYOUT["json"]
+    # MUTATION: restate a layout entry in the worker and it may read another name.
+    assert flow_output.flowlayout.BATCH_TAR is qaspec.FLOW_LAYOUT["batch_tar"]
+    assert flow_output.flowlayout.FLOW_TAR is qaspec.FLOW_LAYOUT["flow_tar"]
+    assert flow_output.flowlayout.FLOW_JSON is qaspec.FLOW_LAYOUT["json"]
 
 
 def _write(root: Path, *names: str) -> None:
@@ -43,7 +43,7 @@ def test_a_lone_stray_tar_is_renamed_to_the_owed_one(tmp_path):
     assert record is not None and record["ok"] is True
     assert record["renamed"] == ["flow-1.tar", "flows-1.tar"]
     assert record["lines"] == ["flows-1 packaged its flow output as flow-1.tar, not flows-1.tar: "
-                               "renamed to flows-1.tar"]
+                               "read as flows-1.tar"]
     assert (tmp_path / "flows-1.tar").exists() and not (tmp_path / "flow-1.tar").exists()
     # A flow's own tar, named by its json, is never read as the batch's.
     assert (tmp_path / "flow-save.tar").exists() and (tmp_path / "flow-open.tar").exists()

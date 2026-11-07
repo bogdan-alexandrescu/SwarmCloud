@@ -577,6 +577,7 @@ drifted here before.
 |---|---|---|
 | Talk | The session's seconds | `gpt-live-1` at $0.05 a minute, billed per second [1][2], silence included |
 | Planner | Each turn's token usage | Opus 5.5 from the platform's `model_prices` (`swarm_api/modelprices.py`) |
+| Speech machine | The own-speech machine's minutes from the start call to the stop, per session, on the day the session started (`docs/design/voice-it-own-speech.md` §13) | The machine's catalogue price; a stop with no price is `unpriced_machine_sessions`, not $0 |
 | Work running | Each started item's step budgets, **times 1.2**, until it ends | The worker's guard kills a step at 120% of its budget (`docs/design/agent-budget.md` §5), so 120% is the true ceiling |
 | Work finished | Each started item's measured `cost_usd`, which replaces its reservation | The platform's estimate at list price |
 | Follow-ups | Agents carrying the project's tag that the platform started for it (fix rounds, merge steps) | Measured `cost_usd`, plus an allowance reserved at start |

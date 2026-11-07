@@ -52,6 +52,8 @@
 .vts-line.is-noted { background: color-mix(in srgb, var(--paused) 14%, transparent); box-shadow: inset 3px 0 0 var(--paused); }
 .vts-line.is-add { background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .vts-line.is-del { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+/* The lines the planner points at (a `focus` event's anchor): after the note and diff bands, so the focus wins over them. */
+.vts-line.is-focus { background: color-mix(in srgb, var(--info) 12%, transparent); box-shadow: inset 3px 0 0 var(--info); }
 .vts-n { color: var(--text-faint); text-align: right; font-variant-numeric: tabular-nums; user-select: none; }
 .vts-code { min-width: 0; font: inherit; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .vts-line-pins { display: inline-flex; gap: 4px; }

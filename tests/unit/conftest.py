@@ -12,6 +12,12 @@ import pytest
 
 import flaky_quarantine
 
+# PROJECT_ID for the script tests is named in tests/unit/scripts/conftest.py,
+# for that package only: set here, suite-wide, it reached every app built in
+# process too, and quota-broker's create_app turns on its Secret Manager paths
+# when it sees one (the lending and refresh tests then failed on what a
+# deployment with a project needs).
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     try:

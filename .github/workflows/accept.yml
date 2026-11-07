@@ -385,6 +385,26 @@ jobs:
           SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE: ${{ vars.ROLES_OTHER_WORKSPACE }}
         run: ./scripts/verify-remote.sh acceptance/groups/roles
 
+      - name: join requests probe (JOIN-DOCS-ACCEPT, inside the VPC)
+        # docs/design/join-requests.md §6 row 8 (part of #2325), beside the
+        # roles probe and for the same reasons: the admin turns the test
+        # workspace's join link on and reads its code once, a person outside
+        # its group asks with the code in a body, the admin approves, the
+        # person's next request selects the workspace (via platform_member)
+        # and removal ends it; with platform_memberships off, approval answers
+        # admitted: false with the group command. It writes no Google group
+        # and reads one only through the API. JOIN_PERSON_SECRET is the NAME
+        # of the Secret Manager secret holding the person's sign-in, never
+        # its value. Until these variables are set, every check SKIPs and
+        # says which is missing.
+        if: ${{ !cancelled() }}
+        env:
+          SWARM_ACCEPTANCE_JOIN_TENANT: ${{ vars.JOIN_TENANT }}
+          SWARM_ACCEPTANCE_JOIN_ADMIN_SA: ${{ vars.JOIN_ADMIN_SA }}
+          SWARM_ACCEPTANCE_JOIN_PERSON: ${{ vars.JOIN_PERSON }}
+          SWARM_ACCEPTANCE_JOIN_PERSON_SECRET: ${{ vars.JOIN_PERSON_SECRET }}
+        run: ./scripts/verify-remote.sh acceptance/groups/join
+
       - name: cancel the executions this job started
         # A cancel stops the client, not the Cloud Run execution (header).
         # Cancels the swarm-verify executions THIS RUN created since this job

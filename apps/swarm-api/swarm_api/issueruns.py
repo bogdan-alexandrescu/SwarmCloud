@@ -220,6 +220,15 @@ from .schemas import (
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
 from . import sessiontag, workcontract
+from .plansections import (
+    MAX_CHANGES,
+    MAX_GRAPH_EDGES,
+    MAX_GRAPH_NODES,
+    MAX_QA_CHECKS,
+    MAX_VALIDATION_TESTS,
+    merge_sections,
+    split_sections,
+)
 from .specsigning import SpecSigningUnavailable
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
@@ -927,8 +936,11 @@ def parse_plan(value: Any, *, stored: bool = False) -> dict[str, Any]:
             raise InvalidPlan(f"{PLAN_FILE} is not JSON") from None
     if not isinstance(value, Mapping):
         raise InvalidPlan("a plan is a JSON object with a summary and steps")
+    # The approval sections (`plansections`) are checked on their own: one
+    # that is malformed is dropped with a note, never refusing the plan.
+    value, sections = split_sections(value)
     try:
-        spec = PlanSpec.model_validate(dict(value), context={_STORED: stored})
+        spec = PlanSpec.model_validate(value, context={_STORED: stored})
     except ValidationError as exc:
         problems = []
         for error in exc.errors():
@@ -942,7 +954,7 @@ def parse_plan(value: Any, *, stored: bool = False) -> dict[str, Any]:
     # (or set to null) stays out, so a plan written before those fields --
     # `requirements`, `files`, `depends_on` -- existed normalises, and
     # digests, exactly as it did then, and readers use `.get` for every one.
-    return spec.model_dump(exclude_unset=True, exclude_none=True)
+    return merge_sections(spec.model_dump(exclude_unset=True, exclude_none=True), sections)
 
 
 def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
@@ -1843,8 +1855,25 @@ _PLAN_SHAPE = (
     '   "requirements": ["<every requirement the issue states, one per entry>"],\n'
     '   "overlaps": [{"ref": "owner/repo#N", "kind": "issue" or "pull_request",\n'
     '                 "action": "none" or "required",\n'
-    '                 "note": "<what overlaps, and what this plan does about it>"}],\n'
+    '                 "note": "<what overlaps, and what this plan does about it>",\n'
+    '                 "theirs": "<one line: what that pull request does to the shared files>"}],\n'
     '   "estimate": "<the whole plan, e.g. 3 agent-hours>",\n'
+    '   "purpose": "<one sentence: what the change does>",\n'
+    '   "why": "<the problem, with the issue\'s evidence, two sentences at most>",\n'
+    '   "changes": [{"file": "<repository path>", "area": "<module or app>",\n'
+    '                "kind": "add" or "modify" or "delete" or "test", "what": "<one line>"}],\n'
+    '   "risk": {"level": "low" or "medium" or "high", "factors": ["<one line>"],\n'
+    '            "blast_radius": "<one line: what breaks if this is wrong>",\n'
+    '            "invariants": [<CONTRACT.md invariant numbers touched, 1 to 10>],\n'
+    '            "mitigations": ["<one line>"], "rollback": "<one line>"},\n'
+    '   "validation": {"tests": [{"file": "<test path>", "proves": "<one line>",\n'
+    '                             "requirements": [<numbers of the requirements it proves>]}],\n'
+    '                  "qa": [{"check": "<what a person checks>", "where": "<page or command>",\n'
+    '                          "when": "<before merge, after deploy, ...>"}]},\n'
+    '   "graph": {"nodes": [{"id": "<symbol>", "label": "<short name>",\n'
+    '                        "kind": "changed" or "caller" or "test" or "route", "file": "<path>"}],\n'
+    '             "edges": [{"from": "<node id>", "to": "<node id>",\n'
+    '                        "kind": "calls" or "imports" or "tests"}]},\n'
     '   "steps": [{"step_id": "<lowercase-id>", "title": "<one line>",\n'
     '              "prompt": "<the full instructions for an engineer doing this step>",\n'
     '              "files": ["<repository path this step touches>"],\n'
@@ -1861,6 +1890,28 @@ _PLAN_SHAPE_LAST = '              "depends_on": ["<step_id of an earlier step>"]
 _PLAN_SHAPE_CLASS = (
     '              "depends_on": ["<step_id of an earlier step>"],\n'
     '              "model_class": "<one of the classes below, or leave it out>"}]}\n'
+)
+
+
+#: What the planner is told about the approval sections (`plansections`;
+#: BGD, 6 November 2026): the person approving reads these first. Each is
+#: optional and advisory -- one written wrong is dropped, not refused.
+_SECTIONS_RULES = (
+    '"purpose", "why", "changes", "risk", "validation" and "graph" are what the person '
+    "approving reads first, so keep each short. \"changes\" lists every file the plan "
+    f"touches (at most {MAX_CHANGES}), each with what changes in it. \"risk\" names the "
+    "CONTRACT.md invariants the change touches by number, [] when none, and how to roll it "
+    f"back. \"validation\" lists the tests that prove the change (at most "
+    f"{MAX_VALIDATION_TESTS}), each with the numbers of the requirements above it proves, "
+    f"1 up, and the checks a person makes by hand (at most {MAX_QA_CHECKS}). Build "
+    '"graph" from the REPO GRAPH\'s impact when you have it, else from the code you '
+    "read: a \"changed\" node for each function the plan changes, a \"caller\" node "
+    "for each of its callers and a \"test\" node for each test that covers it, with "
+    f"at most {MAX_GRAPH_NODES} nodes and {MAX_GRAPH_EDGES} edges -- a bigger graph is "
+    "cut, changed nodes kept first. Each overlap's \"theirs\" says in one line what the "
+    "other pull request does to the files you share. A longer why goes in a design doc "
+    "beside the plan, never in these. A section written wrong is dropped from the plan "
+    "with a note, so check each against the shape.\n\n"
 )
 
 
@@ -2082,6 +2133,7 @@ def planner_prompt(
         "without it starts at once. "
         'If you leave "depends_on" out of every step, the steps run one after '
         "another, each starting from the previous step's work.\n\n"
+        + _SECTIONS_RULES
         + _model_class_rules()
         + "No other keys. A person reads this plan and approves it before any step runs."
         + _READINESS

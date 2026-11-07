@@ -108,6 +108,22 @@ class ApiMetrics:
             ["reason"],
             registry=self.registry,
         )
+        # Join requests and platform memberships (docs/design/join-requests.md
+        # §4.4): the same alert shape. A rising count is a forged, edited or
+        # replayed record being skipped.
+        self.membership_invalid = Counter(
+            "swarm_api_membership_invalid_total",
+            "Platform workspace memberships the reader skipped, by reason (mac, shape).",
+            ["reason"],
+            registry=self.registry,
+        )
+        self.join_request_invalid = Counter(
+            "swarm_api_join_request_invalid_total",
+            "Join requests, decisions and links the reader skipped, by reason (mac, shape, "
+            "decision_mac, decision_shape, link_mac, link_shape).",
+            ["reason"],
+            registry=self.registry,
+        )
         self.role_refusals = Counter(
             "swarm_api_role_refusals_total",
             "Role gates that found the caller's role too low, by code and whether "

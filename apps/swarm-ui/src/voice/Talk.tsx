@@ -303,6 +303,8 @@ export function TalkPane() {
         return
       }
       call.current = c
+      // A new session's project is the one swarm-api opened: the stage reads its visuals.
+      setProjectId(c.projectId)
       setTalkMode(c.mode)
       if (c.mode === 'text') {
         speaker.current = new Speaker({ onLevel: (v) => mounted.current && setLevel(v) })

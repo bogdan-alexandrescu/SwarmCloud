@@ -121,6 +121,7 @@ from urllib.parse import urlsplit, urlunsplit
 from swarm_common.config import Settings
 from swarm_common.profiles import RUNNER_PROFILES
 from swarm_redaction import redact
+from swarm_rollup import flowlayout
 from swarm_rollup.agentimage import QA_TOOL
 
 # --------------------------------------------------------------------------
@@ -190,12 +191,14 @@ FLOW_SECONDS = 2700
 #: prompts render the `tar` commands from these, because two legs of the AI
 #: Studio session's QA re-run 8 (2026-11-06) told "bundle ... into
 #: flows-1.tar" in words wrote flow-1.tar; `check_flow_output` reads them.
+#: The json and tar names are `swarm_rollup.flowlayout`'s, which the worker
+#: reads too when it normalises a stray tar.
 FLOW_LAYOUT = {
-    "json": "flow-{id}.json",
+    "json": flowlayout.FLOW_JSON,
     "recording": "flows/flow-{id}-{width}.gif",
     "screenshots": "screenshots/",
-    "flow_tar": "flow-{id}.tar",
-    "batch_tar": "{step}.tar",
+    "flow_tar": flowlayout.FLOW_TAR,
+    "batch_tar": flowlayout.BATCH_TAR,
 }
 #: How long a flow step waits for what proves the state it is about to record
 #: before its screenshot (re-run 8: a step recorded "twin opened" over a frame
@@ -2182,27 +2185,17 @@ def check_flow_output(step_id: str, flow_ids: Sequence[str], *, files: Collectio
     The step's tar is `<step_id>.tar`. When it is missing and exactly one
     other top-level tar is there that is none of its flows' own tars (re-run
     8's flow-1.tar for flows-1), that one is read in its place, said in one
-    line; several are refused, named. Then every step of every run that
+    line; several are refused, named (`swarm_rollup.flowlayout.pick_flow_tar`,
+    the rule the worker applies before its expected-output check). Then every step of every run that
     records a state needs a `proof` naming the text or element that proved
     it, or what never appeared; a step whose proof says `missing` is said as
     not proven; retries past `FLOW_TOOL_TRIES` or without a reason are
     flagged."""
     check = FlowOutputCheck()
-    expected = FLOW_LAYOUT["batch_tar"].format(step=step_id)
-    own = {FLOW_LAYOUT["flow_tar"].format(id=fid) for fid in flow_ids} - {expected}
-    strays = sorted(n for n in files if isinstance(n, str) and n.endswith(".tar") and "/" not in n
-                    and n != expected and n not in own)
-    if expected in files:
-        check.tar = expected
-    elif len(strays) == 1:
-        check.tar = strays[0]
-        check.renamed = (strays[0], expected)
-        check.say(f"{step_id} packaged its flow output as {strays[0]}, not {expected}: read as {expected}")
-    elif strays:
-        check.flag(f"{step_id} wrote {', '.join(strays)} in place of {expected}: refused, as the layout "
-                   f"names one tar, {expected}")
-    else:
-        check.flag(f"{step_id} wrote no {expected}")
+    pick = flowlayout.pick_flow_tar(step_id, files, {FLOW_LAYOUT["flow_tar"].format(id=fid) for fid in flow_ids})
+    check.tar, check.renamed = pick.tar, pick.renamed
+    if pick.line is not None:
+        (check.say if pick.ok else check.flag)(pick.line)
     for fid in flow_ids:
         _check_flow_document(check, fid, documents.get(fid))
     return check

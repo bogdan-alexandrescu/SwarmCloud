@@ -489,6 +489,27 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    new form beside each old one and removes nothing.
 5. The apply pins those digests and the deploy verifies them, unchanged.
 
+**A dev release skips the images dev switches off** (Bogdan's pick, 6
+November 2026, "Skip it in releases"). The release of 11:28Z that day waited
+16 minutes for main's build, rebuilt 18 images (2 to 5 minutes each, four at a
+time) and swarm-speech alone in 28 minutes 50 seconds, then scanned for about
+7 minutes — and nothing in dev runs swarm-speech: the speech machine exists
+only while `voice_speech.enabled`, which `dev.tfvars` has off. So
+`build-images.sh --reuse-ci` (`only` and `or-build`), outside prod, leaves an
+image whose switch is literally `enabled = false` in its environment's tfvars
+out of its build and out of `build/images-<env>.json`, saying so in one line;
+`push-images.sh --manifest` then scans and promotes the rest and reports it as
+"not deployed in <env>: not rebuilt, not scanned". The table of switched
+images and the reading of the switch are one file,
+`scripts/lib/image-switches.sh`, sourced by both scripts. Everything else is
+unchanged: main's own build still builds swarm-speech, so its recipe stays
+checked; prod, a switch that is on, absent or unreadable, and any `--channel`
+that is not the environment rebuild and scan it as before. Every other reader
+of the record takes it without the image: `image-sizes.sh --duplicate-layers`
+checks the images the record names, and Terraform lists swarm-speech as a
+gated image (`terraform/infra/images.json`), given a digest only while the
+speech machine is on.
+
 **Every promote records its runner images' sizes** (#625). Right after the
 channel moves, `release-promote` runs `scripts/image-sizes.sh --manifest
 build/deployed-images-<env>.json` and appends its table to the job summary:

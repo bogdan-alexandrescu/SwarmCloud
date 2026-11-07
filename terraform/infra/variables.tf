@@ -1023,6 +1023,22 @@ variable "platform_admin_reach" {
   default     = false
 }
 
+variable "platform_memberships" {
+  description = <<-EOT
+    swarm-api's PLATFORM_MEMBERSHIPS (docs/design/join-requests.md §6; #2325):
+    whether an approved join request admits its person to the group workspace.
+    On, approval writes a signed, append-only platform-side membership beside
+    the workspace's Google group, and tenant resolution honours it as a member;
+    there is no Cloud Identity write and no IAM grant, so no GSA, secret or
+    role changes. Off, approval answers admitted: false with the group command
+    for an admin to run by hand. OFF by default, as swarm_api.settings is: it
+    widens who may enter a tenant (invariant 9), so it goes on in dev first, is
+    exercised by the join acceptance probe, and only then in prod.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "contract_review_mode" {
   description = <<-EOT
     swarm-api's SWARM_CONTRACT_REVIEW (apps/swarm-api/swarm_api/contractreview.py;
@@ -1526,10 +1542,12 @@ variable "voice_speech" {
       image         "" until set: a Deep Learning VM image BY NAME,
                     projects/deeplearning-platform-release/global/images/<name>,
                     with the NVIDIA driver and the container toolkit on it.
+                    The driver is 580 or later (its family ends -nvidia-580
+                    or higher): vLLM 0.33 is built on CUDA 13.
                     Never a /family/ path, which moves under a stopped machine
                     and would replace it at the next plan. Required once
-                    enabled; the installer pins the newest image of the family
-                    at install time.
+                    enabled; the installer pins the newest such image at
+                    install time.
       disk_gb       150: the boot disk (pd-balanced, about $15 a month, idle
                     or not), sized for the image with its driver (~50 GB), the
                     server image (~20 GB), the models' weights (~8 GB) and one

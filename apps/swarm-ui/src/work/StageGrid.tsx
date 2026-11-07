@@ -28,7 +28,8 @@
  *
  * Mounted by the Work pages; it owns no route, no fetch and no selection
  * state of its own. The page says which step is selected and which to keep
- * bright, and hears which step was picked and which stage's count was opened.
+ * bright, and hears which step was picked, which stage's count was opened and
+ * which step's asks-you mark was pressed.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
@@ -496,6 +497,11 @@ export interface StageGridProps {
   readonly bright?: ReadonlySet<string> | null
   /** The page's clock, so every chip on the page ages together; else the grid's own. */
   readonly now?: number
+  /**
+   * A chip's asks-you mark was pressed: the page jumps to that step's
+   * questions. Absent: the mark is a picture, and the chip's tooltip says it.
+   */
+  readonly onAsk?: (stepId: string) => void
 }
 
 const MARK_OF: Readonly<Record<ChipKind, Parameters<typeof NamedMark>[0]['mark']>> = {
@@ -525,7 +531,12 @@ function ChipMark({ chip }: { chip: Chip }) {
   return <NamedMark mark={MARK_OF.waiting} hue="neu" word="not started" bare />
 }
 
-export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpenStage, bright = null, now: pageNow }: StageGridProps) {
+/** The asks-you mark's name: the step and how many questions. */
+export function askMarkName(stepId: string, asks: number): string {
+  return `Answer ${stepId}: ${asks === 1 ? '1 question' : `${asks} questions`}`
+}
+
+export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpenStage, bright = null, now: pageNow, onAsk }: StageGridProps) {
   const ownNow = useNow()
   const now = pageNow ?? ownNow
   const shape = useMemo(() => stageGridOf(workflow.steps), [workflow.steps])
@@ -635,34 +646,50 @@ export function StageGrid({ workflow, taskById, selected = null, onSelect, onOpe
                 chip === null ? (
                   <span key={`empty-${c}`} className="sg-gap" />
                 ) : (
-                  <button
-                    key={chip.step.step_id}
-                    ref={(el) => {
-                      if (el) chipRefs.current.set(chip.step.step_id, el)
-                      else chipRefs.current.delete(chip.step.step_id)
-                    }}
-                    type="button"
-                    className={`sg-chip is-${chip.kind}${chip.skipped ? ' is-skipped' : ''}${selected === chip.step.step_id ? ' is-selected' : ''}${bright !== null && !bright.has(chip.step.step_id) ? ' is-dimmed' : ''}`}
-                    data-step={chip.step.step_id}
-                    title={`${chip.tip} · ${lines[c]!.tip}`}
-                    aria-label={`${chip.tip} · ${lines[c]!.tip}`}
-                    aria-pressed={selected === chip.step.step_id}
-                    tabIndex={chip.step.step_id === tabStop ? 0 : -1}
-                    onClick={() => onSelect(chip.step.step_id)}
-                    onKeyDown={onKey(chip.step.step_id)}
-                  >
-                    <span className="sg-chip-top">
-                      <span className="sg-chip-mark" aria-hidden="true"><ChipMark chip={chip} /></span>
-                      {!namedBy(chip.step.step_id, st.label, shape.columns[c]?.label) && <span className="lg-name" aria-hidden="true">{chip.step.step_id}</span>}
-                      {density !== 'marks' && density !== 'no-time' && chip.time !== null && <span className="sg-chip-time" aria-hidden="true">{chip.time}</span>}
-                      {density !== 'marks' && density !== 'no-time' && chip.state.kind === 'unknown' && (
-                        <span className="sg-chip-time" aria-hidden="true">not known</span>
-                      )}
-                      {density === 'full' && chip.pr !== null && <span className="sg-chip-pr" aria-hidden="true">#{chip.pr}</span>}
-                    </span>
-                    {density !== 'marks' && density !== 'no-time' && <ChipLineView line={lines[c]!} />}
-                    {chip.asks > 0 && <span className="sg-ask" aria-hidden="true">?</span>}
-                  </button>
+                  // THE CELL holds the chip and, beside it, its asks-you mark:
+                  // two sibling controls, never a button inside a button.
+                  <div key={chip.step.step_id} className="sg-cell">
+                    <button
+                      ref={(el) => {
+                        if (el) chipRefs.current.set(chip.step.step_id, el)
+                        else chipRefs.current.delete(chip.step.step_id)
+                      }}
+                      type="button"
+                      className={`sg-chip is-${chip.kind}${chip.skipped ? ' is-skipped' : ''}${selected === chip.step.step_id ? ' is-selected' : ''}${bright !== null && !bright.has(chip.step.step_id) ? ' is-dimmed' : ''}`}
+                      data-step={chip.step.step_id}
+                      title={`${chip.tip} · ${lines[c]!.tip}`}
+                      aria-label={`${chip.tip} · ${lines[c]!.tip}`}
+                      aria-pressed={selected === chip.step.step_id}
+                      tabIndex={chip.step.step_id === tabStop ? 0 : -1}
+                      onClick={() => onSelect(chip.step.step_id)}
+                      onKeyDown={onKey(chip.step.step_id)}
+                    >
+                      <span className="sg-chip-top">
+                        <span className="sg-chip-mark" aria-hidden="true"><ChipMark chip={chip} /></span>
+                        {!namedBy(chip.step.step_id, st.label, shape.columns[c]?.label) && <span className="lg-name" aria-hidden="true">{chip.step.step_id}</span>}
+                        {density !== 'marks' && density !== 'no-time' && chip.time !== null && <span className="sg-chip-time" aria-hidden="true">{chip.time}</span>}
+                        {density !== 'marks' && density !== 'no-time' && chip.state.kind === 'unknown' && (
+                          <span className="sg-chip-time" aria-hidden="true">not known</span>
+                        )}
+                        {density === 'full' && chip.pr !== null && <span className="sg-chip-pr" aria-hidden="true">#{chip.pr}</span>}
+                      </span>
+                      {density !== 'marks' && density !== 'no-time' && <ChipLineView line={lines[c]!} />}
+                    </button>
+                    {chip.asks > 0 &&
+                      (onAsk ? (
+                        <button
+                          type="button"
+                          className="sg-ask"
+                          title={askMarkName(chip.step.step_id, chip.asks)}
+                          aria-label={askMarkName(chip.step.step_id, chip.asks)}
+                          onClick={() => onAsk(chip.step.step_id)}
+                        >
+                          <span aria-hidden="true">?</span>
+                        </button>
+                      ) : (
+                        <span className="sg-ask" aria-hidden="true">?</span>
+                      ))}
+                  </div>
                 ),
               )}
             </div>

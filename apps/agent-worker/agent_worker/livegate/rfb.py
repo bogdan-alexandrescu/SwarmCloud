@@ -200,6 +200,28 @@ ENCODING_TIGHT = 7
 ENCODING_DESKTOP_SIZE = -223
 ENCODING_CURSOR = -239
 ENCODING_DESKTOP_NAME = -307
+#: THUMBNAIL MODE (LIVE-THUMBS-SMALL-JPEG, part of #2688; BGD's pick of
+#: 2026-11-06). A private pseudo-encoding: a viewer that names
+#: `ENCODING_THUMB_WIDTH_0 + w` (w from 1 to `_THUMB_WIDTH_SPAN`) in its
+#: SetEncodings, with Tight and DesktopSize, is sent the frame scaled to w
+#: pixels wide -- the aspect kept, never wider than `THUMB_MAX_WIDTH` or the
+#: frame -- announced with DesktopSize, diffed at the scaled size (an
+#: unchanged page sends nothing) and sent as Tight Fill and Tight JPEG at
+#: `THUMB_JPEG_QUALITY`, never refined losslessly. The console's Live
+#: Browsers card (LiveThumb.tsx) asks for it at its device-pixel width: before
+#: it, every card was sent RAW 32 bpp frames at 1440x900, 1-5 MB a frame of a
+#: page that moved. The relay recognises it too (swarm_live/rendezvous.py), so
+#: a session watched only by thumbnails records at the idle rate. "SW" in the
+#: high bytes keeps it clear of every registered pseudo-encoding.
+ENCODING_THUMB_WIDTH_0 = -0x53571000
+_THUMB_WIDTH_SPAN = 0xFFF
+#: The widest thumbnail: a card on the wall is at most 320 CSS pixels at a
+#: device pixel ratio of 2. Wider than that is the Browser tab's job.
+THUMB_MAX_WIDTH = 640
+#: The thumbnail's JPEG quality: a card is shrunk to a third of the page's
+#: width, where q60 is indistinguishable from q70 (the Browser tab's
+#: `JPEG_QUALITY_DEFAULT`) and a moving frame is about a fifth smaller.
+THUMB_JPEG_QUALITY = 60
 #: The CompressLevel pseudo-encodings: -256 is level 0 ... -247 is level 9.
 _COMPRESS_LEVEL_0 = -256
 
@@ -264,6 +286,42 @@ def jpeg_quality_from_env(environ: Any = None) -> int:
     except ValueError:
         return JPEG_QUALITY_DEFAULT
     return max(0, min(95, quality))
+
+
+def thumb_width(encodings: tuple[int, ...]) -> int | None:
+    """The thumbnail width a viewer asked for in its SetEncodings, at most `THUMB_MAX_WIDTH`; None for none."""
+    for encoding in encodings:
+        if 0 < encoding - ENCODING_THUMB_WIDTH_0 <= _THUMB_WIDTH_SPAN:
+            return min(encoding - ENCODING_THUMB_WIDTH_0, THUMB_MAX_WIDTH)
+    return None
+
+
+def thumb_size(width: int, height: int, wanted: int) -> tuple[int, int]:
+    """A `width` x `height` frame scaled to `wanted` pixels wide, aspect kept, never enlarged."""
+    w = max(1, min(wanted, width))
+    return w, max(1, round(height * w / width))
+
+
+def scale_packed(pixels: bytes, width: int, height: int, tw: int, th: int) -> bytes:
+    """Packed 32-bit pixels scaled to `tw` x `th`, in the same byte layout.
+
+    Through Pillow's box filter where it imports (the browser image), every
+    pixel of the source averaged in; else nearest neighbour, which the unit
+    tests run. The four bytes are scaled as channels, whatever their order.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        row = width * 4
+        xs = [min(width - 1, (2 * x + 1) * width // (2 * tw)) * 4 for x in range(tw)]
+        out = []
+        for y in range(th):
+            at = min(height - 1, (2 * y + 1) * height // (2 * th)) * row
+            line = pixels[at:at + row]
+            out.append(b"".join([line[x:x + 4] for x in xs]))
+        return b"".join(out)
+    image = Image.frombytes("RGBX", (width, height), pixels)
+    return image.resize((tw, th), Image.Resampling.BOX).tobytes()
 
 
 def pillow_jpeg(rgb: bytes, width: int, height: int, quality: int) -> bytes | None:
@@ -938,6 +996,8 @@ class _Job:
     new_streams: bool
     #: The JPEG quality for this update's moving rectangles; 0 is lossless only.
     jpeg: int = 0
+    #: Thumbnail mode's scaled size (`ENCODING_THUMB_WIDTH_0`); None at full size.
+    thumb: tuple[int, int] | None = None
 
 
 class RfbSession:
@@ -1285,16 +1345,17 @@ class RfbSession:
         current = self._hub.current
         frame = current.frame
         self._sent_version = self._hub.version
-        if (frame.width, frame.height) != self._size:
+        thumb = self._thumb(frame)
+        size = thumb or (frame.width, frame.height)
+        if size != self._size:
             if ENCODING_DESKTOP_SIZE not in self._encodings:
                 raise RfbError("display resized and the viewer cannot take DesktopSize")
-            self._size = (frame.width, frame.height)
+            self._size = size
             self._resend = True
             # §7.8.1 leaves the cursor to the client across a resize; noVNC
             # keeps it, but a viewer that drops it would be blind again.
             self._cursor_due = ENCODING_CURSOR in self._encodings
-            self._write_update([struct.pack(">HHHHi", 0, 0, frame.width, frame.height,
-                                            ENCODING_DESKTOP_SIZE)])
+            self._write_update([struct.pack(">HHHHi", 0, 0, *size, ENCODING_DESKTOP_SIZE)])
             await self._writer.drain()
             # The viewer requests again at the new size.
             return
@@ -1307,7 +1368,7 @@ class RfbSession:
                    # This viewer's own copy gets the pointer (module docstring).
                    pointer=None if self._local_pointer() else self._hub.pointer.position,
                    resend=self._resend, new_streams=self._new_streams,
-                   jpeg=0 if lossless else self._jpeg_quality)
+                   jpeg=0 if lossless else self._jpeg_quality, thumb=thumb)
         self._resend = self._new_streams = False
         loop = asyncio.get_running_loop()
         rects = await loop.run_in_executor(_ENCODE_POOL, self._render, job)
@@ -1370,6 +1431,8 @@ class RfbSession:
             self._zlib = self._tight = None
         if job.resend:
             self._last = None
+        if job.thumb is not None:
+            return self._render_thumb(job)
         frame = job.frame
         width, height = frame.width, frame.height
         native = _frame_format(frame)
@@ -1412,6 +1475,29 @@ class RfbSession:
         self._lossy = lossy or self._jpeg_sent
         return out
 
+    def _render_thumb(self, job: _Job) -> list[bytes]:
+        """Thumbnail mode's update: the frame scaled, diffed at that size, as Tight Fill and JPEG."""
+        assert job.thumb is not None
+        frame = job.frame
+        tw, th = job.thumb
+        native = _frame_format(frame)
+        pixels = _packed(frame)
+        if job.pointer is not None:
+            painted = bytearray(pixels)
+            paint(native.frame(frame.width, frame.height, painted), *job.pointer)
+            pixels = bytes(painted)
+        scaled = scale_packed(pixels, frame.width, frame.height, tw, th)
+        old = self._last if job.incremental else None
+        if old is not None and len(old) != len(scaled):
+            old = None
+        self._last = scaled
+        # No CopyRect (a scroll moves a thumbnail by fractions of a row) and
+        # no lossless refinement: a card is too small to show the difference.
+        self._lossy = False
+        job = replace(job, encoding=ENCODING_TIGHT, jpeg=THUMB_JPEG_QUALITY)
+        return [piece for x, y, w, h in changed_rects(old, scaled, tw, th)
+                for piece in self._tight_pieces(job, native, scaled, tw, x, y, w, h)]
+
     def _tight_pieces(self, job: _Job, native: _Format, pixels: bytes, width: int,
                       x: int, y: int, w: int, h: int) -> list[bytes]:
         """A rectangle as Tight: its one-colour tiles as Fill, the runs between them as Basic.
@@ -1451,7 +1537,7 @@ class RfbSession:
         header = struct.pack(">HHHHi", x, y, w, h, job.encoding)
         if job.encoding == ENCODING_TIGHT:
             rgb = _rgb(data, native)
-            if job.jpeg and w * h >= JPEG_MIN_PIXELS:
+            if job.jpeg and (job.thumb is not None or w * h >= JPEG_MIN_PIXELS):
                 jpeg = self._jpeg_encoder(rgb, w, h, job.jpeg)
                 if jpeg is not None:
                     self._jpeg_sent = True
@@ -1490,6 +1576,13 @@ class RfbSession:
         encode = fmt.frame(1, 1, bytearray(4)).encode
         return (struct.pack(">HHHHi", *CURSOR_HOTSPOT, CURSOR_WIDTH, CURSOR_HEIGHT, ENCODING_CURSOR)
                 + shape(encode) + bitmask())
+
+    def _thumb(self, frame: Frame) -> tuple[int, int] | None:
+        """Thumbnail mode's scaled size for `frame`, when this viewer asked for it with Tight."""
+        wanted = thumb_width(self._encodings)
+        if wanted is None or ENCODING_TIGHT not in self._encodings:
+            return None
+        return thumb_size(frame.width, frame.height, wanted)
 
     def _encoding(self) -> int:
         for encoding in self._encodings:

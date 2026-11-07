@@ -312,7 +312,7 @@ hold:
   commits did not, so a red-first lane's head -- one parent, the person's
   address, linked to the pull request's author -- read as a person's push.
   A platform head the step did not accept is a defect, and failure-review
-  must see it;
+  must see it -- with one exception, a person's plain lane (below);
 * **GitHub links it to a person on the pull request.** The `User` account
   GitHub links the committer to -- or, for a web-UI edit GitHub committed,
   the author -- is the pull request's author or one of its assignees. Anyone
@@ -322,9 +322,51 @@ hold:
 The step records `refusal.person` (the login) and `refusal.commit`
 (`_head_record`), and makes no merge call.
 
+**Revised 2026-11-05: a person's plain lane is their push.** The issue came
+back. PR 3323's merge step (task_5b7d62f1) parked `owner_pick_fix_pending`
+after the owner answered a pick in free text, then ended `head_moved` at
+cdcbd71: one parent, committed as the owner, GitHub linking it to the pull
+request's author. The plan read it as a hand commit. The live records said
+otherwise: the owner applied the pick through a one-step `publish_to_pr`
+lane they dispatched (task_568ad862, wf_31277a25), and its worker published
+its kept commit as the owner (#765), ending with the worker's line. So the
+condition that named nobody was "the platform did not make it". Every other
+one held. The lane is the person's push made through the platform: the
+person chose to write to the pull request, and the merge step's work there
+is over. A refusal could not say this, since `refusal.commit` recorded only
+the committer's address.
+
+So a worker-line commit counts as a person's push when the agent its line
+names (`CommitFacts.worker_task`) is a **plain lane on this pull request's
+branch** (`merge._person_lane`). Every one of these must hold:
+
+* the tenant-gated upstream read returns it as this tenant's agent;
+* its spec verifies against its own signed workflow, which is not this merge's;
+* its signed `continues`, or `publish_to_pr.task_id`, is the branch's agent (the
+  two kinds `cifix.live_plain_continuation` reads);
+* it carries no writer's mark (`LANE_WRITER_MARKS`: `ci_fix`,
+  `merge_fix_round`, `merge_conflict_round`, `pr_shepherd`, `issue_run`).
+
+It is then held to the same last test as any push: GitHub must link the
+committer to a person on the pull request. A round of this merge, a CI fix,
+pr-shepherd's fix and an issue run's step all carry a mark. They are the
+platform's, so their unaccepted head stays `head_moved`, and so does a lane
+agent the read or the signature check refuses. A named pull request has no
+branch agent, so it has no lane. `_accept` did not change. The lane's content
+is not merged, because this workflow never reviewed it. Whether a lane
+counts as the person's is the owner's to confirm (questions.json of the
+pull request that made this change).
+
+Every `head_moved` refusal's `refusal.commit` now carries the person test's
+inputs as well: `committer_login`, `author_login`, `by_worker`,
+`worker_task` and the pull request's `people`. These are logins only, never
+an address beyond `committer_email`. The refusal's message ends by naming
+them, so the next refusal of this kind explains itself.
+
 **The end cause is frozen.** `EndCause` in `swarm_common/models.py` has no
-member for this, so until contract request SUPERSEDED_BY_PERSON_PUSH lands
-the step still ends `FAILED`/`MERGE_REFUSED`, with the new code in
+member for this, so until contract request 145 (SUPERSEDED_BY_PERSON_PUSH,
+[contract-change-requests.md](contract-change-requests.md)) lands the step
+still ends `FAILED`/`MERGE_REFUSED`, with the new code in
 `result_summary.merge.refusal.code`. failure-review's `person_push` rule
 ([failure-review.md](design/failure-review.md)) skips that code now, and the
 same string as an `end_cause`, so the rule needs no change when the request
@@ -427,11 +469,30 @@ unreadable upstream does.
 
 **Every answered question, not only `needs_owner` (PICK-FIX-ROUND, BGD
 2026-10-26).** A question the owner answered before the review ran goes in
-neither of the review's lists (`owner_questions.guidance`: "an answered
-question goes in neither"), so PR 2451, which compared only `needs_owner`,
-merged past a pick made then. The pick binds the merge whether or not a
-review held for it. An unanswered question the review judged need not hold
-still holds nothing: there is no pick to compare.
+neither of the review's lists (`owner_questions.guidance` then said "an
+answered question goes in neither"), so PR 2451, which compared only
+`needs_owner`, merged past a pick made then. The pick binds the merge whether
+or not a review held for it. An unanswered question the review judged need
+not hold still holds nothing: there is no pick to compare.
+
+**A NOT_YET with no `needs_owner` is pick-checked too (#3149).** A NOT_YET
+that names `needs_owner` is held and pick-fixed like a MERGE verdict, and
+refused `verdict_not_merge` only after (#2764). One that named none refused
+`verdict_not_merge` at once, before any pick was read. wf_f0044e94's
+re-review (task_633db3d4) wrote its one finding, that the owner had answered
+"Widen this lane" where the branch built "Follow-up lane", in `findings`
+with `needs_owner` empty, so the merge failed when a pick-fix round would
+have built the pick. Now such a verdict goes through `_ended_outside` and the
+same unbuilt-pick check: an unbuilt pick parks `owner_pick_fix_pending` for
+a round (or refuses `owner_pick_not_built` once the rounds are spent), and
+the step refuses `verdict_not_merge` once no answered pick is left unbuilt --
+at once, in the words it always used, when none was; naming the re-review the
+head needs when a round built them. It is never held for the owner (a NOT_YET
+with real findings needs a fix step, not an answer), questions that cannot be
+read refuse it `verdict_not_merge` as before, and it is never merged. The
+guidance now tells the review that an answered question whose answer is not
+its `built` goes in `needs_owner` and is not by itself a NOT_YET finding;
+one whose answer is its `built` goes in neither list.
 
 **What passes as before.** A pick equal to `built`; `built: null`; and a
 question with no `built` key at all -- a file written before this check -- so
@@ -1010,7 +1071,7 @@ matches:
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
 | the head moved, and the step did not move it, nor a CI-fix or conflict fix round of this workflow, nor the PR-side CI fixer for this pull request (Revised 2026-10-11, #1073) | MERGE_REFUSED `head_moved` |
-| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27, #2505) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request SUPERSEDED_BY_PERSON_PUSH lands |
+| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27, #2505) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 145 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
 | `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11, #1076) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |
