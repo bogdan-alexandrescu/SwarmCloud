@@ -43,7 +43,12 @@ export REGION
 # prod therefore run identical configuration and differ only in inputs and in
 # the state prefix -- a root per environment is how prod quietly drifts.
 TF_ROOT  := terraform/infra
-VAR_FILE := terraform/environments/$(ENVIRONMENT)/$(ENVIRONMENT).tfvars
+# The inputs are the deployment's own config/<env>/<env>.tfvars in its state
+# bucket, fetched into a cache outside the clone (config_fetch in
+# scripts/lib/common.sh); the repository holds no deployment's values. `=`, not
+# `:=`: only a target that uses it reaches the bucket, so `make help` and
+# `make test` stay offline. Empty when the fetch failed; resolve.sh says why.
+VAR_FILE = $(shell $(RESOLVE) tfvars $(ENVIRONMENT))
 TERRAFORM := $(shell $(RESOLVE) tool terraform)
 TFLINT    := $(shell $(RESOLVE) tool tflint)
 CHECKOV   := $(shell $(RESOLVE) tool checkov)
@@ -51,10 +56,11 @@ TRIVY     := $(shell $(RESOLVE) tool trivy)
 KUBECTL   := $(shell $(RESOLVE) tool kubectl)
 
 # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately not
-# saga-agents-terraform-state-staging: that one belongs to another team.
+# a bucket another team keeps in a shared project, e.g. example-shared-state:
+# that one is theirs.
 TF_STATE_BUCKET ?= swarm-tfstate-$(PROJECT_ID)
 TF_INIT_ARGS := -backend-config=bucket=$(TF_STATE_BUCKET) -backend-config=prefix=infra/$(ENVIRONMENT)
-TF_VAR_ARGS  := -var-file=$(CURDIR)/$(VAR_FILE)
+TF_VAR_ARGS   = -var-file=$(VAR_FILE)
 
 .PHONY: help prerequisites bootstrap infra build push deploy up smoke \
         load-test quota-test concurrency-test failure-test race-test e2e-test \
@@ -75,6 +81,7 @@ help: ## Show this help
 	@printf 'Danger zone:  make pause-swarm | make purge-data | make destroy\n\n'
 
 prerequisites: ## Check tools, credentials, APIs and shared-project guard rails
+	@$(RESOLVE) deny-list $(ENVIRONMENT)
 	@$(SCRIPTS)/prerequisites.sh
 
 bootstrap: ## Prepare the project: state bucket, .env, terraform init
@@ -96,7 +103,8 @@ tf-init: ## terraform init for this environment (state prefix infra/$(ENVIRONMEN
 	@$(TERRAFORM) -chdir=$(TF_ROOT) init -input=false -reconfigure $(TF_INIT_ARGS)
 
 tf-plan: ## terraform plan (review every create in a shared project)
-	@test -f $(VAR_FILE) || { echo "no $(VAR_FILE); ENVIRONMENT=$(ENVIRONMENT) has no inputs"; exit 1; }
+	@test -n "$(VAR_FILE)" || { echo "no tfvars for ENVIRONMENT=$(ENVIRONMENT); the reason is printed above"; exit 1; }
+	@$(RESOLVE) deny-list $(ENVIRONMENT)
 	@$(SCRIPTS)/plan.sh
 
 tf-apply: ## terraform apply the plan from tf-plan
@@ -354,6 +362,7 @@ security: ## checkov over terraform and the RENDERED manifests, trivy over the r
 ## ---------------------------------------------------------------------------
 
 status: ## Cluster, jobs, agents, queues, leases, pools, quota -- one screen
+	@$(RESOLVE) deny-list $(ENVIRONMENT)
 	@$(SCRIPTS)/status.sh
 
 logs: ## Recent control-plane logs (SERVICE=swarm-api LINES=100 FOLLOW=1)
@@ -378,8 +387,8 @@ pause-swarm: ## Stop admitting new work; running tasks continue
 resume-swarm: ## Resume exactly what pause-swarm paused
 	@$(SCRIPTS)/resume-swarm.sh
 
-register-tenant: ## Register a tenant (GROUP=eng@saga.xyz or USER=alice@saga.xyz)
-	@test -n "$${GROUP:-}$${USER_EMAIL:-}" || { echo "usage: make register-tenant GROUP=eng@saga.xyz [PROVIDERS=anthropic]"; exit 1; }
+register-tenant: ## Register a tenant (GROUP=team-a@example.com or USER_EMAIL=member@example.com)
+	@test -n "$${GROUP:-}$${USER_EMAIL:-}" || { echo "usage: make register-tenant GROUP=team-a@example.com [PROVIDERS=anthropic]"; exit 1; }
 	@$(SCRIPTS)/register-tenant.sh $${GROUP:+--group $$GROUP} $${USER_EMAIL:+--user $$USER_EMAIL} $${PROVIDERS:+--providers $$PROVIDERS}
 
 # NOT `make register-tenant PROVIDERS=...` again. A re-run writes the whole tenant
