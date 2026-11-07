@@ -1,6 +1,6 @@
 name: publish-release
 
-# CI PUBLISHES A SWARMCLOUD RELEASE (DAYONE-RELEASE-CI; part of #2688). BGD,
+# CI PUBLISHES A SWARMCLOUD RELEASE (DAYONE-RELEASE-CI; part of #2688). The owner,
 # 2026-10-30: "Move publishing into CI now". Until then a person ran
 # scripts/release/assemble.sh and scripts/release/publish.sh on a laptop
 # (DAYONE-RELEASE-1), because D22 kept CI without IAM in the release home.
@@ -11,14 +11,14 @@ name: publish-release
 # its reviewer's approval is the person's confirmation, and the version they
 # typed into the dispatch form reaches publish.sh as SWARM_PUBLISH_VERSION,
 # which `--ci` takes in place of the typed version (and refuses unless it is
-# exactly the bundle's). It publishes under gs://swarmcloud/releases/<version>/
+# exactly the bundle's). It publishes under the release home bucket's releases/<version>/
 # and us-docker.pkg.dev/swarmcloud-prod/swarmcloud, signed with the KMS key
 # swarmcloud-release/cosign. It NEVER promotes: channels/stable, the root
 # marketplace.json and install.sh move only by `publish.sh --promote`, typed
 # by a person after the manual test (docs/runbooks/release.md).
 #
-# The identity is release.yml's own (vars.GCP_DEPLOY_SA through
-# vars.GCP_WIF_PROVIDER). In swarmcloud-prod it holds exactly what
+# The identity is release.yml's own (secrets.GCP_DEPLOY_SA through
+# secrets.GCP_WIF_PROVIDER). In swarmcloud-prod it holds exactly what
 # `scripts/release-home.sh --ci-publisher` grants: roles/artifactregistry.writer
 # on the repository, roles/storage.objectAdmin on the bucket and
 # roles/cloudkms.signerVerifier on the cosign key; no project-level role.
@@ -47,7 +47,7 @@ concurrency:
   cancel-in-progress: false
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. A dispatch on main resolves it to
@@ -195,8 +195,8 @@ jobs:
         # Pinned by SHA: v3.0.0, the v3 release.yml authenticates with.
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       # Pinned by SHA: v3.0.1, the v3 release.yml uses.
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
@@ -215,7 +215,7 @@ jobs:
           {
             echo "### Published ${SWARM_PUBLISH_VERSION}"
             echo
-            echo "gs://swarmcloud/releases/${SWARM_PUBLISH_VERSION}/ and us-docker.pkg.dev/swarmcloud-prod/swarmcloud, signed."
+            echo "The release home's releases/${SWARM_PUBLISH_VERSION}/ and its image repository, signed."
             echo "Not promoted: run the manual test (docs/runbooks/release.md), then, typed:"
             echo "\`scripts/release/publish.sh --record-test ${SWARM_PUBLISH_VERSION} --record <file>\` and \`scripts/release/publish.sh --promote ${SWARM_PUBLISH_VERSION}\`."
           } >> "$GITHUB_STEP_SUMMARY"
