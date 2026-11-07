@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import re
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,17 @@ def _load_renderer() -> Any:
 
 
 render = _load_renderer()
+
+
+def _deny_list_from_common_sh() -> list[str]:
+    """SHARED_DENY_LIST as scripts/lib/common.sh declares it, read at run time
+    so no other team's resource name is written here (CLAUDE.md rule 2)."""
+    text = (REPO / "scripts/lib/common.sh").read_text()
+    block = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", text, re.MULTILINE | re.DOTALL)
+    assert block, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST=( ... )"
+    names = re.findall(r'^\s*"([^"]+)"', block.group(1), re.MULTILINE)
+    assert names, "SHARED_DENY_LIST is empty"
+    return names
 
 
 def _render(tenant: str, *argv: str) -> list[dict[str, Any]]:
@@ -219,7 +231,9 @@ def test_verify_read_names_the_account_exactly_where_the_read_is_rendered(tenant
 def test_the_rbac_file_names_no_other_identity_and_no_other_cluster():
     text = (KUBERNETES / "rbac" / "verify-rbac.yaml").read_text()
     live = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
-    assert "peer-cluster" not in live
+    # "default" is a namespace name every cluster has, not another team's resource.
+    named = [name for name in _deny_list_from_common_sh() if name != "default" and name in live]
+    assert not named, f"{len(named)} deny-listed resource name(s) of the shared project appear in the RBAC file"
     # Only the two verify placeholders are subjects; no literal identity.
     assert "@" not in live, "an identity is spelled literally; it must come from __VERIFY_GSA__/__VERIFY_UID__"
     assert "__VERIFY_GSA__" in live and "__VERIFY_UID__" in live
