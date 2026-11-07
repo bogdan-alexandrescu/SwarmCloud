@@ -974,7 +974,8 @@ class SchedulerStore:
         return outcome
 
     def fail_before_lease(
-        self, task: Task, error: str, *, detail: dict[str, Any] | None = None
+        self, task: Task, error: str, *, detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
     ) -> GuardedWrite:
         """End a READY or PARKED task that can never run: -> FAILED, no lease.
 
@@ -995,9 +996,14 @@ class SchedulerStore:
         NEVER RETRIED. `error` is the terminal code (`mcp_credential_expired`
         or `mcp_credential_missing`), and `attempt_count` is left alone: no
         attempt ran. `promote_to_ready` refuses a FAILED task, and no other
-        writer reads one back to READY. `end_cause` is None: no `EndCause`
-        value names this ending, and the contract says such a writer writes
-        None.
+        writer reads one back to READY. `end_cause` is None for those: no
+        `EndCause` value names that ending, and the contract says such a
+        writer writes None.
+
+        A fix loop's person-park that nobody answered within 7 days is the
+        other source (docs/design/fix-loop.md §4.5, BGD Q3 (c)): PARKED ->
+        FAILED with `end_cause` FIX_LOOP_EXHAUSTED, as a person's "stop"
+        ends it. The loop is `control_plane` and never held a lease either.
         """
         if task.state not in (TaskState.READY, TaskState.PARKED):
             raise InvalidTransition(task.state, TaskState.FAILED)
@@ -1013,7 +1019,7 @@ class SchedulerStore:
                 "blocked_by": [],
                 "completed_at": now,
                 "last_error": error[:1000],
-                "end_cause": None,
+                "end_cause": end_cause.value if end_cause is not None else None,
                 "updated_at": now,
             },
             same_park_reason=True,
