@@ -632,3 +632,19 @@ def test_the_routes_serve_cost_and_stock_outs(seeded, clock):
                        headers=_as(ALICE)).json()["sessions"]
     assert row["machine_usd"] == cat.machine(cat.DEFAULTS["machine"]).usd_per_hour
     assert row["stockouts"] == 1
+
+
+def test_a_start_that_never_served_still_costs_its_day(db, store):
+    # The machine booted and was stopped before the server was ready: no
+    # sample, no telemetry session, yet the ledger's line priced its minutes.
+    never = sm.SessionRef(tenant_id="eng", person=ALICE, project_id="vp_1",
+                          session_id="vs_eng3")
+    _stopped(db, never, NOW + timedelta(days=1), 6.0)
+    _stopped(db, OPS, NOW + timedelta(days=1), 60.0)
+    span = tel.parse_span("2026-11-06", "2026-11-07", "UTC")
+    days = store.days(span, tenant_id="eng")
+    price = cat.machine(cat.DEFAULTS["machine"]).usd_per_hour
+    assert [(d["day"], d["sessions"], d["machine_usd"]) for d in days] == [
+        ("2026-11-06", 0, 0.0), ("2026-11-07", 0, round(price / 10, 4))]
+    everyone = store.days(span, tenant_id=None)
+    assert everyone[1]["machine_usd"] == round(price / 10 + price, 4)
