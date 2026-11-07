@@ -38,6 +38,7 @@ No credentials, no network, no emulator: every agent step is `mock`.
 from __future__ import annotations
 
 import copy
+import secrets
 from dataclasses import replace
 from typing import Any
 
@@ -244,6 +245,29 @@ def test_get_task_serves_the_block_in_dispatch(client, db, loop_enabled):
     assert read.json()["task"]["dispatch"]["fix_loop"]["review"] == "review"
     plain = client.get(f"/v1/tasks/{steps['fix']['task_id']}", headers=auth_header("alice"))
     assert "fix_loop" not in plain.json()["task"]["dispatch"]
+
+
+def test_an_override_prompt_is_served_masked_in_metadata_and_the_workflow(
+        client, db, loop_enabled):
+    # `metadata_value` serves `dispatch` as stored; the loop's block in it
+    # carries the caller's override prompt, so it is masked there too.
+    literal = "DB_" + "PASSWORD=" + secrets.token_hex(16)
+    block = {"review": "review", "fix": "fix",
+             "fix_round": {"prompt": f"use {literal} to reach the database"}}
+    response = _post(client, _integrate(_loop(block)))
+    assert response.status_code == 201, response.text
+    loop_id = _by_id(response.json())["loop"]["task_id"]
+    task = client.get(f"/v1/tasks/{loop_id}", headers=auth_header("alice")).json()["task"]
+    served = task["metadata"]["dispatch"]["fix_loop"]["fix_round"]["prompt"]
+    assert literal not in served and served != block["fix_round"]["prompt"], served
+    assert literal not in str(task["dispatch"]), task["dispatch"]
+    assert task["metadata_redaction_count"] >= 1, task
+    workflow_id = response.json()["workflow"]["workflow_id"]
+    view = client.get(f"/v1/workflows/{workflow_id}", headers=auth_header("alice"))
+    assert view.status_code == 200, view.text
+    assert literal not in view.text
+    assert _dispatch(db, {"task_id": loop_id})["fix_loop"]["fix_round"]["prompt"] == (
+        block["fix_round"]["prompt"]), "the stored block is the caller's, unmasked"
 
 
 @pytest.fixture

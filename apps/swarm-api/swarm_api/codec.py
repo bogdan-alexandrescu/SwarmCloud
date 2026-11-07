@@ -680,6 +680,15 @@ def task_to_api(
     if not summary:
         masked_input, input_count = masking.input_value()
         masked_metadata, metadata_count = masking.metadata_value()
+        # `metadata_value` serves `dispatch` as stored, but a `fix-loop`
+        # step's block carries the caller's override prompts (FL-SUBMIT), so
+        # it is masked here as `dispatch_of` masks it.
+        served_dispatch = masked_metadata.get(DISPATCH_METADATA_KEY)
+        if isinstance(served_dispatch, dict) and isinstance(served_dispatch.get("fix_loop"), dict):
+            served_dispatch = dict(served_dispatch)
+            served_dispatch["fix_loop"], found = masking.leaves(served_dispatch["fix_loop"])
+            masked_metadata[DISPATCH_METADATA_KEY] = served_dispatch
+            metadata_count += found
         result_summary, result_summary_count = masking.leaves(task.result_summary)
     else:
         masked_metadata, metadata_count = summary_metadata(task, masking)
