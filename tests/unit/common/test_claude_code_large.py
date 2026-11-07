@@ -152,8 +152,10 @@ def test_every_other_profile_is_unchanged(name):
 def test_the_catalogue_gains_exactly_one_profile():
     # MUTATION: add a second entry (or drop one) and the names differ.
     # fix-loop came later, by contract request 124 (FL-CONTRACT), and
-    # claude-code-lightpanda by contract request 127 (LIGHTPANDA-CONTRACT).
-    assert set(RUNNER_PROFILES) == set(BEFORE) | {NAME} | {"fix-loop", "claude-code-lightpanda"}
+    # claude-code-lightpanda by contract request 127 (LIGHTPANDA-CONTRACT),
+    # and claude-code-medium by contract request 147 (the middle size).
+    assert set(RUNNER_PROFILES) == set(BEFORE) | {NAME} | {
+        "fix-loop", "claude-code-lightpanda", "claude-code-medium"}
 
 
 @pytest.fixture

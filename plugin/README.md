@@ -503,6 +503,14 @@ the network, which is why they still answer when the cluster does not.
 Neither shows an image or a command. That is deliberate: a field a session can
 see is a field a session will eventually offer to set.
 
+**Start at `claude-code`, the standard class.** Move a step up only when it
+was OOM-killed or ran out of time there, and then to `claude-code-medium`
+before `claude-code-large`: over the 7 days to 6 November 2026, 96% of the
+large attempts fit medium, and every large request came from a spec sent
+through this plugin. A step that names `claude-code-large` is still
+submitted, and the answer carries a `warnings` line naming the medium
+profile.
+
 A name the catalogue refuses is refused **before anything is dispatched**, and
 the two refusals are kept apart because they need different answers — an unknown
 name is a typo and lists the real names, while a known-but-disabled one quotes
@@ -670,6 +678,20 @@ on-demand (contract request 113). A heavy lane picks it by name when
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 | `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
 <!-- /runner-inputs:claude-code-large -->
+
+`claude-code-medium` is `claude-code` exactly (same image, runner, inputs,
+secret slots, model classes and 7,200 s timeout) on the `medium` resource
+class, 6 CPU and 16 GiB requested (2 units), on GKE Autopilot on-demand
+(contract request 147). Over the 7 days to 6 November 2026, 96% of the
+`claude-code-large` attempts fit it; name it before `claude-code-large`.
+It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-medium generated from RUNNER_PROFILES["claude-code-medium"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-medium runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-medium -->
 
 `claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
 image (contract request 127): the same runner, inputs, secret slots and

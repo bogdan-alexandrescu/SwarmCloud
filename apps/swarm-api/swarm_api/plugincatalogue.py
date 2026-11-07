@@ -49,11 +49,12 @@ BRIDGE_REASON = (
     "lands only unattended mode runs"
 )
 
-#: The five claude-code profiles (`swarm_common.profiles`), the only runners
+#: The six claude-code profiles (`swarm_common.profiles`), the only runners
 #: that load the catalogue's skills. codex comes later.
 CLAUDE_CODE_PROFILES = (
     "claude-code",
     "claude-code-large",
+    "claude-code-medium",
     "claude-code-review",
     "claude-code-browser",
     "claude-code-lightpanda",

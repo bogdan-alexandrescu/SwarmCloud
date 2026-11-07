@@ -2456,8 +2456,8 @@ const FIXTURE_RUNTIMES: Record<string, Runtime> = {
     name: 'demo-viewport', image: 'demo-runtime-viewport',
     backend: 'GKE_AUTOPILOT', resolved_backend: 'GKE_AUTOPILOT',
     provider: 'demo-vendor', secrets: ['DEMO_API_KEY'], secrets_any_of: false,
-    timeout_seconds: 5400, resource_class: 'demo-medium',
-    resources: { name: 'demo-medium', cpu: 6, memory_gib: 15, disk_gib: 7, units: 2 },
+    timeout_seconds: 5400, resource_class: 'demo-mid',
+    resources: { name: 'demo-mid', cpu: 6, memory_gib: 15, disk_gib: 7, units: 2 },
     // THE DISABLED EXEMPLAR. A fixture set where every profile is available
     // means the disabled branch of the catalogue screen ships unexercised --
     // the same argument `demo-wide` makes for declaring AUTO, since nothing in
@@ -4798,7 +4798,7 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
  * demanding a key fails that test here rather than teaching the screen a rule
  * production does not apply.
  *
- * `inputs` ON claude-code, codex, claude-code-large AND claude-code-lightpanda, the profiles that take
+ * `inputs` ON claude-code, codex, claude-code-large, claude-code-medium AND claude-code-lightpanda, the profiles that take
  * MCP servers and declare nothing else a form draws (QAFIX6-FIXTURE f, run 6
  * overview-automate-019, box 6343758363): with no profile serving `inputs`,
  * `mcpProfiles` (McpServers.tsx) read the fixture as an API too old to say,
@@ -4829,6 +4829,7 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "indexer": {"required_keys": ["prompt"]},
   "claude-code-browser": {"required_keys": ["prompt"]},
   "claude-code-large": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
+  "claude-code-medium": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
   "claude-code-lightpanda": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
   "await-input": {"required_keys": []},
   "fix-loop": {"required_keys": []}
@@ -4866,6 +4867,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "indexer": {"available": true, "disabled_reason": ""},
   "claude-code-browser": {"available": true, "disabled_reason": ""},
   "claude-code-large": {"available": true, "disabled_reason": ""},
+  "claude-code-medium": {"available": true, "disabled_reason": ""},
   "claude-code-lightpanda": {"available": true, "disabled_reason": ""},
   "await-input": {"available": true, "disabled_reason": ""},
   "fix-loop": {"available": false, "disabled_reason": "fix-loop is not available yet: it ships unavailable until its acceptance run passes, as docs/design/fix-loop.md says."}

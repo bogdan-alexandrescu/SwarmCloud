@@ -6141,9 +6141,16 @@ def _call(
                                   given=[str(step.get("step_id")) for step in fields["steps"]],
                                   name=fields["title"] or fields["label"],
                                   publish_to_pr=publish_to_pr)
-        if not territory and not checks:
+        # A step on claude-code-large is sent as written and answered with a
+        # warning naming the medium profile (BGD, 2026-11-06); no key without one.
+        warnings = workflows.large_step_warnings(fields["steps"])
+        if not territory and not checks and not warnings:
             return reply
         created = json.loads(reply)
+        if warnings:
+            created["warnings"] = warnings
+        if not territory and not checks:
+            return json.dumps(created, indent=2)
         created.update(territory)
         tasks = {str(step.get("step_id")): step.get("task_id") for step in created.get("steps") or []}
         for check in checks:

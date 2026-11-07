@@ -1191,6 +1191,22 @@ const DETAILS_CHARS = 600
 const NOT_REPORTED = 'not reported'
 const BROWSER_PROFILE = 'claude-code-browser'
 
+// A step that asks for claude-code-large (BGD, 2026-11-06): submitted as
+// written, with one warning line naming the medium profile and the measured
+// share. swarm_mcp.workflows' LARGE_PROFILE, MEDIUM_PROFILE and
+// LARGE_FIT_MEDIUM_SHARE, restated because a script cannot import them;
+// tests/unit/mcp/test_large_step_warning.py holds the two equal.
+const LARGE_PROFILE = 'claude-code-large'
+const MEDIUM_PROFILE = 'claude-code-medium'
+const LARGE_FIT_MEDIUM_SHARE = '96%'
+
+function largeStepWarnings(steps) {
+  return (steps || [])
+    .filter((step) => step && flatText(step.runner_profile) === LARGE_PROFILE)
+    .map((step) => 'step ' + step.step_id + ' asks for ' + LARGE_PROFILE + '; ' + LARGE_FIT_MEDIUM_SHARE +
+      ' of large attempts over 7 days fit ' + MEDIUM_PROFILE + ': name it unless this step was OOM-killed on it')
+}
+
 function detailsText(text) {
   const flat = flatText(text)
   return flat ? clip(flat, DETAILS_CHARS) : null
@@ -3050,6 +3066,7 @@ if (given.path || (given.handle && !given.spec)) {
 
 if (!digest) digest = specDigest(spec)
 const specLabel = flatText(spec.label)
+for (const line of largeStepWarnings(spec.steps)) log(line)
 
 let submitted = null
 let submitFailure = null

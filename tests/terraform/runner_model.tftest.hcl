@@ -117,9 +117,10 @@ run "the_scheduler_hands_the_same_model_to_the_jobs_it_creates" {
       "indexer"                = "claude-opus-5-5"
       "claude-code-browser"    = "claude-opus-5-5"
       "claude-code-large"      = "claude-opus-5-5"
+      "claude-code-medium"     = "claude-opus-5-5"
       "claude-code-lightpanda" = "claude-opus-5-5"
     }
-    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's, indexer's, claude-code-browser's, claude-code-large's and claude-code-lightpanda's (the same: claude-code under its own account, #295; on the indexer image, contract request 48; on the browser image, contract request 67; on the large class, contract request 113; on the Lightpanda image, contract request 127). claude-code, indexer, claude-code-browser, claude-code-large and claude-code-lightpanda run on GKE Autopilot (contract requests 53, 62, 67, 113 and 127), so WORKER_MODELS is the only way their MODEL reaches a pod"
+    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's, indexer's, claude-code-browser's, claude-code-large's, claude-code-medium's and claude-code-lightpanda's (the same: claude-code under its own account, #295; on the indexer image, contract request 48; on the browser image, contract request 67; on the large class, contract request 113; on the Lightpanda image, contract request 127). claude-code, indexer, claude-code-browser, claude-code-large and claude-code-lightpanda run on GKE Autopilot (contract requests 53, 62, 67, 113 and 127), so WORKER_MODELS is the only way their MODEL reaches a pod"
   }
 }
 
