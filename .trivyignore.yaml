@@ -115,7 +115,7 @@ vulnerabilities:
   # 592.0.0, is go1.27.3.
   #
   # PROPOSED 2026-11-06 ~20:20Z UTC by CLD for the owner's decision; this entry
-  # is not accepted until BGD approves its pull request. golang.org/x/net/html
+  # is not accepted until the owner approves its pull request. golang.org/x/net/html
   # denial of service on crafted HTML input (CVE-2026-78661, HIGH, fixed in
   # x/net 0.62.0), new in the scanner's database on 2026-11-06. The
   # speech-release pull request's build-check (run 42281167694) refused
@@ -209,7 +209,7 @@ vulnerabilities:
     expired_at: 2026-11-11
 
   # Same class again (PROPOSED 2026-10-28 ~10:00Z by CLD for the owner's decision;
-  # this entry is not accepted until BGD merges it): go-jose v4 DoS when parsing
+  # this entry is not accepted until the owner merges it): go-jose v4 DoS when parsing
   # JWKs that contain RSA keys (CVE-2026-116587, HIGH, fixed in go-jose 4.1.6),
   # inside two THIRD-PARTY Go binaries the runtime images ship:
   # /usr/local/bin/terraform (1.16.4, go-jose 4.1.4/4.1.5) and
@@ -240,7 +240,7 @@ vulnerabilities:
   # 4.1.6, so only trivy (0.76.1, the newest, still go-jose 4.1.5) carries it.
   - id: CVE-2026-116587
     statement: "go-jose v4 JWK parsing DoS inside vendor-built terraform and trivy; no vendor release carries go-jose 4.1.6 yet."
-    # 2026-11-01 (BGD, extended one week): trivy 0.76.1 (2026-10-21) is
+    # 2026-11-01 (the owner, extended one week): trivy 0.76.1 (2026-10-21) is
     # still the newest release and still links go-jose 4.1.5, so there is
     # no release to move to. Re-check trivy's releases on 2026-11-11.
     expired_at: 2026-11-11
@@ -253,7 +253,7 @@ vulnerabilities:
   # build-check was refused on this id alone (workspace-apply, run 40762235943),
   # and the 21:32Z release refused five images on it, so every change that
   # rebuilds those images stopped. (PR 2673's own fix step had added a
-  # four-week entry for this id to clear its CI; BGD kept that expiry on
+  # four-week entry for this id to clear its CI; the owner kept that expiry on
   # 2026-10-28, and this entry replaces its text with the kubectl bump.)
   #
   # kubectl is FIXED here, not accepted: this change pins 1.36.6, built on
