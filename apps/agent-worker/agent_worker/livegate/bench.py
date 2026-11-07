@@ -27,6 +27,15 @@ TWO PARTS.
   receives that covers the character the key drew) at p50 and p95, and the
   process's CPU per second of stream.
 
+* `thumbs` (`--thumbs`; LIVE-THUMBS-SMALL-JPEG, part of #2688): one Live
+  Browsers card on the Desktop page scrolling every frame, as the console's
+  LiveThumb asked before (`THUMB_RAW_ENCODINGS`: RAW at the full size) and
+  asks now (`thumb_encodings`: the gate's thumbnail mode at `THUMB_WIDTH`):
+  bytes per update, the bytes per second of one card at `THUMB_FPS` (the
+  wall's rate with six or fewer cards on screen), and the gate's CPU per
+  frame (the process's CPU time from the publish to the update read, which
+  is the gate's render plus a socket read).
+
 WHAT IT CANNOT SEE. Chromium's own paint time (a key is drawn one 16 ms
 "frame" after the gate injects it here), the network between the pod, the
 relay, swarm-api and the browser, and noVNC's decode time. Inside-the-pod
@@ -73,6 +82,19 @@ SCENARIOS = ("static", "scroll", "typing")
 #: 530 ms (Chromium's rate) and a small spinner turning at 10 Hz -- which is
 #: what a page waiting for the person looks like.
 SESSION_SCENARIOS = ("idle", "scroll", "typing")
+
+#: LiveThumb.tsx's SetEncodings before thumbnail mode: RAW and DesktopSize.
+THUMB_RAW_ENCODINGS = (0, -223)
+#: The card's device-pixel width the brief measures at, and the wall's
+#: fastest rate (10 fps with six or fewer cards on screen).
+THUMB_WIDTH = 480
+THUMB_FPS = 10
+
+
+def thumb_encodings(width: int = THUMB_WIDTH) -> tuple[int, ...]:
+    """LiveThumb.tsx's SetEncodings now: Tight, RAW, DesktopSize and the thumbnail mode."""
+    return (7, 0, -223, rfb.ENCODING_THUMB_WIDTH_0 + width)
+
 
 #: What noVNC 1.4.0 sends in SetEncodings (core/rfb.js `_sendEncodings`), in
 #: its order, with its default quality 6 and compression 2: Tight, TightPNG,
@@ -443,6 +465,49 @@ async def _frames(size: str, scenario: str, encodings: tuple[int, ...], n: int) 
     }
 
 
+async def _thumbs(encodings: tuple[int, ...], n: int) -> dict[str, Any]:
+    """One card on the Desktop page scrolling every frame: bytes and the gate's CPU per frame."""
+    device = resolve(*SIZES["desktop"])
+    with tempfile.TemporaryDirectory() as tmp:
+        page = Page(device.display_width, device.display_height,
+                    chrome=device.frame_top if device.frame_top else 80)
+        screen = Screen(Path(tmp), page)
+        hub = rfb.FrameHub(device.display_width, device.frame_height)
+        (sr, sw), (cr, cw) = await _pair()
+        session = rfb.RfbSession("bench", sr, sw, hub, rfb.ControlState(_Injector()), _Injector())
+        task = asyncio.create_task(session.serve())
+        client = Client(cr, cw)
+        cpu, sizes = [], []
+        with XvfbFramebuffer(screen.path) as fb:
+            hub.publish(captured(fb.grab(), device))
+            await client.handshake(encodings)
+            client.request(False)
+            await cw.drain()
+            first = await client.read_update()
+            if first.nbytes == 16 and not first.rects:
+                # Thumbnail mode: the scaled size came first; ask again at it.
+                client.request(False)
+                await cw.drain()
+                await client.read_update()
+            for i in range(n):
+                screen.show((i + 1) * SCROLL_PX * 2)
+                frame = captured(fb.grab(), device)
+                t0 = time.process_time()
+                hub.publish(frame)
+                client.request(True)
+                await cw.drain()
+                update = await client.read_update()
+                cpu.append((time.process_time() - t0) * 1000)
+                sizes.append(update.nbytes)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        cw.close()
+        screen.close()
+    per_update = int(statistics.median(sizes))
+    return {"bytes_per_update": per_update, "bytes_per_s": per_update * THUMB_FPS,
+            "cpu_ms_per_frame": round(statistics.median(cpu), 2)}
+
+
 # --------------------------------------------------------------------------
 # Part 2: a session, through the real capture loop
 # --------------------------------------------------------------------------
@@ -600,8 +665,12 @@ def _with_level(level: int) -> tuple[int, ...]:
 
 
 async def run(*, seconds: float, frames: int, sizes: tuple[str, ...] = tuple(SIZES),
-              levels: tuple[int, ...] = ()) -> dict[str, Any]:
-    out: dict[str, Any] = {"frames": {}, "session": {}, "levels": {}}
+              levels: tuple[int, ...] = (), thumbs: bool = False) -> dict[str, Any]:
+    out: dict[str, Any] = {"frames": {}, "session": {}, "levels": {}, "thumbs": {}}
+    if thumbs:
+        out["thumbs"]["raw (before)"] = await _thumbs(THUMB_RAW_ENCODINGS, frames)
+        out["thumbs"][f"thumbnail mode {THUMB_WIDTH} wide"] = await _thumbs(thumb_encodings(), frames)
+        return out
     for level in levels:
         for scenario in ("scroll", "typing"):
             key = f"desktop/{scenario}/novnc level {level}"
@@ -631,6 +700,12 @@ def _table(result: dict[str, Any]) -> str:
         lines += ["", "| zlib level: size/scenario | encode+send ms | bytes/update |", "|---|---:|---:|"]
         for key, r in result["levels"].items():
             lines.append(f"| {key} | {r['encode_send_ms']} | {r['bytes_per_update']:,} |")
+    if result.get("thumbs"):
+        lines = [f"| one card, desktop scrolling | bytes/update | bytes/s at {THUMB_FPS} fps | gate CPU ms/frame |",
+                 "|---|---:|---:|---:|"]
+        for key, r in result["thumbs"].items():
+            lines.append(f"| {key} | {r['bytes_per_update']:,} | {r['bytes_per_s']:,} | {r['cpu_ms_per_frame']} |")
+        return "\n".join(lines)
     lines += ["", "| session: size/scenario/mode | updates/s | bytes/s | input->frame p50 ms | p95 ms | CPU s/s |",
               "|---|---:|---:|---:|---:|---:|"]
     for key, r in result["session"].items():
@@ -645,11 +720,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frames", type=int, default=30, help="frames per per-frame scenario")
     parser.add_argument("--size", choices=tuple(SIZES), action="append", help="only these sizes")
     parser.add_argument("--levels", default="", help="also compare these zlib levels, e.g. 1,2,6,9")
+    parser.add_argument("--thumbs", action="store_true",
+                        help="only one Live Browsers card: raw (before) against thumbnail mode")
     parser.add_argument("--json", type=Path, help="also write the result here")
     args = parser.parse_args(argv)
     levels = tuple(int(v) for v in args.levels.split(",") if v)
     result = asyncio.run(run(seconds=args.seconds, frames=args.frames, sizes=tuple(args.size or SIZES),
-                             levels=levels))
+                             levels=levels, thumbs=args.thumbs))
     print(_table(result))
     if args.json is not None:
         args.json.write_text(json.dumps(result, indent=2) + "\n")

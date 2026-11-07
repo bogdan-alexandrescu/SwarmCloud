@@ -1,31 +1,25 @@
 // The workflow graph's live thumbnails cost what is ON SCREEN, and update
-// faster when only a few are (owner request 2026-11-02, part of #2688).
+// faster when only a few are (owner request 2026-11-02; pacing table BGD's
+// pick on 2026-11-06, part of #2688).
 //
 // WHAT EACH CASE HOLDS:
 //   * the client reads its floor between requests before each one, so the
-//     same card asks every 250 ms with three or fewer cards on screen and
-//     every 1 s with more (`thumbIntervalMs`);
+//     same card asks every 100 ms with six or fewer cards on screen, every
+//     200 ms with seven to twenty, and every 500 ms beyond (`thumbIntervalMs`,
+//     `THUMB_INTERVALS`);
 //   * a card off screen asks for no frame; the request that came due while it
 //     was away goes out when it is back (`resume`);
-//   * the card's label says "≤4 fps" only while few cards are on screen.
+//   * the card's live badge reads the rate it is actually asking for, not a
+//     hard-coded number.
 //
-// MUTATIONS: read `minIntervalMs` once in the constructor (the 250 ms case
-// asks at 1 s and turns red); ignore `paused` (the off-screen case sends a
+// MUTATIONS: read `minIntervalMs` once in the constructor (the 100 ms case
+// asks at 500 ms and turns red); ignore `paused` (the off-screen case sends a
 // request and turns red).
 
 import { act, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import {
-  LIVE_FAST_WORD,
-  LiveThumb,
-  RfbThumb,
-  THUMB_FEW_INTERVAL_MS,
-  THUMB_FEW_VISIBLE,
-  THUMB_MIN_INTERVAL_MS,
-  thumbIntervalMs,
-  type LiveSocket,
-} from '../LiveThumb'
+import { LiveThumb, RfbThumb, THUMB_INTERVALS, thumbIntervalMs, type LiveSocket, type ThumbSink } from '../LiveThumb'
 
 /** A clock and a timer queue the test advances by hand. */
 function clock() {
@@ -61,6 +55,15 @@ function u32(n: number): number[] {
   return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]
 }
 
+/** A `ThumbSink` that does nothing: these tests watch `requests`, not pixels. */
+const NULL_SINK: ThumbSink = {
+  resize() {},
+  fillRect() {},
+  drawRaw() {},
+  drawImage() {},
+  commit() {},
+}
+
 /** The server's side up to ServerInit for a 2x1 framebuffer, then one empty update. */
 const HANDSHAKE = Uint8Array.from([
   ...new TextEncoder().encode('RFB 003.008\n'),
@@ -75,7 +78,7 @@ function client(o: { interval: () => number; paused?: () => boolean }) {
   const sent: Uint8Array[] = []
   const rfb = new RfbThumb({
     send: (b) => sent.push(b),
-    sink: { resize() {}, draw() {} },
+    sink: NULL_SINK,
     now: c.now,
     later: c.later,
     minIntervalMs: o.interval,
@@ -86,11 +89,21 @@ function client(o: { interval: () => number; paused?: () => boolean }) {
 }
 
 describe('thumbIntervalMs', () => {
-  it('is 250 ms with few cards on screen and the 1 s floor with more', () => {
-    expect(thumbIntervalMs(1)).toBe(THUMB_FEW_INTERVAL_MS)
-    expect(thumbIntervalMs(THUMB_FEW_VISIBLE)).toBe(250)
-    expect(thumbIntervalMs(THUMB_FEW_VISIBLE + 1)).toBe(THUMB_MIN_INTERVAL_MS)
-    expect(thumbIntervalMs(40)).toBe(1000)
+  it('is 100 ms at six or fewer cards, 200 ms up to twenty, and 500 ms beyond', () => {
+    expect(thumbIntervalMs(1)).toBe(100)
+    expect(thumbIntervalMs(6)).toBe(100)
+    expect(thumbIntervalMs(7)).toBe(200)
+    expect(thumbIntervalMs(20)).toBe(200)
+    expect(thumbIntervalMs(21)).toBe(500)
+    expect(thumbIntervalMs(40)).toBe(500)
+  })
+
+  it('matches the published table', () => {
+    expect(THUMB_INTERVALS).toEqual([
+      [6, 100],
+      [20, 200],
+      [Infinity, 500],
+    ])
   })
 })
 
@@ -100,19 +113,19 @@ describe('the client paces by what is on screen now', () => {
     const { rfb, c } = client({ interval: () => thumbIntervalMs(visible) })
     expect(rfb.requests).toEqual([0])
     rfb.feed(EMPTY_UPDATE)
-    c.advance(250)
-    expect(rfb.requests).toEqual([0, 250])
+    c.advance(100)
+    expect(rfb.requests).toEqual([0, 100])
     visible = 10
     rfb.feed(EMPTY_UPDATE)
-    c.advance(999)
-    expect(rfb.requests).toEqual([0, 250])
+    c.advance(199)
+    expect(rfb.requests).toEqual([0, 100])
     c.advance(1)
-    expect(rfb.requests).toEqual([0, 250, 1250])
+    expect(rfb.requests).toEqual([0, 100, 300])
   })
 
   it('asks for nothing off screen and asks again when back', () => {
     let away = false
-    const { rfb, c } = client({ interval: () => 1000, paused: () => away })
+    const { rfb, c } = client({ interval: () => 500, paused: () => away })
     away = true
     rfb.feed(EMPTY_UPDATE)
     c.advance(10_000)
@@ -126,7 +139,7 @@ describe('the client paces by what is on screen now', () => {
 })
 
 describe('the card says its rate', () => {
-  it('reads ≤4 fps while it is one of few on screen', () => {
+  it('reads the rate for how many cards are on screen, not a hard-coded number', () => {
     const sock = {
       binaryType: 'arraybuffer',
       send() {},
@@ -139,6 +152,7 @@ describe('the card says its rate', () => {
     const handler = (sock as unknown as { onmessage: (ev: { data: ArrayBuffer }) => void }).onmessage
     const bytes = Uint8Array.from([...HANDSHAKE, 0, 0, ...u16(1), ...u16(0), ...u16(0), ...u16(2), ...u16(1), ...u32(0), ...new Array<number>(8).fill(9)])
     act(() => handler({ data: bytes.buffer }))
-    expect(screen.getByText(LIVE_FAST_WORD)).toBeTruthy()
+    // One card on screen: the 100 ms tier, 10 fps.
+    expect(screen.getByText('live · ≤10 fps')).toBeTruthy()
   })
 })
