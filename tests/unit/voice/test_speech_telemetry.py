@@ -35,6 +35,9 @@ from swarm_api.auth import AuthContext  # noqa: E402
 from swarm_api.deps import current_auth, get_context, tenant_scope  # noqa: E402
 from swarm_api.errors import ApiError  # noqa: E402
 from swarm_api.routes import voice_telemetry as routes  # noqa: E402
+from swarm_api.voice import ledger  # noqa: E402
+from swarm_api.voice import sessions as vs  # noqa: E402
+from swarm_api.voice import speech_catalogue as cat  # noqa: E402
 from swarm_api.voice import speech_machine as sm  # noqa: E402
 from swarm_api.voice import speech_telemetry as tel  # noqa: E402
 
@@ -493,3 +496,139 @@ def test_a_bad_resume_cursor_is_a_422(db, clock):
                                     headers=_as(ALICE))
     assert answer.status_code == 422
     assert answer.json()["detail"]["field"] == "after"
+
+
+# --------------------------------------------------------------------------
+# Machine cost and stock-outs (§12.4, §12.5): the ledger's Speech machine
+# line (§13) and the machine lifecycle's audit rows
+# --------------------------------------------------------------------------
+
+
+def _audit_row(db: FakeFirestore, action: str, owner: sm.SessionRef, at: datetime,
+               detail: dict[str, Any]) -> None:
+    """A `voice_audit` row as SpeechMachine._audit writes it."""
+    db.collection(vs.AUDIT).document().set({
+        "action": action, "tenant_id": owner.tenant_id, "by": owner.person, "at": at,
+        "project_id": owner.project_id, "session_id": owner.session_id, "detail": detail})
+
+
+def _stopped(db: FakeFirestore, owner: sm.SessionRef, at: datetime, minutes: float,
+             machine: str = cat.DEFAULTS["machine"]) -> None:
+    price = cat.machine(machine).usd_per_hour
+    _audit_row(db, sm.AUDIT_STOPPED, owner, at, {
+        "cause": sm.END_IDLE, "generation": 1, "minutes": minutes,
+        "usd": round(minutes / 60.0 * price, 4), "zone": "us-central1-a"})
+
+
+def _no_l4(db: FakeFirestore, owner: sm.SessionRef, at: datetime) -> None:
+    _audit_row(db, sm.AUDIT_NO_L4, owner, at, {"zone": "us-central1-a", "generation": 1})
+
+
+def test_a_session_that_ran_an_hour_carries_the_ledgers_cost_for_that_hour(db, store, clock):
+    _lease(db, ENG, 1)
+    store.record(ENG, 1, _stt(300))
+    _stopped(db, ENG, NOW + timedelta(hours=1), 60.0)
+    clock.at = NOW + timedelta(hours=2)
+    span = tel.parse_span("2026-11-06", "2026-11-06", "UTC")
+    hour = ledger.speech_machine_lines(db, {ENG.session_id: "eng"}, now=clock)
+    [row] = store.sessions(span, tenant_id="eng")
+    assert row["machine_usd"] == hour[ENG.session_id]["usd"] \
+        == cat.machine(cat.DEFAULTS["machine"]).usd_per_hour
+    assert row["machine_usd_reason"] is None
+    [day] = store.days(span, tenant_id="eng")
+    assert day["machine_usd"] == row["machine_usd"] and day["machine_usd_reason"] is None
+    detail = store.session(ENG.session_id, tenant_id="eng", zone=span.zone)["session"]
+    assert detail["machine_usd"] == row["machine_usd"]
+
+
+def test_another_workspaces_machine_row_is_never_counted(db, store):
+    _lease(db, ENG, 1)
+    store.record(ENG, 1, _stt(300))
+    _stopped(db, ENG, NOW + timedelta(hours=1), 60.0)
+    stray = sm.SessionRef(tenant_id="ops", person=BOB, project_id="vp_2",
+                          session_id=ENG.session_id)
+    _stopped(db, stray, NOW + timedelta(hours=1), 600.0)
+    [row] = store.sessions(tel.parse_span("2026-11-06", "2026-11-06", "UTC"), tenant_id="eng")
+    assert row["machine_usd"] == cat.machine(cat.DEFAULTS["machine"]).usd_per_hour
+
+
+def test_a_running_machine_is_priced_from_the_start_call_to_now(db, store, clock):
+    _lease(db, ENG, 1, started_at=NOW - timedelta(minutes=30),
+           machine=cat.DEFAULTS["machine"])
+    store.record(ENG, 1, _stt(300))
+    [row] = store.sessions(tel.parse_span("2026-11-06", "2026-11-06", "UTC"), tenant_id="eng")
+    assert row["machine_usd"] == round(cat.machine(cat.DEFAULTS["machine"]).usd_per_hour / 2, 4)
+
+
+def test_a_refused_start_is_counted_as_a_stock_out_on_its_day(db, store, clock):
+    _lease(db, ENG, 1)
+    store.record(ENG, 1, _stt(300))
+    _no_l4(db, ENG, NOW - timedelta(minutes=1))
+    # A session refused outright never wrote a sample, yet its day counts it.
+    refused = sm.SessionRef(tenant_id="eng", person=ALICE, project_id="vp_1",
+                            session_id="vs_eng2")
+    _no_l4(db, refused, NOW + timedelta(days=1))
+    _no_l4(db, OPS, NOW)
+    span = tel.parse_span("2026-11-06", "2026-11-07", "UTC")
+    days = store.days(span, tenant_id="eng")
+    assert [(d["day"], d["stockouts"]) for d in days] == [("2026-11-06", 1), ("2026-11-07", 1)]
+    assert all(d["stockouts_reason"] is None for d in days)
+    [row] = store.sessions(span, tenant_id="eng")
+    assert row["stockouts"] == 1 and row["stockouts_reason"] is None
+    everyone = store.days(span, tenant_id=None)
+    assert [d["stockouts"] for d in everyone] == [2, 1]
+
+
+class _Unreadable:
+    """A Firestore whose `voice_audit` cannot be read; everything else is."""
+
+    def __init__(self, db: FakeFirestore) -> None:
+        self._db = db
+
+    def collection(self, name: str) -> Any:
+        if name == vs.AUDIT:
+            raise RuntimeError("permission denied on voice_audit")
+        return self._db.collection(name)
+
+    def transaction(self) -> Any:
+        return self._db.transaction()
+
+
+def test_an_unreadable_ledger_gives_null_with_its_reason(db, store, clock):
+    _lease(db, ENG, 1)
+    store.record(ENG, 1, _stt(300))
+    _stopped(db, ENG, NOW + timedelta(hours=1), 60.0)
+    blind = tel.Telemetry(_Unreadable(db), now=clock)
+    span = tel.parse_span("2026-11-06", "2026-11-06", "UTC")
+    [row] = blind.sessions(span, tenant_id="eng")
+    assert row["machine_usd"] is None and row["machine_usd_reason"] == tel.LEDGER_UNREADABLE
+    assert row["stockouts"] is None and row["stockouts_reason"] == tel.AUDIT_UNREADABLE
+    assert row["utterances"] == 1
+    [day] = blind.days(span, tenant_id="eng")
+    assert day["machine_usd"] is None and day["machine_usd_reason"] == tel.LEDGER_UNREADABLE
+    assert day["stockouts"] is None and day["stockouts_reason"] == tel.AUDIT_UNREADABLE
+
+
+def test_an_unpriced_stop_is_null_never_zero(db, store):
+    _lease(db, ENG, 1)
+    store.record(ENG, 1, _stt(300))
+    _audit_row(db, sm.AUDIT_STOPPED, ENG, NOW + timedelta(hours=1), {
+        "cause": sm.END_IDLE, "generation": 1, "minutes": 60.0, "usd": None})
+    span = tel.parse_span("2026-11-06", "2026-11-06", "UTC")
+    [row] = store.sessions(span, tenant_id="eng")
+    assert row["machine_usd"] is None and row["machine_usd_reason"] == ledger.MACHINE_UNPRICED
+    [day] = store.days(span, tenant_id="eng")
+    assert day["machine_usd"] is None and day["machine_usd_reason"] == ledger.MACHINE_UNPRICED
+
+
+def test_the_routes_serve_cost_and_stock_outs(seeded, clock):
+    _stopped(seeded, ENG, NOW + timedelta(hours=1), 60.0)
+    _no_l4(seeded, ENG, NOW)
+    client = _client(seeded, clock)
+    days = client.get("/v1/voice/telemetry/days", params=SPAN, headers=_as(ALICE)).json()["days"]
+    assert [(d["machine_usd"], d["stockouts"]) for d in days] == [
+        (cat.machine(cat.DEFAULTS["machine"]).usd_per_hour, 1), (0.0, 0)]
+    [row] = client.get("/v1/voice/telemetry/sessions", params=SPAN,
+                       headers=_as(ALICE)).json()["sessions"]
+    assert row["machine_usd"] == cat.machine(cat.DEFAULTS["machine"]).usd_per_hour
+    assert row["stockouts"] == 1
