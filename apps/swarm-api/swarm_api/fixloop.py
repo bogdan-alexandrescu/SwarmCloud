@@ -4,7 +4,7 @@ WHAT A LOOP IS. A workflow step on the catalogue profile `fix-loop`, a
 control-plane profile: the scheduler parks it FIX_ROUNDS_RUNNING and never
 leases it (FL-SCHED). Its signed `metadata.dispatch.fix_loop` names the review
 whose verdict starts it, the fix of round 1 under `integrate`, and
-`max_rounds` (1-5, default 3; BGD Q5). It writes no artifact and holds no pod:
+`max_rounds` (1-5, default 3; the owner Q5). It writes no artifact and holds no pod:
 every round is an ordinary admitted agent in a one-step workflow of its own,
 appended to the loop's workflow as a pointer step `review-fix:<k>` /
 `re-review:<k>` (`mergewake.append_round_agent`, `swarm_rollup.FIX_ROUND_STEP_RE`).
@@ -24,9 +24,9 @@ review that says MERGE ends the loop with no round.
 THE DECISION TABLE (§4.4) is `_decide`. Every ending that needs a person parks
 the loop HUMAN_REQUIRED -- a field write on a PARKED task -- with a
 `blocked_by` entry `{park_phase, fix_loop: {...}}`, `next_eligible_at` the park's
-instant (the scheduler expires a `fix_loop` park after 7 days, BGD Q3 (c)),
+instant (the scheduler expires a `fix_loop` park after 7 days, the owner Q3 (c)),
 and the reason in `result_summary.fix_loop`. A person then adds a round
-(`add_rounds`, any full member, at most FIX_LOOP_ROUNDS_CEILING in all, BGD
+(`add_rounds`, any full member, at most FIX_LOOP_ROUNDS_CEILING in all, the owner
 Q4 (a)) or stops it (`end_failed`, FAILED `fix_loop_exhausted`).
 
 WHAT IS TRUSTED. `max_rounds` only from the signed block, re-capped on every
@@ -110,7 +110,7 @@ STATE_KEY = "fix_loop_state"
 #: metadata, where `cifix.ROUND_KINDS` reads it.
 ROUND_METADATA_KEY = FIX_LOOP_ROUND_FIELD
 #: The most rounds a loop may run in all, with every round a person added
-#: (BGD Q4 (a), 2026-10-27).
+#: (the owner Q4 (a), 2026-10-27).
 FIX_LOOP_ROUNDS_CEILING = 10
 #: A PARKED loop whose last round ended longer ago than this is the sweep's;
 #: a younger one is still its push's (§4.3, "a lost push").
@@ -359,7 +359,7 @@ def read_verdict(ctx: Any, tenant_id: str, task_id: str) -> Verdict:
 
 
 # --------------------------------------------------------------------------
-# Later rounds' minors, on the wave epic (§6.5, BGD's Q7 (a))
+# Later rounds' minors, on the wave epic (§6.5, the owner's Q7 (a))
 # --------------------------------------------------------------------------
 #
 # Round 0's minors are the gated integrator's to file, as today; every

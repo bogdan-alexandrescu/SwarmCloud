@@ -73,7 +73,7 @@ WHERE IT WAS ANSWERED (owner decision 2026-10-19, "Plugin records it, marked
 as from Claude Code"; lane ANSWER-SYNC, part of #1644): an answer may say
 `via` -- `console`, or `claude-code` when the person answered in a Claude Code
 session and the sc plugin's `swarm_task_answer` recorded it, or `voice-it`
-when they answered by talking in Voice it (BGD, 6 November 2026) -- and that
+when they answered by talking in Voice it (the owner, 6 November 2026) -- and that
 session's id (`session`), so the console can say "answered in Claude Code".
 Both are optional, stored with the answer and inside `history`, and served
 beside `choice` and `text`. They are LABELS, NEVER PERMISSIONS: who may answer
@@ -82,7 +82,7 @@ read, so no `via` widens or narrows it. A `session` is a UUID or 8-64 of
 `[A-Za-z0-9_-]`, anything else a 422: it is shown to people, so it is held to
 the shape of an id and can carry nothing else.
 
-A DESIGN PREVIEW IS SERVED ON ITS OPTION (BGD's answer on the full-page
+A DESIGN PREVIEW IS SERVED ON ITS OPTION (the owner's answer on the full-page
 interview lane, 6 November 2026, 'Serve preview'). A plugin step's agent may
 draw each option as HTML (`preview`); the worker keeps it in the wait's bridge
 block, and the read serves it on that option, redacted as the question's text
@@ -253,7 +253,7 @@ QUESTION_WAIT_MAX_SECONDS = 72 * 3600
 BRIDGE_KEY = "bridge"
 BRIDGE_WAIT_MAX_SECONDS = 24 * 3600
 #: The most characters of design HTML served as one option's `preview`, and
-#: as all of one question's previews (BGD, 6 November 2026, 'Serve preview').
+#: as all of one question's previews (the owner, 6 November 2026, 'Serve preview').
 #: The largest preview in the tests is a one-line snippet of under 60
 #: characters, so the caps come from the worker instead: the bridge takes a
 #: preview of at most 8 KiB (`question_bridge.MAX_TEXT`), which one option may
@@ -763,7 +763,7 @@ def _redacted_question(entry: dict[str, Any]) -> tuple[dict[str, Any], int]:
     out["context"] = clean(out["context"])
     # Labels too, as the artifact read masks them: an answer's choice is
     # checked against the labels as served, so the two always agree.
-    # And a design preview, as the text beside it is (BGD, 6 November 2026).
+    # And a design preview, as the text beside it is (the owner, 6 November 2026).
     out["options"] = [{**o, "label": clean(o["label"]), "description": clean(o["description"]),
                        **({"preview": clean(o["preview"])} if "preview" in o else {})}
                       for o in out["options"]]
@@ -1179,7 +1179,7 @@ class AnswerBody(BaseModel):
     #: `github-comment` is the `/answer` reply on the agent's issue
     #: (`ghapprove.poll_answers`), set by swarm-api, never a caller's word for
     #: who may answer.
-    #: `voice-it` is an answer given by talking in Voice it (BGD, 6 November 2026).
+    #: `voice-it` is an answer given by talking in Voice it (the owner, 6 November 2026).
     via: Literal["console", "claude-code", "github-comment", "voice-it"] | None = None
     session: str | None = None
 

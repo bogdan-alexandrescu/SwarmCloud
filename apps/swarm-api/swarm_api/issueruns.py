@@ -259,7 +259,7 @@ RUN_ID_PREFIX = "run"
 PLANNER_PROFILE = "claude-code"
 STEP_PROFILE = "claude-code"
 #: The compiled review runs on the browser only when the change is UI (#2322,
-#: BGD 2026-10-25): submitted on the policy's browser profile, the one it
+#: the owner 2026-10-25): submitted on the policy's browser profile, the one it
 #: runs if nothing resolves it, and resolved by the scheduler from what the
 #: implementer steps changed (`scheduler.runtime`). The pair is the
 #: validator's one pair, read rather than restated.
@@ -267,17 +267,17 @@ REVIEW_PROFILE = RUNTIME_POLICY_PROFILES["browser"]
 REVIEW_RUNTIME: Mapping[str, str] = MappingProxyType(
     {"policy": RUNTIME_POLICY_BROWSER_IF_UI, **RUNTIME_POLICY_PROFILES})
 
-# The compiled review runs only where it matters (#2524, BGD 2026-10-27:
+# The compiled review runs only where it matters (#2524, the owner 2026-10-27:
 # "Risk paths + over 300 lines; reuse renders"): when what the implementer
 # steps changed touches a risk path or more than 300 lines. Otherwise
 # swarm-api ends it SUCCEEDED without an agent, with a MERGE verdict.json
 # naming the reason (`reviewgate`), and the fix step publishes as for any
 # MERGE. It names no gate of its own: it is a review step (the fix's `when`
-# reads it), so it is stored with the default gate (BGD 2026-10-28, "every
+# reads it), so it is stored with the default gate (the owner 2026-10-28, "every
 # review step"; `validation.default_review_gate_steps`), which follows the
 # workspace's setting.
 #
-# A SKIPPED REVIEW STILL CONFIRMS REQUIREMENTS (BGD 2026-10-28 ~18:25Z, "Gate
+# A SKIPPED REVIEW STILL CONFIRMS REQUIREMENTS (the owner 2026-10-28 ~18:25Z, "Gate
 # + cheap requirements check"). Beside the review, a plan that lists
 # requirements gets `requirements-check`: held like the review and run ONLY
 # when the review is skipped (`reviewgate.is_requirements_check`), on
@@ -426,7 +426,7 @@ FINDINGS_SHAPE = (
     '"findings": [{"summary": "one blocker per entry", "file": "its repository-relative '
     'path", "line": <its line number>, "side": "new" or "old"}]'
 )
-#: The head the review judged, written beside `verdict` (#2524 check (b), BGD
+#: The head the review judged, written beside `verdict` (#2524 check (b), the owner
 #: 2026-10-28). The worker reads it (`agent_worker.verdict.Verdict.commit`) and
 #: skips a NOT_YET-gated fix whose branch head already contains a commit a
 #: review gave MERGE: that fix would be paid for to change reviewed work.
@@ -1400,8 +1400,8 @@ def deny_list_refusal(plan: Mapping[str, Any] | None) -> str | None:
     )
 
 
-#: A deny-list name, whole: not inside a longer name (`swarm-agents-staging-x`
-#: is not `agents-staging`). "default" (the shared project's default network)
+#: A deny-list name, whole: not inside a longer name (`swarm-peer-cluster-x`
+#: is not `peer-cluster`). "default" (the shared project's default network)
 #: is also an ordinary word, so it is matched only quoted, as a resource name
 #: is written; every other entry anywhere.
 _NAME_CHAR = r"A-Za-z0-9_@"
@@ -1911,7 +1911,7 @@ _PLAN_SHAPE_CLASS = (
 
 
 #: What the planner is told about the approval sections (`plansections`;
-#: BGD, 6 November 2026): the person approving reads these first. Each is
+#: the owner, 6 November 2026): the person approving reads these first. Each is
 #: optional and advisory -- one written wrong is dropped, not refused.
 _SECTIONS_RULES = (
     '"purpose", "why", "changes", "risk", "validation" and "graph" are what the person '
@@ -2970,7 +2970,7 @@ def workflow_unit(run: "IssueRun") -> str:
 def submitting(spec: TaskCreate | WorkflowCreate) -> Any:
     """The block an issue run's submission is made in: inside it, the spec's
     own `metadata.issue_run` gets past the reserved-key check, and nothing
-    else does (BGD, 2026-11-04). The caller calls
+    else does (the owner, 2026-11-04). The caller calls
     `ctx.submissions.submit_tasks`/`submit_workflow` itself inside it, so the
     signing paths stay the only writers of a task: the planner and the
     compiled workflow (routes/runs.py), a CI fix round and the merge
@@ -2982,7 +2982,7 @@ def submitting(spec: TaskCreate | WorkflowCreate) -> Any:
 def workflow_feature(run: "IssueRun") -> dict[str, str]:
     """The compiled workflow's `metadata.feature`: the issue, by its title --
     its reference when the title was not read -- and its URL, the title on one
-    line and at most FEATURE_TITLE_MAX_CHARS (BGD, 2026-11-04)."""
+    line and at most FEATURE_TITLE_MAX_CHARS (the owner, 2026-11-04)."""
     issue_read = getattr(run, "issue_read", None)
     read = issue_read if isinstance(issue_read, Mapping) else {}
     title = " ".join(str(read.get("title") or "").split()) or run.issue.short
@@ -2992,7 +2992,7 @@ def workflow_feature(run: "IssueRun") -> dict[str, str]:
 
 
 #: How many of the summary's sentences the description keeps: "two or three
-#: sentences" is what the workflow page heads with (BGD, 2026-11-04).
+#: sentences" is what the workflow page heads with (the owner, 2026-11-04).
 DESCRIPTION_SENTENCES = 3
 
 _FENCED = re.compile(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", re.MULTILINE | re.DOTALL)
@@ -3040,7 +3040,7 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "metadata": {
             "title": workflow_title(run),
             "unit": workflow_unit(run),
-            # What the workflow page heads with (BGD, 2026-11-04): the issue
+            # What the workflow page heads with (the owner, 2026-11-04): the issue
             # it works on, and what its approved plan delivers.
             "feature": workflow_feature(run),
             **({"description": description} if (description := workflow_description(run)) else {}),
@@ -3861,7 +3861,7 @@ def run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-#: `GET /v1/runs/{id}`'s `planner_documents` (BGD, 6 November 2026, on the
+#: `GET /v1/runs/{id}`'s `planner_documents` (the owner, 6 November 2026, on the
 #: full-page interview lane: "Serve them on the run"): the planner step's
 #: design document and diagrams for the proposal page. A design doc is a
 #: Markdown artifact whose file name holds this word (gstack's planning skills

@@ -32,7 +32,7 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 INSTRUCTIONS = ("Jev answers typed questions about a state you pass; it never writes text. "
                 "Advisory only, shared budget of 8 calls per task.")
 ADVISORY = "Jev is advisory: no answer this time; continue with your own judgement."
-#: A malformed answer is asked again once (BGD's pick of 6 November 2026,
+#: A malformed answer is asked again once (the owner's pick of 6 November 2026,
 #: after 4 of 529 answers were recorded malformed); a second one is this.
 UNDECIDED = "Jev could not decide"
 MALFORMED_RETRIES = 1

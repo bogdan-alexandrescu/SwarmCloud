@@ -41,7 +41,7 @@ The tenant on every route comes from `tenant_scope`, never from the body: a
 run is created in the caller's tenant (through `submit_tasks`, which runs
 `tenant_for`) and every other route reads it under that same check.
 
-A PLATFORM-SCOPE SCHEDULE'S PLAN IS A PLATFORM ADMIN'S TO DECIDE (BGD,
+A PLATFORM-SCOPE SCHEDULE'S PLAN IS A PLATFORM ADMIN'S TO DECIDE (the owner,
 2026-10-25; PLATFORM-SCHED-ROUTES, part of #2157). `plan:approve` and
 `plan:reject` of a run whose STORED `schedule.schedule_id` -- never the
 request -- names a schedule whose stored `scope.mode` is `platform` are 403
@@ -50,7 +50,7 @@ the run moves: the inbox's own check (`routes.approvals._platform_only`),
 with its log line. A run of a workspace-scope schedule, or of none, keeps
 the rules above exactly.
 
-ONLY SOMEONE WHO MAY APPROVE A PLAN MAY REJECT IT (BGD 2026-10-26,
+ONLY SOMEONE WHO MAY APPROVE A PLAN MAY REJECT IT (the owner 2026-10-26,
 PLAN-REJECT-RULE, part of #2417). `plan:reject` of a PLANNED run asks the
 approvals inbox's own reject rule (`reject_rule`, over
 `routes.approvals._reject_rule`): the who-checks `plan:approve` makes -- the
@@ -319,7 +319,7 @@ PLANNER_LISTING_LIMIT = 500
 def with_planner_documents(ctx: AppContext, tenant_id: str, run: IssueRun, row: dict) -> dict:
     """`row` with `planner_documents`: the planner's design docs and diagrams
     (`issueruns.planner_documents`), by name, size and read link, for the
-    proposal page (BGD, 6 November 2026: "Serve them on the run").
+    proposal page (the owner, 6 November 2026: "Serve them on the run").
 
     `None` while the planner has not finished (its artifacts are uploaded at
     the end of its attempt, so an empty list then would be a "none" nobody

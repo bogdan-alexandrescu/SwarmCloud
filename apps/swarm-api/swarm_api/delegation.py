@@ -14,7 +14,7 @@ metadata-server credentials, which have no `with_subject`, so the delegation
 branch silently did not fire and every lookup fell back to the service
 account's own identity:
 
-    impersonation requested for bogdan@saga.xyz but these credentials cannot
+    impersonation requested for owner@example.com but these credentials cannot
     delegate; group lookups will use the service account's own identity
     cloud identity returned 403: Error(2028): Permission denied for resource
 
@@ -102,7 +102,7 @@ def service_account_email(credentials: Any) -> str | None:
     first attempt at this went straight to a hand-rolled urllib call against
     metadata.google.internal instead, which failed silently and produced
 
-        cannot delegate to bogdan@saga.xyz: these credentials are not a
+        cannot delegate to owner@example.com: these credentials are not a
         service account and no metadata server answered
 
     on a machine whose metadata server was working perfectly. Letting

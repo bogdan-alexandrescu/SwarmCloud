@@ -1579,7 +1579,7 @@ def fetch_commit_history(
     short reason (never git's own words).
 
     `fetch_base_history` deepens the checkout, which brings every blob the
-    `depth` commits changed: on a large repository (AI Studio's, 2026-11-06)
+    `depth` commits changed: on a large repository (a peer application's, 2026-11-06)
     that ran past the 20-second limit on 213 of 637 steps and the graph was
     not delivered. An ancestry proof reads commits (`merge-base`,
     `rev-list --count`) and trees (`diff --name-only`), never a blob, so
@@ -3250,7 +3250,7 @@ def merged_head_kept(
     on 6 November 2026). `on_forge(head)` asks the forge itself
     (`forge_holds_commit`); a branch fetched from it -- a merge train, any
     branch, by name or by refspec -- is published already, so keeping it as a
-    parent pushes nothing the forge lacks. Measured on Product Oracle's pull
+    parent pushes nothing the forge lacks. Measured on a peer application's pull
     request 1292: its train branch held a commit with a `Co-Authored-By:
     Claude` trailer made outside this platform, the read above dropped the
     train, and the agent's "merge train AO head" reached the pull request

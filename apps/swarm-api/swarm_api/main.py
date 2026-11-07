@@ -136,7 +136,7 @@ UNCAPTURED_ROUTES = frozenset({
     "/v1/tasks/batch",
     "/v1/workflows",
     # A workflow's per-run MCP credentials, re-stored by its caller
-    # (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+    # (registered-mcp-servers.md §4.10, the owner 2026-10-26).
     workflows.MCP_CREDENTIALS_ROUTE,
     # An await-input answer (docs/design/human-steps.md §4.6): a person's
     # form and up to 16 MiB of their files.
@@ -149,7 +149,7 @@ UNCAPTURED_ROUTES = frozenset({
     qatargets.CREDENTIAL_ROUTE,
     qatargets.ISSUE_ROUTE,
     # A QA target's challenge bypass value (§2.5, lane CAPTCHA-BYPASS): the
-    # PUT's body is the value itself (BGD, 2026-10-23).
+    # PUT's body is the value itself (the owner, 2026-10-23).
     qatargets.BYPASS_ROUTE,
     # The rest take a credential in their body and were missing until
     # test_uncaptured_routes_cover_credential_bodies.py read the routes

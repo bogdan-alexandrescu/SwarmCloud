@@ -33,7 +33,7 @@ request makes the approval stale), then the subject is moved and the
 decision and its `schedule_audit` entry are written, all in that
 transaction.
 
-ONLY SOMEONE WHO MAY APPROVE AN ITEM MAY REJECT IT (BGD 2026-10-26, #2417
+ONLY SOMEONE WHO MAY APPROVE AN ITEM MAY REJECT IT (the owner 2026-10-26, #2417
 A5f). A rejection used to be any member's; it now passes the same who-checks
 an approval does, else 403 `reject_approver_required` through its switch,
 which ships on (`refusals.SWITCHES`). Off: any member rejects, as before.
@@ -43,7 +43,7 @@ WHO MAY DECIDE (§4.6). Any member of the item's tenant by default (SD5) --
 platform admin decides another tenant's item by no route here. `owner_only`:
 PLATFORM_OWNER, as a member of the tenant. `second_member`: any member but
 the run's creator, its last plan editor and its schedule's last gate editor
--- except that a workspace admin decides alone, even as one of those (BGD
+-- except that a workspace admin decides alone, even as one of those (the owner
 2026-10-26, "let an admin approve it, no need for two approvers");
 a one-person `u-*` tenant types a confirmation naming the matched paths
 (SD11). A named list: each a member now, asked of the directory. A
@@ -57,7 +57,7 @@ task has already ended. Expiry (§4.7) tidies the inbox; it releases nothing.
 TENANT-SCOPED (invariant 9). Every read compares the stored `tenant_id` with
 the caller's and answers a mismatch with the same 404 as a missing id.
 
-THE LAST 7 DAYS STAY READABLE (BGD 2026-10-27, #2417 A4). `history` serves
+THE LAST 7 DAYS STAY READABLE (the owner 2026-10-27, #2417 A4). `history` serves
 what was approved, rejected, answered or expired in the last HISTORY_DAYS,
 newest first, each kind from its own source of truth -- a record, a run, a
 task -- with one bounded read per source and nothing written.
@@ -497,7 +497,7 @@ def _hold_refusal(ctx: Any, run: IssueRun, hold: Mapping[str, Any], *, email: st
                 return None
             return ("this one-person workspace approves its own held run only with a typed "
                     "confirmation naming the matched paths", {"confirm": expected})
-        # BGD 2026-10-26, "let an admin approve it, no need for two
+        # the owner 2026-10-26, "let an admin approve it, no need for two
         # approvers": a workspace admin is never one the hold excludes. Asked
         # only of someone excluded, so a second member costs no role read.
         if email.strip().lower() in hold_excluded(ctx, run) and not workspace_admin(ctx, run.tenant_id, email):
@@ -586,7 +586,7 @@ def owner_alone(approvers: Any, hold: Mapping[str, Any] | None = None, *, owner:
     `owner_only`, or the item's hold is, or the gate's approvers are a named
     list of the owner alone.
 
-    THE NAMED LIST OF ONE (#2259, BGD's decision 2026-10-25, "Yes: treat
+    THE NAMED LIST OF ONE (#2259, the owner's decision 2026-10-25, "Yes: treat
     [owner] like owner_only", task_f710f280d20349fc816a): a list whose
     entries, stripped and lower-cased, are exactly one address, and that
     address is `owner`. `owner` is the platform owner's address as the
@@ -620,7 +620,7 @@ def check_gate_approver(ctx: Any, tenant_id: str, approvers: Any, *, email: str,
     Only a caller that writes the audit asks for it (`owner_waiver=True`, and
     `decide(waiver=...)` with what this returns): the waiver is returned, never
     applied silently. Nobody but `is_owner` reaches it; `members` and a named
-    list keep the rule exactly, except a list of the owner alone (BGD
+    list keep the rule exactly, except a list of the owner alone (the owner
     2026-10-25), whose waiver records the list as it stands as `approvers`.
     None: no waiver was needed.
     """
@@ -987,7 +987,7 @@ def inbox(ctx: Any, tenant_id: str, *, kind: str | None = None) -> list[dict[str
 # The history: what was decided or expired lately (#2417 A4)
 # --------------------------------------------------------------------------
 
-#: How far back the history reaches. BGD 2026-10-27 (AUTO-A4A5): "the
+#: How far back the history reaches. The owner 2026-10-27 (AUTO-A4A5): "the
 #: approvals API returns recent decisions", the last 7 days of them.
 HISTORY_DAYS = 7
 #: Decided and expired rows one history read serves at most, and what each of
@@ -1340,7 +1340,7 @@ def merge_digest_text(digest: Mapping[str, Any]) -> str:
 
 
 class RejectApproverRequired(Forbidden):
-    """403: the caller may not approve this item, so may not reject it (BGD
+    """403: the caller may not approve this item, so may not reject it (the owner
     2026-10-26, #2417 A5f). Behind `refusals.SWITCHES`, on by default."""
 
     code = "reject_approver_required"
@@ -1468,20 +1468,20 @@ def superseded_by(db: Any, doc: Mapping[str, Any], head_now: str | None) -> dict
 DECIDERS_MEMBERS = "members"
 DECIDERS_PLATFORM_ADMINS = "platform_admins"
 #: Beside `second_member`: a workspace admin decides a `second_member` hold
-#: alone (BGD 2026-10-26).
+#: alone (the owner 2026-10-26).
 DECIDERS_WORKSPACE_ADMINS = "workspace_admins"
 
 
 def deciders(ctx: Any, tenant_id: str, *, kind: str, approvers: Any, hold: Mapping[str, Any] | None,
              schedule: Mapping[str, Any] | None, merge_tier: bool, platform_scope: bool,
              run: IssueRun | None = None) -> list[str]:
-    """Who may approve an item, and so (BGD 2026-10-26) reject it: the
+    """Who may approve an item, and so (the owner 2026-10-26) reject it: the
     narrowest rule that applies to it, as a list.
 
     Addresses where the item names people -- a named list, less the
     schedule's last editor of a merge-tier item in a group tenant (SD5) and,
     under a `second_member` hold, those the hold does not admit (a workspace
-    admin it admits: BGD 2026-10-26) -- else one rule word from `approvers`'
+    admin it admits: the owner 2026-10-26) -- else one rule word from `approvers`'
     vocabulary: `owner_only` (the gate, or a `NEEDS_OWNER` hold),
     `platform_admins` (a `custom-prompt` spec, or a platform-scope
     schedule's item), `second_member` with `workspace_admins` beside it,

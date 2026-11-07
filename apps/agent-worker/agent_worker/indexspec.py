@@ -1,6 +1,6 @@
 """`repo-index.json`, checked by the worker with promotion's own rules (lane INDEX-ROUTES, #1693).
 
-Measured 2026-10-20 on ai-studio (repo_d754779d0cf31b44): 3 of 19 index runs
+Measured 2026-10-20 on peer-app (repo_d754779d0cf31b44): 3 of 19 index runs
 were refused at promotion (`routes.N.kind` missing, `routes.520.handler`
 empty, `modules.4.purpose` over 300 characters). swarm-api checks the
 document with `swarm_api.repoindex.RepoIndexSpec` only after the attempt has

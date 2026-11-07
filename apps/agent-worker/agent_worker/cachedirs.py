@@ -56,7 +56,7 @@ absent image cache or a failed copy leaves the empty cache npm had before,
 and npm fetches from the network as it always did.
 
 BIG SCRATCH DATA BELONGS UNDER TMPDIR, AND THE AGENT IS TOLD SO (issue #2436).
-task_73850f24085447368991 (Product Oracle's integration lane, 2026-10-26) was
+task_73850f24085447368991 (a peer application's integration lane, 2026-10-26) was
 evicted twice with `EmptyDir volume "tmp" exceeds 3Gi`, after about two hours
 each, and published nothing. TMPDIR already pointed here, at the 20 GiB cache
 volume; the agent wrote a Postgres data dir (/tmp/pgdata), test logs (/tmp/tr)

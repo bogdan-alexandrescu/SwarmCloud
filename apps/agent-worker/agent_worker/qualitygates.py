@@ -1,6 +1,6 @@
 """The claude-code lanes' quality gates: jev-belay and jev-enforce, keyed with the workspace's TypeSafe key (JEV-LANES).
 
-BGD decided 2026-10-31: 25% of lane PRs were red on their first CI run
+The owner decided 2026-10-31: 25% of lane PRs were red on their first CI run
 (#642), and a review's NOT_YET round costs a fix step and a re-review. So a
 claude-code lane in a workspace that turned `quality_gates.jev` on runs two
 Claude Code hooks, both checked by TypeSafe's Jev:
