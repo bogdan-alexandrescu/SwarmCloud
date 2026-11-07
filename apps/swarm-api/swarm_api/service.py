@@ -987,16 +987,15 @@ class SubmissionService:
             max_turns = lower_turn_cap(max_turns, alternate.pop("max_turns"))
             metadata[RUNTIME_METADATA_KEY] = {**runtime, "alternate": alternate}
         # Who the agent's commits name (P37, `gitidentity`): the authenticated
-        # caller unless the caller of this method resolved someone else (a
-        # child's parent, a service account's continued task). Inside the
-        # dispatch block, which the signature covers and no caller can write.
+        # caller's connected GitHub account, else the bot, unless the caller of
+        # this method resolved someone else (a child's parent, a service
+        # account's continued task). Never an email address of the person's
+        # own (owner rule 2026-11-07). Inside the dispatch block, which the
+        # signature covers and no caller can write.
         if git_identity is None:
-            git_identity = (
-                gitidentity.for_caller(ctx.email, ctx.display_name)
-                if ctx is not None
-                else gitidentity.for_caller(submitted_by)
-            )
-        gitidentity.record_on(metadata[DISPATCH_METADATA_KEY], git_identity, submitted_by)
+            git_identity = gitidentity.for_caller(submitted_by, gitidentity.connected_github(
+                self._store.db, tenant.tenant_id, submitted_by))
+        gitidentity.record_on(metadata[DISPATCH_METADATA_KEY], git_identity)
 
         # Walk the real state machine even though only the end state is stored.
         assert_transition(TaskState.SUBMITTED, TaskState.QUEUED)
@@ -1715,12 +1714,14 @@ class SubmissionService:
             self._merge_mode(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
-        # Every step's commits name the workflow's submitter (P37). A
-        # continuation a service account submitted names the person behind
-        # the task it continues instead, else the bot (`gitidentity`).
+        # Every step's commits name the workflow's submitter's connected GitHub
+        # account (P37), else the bot. A continuation a service account
+        # submitted names the account the task it continues records instead,
+        # else the bot (`gitidentity`).
         git_identity = gitidentity.for_continuation(
-            ctx.email, ctx.display_name,
+            ctx.email,
             self._continued_task(tenant.tenant_id, continuation) if continuation else None,
+            gitidentity.connected_github(self._store.db, tenant.tenant_id, ctx.email),
         )
         for step_id in order:
             source = by_id[step_id]

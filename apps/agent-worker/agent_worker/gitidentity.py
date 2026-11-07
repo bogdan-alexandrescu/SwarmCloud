@@ -1,35 +1,34 @@
-"""The git identity an agent commits under: the person who dispatched the task.
+"""The git identity an agent commits under: the dispatcher's GitHub account, else the bot.
 
 Owner decision 2026-10-06 (chunk-3 observer P37): every chunk-3 agent that
 committed first failed `git commit` for want of an identity, then committed as
 `swarm <swarm@localhost>`. The agent's environment now names the person.
 
-FROM THE TASK DOCUMENT, NEVER FROM `input` (invariant 10). `submitted_by` is
-the verified email of whoever submitted, and swarm-api records
-`metadata.dispatch.git_identity = {"name", "email"}` at submission, from the
-authenticated principal, when there is more to say than that address
-(`swarm_api.gitidentity`). Both are inside the spec signature: `dispatch` is a
-signed metadata key, which is why the record lives there. The record's EMAIL is used
-only when it IS `submitted_by`, or when `submitted_by` is a service account (a
-ci-fix continuation, whose record names the person behind the task it
-continues). Otherwise the bare submitter is named, by the local part of their
-address. Nothing a caller puts in `input` reaches this.
+NEVER AN EMAIL ADDRESS OF THEIR OWN (owner hard rule, 2026-11-07). Commits
+used to carry the submitter's address; GitHub refused every push that would
+publish a private one (GH007), and the owner ruled that no commit may carry an
+address identifying a person or a company. So the record's email is used ONLY
+when it is a GitHub no-reply address -- swarm-api writes `<login>
+<id+login@users.noreply.github.com>` for a person whose GitHub account is
+connected (`swarm_api.gitidentity`) -- and everything else commits as
+`BOT_GIT_IDENTITY`. `submitted_by` is never a commit email.
 
-When no person can be named -- a service account's task with no usable record,
-or a document with no submitter -- the commits name `BOT_GIT_IDENTITY`.
+FROM THE TASK DOCUMENT, NEVER FROM `input` (invariant 10). The record is
+`metadata.dispatch.git_identity = {"name", "email"}`, inside the spec
+signature (`dispatch` is a signed metadata key). Nothing a caller puts in
+`input`, or in a metadata key of its own, reaches this.
 
 The worker's OWN commits (its auto-commit, the publish fold, the integrator's
-merges) are unchanged: they are made under `WorkerConfig.git_author_*` with
-`-c` keys and an environment of their own (`gitops._git_env`), which never
-sees these variables.
+merges) are made as `Worker._publish_identity`: this identity, or
+`WorkerConfig.git_author_*` for the bot, which `WorkerConfig` refuses unless
+its email is a no-reply address too (`is_noreply`). They carry them as `-c`
+keys in an environment of their own (`gitops._git_env`).
 """
 
 from __future__ import annotations
 
 import re
 from typing import Any, Mapping
-
-from swarm_common.identity import SERVICE_ACCOUNT_EMAIL
 
 #: The field of `metadata.dispatch` swarm-api writes
 #: (`swarm_api.gitidentity.GIT_IDENTITY_FIELD`).
@@ -50,6 +49,16 @@ GIT_IDENTITY_ENV: tuple[str, ...] = (
     "GIT_COMMITTER_EMAIL",
 )
 
+#: What every address a commit may carry ends with: GitHub's no-reply domain
+#: (`swarm_api.gitidentity.NOREPLY_SUFFIX`).
+NOREPLY_SUFFIX = "@users.noreply.github.com"
+
+#: `<id>+<login>@` (accounts since 2017) or `<login>@`, a login being letters,
+#: digits and hyphens, not starting with a hyphen, at most 39 characters.
+_NOREPLY = re.compile(
+    r"(?:[0-9]{1,20}\+)?([A-Za-z0-9][A-Za-z0-9-]{0,38})" + re.escape(NOREPLY_SUFFIX), re.I
+)
+
 NAME_MAX_CHARS = 100
 
 #: git refuses `<`, `>` and newlines in an identity; control characters would
@@ -64,34 +73,22 @@ def _clean_name(raw: Any) -> str:
     return " ".join(_UNSAFE.sub(" ", raw).split())[:NAME_MAX_CHARS].strip()
 
 
-def _is_service_account(email: str) -> bool:
-    return bool(SERVICE_ACCOUNT_EMAIL.match(email)) or email.endswith(".gserviceaccount.com")
-
-
-def _person(email: Any) -> str:
-    """`email` lowered when it is a person's address, else ""."""
-    if not isinstance(email, str):
-        return ""
-    email = email.strip().lower()
-    if "@" not in email or _UNSAFE.search(email) or " " in email or _is_service_account(email):
-        return ""
-    return email
+def is_noreply(email: Any) -> bool:
+    """`email` is a GitHub no-reply address, and nothing else."""
+    return isinstance(email, str) and _NOREPLY.fullmatch(email) is not None
 
 
 def commit_identity(task: Mapping[str, Any] | None) -> tuple[str, str]:
     """(name, email) the agent's commits carry, for this task document."""
     task = task or {}
-    submitter = str(task.get("submitted_by") or "").strip().lower()
     metadata = task.get("metadata")
     block = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
     record = block.get(GIT_IDENTITY_FIELD) if isinstance(block, Mapping) else None
-    if isinstance(record, Mapping):
-        email = _person(record.get("email"))
-        if email and (email == submitter or _is_service_account(submitter)):
-            return _clean_name(record.get("name")) or email.split("@", 1)[0], email
-    email = _person(submitter)
-    if email:
-        return email.split("@", 1)[0], email
+    if isinstance(record, Mapping) and isinstance(record.get("email"), str):
+        email = record["email"].strip()
+        found = _NOREPLY.fullmatch(email)
+        if found is not None:
+            return _clean_name(record.get("name")) or found.group(1), email
     return BOT_GIT_IDENTITY
 
 
