@@ -17574,7 +17574,7 @@ class Worker:
         if self._clone_base:
             lines.append(f"- base commit: `{self._clone_base}`")
         if self._last_checkpoint is not None:
-            lines.append(f"- checkpoint: `{self._last_checkpoint.uri}`")
+            lines.append(f"- checkpoint: `{self._last_checkpoint.checkpoint_id}`")
         if folded:
             # Said on the page, because a reviewer who knows the agent made
             # several commits would otherwise look for them. They are in the
