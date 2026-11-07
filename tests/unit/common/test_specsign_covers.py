@@ -182,6 +182,8 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: by the park at the time limit.
 #: And the issue run a task or workflow belongs to (BGD, 2026-11-04), written
 #: by the issue-run code at submission, read by swarm-api; no worker acts on it.
+#: And the never-started re-queues so far (part of #2688), written by the
+#: reconciler when a silent lease's worker never started.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
     "human_wait_resumes",
@@ -203,6 +205,7 @@ UNSIGNED_PLATFORM_KEYS = {
     "quota_park_resumes",
     "time_limit_continuations",
     "issue_run",
+    "never_started_requeues",
 }
 
 #: The signed metadata keys that are NOT in swarm-api's reserved tuple,
@@ -242,6 +245,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         QUOTA_PARK_RESUMES_METADATA_KEY,
         TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
         ISSUE_RUN_METADATA_KEY,
+        NEVER_STARTED_REQUEUES_METADATA_KEY,
     )
 
     # MUTATION: drop QA_TARGET_METADATA_KEY from RESERVED_METADATA_KEYS and this is red.
@@ -271,6 +275,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         QUOTA_PARK_RESUMES_METADATA_KEY,
         TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
         ISSUE_RUN_METADATA_KEY,
+        NEVER_STARTED_REQUEUES_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
 
 
