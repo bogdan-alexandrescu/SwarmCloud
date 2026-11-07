@@ -105,7 +105,7 @@ def broker_app(broker, monkeypatch):
     monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setenv(
-        "BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@p.iam.gserviceaccount.com"
+        "BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@example-project.iam.gserviceaccount.com"
     )
     monkeypatch.setenv(
         "WORKER_SERVICE_ACCOUNT_TEMPLATE",

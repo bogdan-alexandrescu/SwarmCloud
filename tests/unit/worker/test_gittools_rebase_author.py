@@ -60,7 +60,7 @@ LANE_FILE = "tests/acceptance/fixtures/git-tools/lane.txt"
 MAIN_LINE = "main: the default branch wrote this line"
 LANE_LINE = "lane: the pull request wrote this line"
 BOT_NAME, BOT_EMAIL = "swarmcloud agent", "swarmcloud-agent@users.noreply.github.com"
-ROBOT = "swarm-accept@project.iam.gserviceaccount.com"
+ROBOT = "swarm-accept@example-project.iam.gserviceaccount.com"
 SUBMITTER = "ada@example.invalid"
 #: The connected GitHub account swarm-api records for SUBMITTER: a no-reply
 #: address, never an address of the person's own (owner rule 2026-11-07).

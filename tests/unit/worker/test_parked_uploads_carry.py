@@ -231,7 +231,7 @@ def test_a_carried_reference_outside_the_task_is_not_carried(db, worker_factory)
     artifact of the parked attempt itself, of THIS task, is dropped."""
     _park_after_writing(db, worker_factory)
     db.documents["tasks/task_1/carry/att_1"]["artifacts"][0]["uri"] = (
-        f"gs://bucket/tenants/{TENANT}/tasks/task_other/attempts/att_9/artifacts/notes.md"
+        f"gs://swarm-artifacts-example-project/tenants/{TENANT}/tasks/task_other/attempts/att_9/artifacts/notes.md"
     )
 
     assert _resume(db, worker_factory, write=None) == ExitCode.FAILED
@@ -430,7 +430,7 @@ def test_an_await_park_records_its_uploads_for_the_attempt_that_finishes(db):
     """The await park (child tasks) is a park too, in its own transaction:
     what the parent uploaded before it waited is carried like any park's."""
     seed_attempt(db, state=TaskState.RUNNING)
-    uri = f"gs://bucket/tenants/{TENANT}/tasks/task_1/attempts/att_1/artifacts/plan.md"
+    uri = f"gs://swarm-artifacts-example-project/tenants/{TENANT}/tasks/task_1/attempts/att_1/artifacts/plan.md"
     _control(db, "att_1").park_awaiting_children(
         max_resumes=3, uploads=[{"name": "plan.md", "bytes": 9, "uri": uri}]
     )

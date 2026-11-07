@@ -233,7 +233,7 @@ def test_a_personal_workspace_is_refused_at_write(store, db):
 
 
 @pytest.mark.parametrize("requester", [
-    "builder@my-project.iam.gserviceaccount.com", "not-an-email",
+    "builder@example-project.iam.gserviceaccount.com", "not-an-email",
 ])
 def test_a_service_account_requester_is_refused_at_write(store, db, requester):
     with pytest.raises(ValidationFailed):
@@ -243,7 +243,7 @@ def test_a_service_account_requester_is_refused_at_write(store, db, requester):
 
 def test_a_signed_personal_or_service_account_request_is_skipped_at_read(store, db):
     keys = store._keys()
-    service = "builder@my-project.iam.gserviceaccount.com"
+    service = "builder@example-project.iam.gserviceaccount.com"
     for tenant_id, requester in (("u-kim", LEE), ("eng", service)):
         fields = {"ref": "j-" + secrets.token_hex(6), "tenant_id": tenant_id,
                   "group": ENG_GROUP, "requester": requester,

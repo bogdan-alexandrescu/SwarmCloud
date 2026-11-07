@@ -1,6 +1,6 @@
 """`swarm_qa_run`'s `flows_per_step` (QA-FLOWS-CAP, part of #2136).
 
-BGD, 2026-10-26: a leg's flows run in batches, several a live-browser step,
+the owner, 2026-10-26: a leg's flows run in batches, several a live-browser step,
 the batch size chosen when a run starts. The plugin's `swarm_qa_run` sends
 the same optional `flows_per_step` the API's `:run` takes (1-30), refuses
 anything else before a request, and sends no such key when the caller names

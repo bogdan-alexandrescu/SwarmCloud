@@ -1,6 +1,6 @@
 """A step that works on a pull request reads it from work/pull_request.md.
 
-Product Oracle, 2026-11-06 (part of #2688): its review lanes could not run
+A peer application, 2026-11-06 (part of #2688): its review lanes could not run
 `gh pr view` -- an agent holds no GitHub token, by design -- so they fell back
 to the checked-out head and never read the pull request's body or comments.
 The worker now reads the pull request with the tenant's own forge credential,

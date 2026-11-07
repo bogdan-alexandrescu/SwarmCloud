@@ -703,7 +703,7 @@ def test_an_at_written_as_a_character_reference_is_neutralised_too(text, expecte
     "text",
     [
         "Reported by ops@example.com.",
-        "mail first.last_name@example.co.uk now",
+        "mail first.last_name@mail.example.org now",
         "&#640; is not an at sign, nor is &#x40a;",
         "an @ on its own, and @ followed by a space",
         "no at sign at all",

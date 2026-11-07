@@ -1,6 +1,6 @@
 """An option's design preview is served with its question, bounded and redacted.
 
-BGD's answer on the full-page interview lane, 6 November 2026 ('Serve
+the owner's answer on the full-page interview lane, 6 November 2026 ('Serve
 preview'). A plugin step's agent may give each option of a question a
 `preview`: the design HTML it wrote. The worker records it in the wait's
 bridge block (`agent_worker.runners.question_bridge.wait_record`), and

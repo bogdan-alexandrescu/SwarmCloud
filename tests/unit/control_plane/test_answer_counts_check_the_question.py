@@ -35,7 +35,7 @@ from swarm_api.task_input import masking_for
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 TASK = "task_q"
 OWNER = "alice@example.com"
 SESSION = "0f0e0d0c-aaaa-4bbb-8ccc-0000000000b1"

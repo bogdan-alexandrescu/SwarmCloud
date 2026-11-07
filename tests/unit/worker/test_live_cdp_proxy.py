@@ -1101,7 +1101,7 @@ def test_a_subframe_navigation_does_not_end_control_on_about_blank(tmp_path):
     run(body)
 
 
-# GATE-LOOPBACK (part of #1333). BGD decided on 2026-10-22 that the gate treats
+# GATE-LOOPBACK (part of #1333). the owner decided on 2026-10-22 that the gate treats
 # a loopback origin as secure, as Chromium does for a secure context: the
 # live-browser acceptance fixture is served at http://127.0.0.1, and the https
 # rule refused control of it. Exactly http at 127.0.0.1, ::1 or localhost, on

@@ -80,7 +80,7 @@ def test_the_request_carries_a_generic_task_resource_built_from_the_real_library
 
     log, stream = _logger()
     client = CapturingClient()
-    CloudMonitoringExporter("proj-x", "europe-west1", log, client=client).export(
+    CloudMonitoringExporter("example-project", "europe-west1", log, client=client).export(
         _usage(), dict(LABELS)
     )
 
@@ -101,14 +101,14 @@ def test_the_request_carries_a_generic_task_resource_built_from_the_real_library
         )
     }
     for call in client.calls:
-        assert call["name"] == "projects/proj-x"
+        assert call["name"] == "projects/example-project"
         # Bounded: a hung endpoint must not hold the attempt's exit.
         assert 0 < call["timeout"] <= 30
     for s in series:
         assert isinstance(s, monitoring_v3.TimeSeries)
         assert s.resource.type == "generic_task"
         assert dict(s.resource.labels) == {
-            "project_id": "proj-x",
+            "project_id": "example-project",
             "location": "europe-west1",
             "namespace": "eng",
             "job": "claude-code",
@@ -134,7 +134,7 @@ def test_missing_labels_fall_back_to_unknown_rather_than_an_empty_label():
 
     log, _ = _logger()
     client = CapturingClient()
-    CloudMonitoringExporter("proj-x", "europe-west1", log, client=client).export(
+    CloudMonitoringExporter("example-project", "europe-west1", log, client=client).export(
         _usage(with_cpu=False), {}
     )
     assert len(client.calls) == 1
@@ -149,7 +149,7 @@ def test_an_exporter_error_is_logged_once_and_swallowed():
 
     log, stream = _logger()
     client = CapturingClient(fail=RuntimeError("permission denied"))
-    exporter = CloudMonitoringExporter("proj-x", "europe-west1", log, client=client)
+    exporter = CloudMonitoringExporter("example-project", "europe-west1", log, client=client)
 
     exporter.export(_usage(), dict(LABELS))  # must not raise
     exporter.export(_usage(), dict(LABELS))  # a retry by the crash path: still quiet
@@ -168,7 +168,7 @@ def test_a_failing_client_constructor_is_swallowed_too():
             raise RuntimeError("no default credentials")
 
     log, stream = _logger()
-    Exploding("proj-x", "europe-west1", log).export(_usage(), dict(LABELS))
+    Exploding("example-project", "europe-west1", log).export(_usage(), dict(LABELS))
 
     warnings = [l for l in _lines(stream) if l.get("severity") == "WARNING"]
     assert len(warnings) == 1
@@ -187,7 +187,7 @@ def test_the_composite_logs_a_cloud_failure_once_and_still_writes_the_log_line()
     composite = CompositeExporter(
         [
             LoggingMetricsExporter(log),
-            CloudMonitoringExporter("proj-x", "europe-west1", log, client=client),
+            CloudMonitoringExporter("example-project", "europe-west1", log, client=client),
         ],
         log,
     )

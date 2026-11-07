@@ -4,7 +4,7 @@ A PROVIDER_QUOTA_EXHAUSTED park-and-exit is invariant 4's designed path, yet
 it spent one of `max_attempts`: four `accounts_full` parks took
 task_c61ee787 to attempt_count 5 of max_attempts 3, and its first real
 infrastructure loss was then final ("no attempts left"). Decided 2026-10-27
-(BGD, epic #2525): "Refund, bounded" -- refunded like a CI_PENDING park, up
+(the owner, epic #2525): "Refund, bounded" -- refunded like a CI_PENDING park, up
 to `QUOTA_MAX_RESUMES` (5) counted in `metadata.quota_park_resumes`; past the
 bound the park spends an attempt as it always did.
 
@@ -50,7 +50,7 @@ KEY = "quota_park_resumes"
 QUOTA = ParkReason.PROVIDER_QUOTA_EXHAUSTED
 #: The incident's park: the account pool was full when the worker asked.
 DETAIL = {"park_phase": "account_assign", "account_pool_reason": "accounts_full"}
-#: BGD, 2026-10-27: five. Stated here rather than imported, so a module that
+#: the owner, 2026-10-27: five. Stated here rather than imported, so a module that
 #: lost its constant fails on the refund and not on an import.
 BOUND = 5
 

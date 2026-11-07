@@ -353,7 +353,7 @@ def test_approvers_lists_are_members_emails_once_each():
     observer = scheduletypes.get("observer")
     gate = schedules.resolve_gate(observer, schedules.GateIn(approvers=["Bob@Example.com"]))
     assert gate["approvers"] == ["bob@example.com"]
-    for bad in ([], ["not-an-email"], ["a@x.io", "A@x.io"]):
+    for bad in ([], ["not-an-email"], ["a@example.net", "A@example.net"]):
         with pytest.raises(ValidationFailed):
             schedules.resolve_gate(observer, schedules.GateIn(approvers=bad))
 

@@ -1,6 +1,6 @@
 """The per-agent budget, enforced in the worker from the runner's own stream (BUDGET-CAP, part of #2459).
 
-BGD, 2026-10-26: at 80% the agent is told to wrap up and publish and a
+the owner, 2026-10-26: at 80% the agent is told to wrap up and publish and a
 `budget_warning` event is recorded; at 100% it is stopped at its next turn
 boundary, checkpointed, its work published as any step publishes, and the
 step ends FAILED `budget_exceeded` with the numbers; it is never stopped

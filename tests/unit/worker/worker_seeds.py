@@ -48,8 +48,8 @@ from fakes import (
 )
 
 TENANT = "eng"
-PROJECT = "saga-agents-staging"
-BUCKET = "saga-agents-staging-swarm-artifacts"
+PROJECT = "example-project"
+BUCKET = "example-project-swarm-artifacts"
 
 #: What the entrypoint hands a worker whose `prctl(PR_SET_DUMPABLE, 0)` worked
 #: (`hardening.make_non_dumpable`). A worker holds the tenant git token only

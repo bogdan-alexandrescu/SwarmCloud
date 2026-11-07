@@ -1,6 +1,6 @@
 """The plugin prints an account's Name where it named it by label (#1913).
 
-Owner decision 2026-10-22 (BGD, "Editable display name"): an account's Name
+Owner decision 2026-10-22 (the owner, "Editable display name"): an account's Name
 is shown in place of its label, and where the id is printed it stays, so the
 Name never hides which account it is. An account with no Name reads as before.
 

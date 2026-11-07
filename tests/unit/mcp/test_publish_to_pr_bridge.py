@@ -1,7 +1,7 @@
 """`swarm_workflow` and `swarm workflow` pass `publish_to_pr` through (PTP-PLUGIN, part of #2183).
 
 PR 2197 taught swarm-api `publish_to_pr`: a lane's commits are pushed onto an
-existing pull request's branch instead of opening a replacement. BGD's answer
+existing pull request's branch instead of opening a replacement. the owner's answer
 of 2026-10-24 02:17Z: the plugin's tools pass it through. The bridge sends it
 TOP-LEVEL beside `steps`, only when given, as `merge_pr` is sent; and because
 the API refuses it beside a merge step or `metadata.merge`, the bridge sends no

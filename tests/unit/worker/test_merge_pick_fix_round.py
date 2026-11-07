@@ -1,9 +1,9 @@
 """A pick the branch did not build starts a pick-fix round instead of ending the merge FAILED.
 
-PICK-FIX-ROUND (part of #2441; BGD's answers to PR 2451, 2026-10-26).
+PICK-FIX-ROUND (part of #2441; the owner's answers to PR 2451, 2026-10-26).
 ANSWER-CONTENT-CHECK made a merge woken by the owner's answers refuse
 `owner_pick_not_built` when the owner picked an option the branch did not
-build, leaving the operator to send the lane back by hand. BGD decided:
+build, leaving the operator to send the lane back by hand. the owner decided:
 
   1. The merge PARKS instead, on a park code swarm-api's wake tick reads as it
      reads a CI or conflict park (`owner_pick_fix_pending`). The tick submits a
@@ -603,7 +603,7 @@ def test_a_pick_park_whose_pull_request_was_merged_outside_finishes(tmp_path):
     world.docs[TASK]["metadata"][merge.MERGE_WAIT_METADATA_KEY] = {
         "code": PENDING, "head": PINNED, "pull_request": NUMBER,
         "wake_requested_at": "2026-10-26T13:00:00Z", "wake_reason": "pull_request_merged"}
-    world.pr.update(state="closed", merged=True, merged_by={"login": "bgd"},
+    world.pr.update(state="closed", merged=True, merged_by={"login": "the owner"},
                     merged_at="2026-10-26T12:59:00Z", merge_commit_sha="d" * 40)
 
     outcome = merge.run_merge(world.context())

@@ -269,7 +269,7 @@ def test_list_marks_a_stale_reading_rather_than_rendering_it_as_a_number(api_con
 def test_a_tenant_id_collision_between_two_groups_is_refused_here_too(
     client, pool, db, method, path, payload
 ):
-    """`eng@example.com` and `eng@partner.com` both derive tenant `eng`.
+    """`eng@example.com` and `eng@example.org` both derive tenant `eng`.
 
     The frozen `tenant_id_for_group` slugs the local part only, so two
     different Google groups collide on one id. `Store.ensure_tenant` refuses
@@ -282,7 +282,7 @@ def test_a_tenant_id_collision_between_two_groups_is_refused_here_too(
     seed_tenant(db, "eng")
     # The document belongs to a different group with the same slug. alice is in
     # eng@example.com.
-    db.docs["tenants/eng"]["principal"] = "eng@partner.com"
+    db.docs["tenants/eng"]["principal"] = "eng@example.org"
 
     kwargs = {"headers": auth_header("alice")}
     if payload is not None:
@@ -292,7 +292,7 @@ def test_a_tenant_id_collision_between_two_groups_is_refused_here_too(
     assert response.status_code == 409, response.text
     body = response.json()
     assert body["code"] == "conflict"
-    assert body["detail"]["registered_principal"] == "eng@partner.com"
+    assert body["detail"]["registered_principal"] == "eng@example.org"
     # Refused BEFORE the broker was asked anything at all, so the other group's
     # account was neither read nor touched.
     assert pool.calls == []

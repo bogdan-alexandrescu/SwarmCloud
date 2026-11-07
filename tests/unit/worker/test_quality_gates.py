@@ -1,6 +1,6 @@
 """The lane quality gates: jev-belay and jev-enforce, keyed with the workspace's TypeSafe key (JEV-LANES).
 
-BGD decided 2026-10-31. With `workspace_settings/{tenant}.quality_gates.jev`
+the owner decided 2026-10-31. With `workspace_settings/{tenant}.quality_gates.jev`
 on, a claude-code lane's Claude Code runs two hooks checked by TypeSafe's
 Jev. These tests hold the worker's half (`agent_worker.qualitygates`: the
 switch, the key, the counts), the runner's half (`claude_code.
@@ -97,7 +97,7 @@ def _logger():
 
 def _world(*, gates: Any = True, tenant_key: str | None = None, user_key: str | None = None):
     docs: dict[str, dict] = {
-        "tenants/u-bogdan": {"tenant_id": "u-bogdan", "kind": "user", "principal": "bogdan@example.com"},
+        "tenants/u-owner": {"tenant_id": "u-owner", "kind": "user", "principal": "owner@example.com"},
     }
     if gates is not None:
         docs["workspace_settings/eng"] = {"tenant_id": "eng", "quality_gates": {"jev": gates}}
@@ -106,8 +106,8 @@ def _world(*, gates: Any = True, tenant_key: str | None = None, user_key: str | 
         docs["provider_keys/swarm-tenant-eng-typesafe"] = {"set": True}
         values["swarm-tenant-eng-typesafe"] = tenant_key
     if user_key is not None:
-        docs["provider_keys/swarm-tenant-u-bogdan-typesafe"] = {"set": True}
-        values["swarm-tenant-u-bogdan-typesafe"] = user_key
+        docs["provider_keys/swarm-tenant-u-owner-typesafe"] = {"set": True}
+        values["swarm-tenant-u-owner-typesafe"] = user_key
     return _Db(docs), _Secrets(values)
 
 

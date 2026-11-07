@@ -1,4 +1,4 @@
-"""Every review step is gated by default (#2524, BGD 2026-10-28: "every review step").
+"""Every review step is gated by default (#2524, the owner 2026-10-28: "every review step").
 
 docs/workflows.md "The review gate". A review step -- one another step's
 `when` reads a verdict from -- that names no `metadata.review_gate` is

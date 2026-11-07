@@ -203,7 +203,7 @@ def test_the_ticket_life_is_clamped_to_what_swarm_egress_accepts(make, ldb):
 
 
 def test_the_settings_are_read_from_the_environment(monkeypatch):
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("BROWSER_EGRESS_ENABLED", "true")
     monkeypatch.setenv("BROWSER_EGRESS_TENANTS", "eng, research")
     monkeypatch.setenv("BROWSER_EGRESS_PROFILES", "claude-code-browser")

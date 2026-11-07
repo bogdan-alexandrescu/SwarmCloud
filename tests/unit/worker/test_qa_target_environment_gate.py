@@ -1,6 +1,6 @@
 """The gate holds one leg of a target per attempt (QAENV-GATE; part of #2136).
 
-docs/design/qa-environments.md §1.5 and §8's QAENV-GATE row, under BGD's Q1
+docs/design/qa-environments.md §1.5 and §8's QAENV-GATE row, under the owner's Q1
 (a) of §10: one target carries several `environments[]` entries (legs), so
 the gate's `target_changed` refusal compares `(target_id, environment name)`.
 The row's red-first tests, plus the review note's leg-switch case:

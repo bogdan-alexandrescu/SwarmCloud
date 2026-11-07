@@ -1,7 +1,7 @@
 """`GET /v1/tenants/mine` serves each group workspace's stored name
 (MINE-NAMES, part of #2157).
 
-BGD, 2026-10-25: a workspace's admins rename it (`PUT /v1/workspaces/{id}/name`,
+the owner, 2026-10-25: a workspace's admins rename it (`PUT /v1/workspaces/{id}/name`,
 WORKSPACE-ADMIN-FIELDS) and everyone's switcher shows the new name at once,
 not only after they next act in that workspace. So /mine reads the caller's
 group workspaces' `tenants/{id}` documents -- ONE batched `get_all` per call,

@@ -394,16 +394,16 @@ def _tenant(tenant_id="eng"):
 
 def test_the_secret_reader_reads_the_tenants_git_secret_latest_version():
     client = FakeSecretClient(data=(TOKEN + "\n").encode())
-    reader = forge.SecretManagerForgeTokens("saga-agents-staging", client=client)
+    reader = forge.SecretManagerForgeTokens("example-project", client=client)
     assert reader.token_for(_tenant()) == TOKEN
-    assert client.names == ["projects/saga-agents-staging/secrets/swarm-tenant-eng-git/versions/latest"]
+    assert client.names == ["projects/example-project/secrets/swarm-tenant-eng-git/versions/latest"]
 
 
 def test_a_missing_secret_is_no_forge_credential():
     from google.api_core import exceptions as gexc
 
     reader = forge.SecretManagerForgeTokens(
-        "saga-agents-staging", client=FakeSecretClient(error=gexc.NotFound("no such secret"))
+        "example-project", client=FakeSecretClient(error=gexc.NotFound("no such secret"))
     )
     with pytest.raises(forge.NoForgeCredential) as raised:
         reader.token_for(_tenant())

@@ -290,7 +290,7 @@ def test_gke_reads_nothing_outside_the_tenant_prefix():
     core = _CoreApi([crash_looping_sidecar()])
     backend = GkeBackend(namespace_prefix="swarm-tenant-", batch_api=object(), core_api=core)
 
-    assert backend.start_problem(dispatched_job(namespace="agents-staging")) is None
+    assert backend.start_problem(dispatched_job(namespace="peer-cluster")) is None
     assert core.calls == []
 
 
@@ -315,7 +315,7 @@ class _PodBackend(FakeBackend):
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,

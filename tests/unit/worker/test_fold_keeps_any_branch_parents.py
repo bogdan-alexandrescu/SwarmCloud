@@ -1,6 +1,6 @@
 """Every branch the agent merged reaches the pull request as a parent, whatever it is (#3359).
 
-WHAT WENT WRONG AGAIN (6 November 2026, reported by Product Oracle's session).
+WHAT WENT WRONG AGAIN (6 November 2026, reported by a peer application's session).
 After #3363, commit 6a4538246 "merge train AO head ebac1ff2" on Product
 Oracle's pull request 1292 still had ONE parent and the train's tree, so the
 pull request's next merge would replay the train's 88 files as conflicts.
@@ -61,7 +61,7 @@ from test_strategy_end_to_end import (  # noqa: F401 -- fixtures are used by nam
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 #: A trailer Claude Code adds, on a commit made OUTSIDE this platform (a
-#: person's own Claude Code session), as on Product Oracle's train.
+#: person's own Claude Code session), as on a peer application's train.
 TRAILER = "Co-Authored-By: Claude <noreply@anthropic.com>"
 
 

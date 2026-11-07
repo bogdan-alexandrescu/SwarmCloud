@@ -9,8 +9,8 @@ WHAT THE OWNER SAW, 2026-09-22 (`docs/web-ui/evidence/01-overview-now.png`):
     every registered account has a current reading
 
 WHAT WAS TRUE AT THAT MOMENT. Three accounts were registered. `eng:team` had a
-reading -- the figure is its, and it is real. `u-bogdan:devops-main` and
-`u-bogdan:personal` had `observed_at: null` and `windows: {}` and had never
+reading -- the figure is its, and it is real. `u-owner:devops-main` and
+`u-owner:personal` had `observed_at: null` and `windows: {}` and had never
 been polled once, because `usagepoll.py:94` calls `access()` on a secret the
 broker holds `secretVersionAdder` on and not `secretAccessor`, and has logged
 `PermissionDenied` for them every five minutes for days. The poller fails SAFE
@@ -123,7 +123,7 @@ def test_a_headroom_with_no_reading_renders_as_absent_and_never_as_100():
     assert "a.observed_at === null" in loop, (
         "an account that has never been polled must be recognised; "
         "`observed_at: null` is what the live platform serves for the two "
-        "u-bogdan accounts usagepoll.py cannot read"
+        "u-owner accounts usagepoll.py cannot read"
     )
     assert "w === null" in loop, "an account whose binding window is absent must be recognised too"
     assert loop.count("unread.push(accountName(a))") == 3, (
@@ -173,7 +173,7 @@ def test_the_tile_no_longer_asserts_that_every_account_has_a_reading():
 
     `/v1/accounts` is tenant-scoped. "every REGISTERED account" was a
     platform-wide claim made from a tenant-wide list, and on 2026-09-22 it was
-    printed for tenant `eng` while two accounts in `u-bogdan` had never been
+    printed for tenant `eng` while two accounts in `u-owner` had never been
     polled.
     """
     fn = uncommented(body_of(src("Overview.tsx"), "function accountHeadroom("))

@@ -1,5 +1,5 @@
 """A leg's run settles what its crawling capture steps found
-(docs/design/qa-environments.md §3.5, §5, §7; lane QAENV-SETTLE of §8; BGD's
+(docs/design/qa-environments.md §3.5, §5, §7; lane QAENV-SETTLE of §8; the owner's
 Q5 (c) and Q8 (a), 2026-10-23; part of #2136).
 
 What these tests hold:

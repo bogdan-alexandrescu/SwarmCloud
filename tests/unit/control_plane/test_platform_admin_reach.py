@@ -293,7 +293,7 @@ def test_may_act_in_never_reaches_an_unregistered_group():
     auth, _ = authenticator()
     assert auth.may_act_in("root@example.com", tenant("ops", "group", "ops@example.com")) == ""
     # Same id, another principal: the collision the principal exists to catch.
-    assert auth.may_act_in("root@example.com", tenant("eng", "group", "eng@partner.com")) == ""
+    assert auth.may_act_in("root@example.com", tenant("eng", "group", "eng@example.org")) == ""
 
 
 def test_may_act_in_with_the_reach_off_is_membership_only():

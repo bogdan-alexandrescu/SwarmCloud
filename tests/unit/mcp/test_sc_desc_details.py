@@ -294,7 +294,7 @@ def _run(tmp_path, args, answers) -> dict:
 
 def _attached() -> dict:
     return {
-        "workflow_id": "wf_a", "workspace": "u-bogdan", "title": "gate", "label": None, "console": None,
+        "workflow_id": "wf_a", "workspace": "u-owner", "title": "gate", "label": None, "console": None,
         "state": "RUNNING", "state_note": None, "bridge_version": "0.1.0", "follow_error": None, "error": None,
         "steps": [{"step_id": "implement", "task_id": "t1", "depends_on": [], "state": "RUNNING", "console": None}],
     }
@@ -304,7 +304,7 @@ _STATUS = {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": [
 
 
 def test_no_run_js_label_or_title_carries_the_workspace(tmp_path):
-    got = _run(tmp_path, {"attach": "wf_a", "title": "gate", "workspace": "u-bogdan"}, {
+    got = _run(tmp_path, {"attach": "wf_a", "title": "gate", "workspace": "u-owner"}, {
         "ATTACH\nworkflow_id: wf_a": _attached(), "step:implement": _step("SUCCEEDED"), "STATUS": _STATUS,
     })
     labels = [c["label"] for c in got["calls"]]
@@ -314,12 +314,12 @@ def test_no_run_js_label_or_title_carries_the_workspace(tmp_path):
         "[SwarmCloud] gate · 1 step · wf_a · setup · result",
     ]
     assert got["result"]["title"] == "SC ∴ gate · 1 step" == launch.workflow_run_title("gate", 1)
-    assert got["result"]["workspace"] == "u-bogdan", "the result object still says where it ran"
-    assert not any(line.startswith("[u-bogdan]") for line in got["logs"]), got["logs"]
-    tasks = _run(tmp_path, {"attach_tasks": [{"task_id": "task_a", "title": "lane-a", "workspace": "u-bogdan"}]},
+    assert got["result"]["workspace"] == "u-owner", "the result object still says where it ran"
+    assert not any(line.startswith("[u-owner]") for line in got["logs"]), got["logs"]
+    tasks = _run(tmp_path, {"attach_tasks": [{"task_id": "task_a", "title": "lane-a", "workspace": "u-owner"}]},
                  {"task_id: task_a": _step("SUCCEEDED")})
     assert tasks["calls"][0]["label"] == "[SwarmCloud] lane-a · task"
-    assert not any(line.startswith("[u-bogdan]") for line in tasks["logs"]), tasks["logs"]
+    assert not any(line.startswith("[u-owner]") for line in tasks["logs"]), tasks["logs"]
 
 
 def test_no_launch_title_carries_the_workspace(monkeypatch):
@@ -351,7 +351,7 @@ def test_the_session_start_notice_puts_no_workspace_in_front_of_a_name():
 
 
 def test_each_step_row_prompt_ends_with_the_details_the_bridge_wrote(tmp_path):
-    line = "Workspace: u-bogdan · Started by: dev@example.com · Profiles: claude-code · LLM: Team Max (anthropic) · Browser tool: not used · Session: this session"
+    line = "Workspace: u-owner · Started by: dev@example.com · Profiles: claude-code · LLM: Team Max (anthropic) · Browser tool: not used · Session: this session"
     got = _run(tmp_path, {"attach": "wf_a", "title": "gate", "details": {"steps": {"implement": line}}}, {
         "ATTACH\nworkflow_id: wf_a": _attached(), "step:implement": _step("SUCCEEDED"), "STATUS": _STATUS,
     })
@@ -363,7 +363,7 @@ def test_a_row_launched_without_details_says_what_it_knows(tmp_path):
     spec = {"label": "gate", "steps": [{"step_id": "implement", "prompt": "p", "runner_profile": "claude-code-browser",
                                        "inputs": {"browser_tool": "playwright"}}]}
     got = _run(tmp_path, {"spec": spec}, {
-        "SUBMIT": {"workflow_id": "wf_s", "workspace": "u-bogdan", "console": None,
+        "SUBMIT": {"workflow_id": "wf_s", "workspace": "u-owner", "console": None,
                    "steps": [{"step_id": "implement", "task_id": "t1", "depends_on": [], "console": None}],
                    "repository": None, "repository_notes": [], "spec_digest": workflows.spec_digest(spec),
                    "bridge_version": "0.1.0", "follow_error": None, "error": None},
@@ -371,7 +371,7 @@ def test_a_row_launched_without_details_says_what_it_knows(tmp_path):
     })
     (row,) = [c for c in got["calls"] if c["agentType"] == "sc:step"]
     assert row["prompt"].split("\n")[-1] == (
-        "details: Workspace: u-bogdan · Started by: not reported · Profiles: claude-code-browser · "
+        "details: Workspace: u-owner · Started by: not reported · Profiles: claude-code-browser · "
         "LLM: not reported · Browser tool: playwright · Session: not reported"
     )
     assert row["label"] == "[SwarmCloud] gate · stage 1 · implement"

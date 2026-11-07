@@ -242,7 +242,7 @@ def test_a_flood_past_the_bounded_read_is_unknown_never_member(store, db):
 # -- who can never hold one ----------------------------------------------------
 
 @pytest.mark.parametrize("subject", [
-    "builder@my-project.iam.gserviceaccount.com", "*", "not-an-email",
+    "builder@example-project.iam.gserviceaccount.com", "*", "not-an-email",
 ])
 def test_a_service_account_or_non_person_subject_is_refused_at_write(store, db, subject):
     with pytest.raises(ValidationFailed):
@@ -259,7 +259,7 @@ def test_a_personal_workspace_is_refused_at_write(store, db):
 def test_a_signed_personal_or_service_account_grant_is_skipped_at_read(
         store, db, signing_key, metrics):
     keys = (signing_key,)
-    service = "builder@my-project.iam.gserviceaccount.com"
+    service = "builder@example-project.iam.gserviceaccount.com"
     for tenant_id, subject in (("u-lee", LEE), ("eng", service)):
         fields = {"tenant_id": tenant_id, "group": ENG_GROUP, "subject": subject,
                   "state": "member", "by": "alex@example.com",

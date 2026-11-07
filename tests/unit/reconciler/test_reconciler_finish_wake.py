@@ -59,7 +59,7 @@ class RecordingAnnouncer:
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="swarm-unit-test",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,
@@ -212,11 +212,11 @@ def test_a_wake_that_is_refused_or_raises_does_not_fail_the_pass(db, config, ans
 def test_no_topic_means_no_announcer(monkeypatch):
     monkeypatch.delenv("DISPATCH_TOPIC", raising=False)
     assert PubSubFinishAnnouncer.from_env() is None
-    monkeypatch.setenv("PROJECT_ID", "swarm-unit-test")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("DISPATCH_TOPIC", "swarm-scheduler-wake")
     announcer = PubSubFinishAnnouncer.from_env()
     assert announcer is not None
-    assert announcer.topic == "projects/swarm-unit-test/topics/swarm-scheduler-wake"
+    assert announcer.topic == "projects/example-project/topics/swarm-scheduler-wake"
 
 
 def test_a_reconciler_with_no_wake_topic_says_so_once_at_start(db, config):
@@ -248,7 +248,7 @@ class _Session:
 def test_the_reconcilers_request_is_the_workers_field_for_field():
     from agent_worker.finishwake import PubSubFinishAnnouncer as WorkerAnnouncer
 
-    topic = "projects/swarm-unit-test/topics/swarm-scheduler-wake"
+    topic = "projects/example-project/topics/swarm-scheduler-wake"
     ours, theirs = _Session(), _Session()
     for cls, session in ((PubSubFinishAnnouncer, ours), (WorkerAnnouncer, theirs)):
         assert cls(topic, session=session).announce(

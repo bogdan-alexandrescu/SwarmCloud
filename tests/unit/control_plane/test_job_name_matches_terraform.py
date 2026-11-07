@@ -26,7 +26,7 @@ def terraform_job_name(tenant_id: str, profile_name: str) -> str:
 
 @pytest.mark.parametrize(
     "tenant,profile",
-    [("eng", "mock"), ("eng", "claude-code"), ("smoke", "generic"), ("u-bogdan", "mock")],
+    [("eng", "mock"), ("eng", "claude-code"), ("smoke", "generic"), ("u-owner", "mock")],
 )
 def test_dispatcher_job_id_equals_the_terraform_name(tenant, profile):
     assert job_id_for(tenant, profile) == terraform_job_name(tenant, profile)
@@ -70,5 +70,5 @@ def test_the_dispatcher_and_the_reconciler_round_trip_awkward_ids() -> None:
     from reconciler.detect import sanitised
     from scheduler.dispatch import sanitize_name
 
-    for value in ("task_9f3a", "att_00FF", "u-bogdan", "Tenant_With.Dots", "a__b"):
+    for value in ("task_9f3a", "att_00FF", "u-owner", "Tenant_With.Dots", "a__b"):
         assert sanitised(value) == sanitize_name(value), value

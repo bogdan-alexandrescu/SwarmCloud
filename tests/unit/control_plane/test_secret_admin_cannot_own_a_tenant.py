@@ -5,8 +5,8 @@ length: secret_admin_members holds secretVersionAdder on EVERY tenant's
 provider-key secrets. That cannot read a key in place, but it can REPLACE one
 with a key pointing at attacker-controlled infrastructure, after which the
 victim tenant's prompts, source and output all flow through it. The validation
-caught exactly this once, when bogdan@example.com was both the secret admin and
-the principal of the u-bogdan fallback tenant.
+caught exactly this once, when owner@example.com was both the secret admin and
+the principal of the u-owner fallback tenant.
 
 That validation can only see tenants DECLARED in var.tenants.
 `Store.ensure_tenant` creates a self-service tenant for any allowed-domain
@@ -102,9 +102,9 @@ def test_an_ordinary_caller_still_gets_a_tenant_on_first_sight():
     resolution is off for most callers, so they land on `u-<user>` and that
     document is created here."""
     store = _Store()
-    tenant = _service(store).tenant_for(_ctx("bogdan@example.com", "u-bogdan"))
-    assert tenant.tenant_id == "u-bogdan"
-    assert store.created == ["bogdan@example.com"]
+    tenant = _service(store).tenant_for(_ctx("owner@example.com", "u-owner"))
+    assert tenant.tenant_id == "u-owner"
+    assert store.created == ["owner@example.com"]
 
 
 def test_matching_is_case_insensitive():

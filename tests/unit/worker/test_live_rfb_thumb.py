@@ -1,6 +1,6 @@
 """The gate's thumbnail mode: scaled Tight JPEG for the Live Browsers wall (part of #2688).
 
-BGD's pick of 6 November 2026: the Live Browsers wall moves at 10 fps with six
+the owner's pick of 6 November 2026: the Live Browsers wall moves at 10 fps with six
 or fewer cards on screen, 5 fps up to 20 and 2 fps beyond. Before this the
 console's thumbnail asked for RAW 32 bpp frames at the full 1440x900 size and
 shrank them in the browser: 1-5 MB a frame of a moving page. Now a viewer

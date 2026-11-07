@@ -48,7 +48,7 @@ from .test_workflow_state_rollup import make_workflow, seed_workflow
 #: The identity terraform/modules/scheduler/jobs.tf gives the rollup jobs. A
 #: service-account address, outside the allowed domain on purpose: it is
 #: admitted by being on ROLLUP_SWEEPER_USERS, not through ALLOWED_USERS.
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 
 #: THE OWNER'S DECISIONS, as the routes declare them: every route whose
@@ -59,7 +59,7 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 #: sweep, `task_finished`, the stranded-PR sweep, the secrets rotation sweep
 #: and the MCP credential sweep); NOT the issue sweeper's route, removed on
 #: 2026-10-12. It used to be a literal here, which two green changes that
-#: each added a route turned red together (BGD's pick, 6 November 2026);
+#: each added a route turned red together (the owner's pick, 6 November 2026);
 #: widening the sweeper still takes a declaration on the route AND an entry
 #: in the gate, held equal below.
 DECIDED = route_scope.declared(route_scope.ROLLUP_SWEEPER)
@@ -362,7 +362,7 @@ def test_an_address_that_is_both_a_sweeper_and_an_admin_is_refused_at_startup(mo
 
     for name, value in {
         "ENVIRONMENT": "dev",
-        "PROJECT_ID": "saga-agents-staging",
+        "PROJECT_ID": "example-project",
         "ROLLUP_SWEEPER_USERS": SWEEPER,
         "ADMIN_USERS": SWEEPER,
     }.items():
@@ -375,6 +375,6 @@ def test_rollup_sweeper_users_is_read_from_the_environment(monkeypatch) -> None:
     from swarm_api.settings import ApiSettings
 
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("ROLLUP_SWEEPER_USERS", f" {SWEEPER} ")
     assert ApiSettings.from_env().rollup_sweeper_users == (SWEEPER,)

@@ -1,6 +1,6 @@
 """The pane layout's toggle, its one quiet row per workflow, and the pane's reads (SC-BROWSER-BUILD, #2318).
 
-BGD picked proposal B on 2026-10-25 (PR 2328): beside the SwarmCloud pane,
+the owner picked proposal B on 2026-10-25 (PR 2328): beside the SwarmCloud pane,
 each workflow keeps ONE /workflows row whose only job is to notice its finish,
 and a toggle switches between today's layout and the new one. What this file
 holds:
