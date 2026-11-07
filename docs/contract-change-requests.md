@@ -17315,3 +17315,158 @@ single function's, and `before_writes` called before any write.
 ### Who decided
 
 The owner (BGD), 6 November 2026: "frozen-batch-function" on PR 3493.
+
+## 147. `config.py`: `ALLOWED_DOMAINS` has no default domain (generic repository, part of #2688)
+
+**Status:** ACCEPTED by the owner 7 November 2026 (drafted as request A in
+`docs/design/day-one-plan.md` §4.2, named in
+`docs/design/generic-repository.md` §5.2), and APPLIED by the change that
+adds this section.
+
+### What is true today
+
+`apps/common/swarm_common/config.py` defaulted `Settings.allowed_domains` to
+the live deployment's domain, and `Settings.from_env` fell back to the same
+domain when `ALLOWED_DOMAINS` was unset. On the live deployment that is the
+right domain. On a Day One install in another company's project, a service
+deployed without the variable would trust the live deployment's domain
+instead of its own: the sign-in check (`assert_allowed_domain`, called from
+`apps/swarm-api/swarm_api/auth.py`) and the admin check
+(`apps/swarm-api/swarm_api/admins.py`) would admit that domain's accounts.
+
+### The change
+
+    # config.py, class Settings
+    allowed_domains: tuple[str, ...] = ()
+
+    # config.py, Settings.from_env
+    domains = tuple(
+        d.strip() for d in os.environ.get("ALLOWED_DOMAINS", "").split(",") if d.strip()
+    )
+
+`Settings.__post_init__` no longer refuses an empty tuple: with no default,
+that refusal would make every `Settings(project_id=...)` (the scheduler's,
+the worker's and their tests', none of which reads the field) fail to build.
+An empty tuple admits no domain: `assert_allowed_domain` and the admin and
+`await_input` checks test membership in it, so they refuse every domain, and
+only `allowed_users` (swarm-api's solo deployment) can still admit a caller.
+swarm-api's startup refusal of an empty value, naming the variable, is the
+backend lane's.
+
+### What it would break if accepted
+
+Any process that relied on the fallback. Every live service sets
+`ALLOWED_DOMAINS` (Terraform renders it from `allowed_domains`, and the Day
+One installer writes `allowed_domains` from the organisation's domain), so
+none does. A test that relied on the old default passes a domain.
+
+### If it is declined
+
+The fallback stays as a latent default that trusts another deployment's
+domain in every company's install, and the generic repository cannot carry
+`config.py` without a written exemption.
+
+### Invariants
+
+Invariant 9 (per-tenant isolation) is strengthened: no deployment trusts a
+domain it was not given. No other invariant reads the field.
+
+### How it is tested
+
+`tests/unit/common/test_allowed_domains_default.py`: `Settings` has no
+allowed domain by default; `from_env` with `ALLOWED_DOMAINS` unset or blank
+gives an empty tuple; with it set, the listed domains in order.
+
+### Who decided
+
+The owner, 7 November 2026, accepting the generic-repository design's two
+frozen-contract requests.
+
+## 148. `identity.py` / `models.py`: the live project and domain in comments become example values (generic repository, part of #2688)
+
+**Status:** ACCEPTED by the owner 7 November 2026 (drafted as request B in
+`docs/design/day-one-plan.md` §4.3, named in
+`docs/design/generic-repository.md` §5.2), and APPLIED by the change that
+adds this section. It covers request 122's comment as well.
+
+### What is true today
+
+Comments and docstrings named the live deployment's domain, project and a CI
+service account: `identity.py`'s module docstring, the `TenantMember.email`
+and `TenantMember.principal` comments and `tenant_id_for_group`'s docstring;
+in `models.py`, the measurement in `Lease.dispatch_overdue`'s docstring and
+`Tenant.principal`'s comment (request 122). Nothing reads them. The Day One
+release ships this package to every company that installs SwarmCloud.
+
+### The change
+
+Comments only. The domain becomes `example.com` (`eng@example.com`), the
+service account `swarm-ci-fix@example-project.iam.gserviceaccount.com`, the
+person in `Tenant.principal`'s example `owner@example.com`, and the
+measurement keeps its task id and date and says "the live deployment"
+instead of the project id. The placeholders are
+`scripts/guards/placeholders.json`'s.
+
+### What it would break if accepted
+
+Nothing. No type, default, field or document shape moves, and
+`scripts/lib/check-contract-parity.sh` reads no comment.
+
+### If it is declined
+
+The frozen contract keeps six lines that name the live deployment, and the
+deployment-values guard needs a written exemption for two frozen files.
+
+### Invariants
+
+None is touched: comments decide nothing.
+
+### Who decided
+
+The owner, 7 November 2026, accepting the generic-repository design's two
+frozen-contract requests.
+
+## 149. `models.py`: the frozen model's comments name the owner by role instead of initials (generic repository, part of #2688)
+
+**Status:** ACCEPTED by the owner on 7 November 2026 and APPLIED by the change
+that adds this section. Comments only.
+
+### What is true today
+
+Three comments in `apps/common/swarm_common/models.py` named the person who
+accepted contract request 123 by their initials: the `Task.platform_refusals`
+comment and two lines of the `PLATFORM_REFUSED_MAX_PARKS` comment. Nothing
+reads them. The deployment-values guard reports each one as category C5, and
+the Day One release ships this package to every company that installs
+SwarmCloud.
+
+### The change
+
+Each set of initials becomes "the owner"; every other word, the dates and
+the meaning stay.
+
+    # models.py, Task.platform_refusals -- before
+    #: by <initials> 2026-10-28. Last in the class, after `budget`, so no positional
+    # after
+    #: by the owner 2026-10-28. Last in the class, after `budget`, so no positional
+
+    # models.py, PLATFORM_REFUSED_MAX_PARKS -- before
+    #: STAYS PARKED and keeps being retried at the longest backoff -- <initials>'s
+    #: it, and <initials>'s 2026-10-28 brief applies that to the platform's refusals.
+    # after
+    #: STAYS PARKED and keeps being retried at the longest backoff -- the owner's
+    #: it, and the owner's 2026-10-28 brief applies that to the platform's refusals.
+
+### What it would break
+
+Nothing: comments only. No type, field, default, docstring or document shape
+moves, and `scripts/lib/check-contract-parity.sh` reads no comment.
+
+### Invariants
+
+None is touched: comments decide nothing.
+
+### Who decided
+
+The owner, 7 November 2026, accepting the third, comments-only request this
+pull request's implement step asked about.
