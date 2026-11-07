@@ -171,7 +171,7 @@ def test_the_issue_comment_leads_with_the_purpose_why_size_and_risk():
     purpose = head.index("**Sort the widget list by name.**")
     assert purpose < head.index("**Approval: pending.**")
     assert "**Why:** Issue #42 reports the list is unordered." in head
-    assert "**Size:** 2 steps · 2 files (1 modified, 1 tests)" in head
+    assert "**Size:** 2 steps · 2 files (1 modified, 1 test)" in head
     assert "**Risk:** low — the widget page" in head
     assert "**Validation:** 1 test, 1 QA check" in body
     assert "renames the header's CSS class" in body
