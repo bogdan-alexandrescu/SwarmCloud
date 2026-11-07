@@ -574,7 +574,7 @@ deny_list_use_example() {
   XDG_CACHE_HOME="${root}/cache"
   PROJECT_ID="${project}"
   ENVIRONMENT="${env}"
-  REGION="${REGION:-us-central1}"
+  REGION="${REGION:-example-region}"
   GKE_LOCATION="${GKE_LOCATION:-${REGION}}"
   export SWARM_DEPLOY_CONFIG_DIR XDG_CACHE_HOME PROJECT_ID ENVIRONMENT REGION GKE_LOCATION
   DENY_LIST_KEY=""

@@ -1,24 +1,26 @@
-"""Scripts never default to the live project, and the deny-list is keyed by project.
+"""Scripts never default to a deployment: no project, region or zone defaults.
 
-`scripts/lib/common.sh` used to say `PROJECT_ID="${PROJECT_ID:-saga-agents-staging}"`.
-That default is what a fresh install inherits when the operator forgets a
-`.env`: every script quietly aims at the shared project, the one holding
-another team's live cluster, VPC, buckets and service accounts. An unset
-project is now an error (Day One plan, lane DAYONE-DESAGA-2, R4).
+`scripts/lib/common.sh` once defaulted PROJECT_ID to the live project, and later
+REGION and ZONE to the live region. A default is what a fresh install inherits
+when the operator forgets a `.env`: every script quietly aims at somebody's
+deployment, possibly the shared project that holds another team's live cluster.
+An unset project, region or zone is now an error that names the variable
+(docs/design/generic-repository.md, section 2.2).
 
-`SHARED_DENY_LIST` stays in `common.sh` (CLAUDE.md rule 2: once, in one place)
-and is keyed by project: the shared project's list applies when `PROJECT_ID` is
-the shared project, and it is empty for any other project, whose resources
-belong to nobody else. The list for the shared project must never weaken:
-`test_deny_list_full_for_shared_project` compares it, entry for entry, with the
-literal block the other deny-list tests hold to the live project.
+The never-touch list is no longer keyed by a project id written here: it is
+read from the deployment's own config object (test_shared_deny_list.py holds
+its rules). What this file holds is how the opt-out and the defaults meet it:
+a script that names no project never gets a list, so a guard it reaches
+refuses, and switching PROJECT_ID never keeps the previous project's list.
 
 Offline: sources common.sh in bash with a scrubbed environment and no `.env`;
-no cloud call, no credential.
+the config object is a local directory (SWARM_DEPLOY_CONFIG_DIR). No cloud
+call, no credential.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -26,11 +28,15 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 COMMON = REPO / "scripts" / "lib" / "common.sh"
-SHARED_PROJECT = "saga-agents-staging"
+EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
+PROJECT = "example-project"
+REFUSAL = "is not readable; nothing that mutates runs without it"
 
-#: Variables load_env reads that could hand it a project, a .env or a cluster.
-#: Scrubbed so the developer's or the runner's own settings cannot make a test pass.
-_SCRUB = ("PROJECT_ID", "SWARM_ENV_FILE", "KUBECONFIG", "GKE_CLUSTER", "ARTIFACT_BUCKET")
+#: Variables load_env reads that could hand it a project, a .env, a cluster or a
+#: list. Scrubbed so the developer's or the runner's own settings cannot make a
+#: test pass.
+_SCRUB = ("PROJECT_ID", "REGION", "ZONE", "SWARM_ENV_FILE", "KUBECONFIG", "GKE_CLUSTER",
+          "ARTIFACT_BUCKET", "SWARM_NO_PROJECT", "SWARM_DEPLOY_CONFIG_DIR", "TF_STATE_BUCKET")
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -38,8 +44,19 @@ def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
     # A path that does not exist: load_env sources nothing, so the repository's
     # own .env (if a developer has one) cannot supply the project either.
     env["SWARM_ENV_FILE"] = str(tmp_path / "no-env-file")
+    env["SWARM_DEPLOY_CONFIG_DIR"] = str(tmp_path / "config")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["ENVIRONMENT"] = "dev"
     env.update(extra)
     return env
+
+
+def _write_list(tmp_path: Path, project: str = PROJECT) -> None:
+    folder = tmp_path / "config" / "dev"
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = folder / "deny-list.json"
+    target.write_text(json.dumps({**json.loads(EXAMPLE.read_text()), "project": project}))
+    target.chmod(0o600)
 
 
 def _source(tmp_path: Path, script: str, **extra: str) -> subprocess.CompletedProcess[str]:
@@ -49,19 +66,10 @@ def _source(tmp_path: Path, script: str, **extra: str) -> subprocess.CompletedPr
     )
 
 
-def _literal_deny_list() -> list[str]:
-    """The `SHARED_DENY_LIST=( ... )` block as written: the shared project's list."""
-    block = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", COMMON.read_text(), re.MULTILINE | re.DOTALL)
-    assert block, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST=( ... )"
-    return re.findall(r'^\s*"([^"]+)"', block.group(1), re.MULTILINE)
-
-
 def test_unset_project_is_an_error(tmp_path: Path) -> None:
-    # MUTATION: put back `PROJECT_ID="${PROJECT_ID:-saga-agents-staging}"` in
-    # load_env and this fails: sourcing succeeds and prints the live project.
-    proc = _source(tmp_path, 'printf "%s" "${PROJECT_ID}"')
+    proc = _source(tmp_path, 'printf "%s" "${PROJECT_ID}"; echo reached')
     assert proc.returncode != 0, f"sourcing common.sh with PROJECT_ID unset succeeded: {proc.stdout!r}"
-    assert SHARED_PROJECT not in proc.stdout
+    assert "reached" not in proc.stdout
     assert "PROJECT_ID" in proc.stderr, proc.stderr
 
 
@@ -71,13 +79,41 @@ def test_empty_project_is_an_error(tmp_path: Path) -> None:
     assert "PROJECT_ID" in proc.stderr, proc.stderr
 
 
-def test_no_project_opt_out_keeps_the_whole_list(tmp_path: Path) -> None:
+def test_unset_region_is_an_error_that_names_it(tmp_path: Path) -> None:
+    # MUTATION: put back `REGION="${REGION:-us-central1}"` in load_env and this
+    # fails: sourcing succeeds with a region nobody chose.
+    _write_list(tmp_path)
+    proc = _source(tmp_path, 'echo "reached ${REGION}"', PROJECT_ID=PROJECT, ZONE="example-zone")
+    assert proc.returncode != 0, proc.stdout
+    assert "reached" not in proc.stdout
+    assert "REGION is not set" in proc.stderr, proc.stderr
+
+
+def test_unset_zone_is_an_error_that_names_it(tmp_path: Path) -> None:
+    _write_list(tmp_path)
+    proc = _source(tmp_path, 'echo "reached ${ZONE}"', PROJECT_ID=PROJECT, REGION="example-region")
+    assert proc.returncode != 0, proc.stdout
+    assert "reached" not in proc.stdout
+    assert "ZONE is not set" in proc.stderr, proc.stderr
+
+
+def test_no_default_region_or_zone_is_written() -> None:
+    text = COMMON.read_text()
+    # Only a placeholder may follow `:-` (deny_list_use_example's self-test
+    # fallback); a real region there is a guess at somebody's deployment.
+    assert not re.search(r'^\s*(REGION|ZONE)="\$\{(REGION|ZONE):-(?!example-)[a-z]', text, re.MULTILINE)
+
+
+def test_no_project_opt_out_has_no_list_and_its_guards_refuse(tmp_path: Path) -> None:
     # A script that touches no project sets SWARM_NO_PROJECT=1: it runs with
-    # PROJECT_ID empty -- never the live project -- and a project nobody named
-    # is never treated as one whose deny-list may be empty.
-    proc = _source(tmp_path, 'printf "[%s] %s" "${PROJECT_ID}" "${#SHARED_DENY_LIST[@]}"', SWARM_NO_PROJECT="1")
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == f"[] {len(_literal_deny_list())}"
+    # PROJECT_ID empty -- never a deployment's -- needs no region, and a project
+    # nobody named is never treated as one whose list may be empty.
+    proc = _source(tmp_path, 'printf "[%s] %s\\n" "${PROJECT_ID}" "${#SHARED_DENY_LIST[@]}"; '
+                   'is_shared_resource anything; echo reached', SWARM_NO_PROJECT="1")
+    assert proc.stdout.splitlines()[0] == "[] 0", proc.stderr
+    assert proc.returncode != 0
+    assert "reached" not in proc.stdout
+    assert REFUSAL in proc.stderr, proc.stderr
 
 
 def test_prerequisites_no_cloud_needs_no_project() -> None:
@@ -88,68 +124,48 @@ def test_prerequisites_no_cloud_needs_no_project() -> None:
 
 def test_project_from_env_file_is_honoured(tmp_path: Path) -> None:
     env_file = tmp_path / "env"
-    env_file.write_text("PROJECT_ID=swarm-dayone-test\n")
+    env_file.write_text(f"PROJECT_ID={PROJECT}\nREGION=example-region\nZONE=example-zone\n")
     env_file.chmod(0o600)
-    proc = _source(tmp_path, 'printf "%s" "${PROJECT_ID}"', SWARM_ENV_FILE=str(env_file))
+    _write_list(tmp_path)
+    proc = _source(tmp_path, 'printf "%s %s %s" "${PROJECT_ID}" "${REGION}" "${ZONE}"',
+                   SWARM_ENV_FILE=str(env_file))
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "swarm-dayone-test"
+    assert proc.stdout == f"{PROJECT} example-region example-zone"
 
 
-def test_deny_list_empty_for_other_project(tmp_path: Path) -> None:
-    # MUTATION: drop the keying in load_env and this fails: the other team's
-    # names are refused in a project they are not in.
-    script = (
-        'printf "count=%s\\n" "${#SHARED_DENY_LIST[@]}"; '
-        'if is_shared_resource agents-staging; then echo shared=yes; else echo shared=no; fi; '
-        'printf "guard=%s\\n" "$(guard_deny_json)"'
-    )
-    proc = _source(tmp_path, script, PROJECT_ID="swarm-dayone-test")
-    assert proc.returncode == 0, proc.stderr
-    lines = proc.stdout.splitlines()
-    assert "count=0" in lines, proc.stdout
-    assert "shared=no" in lines, proc.stdout
-    # (default) stays: a named database is the platform's rule in every project.
-    assert 'guard=["(default)"]' in lines, proc.stdout
-
-
-def test_deny_list_full_for_shared_project(tmp_path: Path) -> None:
-    literal = _literal_deny_list()
-    assert len(literal) >= 30, f"the literal deny-list lost entries: {len(literal)}"
-    proc = _source(tmp_path, 'printf "%s\\n" "${SHARED_DENY_LIST[@]}"', PROJECT_ID=SHARED_PROJECT)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.splitlines() == literal
-    for name in ("agents-staging", "agents-staging-vpc", f"crawler@{SHARED_PROJECT}.iam.gserviceaccount.com"):
-        check = _source(tmp_path, f'is_shared_resource "{name}"', PROJECT_ID=SHARED_PROJECT)
-        assert check.returncode == 0, f"{name} is not refused in the shared project"
-
-
-def test_rekeying_never_loses_the_shared_list(tmp_path: Path) -> None:
-    # load_env run again after PROJECT_ID moved back to the shared project must
-    # restore the whole list, not keep the empty one an earlier call left.
-    script = (
-        'PROJECT_ID=swarm-dayone-test; load_env; a="${#SHARED_DENY_LIST[@]}"; '
-        f'PROJECT_ID={SHARED_PROJECT}; load_env; printf "%s %s" "${{a}}" "${{#SHARED_DENY_LIST[@]}}"'
-    )
-    proc = _source(tmp_path, script, PROJECT_ID=SHARED_PROJECT)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == f"0 {len(_literal_deny_list())}"
+def test_switching_project_never_keeps_the_previous_list(tmp_path: Path) -> None:
+    # The list was keyed by a literal project once; now it is keyed by the
+    # project it was loaded for. A shell that moves PROJECT_ID to a project
+    # with no readable list must refuse, not judge by the old one.
+    # MUTATION: return early from deny_list_load whenever a list is loaded and
+    # this fails: "reached" is printed.
+    _write_list(tmp_path)
+    proc = _source(tmp_path, 'PROJECT_ID=other-project; is_shared_resource peer-cluster; echo reached',
+                   PROJECT_ID=PROJECT, REGION="example-region", ZONE="example-zone")
+    assert proc.returncode != 0, proc.stdout
+    assert "reached" not in proc.stdout
+    assert REFUSAL in proc.stderr, proc.stderr
 
 
 def test_dev_loop_sets_its_project_before_sourcing() -> None:
     # dev.sh targets the emulator's project (swarm-local). It must set
     # PROJECT_ID before it sources common.sh, or `make dev` dies on a machine
-    # with no .env -- and it must never fall back to the live project.
+    # with no .env, and it says it touches no cloud project, so sourcing does
+    # not fetch a never-touch list from a state bucket that does not exist.
     text = (REPO / "scripts" / "lib" / "dev.sh").read_text()
     source_at = text.index('source "$(cd -- ')
     set_at = text.find('PROJECT_ID="${DEV_PROJECT_ID:-swarm-local}"')
     assert 0 <= set_at < source_at, "dev.sh sets PROJECT_ID only after sourcing common.sh"
+    assert 0 <= text.find("SWARM_NO_PROJECT=1") < source_at
 
 
 #: What CI runs with no PROJECT_ID (application.yml's shell and quick-checks
 #: jobs, security.yml's checks and trivy jobs): each touches no project, says
 #: so with SWARM_NO_PROJECT=1, and must get past common.sh (DAYONE-DESAGA-2B).
+#: The guards' self-tests prove themselves against the placeholder list
+#: (deny_list_use_example). destroy.sh's is not here: its fixture still names
+#: the old literal's resources, which lane 3 replaces (see the PR body).
 _CI_NO_PROJECT = [
-    ("scripts/destroy.sh", "--self-test"),
     ("scripts/lib/plan-guard.sh", "--self-test"),
     ("scripts/lib/kubectl-guard.sh", "--self-test"),
     ("scripts/lib/auth-guard.sh", "--self-test"),
@@ -166,8 +182,6 @@ def _script(tmp_path: Path, *argv: str, **extra: str) -> subprocess.CompletedPro
 
 
 def test_ci_checks_run_with_no_project(tmp_path: Path) -> None:
-    # MUTATION: drop the SWARM_NO_PROJECT line from destroy.sh -> red with
-    # "PROJECT_ID is not set", the error security.yml's destroy-guard step hit.
     for argv in _CI_NO_PROJECT:
         proc = _script(tmp_path, *argv)
         assert "PROJECT_ID is not set" not in proc.stderr, argv
@@ -193,15 +207,16 @@ def test_require_project_stops_an_opted_out_script(tmp_path: Path) -> None:
 
 
 def test_empty_deny_list_expansions_are_guarded() -> None:
-    # bash 3.2 dies on "${arr[@]}" of an empty array under `set -u`, and the
-    # list is empty for every project but the shared one.
+    # bash 3.2 dies on "${arr[@]}" of an empty array under `set -u`, and a list
+    # written empty is a valid list.
     bare = re.compile(r'(?<![+])"\$\{SHARED_DENY_LIST\[[@*]\]\}"')
     offenders = []
     for path in sorted((REPO / "scripts").rglob("*.sh")):
         lines = path.read_text().splitlines()
         for n, line in enumerate(lines, 1):
-            # Allowed: the copy taken while the list is still the literal
-            # block, and a line under an explicit non-empty test.
+            # Allowed: a line under an explicit non-empty test, and the copies
+            # release-home.sh and release/publish.sh still take of the removed
+            # SHARED_PROJECT_DENY_LIST (unbound now, so `set -u` stops them).
             guarded = "SHARED_PROJECT_DENY_LIST=" in line or (n > 1 and "-gt 0" in lines[n - 2])
             if bare.search(line) and not guarded:
                 offenders.append(f"{path.relative_to(REPO)}:{n}")
