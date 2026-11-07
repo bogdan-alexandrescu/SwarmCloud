@@ -127,7 +127,7 @@ fieldset.jb-options > legend { padding: 0; margin-bottom: var(--ctl-s1); font-si
   .mcp-registered > tbody > tr > td[data-label='State'] { white-space: nowrap; overflow-wrap: normal; }
   /* THE URL BREAKS AT A '/' OR A '.' (QA2 config2-19). Broken anywhere, its
      narrowest width was one letter, so the table gave it almost none and
-     cut 'https://mcp.exampl / e.com/docs/mcp'. McpServers.tsx puts a `<wbr>`
+     cut 'mcp.exampl / e.com/docs/mcp'. McpServers.tsx puts a `<wbr>`
      after each '/' and '.'; `break-word` breaks inside a piece only when one
      is wider than the column, and leaves the column its widest piece. */
   .mcp-registered > tbody > tr > td[data-label='URL'] { overflow-wrap: break-word; }

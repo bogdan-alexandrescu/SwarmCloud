@@ -7,7 +7,7 @@
  *
  *   * the step's window -- "waiting for a member", "workspace eng", "expires
  *     in 3 h 20 m" -- and what happens at expiry. The reader is told
- *     "workspace", never "tenant" (BGD, 2026-10-26, VQ-056); the `tenant`
+ *     "workspace", never "tenant" (owner, 2026-10-26, VQ-056); the `tenant`
  *     field the API serves keeps its name;
  *   * the prompt, and every artifact the step shows (its `input_from`),
  *     each read through the existing artifact viewer, which applies the

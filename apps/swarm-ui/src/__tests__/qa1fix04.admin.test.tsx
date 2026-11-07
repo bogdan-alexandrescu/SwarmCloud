@@ -1,9 +1,9 @@
 // VISUAL QA PASS 1, FIX LANE QA1-FIX-04 (part of #2596): Admin › Pool limits.
 //
 //   * admin-shell-03: the lead named the pool by its key, "Pool
-//     provider:anthropic:tenant:u-bogdan is at 100%", and its button "Open
-//     provider:anthropic:tenant:u-bogdan", over a row named `anthropic ·
-//     u-bogdan`. It names the pool as the row does, the key as a mono line.
+//     provider:anthropic:tenant:u-owner is at 100%", and its button "Open
+//     provider:anthropic:tenant:u-owner", over a row named `anthropic ·
+//     u-owner`. It names the pool as the row does, the key as a mono line.
 //   * admin-shell-13: the eng row's Set by read `AIMD back-off`, the broker's
 //     algorithm, beside rows that said `configured`. It says what happened.
 //   * admin-shell-14: global read 7 in use over Resource classes adding up to
@@ -67,7 +67,7 @@ function capacity(pools: Pool[], over: Partial<Capacity> = {}): Capacity {
   return {
     pools,
     runner_profiles: { 'claude-code': profile(pools.map((p) => p.name)) },
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     generated_at: '2026-10-28T10:00:00Z',
     ...over,
   }
@@ -95,9 +95,9 @@ async function screenOf(cap: Capacity): Promise<void> {
 // provider-tenant pool at 5 of 5, Resource classes adding up to 5.
 const FIXTURE = capacity([
   pool('global', 7, 22),
-  pool('tenant:u-bogdan', 7, 40),
+  pool('tenant:u-owner', 7, 40),
   pool('tenant:eng', 0, 10, { adaptive_target: 6, effective_limit: 6, available: 6 }),
-  pool('provider:anthropic:tenant:u-bogdan', 5, 5),
+  pool('provider:anthropic:tenant:u-owner', 5, 5),
   pool('resource:standard', 5, 20),
   pool('resource:browser', 0, 4),
   pool('runner:claude-code', 7, 10),
@@ -105,20 +105,20 @@ const FIXTURE = capacity([
 ])
 
 describe('admin-shell-03: the lead names the pool as its row does', () => {
-  it('says "anthropic · u-bogdan" in the headline and the button, with the key only as a mono line', async () => {
+  it('says "anthropic · u-owner" in the headline and the button, with the key only as a mono line', async () => {
     await screenOf(FIXTURE)
     const lead = await waitFor(() => document.querySelector<HTMLElement>('.adm-lead')!, WAIT)
     // MUTATION: title the lead with `lead.pool` again -> the key is the headline and this fails.
-    expect(text(lead.querySelector('b')!)).toBe('Pool anthropic · u-bogdan is at 100% of its ceiling')
+    expect(text(lead.querySelector('b')!)).toBe('Pool anthropic · u-owner is at 100% of its ceiling')
     // MUTATION: drop the sub-line -> the key is nowhere on the lead and this fails.
     const key = lead.querySelector<HTMLElement>('.ws-lead-s.id')
-    expect(key?.textContent).toBe('provider:anthropic:tenant:u-bogdan')
+    expect(key?.textContent).toBe('provider:anthropic:tenant:u-owner')
     // The key is said once, on its own line, and nowhere else on the lead.
-    expect(text(lead).split('provider:anthropic:tenant:u-bogdan')).toHaveLength(2)
+    expect(text(lead).split('provider:anthropic:tenant:u-owner')).toHaveLength(2)
     // MUTATION: label the button `Open ${lead.pool}` again -> fails.
-    const button = within(lead).getByRole('button', { name: 'Open anthropic · u-bogdan' })
+    const button = within(lead).getByRole('button', { name: 'Open anthropic · u-owner' })
     fireEvent.click(button)
-    expect(document.querySelector('aside.adm-side h3')?.textContent).toContain('anthropic · u-bogdan')
+    expect(document.querySelector('aside.adm-side h3')?.textContent).toContain('anthropic · u-owner')
   })
 
   it('draws no key line where the label is the key (global)', async () => {

@@ -1,6 +1,6 @@
 // CAPACITY › ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302).
 //
-// BGD asked on 2026-10-25 for "more details about rate limit hits, error rates,
+// The owner asked on 2026-10-25 for "more details about rate limit hits, error rates,
 // error logs and other potential issues with the subscription accounts used and
 // their health overall", and picked frames from four mock-ups
 // (docs/web-ui/mockups/account-health-*.html, PR 2323):
@@ -93,7 +93,7 @@ export function sheetHref(accountId: string): string {
  * NO LONGER A FOOTER (QA1-FIX-24, capacity-13, part of #2596). It was a
  * `Reading this screen:` row of underlined monospace links at the foot of
  * both layouts, because the console's glyph count is capped (B7.4,
- * `tests/help.test.ts`). VQ-033 (BGD 2026-10-26: "Move the topics behind the
+ * `tests/help.test.ts`). VQ-033 (owner 2026-10-26: "Move the topics behind the
  * page's one ?") moved Pools', Accounts' and Provider quota's behind the `?`
  * the title already draws -- the section's question, which a list joins
  * rather than replaces -- so this costs no glyph, and Account health does the
@@ -249,7 +249,7 @@ function Dash({ why }: { why: string }) {
 }
 
 /**
- * A label whose explanation is its tooltip (BGD's no-prose rule, 5 November
+ * A label whose explanation is its tooltip (the owner's no-prose rule, 5 November
  * 2026: no explanatory sentence on the surface). Focusable, so a keyboard
  * opens the tooltip as a pointer does; the tooltip is the label's
  * description either way.
@@ -391,7 +391,7 @@ function ReauthCallouts({ m }: { m: Model }) {
         const since = open === undefined || !Number.isFinite(open.from) ? '' : ` since ${when(open.from, m.now)}`
         return (
           <div key={a.account_id} className="ah-callout is-reauth" data-state="reauth" data-account={a.account_id}>
-            {/* The reason is the tick's tooltip, not a paragraph (BGD's no-prose rule). */}
+            {/* The reason is the tick's tooltip, not a paragraph (the owner's no-prose rule). */}
             <Tooltip tip={REAUTH_WHY}>
               <span className="ah-tick" tabIndex={0} role="img" aria-label="Why it needs re-auth" data-tick="reauth_needed">
                 <StatusIcon s="reauth_needed" />

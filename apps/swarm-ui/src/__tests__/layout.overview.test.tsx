@@ -347,7 +347,7 @@ describe('a card says what it opens, and a count is not a verdict', () => {
       const href = `#${pathToAddress(pathname!, search)?.address ?? path}`
       const label = tabLabel(href)
       expect(label, `${href} names no tab declared in App.tsx SECTIONS`).not.toBeNull()
-      // A BUTTON IN THE THEME'S STYLE, NEVER AN ARROW LINK (BGD's standing rule, 2026-11-05).
+      // A BUTTON IN THE THEME'S STYLE, NEVER AN ARROW LINK (the owner's standing rule, 2026-11-05).
       // MUTATION: put `&rarr;` back after CardHead's `cta`, or draw it with `ctl-link` alone.
       expect(a.textContent ?? '', `the link to ${href} still carries an arrow`).not.toContain('→')
       expect(a.classList.contains('c-btn'), `the link to ${href} is not drawn as a button`).toBe(true)

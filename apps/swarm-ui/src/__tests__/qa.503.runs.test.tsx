@@ -33,17 +33,17 @@ const said = (li: Element | null) => visible(li).slice(visible(li?.querySelector
 const DIGEST = 'sha256:' + 'cd'.repeat(32)
 const HEAD = '7138b1a' + '0f'.repeat(16) + '9'
 const COMMIT = 'e4a91c0' + '1b'.repeat(16) + '5'
-const REF = 'bogdan-alexandrescu/SwarmCloud#72'
-const ISSUE_URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/72'
-const PR_URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/564'
+const REF = 'example-org/example-repo#72'
+const ISSUE_URL = 'https://github.com/example-org/example-repo/issues/72'
+const PR_URL = 'https://github.com/example-org/example-repo/pull/564'
 const RUN_ID = 'run_7a37942a19aa4d2c80d1'
 const WF = 'wf_5d0e2b7c41a94e3f8a61'
 
 function run(over: Record<string, unknown> = {}) {
   return {
     id: RUN_ID, tenant_id: 'eng', state: 'CHECKING', terminal: false,
-    issue: { ref: REF, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 72, url: ISSUE_URL,
-      repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud' },
+    issue: { ref: REF, owner: 'example-org', repo: 'SwarmCloud', number: 72, url: ISSUE_URL,
+      repository_url: 'https://github.com/example-org/example-repo' },
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner72',
     plan: { summary: 'Draw it.', requirements: ['It is drawn'], overlaps: [],
       steps: [{ step_id: 'impl', title: 'ui', prompt: 'Build it.', depends_on: [] }] },
@@ -86,7 +86,7 @@ const WAITING = {
 }
 const MERGED = {
   state: 'SUCCEEDED',
-  result_summary: { merge: { merged_by_this_task: true, merge_commit: COMMIT, issues_closed: [72], pull_request: 564, repository: 'bogdan-alexandrescu/SwarmCloud' } },
+  result_summary: { merge: { merged_by_this_task: true, merge_commit: COMMIT, issues_closed: [72], pull_request: 564, repository: 'example-org/example-repo' } },
 }
 
 function serve(body: unknown, wf: unknown) {
@@ -207,7 +207,7 @@ describe('#503: at DONE the card says whether the PR merged and the issue closed
  * or `mergeKnown`'s `pull_request.merged` read -- a case below turns red.
  */
 describe('#503: the counts, the checks and the merge swarm-api serves', () => {
-  const RUN_URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/' + '1'.repeat(10)
+  const RUN_URL = 'https://github.com/example-org/example-repo/actions/runs/' + '1'.repeat(10)
   const checkList = [
     ...Array.from({ length: 7 }, (_, i) => ({ name: `pending ${i}`, state: 'pending', url: i === 0 ? `${RUN_URL}/job/7` : null })),
     ...Array.from({ length: 5 }, (_, i) => ({ name: `passed ${i}`, state: 'passed', url: `${RUN_URL}/job/${i}` })),

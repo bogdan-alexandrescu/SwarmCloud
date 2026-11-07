@@ -46,7 +46,7 @@ import type { AttemptRow, Task, TaskEvent } from '../src/types'
  */
 const RUNNING_TASK: Task = {
   id: 'task_b5dc2568713a40158851',
-  tenant_id: 'u-bogdan',
+  tenant_id: 'u-owner',
   state: 'RUNNING',
   runner_profile: 'claude-code',
   resource_class: 'standard',
@@ -56,7 +56,7 @@ const RUNNING_TASK: Task = {
   updated_at: '2026-09-22T09:05:00Z',
   started_at: '2026-09-22T09:01:00Z',
   completed_at: null,
-  submitted_by: 'bogdan',
+  submitted_by: 'owner',
   attempt_count: 1,
   max_attempts: 3,
   park_reason: null,

@@ -93,7 +93,7 @@ const FIXTURE_NOW = Date.parse(FIXTURE_CLOCK)
 /**
  * WHO THE FIXTURE BUILD ANSWERS AS (QAFIX4-FIXTURE-A; docs/design/visual-qa.md
  * §4.3, visual QA run 4 admin-004 and admin-005). `member` is the fixture
- * identity every capture has always seen: alice@example.com in u-bogdan, not
+ * identity every capture has always seen: alice@example.com in u-owner, not
  * a platform admin, administering no group workspace. `platform-admin` is the
  * same person as a platform admin who also administers one group workspace,
  * `eng`, so the admin pages draw their controls rather than their refusals.
@@ -565,7 +565,7 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
       // The DISPATCHED event's detail carries the execution name: the
       // workaround from before the attempts read existed.
       events.push(ev('dispatched', span.started === null ? begin + (end - begin) * 0.3 : begin - lead * 0.5, {
-        execution_name: `swarm-job-u-bogdan-claude-code-${span.n}`, backend: 'CLOUD_RUN_JOB',
+        execution_name: `swarm-job-u-owner-claude-code-${span.n}`, backend: 'CLOUD_RUN_JOB',
       }))
     }
     if (span.started !== null) {
@@ -584,7 +584,7 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
         const prefix = fixtureCheckpointPrefix(task.id)
         events.push(ev('checkpoint_completed', begin + ran * 0.5, {
           checkpoint_id: 'ckpt_0001',
-          uri: `gs://swarm-workspaces/${prefix}/ckpt_0001`,
+          uri: `gs://swarm-artifacts-example-project/${prefix}/ckpt_0001`,
           size_bytes: 9_102_336,
           seq: 1,
         }))
@@ -613,8 +613,8 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
           task.state === 'SUCCEEDED'
             ? {
                 artifacts: [
-                  { name: 'report.md', bytes: 8241, uri: 'gs://swarm-artifacts-dev/u-bogdan/report.md' },
-                  { name: 'diff.patch', bytes: 91233, uri: 'gs://swarm-artifacts-dev/u-bogdan/diff.patch' },
+                  { name: 'report.md', bytes: 8241, uri: 'gs://swarm-artifacts-example-project/u-owner/report.md' },
+                  { name: 'diff.patch', bytes: 91233, uri: 'gs://swarm-artifacts-example-project/u-owner/diff.patch' },
                 ],
                 artifact_bytes: 99474,
                 // The git block the worker's `_publish` writes, DERIVED FROM
@@ -624,8 +624,8 @@ async function fixtureAgentDetail(taskId: string): Promise<Result<AgentDetail>> 
                 // look right while showing an impossible run.
                 git: fixtureGit(task),
                 logs: {
-                  stdout: `gs://swarm-logs/tenants/u-bogdan/tasks/${task.id}/attempts/${attemptId}/logs/final/stdout.log`,
-                  stderr: `gs://swarm-logs/tenants/u-bogdan/tasks/${task.id}/attempts/${attemptId}/logs/final/stderr.log`,
+                  stdout: `gs://swarm-artifacts-example-project/tenants/u-owner/tasks/${task.id}/attempts/${attemptId}/logs/final/stdout.log`,
+                  stderr: `gs://swarm-artifacts-example-project/tenants/u-owner/tasks/${task.id}/attempts/${attemptId}/logs/final/stderr.log`,
                 },
                 // The runner's own report of the newest attempt: the figures
                 // its attempt document carries (`fixtureUsage`), not others.
@@ -793,7 +793,7 @@ async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPag
       attempt_created_at: iso(span?.admitted),
       attempt_completed_at: iso(span?.ended),
       prefix: `${prefix}/${checkpointId}`,
-      uri: `gs://swarm-workspaces/${prefix}/${checkpointId}`,
+      uri: `gs://swarm-artifacts-example-project/${prefix}/${checkpointId}`,
       is_latest_pointer: checkpointId === written[written.length - 1],
       generation: span?.n ?? 0,
     }
@@ -845,7 +845,7 @@ async function fixtureCheckpoints(taskId: string): Promise<Result<CheckpointsPag
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       prefix,
       count: checkpoints.length,
       total_found: checkpoints.length,
@@ -965,7 +965,7 @@ async function fixtureTaskLogs(
         ].join('\n')
   const names: readonly LogStreamName[] =
     asked === undefined ? ['stdout', 'stderr'] : typeof asked === 'string' ? [asked] : asked
-  const attemptPrefix = `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId ?? 'none'}/logs/${source}`
+  const attemptPrefix = `tenants/u-owner/tasks/${taskId}/attempts/${attemptId ?? 'none'}/logs/${source}`
   const pick = (n: LogStreamName): LogStream => {
     const content = n === 'agent_stdout' ? agentOut : n === 'stdout' ? body : ''
     const size = new TextEncoder().encode(content).length
@@ -984,7 +984,7 @@ async function fixtureTaskLogs(
       status: 'ok',
       detail: null,
       key,
-      uri: `gs://swarm-logs/${key}`,
+      uri: `gs://swarm-artifacts-example-project/${key}`,
       content,
       total_bytes: size,
       offset: 0,
@@ -1007,11 +1007,11 @@ async function fixtureTaskLogs(
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       attempt_id: attemptId,
       attempt,
       read_at: new Date(FIXTURE_NOW).toISOString(),
-      prefix: `tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId ?? 'none'}/`,
+      prefix: `tenants/u-owner/tasks/${taskId}/attempts/${attemptId ?? 'none'}/`,
       redaction: { applied_at_read_time: true, rules: 6 },
       streams: names.map(pick),
     },
@@ -1222,7 +1222,7 @@ export async function loadChildren(taskId: string): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) {
     await new Promise((r) => setTimeout(r, 60))
     noteFixtureProbe(route('/v1/tasks', {}, new URLSearchParams({ parent_task_id: taskId })), 60, true)
-    return { status: 'ok', fetchedAt: Date.now(), data: { tasks: [], next_page_token: null, tenant_id: 'u-bogdan' } }
+    return { status: 'ok', fetchedAt: Date.now(), data: { tasks: [], next_page_token: null, tenant_id: 'u-owner' } }
   }
   return read<TaskPage>(
     route('/v1/tasks', {}, new URLSearchParams({ parent_task_id: taskId, limit: String(TASK_PAGE_LIMIT) })),
@@ -1687,7 +1687,7 @@ function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
   }
   const at = new Date(FIXTURE_NOW - 6 * 60_000).toISOString()
   return {
-    id, tenant_id: 'u-bogdan', state: 'PLANNED', terminal: false, issue,
+    id, tenant_id: 'u-owner', state: 'PLANNED', terminal: false, issue,
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner_fixture',
     // The digest is computed text in the live API; the fixture's is built, not a literal.
     plan: FIXTURE_PLAN, plan_digest: `sha256:${'9f2c41'.padEnd(64, '0')}`, plan_revision: 1, plan_edited_by: null,
@@ -1767,7 +1767,7 @@ async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRe
       // THE CAPACITY FIXTURE'S TENANT, and the merge step's answer as the live
       // API serves it since contract request 47 (QA1-FIX-12 runs-submit-13,
       // chrome-C29).
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       auto_merge: { available: true, requires: '#295', reason: null },
       issue: doc,
     },
@@ -1778,7 +1778,7 @@ async function fixtureRuns(pageToken: string | null): Promise<Result<IssueRunPag
   await new Promise((r) => setTimeout(r, 60))
   noteFixtureProbe(route('/v1/runs'), 60, true)
   const runs = pageToken === null ? fixtureIssueRuns() : []
-  return { status: 'ok', fetchedAt: Date.now(), data: { runs, next_page_token: null, tenant_id: 'u-bogdan' } }
+  return { status: 'ok', fetchedAt: Date.now(), data: { runs, next_page_token: null, tenant_id: 'u-owner' } }
 }
 
 async function fixtureRun(runId: string): Promise<Result<IssueRunRead>> {
@@ -1869,7 +1869,7 @@ async function fixtureArtifactListing(taskId: string): Promise<Result<ArtifactLi
   const finished = detail.data.task.state === 'SUCCEEDED'
   // The newest attempt's, as every per-task fixture read names it (F14b).
   const att = fixtureLogAttempt(detail.data.task).attemptId ?? 'none'
-  const uri = (name: string) => `gs://swarm-artifacts-dev/tenants/u-bogdan/tasks/${taskId}/attempts/${att}/artifacts/${name}`
+  const uri = (name: string) => `gs://swarm-artifacts-example-project/tenants/u-owner/tasks/${taskId}/attempts/${att}/artifacts/${name}`
   return {
     status: 'ok',
     fetchedAt: Date.now(),
@@ -1952,7 +1952,7 @@ async function fixtureAnswer(taskId: string): Promise<Result<TaskAnswer>> {
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       attempt_id: attemptId,
       attempt,
       read_at: new Date(FIXTURE_NOW).toISOString(),
@@ -2054,7 +2054,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       attempt_id: attemptId,
       attempt,
       read_at: new Date(FIXTURE_NOW).toISOString(),
@@ -2064,7 +2064,7 @@ async function fixtureTranscript(taskId: string, includeRaw: boolean): Promise<R
         status: started ? 'ok' : 'absent',
         detail: started ? null : 'The attempt has not started, so it has written no transcript.',
         uri: started
-          ? `gs://swarm-logs/tenants/u-bogdan/tasks/${taskId}/attempts/${attemptId}/logs/${finished ? 'final' : 'live'}/agent_stdout${finished ? '' : '.tail'}.log`
+          ? `gs://swarm-artifacts-example-project/tenants/u-owner/tasks/${taskId}/attempts/${attemptId}/logs/${finished ? 'final' : 'live'}/agent_stdout${finished ? '' : '.tail'}.log`
           : null,
         object_updated_at: started ? new Date(at).toISOString() : null,
         age_seconds: started ? Math.max(0, Math.round((Date.now() - at) / 1000)) : null,
@@ -2263,13 +2263,13 @@ async function fixtureArtifactContent(
     fetchedAt: Date.now(),
     data: {
       task_id: taskId,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       attempt_id: att,
-      artifact: { name, bytes, uri: `gs://swarm-artifacts/${name}` },
+      artifact: { name, bytes, uri: `gs://swarm-artifacts-example-project/${name}` },
       status: 'ok',
       detail: null,
-      key: `tenants/u-bogdan/tasks/${taskId}/attempts/${att}/artifacts/${name}`,
-      uri: `gs://swarm-artifacts/${name}`,
+      key: `tenants/u-owner/tasks/${taskId}/attempts/${att}/artifacts/${name}`,
+      uri: `gs://swarm-artifacts-example-project/${name}`,
       content,
       total_bytes: bytes,
       offset: 0,
@@ -2921,7 +2921,7 @@ async function fixtureStats(options: { frame?: boolean } = {}): Promise<Result<S
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       dispatch_paused: false,
       tasks_by_state: tasksByState,
       limits: { max_batch_size: 100, max_input_bytes: 65536, max_workflow_steps: 50 },
@@ -2953,7 +2953,7 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
     status: 'ok',
     fetchedAt: Date.now(),
     data: {
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       generated_at: new Date(FIXTURE_NOW).toISOString(),
       providers: [
         {
@@ -2961,7 +2961,7 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
           credential_registered: true,
           runner_profiles: ['browser', 'claude-code'],
           quota: {
-            provider: 'anthropic', tenant_id: 'u-bogdan', state: 'THROTTLED',
+            provider: 'anthropic', tenant_id: 'u-owner', state: 'THROTTLED',
             updated_at: new Date(FIXTURE_NOW - 40_000).toISOString(),
             configured_hard_max: 50, adaptive_target: 6, quota_derived_limit: null,
             requests_remaining: 118, tokens_remaining: null,
@@ -3183,7 +3183,7 @@ export async function loadTaskWindow(budget: number): Promise<Result<TaskWindow>
 /** `GET /v1/tenants/mine` for the platform-admin persona: its own workspace first (#1200), then `eng`. */
 function fixtureTenantChoices(): TenantChoice[] {
   return [
-    { tenant_id: 'u-bogdan', display_name: 'Your workspace (u-bogdan)', kind: 'user', role: { name: 'admin', source: 'personal' }, via: 'personal' },
+    { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user', role: { name: 'admin', source: 'personal' }, via: 'personal' },
     { tenant_id: FIXTURE_GROUP.tenant_id, display_name: FIXTURE_GROUP.principal, kind: 'group', role: { name: 'admin', source: 'override' }, via: 'member' },
   ]
 }
@@ -3194,10 +3194,10 @@ function fixtureTenantChoices(): TenantChoice[] {
  * personal one. Every fixture read that names the acting workspace asks this
  * (QA2-FIX-07, admin-shell-01: `/v1/tenants/me` honoured the pick, but
  * `/v1/profile` and `/v1/access` did not, so Workspace Settings and GitHub
- * access still described u-bogdan after the eng card's link picked eng).
+ * access still described u-owner after the eng card's link picked eng).
  */
 function fixtureActingTenant(): string {
-  return chosenTenant() === FIXTURE_GROUP.tenant_id && (fixtureIsAdmin || fixtureIsWorkspaceAdmin) ? FIXTURE_GROUP.tenant_id : 'u-bogdan'
+  return chosenTenant() === FIXTURE_GROUP.tenant_id && (fixtureIsAdmin || fixtureIsWorkspaceAdmin) ? FIXTURE_GROUP.tenant_id : 'u-owner'
 }
 
 async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
@@ -3216,7 +3216,7 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
       tenant: {
         tenant_id: id, kind: group ? 'group' : 'user', principal: group ? FIXTURE_GROUP.principal : 'alice@example.com',
         // THE PERSONAL WORKSPACE IS THE SIGNED-IN PERSON'S (QA2-FIX-07, config2-06):
-        // alice@example.com's, so named Alice. 'Bogdan' read as someone else's
+        // alice@example.com's, so named Alice. 'Alex' read as someone else's
         // workspace that alice administered, which a personal one never is.
         display_name: group ? FIXTURE_GROUP.principal : 'Alice', created_at: new Date(FIXTURE_NOW - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
@@ -3224,7 +3224,7 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
           'anthropic',
         ],
         service_account: `swarm-agent-worker-${id}@example-project.iam.gserviceaccount.com`,
-        gcs_prefix: `gs://swarm-artifacts-dev/${id}`, namespace: `swarm-tenant-${id}`,
+        gcs_prefix: `gs://swarm-artifacts-example-project/${id}`, namespace: `swarm-tenant-${id}`,
       },
       principal: {
         email: 'alice@example.com', domain: 'example.com',
@@ -3262,7 +3262,7 @@ async function fixtureWindow(budget: number): Promise<Result<TaskWindow>> {
 /**
  * The three tenants fixtureCapacity has pools for, each figure the one its
  * pool says: `capacity_units` is the `tenant:<id>` pool's hard limit (40, 10,
- * 2), and u-bogdan is fixtureMe's tenant field for field.
+ * 2), and u-owner is fixtureMe's tenant field for field.
  */
 function fixtureRoster(): Tenant[] {
   const created = (days: number) => new Date(FIXTURE_NOW - 86_400_000 * days).toISOString()
@@ -3271,10 +3271,10 @@ function fixtureRoster(): Tenant[] {
     tenant_id, kind, principal, display_name, created_at: created(days), max_active, capacity_units,
     monthly_budget_usd: null, enabled: true, credentials,
     service_account: `swarm-agent-worker-${tenant_id}@example-project.iam.gserviceaccount.com`,
-    gcs_prefix: `gs://swarm-artifacts-dev/${tenant_id}`, namespace: `swarm-tenant-${tenant_id}`,
+    gcs_prefix: `gs://swarm-artifacts-example-project/${tenant_id}`, namespace: `swarm-tenant-${tenant_id}`,
   })
   return [
-    t('u-bogdan', 'user', 'alice@example.com', 'Alice', 9, 2, 40, ['anthropic']),
+    t('u-owner', 'user', 'alice@example.com', 'Alice', 9, 2, 40, ['anthropic']),
     t(FIXTURE_GROUP.tenant_id, 'group', FIXTURE_GROUP.principal, 'Engineering', 30, 4, 10, ['anthropic', 'openai']),
     t('smoke', 'group', 'smoke@example.com', 'Smoke tests', 60, 1, 2, []),
   ]
@@ -3540,7 +3540,7 @@ async function fixtureAttemptsPage(since: string, until: string): Promise<Result
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { tenant_id: 'u-bogdan', read_at: new Date(FIXTURE_NOW).toISOString(), attempts: inWindow, next_page_token: null, coverage: { scope: 'page' } },
+    data: { tenant_id: 'u-owner', read_at: new Date(FIXTURE_NOW).toISOString(), attempts: inWindow, next_page_token: null, coverage: { scope: 'page' } },
   }
 }
 
@@ -3575,9 +3575,9 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
     // back to its short id on the fixture console.
     task_id: FIXTURE_LEASE_TASKS[id] ?? `task_${id}`,
     attempt_id: `att_${id}`,
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     generation: 1,
-    pools: ['global', 'tenant:u-bogdan'],
+    pools: ['global', 'tenant:u-owner'],
     units: 1,
     dispatch_state: 'DISPATCHED',
     created_at: iso(600),
@@ -3679,7 +3679,7 @@ async function fixtureLeaseHeartbeats(): Promise<Result<LeaseHeartbeatPage>> {
     status: 'ok',
     fetchedAt: now,
     data: {
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       read_at: new Date(now).toISOString(),
       thresholds: { heartbeat_grace_seconds: grace, lease_timeout_seconds: 120 },
       heartbeats: held.map(row),
@@ -3739,7 +3739,7 @@ function fixtureAttemptRows(task: Task): AttemptRow[] {
       return {
         attempt_id: fixtureAttemptId(task.id, sp.n),
         task_id: task.id,
-        tenant_id: 'u-bogdan',
+        tenant_id: 'u-owner',
         generation: sp.n,
         // THE NEWEST ATTEMPT HOLDS THE TASK'S LEASE when the task holds one.
         // `attemptEnd` reads an attempt as over once the task stops holding
@@ -3747,7 +3747,7 @@ function fixtureAttemptRows(task: Task): AttemptRow[] {
         // in development as ended.
         lease_id: latest ? (task.current_lease_id ?? `lease_${sp.n}`) : `lease_${sp.n}`,
         backend: 'CLOUD_RUN_JOB',
-        execution_name: refused || (latest && task.state === 'LEASED') ? null : `swarm-job-u-bogdan-claude-code-${sp.n}`,
+        execution_name: refused || (latest && task.state === 'LEASED') ? null : `swarm-job-u-owner-claude-code-${sp.n}`,
         // PRODUCTION SHAPE: a started attempt's `created_at` IS its start. The
         // worker's `record_attempt_start` rewrites the scheduler's document
         // with a non-merge `.set()` (control.py), so admission survives only as
@@ -3896,12 +3896,12 @@ function fixtureQuotaRows(): QuotaState[] {
   })
   return [
     q('anthropic', 'eng', 'AVAILABLE', { requests_remaining: 4210 }),
-    q('anthropic', 'u-bogdan', 'THROTTLED', {
+    q('anthropic', 'u-owner', 'THROTTLED', {
       adaptive_target: 6, effective_limit: 6, rate_limit_count: 9,
       last_429_at: new Date(FIXTURE_NOW - 240_000).toISOString(),
     }),
     q('openai', 'eng', 'EXHAUSTED', { effective_limit: 0, rate_limit_count: 41 }),
-    q('openai', 'u-bogdan', 'UNKNOWN', { success_count: 0 }),
+    q('openai', 'u-owner', 'UNKNOWN', { success_count: 0 }),
   ]
 }
 
@@ -3923,7 +3923,7 @@ async function fixtureAdminQuota(): Promise<Result<{ quota: QuotaState[] }>> {
 
 /**
  * A platform admin's reset of one tenant's AIMD target (QUOTA-RESET), from
- * Admin › Pool limits (POOL-LIMITS-QUOTA, BGD 2026-10-25, part of #2302).
+ * Admin › Pool limits (POOL-LIMITS-QUOTA, owner 2026-10-25, part of #2302).
  * The route proxies to the quota broker, which clamps the target into
  * [min_target, configured_hard_max] and answers `{ quota, reset }`: `reset`
  * carries `from_target`, `to_target` and `clamped`, which the row draws.
@@ -3987,7 +3987,7 @@ export async function setQuotaHardMax(
  * The API has one route per pool KIND rather than one generic route, so the
  * name has to be decomposed. Two of these did not exist until 2026-09-20 --
  * backend, and the per-tenant slice of a provider -- which is precisely why
- * backend:CLOUD_RUN_JOB and provider:anthropic:tenant:u-bogdan became the
+ * backend:CLOUD_RUN_JOB and provider:anthropic:tenant:u-owner became the
  * binding constraints the moment every other pool was raised.
  */
 export async function setPoolLimit(poolName: string, limit: number): Promise<Result<unknown>> {
@@ -4221,7 +4221,7 @@ export function priceRefusals(error: ApiError): { fields: Record<string, string>
 // Fixtures
 // --------------------------------------------------------------------------
 // These are the REAL pool names and the REAL live values read from the dev
-// platform on 2026-09-19, not invented ones -- including tenant:u-bogdan at 40
+// platform on 2026-09-19, not invented ones -- including tenant:u-owner at 40
 // against a configured 2, which is the out-of-band drift `make pool-check`
 // found. A fixture that shows a tidy platform teaches the wrong thing about
 // what this screen is for.
@@ -4273,7 +4273,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         ]
       },
       {
-        "pool": "tenant:u-bogdan",
+        "pool": "tenant:u-owner",
         "action": "raise",
         "headroom_after": 15,
         "basis_after": "measured",
@@ -4343,7 +4343,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         ]
       },
       {
-        "pool": "tenant:u-bogdan",
+        "pool": "tenant:u-owner",
         "action": "raise",
         "headroom_after": 10,
         "basis_after": "measured",
@@ -4395,7 +4395,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "basis": "measured",
     "blockers": [
       {
-        "pool": "provider:anthropic:tenant:u-bogdan",
+        "pool": "provider:anthropic:tenant:u-owner",
         "reason": "PROVIDER_CONCURRENCY_LIMIT",
         "limit": 5,
         "active": 5,
@@ -4403,7 +4403,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
       }
     ],
     "binding": [
-      "provider:anthropic:tenant:u-bogdan"
+      "provider:anthropic:tenant:u-owner"
     ],
     "counterfactual": [
       {
@@ -4413,17 +4413,17 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
-        "pool": "tenant:u-bogdan",
+        "pool": "tenant:u-owner",
         "action": "raise",
         "headroom_after": 0,
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4433,7 +4433,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4443,7 +4443,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4453,7 +4453,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4463,11 +4463,11 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
-        "pool": "provider:anthropic:tenant:u-bogdan",
+        "pool": "provider:anthropic:tenant:u-owner",
         "action": "raise",
         "headroom_after": 5,
         "basis_after": "measured",
@@ -4490,7 +4490,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "binding": [
       "runner:codex",
       "provider:openai",
-      "provider:openai:tenant:u-bogdan"
+      "provider:openai:tenant:u-owner"
     ],
     "counterfactual": [
       {
@@ -4502,11 +4502,11 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "next_binding": [
           "runner:codex",
           "provider:openai",
-          "provider:openai:tenant:u-bogdan"
+          "provider:openai:tenant:u-owner"
         ]
       },
       {
-        "pool": "tenant:u-bogdan",
+        "pool": "tenant:u-owner",
         "action": "raise",
         "headroom_after": 10,
         "basis_after": "measured",
@@ -4514,7 +4514,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "next_binding": [
           "runner:codex",
           "provider:openai",
-          "provider:openai:tenant:u-bogdan"
+          "provider:openai:tenant:u-owner"
         ]
       },
       {
@@ -4526,7 +4526,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "next_binding": [
           "runner:codex",
           "provider:openai",
-          "provider:openai:tenant:u-bogdan"
+          "provider:openai:tenant:u-owner"
         ]
       },
       {
@@ -4537,7 +4537,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "delta": 0,
         "next_binding": [
           "provider:openai",
-          "provider:openai:tenant:u-bogdan"
+          "provider:openai:tenant:u-owner"
         ]
       },
       {
@@ -4549,7 +4549,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "next_binding": [
           "runner:codex",
           "provider:openai",
-          "provider:openai:tenant:u-bogdan"
+          "provider:openai:tenant:u-owner"
         ]
       },
       {
@@ -4560,11 +4560,11 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "delta": 0,
         "next_binding": [
           "runner:codex",
-          "provider:openai:tenant:u-bogdan"
+          "provider:openai:tenant:u-owner"
         ]
       },
       {
-        "pool": "provider:openai:tenant:u-bogdan",
+        "pool": "provider:openai:tenant:u-owner",
         "action": "raise",
         "headroom_after": 10,
         "basis_after": "measured",
@@ -4585,7 +4585,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "basis": "measured",
     "blockers": [
       {
-        "pool": "provider:anthropic:tenant:u-bogdan",
+        "pool": "provider:anthropic:tenant:u-owner",
         "reason": "PROVIDER_CONCURRENCY_LIMIT",
         "limit": 5,
         "active": 5,
@@ -4593,7 +4593,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
       }
     ],
     "binding": [
-      "provider:anthropic:tenant:u-bogdan"
+      "provider:anthropic:tenant:u-owner"
     ],
     "counterfactual": [
       {
@@ -4603,17 +4603,17 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
-        "pool": "tenant:u-bogdan",
+        "pool": "tenant:u-owner",
         "action": "raise",
         "headroom_after": 0,
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4623,7 +4623,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4633,7 +4633,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4643,7 +4643,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4653,11 +4653,11 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
-        "pool": "provider:anthropic:tenant:u-bogdan",
+        "pool": "provider:anthropic:tenant:u-owner",
         "action": "raise",
         "headroom_after": 4,
         "basis_after": "measured",
@@ -4679,7 +4679,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
     "basis": "measured",
     "blockers": [
       {
-        "pool": "provider:anthropic:tenant:u-bogdan",
+        "pool": "provider:anthropic:tenant:u-owner",
         "reason": "PROVIDER_CONCURRENCY_LIMIT",
         "limit": 5,
         "active": 5,
@@ -4687,7 +4687,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
       }
     ],
     "binding": [
-      "provider:anthropic:tenant:u-bogdan"
+      "provider:anthropic:tenant:u-owner"
     ],
     "counterfactual": [
       {
@@ -4697,17 +4697,17 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
-        "pool": "tenant:u-bogdan",
+        "pool": "tenant:u-owner",
         "action": "raise",
         "headroom_after": 0,
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4717,7 +4717,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4727,7 +4727,7 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
@@ -4737,11 +4737,11 @@ const FIXTURE_ADMISSION: Record<string, ProfileAdmission> = {
         "basis_after": "measured",
         "delta": 0,
         "next_binding": [
-          "provider:anthropic:tenant:u-bogdan"
+          "provider:anthropic:tenant:u-owner"
         ]
       },
       {
-        "pool": "provider:anthropic:tenant:u-bogdan",
+        "pool": "provider:anthropic:tenant:u-owner",
         "action": "raise",
         "headroom_after": 4,
         "basis_after": "measured",
@@ -4881,7 +4881,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
     fetchedAt: Date.now(),
     data: {
       generated_at: new Date(FIXTURE_NOW).toISOString(),
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       // The listing was not truncated, so a pool absent from it is
       // unconfigured rather than unread.
       pools_complete: true,
@@ -4894,14 +4894,14 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
         mock: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
           ...FIXTURE_AVAILABILITY.mock,
-          pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
+          pools: ['global', 'tenant:u-owner', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.mock,
           input_contract: FIXTURE_INPUT_CONTRACTS.mock,
         },
         generic: {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: null, units: 1,
           ...FIXTURE_AVAILABILITY.generic,
-          pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
+          pools: ['global', 'tenant:u-owner', 'resource:standard', 'runner:generic', 'backend:CLOUD_RUN_JOB'],
           admission: FIXTURE_ADMISSION.generic,
           input_contract: FIXTURE_INPUT_CONTRACTS.generic,
         },
@@ -4909,8 +4909,8 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY['claude-code'],
           pools: [
-            'global', 'tenant:u-bogdan', 'resource:standard', 'runner:claude-code',
-            'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
+            'global', 'tenant:u-owner', 'resource:standard', 'runner:claude-code',
+            'backend:CLOUD_RUN_JOB', 'provider:anthropic', 'provider:anthropic:tenant:u-owner',
           ],
           admission: FIXTURE_ADMISSION['claude-code'],
           input_contract: FIXTURE_INPUT_CONTRACTS['claude-code'],
@@ -4919,8 +4919,8 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
           ...FIXTURE_AVAILABILITY.codex,
           pools: [
-            'global', 'tenant:u-bogdan', 'resource:standard', 'runner:codex',
-            'backend:CLOUD_RUN_JOB', 'provider:openai', 'provider:openai:tenant:u-bogdan',
+            'global', 'tenant:u-owner', 'resource:standard', 'runner:codex',
+            'backend:CLOUD_RUN_JOB', 'provider:openai', 'provider:openai:tenant:u-owner',
           ],
           admission: FIXTURE_ADMISSION.codex,
           input_contract: FIXTURE_INPUT_CONTRACTS.codex,
@@ -4929,8 +4929,8 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY.browser,
           pools: [
-            'global', 'tenant:u-bogdan', 'resource:browser', 'runner:browser',
-            'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
+            'global', 'tenant:u-owner', 'resource:browser', 'runner:browser',
+            'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-owner',
           ],
           admission: FIXTURE_ADMISSION.browser,
           input_contract: FIXTURE_INPUT_CONTRACTS.browser,
@@ -4946,8 +4946,8 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 1,
           ...FIXTURE_AVAILABILITY['claude-code-browser'],
           pools: [
-            'global', 'tenant:u-bogdan', 'resource:browser', 'runner:claude-code-browser',
-            'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
+            'global', 'tenant:u-owner', 'resource:browser', 'runner:claude-code-browser',
+            'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-owner',
           ],
           admission: FIXTURE_ADMISSION['claude-code-browser'],
           input_contract: FIXTURE_INPUT_CONTRACTS['claude-code-browser'],
@@ -4962,7 +4962,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
  * THE POOL DOCUMENTS `/v1/capacity` serves, and `feeds_pool` names.
  *
  * TWO RULES THEY WERE TYPED APART FROM (QAFIX6-FIXTURE c and i, part of
- * #1680). `global` and `tenant:u-bogdan` count the leases the task list holds,
+ * #1680). `global` and `tenant:u-owner` count the leases the task list holds,
  * one unit each, because every lease is a unit of every pool on its profile's
  * list (invariant 2): typed as 5, they sat under Overview's 7 holding
  * capacity (run 6 task-007, box 6343775508). The 7 is a LITERAL because
@@ -5006,18 +5006,18 @@ function fixturePools(): Capacity['pools'] {
     // resource:standard, backend:CLOUD_RUN_JOB), the shape that literal's note
     // says it exists to teach. At 20 global bound alone at 13.
     pool('global', 22, 7),
-    pool('tenant:u-bogdan', 40, 7),
+    pool('tenant:u-owner', 40, 7),
     pool('provider:anthropic', 10, 5),
-    pool('provider:anthropic:tenant:u-bogdan', 5, 5),
+    pool('provider:anthropic:tenant:u-owner', 5, 5),
     pool('provider:anthropic:tenant:eng', 5, 0),
     pool('provider:openai', 10, 0),
     pool('provider:openai:tenant:eng', 5, 0),
-    // THE POOL openai u-bogdan's QUOTA ROW FEEDS (QAFIX4-FIXTURE-B F11, run 4
+    // THE POOL openai u-owner's QUOTA ROW FEEDS (QAFIX4-FIXTURE-B F11, run 4
     // capacity-009): `pool_names_for` gives every provider its per-tenant
     // slice, so codex's list carries it and Provider quota's row links a
     // pool the board and Holders' accounting both list. At 10, so codex
     // stays tied, now across three ceilings (FIXTURE_ADMISSION's note).
-    pool('provider:openai:tenant:u-bogdan', 10, 0),
+    pool('provider:openai:tenant:u-owner', 10, 0),
     pool('runner:claude-code', 10, 5),
     pool('runner:mock', 20, 0),
     pool('runner:browser', 4, 0),
@@ -5074,7 +5074,7 @@ function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
         options: [option('Yes', 'One more component test.'), option('No', 'Covered by the page test.')],
         recommended: 'Yes',
         context: null,
-        answer: { question_index: 0, question: 'Add a test for the empty Views state?', choice: 'Yes', text: null, by: 'bogdan@example.com', at: new Date(FIXTURE_NOW - 30 * 60_000).toISOString(), history: [] },
+        answer: { question_index: 0, question: 'Add a test for the empty Views state?', choice: 'Yes', text: null, by: 'member@example.com', at: new Date(FIXTURE_NOW - 30 * 60_000).toISOString(), history: [] },
       },
       {
         question: 'Rename the views flag in this change or in a follow-up?',
@@ -5276,10 +5276,10 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
     ),
     one(
       'AWAITING_INPUT',
-      'Waiting for a member of u-bogdan to answer; /sc answer wf_sizes_sched_2 approve',
+      'Waiting for a member of u-owner to answer; /sc answer wf_sizes_sched_2 approve',
       'a member of the workspace answers, or the window expires and its default applies',
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
+        who_may_answer: { tenant_id: 'u-owner', text: 'any member of workspace u-owner' },
         opened_at: at(47), expires_at: at(-240), answer_command: '/sc answer wf_sizes_sched_2 approve',
       },
       { next: null },
@@ -5290,7 +5290,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
       'Waiting for a person: sign in on its console page, then say it is ready',
       "a member of the workspace calls human-ready (the console's Ready button)",
       {
-        who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
+        who_may_answer: { tenant_id: 'u-owner', text: 'any member of workspace u-owner' },
         expires_at: null, answer_route: 'POST /v1/tasks/task_wait_human_required/human-ready', cause: null,
       },
       { next: null, task: { runner_profile: 'claude-code-browser', resource_class: 'browser', blocked_by: [{ reason: 'HUMAN_REQUIRED' }] } },
@@ -5306,7 +5306,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
         park_phase: 'owner_questions',
         questions: FIXTURE_HELD,
         unreadable: 0,
-        who_may_answer: { submitted_by: 'bogdan@example.com', admin: true, text: 'bogdan@example.com, who launched workflow wf_ga_move_views, or an admin' },
+        who_may_answer: { submitted_by: 'member@example.com', admin: true, text: 'member@example.com, who launched workflow wf_ga_move_views, or an admin' },
       },
       {
         next: null,
@@ -5351,7 +5351,7 @@ function fixtureWaitingTasks(listed: Task[]): Task[] {
  * THE BUDGET AGENTS (#2459, BUDGET-FIXTURES): one per state of the agent's
  * Budget card (AgentBudget.tsx), so the card is drawn in development and a
  * visual-QA run captures it (`budget-*` in qa/routes.json). Like the waiting
- * agents they are reached BY ID AND KEPT OFF THE LISTS (BGD, 2026-10-27):
+ * agents they are reached BY ID AND KEPT OFF THE LISTS (owner, 2026-10-27):
  * the agents list, the task window, Outcomes and every count stay as other
  * tests pin them.
  *
@@ -5471,7 +5471,7 @@ function fixtureBudgetTasks(listed: Task[]): Task[] {
 }
 
 /**
- * THE AGENT ANOTHER USER SUBMITTED (#1857, RAW-PATCH-FIXTURE; BGD's decision
+ * THE AGENT ANOTHER USER SUBMITTED (#1857, RAW-PATCH-FIXTURE; the owner's decision
  * 2026-10-27). The raw patch is offered to a task's submitter only, and every
  * other fixture task was submitted by the signed-in fixture user, so the
  * console only ever showed the offer. This one finished agent was submitted by
@@ -5553,7 +5553,7 @@ const FIXTURE_JEV_FINDINGS = [
 const FIXTURE_JEV_VERDICT = JSON.stringify({ verdict: 'NOT_YET', findings: FIXTURE_JEV_FINDINGS }, null, 2)
 
 // ---------------------------------------------------------------------------
-// A step's mock-ups, for the Changes view's Rendered pane (BGD, 2026-11-06)
+// A step's mock-ups, for the Changes view's Rendered pane (owner, 2026-11-06)
 // ---------------------------------------------------------------------------
 //
 // The ux-mockups kit's shape: a desktop frame recorded at 1440x900, a phone
@@ -5764,7 +5764,7 @@ function fixtureJevTasks(listed: Task[]): Task[] {
   const gated = { strategy: 'collect', carrier: 'checkpoints', role: null, integrates: [], verdict_gate: { task_id: FIXTURE_JEV_REVIEW, verdict_in: ['NOT_YET'] } }
   return [
     one(FIXTURE_JEV_REVIEW, 'Review the lease release path', 120, 100, {
-      artifacts: [{ name: 'verdict.json', bytes: new TextEncoder().encode(FIXTURE_JEV_VERDICT).length, uri: 'gs://swarm-artifacts-dev/u-bogdan/verdict.json' }],
+      artifacts: [{ name: 'verdict.json', bytes: new TextEncoder().encode(FIXTURE_JEV_VERDICT).length, uri: 'gs://swarm-artifacts-example-project/u-owner/verdict.json' }],
       quality_gates: fixtureJevGates(0, 0, 4, 2),
     }),
     one(
@@ -5883,7 +5883,7 @@ function fixtureSpans(task: Task): FixtureAttemptSpan[] {
 
 /** Where a fixture task's checkpoints are listed (`fixtureCheckpoints`' prefix). */
 function fixtureCheckpointPrefix(taskId: string): string {
-  return `tenants/u-bogdan/tasks/${taskId}/checkpoints`
+  return `tenants/u-owner/tasks/${taskId}/checkpoints`
 }
 
 /**
@@ -5958,7 +5958,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
   return {
     status: 'ok',
     fetchedAt: Date.now(),
-    data: { tasks: [...fixtureTasksMade, ...fixtureTaskRows()], next_page_token: null, tenant_id: 'u-bogdan' },
+    data: { tasks: [...fixtureTasksMade, ...fixtureTaskRows()], next_page_token: null, tenant_id: 'u-owner' },
   }
 }
 
@@ -5977,7 +5977,7 @@ function fixtureTaskRows(): Task[] {
     extra: Partial<Task> = {},
   ): Task => timed(minsAgo, {
     id,
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     state,
     runner_profile: profile,
     resource_class: profile === 'browser' || profile === 'claude-code-browser' ? 'browser' : 'standard',
@@ -6105,7 +6105,7 @@ function fixtureTaskRows(): Task[] {
       input: { prompt: 'Show the queue depth per pool on the Capacity page.' },
     }),
     // A READY ROW SAYS WHICH POOL REFUSES IT (visual QA pass 1,
-    // overview-agents-56): the sidebar named `anthropic · u-bogdan` full and
+    // overview-agents-56): the sidebar named `anthropic · u-owner` full and
     // this row named nothing. Its `waiting_for` is the capacity fixture's own
     // claude-code blocker, the per-tenant anthropic slice at 5 of 5.
     mk('task_950b8e4a', 'READY', 'claude-code', 1, {
@@ -6114,8 +6114,8 @@ function fixtureTaskRows(): Task[] {
         as_of: new Date(FIXTURE_NOW).toISOString(),
         admissible_now: false,
         holds_capacity: false,
-        lead: { pool: 'provider:anthropic:tenant:u-bogdan', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' },
-        pools: [{ pool: 'provider:anthropic:tenant:u-bogdan', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' }],
+        lead: { pool: 'provider:anthropic:tenant:u-owner', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' },
+        pools: [{ pool: 'provider:anthropic:tenant:u-owner', state: 'full', active: 5, limit: 5, units: 1, reason: 'PROVIDER_CONCURRENCY_LIMIT' }],
         complete: true,
       },
     }),
@@ -6151,7 +6151,7 @@ function fixtureTaskRows(): Task[] {
       },
       result_summary: { artifacts: 1, checkpoints: 2, questions: 2 },
     }),
-    // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
+    // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; owner
     // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
     // no test named, converted rather than a row added so every fixture
     // total stands. A finished agent's Browser tab (BT-006, BT-007) renders
@@ -6191,7 +6191,7 @@ function fixtureTaskRows(): Task[] {
       workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
       dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
-      // THE MOCK-UPS IN THE CHANGES VIEW (BGD, 2026-11-06): this step's patch
+      // THE MOCK-UPS IN THE CHANGES VIEW (owner, 2026-11-06): this step's patch
       // adds a desktop frame, a phone frame and a PNG, so the file pane's
       // Rendered view is looked at in development (`FIXTURE_MOCKUP_PATCH`).
       result_summary: {
@@ -6517,7 +6517,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
   const workflows: Workflow[] = [
     {
       workflow_id: 'wf_audit_01',
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       // The fixture mirrors what the API now sends: a DERIVED state, the
       // stored copy beside it, and the drift between them. `wf_audit_01`
       // carries a deliberate disagreement so the drift line has something
@@ -6579,7 +6579,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
       // length is the reason.
       {
         workflow_id: 'wf_5e5ad3b6f7da4299a839',
-        tenant_id: 'u-bogdan',
+        tenant_id: 'u-owner',
         state: 'FAILED',
         stored_state: 'FAILED',
         state_source: 'derived',
@@ -6629,7 +6629,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
         // and cancelled, so it has to be renderable in development or the fix
         // for it cannot be looked at. The heading must claim NO state here.
         workflow_id: 'wf_bcdc9180e4fb4a209f31',
-        tenant_id: 'u-bogdan',
+        tenant_id: 'u-owner',
         state: 'QUEUED',
         stored_state: 'QUEUED',
         state_source: 'stored',
@@ -6646,7 +6646,7 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
       },
       {
         workflow_id: 'wf_quiet_q_01',
-        tenant_id: 'u-bogdan',
+        tenant_id: 'u-owner',
         state: 'SUCCEEDED',
         stored_state: 'SUCCEEDED',
         state_source: 'derived',
@@ -6828,7 +6828,7 @@ async function fixtureWorkflows(): Promise<Result<WorkflowPage>> {
     data: {
       workflows,
       next_page_token: null,
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       rollup_report: {
         examined: workflows.length,
         written: 1,
@@ -7485,7 +7485,7 @@ function fixtureAccount(
 }
 
 let fixtureAccounts: ServedAccount[] = [
-  fixtureAccount('u-bogdan', 'primary', {
+  fixtureAccount('u-owner', 'primary', {
     assigned: 2,
     // THE POOL'S ANSWER (#2222), on every row: can it take a new agent, what
     // stops it, and when that clears. One of each group the page ranks by.
@@ -7494,14 +7494,14 @@ let fixtureAccounts: ServedAccount[] = [
     blocked_by: [],
     next_eligible_at: null,
     organisation: { name: 'Example', plan: 'Team' },
-    duplicate_of: 'u-bogdan:team-copy',
-    duplicate_reason: 'registered on the same organisation as u-bogdan:team-copy',
+    duplicate_of: 'u-owner:team-copy',
+    duplicate_reason: 'registered on the same organisation as u-owner:team-copy',
     windows: {
       five_hour: { utilization: 0.41, resets_at: ISO(2 * 3600_000 + 51 * 60_000), reset: false },
       seven_day: { utilization: 0.63, resets_at: ISO(70 * 3600_000), reset: false },
     },
   }),
-  fixtureAccount('u-bogdan', 'overflow', {
+  fixtureAccount('u-owner', 'overflow', {
     // Observed two hours ago: past DEFAULT_STALE_AFTER, so every figure on this
     // row is marked `~` and nothing on it may be read as current.
     observed_at: ISO(-2 * 3600_000),
@@ -7522,7 +7522,7 @@ let fixtureAccounts: ServedAccount[] = [
       seven_day: { utilization: 0.12, resets_at: ISO(94 * 3600_000), reset: false },
     },
   }),
-  fixtureAccount('u-bogdan', 'weekly-burn', {
+  fixtureAccount('u-owner', 'weekly-burn', {
     state: 'PAUSED',
     reason: 'held back for the release run on Monday',
     max_agents: 6,
@@ -7536,9 +7536,9 @@ let fixtureAccounts: ServedAccount[] = [
       seven_day: { utilization: 0.94, resets_at: ISO(70 * 3600_000), reset: false },
     },
   }),
-  fixtureAccount('u-bogdan', 'never-polled', {
+  fixtureAccount('u-owner', 'never-polled', {
     // Registered, never observed. Utilisation is UNKNOWN, emphatically not 0%.
-    // It takes one agent until its first reading (BGD, "One until measured").
+    // It takes one agent until its first reading (owner, "One until measured").
     max_agents: 6,
     can_take_new_agent: true,
     blocked_by: [],
@@ -7551,7 +7551,7 @@ let fixtureAccounts: ServedAccount[] = [
     // workers that cannot reach the broker at all.
     last_assigned_at: null,
   }),
-  fixtureAccount('u-bogdan', 'retired-laptop', {
+  fixtureAccount('u-owner', 'retired-laptop', {
     state: 'REAUTH_REQUIRED',
     reason: 'refresh failed: reauth_required',
     lend_to: ['eng'],
@@ -7568,7 +7568,7 @@ let fixtureAccounts: ServedAccount[] = [
   }),
   fixtureAccount('eng', 'shared', {
     assigned: 3,
-    lend_to: ['u-bogdan'],
+    lend_to: ['u-owner'],
     // THE ROW THAT LOOKS HEALTHIEST AND SERVES NOBODY HERE. A borrower that was
     // never granted secretAccessor on a lent secret reports the account
     // unreadable; `choose()` then skips it for that tenant and for nobody else,
@@ -7576,12 +7576,12 @@ let fixtureAccounts: ServedAccount[] = [
     // and without these two fields it renders as the best account on the
     // screen. This is the fixture for the defect, and it is in development so
     // the treatment cannot ship unlooked-at.
-    unreadable_by: ['u-bogdan'],
-    unreadable_now: ['u-bogdan'],
+    unreadable_by: ['u-owner'],
+    unreadable_now: ['u-owner'],
     // The broker's answer is for the owner; this tenant is skipped all the same.
     max_agents: 6,
     can_take_new_agent: true,
-    // IDENTICAL READINGS WITH ANOTHER WORKSPACE'S ACCOUNT (#2222, BGD Q1, Q2):
+    // IDENTICAL READINGS WITH ANOTHER WORKSPACE'S ACCOUNT (#2222, owner Q1, Q2):
     // advisory, so it still takes agents, and the other side is not named.
     blocked_by: [
       {
@@ -7600,7 +7600,7 @@ let fixtureAccounts: ServedAccount[] = [
   // THE GROUPS #2222's PAGE RANKS BY, one row each: a five-hour floor that
   // clears soon, a weekly floor that clears in days, a full account, and the
   // later registration of one subscription, withheld.
-  fixtureAccount('u-bogdan', 'five-hour-floor', {
+  fixtureAccount('u-owner', 'five-hour-floor', {
     max_agents: 6,
     can_take_new_agent: false,
     blocked_by: [{ window: 'five_hour', used: 0.92, floor: 0.15, resets_at: ISO(40 * 60_000), aged_reading: false }],
@@ -7611,7 +7611,7 @@ let fixtureAccounts: ServedAccount[] = [
       seven_day: { utilization: 0.41, resets_at: ISO(4 * 86_400_000 + 3 * 3600_000), reset: false },
     },
   }),
-  fixtureAccount('u-bogdan', 'weekly-floor', {
+  fixtureAccount('u-owner', 'weekly-floor', {
     max_agents: 6,
     can_take_new_agent: false,
     blocked_by: [{ window: 'seven_day', used: 0.97, floor: 0.05, resets_at: ISO(2 * 86_400_000 + 21 * 3600_000), aged_reading: false }],
@@ -7624,7 +7624,7 @@ let fixtureAccounts: ServedAccount[] = [
       harbor_lantern: { utilization: 0.1, resets_at: ISO(-9 * 86_400_000), reset: true },
     },
   }),
-  fixtureAccount('u-bogdan', 'full-six', {
+  fixtureAccount('u-owner', 'full-six', {
     assigned: 6,
     max_agents: 6,
     can_take_new_agent: false,
@@ -7641,7 +7641,7 @@ let fixtureAccounts: ServedAccount[] = [
   // Its row and its sheet name it "ChatGPT plan", and its sign-in section
   // gives `sc account add --provider openai` rather than a browser sign-in.
   // The broker records a plan's organisation as `ChatGPT` and its plan type.
-  fixtureAccount('u-bogdan', 'codex-plan', {
+  fixtureAccount('u-owner', 'codex-plan', {
     provider: 'openai',
     assigned: 1,
     max_agents: 6,
@@ -7658,7 +7658,7 @@ let fixtureAccounts: ServedAccount[] = [
   // VOICE IT'S OPENAI API KEY (the owner, 4 November 2026): in the Voice it
   // pool alone, so it serves no workspace and draws only in that section,
   // where its windows read "not measured" (`measured: false`), never 0.
-  fixtureAccount('u-bogdan', 'openai-key', {
+  fixtureAccount('u-owner', 'openai-key', {
     provider: 'openai-api',
     max_agents: 1,
     can_take_new_agent: true,
@@ -7670,14 +7670,14 @@ let fixtureAccounts: ServedAccount[] = [
     voice_it_people: ['alice@example.com'],
     voice_it_holder: null,
   } as Partial<ServedAccount>),
-  fixtureAccount('u-bogdan', 'team-copy', {
+  fixtureAccount('u-owner', 'team-copy', {
     max_agents: 6,
     can_take_new_agent: false,
-    blocked_by: [{ duplicate_of: 'u-bogdan:primary', reason: 'registered on the same organisation as u-bogdan:primary' }],
+    blocked_by: [{ duplicate_of: 'u-owner:primary', reason: 'registered on the same organisation as u-owner:primary' }],
     next_eligible_at: null,
     organisation: { name: 'Example', plan: 'Team' },
-    duplicate_of: 'u-bogdan:primary',
-    duplicate_reason: 'registered on the same organisation as u-bogdan:primary',
+    duplicate_of: 'u-owner:primary',
+    duplicate_reason: 'registered on the same organisation as u-owner:primary',
     last_assigned_at: null,
     windows: {
       five_hour: { utilization: 0.41, resets_at: ISO(2 * 3600_000 + 51 * 60_000), reset: false },
@@ -7687,7 +7687,7 @@ let fixtureAccounts: ServedAccount[] = [
 ]
 
 /** The tenant the fixture's verified token would carry. */
-const FIXTURE_TENANT = 'u-bogdan'
+const FIXTURE_TENANT = 'u-owner'
 
 async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
   await new Promise((r) => setTimeout(r, 210))
@@ -7712,7 +7712,7 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
         // above are six; the pool is seven. Development has to be able to see
         // the case where the list is SHORT, because that is the one where
         // every figure on the screen is quietly computed over the wrong set.
-        unreadable_documents: ['u-bogdan:half-written'],
+        unreadable_documents: ['u-owner:half-written'],
         unreadable_document_count: 1,
       },
       tenants: null,
@@ -7795,18 +7795,18 @@ function fixturePoolHealth(): PoolHealth {
   const top = Math.floor(FIXTURE_NOW / H) * H
   type Ev = [number, HealthKind, { w?: string; r?: number; m?: string; t?: string }?]
   const plan: Record<string, Ev[]> = {
-    'u-bogdan:primary': [[-50 * H, 'network', { m: 'the connection to the provider was reset' }], [-98 * H, 'overloaded']],
-    'u-bogdan:overflow': [
+    'u-owner:primary': [[-50 * H, 'network', { m: 'the connection to the provider was reset' }], [-98 * H, 'overloaded']],
+    'u-owner:overflow': [
       ...Array.from({ length: 9 }, (_, i): Ev => [-(40 - i * 4) * M, i % 3 === 0 ? 'server_error' : 'overloaded']),
       [-30 * H, 'overloaded'], [-30 * H + 8 * M, 'overloaded'],
     ],
-    'u-bogdan:weekly-burn': [
+    'u-owner:weekly-burn': [
       // Its reset is the one Accounts draws (seven_day resets_at, ISO(70 h)): QA1-FIX-01 capacity-04.
       [-3 * H, 'rate_limit', { w: 'seven_day', r: 70 * H }],
       [-2 * H, 'assign_refused', { w: 'seven_day', m: 'not assigned: its 7-day window is under its floor' }],
       [-27 * H, 'exhausted'],
     ],
-    'u-bogdan:five-hour-floor': [
+    'u-owner:five-hour-floor': [
       // Its reset is the one Accounts draws (five_hour resets_at, ISO(40 min)): QA1-FIX-01 capacity-04.
       [-90 * M, 'rate_limit', { w: 'five_hour', r: 40 * M }],
       [-70 * M, 'rate_limit', { w: 'five_hour', r: 40 * M }],
@@ -7815,7 +7815,7 @@ function fixturePoolHealth(): PoolHealth {
     ],
     // The re-auth story sits on the account whose state IS REAUTH_REQUIRED, so
     // its row, its callout and the phone's re-auth card tell one story.
-    'u-bogdan:retired-laptop': [
+    'u-owner:retired-laptop': [
       [-30 * H, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
       [-70 * M, 'refresh_failed', { m: 'the credential refresh was refused · credential [redacted]' }],
       [-62 * M, 'auth', { m: '401 from the provider: the sign-in expired · credential [redacted]' }],
@@ -7823,7 +7823,7 @@ function fixturePoolHealth(): PoolHealth {
       [-40 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
       [-12 * M, 'assign_refused', { m: 'not assigned: the account needs re-auth' }],
     ],
-    'u-bogdan:full-six': [[-140 * H, 'network', { m: 'read timeout after 600 s, stream closed' }]],
+    'u-owner:full-six': [[-140 * H, 'network', { m: 'read timeout after 600 s, stream closed' }]],
   }
   // accountstore.health_status's order: re-auth, then limited -- by the window
   // readings OR by a 429 short of its reset (`limited_until`), so an account
@@ -7832,7 +7832,7 @@ function fixturePoolHealth(): PoolHealth {
     a.state === 'REAUTH_REQUIRED' ? 'reauth_needed'
     : a.can_take_new_agent === false && (a.blocked_by ?? []).some((b) => 'window' in b) ? 'limited'
     : limitedUntil !== null && Date.parse(limitedUntil) > FIXTURE_NOW ? 'limited'
-    : a.account_id === 'u-bogdan:overflow' ? 'erroring'
+    : a.account_id === 'u-owner:overflow' ? 'erroring'
     : 'healthy'
   const accounts = fixtureAccounts.map((a): AccountHealthRecord => {
     const events: HealthEvent[] = (plan[a.account_id] ?? [])
@@ -8260,7 +8260,7 @@ async function fixtureAccountPool(): Promise<Result<AccountsPage>> {
       // The same shortfall the Accounts board fixture carries. Both fixtures
       // read the same route, so a difference between them would be a shape the
       // API never sends.
-      unreadable_documents: ['u-bogdan:half-written'],
+      unreadable_documents: ['u-owner:half-written'],
       unreadable_document_count: 1,
     },
   }
@@ -8999,7 +8999,7 @@ let fixtureOnboardingHiddenAt: string | null = null
 function fixtureOnboarding(): unknown {
   // THE PICKED WORKSPACE'S CHECKLIST (QA2-FIX-07 review, admin-shell-01): the
   // read names the acting workspace, and eng, a group, has people to invite;
-  // the strip drew u-bogdan's 'a personal workspace has nobody to invite'.
+  // the strip drew u-owner's 'a personal workspace has nobody to invite'.
   const acting = fixtureActingTenant()
   const group = acting === FIXTURE_GROUP.tenant_id
   const checked = fixtureAgo(4 * 60_000)
@@ -9227,7 +9227,7 @@ function fixtureQaSettings(): unknown {
   }
 }
 
-/** `GET /v1/workspace/roles`: u-bogdan is a personal workspace, which has only its owner, the admin. */
+/** `GET /v1/workspace/roles`: u-owner is a personal workspace, which has only its owner, the admin. */
 function fixtureWorkspaceRoles(): unknown {
   return {
     tenant_id: FIXTURE_TENANT, kind: 'user', default_role: null, default_source: null, can_manage: true,
@@ -9282,7 +9282,7 @@ function fixtureScopedPeople(): unknown {
  * `GET /v1/admin/people` (run-4 admin-003): four people -- three signed in
  * with a ready workspace, one pending (a requested workspace) -- and one
  * admin, the persona. `count` and `pending` are counted from the rows.
- * alice and bogdan, on the admins list, are marked `platform_admin` with admin
+ * alice and owner, on the admins list, are marked `platform_admin` with admin
  * in every column, as `people.role_cell` and `people.mark_platform_admin`
  * serve them: the page draws "(platform admin)" from the marker alone (ROLE-MARK).
  */
@@ -9314,8 +9314,8 @@ function fixturePeople(): unknown {
       first_seen: fixtureAgo(6 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(3 * FIXTURE_HOUR), last_submitted: fixtureAgo(4 * FIXTURE_HOUR), last_active: fixtureAgo(3 * FIXTURE_HOUR),
     },
     {
-      email: 'bogdan@example.com', display_name: 'Bogdan Alexandrescu', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'admin' }, platform_admin: true,
-      workspace: ws('ready', 'u-bogdan', { ready_at: fixtureAgo(12 * 24 * FIXTURE_HOUR) }),
+      email: 'member@example.com', display_name: 'Alex Example', teams: [FIXTURE_GROUP.principal], github: 'connected', roles: { eng: 'admin', research: 'admin' }, platform_admin: true,
+      workspace: ws('ready', 'u-owner', { ready_at: fixtureAgo(12 * 24 * FIXTURE_HOUR) }),
       claude_account: { source: 'lent', own: 0, lent: 7, lent_by: ['eng'], provider_key: false, lent_accounts: Array.from({ length: 7 }, (_, i) => ({ account_id: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, label: i === 0 ? 'ai-eng-1-max' : `ai-eng-${i + 1}`, owner_tenant: 'eng', owner_name: 'Engineering', state: 'AVAILABLE' })) },
       loan_request: null,
       first_seen: fixtureAgo(12 * 24 * FIXTURE_HOUR), last_seen: fixtureAgo(2 * 60_000), last_submitted: fixtureAgo(30 * 60_000), last_active: fixtureAgo(2 * 60_000),
@@ -9343,7 +9343,7 @@ function fixturePeople(): unknown {
     lendable_accounts: ownAccounts.map((a) => ({ account_id: a.account_id, owner_tenant: a.owner_tenant, label: a.label, state: a.state, lend_to: a.lend_to })),
     lendable_error: null,
     provisioning: { available: true, approved_waiting: 0 },
-    admins: [{ email: 'ops@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'bogdan@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
+    admins: [{ email: 'ops@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'member@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null }, { email: 'alice@example.com', role: 'admin', granted_by: 'ops@example.com', granted_at: fixtureAgo(30 * 24 * FIXTURE_HOUR) }],
     admins_error: null,
   }
 }
@@ -9605,7 +9605,7 @@ export interface GraphCacheFacts {
   window_hours: number | null
   answers: number | null
   hit: number | null
-  /** Null until carry forward exists (BGD Q4): never a 0 that says it ran. */
+  /** Null until carry forward exists (owner Q4): never a 0 that says it ran. */
   carried: number | null
   miss: number | null
   hit_rate: number | null
@@ -10272,7 +10272,7 @@ async function fixtureWorkspaceSecrets(target: ApiRoute): Promise<Result<Workspa
     status: 'ok',
     fetchedAt: Date.now(),
     data: normWorkspaceSecretList({
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       can_manage: true,
       secrets: [{
         name: 'typesafe-key', provider: 'typesafe', kind: 'api_key', current_version: '1',
@@ -10579,7 +10579,7 @@ export interface MintedLink {
 
 // ---------------------------------------------------------------------------
 // Config › Secrets › Repository › GitHub Actions (lane SSC-UI-ACTIONS, part of
-// #2158; docs/design/secrets-scopes.md §3, §6.1, and BGD's answers in §11).
+// #2158; docs/design/secrets-scopes.md §3, §6.1, and the owner's answers in §11).
 // SecretsActions.tsx is the only caller; the routes are SSC-ACTIONS-API's
 // (apps/swarm-api/swarm_api/routes/actions_secrets.py).
 //
@@ -11634,7 +11634,7 @@ export async function saveBudgetCeiling(ceiling: BudgetLimits): Promise<Result<P
 }
 
 /**
- * What a budget does, in the console's words (#2459, BGD 2026-10-26), drawn by both settings cards so they cannot
+ * What a budget does, in the console's words (#2459, owner 2026-10-26), drawn by both settings cards so they cannot
  * disagree: the worker's 80% note and its stop at the next turn boundary (docs/design/agent-budget.md §5).
  */
 export const BUDGET_DOES =
@@ -11701,7 +11701,7 @@ export function budgetRefusalWords(error: ApiError): string | null {
  * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
  * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
  * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
- * And `writing_flows` (part of #2688; BGD, 2026-11-05): whether the workspace's flows may write at all, on by default.
+ * And `writing_flows` (part of #2688; owner, 2026-11-05): whether the workspace's flows may write at all, on by default.
  */
 export interface QaSettings {
   tenant_id: string
@@ -15042,7 +15042,7 @@ export function fixtureSetupHealth(): Record<string, unknown> {
     { id: 'api.artifactregistry', status: 'met', detail: 'artifactregistry.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The registry the images are pulled from.', 'foundations.apis', 'api.artifactregistry'), cause: '', repair: 'swarm install --repair api.artifactregistry' },
     { id: 'api.cloudkms', status: 'unmet', detail: 'cloudkms.googleapis.com is not enabled', step: 'foundations.apis', fix: fix('The keys the state bucket and the secrets are encrypted with.', 'foundations.apis', 'api.cloudkms'), cause: '', repair: 'swarm install --repair api.cloudkms' },
     { id: 'api.cloudbuild', status: 'met', detail: 'cloudbuild.googleapis.com is enabled', step: 'foundations.apis', fix: fix('The builds the release images come from.', 'foundations.apis', 'api.cloudbuild'), cause: '', repair: 'swarm install --repair api.cloudbuild' },
-    { id: 'quota.cloud-run-jobs', status: 'unknown', detail: 'missing grant: swarm-doctor@example.iam.gserviceaccount.com lacks serviceusage.quotas.get on projects/example, so this could not be checked', step: null, fix: 'Fix: no install step makes this; see the entry\'s check: quota.cloud-run-jobs.', cause: 'missing_grant', repair: null },
+    { id: 'quota.cloud-run-jobs', status: 'unknown', detail: 'missing grant: swarm-doctor@example-project.iam.gserviceaccount.com lacks serviceusage.quotas.get on projects/example-project, so this could not be checked', step: null, fix: 'Fix: no install step makes this; see the entry\'s check: quota.cloud-run-jobs.', cause: 'missing_grant', repair: null },
   ]
   return {
     latest: {
@@ -15118,11 +15118,11 @@ let fixturePluginsSaved: { allowed: string[]; set_at: string; set_by: string } |
 function fixturePlugins(): Record<string, unknown> {
   const later = (m: Record<string, unknown>) => ({ ...m, available: false, reason: FIXTURE_PLUGIN_BRIDGE })
   return {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     plugins: { allowed: fixturePluginsSaved?.allowed ?? ['gstack'] },
     defaults: { plugins: { allowed: [] } },
     set_at: fixturePluginsSaved?.set_at ?? new Date(FIXTURE_NOW - 26 * 3_600_000).toISOString(),
-    set_by: fixturePluginsSaved?.set_by ?? 'bogdan@example.com',
+    set_by: fixturePluginsSaved?.set_by ?? 'member@example.com',
     can_edit: true,
     catalogue: [
       {
@@ -15166,7 +15166,7 @@ export async function saveWorkspacePlugins(tenantId: string, allowed: readonly s
   const target = route(PLUGINS_OF, { tenant_id: tenantId })
   if (USE_FIXTURES) {
     noteFixtureProbe(target, 60, true)
-    fixturePluginsSaved = { allowed: [...new Set(allowed)].sort(), set_at: new Date().toISOString(), set_by: 'bogdan@example.com' }
+    fixturePluginsSaved = { allowed: [...new Set(allowed)].sort(), set_at: new Date().toISOString(), set_by: 'member@example.com' }
     return { status: 'ok', fetchedAt: Date.now(), data: normWorkspacePlugins(fixturePlugins()) }
   }
   const r = await write(target, 'PUT', { allowed: [...allowed] })

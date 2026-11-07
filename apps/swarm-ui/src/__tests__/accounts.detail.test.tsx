@@ -68,7 +68,7 @@ function account(over: Partial<PoolAccount> = {}): PoolAccount {
     provider: 'anthropic',
     state: 'AVAILABLE',
     reason: '',
-    lend_to: ['smoke', 'u-bogdan'],
+    lend_to: ['smoke', 'u-owner'],
     assigned: 0,
     observed_at: new Date(now - 5 * 60_000).toISOString(),
     stale: false,
@@ -127,7 +127,7 @@ describe('the sheet answers first, in mock-up A’s order', () => {
     const kv = [...sheet.querySelectorAll('.acct-kv > dt')].map((d) => [d.textContent, d.nextElementSibling!.textContent])
     expect(kv[0]).toEqual(['Signed in to', 'Acme · Team'])
     expect(kv[1]![1]).toContain('eng')
-    expect(kv[2]![1]).toContain('smoke, u-bogdan')
+    expect(kv[2]![1]).toContain('smoke, u-owner')
     expect(kv[3]).toEqual(['Id', 'eng:devops-team'])
     // Pause and Drain keep their place and their confirmation.
     fireEvent.click(screen.getByRole('button', { name: 'Drain' }))

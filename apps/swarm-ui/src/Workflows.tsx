@@ -6966,7 +6966,7 @@ function WorkflowHead({
 }
 
 /**
- * BEHIND THE FINISHED WORKFLOW'S QUIET TICK (BGD's pick "Only what still holds
+ * BEHIND THE FINISHED WORKFLOW'S QUIET TICK (the owner's pick "Only what still holds
  * work", 6 November 2026): each asking step's "Questions for you" card, read
  * and answered through the task's own questions route, as on its page. The
  * list read serves a step's open indices, not the file's count, so a task

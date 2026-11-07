@@ -88,7 +88,7 @@ function step(step_id: string, depends_on: string[], over: Partial<WorkflowStep>
 function task(id: string, state: TaskState, over: Partial<Task> = {}): Task {
   return {
     id,
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     state,
     runner_profile: 'claude-code',
     resource_class: 'standard',
@@ -127,7 +127,7 @@ function workflow(workflow_id: string, steps: WorkflowStep[], over: Partial<Work
   return {
     workflow_id,
     state: 'RUNNING',
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     stored_state: 'RUNNING',
     state_source: 'derived',
     rollup: {

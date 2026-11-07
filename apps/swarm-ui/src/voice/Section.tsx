@@ -29,7 +29,7 @@ import { TalkPane } from './Talk'
 /**
  * WHO VOICE IT IS OPEN TO. Version one is one person's (§1: one budget, one
  * key, one history), and the person is the platform's owner. swarm-api's
- * session routes (§10, "swarm-api starts and ends a Voice it session for BGD
+ * session routes (§10, "swarm-api starts and ends a Voice it session for owner
  * only") will hold the allowed people in its settings and refuse anyone else
  * with a 403; until they land, the console's own identity read is all it has,
  * and the one thing it can say about the owner is that they are a platform

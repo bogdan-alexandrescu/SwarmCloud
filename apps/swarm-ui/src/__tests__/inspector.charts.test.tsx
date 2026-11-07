@@ -81,7 +81,7 @@ function run(): AgentRun {
       ev('heartbeat', at(15), 'att_2', { peak_rss_bytes: 900_000_000 }),
       ev('heartbeat', at(17.5), 'att_2', { peak_rss_bytes: 1_400_000_000 }),
       ev('checkpoint_completed', at(16), 'att_2', {
-        checkpoint_id: 'ck_1', uri: 'gs://acme/ck_1', size_bytes: 40_000_000, seq: 1,
+        checkpoint_id: 'ck_1', uri: 'gs://swarm-artifacts-example-project/ck_1', size_bytes: 40_000_000, seq: 1,
       }),
     ],
     eventsDetail: null,

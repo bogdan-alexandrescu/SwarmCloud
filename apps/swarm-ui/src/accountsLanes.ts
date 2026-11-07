@@ -1,5 +1,5 @@
 /**
- * CAPACITY › ACCOUNTS, THE TIMELINE VIEW (#2222, ACCOUNTS-TIMELINE; BGD
+ * CAPACITY › ACCOUNTS, THE TIMELINE VIEW (#2222, ACCOUNTS-TIMELINE; owner
  * 2026-10-24 17:33Z: proposal A with a Table / Timeline toggle whose Timeline
  * draws every account the way proposal B does).
  *
@@ -44,7 +44,7 @@ export const NEAR_MS = 12 * HOUR_MS
 export const SPLIT_AT = 0.28
 
 // ---------------------------------------------------------------------------
-// The view: Table by default, remembered (BGD, "Table default, remembered")
+// The view: Table by default, remembered (owner, "Table default, remembered")
 // ---------------------------------------------------------------------------
 
 export type AccountsView = 'table' | 'timeline'
@@ -413,7 +413,7 @@ export function holdDeadlineOf(
  * withheld one in `blocked_by`; a row another account's withheld block points
  * at is kept too, for a broker that names the pair on one row only. Returns
  * the other half's name, or null when it is not in this read -- another
- * workspace's account is never named (BGD, Q2) -- and undefined when this
+ * workspace's account is never named (owner, Q2) -- and undefined when this
  * account is not a kept half.
  */
 export function keptOf(

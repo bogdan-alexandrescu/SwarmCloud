@@ -1401,7 +1401,7 @@ function FinishedBrowser({
  * `⤢ Theater`. MEASURED 2026-10-26: the member checkbox sat right beside
  * Theater (one thumb-width from it at 390) and the device chips looked like
  * view toggles. This replaces the 2026-10-12 order (checkbox after
- * Theater), which BGD's 2026-10-26 review asked to change.
+ * Theater), which the owner's 2026-10-26 review asked to change.
  *
  * THE CHIPS ARE ONE MENU (BT-003): `Device: <preset> ▾`. Eight chips were
  * 408 px of a 611 px pane and took the toolbar to two rows above the frame.
@@ -1783,7 +1783,7 @@ const BROWSER_CLOSED = 'The agent has finished; its browser is closed.'
  * `REASON_BROWSER_CLOSED`; GREY-TAIL, part of #1344), and the strip draws it.
  *
  * Only that name; null for the gate's ordinary name (the page is shown) or
- * anything else. The gate redacts no part of the screen (BGD, 2026-10-25;
+ * anything else. The gate redacts no part of the screen (owner, 2026-10-25;
  * LIVE-NOMASK-COPY, part of #2298), so a name that says the page cannot be
  * shown safely or is partly covered is not a reason here.
  */

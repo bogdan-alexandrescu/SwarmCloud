@@ -2,7 +2,7 @@
  * QAFIX-RUNS-TIMELINE, THE RUNS LIST (part of #1680, the first console visual
  * QA run, wf_9e9bf74834634db7bcc3, 2026-10-20):
  *
- *   QA-081  at 1440 the By column cut 'operator@example.co…' in both rows:
+ *   QA-081  at 1440 the By column cut 'operator@example.c…' in both rows:
  *           150px held a 20-character address with no pixel to spare.
  *   QA-082  at 390 the two run cards laid their facts out differently: each
  *           fact started at its value's width, so a longer value moved By to
@@ -71,8 +71,8 @@ describe('QA-081: the By column holds an operator address whole at 1440', () => 
   it('fits the 20-character address in By, with the run id, the workflow id and a 34-character reference still whole', async () => {
     const RUN_ID = 'run_' + 'b2'.repeat(10)
     const WF = 'wf_' + 'a1'.repeat(10)
-    const REF = 'bogdan-alexandrescu/SwarmCloud#454'
-    const { container } = await mountList([run(RUN_ID, { issue: { ref: REF, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454, url: null } })])
+    const REF = 'example-org/example-repo#454'
+    const { container } = await mountList([run(RUN_ID, { issue: { ref: REF, owner: 'example-org', repo: 'SwarmCloud', number: 454, url: null } })])
     // The 1056px card the list sits in at 1440 (D11, R11), by the table-fit
     // model: each column its declared width, Issue what is left, and text at
     // a conservative 0.56em (sans) or 0.6em (mono) a character.
@@ -87,7 +87,7 @@ describe('QA-081: the By column holds an operator address whole at 1440', () => 
     expect(by.textContent).toBe('operator@example.com')
     // MUTATION: draw By at --t-meta again (drop `.rn-row > td[data-label='By']`'s
     // micro size) or set its column back to 150px, and this is red: the
-    // address is cut 'operator@example.co…', as the QA run saw it.
+    // address is cut 'operator@example.c…', as the QA run saw it.
     expect(room('by', 'By'), 'the address is cut').toBeGreaterThanOrEqual(textPx('operator@example.com', by, WIDE))
     // MUTATION: find By's room by taking it from Issue, Run or Workflow and
     // one of these is red.

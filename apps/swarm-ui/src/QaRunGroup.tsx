@@ -30,7 +30,7 @@ import './styles/qarungroup.css'
 /**
  * ONE QA DISPATCH, ONE COLUMN PER LEG (lane QAENV-UI-RUNPAGE, part of #2136;
  * docs/design/qa-environments.md §7; Config proposal E, S9b desktop and S9d
- * phone, BGD's pick 2026-10-24).
+ * phone, the owner's pick 2026-10-24).
  *
  * `/qa-runs/<group_id>` is where the issues a leg files link (swarm_api
  * `qaspec._group_sentence`). It is drawn under Config › Repositories › QA

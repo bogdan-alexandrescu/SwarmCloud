@@ -256,23 +256,23 @@ def test_blocker_group_prefers_the_served_grouping():
 # --------------------------------------------------------------------------
 
 FIXTURE_PROFILES = {
-    "mock": (1, ["global", "tenant:u-bogdan", "resource:standard", "runner:mock",
+    "mock": (1, ["global", "tenant:u-owner", "resource:standard", "runner:mock",
                  "backend:CLOUD_RUN_JOB"]),
-    "generic": (1, ["global", "tenant:u-bogdan", "resource:standard", "runner:generic",
+    "generic": (1, ["global", "tenant:u-owner", "resource:standard", "runner:generic",
                     "backend:CLOUD_RUN_JOB"]),
-    "claude-code": (1, ["global", "tenant:u-bogdan", "resource:standard",
+    "claude-code": (1, ["global", "tenant:u-owner", "resource:standard",
                         "runner:claude-code", "backend:CLOUD_RUN_JOB",
-                        "provider:anthropic", "provider:anthropic:tenant:u-bogdan"]),
-    "codex": (1, ["global", "tenant:u-bogdan", "resource:standard", "runner:codex",
-                  "backend:CLOUD_RUN_JOB", "provider:openai", "provider:openai:tenant:u-bogdan"]),
-    "browser": (1, ["global", "tenant:u-bogdan", "resource:browser", "runner:browser",
+                        "provider:anthropic", "provider:anthropic:tenant:u-owner"]),
+    "codex": (1, ["global", "tenant:u-owner", "resource:standard", "runner:codex",
+                  "backend:CLOUD_RUN_JOB", "provider:openai", "provider:openai:tenant:u-owner"]),
+    "browser": (1, ["global", "tenant:u-owner", "resource:browser", "runner:browser",
                     "backend:GKE_AUTOPILOT", "provider:anthropic",
-                    "provider:anthropic:tenant:u-bogdan"]),
+                    "provider:anthropic:tenant:u-owner"]),
     # QAFIX4-FIXTURE-B F10: served, so its headroom is measured. Its runner
     # pool has no row on the board, so the analyser calls it uncapped.
-    "claude-code-browser": (1, ["global", "tenant:u-bogdan", "resource:browser",
+    "claude-code-browser": (1, ["global", "tenant:u-owner", "resource:browser",
                                 "runner:claude-code-browser", "backend:GKE_AUTOPILOT",
-                                "provider:anthropic", "provider:anthropic:tenant:u-bogdan"]),
+                                "provider:anthropic", "provider:anthropic:tenant:u-owner"]),
 }
 
 

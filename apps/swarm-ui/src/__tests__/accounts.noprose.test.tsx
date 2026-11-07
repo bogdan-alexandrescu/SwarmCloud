@@ -1,4 +1,4 @@
-// CAPACITY › ACCOUNTS CARRIES NO EXPLANATORY PROSE ON ITS SURFACE (BGD's
+// CAPACITY › ACCOUNTS CARRIES NO EXPLANATORY PROSE ON ITS SURFACE (the owner's
 // standing rule, 5 November 2026; part of #2688).
 //
 // The audit of that day listed this page's sentences: the floors line, the

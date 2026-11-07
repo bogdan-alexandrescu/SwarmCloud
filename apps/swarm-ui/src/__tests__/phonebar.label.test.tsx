@@ -1,6 +1,6 @@
 /**
  * THE PHONE BAR READS A LONG PAGE NAME WHOLE (lane PHONE-BAR-LABEL, part of
- * #2391; BGD's decision of 2026-10-26 in ADMIN-PEOPLE-ROLES, "Chrome lane").
+ * #2391; the owner's decision of 2026-10-26 in ADMIN-PEOPLE-ROLES, "Chrome lane").
  *
  * At 390 the bar's page name was one `nowrap` line cut with an ellipsis:
  * `People and roles` read `People an…`, and `Pe…` beside the admin's
@@ -15,7 +15,7 @@
  *
  * PHONE-BAR-CHIP (the PHONE-BAR-LABEL review, part of #2391): an 8em floor
  * beside the chip took 27px from it, and the admin's own chip read `Your …`
- * on every page. BGD's rule (2026-10-26, "Room left, then wrap"): the chip,
+ * on every page. the owner's rule (2026-10-26, "Room left, then wrap"): the chip,
  * the env pill, the bell and the arrow keep their widths; the name takes the
  * room left and wraps at a space; no word is cut. tablefit's 0.56em is an
  * upper bound made for "if the model says it fits, it fits"; beside the

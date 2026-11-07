@@ -1,12 +1,12 @@
 // THE CACHE SECTION UNDER EACH INDEXED REPOSITORY (lane CACHE-4-CONSOLE, part
-// of #1835; docs/design/graph-answer-cache.md §5.1-§5.5, BGD's pick C, "live
+// of #1835; docs/design/graph-answer-cache.md §5.1-§5.5, the owner's pick C, "live
 // replicas, v2 from the start", 2026-10-27). What each case holds:
 //   * nothing is read while the section is folded or the page is hidden, and
 //     reopening or becoming visible reads once at once (§5.5);
 //   * open, it reads once and then every 30 s (§5.5);
 //   * a replica that was not read shows its reason, never zeros (§5.3, §5.4);
 //   * the reuse tile is a dash with no `carried` count until there is one
-//     (§5.2, BGD Q4);
+//     (§5.2, owner Q4);
 //   * a failed read keeps the last good values, with their time and the
 //     reason the new read failed (§5.5);
 //   * swarm-graph not answering at all still shows the latency tile (§5.3);
@@ -196,7 +196,7 @@ describe('a replica that was not read (§5.3, §5.4)', () => {
   })
 })
 
-describe('the reuse tile (§5.2, BGD Q4)', () => {
+describe('the reuse tile (§5.2, owner Q4)', () => {
   it('is a dash with no carried count until carry forward exists', async () => {
     render(<RepoGraphCache repoId={REPO} indexSha="4c1e9a0000" load={async () => ok()} />)
     await open()

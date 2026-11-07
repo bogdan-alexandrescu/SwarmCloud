@@ -1,4 +1,4 @@
-// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// THE APP-WIDE RATCHET IS proseapp.tsx (THE OWNER'S RULE, 2026-11-05): every
 // page the nav reaches shows no more words or arrowed links than it did on the
 // change's base. This file keeps its own screen-level budget.
 //

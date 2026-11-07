@@ -3,7 +3,7 @@
 //
 // The gate used to fill a frame it could not vouch for and name the reason as
 // the RFB desktop name ("Can't show this page safely: ...", "Part of this page
-// is covered: ..."), which the strip drew. BGD decided on 2026-10-25 that the
+// is covered: ..."), which the strip drew. owner decided on 2026-10-25 that the
 // live browser redacts no part of the screen in any situation, so the gate no
 // longer blanks or covers anything and the strip has no masking reason to
 // draw: a desktop name with either lead is not a reason here. The one name the
@@ -137,7 +137,7 @@ afterEach(() => {
 })
 
 describe('the gate’s reason in the strip', () => {
-  it('is never a masking reason: the gate blanks and covers nothing (BGD, 2026-10-25)', () => {
+  it('is never a masking reason: the gate blanks and covers nothing (owner, 2026-10-25)', () => {
     expect(gateReason('Can’t show this page safely: a frame on the page cannot be placed')).toBeNull()
     expect(gateReason("Can't show this page safely: switching tabs")).toBeNull()
     expect(gateReason('Part of this page is covered: an embedded frame on it cannot be checked')).toBeNull()

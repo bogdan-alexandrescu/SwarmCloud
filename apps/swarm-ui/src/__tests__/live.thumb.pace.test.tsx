@@ -1,5 +1,5 @@
 // The workflow graph's live thumbnails cost what is ON SCREEN, and update
-// faster when only a few are (owner request 2026-11-02; pacing table BGD's
+// faster when only a few are (owner request 2026-11-02; pacing table the owner's
 // pick on 2026-11-06, part of #2688).
 //
 // WHAT EACH CASE HOLDS:

@@ -85,7 +85,7 @@
 .ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-att-t small.ov-att-ids { -webkit-line-clamp: 1; }
 .ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
-/* A BUTTON, NOT AN ARROW LINK (BGD's standing rule, 2026-11-05): `.ov-att-go`
+/* A BUTTON, NOT AN ARROW LINK (the owner's standing rule, 2026-11-05): `.ov-att-go`
    is drawn by the shared `.c-btn` (components.css); this rule only keeps it
    whole beside a long title. */
 .ov-att-go { flex-shrink: 0; }
@@ -94,7 +94,7 @@
    carries a `::after` that covers the box, so a click anywhere but another
    link still goes somewhere. Every other link sits above the cover.
 
-   THE COVER OPENS THE FAILED WORKFLOW (#1680 box 6343766999, BGD's decision
+   THE COVER OPENS THE FAILED WORKFLOW (#1680 box 6343766999, the owner's decision
    of 2026-10-23). It was `Agents · FAILED →`'s, so a click on the card's
    empty space opened the list while the card's prominent link was the
    workflow: the card said one thing and did another. The first named
@@ -130,7 +130,7 @@
    workflow links take the accent at the card title's weight (`font-weight`
    in `.ov-att-wf`'s rule above); the list link steps down to the sentence's
    dim ink at the regular weight. The card's cover is the first workflow's
-   (BGD, 2026-10-23; the N11 block above). */
+   (owner, 2026-10-23; the N11 block above). */
 /* Since 2026-11-05 the two are buttons: the workflow the theme's secondary,
    the list its ghost (`kind: 'ghost'`), which carries the dim ink itself. */
 .ov-att-ids a:hover { color: var(--sk-ac); }
@@ -342,7 +342,7 @@
    together. The bar spans the row; the name is whole, or cut with its title. */
 .ov-pl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
 .ov-pl .ctl-util-track { height: 6px; grid-column: 1 / -1; grid-row: 2; }
-/* A POOL IS NAMED IN WORDS (QA2 ovag2-04): 'anthropic · u-bogdan' in the
+/* A POOL IS NAMED IN WORDS (QA2 ovag2-04): 'anthropic · u-owner' in the
    page's face, as Headroom writes it; the mono key is the name's title. */
 .ov-pl .ov-pl-k { font-family: var(--font); }
 .ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -352,7 +352,7 @@
    drawn, so a phone read `5/5` as plainly as `0/5`. The figure takes the
    over-ceiling vocabulary -- the bad ink, with the weight above as the
    greyscale channel -- at every width, so the two widths agree. Q3 also kept
-   the track hidden on a phone; BGD reversed that on 2026-10-23 (the 560px
+   the track hidden on a phone; owner reversed that on 2026-10-23 (the 560px
    block's `.ov-pools .ov-pl > .ctl-util-track`), and the toned figure stays. */
 .ov-pl b.is-full { color: var(--bad); }
 /* NEARLY FULL, ON THE FIGURE (visual QA V057, owner decision Q4
@@ -448,14 +448,14 @@
      stays at the right edge. */
   .ov-att-t small, .ov-att-t small.ov-att-ids { display: none; }
   .ov-att { align-items: center; }
-  /* No arrow is left to draw (BGD's standing rule, 2026-11-05): a one-link
+  /* No arrow is left to draw (the owner's standing rule, 2026-11-05): a one-link
      card's button steps aside whole, and the cover link keeps its box but
      not its chrome, so the card itself is the tap target. */
   .ov-att:not(.is-split) .ov-att-go, .ov-att:not(.is-split) > .ov-att-acts { display: none; }
   .ov-att.is-split .ov-att-wf.is-cover { height: auto; padding: 0; border: 0; background: none; }
   .ov-att.is-split .ov-att-wf.is-cover .ov-att-wf-t { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   /* A split card keeps one way out: the first workflow's link, which carries
-     the card's cover (BGD's decision of 2026-10-23), so a tap anywhere on
+     the card's cover (the owner's decision of 2026-10-23), so a tap anywhere on
      the card opens the failed workflow. The other workflows and the list are
      the desktop's links; Recent failures, further down, is the list. */
   .ov-att.is-split .ov-att-wf:not(.is-cover), .ov-att.is-split .ov-att-go:not(.ov-att-wf) { display: none; }
@@ -494,7 +494,7 @@
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
   .ov-prun, .ov-prun-more { display: block; }
   /* THE POOLS LIST KEEPS ITS BARS (visual QA run 6, overview-automate-011,
-     #1680 box 6343776209; BGD's decision of 2026-10-23, which reverses BGD's Q3
+     #1680 box 6343776209; the owner's decision of 2026-10-23, which reverses the owner's Q3
      of 2026-10-11, "the bar stays hidden on a phone"). styles.css's phone
      block hides every `.ctl-util-track`; here that left a full pool's hatch,
      a lowered pool's short fill and a paused pool's tone nowhere at 390, only

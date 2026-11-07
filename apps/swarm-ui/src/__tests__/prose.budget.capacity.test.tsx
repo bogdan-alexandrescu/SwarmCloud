@@ -1,4 +1,4 @@
-// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// THE APP-WIDE RATCHET IS proseapp.tsx (THE OWNER'S RULE, 2026-11-05): every
 // page the nav reaches shows no more words or arrowed links than it did on the
 // change's base. This file keeps its own screen-level budget.
 //
@@ -52,7 +52,7 @@
 //   Holders       (#432)   --       110   +15: the Held for column (capacity.html
 //                                         §C, decided 2026-10-01), one duration
 //                                         of up to two tokens per lease row
-//   Accounts      (#2222)  256     500   520   proposal A, "Answer first" (BGD,
+//   Accounts      (#2222)  256     500   520   proposal A, "Answer first" (owner,
 //                                         2026-10-24): the verdict sentence, the
 //                                         rule line, the forecast and the
 //                                         laptop note, and a ranked table whose

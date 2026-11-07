@@ -2395,7 +2395,7 @@ function StepRowBody({
       )
     case 'usage': {
       // A CODEX TURN'S USAGE AS LABELLED FIGURES (CODEX-ROWS, part of #2459;
-      // BGD, 2026-10-28, proposal B "New kinds in the drawer"). Tabular
+      // owner, 2026-10-28, proposal B "New kinds in the drawer"). Tabular
       // figures, so the rows of a long run line up; a figure the server did
       // not send is left out, never drawn as 0, because codex not reporting
       // it is not a measured zero. With no figure at all the server's words

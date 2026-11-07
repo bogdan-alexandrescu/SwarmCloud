@@ -12,7 +12,7 @@
  * marked done by hand.
  *
  * THE ORDER IS sign-in client -> GitHub App -> first team -> Claude pool
- * accounts -> smoke agent -> verify -> Send to your team (BGD, 2026-10-29;
+ * accounts -> smoke agent -> verify -> Send to your team (owner, 2026-10-29;
  * the sign-in client added by the owner's pick of 2026-11-01, issue #2964;
  * the smoke agent its own step in the owner's pick of 2026-11-02), after the
  * CLI's cloud part.

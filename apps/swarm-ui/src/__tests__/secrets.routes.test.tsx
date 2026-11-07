@@ -7,10 +7,10 @@
 //
 //   * Settings › API keys (`/settings/keys`) and its TypeSafe link
 //     (`/settings/keys/typesafe?scope=user|tenant&t=..`), moved into Keys for
-//     agents and MCP (BGD 2026-10-23 23:57Z);
+//     agents and MCP (owner 2026-10-23 23:57Z);
 //   * Settings › Workspace › Secrets' link (`/settings/workspace/secrets?..&t=..`);
 //   * the runner-key link SSC-LINKS mints
-//     (`/config/secrets?scope=workspace&runner_key=<provider>&t=..`, BGD 2026-10-24);
+//     (`/config/secrets?scope=workspace&runner_key=<provider>&t=..`, owner 2026-10-24);
 //   * a repository store's link and the GitHub Actions link, with their scope,
 //     repository, destination, name and environment;
 //   * Admin › Platform secrets, a platform admin's tab.

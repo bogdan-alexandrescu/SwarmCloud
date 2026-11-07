@@ -1,4 +1,4 @@
-// NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05; part
+// NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05; part
 // of #2688). Overview's waiting reasons and lifecycle band, and the Platform
 // counts' Over time, said their definitions as visible sentences. Each moved
 // behind the label it explained: a status tick's tooltip, a name's tooltip,

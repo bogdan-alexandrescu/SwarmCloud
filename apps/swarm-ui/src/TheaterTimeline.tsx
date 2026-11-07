@@ -500,7 +500,7 @@ function timeLeft(deadline: string, now: number, inControl = false): string {
  * is not always a sign-in -- a captcha, an approval, a second factor -- so
  * the agent's own reason is the headline and the steps fit any of them.
  * Nothing under the steps says a password is masked: the live view shows the
- * page as Chromium draws it (BGD, 2026-10-25; LIVE-NOMASK-COPY, part of #2298).
+ * page as Chromium draws it (owner, 2026-10-25; LIVE-NOMASK-COPY, part of #2298).
  *
  * THE TICKS ARE WHAT IS KNOWN, NOT WHAT IS HOPED (lane LB-UX2a, the chosen
  * mockup). "The agent asked for your help" is done the moment a hand-off

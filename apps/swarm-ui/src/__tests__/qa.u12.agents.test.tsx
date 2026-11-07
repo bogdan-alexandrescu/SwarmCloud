@@ -76,7 +76,7 @@ function stream(name: LogStream['stream'], content: string): LogStream {
     status: 'ok',
     detail: null,
     key: `tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
-    uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
+    uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
     content,
     total_bytes: content.length,
     offset: 0,
@@ -118,7 +118,7 @@ function transcript(text: string): TaskTranscript {
     attempt_id: 'att_1',
     format: 'stream-json',
     stream: {
-      status: 'ok', source: 'final', detail: null, uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/att_1/logs/agent_stdout.log`,
+      status: 'ok', source: 'final', detail: null, uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${ID}/attempts/att_1/logs/agent_stdout.log`,
       next_offset: null, object_updated_at: new Date().toISOString(), age_seconds: 3,
     },
     steps: [{ id: 's1', kind: 'text', role: 'assistant', text, tool: null, tool_result: null, meta: {}, raw: null, truncated_fields: [] }],

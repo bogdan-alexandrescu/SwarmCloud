@@ -475,7 +475,7 @@ export function Run({
        say, so a healthy run pays no space for them. The five figures' strip
        and the Resources card sit inside the Resources row's `details`. */
     <div className="run-stack dt">
-      {/* WHAT IT IS BUILDING, FIRST (BGD 2026-10-27, DETAILS-BUILDING): one
+      {/* WHAT IT IS BUILDING, FIRST (owner 2026-10-27, DETAILS-BUILDING): one
           line from the workflow's title, label, step and issue, or the
           prompt's first sentence. */}
       <DtBuilding task={task} readAt={readAt} />
@@ -517,7 +517,7 @@ export function Run({
           owner's pick on PR #3255): the record the approval screen draws,
           served on the task detail too. Nothing for a step never judged. */}
       <ContractAcceptanceCard raw={task.contract_acceptance} />
-      {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
+      {/* RESOURCES ARE ONE ROW (owner 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one
           click down behind the row's `details`. */}
@@ -972,7 +972,7 @@ function copyIssue(copy: TaskInputCopy | null): string | null {
 }
 
 /**
- * WHAT THE AGENT IS BUILDING, as one line (BGD 2026-10-27, DETAILS-BUILDING):
+ * WHAT THE AGENT IS BUILDING, as one line (owner 2026-10-27, DETAILS-BUILDING):
  * `Secret retention keeps 3 versions (DECIDED-A · step secret-retention ·
  * #1819)`. The workflow's title (`metadata.title`, which every step task
  * carries, or a lone task's own), the workflow label (`metadata.unit`,
@@ -2293,7 +2293,7 @@ export function resourceFigures(run: AgentRun): ResFigure[] {
 }
 
 /**
- * RESOURCES, ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): `4/8 cores · 8 GiB
+ * RESOURCES, ONE ROW (owner 2026-10-27, DETAILS-BUILDING): `4/8 cores · 8 GiB
  * · 412k tokens · $3.10  details ▾`. Every number the strip and the
  * Resources card drew is still on the page, unchanged, behind `details`;
  * only the prose left the first screen.
@@ -2362,7 +2362,7 @@ export function parkedOutcome(a: AttemptRow): { label: string; tone: ChipTone } 
 
 /**
  * THE WAIT LINE, WITH THE POOL NAMED AS HEADROOM NAMES IT (QA2 ovag2-06):
- * `waiting for: anthropic · u-bogdan  5/5 units`, the raw key in the
+ * `waiting for: anthropic · u-owner  5/5 units`, the raw key in the
  * name's title. `waitingLine` (types.ts) is the line every other screen
  * compares against, so it stays as it is; only the drawing names the pool.
  */
