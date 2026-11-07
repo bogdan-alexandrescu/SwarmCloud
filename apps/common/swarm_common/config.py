@@ -42,8 +42,10 @@ class Settings:
     artifact_bucket: str = ""
     artifact_registry: str = "swarm-images"
 
-    # Identity. Only these hosted domains may authenticate.
-    allowed_domains: tuple[str, ...] = ("saga.xyz",)
+    # Identity. Only these hosted domains may authenticate. No default: a
+    # deployment trusts only the domains it is given (ALLOWED_DOMAINS), and
+    # an empty tuple admits no domain (contract request 147).
+    allowed_domains: tuple[str, ...] = ()
     api_audience: str = ""
 
     # Admission
@@ -100,14 +102,12 @@ class Settings:
             )
         if self.performance_profile not in {"economy", "balanced", "burst"}:
             raise ValueError(f"unknown performance profile {self.performance_profile}")
-        if not self.allowed_domains:
-            raise ValueError("at least one allowed domain is required; refusing open auth")
 
     @classmethod
     def from_env(cls) -> "Settings":
         project = os.environ.get("PROJECT_ID", "")
         domains = tuple(
-            d.strip() for d in os.environ.get("ALLOWED_DOMAINS", "saga.xyz").split(",") if d.strip()
+            d.strip() for d in os.environ.get("ALLOWED_DOMAINS", "").split(",") if d.strip()
         )
         return cls(
             project_id=project,
