@@ -117,6 +117,9 @@ def _name_prefix() -> str:
     proc = subprocess.run(
         ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
         capture_output=True, text=True, timeout=60,
+        # The prefix does not depend on the project; SWARM_NO_PROJECT=1 lets
+        # common.sh be sourced on a runner with no PROJECT_ID.
+        env={**os.environ, "SWARM_NO_PROJECT": "1"},
     )
     assert proc.returncode == 0, (
         f"guard_name_prefix is not callable in {COMMON_SH}: {proc.stderr}"
