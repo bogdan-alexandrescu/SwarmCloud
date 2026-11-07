@@ -1530,3 +1530,35 @@ run "workload_identity_pool_admin_cannot_be_put_back" {
 
   expect_failures = [var.deployer_roles]
 }
+
+# The managed plugins' bucket is named <project>-swarm-plugins by default, which
+# the `swarm-` prefix does not admit; without an exact clause every release plan
+# stopped on a 403 reading it. Placeholder project only.
+run "the_storage_condition_admits_the_plugins_bucket_and_its_objects" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    project_id        = "example-project"
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  assert {
+    condition     = strcontains(google_project_iam_member.deployer_storage[0].condition[0].expression, "resource.name == \"projects/_/buckets/example-project-swarm-plugins\"")
+    error_message = "the storage condition does not admit the plugins bucket; every release plan stops on a 403 reading it"
+  }
+
+  assert {
+    condition     = strcontains(google_project_iam_member.deployer_storage[0].condition[0].expression, "resource.name.startsWith(\"projects/_/buckets/example-project-swarm-plugins/objects/\")")
+    error_message = "the storage condition admits the plugins bucket but not its objects"
+  }
+
+  assert {
+    condition     = !strcontains(google_project_iam_member.deployer_storage[0].condition[0].expression, "buckets/example-project-swarm-plugins-")
+    error_message = "the plugins bucket must be admitted by exact name, not as a prefix another bucket could share"
+  }
+}
