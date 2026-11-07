@@ -6,9 +6,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Plans proposal A, "Proposals inbox and side sheet" (PLANS-MOCKS-A, part of #2585).
+ * Plans proposal A, "Proposals inbox and side sheet" (PLANS-MOCKS-A).
  * Tokens, type scale, lead strip, tables, cards, chips, buttons and the side sheet
- * are copied whole from the picked Automate A (automate-a.html, #2417), which took
+ * are copied whole from the picked Automate A (automate-a.html), which took
  * them from Config E (config-e.html) and Subscription accounts A (accounts-a.html).
  * PICKS.md rules: 12px type floor, no all-caps, no letter-spacing, a theme toggle,
  * an unknown figure is a dash with its reason, never 0.
@@ -447,9 +447,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">PLANS-MOCKS-A · part of #2585 · drawn 2026-10-28 · not picked</p>
+<p class="kick">PLANS-MOCKS-A · drawn 2026-10-28 · not picked</p>
 <h1>Plans, proposal A: Proposals inbox and side sheet</h1>
-<p class="lede">One of four competing proposals (A to D) for BGD's redesign of how the console shows what automatic runs propose, and how a plan is judged and approved. Each draws the same frames (P1 to P7). This one is built for fast triage: everything lands in one inbox, and one plan opens in a side sheet over it, with the decision bar always at the sheet's foot.</p>
+<p class="lede">One of four competing proposals (A to D) for the owner's redesign of how the console shows what automatic runs propose, and how a plan is judged and approved. Each draws the same frames (P1 to P7). This one is built for fast triage: everything lands in one inbox, and one plan opens in a side sheet over it, with the decision bar always at the sheet's foot.</p>
 
 <div class="idea">
   <div><h4>Idea</h4><p><b>Approvals grows into the one inbox</b> for everything an automatic run proposes: the issue sweep's plans, the failure-review schedule's plans, observer proposals to file as issues, a plan for an issue submitted by hand, and the merges those plans end in. It is grouped by what waits on a person first (oldest first, with the time to expiry), then what was decided, then what ended without a decision, and it filters by <b>source</b> and by <b>state</b>. One plan opens in a <b>right side sheet</b> over the list, as a schedule does in the picked Automate A1/A2, read top to bottom in the order a decision needs: why it exists, what it changes, what it collides with, what it costs, what it touches that is risky, its digest. A sticky <b>Approve and run · Edit plan · Reject</b> bar sits at the sheet's foot, so the next row is one click away and the decision never scrolls out of reach.</p></div>
@@ -474,7 +474,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <ul>
     <li>PICKS.md: nothing below 12px, no all-caps, no letter-spacing, a light / dark / system toggle (top of this page and in every frame's panel foot), an unknown figure is a dash with its reason, never 0. State words are lower case (waiting, approved), never the API's enums.</li>
     <li>Style is Automate A's, which is Config E's and Subscription accounts A's: the four plan proposals differ in layout and flow, not in style.</li>
-    <li><b>The canonical plan is real</b>: run <code>run_fba2dc8f6ec9494dae2f</code>, from the failure-review schedule <code>sch_54e9828e6772</code>, firing <code>sch_54e9828e6772:29885760</code>, issue <code>bogdan-alexandrescu/SwarmCloud#2583</code>. Its words are the plan's own, cut where the excerpt ends; what this page does not quote is folded or a dash, never made up. Everything else is example data, read at <b>Wednesday 2026-10-28 03:00Z</b>; a value about the canonical plan that is an example (a time, a gate, what it became) carries an <span class="ex">example</span> mark. The viewer is Operator, the platform owner, unless a frame says otherwise.</li>
+    <li><b>The canonical plan is real</b>: run <code>run_fba2dc8f6ec9494dae2f</code>, from the failure-review schedule <code>sch_54e9828e6772</code>, firing <code>sch_54e9828e6772:29885760</code>, issue <code>example-org/example-repo#2583</code>. Its words are the plan's own, cut where the excerpt ends; what this page does not quote is folded or a dash, never made up. Everything else is example data, read at <b>Wednesday 2026-10-28 03:00Z</b>; a value about the canonical plan that is an example (a time, a gate, what it became) carries an <span class="ex">example</span> mark. The viewer is Operator, the platform owner, unless a frame says otherwise.</li>
   </ul>
 </div>
 
@@ -498,7 +498,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <figcaption><b>Approve and run carries the digest shown</b> (docs/issue-runs.md, D3): if the plan changed since the sheet opened, the server answers <code>409 plan_changed</code> and the sheet turns into P2c rather than approving the text nobody read. <b>Risk paths</b> come from the hold check the server already runs at plan (<code>issueruns.hard_stop_hold</code>, every category of failure-review.md §6), drawn per category so "clear" reads as checked, not as absent.</figcaption></figure>
   <div class="pair">
     <figure class="sub" id="P2b" data-frame="P2b"><div class="sl"><span class="sid">P2b</span><b>Waiting, seen by a member who may not approve</b><span class="dim">the sheet alone · its foot</span></div><div class="scroller solo" data-f="p2b"></div>
-    <figcaption>No buttons: the sheet says who can, from <code>may_decide</code>. Only someone who may approve may reject (BGD 2026-10-26), so Reject is not offered either.</figcaption></figure>
+    <figcaption>No buttons: the sheet says who can, from <code>may_decide</code>. Only someone who may approve may reject (the owner 2026-10-26), so Reject is not offered either.</figcaption></figure>
     <figure class="sub" id="P2c" data-frame="P2c"><div class="sl"><span class="sid">P2c</span><b>Superseded: the plan changed after it was shown</b><span class="dim">the sheet alone · its head and foot</span></div><div class="scroller solo" data-f="p2c"></div>
     <figcaption>A poll that brings a newer digest never swaps the plan under an open Approve button. The sheet keeps revision 0 on screen, turns Approve off, and offers revision 1 with what changed. Revision 1's digest is an example.</figcaption></figure>
   </div>
@@ -696,7 +696,7 @@ function srcSec(){
   `<dt>Source</dt><dd>${SRCC('fr')} <a class="mn">sch_54e9828e6772</a></dd>`+
   `<dt>Firing</dt><dd><span class="mn">sch_54e9828e6772:29885760</span> · 2026-10-28 00:00Z</dd>`+
   `<dt>Failure</dt><dd>${DASH('its fingerprint is not served on the run yet (new field run.cause)')}</dd>`+
-  `<dt>Issue</dt><dd><a>bogdan-alexandrescu/SwarmCloud#2583</a> ${I('ext')}</dd>`+
+  `<dt>Issue</dt><dd><a>example-org/example-repo#2583</a> ${I('ext')}</dd>`+
   `<dt>Run</dt><dd><a class="mn">run_fba2dc8f6ec9494dae2f</a> · planned 00:41Z ${EX}</dd></dl></div>`;
 }
 function sumSec(){return `<div class="shs"><h5>Summary</h5><p class="quote">${SUMMARY}</p><span class="more">${I('chevd')}Show the whole summary</span></div>`}

@@ -1,4 +1,4 @@
-"""codex on a ChatGPT plan from the shared pool (part of #2688, BGD 2026-11-01).
+"""codex on a ChatGPT plan from the shared pool (part of #2688, the owner 2026-11-01).
 
 The worker hands a plan's ACCESS token and account id to the codex runner as
 CODEX_PLAN_ACCESS_TOKEN and CODEX_PLAN_ACCOUNT_ID. The runner writes them as a

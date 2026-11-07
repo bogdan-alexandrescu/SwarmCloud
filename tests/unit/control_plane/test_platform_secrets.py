@@ -11,7 +11,7 @@ docs/design/secrets-scopes.md §5 and §11 Q7 (SSC-PLATFORM-STATUS, part of
   it, and checked in the module's syntax tree too;
 * no name outside `swarm-` reaches Secret Manager: not from the catalogue, and
   not from a broker account document whose recorded secret names the other
-  team's (saga-agents-staging is shared, CLAUDE.md rule 2);
+  team's (example-project is shared, CLAUDE.md rule 2);
 * a row carries status, counts and times, never a value, a length or `last4`;
   a missing secret is `not_declared` and an unreadable one says why, never a
   500.
@@ -214,8 +214,8 @@ def test_the_catalogue_names_only_swarm_secrets():
 
 
 @pytest.mark.parametrize("secret_id", [
-    "agents-staging-db-password",          # the other team's family
-    "promptlab-openai",                    # and its other one
+    "peer-cluster-db-password",          # the other team's family
+    "peer-openai",                    # and its other one
     "",
     "swarm-",                              # the prefix alone
     "swarm-a/../../agents-x",              # a path smuggled into an id
@@ -237,7 +237,7 @@ def test_an_account_naming_another_teams_secret_is_never_read(api_context, db):
     recorder = RecordingClient()
     _all_set(recorder)
     _account(db, "u-alice", "main")
-    bad = _account(db, "u-mallory", "x", secret="agents-staging-db-password")
+    bad = _account(db, "u-mallory", "x", secret="peer-cluster-db-password")
     http = _app(api_context, recorder)
 
     body = http.get("/v1/admin/platform-secrets", headers=auth_header("root")).json()

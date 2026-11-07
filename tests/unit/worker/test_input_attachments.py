@@ -233,7 +233,7 @@ def test_a_malformed_attachments_list_is_refused_not_ignored(db, store, work, at
 )
 def test_an_attachment_named_outside_its_files_directory_is_refused(db, store, work, name):
     # Recorded, not uploaded: the store itself refuses to write a traversing key.
-    recorded = {"name": name, "bytes": len(DRAFT), "uri": f"gs://bucket/{_key(name)}"}
+    recorded = {"name": name, "bytes": len(DRAFT), "uri": f"gs://swarm-artifacts-example-project/{_key(name)}"}
     _seed_answer(db, store, [recorded])
 
     with pytest.raises(InputUnavailable):

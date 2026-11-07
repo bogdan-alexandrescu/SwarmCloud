@@ -1,5 +1,5 @@
 """`metadata.issue_run` is reserved: written only by the issue-run code
-(`issueruns`, `issueci`), refused from every caller (BGD, 2026-11-04).
+(`issueruns`, `issueci`), refused from every caller (the owner, 2026-11-04).
 
 The key links a task or workflow to the issue run that started it: the
 console's "started from" names it, `resolve_fix_rounds` gives an issue run's

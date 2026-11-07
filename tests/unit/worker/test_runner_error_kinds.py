@@ -1,6 +1,6 @@
 """The runner tells a provider ERROR apart from a rate limit (RUNNER-ERROR-KINDS, #2302).
 
-BGD decided on 2026-10-25 that the claude-code runner classifies what its CLI
+the owner decided on 2026-10-25 that the claude-code runner classifies what its CLI
 ended in, so the held pool account's health record says which: an overloaded
 529, a server 5xx, or a network failure -- each its own `kind` on the broker's
 `/account-error` route, which counts on the account and never touches AIMD.

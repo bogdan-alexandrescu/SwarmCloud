@@ -14,7 +14,7 @@ cache root; the child's `oom_score_adj` is 1000; not ready in the bound is
 an error with scrubbed log lines; stop removes the data directory; nothing
 listens on a non-loopback address.
 
-TS-CLOUDRUN-REFUSE (BGD 2026-10-24, "Refuse on Cloud Run"): with no
+TS-CLOUDRUN-REFUSE (the owner 2026-10-24, "Refuse on Cloud Run"): with no
 SWARM_CACHE_ROOT the data directory would sit in the workspace tmpfs,
 charged to the container's memory, so `start` refuses before `initdb`. Every
 other test here runs with it set, as on GKE (`_cache_volume`).

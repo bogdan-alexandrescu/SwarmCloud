@@ -161,7 +161,7 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     # refused title), which is what each was counted as before.
     assert dict(outcomes.FAILURE_CLASSES)["publish_refused"] == "publish refused"
     assert outcomes._FAILURE_OF_CAUSE["publish_refused"] == "publish_refused"
-    # Contract request 118, BGD 2026-10-27: an attempt the worker stopped on
+    # Contract request 118, the owner 2026-10-27: an attempt the worker stopped on
     # its budget is its own class, never "runner error".
     # MUTATION: map BUDGET_EXCEEDED back to "runner_error" and this fails.
     assert dict(outcomes.FAILURE_CLASSES)["budget_exceeded"] == "budget exceeded"
@@ -171,7 +171,7 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     # It is served in the vocab in its fixed place, after publish_refused.
     served = [c["key"] for c in outcomes.VOCAB["failure_classes"]]
     assert served.index("budget_exceeded") == served.index("publish_refused") + 1
-    # Contract request 126, BGD 2026-10-27: a fix loop that ended without a
+    # Contract request 126, the owner 2026-10-27: a fix loop that ended without a
     # MERGE is a failure of the work, not of the platform: its own class,
     # never "runner error" (every round ran) or "other".
     # MUTATION: leave FIX_LOOP_EXHAUSTED out of `_FAILURE_OF_CAUSE` and

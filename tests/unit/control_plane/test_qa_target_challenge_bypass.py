@@ -1,5 +1,5 @@
 """A QA target's challenge bypass, swarm-api's half (docs/design/visual-qa-any-app.md
-§2.5; lane CAPTCHA-BYPASS, part of #2058; BGD, 2026-10-23: "a QA target may carry
+§2.5; lane CAPTCHA-BYPASS, part of #2058; the owner, 2026-10-23: "a QA target may carry
 a challenge bypass its owner configures, and only the gate applies it, only on
 the target's own origins").
 
@@ -241,7 +241,7 @@ def test_deleting_a_target_with_only_a_bypass_removes_its_entry(client, db, seed
 def test_the_bypass_route_is_never_captured():
     """The PUT's body is the bypass value itself, so it is named beside the
     credential's in `main.UNCAPTURED_ROUTES`: a body capture added to the app
-    later must skip it (BGD, 2026-10-23)."""
+    later must skip it (the owner, 2026-10-23)."""
     from swarm_api.main import UNCAPTURED_ROUTES
     from swarm_api.routes.qatargets import BYPASS_ROUTE, CREDENTIAL_ROUTE
 

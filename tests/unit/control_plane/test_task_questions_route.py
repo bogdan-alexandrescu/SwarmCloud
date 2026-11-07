@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 
 
 def _key(name: str, *, tenant: str, task: str, attempt: str = "att_1") -> str:

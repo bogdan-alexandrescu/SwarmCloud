@@ -60,7 +60,7 @@ from .test_roles_store import grant
 MEMBER_SWITCH = refusals.env_name("role_member_required")
 
 ALICE, BOB, VERA, OPS = "alice@example.com", "bob@example.com", "vera@example.com", "ops@example.com"
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 GROUPS = {
     ALICE: (ENG_GROUP,),
     BOB: (ENG_GROUP,),

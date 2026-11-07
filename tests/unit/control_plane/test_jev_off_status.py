@@ -1,6 +1,6 @@
 """Jev's unavailability is served, not silent (lane JEV-OFF; part of #1345).
 
-Measured 2026-10-15: `browser_tool: jev` on u-bogdan, whose judgment backend
+Measured 2026-10-15: `browser_tool: jev` on u-owner, whose judgment backend
 is internal-jev, got `mcp_servers: jev -> failed`. The dispatcher sends no
 JEV_API_URL while the tailnet egress is off, the jev wrapper refuses, and the
 agent drove Playwright -- while the Submit picker offered Jev and the live

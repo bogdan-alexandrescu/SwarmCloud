@@ -49,7 +49,7 @@ WEDGED = f"{JOB}/executions/swarm-job-eng-mock-5lrt8"
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,

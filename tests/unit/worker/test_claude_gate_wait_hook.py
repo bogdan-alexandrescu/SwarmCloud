@@ -1,6 +1,6 @@
 """A claude-code browser agent's next tool result says the gate asked a person (CAPTCHA-HANDOFF-2).
 
-BGD, 2026-10-23 (part of #2058): when the gate sees a CAPTCHA on the agent's
+the owner, 2026-10-23 (part of #2058): when the gate sees a CAPTCHA on the agent's
 page it raises the hand-off itself (CAPTCHA-HANDOFF, PR 2085), and the agent's
 next tool result says a person has been asked to solve it and that it should
 wait and not retry. claude-code puts text into a tool result only through a

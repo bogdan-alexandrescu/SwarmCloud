@@ -1,5 +1,5 @@
 // The sc plugin's SwarmCloud pane (SC-BROWSER-BUILD, #2318): proposal B, Two
-// columns, which BGD picked for every frame on 2026-10-25 (PR 2328).
+// columns, which the owner picked for every frame on 2026-10-25 (PR 2328).
 //
 // A Claude Code mod pane beside the chat: this session's workflows, then one
 // workflow's stages on the left with the selected stage's agents -- then one
@@ -15,7 +15,7 @@
 // events and turns the model's lines into elements.
 //
 // `/sc layout rows|pane` is answered here too: it saves the project's layout
-// through `swarm_layout`, and then -- BGD, 2026-10-25: "Also re-attach
+// through `swarm_layout`, and then -- the owner, 2026-10-25: "Also re-attach
 // automatically" -- the same run goes on as `/sc attach --all` (one chat
 // turn), so rows in the new layout start beside the old ones, which keep
 // running until they end. The engine refuses `$.command.run` inside a
@@ -26,7 +26,7 @@
 // CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1) this module does not load, and
 // commands/sc.md answers `/sc layout` the slower way.
 //
-// AT SESSION START (BGD, 2026-10-25: "Yes, open it with no read"): ONE
+// AT SESSION START (the owner, 2026-10-25: "Yes, open it with no read"): ONE
 // `swarm_layout` call per session learns the project's layout, after the
 // session has started (the first `session.start` is awaited before the first
 // prompt, and the bridge may still be starting). In the pane layout the pane
@@ -34,10 +34,10 @@
 // The engine seats an unasked pane only from 144 columns; below that it
 // waits, and one toast says so. Either layout, Level 1 then lists this
 // PROJECT's running work beside this session's, because session start
-// tracks the project's running work (BGD's note; `/sc check` and the watch
+// tracks the project's running work (the owner's note; `/sc check` and the watch
 // stay this session's).
 //
-// THE BAND (SC-BAND, part of #2318): BGD, 2026-10-26, moved the SwarmCloud
+// THE BAND (SC-BAND, part of #2318): the owner, 2026-10-26, moved the SwarmCloud
 // view out of the right-docked pane into a HORIZONTAL STRIP ABOVE THE PROMPT,
 // with one summary line BELOW the prompt -- a third layout, `band`, in which
 // the plugin starts no /workflows rows at all. Why: in Claude Code's
@@ -80,7 +80,7 @@ const PANE = 'swarmcloud'
 const pane = atom({ plugin: 'sc', key: 'pane' } as const, initialState() as ScPaneState)
 const band = atom({ plugin: 'sc', key: 'band' } as const, initialBand() as ScBandState)
 
-/** The band's re-read while anything runs: once a minute (BGD, 2026-10-26). */
+/** The band's re-read while anything runs: once a minute (the owner, 2026-10-26). */
 const MINUTE_MS = 60_000
 
 /** The minute's handle while it runs; nothing else is kept outside `$.state`. */

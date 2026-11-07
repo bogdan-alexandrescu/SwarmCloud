@@ -113,7 +113,7 @@ def test_another_member_as_last_editor_is_still_refused_and_told_another_member_
 
 
 def test_a_named_list_of_the_owner_alone_is_owner_only_and_the_waiver_records_the_list(client, db):
-    """BGD 2026-10-25, "Yes: treat [owner] like owner_only": a named list whose
+    """the owner 2026-10-25, "Yes: treat [owner] like owner_only": a named list whose
     only entry is the platform owner gets the waiver, and its audit row says
     what the list was, not `owner_only`. Rendered 2026-10-25 (fixture S3):
     nobody could decide it."""
@@ -408,7 +408,7 @@ def test_the_last_editors_approve_comment_on_an_ordinary_merge_keeps_the_second_
 def test_the_owners_approve_comment_on_a_named_list_of_the_owner_alone_merges_with_the_waiver(
     client, db, objects, writes, clock, api_context, switch_on,
 ):
-    """BGD 2026-10-25, "Yes: treat [owner] like owner_only", on the comment path:
+    """the owner 2026-10-25, "Yes: treat [owner] like owner_only", on the comment path:
     the gate names only the owner, the owner last edited it, no hold."""
     seed_tenant(db, "eng")
     seed_schedule(db, owner=OWNER)

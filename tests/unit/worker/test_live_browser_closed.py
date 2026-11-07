@@ -5,11 +5,11 @@ the gate closed Chromium at the attempt's end (`browser_wiped attempt_end`,
 17:42:43.889) and stopped 12.26 s later; for all of that a person watching was
 told "Can't show this page safely: the gate is not attached to the page on
 screen", and the metrics booked it as `no_session`, a page failure. Owner
-decision (BGD, 2026-10-23 ~20:20Z): "Say the agent finished."
+decision (the owner, 2026-10-23 ~20:20Z): "Say the agent finished."
 
 So a wipe whose cause is the attempt's end gives the page watch (mask.py) its
 own reason, `REASON_BROWSER_CLOSED`, said to the viewer as one sentence, and
-counted under its own metrics key. Since LIVE-NOMASK (BGD, 2026-10-25) it is
+counted under its own metrics key. Since LIVE-NOMASK (the owner, 2026-10-25) it is
 the only reason a captured frame carries: any other way the session goes
 publishes the capture with the plain desktop name, and the frame itself is
 always the capture, never a fill.
@@ -29,7 +29,7 @@ from test_live_rfb import _frame
 from agent_worker.livegate import mask, rfb
 from agent_worker.livegate.mask import MaskState
 
-#: The owner's words (BGD, 2026-10-23), held here as written rather than read
+#: The owner's words (the owner, 2026-10-23), held here as written rather than read
 #: from the module, so a rewording is a decision this test makes visible.
 FINISHED = "The agent has finished; its browser is closed."
 

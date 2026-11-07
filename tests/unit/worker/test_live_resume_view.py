@@ -377,8 +377,8 @@ def test_the_gate_reports_the_path_the_top_frame_navigated_to(short_tmp):  # noq
         rig = rigs.Rig(short_tmp)
         stop, task = await rigs._started(rig)
         await rig.gate.open_tunnel({"ticket": "t." + secrets.token_urlsafe(8)})
-        rigs._navigated(rig, "https://github.com/bogdan/swarm/pulls?q=is%3Aopen", "github.com")
-        await rigs._until(lambda: any((r["origin"] or {}).get("path") == "/bogdan/swarm/pulls"
+        rigs._navigated(rig, "https://github.com/octo/swarm/pulls?q=is%3Aopen", "github.com")
+        await rigs._until(lambda: any((r["origin"] or {}).get("path") == "/octo/swarm/pulls"
                                       for r in _reports(rig.relay)))
         stop.set()
         assert await task == 0

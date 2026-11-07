@@ -1,7 +1,7 @@
 # One visual-QA dispatch over an app's environments, discovering as it captures
 
 **Status: BUILT.** Designed by lane QA-ENVIRONMENTS-DESIGN (PR 2144),
-2026-10-23, part of #2136; BGD answered §9 the same day (§10), and the build
+2026-10-23; the owner answered §9 the same day (§10), and the build
 follows those answers. Built by QAENV-GATE (PR 2161), QAENV-CRAWL (PR 2162),
 QAENV-MODEL (PR 2163), QAENV-RUN (PR 2175), QAENV-SC (PR 2177),
 QAENV-SETTLE (PR 2181), QAENV-UI-RUNPAGE (PR 2261) and QAENV-UI-FORM
@@ -11,13 +11,13 @@ QAENV-SETTLE (PR 2181), QAENV-UI-RUNPAGE (PR 2261) and QAENV-UI-FORM
 lane built and where the build differs from the text below; the text below
 is the design as decided, kept so the reasons stay with it.
 
-**The request (BGD, 2026-10-23 ~17:40Z, #2136):** dispatch one visual-QA
-workflow from the console against an app such as `https://studio.saga.xyz`
+**The request (the owner, 2026-10-23 ~17:40Z):** dispatch one visual-QA
+workflow from the console against an app such as `https://peer.example.com`
 and have it QA both legs of that app, production and staging, in the same
 dispatch. It signs in to each. It runs discovery **while** it does QA, not
 as a step that must finish first, because the UI changes all the time and a
 run over a stored, stale route list misses new routes, sections and
-features. BGD chose (~17:55Z) a design first, then his answers, then build
+features. The owner chose (~17:55Z) a design first, then his answers, then build
 lanes.
 
 **What this design builds on, and does not reopen.** Everything in
@@ -58,12 +58,12 @@ asks the owner to change it:
 | capture | captures exactly the routes its prompt lists; adds none it finds | `swarm_qa.py` `capture` |
 | the schedule | `visual-qa` takes one `target`; per-run $40, per-day $80, `max_concurrent` 1 (VQ7-CAPS) | `schedtypes/visual_qa.py` `BUDGET_CAPS`, `scheduletypes.py` `VisualQaParams` |
 | the console | one Run per target card, "report only" and "Flows with" beside it | `apps/swarm-ui/src/QaTargets.tsx`, `qaTargetsApi.ts` `runQaTarget`, `cannotRunBecause` |
-| AI Studio | two targets, `ai-studio-staging-routes` and `ai-studio-staging-crawl`, both staging; the production leg has **no** target and its sign-in host is **not recorded** | #2136 |
+| The peer application | two targets, `peer-app-staging-routes` and `peer-app-staging-crawl`, both staging; the production leg has **no** target and its sign-in host is **not recorded** | An earlier issue |
 
-**One fact about AI Studio shapes the safety argument.** Its base URL opens
+**One fact about the peer application shapes the safety argument.** Its base URL opens
 on a chooser with a **Staging | Production** toggle (visual-qa-any-app.md
 §2.2, start clicks). If both legs are served from the same origin
-(`https://studio.saga.xyz`) and differ only by the toggle, the gate cannot
+(`https://peer.example.com`) and differ only by the toggle, the gate cannot
 tell the legs apart by origin. §1.5 and §6 make that case safe by rule
 rather than by hope.
 
@@ -110,8 +110,8 @@ one product, the schedule names a list, and the duplication of (b) remains.
   route, as any edit is). Each rewrite appends an `admin_audit` row
   `qa_target_migrated`. Until the rewrite has run everywhere, the reader
   (`QaTargets.find`) presents an unmigrated document as a one-entry list, so
-  nothing reads two shapes past the read. AI Studio's two staging targets
-  each become a one-environment target; BGD then adds a `production` entry
+  nothing reads two shapes past the read. The peer application's two staging targets
+  each become a one-environment target; the owner then adds a `production` entry
   to the one he keeps (and may delete the other; its `screens` are a
   `screens` list to copy, not a different app).
 * **(b):** none for existing targets; a person links them.
@@ -146,7 +146,7 @@ changes: an entry is `values["<target_id>/<environment name>"]`.
   target, so a link minted for staging can never set production's password.
   A PUT (credential or bypass) whose body names no entry, on a target of
   several, takes the entry the link was minted for, read by the token's
-  digest from a link that is this person's, unused and unexpired (#2280):
+  digest from a link that is this person's, unused and unexpired:
   the link already names it, so the request need not restate it. A body
   naming another entry is still `consume_link`'s 403, the link not burned.
 * **Size.** A Secret Manager payload is at most 64 KiB. An entry at today's
@@ -176,7 +176,7 @@ attempt can never switch legs; the worker route never offers one anyway,
 because the mark is read from the task document swarm-api wrote.
 
 **Two legs on one origin.** When two entries of one target share any
-approved origin (AI Studio's case if both are `https://studio.saga.xyz`),
+approved origin (the peer application's case if both are `https://peer.example.com`),
 the worker route treats **both** as production for the write rule:
 `mutating` is false for every step of either leg, whatever the entry's mark
 says. The page's toggle, not the origin, chooses which backend a write
@@ -187,7 +187,7 @@ a narrowing of §3, never a widening: it only ever turns a write permission
 off.
 
 **A write the flow did not declare, and a workspace that writes nothing.**
-Two more narrowings, both §6's (BGD, 2026-11-05): a mutating flow with no
+Two more narrowings, both §6's (the owner, 2026-11-05): a mutating flow with no
 `writes` sentence, and every flow of a workspace whose `writing_flows` QA
 setting is off, are held read-only by the same leg view (`qaspec.leg`'s
 `writing_flows`) the worker route reads, so `mutating` is false for them
@@ -259,7 +259,7 @@ steps, 362 screenshots, **$23.62**, schedtypes/visual_qa.py); two legs of an
 app that size are about **$47 before the crawl**. The crawl's own cost is
 not measured: it is haiku time spent waiting on navigations
 (`swarm_qa`'s loop, not the model, walks the pages), and the first build
-lane measures it on AI Studio staging before the schedule's caps are
+lane measures it on the peer application staging before the schedule's caps are
 changed.
 
 * **Started by hand** (`:run`): no dollar budget applies, as for all work
@@ -305,7 +305,7 @@ step walks the same graph), and captures the **new** routes it **owns**:
   same id in every step and every run, and the filing step's de-duplication
   key (`visual-qa:<target_id>:<screen>:<title>`) stays stable.
 * **A dismissed route is not crawled** (added by QA-CRAWL-SKIP, PR 2374;
-  BGD 2026-10-25, part of #2157). A QA run group's **Remove** records a
+  The owner 2026-10-25). A QA run group's **Remove** records a
   found route on the target's `dismissed_routes`, so that no later run
   offers it again. Removing it from one run's list is not enough on its own:
   the next run's crawl would find the same link, capture it as new, and
@@ -350,7 +350,7 @@ target today (the rate is per attempt, §3 of visual-qa-any-app.md). No
 review, report or filing step changes cost except by reviewing the new
 routes it is given.
 
-**A run with no stored screens** (BGD's "from nothing but the base URL").
+**A run with no stored screens** (the owner's "from nothing but the base URL").
 `runnable` stops refusing `qa_target_no_screens` for a target with
 `discover` set: the renderer makes `discover.slots` capture steps (default
 4, at most 8) with no stored routes, each crawling from the base path and
@@ -420,7 +420,7 @@ empty stored lists. Coverage is reported exactly: queued, taken, captured.
 A `discover` step first; `G` capture steps each `input_from` its
 `screens.json` and take their share by index. No new path, no coverage gap,
 no frozen change; and every capture waits for the discovery, which is the
-"prerequisite" BGD's wording rules out. Kept here only as the baseline the
+"prerequisite" the owner's wording rules out. Kept here only as the baseline the
 others are measured against: its wall-clock is the discovery's plus the
 run's.
 
@@ -468,7 +468,7 @@ Only an option this design does not recommend would need one, so it is
 drafted here, in `docs/contract-change-requests.md` form, and **not** filed
 there:
 
-> **QE-1. `models.py`: a running workflow's steps may grow (QA-ENVIRONMENTS-DESIGN, part of #2136).**
+> **QE-1. `models.py`: a running workflow's steps may grow (QA-ENVIRONMENTS-DESIGN).**
 > *What is true today:* `Workflow.steps` is fixed at submission; nothing
 > appends a step to a running workflow. *The requested change:* an
 > `append_steps` path, swarm-api only, admitting steps whose
@@ -588,8 +588,8 @@ with a production leg (§1.5); a production leg's run renders no mutating
 flow at all. Allowing a mutating flow on production would change
 visual-qa-any-app.md §3 and is the owner's (§9 Q6, recommended no).
 
-**What a writing flow may write: what it declares (BGD, 2026-11-05,
-"declared writes plus a switch, on by default", after AI Studio asked for
+**What a writing flow may write: what it declares (the owner, 2026-11-05,
+"declared writes plus a switch, on by default", after the peer application asked for
 flows that create records on staging).** All of the above stays. On top of
 it:
 
@@ -638,8 +638,8 @@ four choices, in §9 Q7:
    the screens. Nothing in the platform changes.
 2. **The identity provider's own skip rule, carried by §2.5's bypass.** Some
    providers skip a second factor on a request header the owner configures
-   (Keycloak's conditional OTP form has such a setting; whether AI Studio's
-   production realm uses it is a fact for CLD or BGD). The bypass already
+   (Keycloak's conditional OTP form has such a setting; whether the peer application's
+   production realm uses it is a fact for CLD or the owner). The bypass already
    applies a header on the leg's approved origins only, the IdP's
    `extra_origin` included. But §2.5 was decided for CAPTCHA and WAF
    challenges; using it to skip MFA widens that decision, so it is the
@@ -652,10 +652,10 @@ four choices, in §9 Q7:
 
 **Facts this lane does not know, set per environment when known:**
 
-* **F-1.** AI Studio's production sign-in: its `login_path`, its identity
+* **F-1.** The peer application's production sign-in: its `login_path`, its identity
   provider's origin (its `extra_origin`), and whether the production leg is
-  `https://studio.saga.xyz` with the chooser's **Production** toggle or a
-  different host. BGD or CLD supplies it; it is an entry's data, typed into
+  `https://peer.example.com` with the chooser's **Production** toggle or a
+  different host. The owner or CLD supplies it; it is an entry's data, typed into
   the console, not code.
 * **F-2.** Whether that production account has MFA, and of which kind.
 
@@ -727,7 +727,7 @@ recommended answers; a different answer changes the lanes it names.
 | 3 | **QAENV-UI** | `apps/swarm-ui/src/QaTargets.tsx`, `qaTargetsApi.ts`, a new `QaRunGroup.tsx`, `App.tsx` route, `paths.ts`, the Submit-a-workflow entry, their vitest files; `.github/ISSUE_TEMPLATE/` if a nav tab changes (`test_issue_forms.py`) | a leg that cannot run is disabled with its reason while the other stays enabled; Run sends names only; the run page shows one column per leg and the one-leg-only routes; Promote is drawn to an admin only | QAENV-RUN merged |
 | 3 | **QAENV-SC** | `apps/swarm-mcp`, `plugin/` (`swarm_qa_run`, `swarm_qa_targets`) | `swarm_qa_run` takes `environments` by name and no URL field; the targets tool lists entries without any credential field | QAENV-RUN merged |
 | 4 | **QAENV-DOCS** | `docs/design/visual-qa-any-app.md`, `docs/schedules.md` §3.17, this file's status | `test_docs_describe_what_was_built` | each lane above |
-| data | **AI Studio production entry** (a person, not a lane) | the console | — | F-1, F-2, §9 Q7; a platform admin approves the entry's host |
+| data | **The peer application production entry** (a person, not a lane) | the console | — | F-1, F-2, §9 Q7; a platform admin approves the entry's host |
 
 The review CLAUDE.md requires for credentials, isolation and redaction
 applies to QAENV-MODEL (the secret key, the link binding, the worker
@@ -818,19 +818,19 @@ one); (b) $40 a leg, `max_concurrent` 2, $80 a day (one two-leg firing a
 day, no run-now room); (c) unchanged until the crawl's cost is measured, a
 schedule naming two legs refused until then.
 
-**F-1, F-2 (facts, not choices).** AI Studio's production sign-in host,
+**F-1, F-2 (facts, not choices).** The peer application's production sign-in host,
 `login_path`, IdP origin and whether it is the chooser's Production toggle on
-`https://studio.saga.xyz`; and whether its production account has MFA.
+`https://peer.example.com`; and whether its production account has MFA.
 
 ---
 
 ## 10. Owner decisions (2026-10-23, ~12:00 PDT / 19:00Z)
 
-BGD answered every question in §9 in the console session that dispatched this
+The owner answered every question in §9 in the console session that dispatched this
 lane. Each answer is recorded on the design agent (`task_182e885f55a44323940e`,
 `owner_answers`). The build lanes of §8 follow these:
 
-| question | BGD's answer |
+| question | The owner's answer |
 |---|---|
 | Q1, one app, several environments | **(a) one target with an `environments[]` list** (§1) |
 | Q2, one dispatch, both legs | **(a) one workflow per leg, linked by a run group** (§2) |
@@ -843,22 +843,22 @@ lane. Each answer is recorded on the design agent (`task_182e885f55a44323940e`,
 | Q9, schedule caps | **(a) $40 a leg, `max_concurrent` 2, $160 a day** (§2.2) |
 | new routes per capture step (from CLD's review) | **8 by default** (`discover.found_per_step: 8`, not 4). Stored plus new routes stay at most 60 per leg (§3.1). |
 
-**F-1, read by CLD from the ai-studio repository** (checkout `7b4d28dd0`,
+**F-1, read by CLD from the peer-app repository** (checkout `7b4d28dd0`,
 2026-10-19; see the PR comment):
-- AI Studio's production leg is the chooser's **Production** toggle on the same
-  origin, `https://studio.saga.xyz`. `DEPLOY.md` calls it "the single canonical origin".
-- Its identity provider is `https://sso.galatia.saga.xyz/realms/sagents` (client
-  `ai-studio-web`), so that is the production entry's `extra_origin`.
+- The peer application's production leg is the chooser's **Production** toggle on the same
+  origin, `https://peer.example.com`. `DEPLOY.md` calls it "the single canonical origin".
+- Its identity provider is `https://sso.peer.example.com/realms/sagents` (client
+  `peer-app-web`), so that is the production entry's `extra_origin`.
 - Production writes travel through the shared origin: `routes/ship.py` forwards
-  the browser's production token to `https://api.galatia.saga.xyz`. §1.5's
-  shared-origin rule is therefore required for AI Studio, not optional. Both of its
+  the browser's production token to `https://api.peer.example.com`. §1.5's
+  shared-origin rule is therefore required for the peer application, not optional. Both of its
   legs run read-only.
 - The production sign-in's token exchange needs the IdP token path that
-  QA-IDP-POST (#2067) allows.
+  QA-IDP-POST allows.
 
-**F-2** stays open: whether production Galatia's `sagents` realm requires a
+**F-2** stays open: whether production peer-app's `sagents` realm requires a
 second factor for a QA account. Under Q7 the answer is to create an MFA-free QA
-account there; BGD or the app's owner does that.
+account there; the owner or the app's owner does that.
 
 ---
 
@@ -883,7 +883,7 @@ rewritten, so the reason for each decision stays next to it.
   without `environments` is still stored in the one-origin shape until
   `POST /v1/qa-targets:migrate` runs (a platform admin's call, safe to
   repeat); it is never run automatically. It ran on 2026-10-24 at 00:18Z
-  and migrated the three stored targets (#2136's comment of that time).
+  and migrated the three stored targets (an earlier issue's comment of that time).
 * **QAENV-GATE (PR 2161).** §1.5's one leg per attempt. The worker passes
   `environment_name` in the `qa_sign_in` hand-off, and the gate refuses a
   second hand-off as `target_changed` when `(target_id, environment_name)`
@@ -896,7 +896,7 @@ rewritten, so the reason for each decision stays next to it.
   links on every captured page, walks from the start path and every stored
   route, and captures the new routes it owns
   (`1 + int(sha256(p)[:8], 16) mod G`) up to `--found-per-step` (default and
-  ceiling 8, BGD's §10 answer), writing `found.json`. The wider walk and
+  ceiling 8, the owner's §10 answer), writing `found.json`. The wider walk and
   disclosure-only clicks of §4 are shared with `discover` (`--no-clicks`
   turns them off there). Bounds: 60 pages, depth 3, 20 clicks a page and
   200 a crawl, `--crawl-seconds` 600 (at most 900), navigations spaced by
@@ -917,7 +917,7 @@ rewritten, so the reason for each decision stays next to it.
   and a 2,700 s timeout; a discovering target with nothing stored renders
   `discover.slots` crawling steps (default 4, at most 8). The report gains a
   coverage section per leg. The `visual-qa` schedule takes `environments`
-  and its caps became BGD's Q9 (a): $40 a leg, `max_concurrent` 2, $160 a
+  and its caps became the owner's Q9 (a): $40 a leg, `max_concurrent` 2, $160 a
   day (schedules.md §3.17).
 * **QAENV-SC (PR 2177).** §7 in the plugin. `swarm_qa_run` takes
   `environments` by name (1 to 8, a bare name only) and answers `group_id`
@@ -964,17 +964,17 @@ rewritten, so the reason for each decision stays next to it.
   drew two, and Run discovery on a target of several entries discovers each
   ticked leg; §7 says neither.
 
-**The shared-origin rule spans one target, and AI Studio is now two.**
+**The shared-origin rule spans one target, and the peer application is now two.**
 `qaspec.shares_production_origin` compares an entry with the other entries
-of its own target. On 2026-10-24 AI Studio was registered as two targets
-(#2136's comments of 22:39Z and 23:10Z): `ai-studio-prod`, whose entries are
-all `production`, and `ai-studio-staging`, whose entries are all
-`non_production`, both on `https://studio.saga.xyz`. No entry of
-`ai-studio-staging` shares an origin with a production entry of its own
+of its own target. On 2026-10-24 the peer application was registered as two targets
+(an earlier issue's comments of 22:39Z and 23:10Z): `peer-app-prod`, whose entries are
+all `production`, and `peer-app-staging`, whose entries are all
+`non_production`, both on `https://peer.example.com`. No entry of
+`peer-app-staging` shares an origin with a production entry of its own
 target, so §1.5's rule does not turn its write permission off, although the
 comment of 22:39Z says it does. Nothing can write there today, because
 neither target declares a flow and a capture step is never `mutating`; a
-`mutating: true` flow added to `ai-studio-staging` would be rendered, and
+`mutating: true` flow added to `peer-app-staging` would be rendered, and
 its step's writes to the shared origin would be allowed whichever backend
 the page's toggle picks, the case §1.5 exists for. Whether the rule should compare a tenant's targets, or
 the two legs should be entries of one target as §1.2 planned, is asked of

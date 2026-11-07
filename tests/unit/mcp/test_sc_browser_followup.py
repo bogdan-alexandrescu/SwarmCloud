@@ -1,4 +1,4 @@
-"""BGD's three answers to SC-BROWSER-BUILD, built (SC-BROWSER-FOLLOWUP, #2318; recorded 2026-10-25).
+"""the owner's three answers to SC-BROWSER-BUILD, built (SC-BROWSER-FOLLOWUP, #2318; recorded 2026-10-25).
 
 1. SWITCHING LAYOUTS ALSO RE-ATTACHES ("Also re-attach automatically"):
    `/sc layout rows|pane` saves the choice, then queues ONE `/sc attach --all`
@@ -11,7 +11,7 @@
    "not read yet" with Refresh, after ONE swarm_layout call and no list read.
    The engine half is pane.test.ts; the frame and the Refresh read are
    pane/model.ts's, run here under node.
-3. SESSION START ATTACHES THE PROJECT'S RUNNING WORK (BGD's note): at session
+3. SESSION START ATTACHES THE PROJECT'S RUNNING WORK (the owner's note): at session
    start only, the work still running for THIS project -- this checkout's
    origin repository, whichever Claude Code session started it -- is named
    and attached (rows layout: `/sc attach --all --project`; pane layout: the

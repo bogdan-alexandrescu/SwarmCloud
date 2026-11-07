@@ -45,8 +45,8 @@ class Accounts:
 
 def account(label, observed_at=None):
     return Account(
-        account_id=f"u-bogdan:{label}",
-        owner_tenant="u-bogdan",
+        account_id=f"u-owner:{label}",
+        owner_tenant="u-owner",
         label=label,
         provider="anthropic",
         state=AccountState.AVAILABLE,
@@ -103,7 +103,7 @@ def test_an_unreadable_token_skips_that_account_and_continues():
     """One bad secret must not stop the pool being read."""
     accounts = Accounts()
     p = UsagePoller(
-        Secrets(fail={"swarm-account-u-bogdan--a"}),
+        Secrets(fail={"swarm-account-u-owner--a"}),
         accounts,
         logger=Log(),
         now=lambda: NOW,
@@ -113,7 +113,7 @@ def test_an_unreadable_token_skips_that_account_and_continues():
     out = p.poll_round([account("a"), account("b")])
 
     assert [o.reason for o in out] == ["token_unreadable", "ok"]
-    assert [r[0] for r in accounts.recorded] == ["u-bogdan:b"]
+    assert [r[0] for r in accounts.recorded] == ["u-owner:b"]
 
 
 def test_the_never_read_account_is_polled_first():
@@ -127,7 +127,7 @@ def test_the_never_read_account_is_polled_first():
     never = account("never", observed_at=None)
     p.poll_round([fresh, never])
 
-    assert [r[0] for r in accounts.recorded] == ["u-bogdan:never"]
+    assert [r[0] for r in accounts.recorded] == ["u-owner:never"]
 
 
 def test_the_oldest_reading_is_polled_before_a_fresher_one():
@@ -140,7 +140,7 @@ def test_the_oldest_reading_is_polled_before_a_fresher_one():
     new = account("new", observed_at=NOW - timedelta(minutes=2))
     p.poll_round([new, old])
 
-    assert [r[0] for r in accounts.recorded] == ["u-bogdan:old"]
+    assert [r[0] for r in accounts.recorded] == ["u-owner:old"]
 
 
 def test_the_budget_is_a_hard_cap():

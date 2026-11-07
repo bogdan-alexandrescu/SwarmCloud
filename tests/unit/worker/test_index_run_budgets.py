@@ -60,7 +60,7 @@ def test_the_pass_gets_2160_of_3600_and_the_agent_keeps_720():
 
 
 def test_ai_studios_run_gives_the_pass_more_than_pyright_needed():
-    # #1693: pyright needed ~680-890 s on ai-studio (3,795 source files) and
+    # #1693: pyright needed ~680-890 s on peer-app (3,795 source files) and
     # had 270. The pass as a whole now has 2,160 s, and the driver grants it
     # in proportion to each server's measured cost.
     timeout = repoindex.index_timeout_seconds("full", 3_795)

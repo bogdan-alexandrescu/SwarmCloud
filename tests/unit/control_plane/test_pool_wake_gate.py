@@ -1,13 +1,13 @@
 """Work waiting on the account pool wakes only as fast as accounts can take it (#2222, POOL-WAKE-GATE).
 
-BGD, 2026-10-24: "Per-account cap, staggered wake" and "Ask the pool before a
+the owner, 2026-10-24: "Per-account cap, staggered wake" and "Ask the pool before a
 container". Measured that morning: at 10:10Z one 5-hour reset was the
 `next_eligible_at` of 28 parks, and each promotion started a container that
 cloned, checkpointed about 49 MB and asked the broker, to be told there was no
 account and park again. What is held here:
 
   * a wake wakes at most as many parks as there are free slots, and as many
-    as there are (BGD's pick on PR #3044, "free slots only");
+    as there are (the owner's pick on PR #3044, "free slots only");
   * admission asks the broker's `choose()` BEFORE the lease and parks what no
     account can take, PROVIDER_QUOTA_EXHAUSTED at `account_assign`, holding
     nothing (invariant 1);
@@ -259,7 +259,7 @@ def test_the_waiting_line_names_the_pool_and_what_holds_each_account():
                 "used": 0.86, "resets_at": "2026-10-25T18:59:00+00:00"}}},
             {"account": "aieng-claude1", "windows": {"five_hour": {
                 "used": 0.99, "resets_at": "2026-10-24T10:10:00+00:00"}}},
-            {"account": "saga-team", "full": "6 of 6"},
+            {"account": "org-team", "full": "6 of 6"},
             {"account": "devops-main", "state": "PAUSED"},
         ],
     }
@@ -278,7 +278,7 @@ def test_the_waiting_line_names_the_pool_and_what_holds_each_account():
     assert w["summary"] == (
         "No pool account can take an agent on anthropic: every account is under its floor "
         "(ai-eng-2 7-day at 86%, clears 2026-10-25 18:59Z; aieng-claude1 5-hour at 99%, "
-        "clears 10:10Z; saga-team full (6 of 6); and 1 more); next check 09:09Z"
+        "clears 10:10Z; org-team full (6 of 6); and 1 more); next check 09:09Z"
     )
     assert [a["account"] for a in w["detail"]["accounts"]] == [
-        "ai-eng-2", "aieng-claude1", "saga-team", "devops-main"]
+        "ai-eng-2", "aieng-claude1", "org-team", "devops-main"]

@@ -35,7 +35,7 @@ from quota_broker.oauth import (
     split_pasted_code,
 )
 
-PROJECT = "test-project"
+PROJECT = "example-project"
 TENANT = "eng"
 
 
@@ -75,7 +75,7 @@ def test_the_url_carries_every_parameter_claude_code_sends():
 
 def test_the_redirect_is_anthropics_callback_and_not_ours():
     """A third-party application cannot register its own redirect with this
-    client. Pointing it at swarm.saga.xyz would fail at the login page, after
+    client. Pointing it at swarm.example.com would fail at the login page, after
     the person had already signed in."""
     url = build_authorize_url(state=new_state(), code_challenge="abc")
     assert "platform.claude.com%2Foauth%2Fcode%2Fcallback" in url
@@ -173,7 +173,7 @@ def client(broker, monkeypatch):
 
     monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@p.iam.gserviceaccount.com")
+    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv(
         "WORKER_SERVICE_ACCOUNT_TEMPLATE",
         "swarm-agent-worker-{tenant}@p.iam.gserviceaccount.com",

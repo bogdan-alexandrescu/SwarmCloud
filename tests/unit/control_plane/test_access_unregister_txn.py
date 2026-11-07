@@ -80,7 +80,7 @@ def api(db, tokens, group_map, objects, github, sm, grant_key) -> TestClient:
         forge=forge.GitHubIssues(send=GitHubRepos(repos={}, listing=[])), now=clock,
     )
     forge_app = forgeapp.ForgeApp(
-        db, config=forgeapp.AppConfig(client_id=CLIENT_ID, app_id="12345", slug="swarmcloud"),
+        db, config=forgeapp.AppConfig(client_id=CLIENT_ID, app_id="123456", slug="swarmcloud"),
         secrets=FakeAppSecret("s" + "x" * 39), slots=FakeSlots(), send=github, now=clock)
     service = access.AccessService(db, forge_app, send=github, now=clock)
     app = create_app(ctx, forge_app=forge_app, access_service=service)

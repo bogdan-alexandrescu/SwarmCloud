@@ -44,7 +44,7 @@ from .test_attemptstate import (  # noqa: F401 - fixtures
 )
 
 ROUTE = "/v1/attempts/{attempt_id}/reads/{tool}"
-VIEW = "projects/swarm-test-project/locations/global/buckets/_Default/views/swarm-workers"
+VIEW = "projects/example-project/locations/global/buckets/_Default/views/swarm-workers"
 NOW = datetime.now(timezone.utc)
 #: The agents an agent reads: one of its own tenant's, one of another's.
 MINE = "task_mine_failed"

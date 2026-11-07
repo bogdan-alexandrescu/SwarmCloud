@@ -1,6 +1,6 @@
 """The pool's waiting line names every reason an account cannot take the agent (#2222, POOL-WAITLINE).
 
-BGD, 2026-10-24, POOL-DUP-DETECT question 3: "Yes, follow-up lane". After
+the owner, 2026-10-24, POOL-DUP-DETECT question 3: "Yes, follow-up lane". After
 PR 2247 the broker withholds the later registration of one subscription
 (`duplicate_withheld`) and gives a never-measured account one agent until its
 first reading, but the waiting line on Work › Agents › Waiting named only a
@@ -132,7 +132,7 @@ def test_another_workspaces_duplicate_is_named_without_its_label(
     assert dispatcher.dispatched == []
     assert block["account_pool_reason"] == "pool_paused"
     # MUTATION: writing the other side's label puts another tenant's account
-    # name into eng's task document (BGD, Q2: "only within the same tenant").
+    # name into eng's task document (the owner, Q2: "only within the same tenant").
     assert block["accounts"] == [
         {"account": "team", "withheld": {"same_subscription_as": None, **WHY}}]
     assert "night-shift" not in repr(block)
@@ -171,7 +171,7 @@ def test_a_possible_duplicate_is_named_as_such_and_not_called_withheld(
     measure(store, f"{OWNER}:team")
     store.set_max_agents(f"{OWNER}:team", 1)
     assert acquire_hold(db, f"{OWNER}:team", tenant_id=OWNER, now=_now()) is not None
-    store.set_identical_readings(f"{OWNER}:team", None, f"{OWNER}:saga-personal")
+    store.set_identical_readings(f"{OWNER}:team", None, f"{OWNER}:org-personal")
     _ready(db)
 
     block = _park(db, make_scheduler)
@@ -180,9 +180,9 @@ def test_a_possible_duplicate_is_named_as_such_and_not_called_withheld(
     # Full is what holds it; the inferred pair rides along, never as withheld.
     assert block["accounts"] == [{
         "account": "team", "full": "1 of 1",
-        "possible_duplicate": {"of": "saga-personal"}}]
+        "possible_duplicate": {"of": "org-personal"}}]
     line = _line(block)
-    assert "team full (1 of 1); possible duplicate of saga-personal (identical readings)" in line
+    assert "team full (1 of 1); possible duplicate of org-personal (identical readings)" in line
     assert "withheld" not in line
 
 
@@ -196,8 +196,8 @@ def test_the_line_keeps_its_shape_with_the_new_reasons_in_it():
         "reason": "PROVIDER_QUOTA_EXHAUSTED", "provider": "anthropic",
         "account_pool_reason": "no_recent_reading", "park_phase": "account_assign",
         "accounts": [
-            {"account": "saga-team", "first_reading": "pending"},
-            {"account": "team", "withheld": {"same_subscription_as": "saga-personal"},
+            {"account": "org-team", "first_reading": "pending"},
+            {"account": "team", "withheld": {"same_subscription_as": "org-personal"},
              "windows": {"seven_day": {"used": 0.98, "resets_at": "2026-10-26T08:00:00+00:00"}}},
             {"account": "devops-main", "possible_duplicate": {"of": None}},
             {"account": "ai-eng-2", "full": "6 of 6"},
@@ -208,8 +208,8 @@ def test_the_line_keeps_its_shape_with_the_new_reasons_in_it():
     # the line's order or its "and N more" cut.
     assert _line(block) == (
         "No pool account can take an agent on anthropic: no account has a reading recent "
-        "enough to trust (saga-team taking one agent until its first reading; team withheld: "
-        "same subscription as saga-personal; 7-day at 98%, clears 2026-10-26 08:00Z; "
+        "enough to trust (org-team taking one agent until its first reading; team withheld: "
+        "same subscription as org-personal; 7-day at 98%, clears 2026-10-26 08:00Z; "
         "devops-main possible duplicate of an account in another workspace (identical "
         "readings); and 1 more); next check 09:09Z"
     )

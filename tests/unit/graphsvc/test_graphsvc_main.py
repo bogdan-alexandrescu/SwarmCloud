@@ -45,12 +45,12 @@ def test_a_missing_switch_is_off(tmp_path):
     assert (config.enabled, config.cause) == (False, "config_unreadable")
 
 
-VERSION = "projects/swarm-dev-1/secrets/swarm-graph-ticket-key/versions/latest"
+VERSION = "projects/example-project/secrets/swarm-graph-ticket-key/versions/latest"
 
 
 def test_settings_name_the_graph_key_and_a_bucket():
-    env = {main.KEY_ENV: VERSION, main.BUCKET_ENV: "swarm-artifacts-dev"}
-    assert main.settings(env) == (VERSION, "swarm-artifacts-dev", main.DEFAULT_CONFIG)
+    env = {main.KEY_ENV: VERSION, main.BUCKET_ENV: "swarm-artifacts-example-project"}
+    assert main.settings(env) == (VERSION, "swarm-artifacts-example-project", main.DEFAULT_CONFIG)
     with pytest.raises(RuntimeError):
         main.settings({**env, main.KEY_ENV: VERSION.replace("graph-ticket", "egress")})
     with pytest.raises(RuntimeError):
@@ -65,7 +65,7 @@ def test_a_short_key_never_starts():
 
 
 def test_serve_answers_health_and_stops(tmp_path):
-    env = {main.KEY_ENV: VERSION, main.BUCKET_ENV: "swarm-artifacts-dev",
+    env = {main.KEY_ENV: VERSION, main.BUCKET_ENV: "swarm-artifacts-example-project",
            main.CONFIG_ENV: _write(tmp_path, {"enabled": True})}
     stop = threading.Event()
     key = new_key()

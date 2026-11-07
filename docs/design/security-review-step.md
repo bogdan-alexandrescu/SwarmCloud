@@ -1,6 +1,6 @@
 # The optional security review step
 
-Owner's decisions, 4 November 2026 (part of #2688). This page says what the
+Owner's decisions, 4 November 2026 (part of the Day One install program). This page says what the
 step does, why each choice was made, and how a workflow adds it.
 
 ## What it is
@@ -110,7 +110,7 @@ offers three options:
 - **Mark it a false positive** (say why in the answer).
 
 The verdict's `needs_owner` names each question, so the merge parks on
-`owner_wait` exactly as it does for a review's questions (#2070). The
+`owner_wait` exactly as it does for a review's questions. The
 existing answer route wakes the merge.
 
 `built` is `null` because the branch built none of the three options. The

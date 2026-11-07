@@ -1,6 +1,6 @@
 # Multi-repository steps: one step reads several registered repositories, writes one
 
-**Status: design, 2026-10-17 (lane MULTI-REPO-DESIGN, part of #1434).
+**Status: design, 2026-10-17 (lane MULTI-REPO-DESIGN).
 Nothing here is built.** The owner reads this and answers §7 before any build
 lane starts. The frozen-contract half is in §5 as requests, not changes
 (CLAUDE.md rule 1); the operator files them in
@@ -9,7 +9,7 @@ they are approved.
 
 Every file and symbol cited below was read on 2026-10-17 at `35f2a61`.
 Symbols are cited as `path::qualname` because line numbers in `lifecycle.py`
-and `service.py` move by hundreds in one merge wave (#453, #647).
+and `service.py` move by hundreds in one merge wave.
 
 What the design settles, in one line each:
 
@@ -63,9 +63,9 @@ It is enough to read a pinned API spec. It is not enough to grep a codebase,
 follow a call through it, or answer "which service owns the endpoint the web
 app calls?".
 
-### 1.2 What people do instead (#1434)
+### 1.2 What people do instead
 
-#1434's measured workaround: one indexer agent per repository, each writing a
+An earlier issue's measured workaround: one indexer agent per repository, each writing a
 summary artifact, then a step that stages every summary through
 `input_from`. The cross-repository question is answered from summaries, not
 code. For a product in four repositories (API, web app, infrastructure,
@@ -85,7 +85,7 @@ happened to keep.
 | Cloud Run workspace, class `standard` | 4 GiB memory-backed tmpfs, charged against the 8 GiB memory limit | `apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`; `dispatch.py` workspace sizing |
 | checkpoint ceiling | 2 GiB per archive, chain of 24 | `apps/agent-worker/agent_worker/config.py::WorkerConfig` (`max_checkpoint_bytes`); `checkpoint.py` |
 
-**#1434 says "4 GiB today for claude-code". That figure is the Cloud Run
+**An earlier issue says "4 GiB today for claude-code". That figure is the Cloud Run
 tmpfs.** claude-code has run on GKE since contract request 53. Its
 workspace is a 5 GiB disk emptyDir, and an overflow there is an eviction,
 not an ENOSPC (`dispatch.py::GKE_DISK`'s comment; evictions on 2026-10-08
@@ -97,7 +97,7 @@ and 2026-10-15). The volume with room is the 20 GiB cache PVC. That is why
 Submit one step, or one workflow, that names its primary repository and up
 to four registered repositories beside it. The agent can grep, read, run a
 language server over, and (phase 2) query the code graph of all of them at
-known commits. Then it opens one PR against the primary. #1434's three
+known commits. Then it opens one PR against the primary. An earlier issue's three
 acceptance checks become three red-first tests (§6):
 
 1. a step with two additional repositories sees all three checkouts at their
@@ -179,7 +179,7 @@ shape changes.
   `forge.may_receive_forge_token` accepts
   (`apps/agent-worker/agent_worker/forge.py::may_receive_forge_token`).
 * **The worker cannot read a repository (`git-r-`) slot.** Those are read by
-  swarm-api only, for the runner git tools it executes (#1225,
+  swarm-api only, for the runner git tools it executes (an earlier issue,
   `terraform/bootstrap/forge_user_slots.tf`'s `enable_forge_user_slots`
   description). So a per-repository credential for an extra clone is the
   tenant slot `git` or a user slot `git-u-<hex>`, never `git-r-`.
@@ -198,7 +198,7 @@ shape changes.
   placed inside `work/repo` would therefore be committed into the
   primary's patch as plain files.** That is why the extras go in
   `work/repos/`, a sibling, and not in `./repos/<name>` under the agent's
-  working directory as #1434 sketches. The agent reaches them as
+  working directory as an earlier issue sketches. The agent reaches them as
   `../repos/<name>`.
 * **An agent with no repository uploads `work/`** as its standalone output
   (`Worker._uploads_working_folder`, `standalone_outputs.scan`). Extra
@@ -236,7 +236,7 @@ allowlist, with the repository's own `git-r-` slot or the agent's.
   measurable on GCP. GitHub's REST budget (5,000 requests an hour per token)
   becomes the ceiling for an agent that reads a lot. Code search covers only
   default branches, so it cannot honour a pinned commit.
-* **What it breaks.** Nothing, and it does not deliver #1434. An agent cannot
+* **What it breaks.** Nothing, and it does not deliver an earlier issue. An agent cannot
   run `rg`, a type checker or a language server over a forge API.
   "Sees all three checkouts at their pinned commits" is false by
   construction. The code graph cannot be staged for a repository that is
@@ -307,7 +307,7 @@ downloads and unbundles it.
 
 ### 3.4 Recommendation: B, with C kept as a phase-3 option
 
-B delivers all three of #1434's checks with the least new machinery. Every
+B delivers all three of an earlier issue's checks with the least new machinery. Every
 piece it uses already exists and is tested on the primary path:
 `clone_at_commit`, the credentials file, `grant_refusal`, the cache volume
 and the spec signature. Its security exposure is the one the platform
@@ -407,7 +407,7 @@ A new module, `apps/swarm-api/swarm_api/extrarepos.py`, called by
 5. **Write.** The entries go on the agent as §4.7's shape. The agent is signed
    at format 4 (request B).
 
-**Pinning, compared with the primary.** #1434 asks that pinning "work as
+**Pinning, compared with the primary.** an earlier issue asks that pinning "work as
 for the primary". Read on 2026-10-17, the primary is **not** resolved at
 submission by swarm-api: `check_repository_ref` only refuses a short sha.
 The pins that exist are the MCP bridge's `infer`
@@ -618,7 +618,7 @@ Written in the shape of `docs/contract-change-requests.md` (entries 80-84).
 The operator numbers them and files them there once approved. Until then,
 nothing under `apps/common/swarm_common/` changes.
 
-### Request A. `models.py`: `Task.additional_repositories`, the repositories a step reads beside its own, and their shape (MULTI-REPO, part of #1434)
+### Request A. `models.py`: `Task.additional_repositories`, the repositories a step reads beside its own, and their shape (MULTI-REPO)
 
 **Status:** PROPOSED 2026-10-17 by lane MULTI-REPO-DESIGN. Not applied.
 
@@ -708,7 +708,7 @@ a tenant-scoped hash, and the slot is the agent's own tenant's. **10**: the
 field holds names and commits, never an image, command, resource or
 backend parameter, and a caller cannot write it. 1-4 and 6-8 untouched.
 
-### Request B. `specsign.py`: spec format 4 covers `additional_repositories` (MULTI-REPO, part of #1434)
+### Request B. `specsign.py`: spec format 4 covers `additional_repositories` (MULTI-REPO)
 
 **Status:** PROPOSED 2026-10-17 by lane MULTI-REPO-DESIGN. Not applied.
 
@@ -782,8 +782,8 @@ first, in this shape"). Each lane's last command is
 | # | lane | files (its whole territory) | red-first tests | after |
 |---|---|---|---|---|
 | 0 | **MR-CONTRACT** (operator applies A and B once approved) | `apps/common/swarm_common/models.py`, `apps/common/swarm_common/specsign.py`, `docs/contract-change-requests.md`, `tests/unit/common/test_additional_repositories_contract.py` (new), `tests/unit/common/test_specsign.py`, `tests/unit/common/test_specsign_covers.py` | a malformed entry (`name` "..", a `git-r-` slot, a short commit, a duplicate name, five entries) raises; an old document decodes with None; a format-3 projection refuses a set list; a rewritten commit fails a format-4 verification; an agent without the list signs at 3 | owner approval |
-| 1 | **MR-WORKER** | `apps/agent-worker/agent_worker/extrarepos.py` (new), `lifecycle.py`, `workspace.py`, `checkpoint.py`, `standalone_outputs.py`; tests `tests/unit/worker/test_additional_repositories_clone.py`, `test_additional_repositories_not_harvested.py`, `test_checkpoint_leaves_out_repos.py` (all new) | **#1434 check 1**: two entries give three checkouts, each `rev-parse HEAD` equal to its signed commit; **#1434 check 2**: an edit under `work/repos/web` leaves `swarm-work.patch` byte-identical; a revoked grant fails before the agent; a clone failure fails the attempt naming the entry and no URL; the size cap fails terminal; a checkpoint archive has no `repos/` member; a resume re-clones at the same commits; a no-repository agent's upload skips `repos/`; the credentials file is gone before the agent starts | 0 |
-| 2 | **MR-API** | `apps/swarm-api/swarm_api/extrarepos.py` (new), `schemas.py`, `service.py`, `validation.py`, `codec.py`; tests `tests/unit/control_plane/test_additional_repositories_submit.py` (new) | **#1434 check 3**: an unregistered `owner/repo` is refused `repository_not_registered` and no agent is written; not `readable_by_tasks` is refused; no person grant is refused `REPOSITORY_NOT_GRANTED`; a URL in `repository` is refused by shape; a Cloud Run profile is refused; the ref resolves once per workflow and every step gets the same commit; a step's `[]` replaces the workflow's list; the signed spec is at format 4 only when the list is set; the response carries no URL and no token | 0 (parallel with 1) |
+| 1 | **MR-WORKER** | `apps/agent-worker/agent_worker/extrarepos.py` (new), `lifecycle.py`, `workspace.py`, `checkpoint.py`, `standalone_outputs.py`; tests `tests/unit/worker/test_additional_repositories_clone.py`, `test_additional_repositories_not_harvested.py`, `test_checkpoint_leaves_out_repos.py` (all new) | **An earlier issue check 1**: two entries give three checkouts, each `rev-parse HEAD` equal to its signed commit; **An earlier issue check 2**: an edit under `work/repos/web` leaves `swarm-work.patch` byte-identical; a revoked grant fails before the agent; a clone failure fails the attempt naming the entry and no URL; the size cap fails terminal; a checkpoint archive has no `repos/` member; a resume re-clones at the same commits; a no-repository agent's upload skips `repos/`; the credentials file is gone before the agent starts | 0 |
+| 2 | **MR-API** | `apps/swarm-api/swarm_api/extrarepos.py` (new), `schemas.py`, `service.py`, `validation.py`, `codec.py`; tests `tests/unit/control_plane/test_additional_repositories_submit.py` (new) | **An earlier issue check 3**: an unregistered `owner/repo` is refused `repository_not_registered` and no agent is written; not `readable_by_tasks` is refused; no person grant is refused `REPOSITORY_NOT_GRANTED`; a URL in `repository` is refused by shape; a Cloud Run profile is refused; the ref resolves once per workflow and every step gets the same commit; a step's `[]` replaces the workflow's list; the signed spec is at format 4 only when the list is set; the response carries no URL and no token | 0 (parallel with 1) |
 | 3 | **MR-BRIDGE** | `apps/swarm-mcp/swarm_mcp/server.py`, `client.py`, `workflows.py`, `plugin/skills/delegate/SKILL.md`; tests `tests/unit/mcp/test_additional_repositories_bridge.py` (new) | the tools send `additional_repositories` as names; `infer` never rewrites them; a URL argument is refused before any request | 2 |
 | 4 | **MR-UI** | `apps/swarm-ui/src/Dispatch.tsx`, `Submit.tsx`, `SubmitWorkflow.tsx`, `AgentDetail.tsx`, `types.ts`; tests `apps/swarm-ui/src/__tests__/submit.additional-repositories.test.tsx` (new) | the picker lists only `GET /v1/repositories/readable`; the body sends names; the detail shows the pinned commit | 2 (parallel with 3) |
 | 5 | **MR-GRAPH** (phase 2) | `apps/agent-worker/agent_worker/graphstage.py`, `graph_ticket.py`, `graphmcp/shim.py`, `graphmcp/tools.py`; `apps/swarm-api/swarm_api/graph_ticket.py`; tests `tests/unit/worker/test_graphstage_additional.py`, `tests/unit/control_plane/test_graph_ticket_additional.py` (new) | a ticket for a `repo_id` not in the signed list is refused; an index version not an ancestor of the entry's commit is not staged; the shim's `repo` argument picks its own ticket file | 1 and 2 |
@@ -792,7 +792,7 @@ first, in this shape"). Each lane's last command is
 **Acceptance (after 1-4 merge).** One `accept.yml` case belongs with lane
 1's PR as a follow-up, since `scripts/acceptance/workflow.sh` is not in any
 lane above. It submits a claude-code step with two additional repositories
-from the acceptance tenant's registrations and asserts the three #1434
+from the acceptance tenant's registrations and asserts the three an earlier issue
 checks against the deployed environment. It is named here so it is not
 forgotten. It is not assigned until the owner approves this plan.
 
@@ -824,7 +824,7 @@ recommendation is the first option. They are also in the run's
 2. Build Design C (swarm-api serves bundles) now, for those repositories
    only.
 3. Grant the tenant worker account read on `git-r-` slots. This reverses
-   #1225's decision that only swarm-api reads them.
+   an earlier issue's decision that only swarm-api reads them.
 
 **Q3. When is a ref pinned?**
 1. *(recommended)* At submission, by swarm-api, to a 40-hex commit, signed.
@@ -974,7 +974,7 @@ while the platform runs:
 |---|---|
 | At most 4, a contract constant (§4.1, §5 A, §7 Q5) | The setting `max_additional_repositories`, default 5, range 1-10; the contract's `ADDITIONAL_REPOSITORIES_CEILING` (10) is a shape guard (§8.2) |
 | A 6 GiB budget (§4.6) | The setting `additional_repositories_budget_gib`, default 6, range 1-20, read by swarm-api and by the worker |
-| Contract request `<n>`, spec format 4 | Requests 95 and 96 in `docs/contract-change-requests.md`, format 4. `SPEC_FORMAT` is now 5 (request 104, `model_class`, #1435). An agent that names a model class and additional repositories signs at 5, which covers both |
+| Contract request `<n>`, spec format 4 | Requests 95 and 96 in `docs/contract-change-requests.md`, format 4. `SPEC_FORMAT` is now 5 (request 104, `model_class`). An agent that names a model class and additional repositories signs at 5, which covers both |
 | `REPOSITORY_NOT_GRANTED` per additional repository | The same code, one refusal naming every ungranted entry, and only while `repository_grants_enforced` is on. With grants not enforced, a person's ungranted entry is cloned with the service slot, as for the primary |
 | The workflow's list applies to every step | It applies to every step that **runs an agent** (`extrarepos.py::runs_an_agent`). A worker action or an `await-input` step inherits none. A step's own list still replaces it, and `[]` means none (Q6) |
 | Refusal codes (§4.1 table) | All of them, plus `additional_repositories_disabled` (422) while `ADDITIONAL_REPOSITORIES_ENABLED` is off, and `validation_failed` when the deployment has no forge reader configured. An archived registration is `repository_not_readable_by_tasks` |
@@ -985,9 +985,9 @@ while the platform runs:
 | `standalone_outputs.scan` reserves `repos` | The worker's reserved names (`Worker._workdir_reserved`) add `repos` when the attempt has checkouts. `standalone_outputs.py` is unchanged |
 | The UI picker lists `GET /v1/repositories/readable` (§4.8) | It lists `GET /v1/repositories` (up to 20 pages), keeping `readable_by_tasks === true` and not archived. `/readable` lists what the token can see, including repositories nobody registered, and every one of those the API refuses. The read-back is on the agent detail (`AgentDetail.tsx`) and on the submit form's created view, each row `name · owner/repo @ ref · commit[:12]` |
 | The graph for additional repositories, phase 2 (§4.9) | Built (MR-GRAPH). The ticket body's `repo_id` (`apps/swarm-api/swarm_api/graph_ticket.py::AdditionalGraphTicketRequest`, a subclass, so the primary's body is unchanged) is accepted only from the agent's signed list; anything else is 404 `no_graph`. A served graph's shim takes a `repo` argument. A **staged** one is written under `work/.swarm-context/repos/<name>/snapshot/`, but the staged server reads only the step's own snapshot today. An entry never fails the attempt; one with no graph says `graph: false` in its stage record |
-| One `accept.yml` case after lanes 1-4 | **Not built.** `scripts/acceptance/` has no additional-repositories case, so the three #1434 checks are held offline only (§8.4) |
+| One `accept.yml` case after lanes 1-4 | **Not built.** `scripts/acceptance/` has no additional-repositories case, so the three an earlier issue checks are held offline only (§8.4) |
 
-### 8.4 How each #1434 check is held, and what is not
+### 8.4 How each an earlier issue check is held, and what is not
 
 * **Three checkouts at their pinned commits**:
   `tests/unit/worker/test_additional_repositories_clone.py`.

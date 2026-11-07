@@ -32,7 +32,7 @@ from swarm_api.executioncancel import (
 from .conftest import api_settings, auth_header, seed_task, seed_tenant
 from .test_cancel_without_a_worker import active_pools, dispatched, lease_of, worker_started
 
-PROJECT = "proj-x"
+PROJECT = "example-project"
 REGION = "us-central1"
 
 
@@ -178,7 +178,7 @@ class _Publisher:
 
 
 RUN_NAME = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-job-eng-mock/executions/swarm-job-eng-mock-abc12"
-TOPIC = "projects/proj-x/topics/swarm-execution-cancel"
+TOPIC = "projects/example-project/topics/swarm-execution-cancel"
 
 
 def _target() -> ExecutionTarget:

@@ -52,7 +52,7 @@ OWNER, REPO = "example-org", "widgets"
 REPO_URL = f"https://github.com/{OWNER}/{REPO}"
 API = f"/repos/{OWNER}/{REPO}"
 CHECK = "ci / unit"
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 
 
 def _sha(*parts: Any) -> str:

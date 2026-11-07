@@ -1,4 +1,4 @@
-"""`jev_decide`'s malformed answers (BGD's pick of 6 November 2026, after the
+"""`jev_decide`'s malformed answers (the owner's pick of 6 November 2026, after the
 24-hour Jev usage report: 4 of 529 agent answers were recorded malformed, each
 with a short output of 17 to 36 tokens).
 

@@ -1,6 +1,6 @@
 """ChatGPT-plan pool accounts, the broker's half (#2688).
 
-The owner chose (BGD, 2026-11-01) that codex runs on ChatGPT plans from a
+The owner chose (the owner, 2026-11-01) that codex runs on ChatGPT plans from a
 shared pool, the way claude-code runs on Claude subscriptions. What has to
 hold:
 
@@ -33,7 +33,7 @@ from quota_broker.accountstore import AccountStore
 from quota_broker.credentials import REFRESH_SUFFIX, CredentialRefresher
 from quota_broker.oauth import ReauthRequired
 
-PROJECT = "test-project"
+PROJECT = "example-project"
 TENANT = "eng"
 NOW = datetime(2026, 11, 1, 20, 0, tzinfo=timezone.utc)
 
@@ -349,7 +349,7 @@ def client(broker, monkeypatch):
     monkeypatch.delenv("PROJECT_ID", raising=False)
     monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@p.iam.gserviceaccount.com")
+    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv(
         "WORKER_SERVICE_ACCOUNT_TEMPLATE", "swarm-agent-worker-{tenant}@p.iam.gserviceaccount.com"
     )

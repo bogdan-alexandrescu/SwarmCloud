@@ -214,7 +214,7 @@ def test_the_process_will_not_start_without_its_one_caller(monkeypatch):
 
 
 def test_a_refused_models_value_still_starts_the_server_to_say_why(monkeypatch, tmp_path):
-    monkeypatch.setenv("SWARM_SPEECH_CALLER", "swarm-api@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_SPEECH_CALLER", "swarm-api@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv("SWARM_SPEECH_MODELS", '{"stt": {"name": "x", "revision": "main"}}')
     monkeypatch.setattr(main, "MODEL_ROOT", tmp_path / "models")
     monkeypatch.setattr(main, "STATE_DIR", tmp_path / "state")

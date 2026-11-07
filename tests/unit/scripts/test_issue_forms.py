@@ -335,6 +335,62 @@ def _labels_workflows_gate_on() -> set[str]:
     return found
 
 
+def _labels_workflows_apply_or_read() -> set[str]:
+    """Every label a workflow adds, removes, lists or matches on, beyond
+    `--label` (auto-merge.yml's `ready`: `--remove-label ready`,
+    `labels[]=ready`, `label.name == 'ready'`)."""
+    pattern = re.compile(
+        r"--(?:add-|remove-)?label[\s=]+[\"']?([A-Za-z][\w.-]*)"
+        r"|labels\[\]=([A-Za-z][\w.-]*)"
+        r"|/labels/([A-Za-z][\w.-]*)"
+        r"|label\.name\s*==\s*[\"']([\w.-]+)[\"']"
+        r"|labels\.\*\.name,\s*'([\w.-]+)'"
+    )
+    found: set[str] = set()
+    for path in sorted((REPO / ".github" / "workflows").glob("*.yml")):
+        for m in pattern.finditer(path.read_text()):
+            found.add(next(g for g in m.groups() if g))
+    return found
+
+
+def _labels_the_merge_train_reads() -> set[str]:
+    """scripts/merge-train.sh orders pull requests labelled FIRST_LABEL first."""
+    m = re.search(r'^FIRST_LABEL="([\w.-]+)"$', (REPO / "scripts" / "merge-train.sh").read_text(), re.M)
+    assert m is not None, "scripts/merge-train.sh no longer sets FIRST_LABEL"
+    return {m.group(1)}
+
+
+def _labels_the_platform_reads() -> set[str]:
+    """Every label the worker or swarm-api acts on when a person applies it:
+    the merge step's train label, the stranded-PR sweep's hold and the issue
+    run's security class."""
+    from agent_worker.merge import REPOSITORY_TRAIN_LABEL
+    from swarm_api.issueruns import SECURITY_LABEL
+    from swarm_api.strandedprs import HOLD_LABEL
+
+    return {REPOSITORY_TRAIN_LABEL, SECURITY_LABEL, HOLD_LABEL}
+
+
+def _labels_in_use() -> set[str]:
+    return (
+        _labels_workflows_gate_on()
+        | _labels_workflows_apply_or_read()
+        | _labels_the_merge_train_reads()
+        | _labels_the_worker_applies()
+        | _labels_the_platform_applies()
+        | _labels_the_platform_reads()
+    )
+
+
+def test_every_label_the_workflows_and_the_platform_use_is_declared() -> None:
+    """A label a workflow or the platform relies on and nobody declared is one
+    a fresh repository never gets: `gh label create` runs from this file."""
+    declared = {e.get("name") for e in _declared_labels() if isinstance(e, dict)}
+    # MUTATION: drop the `ready` entry from .github/labels.yml and this fails.
+    undeclared = sorted(_labels_in_use() - declared)
+    assert not undeclared, f".github/labels.yml does not declare {undeclared}"
+
+
 def _labels_the_worker_applies() -> set[str]:
     """Every label the worker adds to a pull request it opens (TERRITORY-WARN)."""
     from agent_worker.territory import OUT_OF_TERRITORY_LABEL
@@ -401,9 +457,7 @@ def test_the_label_declaration_is_one_gh_label_create_accepts() -> None:
     # repository, which would be a mirror of GitHub state that nothing here can
     # check.
     applied = {label for p in FORMS for label in (_load(p).get("labels") or [])}
-    applied |= _labels_workflows_gate_on()
-    applied |= _labels_the_worker_applies()
-    applied |= _labels_the_platform_applies()
+    applied |= _labels_in_use()
     unused = sorted(set(names) - applied, key=str)
     if unused:
         problems.append(f"declared but applied by no form: {unused}")

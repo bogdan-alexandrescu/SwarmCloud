@@ -1,7 +1,7 @@
 # Model per step: a workflow step picks its model class by name
 
 **Status: designed 2026-10-17, revised the same day for the owner's answers
-(lanes MODEL-STEP-DESIGN and MODEL-DESIGN-B, part of #1435), and built by
+(lanes MODEL-STEP-DESIGN and MODEL-DESIGN-B), and built by
 the lanes of §6. §8 records what each lane built and where the code departs
 from this design: the class is signed at spec format 5, not 4, and there is
 no `model_classes_enabled` flag (R4).** The first version recommended one profile per model tier (design A).
@@ -51,7 +51,7 @@ What the design settles, in one line each:
 
 ### 1.1 What is true today
 
-Since #226 (owner decision of 2026-09-26), the model a claude-code agent runs
+Since an earlier issue (owner decision of 2026-09-26), the model a claude-code agent runs
 is fixed per runner profile, and the profile is the only thing a caller picks:
 
 * **One map states every model**: `runner_models` in
@@ -94,14 +94,14 @@ is fixed per runner profile, and the profile is the only thing a caller picks:
 
 ### 1.2 What it costs
 
-The issue (#1435, opened 2026-10-16) states the cost as a property of the
+The issue (opened 2026-10-16) states the cost as a property of the
 design, not as a measured bill: every claude-code step runs Opus, "including
 steps that only reformat text". It gives no spend figure. This lane had no
 Firestore access to read one, so this document does not invent one. What can
 be stated:
 
 * **List prices.** `_LIST_PRICES` in `apps/agent-worker/agent_worker/lifecycle.py`
-  (since #1481 the `model_prices` platform setting, §4.10) (rates cached 2026-06-24, checked 2026-10-05) has `claude-opus-5-5` at $4
+  (since an earlier issue the `model_prices` platform setting, §4.10) (rates cached 2026-06-24, checked 2026-10-05) has `claude-opus-5-5` at $4
   input / $20 output / $0.20 cache read per million tokens. It has
   **`claude-fable-5-1` at $10 / $50 / $0.25**, so Fable costs 2.5 times Opus
   per token. Planning on Fable is therefore a quality choice, not a saving.
@@ -400,7 +400,7 @@ images run one CLI, pinned once in the base Dockerfile (§2.3), so an ID
 accepted on one profile is accepted on all three. A profile × class map would
 be twelve lines that must change together at every model release. The only
 thing it could express beyond the class map is one profile lagging another on
-an older model. #226 removed exactly that, when the review agent was set to
+an older model. An earlier issue removed exactly that, when the review agent was set to
 "name the same model" so that it would not judge with a different model than
 the one that wrote the change. If a profile ever needs to lag, a
 `<profile>/<class>` override key can be added then, with its own check.
@@ -776,7 +776,7 @@ It is red until the CLI in `agent-runtime-base` accepts every pinned ID
 
 ### 4.10 Prices
 
-**Moved, 2026-10-17 (#1481, lane PRICES-STORE).** The table below is no longer
+**Moved, 2026-10-17 (lane PRICES-STORE).** The table below is no longer
 code. List prices are the `model_prices` platform setting
 (`control/settings`, served and set by `/v1/admin/settings`, PUT admin-only and
 stamped with who changed it), seeded with exactly the figures `_LIST_PRICES`
@@ -788,7 +788,7 @@ at that moment, so a price change applies to the next stopped attempt with no
 deploy. The rule is unchanged: a model with no entry prices nothing, and the
 attempt reads "cost not reported". The paragraphs below describe the table as
 it was when it lived in code; read "the table" as the setting. The weekly
-pricing-page refresh and the nightly observed-rate check (#1481, lane
+pricing-page refresh and the nightly observed-rate check (lane
 PRICES-REFRESH) are schedule types, `model-prices-refresh` and
 `model-prices-check` ([schedules.md §3.14 and §3.15](../schedules.md#314-model-prices-refresh)).
 They run once an admin creates the two platform schedules. The refresh
@@ -850,7 +850,7 @@ profiles; the first version's request B (`claude-code-sonnet`,
 
 ### Request A. `profiles.py`: the `MODEL_CLASSES` vocabulary
 
-**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B, part of #1435.
+**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B.
 
 #### Why
 
@@ -866,7 +866,7 @@ vocabulary is what a caller is promised. The IDs behind it are Terraform's
 ```python
 @dataclass(frozen=True)
 class ModelClass:
-    """A model family a step may name (contract request A, #1435).
+    """A model family a step may name (contract request A, #<N>).
 
     The ID it stands for is Terraform's (`runner_models`, keyed by class),
     held to the class by `admits` at the scheduler's and swarm-api's start.
@@ -916,7 +916,7 @@ are untouched.
 
 ### Request B. `profiles.py`: `RunnerProfile.model_classes`, `default_model_class`, and `step_model_class`
 
-**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B, part of #1435.
+**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B.
 
 #### Why
 
@@ -930,7 +930,7 @@ claude-code-family profile accepts all four classes.
 On `RunnerProfile`, after `secret_slots`:
 
 ```python
-    #: Contract request B (#1435): the MODEL_CLASSES names a step on this
+    #: Contract request B (#<N>): the MODEL_CLASSES names a step on this
     #: profile may ask for, and the one it runs when it asks for none. Both
     #: empty on a profile that runs no Claude model. The IDs are
     #: `runner_models` in terraform/infra/locals.tf.
@@ -978,7 +978,7 @@ untouched. 1 to 5, 8 and 9 are untouched.
 
 ### Request C. `models.py`: `Task.model_class` and `WorkflowStep.model_class`
 
-**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B, part of #1435.
+**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B.
 
 #### Why
 
@@ -991,7 +991,7 @@ be signed, and be read by the scheduler at dispatch and by the worker at start.
 
 ```python
 # Task, after `model`:
-    #: Contract request C (#1435): the MODEL_CLASSES name this step asked
+    #: Contract request C (#<N>): the MODEL_CLASSES name this step asked
     #: for. None: the profile's default_model_class. Written by swarm-api at
     #: submission, only when it differs from that default; signed at spec
     #: format 4 (request E). Resolved by profiles.step_model_class.
@@ -1023,7 +1023,7 @@ and fixed across attempts. **8**: a checkpoint never crosses a class.
 
 ### Request D. `models.py`: `Attempt.model`
 
-**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B, part of #1435
+**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B
 (carried over from the first version's request C, unchanged).
 
 #### Why
@@ -1036,7 +1036,7 @@ the worker cannot add it alone.
 #### The change
 
 ```python
-    #: Contract request D (#1435): the model ID this attempt's agent was
+    #: Contract request D (#<N>): the model ID this attempt's agent was
     #: started with (MODEL), written by the worker at attempt start after its
     #: generation check. None: no model (mock, generic, browser, worker
     #: actions) or written before this field existed.
@@ -1059,7 +1059,7 @@ to 4 and 6 to 10 are untouched.
 
 ### Request E. `specsign.py`: format 4 covers `model_class`
 
-**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B, part of #1435.
+**Status:** proposed 2026-10-17 by lane MODEL-DESIGN-B.
 
 #### Why
 
@@ -1073,7 +1073,7 @@ signature that still verifies.
 #### The change
 
 ```python
-#: 4 is contract request E (#1435): format 3's fields plus `model_class`, so
+#: 4 is contract request E (#<N>): format 3's fields plus `model_class`, so
 #: a task whose model class was rewritten fails its worker's check.
 SPEC_FORMAT = 4
 SPEC_FORMATS = (1, 2, 3, 4)
@@ -1299,4 +1299,4 @@ the code that holds the lane's rule, and the test that holds it there.
 its map (§4.2). Removing it is the follow-up lane §6 names, to be dispatched
 once a release carrying MODEL-SCHED has applied. Prices for
 `claude-sonnet-5-5` and `claude-haiku-5-5` are not in `_LIST_PRICES` until
-an operator supplies dated figures (§4.10; R2 is #1481).
+an operator supplies dated figures (§4.10; R2 is an earlier issue).

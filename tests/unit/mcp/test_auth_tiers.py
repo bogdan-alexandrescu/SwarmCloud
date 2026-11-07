@@ -58,7 +58,7 @@ def test_running_inside_gcp_wins_over_everything_configurable(monkeypatch):
     """The metadata server is free, certain and needs no configuration, so a
     worker that ALSO has SWARM_IMPERSONATE_SA set must not pay for gcloud."""
     monkeypatch.setattr(auth, "_metadata_available", lambda timeout=0.3: True)
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     assert detect().tier is Tier.METADATA
 
 
@@ -76,12 +76,12 @@ def test_iap_needs_both_a_client_id_and_a_service_account(monkeypatch):
     assert detection.tier is Tier.PROXY
     assert any("only a service account can set one" in v for _, v in detection.considered)
 
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     assert detect().tier is Tier.IAP
 
 
 def test_a_service_account_without_an_iap_client_id_is_the_direct_tier(monkeypatch):
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     assert detect().tier is Tier.IMPERSONATE
 
 
@@ -170,7 +170,7 @@ def test_the_iap_tier_addresses_the_client_id_not_the_service_url(monkeypatch):
     """Getting this backwards produces `Invalid JWT audience`, which sends
     people to look at their IAM policy, where the problem is not."""
     monkeypatch.setenv("SWARM_IAP_CLIENT_ID", "123.apps.googleusercontent.com")
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     c = client.SwarmClient(base_url="https://swarm.example.com", connect=True)
     assert c._audience == "123.apps.googleusercontent.com"
 

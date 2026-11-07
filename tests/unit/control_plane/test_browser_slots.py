@@ -207,7 +207,7 @@ def test_a_u_tenant_that_is_not_a_persons_is_refused(live, db, slots, change) ->
     f"swarm-tenant-{CAROL_TENANT}-browser-other-x",
     f"swarm-tenant-{CAROL_TENANT}-browser-login-Not_A_Slug",
     f"swarm-tenant-{CAROL_TENANT}-browser-wf-{WORKFLOW}/versions/1",
-    "agents-staging-browser-login-x",                              # the other team's
+    "peer-cluster-browser-login-x",                              # the other team's
     "swarm-github-app-private-key",
     carry_id(workflow="wf_someone_elses"),                         # not this task's workflow
 ])
@@ -328,7 +328,7 @@ def test_the_vault_binds_exactly_one_member_on_exactly_one_secret() -> None:
         bindings=[policy_pb2.Binding(role=ACCESSOR_ROLE, members=["serviceAccount:b@x"])]
     )
     vault = SecretManagerSlotVault(PROJECT, client=client)
-    member = "serviceAccount:swarm-agent-worker-u-a@p.iam.gserviceaccount.com"
+    member = "serviceAccount:swarm-agent-worker-u-a@example-project.iam.gserviceaccount.com"
 
     created = vault.provision("swarm-tenant-u-a-browser-wf-wf_1", tenant_id="u-a", member=member,
                               labels={"swarm-tenant": "u-a"}, ttl_seconds=CARRY_TTL_SECONDS)
@@ -350,7 +350,7 @@ def test_the_vault_drops_any_other_binding_on_an_existing_secret_of_the_same_ten
         policy_pb2.Binding(role=ACCESSOR_ROLE, members=["serviceAccount:someone@x", "user:x@y"]),
         policy_pb2.Binding(role="roles/secretmanager.admin", members=["user:x@y"]),
     ])
-    member = "serviceAccount:swarm-agent-worker-u-a@p.iam.gserviceaccount.com"
+    member = "serviceAccount:swarm-agent-worker-u-a@example-project.iam.gserviceaccount.com"
 
     created = SecretManagerSlotVault(PROJECT, client=client).provision(
         "swarm-tenant-u-a-browser-login-github-qa", tenant_id="u-a", member=member,
@@ -378,7 +378,7 @@ def test_the_vault_never_regrants_a_secret_labelled_another_tenants() -> None:
 @pytest.mark.parametrize("secret_id", [
     "swarm-tenant-eng-browser-wf-wf_1",
     "swarm-tenant-u-a-anthropic",
-    "agents-staging-browser-login-x",
+    "peer-cluster-browser-login-x",
     "swarm-tenant-u-a-browser-other-x",
 ])
 def test_the_vault_refuses_a_non_browser_name_before_any_call(secret_id) -> None:

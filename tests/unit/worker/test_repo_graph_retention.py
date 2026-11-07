@@ -297,7 +297,7 @@ def test_the_gcs_sweep_deletes_in_batches(shards, tmp_path):
 # lane INDEX-RETENTION (part of #1693): the sweep out of the graph write
 # --------------------------------------------------------------------------
 #
-# Measured 2026-10-20 on ai-studio: the graph write's sweep timed out in 19 of
+# Measured 2026-10-20 on peer-app: the graph write's sweep timed out in 19 of
 # 19 runs, reading 163 manifests one `gcloud storage cat` at a time after a
 # write that itself took 86-97 s. The worker now runs `write --no-sweep` and
 # the sweep as its own phase; the sweep reads manifests side by side, deletes

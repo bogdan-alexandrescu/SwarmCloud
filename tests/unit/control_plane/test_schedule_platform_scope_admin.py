@@ -2,7 +2,7 @@
 
 A `platform`-scope schedule reads every workspace's aggregates. Creating one,
 or moving a schedule's scope TO platform, already needs a platform admin
-(`schedules.check_creator`). BGD's decision of 2026-10-24, "Platform admins
+(`schedules.check_creator`). the owner's decision of 2026-10-24, "Platform admins
 only": every change to an EXISTING schedule whose STORED `scope.mode` is
 `platform` needs one too -- PATCH, DELETE, `:pause` (with or without
 `cancel_live`), `:resume`, `:run`, `:take-ownership` and the SD3

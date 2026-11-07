@@ -1,8 +1,8 @@
 # SwarmCloud Day One: the P3 build plan (P2)
 
-**Status:** P2 plan, for BGD's approval (GATE 2), with the adversarial review's 21 findings fixed in place (section 13). Part of #2688. Merge is off.
+**Status:** P2 plan, for the owner's approval (GATE 2), with the adversarial review's 21 findings fixed in place (section 13). Part of the Day One install program. Merge is off.
 **Written:** 2026-10-29, against `main` at `b3fe3e6`.
-**Inputs:** the design [`day-one-install.md`](day-one-install.md) (approved at GATE 0b, with BGD's nine answers in its section 14), the inventory [`day-one/manifest.draft.yaml`](day-one/manifest.draft.yaml), the 48 lessons in [`day-one/lessons.md`](day-one/lessons.md), the brief's decisions D1 to D25, and the GATE 1 picks D26 (DX1 B), D27 (DX2 B) and D28 (DX3 B, the marketplace in the release home).
+**Inputs:** the design [`day-one-install.md`](day-one-install.md) (approved at GATE 0b, with the owner's nine answers in its section 14), the inventory [`day-one/manifest.draft.yaml`](day-one/manifest.draft.yaml), the 48 lessons in [`day-one/lessons.md`](day-one/lessons.md), the brief's decisions D1 to D25, and the GATE 1 picks D26 (DX1 B), D27 (DX2 B) and D28 (DX3 B, the marketplace in the release home).
 
 This plan says **who builds what, in which order, and how CI proves it**. It reopens no decision. Where the code, read while planning, disagrees with the design, section 0 says what the plan does instead and why; none of those changes a decision.
 
@@ -17,10 +17,10 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 | # | Design says | The code says | The plan does |
 |---|---|---|---|
 | R1 | §5.6: `SIGNING_KEYS` "must come from the job's environment". | `images/workspace-apply/entry.py` empties `os.environ` before anything runs (module docstring, "THE ENVIRONMENT, NONE OF IT"); only the fixed command survives an override. | The trusted key name goes into the job's **fixed command** as `--spec-signing-key=projects/<P>/locations/<R>/keyRings/<ring>/cryptoKeys/step-spec`, rendered by bootstrap beside the existing `--spec-verify-keys-sha256` (`terraform/bootstrap/workspace_deployer.tf:123`). Lane DAYONE-BOOT-1. |
-| R2 | §2.3: the console mirror is `swarm_install/state`. | D26 (later, BGD) names it "Firestore `swarm-install/<env>` plus the state object". | D26 wins: the engine's mirror is document `swarm-install/<env>`. Section 5.4 splits it into one document per writer so nothing races. |
+| R2 | §2.3: the console mirror is `swarm_install/state`. | D26 (later, the owner) names it "Firestore `swarm-install/<env>` plus the state object". | D26 wins: the engine's mirror is document `swarm-install/<env>`. Section 5.4 splits it into one document per writer so nothing races. |
 | R3 | §9.1: the engine runs the GitHub App manifest flow through a loopback listener. | D26 moves the App to the console (B06). | swarm-api runs the flow: `redirect_url` is `https://<H>/admin/setup/github-app/callback`, and swarm-api performs the code exchange and writes the three secrets server-side (section 5.3). The loopback flow is not built. |
-| R4 | §7: `SHARED_DENY_LIST` "is read from `SWARM_SHARED_DENY_LIST`". | CLAUDE.md rule 2: the deny-list lives **once**, in `scripts/lib/common.sh`. An environment variable that an operator forgets would silently empty the live guard. | The list stays in `common.sh`, keyed by project: the shared project's list applies when `PROJECT_ID` is the shared project, and it is empty for any other project. The engine never sources `common.sh` (design §7) and reads its deny-list (empty) from the install state. Lane DAYONE-DESAGA-2. |
-| R5 | §7: Kubernetes files hold `saga.xyz` literals to render per project. | Almost all are **label and annotation keys** (`swarm.saga.xyz/tenant`, `kubernetes/namespaces/tenant-namespace.yaml:62-64`; `WORKSPACE_LABEL = "swarm.saga.xyz/workspace"`, `kubernetes/render.py:935`). Renaming a key breaks every live object and admission policy that matches it. The deployment literals are `--project default="saga-agents-staging"` (`kubernetes/render.py:880`) and `apply.sh`'s defaults. | Keys stay (open question 2). Lane DAYONE-K8S-1 removes the project defaults. The no-live-literal test exempts the `swarm.saga.xyz/` key prefix by name. |
+| R4 | §7: `SHARED_DENY_LIST` "is read from `SWARM_SHARED_DENY_LIST`". | CLAUDE.md rule 2: the deny-list lives **once**, in `scripts/lib/common.sh`. An environment variable that an operator forgets would silently empty the live guard. | The list stays in `common.sh`, keyed by project: the shared project's list applies when `PROJECT_ID` is the shared project, and it is empty for any other project. The engine never sources `common.sh` (design §7) and reads its deny-list (empty) from the install state. Lane DAYONE-DEBRAND-2. |
+| R5 | §7: Kubernetes files hold `example.com` literals to render per project. | Almost all are **label and annotation keys** (`swarm.example.com/tenant`, `kubernetes/namespaces/tenant-namespace.yaml:62-64`; `WORKSPACE_LABEL = "swarm.example.com/workspace"`, `kubernetes/render.py:935`). Renaming a key breaks every live object and admission policy that matches it. The deployment literals are the `--project` flag's default `"example-project"` (`kubernetes/render.py:880`) and `apply.sh`'s defaults. | Keys stay (open question 2). Lane DAYONE-K8S-1 removes the project defaults. The no-live-literal test exempts the `swarm.example.com/` key prefix by name. |
 | R6 | §6.1: one wheel, "the engine + the swarm/sc CLI". | §2.1 keeps the Google clients out of the plugin bridge. A single wheel would pull them into every teammate's bridge. | Two wheels per release: `swarm_mcp-<V>` (bridge, `sc`, `swarm` without the engine) and `swarm_install-<V>` (engine). `install.sh` installs both; the plugin's bridge source is the first only. |
 | R7 | §4 stage table: stage 13 sets `require_alert_channels` after stage 9-12. | D26: the CLI does stage 13 before the hand-off, and every infra apply after stage 7 is another wait. | The engine asks for the alert email in stage 0, writes the channel and `require_alert_channels = true` into infra pass 2 (stage 7). Stage 13 is a check: the channel exists, the flag is on, and a test notification is accepted. |
 | R8 | §9.1 step 5: infra pass 2 turns on the App switches. | Under D26 the App does not exist until the console's GitHub step, after the hand-off. | The CLI, waiting on the install record, sees the App land and runs **infra pass 3** (App ids and `enable_github_app`, `enable_forge_refresh`), then marks the console's self-check runnable; after the self-check it turns on the webhook and `enable_github_hooks` (pass 4, one switch). Section 5.5. |
@@ -36,15 +36,15 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 
 - **Runner:** `claude-code` (a SwarmCloud agent in `agent-runtime-base`). UI lanes are `claude-code`, then a `claude-code-browser` rendered review.
 - **Tests:** red first. The lane pushes the tests alone to the PR branch, CI shows them red, then the fix goes to `<branch>-fix` (CLAUDE.md "Lanes"). Unit tests run with no credentials and no emulator.
-- **Held:** a PR flagged `held: IAM`, `held: Terraform` or `held: workflow file` waits for BGD with its diff shown, and with a `terraform plan` summary when it is Terraform (BGD runs the plan; CI never applies a held change). A workflow change is written as `$SWARM_ARTIFACTS_DIR/workflow-lines.patch` and quoted in the PR body.
+- **Held:** a PR flagged `held: IAM`, `held: Terraform` or `held: workflow file` waits for the owner with its diff shown, and with a `terraform plan` summary when it is Terraform (the owner runs the plan; CI never applies a held change). A workflow change is written as `$SWARM_ARTIFACTS_DIR/workflow-lines.patch` and quoted in the PR body.
 - **Before finishing:** the lane's named tests, `scripts/related-tests.sh` as CLAUDE.md says, `scripts/changed-guards.sh` once, `scripts/publish-scan.sh`.
 - **The manifest is split by lane (review finding 1).** `install/manifest.yaml` (MANIFEST-1) holds the draft's entries; every lane that adds, changes or removes a collectable item (a Terraform resource or data source, a `bool` variable, an environment variable a service reads, a Scheduler job, an image, a Kubernetes object) owns its own fragment `install/manifest.d/<lane>.yaml` (new), named in its territory, and adds the entries for what it creates in the same PR. The loader merges the fragments; a fragment may restate a base entry by id with `replace: true` (how TF-2 rewrites `iam-binding.github-hooks-allusers`); two fragments restating one id fail. So the completeness test is green after every merge, in either direction, and no two lanes share a manifest file.
-- **The base manifest comes first (review-fix finding 3).** The fragment format, the loader and the completeness test exist only once MANIFEST-1 is merged, so every lane that writes a fragment depends on DAYONE-MANIFEST-1 (directly or through a lane that does) and is in wave 1 or later. In wave 0 only MANIFEST-1 writes the manifest, and the other eight wave-0 lanes add no collectable item: DESAGA-1 keeps the same 15 Dockerfiles and only empties `ARG` defaults; DESAGA-2 and K8S-1 change scripts and rendering, not the API list, `POLICY_FILES` or `TENANT_FILES`; DESAGA-3 keys the deny-list by the project id swarm-api already reads (`settings.py:896`), so it adds no environment variable; DESAGA-4 adds no `VITE_*` name; TF-1 adds only non-`bool` variables and removes a default; BOOT-1 adds an `import` block (an `ignored:` type) and one argument of an existing job; RELHOME-1 is a script outside every collector. `install/manifest.yaml` therefore carries **every entry whose reference already exists on `main` when MANIFEST-1 merges**: the draft's 433, every section 1.8 addition with no collectable reference, and the two additions whose code is already in the tree (`declared-value.monitoring-excluded-tenants`, `terraform/modules/monitoring/variables.tf:105-115`; `switch.tenant_job_vpc_egress`, `terraform/infra/tenant_job_vpc.tf:31`). A `+` entry whose code a later lane creates is added by that lane's fragment, and only then.
+- **The base manifest comes first (review-fix finding 3).** The fragment format, the loader and the completeness test exist only once MANIFEST-1 is merged, so every lane that writes a fragment depends on DAYONE-MANIFEST-1 (directly or through a lane that does) and is in wave 1 or later. In wave 0 only MANIFEST-1 writes the manifest, and the other eight wave-0 lanes add no collectable item: DEBRAND-1 keeps the same 15 Dockerfiles and only empties `ARG` defaults; DEBRAND-2 and K8S-1 change scripts and rendering, not the API list, `POLICY_FILES` or `TENANT_FILES`; DEBRAND-3 keys the deny-list by the project id swarm-api already reads (`settings.py:896`), so it adds no environment variable; DEBRAND-4 adds no `VITE_*` name; TF-1 adds only non-`bool` variables and removes a default; BOOT-1 adds an `import` block (an `ignored:` type) and one argument of an existing job; RELHOME-1 is a script outside every collector. `install/manifest.yaml` therefore carries **every entry whose reference already exists on `main` when MANIFEST-1 merges**: the draft's 433, every section 1.8 addition with no collectable reference, and the two additions whose code is already in the tree (`declared-value.monitoring-excluded-tenants`, `terraform/modules/monitoring/variables.tf:105-115`; `switch.tenant_job_vpc_egress`, `terraform/infra/tenant_job_vpc.tf:31`). A `+` entry whose code a later lane creates is added by that lane's fragment, and only then.
 - **New Python package:** `apps/swarm-install` (Q5). Its deps (Google client libraries, `pydantic`, `pyyaml`) are added once, by DAYONE-MANIFEST-1, so no later lane touches `pyproject.toml` or `uv.lock`.
 - **Step and verb registries are discovered**, never listed: `swarm_install.steps` and `swarm_install.verbs` are packages scanned with `pkgutil.iter_modules`, so each lane adds its own module and no two lanes edit a shared registry file.
 - **Manifest ids** below are the draft's ids; `+` marks an entry this plan adds (section 1.8).
 
-### 1.1 Wave 0: foundations, the de-Saga sweep and the held Terraform groundwork (9 lanes)
+### 1.1 Wave 0: foundations, the debranding sweep and the held Terraform groundwork (9 lanes)
 
 **DAYONE-MANIFEST-1** — The manifest gets its home, its typed model and the test that fails on an unlisted dependency.
 - Territory: `install/manifest.yaml` (new), `apps/swarm-install/pyproject.toml` (new), `apps/swarm-install/swarm_install/__init__.py` (new), `apps/swarm-install/swarm_install/manifest.py` (new), `tests/unit/install/__init__.py` (new), `tests/unit/install/test_manifest_complete.py` (new), `tests/unit/install/test_manifest_counts.py` (new), `pyproject.toml`, `uv.lock`.
@@ -53,38 +53,38 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 - Flags: none. Runner: claude-code. Estimate: **$35**.
 - CI green proves: every Terraform resource and data source, API, service environment variable, secret id, Scheduler job, image, Kubernetes object and switch in the tree is listed or ignored with a reason, and the counts in the header are true.
 
-**DAYONE-DESAGA-1** — The 15 Dockerfiles build in any project.
+**DAYONE-DEBRAND-1** — The 15 Dockerfiles build in any project.
 - Territory: `apps/swarm-egress/Dockerfile`, `apps/swarm-github-hooks/Dockerfile`, `apps/swarm-graph/Dockerfile`, `apps/swarm-live/Dockerfile`, `apps/swarm-typesafe-fwd/Dockerfile`, `images/agent-runtime-base/Dockerfile`, `images/agent-runtime-browser/Dockerfile`, `images/agent-runtime-indexer/Dockerfile`, `images/swarm-api/Dockerfile`, `images/swarm-quota-broker/Dockerfile`, `images/swarm-reconciler/Dockerfile`, `images/swarm-scheduler/Dockerfile`, `images/swarm-ui/Dockerfile`, `images/swarm-verify/Dockerfile`, `images/workspace-apply/Dockerfile`, `scripts/lib/build-mirror.sh`, `scripts/build-images.sh`, `tests/unit/scripts/test_build_mirror.py`.
 - depends_on: none. Manifest: `declared-value.dockerfile-mirror-hardcoding`, `registry.mirror-dockerhub`, `registry.mirror-ghcr`, `bucket.build-mirror`.
-- Red first: `test_build_mirror.py::test_no_dockerfile_names_a_project` asserts no tracked Dockerfile contains `saga-agents-staging` or `swarm-mirror-` and every `ARG MIRROR_*` default is empty; the existing lines 169-172 change with it (design §7).
+- Red first: `test_build_mirror.py::test_no_dockerfile_names_a_project` asserts no tracked Dockerfile contains `example-project` or `swarm-mirror-` and every `ARG MIRROR_*` default is empty; the existing lines 169-172 change with it (design §7).
 - Flags: none (no workflow file; `build-images.sh` passes the live mirror explicitly so the live build is unchanged). Estimate: **$15**.
 - CI green proves: the Dockerfiles carry no project; the live build still resolves its mirror through `build-images.sh`.
 
-**DAYONE-DESAGA-2** — Scripts stop defaulting to the live project; the deny-list is keyed by project (R4).
+**DAYONE-DEBRAND-2** — Scripts stop defaulting to the live project; the deny-list is keyed by project (R4).
 - Territory: `scripts/lib/common.sh`, `scripts/prerequisites.sh`, `scripts/lib/dev.sh`, `scripts/register-tenant.sh`, `.env.example`, `tests/unit/scripts/test_common_defaults.py` (new).
 - depends_on: none. Manifest: `other.shared-project-literal-in-both-envs`, `declared-value.project_id`, `local-tool.terraform` (pin), `local-tool.kubectl`.
 - Red first: `test_common_defaults.py::test_unset_project_is_an_error` (sourcing `common.sh` with `PROJECT_ID` unset exits non-zero, today it defaults); `::test_deny_list_empty_for_other_project` and `::test_deny_list_full_for_shared_project` (the second passes today and must keep passing: the guard never weakens).
 - Flags: **held: IAM** (review finding 15: `common.sh` holds the deny-list, and `register-tenant.sh` runs inside `swarm-workspace-apply` as the deployer with project-wide account-IAM power). Estimate: **$15**.
 - CI green proves: no script silently targets the live project; the live deny-list is unchanged for the shared project.
 
-**DAYONE-DESAGA-3** — Service code stops carrying live literals at runtime.
+**DAYONE-DEBRAND-3** — Service code stops carrying live literals at runtime.
 - Territory: `apps/swarm-api/swarm_api/issueruns.py`, `apps/swarm-api/swarm_api/platform_secrets.py`, `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/swarm_api/service.py`, `apps/swarm-api/swarm_api/qatargets.py`, `apps/swarm-api/swarm_api/judgment.py`, `apps/swarm-api/swarm_api/forge_installation.py`, `apps/quota-broker/quota_broker/credentials.py`, `apps/quota-broker/quota_broker/publishledger.py`, `apps/quota-broker/quota_broker/secretstore.py`, `apps/reconciler/reconciler/backends.py`, `apps/reconciler/reconciler/checkpoints.py`, `apps/reconciler/reconciler/detect.py`, `apps/scheduler/scheduler/judgment.py`, `apps/scheduler/scheduler/on_step_failure_audit.py`, `apps/swarm-live/swarm_live/recorder.py`, `tests/unit/scripts/test_no_live_literals.py` (new).
 - depends_on: none. Manifest: lesson 5's rule; `other.allowed-users-literal` (its swarm-api half).
-- Red first: `test_no_live_literals.py::test_no_runtime_literal` walks every `ast.Constant` string under `apps/*/` (tests, comments and docstrings excluded; `apps/common` excluded because it is frozen, section 4; `apps/swarm-mcp` and `apps/swarm-ui` excluded because DAYONE-PLUGIN-1 and DAYONE-DESAGA-4 own them) and fails on `saga-agents-staging`, `saga.xyz` (except the `swarm.saga.xyz/` key prefix, R5), `bogdan-alexandrescu`, `taile0bda9`. It lists the appendix-A lines that are runtime today.
+- Red first: `test_no_live_literals.py::test_no_runtime_literal` walks every `ast.Constant` string under `apps/*/` (tests, comments and docstrings excluded; `apps/common` excluded because it is frozen, section 4; `apps/swarm-mcp` and `apps/swarm-ui` excluded because DAYONE-PLUGIN-1 and DAYONE-DEBRAND-4 own them) and fails on `example-project`, `example.com` (except the `swarm.example.com/` key prefix, R5), `example-org`, `example-tailnet`. It lists the appendix-A lines that are runtime today.
 - Flags: none. The issueruns deny-list (design §7, `issueruns.py:1264-1270`) reads the same project-keyed list as R4, keyed by the project id swarm-api already reads (`settings.py:896`), so the lane adds no environment variable and needs no manifest fragment (review-fix finding 3). Estimate: **$20**.
 - CI green proves: no service carries a live default; a comment may still mention history.
 
-**DAYONE-DESAGA-4** — The console stops naming the live repository as a default. `UI (rendered review)`.
+**DAYONE-DEBRAND-4** — The console stops naming the live repository as a default. `UI (rendered review)`.
 - Territory (3 UI files): `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/IssueSubmit.tsx`, `apps/swarm-ui/src/styles/intake.css`; test `apps/swarm-ui/src/__tests__/noLiveRepository.test.ts` (new).
 - depends_on: none. Manifest: lesson 5.
-- Red first: `noLiveRepository.test.ts` reads every file under `src/` (tests excluded) and fails on `bogdan-alexandrescu` (`api.ts:555`, `:587`, `:4786`, `:5064`, `:5332`; `IssueSubmit.tsx:442`; `intake.css:311`).
+- Red first: `noLiveRepository.test.ts` reads every file under `src/` (tests excluded) and fails on `example-org` (`api.ts:555`, `:587`, `:4786`, `:5064`, `:5332`; `IssueSubmit.tsx:442`; `intake.css:311`).
 - Runner: claude-code, then claude-code-browser review of the intake form. Estimate: **$8**.
 - CI green proves: no UI default points a new company at another org's repository.
 
 **DAYONE-K8S-1** — Kubernetes rendering takes the project and the subjects from its caller, never a default.
 - Territory: `kubernetes/render.py`, `kubernetes/apply.sh`, `tests/unit/scripts/test_k8s_render_project.py` (new).
 - depends_on: none. Manifest: `cluster-policy.*` (9), `rbac.dispatcher-role`, `rbac.verify-role`, `rbac.worker-role`, `rbac.provisioner-clusterrole`, `namespace-object.tenant-resourcequota`, `cluster.swarm-system-namespace`.
-- Red first: `test_k8s_render_project.py::test_project_is_required` (`render.py namespaces` and `rbac` with no `--project` exit 2; today they default, `render.py:880`); `::test_subjects_carry_unique_id` (every RoleBinding subject is rendered with both email and the numeric uniqueId passed in, lesson 29); `::test_quota_from_tenant_record` (a namespace's ResourceQuota is rendered from the tenant record's values passed in, never `render.py`'s default, #2039).
+- Red first: `test_k8s_render_project.py::test_project_is_required` (`render.py namespaces` and `rbac` with no `--project` exit 2; today they default, `render.py:880`); `::test_subjects_carry_unique_id` (every RoleBinding subject is rendered with both email and the numeric uniqueId passed in, lesson 29); `::test_quota_from_tenant_record` (a namespace's ResourceQuota is rendered from the tenant record's values passed in, never `render.py`'s default).
 - `--project` is required only by the subcommands that render a project-bearing object (namespaces, RBAC, swarm-system); `render.py policies` keeps working with no `--project`, as `.github/workflows/security.yml:235` and `Makefile:343` call it, so neither file changes (review finding 14); `::test_policies_unchanged_without_project` runs exactly that call and asserts its output names no project.
 - Flags: none. `apply.sh` refuses an unset project (design §7). Estimate: **$20**.
 - CI green proves: no Kubernetes object can be rendered for the wrong project or with a default quota.
@@ -92,9 +92,9 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 **DAYONE-TF-1** — Infra and bootstrap literals become inputs, both roots pin Terraform, and the declared-value cycle goes. `held: Terraform`.
 - Territory: `terraform/infra/main.tf`, `terraform/infra/locals.tf`, `terraform/infra/variables.tf`, `terraform/infra/tailscale.tf`, `terraform/infra/child_tasks.tf`, `terraform/infra/versions.tf`, `terraform/infra/custom_roles_moved_to_bootstrap.tf`, `terraform/bootstrap/versions.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/variables.tf`, `tests/unit/scripts/test_terraform_install_inputs.py` (new). No fragment: TF-1 adds no collectable item (its new variables are strings and lists, not `bool`), and removing a default leaves `declared-value.monitoring-excluded-tenants`'s reference in place; MANIFEST-1 carries that entry (review-fix finding 3).
 - depends_on: none. Manifest: `other.allowed-users-literal`, `other.moved-block-project-literal`, `addon.tailscale-egress-target`, `declared-value.frontend_iap_audiences`, `declared-value.quota_broker_url`, `declared-value.frontend_iap_backends`, `declared-value.deployer_storage_buckets_exact`, `local-tool.terraform`, `+declared-value.monitoring-excluded-tenants`.
-- Changes: `ALLOWED_USERS` from a variable (`locals.tf:1012-1015`); the tailnet host a variable with no default (`tailscale.tf:84`); `required_version = "~> 1.16.2"` in both roots (Q8); remove `module.cloud_run` from the frontend's `depends_on` (`main.tf:698`) and compute `IAP_AUDIENCES` from `module.frontend[0].iap_audiences` (`locals.tf:870`); compute `quota_broker_url` and `swarm_api_url` from the project number (design §5.2); `deployer_storage_buckets_exact` defaults to `[]`; `frontend_iap_backends` empty in pass 1; the monitoring excluded-tenants default removed (R9). The `moved` block in `custom_roles_moved_to_bootstrap.tf:115` is deleted **only if** BGD's live `terraform plan` shows it already applied (no pending move); otherwise it stays and the lane says so.
+- Changes: `ALLOWED_USERS` from a variable (`locals.tf:1012-1015`); the tailnet host a variable with no default (`tailscale.tf:84`); `required_version = "~> 1.16.2"` in both roots (Q8); remove `module.cloud_run` from the frontend's `depends_on` (`main.tf:698`) and compute `IAP_AUDIENCES` from `module.frontend[0].iap_audiences` (`locals.tf:870`); compute `quota_broker_url` and `swarm_api_url` from the project number (design §5.2); `deployer_storage_buckets_exact` defaults to `[]`; `frontend_iap_backends` empty in pass 1; the monitoring excluded-tenants default removed (R9). The `moved` block in `custom_roles_moved_to_bootstrap.tf:115` is deleted **only if** the owner's live `terraform plan` shows it already applied (no pending move); otherwise it stays and the lane says so.
 - Red first: `test_terraform_install_inputs.py` (text-level, offline): `::test_frontend_depends_only_on_services` (fails on `main.tf:698` today), `::test_iap_audiences_computed`, `::test_broker_url_computed`, `::test_required_version_pinned` (both roots), `::test_no_live_default` (no `default` in either root's variables names the live project, domain or tailnet).
-- Flags: **held: Terraform**. BGD runs `scripts/plan.sh` for the live environments; the plan must show **zero destroys and zero replacements** (the `IAP_AUDIENCES` value must be identical to today's tfvars value). Estimate: **$30**.
+- Flags: **held: Terraform**. The owner runs `scripts/plan.sh` for the live environments; the plan must show **zero destroys and zero replacements** (the `IAP_AUDIENCES` value must be identical to today's tfvars value). Estimate: **$30**.
 - CI green proves: the module carries no live default and no hand-copied value; `terraform validate` and `fmt -check` pass (the terraform workflow). The NEG-before-service fact (design R1) is **to be proven** on the D22 test project in P3's pre-release run (section 10).
 
 **DAYONE-BOOT-1** — Bootstrap becomes install-safe: the state bucket imports, an install may declare no Terraform tenants, workspace-apply trusts the project's own key. `held: Terraform`, `held: IAM`.
@@ -103,15 +103,15 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 - Changes: an unconditional `import` block for `google_storage_bucket.state` (design §5.5); the tenants precondition (`deployer_service_accounts.tf:100-103`) conditional on `var.infra_tenants_tfvars != ""` (design §5.6); `entry.py`'s `SIGNING_KEYS` map is replaced by the `--spec-signing-key=` argument of the fixed command (R1), which `workspace_deployer.tf` renders from the module's own key, and which `entry.py` validates against `^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/keyRings/[A-Za-z0-9_-]+/cryptoKeys/step-spec$`.
 - Red first: `test_workspace_apply_entry.py::test_signing_key_from_fixed_command` (a project other than the live one gets its key trusted; today `entry.py:183-190` trusts none) and `::test_signing_key_not_from_environment` (an env var carrying a key changes nothing); `test_bootstrap_install_safe.py::test_state_bucket_imported` and `::test_empty_tenants_admitted_for_installs`.
 - Flags: **held: Terraform, held: IAM** (the job spec is IAM-adjacent: it decides whose signatures grant). The live plan must show the job's command gaining one argument and nothing else. Estimate: **$25**.
-- CI green proves: a fresh project can create a team workspace (issue #2688's first finding), and bootstrap state can never be created twice.
+- CI green proves: a fresh project can create a team workspace (the Day One install program's first finding), and bootstrap state can never be created twice.
 
 **DAYONE-RELHOME-1** — A script stands up the release home's registry, bucket and signing key in project `swarmcloud-prod`, idempotently. `held: IAM`.
 - Territory: `scripts/release-home.sh` (new), `tests/unit/scripts/test_release_home.py` (new).
 - depends_on: none. Manifest: `+other.release-home`, `other.release-bundle`.
-- What it does (BGD runs it; CLD does not create projects, D23): Artifact Registry repo `swarmcloud` (us, Docker), bucket `gs://swarmcloud` (uniform access, versioning), KMS key ring `swarmcloud-release` and an asymmetric P-256 key for cosign, each labelled `managed-by=swarm-release`; then, **only after** the Q4 org-policy exception exists (it checks the effective policy first), `allUsers` `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repo. The public grant needs a typed confirmation of the project id that ignores `SWARM_ASSUME_YES`.
+- What it does (the owner runs it; CLD does not create projects, D23): Artifact Registry repo `swarmcloud` (us, Docker), bucket `gs://<release-bucket>` (uniform access, versioning), KMS key ring `swarmcloud-release` and an asymmetric P-256 key for cosign, each labelled `managed-by=swarm-release`; then, **only after** the Q4 org-policy exception exists (it checks the effective policy first), `allUsers` `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repo. The public grant needs a typed confirmation of the project id that ignores `SWARM_ASSUME_YES`.
 - Red first: `test_release_home.py::test_dry_run_prints_every_call` (with a fake `gcloud` on `PATH`), `::test_public_grant_refused_without_exception`, `::test_public_grant_needs_typed_confirmation`, `::test_refuses_shared_project` (the deny-list guard), `::test_shellcheck_clean`.
 - Flags: **held: IAM** (public read on one project, Q4). Estimate: **$12**.
-- CI green proves: the script is idempotent and guarded; BGD's run proves the exception.
+- CI green proves: the script is idempotent and guarded; the owner's run proves the exception.
 
 ### 1.2 Wave 1: the engine core, the service-account migration, the discovery app, a runtime-configured console, the group mode (5 lanes)
 
@@ -124,8 +124,8 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 - CI green proves: the document's shape and that nothing private is served; serving through the load balancer is DAYONE-TF-2.
 
 **DAYONE-IDENTITY-1** — swarm-api reads groups through the Workspace admin role (Q2) with delegation as the fallback, and one unreadable group fails only its own members.
-- Territory: `apps/swarm-api/swarm_api/groups.py`, `apps/swarm-api/swarm_api/delegation.py`, `apps/swarm-api/swarm_api/settings.py` (↺: DESAGA-3 holds it in wave 0; `GROUPS_AUTH` is parsed in `ApiSettings.from_env`, `settings.py:905`), `install/manifest.d/identity-1.yaml` (new), `tests/unit/control_plane/test_groups_auth_mode.py` (new), `tests/unit/control_plane/test_groups_single_failure.py` (new).
-- depends_on: DAYONE-DESAGA-3 (shares `settings.py` across waves; review finding 7), DAYONE-MANIFEST-1 (its fragment; review-fix finding 3). Manifest: `+declared-value.groups_auth`, `workspace-delegation.groups-dwd`, `workspace-group.tenant-groups`, `workspace-group.cloud-identity-presence`, `+workspace-delegation.groups-reader-admin-role`.
+- Territory: `apps/swarm-api/swarm_api/groups.py`, `apps/swarm-api/swarm_api/delegation.py`, `apps/swarm-api/swarm_api/settings.py` (↺: DEBRAND-3 holds it in wave 0; `GROUPS_AUTH` is parsed in `ApiSettings.from_env`, `settings.py:905`), `install/manifest.d/identity-1.yaml` (new), `tests/unit/control_plane/test_groups_auth_mode.py` (new), `tests/unit/control_plane/test_groups_single_failure.py` (new).
+- depends_on: DAYONE-DEBRAND-3 (shares `settings.py` across waves; review finding 7), DAYONE-MANIFEST-1 (its fragment; review-fix finding 3). Manifest: `+declared-value.groups_auth`, `workspace-delegation.groups-dwd`, `workspace-group.tenant-groups`, `workspace-group.cloud-identity-presence`, `+workspace-delegation.groups-reader-admin-role`.
 - Red first: `test_groups_auth_mode.py::test_admin_role_skips_delegation` (`GROUPS_AUTH=admin_role` calls `checkTransitiveMembership` with swarm-api's own credentials, never `delegation.delegate()`; fails today: there is no mode); `::test_unknown_mode_refused_at_start`. `test_groups_single_failure.py::test_one_unreadable_group_fails_only_its_members` (fails today: every request 503s, `docs/multi-tenancy.md:167-171`); `::test_unreadable_registry_still_503s` (kept).
 - Flags: none (the env var is set by DAYONE-TF-2). Estimate: **$20**.
 - CI green proves: the mode switch and the scoped failure, with fakes. The admin-role path against the real Groups API is **to be proven in P4** (design §8); delegation stays the fallback.
@@ -142,12 +142,12 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 - depends_on: DAYONE-TF-1 (shares `terraform/bootstrap/variables.tf` across waves), DAYONE-BOOT-1, DAYONE-MANIFEST-1 (its fragment; review-fix finding 3). Manifest: `sa.swarm-api`, `sa.swarm-quota-broker`, `sa.swarm-reconciler`, `sa.swarm-rollup-sweeper`, `sa.swarm-schedule-tick`, `sa.swarm-scheduler`, `sa.swarm-tick`, `sa.swarm-verify`, `switch.grant_broker_secret_lister`, `switch.swarm_workers_log_view_exists`, `iam-binding.swarm-api-spec-signer`, `iam-binding.verify-cluster-viewer`, `iam-binding.broker-secret-lister`, `+sa.swarm-discovery`, `+sa.swarm-doctor`.
 - Changes: section 8. `removed { from = ...; lifecycle { destroy = false } }` in infra for `module.iam.google_service_account.platform`, `.tick`, `google_service_account.verify`, `module.scheduler.google_service_account.schedule_tick`, `.rollup_sweeper`; `google_service_account` resources in bootstrap with `import {}` blocks gated by `adopt_from_infra_states` exactly as `terraform/bootstrap/platform_roles.tf:425-437` does; infra reads the accounts as `data "google_service_account"`; the four "later" booleans go.
 - Red first: `test_sa_migration_blocks.py::test_every_platform_sa_has_removed_destroy_false`, `::test_every_bootstrap_sa_has_gated_import`, `::test_infra_declares_no_platform_sa` (fails today on `terraform/modules/iam/service_accounts.tf:34`, `:48`, `terraform/infra/verify.tf:38`, `terraform/modules/scheduler/main.tf:236`, `terraform/modules/scheduler/jobs.tf:155`).
-- Flags: **held: Terraform, held: IAM**. **Merge gate:** BGD's live plans (bootstrap, then infra dev and prod) show **0 to destroy** and every service account as "import" or "forget"; any destroy blocks the merge (Q7). Estimate: **$40**.
-- CI green proves: the blocks are present and no root declares an account twice; the zero-destroy live plan is BGD's gate.
+- Flags: **held: Terraform, held: IAM**. **Merge gate:** The owner's live plans (bootstrap, then infra dev and prod) show **0 to destroy** and every service account as "import" or "forget"; any destroy blocks the merge (Q7). Estimate: **$40**.
+- CI green proves: the blocks are present and no root declares an account twice; the zero-destroy live plan is the owner's gate.
 
 **DAYONE-UIENV-1** — The console reads its environment at runtime, so one image serves every deployment (brief §9). `UI (rendered review)`.
 - Territory (3 UI files): `apps/swarm-ui/src/Brand.tsx`, `apps/swarm-ui/src/vite-env.d.ts`, `apps/swarm-ui/src/runtimeConfig.ts` (new); plus `images/swarm-ui/nginx.conf`, `images/swarm-ui/Dockerfile` (an entrypoint that writes `/config.json` from the container's environment); test `apps/swarm-ui/src/__tests__/runtimeConfig.test.ts` (new).
-- depends_on: DAYONE-DESAGA-1 (shares `images/swarm-ui/Dockerfile` across waves). Manifest: `image.swarm-ui`.
+- depends_on: DAYONE-DEBRAND-1 (shares `images/swarm-ui/Dockerfile` across waves). Manifest: `image.swarm-ui`.
 - Red first: `runtimeConfig.test.ts` "Brand reads the environment from /config.json, not import.meta.env.VITE_SWARM_ENV" (fails today: `Brand.tsx:34`).
 - Runner: claude-code, then claude-code-browser review of the brand strip in both environments. Estimate: **$15**.
 - CI green proves: no environment is compiled into the console image.
@@ -165,9 +165,9 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 **DAYONE-TF-2** — The front door serves discovery, the GitHub receiver needs no `allUsers`, swarm-api can store the App's secrets, and the hourly doctor exists. `held: Terraform`, `held: IAM`.
 - Territory: `terraform/infra/discovery.tf` (new), `terraform/infra/doctor.tf` (new), `terraform/infra/github_hooks.tf`, `terraform/infra/locals.tf`, `terraform/infra/variables.tf`, `terraform/modules/frontend/main.tf`, `terraform/modules/frontend/variables.tf`, `terraform/modules/frontend/outputs.tf`, `terraform/modules/cloud_run/main.tf`, `terraform/modules/cloud_run/variables.tf`, `terraform/bootstrap/github_app_setup.tf` (new), `terraform/bootstrap/doctor_roles.tf` (new), `terraform/infra/main.tf` (↺: TF-1 wave 0; the `module "frontend"` block at `main.tf:683-699` gains the discovery backend's arguments, review finding 6), `terraform/modules/secret_manager/main.tf`, `terraform/infra/acceptance_fixture.tf`, `terraform/environments/dev/dev.tfvars`, `terraform/environments/prod/prod.tfvars`, `install/manifest.d/tf-2.yaml` (new), `tests/unit/scripts/test_terraform_day_one_edge.py` (new).
 - depends_on: DAYONE-TF-1, DAYONE-BOOT-2 (the discovery and doctor accounts), DAYONE-DISCOVERY-1, DAYONE-IDENTITY-1. Manifest: `other.discovery-endpoint`, `+cloud-run-service.swarm-discovery`, `iam-binding.github-hooks-allusers` (corrected, section 1.8), `other.url-map`, `+iam-binding.swarm-api-github-app-secret-writer`, `+cloud-run-job.swarm-doctor`, `+sched.doctor-hourly`, `+iam-binding.doctor-read-only`, `+monitoring.doctor-findings-alert`, `+switch.enable_console_app_setup`, `+switch.enable_scheduled_doctor`, `+switch.enable_acceptance_fixture`, `+declared-value.groups_auth`, `+iam-binding.deployer-iap-api-accessor` (review-fix finding 2).
-- Changes: `roles/iap.httpsResourceAccessor` for `swarm-tf-deployer` on the API backend's IAP only (never the UI backend), so the engine can call swarm-api's two engine routes (section 5.3); `swarm-discovery` (the swarm-api image, `command` = the discovery factory, ingress `internal-and-cloud-load-balancing`, `invoker_iam_disabled = true`, runs as `swarm-discovery` with no roles unless `discovery_serves_client_secret` is true, when it holds `secretAccessor` on `swarm-iap-desktop-client-secret` alone); a third backend without IAP and `path_rule { paths = ["/.well-known/swarmcloud"] }` beside `terraform/modules/frontend/main.tf:287-288`; `github_hooks_public` (`github_hooks.tf:314-320`) replaced by `invoker_iam_disabled = true` (Q3); `GROUPS_AUTH` rendered for swarm-api (default `delegation`, so the live deployment is unchanged until BGD flips it); under `enable_console_app_setup` (new bool, default false; the engine sets it in infra pass 2, review finding 2) the three `swarm-github-app-*` **containers** are created independently of `enable_github_app` and `enable_github_hooks` (today they exist only under those switches: `terraform/modules/secret_manager/main.tf:249-255`, `terraform/infra/github_hooks.tf:136-137`), with `secretmanager.versions.add` and `secretAccessor` for swarm-api on exactly those three, conditioned on their names; `acceptance_fixture.tf`'s bucket and its `allUsers` reader gated by `count = var.enable_acceptance_fixture ? 1 : 0` (new bool, default false, an `addon:ci` switch; `moved` blocks to index `[0]`; both live tfvars set it `true`, so the live plan shows no change; review finding 4); `swarm-doctor`'s email added to swarm-api's `PLATFORM_SERVICE_ACCOUNTS` (lesson 38's cause, review finding 12); the `swarm-doctor` Cloud Run job (the swarm-verify image, VPC egress as lesson 35), an hourly Scheduler job, the doctor's read-only roles (`roles/viewer`, `roles/iam.securityReviewer`, `roles/secretmanager.viewer`, `roles/container.clusterViewer`, `roles/policytroubleshooter.user`; it can invoke swarm-api to post findings and nothing else), and an alert on its finding count, the job and its schedule both gated by `enable_scheduled_doctor` (new bool, default false), so nothing runs hourly before DOCTOR-1's code ships; the engine turns it on (DOCTOR-1).
+- Changes: `roles/iap.httpsResourceAccessor` for `swarm-tf-deployer` on the API backend's IAP only (never the UI backend), so the engine can call swarm-api's two engine routes (section 5.3); `swarm-discovery` (the swarm-api image, `command` = the discovery factory, ingress `internal-and-cloud-load-balancing`, `invoker_iam_disabled = true`, runs as `swarm-discovery` with no roles unless `discovery_serves_client_secret` is true, when it holds `secretAccessor` on `swarm-iap-desktop-client-secret` alone); a third backend without IAP and `path_rule { paths = ["/.well-known/swarmcloud"] }` beside `terraform/modules/frontend/main.tf:287-288`; `github_hooks_public` (`github_hooks.tf:314-320`) replaced by `invoker_iam_disabled = true` (Q3); `GROUPS_AUTH` rendered for swarm-api (default `delegation`, so the live deployment is unchanged until the owner flips it); under `enable_console_app_setup` (new bool, default false; the engine sets it in infra pass 2, review finding 2) the three `swarm-github-app-*` **containers** are created independently of `enable_github_app` and `enable_github_hooks` (today they exist only under those switches: `terraform/modules/secret_manager/main.tf:249-255`, `terraform/infra/github_hooks.tf:136-137`), with `secretmanager.versions.add` and `secretAccessor` for swarm-api on exactly those three, conditioned on their names; `acceptance_fixture.tf`'s bucket and its `allUsers` reader gated by `count = var.enable_acceptance_fixture ? 1 : 0` (new bool, default false, an `addon:ci` switch; `moved` blocks to index `[0]`; both live tfvars set it `true`, so the live plan shows no change; review finding 4); `swarm-doctor`'s email added to swarm-api's `PLATFORM_SERVICE_ACCOUNTS` (lesson 38's cause, review finding 12); the `swarm-doctor` Cloud Run job (the swarm-verify image, VPC egress as lesson 35), an hourly Scheduler job, the doctor's read-only roles (`roles/viewer`, `roles/iam.securityReviewer`, `roles/secretmanager.viewer`, `roles/container.clusterViewer`, `roles/policytroubleshooter.user`; it can invoke swarm-api to post findings and nothing else), and an alert on its finding count, the job and its schedule both gated by `enable_scheduled_doctor` (new bool, default false), so nothing runs hourly before DOCTOR-1's code ships; the engine turns it on (DOCTOR-1).
 - Red first: `test_terraform_day_one_edge.py::test_no_allusers_binding_anywhere` (fails today on `github_hooks.tf:314`), `::test_discovery_path_rule_targets_non_iap_backend`, `::test_discovery_has_no_roles_by_default`, `::test_app_secret_writer_scoped_to_three_names`, `::test_app_secret_containers_exist_without_app_switches` (fails today), `::test_doctor_gated_off_by_default`, `::test_doctor_in_platform_service_accounts`, `::test_acceptance_fixture_off_by_default`, `::test_deployer_iap_accessor_on_api_backend_only` (review-fix finding 2), `::test_doctor_roles_are_read_only` (no role in the doctor's list holds a `.create`, `.update`, `.delete`, `.setIamPolicy` or `.add` permission, read from a checked-in list of each role's permissions).
-- Flags: **held: Terraform, held: IAM**. BGD's live plan: create-only (no change to existing services except swarm-api's one new env var and swarm-github-hooks' invoker setting). The org policy `run.managed.requireInvokerIam` is **to be proven** absent or excepted (design §9.2); if it is enforced, the fallback is option (b), one path to swarm-api, and the lane stops and asks. Estimate: **$45**.
+- Flags: **held: Terraform, held: IAM**. The owner's live plan: create-only (no change to existing services except swarm-api's one new env var and swarm-github-hooks' invoker setting). The org policy `run.managed.requireInvokerIam` is **to be proven** absent or excepted (design §9.2); if it is enforced, the fallback is option (b), one path to swarm-api, and the lane stops and asks. Estimate: **$45**.
 - CI green proves: the edge has no public binding and the doctor cannot write.
 
 **DAYONE-ENGINE-2** — Stages 0, 1 and 2: preflight, project foundations, edge and identity prerequisites.
@@ -203,28 +203,28 @@ Each row is a fact found in the code while planning. None changes a decision; ea
 
 **DAYONE-RELEASE-1** — The release is assembled, signed and published to the release home, and the plugin marketplace with it. `held: workflow file`.
 - Territory: `scripts/release/assemble.sh` (new), `scripts/release/publish.sh` (new), `scripts/release/marketplace.py` (new), `install/install.sh` (new), `install/compat.json` (new), `tests/unit/scripts/test_release_assemble.py` (new), `tests/unit/scripts/test_release_publish.py` (new), `tests/unit/scripts/test_marketplace.py` (new); workflow patch `$SWARM_ARTIFACTS_DIR/workflow-lines.patch` adding `.github/workflows/release-public.yml` (quoted in the PR body, pushed by the operator).
-- depends_on: DAYONE-RELHOME-1, DAYONE-MANIFEST-1, DAYONE-DESAGA-1, DAYONE-UIENV-1, DAYONE-PLUGIN-1. Manifest: `other.release-bundle`, `image.copy-to-company-registry`, `+other.release-home`, `+other.plugin-marketplace`, `+other.release-kubernetes-bundle`.
+- depends_on: DAYONE-RELHOME-1, DAYONE-MANIFEST-1, DAYONE-DEBRAND-1, DAYONE-UIENV-1, DAYONE-PLUGIN-1. Manifest: `other.release-bundle`, `image.copy-to-company-registry`, `+other.release-home`, `+other.plugin-marketplace`, `+other.release-kubernetes-bundle`.
 - Section 7 has the pipeline.
 - Red first: `test_release_assemble.py::test_module_has_no_tfvars_or_environments` (design §5.1), `::test_two_wheels` (R6), `::test_sha256sums_cover_every_file`, `::test_images_json_digests_only`, `::test_bundle_carries_kubernetes` (`kubernetes.tgz`: `render.py`, `policies/`, `swarm-system/`, `rbac/`, the tenant templates; stage 10, team add, upgrade and uninstall run from it with no checkout; review finding 3). `test_release_publish.py::test_publish_refuses_without_manual_test_record` (D22), `::test_channel_moved_only_by_promote`, `::test_cve_acceptances_have_expiry` (lesson 27). `test_marketplace.py::test_marketplace_names_plugin_sc_at_version`, `::test_plugin_bundle_carries_supported_deployment_range`.
 - Flags: **held: workflow file**. Estimate: **$30**.
 - CI green proves: the bundle's shape. The publish itself is a manual run (section 7.3).
 
 **DAYONE-ENGINE-3** — Stages 3 to 7, the hand-off wait and the App's switches after the console, stage 13 and READY: Terraform driven by the engine as the deployer.
-- Territory: `apps/swarm-install/swarm_install/terraform.py` (new), `apps/swarm-install/swarm_install/tfvars.py` (new), `apps/swarm-install/swarm_install/adopt.py` (new), `apps/swarm-install/swarm_install/steps/bootstrap.py` (new), `apps/swarm-install/swarm_install/steps/images.py` (new), `apps/swarm-install/swarm_install/steps/infra.py` (new), `apps/swarm-install/swarm_install/steps/secrets.py` (new), `apps/swarm-install/swarm_install/steps/github_switches.py` (new), `apps/swarm-install/swarm_install/steps/alerts.py` (new), `apps/swarm-install/swarm_install/steps/handoff.py` (new), `apps/swarm-install/swarm_install/tools.py` (new: pinned versions, SHA-256 and download of cosign and gcrane), `apps/swarm-install/swarm_install/release_key.pub` (new: the cosign public key of `swarmcloud-release/cosign`, which exists once BGD has run `scripts/release-home.sh`; a precondition of this lane's start), `tests/unit/install/test_tfvars.py` (new), `tests/unit/install/test_terraform_runner.py` (new), `tests/unit/install/test_images_step.py` (new), `tests/unit/install/test_switches.py` (new), `tests/unit/install/test_adopt.py` (new), `tests/unit/install/test_alerts_step.py` (new), `tests/unit/install/test_handoff.py` (new), `tests/unit/install/test_tools.py` (new).
-- depends_on: DAYONE-ENGINE-1, DAYONE-ENGINE-4 (stage 14, which the hand-off triggers), DAYONE-TF-1, DAYONE-BOOT-1, DAYONE-BOOT-2, DAYONE-TF-2, DAYONE-SETUP-API-1 (the hook route), DAYONE-RELHOME-1 **run by BGD** (the public key). Manifest: every stage 3-7 entry, stage 9's switches, stage 13's and 15's entries, `local-tool.cosign`, `local-tool.gcrane`, `+other.release-signing-public-key`, `+other.engine-terraform-rules`, `+switch.enable_console_app_setup`, `+switch.tenant_job_vpc_egress`, `+declared-value.groups_auth`.
+- Territory: `apps/swarm-install/swarm_install/terraform.py` (new), `apps/swarm-install/swarm_install/tfvars.py` (new), `apps/swarm-install/swarm_install/adopt.py` (new), `apps/swarm-install/swarm_install/steps/bootstrap.py` (new), `apps/swarm-install/swarm_install/steps/images.py` (new), `apps/swarm-install/swarm_install/steps/infra.py` (new), `apps/swarm-install/swarm_install/steps/secrets.py` (new), `apps/swarm-install/swarm_install/steps/github_switches.py` (new), `apps/swarm-install/swarm_install/steps/alerts.py` (new), `apps/swarm-install/swarm_install/steps/handoff.py` (new), `apps/swarm-install/swarm_install/tools.py` (new: pinned versions, SHA-256 and download of cosign and gcrane), `apps/swarm-install/swarm_install/release_key.pub` (new: the cosign public key of `swarmcloud-release/cosign`, which exists once the owner has run `scripts/release-home.sh`; a precondition of this lane's start), `tests/unit/install/test_tfvars.py` (new), `tests/unit/install/test_terraform_runner.py` (new), `tests/unit/install/test_images_step.py` (new), `tests/unit/install/test_switches.py` (new), `tests/unit/install/test_adopt.py` (new), `tests/unit/install/test_alerts_step.py` (new), `tests/unit/install/test_handoff.py` (new), `tests/unit/install/test_tools.py` (new).
+- depends_on: DAYONE-ENGINE-1, DAYONE-ENGINE-4 (stage 14, which the hand-off triggers), DAYONE-TF-1, DAYONE-BOOT-1, DAYONE-BOOT-2, DAYONE-TF-2, DAYONE-SETUP-API-1 (the hook route), DAYONE-RELHOME-1 **run by the owner** (the public key). Manifest: every stage 3-7 entry, stage 9's switches, stage 13's and 15's entries, `local-tool.cosign`, `local-tool.gcrane`, `+other.release-signing-public-key`, `+other.engine-terraform-rules`, `+switch.enable_console_app_setup`, `+switch.tenant_job_vpc_egress`, `+declared-value.groups_auth`.
 - Red first: `test_tfvars.py::test_generated_never_from_committed_tfvars` (lesson 5, design §5.1), `::test_no_dash_var_ever` (lesson 11), `::test_inputs_stored_in_state_bucket`, `::test_pass2_sets_console_app_setup` (review finding 2), `::test_groups_auth_admin_role_for_installs` (Q2; `delegation` only when the person chose the fallback at stage 8; review finding 8), `::test_tenant_job_vpc_egress_true` (lesson 35), `::test_traffic_latest_100` (lesson 28). `test_terraform_runner.py::test_every_apply_after_pass1_impersonates_deployer` (lessons 22, 23), `::test_plan_with_destroy_refused_without_typed_approval` (lesson 11), `::test_iam_replace_without_create_before_destroy_refused` (lesson 10), `::test_conditions_linted_before_apply` (lesson 10's limits), `::test_terraform_version_checked` (lesson 12), `::test_init_before_plan` (lesson 12), `::test_freshness_from_state_not_registry` (lesson 9), `::test_empty_state_refused_when_deployer_exists` (lesson 7), `::test_deployer_act_as_checked_before_apply` (lesson 23). `test_images_step.py::test_cosign_verified_before_copy`, `::test_copy_by_digest_only` (lesson 13), `::test_verified_with_pinned_release_key`. `test_tools.py::test_download_checked_against_pinned_sha256`. `test_alerts_step.py::test_alert_policies_after_metric_descriptor` (lesson 23). `test_switches.py::test_switch_true_only_with_enabled_version` (lesson 39), `::test_app_switches_after_console_app_lands` (R8), `::test_hooks_switch_after_self_check`, `::test_engine_never_reads_an_app_secret` (the webhook is activated through swarm-api's hook route; the engine holds no accessor on any `swarm-github-app-*` secret; review finding 10). `test_handoff.py::test_one_url_printed_once_console_answers` (B05), `::test_cli_lease_heartbeat_while_waiting`, `::test_app_landing_triggers_pass3_then_hook_then_pass4` (passes 3 and 4 are triggered steps of the wait, ENGINE-1's `test_wait_runs_steps_whose_trigger_lands`), `::test_console_finish_triggers_verify` (B09b), `::test_ready_only_after_verify_passes`. `test_adopt.py::test_kms_ring_imported_never_recreated`, `::test_custom_roles_undeleted_within_7_days`, `::test_brand_found_and_adopted`, `::test_desktop_client_adopted_or_asked`, `::test_github_app_reuse_or_new_name`, `::test_firestore_id_waited_with_countdown`, `::test_remains_rederived_by_probe_without_cache` (D24; review finding 18).
 - Flags: none (it runs Terraform at install time against the company's project; it changes no `.tf` file). Estimate: **$55**.
 - CI green proves: the four-apply sequence, key before switch, the hand-off (B05, B09b) and adoption on fakes; the real applies are P4.
 
 **DAYONE-TEAM-1** — `swarm team add <group>` and the console's team creation drive one path: swarm-api's team route, then `swarm-workspace-apply`.
-- Territory: `apps/swarm-install/swarm_install/verbs/team.py` (new), `apps/swarm-install/swarm_install/team.py` (new), `scripts/workspace-apply.sh`, `scripts/register-tenant.sh` (↺: DESAGA-2 wave 0; the namespace, ResourceQuota and `--providers` logic lives here, `register-tenant.sh:300-325`, `:1889`; review finding 15), `tests/unit/install/test_team_add.py` (new), `tests/unit/scripts/test_workspace_apply_namespace.py` (new).
+- Territory: `apps/swarm-install/swarm_install/verbs/team.py` (new), `apps/swarm-install/swarm_install/team.py` (new), `scripts/workspace-apply.sh`, `scripts/register-tenant.sh` (↺: DEBRAND-2 wave 0; the namespace, ResourceQuota and `--providers` logic lives here, `register-tenant.sh:300-325`, `:1889`; review finding 15), `tests/unit/install/test_team_add.py` (new), `tests/unit/scripts/test_workspace_apply_namespace.py` (new).
 - depends_on: DAYONE-SETUP-API-1, DAYONE-CLI-1, DAYONE-K8S-1, DAYONE-BOOT-1. Manifest: every stage 11 entry, `secret.swarm-tenant-git-u.value` (its `secret_entry` is the one-time link).
 - Red first: `test_team_add.py::test_group_probe_before_registration` (lesson 20), `::test_team_git_value_only_through_link` (prints the one-time link; never prompts in the terminal for a forge token, CLAUDE.md), `::test_ends_with_smoke_green`, `::test_smoke_waits_for_a_pool_account` (the smoke agent starts only once a pool account is owned by or lent to the team; for the first team, stage 12's accounts; the wait says so; review-fix finding 1). `test_workspace_apply_namespace.py::test_namespace_quota_from_tenant_record` (lesson 32), `::test_verify_keys_configmap_present` (lesson 31), `::test_add_provider_never_replaces` (lesson 40).
 - Flags: **held: IAM** (both scripts run inside `swarm-workspace-apply` as the deployer with account-IAM power). Estimate: **$30**.
 - CI green proves: a team ends with namespace, quota, verify-keys, worker identity, slots and a green smoke, on fakes.
 
 **DAYONE-SETUP-UI-1** — The Admin › Setup step panels, the GitHub App callback, the Health panel and the setup API client. `UI (rendered review)`. The starting point is P1-B's `variants.patch` (`AdminSetupMock.tsx`, `admin-setup-mock.css`; not in the tree: CLD attaches it to this lane's brief from task_201016d500db49fab184's artefacts), MOCK-HOOKs stripped.
-- Territory (3 UI files): `apps/swarm-ui/src/AdminSetupSteps.tsx` (new; also exports `GitHubAppCallback`, the `/admin/setup/github-app/callback` page that posts `{code, state}` to the conversion route), `apps/swarm-ui/src/AdminSetupHealth.tsx` (new), `apps/swarm-ui/src/api.ts` (↺: DESAGA-4 wave 0; the setup routes' client, review finding 16); tests `apps/swarm-ui/src/__tests__/AdminSetupSteps.test.tsx` (new), `apps/swarm-ui/src/__tests__/AdminSetupHealth.test.tsx` (new).
+- Territory (3 UI files): `apps/swarm-ui/src/AdminSetupSteps.tsx` (new; also exports `GitHubAppCallback`, the `/admin/setup/github-app/callback` page that posts `{code, state}` to the conversion route), `apps/swarm-ui/src/AdminSetupHealth.tsx` (new), `apps/swarm-ui/src/api.ts` (↺: DEBRAND-4 wave 0; the setup routes' client, review finding 16); tests `apps/swarm-ui/src/__tests__/AdminSetupSteps.test.tsx` (new), `apps/swarm-ui/src/__tests__/AdminSetupHealth.test.tsx` (new).
 - depends_on: DAYONE-SETUP-API-1 (the shapes). Manifest: `other.ready-screen`, `+other.verify-row`, `+other.doctor-findings`.
 - Red first: `AdminSetupSteps.test.tsx` "the verify row shows a countdown from expected and deadline" (the P1 gap), "Send to your team stays locked until verify passes", "a failed step shows its fix and a retry", "the plugin line carries only the deployment URL", "the callback posts code and state once and shows secrets stored without a value"; `AdminSetupHealth.test.tsx` "a finding shows the repair command and the console path".
 - Runner: claude-code, then claude-code-browser review at 1440 and 390 wide (B06-B09a, B11, B12b). Estimate: **$20**.
@@ -294,10 +294,10 @@ A file appears in at most one lane per wave. Files in a later wave that an earli
 | Wave | Lane | Files |
 |---|---|---|
 | 0 | MANIFEST-1 | `install/manifest.yaml`, `apps/swarm-install/pyproject.toml`, `apps/swarm-install/swarm_install/__init__.py`, `apps/swarm-install/swarm_install/manifest.py`, `tests/unit/install/__init__.py`, `tests/unit/install/test_manifest_complete.py`, `tests/unit/install/test_manifest_counts.py`, `pyproject.toml`, `uv.lock` |
-| 0 | DESAGA-1 | the 15 Dockerfiles listed in 1.1, `scripts/lib/build-mirror.sh`, `scripts/build-images.sh`, `tests/unit/scripts/test_build_mirror.py` |
-| 0 | DESAGA-2 | `scripts/lib/common.sh`, `scripts/prerequisites.sh`, `scripts/lib/dev.sh`, `scripts/register-tenant.sh`, `.env.example`, `tests/unit/scripts/test_common_defaults.py` |
-| 0 | DESAGA-3 | the 16 service files listed in 1.1 (`apps/swarm-api/swarm_api/settings.py` among them), `tests/unit/scripts/test_no_live_literals.py` |
-| 0 | DESAGA-4 | `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/IssueSubmit.tsx`, `apps/swarm-ui/src/styles/intake.css`, `apps/swarm-ui/src/__tests__/noLiveRepository.test.ts` |
+| 0 | DEBRAND-1 | the 15 Dockerfiles listed in 1.1, `scripts/lib/build-mirror.sh`, `scripts/build-images.sh`, `tests/unit/scripts/test_build_mirror.py` |
+| 0 | DEBRAND-2 | `scripts/lib/common.sh`, `scripts/prerequisites.sh`, `scripts/lib/dev.sh`, `scripts/register-tenant.sh`, `.env.example`, `tests/unit/scripts/test_common_defaults.py` |
+| 0 | DEBRAND-3 | the 16 service files listed in 1.1 (`apps/swarm-api/swarm_api/settings.py` among them), `tests/unit/scripts/test_no_live_literals.py` |
+| 0 | DEBRAND-4 | `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/IssueSubmit.tsx`, `apps/swarm-ui/src/styles/intake.css`, `apps/swarm-ui/src/__tests__/noLiveRepository.test.ts` |
 | 0 | K8S-1 | `kubernetes/render.py`, `kubernetes/apply.sh`, `tests/unit/scripts/test_k8s_render_project.py` |
 | 0 | TF-1 | `terraform/infra/{main,locals,variables,tailscale,child_tasks,versions,custom_roles_moved_to_bootstrap}.tf`, `terraform/bootstrap/{versions,variables}.tf`, `terraform/modules/monitoring/variables.tf`, `tests/unit/scripts/test_terraform_install_inputs.py` |
 | 0 | BOOT-1 | `terraform/bootstrap/{state_bucket,deployer_service_accounts,workspace_deployer}.tf`, `images/workspace-apply/entry.py`, `tests/unit/scripts/test_workspace_apply_entry.py`, `tests/unit/scripts/test_bootstrap_install_safe.py` |
@@ -328,11 +328,11 @@ A file appears in at most one lane per wave. Files in a later wave that an earli
 
 `.../` is `apps/swarm-install/swarm_install/`. Brace groups expand to the full paths written out in each lane's territory above; the territory lines are authoritative.
 
-**UI files per UI lane:** DESAGA-4 3, UIENV-1 3, SETUP-UI-1 3, SETUP-UI-2 3, SETUP-UI-3 3. None over 3.
+**UI files per UI lane:** DEBRAND-4 3, UIENV-1 3, SETUP-UI-1 3, SETUP-UI-2 3, SETUP-UI-3 3. None over 3.
 
-**Within-wave check after the review:** `settings.py` is DESAGA-3's in wave 0 and moves with IDENTITY-1 to wave 1, then SETUP-API-1 in wave 2; `api.ts` is DESAGA-4's (0) then SETUP-UI-1's (3); `register-tenant.sh` DESAGA-2's (0) then TEAM-1's (3); `terraform/infra/locals.tf` TF-1 (0), BOOT-2 (1), TF-2 (2); `terraform/infra/main.tf` TF-1 (0), TF-2 (2); `tfvars.py` ENGINE-3 (3), DOCTOR-1 (4). After review-fix finding 3, DISCOVERY-1 is in wave 1, PLUGIN-1 in wave 2 and RELEASE-1 in wave 3; none of their files is in another lane of its new wave. Every manifest fragment has one lane, and no wave-0 lane but MANIFEST-1 writes the manifest. No file is in two lanes of one wave.
+**Within-wave check after the review:** `settings.py` is DEBRAND-3's in wave 0 and moves with IDENTITY-1 to wave 1, then SETUP-API-1 in wave 2; `api.ts` is DEBRAND-4's (0) then SETUP-UI-1's (3); `register-tenant.sh` DEBRAND-2's (0) then TEAM-1's (3); `terraform/infra/locals.tf` TF-1 (0), BOOT-2 (1), TF-2 (2); `terraform/infra/main.tf` TF-1 (0), TF-2 (2); `tfvars.py` ENGINE-3 (3), DOCTOR-1 (4). After review-fix finding 3, DISCOVERY-1 is in wave 1, PLUGIN-1 in wave 2 and RELEASE-1 in wave 3; none of their files is in another lane of its new wave. Every manifest fragment has one lane, and no wave-0 lane but MANIFEST-1 writes the manifest. No file is in two lanes of one wave.
 
-**Held PRs (9 lanes, 12 flags):** TF-1 (Terraform), BOOT-1 (Terraform, IAM), RELHOME-1 (IAM), DESAGA-2 (IAM), BOOT-2 (Terraform, IAM), TF-2 (Terraform, IAM), RELEASE-1 (workflow file), TEAM-1 (IAM), ADDON-1 (workflow file). **Contract requests:** none needed to build (section 4).
+**Held PRs (9 lanes, 12 flags):** TF-1 (Terraform), BOOT-1 (Terraform, IAM), RELHOME-1 (IAM), DEBRAND-2 (IAM), BOOT-2 (Terraform, IAM), TF-2 (Terraform, IAM), RELEASE-1 (workflow file), TEAM-1 (IAM), ADDON-1 (workflow file). **Contract requests:** none needed to build (section 4).
 
 ### 1.8 Manifest additions and corrections made by this plan
 
@@ -354,7 +354,7 @@ Added to `docs/design/day-one/manifest.draft.yaml` (each with evidence; the head
 | `other.verify-row` | other | 14 | D26: the console shows verify's progress. |
 | `other.doctor-findings` | other | 15 | D27: Admin › Setup › Health. |
 | `other.release-home` | other | 0 | D25/Q4: the release home and its public read. |
-| `other.plugin-marketplace` | other | 15 | D28: `gs://swarmcloud/marketplace.json` and the plugin bundle. |
+| `other.plugin-marketplace` | other | 15 | D28: `gs://<release-bucket>/marketplace.json` and the plugin bundle. |
 | `other.plugin-version-skew` | other | 15 | D28: the supported range and its message. |
 | `switch.enable_console_app_setup` | switch | 7 | Review finding 2: the App's secret containers and swarm-api's writer grant must exist before the console's App step. |
 | `switch.enable_scheduled_doctor` | switch | 7 | Review finding 12: the hourly doctor must not run before its code ships. |
@@ -382,11 +382,11 @@ Every item and sub-item, and the lane(s) that build it.
 
 | Brief §11 item | Lane(s) |
 |---|---|
-| 1. De-Saga: Dockerfile mirror references, `test_build_mirror.py` | DESAGA-1 |
-| 1. `ALLOWED_USERS` literal to a variable | TF-1 (Terraform), DESAGA-3 (swarm-api's reader) |
-| 1. the `moved` block | TF-1 (deleted only once BGD's live plan shows it applied) |
-| 1. `PROJECT_ID` and `ALLOWED_DOMAINS` defaults (env overrides for the frozen config) | DESAGA-2 (`PROJECT_ID`), ENGINE-3 (renders `ALLOWED_DOMAINS` from the stage 0 domain into every service), section 4 (the frozen defaults) |
-| 1. `SHARED_DENY_LIST` per deployment | DESAGA-2 (R4), DESAGA-3 (issueruns) |
+| 1. De-brand: Dockerfile mirror references, `test_build_mirror.py` | DEBRAND-1 |
+| 1. `ALLOWED_USERS` literal to a variable | TF-1 (Terraform), DEBRAND-3 (swarm-api's reader) |
+| 1. the `moved` block | TF-1 (deleted only once the owner's live plan shows it applied) |
+| 1. `PROJECT_ID` and `ALLOWED_DOMAINS` defaults (env overrides for the frozen config) | DEBRAND-2 (`PROJECT_ID`), ENGINE-3 (renders `ALLOWED_DOMAINS` from the stage 0 domain into every service), section 4 (the frozen defaults) |
+| 1. `SHARED_DENY_LIST` per deployment | DEBRAND-2 (R4), DEBRAND-3 (issueruns) |
 | 1. the Tailscale target to the add-on | TF-1 (variable, no default), ADDON-1 (asks for it) |
 | 1. `frontend_iap_backends` | TF-1 (empty in pass 1), ENGINE-3 (derived from infra state for bootstrap pass 2) |
 | 1. workspace-apply `SIGNING_KEYS` per project | BOOT-1 (R1) |
@@ -409,12 +409,12 @@ Every item and sub-item, and the lane(s) that build it.
 | 5. Identity: delegation guided and checked; a group-probe check; a safe failure instead of 503-everyone | IDENTITY-1, ENGINE-4 (stage 8), TF-2 (`GROUPS_AUTH`) |
 | 6. GitHub App manifest flow and installation check | SETUP-API-1 (R3), TF-2 (the secret-writer grant), ENGINE-3 (the switches, R8), SETUP-UI-1 (the panel) |
 | 7. Discovery endpoint; a plugin that needs one value; `/sc:setup` hints; `/sc` without a checkout | DISCOVERY-1, TF-2, PLUGIN-1 (incl. `plugin/skills/sc/SKILL.md` and `plugin/commands/sc.md`), RELEASE-1 (the marketplace) |
-| 8. Team add: namespaces by the engine and by releases (#1590); quota from the tenant record (#2039); verify-keys; first admin; team `-git` slot through a link | TEAM-1, K8S-1, UPGRADE-1 (namespaces on every release), SETUP-API-1 (the team route), SETUP-UI-2 (second team) |
+| 8. Team add: namespaces by the engine and by releases; quota from the tenant record; verify-keys; first admin; team `-git` slot through a link | TEAM-1, K8S-1, UPGRADE-1 (namespaces on every release), SETUP-API-1 (the team route), SETUP-UI-2 (second team) |
 | 9. Cluster policies in the engine | ENGINE-4 (`steps/cluster.py`), K8S-1, RELEASE-1 (`kubernetes.tgz` in the bundle) |
-| 10. Alerts: a channel required (#1817) | ENGINE-2 (asks), ENGINE-3 (renders, stage 13 check) |
-| 11. Safer defaults: no default-SA Editor; no `allUsers` under DRS; `workspace_gate` and `repository_grants_enforced` on | ENGINE-2 (#1020), TF-2 (Q3, and the acceptance fixture's `allUsers` bucket gated to `addon:ci`), ENGINE-3 (the two switches) |
+| 10. Alerts: a channel required | ENGINE-2 (asks), ENGINE-3 (renders, stage 13 check) |
+| 11. Safer defaults: no default-SA Editor; no `allUsers` under DRS; `workspace_gate` and `repository_grants_enforced` on | ENGINE-2, TF-2 (Q3, and the acceptance fixture's `allUsers` bucket gated to `addon:ci`), ENGINE-3 (the two switches) |
 | 12. Doctor, uninstall, upgrade, `team add`, add-ons | DOCTOR-1, UNINSTALL-1, UPGRADE-1, TEAM-1, ADDON-1 |
-| 13. The release pipeline and release home; prod-shaped images; signing; the install-and-upgrade test | RELHOME-1, RELEASE-1, UIENV-1, DESAGA-1; the test is the manual step of section 7.3 |
+| 13. The release pipeline and release home; prod-shaped images; signing; the install-and-upgrade test | RELHOME-1, RELEASE-1, UIENV-1, DEBRAND-1; the test is the manual step of section 7.3 |
 | 14. Console Admin › Setup and `/sc:install` | SETUP-API-1, SETUP-UI-1, SETUP-UI-2, SETUP-UI-3, SC-INSTALL-1 |
 | 15. Docs: the install page generated from the manifest; superseded runbook steps | DOCS-1 |
 
@@ -441,9 +441,9 @@ Every item and sub-item, and the lane(s) that build it.
 | 5.6 The tenants freeze and service tenants | BOOT-1, ENGINE-3 |
 | 5.7 Tenant secret containers: one writer for installs | TEAM-1 (every tenant value through swarm-api's writer behind a link) |
 | 6.1 The release home | RELHOME-1 |
-| 6.2 The release pipeline | RELEASE-1, UIENV-1, DESAGA-1 |
+| 6.2 The release pipeline | RELEASE-1, UIENV-1, DEBRAND-1 |
 | 6.3 The company's side (`install.sh`, verify, copy) | RELEASE-1 (`install.sh`), ENGINE-3 (`steps/images.py`, `tools.py`, `release_key.pub`) |
-| 7 De-hardcoding | DESAGA-1, DESAGA-2, DESAGA-3, DESAGA-4, K8S-1, TF-1, BOOT-1, PLUGIN-1 |
+| 7 De-hardcoding | DEBRAND-1, DEBRAND-2, DEBRAND-3, DEBRAND-4, K8S-1, TF-1, BOOT-1, PLUGIN-1 |
 | 8 Identity and domain-wide delegation | IDENTITY-1, ENGINE-4, TF-2 |
 | 9.1 The GitHub App Manifest flow | SETUP-API-1, TF-2, ENGINE-3, SETUP-UI-1 |
 | 9.2 The discovery endpoint | DISCOVERY-1, TF-2, PLUGIN-1 |
@@ -466,7 +466,7 @@ Each lesson from [`day-one/lessons.md`](day-one/lessons.md), the manifest entry 
 | 2 | Firestore location is permanent | `firestore.main`, `org-policy.resource-locations` | ENGINE-2: `::test_region_confirmed_before_stage_1` |
 | 3 | IAM binding write rate limit | `iam-binding.default-compute-sa-editor-removed` (the first engine IAM write) | ENGINE-2: `test_foundations.py::test_iam_write_rate_limit_retried_not_reported_as_denial` |
 | 4 | Three API lists; KMS quota | `api.*`, `quota.kms-signing-h4` | MANIFEST-1: collector 2 in `test_manifest_complete.py`; ENGINE-2: `::test_one_api_list_from_manifest`, `::test_kms_signing_quota_read` |
-| 5 | Defaults name the live project | `other.shared-project-literal-in-both-envs`, `declared-value.project_id` | DESAGA-2: `test_common_defaults.py`; DESAGA-3: `test_no_live_literals.py`; TF-1: `::test_no_live_default`; ENGINE-3: `::test_generated_never_from_committed_tfvars` |
+| 5 | Defaults name the live project | `other.shared-project-literal-in-both-envs`, `declared-value.project_id` | DEBRAND-2: `test_common_defaults.py`; DEBRAND-3: `test_no_live_literals.py`; TF-1: `::test_no_live_default`; ENGINE-3: `::test_generated_never_from_committed_tfvars` |
 | 6 | Default compute SA holds Editor | `iam-binding.default-compute-sa-editor-removed` | ENGINE-2: `::test_default_compute_editor_removed`; ADDON-1: `::test_ci_addon_makes_cloud_build_sa_not_default_sa` |
 | 7 | Bootstrap state on one laptop | `bucket.state`, `other.install-state`, `other.bootstrap-sh-empty-state-guard` | ENGINE-2: `::test_state_bucket_created_with_settings_then_state_uploaded`; BOOT-1: `::test_state_bucket_imported`; ENGINE-3: `test_terraform_runner.py::test_empty_state_refused_when_deployer_exists` (`+other.engine-terraform-rules`) |
 | 8 | Infra applied before bootstrap | `role.custom.*`, `switch.grant_broker_secret_lister` | ENGINE-1: `test_engine_loop.py::test_stage_refuses_while_earlier_entry_unmet`; BOOT-2 removes the "later" booleans |
@@ -519,27 +519,27 @@ Each lesson from [`day-one/lessons.md`](day-one/lessons.md), the manifest entry 
 
 ### 4.1 Every frozen literal appendix A lists
 
-Read at `b3fe3e6` with `grep -n 'saga\|bogdan' apps/common/swarm_common/*.py`. Seven lines.
+Read at `b3fe3e6` with `grep -n '<company>\|<owner>' apps/common/swarm_common/*.py`. Seven lines.
 
 | File:line | Text | Runtime? | Overridable by environment? |
 |---|---|---|---|
-| `config.py:46` | `allowed_domains: tuple[str, ...] = ("saga.xyz",)` | yes: the dataclass default | Yes. `Settings.from_env` builds the field from `ALLOWED_DOMAINS` (`config.py:110`); swarm-api reads `settings.core.allowed_domains` (`apps/swarm-api/swarm_api/admins.py:483`, `auth.py:1171`). No service constructs `Settings()` without `from_env` (`grep -rn 'Settings()' apps` finds only the egress module's own class). |
-| `config.py:110` | `os.environ.get("ALLOWED_DOMAINS", "saga.xyz")` | yes: the fallback when the variable is unset | Yes, by setting `ALLOWED_DOMAINS`. **But the fallback fails open to another company's domain** when a service is deployed without the variable. |
-| `identity.py:8` | module docstring example `eng@saga.xyz` | no | n/a (documentation) |
-| `identity.py:68` | comment `swarm-ci-fix@saga-agents-staging…` | no | n/a |
-| `identity.py:70` | comment `eng@saga.xyz` | no | n/a |
-| `identity.py:169` | docstring `` `eng@saga.xyz` -> `eng` `` | no | n/a |
+| `config.py:46` | `allowed_domains: tuple[str, ...] = ("example.com",)` | yes: the dataclass default | Yes. `Settings.from_env` builds the field from `ALLOWED_DOMAINS` (`config.py:110`); swarm-api reads `settings.core.allowed_domains` (`apps/swarm-api/swarm_api/admins.py:483`, `auth.py:1171`). No service constructs `Settings()` without `from_env` (`grep -rn 'Settings()' apps` finds only the egress module's own class). |
+| `config.py:110` | `os.environ.get("ALLOWED_DOMAINS", "example.com")` | yes: the fallback when the variable is unset | Yes, by setting `ALLOWED_DOMAINS`. **But the fallback fails open to another company's domain** when a service is deployed without the variable. |
+| `identity.py:8` | module docstring example `eng@example.com` | no | n/a (documentation) |
+| `identity.py:68` | comment `swarm-ci-fix@example-project…` | no | n/a |
+| `identity.py:70` | comment `eng@example.com` | no | n/a |
+| `identity.py:169` | docstring `` `eng@example.com` -> `eng` `` | no | n/a |
 | `models.py:164` | docstring: measured on the live project | no | n/a |
-| `models.py:873` | comment `eng@saga.xyz \| alice@saga.xyz` | no | n/a; already the subject of open request **122** |
+| `models.py:873` | comment `eng@example.com \| alice@example.com` | no | n/a; already the subject of open request **122** |
 
 **Result:** by Q6's test, **no frozen literal is impossible to override by environment**, so no contract request is required to build Day One. The install guards the one runtime risk without a contract change: ENGINE-3 renders `ALLOWED_DOMAINS` into every service, and DOCTOR-1 checks each service's environment carries it (a missing value is a finding, never "fine").
 
-Two requests are drafted anyway, because the fallback fails open and the comments name the company in a product companies receive (D1). **Filing them is BGD's call** (open question 3); neither blocks a lane.
+Two requests are drafted anyway, because the fallback fails open and the comments name the company in a product companies receive (D1). **Filing them is the owner's call** (open question 3); neither blocks a lane.
 
 ### 4.2 Draft request A: `config.py`: `ALLOWED_DOMAINS` has no live default
 
 ```markdown
-## 127. `config.py`: `ALLOWED_DOMAINS` has no default domain (DAYONE-P2, part of #2688)
+## 127. `config.py`: `ALLOWED_DOMAINS` has no default domain (DAYONE-P2, part of the Day One install program)
 
 **Status:** open, REQUESTED 2026-10-29 by lane DAYONE-P2 (the Day One plan,
 `docs/design/day-one-plan.md` §4). Not applied: `apps/common/swarm_common/`
@@ -548,8 +548,8 @@ is frozen.
 ### What is true today
 
 `apps/common/swarm_common/config.py:46` defaults `Settings.allowed_domains`
-to `("saga.xyz",)`, and `Settings.from_env` (line 110) falls back to
-`"saga.xyz"` when `ALLOWED_DOMAINS` is unset. On the live deployment that is
+to `("example.com",)`, and `Settings.from_env` (line 110) falls back to
+`"example.com"` when `ALLOWED_DOMAINS` is unset. On the live deployment that is
 the right domain. On a Day One install in another company's project, a
 service deployed without the variable trusts the live deployment's domain
 instead of failing: the sign-in check (`apps/swarm-api/swarm_api/auth.py:1171`)
@@ -592,7 +592,7 @@ domain it was not given.
 ### 4.3 Draft request B: the frozen contract's comments use example identities
 
 ```markdown
-## 128. `identity.py` / `models.py`: the live project and domain in comments become example values (DAYONE-P2, part of #2688)
+## 128. `identity.py` / `models.py`: the live project and domain in comments become example values (DAYONE-P2, part of the Day One install program)
 
 **Status:** open, REQUESTED 2026-10-29 by lane DAYONE-P2 (the Day One plan,
 `docs/design/day-one-plan.md` §4). Not applied: `apps/common/swarm_common/`
@@ -608,8 +608,8 @@ every company that installs SwarmCloud (D1, D5).
 
 ### The change
 
-Comments only: `eng@saga.xyz` becomes `eng@example.com`;
-`swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` becomes
+Comments only: `eng@example.com` becomes `eng@example.com`;
+`swarm-ci-fix@example-project.iam.gserviceaccount.com` becomes
 `swarm-ci-fix@example-project.iam.gserviceaccount.com`; the measurement in
 `models.py:164` keeps its task id and date and says "the live deployment"
 instead of the project id.
@@ -622,7 +622,7 @@ Nothing. No type, default, field or document shape moves, and
 ### If it is declined
 
 The frozen contract keeps six lines that name the live deployment, and
-DAYONE-DESAGA-3's no-live-literal test keeps `apps/common` excluded by name.
+DAYONE-DEBRAND-3's no-live-literal test keeps `apps/common` excluded by name.
 
 ### Invariants
 
@@ -701,7 +701,7 @@ Within one writer, every write is a transaction with an `update_time` preconditi
 
 ---
 
-### 5.6 The Sign-in client step: the brand and the Desktop client move to the console (issue #2964)
+### 5.6 The Sign-in client step: the brand and the Desktop client move to the console
 
 **Where it lives now.** Admin › Setup's first step, before the GitHub App, is **Sign-in client**. It links three Google Cloud console pages in order (Branding: app name SwarmCloud, support email the person's own address; Audience: Internal; Clients › Create client: Desktop app, name SwarmCloud sc) and takes the client's id and secret in a form. `POST /v1/admin/setup/sign-in-client` (platform admins only, audited like the GitHub App conversion) refuses an id that does not end `.apps.googleusercontent.com` (422 `client_id_invalid`), adds the secret as a new version of `swarm-iap-desktop-client-secret` and never returns, logs or stores it elsewhere, and records `{client_id, saved_at, saved_by}` in `swarm-install/<env>/console/sign_in_client`. `GET /v1/admin/setup` serves `sign_in_client` as `waiting`, `saved` or `applied`, with the three links built from the deployment's own project id.
 
@@ -723,9 +723,9 @@ Never: any other secret, a tenant, a group, an email, a project number beyond wh
 
 ### 6.3 The PKCE-only attempt and its fallback (Q1)
 
-1. **The attempt.** PLUGIN-1 adds `sc login --pkce-only`, which runs the installed-app flow with PKCE and **no** `client_secret`. BGD runs it once against the live deployment's existing Desktop client (wave 2, after PLUGIN-1 merges; it needs his sign-in, so it is a manual step, about two minutes). The result is recorded in the PR of TF-2.
+1. **The attempt.** PLUGIN-1 adds `sc login --pkce-only`, which runs the installed-app flow with PKCE and **no** `client_secret`. The owner runs it once against the live deployment's existing Desktop client (wave 2, after PLUGIN-1 merges; it needs his sign-in, so it is a manual step, about two minutes). The result is recorded in the PR of TF-2.
 2. **If Google accepts it:** `discovery_serves_client_secret = false` (the default). The plugin needs no secret; `swarm-desktop`'s secret stays in Secret Manager for nothing but the record.
-3. **If Google refuses it:** the engine sets `discovery_serves_client_secret = true` in the generated tfvars; `swarm-discovery` gains `secretAccessor` on `swarm-iap-desktop-client-secret` only and serves the value (design §9.3: Google classifies it as non-confidential; Internal brand plus IAP remain the boundary). This is BGD's already-made Q1 decision, not a new one.
+3. **If Google refuses it:** the engine sets `discovery_serves_client_secret = true` in the generated tfvars; `swarm-discovery` gains `secretAccessor` on `swarm-iap-desktop-client-secret` only and serves the value (design §9.3: Google classifies it as non-confidential; Internal brand plus IAP remain the boundary). This is the owner's already-made Q1 decision, not a new one.
 
 Either way the secret enters through ENGINE-2's hidden prompt at stage 2, straight into Secret Manager.
 
@@ -734,7 +734,7 @@ Either way the secret enters through ENGINE-2's hidden prompt at stage 2, straig
 Per release `V`, RELEASE-1 publishes:
 
 ```
-gs://swarmcloud/
+gs://<release-bucket>/
   marketplace.json                     the marketplace (D28): one plugin "sc", version V, source releases/V/plugin/
   releases/V/plugin/                   the plugin directory: .claude-plugin/plugin.json, commands/, skills/, workflows/
   releases/V/marketplace.json          the same marketplace pinned to V (for a team that must stay on V)
@@ -764,22 +764,22 @@ The plugin can run ahead of the deployment it talks to (D28). The rule: **a skew
 
 ### 7.1 The release home (project `swarmcloud-prod`, D25)
 
-RELHOME-1's script, run by BGD: Artifact Registry `us-docker.pkg.dev/swarmcloud-prod/swarmcloud` (Docker), `gs://swarmcloud`, KMS key `swarmcloud-release/cosign` (P-256). **The one org-policy exception (Q4):** `iam.allowedPolicyMemberDomains` overridden on project `swarmcloud-prod` alone, covering `allUsers` as `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repository. It is an org-admin action (BGD); the script checks the effective policy and refuses the public grant until the exception exists.
+RELHOME-1's script, run by the owner: Artifact Registry `us-docker.pkg.dev/swarmcloud-prod/swarmcloud` (Docker), `gs://<release-bucket>`, KMS key `swarmcloud-release/cosign` (P-256). **The one org-policy exception (Q4):** `iam.allowedPolicyMemberDomains` overridden on project `swarmcloud-prod` alone, covering `allUsers` as `roles/storage.objectViewer` on the bucket and `roles/artifactregistry.reader` on the repository. It is an org-admin action (the owner); the script checks the effective policy and refuses the public grant until the exception exists.
 
 ### 7.2 The pipeline
 
 1. **Tag** `v<YYYY.MM.N>` on `main` triggers `release-public.yml` (RELEASE-1's patch; **held: workflow file**).
-2. **Build prod-shaped images** in SwarmCloud's own CI into its existing registry: the console with no `VITE_SWARM_ENV` (UIENV-1), Dockerfiles with no project (DESAGA-1).
+2. **Build prod-shaped images** in SwarmCloud's own CI into its existing registry: the console with no `VITE_SWARM_ENV` (UIENV-1), Dockerfiles with no project (DEBRAND-1).
 3. **Scan** with the existing trivy gate; a HIGH or CRITICAL needs an acceptance with an expiry, which `RELEASE.md` lists (lesson 27).
 4. **Assemble** (`scripts/release/assemble.sh`): `module.tgz` (`terraform/{bootstrap,infra,modules}`, no tfvars, no `environments/`), the two wheels, `manifest.yaml`, `images.json` (digests only), `kubernetes.tgz` (`kubernetes/render.py`, `policies/`, `swarm-system/`, `rbac/`, the tenant templates), the plugin directory, `compat.json`, `marketplace.json`, `RELEASE.md`, `SHA256SUMS`. Uploaded as a workflow artefact.
-5. **Publish** (`scripts/release/publish.sh`), run by a person, not CI: copy each image by digest to the release home, sign each digest with cosign and the KMS key, sign `SHA256SUMS`, upload under `releases/<V>/`. CI holds no grant in project `swarmcloud-prod`, so D22's "no IAM change for CI" holds (open question 4 asks whether BGD wants CI to publish later).
+5. **Publish** (`scripts/release/publish.sh`), run by a person, not CI: copy each image by digest to the release home, sign each digest with cosign and the KMS key, sign `SHA256SUMS`, upload under `releases/<V>/`. CI holds no grant in project `swarmcloud-prod`, so D22's "no IAM change for CI" holds (open question 4 asks whether the owner wants CI to publish later).
 6. **Promote** (`publish.sh --promote V`): moves `channels/stable` and the root `marketplace.json`, refused unless the manual test of 7.3 is recorded for `V`.
 
-**Signing: cosign with a KMS key**, not Binary Authorization. cosign signatures live beside the images and are verified on the installer's machine with the public key pinned in the engine wheel (`swarm_install/release_key.pub`, written by ENGINE-3 after BGD has run `release-home.sh`; cosign and gcrane are fetched at pinned versions and checked against pinned SHA-256s by `swarm_install/tools.py`) (design §6.1); Binary Authorization would need a policy and attestors in every company's project, which core does not otherwise need.
+**Signing: cosign with a KMS key**, not Binary Authorization. cosign signatures live beside the images and are verified on the installer's machine with the public key pinned in the engine wheel (`swarm_install/release_key.pub`, written by ENGINE-3 after the owner has run `release-home.sh`; cosign and gcrane are fetched at pinned versions and checked against pinned SHA-256s by `swarm_install/tools.py`) (design §6.1); Binary Authorization would need a policy and attestors in every company's project, which core does not otherwise need.
 
 ### 7.3 The manual pre-release install-and-upgrade test (D22)
 
-Before `--promote`, CLD runs, in the throwaway or kept test project BGD provides (CLD creates no project):
+Before `--promote`, CLD runs, in the throwaway or kept test project the owner provides (CLD creates no project):
 
 1. `publish.sh` the candidate to `releases/<V>-rc.<n>/`.
 2. `swarm install --version <previous>` into the test project, then `swarm upgrade --to <V>-rc.<n>`; `swarm doctor` exits 0; the new plugin runs one agent against the previous release first (the skew check, 6.5).
@@ -796,12 +796,12 @@ BOOT-2 moves the platform service accounts into bootstrap for the live deploymen
 
 **What changes in code.** Infra gets `removed { from = <address>; lifecycle { destroy = false } }` for each of: `module.iam.google_service_account.platform` (`terraform/modules/iam/service_accounts.tf:34`), `module.iam.google_service_account.tick` (`:48`), `google_service_account.verify` (`terraform/infra/verify.tf:38`), `module.scheduler.google_service_account.schedule_tick` (`terraform/modules/scheduler/main.tf:236`), `module.scheduler.google_service_account.rollup_sweeper` (`terraform/modules/scheduler/jobs.tf:155`). Bootstrap gets the same accounts as resources, with `import {}` blocks gated on `adopt_from_infra_states` as `terraform/bootstrap/platform_roles.tf:425-437` does for roles. Infra reads them as data sources. Per-tenant worker accounts (`terraform/modules/tenancy/main.tf:109`) stay where they are: installs have no Terraform tenants, and the live tenants' accounts are not platform accounts. `mcp_test_server` (`addon:ci`) stays in infra.
 
-**The plan BGD reviews (the merge gate).** BGD runs, in order, and reads each for destroys:
+**The plan the owner reviews (the merge gate).** The owner runs, in order, and reads each for destroys:
 
 1. `terraform plan` of bootstrap for the live project: N to import (the five resources, with every key of `module.iam`'s `for_each`), 0 to destroy, and the grants that used to need "later" booleans as in-place no-ops.
 2. `terraform plan` of infra dev and prod: the same addresses as "will be removed from state, not destroyed", 0 to destroy, 0 to replace.
 
-**Any destroy or replace blocks the merge** (Q7). BGD applies bootstrap first, then infra (the reverse order is also safe, because infra reads the accounts through data sources that find them either way; bootstrap first is chosen so that no moment exists where no root holds them).
+**Any destroy or replace blocks the merge** (Q7). The owner applies bootstrap first, then infra (the reverse order is also safe, because infra reads the accounts through data sources that find them either way; bootstrap first is chosen so that no moment exists where no root holds them).
 
 **Order relative to the other lanes.** BOOT-2 is wave 1, after TF-1 and BOOT-1 are merged **and applied** live (so the live plan BOOT-2 shows is against current state). TF-2 (wave 2) creates the discovery and doctor accounts' grants and must follow BOOT-2's live apply. The live release pipeline keeps running between them: the migration changes no service account's email or unique id, so no grant, Workload Identity binding or RBAC subject (lesson 29) moves.
 
@@ -864,21 +864,21 @@ Stage 12 needs the first team: the existing sign-in files an account into the si
 
 | Wave | Leaves ready for P4/P5 |
 |---|---|
-| 0 | A manifest that a test holds complete, with every entry whose code is already on `main` (fragments per lane after it); images and scripts that build and run in any project; a bootstrap that can start from an empty project; a release home BGD can make public. |
+| 0 | A manifest that a test holds complete, with every entry whose code is already on `main` (fragments per lane after it); images and scripts that build and run in any project; a bootstrap that can start from an empty project; a release home the owner can make public. |
 | 1 | The engine core with resume and bounded waits; the live deployment on the one service-account layout; the discovery app; a console image with no baked environment. |
 | 2 | Stages 0-2 and 8, 10, 14 runnable; `swarm install`; the setup API; a plugin configured by one value; the discovery path and the hourly doctor in Terraform (off until DOCTOR-1). |
 | 3 | Stages 3-7, the hand-off, 9's switches, 13 and 15: a full `swarm install` from an empty project to READY; `swarm team add`; `/sc:install`; the setup panels; the release assembled with `kubernetes.tgz`. |
 | 4 | `swarm doctor` (CLI and hourly), `uninstall`, `upgrade`, `addon`; the setup page. |
 | 5 | Admin › Setup reachable; the generated install page. **Then:** RC1 published by `publish.sh`, and the P3 exit check. |
 
-**P3's exit check (brief §8), run by CLD after wave 5:** `swarm install --project <empty project BGD provides> --env prod --version <RC1> --domain swarmcloud.saga.xyz --dry-run` exits 0 or 4 (4 only for the human steps it lists), printing every stage's plan and no write (checked by the project's audit log showing no mutating call).
+**P3's exit check (brief §8), run by CLD after wave 5:** `swarm install --project <empty project the owner provides> --env prod --version <RC1> --domain swarm.example.com --dry-run` exits 0 or 4 (4 only for the human steps it lists), printing every stage's plan and no write (checked by the project's audit log showing no mutating call).
 
-**The commands BGD runs in P4** (from the product only, D12; no checkout):
+**The commands the owner runs in P4** (from the product only, D12; no checkout):
 
 ```
 curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | sh
-swarm install --project swarmcloud-dayone-1 --env prod --version <RC> --domain swarmcloud.saga.xyz
-#   ... guided human steps; then the ONE URL: https://swarmcloud.saga.xyz/admin/setup
+swarm install --project example-project --env prod --version <RC> --domain swarm.example.com
+#   ... guided human steps; then the ONE URL: https://swarm.example.com/admin/setup
 #   Admin › Setup: GitHub App, first team, Claude accounts, Send to your team
 #   (the CLI prints READY after verify)
 swarm doctor                     # exit 0
@@ -886,7 +886,7 @@ swarm team add <second group>    # or Admin › Setup, second team
 swarm uninstall                  # typed confirmation; prints what remains
 ```
 
-A teammate (not BGD) then runs the D28 line with `deployment_url=https://swarmcloud.saga.xyz`, `sc login`, and `/sc:submit` to a PR. P5 repeats into `swarmcloud-dayone-2`, then run 2b into `swarmcloud-dayone-1`, then `swarm upgrade --to <v1 candidate>`. CLD keeps the snag log (brief §10).
+A teammate (not the owner) then runs the D28 line with `deployment_url=https://swarm.example.com`, `sc login`, and `/sc:submit` to a PR. P5 repeats into `swarmcloud-dayone-2`, then run 2b into `swarmcloud-dayone-1`, then `swarm upgrade --to <v1 candidate>`. CLD keeps the snag log (brief §10).
 
 ---
 
@@ -894,7 +894,7 @@ A teammate (not BGD) then runs the D28 line with `deployment_url=https://swarmcl
 
 | Wave | Lanes | Estimate |
 |---|---|---|
-| 0 | MANIFEST-1 35, DESAGA-1 15, DESAGA-2 15, DESAGA-3 20, DESAGA-4 8, K8S-1 20, TF-1 30, BOOT-1 25, RELHOME-1 12 | $180 |
+| 0 | MANIFEST-1 35, DEBRAND-1 15, DEBRAND-2 15, DEBRAND-3 20, DEBRAND-4 8, K8S-1 20, TF-1 30, BOOT-1 25, RELHOME-1 12 | $180 |
 | 1 | DISCOVERY-1 15, IDENTITY-1 20, ENGINE-1 45, BOOT-2 40, UIENV-1 15 | $135 |
 | 2 | PLUGIN-1 35, TF-2 45, ENGINE-2 30, ENGINE-4 25, CLI-1 20, SETUP-API-1 40 | $195 |
 | 3 | RELEASE-1 30, ENGINE-3 55, TEAM-1 30, SETUP-UI-1 20, SC-INSTALL-1 10 | $145 |
@@ -904,21 +904,21 @@ A teammate (not BGD) then runs the D28 line with `deployment_url=https://swarmcl
 | Reserve | fix rounds after red CI and held-PR revisions (~10 %) | $83 |
 | **P3 total** | | **$900** |
 
-**Within P3's ~$900**, with no cut; the review's fixes added $30 to the lanes, taken from the reserve. The estimates assume the measured cost of recent lanes (P1's frame lanes were $4.98 and $8.24; code lanes with tests run several times that). If wave 0 and 1 together pass $450, the next wave pauses and CLD asks BGD which of these to merge or defer, in this order: SETUP-UI-3 into SETUP-UI-2's PR (saves a lane's overhead), DOCS-1 deferred to P4 (the guide is generated, so it can follow), ADDON-1 split so only the CI add-on's held patch waits.
+**Within P3's ~$900**, with no cut; the review's fixes added $30 to the lanes, taken from the reserve. The estimates assume the measured cost of recent lanes (P1's frame lanes were $4.98 and $8.24; code lanes with tests run several times that). If wave 0 and 1 together pass $450, the next wave pauses and CLD asks the owner which of these to merge or defer, in this order: SETUP-UI-3 into SETUP-UI-2's PR (saves a lane's overhead), DOCS-1 deferred to P4 (the guide is generated, so it can follow), ADDON-1 split so only the CI add-on's held patch waits.
 
 ---
 
-## 12. Open questions for BGD
+## 12. Open questions for the owner
 
 Only what the decisions do not settle.
 
 1. **If a URL-hosted marketplace cannot install a plugin from a relative path** (section 6.4, to be proven by RELEASE-1 before RC1), where does the plugin's source live?
-   - (a) A public, read-only git repository holding only `plugin/`, under a GitHub org BGD names (D16: `swarmcloud` on GitHub is taken).
-   - (b) A plugin source of type `url` pointing at a git bundle served from `gs://swarmcloud`, if Claude Code supports it.
-   - (c) Keep the plugin in the existing marketplace (`bogdan-alexandrescu/SwarmCloud`) and publish only the bridge to the release home.
+   - (a) A public, read-only git repository holding only `plugin/`, under a GitHub org the owner names (D16: `swarmcloud` on GitHub is taken).
+   - (b) A plugin source of type `url` pointing at a git bundle served from `gs://<release-bucket>`, if Claude Code supports it.
+   - (c) Keep the plugin in the existing marketplace (`example-org/example-repo`) and publish only the bridge to the release home.
 
    **Recommend (a)**: it keeps D28's one line and needs nothing Claude Code may not support. Built: nothing until the check runs; the check is a two-minute manual step.
-2. **The `swarm.saga.xyz/` Kubernetes label and annotation keys** (R5) stay in every company's cluster.
+2. **The `swarm.example.com/` Kubernetes label and annotation keys** (R5) stay in every company's cluster.
    - (a) Keep them in v1: they are identifiers, not deployment config, and renaming them is a live-cluster migration of every object and admission policy.
    - (b) Rename to a neutral prefix (for example `swarmcloud.dev/`) in v1, with a migration lane for the live cluster.
 
@@ -930,7 +930,7 @@ Only what the decisions do not settle.
 
    **Recommend (a)**. Built either way: nothing in P3 waits on them.
 4. **Who publishes a release to project `swarmcloud-prod`.** D22 keeps IAM for CI unchanged, so `publish.sh` is run by a person (section 7.2).
-   - (a) A person runs `publish.sh` for v1 (CLD or BGD, with rights in `swarmcloud-prod`), as planned.
+   - (a) A person runs `publish.sh` for v1 (CLD or the owner, with rights in `swarmcloud-prod`), as planned.
    - (b) Add a release-publisher identity in `swarmcloud-prod` that the tag workflow assumes (an IAM change for CI, held).
 
    **Recommend (a)** for v1: it honours D22 and the manual test already puts a person in the loop.
@@ -945,11 +945,11 @@ The P2 review lane read this plan against the design, the manifest, the lessons 
 |---|---|---|---|
 | 1 | Blocker | Only MANIFEST-1 could edit the manifest, so the completeness test (design §3.3, both directions) would turn `main` red when a later lane added a collectable item or when MANIFEST-1 listed `+` entries whose Terraform did not exist yet. | Section 1 conventions: per-lane fragments `install/manifest.d/<lane>.yaml`, each `+` entry added by the lane that creates its code; `test_fragments_merged_and_ids_unique`; fragments in TF-1, BOOT-1, DISCOVERY-1, IDENTITY-1, BOOT-2, TF-2, SETUP-API-1, DOCTOR-1, ADDON-1. |
 | 2 | Blocker | The console wrote the App's three secrets before their containers existed (`terraform/modules/secret_manager/main.tf:249-255`, `terraform/infra/github_hooks.tf:136-137` create them only under `enable_github_app` / `enable_github_hooks`), and `enable_console_app_setup` was set by no stage. | TF-2 creates the containers and swarm-api's add/read grants under `enable_console_app_setup`, independent of the App switches; `secret_manager/main.tf` added to TF-2; ENGINE-3 sets it in pass 2 (`test_pass2_sets_console_app_setup`); sections 5.3, 5.5, 9.1; manifest `switch.enable_console_app_setup`. |
-| 3 | Blocker | The release bundle carried no Kubernetes trees, though stage 10, team add, upgrade and uninstall need them with no checkout; no lane built the pinned cosign/gcrane download or the pinned release key. | RELEASE-1 adds `kubernetes.tgz` (`test_bundle_carries_kubernetes`); ENGINE-3 adds `tools.py` and `release_key.pub` (after BGD runs `release-home.sh`); sections 6.4, 7.2; manifest `other.release-kubernetes-bundle`, `other.release-signing-public-key`. |
+| 3 | Blocker | The release bundle carried no Kubernetes trees, though stage 10, team add, upgrade and uninstall need them with no checkout; no lane built the pinned cosign/gcrane download or the pinned release key. | RELEASE-1 adds `kubernetes.tgz` (`test_bundle_carries_kubernetes`); ENGINE-3 adds `tools.py` and `release_key.pub` (after the owner runs `release-home.sh`); sections 6.4, 7.2; manifest `other.release-kubernetes-bundle`, `other.release-signing-public-key`. |
 | 4 | Blocker | `terraform/infra/acceptance_fixture.tf:41,99-103` grants `allUsers` with no `count`: core would fail under Domain Restricted Sharing, contradict D9/D10, and TF-2's own `test_no_allusers_binding_anywhere` had no file to fix. | TF-2 gates it with `enable_acceptance_fixture` (default false, `addon:ci`; live tfvars set true, `moved` to `[0]`, zero-change live plan); ADDON-1 turns it on; manifest `switch.enable_acceptance_fixture`. |
 | 5 | Major | BOOT-2 lacked the files that reference the migrated accounts (`modules/iam/outputs.tf:49,53,58`, `bindings.tf:14,16,332`, `infra/locals.tf:1032`, `infra/deployer.tf:46`). | Added to BOOT-2. |
 | 6 | Major | TF-2 could not add the discovery backend without `terraform/infra/main.tf:683-699`. | Added to TF-2 (↺). |
-| 7 | Major | `GROUPS_AUTH` needs `swarm_api/settings.py`, which DESAGA-3 held in the same wave; SETUP-API-1 needs it too. | IDENTITY-1 moved to wave 1 with `settings.py` ↺ (depends on DESAGA-3); SETUP-API-1 gets `settings.py` ↺. Waves 0/1 were then 10/5 lanes (9/5 after section 13.1). |
+| 7 | Major | `GROUPS_AUTH` needs `swarm_api/settings.py`, which DEBRAND-3 held in the same wave; SETUP-API-1 needs it too. | IDENTITY-1 moved to wave 1 with `settings.py` ↺ (depends on DEBRAND-3); SETUP-API-1 gets `settings.py` ↺. Waves 0/1 were then 10/5 lanes (9/5 after section 13.1). |
 | 8 | Major | No lane switched installs to the admin-role group mode (Q2), so swarm-api would read groups through delegation that was never set up. | ENGINE-3 `test_groups_auth_admin_role_for_installs`; ENGINE-4 `test_probe_runs_through_swarm_api_in_its_mode`; stage 7 sets it; manifest `declared-value.groups_auth`. |
 | 9 | Major | The hand-off wait (ENGINE-4, wave 2) had to run passes 3 and 4, which ENGINE-3 builds in wave 3. | `handoff.py` and `test_handoff.py` moved to ENGINE-3; ENGINE-1 adds `test_wait_runs_steps_whose_trigger_lands`. |
 | 10 | Major (secret path) | Activating the webhook from the CLI needed an App JWT, so the private key would reach the laptop, possibly a Claude session. | New route `POST /v1/admin/setup/github-app/hook` (swarm-api signs); `test_hook_activation_signed_server_side`; ENGINE-3 `test_engine_never_reads_an_app_secret`; section 5.5. |
@@ -957,7 +957,7 @@ The P2 review lane read this plan against the design, the manifest, the lessons 
 | 12 | Major | The hourly doctor would run two waves before its code; `swarm-doctor` was not in `PLATFORM_SERVICE_ACCOUNTS` (lesson 38's exact cause) and could not re-probe groups. | TF-2 gates it with `enable_scheduled_doctor` (off), adds the account to `PLATFORM_SERVICE_ACCOUNTS`; DOCTOR-1 turns it on through `tfvars.py` ↺; group re-probe through swarm-api's new `groups-probe` route. |
 | 13 | Major | `swarm status` already exists (`apps/swarm-mcp/swarm_mcp/cli.py:1870`). | The install's status is `swarm install --status`; `verbs/status.py` dropped; `test_existing_swarm_status_unchanged`. |
 | 14 | Major | K8S-1's mandatory `--project` would break `.github/workflows/security.yml:235` and `Makefile:343`. | `--project` required only for project-bearing subcommands; `render.py policies` unchanged (`test_policies_unchanged_without_project`). No workflow change. |
-| 15 | Major | The namespace, quota and `--providers` logic is in `scripts/register-tenant.sh`, not `workspace-apply.sh`; both run as the deployer with account-IAM power, unflagged. | `register-tenant.sh` ↺ added to TEAM-1; TEAM-1 and DESAGA-2 flagged `held: IAM` (9 held lanes, 12 flags). |
+| 15 | Major | The namespace, quota and `--providers` logic is in `scripts/register-tenant.sh`, not `workspace-apply.sh`; both run as the deployer with account-IAM power, unflagged. | `register-tenant.sh` ↺ added to TEAM-1; TEAM-1 and DEBRAND-2 flagged `held: IAM` (9 held lanes, 12 flags). |
 | 16 | Major | The setup panels (wave 3) called an API client added only in wave 4; the mock is not in the tree; no lane built the App callback page. | `api.ts` moved to SETUP-UI-1 and `admin-setup.css` to SETUP-UI-2; the mock comes from P1-B's artefacts via the brief; `GitHubAppCallback` in SETUP-UI-1, its route and `/admin/setup/health` tested in SETUP-UI-3. |
 | 17 | Major | `plugin/skills/sc/SKILL.md` (44 `uv run` hints, the live front door at `:1061`) and `plugin/commands/sc.md` ship in the bundle, in no territory (D1). | Added to PLUGIN-1 with `test_plugin_has_no_checkout_hint_or_live_literal`. |
 | 18 | Major | Reinstall adoption covered two of design §10's eight names; the record lived only in the local cache; the retention windows were not reported. | Eight names everywhere; `adopt.py` tests for the brand, Desktop client, App reuse or rename, Firestore wait, and re-derivation by probe; section 9.2 says how the windows are handled. |

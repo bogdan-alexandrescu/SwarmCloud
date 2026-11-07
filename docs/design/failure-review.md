@@ -1,24 +1,24 @@
 # The `failure-review` schedule type
 
 **Status: DESIGN, not built.** Lane AUTONOMY-DESIGN, 2026-10-22, part of
-#1933. Built by lanes FR-1 to FR-4 of
+An earlier issue. Built by lanes FR-1 to FR-4 of
 [agent-autonomy.md](agent-autonomy.md) §6.2, after the capability lanes they
 name. Nothing fires until FR-3 merges and the owner creates the schedule.
 
-**The request (BGD, 2026-10-22):** "set up an automation job that will run
+**The request (the owner, 2026-10-22):** "set up an automation job that will run
 every 6 hrs and investigate all of the agents and workflows that failed in the
 past 7 hrs, do an exhaustive in depth review and root cause analysis and why
 it failed. Propose a solution or a fix and, for each proposed solution,
 dispatch a workflow to design, plan, implement, review test and merge each
 fix".
 
-**The owner's decisions this design builds on, not reopens** (#1933, ~04:40Z):
+**The owner's decisions this design builds on, not reopens** (~04:40Z):
 
 * a **platform** schedule type only: it runs with no Claude Code session, and
   nothing runs until it is built;
 * **dispatch and merge without asking**, but **hold** anything touching IAM,
   `apps/common/swarm_common/`, secrets or tenant isolation, the other team's
-  resources in `saga-agents-staging`, or cost (`needs-owner`). For this job
+  resources in `example-project`, or cost (`needs-owner`). For this job
   only, this overrides the standing "ask before each proposal" rule;
 * **all tenants** are reviewed, and only **SwarmCloud causes** are fixed here;
 * **no budget cap** on the number of fix runs.
@@ -90,13 +90,13 @@ exists that the agent can add:
 | `verify_fence` | verify-remote's deliberate fences | the submitter service `swarm-verify` (`agent_worker/logs.py` `submitter_service`, the same list Terraform's `fencing_alert_excluded_submitters` names): the race and concurrency tests fence on purpose ([operations.md](../operations.md)) |
 | `fix_round_live` | failures a running fix round already covers | the agent belongs to an issue run in `CHECKING` or `FIXING`, or to a merge step parked `CI_PENDING` with rounds left. If that run then ends FAILED, the run's failure is reviewed |
 | `question_unanswered` | an agent dead-lettered because its owner question went unanswered, an await-input step nobody answered in time, and what either cancelled | `last_error: "owner question unanswered"` (agent-autonomy.md §3.9); or an await-input profile step (`awaitinput.is_await_profile`) `DEAD_LETTERED` with `last_error` beginning `await_input_expired:` (`awaitinput.AWAIT_INPUT_EXPIRED_ERROR`, written by the expiry sweep). Also a step the `fail_workflow` sweep cancelled (`end_cause: workflow_sweep`) when every failed step its `CANCELLED` event names in `detail.failed_steps` is such a silence, a `cancelled_parent` step whose ended upstream steps all are, and a workflow FAILED only because of them. A person's silence, not a defect. An `await_input_spec_refused:` dead-letter (a declaration that did not verify) **is** reviewed, and so is a sweep any FAILED agent caused |
-| `person_push` | a merge step a person on its pull request pushed over | `result_summary.merge.refusal.code == "superseded_by_person_push"` (`failuredigest.SUPERSEDED_BY_PERSON_PUSH`), or that string as the `end_cause` once contract request 139 (SUPERSEDED_BY_PERSON_PUSH, [contract-change-requests.md](../contract-change-requests.md)) lands; and a workflow FAILED only because of such a step. BGD, 2026-10-27 (#2505, epic #2525): the refusal is right and is not a failure. A plain lane that person dispatched onto the pull request's branch (a `continues` or `publish_to_pr` agent with no writer's mark) is their push too: the 2026-11-05 recurrence, cdcbd71, was the owner's `publish_to_pr` lane. A head from an unknown branch-mate, or any other platform commit the step did not accept, is `head_moved` and **is** reviewed, and its `refusal.commit` says why no person was named ([merge-step.md](../merge-step.md#revised-2026-10-27-a-persons-push-supersedes-the-merge-step-person-push-end-part-of-2505)) |
+| `person_push` | a merge step a person on its pull request pushed over | `result_summary.merge.refusal.code == "superseded_by_person_push"` (`failuredigest.SUPERSEDED_BY_PERSON_PUSH`), or that string as the `end_cause` once contract request 139 (SUPERSEDED_BY_PERSON_PUSH, [contract-change-requests.md](../contract-change-requests.md)) lands; and a workflow FAILED only because of such a step. The owner, 2026-10-27 (an earlier epic): the refusal is right and is not a failure. A plain lane that person dispatched onto the pull request's branch (a `continues` or `publish_to_pr` agent with no writer's mark) is their push too: the 2026-11-05 recurrence, cdcbd71, was the owner's `publish_to_pr` lane. A head from an unknown branch-mate, or any other platform commit the step did not accept, is `head_moved` and **is** reviewed, and its `refusal.commit` says why no person was named ([merge-step.md](../merge-step.md#revised-2026-10-27-a-persons-push-supersedes-the-merge-step-person-push-end-part-of-2505)) |
 | `self` | this schedule's own investigation | `metadata.schedule_type == "failure-review"` on the investigator and its children (§9). The **fix runs** it starts are not skipped: their failures are real |
 
-**Measured, 2026-10-22 ~04:40Z, over 7 hours** (from #1933): eng 7 (three
+**Measured, 2026-10-22 ~04:40Z, over 7 hours** (from an earlier issue): eng 7 (three
 "runner exceeded its 7200s timeout", one OOM reclaimed as "lease silent",
 two "expected outputs missing" or `published_nothing`), smoke 28 (mostly
-acceptance cases), u-bogdan 0. Under these rules most of smoke's 28 are
+acceptance cases), u-member 0. Under these rules most of smoke's 28 are
 `acceptance_deliberate` and all of eng's 7 are reviewed.
 
 ---
@@ -221,14 +221,14 @@ died".
 * `hold` is one of `none`, `iam`, `contract`, `secrets`, `tenancy`, `shared`,
   `cost`. `where` is `platform` or `tenant_repo` (§1).
 * `action` is `fix` (the default when absent: file an issue, start a run),
-  `none` or `existing` (#2003). `none` means no code change is needed -- the
+  `none` or `existing`. `none` means no code change is needed -- the
   fix is already on main, or the cause is a process with no code site -- and
   `fix` then says why, with the evidence; the cause is recorded `no_change`
   with that why and nothing is filed or run. `existing` names an OPEN issue
   of the platform repository in `existing_issue`. The field exists because
-  the first live take-in (2026-10-22) filed #2001 and started a run for a
+  the first live take-in (2026-10-22) filed an earlier issue and started a run for a
   cause whose rca said in prose "No fix run should be started", and filed
-  #1999 for one it called "part of #1778": the take-in reads fields, never
+  an earlier issue for one it called "part of an earlier issue": the take-in reads fields, never
   prose.
 * **The fingerprint is swarm-api's, not the agent's**:
   `fr-` + the first 12 hex of SHA-256 over `component|site|class|signature`.
@@ -318,7 +318,7 @@ died".
      (`issueci._merge`'s point), because a plan's files are advisory.
 
    Today `hard_stop_hold` holds IAM (`IAM_PATTERNS`, any `google_*_iam_*`
-   line) and the frozen contract. FR-1 adds the four categories BGD named:
+   line) and the frozen contract. FR-1 adds the four categories the owner named:
 
    | category | held when the change touches |
    |---|---|

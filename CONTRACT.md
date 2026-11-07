@@ -46,7 +46,7 @@ If you believe it needs a change, say so in your report rather than editing it.
 
 ## Platform decisions
 
-- Project `saga-agents-staging`, region `us-central1`, Firestore database `swarm`
+- Project `example-project` (each deployment's own `PROJECT_ID`), region `us-central1`, Firestore database `swarm`
   (NOT `(default)` — shared project).
 - Primary backend Cloud Run Jobs. GKE Autopilot only for browser/GPU/>32GiB,
   and for claude-code since contract request 53.
@@ -68,8 +68,8 @@ If you believe it needs a change, say so in your report rather than editing it.
   either backend: a Cloud Run Job execution's task for the four Cloud Run
   profiles, a Kubernetes pod for `browser`. Pods are not the universal unit of
   execution here, and every invariant binds both backends equally.
-- Auth: Google ID token, hosted domain `saga.xyz`. No shared bearer token.
-- Tenant = Google group (`eng@saga.xyz` -> `eng`), personal fallback `u-<user>`.
+- Auth: Google ID token, hosted domain `example.com` (configured as `ALLOWED_DOMAINS`). No shared bearer token.
+- Tenant = Google group (`eng@example.com` -> `eng`), personal fallback `u-<user>`.
 - Cloud Run sets the service account on the JOB resource and it cannot be
   overridden per execution, so the dispatcher creates per-tenant-per-profile Job
   resources; the reconciler garbage-collects unused ones.
@@ -77,13 +77,13 @@ If you believe it needs a change, say so in your report rather than editing it.
   exists, then exits. Cloud Scheduler provides a 1-minute safety tick.
 - `make destroy` is label-scoped and ABORTS if the plan would delete anything
   lacking `managed-by=swarm-terraform`. The project holds a live GKE cluster
-  `agents-staging`, VPC `agents-staging-vpc`, and 12 other service accounts.
+  `peer-cluster`, VPC `peer-vpc` (real names in `SHARED_DENY_LIST`), and 12 other service accounts.
 
 ## Verified operational constraint — Cloud Identity group resolution
 
-Tested live against saga-agents-staging on 2026-09-15. Two calls, two different outcomes:
+Tested live against the live deployment's project on 2026-09-15. Two calls, two different outcomes:
 
-    groups:lookup?groupKey.id=eng@saga.xyz                        WORKS
+    groups:lookup?groupKey.id=eng@example.com                     WORKS
     groups/{id}/memberships:checkTransitiveMembership             WORKS
     groups/-/memberships:searchTransitiveGroups                   403 Error(4013)
                                                  "Insufficient permissions to retrieve memberships"

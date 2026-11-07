@@ -1,6 +1,6 @@
 """How many index versions a repository keeps, and who says which (lane INDEX-RETENTION, part of #1693).
 
-Measured 2026-10-20 on ai-studio (repo_d754779d0cf31b44): retention never
+Measured 2026-10-20 on peer-app (repo_d754779d0cf31b44): retention never
 ran. The worker read the registration's `index_versions` from Firestore
 itself (`agent_worker.indexrun.kept_commits`), a tenant not switched to the
 state routes got PermissionDenied on every run, and the sweep was then given

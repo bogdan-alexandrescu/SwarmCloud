@@ -49,7 +49,7 @@ from .test_await_input_api import (  # noqa: F401 - fixtures
     writer,
 )
 
-PROJECT_DOMAIN = "saga-agents-staging.iam.gserviceaccount.com"
+PROJECT_DOMAIN = "example-project.iam.gserviceaccount.com"
 #: The service tenant's principal, and its tenant id from the frozen rule.
 ORACLE = f"oracle-api@{PROJECT_DOMAIN}"
 ORACLE_TENANT = tenant_id_for_user(ORACLE)

@@ -6,7 +6,7 @@ many ad iframes (task_9d2890cce74147f985ff) the page area was the mask's flat
 #222 for ten minutes and more, and a resumed attempt (task_84cb2038aa704c829d48)
 showed the whole frame #555 for 30 s and more. Two causes: the page follower
 followed the NEWEST page target rather than the one shown, and the mask failed
-closed on any frame it could not check. BGD decided on 2026-10-25 that the
+closed on any frame it could not check. the owner decided on 2026-10-25 that the
 live view paints nothing (docs/design/live-browser.md §5.3), so the second
 cause is gone with the mask; the first still matters, because the caption's
 origin and the CAPTCHA hand-off are read from the page the follower follows.

@@ -1,7 +1,7 @@
 """QAENV-CRAWL (docs/design/qa-environments.md §3.1, §3.5, §4, §10; part of
 #2136): `swarm_qa capture --crawl` discovers while it captures.
 
-BGD, 2026-10-23: discovery runs inside every capture step (Q3 (a)), the
+the owner, 2026-10-23: discovery runs inside every capture step (Q3 (a)), the
 crawl may click disclosure controls only (Q4 (a)), and a step captures at
 most `found_per_step` new routes, 8 by default (§10, not the design's 4).
 These are the row's red-first tests in §8:
@@ -195,7 +195,7 @@ def _control(text: str, **facts) -> dict:
 
 
 def test_found_per_step_defaults_to_8(qa):
-    # MUTATION: keep the design's 4 and BGD's §10 answer is not what runs.
+    # MUTATION: keep the design's 4 and the owner's §10 answer is not what runs.
     assert qa.FOUND_PER_STEP == 8
     args = qa._parser().parse_args(["capture", "--routes", "r", "--group", "g1", "--base", APP,
                                     "--out", "o", "--bundle", "b", "--crawl", "--step", "1", "--steps", "1"])
@@ -753,7 +753,7 @@ def test_the_reveal_rules_are_qaspecs_start_click_rules(qa):
 
 
 # --------------------------------------------------------------------------
-# Dismissed routes (lane QA-CRAWL-SKIP; BGD 2026-10-25, part of #2157)
+# Dismissed routes (lane QA-CRAWL-SKIP; the owner 2026-10-25, part of #2157)
 # --------------------------------------------------------------------------
 
 

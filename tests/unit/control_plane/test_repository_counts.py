@@ -3,7 +3,7 @@
 
 Config › Repositories draws "Secrets: N" and "QA targets: N" on every
 registered card (config-e.html S3a). Neither count was served in one read:
-`GET /v1/repositories/{repo_id}/secrets` is one call per card, and BGD's
+`GET /v1/repositories/{repo_id}/secrets` is one call per card, and the owner's
 answer of 2026-10-25 was one call for the page's repositories, counts only.
 
 What each case holds, and the attacker it stands in for:

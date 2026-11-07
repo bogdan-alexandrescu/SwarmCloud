@@ -46,7 +46,7 @@ from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
 TENANT = "eng"
-BUCKET = "saga-agents-staging-swarm-artifacts"
+BUCKET = "example-project-swarm-artifacts"
 
 #: What the bucket lifecycle rule would have deleted by now. Any checkpoint
 #: older than this in dev was gone, whatever the control plane thought.
@@ -67,7 +67,7 @@ def log():
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         artifact_bucket=BUCKET,
@@ -323,7 +323,7 @@ def test_an_attempt_that_never_recorded_completion_is_honoured_but_floored(
     terminal. Honouring that reference for ever is the leak; the backstop is the
     floor under it.
 
-    Found by dry-running this collector against saga-agents-staging: 19 real
+    Found by dry-running this collector against example-project: 19 real
     checkpoints across 6 tasks were in exactly this state.
     """
     db, objects, tmp_path = db_and_objects
@@ -579,7 +579,7 @@ def test_a_dry_run_deletes_nothing_and_still_reports_what_it_would_delete(
 
     The first version of this reported `reclaimed: 0, kept: 142` beside 123
     reclaimable outcomes, which is a report an operator would read as "nothing
-    to collect". Caught by running the collector against saga-agents-staging.
+    to collect". Caught by running the collector against example-project.
     """
     db, objects, tmp_path = db_and_objects
     records = write_checkpoints(

@@ -6,7 +6,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Plan diagrams, proposal C, "Diagrams in the conversation" (PLANS-DIAG-C, part of #2585).
+ * Plan diagrams, proposal C, "Diagrams in the conversation" (PLANS-DIAG-C).
  * Built on proposal D's decision page as merged (plans-d.html, PR 2587): its tokens, chrome,
  * plan document, margin, revision bar and decision bar are copied whole. The pinned strip,
  * diagram messages, the review chat and the switches below are this proposal's.
@@ -564,14 +564,14 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">PLANS-DIAG-C · part of #2585 · drawn 2026-10-28 · not picked</p>
+<p class="kick">PLANS-DIAG-C · drawn 2026-10-28 · not picked</p>
 <h1>Plan diagrams, proposal C: Diagrams in the conversation</h1>
-<p class="lede">One of three competing proposals for diagrams in plans, drawn on proposal D's decision page as merged (<code>plans-d.html</code>, PR 2587, BGD's pick on 2026-10-28 for the plan and its conversation). This one makes a diagram a <b>message</b>: the planner's first message in the thread carries the plan's diagrams, every diagram asked for later is a message anchored to what it explains (in the thread) or a reply in the chat, and the diagrams added to the plan are <b>pinned</b> in a strip above the document, inside the plan's digest.</p>
+<p class="lede">One of three competing proposals for diagrams in plans, drawn on proposal D's decision page as merged (<code>plans-d.html</code>, PR 2587, the owner's pick on 2026-10-28 for the plan and its conversation). This one makes a diagram a <b>message</b>: the planner's first message in the thread carries the plan's diagrams, every diagram asked for later is a message anchored to what it explains (in the thread) or a reply in the chat, and the diagrams added to the plan are <b>pinned</b> in a strip above the document, inside the plan's digest.</p>
 
 <div class="ask">
-  <blockquote><b>BGD, 2026-10-28, first ask</b>“generate flow diagrams and schematics to be included in plans for the majority of coding tasks, product design or research, issue fixing, error and failure fixes and more but also not everywhere where it doesn't make sense, like fixing a line in terraform … by default on but toggleable from the automation settings”</blockquote>
-  <blockquote><b>BGD, 2026-10-28, second ask</b>“the interactive conversational part of the plan review … to also be able to provide on demand schematics and diagrams during the plan review process”</blockquote>
-  <blockquote><b>BGD, 2026-10-28, third addition</b>on-demand diagrams must work “even if the plan reviewer / approver asks this in chat with the agent that takes part in the plan review conversation, interactively in a chat section on the plan review page”</blockquote>
+  <blockquote><b>The owner, 2026-10-28, first ask</b>“generate flow diagrams and schematics to be included in plans for the majority of coding tasks, product design or research, issue fixing, error and failure fixes and more but also not everywhere where it doesn't make sense, like fixing a line in terraform … by default on but toggleable from the automation settings”</blockquote>
+  <blockquote><b>The owner, 2026-10-28, second ask</b>“the interactive conversational part of the plan review … to also be able to provide on demand schematics and diagrams during the plan review process”</blockquote>
+  <blockquote><b>The owner, 2026-10-28, third addition</b>on-demand diagrams must work “even if the plan reviewer / approver asks this in chat with the agent that takes part in the plan review conversation, interactively in a chat section on the plan review page”</blockquote>
 </div>
 
 <div class="idea">
@@ -593,7 +593,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <ul>
     <li>PICKS.md: nothing below 12px, no all-caps, a light / dark / system toggle (top of the page and every frame's panel foot), an unknown figure is a dash with its reason, and state words are lower-case words.</li>
     <li>Proposal D's tokens, decision page, revision bar, margin, thread and decision bar, copied whole. Only the diagrams, the chat and the switches are this proposal's.</li>
-    <li>The canonical plan is the real <code>run_fba2dc8f6ec9494dae2f</code> (issue #2583, from the failure-review schedule), cut where D cut it. It carries <b>no diagrams today</b>: every diagram, revision after 1, chat message and cost below is an <b>example</b> of what the planner and the review agent would produce, and says so. The diagrams are inline SVG standing for what the renderer draws from each diagram's source (D4 shows one source). Read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner.</li>
+    <li>The canonical plan is the real <code>run_fba2dc8f6ec9494dae2f</code> (the issue the frames draw, from the failure-review schedule), cut where D cut it. It carries <b>no diagrams today</b>: every diagram, revision after 1, chat message and cost below is an <b>example</b> of what the planner and the review agent would produce, and says so. The diagrams are inline SVG standing for what the renderer draws from each diagram's source (D4 shows one source). Read at <b>Wednesday 2026-10-28 03:00Z</b>; the viewer is Operator, the platform owner.</li>
   </ul>
 </div>
 
@@ -639,7 +639,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 
 <section class="frame" id="D5" data-frame="D5">
   <div class="flabel"><span class="fid">D5</span><h2>The switch: a workspace default, per schedule, per issue submission</h2></div>
-  <p>On by default, as BGD asked. The workspace default lives in Config › Workspace Settings; a schedule overrides it on its Gates and approvers card; an issue submitted by hand overrides it on Submit › From a GitHub issue. On means the planner may draw (and decides per plan) and anyone reviewing may ask; off means no diagrams and no way to ask.</p>
+  <p>On by default, as the owner asked. The workspace default lives in Config › Workspace Settings; a schedule overrides it on its Gates and approvers card; an issue submitted by hand overrides it on Submit › From a GitHub issue. On means the planner may draw (and decides per plan) and anyone reviewing may ask; off means no diagrams and no way to ask.</p>
   <figure class="sub" id="D5a" data-frame="D5a"><div class="sl"><span class="sid">D5a</span><b>Config › Workspace Settings: the default, on</b><span class="dim">desktop 1440</span></div><div class="scroller" data-f="d5a"></div></figure>
   <div class="pair">
     <figure class="sub" id="D5b" data-frame="D5b"><div class="sl"><span class="sid">D5b</span><b>A schedule's Gates and approvers card: off for this one</b><span class="dim">the schedule sheet's card</span></div><div class="scroller solo" data-f="d5b"></div>
@@ -699,7 +699,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
     <tr><td><code>plan_chat[]</code>, <code>POST /v1/runs/{id}:plan-chat</code> and its stream</td><td>The review chat: messages (words or a diagram), the agent's runner and model, each reply's cost, the conversation's total and its cap, and a stream of the reply while it is written.</td><td>The chat section, its working state and its meter.</td><td>D6, D7, D8</td></tr>
     <tr><td><code>plan_review_agent</code> settings</td><td>The chat agent's runner profile, model and per-conversation cost cap ($2.00 drawn here, example), and what it may read.</td><td>The chat's head and its meter. PLANS-DESIGN designs the agent itself; this proposal only draws where it sits.</td><td>D8</td></tr>
     <tr><td><code>POST /v1/diagrams:render</code></td><td>Renders diagram source to SVG on the server (sandboxed), returns the SVG or the renderer's error with its line.</td><td>The console never runs agent-written diagram code; a failure has a reason to show.</td><td>D4, D6</td></tr>
-    <tr><td><code>plan_diagrams</code> in workspace settings</td><td>The workspace default, on or off; on when unset.</td><td>BGD's “by default on”.</td><td>D5</td></tr>
+    <tr><td><code>plan_diagrams</code> in workspace settings</td><td>The workspace default, on or off; on when unset.</td><td>The owner's “by default on”.</td><td>D5</td></tr>
     <tr><td><code>gate.diagrams</code> on a schedule</td><td><i>default</i>, <i>on</i> or <i>off</i>; default when unset.</td><td>The per-schedule switch on the Gates and approvers card.</td><td>D5, D6</td></tr>
     <tr><td><code>plan_diagrams</code> on an issue-run submission</td><td>As the schedule's, chosen on Submit › From a GitHub issue; stored on the run.</td><td>The per-submission switch.</td><td>D5</td></tr>
     <tr><td><code>diagrams_effective</code> on the run read</td><td>On or off, and which switch decided it (workspace, schedule, submission).</td><td>The plan page's off line names the switch that turned it off.</td><td>D5, D6</td></tr>
@@ -755,7 +755,7 @@ function phone(title,body){return `<div class="F ph"><div class="phd">${I('menu'
 const solo=(body,w)=>`<div class="F" style="width:${w||640}px;max-width:100%;background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:12px">${body}</div>`;
 
 /* ---------- the canonical plan, in its own words (D's) ---------- */
-const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='bogdan-alexandrescu/SwarmCloud#2583';
+const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='example-org/example-repo#2583';
 const DIG='sha256:be162b53886ee2620…';
 const DIG2='sha256:3f9a07c1d2e4… (example)',DIG3='sha256:81c4e2a90b6f… (example)';
 const SUMMARY="cifix.stamp's ci_fix branch refuses a PR-side CI fix while a lane's merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-1…";
