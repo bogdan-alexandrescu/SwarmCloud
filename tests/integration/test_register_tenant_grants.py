@@ -84,7 +84,7 @@ case "${args}" in
   *"auth print-access-token"*)        echo "fake-access-token" ;;
   *"firestore databases describe"*)   echo "projects/x/databases/swarm" ;;
   *"identity groups describe"*)       echo "groups/1" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *"iam roles describe"*)             echo "roles/custom" ;;
   *"storage buckets describe"*)       echo "swarm-test-artifacts" ;;
   # The bucket policy the script reads to decide whether a grant already
@@ -360,7 +360,7 @@ def test_another_tenants_bucket_bindings_do_not_count_as_this_tenants(tmp_path) 
     """Register a tenant terraform does not manage, into a policy full of ones it does.
 
     The reproduction, end to end: `make infra` in dev leaves eng, smoke and
-    u-bogdan bound on the single shared artifact bucket, and
+    example-tenant bound on the single shared artifact bucket, and
     `make register-tenant GROUP=research@example.com` then registers a tenant that
     is in nobody's var.tenants. Both "already granted?" checks used to be a grep
     over that whole policy -- one for the role id, one for the member -- so both
@@ -372,7 +372,7 @@ def test_another_tenants_bucket_bindings_do_not_count_as_this_tenants(tmp_path) 
     transcript = _register(
         tmp_path,
         "research@example.com",
-        _shared_bucket_policy("eng@example.com", "smoke@example.com", "u-bogdan@example.com"),
+        _shared_bucket_policy("eng@example.com", "smoke@example.com", "example-tenant@example.com"),
     )
     member = _gsa("research@example.com")
 

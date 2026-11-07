@@ -1103,7 +1103,7 @@
       "type": "google_artifact_registry_repository_iam_member"
     },
     {
-      "address": "module.artifact_registry.google_artifact_registry_repository_iam_member.pullers[\"tenant-u-bogdan\"]",
+      "address": "module.artifact_registry.google_artifact_registry_repository_iam_member.pullers[\"tenant-example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -1111,8 +1111,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/locations/us-central1/repositories/swarm-images/projects/saga-agents-staging/roles/swarmImagePuller/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/locations/us-central1/repositories/swarm-images/projects/saga-agents-staging/roles/swarmImagePuller/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
           "project": "saga-agents-staging",
           "repository": "projects/saga-agents-staging/locations/us-central1/repositories/swarm-images"
         }
@@ -1454,8 +1454,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/locations/us-central1/services/swarm-api/roles/run.invoker/serviceAccount:service-209012342332@gcp-sa-iap.iam.gserviceaccount.com",
-          "member": "serviceAccount:service-209012342332@gcp-sa-iap.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/locations/us-central1/services/swarm-api/roles/run.invoker/serviceAccount:service-123456789012@gcp-sa-iap.iam.gserviceaccount.com",
+          "member": "serviceAccount:service-123456789012@gcp-sa-iap.iam.gserviceaccount.com",
           "name": "projects/saga-agents-staging/locations/us-central1/services/swarm-api",
           "project": "saga-agents-staging"
         }
@@ -1566,7 +1566,7 @@
       "type": "google_cloud_run_v2_service_iam_member"
     },
     {
-      "address": "module.cloud_run.google_cloud_run_v2_service_iam_member.invokers[\"swarm-quota-broker:worker-u-bogdan\"]",
+      "address": "module.cloud_run.google_cloud_run_v2_service_iam_member.invokers[\"swarm-quota-broker:worker-example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -1574,8 +1574,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/locations/us-central1/services/swarm-quota-broker/roles/run.invoker/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/locations/us-central1/services/swarm-quota-broker/roles/run.invoker/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
           "name": "projects/saga-agents-staging/locations/us-central1/services/swarm-quota-broker",
           "project": "saga-agents-staging"
         }
@@ -1674,8 +1674,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/locations/us-central1/services/swarm-ui/roles/run.invoker/serviceAccount:service-209012342332@gcp-sa-iap.iam.gserviceaccount.com",
-          "member": "serviceAccount:service-209012342332@gcp-sa-iap.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/locations/us-central1/services/swarm-ui/roles/run.invoker/serviceAccount:service-123456789012@gcp-sa-iap.iam.gserviceaccount.com",
+          "member": "serviceAccount:service-123456789012@gcp-sa-iap.iam.gserviceaccount.com",
           "name": "projects/saga-agents-staging/locations/us-central1/services/swarm-ui",
           "project": "saga-agents-staging"
         }
@@ -1974,7 +1974,7 @@
       "type": "google_cloud_run_v2_job"
     },
     {
-      "address": "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"swarm-job-u-bogdan-claude-code\"]",
+      "address": "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"swarm-job-example-tenant-claude-code\"]",
       "change": {
         "actions": [
           "delete"
@@ -1990,9 +1990,9 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "claude-code",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           },
-          "id": "projects/saga-agents-staging/locations/us-central1/jobs/swarm-job-u-bogdan-claude-code",
+          "id": "projects/saga-agents-staging/locations/us-central1/jobs/swarm-job-example-tenant-claude-code",
           "labels": {
             "managed-by": "swarm-terraform",
             "swarm-class": "standard",
@@ -2000,9 +2000,9 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "claude-code",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           },
-          "name": "swarm-job-u-bogdan-claude-code",
+          "name": "swarm-job-example-tenant-claude-code",
           "project": "saga-agents-staging",
           "terraform_labels": {
             "goog-terraform-provisioned": "true",
@@ -2012,7 +2012,7 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "claude-code",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           }
         }
       },
@@ -2022,7 +2022,7 @@
       "type": "google_cloud_run_v2_job"
     },
     {
-      "address": "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"swarm-job-u-bogdan-generic\"]",
+      "address": "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"swarm-job-example-tenant-generic\"]",
       "change": {
         "actions": [
           "delete"
@@ -2038,9 +2038,9 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "generic",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           },
-          "id": "projects/saga-agents-staging/locations/us-central1/jobs/swarm-job-u-bogdan-generic",
+          "id": "projects/saga-agents-staging/locations/us-central1/jobs/swarm-job-example-tenant-generic",
           "labels": {
             "managed-by": "swarm-terraform",
             "swarm-class": "standard",
@@ -2048,9 +2048,9 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "generic",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           },
-          "name": "swarm-job-u-bogdan-generic",
+          "name": "swarm-job-example-tenant-generic",
           "project": "saga-agents-staging",
           "terraform_labels": {
             "goog-terraform-provisioned": "true",
@@ -2060,7 +2060,7 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "generic",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           }
         }
       },
@@ -2070,7 +2070,7 @@
       "type": "google_cloud_run_v2_job"
     },
     {
-      "address": "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"swarm-job-u-bogdan-mock\"]",
+      "address": "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"swarm-job-example-tenant-mock\"]",
       "change": {
         "actions": [
           "delete"
@@ -2086,9 +2086,9 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "mock",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           },
-          "id": "projects/saga-agents-staging/locations/us-central1/jobs/swarm-job-u-bogdan-mock",
+          "id": "projects/saga-agents-staging/locations/us-central1/jobs/swarm-job-example-tenant-mock",
           "labels": {
             "managed-by": "swarm-terraform",
             "swarm-class": "standard",
@@ -2096,9 +2096,9 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "mock",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           },
-          "name": "swarm-job-u-bogdan-mock",
+          "name": "swarm-job-example-tenant-mock",
           "project": "saga-agents-staging",
           "terraform_labels": {
             "goog-terraform-provisioned": "true",
@@ -2108,7 +2108,7 @@
             "swarm-gc-exempt": "true",
             "swarm-owner": "platform",
             "swarm-runner": "mock",
-            "swarm-tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant"
           }
         }
       },
@@ -2343,7 +2343,7 @@
       "type": "google_firestore_document"
     },
     {
-      "address": "module.firestore.google_firestore_document.pool[\"provider:anthropic:tenant:u-bogdan\"]",
+      "address": "module.firestore.google_firestore_document.pool[\"provider:anthropic:tenant:example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -2353,9 +2353,9 @@
         "before": {
           "collection": "pools",
           "database": "swarm",
-          "document_id": "provider:anthropic:tenant:u-bogdan",
-          "id": "projects/saga-agents-staging/databases/swarm/documents/pools/provider:anthropic:tenant:u-bogdan",
-          "name": "projects/saga-agents-staging/databases/swarm/documents/pools/provider:anthropic:tenant:u-bogdan",
+          "document_id": "provider:anthropic:tenant:example-tenant",
+          "id": "projects/saga-agents-staging/databases/swarm/documents/pools/provider:anthropic:tenant:example-tenant",
+          "name": "projects/saga-agents-staging/databases/swarm/documents/pools/provider:anthropic:tenant:example-tenant",
           "project": "saga-agents-staging"
         }
       },
@@ -2629,7 +2629,7 @@
       "type": "google_firestore_document"
     },
     {
-      "address": "module.firestore.google_firestore_document.pool[\"tenant:u-bogdan\"]",
+      "address": "module.firestore.google_firestore_document.pool[\"tenant:example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -2639,9 +2639,9 @@
         "before": {
           "collection": "pools",
           "database": "swarm",
-          "document_id": "tenant:u-bogdan",
-          "id": "projects/saga-agents-staging/databases/swarm/documents/pools/tenant:u-bogdan",
-          "name": "projects/saga-agents-staging/databases/swarm/documents/pools/tenant:u-bogdan",
+          "document_id": "tenant:example-tenant",
+          "id": "projects/saga-agents-staging/databases/swarm/documents/pools/tenant:example-tenant",
+          "name": "projects/saga-agents-staging/databases/swarm/documents/pools/tenant:example-tenant",
           "project": "saga-agents-staging"
         }
       },
@@ -2717,7 +2717,7 @@
       "type": "google_firestore_document"
     },
     {
-      "address": "module.firestore.google_firestore_document.tenant[\"u-bogdan\"]",
+      "address": "module.firestore.google_firestore_document.tenant[\"example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -2727,9 +2727,9 @@
         "before": {
           "collection": "tenants",
           "database": "swarm",
-          "document_id": "u-bogdan",
-          "id": "projects/saga-agents-staging/databases/swarm/documents/tenants/u-bogdan",
-          "name": "projects/saga-agents-staging/databases/swarm/documents/tenants/u-bogdan",
+          "document_id": "example-tenant",
+          "id": "projects/saga-agents-staging/databases/swarm/documents/tenants/example-tenant",
+          "name": "projects/saga-agents-staging/databases/swarm/documents/tenants/example-tenant",
           "project": "saga-agents-staging"
         }
       },
@@ -3507,7 +3507,7 @@
       "type": "google_compute_url_map"
     },
     {
-      "address": "module.frontend[0].google_iap_web_backend_service_iam_member.members[\"domain:saga.xyz\"]",
+      "address": "module.frontend[0].google_iap_web_backend_service_iam_member.members[\"domain:example.com\"]",
       "change": {
         "actions": [
           "delete"
@@ -3515,8 +3515,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/iap_web/compute/services/swarm-ui-backend/roles/iap.httpsResourceAccessor/domain:saga.xyz",
-          "member": "domain:saga.xyz",
+          "id": "projects/saga-agents-staging/iap_web/compute/services/swarm-ui-backend/roles/iap.httpsResourceAccessor/domain:example.com",
+          "member": "domain:example.com",
           "project": "saga-agents-staging"
         }
       },
@@ -3526,7 +3526,7 @@
       "type": "google_iap_web_backend_service_iam_member"
     },
     {
-      "address": "module.frontend[0].google_iap_web_backend_service_iam_member.ui_members[\"domain:saga.xyz\"]",
+      "address": "module.frontend[0].google_iap_web_backend_service_iam_member.ui_members[\"domain:example.com\"]",
       "change": {
         "actions": [
           "delete"
@@ -3534,8 +3534,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/iap_web/compute/services/swarm-ui-ui-backend/roles/iap.httpsResourceAccessor/domain:saga.xyz",
-          "member": "domain:saga.xyz",
+          "id": "projects/saga-agents-staging/iap_web/compute/services/swarm-ui-ui-backend/roles/iap.httpsResourceAccessor/domain:example.com",
+          "member": "domain:example.com",
           "project": "saga-agents-staging"
         }
       },
@@ -4623,7 +4623,7 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/209012342332/dashboards/88e43129-ebd9-4b76-ae96-ebe9b0dd3365",
+          "id": "projects/123456789012/dashboards/88e43129-ebd9-4b76-ae96-ebe9b0dd3365",
           "project": "saga-agents-staging"
         }
       },
@@ -5354,8 +5354,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/subscriptions/swarm-scheduler-wake-sub/roles/pubsub.subscriber/serviceAccount:service-209012342332@gcp-sa-pubsub.iam.gserviceaccount.com",
-          "member": "serviceAccount:service-209012342332@gcp-sa-pubsub.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/subscriptions/swarm-scheduler-wake-sub/roles/pubsub.subscriber/serviceAccount:service-123456789012@gcp-sa-pubsub.iam.gserviceaccount.com",
+          "member": "serviceAccount:service-123456789012@gcp-sa-pubsub.iam.gserviceaccount.com",
           "project": "saga-agents-staging",
           "subscription": "swarm-scheduler-wake-sub"
         }
@@ -5449,8 +5449,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/topics/swarm-scheduler-wake-dlq/roles/pubsub.publisher/serviceAccount:service-209012342332@gcp-sa-pubsub.iam.gserviceaccount.com",
-          "member": "serviceAccount:service-209012342332@gcp-sa-pubsub.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/topics/swarm-scheduler-wake-dlq/roles/pubsub.publisher/serviceAccount:service-123456789012@gcp-sa-pubsub.iam.gserviceaccount.com",
+          "member": "serviceAccount:service-123456789012@gcp-sa-pubsub.iam.gserviceaccount.com",
           "project": "saga-agents-staging",
           "topic": "projects/saga-agents-staging/topics/swarm-scheduler-wake-dlq"
         }
@@ -5551,7 +5551,7 @@
             "swarm-tenant": "eng",
             "tenant": "eng"
           },
-          "name": "projects/209012342332/secrets/swarm-tenant-eng-anthropic-refresh",
+          "name": "projects/123456789012/secrets/swarm-tenant-eng-anthropic-refresh",
           "project": "saga-agents-staging",
           "secret_id": "swarm-tenant-eng-anthropic-refresh",
           "terraform_labels": {
@@ -5603,7 +5603,7 @@
             "swarm-tenant": "eng",
             "tenant": "eng"
           },
-          "name": "projects/209012342332/secrets/swarm-tenant-eng-openai-refresh",
+          "name": "projects/123456789012/secrets/swarm-tenant-eng-openai-refresh",
           "project": "saga-agents-staging",
           "secret_id": "swarm-tenant-eng-openai-refresh",
           "terraform_labels": {
@@ -5625,7 +5625,7 @@
       "type": "google_secret_manager_secret"
     },
     {
-      "address": "module.secret_manager.google_secret_manager_secret.refresh[\"swarm-tenant-u-bogdan-anthropic-refresh\"]",
+      "address": "module.secret_manager.google_secret_manager_secret.refresh[\"swarm-tenant-example-tenant-anthropic-refresh\"]",
       "change": {
         "actions": [
           "delete"
@@ -5641,10 +5641,10 @@
             "swarm-env": "dev",
             "swarm-owner": "platform",
             "swarm-provider": "anthropic",
-            "swarm-tenant": "u-bogdan",
-            "tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant",
+            "tenant": "example-tenant"
           },
-          "id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic-refresh",
+          "id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic-refresh",
           "labels": {
             "component": "tenant-credential",
             "managed-by": "swarm-terraform",
@@ -5652,12 +5652,12 @@
             "swarm-env": "dev",
             "swarm-owner": "platform",
             "swarm-provider": "anthropic",
-            "swarm-tenant": "u-bogdan",
-            "tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant",
+            "tenant": "example-tenant"
           },
-          "name": "projects/209012342332/secrets/swarm-tenant-u-bogdan-anthropic-refresh",
+          "name": "projects/123456789012/secrets/swarm-tenant-example-tenant-anthropic-refresh",
           "project": "saga-agents-staging",
-          "secret_id": "swarm-tenant-u-bogdan-anthropic-refresh",
+          "secret_id": "swarm-tenant-example-tenant-anthropic-refresh",
           "terraform_labels": {
             "component": "tenant-credential",
             "goog-terraform-provisioned": "true",
@@ -5666,8 +5666,8 @@
             "swarm-env": "dev",
             "swarm-owner": "platform",
             "swarm-provider": "anthropic",
-            "swarm-tenant": "u-bogdan",
-            "tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant",
+            "tenant": "example-tenant"
           }
         }
       },
@@ -5707,7 +5707,7 @@
             "swarm-tenant": "eng",
             "tenant": "eng"
           },
-          "name": "projects/209012342332/secrets/swarm-tenant-eng-anthropic",
+          "name": "projects/123456789012/secrets/swarm-tenant-eng-anthropic",
           "project": "saga-agents-staging",
           "secret_id": "swarm-tenant-eng-anthropic",
           "terraform_labels": {
@@ -5759,7 +5759,7 @@
             "swarm-tenant": "eng",
             "tenant": "eng"
           },
-          "name": "projects/209012342332/secrets/swarm-tenant-eng-openai",
+          "name": "projects/123456789012/secrets/swarm-tenant-eng-openai",
           "project": "saga-agents-staging",
           "secret_id": "swarm-tenant-eng-openai",
           "terraform_labels": {
@@ -5781,7 +5781,7 @@
       "type": "google_secret_manager_secret"
     },
     {
-      "address": "module.secret_manager.google_secret_manager_secret.this[\"swarm-tenant-u-bogdan-anthropic\"]",
+      "address": "module.secret_manager.google_secret_manager_secret.this[\"swarm-tenant-example-tenant-anthropic\"]",
       "change": {
         "actions": [
           "delete"
@@ -5797,10 +5797,10 @@
             "swarm-env": "dev",
             "swarm-owner": "platform",
             "swarm-provider": "anthropic",
-            "swarm-tenant": "u-bogdan",
-            "tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant",
+            "tenant": "example-tenant"
           },
-          "id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic",
+          "id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic",
           "labels": {
             "component": "tenant-credential",
             "managed-by": "swarm-terraform",
@@ -5808,12 +5808,12 @@
             "swarm-env": "dev",
             "swarm-owner": "platform",
             "swarm-provider": "anthropic",
-            "swarm-tenant": "u-bogdan",
-            "tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant",
+            "tenant": "example-tenant"
           },
-          "name": "projects/209012342332/secrets/swarm-tenant-u-bogdan-anthropic",
+          "name": "projects/123456789012/secrets/swarm-tenant-example-tenant-anthropic",
           "project": "saga-agents-staging",
-          "secret_id": "swarm-tenant-u-bogdan-anthropic",
+          "secret_id": "swarm-tenant-example-tenant-anthropic",
           "terraform_labels": {
             "component": "tenant-credential",
             "goog-terraform-provisioned": "true",
@@ -5822,8 +5822,8 @@
             "swarm-env": "dev",
             "swarm-owner": "platform",
             "swarm-provider": "anthropic",
-            "swarm-tenant": "u-bogdan",
-            "tenant": "u-bogdan"
+            "swarm-tenant": "example-tenant",
+            "tenant": "example-tenant"
           }
         }
       },
@@ -5871,7 +5871,7 @@
       "type": "google_secret_manager_secret_iam_binding"
     },
     {
-      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.accessor[\"swarm-tenant-u-bogdan-anthropic\"]",
+      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.accessor[\"swarm-tenant-example-tenant-anthropic\"]",
       "change": {
         "actions": [
           "delete"
@@ -5879,9 +5879,9 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic/roles/secretmanager.secretAccessor",
+          "id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic/roles/secretmanager.secretAccessor",
           "project": "saga-agents-staging",
-          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic"
+          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic"
         }
       },
       "mode": "managed",
@@ -5928,7 +5928,7 @@
       "type": "google_secret_manager_secret_iam_binding"
     },
     {
-      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.refresh_accessor[\"swarm-tenant-u-bogdan-anthropic-refresh\"]",
+      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.refresh_accessor[\"swarm-tenant-example-tenant-anthropic-refresh\"]",
       "change": {
         "actions": [
           "delete"
@@ -5936,9 +5936,9 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic-refresh/roles/secretmanager.secretAccessor",
+          "id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic-refresh/roles/secretmanager.secretAccessor",
           "project": "saga-agents-staging",
-          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic-refresh"
+          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic-refresh"
         }
       },
       "mode": "managed",
@@ -6023,7 +6023,7 @@
       "type": "google_secret_manager_secret_iam_binding"
     },
     {
-      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.version_adder[\"swarm-tenant-u-bogdan-anthropic\"]",
+      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.version_adder[\"swarm-tenant-example-tenant-anthropic\"]",
       "change": {
         "actions": [
           "delete"
@@ -6031,9 +6031,9 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic/roles/secretmanager.secretVersionAdder",
+          "id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic/roles/secretmanager.secretVersionAdder",
           "project": "saga-agents-staging",
-          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic"
+          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic"
         }
       },
       "mode": "managed",
@@ -6042,7 +6042,7 @@
       "type": "google_secret_manager_secret_iam_binding"
     },
     {
-      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.version_adder[\"swarm-tenant-u-bogdan-anthropic-refresh\"]",
+      "address": "module.secret_manager.google_secret_manager_secret_iam_binding.version_adder[\"swarm-tenant-example-tenant-anthropic-refresh\"]",
       "change": {
         "actions": [
           "delete"
@@ -6050,9 +6050,9 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic-refresh/roles/secretmanager.secretVersionAdder",
+          "id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic-refresh/roles/secretmanager.secretVersionAdder",
           "project": "saga-agents-staging",
-          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-u-bogdan-anthropic-refresh"
+          "secret_id": "projects/saga-agents-staging/secrets/swarm-tenant-example-tenant-anthropic-refresh"
         }
       },
       "mode": "managed",
@@ -6234,7 +6234,7 @@
       "type": "google_project_iam_member"
     },
     {
-      "address": "module.tenancy.google_project_iam_member.worker_firestore[\"u-bogdan\"]",
+      "address": "module.tenancy.google_project_iam_member.worker_firestore[\"example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -6242,8 +6242,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "saga-agents-staging/projects/saga-agents-staging/roles/swarmTenantWorkerFirestore/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "saga-agents-staging/projects/saga-agents-staging/roles/swarmTenantWorkerFirestore/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
           "project": "saga-agents-staging"
         }
       },
@@ -6386,7 +6386,7 @@
       "type": "google_project_iam_member"
     },
     {
-      "address": "module.tenancy.google_project_iam_member.worker_telemetry[\"u-bogdan:roles/cloudtrace.agent\"]",
+      "address": "module.tenancy.google_project_iam_member.worker_telemetry[\"example-tenant:roles/cloudtrace.agent\"]",
       "change": {
         "actions": [
           "delete"
@@ -6394,8 +6394,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "saga-agents-staging/roles/cloudtrace.agent/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "saga-agents-staging/roles/cloudtrace.agent/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
           "project": "saga-agents-staging"
         }
       },
@@ -6405,7 +6405,7 @@
       "type": "google_project_iam_member"
     },
     {
-      "address": "module.tenancy.google_project_iam_member.worker_telemetry[\"u-bogdan:roles/logging.logWriter\"]",
+      "address": "module.tenancy.google_project_iam_member.worker_telemetry[\"example-tenant:roles/logging.logWriter\"]",
       "change": {
         "actions": [
           "delete"
@@ -6413,8 +6413,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "saga-agents-staging/roles/logging.logWriter/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "saga-agents-staging/roles/logging.logWriter/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
           "project": "saga-agents-staging"
         }
       },
@@ -6424,7 +6424,7 @@
       "type": "google_project_iam_member"
     },
     {
-      "address": "module.tenancy.google_project_iam_member.worker_telemetry[\"u-bogdan:roles/monitoring.metricWriter\"]",
+      "address": "module.tenancy.google_project_iam_member.worker_telemetry[\"example-tenant:roles/monitoring.metricWriter\"]",
       "change": {
         "actions": [
           "delete"
@@ -6432,8 +6432,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "saga-agents-staging/roles/monitoring.metricWriter/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "saga-agents-staging/roles/monitoring.metricWriter/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
           "project": "saga-agents-staging"
         }
       },
@@ -6544,7 +6544,7 @@
       "type": "google_service_account"
     },
     {
-      "address": "module.tenancy.google_service_account.worker[\"u-bogdan\"]",
+      "address": "module.tenancy.google_service_account.worker[\"example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -6552,11 +6552,11 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "account_id": "swarm-agent-worker-u-bogdan",
-          "email": "swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "name": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
+          "account_id": "swarm-agent-worker-example-tenant",
+          "email": "swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "name": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
           "project": "saga-agents-staging"
         }
       },
@@ -6660,7 +6660,7 @@
       "type": "google_service_account_iam_member"
     },
     {
-      "address": "module.tenancy.google_service_account_iam_member.act_as[\"u-bogdan:reconciler\"]",
+      "address": "module.tenancy.google_service_account_iam_member.act_as[\"example-tenant:reconciler\"]",
       "change": {
         "actions": [
           "delete"
@@ -6668,7 +6668,7 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com/roles/iam.serviceAccountUser/serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com/roles/iam.serviceAccountUser/serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com",
           "member": "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
         }
       },
@@ -6678,7 +6678,7 @@
       "type": "google_service_account_iam_member"
     },
     {
-      "address": "module.tenancy.google_service_account_iam_member.act_as[\"u-bogdan:scheduler\"]",
+      "address": "module.tenancy.google_service_account_iam_member.act_as[\"example-tenant:scheduler\"]",
       "change": {
         "actions": [
           "delete"
@@ -6686,7 +6686,7 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com/roles/iam.serviceAccountUser/serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com",
+          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com/roles/iam.serviceAccountUser/serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com",
           "member": "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
         }
       },
@@ -6768,7 +6768,7 @@
       "type": "google_service_account_iam_member"
     },
     {
-      "address": "module.tenancy.google_service_account_iam_member.workload_identity[\"u-bogdan\"]",
+      "address": "module.tenancy.google_service_account_iam_member.workload_identity[\"example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -6776,8 +6776,8 @@
         "after": null,
         "after_unknown": {},
         "before": {
-          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com/roles/iam.workloadIdentityUser/serviceAccount:saga-agents-staging.svc.id.goog[swarm-tenant-u-bogdan/swarm-agent-worker]",
-          "member": "serviceAccount:saga-agents-staging.svc.id.goog[swarm-tenant-u-bogdan/swarm-agent-worker]"
+          "id": "projects/saga-agents-staging/serviceAccounts/swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com/roles/iam.workloadIdentityUser/serviceAccount:saga-agents-staging.svc.id.goog[swarm-tenant-example-tenant/swarm-agent-worker]",
+          "member": "serviceAccount:saga-agents-staging.svc.id.goog[swarm-tenant-example-tenant/swarm-agent-worker]"
         }
       },
       "mode": "managed",
@@ -6842,7 +6842,7 @@
       "type": "google_storage_bucket_iam_member"
     },
     {
-      "address": "module.tenancy.google_storage_bucket_iam_member.worker_bucket_metadata[\"u-bogdan\"]",
+      "address": "module.tenancy.google_storage_bucket_iam_member.worker_bucket_metadata[\"example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -6851,8 +6851,8 @@
         "after_unknown": {},
         "before": {
           "bucket": "b/swarm-artifacts-saga-agents-staging",
-          "id": "b/swarm-artifacts-saga-agents-staging/projects/saga-agents-staging/roles/swarmBucketMetadataReader/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com"
+          "id": "b/swarm-artifacts-saga-agents-staging/projects/saga-agents-staging/roles/swarmBucketMetadataReader/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com"
         }
       },
       "mode": "managed",
@@ -6918,7 +6918,7 @@
       "type": "google_storage_bucket_iam_member"
     },
     {
-      "address": "module.tenancy.google_storage_bucket_iam_member.worker_objects[\"u-bogdan\"]",
+      "address": "module.tenancy.google_storage_bucket_iam_member.worker_objects[\"example-tenant\"]",
       "change": {
         "actions": [
           "delete"
@@ -6927,8 +6927,8 @@
         "after_unknown": {},
         "before": {
           "bucket": "b/swarm-artifacts-saga-agents-staging",
-          "id": "b/swarm-artifacts-saga-agents-staging/roles/storage.objectUser/serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com/swarm-tenant-prefix-u-bogdan/Objects under tenants/u-bogdan/ only, including prefix-scoped listing./resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/u-bogdan/\") || api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"tenants/u-bogdan/\")",
-          "member": "serviceAccount:swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com"
+          "id": "b/swarm-artifacts-saga-agents-staging/roles/storage.objectUser/serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com/swarm-tenant-prefix-example-tenant/Objects under tenants/example-tenant/ only, including prefix-scoped listing./resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/example-tenant/\") || api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"tenants/example-tenant/\")",
+          "member": "serviceAccount:swarm-agent-worker-example-tenant@saga-agents-staging.iam.gserviceaccount.com"
         }
       },
       "mode": "managed",

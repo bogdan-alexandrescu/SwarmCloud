@@ -74,7 +74,7 @@ UTC = timezone.utc
 NOW = datetime(2026, 9, 25, 11, 10, 2, tzinfo=UTC)
 WEEK = {"tz": "UTC", "span": "7d"}
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 ENG_GROUP = "eng@example.com"
 RESEARCH_GROUP = "research@example.com"
 ADMIN_GROUP = "swarm-admins@example.com"
