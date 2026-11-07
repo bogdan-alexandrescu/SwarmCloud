@@ -126,9 +126,10 @@ def test_a_task_run_is_named_by_its_label_alone(_plugin_root):
     assert [copy["title"] for copy in several["launches"]] == ["SC · lane-a", "SC · lane-b"]
 
 
-def test_a_long_task_label_is_cut_at_150(_plugin_root):
+def test_a_long_task_label_is_cut_at_the_name_cap(_plugin_root):
+    # #2688: a stored label longer than a name's cap is cut at it.
     out = launch.for_tasks([{"task_id": "task_a", "label": "x" * 400, "workspace": "eng"}])
-    assert len(out["title"]) == workflows.TITLE_CHARS
+    assert len(out["title"]) == len("SC · ") + workflows.NAME_MAX_CHARS
     assert out["title"].startswith("SC · xxx") and out["title"].endswith("x…")
     assert "[" not in out["title"]
 
