@@ -33,6 +33,7 @@ import { publishListCounts } from './Spine'
 import { rowLabel, useRowTitles } from './OverviewRegions'
 import { rowClock, useNow } from './useNow'
 import { waitingShort } from './waitingShort'
+import { OneRowName } from './OneRowName'
 import {
   CONCURRENCY_STATES,
   NEVER_WRITTEN,
@@ -2773,7 +2774,7 @@ function CompactRow({
           // One text, so `.cr-name b`'s ellipsis cuts a long one (not the
           // step's flex `is-titled`); the whole title and the id are the hover.
           <b title={`${name} · ${task.id}`}>
-            {loneTitle}
+            <OneRowName name={loneTitle} title={`${name} · ${task.id}`} />
           </b>
         ) : (
           // THE ID ONCE (visual QA pass 1, overview-agents-14): an untitled

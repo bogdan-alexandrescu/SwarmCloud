@@ -931,6 +931,12 @@ export interface Task {
    * took.
    */
   metadata: Record<string, unknown> | null
+  /**
+   * A single task's own description (#2688): plain text of at most 600
+   * characters, masked as its metadata is. Null for a workflow's step, which
+   * inherits nothing; OPTIONAL, as an API older than the field sends none.
+   */
+  description?: string | null
   repository_ref: string | null
   /**
    * THE MASKED INPUT. `GET /v1/tasks/{id}` serves the input the API masked at
