@@ -539,6 +539,27 @@ def test_ci_addon_makes_cloud_build_sa_not_default_sa() -> None:
     assert addons.build_account_problem("") is not None
 
 
+def test_ci_addon_creates_the_deployment_patterns_container_and_writes_no_version() -> None:
+    world = FakeWorld()
+    the_flow, _ = flow(world)
+    the_flow.enable("ci", given=CI_CHOICES)
+    assert ("create_secret", addons.CI_PATTERNS_SLOT) in world.calls
+    assert addons.CI_PATTERNS_SLOT not in world.added  # the list is the owner's sync, never the engine's
+    assert "secret.swarm-deployment-patterns.container" in addons.ADDONS["ci"].satisfies
+    assert "secret.swarm-deployment-patterns.value" not in addons.ADDONS["ci"].satisfies
+    # A second enable finds it and creates nothing.
+    world.calls.clear()
+    the_flow.enable("ci", given=CI_CHOICES)
+    assert ("create_secret", addons.CI_PATTERNS_SLOT) not in world.calls
+    # Its check needs the container.
+    world.containers.discard(addons.CI_PATTERNS_SLOT)
+    assert the_flow.check(addons.ADDONS["ci"]) == (addons.UNMET, f"{addons.CI_PATTERNS_SLOT} does not exist")
+    # Disabling keeps it unless --delete-secrets is typed.
+    world.containers.add(addons.CI_PATTERNS_SLOT)
+    the_flow.disable("ci")
+    assert addons.CI_PATTERNS_SLOT in world.containers
+
+
 def test_ci_addon_turns_on_acceptance_fixture() -> None:
     assert "enable_acceptance_fixture" in _variables("infra")
     world = FakeWorld()
