@@ -121,7 +121,7 @@ export function workflowNeedItems(
 }
 
 /**
- * ONLY WHAT STILL HOLDS WORK (BGD's pick, 6 November 2026): a workflow that
+ * ONLY WHAT STILL HOLDS WORK (the owner's pick, 6 November 2026): a workflow that
  * has finished -- SUCCEEDED, FAILED, CANCELLED or DEAD_LETTERED, its derived
  * state -- waits on nobody's answer, so its unanswered questions are neither
  * Needs you nor the list's "?". Its page shows them as one quiet tick beside
@@ -148,7 +148,7 @@ export function questionKey(text: string): string {
 
 /**
  * The keys of a question's words alone that `codec.step_needs` serves (the
- * follow-up picked under BGD's overnight grant, 6 November 2026): the worker's
+ * follow-up picked under the owner's overnight grant, 6 November 2026): the worker's
  * `question_text_digests` of an ended step's artifact questions, by index, and
  * each open wait question's `text_digest`. An implement and a fix step asking
  * the same words with other option labels then count once, as the bell counts

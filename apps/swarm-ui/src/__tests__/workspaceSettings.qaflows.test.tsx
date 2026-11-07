@@ -1,6 +1,6 @@
 /**
  * CONFIG › WORKSPACE SETTINGS › QA FLOWS PER STEP (lane QA-FLOWS-UI over
- * QA-FLOWS-CAP, part of #2136; BGD, 2026-10-26).
+ * QA-FLOWS-CAP, part of #2136; owner, 2026-10-26).
  *
  *   * The Settings part draws the workspace's `qa_flows_per_step`, read from
  *     `GET /v1/qa-settings`, with its 1-30 bound.

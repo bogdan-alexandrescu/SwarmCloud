@@ -23,7 +23,7 @@ import { useInView } from './useInView'
  * (`livegate/rfb.py`) sends a FramebufferUpdate only in answer to a
  * FramebufferUpdateRequest, and this client keeps ONE request outstanding and
  * sends the next no sooner than the floor `thumbIntervalMs` picks for how many
- * cards are on screen now (`THUMB_INTERVALS`, BGD's pick on 2026-11-06, part
+ * cards are on screen now (`THUMB_INTERVALS`, the owner's pick on 2026-11-06, part
  * of #2688): 10 fps at six or fewer, 5 fps for seven to twenty, 2 fps beyond.
  * So the rate is decided here, in the viewer, and not by the gate's 10 fps
  * viewer rate (§5.10): a thumbnail on a graph does not cost the pod a
@@ -53,12 +53,12 @@ import { useInView } from './useInView'
  * NOTHING SECRET IN THE URL (§5.2). The socket's URL carries only the task id.
  * The console holds no ticket: swarm-api authenticates the connection as it
  * does every route and mints the viewer ticket for itself. Every frame is the
- * screen as Chromium drew it: the gate redacts no part of it (BGD, 2026-10-25;
+ * screen as Chromium drew it: the gate redacts no part of it (owner, 2026-10-25;
  * part of #2298).
  */
 
 /**
- * THE PACING TABLE (BGD's pick on 2026-11-06, part of #2688): the floor
+ * THE PACING TABLE (the owner's pick on 2026-11-06, part of #2688): the floor
  * between two requests, by how many thumbnails are on screen right now -- 10
  * fps at six or fewer, 5 fps for seven to twenty, 2 fps beyond, so forty
  * running browser steps on one graph still cost the pods at most two frames a

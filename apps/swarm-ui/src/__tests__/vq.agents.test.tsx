@@ -1,4 +1,4 @@
-// LANE VQ-AGENTS (part of #2391): BGD's visual QA of Work › Agents and one
+// LANE VQ-AGENTS (part of #2391): the owner's visual QA of Work › Agents and one
 // agent's detail, 2026-10-26, against agents.html V1 and agent-details-v3.html A.
 //
 //   VQ-008  At 390 the agent's tab bar drew the open tab 0px wide: More was

@@ -835,7 +835,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
   //
   // OVER TIME SINCE COUNTS-PAGE (#2149). The page draws a second read below
   // the state counts, PlatformOverTime.tsx, and this topic said nothing about
-  // time. Its facts are BGD's decisions of 2026-10-23 -- agents by the day they
+  // time. Its facts are the owner's decisions of 2026-10-23 -- agents by the day they
   // were submitted with their retries apart, the four breakdowns, "Estimated
   // cost (list price, not a bill)" with its coverage -- and docs/outcomes.md
   // ("The nightly seal") for where the days come from.
@@ -1766,7 +1766,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
-  // ADMIN-PEOPLE-ROLES (part of #2157, BGD "Both, by scope"): Admin › People
+  // ADMIN-PEOPLE-ROLES (part of #2157, owner "Both, by scope"): Admin › People
   // and roles is drawn for a workspace admin too, with fewer columns than a
   // platform admin sees. Said here so a missing workspace reads as the scope
   // working, not as a fault. A role "from the default" is a sighting: the

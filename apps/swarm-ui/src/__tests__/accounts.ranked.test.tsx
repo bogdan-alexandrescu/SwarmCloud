@@ -5,7 +5,7 @@
 // it showed with `~` belonged to a window that had already reset. The page now
 // opens on "N of M accounts can take a new agent", the account that frees
 // first and when, the agents waiting on the pool; it ranks the accounts Can
-// take now -> Clears at a known time -> Frees when an agent finishes (BGD,
+// take now -> Clears at a known time -> Frees when an agent finishes (owner,
 // "Known clock first"); a reset window reads "reset HH:MMZ, nothing read
 // since"; and the forecast says when the pool goes dark at this pace.
 //
@@ -158,7 +158,7 @@ describe('the verdict', () => {
         },
         AT,
       ),
-      weekly('ai-eng-3', 0.97, Date.parse('2026-10-27T10:59:00Z'), AT),
+      weekly('acct-3', 0.97, Date.parse('2026-10-27T10:59:00Z'), AT),
       weekly('home-personal', 0.98, Date.parse('2026-10-26T07:59:00Z'), AT),
     ]
     const v = pool.verdictOf(accounts, 'eng', 0, AT)

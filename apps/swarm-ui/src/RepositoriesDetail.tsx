@@ -1189,7 +1189,7 @@ function HardStopsCard({ stops }: { stops: RepoHardStops }) {
 }
 
 /**
- * ONE OF THIS PAGE'S TWO SWITCHES (BGD's answer to visual QA VQ-043,
+ * ONE OF THIS PAGE'S TWO SWITCHES (the owner's answer to visual QA VQ-043,
  * 2026-10-26: "Show state only on the card"). They were Turn on / Turn off on
  * the Repositories list's card, which now says their state in one read-only
  * line; here they are the setting's own control. Who may use them is
@@ -1282,7 +1282,7 @@ function FileIssuesCard({ on, repoId, onWrite }: { on: boolean | null; repoId: s
 
 /**
  * Whether an agent's push that changes workflow files is made here (#2029,
- * WF-APP-TOKEN; BGD's decision 2026-10-22: self-serve, per-repo opt-in, off by
+ * WF-APP-TOKEN; the owner's decision 2026-10-22: self-serve, per-repo opt-in, off by
  * default), with its switch for a workspace admin only, as issue filing's.
  * Under it, what turning it on means, and "Workflows: not granted" where it is
  * on and the App installation has not accepted Workflows. Drawn only where the
@@ -1316,7 +1316,7 @@ function WorkflowsGrantRead({ repoId }: { repoId: string }) {
 }
 
 /**
- * "Workflows: not granted" (#2029, BGD's decision 4): the switch is on, and the
+ * "Workflows: not granted" (#2029, the owner's decision 4): the switch is on, and the
  * App installation has not accepted "Workflows: Read and write" -- or no
  * installation covers the repository -- so a workflow-file push still falls
  * back to a patch. The link is the API's, never built here.

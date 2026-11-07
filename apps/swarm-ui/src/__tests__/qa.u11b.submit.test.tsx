@@ -45,12 +45,12 @@ const CAPACITY = {
   tenant_id: 'eng',
   generated_at: '2026-10-02T10:00:00Z',
 }
-const REF = 'bogdan-alexandrescu/SwarmCloud-with-a-much-longer-repository-name#454'
+const REF = 'example-org/example-repo-with-a-much-longer-repository-name#454'
 const PREVIEW = {
   issue: {
-    ref: REF, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud-with-a-much-longer-repository-name', number: 454,
-    url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/454',
-    repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+    ref: REF, owner: 'example-org', repo: 'SwarmCloud-with-a-much-longer-repository-name', number: 454,
+    url: 'https://github.com/example-org/example-repo/issues/454',
+    repository_url: 'https://github.com/example-org/example-repo',
     title: 'Wire `Closes #N` into the PR body from `apps/swarm-api`',
     body: 'Body.', body_truncated: false, body_redacted: false, labels: [], state: 'open', comments: 2,
   },

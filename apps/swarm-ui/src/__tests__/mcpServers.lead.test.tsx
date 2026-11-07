@@ -1,4 +1,4 @@
-// CONFIG › MCP SERVERS' LEAD (CONFIG-S5-LEADS; part of #2157, BGD's pick of
+// CONFIG › MCP SERVERS' LEAD (CONFIG-S5-LEADS; part of #2157, the owner's pick of
 // proposal E, docs/web-ui/mockups/config-e.html S5a, S5d).
 //
 // WHAT EACH CASE HOLDS:
@@ -87,7 +87,7 @@ describe('Config › MCP servers: its lead (S5a)', () => {
     expect(visible(lead)).not.toContain('docs-search')
     const buttons = within(lead).getAllByRole('link')
     expect(buttons).toHaveLength(1)
-    // Add a secret on Config › Secrets, mcp:kb picked (MCP-LEAD-FORM, BGD
+    // Add a secret on Config › Secrets, mcp:kb picked (MCP-LEAD-FORM, owner
     // 2026-10-25). Never `?action=add`: that is the /sc one-time link's
     // address, and the page then says it was opened from one.
     // MUTATION: point the button at Config › Secrets alone -> no form opens and this fails.

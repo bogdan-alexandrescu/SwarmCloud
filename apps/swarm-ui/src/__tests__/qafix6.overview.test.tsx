@@ -17,11 +17,11 @@
  *   f. box 6343791868 (5b:ff-desktop-02): a workflow step's failure row
  *      carries its short task id, as a lone agent's name already does.
  *
- * LANE QAFIX6-OVERVIEW-2 (part of #1680), on BGD's decisions of 2026-10-23:
+ * LANE QAFIX6-OVERVIEW-2 (part of #1680), on the owner's decisions of 2026-10-23:
  *
  *   a. 6:overview-automate-011 (box 6343776209): at 390 the Pools list
  *      dropped every bar, a full pool's hatch with them. The phone draws
- *      them as 1440 does. This reverses BGD's Q3 of 2026-10-11 ("the bar
+ *      them as 1440 does. This reverses the owner's Q3 of 2026-10-11 ("the bar
  *      stays hidden on a phone"); Q3's toned figure stays.
  *   e. box 6343766999: a click on the failed-agents card's empty space opens
  *      the failed workflow. The first named workflow's link carries the
@@ -77,7 +77,7 @@ describe('a: the 390 Pools list draws its bars (6:overview-automate-011, box 634
   it('draws the full, lowered and paused pools’ tracks under the phone query', () => {
     const { container } = render(
       <div className="ov-pools">
-        <Overview.PoolRow pool={pool('provider:anthropic:tenant:u-bogdan', 5, 5)} />
+        <Overview.PoolRow pool={pool('provider:anthropic:tenant:u-owner', 5, 5)} />
         <Overview.PoolRow pool={{ ...pool('global', 3, 8), hard_limit: 40 } as Pool} />
         <Overview.PoolRow pool={pool('tenant:eng', 0, 10, false)} />
       </div>,
@@ -141,7 +141,7 @@ describe('e: the failed-agents card leads to the failed workflow (box 6343766999
     const links = [...container.querySelectorAll<HTMLAnchorElement>('.ov-att-acts a')]
     expect(links[0]!.getAttribute('href')).toBe(Overview.toPath(p.workflows![0]!.href))
     const list = links.find((a) => text(a).startsWith('Agents · FAILED'))!
-    // Since 2026-11-05 both are the theme's buttons (BGD's standing rule: no
+    // Since 2026-11-05 both are the theme's buttons (the owner's standing rule: no
     // arrow links): the workflow the outlined secondary, the list the ghost.
     // MUTATION: draw the list link as the workflow's secondary, or the workflow as a ghost.
     expect([links[0]!.classList.contains('c-btn'), links[0]!.classList.contains('is-ghost'), list.classList.contains('is-ghost')]).toEqual([true, false, true])

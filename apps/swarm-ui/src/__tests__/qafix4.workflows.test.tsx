@@ -105,7 +105,7 @@ function workflow(steps: WorkflowStep[]): Workflow {
   return {
     workflow_id: 'wf_qafix4',
     state: 'RUNNING',
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     stored_state: 'RUNNING',
     state_source: 'derived',
     rollup: {

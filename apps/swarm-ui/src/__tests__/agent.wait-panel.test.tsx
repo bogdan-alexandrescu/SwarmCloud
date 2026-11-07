@@ -58,7 +58,7 @@ function parked(w: Waiting, over: Partial<Task> = {}): Task {
     state: w.reason === 'READY_CAPACITY' ? 'READY' : 'PARKED',
     park_reason: w.reason === 'READY_CAPACITY' ? null : (w.reason as Task['park_reason']),
     next_eligible_at: w.next_check_at,
-    repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud',
+    repository_url: 'https://github.com/example-org/example-repo',
     waiting: w,
     ...over,
   })
@@ -79,7 +79,7 @@ function fact(panel: HTMLElement, key: string): string {
 }
 
 const CI_DETAIL = {
-  pull_request: { number: 1779, url: 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/1779' },
+  pull_request: { number: 1779, url: 'https://github.com/example-org/example-repo/pull/1779' },
   head: '1968b677a1c2d3e4f5061728394a5b6c7d8e9f00',
   code: 'CI_PENDING',
   pending: ['checkov', 'ci-gate', 'python (unit)', 'ui (typecheck + component)', 'manifests'],
@@ -321,7 +321,7 @@ describe('each reason renders its own detail', () => {
         reason: 'AWAITING_INPUT',
         next_check_at: null,
         detail: {
-          who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
+          who_may_answer: { tenant_id: 'u-owner', text: 'any member of workspace u-owner' },
           opened_at: at(60),
           expires_at: at(180),
           answer_command: '/sc answer wf_1 approve',
@@ -329,7 +329,7 @@ describe('each reason renders its own detail', () => {
       }),
     )
     // MUTATION: drop who may answer, the expiry, or the command.
-    expect(fact(p, 'who')).toBe('any member of workspace u-bogdan')
+    expect(fact(p, 'who')).toBe('any member of workspace u-owner')
     expect(fact(p, 'expires')).toBe(clockTime(at(180), NOW)!.text)
     expect(fact(p, 'answer')).toBe('/sc answer wf_1 approve')
   })
@@ -340,7 +340,7 @@ describe('each reason renders its own detail', () => {
         reason: 'HUMAN_REQUIRED',
         next_check_at: null,
         detail: {
-          who_may_answer: { tenant_id: 'u-bogdan', text: 'any member of workspace u-bogdan' },
+          who_may_answer: { tenant_id: 'u-owner', text: 'any member of workspace u-owner' },
           expires_at: null,
           answer_route: 'POST /v1/tasks/task_31c301ecb33940eeb278/human-ready',
           cause: null,

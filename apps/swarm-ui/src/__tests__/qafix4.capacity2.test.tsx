@@ -69,7 +69,7 @@ function quota(over: Partial<QuotaState>): QuotaState {
 const ROWS: QuotaState[] = [
   quota({ tenant_id: 'eng', state: 'THROTTLED', retry_after_seconds: 30 }),
   quota({ tenant_id: 'ops', state: 'AVAILABLE', rate_limit_count: 0, last_429_at: null }),
-  quota({ tenant_id: 'u-bogdan', state: 'EXHAUSTED', effective_limit: 0 }),
+  quota({ tenant_id: 'u-owner', state: 'EXHAUSTED', effective_limit: 0 }),
 ]
 
 async function records(): Promise<Record<string, HTMLElement>> {
@@ -121,8 +121,8 @@ describe('capacity-009: at 390 a throttled quota record carries its warn rule do
     // `linear-gradient(var(--warn), var(--warn))` at 100% -- throttled and
     // exhausted become one shape once the colour is taken away.
     const form = (el: Element): string => `${stripColours(image(el, PHONE))} ${painted(el, 'background-size', PHONE)}`
-    expect(painted(r['u-bogdan']!, 'background-size', PHONE)).toBe('3px 100%')
-    expect(form(r.eng!), 'throttled and exhausted draw one shape').not.toBe(form(r['u-bogdan']!))
+    expect(painted(r['u-owner']!, 'background-size', PHONE)).toBe('3px 100%')
+    expect(form(r.eng!), 'throttled and exhausted draw one shape').not.toBe(form(r['u-owner']!))
     // The state is still named in words, so the rule is not the only signal.
     expect(r.eng!.querySelector('td[data-label="State"]')?.textContent).toContain('throttled')
   })

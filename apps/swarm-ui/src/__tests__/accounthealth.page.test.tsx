@@ -1,4 +1,4 @@
-// ACCOUNT-HEALTH-PAGE (part of #2302): CAPACITY › ACCOUNT HEALTH, AS BGD PICKED IT.
+// ACCOUNT-HEALTH-PAGE (part of #2302): CAPACITY › ACCOUNT HEALTH, AS owner PICKED IT.
 //
 // F1 (proposal B): four tiles per status word that agree with the list, a
 // fifth that says whether the pool can take work and links to Accounts, then
@@ -117,7 +117,7 @@ function pool(): { accounts: HealthAccount[]; events: Map<string, HealthEvent[]>
     ['example-team', 'healthy', [ev(600, 'network')]],
     ['aieng-claude1', 'limited', [ev(80, 'rate_limit', { window: 'five_hour', resetIn: 120 }), ev(40, 'assign_refused', { window: 'five_hour' })]],
     ['ai-eng-2', 'erroring', [ev(30, 'overloaded'), ev(25, 'overloaded'), ev(20, 'server_error'), ev(15, 'overloaded')]],
-    ['ai-eng-3', 'reauth_needed', [ev(62, 'auth'), ev(61, 'reauth'), ev(30, 'assign_refused')]],
+    ['acct-3', 'reauth_needed', [ev(62, 'auth'), ev(61, 'reauth'), ev(30, 'assign_refused')]],
     ['devops-main', 'healthy', []],
     ['devops-team', 'healthy', [ev(3000, 'overloaded')]],
     ['example-personal', 'limited', [ev(200, 'rate_limit', { window: 'seven_day', resetIn: 1500 })]],
@@ -181,7 +181,7 @@ describe('F1: the tiles and the list', () => {
 
     const order = [...container.querySelectorAll<HTMLElement>('tr[data-status]')].map((r) => r.dataset.account)
     expect(order).toEqual([
-      'eng:ai-eng-3',
+      'eng:acct-3',
       'eng:ai-eng-2',
       'eng:aieng-claude1',
       'eng:example-personal',
@@ -291,9 +291,9 @@ describe('F4: the honest states', () => {
     const { container } = desktop(board(accounts, events))
 
     const callout = container.querySelector<HTMLElement>('[data-state="reauth"]')!
-    expect(callout.dataset.account).toBe('eng:ai-eng-3')
+    expect(callout.dataset.account).toBe('eng:acct-3')
     expect(within(callout).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toBe(
-      '#capacity/accounts?account=eng%3Aai-eng-3',
+      '#capacity/accounts?account=eng%3Aacct-3',
     )
   })
 
@@ -340,7 +340,7 @@ describe('F5: the phone groups open problems first', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Accounts' }))
 
     expect(container.querySelectorAll('.ah-acard')).toHaveLength(7)
-    expect(container.querySelector<HTMLElement>('.ah-acard')!.dataset.account).toBe('eng:ai-eng-3')
+    expect(container.querySelector<HTMLElement>('.ah-acard')!.dataset.account).toBe('eng:acct-3')
     expect(container.querySelector('[data-tile="verdict"]')).not.toBeNull()
   })
 
@@ -357,15 +357,15 @@ describe('review fixes: the phone, the swimlane, the list and the development po
   it('gives an account that needs re-auth but has no credential event an open card with Sign in again', () => {
     const { accounts, events } = pool()
     // Its re-auth is older than 7 days: the record holds no events at all.
-    events.set('eng:ai-eng-3', [])
+    events.set('eng:acct-3', [])
     const { container } = render(<AccountHealthBody board={board(accounts, events)} now={NOW} phone />)
 
     expect(screen.getByRole('button', { name: /Incidents · 4 open/ })).toBeTruthy()
     const card = container.querySelector<HTMLElement>('[data-section="open"] [data-incident="cred"]')!
     expect(card.dataset.open).toBe('true')
-    expect(card.textContent).toContain('ai-eng-3 needs re-auth')
+    expect(card.textContent).toContain('acct-3 needs re-auth')
     expect(card.querySelector('[data-state="no-cred-event"]')).not.toBeNull()
-    expect(within(card).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toContain('ai-eng-3')
+    expect(within(card).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toContain('acct-3')
     expect(container.textContent).not.toContain('Nothing is open on any account')
   })
 
@@ -584,9 +584,9 @@ describe('fourth review: the marks in their lanes, the phone’s switch and the 
     expect(screen.getByRole('button', { name: /Incidents/ }).getAttribute('aria-pressed')).toBe('true')
     expect(container.querySelector('[data-sum="reauth_needed"]')!.textContent).toContain('1')
     const card = container.querySelector<HTMLElement>('[data-state="reauth"]')!
-    expect(card.dataset.account).toBe('eng:ai-eng-3')
+    expect(card.dataset.account).toBe('eng:acct-3')
     expect(within(card).getByRole('link', { name: 'Sign in again' }).getAttribute('href')).toBe(
-      '#capacity/accounts?account=eng%3Aai-eng-3',
+      '#capacity/accounts?account=eng%3Aacct-3',
     )
   })
 
@@ -599,9 +599,9 @@ describe('fourth review: the marks in their lanes, the phone’s switch and the 
     const { container } = desktop(board(old, events, 'not_served'))
 
     const callout = container.querySelector<HTMLElement>('[data-state="reauth"]')!
-    expect(callout.dataset.account).toBe('eng:ai-eng-3')
+    expect(callout.dataset.account).toBe('eng:acct-3')
     expect(within(callout).getByRole('link', { name: 'Sign in again' })).toBeTruthy()
-    const row = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-3"]')!
+    const row = container.querySelector<HTMLElement>('tr[data-account="eng:acct-3"]')!
     expect(row.dataset.status).toBe('reauth_needed')
     expect(within(row).getByRole('link', { name: 'Sign in again' })).toBeTruthy()
     const nums = [...row.querySelectorAll<HTMLElement>('td.ah-num')]
@@ -634,14 +634,14 @@ describe('REAUTH-MODEL: the re-auth fallback from the row’s state is the model
   function mixed(): { accounts: HealthAccount[]; events: Map<string, HealthEvent[]> } {
     const { accounts, events } = pool()
     const out = accounts.map((a) =>
-      a.account_id === 'eng:ai-eng-3' ? { ...a, health_status: null, state: 'REAUTH_REQUIRED' as const } : a,
+      a.account_id === 'eng:acct-3' ? { ...a, health_status: null, state: 'REAUTH_REQUIRED' as const } : a,
     )
     return { accounts: out, events }
   }
 
   it('statusOf reads an account whose health is null and whose state is REAUTH_REQUIRED as needing re-auth', () => {
     const { accounts, events } = mixed()
-    const a = accounts.find((x) => x.account_id === 'eng:ai-eng-3')!
+    const a = accounts.find((x) => x.account_id === 'eng:acct-3')!
     const r = { ...rec(a, events.get(a.account_id) ?? []), status: null }
     expect(statusOf(a, r)).toEqual({ status: 'reauth_needed' })
     expect(statusOf(a, undefined)).toEqual({ status: 'reauth_needed' })
@@ -653,7 +653,7 @@ describe('REAUTH-MODEL: the re-auth fallback from the row’s state is the model
   it('worstFirst puts that account first', () => {
     const { accounts, events } = mixed()
     const records = new Map(accounts.map((a) => [a.account_id, { ...rec(a, events.get(a.account_id) ?? []), status: null }]))
-    expect(worstFirst(accounts, records)[0]!.account_id).toBe('eng:ai-eng-3')
+    expect(worstFirst(accounts, records)[0]!.account_id).toBe('eng:acct-3')
   })
 
   it('sorts that row first on the page and counts it once in the tiles', () => {
@@ -661,7 +661,7 @@ describe('REAUTH-MODEL: the re-auth fallback from the row’s state is the model
     const { container } = desktop(board(accounts, events))
 
     const rows = [...container.querySelectorAll<HTMLElement>('tr[data-status]')]
-    expect(rows[0]!.dataset.account).toBe('eng:ai-eng-3')
+    expect(rows[0]!.dataset.account).toBe('eng:acct-3')
     expect(rows[0]!.dataset.status).toBe('reauth_needed')
     expect(Number(container.querySelector('[data-tile="reauth_needed"] .ah-tile-n')!.textContent)).toBe(1)
     expect(rows.filter((r) => r.dataset.status === 'reauth_needed')).toHaveLength(1)
@@ -669,7 +669,7 @@ describe('REAUTH-MODEL: the re-auth fallback from the row’s state is the model
   })
 })
 
-// THE NO-PROSE RULE (BGD, 5 November 2026): every explanation on this page
+// THE NO-PROSE RULE (owner, 5 November 2026): every explanation on this page
 // moved behind the label it explained -- a tooltip on a status word or a
 // legend key, an (i) beside a column or a heading, a tick on the re-auth
 // callout -- and every arrow link became a button with the same target.
@@ -699,11 +699,11 @@ describe('the page carries its explanations behind its labels, not on its surfac
     expect(acc.getAttribute('href')).toBe('#capacity/accounts')
     expect(acc.classList.contains('c-btn')).toBe(true)
 
-    const dead = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-3"]')!
+    const dead = container.querySelector<HTMLElement>('tr[data-account="eng:acct-3"]')!
     const sign = within(dead).getAllByRole('link', { name: 'Sign in again' })
     expect(sign).toHaveLength(1)
     expect(sign[0]!.classList.contains('c-btn')).toBe(true)
-    expect(sign[0]!.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Aai-eng-3')
+    expect(sign[0]!.getAttribute('href')).toBe('#capacity/accounts?account=eng%3Aacct-3')
 
     const ok = container.querySelector<HTMLElement>('tr[data-account="eng:ai-eng-2"]')!
     const open = within(ok).getByRole('link', { name: 'Open' })

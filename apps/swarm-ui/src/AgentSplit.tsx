@@ -241,7 +241,7 @@ export function AgentSplit({
 
   useSplitFocus(panel, close, taskId)
 
-  // THE TAB STRIP'S HEIGHT, MEASURED (AGENT-HEAD-B, BGD's pick AH1 B,
+  // THE TAB STRIP'S HEIGHT, MEASURED (AGENT-HEAD-B, the owner's pick AH1 B,
   // 2026-10-28, part of #2596). The column scrolls and the strip sticks at its
   // top, so Logs, Changes and Browser are one column less the strip tall and
   // Details' stuck figures sit at the strip's foot (agents.css, details.css).

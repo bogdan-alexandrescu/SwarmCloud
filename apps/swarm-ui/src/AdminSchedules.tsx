@@ -25,7 +25,7 @@
  * `GET /v1/schedules/{id}` as the working tenant: any other tenant's row says
  * to switch tenant first, rather than linking to a page that would 404.
  *
- * Every word a reader sees says workspace, never tenant (VQ-056, BGD
+ * Every word a reader sees says workspace, never tenant (VQ-056, owner
  * 2026-10-26); the routes, `tenant_id` and `data-col="tenant"` (a CSS hook)
  * keep their names.
  *

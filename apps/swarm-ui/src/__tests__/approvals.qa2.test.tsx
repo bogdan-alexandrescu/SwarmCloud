@@ -96,7 +96,7 @@ describe('a held plan’s decision page (automate2-04, automate2-05, automate2-0
     await mount('approval=apr_hold', routes(INBOX, held()))
     const d = await page()
     await within(d).findByRole('region', { name: 'Why it is held' }, WAIT)
-    // The plan as a brief (BGD, 6 November 2026): the header card, then why it
+    // The plan as a brief (owner, 6 November 2026): the header card, then why it
     // is held, before where it changes and the steps.
     // MUTATION: draw the hold after the steps, and a reader meets it last.
     const cards = [...d.querySelectorAll<HTMLElement>('.ab-head, .ab-card')]

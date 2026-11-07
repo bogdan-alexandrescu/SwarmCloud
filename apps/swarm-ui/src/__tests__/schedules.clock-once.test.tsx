@@ -1,4 +1,4 @@
-// THE SCHEDULES FIXTURES READ THE CLOCK ONCE (CLOCK-ONCE, part of #2391; BGD
+// THE SCHEDULES FIXTURES READ THE CLOCK ONCE (CLOCK-ONCE, part of #2391; owner
 // 2026-10-26, "Read the clock once in the fixtures").
 //
 // WHAT EACH CASE HOLDS, on a clock that moves between two reads the way a slow

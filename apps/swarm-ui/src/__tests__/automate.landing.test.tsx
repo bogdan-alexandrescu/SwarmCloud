@@ -3,7 +3,7 @@
 //
 // WHAT EACH CASE HOLDS:
 //   * every schedule wears the API's `state_word` as the reader's words, a
-//     disabled one reading paused (BGD, 2026-10-26), never the stored state;
+//     disabled one reading paused (owner, 2026-10-26), never the stored state;
 //   * the ones that need a look (waiting, tripped, failing) sort first and
 //     are tinted, and the filter counts each word from the served summary;
 //   * the approvals card counts EVERY inbox item from the summary and gives

@@ -109,7 +109,7 @@ describe('one Schedules page, with an admin switch', () => {
     // MUTATION: draw the switch for nobody, or for everyone.
     const nav = await screen.findByRole('navigation', SWITCH, WAIT)
     const links = [...nav.querySelectorAll('a')]
-    // VQ-030: BGD on #2157 (2026-10-23) kept the "All workspaces" switch; the
+    // VQ-030: owner on #2157 (2026-10-23) kept the "All workspaces" switch; the
     // console says workspace, never tenant, in its words and its titles.
     expect(links.map((a) => a.textContent)).toEqual(['Mine', 'All workspaces'])
     for (const a of links) expect(a.getAttribute('title') ?? '').not.toMatch(/tenant/i)

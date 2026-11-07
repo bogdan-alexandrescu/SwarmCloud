@@ -1142,7 +1142,7 @@ export function HelpCardView({
 
 /**
  * ONE `?` THAT OPENS SEVERAL TOPICS: a screen's index, behind the `?` beside
- * its title (VQ-033, BGD's answer 2026-10-26 08:20-08:30Z, "Move the topics
+ * its title (VQ-033, the owner's answer 2026-10-26 08:20-08:30Z, "Move the topics
  * behind the page's one ?"). Pools, Accounts and Provider quota ended in a
  * `Reading this screen:` row of underlined monospace links -- the help-link
  * block the agent-details-v3 decision replaced with one `?` per card -- and

@@ -1,4 +1,4 @@
-// CONTRACT REQUEST 126, AS THE LEDGER CLASSES IT (BGD 2026-10-27).
+// CONTRACT REQUEST 126, AS THE LEDGER CLASSES IT (owner 2026-10-27).
 //
 // A fix loop whose rounds ended without a MERGE (`EndCause.FIX_LOOP_EXHAUSTED`)
 // is its own failure class in the outcome ledger (`swarm_api/outcomes.py`,

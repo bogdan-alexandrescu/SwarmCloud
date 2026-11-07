@@ -57,8 +57,8 @@ import './styles/secrets.css'
 
 /**
  * CONFIG › SECRETS (lane SSC-UI, part of #2158; docs/design/secrets-scopes.md
- * §6.1 with BGD's answers in its §11, drawn as Config proposal E S4,
- * docs/web-ui/mockups/config-e.html, BGD's pick of 2026-10-24). Every secret
+ * §6.1 with the owner's answers in its §11, drawn as Config proposal E S4,
+ * docs/web-ui/mockups/config-e.html, the owner's pick of 2026-10-24). Every secret
  * an agent, a tool or a repository's QA run reads, at the level it belongs
  * to, on one page. NO STORE MIGRATES (§4): this page is a view over the
  * stores that already exist, read through `GET /v1/secrets/overview`, and
@@ -300,7 +300,7 @@ function neededOf(rows: readonly SecretsRow[]): SecretsRow[] {
 const OVERVIEW_ROUTE = 'GET /v1/secrets/overview'
 
 /**
- * BROWSER LOGINS, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, BGD
+ * BROWSER LOGINS, THE PAGE'S SECOND TAB (GA-MOVE-VIEWS; part of #2157, owner
  * 2026-10-24: "Browser logins to Config › Secrets"). It was GitHub access'
  * Browser logins view: the person's own saved live-browser sessions, by name
  * and site, with a typed Revoke (BrowserLogins.tsx `BrowserLoginsPane`, moved
@@ -1073,7 +1073,7 @@ function credentialLabel(name: string): string {
 }
 
 /**
- * Keys for agents and MCP (Settings › API keys until SSC-UI; BGD 2026-10-23 23:57Z).
+ * Keys for agents and MCP (Settings › API keys until SSC-UI; owner 2026-10-23 23:57Z).
  * `agents` is For agents' rows: a TypeSafe secret granted there is its own
  * record, set on its own date, so the TypeSafe key row says it is a separate
  * one rather than reading as the same key with a second date (config2-05).

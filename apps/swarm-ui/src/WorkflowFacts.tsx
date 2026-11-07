@@ -1,4 +1,4 @@
-// THE WORKFLOW'S FACTS CARD (the picked workflow-clarity variant, Bogdan,
+// THE WORKFLOW'S FACTS CARD (the picked workflow-clarity variant, the owner,
 // 2026-11-05): under the page's state row, what the workflow is meant to
 // deliver on the left and a column of labelled facts on the right
 // (Repository, Feature, Started by, From, When), stacked under the
@@ -8,7 +8,7 @@
 // `workflow_about`), on every workflow read, the full and the summary view
 // alike, at the workflow's root: `repository_url`, `title`, `description`,
 // `description_source`, `about` (`{purpose, goals, output}`, the description
-// in three labelled parts, BGD 2026-11-06), `feature` (`{title, url?}`) and
+// in three labelled parts, owner 2026-11-06), `feature` (`{title, url?}`) and
 // `started_from`. The
 // frozen `Workflow` (types.ts) does not name them, so they are read here, each
 // checked for its type. The keys are present only when a step task was read:

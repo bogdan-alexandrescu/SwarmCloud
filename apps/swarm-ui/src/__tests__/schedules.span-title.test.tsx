@@ -1,4 +1,4 @@
-// A SCHEDULE-MADE TASK IS NAMED BY ITS TITLE (VQ-028, BGD 2026-10-26 "Serve
+// A SCHEDULE-MADE TASK IS NAMED BY ITS TITLE (VQ-028, owner 2026-10-26 "Serve
 // the task's metadata.title"; lane SPANS-TITLE, part of #2391).
 //
 // WHAT EACH CASE HOLDS:

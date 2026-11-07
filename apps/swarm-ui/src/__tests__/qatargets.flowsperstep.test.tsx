@@ -1,5 +1,5 @@
 // WORK › REPOSITORIES › QA TARGETS: A RUN'S FLOWS PER STEP (lane QA-FLOWS-UI
-// over QA-FLOWS-CAP, part of #2136; BGD, 2026-10-26).
+// over QA-FLOWS-CAP, part of #2136; owner, 2026-10-26).
 //
 // WHAT EACH CASE HOLDS:
 //   * beside Run, a target with flows draws a "Flows per step" number field

@@ -1,7 +1,7 @@
 // WORK › REPOSITORIES › QA TARGETS: one target's environments on its card,
 // and one Run over the ticked ones (lane QAENV-UI-FORM, part of #2136;
 // docs/design/qa-environments.md §7 "The dispatch form", §5 Promote, §10;
-// Config proposal E, S9a and S9c, BGD's pick 2026-10-24).
+// Config proposal E, S9a and S9c, the owner's pick 2026-10-24).
 //
 // WHAT EACH CASE HOLDS, over `to_api`'s shape for a target of several
 // entries (the app's fields, and `environments[]` each with its own host,
@@ -31,7 +31,7 @@ const WF = 'wf_' + 'a1'.repeat(10)
 type Json = Record<string, unknown>
 
 const UNSET = { set: false, set_at: null, set_by: null, version: null }
-const SET = { set: true, set_at: '2026-10-24T22:00:00+00:00', set_by: 'bogdan@example.com', version: '3' }
+const SET = { set: true, set_at: '2026-10-24T22:00:00+00:00', set_by: 'owner@example.com', version: '3' }
 
 function me(role: string, isAdmin = false): Json {
   return {

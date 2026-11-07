@@ -9,7 +9,7 @@
 // question is a list '?' and no tick.
 //
 // Its list row costs Work › Workflows one word, so the list footer's
-// "100 per read" moves into the footer's tooltip (BGD's pick, 6 November 2026).
+// "100 per read" moves into the footer's tooltip (the owner's pick, 6 November 2026).
 
 import { cleanup, render, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
