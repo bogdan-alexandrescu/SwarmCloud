@@ -700,7 +700,7 @@ _CLOSED_CALL = (
 #: `Authorization: Bearer {TOKEN});'<v>'` was served whole (the security
 #: re-review of PR #3448); a quote ends the value only where the value ends.
 #:
-#: EACH IS KEPT ONLY AS A WHOLE, CLOSED CONSTRUCT WHERE THE VALUE ENDS (BGD,
+#: EACH IS KEPT ONLY AS A WHOLE, CLOSED CONSTRUCT WHERE THE VALUE ENDS (the owner,
 #: 6 November 2026, the attacker-lens review of PR #3448; part of #2688).
 #: Only `$(` and `${{ ` were read, so `token = $(cat f);<v>` and
 #: `token = ${{ secrets.T }};<v>` were served whole; and `${NAME}` ended
@@ -815,7 +815,7 @@ _CONTAINER = (
     r"(?:\[[ \t]*\]|\{[ \t]*\}|\([ \t]*\))" + _END
     + r"|[\[{(][ \t]*(?=\n|$)|\{(?=[ \t])"
 )
-#: AN `Authorization` VALUE THAT ONLY NAMES A VARIABLE IS CODE (AI Studio's
+#: AN `Authorization` VALUE THAT ONLY NAMES A VARIABLE IS CODE (a peer application's
 #: report, 6 November 2026; part of #2688). A patch holding
 #: `"Authorization": f"Bearer {TOKEN}"` had the f-string's `f` masked here as
 #: the value, and `Bearer ${TOKEN}` had its scheme word masked here and the

@@ -8,7 +8,7 @@ exempts them. A cancel cannot be undone, and a cancelled step's checkpoint
 becomes reclaimable. So the question "which in-flight workflows does this
 cancel?" should be answered from data before the deploy, not after it.
 
-    PROJECT_ID=saga-agents-staging FIRESTORE_DATABASE=swarm \\
+    PROJECT_ID=example-project FIRESTORE_DATABASE=swarm \\
       uv run --project . python -m scheduler.on_step_failure_audit
 
 prints one JSON object:

@@ -4,7 +4,7 @@ Lane W2 of #847 builds the grant and remove routes; lane W7 extends this file
 with the People list, approvals, limits and loans. Every route here is
 admin-only through `admin_auth`, and none is in `auth.POOL_ADMIN_ROUTES`, so a
 pool admin or the rollup sweeper is refused. The one exception is the READ of
-the People list (ADMIN-PEOPLE-ROLES; part of #2157, BGD "Both, by scope"):
+the People list (ADMIN-PEOPLE-ROLES; part of #2157, the owner "Both, by scope"):
 `people_scope` also answers a workspace admin, with only the group workspaces
 they administer and the people in them. Every write stays a platform admin's.
 
@@ -131,7 +131,7 @@ def membership_store(ctx: AppContext) -> MembershipStore:
     """The authenticator's own store, so every membership write (an approval,
     a removal) evicts the cache the person's next request reads: a second
     store's eviction left a removed person selecting the workspace for up to
-    `role_cache_seconds` (docs/design/join-requests.md §4.4; BGD,
+    `role_cache_seconds` (docs/design/join-requests.md §4.4; the owner,
     2026-10-26, lane JOIN-ONE-STORE)."""
     shared = getattr(ctx.authenticator, "memberships", None)
     if shared is not None:
@@ -471,10 +471,10 @@ def list_people(
     platform admin's (`admin_auth`).
 
     A PLATFORM ADMIN'S CELL IS `admin` in every column, for both readers
-    (`people.role_cell`, `RoleStore.resolve`'s rule; BGD 2026-10-26, part of
+    (`people.role_cell`, `RoleStore.resolve`'s rule; the owner 2026-10-26, part of
     #2391): the admin holders are read BEFORE the grid and their emails passed
     to it, and their rows carry `platform_admin: true`, which the page draws
-    as "(platform admin)" under the cell (`people.mark_platform_admin`; BGD
+    as "(platform admin)" under the cell (`people.mark_platform_admin`; the owner
     2026-10-26, "Mark the source"). A workspace admin is not served the list
     itself, so for them the marker is the only place it shows. ADMIN_GROUPS
     members hold admin through a group nobody can list here

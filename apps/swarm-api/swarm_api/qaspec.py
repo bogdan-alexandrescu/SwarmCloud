@@ -47,7 +47,7 @@ byte for byte as before. Of a target with several, a `production` leg, and a
 mutating flow: a production leg reads only.
 
 A FLOW THAT WRITES SAYS WHAT IT WRITES (docs/design/qa-environments.md §6;
-BGD, 2026-11-05, "declared writes plus a switch, on by default"). A flow with
+the owner, 2026-11-05, "declared writes plus a switch, on by default"). A flow with
 `mutating: true` carries `writes`, one plain sentence of at most
 `WRITES_MAX` characters; its step's brief states that sentence as the limit
 of what it may write, and its report repeats it word for word under "This
@@ -57,12 +57,12 @@ setting, off, renders every flow read-only (`leg`). Both only ever turn a
 write off.
 
 EVERY CAPTURE STEP DISCOVERS WHILE IT CAPTURES (docs/design/qa-environments.md
-§3.1, §3.5; lane QAENV-RUN; BGD's Q3 (a), 2026-10-23). A capture step runs
+§3.1, §3.5; lane QAENV-RUN; the owner's Q3 (a), 2026-10-23). A capture step runs
 `swarm_qa capture --crawl` (lane QAENV-CRAWL): its prompt carries the WHOLE
 run's stored list, the same in every step, and its share is `--group`,
 `--step` and `--steps`; after its own routes the tool walks the leg from its
 base path and every stored route, and captures the new routes it owns by a
-hash of the path, at most `found_per_step` (8, BGD's §10 answer), cut so the
+hash of the path, at most `found_per_step` (8, the owner's §10 answer), cut so the
 leg's stored plus `G x found_per_step` stays within `MAX_SCREENS`. No path a
 crawl found ever reaches a prompt: what a step finds goes to its own capture
 and its `found.json`. A target that asks to `discover` and has nothing stored
@@ -70,7 +70,7 @@ renders `discover.slots` crawling steps (4 by default, at most 8) from the
 base alone, instead of being refused; one with neither is still refused. The
 report gains the leg's Coverage section (§3.5).
 
-A LEG'S FLOWS RUN IN BATCHES (QA-FLOWS-CAP, part of #2136; BGD, 2026-10-26).
+A LEG'S FLOWS RUN IN BATCHES (QA-FLOWS-CAP, part of #2136; the owner, 2026-10-26).
 A target holds up to `MAX_FLOWS` (150) flows. Its read-only flows render as
 ceil(n / flows_per_step) flow-batch steps, `flows-<k>`, each one agent that
 signs in once and runs its batch's flows in order, every flow ending "STOP
@@ -82,7 +82,7 @@ batch size is the run's, else the workspace's, else 15 (`qasettings`); a leg
 that would pass the workflow's step or input bounds is refused with the
 batch size that fits.
 
-A FLOW CAPTURES WHAT IT PROVES (QA-FLOW-CAPTURE, part of #2688; the AI Studio
+A FLOW CAPTURES WHAT IT PROVES (QA-FLOW-CAPTURE, part of #2688; the a peer application
 session's QA re-run 8, 2026-11-06). Every flow brief makes each step wait,
 bounded, for the text or element that proves the state it records before
 its screenshot, and write it in the step's `proof` (`_capture_rule`);
@@ -94,7 +94,7 @@ normalising a lone stray tar such as flow-1.tar with a line saying so; the
 worker applies the same tar rule at the end of the step, renaming the stray
 before the upload (`agent_worker.flow_output`, the owner's pick on PR #3521).
 
-A DISMISSED ROUTE IS SKIPPED BY LATER CRAWLS (lane QA-CRAWL-SKIP; BGD
+A DISMISSED ROUTE IS SKIPPED BY LATER CRAWLS (lane QA-CRAWL-SKIP; the owner
 2026-10-25, part of #2157). The target's `dismissed_routes` (S9b's Remove,
 `qatargets.DISMISSED_FIELD`) travel in every capture step's route list as
 `dismissed`: each route's `route_key` as sha256 hex, sorted, so the crawl
@@ -140,7 +140,7 @@ MAX_SCREENS = 60
 MAX_DISCOVER_PAGES = 60
 MAX_DISCOVER_DEPTH = 3
 #: A crawling capture step (§3.1; QAENV-RUN). New routes a step captures by
-#: default: BGD answered 8 on 2026-10-23 (qa-environments.md §10), not the
+#: default: the owner answered 8 on 2026-10-23 (qa-environments.md §10), not the
 #: design's 4, and 8 is also the ceiling (`swarm_qa.FOUND_PER_STEP`,
 #: `MAX_FOUND_PER_STEP`). A target may set fewer in `discover.found_per_step`.
 FOUND_PER_STEP = 8
@@ -155,25 +155,25 @@ CRAWL_SECONDS = 600
 CRAWL_CAPTURE_TIMEOUT = 2700
 #: `swarm_qa`'s own bound (`MAX_SEGMENTS`, beside `NAME`), which the capture
 #: tool refuses past; restated so a target is refused at registration, not at run.
-#: 120 viewports, because AI Studio's /docs (2026-11-04, part of #2688) is about
+#: 120 viewports, because a peer application's /docs (2026-11-04, part of #2688) is about
 #: 65,300 px at 390 px wide (78 of phone-390's 844 px) and 49,600 px at the
 #: desktop (56 of 900 px), and the capture now takes a page to its end up to
 #: it (swarm_qa says why next to its own); test_qaspec_segment_bound holds the
 #: two equal.
 MAX_SEGMENTS = 120
 #: The flows one target (each leg) may hold (QA-FLOWS-CAP, part of #2136).
-#: BGD, 2026-10-26: AI Studio's ai-studio-staging needs 132 read-only
+#: The owner, 2026-10-26: a peer application's peer-app-staging needs 132 read-only
 #: frame-state flows; 150 holds them with room. Stated HERE ONLY: a flow runs
 #: as an agent's prompt, and the capture tool (`swarm_qa`) never reads one, so
 #: there is no second statement to hold equal (docs/mirrored-values.md).
 MAX_FLOWS = 150
-#: A writing flow's `writes` (BGD, 2026-11-05, "declared writes plus a
+#: A writing flow's `writes` (the owner, 2026-11-05, "declared writes plus a
 #: switch"): one plain sentence saying what the flow writes, held to this
 #: length so it reads as one sentence in a prompt and on the console's row.
 WRITES_MAX = 300
 #: How many read-only flows one flow-batch step runs (`flows_per_step`): the
 #: run's own value (`:run`'s `flows_per_step`), else the workspace's
-#: `qa_flows_per_step` (`qasettings`), else 15 (BGD, 2026-10-26). One agent
+#: `qa_flows_per_step` (`qasettings`), else 15 (the owner, 2026-10-26). One agent
 #: signs in once and runs its batch's flows in order. 30 at most because a
 #: batch's step is held to the browser profile's 7,200 s (`FLOW_STEP_CEILING`):
 #: 30 flows have 240 s each, about two widths of the bench's 44.5 s median
@@ -257,7 +257,7 @@ ENVIRONMENTS = ("production", "non_production")
 EVIDENCE_MODES = ("console_link", "branch")
 FILE_MODES = ("issues", "none")
 #: The browser tool a goal-driven flow drives the live browser with
-#: (`flows_browser_tool`, or one run's `browser_tool`; lane VQ9-TOOL). BGD,
+#: (`flows_browser_tool`, or one run's `browser_tool`; lane VQ9-TOOL). The owner,
 #: 2026-10-23, after batch bench3-2026-10-23 (docs/browser-bench.md): Playwright
 #: MCP passed 8 of 10 prompts at $0.14 and 44.5 s a run (medians), Jev 6 of 10
 #: at $0.17 and 51.3 s, so flows default to Playwright and a target, or one
@@ -290,7 +290,7 @@ DEFAULT_EXCLUDED_CONTROLS = (
     "delete", "remove", "pay", "buy", "purchase", "send", "invite",
     "unsubscribe", "cancel subscription",
 )
-#: A sign-in's start clicks (§2.2; BGD, 2026-10-23): what the gate clicks on
+#: A sign-in's start clicks (§2.2; the owner, 2026-10-23): what the gate clicks on
 #: the login page before the form, a chooser or a "Sign in" button before an
 #: identity provider. Three covers a toggle, a button and one interstitial.
 MAX_START_CLICKS = 3
@@ -304,7 +304,7 @@ START_CLICK_REFUSED = ("logout", "log out", "sign out")
 _PLAYWRIGHT_SELECTOR = re.compile(
     r":(?:has-text|text|text-is|text-matches|nth-match|left-of|right-of|above|below|near)\(|:visible\b|>>"
     r"|^\s*(?:text|css|xpath|id|role|data-testid|internal:[a-z-]+)=")
-#: A challenge bypass (§2.5; lane CAPTCHA-BYPASS, BGD 2026-10-23): a header or
+#: A challenge bypass (§2.5; lane CAPTCHA-BYPASS, the owner 2026-10-23): a header or
 #: a cookie the app's owner configured to skip their own challenge, which the
 #: live gate adds on the target's approved origins alone. Its name is an HTTP
 #: token (RFC 9110 §5.6.2, less the backtick no prompt or command quotes).
@@ -341,7 +341,7 @@ CAPTURE_PROFILE = "claude-code-browser"
 REVIEW_PROFILE = "claude-code"
 #: The console template's lesson (docs/browser-qa.md): haiku captures, opus
 #: reports, sonnet reviews, runs flows and files.
-#: REVIEW_MODEL: BGD 2026-10-27 (#2524, TOKEN-RENDER question 2), review on
+#: REVIEW_MODEL: the owner 2026-10-27 (#2524, TOKEN-RENDER question 2), review on
 #: Sonnet: the review reads every capture, so it is the run's largest spend,
 #: and the children that judge its renders already run on Sonnet.
 CAPTURE_MODEL, REVIEW_MODEL, FLOW_MODEL, REPORT_MODEL, FILE_MODEL = (
@@ -629,7 +629,7 @@ def _environment(target: Mapping[str, Any]) -> str:
 
 # --------------------------------------------------------------------------
 # One leg of a target (docs/design/qa-environments.md §1.1, §1.5, §6;
-# lane QAENV-MODEL, BGD's Q1 (a), 2026-10-23)
+# lane QAENV-MODEL, the owner's Q1 (a), 2026-10-23)
 # --------------------------------------------------------------------------
 
 #: An entry's name: a short label, unique in its target (§1.1).
@@ -1254,7 +1254,7 @@ def _sign_in_note(own_login: bool, clicks: Sequence[Mapping[str, str]] = ()) -> 
     if clicks:
         # An app that keeps its token in page memory lands the agent's own tab
         # on its chooser again; one click there completes through the identity
-        # provider's session, with no form (§2.2, BGD 2026-10-23).
+        # provider's session, with no form (§2.2, the owner 2026-10-23).
         named = " then ".join(f"'{c['text']}'" for c in clicks)
         note += (
             f" If your tab shows the sign-in chooser, click {named}; the sign-in completes without a form. "
@@ -1542,7 +1542,7 @@ def _flow_check_line() -> str:
 def _file_prompt(target: Mapping[str, Any], settings: Mapping[str, Any],
                  group: Mapping[str, Any] | None = None) -> str:
     tid = target["id"]
-    # §7, BGD's Q8 (a): one issue per finding per environment. The leg is in
+    # §7, the owner's Q8 (a): one issue per finding per environment. The leg is in
     # the key, so the legs' concurrent file steps never race on one key, and
     # in the title, so a reader tells them apart.
     leg_name = _leg_name(target)
@@ -1675,7 +1675,7 @@ def leg_words(target: Mapping[str, Any]) -> tuple[str | None, str]:
 
 def _leg_title(kind: str, name: str, target: Mapping[str, Any]) -> str:
     """`Visual QA: moderator, staging`: every leg of one target titled apart
-    (BGD, 2026-11-04: the reviewer and moderator legs read alike), within the
+    (the owner, 2026-11-04: the reviewer and moderator legs read alike), within the
     NAME_MAX_CHARS a name holds (owner, 2026-11-07, part of #2688). The role
     and environment come first, the words that tell legs apart; the target's
     name follows only while it fits, and is always in the description and the

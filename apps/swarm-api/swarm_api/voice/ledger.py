@@ -83,7 +83,7 @@ from . import store as vstore
 
 log = logging.getLogger(__name__)
 
-#: BGD's caps (§1 decision record): $100 a session, $300 a day.
+#: The owner's caps (§1 decision record): $100 a session, $300 a day.
 SESSION_CAP_USD = 100.0
 DAY_CAP_USD = 300.0
 #: The worker's guard kills a step at 120% of its budget (agent-budget.md §5),

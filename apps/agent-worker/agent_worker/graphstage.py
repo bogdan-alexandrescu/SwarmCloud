@@ -616,7 +616,7 @@ def history_fetcher(repository_url: str | None, private_dir: Path, *,
     First `gitops.fetch_commit_history`: the commits behind the base with
     their trees and no file contents, in a scratch repository, which is what
     the proof reads (lane GRAPH-DELIVERY, 2026-11-06: the blob-carrying
-    deepen ran past its limit on a third of AI Studio's steps). When that
+    deepen ran past its limit on a third of a peer application's steps). When that
     fails for any reason but the limit -- a forge that refuses the filter,
     say -- the bounded fallback is the old `gitops.fetch_base_history`
     deepen of the checkout, in what is left of the same limit, so a step

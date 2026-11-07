@@ -142,7 +142,7 @@ class AuthContext:
     #: is the group email (`eng@example.com`); for the personal fallback it is the
     #: user's own address. `tenant_id` alone cannot identify a tenant, because
     #: the frozen `tenant_id_for_group` slugs the local part only: `eng@example.com`
-    #: and `eng@partner.com` both produce `eng`. The store compares this against
+    #: and `eng@example.org` both produce `eng`. The store compares this against
     #: the tenant document so the second group cannot inherit the first's
     #: service account, secrets and GCS prefix.
     tenant_principal: str = ""
@@ -874,7 +874,7 @@ class Authenticator:
         only personal tenant this can ever add is `tenant_id_for_user(ctx.email)`,
         and only when `PersonalTenants.ready` confirms that tenant's documents
         name THIS email -- the frozen slug drops the domain, so `bob@example.com`
-        and `bob@partner.com` derive one id, and the principal is what tells
+        and `bob@example.org` derive one id, and the principal is what tells
         them apart. Another person's `u-` id is never in the list, so
         `_select_tenant` refuses it exactly as it refuses a group the caller is
         not in.

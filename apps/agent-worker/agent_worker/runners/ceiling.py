@@ -1,6 +1,6 @@
 """The context ceiling: a session is ended by its size, and work goes on in a fresh one (TOKEN-CEILING, part of #2524).
 
-BGD, 2026-10-27 (#2524 item 3, "200k tokens or 150 tool calls"): nothing
+The owner, 2026-10-27 (#2524 item 3, "200k tokens or 150 tool calls"): nothing
 ended a session as its context grew. In the measured week the longest lanes
 ran 300-640 turns at a 250-390k mean context, the spend in the 60-150 and
 150+ turn buckets was most of the week's total, and one resume
@@ -49,15 +49,15 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 #: The context, in tokens, past which a session is stopped at its next turn
-#: boundary: BGD, 2026-10-27, #2524 item 3. Read as `cache_read + input` of
+#: boundary: the owner, 2026-10-27, #2524 item 3. Read as `cache_read + input` of
 #: one turn, which is what each turn re-reads.
 CONTEXT_CEILING_TOKENS = 200_000
-#: The tool calls past which a session is stopped (BGD, #2524 item 3): the
+#: The tool calls past which a session is stopped (the owner, #2524 item 3): the
 #: lean-lanes rule in CLAUDE.md said ~150 per agent and nothing enforced it.
 TOOL_CALL_CEILING = 150
 #: The most a profile or a step can set either limit to. A profile or step may
 #: LOWER the ceiling; a value above these is clamped to them, because the
-#: decision was BGD's and a caller's input is not a way round it.
+#: decision was the owner's and a caller's input is not a way round it.
 CONTEXT_CEILING_HARD_CAP = CONTEXT_CEILING_TOKENS
 TOOL_CALL_HARD_CAP = TOOL_CALL_CEILING
 #: Fresh sessions one attempt may start after a ceiling stop. Four: a lane
@@ -69,7 +69,7 @@ MAX_FRESH_SESSIONS = 4
 #: "tool_calls": M}`, either key optional.
 PAYLOAD_KEY = "context_ceiling"
 #: A profile's own, lower limits, by runner profile name. A profile not named
-#: here runs at the BGD ceiling.
+#: here runs at the owner's ceiling.
 PROFILE_LIMITS: Mapping[str, Mapping[str, int]] = {}
 
 #: The note the agent may write for the session after it, in
@@ -145,7 +145,7 @@ BUCKET_FIELDS = (
 #: screenshots, because the handoff carried only the note file.
 SESSION_TAIL_MAX_CHARS = 12 * 1024
 #: Whether a handoff carries that tail at all: OFF unless this is "1"/"true"
-#: (BGD, 2026-11-06). The tail is the previous session's own assistant text
+#: (the owner, 2026-11-06). The tail is the previous session's own assistant text
 #: fed back in as user input, and a fresh session started from it was refused
 #: on its FIRST call -- `model_refusal_no_fallback`, "safeguards flagged this
 #: message ... [reasoning_extraction]" (task_a27c0b2241d1492492ee,
@@ -229,7 +229,7 @@ def first_call_refusal(parsed: Any) -> str | None:
 
 
 def resolve_limits(payload: Mapping[str, Any] | None, profile: str | None) -> CeilingLimits:
-    """The ceiling for this run: the BGD values, lowered by the profile and the
+    """The ceiling for this run: the owner's values, lowered by the profile and the
     step, never raised past the hard caps. A value that is not a positive
     integer is ignored."""
     tokens, calls = CONTEXT_CEILING_TOKENS, TOOL_CALL_CEILING

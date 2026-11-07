@@ -386,7 +386,7 @@ class MergePullRequest(StrictModel):
 MAX_AFTER_PRS = 10
 
 
-#: What a workflow is about (BGD, 2026-11-04): `metadata.description`, two or
+#: What a workflow is about (the owner, 2026-11-04): `metadata.description`, two or
 #: three sentences of plain text saying what the work is meant to deliver,
 #: and `metadata.feature`, `{title, url?}`, the feature it belongs to. The
 #: console's workflow page heads with both; `routes.workflows.workflow_about`
@@ -408,7 +408,7 @@ FEATURE_TITLE_MAX_CHARS = 120
 #: fallback writes its own value, so the console can mark a generated one.
 DESCRIPTION_SOURCE_KEY = "description_source"
 DESCRIPTION_SOURCE_SUBMITTER = "submitter"
-#: The description in three labelled parts (BGD, 2026-11-06), each optional:
+#: The description in three labelled parts (the owner, 2026-11-06), each optional:
 #: `purpose`, one sentence saying why the work exists; `goals`, up to three
 #: short items it must achieve; `output`, one sentence saying what lands (a
 #: pull request, mock-up frames, a report). The console draws them as three
@@ -782,7 +782,7 @@ class CredentialCreate(StrictModel):
 
 #: What a feature whose state could not be read is served as. Never `false`:
 #: a caller that reads `false` stops offering the feature, which is the wrong
-#: answer Product Oracle's New run form gave its users on 2026-10-20 (#1748).
+#: answer a peer application's New run form gave its users on 2026-10-20 (#1748).
 FEATURE_UNKNOWN = "unknown"
 
 #: One feature's state on `GET /v1/tenants/me`.

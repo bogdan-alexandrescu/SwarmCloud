@@ -1,6 +1,6 @@
 """Agent plugins: the closed catalogue, a step's plugins checked at submission, and a workspace's allowed plugins.
 
-The owner (BGD, 3 November 2026) chose plugins per step, gstack first, baked
+The owner (3 November 2026) chose plugins per step, gstack first, baked
 into the agent images at a pinned version, and merged them into the agent
 quality program: a step's plugins ride in its work contract's capabilities
 section (`capabilities.plugins`, contract request 136), and the catalogue is a

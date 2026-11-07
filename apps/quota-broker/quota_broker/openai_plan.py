@@ -1,13 +1,13 @@
 """ChatGPT-plan pool accounts: the `openai` account kind (#2688).
 
-THE OWNER'S CHOICE (BGD, 2026-11-01): the codex runner runs on ChatGPT PLANS
+THE OWNER'S CHOICE (the owner, 2026-11-01): the codex runner runs on ChatGPT PLANS
 from a shared pool, the way claude-code runs on the pool of Claude
 subscriptions. This module is that pool's credential: what is stored, how it
 is refreshed, what a worker is handed, and how a plan's usage is read.
 
 WHAT WAS MEASURED, AND WHERE
 ----------------------------
-* AI Studio (sagaxyz/ai-studio, first-hand on a live ChatGPT Plus login,
+* a peer application (example-org/peer-app, first-hand on a live ChatGPT Plus login,
   2026-08-10): the sign-in is OAuth with PKCE at https://auth.openai.com,
   authorize `/oauth/authorize`, token `/oauth/token`, the Codex CLI's public
   client id, and the redirect `http://localhost:1455/auth/callback` -- the

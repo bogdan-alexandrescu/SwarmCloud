@@ -50,7 +50,7 @@ ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47
 # digests. A pull request's local build, which has no Google identity,
 # passes the upstream registries here instead (scripts/lib/build-mirror.sh).
 # docs/runbooks/build-mirror.md.
-# No default, so this file names no project (DAYONE-DESAGA-1,
+# No default, so this file names no project (DAYONE-GENERIC-1,
 # docs/design/day-one-install.md section 7): scripts/build-images.sh passes
 # the mirror of the project it builds for (lib/build-mirror.sh
 # mirror_build_args), and the `# syntax=` frontend through the same mirror as

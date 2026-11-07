@@ -97,7 +97,7 @@ agent). And `git_push_branch` reads the pushed range's paths from the bundle:
 a range touching `.github/workflows/` or `.github/actions/` is pushed only
 for a registration whose `workflow_files` switch is on, with a token the
 GitHub App mints for that one repository at push time (#2029, WF-APP-TOKEN;
-BGD, 2026-10-22), and is otherwise `workflow_scope_missing`, naming the files.
+the owner, 2026-10-22), and is otherwise `workflow_scope_missing`, naming the files.
 
 INVARIANTS. Nothing here creates infrastructure demand (1), touches capacity
 (2, 3) or the lease (5: a fenced call is refused, never released). The
@@ -364,7 +364,7 @@ _EXEC_STATUS = {
     "bad_ref": 422, "bad_bundle": 422, "too_large": 422, "non_fast_forward": 422,
     "remote_rejected": 422, "busy": 503, "timed_out": 504, "bad_remote": 502, "failed": 502,
     # A bundle's base the remote did not answer for, twice: the worker asks
-    # again on a 5xx, and a forge outage heals (AI Studio's report, 2026-11-06).
+    # again on a 5xx, and a forge outage heals (a peer application's report, 2026-11-06).
     "remote_unavailable": 503,
 }
 

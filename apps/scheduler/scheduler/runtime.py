@@ -1,6 +1,6 @@
 """A review step's runtime, chosen when it is readied from what its parents changed (#2322).
 
-BGD's decision, 2026-10-25: "if a review only does code review and a UI
+The owner's decision, 2026-10-25: "if a review only does code review and a UI
 review or UI QA is not needed, it should not dispatch a review task with a
 browser runtime." Until then the submitter named every step's profile at
 submission, before anyone knew whether the change touched UI: 43 browser pods
@@ -40,7 +40,7 @@ THE RE-REVIEW (`swarm_api.validation.rereview_step_for`) carries
 `runtime.inherit`: it runs on whatever its review RESOLVED to, read from the
 review's task, so a lane's second look sees what its first did.
 
-UNLESS ITS AGENT WILL NOT RUN (BGD, 2026-11-05). On MERGE no fix runs and the
+UNLESS ITS AGENT WILL NOT RUN (the owner, 2026-11-05). On MERGE no fix runs and the
 re-review runs no agent: the worker re-publishes the verdict it staged
 (`agent_worker.lifecycle.Worker._republish_staged_verdict`). Inheriting a
 UI lane's browser then started a browser pod for a copy: 56 re-reviews on

@@ -1,6 +1,6 @@
 """The intake's caps.
 
-The three size caps are the owner's answer to Q8 (BGD, 6 November 2026): 100 MiB
+The three size caps are the owner's answer to Q8 (the owner, 6 November 2026): 100 MiB
 packed, 500 MiB unpacked and 20,000 files, larger than the design's recommended
 25 MiB / 100 MiB / 5,000 because gstack and security-audit move to the managed
 path. The ratio is the design's (§2.3 step 3).

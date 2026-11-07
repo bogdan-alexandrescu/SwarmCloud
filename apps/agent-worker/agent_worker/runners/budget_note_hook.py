@@ -6,7 +6,7 @@ writes, where `<note>` is the attempt's `$SWARM_BUDGET_NOTE`. Standard
 library only, and nothing imported from the worker: `-I` drops the package's
 path, and a hook must not depend on it.
 
-WHY (BGD, 2026-10-26). At 80% of its budget the agent is told to finish and
+WHY (the owner, 2026-10-26). At 80% of its budget the agent is told to finish and
 publish. A headless claude-code run takes no new message while it runs; the
 one place text reaches it mid-run is a hook's
 `hookSpecificOutput.additionalContext`, shown with the next tool result. The

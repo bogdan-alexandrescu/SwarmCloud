@@ -1,7 +1,7 @@
 """A workspace's visual-QA settings: how many flows one live-browser step runs (QA-FLOWS-CAP, part of #2136),
 and whether its flows may write (`writing_flows`, part of #2688).
 
-BGD, 2026-10-26: a leg's flows run in BATCHES, several flows per live-browser
+The owner, 2026-10-26: a leg's flows run in BATCHES, several flows per live-browser
 step (`qaspec.flow_batches`), the batch size chosen when a run starts
 (`:run`'s `flows_per_step`) or, when the run names none, by the workspace's
 default, `qa_flows_per_step`, held here. Neither set: 15
@@ -25,7 +25,7 @@ anything else as unset (the default). The worst a forger achieves is a batch
 size the workspace's own admin could have chosen; a run that names its own
 `flows_per_step` is not affected at all.
 
-WRITING FLOWS (BGD, 2026-11-05, "declared writes plus a switch, on by
+WRITING FLOWS (the owner, 2026-11-05, "declared writes plus a switch, on by
 default"). `writing_flows`, stored as `qa_writing_flows` in the same
 document, says whether a flow of this workspace may write at all. On (the
 default, so a fresh deployment needs nothing): a `mutating` flow that
@@ -78,7 +78,7 @@ WRITING_FIELD = "qa_writing_flows"
 WRITING_SET_AT = "qa_writing_flows_set_at"
 WRITING_SET_BY = "qa_writing_flows_set_by"
 WRITING_AUDIT_ACTION = "qa_writing_flows_set"
-#: On: BGD's pick, 2026-11-05. A fresh install needs nothing to keep writing flows.
+#: On: the owner's pick, 2026-11-05. A fresh install needs nothing to keep writing flows.
 WRITING_DEFAULT = True
 
 #: Where a run's batch size came from, as its `qa_target_runs` record says.
