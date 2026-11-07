@@ -4,7 +4,6 @@
 a secret). **Takes:** one merged pull request and its release, one bootstrap
 apply, ten minutes at github.com, two `create-secrets.sh` runs, and a second
 small pull request with the App's public settings. **Why:** owner decision D1
-on [#780](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/780)
 (2026-10-07): SwarmCloud acts on GitHub **as the user**, through a GitHub App's
 user access tokens, so each user chooses at GitHub which orgs and repositories
 it may reach. The design is [docs/onboarding.md](../onboarding.md) §1 and §3.4;
@@ -17,7 +16,7 @@ registration is by hand. Everything around it is code:
 |---|---|---|
 | the App's public settings (id, client id, slug) | `terraform/environments/dev/dev.tfvars`: `github_app_id`, `github_app_client_id`, `github_app_slug` | the release |
 | two empty secret slots, `swarm-github-app-client-secret` and `swarm-github-app-private-key`, swarm-api their one reader | `terraform/modules/secret_manager` (`github_app`, `github_app_accessor`), switched on by `enable_github_app` | the release, held at `dev-iam` |
-| the user slots' IAM: `swarmForgeSlotCreator` and `swarmForgeSlotVersionManager` for swarm-api, and per tenant swarm-api's version-add, version disable/enable and read (base slots and `-refresh` twins). No worker reads a user slot: it obtains one through swarm-api's broker (#1041) | `terraform/bootstrap/forge_user_slots.tf`, switched on by `enable_forge_user_slots` | the owner, by bootstrap apply |
+| the user slots' IAM: `swarmForgeSlotCreator` and `swarmForgeSlotVersionManager` for swarm-api, and per tenant swarm-api's version-add, version disable/enable and read (base slots and `-refresh` twins). No worker reads a user slot: it obtains one through swarm-api's broker | `terraform/bootstrap/forge_user_slots.tf`, switched on by `enable_forge_user_slots` | the owner, by bootstrap apply |
 | the refresh sweep, `swarm-forge-refresh`, every 15 minutes | `terraform/modules/scheduler/jobs.tf` (`forge_refresh`), switched on by `enable_forge_refresh` | the release, once lane OB3 ships |
 | the `forge_grants` and `forge_orgs` indexes on (`tenant_id`, `user_hash`) | `terraform/modules/firestore/indexes.tf` | the release |
 | the values of the client secret and the private key | Secret Manager only, by `scripts/create-secrets.sh --github-app <slot> --stdin` | the owner, from a terminal |
@@ -50,7 +49,7 @@ held at the `dev-iam` environment for the owner because it adds IAM:
 * `module.secret_manager.google_secret_manager_secret.github_app["private-key"]`
 * `module.secret_manager.google_secret_manager_secret_iam_binding.github_app_accessor["client-secret"]`
   -- `roles/secretmanager.secretAccessor`, members exactly
-  `serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com`
+  `serviceAccount:swarm-api@example-project.iam.gserviceaccount.com`
 * `module.secret_manager.google_secret_manager_secret_iam_binding.github_app_accessor["private-key"]`
   -- the same role and the same one member
 * `module.firestore.google_firestore_index.this["forge-grants-tenant-user"]`
@@ -97,7 +96,7 @@ must show exactly, with `<n>` the project number and `<t>` each tenant in
 
 And the tenant's worker: `forge_slot_reader["<t>"]`, `secretAccessor` on
 that prefix's BASE slots, never a `-refresh` twin (decision D7/U1). The
-owner's 2026-10-11 decision that secrets are user-scoped (#1041) supersedes
+owner's 2026-10-11 decision that secrets are user-scoped supersedes
 it: swarm-api's broker, `POST /v1/attempts/forge-credential`
 ([design/user-scoped-secrets.md](../design/user-scoped-secrets.md)), is built
 behind the `forge_broker` switch (FORGE_BROKER), off by default and off in
@@ -131,7 +130,7 @@ of these for the environment, and stop at the first that fails:
    refused that slot.
 
 With the broker off, the worker reads a person's slot with its own account,
-as before #1041. Destroy the binding before the broker is on, and that read
+as before the forge-broker rollout. Destroy the binding before the broker is on, and that read
 is `PERMISSION_DENIED`: every agent that resolved to a person's slot fails
 closed until the broker is on. Turning `forge_broker` off or rolling the
 worker back after the removal has the same effect; re-adding the binding is
@@ -140,7 +139,7 @@ the undo.
 These are bootstrap's, not the release's, on purpose: a project-level
 `secretAccessor` grant made by CI would have to be on the deployer's
 grantable list, and that list limits which roles CI grants, never to whom --
-CI could then grant itself read of every secret in `saga-agents-staging`, the
+CI could then grant itself read of every secret in `example-project`, the
 other team's included. `terraform/bootstrap/forge_user_slots.tf` has the full
 reasoning. A tenant added later gets its four per-tenant
 grants from the same bootstrap apply that grants the deployer on its worker
@@ -156,9 +155,9 @@ Fill in exactly:
 
 | field | value | why |
 |---|---|---|
-| GitHub App name | `SwarmCloud` (if taken, `SwarmCloud Saga`) | what users and org admins see when they authorise and install |
-| Homepage URL | `https://swarm.saga.xyz` | the console |
-| Callback URL | `https://swarm.saga.xyz/onboarding/github/callback` | the console's callback page posts `{state, code}` to swarm-api's exchange with the user's own sign-in (onboarding.md §3.2). Terraform derives the same value from `frontend_hostname` (`terraform output github_app`); they must agree |
+| GitHub App name | `SwarmCloud` (if taken, `SwarmCloud Example`) | what users and org admins see when they authorise and install |
+| Homepage URL | `https://swarm.example.com` | the console |
+| Callback URL | `https://swarm.example.com/onboarding/github/callback` | the console's callback page posts `{state, code}` to swarm-api's exchange with the user's own sign-in (onboarding.md §3.2). Terraform derives the same value from `frontend_hostname` (`terraform output github_app`); they must agree |
 | Expire user authorization tokens | **ticked** | user access tokens live 8 hours and are refreshed by the sweep; a token that never expires is the OAuth App this design rejected (D1) |
 | Request user authorization (OAuth) during installation | **ticked** | installing and authorising are one trip, so a new user ends on the callback page with a code |
 | Enable Device Flow | unticked | the plugin reuses the browser sign-in or a pasted one-time code (onboarding.md §3.2), never device flow |
@@ -172,15 +171,15 @@ No access):
 
 * Contents: Read and write -- clone and push
 * Pull requests: Read and write -- open and update the agent's pull request
-* Issues: Read and write -- the issue-run comments (#454)
+* Issues: Read and write -- the issue-run comments
 * Checks: Read-only -- the merge step's CI wait
 * Metadata: Read-only -- mandatory, GitHub sets it
 * Actions: Read and write -- the merge step re-runs the failed jobs of a
   red CI run at the same commit (`mergewake.py`,
   `GitHubWriter.rerun_failed_jobs`, else `GitHubWriter.rerun_job` for one
-  job; both `forgewrite.ACTIONS_WRITE`, no new grant, #2841); held since
+  job; both `forgewrite.ACTIONS_WRITE`, no new grant); held since
   before 2026-10-23
-* Workflows: Read and write -- added to the App on 2026-10-23 (#2029); each
+* Workflows: Read and write -- added to the App on 2026-10-23; each
   installation's owner accepts it. A repository uses it only when its
   `workflow_files` switch is on. A push that changes `.github/workflows/` or
   `.github/actions/` needs it: swarm-api mints a token for that ONE
@@ -190,7 +189,7 @@ No access):
   `workflow-lines.patch`. Why off by default: a workflow on a pushed branch
   runs with that repository's secrets before any merge hold.
 * Secrets: Read and write, and Environments: Read and write -- added for
-  writing GitHub Actions secrets (SSC-ACTIONS-API, #2158; BGD's Q3 of
+  writing GitHub Actions secrets (SSC-ACTIONS-API; [the owner]'s Q3 of
   secrets-scopes.md §11: the existing App, no second one). Steps and the
   reasoning: [Writing GitHub Actions secrets](#writing-github-actions-secrets).
   **Not Administration**: SwarmCloud creates, edits and deletes no
@@ -228,8 +227,8 @@ never the value.
 Check without reading anything back:
 
 ```bash
-gcloud secrets versions list swarm-github-app-client-secret --project saga-agents-staging --filter=state=ENABLED --format='value(name)'
-gcloud secrets get-iam-policy swarm-github-app-client-secret --project saga-agents-staging --format='value(bindings.members)'
+gcloud secrets versions list swarm-github-app-client-secret --project example-project --filter=state=ENABLED --format='value(name)'
+gcloud secrets get-iam-policy swarm-github-app-client-secret --project example-project --format='value(bindings.members)'
 ```
 
 The first prints one version; the second prints swarm-api alone. The same two
@@ -322,7 +321,7 @@ value, with `<n>` the project number and `<slot>` that user's slot:
 ```bash
 gcloud policy-intelligence troubleshoot-policy iam \
   "//secretmanager.googleapis.com/projects/<n>/secrets/<slot>/versions/1" \
-  --principal-email=swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com \
+  --principal-email=swarm-agent-worker-eng@example-project.iam.gserviceaccount.com \
   --permission=secretmanager.versions.access
 ```
 
@@ -335,7 +334,7 @@ set `enable_forge_user_slots = false` and apply bootstrap before anything
 else. swarm-api denied means its condition does not match: the same.
 
 After the later removal of `forge_slot_reader` (step 2's checklist, with the
-broker on): `swarm-agent-worker-eng@` **denied** for both (#1041: no worker
+broker on): `swarm-agent-worker-eng@` **denied** for both (no worker
 reads a user slot), `swarm-api@` still granted for both. A worker granted is a
 binding the removal missed: find it with `gcloud projects get-iam-policy` and
 remove it. Then submit an agent as that user in a group tenant: it clones and
@@ -345,8 +344,7 @@ value.
 
 ## Step 9: the push webhook
 
-**Why:** owner answer Q3 on
-[#1384](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/1384)
+**Why:** owner answer Q3
 (2026-10-15): a push to a registered repository's default branch makes its
 index poll happen now, instead of at the next five-minute tick
 ([docs/design/graph-service.md](../design/graph-service.md) §6.2). The
@@ -368,8 +366,7 @@ after 7 days), and forwards the repository's `full_name` -- never the
 payload's commit -- to swarm-api's `POST /v1/admin/repositories/push`, which
 re-reads the head with each workspace's own token.
 
-**THE IDENTITY, AND ITS BLAST RADIUS.** Owner decision 2026-10-16, recorded on
-#1384: the receiver **runs as the rollup sweeper account**
+**THE IDENTITY, AND ITS BLAST RADIUS.** Owner decision 2026-10-16: the receiver **runs as the rollup sweeper account**
 (`swarm-rollup-sweeper`, `module.scheduler.rollup_sweeper_email`) and calls
 swarm-api as it; `POST /v1/admin/repositories/push` was added to that account's
 route allow-list (`ROLLUP_SWEEPER_ROUTES` in
@@ -438,8 +435,8 @@ In this order:
    `webhook_secret`:
 
    ```bash
-   gcloud secrets versions list <secret> --project saga-agents-staging --filter=state=ENABLED --format='value(name)'
-   gcloud secrets get-iam-policy <secret> --project saga-agents-staging --format='value(bindings.members)'
+   gcloud secrets versions list <secret> --project example-project --filter=state=ENABLED --format='value(name)'
+   gcloud secrets get-iam-policy <secret> --project example-project --format='value(bindings.members)'
    ```
 
    The first prints one version; the second prints the rollup sweeper account
@@ -471,7 +468,7 @@ In this order:
    default branch** at registration, and a repository's settings change it in
    place with that same PATCH, carrying `index.on_change` alone. Both show the
    note that the App's webhook must be ticked (this step).
-   `min_change_interval_minutes` (default 120 since #2524, was 30) applies to pushes as well, so a
+   `min_change_interval_minutes` (default 120 since the index-poll-interval change, was 30) applies to pushes as well, so a
    busy default branch does not queue a run per merge.
 
 **Rotating the webhook secret.** GitHub holds one webhook secret at a time, so
@@ -487,7 +484,7 @@ swarm-api writes a repository's or an environment's GitHub Actions secret
 for a workspace manager whom GitHub calls admin of that repository
 (`apps/swarm-api/swarm_api/actions_secrets.py`,
 `routes/actions_secrets.py`; design: `docs/design/secrets-scopes.md` §3,
-with BGD's answers in its §11). It mints from **this** App, per call, a
+with [the owner]'s answers in its §11). It mints from **this** App, per call, a
 token for ONE repository and the ONE permission that call needs
 (`forge_installation.ACTIONS_PERMISSIONS`), seals the value to GitHub's
 public key with PyNaCl, PUTs it, and keeps only the name, who and when.
@@ -497,7 +494,7 @@ them, every write to that installation's repositories is refused, 409 with
 `detail.review_url`, the installation's page to accept them, and nothing is
 written.
 
-What BGD does on GitHub, once:
+What [the owner] does on GitHub, once:
 
 1. **Settings → Developer settings → GitHub Apps → SwarmCloud → Permissions
    & events → Repository permissions.**
@@ -541,7 +538,7 @@ one rule, the default branch (`main`). `GET
 the request types the environment's name in `confirm_environment`, because a
 secret there reaches every workflow those branches run.
 
-**The risk BGD accepted with Q3.** A repository admin's App user token sits
+**The risk [the owner] accepted with Q3.** A repository admin's App user token sits
 in a `-git-u-` slot tenant workers can read until user-scoped-secrets step 5,
 and with Secrets: write on the App such a token can overwrite that
 repository's Actions secrets. Step 5 closes that; Administration waits for it.
@@ -556,7 +553,7 @@ rotation never has a gap:
 2. Once swarm-api has served an exchange or a refresh with it, delete the old
    one at GitHub.
 3. Disable the old version by hand:
-   `gcloud secrets versions disable <N> --secret swarm-github-app-client-secret --project saga-agents-staging`.
+   `gcloud secrets versions disable <N> --secret swarm-github-app-client-secret --project example-project`.
 
 `create-secrets.sh --github-app` refuses `--disable-previous`: disabling
 before step 2 would refuse every exchange in between.
@@ -568,7 +565,7 @@ swarm-api creates each user's slot at onboarding (D3), labelled
 removes them. To see a tenant's:
 
 ```bash
-gcloud secrets list --project saga-agents-staging --filter='labels.managed-by=swarm-api AND labels.swarm-tenant=<t>' --format='value(name)'
+gcloud secrets list --project example-project --filter='labels.managed-by=swarm-api AND labels.swarm-tenant=<t>' --format='value(name)'
 ```
 
 Offboarding a tenant must delete them by label, since no Terraform plan will

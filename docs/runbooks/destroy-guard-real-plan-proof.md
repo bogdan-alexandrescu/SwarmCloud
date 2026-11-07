@@ -14,13 +14,13 @@ real infrastructure (new resource types, a new neighbour in the shared project).
 There is no `terraform apply` and no `terraform destroy` anywhere in this
 runbook, and `scripts/verify-destroy-guard.sh` contains neither.
 
-**What it is protecting.** `saga-agents-staging` is shared. It holds another
-team's live GKE cluster `agents-staging`, their VPC `agents-staging-vpc`, two
+**What it is protecting.** `example-project` is shared. It holds another
+team's live GKE cluster `peer-cluster`, their VPC `peer-vpc`, two
 subnets, six buckets, eighteen service accounts, one Cloud Run service and
 Firestore's `(default)` database (`SHARED_DENY_LIST` as of the 2026-10-21 read
-of the live project, less the `oracle-api@` service account and the bare
-`oracle-api` Cloud Run service name, which left it on 2026-10-27 by the
-owner's decision, #1835: the account is a SwarmCloud principal). `make destroy` aborting on all of those is the only control between
+of the live project, less the `peer-api@` service account and the bare
+`peer-api` Cloud Run service name, which left it on 2026-10-27 by the
+owner's decision (the account is a SwarmCloud principal). `make destroy` aborting on all of those is the only control between
 this repository and deleting their production.
 
 ---

@@ -20,7 +20,7 @@ a merge made with the GITHUB_TOKEN raises no `push` event, so `application.yml`
 (the one image build) and `release.yml` would never run for main.
 
 This App merges **this repository's** pull requests. It is not the SwarmCloud
-merge step ([docs/merge-step.md](../merge-step.md), #295), which is the separate,
+merge step ([docs/merge-step.md](../merge-step.md)), which is the separate,
 per-tenant way SwarmCloud's own chains merge, with the tenant's own forge
 token from Secret Manager. The two do not share credentials.
 
@@ -51,7 +51,7 @@ union of what every one of them asks for: the table in step 1, which
 `tests/unit/scripts/test_merge_app_permissions_doc.py` holds to every
 `permission-*` input of every token mint that uses `MERGE_APP_ID`.
 
-Measured 2026-10-23 to 2026-10-26 (#2220; F12, F14 and F15 of #2379): this
+Measured 2026-10-23 to 2026-10-26 (findings F12, F14 and F15 of the merge-App permissions review): this
 runbook listed Contents, Pull requests and Workflows only, the App was set up
 from it, and every scheduled `judge` run failed at its mint with "The
 permissions requested are not granted to this installation", so
@@ -67,7 +67,7 @@ latter at 05:57Z 2026-10-27), and the cause was the input's name:
 names neither, so it still warns `Unexpected input(s)`; the warning is
 harmless, the request goes through by name.
 
-## The App also turns auto-merge off (#795)
+## The App also turns auto-merge off
 
 Measured 2026-10-07: the `disable` job, on a push after `ready`, ran
 `gh pr merge --disable-auto` with the workflow's GITHUB_TOKEN, which held only
@@ -75,7 +75,7 @@ Measured 2026-10-07: the `disable` job, on a push after `ready`, ran
 "Resource not accessible by integration" every time, and an `|| true` after
 the call hid it. So `ready`
 was removed and auto-merge stayed armed: 17 of the 24 pull requests merged
-that day merged with no label, at a head nobody had labelled -- the #269 rule
+that day merged with no label, at a head nobody had labelled -- the head-binding rule
 that `ready` binds to the head it was given for was not enforced for the
 merge itself.
 
@@ -140,7 +140,7 @@ Running a disable beside a `labeled` run is safe because every arming is
 pinned with `--match-head-commit`, and the enable job re-arms only over a pure
 base merge of the head it was labelled at.
 
-### Fewer runs (#795)
+### Fewer runs
 
 `auto-merge.yml` re-evaluates `ready` pull requests when a CI run completes.
 It used to listen to application, ci-gate, security and terraform, which
@@ -149,11 +149,11 @@ job of application.yml and waits for terraform's run at its head, so only
 application's (that is, ci-gate's) and security's completions can be the last
 one on a head; those are the two it listens to now.
 
-### Only a required check holds the merge (#815)
+### Only a required check holds the merge
 
-On 2026-10-07 #811 got `ready` while code scanning's **Trivy** check was still
+On 2026-10-07 a pull request got `ready` while code scanning's **Trivy** check was still
 running. Trivy is not one of the five checks ruleset `main-protection`
-(24160219) requires, and no application or security run reports it, so the
+requires, and no application or security run reports it, so the
 gate waited on it and nothing looked again when it finished: the merge queue
 stalled 10:30-15:40Z until an operator ran `gh workflow run auto-merge.yml -f
 pr=811`. Two changes since:
@@ -181,7 +181,7 @@ required ones are green. The label run's `queue for auto-merge` job should
 arm or merge it, not comment "waiting". A pull request still waiting on a
 required check names only required checks in its comment. If one ever sits
 labelled with every required check green, `gh workflow run auto-merge.yml
---repo bogdan-alexandrescu/SwarmCloud -f pr=<number>` makes it look again.
+--repo example-org/example-repo -f pr=<number>` makes it look again.
 
 ## 1. Create the App
 
@@ -197,9 +197,9 @@ repository).
 | Permission | Level | Why, and the line that needs it |
 |---|---|---|
 | Contents | Read and write | `permission-contents: write`. Squash-merging writes the commit to `main`; enabling and disabling auto-merge need it too. |
-| Pull requests | Read and write | `permission-pull-requests: write`. Enabling auto-merge, turning it off (the `disarm` steps, #795) and merging are pull request mutations. |
+| Pull requests | Read and write | `permission-pull-requests: write`. Enabling auto-merge, turning it off (the `disarm` steps) and merging are pull request mutations. |
 | Workflows | Read and write | `permission-workflows: write`, the `enable` job and `merge-train.yml` only. A pull request that touches `.github/workflows` cannot be merged by a token without it (owner decision, 2026-09-28). |
-| Actions variables | Read and write | `permission-actions-variables: write`, `runner-fallback.yml`'s `judge` only. GitHub's App settings page calls it *Variables*; its API key is `actions_variables`. It reads and writes the `SELF_HOSTED_CI` repository variable; the GITHUB_TOKEN has no variables scope (owner decision, 2026-10-26; #2220). |
+| Actions variables | Read and write | `permission-actions-variables: write`, `runner-fallback.yml`'s `judge` only. GitHub's App settings page calls it *Variables*; its API key is `actions_variables`. It reads and writes the `SELF_HOSTED_CI` repository variable; the GITHUB_TOKEN has no variables scope (owner decision, 2026-10-26). |
 
   Metadata: Read is added by GitHub automatically. The App does **not** need
   Checks or Actions: the gate reads check runs with the workflow's
@@ -219,7 +219,7 @@ one repository, keep the key only in the Actions secret.
 ## 2. Install it on this repository only
 
 App settings, **Install App**, the owner account, **Install**, then choose
-**Only select repositories** and pick `bogdan-alexandrescu/SwarmCloud`. Do not
+**Only select repositories** and pick `example-org/example-repo`. Do not
 choose "All repositories". Confirm on the installation page that exactly one
 repository is listed.
 
@@ -232,8 +232,8 @@ browser downloads a `.pem`. Move it somewhere outside any repository checkout
 ## 4. Store the id and the key, then delete the file
 
 ```bash
-gh variable set MERGE_APP_ID --repo bogdan-alexandrescu/SwarmCloud --body '<the App ID>'
-gh secret set MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud < ~/merge-app.private-key.pem
+gh variable set MERGE_APP_ID --repo example-org/example-repo --body '<the App ID>'
+gh secret set MERGE_APP_PRIVATE_KEY --repo example-org/example-repo < ~/merge-app.private-key.pem
 rm ~/merge-app.private-key.pem
 ```
 
@@ -242,14 +242,14 @@ file, a Job environment or a log. Also confirm native auto-merge is allowed on
 the repository (once, if not already done):
 
 ```bash
-gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=true
+gh api --method PATCH repos/example-org/example-repo -F allow_auto_merge=true
 ```
 
 ## 5. Verify
 
 1. Open a small docs-only pull request and let its checks finish.
 2. Add the `ready` label.
-3. `gh run list --repo bogdan-alexandrescu/SwarmCloud --workflow auto-merge.yml --limit 3`
+3. `gh run list --repo example-org/example-repo --workflow auto-merge.yml --limit 3`
    shows a run for the label event. Its `queue for auto-merge` job should be
    green and the pull request should show "Auto-merge enabled", or be merged
    at once if it was already green.
@@ -274,7 +274,7 @@ values).
 
 1. App settings, **Private keys**, **Generate a private key** (a second key is
    allowed alongside the first).
-2. `gh secret set MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud < new.pem`, then `rm new.pem`.
+2. `gh secret set MERGE_APP_PRIVATE_KEY --repo example-org/example-repo < new.pem`, then `rm new.pem`.
 3. Verify as above with a `ready` label.
 4. Delete the old key in the App's **Private keys** list.
 

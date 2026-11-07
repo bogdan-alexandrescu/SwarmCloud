@@ -2,7 +2,7 @@
 
 **Status: PROPOSED 2026-10-04, design and mock-ups only (functionality wave 4,
 lane RI0b, drawn 2026-10-05).** As proposed, nothing here was built; the per-user
-scope since has been, by #780 ("Built for #780" below). The owner
+scope since has been, by the per-person-slots migration (described below). The owner
 asked on 2026-10-04 for "a way to visualize the permissions the git token has
 on a given repo or set of repos. We might need to manage different git tokens
 per repo and per user or tenant." This is a sibling of
@@ -31,7 +31,7 @@ What the design settles, in one line each:
 
 ---
 
-## Built for #780: per-person slots, the migration policy, retiring the tenant token
+## Per-person slots, the migration policy, retiring the tenant token
 
 Read 2026-10-09. Onboarding ([onboarding.md](onboarding.md)) built the **per
 user** scope of §1 and request E (filed and accepted as request 54). The
@@ -65,7 +65,7 @@ IAM change and no frozen-contract change: `Task.forge_credential` already
 accepts `git-u-<hex>`.
 
 **Readers: the tenant's worker account and swarm-api, until the broker is
-on (#1041).** The owner decided on 2026-10-11 that secrets are user-scoped,
+on.** The owner decided on 2026-10-11 that secrets are user-scoped,
 not tenant-scoped, superseding U1 (D7). Under U1 the tenant's worker account
 reads every member's slot, so an agent in Bob's agent can mint its worker's
 token and read Alice's slot by name, and only the worker's code keeps the two
@@ -124,7 +124,7 @@ its own direct read.
 | a person | `read` or `write`, owner enabled through the App | either | their App slot |
 | a person | `read` or `write`, owner enabled through their fallback token | either | their slot for that owner |
 | a person | none | on | refused, 403 `REPOSITORY_NOT_GRANTED`, "choose it under Access" |
-| a person | none | off | the tenant token, `git`, as before #780 |
+| a person | none | off | the tenant token, `git`, as before the per-person-slots migration |
 | a service account | not asked | either | the tenant token, `git`, with write |
 
 **The migration policy (owner decisions D4, 2026-10-07 and 2026-10-08).**
@@ -186,11 +186,11 @@ it, so the owner decides it rather than discovers it.
 
 **The merge step.** [merge-step.md §2.1](merge-step.md) designs the merge
 credential as a GitHub App key in `swarm-tenant-<tenant>-git-merge`, read only
-by `swarm-<tenant>-merge` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) (`terraform/modules/tenancy/main.tf`, the
+by `swarm-<tenant>-merge` (history: retired with the own-PR-merge-limitation design, docs/merge-step.md §3; the account no longer exists) (`terraform/modules/tenancy/main.tf`, the
 `sole_accessor` comment), so that a merge is attributed to a bot identity no
-agent can read. The lane brief for RI0b says the merge step (#295, lane M1a,
+agent can read. The lane brief for RI0b says the merge step (lane M1a,
 in flight) "uses that same token", the tenant's `-git`. Those two statements
-disagree, and this lane cannot read #295 to settle which is current. The
+disagree, and this lane cannot read the own-PR-merge-limitation design to settle which is current. The
 registry below is written so either holds: `merge` is a capability every
 token is probed for, and §3.3 says how the merge step picks under each.
 
@@ -266,11 +266,11 @@ protection `-git` has, and no stronger. Three options, for the owner:
   `eng`.
 * **(U3) A per-user reader identity** (a service account per registered user,
   the only accessor of `-git-u-<hex>`, used by a credential step the way
-  `swarm-<tenant>-merge` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) is used for `-git-merge`). Strongest; one more
+  `swarm-<tenant>-merge` (history: retired with the own-PR-merge-limitation design, docs/merge-step.md §3; the account no longer exists) is used for `-git-merge`). Strongest; one more
   identity per user and a step that runs no agent.
 
 The owner picked U1 on 2026-10-07 (D7). **On 2026-10-11 the owner superseded
-it: secrets are user-scoped (#1041).** None of U1-U3 is the answer. U1 is
+it: secrets are user-scoped.** None of U1-U3 is the answer. U1 is
 what the decision rules out. U2 fails "a task Alice submits in `eng` pushes as
 Alice". U3, and per-person worker identities generally, multiply identities
 per person per tenant and still need a per-attempt switch at dispatch. What
@@ -410,7 +410,7 @@ never inferred from the refusal. A refused read of a slot the index knows
 names the missing grant (`forge.grant_hint`); a refused or missing read of a
 slot nobody recorded says "No GitHub credential for `<tenant>`: connect
 GitHub under Setup › Git tokens (or store `swarm-tenant-<tenant>-git`)". The
-owner's report of 2026-10-13 is why: u-bogdan had only its owner's
+owner's report of 2026-10-13 is why: example-tenant had only its owner's
 connection slot, and the read of the absent `-git` blamed a grant.
 
 Not resolved here: a person's per-owner fallback slot (D5, `owner_suffix`) —
@@ -424,7 +424,7 @@ a `repo-index-refresh` schedule's, a service account's — runs on
 `forge.service_slot`, which is `resolve_forge_slot` with no person: steps 2–4
 above. `SubmissionService._resolve_forge` calls it; there is no second copy.
 Until INDEX-CRED that submission path hard-coded `git`, so on 2026-10-14
-u-bogdan's Try it passed for `sagaxyz/ai-studio` through the owner's
+example-tenant's Try it passed for `example-org/peer-app` through the owner's
 connection slot while every index run of it cloned with a `-git` slot the
 workspace never had and failed "Repository not found". A person's own agent
 keeps its own slot first (their grant, §3.1); a person's ungranted agent while

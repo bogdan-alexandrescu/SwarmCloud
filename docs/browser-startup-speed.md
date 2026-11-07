@@ -81,7 +81,7 @@ layer:
 
 Each item below was downloaded as the Dockerfile downloads it, unpacked, and
 then re-tarred and `gzip -6`'d, which is how a layer is compressed. This is the
-same method [worker-images.md](worker-images.md#why-the-repository-index-has-its-own-image-625)
+same method [worker-images.md](worker-images.md#why-the-repository-index-has-its-own-image)
 used for the toolbox. Measured 2026-10-13 ~11:30 UTC:
 
 | item | download | unpacked | as a layer (gzip -6) |
@@ -241,9 +241,9 @@ lane:
    can read it with
    `kubectl get events -n swarm-tenant-<t> --field-selector involvedObject.name=<pod>`
    on `swarm-autopilot`, through `kubectl_bin` and **never** on
-   `agents-staging`.
+   `peer-cluster`.
 2. **Whether the Container File System API (`containerfilesystem.googleapis.com`)
-   is enabled** in `saga-agents-staging`. Image streaming needs it. It is
+   is enabled** in `example-project`. Image streaming needs it. It is
    **not** in the list of services Terraform enables
    (`terraform/infra/main.tf`, the `services` list). The SwarmCloud worker
    account got `AUTH_PERMISSION_DENIED` on `gcloud services list` (2026-10-13
@@ -443,20 +443,20 @@ are fetched.
 | 5 | **Leave codex out of the browser image** (base `INSTALL_AGENT_CLIS` split, or a base without codex) | 4.3 cold (~130 MB); ~0 streamed | 0 | S-M (base Dockerfile + build args) | none | low: codex is disabled (`available=False`) |
 | 6 | **Browser image without the agent toolbox** (a slimmer base) | 8.5 cold (256.9 MB); ~0 streamed | 0 | M | none | changes what a `claude-code-browser` agent can do (no gcloud, terraform, checkov, trivy): an owner choice |
 | 7 | **Smaller `browser` class** (4/8) | 0-38, unknown until measured (§4.3) | saves ~$0.22 per browser-hour | M + contract request | none (requests == limits kept) | medium: Chromium + encoder starved; re-split `LIVE_DISPLAY_SHARE` |
-| 8 | Secondary boot disk preloading | 0-5 on top of #1 | ~0.003 per node-day | L: disk image per release, allowlist, node selector | none | medium: release machinery |
+| 8 | Secondary boot disk preloading | 0-5 on top of option 1 | ~0.003 per node-day | L: disk image per release, allowlist, node selector | none | medium: release machinery |
 | 9 | Compute-class change | ~0 | ≥ 0 | S | none | — |
 | 10 | Pre-pull DaemonSet | ~0 cold | small × nodes | S | none (but agent-less pods) | — |
 
 Options 3-6 together take about 540 MB (43 %) off the image: about 18 s on a
-cold non-streamed pull, and close to nothing once #1 works. They are still
+cold non-streamed pull, and close to nothing once option 1 works. They are still
 worth doing for the first pull after each release, which streaming may not
-cover, and for node disk. They come after #1, not instead of it.
+cover, and for node disk. They come after option 1, not instead of it.
 
 ## 7. Recommendation, and the lanes that would build it (question 6)
 
-**Do #1 now.** It is the only option with a large measured cause behind it,
+**Do option 1 now.** It is the only option with a large measured cause behind it,
 it costs nothing, and it touches no invariant. **Then measure** before
-deciding #2 and #7. **Do #3-#5 as one image lane** once #1's effect is known.
+deciding options 2 and 7. **Do options 3-5 as one image lane** once option 1's effect is known.
 
 * **Lane STREAM** (Track B images + Track D scripts; no contract change).
   * Remove `WORKDIR /workspace` from `images/agent-runtime-browser/Dockerfile`.
@@ -474,7 +474,7 @@ deciding #2 and #7. **Do #3-#5 as one image lane** once #1's effect is known.
     enablement and one cold browser pod's `ImageStreaming` event, and compare
     `image_pulling -> image_pulled` before and after. **If the API is off,**
     enabling it is a project-wide change in a **shared** project. If the other
-    team's `agents-staging` is an Autopilot cluster, their pulls would start
+    team's `peer-cluster` is an Autopilot cluster, their pulls would start
     streaming too. That is the owner's call (question 2 below), not this
     lane's.
 * **Lane MEASURE** (Track D, read-only, no code). This lane fills the "unknown"
@@ -483,7 +483,7 @@ deciding #2 and #7. **Do #3-#5 as one image lane** once #1's effect is known.
     starts, split by cold and warm (`pod_scheduled - dispatched` over 10 s
     means cold), before and after STREAM.
   * The browser pod's real CPU and memory use from GKE metrics, to size
-    option #7.
+    option 7.
 * **Lane SLIM** (Track B images + Track B worker).
   * `--no-shell` and `channel="chromium"` in
     `apps/agent-worker/agent_worker/runners/browser.py::_launch`, in
@@ -517,7 +517,7 @@ The same questions are filed as `questions.json` with this PR's artifacts.
    larger of the two measured waits.
 2. **If `containerfilesystem.googleapis.com` turns out to be off, may it be
    enabled in the shared project?** (a) yes, after confirming whether
-   `agents-staging` is Autopilot; (b) yes, without checking; (c) no, and live
+   `peer-cluster` is Autopilot; (b) yes, without checking; (c) no, and live
    with the 42 s. Recommended: (a).
 3. **Warm slots: amend invariant 1?** (a) no warm slots; (b) one slot on
    weekdays 07-19 PT, ~$3.73/day; (c) one slot 24×7, ~$10.44/day; (d) decide
@@ -539,8 +539,8 @@ The owner answered §8 on 2026-10-13. Lane names refer to §7.
 1. **STREAM: yes.**
    - Remove the redundant `WORKDIR` so the browser image has no duplicate layer.
    - Add a release check that fails on duplicate layers.
-   - Read on 2026-10-13 at 12:00 UTC: `containerfilesystem.googleapis.com` is **already enabled** in `saga-agents-staging`, so the shared project needs no change.
-   - In the same reading, `agents-staging` (the other team's cluster) is a Standard cluster, not Autopilot.
+   - Read on 2026-10-13 at 12:00 UTC: `containerfilesystem.googleapis.com` is **already enabled** in `example-project`, so the shared project needs no change.
+   - In the same reading, `peer-cluster` (the other team's cluster) is a Standard cluster, not Autopilot.
 2. **Enabling the API:** not needed, because it is already on (see 1).
 3. **Warm placeholder slots: decide after lane MEASURE.** Invariant 1 stays as written until then.
 4. **Slim the image: yes, after STREAM.**
@@ -588,7 +588,7 @@ image_pulled`), browser (`container_started -> first_frame`) and total
 (`dispatched -> first_frame`). A start is cold when its node wait is over
 10 s (§7). It then takes `kubectl top` samples of the `browser` pods on
 `swarm-autopilot` through `kubectl_bin`, after `assert_kube_context` has
-refused any other context, so it never reaches `agents-staging`. It compares
+refused any other context, so it never reaches `peer-cluster`. It compares
 the largest sampled pod (display plus worker) with the catalogue's `standard`
 class, 4 vCPU / 8 GiB, at 80 % headroom, because requests == limits leaves no
 burst. Run it after the IMG-STREAM release, while browser agents are running,
@@ -613,15 +613,15 @@ not the decision itself.
 ## 11. First full measurement (2026-10-15 01:00 UTC, release b93ad6cb)
 
 Read 2026-10-15 between 00:58 and 01:05 UTC (17:58–18:05 PDT, 10-14), in
-tenant `u-bogdan`, over the 2 days before it, while the live-browser QA matrix
+tenant `example-tenant`, over the 2 days before it, while the live-browser QA matrix
 (batch `full-1015`) was running browser agents. The deployed release was
-b93ad6cb, which includes IMG-STREAM (#1239). The window also covers starts from
+b93ad6cb, which includes IMG-STREAM. The window also covers starts from
 before that release, so the pull row is not a clean before/after.
 
 **How it was read, and why not with the script as written.** The script's
 default credential is the operator's own gcloud access token, and IAP
 answered 401 to it. The account `.env.example` suggests for
-`SWARM_IMPERSONATE_SA` (`swarm-verify`) is not a member of `u-bogdan`, so the
+`SWARM_IMPERSONATE_SA` (`swarm-verify`) is not a member of `example-tenant`, so the
 API answered 403 `tenant_not_member`. The same reads (`GET /v1/tasks`, then
 every events page of each agent) were therefore made through the sc plugin's
 API client as the owner, written in the script's own `events.json` stream

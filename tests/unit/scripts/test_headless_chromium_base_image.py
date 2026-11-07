@@ -143,5 +143,5 @@ def test_the_doc_tells_a_step_how_to_run_its_suite_on_both_profiles() -> None:
     section = doc[heading.end():].split("\n## ", 1)[0]
     for needle in ("claude-code-browser", "`claude-code`", "npx playwright install chromium",
                    "swarm-test-browsers npx playwright test", "SWARM_TEST_BROWSERS_PATH",
-                   "XDG_CACHE_HOME", "--with-deps", "#2253"):
+                   "XDG_CACHE_HOME", "--with-deps", "the Chromium-launch fix"):
         assert needle in section, needle

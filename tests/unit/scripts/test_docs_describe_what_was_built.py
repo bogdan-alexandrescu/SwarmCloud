@@ -1297,7 +1297,7 @@ LIVE_BROWSER = DOCS / "design" / "live-browser.md"
 QI_BUILT = "## 8. Measurements and what was built"
 QI_M = "### 4.9 Measurements before the build (M1–M5) and the owner's steps"
 QI_CARRY = "### 5.5.1 Reusing a signed-in session (LB-7)"
-QI_WORKSPACE = "### 6.6 The QA identity's service workspace (qa-identity, #1649)"
+QI_WORKSPACE = "### 6.6 The QA identity's service workspace (qa-identity)"
 QI_GATE_PY = "apps/agent-worker/agent_worker/livegate/qaidentity.py"
 QI_WORKER_PY = "apps/agent-worker/agent_worker/qa_identity.py"
 QI_API_PY = "apps/swarm-api/swarm_api/qa_identity.py"
@@ -2132,7 +2132,7 @@ def _check_ts_agent_output(text: str) -> None:
 
     raw = _ts_agent_output_part(text)
     body = _flat(raw)
-    assert "(#1605, #1627)" in body
+    assert body.startswith(f"{TS_AGENT_OUTPUT}. A `graph-pytest` run in which"), body[:80]
     assert "[test-services.md](test-services.md)" in raw
     assert "[design/test-services.md](design/test-services.md) §11" in raw
     # The skipped text, as `_pytest_project` builds it.
@@ -2261,7 +2261,7 @@ SSC_DESIGN = DOCS / "design" / "secrets-scopes.md"
 PROVIDER_KEYS = DOCS / "provider-keys.md"
 SSC_BUILT = "## 12. What was built (2026-10-24, lane SSC-DOCS, part of #2158)"
 SSC_SECURITY = "## Secrets scopes and GitHub Actions secrets"
-SSC_KEYS = "## 7. Secrets scopes: what changes for these keys, and what does not (#2158)"
+SSC_KEYS = "## 7. Secrets scopes: what changes for these keys, and what does not"
 #: §9's lanes that are not built, each for a reason the status line gives:
 #: phase 0 because Q3 declined the second App.
 SSC_UNBUILT = ("SSC-SECRETS-APP",)
@@ -2391,7 +2391,7 @@ def _check_ssc_security(text: str) -> None:
     assert "`apps/swarm-api/swarm_api/workspace_secrets.py::attempt_repositories`" in raw
     assert "`apps/swarm-api/swarm_api/grant_attest.py::FORM_REPOSITORY`" in raw
     assert f"`{SSC_ACTIONS_PY}::ACTIONS_PERMISSIONS`" in raw and "No mint asks `administration`" in body
-    assert "**Accepted residual risk (BGD, Q3" in body and "step 5" in body
+    assert "**Accepted residual risk ([the owner], Q3" in body and "step 5" in body
     assert "`MERGE_APP_PRIVATE_KEY`" in body and "cannot read one" in body
     if SSC_STEP5 in _text(REPO / "terraform" / "bootstrap" / "forge_user_slots.tf"):
         assert "tenant workers can still read" in body
@@ -2583,12 +2583,12 @@ def _check_qaenv_schedule(text: str) -> None:
     per_run, per_day, concurrent = _qaenv_caps()
     assert (per_run, per_day, concurrent) == (80, 160, 2)
     assert f"`per_run_usd` {per_run} a leg" in body
-    # BGD raised the leg from $40 to $80 on 2026-10-26 (QA-TRIPWIRE-MAC), from
+    # The owner raised the leg from $40 to $80 on 2026-10-26 (QA-TRIPWIRE-MAC), from
     # the bench median of $0.14 a flow run: 132 flows at 2 widths are about $37.
-    assert "BGD raised it to $80 on 2026-10-26" in body and "$0.14" in body
+    assert "[the owner] raised it to $80 on 2026-10-26" in body and "$0.14" in body
     assert f"`per_day_usd` {per_day}" in body and f"`max_concurrent` {concurrent}" in body
-    assert "BGD on 2026-10-23" in body and "Q9 (a)" in body and "VQ7-CAPS" in body
-    assert "`max_concurrent` 1, set by BGD" not in body
+    assert "[the owner] on 2026-10-23" in body and "Q9 (a)" in body and "VQ7-CAPS" in body
+    assert "`max_concurrent` 1, set by [the owner]" not in body
     assert "`environments`" in body and "one work item per leg" in body
     assert f"`{_qaenv_refusal()}`" in body
 

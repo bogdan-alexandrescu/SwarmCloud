@@ -128,4 +128,4 @@ def test_acceptance_doc_has_a_carry_row():
     rows = [line for line in section.splitlines() if line.startswith("| carry |")]
     assert len(rows) == 1, section
     assert "carried_from" in rows[0]
-    assert "#166" in rows[0]
+    assert "the park-and-carry 403 finding" in rows[0]

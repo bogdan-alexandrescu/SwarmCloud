@@ -75,7 +75,7 @@ checked by `schemas.check_workflow_about` when `WorkflowCreate` is read:
 | Key | Rule |
 |---|---|
 | `description` | Plain text, two or three sentences saying what the work delivers. Trimmed; at most 600 characters. Longer is **refused**, never cut, because a cut description says something its author did not. Markup (an HTML tag, a Markdown link, heading, code fence or doubled bold markers) and control characters other than a line break or a tab are refused: the console shows the text as written. |
-| `about` | `{purpose?, goals?, output?}`, at least one (BGD, 2026-11-06): the owner, opening a workflow, asked what the work is for, what it must achieve and what it will produce. `purpose` is one sentence of at most 300 characters, `goals` a list of one to three items of at most 120, `output` one sentence of at most 300 (a pull request, mock-up frames, a report). Each part is one line of plain text, held to the description's markup rule; a refusal names the part (`metadata.about.goals[1]`). The caps are per part because the console draws each as a short labelled line. |
+| `about` | `{purpose?, goals?, output?}`, at least one ([the owner], 2026-11-06): the owner, opening a workflow, asked what the work is for, what it must achieve and what it will produce. `purpose` is one sentence of at most 300 characters, `goals` a list of one to three items of at most 120, `output` one sentence of at most 300 (a pull request, mock-up frames, a report). Each part is one line of plain text, held to the description's markup rule; a refusal names the part (`metadata.about.goals[1]`). The caps are per part because the console draws each as a short labelled line. |
 | `feature` | `{title, url?}`: the feature the work belongs to. `title` is one line of at most 120 characters. `url`, when given, is an `https://github.com/<owner>/<repo>/issues/<n>` or `.../pull/<n>` page **of the workflow's own `repository_url`**, in any spelling of that repository (https, `ssh://`, `git@`); another repository's link, or a link on a workflow with no GitHub repository, is refused. |
 
 Neither may be set in a step's `metadata`: a step's metadata is merged over
@@ -152,7 +152,7 @@ past the check only inside a scoped exemption of the exact value it is about
 to store: `schedule_mark_allowed` for a schedule's firing,
 `qa_target_mark_allowed` for a target's run, and `issue_run_mark_allowed`
 (`issueruns.submitting`) for an issue run's planner, its compiled workflow,
-its CI-fix rounds and its merge (BGD, 2026-11-04).
+its CI-fix rounds and its merge ([the owner], 2026-11-04).
 
 `claude_code` stays caller-written on purpose. The `claude_session` tag and
 `metadata.origin` are the sc plugin bridge's own metadata, sent by an API
@@ -164,7 +164,7 @@ console, never an authority anything is granted on.
 **Who sets them.** The sc plugin passes a spec's top-level `description` and
 `feature` as metadata, checked by the same rules before anything is sent
 (`swarm_mcp.workflows.check_description`, `check_feature`). A quality-check
-leg is titled with its role and environment (`Visual QA: ai-studio,
+leg is titled with its role and environment (`Visual QA: peer-app,
 moderator, staging`, read off the leg's name, `qaspec.leg_words`), and
 carries a description (the target, the leg's role and environment, how many
 capture groups, what the report is) and the feature `Quality check of
@@ -221,12 +221,12 @@ each workflow's conditions from these records.
 
 A runner reads its agent's `input`, and an input means something only to the
 runner that reads it: `input.model` was passed as `--model` by the CLI runners
-(until #226, when the model became the Job's `MODEL`, set in Terraform; see
-[agent-output.md](agent-output.md); since #1435 a step picks it by
+(until the MODEL-env-var change, when the model became the Job's `MODEL`, set in Terraform; see
+[agent-output.md](agent-output.md); since the model-class selection change a step picks it by
 [`model_class`](#choosing-a-steps-model-model_class)), and `input.quota_exhausted` makes the mock
 simulate a rate limit. So what a
 caller may send is declared per profile in the frozen catalogue,
-`RunnerProfile.inputs` (contract request 25, accepted by the owner on #142 on
+`RunnerProfile.inputs` (contract request 25, accepted by the owner on
 2026-09-25), and the API holds every caller to it: `POST /v1/tasks`, the batch,
 and each step here.
 
@@ -292,7 +292,7 @@ else in this file would be a copy nothing compares, so none is.
 | `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
 <!-- /runner-inputs:generic -->
 
-What `claude-code` and `codex` declare (contract request 28, #265):
+What `claude-code` and `codex` declare (contract request 28):
 
 <!-- runner-inputs:claude-code generated from RUNNER_PROFILES["claude-code"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the claude-code runner does with it |
@@ -311,8 +311,8 @@ What `claude-code` and `codex` declare (contract request 28, #265):
 <!-- /runner-inputs:codex -->
 
 `claude-code-review` is `claude-code` under its own Job and service account,
-for the merge chain's review step (contract request 36, #295). It is
-disabled until #295 is enabled, and declares what `claude-code` does:
+for the merge chain's review step (contract request 36). It is
+disabled until the merge-step design is enabled, and declares what `claude-code` does:
 
 <!-- runner-inputs:claude-code-review generated from RUNNER_PROFILES["claude-code-review"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the claude-code-review runner does with it |
@@ -322,7 +322,7 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 <!-- /runner-inputs:claude-code-review -->
 
 `indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
-the repository index's toolchain (contract request 48, #625). swarm-api runs
+the repository index's toolchain (contract request 48). swarm-api runs
 index runs on it; it declares what `claude-code` does:
 
 <!-- runner-inputs:indexer generated from RUNNER_PROFILES["indexer"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
@@ -400,7 +400,7 @@ forge credential, after the clone and the credentials and before the agent
 starts. It writes them to `issue.md` in the work directory, beside the
 checkout, where no diff and no upload reaches it, and names that file in the
 prompt by absolute path. The credential stays in the worker's memory, as it
-does for the clone (#219), and is never sent to a host other than the
+does for the clone, and is never sent to a host other than the
 repository's own. The issue's text is scrubbed of every secret the attempt
 holds, and it is data for the agent: nothing in it chooses anything the
 platform does (invariant 10). A fetch that fails -- no such issue, a pull
@@ -410,7 +410,7 @@ agent never starts. A step that asks for an issue cannot also stage an
 `input_from` file named `issue.md`.
 
 **Every step's spec is signed at submission, and verified before it runs**
-(contract request 34, #342). A tenant's agents can write any task document
+(contract request 34). A tenant's agents can write any task document
 of their tenant -- Firestore has no document-level IAM -- so one step could
 rewrite a parked later step's prompt, its `input_from`, its dispatch role or
 its repository. swarm-api signs each step's canonical spec
@@ -443,7 +443,7 @@ would let them through. `swarm_profiles` and `swarm profiles` list each
 profile's inputs.
 
 `browser` and `generic` declare every key their runners read (contract
-request 32, #218, accepted by the owner on 2026-09-29). Until then both were
+request 32, accepted by the owner on 2026-09-29). Until then both were
 bounded by size alone, so a `generic` agent with no `command`, an action with
 no `selector`, or a browser `goto` to a private address was admitted, leased
 and started, and failed inside the pod. Each is a 422 at the door now.
@@ -453,7 +453,7 @@ and started, and failed inside the pod. Each is a 422 at the door now.
   cluster addresses, `.internal`, `.local`, `.localhost` and `.svc` names, a
   single-label host and any host that is not plain ASCII letters, digits, dots
   and hyphens are refused (`url_refusal` in the frozen catalogue). Contract
-  request 57 (#349) added site-local (`fec0::/10`), Teredo (`2001::/32`,
+  request 57 added site-local (`fec0::/10`), Teredo (`2001::/32`,
   refused outright because its embedded IPv4 is obfuscated) and the reserved
   `3fff::/20` and `5f00::/16` IPv6 ranges, the exact names `metadata.goog` and
   `localhost.localdomain`, and a host ending in two dots (`example.com..` is
@@ -476,13 +476,13 @@ upload; the attempt after the park runs to the end, from that checkpoint when
 there is one. It parked on every attempt until 2026-09-25, and a park does not
 spend an attempt, so such an agent never ended. Its first bound was a count in
 the mock's own working directory, which only the checkpoint carried forward,
-so a park whose upload failed was followed by another (the review of #213).
+so a park whose upload failed was followed by another (the checkpoint-upload-retry review).
 
 `{"quota_exhausted": true, "artifact_before_park": true}` moves the mock's
 artifact (`artifact_name`, `artifact_text`) to BEFORE that park: the parking
 attempt writes it and then parks, and the attempt after the park writes
 nothing under that name. Without `quota_exhausted` the flag changes nothing.
-It exists to prove #166's carry live (contract request 56, accepted by the
+It exists to prove the artifact-before-park carry live (contract request 56, accepted by the
 owner 2026-10-08): a file an agent wrote before a quota park reaches the
 attempt that succeeds BY REFERENCE, and before this input the mock parked
 before writing anything, so no live run could show it. Because the finishing
@@ -523,7 +523,7 @@ against dev after every release, as `workflow: carry`
 ## Reading other repositories: `additional_repositories`
 
 **A step may read several registered repositories at pinned commits, and it
-writes only its own.** #1434: a question like "which service owns the
+writes only its own.** A question like "which service owns the
 endpoint the web app calls?" needs the code of more than one repository.
 Before this, the only answer was one indexer agent per repository and a step
 that read their summaries. The design and its record of what was built are
@@ -565,7 +565,7 @@ is a typed error in the usual envelope, and on a workflow it names the step:
 | `repository_not_registered` | 422 | the tenant has no registration for that `owner/repo` |
 | `repository_not_readable_by_tasks` | 403 | registered, but an admin has not turned on `readable_by_tasks` for it, or it is archived. **The gate is registered and readable by agents**, the same admin-set flag `read_private` uses ([runner-git-tools.md §2.3](runner-git-tools.md#23-the-private-read-allowlist)) |
 | `REPOSITORY_NOT_GRANTED` | 403 | while repository grants are enforced, the submitting person has no grant on it; one refusal names every such entry |
-| `additional_repository_unreadable` | 422 | the slot the clone would use cannot read it at that ref, or the ref names no commit (one sentence for both). **This includes every repository that only its own `git-r-` token can read**: that slot is swarm-api's alone (#1225), the worker never reads it, so the platform refuses the repository rather than clone it with one |
+| `additional_repository_unreadable` | 422 | the slot the clone would use cannot read it at that ref, or the ref names no commit (one sentence for both). **This includes every repository that only its own `git-r-` token can read**: that slot is swarm-api's alone, the worker never reads it, so the platform refuses the repository rather than clone it with one |
 | `additional_repository_duplicate` | 422 | two entries name one repository or one `name`, or an entry names the step's own repository |
 | `too_many_additional_repositories` | 422 | more entries than the platform setting `max_additional_repositories`; the message and `detail.limit` name the current value |
 | `additional_repositories_too_large` | 422 | the forge's size estimates total more than the setting `additional_repositories_budget_gib` |
@@ -632,7 +632,7 @@ argument. A repository with no graph still has its checkout and `rg`.
 ## Choosing a step's model: `model_class`
 
 A step names its model **class**, never a model: one of the four names in the
-frozen `MODEL_CLASSES` (#1435, design B, owner decisions of 2026-10-17;
+frozen `MODEL_CLASSES` (design B, owner decisions of 2026-10-17;
 [design/model-per-step.md](design/model-per-step.md)). Terraform pins one model
 ID per class (`local.runner_models`), and the platform runs that pin:
 
@@ -721,11 +721,11 @@ its plan serves; see [quota-management.md](quota-management.md#4-park-reasons).
 wrote into `$SWARM_ARTIFACTS_DIR`, and nothing else is.** That directory sits
 outside the agent's working directory and outside the repository checkout, so a
 file written anywhere else is never staged by a later step, however exactly its
-name matches. (Since #184's owner decision of 2026-09-26, a claude-code or codex
+name matches. (Since the owner's 2026-09-26 decision, a claude-code or codex
 agent with NO repository also uploads what its agent created in its working
 folder, but as `workdir/<path>`, so a working-folder `scan-01.md` is
 `workdir/scan-01.md` and still does not satisfy a step that stages
-`scan-01.md`; see [agent-output.md](agent-output.md).) Until #149 this failed late and cost money:
+`scan-01.md`; see [agent-output.md](agent-output.md).) Until the missing-expected-outputs rule this failed late and cost money:
 the upstream step SUCCEEDED, and only the dependant failed, at staging, with
 `upstream task … did not produce an artifact named 'scan-01.md'`. By then every
 upstream step had spent its compute and its provider quota. That is what
@@ -743,8 +743,7 @@ first alone was measured not to be enough.
    stage, as `metadata.expected_outputs`, in the same write that creates the
    agent. The worker passes that list to the runner. Only the `claude-code` and
    `codex` runners act on it: every prompt they give an agent already ends
-   with one line naming the **absolute** path of `$SWARM_ARTIFACTS_DIR` (#184,
-   2026-09-26), and they add the names after it, with each file's full path
+   with one line naming the **absolute** path of `$SWARM_ARTIFACTS_DIR` (2026-09-26), and they add the names after it, with each file's full path
    and the statement that files written anywhere else, the repository
    included, do not reach later steps. The `generic`, `mock` and `browser` runners receive the
    list in `input.json` and change nothing. A name the platform writes itself
@@ -768,19 +767,19 @@ first alone was measured not to be enough.
    or a directory a restored checkpoint brought back), it is left alone and
    one WARNING says so. Files written under it are then not uploaded, exactly
    as before. A step with a repository starts its agent in the checkout
-   (#226, 2026-09-26), so the worker makes the same link at
+   (2026-09-26), so the worker makes the same link at
    `work/repo/artifacts` as well, hidden from git with the clone's
    `.git/info/exclude` so it never reaches the agent's diff; see
    [agent-output.md](agent-output.md) for when it is not made.
-3. **A missing expected output fails the attempt** (owner decision on #149,
-   2026-09-25), **retryably only when a retry can help** (#165, 2026-09-28).
+3. **A missing expected output fails the attempt** (owner decision,
+   2026-09-25), **retryably only when a retry can help** (2026-09-28).
    If an attempt's runner finishes cleanly and one of its expected outputs was
    not uploaded, the attempt FAILS with the missing names as its cause, in
    `last_error`, in `result_summary.expected_outputs_missing` (and, name by
    name, `expected_outputs_missing_causes`) and in one log line. The worker
    records WHY each file it did not upload was skipped: each
    `result_summary.artifacts_skipped` entry is `{name, cause}` (a summary
-   from before #165 holds bare names, and every reader accepts both; the
+   from before the cause-tagged artifacts-skipped format holds bare names, and every reader accepts both; the
    API's artifact listing serves the same `{name, cause}` entries, a bare
    name as `cause: null`), and the cause decides:
    * **not retried** -- `cap` (the artifact byte or file cap), `refused` (a
@@ -812,7 +811,7 @@ one that was missing. The agent is given the same instructions, which list every
 name.
 
 **Nothing is published until the upload manifest has passed the check**
-(#165, owner decision 2026-09-28). The worker harvests the repository and
+(owner decision 2026-09-28). The worker harvests the repository and
 uploads the artifacts first; the push and the pull request are made only
 after the missing-output check has found every expected output in the
 manifest. An attempt that is then failed or retried -- the last attempt
@@ -840,16 +839,16 @@ What this deliberately does not do:
 
 * **It does not copy a file out of the working directory.** The worker does not
   go looking for a same-named file in the working directory and upload it. That
-  was option (c) on #149, and the owner rejected it. The link is not a copy: a
+  was option (c) in the missing-expected-outputs decision, and the owner rejected it. The link is not a copy: a
   file written through it is written into the artifacts directory in the first
   place. A file left anywhere else, in the repository or elsewhere in the
   working directory, is never staged by a later step under its own name. An
-  agent with no repository does upload what its agent created there (#184),
+  agent with no repository does upload what its agent created there,
   for a reader of the Artifacts tab, under `workdir/<path>`, which is not the
   name a dependant stages.
 * **It does not carry the artifacts directory across a retry.** Only `work/`
   is checkpointed, and a resumed attempt starts with an empty artifacts
-  directory. A PARK is different (#166, owner decision 2026-09-28): a parked
+  directory. A PARK is different (owner decision 2026-09-28): a parked
   attempt uploads what its agent wrote, and the attempt that finishes lists
   those uploads it did not replace in its own `result_summary.artifacts`, BY
   REFERENCE -- `{name, bytes, uri: <the parked attempt's object>,
@@ -869,7 +868,7 @@ artifact even by naming it.
 It lands in `work/<filename>`. A step with no repository starts its agent in
 `work/`, so "read scan-01.md" in its prompt finds the file. A step with a
 repository starts its agent in the checkout, `work/repo` (owner decision of
-2026-09-26, #226, so Claude Code loads the repository's own `CLAUDE.md`), where
+2026-09-26, so Claude Code loads the repository's own `CLAUDE.md`), where
 that relative name would not resolve, so the prompt line the worker adds names
 every staged file by its absolute path. Staging into the checkout instead would
 put the file in the agent's diff.
@@ -985,7 +984,7 @@ nothing alerts on it.
 
 **A workflow step can wait for a member of its tenant to answer, for up to
 24 hours, at no cost, and the next step reads the answer as an artifact.**
-Issue #1436: a draft -> review -> revise loop used to be one workflow per
+A draft -> review -> revise loop used to be one workflow per
 round, with the caller downloading each round's artifacts and pasting them
 into the next prompt, because `input_from` does not cross workflows. The
 design, with the owner's decisions of 2026-10-17, is
@@ -1108,7 +1107,7 @@ step is a 404.
 
 **One exception, for a service tenant (owner decision, 2026-10-18).** A
 service tenant is a `kind: "user"` tenant whose principal is a service
-account (`u-or-9a0792` for oracle-api, `u-sw-c90291` for swarm-verify), so
+account (`team-a` for peer-api, `u-sw-c90291` for swarm-verify), so
 its only member is that account. **That principal may answer the steps of
 its own tenant's workflows.** Nothing else widens: any other service
 account, the principal in any other tenant (group or service), a tenant's
@@ -1246,7 +1245,7 @@ agent that holds no capacity.
 
 ## Publishing onto an existing pull request: `publish_to_pr`
 
-**Why it exists** (#2183, approved by BGD on 2026-10-24). A follow-up lane --
+**Why it exists** (approved by [the owner] on 2026-10-24). A follow-up lane --
 a re-review, a fix round, the owner's answers applied to a mock-up -- could
 only open a *replacement* pull request: a `repository_ref` of the old branch
 gave an empty diff and failed, so the lane started from main, merged the old
@@ -1275,7 +1274,7 @@ contributor still pushes its own `swarm/<task>` branch for the integrator to
 merge, exactly as without the field. If the lane wrote `pr-title.txt`, the
 pull request is retitled; if it wrote `pr-body.md`, its body is replaced
 (never when that would drop a `Closes #N` or `part of #N` line the current
-body has, #807). A lane that wrote neither leaves both as they are, and is
+body has). A lane that wrote neither leaves both as they are, and is
 not asked for a title.
 
 **What the value may be.** A positive integer: a pull request of the spec's
@@ -1354,7 +1353,7 @@ lease, no pool count and no execution (invariant 1). Then:
   and admission takes it as any other step. The reconciler's
   DEPENDENCIES_MET rule is the backstop, as for any dependency park.
 * **one closed without merging -> failed.** The gate is marked `closed`,
-  naming it; the scheduler dead-letters the root ("pull request #42 of
+  naming it; the scheduler dead-letters the root ("pull request 42 of
   owner/repo was closed without being merged; ..."), and its dependants are
   cancelled as a failed parent's. PARKED -> FAILED is not a transition the
   contract allows; DEAD_LETTERED is, and the workflow reads failed.
@@ -1416,7 +1415,7 @@ logged as `refusal report-only code=repository_ref_not_found` and the
 submission is admitted, as before. Set the switch to `on` (terraform's
 `api_refusals` map) once that log shows only refs that really were gone.
 
-**A full sha is asked about too (#3315).** Agent `task_36c8a894` was
+**A full sha is asked about too.** Agent `task_36c8a894` was
 submitted with a full 40-character sha, `feb6013fd58d0e25ac6bcb2ad2aec2d0d3fc0fd2`.
 GitHub's upload-pack does not serve that sha. Admission did not ask about a full
 sha, because the worker fetches one by sha. So the agent took a browser lease
@@ -1511,7 +1510,7 @@ wrote `verification.md`, and changed nothing ([below](#an-empty-diff-can-succeed
 refusal, and that step reads as it did before. Until contract request 46 is
 decided, the end cause is `outputs_missing`, the closest existing one.
 
-**A pull-request step whose push failed is FAILED (#872).** Measured
+**A pull-request step whose push failed is FAILED.** Measured
 2026-10-08 on `task_6a0c9afdbaea449eb53d`: the agent left 18 files
 uncommitted and exited 0, the worker committed them, and the push failed with
 `push failed with exit 1: error: failed to push some refs`. The step and its
@@ -1529,7 +1528,7 @@ refusal on the same branch. The end cause is `outputs_missing`, as for
 and no new `TaskState` was added for it.
 
 **A step whose branch is its deliverable is FAILED when the branch was not
-pushed (G1, part of #1225).** #872 covered only a step that opens a pull
+pushed (G1).** The earlier pull-request-step fix covered only a step that opens a pull
 request, and the gap it left was measured on 2026-10-12
 (`wf_e55610ded71c4d9d9fae`, `wf_0260c920acf8414395b2`): a review failed
 cloning "Remote branch swarm/task_... not found" behind a build step that had
@@ -1550,7 +1549,7 @@ reached at the probe fails the attempt retryably instead (`forge_unreachable`),
 as it already did for a pull-request step. A push whose stderr says the forge
 did not answer (a reset connection, a 5xx or its reason phrase, a timeout;
 git's own words, read by `gitops.transient_git_failure`) is tried again after
-5, 10 and 20 s (`gitops.push_branch`, #2833). A refusal or a non-fast-forward
+5, 10 and 20 s (`gitops.push_branch`). A refusal or a non-fast-forward
 is not retried. A push that fails every try fails the attempt retryably
 (`forge_unreachable`), its work kept in `swarm-work.patch` and the final
 checkpoint, and the retry publishes that work without running the agent again
@@ -1599,14 +1598,14 @@ says which it is.
 * **The flag is stored where the worker reads it**, `metadata.dispatch.
   allow_empty_diff`, inside the block the spec signature covers, and served in
   the agent's `dispatch`. It must be a JSON boolean: `"yes"` is refused with 422.
-* **Under `direct-pr` swarm-api sets it on a reader** (#2662): an agent step
+* **Under `direct-pr` swarm-api sets it on a reader**: an agent step
   that another agent step `depends_on` or stages a file from, and that no step
   `builds_on`, is stored with the flag whatever its spec says
   (`validation.reader_step_ids`). Its dependants read its artifacts, not its
   branch, so a read-only review that changes nothing succeeds `no_change`
   instead of failing `published_nothing:` and sweeping the fix behind it; if
   it commits, it still opens its pull request. A step another `builds_on`
-  (its branch is the deliverable, #1225), a step nothing depends on, a step
+  (its branch is the deliverable), a step nothing depends on, a step
   only the appended merge step depends on, and every step under any other
   strategy store exactly the block they stored before.
 
@@ -1623,7 +1622,7 @@ artifact. The evidence is the price: with no change and no `verification.md`
 unchanged. "No change" is the same harvest measurement as for the flag, and an
 integrator still owed its contributors' merge is still never `no_change`.
 Every repository prompt's platform paragraph (`cliagent.PUBLISH_PARAGRAPH`)
-names `$SWARM_ARTIFACTS_DIR/verification.md` for this case (#2140): before it
+names `$SWARM_ARTIFACTS_DIR/verification.md` for this case: before it
 did, build-170 found its issue built, wrote `pr-body.md` and no
 `verification.md`, and failed `published_nothing`.
 
@@ -1670,7 +1669,7 @@ ANOTHER changed input runs:
 * A `single-pr` reader or amender, and a merge step, keep the plain rule: each
   has exactly one branch to read, and nothing else stands in for it.
 
-**Why: #978.** The rule was first written for one implementer, as "skip when
+**Why this rule exists.** It was first written for one implementer, as "skip when
 ANY upstream it needs changed nothing". An issue run with two implement steps
 compiles to a review that stages both patches and builds on the LAST
 implementer, and an integrator that builds on that same one
@@ -1688,13 +1687,13 @@ nothing to change, the review is skipped (every patch it stages is absent),
 then the fix (its verdict was never written and no contributor changed
 anything), and the workflow SUCCEEDS with no pull request -- the integrator's
 `skipped` marker is what an issue run reads as the work being already on main
-(#646). When at least one implementer changed something, the review reviews
+. When at least one implementer changed something, the review reviews
 the patches that exist and the fix integrates them.
 
 **Why SKIPPED is a SUCCEEDED agent and not a state of its own.** The frozen
 `TaskState` has no SKIPPED, and the frozen transitions forbid PARKED ->
 SUCCEEDED, so the scheduler cannot end a parked step as skipped. The skip is
-made the way the verdict gate's no-agent ending is (#264): the dependency
+made the way the verdict gate's no-agent ending is: the dependency
 sweep promotes the step, admission leases it, and the worker reads its
 upstreams' `result_summary` through the tenant-checked upstream read, before
 any checkpoint restore, clone, staging or credential, and ends it. The step
@@ -1713,9 +1712,9 @@ that ran. `rollup.counts` keeps counting it under `SUCCEEDED`.
 ## Review before publishing: implement, review, fix-if-needed
 
 **A step's patch can be reviewed inside the workflow, and fixed, before
-anything opens a pull request** (#264). Until this existed every SwarmCloud PR
+anything opens a pull request**. Until this existed every SwarmCloud PR
 was reviewed by an agent on the operator's machine after it had opened. On
-2026-09-27/28 two of seven came back NOT YET (#247 fixed the wrong layer, #256
+2026-09-27/28 two of seven came back NOT YET (one fix addressed the wrong layer, another
 left an ssh-user bypass), and each then needed a local fixer.
 
 ```bash
@@ -1763,14 +1762,14 @@ What each step does, and why each field is there:
   `no_change`, and the review and the fix, which need its change, are SKIPPED
   -- unless another implementer of the same run changed something, in which
   case they review and integrate that work and start from the default branch
-  instead of the unpushed one (#978; see
+  instead of the unpushed one (see
   [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff)).
 * **The verdict is a file the review writes**, `{"verdict": "MERGE" |
   "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
   `summary`, `title` or `message` is one. The verdict is read whatever its case
   and surrounding spaces. The file name is yours: the gate reads whatever the
   gated step stages from `when.step`. Any other key is ignored by the gate,
-  which is what lets an issue run's review (#454) put
+  which is what lets an issue run's review put
   `"requirements": [{"index", "met", "note"}]` in the same file: swarm-api
   reads that list when the pull request opens, and the pull request says
   `Closes #N` only when every planned requirement is answered `met: true`
@@ -1815,7 +1814,7 @@ What each step does, and why each field is there:
   integration. If it did edit the repository, those edits are unreviewed
   work, which is what the gate keeps out.
 * **A contributor that published nothing by design is not "missing"**
-  (#760). A review with no `when` gate reading it -- the implement -> review
+ . A review with no `when` gate reading it -- the implement -> review
   -> fix chain in `scripts/acceptance/groups/workflow.sh` -- stays in the
   integrator's `integrates`. If it ends SUCCEEDED with
   `result_summary.git.published: false`, `commit_count: 0` and nothing left
@@ -1835,11 +1834,11 @@ What each step does, and why each field is there:
 
 ### A UI lane's MERGE counts only from a rendered review
 
-Owner decision, 2026-10-24 (#2184). On 2026-10-23 ten mock-up lanes' reviews
+Owner decision, 2026-10-24. On 2026-10-23 ten mock-up lanes' reviews
 ran on `claude-code`, with no browser, and gave MERGE on pages they had only
 read as HTML; two said so in their verdicts. The pages had clipped frames,
 crushed text and contradictory counts, found only when someone rendered them
-(#2157, #2149). Reading markup is not seeing a page.
+. Reading markup is not seeing a page.
 
 So a review step (one a dependant stages `verdict.json` from) whose patch
 touches `apps/swarm-ui/**` or `docs/web-ui/**` is **UI-gated**. Its MERGE
@@ -1860,7 +1859,7 @@ everyone sees it.
   its bound with no UI path in the part kept, or a `builds_on` step that
   cannot be read, is gated too: a review that could not be told what it
   reviews is not one that saw it.
-* **Only the paths the lane changed itself count** (#2337). On 2026-10-25
+* **Only the paths the lane changed itself count**. On 2026-10-25
   two code-only lanes started from other open PRs' branches and merged
   `origin/main` first (PRs 2334 and 2335); their patches carried 20 and 10 UI
   files they had not written, and their reviews' MERGE was forced to NOT_YET.
@@ -1870,12 +1869,11 @@ everyone sees it.
   merge of main or of another branch brings nothing into it. When the
   upstream that made a staged `swarm-work.patch`, or the `builds_on` step,
   recorded that list, the gate reads it instead of the patch headers or
-  `git.files`. A step recorded without it (harvested before #2337, or whose
+  `git.files`. A step recorded without it (harvested before the first-parent-list recording change, or whose
   listing failed) is judged by the whole patch, as before, so nothing older
   is waved through. A lane that fast-forwarded onto main has main's commits
   on its first-parent line and is gated on them: that errs towards gating.
-* **A vitest file is not a UI path** (owner decision 2026-10-26, part of
-  #2379). On 2026-10-26 a lane whose only own file under `apps/swarm-ui/`
+* **A vitest file is not a UI path** (owner decision 2026-10-26). On 2026-10-26 a lane whose only own file under `apps/swarm-ui/`
   was `src/__tests__/accounts.timeline.test.tsx` had its review's MERGE
   forced to NOT_YET. The re-review that `on_merge_verdict` appends runs the
   review's own profile (`rereview_step_for`), so no fix round could ever be
@@ -1889,7 +1887,7 @@ everyone sees it.
   the UI paths and the profile the step runs on, so a reviewer knows before
   it writes a verdict that MERGE from anywhere but a rendered review will not
   count.
-* **Test files are not UI** (#2322, fix 6 of the 2026-10-25 runtime audit):
+* **Test files are not UI** (fix 6 of the 2026-10-25 runtime audit):
   a path under `__tests__/` or a `tests/` directory, or a `*.test.*` file,
   renders nothing new, so a test-only change is not gated. Before this, a
   test-only change needed a render follow-up lane.
@@ -1903,7 +1901,7 @@ everyone sees it.
 
 ### A review's runtime is chosen from its diff: `runtime: browser_if_ui`
 
-Owner decision, 2026-10-25 (#2322): "if a review only does code review and a
+Owner decision, 2026-10-25: "if a review only does code review and a
 UI review or UI QA is not needed, it should not dispatch a review task with a
 browser runtime." A runtime audit of one day found 43 browser pods that ran
 reviews of non-UI code, and 8 reviews of UI files on `claude-code` that the
@@ -1959,13 +1957,13 @@ test files excluded), the step runs on `claude-code-browser`; otherwise on
 
 ### Reviews only where they matter, and no-op steps refused
 
-BGD decided on 2026-10-27 (#2524): "Risk paths + over 300 lines; reuse
+[the owner] decided on 2026-10-27: "Risk paths + over 300 lines; reuse
 renders", and that a fix, CI-fix or pull-request step that can buy nothing
 ends before it is leased. The token analysis of 2026-10-20..27 found every
 change got a review however small, and fix rounds started for pull requests
-that had already merged. No pod starts for either skip. On 2026-10-28 BGD
+that had already merged. No pod starts for either skip. On 2026-10-28 [the owner]
 decided who ends a skipped review: "No contract change. The scheduler holds
-the review PARKED (as the #748 control-publish hold does) and swarm-api ends
+the review PARKED (as the control-publish hold does) and swarm-api ends
 it PARKED -> SUCCEEDED on a wake." `swarm_common.states` says of that edge
 "only swarm-api writes it", and it stays true: the review gate is decided in
 `swarm_api/reviewgate.py`, the fix-round precheck in
@@ -1988,18 +1986,18 @@ that is not a list of repository-relative globs, with a 422
 is dropped and the review always runs). `"review_gate": false` switches the
 gate off for that one step: its review always runs.
 
-* **Every review step is gated by default** (BGD 2026-10-28, page M8:
+* **Every review step is gated by default** ([the owner] 2026-10-28, page M8:
   "every review step"). A review step is one another step's `when` reads a
   verdict from -- the step a fix, a gated integrator or a re-review is gated
   on, the compiled issue run's review among them.
   One that names no `review_gate` (nor does the workflow's metadata) is
   stored with `{"default": true}` (`validation.default_review_gate_steps`),
   which no caller may write, and is held and decided like any other gated
-  step. Why a default rather than an opt-in: the #2524 baseline week
+  step. Why a default rather than an opt-in: the review-everything baseline week
   reviewed every change, however small, and a gate a step has to ask for
   is one almost nothing asks for. A step that names its own block keeps it.
 * **The default's values: 300 lines and the platform's risk paths**, the
-  values BGD decided on 2026-10-27 ("Risk paths + over 300 lines"), unless
+  values [the owner] decided on 2026-10-27 ("Risk paths + over 300 lines"), unless
   the workspace sets its own: `GET`/`PUT
   /v1/workspaces/{tenant_id}/review-gate`, `{"enabled", "min_lines",
   "risk_paths"}`, each optional, its owner or admin (or a platform admin),
@@ -2070,10 +2068,10 @@ changed paths (`own_files` when recorded, else `files`) and
   per-requirement read reads it. A lost wake or a swarm-api that is down
   ends the scheduler's hold, and the review is promoted and RUNS: the
   fallback spends a review, it never invents a MERGE.
-* **A skipped issue-run review still confirms requirements** (BGD
+* **A skipped issue-run review still confirms requirements** ([the owner]
   2026-10-28 ~18:25Z: "Gate + cheap requirements check"). A skipped review
   writes no `requirements` list of its own, and without one the run could
-  only say "part of #N" (the #454 rule: never Closes without evidence). So
+  only say "part of #N" (never Closes without evidence). So
   an issue run whose plan lists requirements compiles a
   `requirements-check` step beside its review: `claude-code` (no browser),
   the `sonnet` class where the deployment pins it (a class with no pin is
@@ -2119,7 +2117,7 @@ changed paths (`own_files` when recorded, else `files`) and
 * **Renders reused: recorded, not yet acted on.** The decision records
   whether a parent published images under `shots/` (`renders_published`,
   `shots`); no runner writes a compare-report manifest, so the listing is the
-  check. A UI review still runs on `claude-code-browser`: BGD, 2026-10-28,
+  check. A UI review still runs on `claude-code-browser`: [the owner], 2026-10-28,
   moved acting on it to a follow-up lane, because it needs the worker's
   rendered-review rule (above), which downgrades a UI MERGE from any other
   profile to NOT_YET, and the review's signed `input_from` to change.
@@ -2143,7 +2141,7 @@ changed paths (`own_files` when recorded, else `files`) and
   downgrade always writes its reason as a finding, so it is never read as
   empty.
 * **A head that already holds a commit a review gave MERGE** (check (b),
-  BGD 2026-10-28). Every compiled review prompt (the issue run's review and
+  [the owner] 2026-10-28). Every compiled review prompt (the issue run's review and
   re-review, and the dependency CVE refresh's review) asks for
   `"commit": "<the full SHA of HEAD you reviewed>"` in `verdict.json`
   (`issueruns.COMMIT_SHAPE`), and the worker reads it as
@@ -2206,7 +2204,7 @@ refused on attribution or a task id, every mention neutralised.
 label -- nothing is generated, and the missing title fails the attempt as it
 always has; a step given an `issue` input is titled from the issue instead.
 
-#### When swarm-api opens it without a worker (#748, contract request 52)
+#### When swarm-api opens it without a worker (contract request 52)
 
 Starting a worker only to open that pull request cost 116 s from the review's
 end, and one execution and one lease, on the three MERGE workflows measured on
@@ -2268,9 +2266,9 @@ reads them only from the verified document. Read unverified, clearing
 rewriting `forge_credential` to another member's `git-u-<hex>` a push as that
 person. The check uses the id the document was read by, never its `id`
 field. Any refusal from GitHub is declined too. The body keeps the worker's
-rules: attribution lines removed (#735), mentions neutralised, 60 KiB at most.
+rules: attribution lines removed, mentions neutralised, 60 KiB at most.
 
-**The refusal scans are the worker's.** #748 asks for "the same refusal scans
+**The refusal scans are the worker's.** The control-publish design asks for "the same refusal scans
 the worker runs (credentials, title placeholder)". swarm-api does not import
 the worker and nothing moved into `swarm_common`, so both are restated in
 `verdictpublish.py` and held equal by
@@ -2365,13 +2363,13 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
   built for a caller's own steps. The one exception is the re-review
   `"on_merge_verdict"` appends (below), gated on the same review as the
   integrator. An issue run's compiled workflow states that same re-review
-  itself after its fix (`issueruns._with_rereview`, #2217), under
+  itself after its fix (`issueruns._with_rereview`), under
   `metadata.merge` `"off"` because its CI loop merges, and swarm-api accepts
   it only when it is exactly the step `rereview_step_for` derives
   (`SubmissionService._stated_rereview`); any other gated non-integrator is
   still refused. Its `auto_merge` reads the re-review's verdict, the latest
   (`issueci._review_task_id`), falling back to the review's for a workflow
-  compiled before it. Without it, wf_3cc4026eb34a43a885a4 (PR #2147) failed
+  compiled before it. Without it, wf_3cc4026eb34a43a885a4 failed
   "the review's verdict is NOT_YET, not MERGE" after its fix had resolved
   the review's one finding.
 * **It does not check the verdict where it is written.** A malformed verdict
@@ -2381,7 +2379,7 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
 ### Minor findings are filed on the tenant's wave epic
 
 CLAUDE.md's rule is that minor findings go to a wave epic, one comment per
-finding. Until #638 that depended on an operator copying them out of
+finding. Until the auto-file-minors change that depended on an operator copying them out of
 `verdict.json` by hand, and the 2026-10-05 history analysis counted 530 minors
 across 122 reviews that never left the file. Now the gated step files them.
 
@@ -2393,7 +2391,7 @@ across 122 reviews that never left the file. Now the gated step files them.
   `{"severity": "minor", "summary": "...", "file": "apps/x/a.py", "call_site":
   "run()", "evidence": "..."}` and the shape the review briefs prescribe,
   `{"severity": "minor", "file": "apps/x/a.py", "where": "run()", "problem":
-  "...", "fix": "..."}`. The second is the shape of the 530 minors #638
+  "...", "fix": "..."}`. The second is the shape of the 530 minors the 2026-10-05 history analysis
   counted; reading only the first filed none of them. A string finding, or a `blocker` or `major`, is
   the fix step's and is **never** filed: blockers and majors are what the fix
   agent fixes, and a NOT_YET with only minors would otherwise be filed and
@@ -2411,7 +2409,7 @@ across 122 reviews that never left the file. Now the gated step files them.
   MERGE, where no agent ran) and after its publish, with the tenant's own
   `swarm-tenant-<tenant>-git` token: never the agent, which never sees the
   token, and never another tenant's. The token goes only to github.com
-  (#307); it is registered with the log redaction and appears in no log line,
+ ; it is registered with the log redaction and appears in no log line,
   event or result. Each comment is one line in the epic shape, the agent's
   text scrubbed of registered secrets and with every `@`-mention broken:
 
@@ -2447,7 +2445,7 @@ the checks above, including the rule that every `input_from` source is also a
 `depends_on`.
 
 So the API refuses the key from callers, the same way it refuses
-`metadata.dispatch` (owner decision on #151, 2026-09-25):
+`metadata.dispatch` (owner decision, 2026-09-25):
 
 | request | answer |
 |---|---|
@@ -2479,7 +2477,7 @@ service writes into `task.metadata`. They are one tuple,
 `validation.RESERVED_METADATA_KEYS`, checked by one function. A caller who sends
 more than one gets a single 422 whose `detail.reserved_metadata_keys` lists each
 of them, in that order, and whose message says why each is reserved and what to
-send instead. `expected_outputs` was first reserved by a check of its own (#153),
+send instead. `expected_outputs` was first reserved by a check of its own,
 so as not to collide with the `input_from` change. That check heard about one
 key per round trip, and it was folded into the tuple once both had merged.
 
@@ -2490,7 +2488,7 @@ key per round trip, and it was folded into the tuple once both had merged.
 | `fail_workflow` (default) | every step of the workflow that has not started (SUBMITTED, QUEUED, READY, PARKED) is CANCELLED, dependent on the failure or not |
 | `continue` | only the transitive dependents of the failed step are CANCELLED; independent branches keep starting |
 
-The scheduler honours the field from the release that carries PR #42. Before
+The scheduler honours the field from the release that added `on_step_failure`. Before
 that nothing read it, and both rows behaved like `continue`. The rules that
 are not obvious:
 
@@ -2509,7 +2507,7 @@ are not obvious:
   before deploying. It exits 3 if a page came back full:
 
   ```bash
-  PROJECT_ID=saga-agents-staging FIRESTORE_DATABASE=swarm \
+  PROJECT_ID=example-project FIRESTORE_DATABASE=swarm \
     uv run --project . python -m scheduler.on_step_failure_audit
   ```
 * **It happens on the scheduler's next drain, not at the instant of failure.**
@@ -2576,7 +2574,7 @@ then cancelled like any other step that has not started.
 ```
 
 The console's **Needs you** row offers this as **Retry** on a failed step (the
-owner's pick on PR #3123). A lone agent's Retry opens Submit prefilled instead.
+owner's pick). A lone agent's Retry opens Submit prefilled instead.
 A step's prompt submitted alone as a lone agent is not the step it was: it
 would have no parents' artifacts, no gate, no place in the merge. The step's
 Retry asks first, in the row, naming the step ("Re-run step build inside its
@@ -2696,10 +2694,10 @@ holds no project role. Its one grant is `roles/run.invoker` on swarm-api
 `api_invokers` names only the tenant groups and Cloud Run's edge would refuse
 the job before the application saw it. swarm-api admits that one address (`ROLLUP_SWEEPER_USERS`,
 set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup`, to
-the issue-run tick `POST /v1/admin/runs/advance` (#454, below), and to nothing
+the issue-run tick `POST /v1/admin/runs/advance` (below), and to nothing
 else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
 `tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`), which also
-lists the repository poll, the merge wake, the forge refresh and, since #748, the
+lists the repository poll, the merge wake, the forge refresh and, since the control-publish design, the
 `task_finished` push that opens a MERGE verdict's pull request without a
 worker (`POST /v1/admin/tasks/finished`, "When swarm-api opens it without a
 worker" above). It is not an admin
@@ -2725,7 +2723,7 @@ schedule interval plus a sweep, and a reader never sees the lag at all. Two
 limits: a personal `u-` tenant the API creates at runtime is not in `var.tenants`
 and is not swept (its workflows still converge on every read), and a sweep
 examines one page of a tenant's live workflows, reporting `truncated: true` when
-there are more. Request #7 in
+there are more. Request 7 in
 [contract-change-requests.md](contract-change-requests.md) is the alternative
 that would have put this write on the scheduler's own tick.
 
@@ -2767,14 +2765,14 @@ the sweep has not run yet — wake the scheduler, or wait for the 1-minute tick.
 
 ## Ending in a merge: the `merge` step
 
-**Built 2026-10-04 (contract request 47, owner decisions recorded on #295).**
+**Built 2026-10-04 (contract request 47, owner decisions recorded in the merge-step design).**
 A workflow that opens a pull request can end by merging it. The `merge`
 profile runs no agent: the worker squash-merges the pull request with the
 tenant's existing `-git` token, in the workflow's own repository, and then
 closes the issues the pull request closes. The design and every refusal are
 in [merge-step.md](merge-step.md) ("Revised 2026-10-04 (owner)").
 
-**Revised 2026-10-06 (owner), design only -- lane MS0, part of #352.** The
+**Revised 2026-10-06 (owner), design only -- lane MS0.** The
 step becomes the last of implement → review → fix → merge on any repository
 a workflow runs on, and replaces `auto-merge.yml` for SwarmCloud's own pull
 requests once it has merged about ten cleanly. While the pull request's
@@ -2868,7 +2866,7 @@ on a review, swarm-api appends two steps before signing
   the same step either way. Before this the re-review ran on MERGE too, one
   review agent per merged workflow, because a shut gate wrote no artifact
   and the merge refused `verdict_unreadable`.
-* **An issue run carries the same re-review** (#2217). Its compiled
+* **An issue run carries the same re-review**. Its compiled
   implement -> review -> fix gains this `re-review` step, though its
   `metadata.merge` is `"off"`: the run's merge is the CI loop's
   continuation, submitted once CI is green, and it reads the re-review's
@@ -2929,7 +2927,7 @@ is green and its `Closes #N` block is written, and only when its review said
 merges that agent's pull request at the head that agent pushed, with every
 check below except the verdict (it has no review). A tenant member's only.
 
-**A merge of a pull request no workflow opened** (#352, owner decision
+**A merge of a pull request no workflow opened** (owner decision
 2026-10-07, MS0 question 2) is the same one-`merge`-step `direct-pr`
 workflow with `merge_pr: {number, head_sha}` in place of `continues_task`:
 
@@ -3025,7 +3023,7 @@ submission, from the workflow's own `metadata`:
   label. So a label that reads `ready` is kept as written beside a merge step
   too. Lane MS1 had dropped it there, recording
   `metadata.merge_label_dropped`; the owner reverted that on 2026-10-06
-  (#352) because it was aimed at the wrong thing: what races the merge step
+  because it was aimed at the wrong thing: what races the merge step
   is the GitHub `ready` label `auto-merge.yml` merges on, which an operator's
   watcher or brief adds, not this title. `metadata.merge_label_dropped` is
   no longer reserved or written.
@@ -3056,7 +3054,7 @@ never asked for a merge.
 
 ## A repository's Playwright suite as a sharded gate: `swarm_suite_gate`
 
-The bridge tool `swarm_suite_gate` (PLAYWRIGHT-GATE, part of #2253) renders a
+The bridge tool `swarm_suite_gate` (PLAYWRIGHT-GATE) renders a
 workflow for a registered repository: N shard steps on `claude-code` and one
 `report` step. Each shard runs `npx playwright test --shard k/N --retries=1
 --reporter=blob,line` from `working_dir` and puts its blob in its artifacts.
@@ -3083,11 +3081,11 @@ end of any `integrate` or one-step `direct-pr` workflow. The `single-pr`
 chain below stays proposed and disabled, because its `post-verdict` and
 `claude-code-review` profiles do; what follows is its design as written.
 
-**Proposed on 2026-09-29 for #295 and not built. Revised four times,
+**Proposed on 2026-09-29 for the merge-step design and not built. Revised four times,
 2026-09-29,** against a security review's two blockers and five majors, then
 a re-review that found the first B1 revision insufficient, then a third
 round that found B1 still open against a different attack and decided three
-more owner questions, then a fourth, joint review with CR 34 (#344, signed
+more owner questions, then a fourth, joint review with CR 34 (signed
 step specs) that found `post-verdict`'s own read of `review.json` was still
 routed through a tenant-writable pointer, corrected the real GCS bucket
 layout, and found the cross-workflow forgery claim was not actually closed;
@@ -3108,7 +3106,7 @@ key regardless of profile). `claude-code-review`, by contrast, **is** a
 dedicated profile for the `review` step — safe for a narrower reason: it
 holds no App key, only a GCS write grant scoped to one prefix, which is not
 a portable secret an agent could exfiltrate and reuse. **This design also
-depends on S0 issue #342 (signed step specs), which is not a
+depends on S0 signed step specs, which is not a
 `profiles.py`/`models.py` request and is not built either** — without it, an
 earlier step's agent can rewrite a later step's own `prompt` before that
 step starts, which nothing else in this design touches (see below). The
@@ -3124,20 +3122,20 @@ step earlier, for the review credential.
 ```bash
 ./scripts/api.sh POST /workflows '{
   "on_step_failure": "fail_workflow",
-  "repository_url": "https://github.com/bogdan-alexandrescu/SwarmCloud",
+  "repository_url": "https://github.com/example-org/example-repo",
   "repository_ref": "main",
   "strategy": "single-pr",
   "steps": [
     {"step_id": "implement",
      "runner_profile": "claude-code",
      "pr_role": "author",
-     "input": {"prompt": "Implement issue #295. Write a fact-style pull request title to pr-title.txt."}},
+     "input": {"prompt": "Implement the merge-step design. Write a fact-style pull request title to pr-title.txt."}},
 
     {"step_id": "review",
      "runner_profile": "claude-code-review",
      "pr_role": "reader",
      "depends_on": ["implement"],
-     "input": {"prompt": "Review the checked-out head against issue #295. Write review.json: {\"verdict\": \"MERGE\" or \"CHANGES\", \"sha\": the checked-out HEAD, \"title\": the pull request title you reviewed, \"summary\": your findings}."}},
+     "input": {"prompt": "Review the checked-out head against the merge-step design. Write review.json: {\"verdict\": \"MERGE\" or \"CHANGES\", \"sha\": the checked-out HEAD, \"title\": the pull request title you reviewed, \"summary\": your findings}."}},
 
     {"step_id": "post-verdict",
      "runner_profile": "post-verdict",
@@ -3187,7 +3185,7 @@ kind of attacker-writable pointer this whole design exists to route around
 for the one read the verdict anchor depends on. `post-verdict` instead
 computes the object's path itself — `gs://<bucket>/tenants/<tenant>/verdicts/<workflow_id>/<review task id>/review.json`
 — from `workflow_id` and the review task id named in its **own signed spec**
-(#342), and reads that exact path directly, never through the generic
+, and reads that exact path directly, never through the generic
 resolver ([merge-step.md](merge-step.md) §4.1, §4.3, §6a). The
 `"depends_on": ["review"]` edge above still orders it correctly; it is just
 not also the channel `post-verdict` uses to find the file.
@@ -3197,7 +3195,7 @@ What each step does:
 | step | clones | publishes | writes |
 |---|---|---|---|
 | implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
-| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists), to a prefix the tenant's ordinary worker account cannot write | `review.json` |
+| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review` (history: retired with the merge-step design, docs/merge-step.md §3; the account no longer exists), to a prefix the tenant's ordinary worker account cannot write | `review.json` |
 | post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it. Reads `review.json` from the review-only-writable prefix, not the general staged-artifact location | nothing |
 | fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
 | proof (`reader`) | the implement branch | no git push, nothing to GitHub at all | `proof.json` |
@@ -3256,21 +3254,21 @@ first, the other finds it merged at the same pinned head.
 **None of the above closes B1 by itself.** Every mechanism in this section —
 `post-verdict`'s isolation, the review-only-writable prefix, the pinned
 host — protects an artifact's integrity once it exists. Signed step specs
-(#342) protect something none of them touch: the `prompt` a step is handed
-*before* it runs. Without #342, an `implement` agent can rewrite `review`'s
+ protect something none of them touch: the `prompt` a step is handed
+*before* it runs. Without signed step specs, an `implement` agent can rewrite `review`'s
 still-`PARKED` task document, and the review agent would honestly follow
 corrupted instructions to a genuine, unforced `MERGE` verdict about a change
 it was never actually asked to judge. `post-verdict` and `merge` must verify
 the signed spec of every upstream step they depend on, not only stage its
 output ([merge-step.md](merge-step.md) §0 consequence 4, §7 T14). **The
-merge step must not be enabled for any tenant until #342 ships** — a
+merge step must not be enabled for any tenant until signed step specs ship** — a
 precondition independent of, and in addition to, `main-protection` (M1). By
 contrast, moving `release.yml`'s `id-token: write` to job level is
 recommended but, per the owner's round-3 decision, is **not** a
 precondition ([merge-step.md](merge-step.md) §7 R4, §11 open question (b)).
 **Separately, and NOT closed by anything above (named residual R8, joint
 review with CR 34, 2026-09-29):** the review-only-writable prefix stops the
-ordinary tenant account from writing there, but `swarm-<tenant>-review` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) is
+ordinary tenant account from writing there, but `swarm-<tenant>-review` (history: retired with the merge-step design, docs/merge-step.md §3; the account no longer exists) is
 one identity shared by every `single-pr` workflow of the tenant, and its
 write grant covers every workflow's verdict path at once. A review agent of
 one workflow, compromised by prompt injection, can still write a fabricated
@@ -3295,7 +3293,7 @@ make dev TARGET=emulator      # emulator only; point your own process at it
 `scripts/lib/dev.sh` starts `gcloud emulators firestore`, waits for it, seeds the
 slot pools the scheduler needs, and runs the service with
 `FIRESTORE_EMULATOR_HOST` set. No cloud credentials are used and nothing touches
-`saga-agents-staging`.
+`example-project`.
 
 The emulator is used rather than a mock because the admission path depends on
 **real transaction semantics** — the last-slot race resolves the way it does
