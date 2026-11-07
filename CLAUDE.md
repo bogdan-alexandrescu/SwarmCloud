@@ -35,11 +35,10 @@ blocked step's dependants so that what remains is one command
 types, never edit the files. If you are convinced it needs to change, **say so
 in your report or PR description instead of changing it**.
 
-**2. `saga-agents-staging` is a SHARED project.** It holds another team's live
-GKE cluster (`agents-staging`), their VPC (`agents-staging-vpc`), their buckets
-and service accounts, every one in `SHARED_DENY_LIST` (once, in
-`scripts/lib/common.sh`). Nothing you write may delete, modify or even point
-`kubectl` at any of them.
+**2. The deployment's project may be SHARED.** It can hold another team's live
+GKE cluster, network, buckets and service accounts, named only in the
+deployment's never-touch list (read once, by `scripts/lib/common.sh`). Nothing
+you write may delete, modify or even point `kubectl` at any of them.
 
 **3. Nothing ships as a TODO, a stub or pseudocode.** Everything must run. A
 `NotImplementedError` in a dispatch path is a production outage with a comment
