@@ -317,3 +317,26 @@ def test_only_the_real_resolve_sh_defers(tmp_path: Path) -> None:
     proc = subprocess.run([str(fake)], capture_output=True, text=True, timeout=60, check=False,
                           env=_env(tmp_path, _deny_list_deferred="1"))
     _refused(proc)
+
+
+def test_the_workspace_guard_refusal_reason_is_a_fixed_sentence(tmp_path: Path) -> None:
+    # The reason lands in the job's needs_owner stop record and its build log,
+    # so it is one fixed sentence: the object's own text (here the `.project` its
+    # writer chose) and the bucket path stay on stderr, never in the record.
+    # MUTATION: interpolate DENY_LIST_ERROR into GUARD_REASON and this fails.
+    chosen = "writer-chosen-text"
+    _write(tmp_path, {**_example(), "project": chosen})
+    expect = tmp_path / "expect.json"
+    expect.write_text(json.dumps({"workspace_id": "w-0a1b2c"}))
+    expect.chmod(0o600)
+    proc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "lib" / "workspace-guard.sh"), "check", "--", "gcloud", "projects", "list"],
+        capture_output=True, text=True, timeout=60, check=False,
+        # SWARM_NO_PROJECT defers the load from the sourcing to the judge, which
+        # is the path this refusal is on.
+        env=_env(tmp_path, SWARM_NO_PROJECT="1", SWARM_CALL_GUARD=str(expect)),
+    )
+    assert proc.returncode == 86, proc.stderr
+    stop = json.loads((tmp_path / "expect.json.stop").read_text())
+    assert stop["reason"] == "the never-touch list is not readable, and nothing runs without it", stop
+    assert chosen in proc.stderr, proc.stderr
