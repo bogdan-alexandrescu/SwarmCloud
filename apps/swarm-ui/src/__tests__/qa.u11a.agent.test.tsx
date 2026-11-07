@@ -166,7 +166,7 @@ describe('D21: the Checkpoints tab counts from the read its pane draws, from the
     // Wait on the three reads the badge is drawn from, then query the tablist
     // ONCE (reads.ts, #605): `tab()` is a `*ByRole` query, and polling it inside
     // `waitFor` spent the 2000 ms window on `getComputedStyle` -- red at 3911 ms
-    // on a bogdan-ci runner (run 38267927535, PR 1184).
+    // on a owner-ci runner (run 38267927535, PR 1184).
     await landed(api.loadTask)
     await landed(api.loadAttempts)
     await landed(api.loadCheckpoints)

@@ -28,7 +28,7 @@ import { read, route, write, type Result } from './fetch'
  * exactly as the credential's (`challenge_bypass_value`), and is taken by
  * `putQaChallengeBypass` alone.
  *
- * THE FLOW BROWSER (lane VQ9-TOOL; BGD, 2026-10-23) is the tool a target's
+ * THE FLOW BROWSER (lane VQ9-TOOL; owner, 2026-10-23) is the tool a target's
  * goal-driven flows drive the live browser with: Playwright MCP unless the
  * target, or one run, chooses Jev. Batch bench3-2026-10-23 passed Playwright
  * on 8 of 10 prompts at $0.14 and 44.5 s a run, Jev on 6 of 10 at $0.17 and

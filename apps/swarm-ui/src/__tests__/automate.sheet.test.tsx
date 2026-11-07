@@ -6,7 +6,7 @@
 //   * a list row opens the sheet beside the list, which stays drawn with the
 //     open row marked; Close and Escape go back to the list;
 //   * the sheet's state word is the API's `state_word` in the reader's words,
-//     a disabled schedule reading paused (BGD, 2026-10-26);
+//     a disabled schedule reading paused (owner, 2026-10-26);
 //   * each firing names its runs and the pull request each opened, with that
 //     pull request's state as served (`work[].pull_request`);
 //   * the largest run is drawn against the per-run tripwire, over it said in

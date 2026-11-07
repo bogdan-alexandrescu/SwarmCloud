@@ -206,7 +206,7 @@ function transcript(steps: TranscriptStep[]): TaskTranscript {
       source: 'final',
       status: 'ok',
       detail: null,
-      uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/att_1/logs/agent_stdout.log`,
+      uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${ID}/attempts/att_1/logs/agent_stdout.log`,
       object_updated_at: at(10),
       age_seconds: 3,
       total_bytes: 1000,

@@ -2,7 +2,7 @@
 // the findings whose main file is McpServers.tsx or Notifications.tsx.
 //
 //   config2-19  Config › MCP servers broke a URL mid-word
-//               ('https://mcp.exampl / e.com/docs/mcp'): it breaks only after
+//               ('mcp.exampl / e.com/docs/mcp'): it breaks only after
 //               a '/' or a '.', and the column keeps its widest piece.
 //   config2-20  at 390 the highlighted kb row was padded on the left only, so
 //               its Disable button met the tint's right edge.

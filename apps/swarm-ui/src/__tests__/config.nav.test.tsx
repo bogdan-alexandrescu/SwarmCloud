@@ -1,10 +1,10 @@
 /**
  * CONFIG, ONE SECTION FOR SETTING UP A WORKSPACE (CONFIG-NAV; part of #2157,
- * BGD's decisions of 2026-10-23 and his pick of 2026-10-24, proposal E,
+ * the owner's decisions of 2026-10-23 and their pick of 2026-10-24, proposal E,
  * docs/web-ui/mockups/config-e.html S1a-S1g).
  *
  *   * Config is a section of its own, between Capacity and Admin, with its
- *     pages in BGD's order: GitHub access, Repositories, Secrets, MCP servers.
+ *     pages in the owner's order: GitHub access, Repositories, Secrets, MCP servers.
  *     People and roles and Workspace Settings were its last two until the
  *     admin routes lane (part of #2688) made them the workspace page's tabs;
  *     their addresses open that page.
@@ -18,12 +18,12 @@
  *     `/settings/workspace/secrets?action=add&t=..`, still opens the add form,
  *     and its token still never enters the bar.
  *   * Admin is not drawn for a person in no group workspace (a member of one
- *     has Admin › Workspaces, BGD 3 November), and its
+ *     has Admin › Workspaces, owner 3 November), and its
  *     addresses keep their path and say the refusal in place once both
- *     reads say so (admin-shell-23, BGD 2026-10-28, reversing CONFIG-NAV's
+ *     reads say so (admin-shell-23, owner 2026-10-28, reversing CONFIG-NAV's
  *     redirect to Overview for this case); a workspace
  *     admin who is not a platform admin is sent from a platform Admin page
- *     to Workspaces you admin (ADMIN-REDIRECT, BGD 2026-10-24).
+ *     to Workspaces you admin (ADMIN-REDIRECT, owner 2026-10-24).
  *   * The setup strip runs across every Config page, measured from
  *     `GET /v1/onboarding`; a step with no read is unknown, never done.
  */
@@ -109,7 +109,7 @@ afterEach(() => {
 })
 
 describe('the Config section (CONFIG-NAV)', () => {
-  it('lists exactly its pages, in BGD\'s order, between Capacity and Admin', async () => {
+  it('lists exactly its pages, in owner\'s order, between Capacity and Admin', async () => {
     const { App } = await routing()
     const config = App.SECTIONS.find((s) => s.id === 'config')
     // MUTATION: drop the Config entry from SECTIONS -> fails.
@@ -279,7 +279,7 @@ describe('the workspace secrets one-time link', () => {
 
 describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
   // SOMEONE WHO ADMINISTERS NOTHING IS TOLD SO IN PLACE (visual QA pass 1
-  // admin-shell-23, part of #2596; BGD 2026-10-28 reversed CONFIG-NAV's
+  // admin-shell-23, part of #2596; owner 2026-10-28 reversed CONFIG-NAV's
   // redirect to Overview for this case): the address stays, and the page's
   // place says which page, the role and the workspace, with a link to Overview.
   it('refuses a member in place at /admin/limits, and draws Admin as their Workspaces alone', async () => {
@@ -290,7 +290,7 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     expect(document.querySelector('[data-refused="admin"]')?.textContent).toMatch(/You are a member of \S+\./)
     expect(screen.getByRole('link', { name: 'Open Overview' })).toBeTruthy()
     expect(window.location.pathname).toBe('/admin/limits')
-    // A member of a group workspace reaches Admin › Workspaces (BGD, 3 November), and nothing else there.
+    // A member of a group workspace reaches Admin › Workspaces (owner, 3 November), and nothing else there.
     await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces'))
   })
 
@@ -360,10 +360,10 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
 })
 
 describe('a workspace admin on a platform Admin page is refused in place, and a bare /admin goes to Workspaces you admin (ADMIN-REDIRECT)', () => {
-  // BGD 2026-10-24, "Redirect, in a later lane": the nav never links a
+  // owner 2026-10-24, "Redirect, in a later lane": the nav never links a
   // workspace admin to a platform page, and a typed or bookmarked one sent
   // them to the one Admin page they are shown. Visual QA pass 2 admin2-01
-  // (part of #2694) applies BGD 2026-10-28's admin-shell-23 rule to them
+  // (part of #2694) applies owner 2026-10-28's admin-shell-23 rule to them
   // too: a platform page is refused in place, with a link to Workspaces you
   // admin; only the bare /admin, Admin itself, still lands there.
   // Not /admin/people since ADMIN-PEOPLE-ROLES (part of #2157): a workspace

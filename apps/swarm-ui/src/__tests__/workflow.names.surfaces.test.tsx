@@ -1,6 +1,6 @@
 /**
  * ONE WORKFLOW, ONE NAME, ON THE THREE SURFACES THE FACTS CARD LEFT (part of
- * #2688; Bogdan's answers on the facts card lane, 2026-11-06). Outcomes'
+ * #2688; the owner's answers on the facts card lane, 2026-11-06). Outcomes'
  * failed workflows (Ledger), the submit chooser's "your submissions" and the
  * Timeline name a workflow by `workflowName` -- its served `title`, falling
  * back to its label off the step tasks -- as the page heading, the list and

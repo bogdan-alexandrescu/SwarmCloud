@@ -16,7 +16,7 @@
  *
  * THE SERVER HOLDS EVERY RULE. Who may approve (§4.6), a hold's stricter
  * approver (§4.4), the one-person tenant's typed confirmation (SD11), the
- * rule that only someone who may approve may reject (BGD 2026-10-26) and the
+ * rule that only someone who may approve may reject (owner 2026-10-26) and the
  * race between two approvers are all decided in `routes/approvals.py`; this
  * list reads `may_decide` out of each row and never widens it.
  *
@@ -362,7 +362,7 @@ function EmptyInbox({ kind, elsewhere, go }: { kind: string | null; elsewhere: n
       say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
     >
       {kind === null ? (
-        // THE KINDS ARE THE TOOLTIP (BGD's standing rule, 5 November 2026: no
+        // THE KINDS ARE THE TOOLTIP (the owner's standing rule, 5 November 2026: no
         // explanatory prose on the surface). The list grew a kind (contract
         // judgment, PR #3255) and took the page past its prose ceiling; it is
         // the drawn words' hover and accessible description now, still named

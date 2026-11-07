@@ -1,4 +1,4 @@
-// TZ-CLOCKTIME (part of #2391; BGD, 2026-10-26, "One types.ts lane"): every
+// TZ-CLOCKTIME (part of #2391; owner, 2026-10-26, "One types.ts lane"): every
 // time `clockTime` prints is in the person's zone and carries its label, so
 // the text a caller's column holds grew. `09:04:07` is `09:04:07 UTC`, and an
 // older day's `10-24 14:05` is `Oct 24 14:05 PDT`. This holds the inspector's

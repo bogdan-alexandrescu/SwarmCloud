@@ -1,7 +1,7 @@
 /**
  * THE WORKFLOW'S FACTS CARD (the picked workflow-clarity variant, part of
- * #2688; Bogdan, 2026-11-05). Under the page's state row: the description on
- * the left, in three labelled lines (Purpose, Goals, Expected output; BGD,
+ * #2688; owner, 2026-11-05). Under the page's state row: the description on
+ * the left, in three labelled lines (Purpose, Goals, Expected output; owner,
  * 2026-11-06), each part clamped on its own row with More only when a clamp cut
  * text, a generated one marked by its chip, the dim ink and an (i); nothing
  * when none is served) and labelled facts on the right (Repository, Feature, Started by,

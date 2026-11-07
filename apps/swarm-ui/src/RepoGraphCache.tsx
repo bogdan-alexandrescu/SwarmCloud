@@ -1,6 +1,6 @@
 /**
  * THE CACHE SECTION UNDER EACH INDEXED REPOSITORY (lane CACHE-4-CONSOLE, part
- * of #1835; docs/design/graph-answer-cache.md §5.1-§5.5). BGD picked mock-up C,
+ * of #1835; docs/design/graph-answer-cache.md §5.1-§5.5). owner picked mock-up C,
  * "live replicas, v2 from the start" (2026-10-27): the section reads every
  * swarm-graph replica live through swarm-api's
  * `GET /v1/repositories/{repo_id}/graph-cache`, not a daily summary.
@@ -15,7 +15,7 @@
  *   * SWARM-GRAPH NOT ANSWERING AT ALL (`replicas: []`, `stats: not_read`) still
  *     draws the latency tile: the uncached p95 is the index version's
  *     `answer_latency`, read from Firestore, not from a replica (§5.3).
- *   * THE REUSE TILE IS A DASH UNTIL CARRY FORWARD EXISTS (BGD Q4). 0% would say
+ *   * THE REUSE TILE IS A DASH UNTIL CARRY FORWARD EXISTS (owner Q4). 0% would say
  *     carry forward ran and reused nothing; the route leaves `carried` null
  *     until a replica counts one, and so does this tile.
  *   * A WINDOW SHORTER THAN 24 H IS LABELLED WITH ITS LENGTH ("over 5 h"): a
@@ -315,7 +315,7 @@ function hitRateTile(f: GraphCacheFacts, stats: Stats): TileValue {
 }
 
 function reuseTile(f: GraphCacheFacts, stats: Stats): TileValue {
-  // BGD Q4: a dash until carry forward exists, never 0%, and no carried count.
+  // owner Q4: a dash until carry forward exists, never 0%, and no carried count.
   if (f.carried === null || f.reused_share === null) {
     return { kind: 'unknown', why: f.answers === null ? notReadWhy(stats) : 'Carry forward is not built yet' }
   }

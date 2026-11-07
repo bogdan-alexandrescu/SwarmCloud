@@ -5,10 +5,10 @@
  * finding, held by the property that was false:
  *
  *   admin-007 (also overview-automate-005, task-014, work-a-008, work-b-004)
- *           The Global pool note `a pool is full: anthropic · u-bogdan`
+ *           The Global pool note `a pool is full: anthropic · u-owner`
  *           (`another pool` until visual QA pass 2, admin2-15)
  *           broke inside the tenant id at its hyphen, `u-` ending one line
- *           and `bogdan` alone on the next.
+ *           and `owner` alone on the next.
  *   FF-P1   On a phone, Overview had no "On this page" list on the page
  *           itself (it was only behind the menu), so Recent failures was
  *           reached only by scrolling past every card.
@@ -68,11 +68,11 @@ function media(phone: boolean): void {
 describe('admin-007: the Global pool note does not break inside a tenant id', () => {
   it('meterOf hands the pool label over on its own, so it can be drawn whole', async () => {
     const { meterOf } = await import('../Spine')
-    const cap = { pools: [pool('global', 5, 20), pool('provider:anthropic:tenant:u-bogdan', 3, 3)], runner_profiles: {} } as unknown as Capacity
+    const cap = { pools: [pool('global', 5, 20), pool('provider:anthropic:tenant:u-owner', 3, 3)], runner_profiles: {} } as unknown as Capacity
     const m = meterOf(cap)!
-    expect(m.warn).toBe('a pool is full: anthropic · u-bogdan')
+    expect(m.warn).toBe('a pool is full: anthropic · u-owner')
     // MUTATION: drop `warnLabel` from meterOf and the note has no unbreakable part to draw.
-    expect(m.warnLabel).toBe('anthropic · u-bogdan')
+    expect(m.warnLabel).toBe('anthropic · u-owner')
     // MUTATION: give the global pool's own note a label and "this pool" gets a nowrap span it does not need.
     expect(meterOf({ pools: [pool('global', 20, 20)], runner_profiles: {} } as unknown as Capacity)?.warnLabel).toBeNull()
   })
@@ -82,7 +82,7 @@ describe('admin-007: the Global pool note does not break inside a tenant id', ()
     for (const theme of THEMES) {
       for (const env of [WIDE, PHONE]) {
         // MUTATION: drop `white-space: nowrap` from `.sk-mws` in styles.css and
-        // `u-bogdan` breaks at its hyphen again, `u-` / `bogdan` on two lines.
+        // `u-owner` breaks at its hyphen again, `u-` / `owner` on two lines.
         expect(painted(segment, 'white-space', { ...env, theme }), `${theme} at ${env.width}px`).toBe('nowrap')
       }
     }
@@ -93,16 +93,16 @@ describe('admin-007: the Global pool note does not break inside a tenant id', ()
     vi.resetModules()
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      const chosen = new Headers(init?.headers).get(TENANT_HEADER) ?? 'u-bogdan'
-      if (url.includes('/v1/tenants/mine')) return ok([{ tenant_id: 'u-bogdan', display_name: 'Bogdan' }])
+      const chosen = new Headers(init?.headers).get(TENANT_HEADER) ?? 'u-owner'
+      if (url.includes('/v1/tenants/mine')) return ok([{ tenant_id: 'u-owner', display_name: 'Alex' }])
       if (url.includes('/v1/tenants/me'))
         return ok({
-          tenant: { tenant_id: chosen, display_name: 'Bogdan' },
+          tenant: { tenant_id: chosen, display_name: 'Alex' },
           principal: { email: 'ana.b@example.com', domain: 'example.com', groups: [], is_admin: false },
           environment: 'dev',
           environment_declared: true,
         })
-      if (url.includes('/v1/capacity')) return ok({ pools: [pool('global', 5, 20), pool('provider:anthropic:tenant:u-bogdan', 3, 3)] })
+      if (url.includes('/v1/capacity')) return ok({ pools: [pool('global', 5, 20), pool('provider:anthropic:tenant:u-owner', 3, 3)] })
       return ok({})
     }) as unknown as typeof fetch
     const { SkyShell } = await import('../Spine')
@@ -117,11 +117,11 @@ describe('admin-007: the Global pool note does not break inside a tenant id', ()
       return n!
     }, WAIT)
     // MUTATION: render `{meter.warn}` as one text node again and the note is whole text with no span.
-    expect(note.textContent).toBe('a pool is full: anthropic · u-bogdan')
+    expect(note.textContent).toBe('a pool is full: anthropic · u-owner')
     const parts = [...note.querySelectorAll('.sk-mwn .sk-mws')].map((s) => s.textContent)
     // MUTATION: wrap the whole label in one nowrap span and a long one cannot break at its `·`.
-    expect(parts).toEqual(['anthropic', 'u-bogdan'])
-    expect(note.getAttribute('title')).toBe('provider:anthropic:tenant:u-bogdan')
+    expect(parts).toEqual(['anthropic', 'u-owner'])
+    expect(note.getAttribute('title')).toBe('provider:anthropic:tenant:u-owner')
   })
 })
 

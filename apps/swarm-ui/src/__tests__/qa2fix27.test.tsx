@@ -1,5 +1,5 @@
 /**
- * CONSOLE VISUAL QA PASS 2, LANE QA2-FIX-27 (part of #2694 and #2391; BGD
+ * CONSOLE VISUAL QA PASS 2, LANE QA2-FIX-27 (part of #2694 and #2391; owner
  * 2026-10-28). One case per finding this lane changed, each red on main
  * before the change. jsdom has no layout, so each reads the cascade of the
  * sheets in the order the page loads them (`cssgate.ts`) on the real markup.

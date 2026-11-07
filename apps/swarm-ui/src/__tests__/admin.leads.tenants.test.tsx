@@ -60,7 +60,7 @@ function tenant(id: string): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic'],
-    service_account: `swarm-agent-worker-${id}@example.iam.gserviceaccount.com`,
+    service_account: `swarm-agent-worker-${id}@example-project.iam.gserviceaccount.com`,
     gcs_prefix: null,
     namespace: null,
   }

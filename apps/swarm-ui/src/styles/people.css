@@ -26,8 +26,8 @@
 .is-scroll > .pp-table .pp-who { max-width: 15rem; }
 /* AND THE NAME DOES NOT SHRINK BELOW ITS OWN WIDTH (visual QA VQ-052): with
    `min-width: 0` the Person column's min-content was the avatar alone, so the
-   table took its width for a long Claude account cell and cut "Bogdan
-   Alexandrescu" to "Bogdan Alexand…" with room to spare. At its own width,
+   table took its width for a long Claude account cell and cut "Alex
+   Example" to "Alex Exampl…" with room to spare. At its own width,
    capped above, the name reads whole; only one past the cap is cut. */
 .is-scroll > .pp-table .pp-who { flex-shrink: 0; width: max-content; }
 .pp-avatar {
@@ -246,9 +246,9 @@
 /* The name line may still wrap its GitHub mark under it; the address never breaks. */
 .pp-grid .pp-person { flex-wrap: wrap; }
 /* THE NAME OVER THE ADDRESS, THE AVATAR ON THE NAME'S LINE (visual QA VQ-052,
-   review of ADMIN-PEOPLE-VQ). On one line, "Bogdan Alexandrescu · bob@example.com"
+   review of ADMIN-PEOPLE-VQ). On one line, "Alex Example · bob@example.com"
    needed more than the 15rem cap, the address does not shrink (PersonName),
-   so the name was cut to "Bogdan Alexan…"; and the capped 240px who no longer
+   so the name was cut to "Alex Exampl…"; and the capped 240px who no longer
    fit beside the avatar, so the cell wrapped to three lines (avatar; cut
    name; GitHub mark) -- a row 89px tall where the others are 56px. Stacked,
    the who is as wide as the longer of the two, the name never shares a line
@@ -261,7 +261,7 @@
 .is-scroll > .pp-table .pp-person { flex-wrap: nowrap; }
 /* AND ITS TWO GAPS ARE 4PX, NOT 8 (render review of PR 2464's FIX2, 1440
    with the nav open): nowrap, the cell's least width is avatar, gap, who,
-   gap, GitHub mark, and the seven-loan row's "Bogdan Alexandrescu" held the
+   gap, GitHub mark, and the seven-loan row's "Alex Example" held the
    table at 1010.8px in its 1009px pane, a 2px sideways scroll under the
    grid. The 8px saved is the margin; the cell does not wrap for it. */
 .is-scroll > .pp-table .pp-person { gap: var(--ctl-s1); }

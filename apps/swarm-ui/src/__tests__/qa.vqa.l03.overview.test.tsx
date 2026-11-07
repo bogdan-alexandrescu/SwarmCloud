@@ -191,7 +191,7 @@ describe('V057: a full pool’s figure carries the bad tone (owner Q3)', () => {
     expect(figures.map((b) => b.classList.contains('is-full'))).toEqual([true, false, false])
     expect(figures[0]!.closest('.ov-pl')!.getAttribute('title')).toMatch(/, full$/)
     for (const env of [WIDE, PHONE]) expect(painted(figures[0]!, 'color', env)).toBe('var(--bad)')
-    // The bar is drawn on a phone too: BGD reversed Q3's "the bar stays
+    // The bar is drawn on a phone too: owner reversed Q3's "the bar stays
     // hidden on a phone" on 2026-10-23 (run 6, overview-automate-011, #1680
     // box 6343776209). The figure's tone is kept beside the bar, not instead.
     // MUTATION: drop `.ov-pools .ov-pl > .ctl-util-track` from overview.css's 560px block.
@@ -260,7 +260,7 @@ describe('QA-060: the Overview count note never leaves its `?` alone on a line',
     const note = el.querySelector<HTMLElement>('.ov-page > .c-count-note')!
     const scope = note.querySelector<HTMLElement>(':scope > .ov-scope')
     const tally = note.querySelector<HTMLElement>(':scope > .ov-tally')!
-    // MUTATION: render the tenant as bare text again -- it can then break inside "tenant u-bogdan".
+    // MUTATION: render the tenant as bare text again -- it can then break inside "tenant u-owner".
     expect(scope, 'the tenant is not one unit').not.toBeNull()
     expect(text(scope)).toMatch(/^workspace eng ·$/)
     expect(tally.querySelector('.ctl-q-glyph, button, a'), 'the `?` is inside the tally').not.toBeNull()

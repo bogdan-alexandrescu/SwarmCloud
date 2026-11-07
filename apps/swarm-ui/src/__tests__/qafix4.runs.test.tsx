@@ -34,7 +34,7 @@ const SCROLLBAR_PX = 15
 const OWNER = 'example-org'
 const REPO = 'agent-swarm-infra'
 // 34 characters: the longest reference D11 sized the column for.
-const REF_34 = 'bogdan-alexandrescu/SwarmCloud#454'
+const REF_34 = 'example-org/example-repo#454'
 const RUN_ID = 'run_' + 'b2'.repeat(10)
 const WF = 'wf_' + 'a1'.repeat(10)
 
@@ -105,7 +105,7 @@ describe('N20 (run-4 work-a-009): at 1440 the Issue column holds a 34-character 
 
   it('fits the reference in Issue, with Run, State, Workflow and By still holding what they hold', async () => {
     const { container } = await mountList([
-      run(RUN_ID, { issue: { ref: REF_34, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454, url: null } }),
+      run(RUN_ID, { issue: { ref: REF_34, owner: 'example-org', repo: 'SwarmCloud', number: 454, url: null } }),
     ])
     const table = container.querySelector<HTMLTableElement>('.rn-table')!
     const { width, cols } = fixedColumns(table, listWidthAt1440(), WIDE)
@@ -121,7 +121,7 @@ describe('N20 (run-4 work-a-009): at 1440 the Issue column holds a 34-character 
     const ref = row.querySelector('td[data-label="Issue"] .rn-refcut')!
     expect(ref.textContent).toBe(REF_34)
     // MUTATION: put the six sized columns' widths back (190, 112, 90, 182,
-    // 68, 152) and Issue has 235px for 245: 'bogdan-alexandrescu/SwarmClo…#454',
+    // 68, 152) and Issue has 235px for 245: 'example-org/example-re…#454',
     // as run 4 saw its reference.
     expect(room('issue', 'Issue'), 'the issue reference is cut').toBeGreaterThanOrEqual(textPx(REF_34, ref, WIDE))
     // MUTATION: find Issue's room by narrowing Run, Workflow or By below its

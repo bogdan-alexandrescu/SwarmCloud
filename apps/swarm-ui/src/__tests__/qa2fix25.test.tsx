@@ -42,17 +42,17 @@ describe('admin2-02: a workspace-admin page refused to someone who administers n
 
   it('says a personal workspace is the reader’s own, never calling them its admin', () => {
     const { container } = render(
-      <AdminRoleRefusal page="People and roles" role="admin" workspace="Bogdan" audience="workspace" personal />,
+      <AdminRoleRefusal page="People and roles" role="admin" workspace="Alex" audience="workspace" personal />,
     )
-    // MUTATION: ignore `personal` and the line reads "You are an admin of Bogdan." again.
-    expect(visible(container)).toContain('Bogdan is your own workspace.')
+    // MUTATION: ignore `personal` and the line reads "You are an admin of Alex." again.
+    expect(visible(container)).toContain('Alex is your own workspace.')
     expect(visible(container)).not.toContain('an admin of')
   })
 
   it('keeps a platform-only page as it was', () => {
-    const { container } = render(<AdminRoleRefusal page="Pool limits" role="admin" workspace="Bogdan" personal />)
+    const { container } = render(<AdminRoleRefusal page="Pool limits" role="admin" workspace="Alex" personal />)
     expect(screen.getByText('Pool limits is for platform admins')).toBeTruthy()
-    expect(visible(container)).toContain('You are not a platform admin. Bogdan is your own workspace.')
+    expect(visible(container)).toContain('You are not a platform admin. Alex is your own workspace.')
   })
 })
 
@@ -65,7 +65,7 @@ describe('cap2-01: a paused account cannot take a new agent', () => {
 
   it('reads No once paused, though the flag read before the pause says yes', async () => {
     const { accounts, scope } = await pool()
-    const primary = accounts.find((a) => a.account_id === 'u-bogdan:primary') as PoolAccount
+    const primary = accounts.find((a) => a.account_id === 'u-owner:primary') as PoolAccount
     expect(canTake(primary, scope)).toBe(true)
     // The fixture's PUT /state sets the state and keeps the flag, as a read made before the pause does.
     const paused: PoolAccount = { ...primary, state: 'PAUSED', reason: 'holiday', can_take_new_agent: true }
@@ -79,7 +79,7 @@ describe('cap2-01: a paused account cannot take a new agent', () => {
   it('drops its slots from the verdict', async () => {
     const { accounts, scope } = await pool()
     const before = verdictOf(accounts, scope, 0)
-    const primary = accounts.find((a) => a.account_id === 'u-bogdan:primary') as PoolAccount
+    const primary = accounts.find((a) => a.account_id === 'u-owner:primary') as PoolAccount
     const after = verdictOf(
       accounts.map((a) => (a === primary ? { ...a, state: 'PAUSED' as const } : a)),
       scope,
@@ -104,10 +104,10 @@ describe('capacity-04: Healthy is not "nothing to do" over accounts the pool wit
     const records = new Map<string, AccountHealthRecord>(r.data.health.pool.accounts.map((x) => [x.account_id, x]))
     const held = healthyWithheld(accounts, records, r.data.page.tenant_id ?? null).map((a) => a.account_id)
     // MUTATION: drop the skipped-here or the duplicate clause and one of these is missing.
-    expect(held).toEqual(expect.arrayContaining(['eng:shared', 'u-bogdan:team-copy']))
+    expect(held).toEqual(expect.arrayContaining(['eng:shared', 'u-owner:team-copy']))
     // A never-polled account takes its one agent; a full one frees when an agent finishes.
-    expect(held).not.toContain('u-bogdan:never-polled')
-    expect(held).not.toContain('u-bogdan:full-six')
+    expect(held).not.toContain('u-owner:never-polled')
+    expect(held).not.toContain('u-owner:full-six')
     expect(healthyWithheldLine([])).toBeNull()
     expect(healthyWithheldLine(accounts.filter((a) => held.includes(a.account_id)))).toMatch(
       /^\d of them cannot take an agent: .*shared.*team-copy|^\d of them cannot take an agent: .*team-copy.*shared/,

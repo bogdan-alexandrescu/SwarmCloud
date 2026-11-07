@@ -1,6 +1,6 @@
 // THE QA RUN PAGE, `/qa-runs/<group_id>` (lane QAENV-UI-RUNPAGE, part of
 // #2136; docs/design/qa-environments.md §7, §3.5, §5 "Between legs"; Config
-// proposal E, S9b and S9d, BGD's pick 2026-10-24).
+// proposal E, S9b and S9d, the owner's pick 2026-10-24).
 //
 // WHAT EACH CASE HOLDS, over `GET /v1/qa-runs/{group_id}` as routes/qatargets.py
 // serves it (`QaTargets.group`), each leg's `GET /v1/workflows/{id}`, the

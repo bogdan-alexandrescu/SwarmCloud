@@ -23,7 +23,7 @@ const JSON_HEADERS = { 'content-type': 'application/json' }
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'cd'.repeat(32)
-const REPO = 'bogdan-alexandrescu/SwarmCloud'
+const REPO = 'example-org/example-repo'
 const RUN_ID = 'run_7a37942a19aa4d2c80d1'
 
 /**
@@ -31,17 +31,17 @@ const RUN_ID = 'run_7a37942a19aa4d2c80d1'
  * 2026-10-05: ref, kind and note as stored before #587, no `action`.
  */
 const RUN_7A37_OVERLAPS = [
-  { ref: "bogdan-alexandrescu/SwarmCloud#185", kind: "issue", note: "The Timeline outcome ledger reads GET /v1/outcomes, which has its own coverage section. It is a different route from /v1/attempts, and this plan touches none of its files. No action. #185's builder can reuse the not_recorded wording this plan settles." },
-  { ref: "bogdan-alexandrescu/SwarmCloud#322", kind: "issue", note: "Same spend-honesty family: the Tokens tile leaves out cached tokens. It is UI code (AgentDetail), not the attempts route or these docs. No action." },
-  { ref: "bogdan-alexandrescu/SwarmCloud#323", kind: "issue", note: "Prompt-cache cost of claude-code steps. It is about spend, but it is worker and runner configuration, with no shared files. No action." },
-  { ref: "bogdan-alexandrescu/SwarmCloud#503", kind: "issue", note: "The UI-vs-mock-ups epic may edit docs/web-ui/ui-audit-and-build-prompt.md for other screens. No open PR touches that file now. This plan's edits there are limited to §A0.1's coverage sentence. If a #503 lane opens a PR on the file first, rebase onto it rather than editing in parallel." },
-  { ref: "bogdan-alexandrescu/SwarmCloud#177", kind: "issue", note: "This epic collects comments that contradict the code, and the stale record_spend passages are in that family. If the epic has a box for them, the PR comment (not the body) should name this PR as its evidence." },
+  { ref: "example-org/example-repo#185", kind: "issue", note: "The Timeline outcome ledger reads GET /v1/outcomes, which has its own coverage section. It is a different route from /v1/attempts, and this plan touches none of its files. No action. #185's builder can reuse the not_recorded wording this plan settles." },
+  { ref: "example-org/example-repo#322", kind: "issue", note: "Same spend-honesty family: the Tokens tile leaves out cached tokens. It is UI code (AgentDetail), not the attempts route or these docs. No action." },
+  { ref: "example-org/example-repo#323", kind: "issue", note: "Prompt-cache cost of claude-code steps. It is about spend, but it is worker and runner configuration, with no shared files. No action." },
+  { ref: "example-org/example-repo#503", kind: "issue", note: "The UI-vs-mock-ups epic may edit docs/web-ui/ui-audit-and-build-prompt.md for other screens. No open PR touches that file now. This plan's edits there are limited to §A0.1's coverage sentence. If a #503 lane opens a PR on the file first, rebase onto it rather than editing in parallel." },
+  { ref: "example-org/example-repo#177", kind: "issue", note: "This epic collects comments that contradict the code, and the stale record_spend passages are in that family. If the epic has a box for them, the PR comment (not the body) should name this PR as its evidence." },
 ]
 
 function run(overlaps: unknown[], state = 'PLANNED') {
   return {
     id: RUN_ID, tenant_id: 'eng', state, terminal: ['DONE', 'FAILED', 'REJECTED', 'CANCELLED'].includes(state),
-    issue: { ref: `${REPO}#454`, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454,
+    issue: { ref: `${REPO}#454`, owner: 'example-org', repo: 'SwarmCloud', number: 454,
       url: `https://github.com/${REPO}/issues/454`, repository_url: `https://github.com/${REPO}` },
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_7f3e2c9a1b8d4e6f0a5c',
     plan: {

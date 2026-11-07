@@ -17,7 +17,7 @@ import type { Me, Profile } from './types'
  *
  * WHERE IT IS KEPT: the person's server-side preferences (`time_zone` on
  * `GET /v1/profile`, saved through `PUT /v1/profile/preferences`), so it
- * follows them to every browser and survives sign-out (BGD, 2026-10-26, lane
+ * follows them to every browser and survives sign-out (owner, 2026-10-26, lane
  * TIMEZONE-SERVER). This browser's local storage, keyed by the signed-in
  * person's email (`swarm.timezone:<email>`), is only a first-paint cache: the
  * page draws in it until the profile read answers, then in the server's

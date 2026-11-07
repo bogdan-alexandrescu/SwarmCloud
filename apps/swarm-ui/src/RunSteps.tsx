@@ -541,7 +541,7 @@ export function ProgressTime({ at, prev, now }: { at: string | null; prev: strin
   }
   // UTC, WRITTEN WITH ITS Z (QA1-FIX-24, chrome-C16, part of #2596): the
   // local clock carried no zone, so '10-27 17:02:06' could not be set beside
-  // a log line or a CI run's time. BGD's rule: UTC times are written with Z.
+  // a log line or a CI run's time. the owner's rule: UTC times are written with Z.
   const d = new Date(t)
   const pad = (n: number) => String(n).padStart(2, '0')
   const today = new Date(now)

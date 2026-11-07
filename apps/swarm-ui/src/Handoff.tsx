@@ -336,7 +336,7 @@ function useYou(taskId: string, enabled: boolean): string | null {
  * NEUTRAL WORDING (owner decision, 2026-10-13, QA12-04): a hand-off is not
  * always a sign-in, so nothing here says "sign in". The headline is "The agent
  * needs your help" with the agent's own reason; the button is "I'm ready".
- * The live view shows the page as Chromium draws it (BGD, 2026-10-25;
+ * The live view shows the page as Chromium draws it (owner, 2026-10-25;
  * LIVE-NOMASK-COPY, part of #2298), so nothing here says a field is masked.
  * The theater's checklist (TheaterTimeline.tsx) is its own lane's.
  *

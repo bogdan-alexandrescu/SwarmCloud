@@ -233,7 +233,7 @@
      3h ago` -- takes the room, and wrapped `3h / ago` in its 20%. */
   /* AND THE POOL COLUMN HOLDS THE LONGEST KEY ON ONE LINE (visual QA run
      5b, Providers, part of #1680). At 25% (255px of the 1022px families)
-     `provider:anthropic:tenant:u-bogdan` -- 34 characters of 12px DM Mono,
+     `provider:anthropic:tenant:u-owner` -- 34 characters of 12px DM Mono,
      245px, and the cell's 20px of padding -- wrapped between its pairs and
      made one row of Providers taller than the rest. 27% is 276px. The 2% is
      Set by's slack (`AIMD back-off`, its term then, was 122px in 12%'s 123px;
@@ -499,7 +499,7 @@
   }
   /* AN ADDRESS BREAKS AFTER `@` AND `.` ONLY (visual QA run 6, 6:admin-008,
      part of #1680). The phone record let the identity break anywhere:
-     `alice@example` / `.com`, `bogdan@exampl` / `e-`. It is drawn as runs
+     `alice@example` / `.com`, `owner@exampl` / `e-`. It is drawn as runs
      that end at an `@` or a `.`, a `<wbr>` between two (`addressBreaks`,
      Activity.tsx `TenantIdent`); each run is an inline block that never
      breaks inside, and one wider than the value column is cut with an
@@ -517,7 +517,7 @@
   /* THE IDENTITY STAYS INSIDE THE CARD (visual QA pass 1, admin-shell-02,
      part of #2596). The row was `inline-flex` with no wrap, so the identity
      -- a flex item whose minimum is its widest run, 28 characters of
-     `swarm-agent-worker-u-bogdan@` -- and its 44px copy control ran past the
+     `swarm-agent-worker-u-owner@` -- and its 44px copy control ran past the
      value column to x=461 at 390, and the whole page scrolled sideways. Now
      the row wraps: the identity is never wider than the column and breaks at
      its `@` and `.` runs inside it, and the copy control takes the next line
@@ -575,13 +575,13 @@
      its padding) was cut in its 84px head. Now Status and Kind are their
      word and padding, the two figure heads fit, three credential tags take
      two lines, a normal Principal is whole, and the Identity keeps its key
-     (`…u-bogdan@…`) whole. A long tenant id still breaks at its hyphens
+     (`…u-owner@…`) whole. A long tenant id still breaks at its hyphens
      only, in three lines at 148px. */
   /* AND A PRINCIPAL IS WHOLE (visual QA run 6, 6:admin-009, part of
      #1680). At 19% (200px of 1054) `alice@example.com` -- 17 characters of
      14px DM Mono, 143px, with the 8px gap, its 47px copy control and the
      cell's 20px of padding, 218px -- was cut `alice@example…` while Tenant
-     held `u-bogdan` in 148px. Tenant gives 2% (126px: a long id still breaks
+     held `u-owner` in 148px. Tenant gives 2% (126px: a long id still breaks
      at its hyphens) and Credentials 0.5% (179px still holds `anthropic` and
      `openai` on one line, 174px); Principal is 21% (221px) and Identity
      20% (211px). */
@@ -622,14 +622,14 @@
 
      AND NO SHRINK FACTOR AT ALL, BUT A CAP (VQA V186). Any factor above 0
      hands the key its share of the overflow while the head is still wide:
-     0.05px for `u-bogdan@` at 1440, enough for the ellipsis, so the one
+     0.05px for `u-owner@` at 1440, enough for the ellipsis, so the one
      part this row exists to show read `u-bogda…` with client 72 == scroll
      72. So the key does not shrink: it is whole unless it alone is wider
      than the column less the head's and the tail's 2ch floors, and then
      `max-width` cuts it there, with its ellipsis (V026). */
   /* ONE CUT, NOT TWO (visual QA pass 1, admin-shell-18, part of #2596).
      With the copy control beside it the identity had about 16 characters, so
-     both the prefix and the domain were cut: `sw…u-bogdan@ex…`. Now the
+     both the prefix and the domain were cut: `sw…u-owner@ex…`. Now the
      identity takes the cell's width and the copy control the line under it
      when the two do not fit together; inside, the pieces wrap as whole
      runs -- the prefix on its own line, then the key -- and only the domain,
@@ -647,7 +647,7 @@
   /* EVERY ROW CUT BY ONE RULE (visual QA run 6, 6:admin-009). Weighted
      1000 and 4000 from their own widths, the two pieces gave up the
      overflow in proportion to their length, so each row cut its domain at a
-     different letter: `swa…u-bogdan@e…` in one, more of the domain in the
+     different letter: `swa…u-owner@e…` in one, more of the domain in the
      next. Now they share what the key leaves EQUALLY (a zero basis and the
      same factors), each capped at its own text: a short head hands its
      unused share to the domain, and two rows with the same room show the
@@ -664,7 +664,7 @@
   }
   /* AND THE DOMAIN IS WHOLE TOO (visual QA pass 2, admin-shell-18, part of
      #2694). Cut with an ellipsis, every service account at 1440 still read
-     `swarm-agent-worker-` / `u-bogdan@example-proj…`, and the whole value was
+     `swarm-agent-worker-` / `u-owner@example-proj…`, and the whole value was
      only reachable through the copy control. The domain takes the line after
      the key when it does not fit beside it and wraps there, so the whole
      address is on screen with its copy control under it. */

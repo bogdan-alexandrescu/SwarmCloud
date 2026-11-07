@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
-import { COMPANY_NAME } from '../../test/companyName'
+import { listedIn } from '../../test/deploymentPatterns'
 
 type Json = Record<string, unknown>
 
@@ -92,7 +92,7 @@ describe('the Jev backend radio', () => {
     expect(text).toMatch(/internal jev.*default/i)
     expect(text).toMatch(/internal jev.*stays inside your network\..*internal laya.*stays inside your network\./is)
     // The company is not named on the card (#1647).
-    expect(g.textContent).not.toMatch(COMPANY_NAME)
+    expect(listedIn(g.textContent ?? '')).toEqual([])
     expect(text).toMatch(/sends page text to typesafe; needs a key/i)
   })
 

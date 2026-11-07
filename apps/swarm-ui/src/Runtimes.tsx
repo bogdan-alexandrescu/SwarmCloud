@@ -95,7 +95,7 @@ export function RuntimesScreen() {
       title="Runtimes"
       // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (QA1-FIX-24, capacity-13,
       // part of #2596), AS POOLS, ACCOUNTS AND PROVIDER QUOTA'S HAVE SINCE
-      // VQ-033 (BGD 2026-10-26: "Move the topics behind the page's one ?").
+      // VQ-033 (owner 2026-10-26: "Move the topics behind the page's one ?").
       // Runtimes was the last Capacity tab still ending in the `Reading this
       // screen:` row of underlined monospace links; the `?` beside the title
       // takes the section question's place and lists every topic the row did,

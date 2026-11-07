@@ -1,6 +1,6 @@
 // CONFIG › REPOSITORIES IN THE NAV AND THE ROUTER (repositories.html §1 put
 // it under Work, after Runs; CONFIG-NAV, part of #2157, moved it to Config,
-// second, after GitHub access, by BGD's decision of 2026-10-23).
+// second, after GitHub access, by the owner's decision of 2026-10-23).
 //
 // The pages are one tab, `config/repositories`, with the page on its query --
 // the way one run is `work/runs?run=<id>` -- and real paths in the bar:

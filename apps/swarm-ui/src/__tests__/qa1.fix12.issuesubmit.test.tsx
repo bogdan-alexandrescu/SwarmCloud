@@ -42,15 +42,15 @@ const pool = (name: string) => ({
   active: 2, available: 8, enabled: true, updated_at: '2026-10-02T10:00:00Z',
 })
 const CAPACITY = {
-  pools: [pool('global'), pool('tenant:u-bogdan')],
+  pools: [pool('global'), pool('tenant:u-owner')],
   runner_profiles: {
     'claude-code': { resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
-      pools: ['global', 'tenant:u-bogdan'], admission },
+      pools: ['global', 'tenant:u-owner'], admission },
   },
-  tenant_id: 'u-bogdan',
+  tenant_id: 'u-owner',
   generated_at: '2026-10-02T10:00:00Z',
 }
-const PROVIDERS = { tenant_id: 'u-bogdan', providers: [{ provider: 'anthropic', credential_registered: true }], generated_at: '2026-10-02T10:00:00Z' }
+const PROVIDERS = { tenant_id: 'u-owner', providers: [{ provider: 'anthropic', credential_registered: true }], generated_at: '2026-10-02T10:00:00Z' }
 
 const ISSUE = {
   ref: 'example-org/agent-swarm-infra#512', owner: 'example-org', repo: 'agent-swarm-infra', number: 512,
@@ -68,7 +68,7 @@ function preview(top: Record<string, unknown> = {}) {
 
 function run(id: string, state: string, over: Record<string, unknown> = {}) {
   return {
-    id, tenant_id: 'u-bogdan', state, terminal: false, issue: ISSUE, plan_approval: 'required', auto_merge: false, fix_rounds: 3,
+    id, tenant_id: 'u-owner', state, terminal: false, issue: ISSUE, plan_approval: 'required', auto_merge: false, fix_rounds: 3,
     planner_task_id: 'task_p', plan_digest: null, plan_revision: 1, plan_edited_by: null, workflow_id: null,
     created_by: 'operator@example.com', created_at: '2026-10-02T09:00:00Z', updated_at: '2026-10-02T09:00:00Z',
     approved_by: null, approved_at: null, approved_digest: null, rejected_by: null, rejection_reason: null, error: null,
@@ -104,7 +104,7 @@ const RUNS = {
       run('run_e1sewhere', 'RUNNING', { issue: { ...ISSUE, ref: 'example-org/agent-swarm-infra#9', number: 9 } }),
     ],
     next_page_token: null,
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
   },
 }
 
@@ -138,10 +138,10 @@ describe('runs-submit-13: one tenant before and after the read', () => {
   it('keeps the tenant the page was read for, whatever the preview names', async () => {
     serve({ status: 200, body: preview() }, RUNS)
     const { container } = await mount()
-    expect(factText(container as HTMLElement, 'tenant')).toBe('tenant u-bogdan')
+    expect(factText(container as HTMLElement, 'tenant')).toBe('tenant u-owner')
     await readIssue('example-org/agent-swarm-infra#512')
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
-    expect(factText(container as HTMLElement, 'tenant'), 'the tenant changed with the read').toBe('tenant u-bogdan')
+    expect(factText(container as HTMLElement, 'tenant'), 'the tenant changed with the read').toBe('tenant u-owner')
   })
 })
 
@@ -170,7 +170,7 @@ describe('runs-submit-14: an issue with open runs says so before the button', ()
   })
 
   it('says nothing when the issue has no open run', async () => {
-    serve({ status: 200, body: preview() }, { status: 200, body: { runs: [], next_page_token: null, tenant_id: 'u-bogdan' } })
+    serve({ status: 200, body: preview() }, { status: 200, body: { runs: [], next_page_token: null, tenant_id: 'u-owner' } })
     const { container } = await mount()
     await readIssue('example-org/agent-swarm-infra#512')
     await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)

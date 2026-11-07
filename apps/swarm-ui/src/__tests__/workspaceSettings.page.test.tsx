@@ -1,6 +1,6 @@
 /**
  * CONFIG › WORKSPACE SETTINGS, ONE PAGE WITH PARTS (WS-SETTINGS-PAGE; part of
- * #2157, BGD's decisions of 2026-10-23 and his pick of proposal E,
+ * #2157, the owner's decisions of 2026-10-23 and their pick of proposal E,
  * docs/web-ui/mockups/config-e.html S6a-S6f).
  *
  *   * Settings: the workspace's settings, as Settings › Workspace had them
@@ -9,7 +9,7 @@
  *     page rather than as a page of its own, so it draws no second heading.
  *     Its Connect GitHub, Enable orgs and Choose repositories steps link to
  *     Config › GitHub access.
- *   * Add a new workspace: a platform admin's part only (BGD,
+ *   * Add a new workspace: a platform admin's part only (owner,
  *     2026-10-23T23:57Z), the same rule and the same route as Admin › Tenants ›
  *     New workspace, `POST /v1/admin/workspaces`. A member sees no such part.
  *
@@ -406,7 +406,7 @@ describe('Settings: This workspace names the default role (S6a)', () => {
 })
 
 describe('Settings: This workspace names the role the API acts on (VQ-044)', () => {
-  /** Bogdan's case: a platform admin acting in eng, a group he is in, whose stored role there is the default, member. */
+  /** The owner's case: a platform admin acting in eng, a group they are in, whose stored role there is the default, member. */
   const PLATFORM_ADMIN_PROFILE: Json = {
     ...(profile(true) as Json),
     workspaces: [

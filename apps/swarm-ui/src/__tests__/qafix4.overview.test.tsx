@@ -49,7 +49,7 @@ const MOCK = {
   backend: 'CLOUD_RUN_JOB',
   provider: null,
   units: 1,
-  pools: ['global', 'tenant:u-bogdan', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
+  pools: ['global', 'tenant:u-owner', 'resource:standard', 'runner:mock', 'backend:CLOUD_RUN_JOB'],
   admission: {
     units: 1,
     headroom: 15,
@@ -65,7 +65,7 @@ const MOCK = {
 
 describe('N10: the mock Headroom tile shows every pool that binds it', () => {
   it('holds each binding pool’s label in the line, each one unbreakable', () => {
-    const { container } = render(<ProfileTile name="mock" profile={MOCK} byName={new Map()} tenant="u-bogdan" />)
+    const { container } = render(<ProfileTile name="mock" profile={MOCK} byName={new Map()} tenant="u-owner" />)
     const tile = container.querySelector('.ov-hp')!
     const line = tile.querySelector('small')!
     // MUTATION: drop a pool from the binding list the tile renders.
@@ -93,7 +93,7 @@ describe('N10: the mock Headroom tile shows every pool that binds it', () => {
       ...MOCK,
       admission: { ...(MOCK.admission as object), headroom: null, basis: 'uncapped', binding: [] },
     } as unknown as Profile
-    const { container } = render(<ProfileTile name="open" profile={uncapped} byName={new Map()} tenant="u-bogdan" />)
+    const { container } = render(<ProfileTile name="open" profile={uncapped} byName={new Map()} tenant="u-owner" />)
     const line = container.querySelector('.ov-hp small')!
     expect(text(line)).toBe('no pool caps it')
     // MUTATION: let every tile's line wrap (`white-space: normal` on `.ov-hp small`).
@@ -104,7 +104,7 @@ describe('N10: the mock Headroom tile shows every pool that binds it', () => {
 
   it('keeps the disabled tile’s reason clamped to two lines on a desktop, whole on a phone', () => {
     const off = { ...MOCK, available: false, disabled_reason: 'the merge chain (#295) is disabled until its review step stops looping' } as unknown as Profile
-    const { container } = render(<ProfileTile name="merge-chain" profile={off} byName={new Map()} tenant="u-bogdan" />)
+    const { container } = render(<ProfileTile name="merge-chain" profile={off} byName={new Map()} tenant="u-owner" />)
     const small = container.querySelector('.ov-hp.is-off small')!
     // MUTATION: let the binding rule's selector reach the disabled tile's reason.
     expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('2')
@@ -178,7 +178,7 @@ describe('N11: the failed-agents card links each workflow it names', () => {
     // MUTATION: move the card's accessible name off its main link.
     // Its destination first (5b:wg-dark-D1), then the card's words.
     expect(main[0]!.getAttribute('aria-label')).toBe(`Agents · failed: ${p.headline}. ${p.detail}`)
-    // The rest of the card opens the FIRST WORKFLOW, not the list (BGD's
+    // The rest of the card opens the FIRST WORKFLOW, not the list (the owner's
     // decision of 2026-10-23, #1680 box 6343766999): the first named
     // workflow's link carries the stretched cover, and the list's link is a
     // plain link drawn above it.
