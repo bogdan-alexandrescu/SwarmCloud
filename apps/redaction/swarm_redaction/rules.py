@@ -717,11 +717,13 @@ _VALUE_ENDS = (
 #: as main kept, so a run of up to four closing quotes comes before the end.
 #: A `$(` whose line ends in a continuation (`"$(gcloud auth \`) is kept as
 #: main kept it: nothing is glued after it on that line.
+#: Up to 256 characters inside is `{0,255}` and one optional character, as
+#: common.sh writes it for BSD sed's 255 limit (RE_DUP_MAX): the same set.
 _SHELL_SUBSTITUTION = (
-    r"\"?\$(?:(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}(?: [^()\n]{0,256})?\)"
+    r"\"?\$(?:(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}(?: [^()\n]{0,255}[^()\n]?)?\)"
     r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}"
-    r"|\{\{ [^{}\n]{0,256}\}\})(?:\\{0,15}[\"'`]){0,3}" + _VALUE_ENDS
-    + r"|\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31} [^()\n]{0,256}\\(?=\n|$))"
+    r"|\{\{ [^{}\n]{0,255}[^{}\n]?\}\})(?:\\{0,15}[\"'`]){0,3}" + _VALUE_ENDS
+    + r"|\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31} [^()\n]{0,255}[^()\n]?\\(?=\n|$))"
 )
 #: A LITERAL AFTER A `;)]}` AND A DOUBLE QUOTE OR A COMMA IS IN THE SAME
 #: VALUE (the same review). The masked run stopped at the first `"` or `,`,
@@ -733,7 +735,7 @@ _GLUED_TAIL = r"(?:\\*\"|,)(?=[;)\]}]*[^\s,\"\\;)\]}])"
 _GLUED_RUN = r"[;)\]}]" + _GLUED_TAIL
 #: A closed construct's own closer may start that run (`$(cmd)"<v>`): taking
 #: it here keeps the match as long as the shell's leftmost-longest one.
-_CLOSED_CONSTRUCT = r"\$(?:\([^()\n]{0,256}\)|\{\{[^{}\n]{0,256}\}\})(?:" + _GLUED_TAIL + r")?"
+_CLOSED_CONSTRUCT = r"\$(?:\([^()\n]{0,255}[^()\n]?\)|\{\{[^{}\n]{0,255}[^{}\n]?\}\})(?:" + _GLUED_TAIL + r")?"
 _EXPRESSION_PASSWORD = (
     r"(?-i:={1,2}[ \t]|(?:await|new|not)[ \t]"
     + r"|(?:None|True|False|null|undefined|\{\}|\[\]|\(\)|" + _DOTTED + r"|" + _KEYWORD_WORD + r")"

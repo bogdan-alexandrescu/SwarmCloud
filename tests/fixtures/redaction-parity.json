@@ -1191,6 +1191,38 @@
       "expected": "token\u003a ${{ secrets.GITHUB_TOKEN }}",
       "never": [],
       "count": 0
+    },
+    {
+      "name": "kv-command-substitution-256-glued-bsd-bounds",
+      "text": "token \u003d $(lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit );glued-literal-q7Zp",
+      "expected": "token \u003d ********",
+      "never": [
+        "glued-literal-q7Zp"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-actions-expression-256-glued-bsd-bounds",
+      "text": "token \u003d ${{lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit }};glued-literal-q7Zp",
+      "expected": "token \u003d ********",
+      "never": [
+        "glued-literal-q7Zp"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-command-substitution-256-alone-bsd-bounds",
+      "text": "export TOKEN\u003d\"$(gh lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit)\"",
+      "expected": "export TOKEN\u003d\"$(gh lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit)\"",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "kv-actions-expression-256-alone-bsd-bounds",
+      "text": "token\u003a ${{ lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit}}",
+      "expected": "token\u003a ${{ lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit word lit}}",
+      "never": [],
+      "count": 0
     }
   ]
 }
