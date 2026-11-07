@@ -97,7 +97,7 @@ from .memory import OutOfMemory, out_of_memory_killed, stalled_at_memory_limit
 from .progress import assess
 from .startproblem import START_PROBLEM_STATES
 from .startsteps import POD_STARTUP_STEPS, RUNNING_STEPS_WINDOW_SECONDS, StartRead
-from .store import ControlStore, RepairPlan
+from .store import NEVER_STARTED_STATES, ControlStore, RepairPlan
 
 #: The two lines the reconciler writes when it holds back, spelled ONCE.
 #:
@@ -236,6 +236,17 @@ _NEVER_STARTED_STATES = (TaskState.LEASED, TaskState.DISPATCHED, TaskState.START
 #: Set on a finding `_admit` let through on that evidence alone, so `_repair`
 #: releases it only behind a fence (#560).
 _NEVER_STARTED_DETAIL = "admitted_because_worker_never_started"
+
+#: The silence findings the never-started requeue applies to (part of #2688):
+#: a lease reclaimed for silence, with or without an execution still listed.
+#: Not the ended-at-startup rule, which has its own refund (#67), nor a
+#: missing execution, whose evidence is the backend's and not the lease's.
+_NEVER_STARTED_KINDS = (FindingKind.STALE_LEASE, FindingKind.DEAD_WORKER)
+#: What the event of a never-started requeue or failure says, in words.
+NEVER_STARTED_WHY = (
+    "its worker never started: no attempt reached STARTING before its lease "
+    "went silent, so nothing ran and the attempt is not counted"
+)
 
 #: The event each repaired state is announced with.
 _EVENT_FOR_REPAIR: dict[TaskState, EventType] = {
@@ -2285,6 +2296,21 @@ class Reconciler:
             if disk_eviction and to_state is TaskState.READY:
                 what = finding.detail.get("what_ended") or finding.reason
                 error = f"reconciled: {what}"
+            # A silent lease whose task never reached STARTING ran nothing
+            # (part of #2688): re-queued without counting the attempt, up to a
+            # bound, then FAILED as never started. The store re-reads the
+            # state inside the transaction and applies this only while the
+            # task is still LEASED or DISPATCHED; a worker that started since
+            # is judged as before. The fence, the release and the kill are the
+            # reclaim's, unchanged (invariants 1-3 and 5).
+            never_started = (
+                to_state is TaskState.READY
+                and finding.kind in _NEVER_STARTED_KINDS
+                and self._never_started(finding, task, snapshot)
+            )
+            backoff_after = (
+                task.never_started_requeues + 1 if never_started else task.attempt_count
+            )
             plan = RepairPlan(
                 to_state=to_state,
                 # Only the task this finding is actually about. A snapshot is
@@ -2300,12 +2326,15 @@ class Reconciler:
                 # demand: a READY task holds nothing (invariant 1).
                 next_eligible_at=None
                 if cannot_start or out_of_memory is not None
-                else utcnow() + timedelta(seconds=requeue_backoff_seconds(task.attempt_count)),
+                else utcnow() + timedelta(seconds=requeue_backoff_seconds(backoff_after)),
                 # Why it ends if it ends FAILED: the worker could not start,
                 # or (spent attempts on a requeue) its worker was lost.
                 failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
                 startup_refund_limit=refund_limit,
                 disk_eviction=disk_eviction,
+                never_started_requeue_limit=(
+                    self._config.never_started_requeue_limit if never_started else None
+                ),
             )
         fence_guard: dict[str, Any] = dict(guard)
         if orphan_lease and finding.lease_id:
@@ -2405,6 +2434,17 @@ class Reconciler:
                     out_of_memory=out_of_memory.how,
                     memory_limit_bytes=out_of_memory.limit_bytes,
                 )
+            if done.never_started_requeues is not None:
+                detail.update(
+                    never_started=True,
+                    why=NEVER_STARTED_WHY,
+                    never_started_requeues=done.never_started_requeues,
+                    never_started_requeue_limit=self._config.never_started_requeue_limit,
+                )
+                outcome.actions.append(
+                    f"never started: {done.never_started_requeues}/"
+                    f"{self._config.never_started_requeue_limit} re-queue(s)"
+                )
             if repaired is TaskState.CANCELLED:
                 # The API's flag-only cancel wrote `cancel_requested`
                 # (before 2026-09-24: a `cancelled` with
@@ -2423,6 +2463,20 @@ class Reconciler:
             if repaired in TERMINAL_STATES:
                 self._announce_finished(finding.task_id, task.tenant_id, repaired, outcome)
         return outcome
+
+    @staticmethod
+    def _never_started(finding: Finding, task: TaskView, snapshot: ControlSnapshot) -> bool:
+        """Whether no attempt of `task` reached STARTING, as this pass read it (part of #2688).
+
+        A worker writes STARTING before it runs anything, so a task still
+        LEASED or DISPATCHED has none; an attempt document that records a
+        `started_at` says otherwise whatever the task reads. The store judges
+        the state again inside the repair's transaction.
+        """
+        if task.state not in NEVER_STARTED_STATES:
+            return False
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        return attempt is None or attempt.started_at is None
 
     def _out_of_memory(self, finding: Finding, snapshot: ControlSnapshot) -> OutOfMemory | None:
         """Whether this finding's attempt ran out of memory at its own limit (#1926), or None.

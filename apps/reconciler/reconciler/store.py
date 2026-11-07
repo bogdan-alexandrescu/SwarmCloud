@@ -46,6 +46,7 @@ from .backends import TENANT_NAMESPACE_MISMATCH, _namespace_mismatch_due, saniti
 from .config import ReconcilerConfig
 from .model import (
     DISK_EVICTIONS_KEY,
+    NEVER_STARTED_REQUEUES_KEY,
     STARTUP_REFUNDS_KEY,
     AttemptView,
     ControlSnapshot,
@@ -56,8 +57,10 @@ from .model import (
     WorkflowView,
     cancel_end_cause,
     count_disk_eviction,
+    count_never_started,
     count_startup_end,
     disk_evictions_used,
+    never_started_requeues_used,
     startup_refunds_used,
 )
 from .model import as_datetime as _as_datetime
@@ -166,6 +169,18 @@ class RepairPlan:
     #: counted in `metadata.disk_evictions`, and FAILED past
     #: `DISK_EVICTION_RETRIES` (`count_disk_eviction`).
     disk_eviction: bool = False
+    #: The silent lease's worker never started (part of #2688): re-queued
+    #: without counting the attempt, up to this many times, counted in
+    #: `metadata.never_started_requeues`, then FAILED (`count_never_started`).
+    #: Applied only while the task, as this transaction reads it, is still
+    #: LEASED or DISPATCHED; one a worker moved on is judged as before. None:
+    #: not this rule.
+    never_started_requeue_limit: int | None = None
+
+
+#: The states in which no attempt of a task has reached STARTING: a worker
+#: writes STARTING before it runs anything.
+NEVER_STARTED_STATES = (TaskState.LEASED, TaskState.DISPATCHED)
 
 
 @dataclass(frozen=True)
@@ -186,6 +201,9 @@ class OneRepair:
     #: newer than the one the finding was made on and within the grace
     #: (`heartbeat_resumed`). The worker is alive (#1822).
     heartbeat_resumed: bool = False
+    #: The never-started rule decided the repair: the re-queue count the task
+    #: holds afterwards. None when that rule did not decide it.
+    never_started_requeues: int | None = None
 
 
 def heartbeat_resumed(
@@ -1450,6 +1468,7 @@ class ControlStore:
         startup_refund_limit: int | None,
         fenced_generation: int | None,
         disk_eviction: bool = False,
+        never_started_requeue_limit: int | None = None,
     ) -> tuple[TaskState, dict[str, Any]] | None:
         """`repair_task_state`'s judgement on a document read in the caller's
         transaction: the state it moves to and the payload, or None to refuse.
@@ -1530,6 +1549,32 @@ class ControlStore:
             if evicted.exhausted:
                 target = TaskState.FAILED
             message = f"{error}; {evicted.tail}" if error else evicted.tail
+        elif (
+            target is TaskState.READY
+            and never_started_requeue_limit is not None
+            and current in NEVER_STARTED_STATES
+        ):
+            # The never-started requeue (part of #2688), from this re-read:
+            # a task still LEASED or DISPATCHED here has no attempt that
+            # reached STARTING. Its count is written even when it fails, so
+            # the caller reads which rule decided from the payload.
+            metadata = data.get("metadata")
+            never = count_never_started(
+                int(data.get("attempt_count", 0)),
+                int(data.get("max_attempts", 3)),
+                never_started_requeues_used(metadata),
+                max(0, int(never_started_requeue_limit)),
+            )
+            counting["attempt_count"] = never.attempt_count
+            counting["metadata"] = {
+                **(metadata if isinstance(metadata, dict) else {}),
+                NEVER_STARTED_REQUEUES_KEY: never.requeues,
+            }
+            if never.exhausted:
+                target = TaskState.FAILED
+                message = f"{never.words}; {error}" if error else never.words
+            else:
+                message = f"{error}; {never.words}" if error else never.words
         elif target is TaskState.READY:
             # ONLY a READY target is ever downgraded. A CANCELLED target is
             # the user's decision and survives exhausted attempts: recording
@@ -1748,7 +1793,20 @@ class ControlStore:
                         new_generation if repair.startup_refund_limit is not None else None
                     ),
                     disk_eviction=repair.disk_eviction,
+                    never_started_requeue_limit=repair.never_started_requeue_limit,
                 )
+            never_started: int | None = None
+            if (
+                decided is not None
+                and repair is not None
+                and repair.never_started_requeue_limit is not None
+            ):
+                # Only the never-started branch writes this key on a plan that
+                # carries the limit: the startup and disk-eviction rules are
+                # other findings' plans.
+                written = decided[1].get("metadata")
+                if isinstance(written, dict) and NEVER_STARTED_REQUEUES_KEY in written:
+                    never_started = int(written[NEVER_STARTED_REQUEUES_KEY])
 
             # ---- writes --------------------------------------------------
             # The frozen release reads the lease and its pools before it
@@ -1801,6 +1859,7 @@ class ControlStore:
                 repaired_to=decided[0] if decided is not None else None,
                 release_refused=refused,
                 attempt_ended=attempt_ended,
+                never_started_requeues=never_started,
             )
 
         return self._txn.run(_apply)

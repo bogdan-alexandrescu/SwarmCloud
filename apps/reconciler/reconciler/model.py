@@ -243,6 +243,81 @@ def count_startup_end(
     )
 
 
+#: Where a task records how many times the reconciler re-queued it because its
+#: lease went silent before any attempt reached STARTING (part of #2688,
+#: `count_never_started`). Free-form `Task.metadata`, like the two above, so
+#: the frozen `Task` needs no field for it.
+NEVER_STARTED_REQUEUES_KEY = "never_started_requeues"
+
+
+def never_started_requeues_used(metadata: Any) -> int:
+    """How many never-started re-queues a task's `metadata` records. Absent or unreadable is 0.
+
+    By the same total reader as `startup_refunds_used`: a pass must not raise
+    on whatever a document carries, and a negative count reads as 0, never as
+    extra re-queues.
+    """
+    if not isinstance(metadata, dict):
+        return 0
+    used = _startup_refunds_int(metadata.get(NEVER_STARTED_REQUEUES_KEY))
+    return used if used is not None else 0
+
+
+@dataclass(frozen=True)
+class NeverStarted:
+    """What a silent lease whose worker never started does to its task.
+
+    `attempt_count` and `requeues` are the values the task should hold
+    afterwards; `words` lead (when it fails) or end (when it is re-queued)
+    its `last_error`.
+    """
+
+    attempt_count: int
+    requeues: int
+    exhausted: bool
+    words: str
+
+
+def count_never_started(
+    attempt_count: int, max_attempts: int, requeues_used: int, limit: int
+) -> NeverStarted:
+    """Re-queue a task whose worker never started, up to `limit` times; then fail it.
+
+    The attempt did no work -- nothing reached STARTING, so no agent ran and
+    nothing was spent -- so it is not counted against `max_attempts`: on
+    2026-11-06 a task silent for 485 s in DISPATCHED while the platform sat at
+    its limits ended FAILED with no attempt, no cost and no artifacts. THE
+    BOUND is what still ends a task that never starts however often it is
+    dispatched. The frozen `retries_exhausted` still applies to the count the
+    task is left with, so a count already past its cap fails either way.
+    """
+    if requeues_used < limit:
+        refunded = max(0, attempt_count - 1)
+        if not retries_exhausted(refunded, max_attempts):
+            used = requeues_used + 1
+            return NeverStarted(
+                attempt_count=refunded,
+                requeues=used,
+                exhausted=False,
+                words=f"its worker never started; re-queued, not counted ({used}/{limit})",
+            )
+        return NeverStarted(
+            attempt_count=attempt_count,
+            requeues=requeues_used,
+            exhausted=True,
+            words="never started: its worker never reached STARTING and no attempts are left",
+        )
+    return NeverStarted(
+        attempt_count=attempt_count,
+        requeues=requeues_used,
+        exhausted=True,
+        words=(
+            f"never started: its worker never reached STARTING, after {requeues_used} "
+            "re-queue(s) that never started either"
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class TaskView:
     task_id: str
@@ -276,6 +351,9 @@ class TaskView:
     #: `metadata.disk_evictions`: attempts already lost to the pod passing its
     #: own disk limit (#893, `count_disk_eviction`).
     disk_evictions: int = 0
+    #: `metadata.never_started_requeues`: times a silent lease whose worker
+    #: never started sent the task back to READY (`count_never_started`).
+    never_started_requeues: int = 0
     #: `metadata.start_problem`: why the current attempt's GKE pod was last
     #: seen not starting (`startproblem`, F1-POD), or None. A record for the
     #: console; no rule decides anything from it.
@@ -309,6 +387,7 @@ class TaskView:
             completed_at=as_datetime(doc.get("completed_at")),
             startup_refunds=startup_refunds_used(doc.get("metadata")),
             disk_evictions=disk_evictions_used(doc.get("metadata")),
+            never_started_requeues=never_started_requeues_used(doc.get("metadata")),
             start_problem=start_problem_of(doc.get("metadata")),
         )
 
