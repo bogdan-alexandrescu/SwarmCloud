@@ -18,9 +18,12 @@
  * scrolling with no bar.
  *
  * LIVE (part of #2688). While the session is live the stage also reads
- * its stream, the one connection it shares with the card list (CardList.tsx
- * `readSessionStream`; `GET /v1/voice/sessions/{id}/events`, swarm_api/voice/stream.py
- * `STAGE_TYPES`): a `visual.upsert` takes the stage at once, a `focus` moves
+ * its stream, which is the card list's (CardList.tsx; `GET
+ * /v1/voice/sessions/{id}/events`, swarm_api/voice/stream.py `STAGE_TYPES`):
+ * the card list hands the stage's events up (`onStageEvent`) and the Talk pane
+ * passes them in (`feed`), so the stage opens no stream of its own and a live
+ * session holds one connection (the owner's pick, 7 November 2026). A
+ * `visual.upsert` takes the stage at once, a `focus` moves
  * it to the visual the planner points at and bands the lines it names, and a
  * `note.upsert` re-reads the visual it names, so a note pinned or resolved
  * shows without waiting for the next read. The reads every few seconds stay,
@@ -48,7 +51,7 @@ import {
 } from '../api'
 import { Button, TOOLTIP_DELAY_MS } from '../components'
 import '../styles/talk-stage.css'
-import { readSessionStream, STAGE_EVENTS } from './CardList'
+import { STAGE_EVENTS, type StreamEvent } from './CardList'
 
 /** How often a live session's visuals are read again. */
 export const STAGE_REFRESH_MS = 5_000
@@ -60,6 +63,31 @@ const READBACK_WINDOW_S = 55
 const ANSWERED_MS = 1_600
 
 export { STAGE_EVENTS }
+
+/** The stage's events as the card list hands them up: subscribe, and get the leave back. */
+export type StageFeed = (onEvent: (ev: StreamEvent) => void) => () => void
+
+/** A feed and its delivery: the card list's `onStageEvent` is `deliver`, the stage's `feed` is `feed`. */
+export interface StageFeedHub {
+  feed: StageFeed
+  deliver: (ev: StreamEvent) => void
+}
+
+/** One hand-off from the card list to the stage; the Talk pane holds one for its life. */
+export function createStageFeed(): StageFeedHub {
+  const readers = new Set<(ev: StreamEvent) => void>()
+  return {
+    feed: (onEvent) => {
+      readers.add(onEvent)
+      return () => {
+        readers.delete(onEvent)
+      }
+    },
+    deliver: (ev) => {
+      for (const r of [...readers]) r(ev)
+    },
+  }
+}
 
 /** Where the planner points (`speak`'s `point_at`): the visual, the lines of its anchor, and its caption. */
 interface Focus {
@@ -321,7 +349,18 @@ function HoldCard({ rb, now, busy, problem, onAnswer }: { rb: VoiceReadback; now
  * The stage of `projectId`'s visuals and `sessionId`'s held read-back. Draws
  * nothing until there is a visual or a hold: an empty stage is not drawn.
  */
-export function TalkStage({ projectId, sessionId, live }: { projectId: string | null; sessionId: string | null; live: boolean }) {
+export function TalkStage({
+  projectId,
+  sessionId,
+  live,
+  feed = null,
+}: {
+  projectId: string | null
+  sessionId: string | null
+  live: boolean
+  /** The card list's stage events, handed through the Talk pane; null reads only the routes. */
+  feed?: StageFeed | null
+}) {
   const [visuals, setVisuals] = useState<VoiceVisual[]>([])
   const [picked, setPicked] = useState<string | null>(null)
   const [detail, setDetail] = useState<VoiceVisualDetail | null>(null)
@@ -402,36 +441,34 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
 
   // The session's stream, while it is live: a visual drawn, the planner's focus, a note pinned or resolved.
   useEffect(() => {
-    if (projectId === null || sessionId === null || !live || typeof EventSource === 'undefined') return
+    if (feed === null || projectId === null || sessionId === null || !live) return
     let last = 0
-    // The card list's stream, shared: one connection for the session, however many read it.
-    return readSessionStream(sessionId, 0, {
-      types: STAGE_EVENTS,
-      onEvent: (ev) => {
-        // A resumed stream repeats nothing it already sent; a repeat changes nothing here either.
-        if (!Number.isInteger(ev.seq) || ev.seq <= last) return
-        last = ev.seq
-        if (ev.type === 'visual.upsert') {
-          const v = normVoiceVisual(ev.data.visual)
-          if (v === null) return
-          const held = listed.current.find((x) => x.visual_id === v.visual_id)
-          if (held !== undefined && held.version >= v.version) return
-          setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
-          newest.current = markOf(v)
-          setPicked(null)
-        } else if (ev.type === 'focus') {
-          const f = focusOf(ev.data)
-          if (f === null) return
-          setFocus(f)
-          setPicked(f.visual_id)
-          if (!listed.current.some((x) => x.visual_id === f.visual_id)) pullList.current()
-        } else {
-          const note = (ev.data.note ?? null) as { visual_id?: unknown } | null
-          if (note !== null && typeof note.visual_id === 'string' && note.visual_id !== '') readVisual(note.visual_id)
-        }
-      },
+    // The card list's stream, handed up to the Talk pane and on to here: the stage opens none of its own.
+    return feed((ev) => {
+      if (!(STAGE_EVENTS as readonly string[]).includes(ev.type)) return
+      // A resumed stream repeats nothing it already sent; a repeat changes nothing here either.
+      if (!Number.isInteger(ev.seq) || ev.seq <= last) return
+      last = ev.seq
+      if (ev.type === 'visual.upsert') {
+        const v = normVoiceVisual(ev.data.visual)
+        if (v === null) return
+        const held = listed.current.find((x) => x.visual_id === v.visual_id)
+        if (held !== undefined && held.version >= v.version) return
+        setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
+        newest.current = markOf(v)
+        setPicked(null)
+      } else if (ev.type === 'focus') {
+        const f = focusOf(ev.data)
+        if (f === null) return
+        setFocus(f)
+        setPicked(f.visual_id)
+        if (!listed.current.some((x) => x.visual_id === f.visual_id)) pullList.current()
+      } else {
+        const note = (ev.data.note ?? null) as { visual_id?: unknown } | null
+        if (note !== null && typeof note.visual_id === 'string' && note.visual_id !== '') readVisual(note.visual_id)
+      }
     })
-  }, [projectId, sessionId, live, readVisual])
+  }, [feed, projectId, sessionId, live, readVisual])
 
   useEffect(() => {
     setOpenPin(null)

@@ -7,7 +7,9 @@
  * subtitle band under it, the mic on the bottom edge, and the cards around
  * it. Phase one is the talk itself: the call, the ring, both sides'
  * captions, mute and push-to-talk. The cards beside it are the session's
- * card stream (CardList.tsx), drawn from the catalogue only.
+ * card stream (CardList.tsx), drawn from the catalogue only. That stream is
+ * the session's one: the card list hands the stage's events up and the pane
+ * passes them to the stage (Stage.tsx `createStageFeed`).
  *
  * WHAT THE PAGE HOLDS. The WebRTC peer, the mic and the agent's track, the
  * captions and the ring (§3.2). It holds no key and no client secret: the
@@ -63,7 +65,7 @@ import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, sendTurn, TalkError, TURN_MAX, TurnError, type TalkCall, type TalkMode } from './rtc'
 import { Ring, type ScopeState } from './Scope'
 import { Listener, NO_RECOGNITION, recogniserClass, Speaker } from './speech'
-import { TalkStage, TalkTip } from './Stage'
+import { createStageFeed, TalkStage, TalkTip } from './Stage'
 import '../styles/talk-pane.css'
 
 type Phase = 'idle' | 'connecting' | 'live' | 'ending'
@@ -177,6 +179,8 @@ export function TalkPane() {
   // Why a text session types instead of listening; null while it listens.
   const [typed, setTyped] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  // The card list's stage events, on their way to the stage: one hand-off for the pane's life.
+  const [stageFeed] = useState(createStageFeed)
   const call = useRef<TalkCall | null>(null)
   const listener = useRef<Listener | null>(null)
   const speaker = useRef<Speaker | null>(null)
@@ -418,9 +422,9 @@ export function TalkPane() {
       </div>
 
       {USE_FIXTURES && sessionId === null ? (
-        <TalkStage projectId="vp_fixture" sessionId="vs_fixture" live />
+        <TalkStage projectId="vp_fixture" sessionId="vs_fixture" live feed={stageFeed.feed} />
       ) : (
-        <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} />
+        <TalkStage projectId={projectId} sessionId={live ? sessionId : null} live={live} feed={stageFeed.feed} />
       )}
 
       <div className="vt-presence" aria-label="Voice it">
@@ -491,7 +495,7 @@ export function TalkPane() {
 
       <section className="vt-cards" aria-label="Cards">
         <p className="vt-cards-h">Cards</p>
-        <CardList sessionId={call.current?.sessionId ?? null} />
+        <CardList sessionId={call.current?.sessionId ?? null} onStageEvent={stageFeed.deliver} />
       </section>
 
       {sessionId !== null && <BudgetMeter sessionId={sessionId} live={live} />}

@@ -42,6 +42,8 @@
 }
 .vts-where { min-width: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text); overflow-wrap: anywhere; }
 .vts-range { font: 500 var(--t-meta)/var(--lh-meta) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); }
+/* What the planner says of the lines it points at (a `focus` event's caption): the focus band's colour. */
+.vts-focus-caption { min-width: 0; font: 500 var(--t-meta)/var(--lh-meta) var(--font); color: var(--info); overflow-wrap: anywhere; }
 
 /* A body's lines: numbered, every one wrapped inside the frame. */
 .vts-lines { margin: 0; padding: 6px 0; list-style: none; min-width: 0; }
