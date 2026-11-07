@@ -210,6 +210,37 @@ VOICE_IMAGE = "swarm-voice"
 #: stopped machine and would replace it at the next plan.
 SPEECH_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
 SPEECH_IMAGE = re.compile(r"^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$")
+#: The speech image's NVIDIA driver floor: vLLM 0.31 and later are built on
+#: torch 2.13+ with cuda-toolkit 13.0.3, and CUDA 13 needs a host driver of 580
+#: or later (PR 3538). The driver is carried by the image's FAMILY, as the
+#: suffix `-nvidia-<driver>` (`common-cu129-ubuntu-2204-nvidia-580`); an image's
+#: name is its family plus `-v<date>`, so the name carries it too. Checked on
+#: 2026-11-07 against Google's Deep Learning VM images page
+#: (docs.cloud.google.com/deep-learning-vm/docs/images: "the images come with
+#: the NVIDIA driver version 580. They are denoted by the -ubuntu-2204-nvidia-580
+#: ... suffixes in the image family name"). A family with no suffix (the older
+#: `common-cu124-ubuntu-2204`) states no driver, and counts as below the floor.
+DRIVER_FLOOR = 580
+SPEECH_DRIVER = re.compile(r"-nvidia-([0-9]+)(?:-|$)")
+DRIVER_FLOOR_REFUSAL = (f"Voice it's own speech engine needs a Deep Learning VM image with an NVIDIA driver of "
+                        f"{DRIVER_FLOOR} or later, because vLLM 0.33 is built on CUDA 13.")
+
+
+def image_driver(family_or_name: str) -> int | None:
+    """The NVIDIA driver a Deep Learning VM family or image name states (`-nvidia-<driver>`), or None."""
+    found = SPEECH_DRIVER.search(family_or_name)
+    return int(found.group(1)) if found else None
+
+
+def check_speech_image(image: str) -> str:
+    """`image` (projects/.../global/images/<name>) when its name states a driver
+    of DRIVER_FLOOR or later; else ValueError with DRIVER_FLOOR_REFUSAL."""
+    name = str(image).rsplit("/", 1)[-1]
+    driver = image_driver(name)
+    if driver is None or driver < DRIVER_FLOOR:
+        raise ValueError(f"{DRIVER_FLOOR_REFUSAL} {image} states "
+                         + ("no driver" if driver is None else f"driver {driver}") + ".")
+    return str(image)
 
 
 def desktop_client(state: Any) -> str:
@@ -384,6 +415,8 @@ def voice_speech(state: Any) -> dict[str, Any] | None:
     if not SPEECH_IMAGE.match(str(image)):
         raise ValueError(f"voice_speech image {image!r} is not a Deep Learning VM image by name "
                          "(projects/deeplearning-platform-release/global/images/<name>)")
+    # Never render an image below the driver floor; infra.voice-speech pins one that meets it.
+    check_speech_image(str(image))
     return {"enabled": True, "zone": str(zone), "image": str(image)}
 
 
