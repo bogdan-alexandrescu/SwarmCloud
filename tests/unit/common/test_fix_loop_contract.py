@@ -152,8 +152,19 @@ def test_no_scheduler_sweep_promotes_fix_rounds_running():
         named |= set(re.findall(r"_parked_window\(\s*ParkReason\.([A-Z_]+)", path.read_text(encoding="utf-8")))
     assert {"SCHEDULED_RETRY", "DEPENDENCY_INCOMPLETE", "CI_PENDING"} <= named, named
     assert "FIX_ROUNDS_RUNNING" not in named
-    for path in sorted(SCHEDULER.glob("*.py")):
-        assert "FIX_ROUNDS_RUNNING" not in path.read_text(encoding="utf-8"), path
+    # FL-SCHED parks a READY fix loop on it (docs/design/fix-loop.md §4.7), so
+    # the scheduler names it once: the park `_park_control_plane` writes. No
+    # other use, by member or by value, so no sweep, promotion or expiry reads it.
+    mentions = {
+        path.name: len(re.findall(r"ParkReason\.FIX_ROUNDS_RUNNING|[\"']FIX_ROUNDS_RUNNING[\"']",
+                                  path.read_text(encoding="utf-8")))
+        for path in sorted(SCHEDULER.glob("*.py"))
+    }
+    assert {name: n for name, n in mentions.items() if n} == {"loop.py": 1}, mentions
+    loop = (SCHEDULER / "loop.py").read_text(encoding="utf-8")
+    park = loop[loop.index("def _park_control_plane"):]
+    park = park[:park.index("\n    def ")]
+    assert "ParkReason.FIX_ROUNDS_RUNNING" in park
 
 
 def test_the_contract_parity_script_passes():
