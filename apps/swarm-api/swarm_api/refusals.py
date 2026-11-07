@@ -242,8 +242,8 @@ SWITCHES: dict[str, Switch] = {
     "workflow_finished": Switch(
         code="workflow_finished",
         why="a re-store of a finished workflow's MCP credentials is answered 409 "
-        "workflow_finished instead of 409 conflict with the same message. On once Product "
-        "Oracle's re-store call reads the code",
+        "workflow_finished instead of 409 conflict with the same message. On once a peer "
+        "application's re-store call reads the code",
     ),
     "mcp_credential_restore_forbidden": Switch(
         code="mcp_credential_restore_forbidden",
@@ -509,7 +509,7 @@ SWITCHES: dict[str, Switch] = {
     ),
     # Lane BUDGET-CAP (#2459, `budget`): a step's budget above the workspace
     # default or the platform ceiling, and a workspace default above the
-    # ceiling. SHIP ON (default=True) by BGD's answer of 2026-10-26 (~22:15Z,
+    # ceiling. SHIP ON (default=True) by the owner's answer of 2026-10-26 (~22:15Z,
     # question 5, "enforce at once"), unlike a new refusal's usual
     # report-only start (the 2026-10-08 rule): no caller sends a `budget`
     # before this feature, so the first deploy refuses nobody who worked
@@ -522,7 +522,7 @@ SWITCHES: dict[str, Switch] = {
         code="budget_above_limit",
         why="a task or workflow step whose `budget` is above the workspace's default or the "
         "platform ceiling in the same unit is refused 422, naming both, instead of running "
-        "under the lower limit. Ships on by BGD's decision 2026-10-26 (enforce at once); "
+        "under the lower limit. Ships on by the owner's decision 2026-10-26 (enforce at once); "
         "off, the step runs under the lower limit",
         default=True,
     ),
@@ -530,7 +530,7 @@ SWITCHES: dict[str, Switch] = {
         code="budget_above_ceiling",
         why="a workspace budget default above the platform ceiling in its unit is refused 422 "
         "naming the ceiling, instead of being saved and capped at every resolution. Ships on "
-        "by BGD's decision 2026-10-26 (enforce at once); off, the default is saved and capped",
+        "by the owner's decision 2026-10-26 (enforce at once); off, the default is saved and capped",
         default=True,
     ),
     # A step's `metadata.review_gate` (#2524, `validation.resolve_review_gate`).
@@ -540,7 +540,7 @@ SWITCHES: dict[str, Switch] = {
     "invalid_review_gate": Switch(
         code="invalid_review_gate",
         why="a workflow step's metadata.review_gate with an unknown key or a bad type is "
-        "refused 422. Ships on by BGD's decision 2026-10-27 (#2524: an unknown key or a bad "
+        "refused 422. Ships on by the owner's decision 2026-10-27 (#2524: an unknown key or a bad "
         "type is a 422); off, the block is dropped and the review always runs",
         default=True,
     ),
@@ -550,10 +550,10 @@ SWITCHES: dict[str, Switch] = {
         "3). On once a schedule's failures are visible in the console (S7), so a "
         "pause has a screen that says why",
     ),
-    # The inbox's reject rule (docs/schedules.md §4.5; BGD 2026-10-26, #2417
+    # The inbox's reject rule (docs/schedules.md §4.5; the owner 2026-10-26, #2417
     # A5f): only someone who may APPROVE an item may reject it. Until then
     # any member could. SHIPS ON (default=True), unlike a new refusal's usual
-    # report-only start: BGD's picked decision page (A5f) drew the 403 and
+    # report-only start: the owner's picked decision page (A5f) drew the 403 and
     # hides Reject from a member who may not approve, and every caller can
     # read who may beforehand from the item's `may_decide`. Set
     # REFUSAL_REJECT_APPROVER_REQUIRED=off to let any member reject again.
@@ -561,7 +561,7 @@ SWITCHES: dict[str, Switch] = {
         code="reject_approver_required",
         why="a member whom an item's approve would refuse -- its gate's approvers, its hold, the "
         "last-editor rule or the custom-prompt spec rule -- is refused 403 on :reject of it too. "
-        "Ships on by BGD's decision 2026-10-26 (#2417 A5f); the console reads may_decide.reject "
+        "Ships on by the owner's decision 2026-10-26 (#2417 A5f); the console reads may_decide.reject "
         "and offers Reject only to those who may approve",
         default=True,
     ),
@@ -592,7 +592,7 @@ SWITCHES: dict[str, Switch] = {
         "Ships on: the console shows the step waiting until then",
         default=True,
     ),
-    # QA flows that write (docs/design/qa-environments.md §6; BGD, 2026-11-05,
+    # QA flows that write (docs/design/qa-environments.md §6; the owner, 2026-11-05,
     # "declared writes plus a switch, on by default"). Both refuse a SAVE of a
     # QA target, raised by `qatargets` through `refuse`, and both SHIP ON
     # (default=True) by that decision, with precedent budget_above_limit:
@@ -604,14 +604,14 @@ SWITCHES: dict[str, Switch] = {
     "qa_flow_writes_required": Switch(
         code="qa_flow_writes_required",
         why="a QA target saved with a flow that is mutating and has no non-empty `writes`, the "
-        "one sentence saying what it writes, is refused 422. Ships on by BGD's decision "
+        "one sentence saying what it writes, is refused 422. Ships on by the owner's decision "
         "2026-11-05; off, the target is saved and that flow renders read-only",
         default=True,
     ),
     "qa_writing_flows_off": Switch(
         code="qa_writing_flows_off",
         why="a QA target saved with a mutating flow while its workspace's `writing_flows` QA "
-        "setting is off is refused 422. Ships on by BGD's decision 2026-11-05; off, the "
+        "setting is off is refused 422. Ships on by the owner's decision 2026-11-05; off, the "
         "target is saved and every flow of the workspace still renders read-only",
         default=True,
     ),

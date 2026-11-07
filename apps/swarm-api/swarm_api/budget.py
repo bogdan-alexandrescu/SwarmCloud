@@ -1,6 +1,6 @@
 """The per-agent budget: the workspace default, the platform ceiling, the step's own, and how they resolve (BUDGET-CAP, part of #2459).
 
-BGD's decisions, 2026-10-26 (#2459):
+The owner's decisions, 2026-10-26 (#2459):
 
 * A WORKSPACE ADMIN sets a per-agent budget on the workspace, a token count
   or a dollar amount, the unit chosen per workspace: `budget: {unit, amount}`
@@ -20,7 +20,7 @@ BGD's decisions, 2026-10-26 (#2459):
   own: with a step in dollars and a workspace default in tokens, both are
   limits and each is checked.
 
-BOTH REFUSALS SHIP ON (`refusals.SWITCHES`, default on, by BGD's answer of
+BOTH REFUSALS SHIP ON (`refusals.SWITCHES`, default on, by the owner's answer of
 2026-10-26, "enforce at once"): the 422s are served from the first deploy.
 `REFUSAL_BUDGET_ABOVE_LIMIT=off` and `REFUSAL_BUDGET_ABOVE_CEILING=off` turn
 them off, and off loses no limit, because the min holds either way: a step

@@ -20,7 +20,7 @@ EVERY CALL, IN THIS ORDER, BEFORE ANYTHING IS READ FOR IT:
    `swarm-state-req/v1` by a key registered for the `state` purpose
    (`state/open`), OR `swarm-child-req/v1` by a key registered for the
    `child` purpose (`/child-key`, or `state/open` from a protected heap) --
-   BGD, 2026-10-22 08:54Z: "Also accept the child-purpose proof
+   the owner, 2026-10-22 08:54Z: "Also accept the child-purpose proof
    (swarm-child-req/v1) on the read route", so a tenant not switched to the
    state routes reads too. Either proof covers the path WITH its query and
    is verified against THIS attempt's registration for ITS purpose; a

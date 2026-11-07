@@ -147,7 +147,7 @@ RATE_LIMIT_BACKOFF_SECONDS = 15.0
 RATE_LIMIT_BACKOFF_CAP_SECONDS = 120.0
 
 #: How often a row may write its line again when nothing changed (#2441,
-#: BGD 2026-10-26): a line is written only on a change, so a panel showed
+#: the owner 2026-10-26): a line is written only on a change, so a panel showed
 #: "PARKED · waiting 7s" for 4.5 hours. Every wait line now says when the
 #: wait BEGAN (`parked since 03:05Z (4h 30m)`), and a held call whose task did
 #: not change still hands the row its line again once this long has passed
@@ -926,7 +926,7 @@ def person_wait(client: SwarmClient, task_id: str, task: dict[str, Any], link: s
         # A FIX LOOP PARKED FOR A PERSON (FL-PLUGIN, docs/design/fix-loop.md
         # §4.5): nobody signs in -- `human-ready` refuses a loop with 409 --
         # and no question is open. Any member adds a round (up to the ceiling
-        # of 10, BGD Q4 (a)) or stops it.
+        # of 10, the owner Q4 (a)) or stops it.
         began = wait_began(task)
         workflow_id = _text(task.get("workflow_id"))
         return {
@@ -992,7 +992,7 @@ def person_wait_result(task_id: str, wait: dict[str, Any]) -> dict[str, Any]:
     no null, `state: PARKED`, and `waiting_on_person` -- the questions, the
     console link and, for a hand-off, the human-ready route.
 
-    WHY (#2441, BGD 2026-10-26). Seven merge rows followed an owner-question
+    WHY (#2441, the owner 2026-10-26). Seven merge rows followed an owner-question
     hold for 3 to 7 hours, 27 to 35 thirty-minute calls and 0.32-0.46M tokens
     each, because the follow answered `stop: false` for it. Nothing a row does
     moves a person; the task holds no capacity (invariant 1), and `/sc check`

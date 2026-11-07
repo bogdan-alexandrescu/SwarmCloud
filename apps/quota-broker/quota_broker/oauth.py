@@ -90,7 +90,7 @@ class Organisation:
     """Which SUBSCRIPTION a credential runs on: the provider's organisation (#2222).
 
     THE IDENTITY OF A POOL ACCOUNT IS THE ORGANISATION, NEVER THE LOGIN. On
-    2026-10-24 one claude.ai login belonged to two organisations, "Saga"
+    2026-10-24 one claude.ai login belonged to two organisations, "Example"
     (Team) and "Personal" (Max), and a sign-in authorises whichever one is
     selected. It authorised Personal twice, so the pool held one subscription
     under two labels and counted its quota twice. One login with two

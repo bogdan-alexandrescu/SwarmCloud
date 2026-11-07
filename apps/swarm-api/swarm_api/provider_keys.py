@@ -108,7 +108,7 @@ def resolve_provider_key(
     `submitter_tenant_id` is the submitter's CONFIRMED personal tenant --
     `own_personal_tenant(...).tenant_id`, or None when they have none, or are
     a service identity. Confirmed, never derived here: the frozen slug keeps
-    only the local part, so `alice@partner.com` derives `u-alice` as
+    only the local part, so `alice@example.org` derives `u-alice` as
     `alice@example.com` does, and only the tenant document's principal says whose
     it is. A resolver that derived it from the email would hand one person's
     key to their namesake. `present` is the secret ids that hold a key now.

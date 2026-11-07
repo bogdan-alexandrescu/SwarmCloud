@@ -149,7 +149,7 @@ PRESETS: Mapping[str, Preset] = {
         # (LiveBrowser.tsx, Theater.tsx, TheaterTimeline.tsx) change with it.
         Preset("phone-390", 390, 844, 3.0, True, True, _SAFARI_IOS, "iPhone",
                "iOS", "17.0", "arm", "iPhone"),
-        # PHONE-380 (BGD, 2026-10-26, part of #2136): AI Studio's phone
+        # PHONE-380 (the owner, 2026-10-26, part of #2136): a peer application's phone
         # mock-up frame, 380 x 800, so a browser step or a QA target renders
         # at the size the design was drawn at. IMPLEMENT-RENDER (part of #2442)
         # renders a UI lane's branch at its frames' size with it and compares

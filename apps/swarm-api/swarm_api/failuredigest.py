@@ -167,7 +167,7 @@ QUESTION_UNANSWERED_ERROR = "owner question unanswered"
 # cascade (`_question_unanswered`). A REFUSED declaration
 # (`awaitinput.AWAIT_INPUT_SPEC_REFUSED_ERROR`) is a defect, and reviewed.
 
-#: §2 `person_push` (#2505, BGD 2026-10-27): a merge step a person on its
+#: §2 `person_push` (#2505, the owner 2026-10-27): a merge step a person on its
 #: pull request pushed over. The worker's refusal code
 #: (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, held equal by
 #: tests/unit/worker/test_merge_person_push.py) in `result_summary.merge.

@@ -9,7 +9,7 @@ that deriving the id from the verified token was the whole boundary -- "there is
 no request a caller can construct that reads another tenant's task". That was
 wrong, and the counterexample is two VERIFIED identities holding the SAME id:
 the frozen `tenant_id_for_group` slugs the local part only, so `eng@example.com`
-and `eng@partner.com` both derive `eng`, and a registered group `u-eng@example.com`
+and `eng@example.org` both derive `eng`, and a registered group `u-eng@example.com`
 derives what the personal tenant of `eng@example.com` derives. Submitting was
 already refused by `ensure_tenant`; listing, reading and CANCELLING were not.
 `tenant_scope` applies that same principal check before any store call here.
@@ -1294,7 +1294,7 @@ def read_artifact_raw(
     still the only tenant this body sees.
 
     `redaction` is `applied` (the default; the answer above, unchanged) or
-    `none`: the OWNER-ONLY RAW PATCH (BGD's decision on #1857, 2026-10-27).
+    `none`: the OWNER-ONLY RAW PATCH (the owner's decision on #1857, 2026-10-27).
     A served `.patch` is redacted like any text, so its credential-shaped
     test fixtures come back masked and it no longer applies; the masking
     rules stay as they are and the person who SUBMITTED the task may take the
@@ -1562,7 +1562,7 @@ def answer_question(
     `?reply=short` answers only `{status: "recorded", task_id,
     question_index, recorded_at, by}`, no question text: a whole task's
     questions are about 4,000 tokens, and closing ~400 finished tasks'
-    questions one by one cost ~1.6 million (AI Studio, 6 November 2026,
+    questions one by one cost ~1.6 million (a peer application, 6 November 2026,
     part of #2688). The answer is checked and stored exactly as with the
     default `reply=full`, which is unchanged.
     """

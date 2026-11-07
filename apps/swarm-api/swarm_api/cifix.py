@@ -155,7 +155,7 @@ never the failing log or an agent's output -- onto each pushing step of a
 `ci_fix` or `merge_fix_round` workflow, replacing any the caller sent, and
 appends `laneterritory.round_brief` to its prompt. The worker's publish then
 labels a push that leaves it, as it does a lane's. A warning, never a
-refusal: BGD's decision for lanes (#1468, 2026-10-19). A lane that declares
+refusal: the owner's decision for lanes (#1468, 2026-10-19). A lane that declares
 none gives a round as before. A conflict round is left out: it merges the
 base into the branch, so its push changes every path the base changed since,
 and the lane's territory would flag main's own work.

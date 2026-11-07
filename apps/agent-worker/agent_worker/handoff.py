@@ -126,7 +126,7 @@ from .livegate.tunnel import (
     resolver_class,
 )
 
-#: CAPTCHA-HANDOFF (BGD, 2026-10-23; docs/design/live-browser.md §4.1, part
+#: CAPTCHA-HANDOFF (the owner, 2026-10-23; docs/design/live-browser.md §4.1, part
 #: of #2058): a hand-off the gate raised itself, because it saw a challenge on
 #: the agent's page (livegate `LiveGate._on_challenge`), is `origin: "gate"`
 #: at swarm-api. An agent's own request names no origin: swarm-api's default
@@ -305,7 +305,7 @@ GATE_WAIT_STEP_SECONDS = 1.0
 #: on the lifecycle's loop, after the control poll, the child requests and the
 #: tickets, and never during the periodic checkpoint, which uploads the work
 #: tree (a capture's hundreds of PNGs) with a 60 s timeout per upload. MEASURED
-#: 2026-11-03 (ai-studio-prod, five legs, GKE Autopilot): every phone-390
+#: 2026-11-03 (peer-app-prod, five legs, GKE Autopilot): every phone-390
 #: route of every leg failed with "the worker did not answer the device
 #: switch" or "... theme change" -- the switches came after the desktop
 #: sweep had filled the tree, and the 30 s the command waits

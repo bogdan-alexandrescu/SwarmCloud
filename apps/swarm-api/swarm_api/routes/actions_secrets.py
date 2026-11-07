@@ -11,7 +11,7 @@
                                                                             environment?}
     POST   /v1/repositories/{repo_id}/actions/links                        {name, environment?}
 
-Design: docs/design/secrets-scopes.md §3 and §6.2, with BGD's answers in its
+Design: docs/design/secrets-scopes.md §3 and §6.2, with the owner's answers in its
 §11; the service is `swarm_api.actions_secrets`, whose docstring says what
 each answer changed. In short:
 

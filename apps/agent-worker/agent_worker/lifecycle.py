@@ -503,7 +503,7 @@ SWAP_EXHAUSTED = "exhausted"
 SWAP_DRAIN = "drain"
 SWAP_UNUSABLE = "unusable"
 
-#: Why a dead credential moves an attempt to another account (#1855; BGD
+#: Why a dead credential moves an attempt to another account (#1855; the owner
 #: 2026-10-28: "it should automatically move in the future on this error").
 #: The `why` of the `account_moved` event; to the broker every one of them is a
 #: `SWAP_UNUSABLE` swap, which marks the dead account for this tenant.
@@ -572,7 +572,7 @@ CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
 #: The artifact a moved HEAD's line is kept in (`Worker._keep_moved_head`):
 #: nothing of it is published, and `git fetch moved-head.bundle` brings it
-#: back (reported by Product Oracle's session, 5 November 2026).
+#: back (reported by a peer application's session, 5 November 2026).
 MOVED_HEAD_BUNDLE = "moved-head.bundle"
 
 #: The checkpoint label, and the cause on the attempt's document, of an attempt
@@ -744,7 +744,7 @@ RUNNER_DEADLINE_ENV = "SWARM_RUNNER_DEADLINE_EPOCH"
 TIMEOUT_ASKED_FIELD = "timeout_seconds_asked"
 TIMEOUT_ASKED_ENV = "SWARM_TIMEOUT_ASKED_SECONDS"
 
-#: CONTINUING AT THE TIME LIMIT (BGD, 2026-11-02). In the 14 days to that date
+#: CONTINUING AT THE TIME LIMIT (the owner, 2026-11-02). In the 14 days to that date
 #: 46 tasks were killed at their 1 or 2 hour limit, 75 hours of work, and each
 #: failure ended its workflow. An attempt that reaches its step's limit and
 #: whose final checkpoint uploaded now parks SCHEDULED_RETRY at once (the
@@ -3894,7 +3894,7 @@ class Worker:
             self._security_review = {}
             if isinstance(payload.get("prompt"), str):
                 payload["prompt"] += security_review_mod.guidance(ws.artifacts)
-        # The pull request this step works on (Product Oracle, 2026-11-06):
+        # The pull request this step works on (a peer application, 2026-11-06):
         # one line of the brief names `work/pull_request.md`, which STEP 6b'
         # writes after the credentials, before the agent starts.
         if self._requested_pull_request() is not None and isinstance(payload.get("prompt"), str):
@@ -3969,7 +3969,7 @@ class Worker:
         if unattached is not None:
             self.mcp.close()
             # A WORKFLOW STEP'S per-run credential that lapsed while it waited
-            # parks for its caller to re-store it (BGD 2026-10-26, §4.10);
+            # parks for its caller to re-store it (the owner 2026-10-26, §4.10);
             # anything else withheld still fails the attempt.
             lapsed = attached.lapsed_credentials() if task.get("workflow_id") else []
             if lapsed:
@@ -4798,7 +4798,7 @@ class Worker:
         assert ws is not None
 
         if result.timed_out:
-            # Before the final checkpoint, so it carries the note (BGD, 2026-11-02).
+            # Before the final checkpoint, so it carries the note (the owner, 2026-11-02).
             self._write_continuation_note()
         final = self._checkpoint("final")
         # Whether this stop at the limit continues: decided before the
@@ -6031,7 +6031,7 @@ class Worker:
         service that does not come up is logged with its scrubbed error and
         the agent runs without it, as it did before; so is a worker with no
         SWARM_CACHE_ROOT, whose services are refused before `initdb`
-        (`testservices.NO_CACHE_VOLUME`, BGD 2026-10-24). The lease is
+        (`testservices.NO_CACHE_VOLUME`, the owner 2026-10-24). The lease is
         heartbeated meanwhile: the ready wait alone may take 30 s.
         Invariant 7: the server shares this container's fixed resources;
         nothing is requested or added to the pod.
@@ -6694,7 +6694,7 @@ class Worker:
     def _head_moved(self, repo: Path, publish_repo: Path, floor: str | None) -> str | None:
         """Where HEAD went when it left this step's work, or None when it did not (#2094).
 
-        MEASURED 2026-10-23 (product-oracle PRs #456 and #465): two review
+        MEASURED 2026-10-23 (peer-app PRs #456 and #465): two review
         steps checked out the branch they reviewed and committed nothing; the
         harvest counted that branch's commits since the clone base as theirs
         and published them. HEAD has moved when, at the end:
@@ -6708,7 +6708,7 @@ class Worker:
           the start was -- a branch, or detached itself (a by-sha
           `repository_ref`, a resumed index run) -- unless that commit is
           `floor` itself or the tip of this step's own branch -- the head's
-          short sha is returned (BGD, 2026-10-23 ~18:39Z, recorded on
+          short sha is returned (the owner, 2026-10-23 ~18:39Z, recorded on
           task_bf208a4d46f04764869d q1: "Yes, close it." A review cloned by
           sha that ran `git checkout --detach origin/<reviewed>` changed no
           branch, and its line descends from the start); or
@@ -6720,7 +6720,7 @@ class Worker:
           (detached counts as a branch of its own),
           the head's short sha otherwise.
 
-        RELAXED FOR A NEW LOCAL BRANCH (BGD, 2026-10-23 16:47Z, recorded on
+        RELAXED FOR A NEW LOCAL BRANCH (the owner, 2026-10-23 16:47Z, recorded on
         task_306e3aa8dee141a5a390 q0). All five implement agents sampled that
         day ran `git checkout -b <name>` from their start and committed there,
         and PR 2107's rule -- any other branch is a move -- refused them all. A
@@ -6734,7 +6734,7 @@ class Worker:
         `refs/remotes/origin/*` tip but this step's own branch's -- a by-sha
         step's own commits on top of its start.
 
-        THE KNOWN LIMIT BGD ACCEPTED. A line fetched without a tracking ref
+        THE KNOWN LIMIT THE OWNER ACCEPTED. A line fetched without a tracking ref
         reads as the agent's own: a reviewed pull request fetched BY SHA (or
         into FETCH_HEAD) and checked out, detached or onto a fresh local
         branch, a branch made with `checkout -b mine origin/<reviewed>`, a
@@ -6774,7 +6774,7 @@ class Worker:
         left_branch = start is not None and end != start
         if end == DETACHED_HEAD:
             # Whatever the start was: a clone by sha starts detached, so
-            # detaching onto a fetched tip changes no branch (BGD, 2026-10-23).
+            # detaching onto a fetched tip changes no branch (the owner, 2026-10-23).
             head = read_head_as_data(repo)
             own = self._publish_branch_name()
             fetched = (
@@ -6841,7 +6841,7 @@ class Worker:
     def _keep_moved_head(self, publish_repo: Path, floor: str | None) -> str | None:
         """Keep a moved HEAD's line as `MOVED_HEAD_BUNDLE` in the artifacts.
 
-        REPORTED by Product Oracle's session, 5 November 2026:
+        REPORTED by a peer application's session, 5 November 2026:
         task_884a993427ce44feb7a6's agent merged a train branch into its own,
         checked out another branch, and the harvest rightly published nothing
         -- and kept nothing, so a person rebuilt the merge by hand. The bundle
@@ -8059,7 +8059,7 @@ class Worker:
         )
         runs = read.verdict in gate.verdict_in
         passed_on = ws.work / source.path
-        # The no-op precheck, check (b) (#2524, BGD 2026-10-28): a NOT_YET
+        # The no-op precheck, check (b) (#2524, the owner 2026-10-28): a NOT_YET
         # that would run the agent does not when this head already holds a
         # commit a review gave MERGE. The MERGE is then the verdict passed on.
         noop = self._noop_precheck_b(staged, source, read) if (
@@ -10245,7 +10245,7 @@ class Worker:
         )
 
     def _requested_pull_request(self) -> int | None:
-        """The pull request this step works on, or None (Product Oracle, 2026-11-06).
+        """The pull request this step works on, or None (a peer application, 2026-11-06).
 
         In order: the caller's `input.pull_request`; the signed `publish_to_pr`
         it publishes onto; the pull request its signed `builds_on` step -- or,
@@ -11204,7 +11204,7 @@ class Worker:
             return self._decline_pool("profile_takes_no_subscription", profile.provider)
         if profile.provider in TENANT_KEY_FIRST and self._tenant_supplies_key(profile.provider):
             # A codex step leases a ChatGPT plan only when the tenant supplies
-            # no OPENAI_API_KEY of its own (BGD, 2026-11-01, part of #2688): a
+            # no OPENAI_API_KEY of its own (the owner, 2026-11-01, part of #2688): a
             # tenant paying for metered access keeps running on it.
             self.log.info(
                 "the tenant supplies its own API key; using it rather than the "
@@ -11240,7 +11240,7 @@ class Worker:
                     NoAccount(reason=BROKER_REFUSED), provider or "unknown"
                 ) from None
             except BrokerUnavailable as exc:
-                # ASK AGAIN, THEN PARK -- NEVER THE TENANT SECRET (#2560, BGD
+                # ASK AGAIN, THEN PARK -- NEVER THE TENANT SECRET (#2560, the owner
                 # 2026-10-28). This used to degrade to the tenant's own secret
                 # with nothing but a log line, and in task_d212c88b that secret
                 # held a key the provider refused: three tasks FAILED on a pool
@@ -12413,7 +12413,7 @@ class Worker:
             return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
-    # -- continuing at the time limit (BGD, 2026-11-02) ---------------------
+    # -- continuing at the time limit (the owner, 2026-11-02) ---------------------
     def _time_limit_continuations(self) -> int:
         """The continuations at the time limit this task has had: the park's
         count on the task this attempt verified when it started."""
@@ -12519,7 +12519,7 @@ class Worker:
         self, final: CheckpointRecord | None, summary: dict[str, Any]
     ) -> Outcome:
         """Park SCHEDULED_RETRY, now: the stop at the time limit continues in a
-        new attempt (BGD, 2026-11-02). The park is the SIGTERM park's
+        new attempt (the owner, 2026-11-02). The park is the SIGTERM park's
         (`_handle_interruption`): one fenced transaction that parks, releases
         the lease and the pools and ends the attempt, so nothing holds
         capacity while the task waits (invariant 1) and nothing sleeps
@@ -13350,7 +13350,7 @@ class Worker:
 
     def _park_mcp_credential(self, lapsed: list[tuple[str, str]]) -> Outcome:
         """A workflow step's per-run MCP credential lapsed between admission
-        and this attach (registered-mcp-servers.md §4.10, BGD 2026-10-26).
+        and this attach (registered-mcp-servers.md §4.10, the owner 2026-10-26).
         Its caller is online and re-stores it through
         `PUT /v1/workflows/{id}/mcp-credentials`, so this is a wait, not a
         failure: checkpoint, PARKED(CREDENTIAL_MISSING), release, exit, with
@@ -14969,7 +14969,7 @@ class Worker:
             # ONLY WHAT THIS STEP MADE ON TOP OF ITS START IS ITS WORK (#2094).
             # A review that checked out the branch it reviewed used to have
             # that branch's commits counted here and published as its own
-            # pull request (product-oracle #456, #465). A HEAD that left the
+            # pull request (peer-app #456, #465). A HEAD that left the
             # step's branch, or no longer descends from where it started, is
             # described as moved and nothing on it is harvested or published.
             moved = self._head_moved(repo, publish_repo, fetched_base)
@@ -20246,9 +20246,9 @@ def final_tree_leak(
 
 
 #: What a refusal and the repair turn tell the agent to do (SCAN-FP, #2030;
-#: BGD's decision, 2026-10-23). NEVER to split, join or encode the literal:
+#: the owner's decision, 2026-10-23). NEVER to split, join or encode the literal:
 #: that defeats the scan rather than removing the value, and some
-#: repositories forbid it, which left Product Oracle's agent no way through.
+#: repositories forbid it, which left a peer application's agent no way through.
 CREDENTIAL_ADVICE = "remove the value, or read it at runtime from configuration"
 
 
@@ -21583,7 +21583,7 @@ def _usage_summary(output: Any) -> dict[str, Any]:
     return summary
 
 
-#: SUBAGENT-SPEND (part of #2524, item 8; BGD, 2026-10-27). The usage summary's
+#: SUBAGENT-SPEND (part of #2524, item 8; the owner, 2026-10-27). The usage summary's
 #: per-model rows -- `[{model, input_tokens, output_tokens,
 #: cache_read_input_tokens, cache_creation_input_tokens, cost_usd}]`, sorted by
 #: model -- and the share of `total_cost_usd` the parent agent's own token

@@ -2,7 +2,7 @@
 
 docs/design/live-browser.md §3.1: the live gate captures the framebuffer and
 encodes it as Chromium drew it -- nothing is painted over a frame (§5.3;
-owner decision, BGD 2026-10-25). This module is the first step.
+owner decision, 2026-10-25). This module is the first step.
 
 HOW: XVFB'S OWN FRAMEBUFFER FILE, NOT AN X CLIENT. Xvfb started with
 `-fbdir <dir>` keeps its screen in `<dir>/Xvfb_screen0`, a memory-mapped file

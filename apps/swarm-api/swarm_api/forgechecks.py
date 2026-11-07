@@ -21,7 +21,7 @@ are restated here and held to the same rules:
     by its pinned App, when it has one -- a check of the same name from
     another App does not satisfy it;
   * a required check is decided by the LATEST run of EACH event that ran
-    it (BGD, 2026-10-22; CHECK-RULE, part of #1999 and #1778): a re-run
+    it (the owner, 2026-10-22; CHECK-RULE, part of #1999 and #1778): a re-run
     replaces the earlier runs of its own event, and every event's latest
     run must be green, so a red push run is never outvoted by a green
     pull_request run (CI-EARLY, #1694). The event is what
@@ -164,7 +164,7 @@ def latest_per_event(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any
 
 def cancelled_by_its_workflow(run: Mapping[str, Any], deciding: Sequence[Mapping[str, Any]]) -> bool:
     """Whether a check run that finished red is read as `cancelled` because
-    its Actions run was (#2582, BGD 2026-10-28).
+    its Actions run was (#2582, the owner 2026-10-28).
 
     `ci-gate` and security.yml's folded name-keepers run under `if:
     always()`, so in a workflow run concurrency cancelled they conclude
@@ -311,7 +311,7 @@ def check_run_finished(run: Mapping[str, Any]) -> bool:
     """Whether a check run has finished: `status` is `completed`, OR it
     carries a conclusion together with a `completed_at`.
 
-    BGD, 2026-10-23 (CHECK-STUCK, part of #2031): a run that carries a
+    The owner, 2026-10-23 (CHECK-STUCK, part of #2031): a run that carries a
     conclusion and a completed_at is judged by its conclusion, whatever
     `status` says -- GitHub left PR 2006's `secret scan` at `in_progress`
     with `conclusion: success` and a `completed_at`. A run with no
@@ -326,7 +326,7 @@ def check_run_finished(run: Mapping[str, Any]) -> bool:
 def cancelled_run(run: Mapping[str, Any]) -> bool:
     """A run that finished `cancelled`: pending, never red.
 
-    #1778's second expectation (BGD released bundle H09, 2026-10-27): "a
+    #1778's second expectation (the owner released bundle H09, 2026-10-27): "a
     check whose LATEST run is cancelled is still not green and waits, rather
     than failing the merge". A red latest run of another event still wins.
     The worker's `merge.cancelled_run` is the same rule, held equal by
@@ -504,7 +504,7 @@ def evaluate(
     else:
         if not runs and not statuses:
             return CiReading(state=NONE)
-        # One rule for every check (BGD, 2026-10-22, CHECK-RULE-2, part of
+        # One rule for every check (the owner, 2026-10-22, CHECK-RULE-2, part of
         # #1999): each check -- its name and App -- is judged by the latest
         # run of each event, as the worker's `judge_other_checks` judges it,
         # and only those deciding runs are counted and excerpted: a

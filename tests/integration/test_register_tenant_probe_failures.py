@@ -71,7 +71,7 @@ case "${args}" in
   *"auth print-access-token"*)        echo "fake-access-token" ;;
   *"firestore databases describe"*)   echo "projects/x/databases/swarm" ;;
   *"identity groups describe"*)       echo "groups/1" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *"iam roles describe"*swarmTenantWorkerFirestore*)
     [[ -z "${FAKE_FIRESTORE_ROLE_ERR:-}" ]] || fail "${FAKE_FIRESTORE_ROLE_ERR}"
     echo "roles/custom" ;;
