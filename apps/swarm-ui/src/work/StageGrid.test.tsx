@@ -93,6 +93,8 @@ function fixture(): { workflow: Workflow; taskById: Map<string, Task> } {
 }
 
 const chip = (stepId: string) => document.querySelector<HTMLButtonElement>(`[data-step="${stepId}"]`)!
+/** A chip's asks-you mark: beside the chip, in the chip's cell. */
+const askOf = (stepId: string) => chip(stepId).parentElement!.querySelector<HTMLElement>('.sg-ask')
 const row = (label: string) => document.querySelector<HTMLElement>(`.sg-row[data-stage="${label}"]`)!
 
 /** A ResizeObserver that reports the given width for whatever it observes. */
@@ -205,7 +207,7 @@ describe('StageGrid', () => {
   it('marks the steps whose agent asks the owner with a question mark', () => {
     const { workflow, taskById } = fixture()
     render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
-    const asking = [...document.querySelectorAll('.sg-chip')].filter((c) => c.querySelector('.sg-ask')).map((c) => c.getAttribute('data-step'))
+    const asking = [...document.querySelectorAll('.sg-chip')].filter((c) => c.parentElement!.querySelector('.sg-ask')).map((c) => c.getAttribute('data-step'))
     expect(asking).toEqual(['build-search', 'build-calendar'])
     expect(chip('build-search').title).toContain('asks you a question')
   })
@@ -215,7 +217,7 @@ describe('StageGrid', () => {
     const t = taskById.get(taskId('review', 'login'))!
     taskById.set(t.id, { ...t, result_summary: { questions: 2 }, owner_answers: [] } as unknown as Task)
     render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
-    expect(chip('review-login').querySelector('.sg-ask')).not.toBeNull()
+    expect(askOf('review-login')).not.toBeNull()
     expect(chip('review-login').title).toContain('asks you 2 questions')
   })
 
@@ -230,6 +232,35 @@ describe('StageGrid', () => {
     cleanup()
     render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
     expect(document.querySelectorAll('.sg-chip.is-dimmed')).toHaveLength(0)
+  })
+
+  it("draws the asks-you mark as its own control beside the chip, named for the step and its questions", () => {
+    // MUTATION: draw the mark inside the chip's button, or as a picture when the page hears it.
+    const { workflow, taskById } = fixture()
+    const onSelect = vi.fn()
+    const onAsk = vi.fn()
+    render(<StageGrid workflow={workflow} taskById={taskById} onSelect={onSelect} onAsk={onAsk} now={NOW} />)
+    const mark = screen.getByRole('button', { name: 'Answer build-search: 1 question' })
+    expect(mark).toBe(askOf('build-search'))
+    expect(mark.title).toBe('Answer build-search: 1 question')
+    expect(mark.tabIndex).toBe(0)
+    expect(mark.parentElement!.closest('button')).toBeNull()
+    expect(chip('build-search').querySelector('button, .sg-ask')).toBeNull()
+    fireEvent.click(mark)
+    expect(onAsk).toHaveBeenCalledWith('build-search')
+    expect(onSelect).not.toHaveBeenCalled()
+    // The chip's own click still picks the step.
+    fireEvent.click(chip('build-search'))
+    expect(onSelect).toHaveBeenCalledWith('build-search')
+    expect(onAsk).toHaveBeenCalledTimes(1)
+  })
+
+  it('draws the mark as a picture when the page does not hear it', () => {
+    const { workflow, taskById } = fixture()
+    render(<StageGrid workflow={workflow} taskById={taskById} onSelect={() => undefined} now={NOW} />)
+    expect(askOf('build-search')!.tagName).toBe('SPAN')
+    expect(askOf('build-search')!.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.queryByRole('button', { name: /^Answer / })).toBeNull()
   })
 
   it('reports a clicked chip and a clicked stage count to the page', () => {
@@ -289,10 +320,10 @@ describe('StageGrid', () => {
     expect(g.getAttribute('data-density')).toBe('marks')
     expect(g.className).toContain('is-marks')
     expect(chip('build-login').querySelector('.sg-chip-mark')).not.toBeNull()
-    // What a chip drops stays in its tooltip, and the question mark stays on the chip.
+    // What a chip drops stays in its tooltip, and the question mark stays on the chip's corner.
     expect(chip('build-login').title).toContain('pull request #2400')
     expect(chip('build-login').title).toContain('ran 20m')
-    expect(chip('build-search').querySelector('.sg-ask')).not.toBeNull()
+    expect(askOf('build-search')).not.toBeNull()
   })
 
   it('draws no header row over a lane its stages name, and names a chip only where its column does not', () => {
