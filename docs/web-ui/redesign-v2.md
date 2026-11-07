@@ -55,7 +55,7 @@ move.
   not a dot strip on the attempt timeline.
 - **The diffstat** (§4 item 7). Per-commit `+N −M` is printed as table figures
   (`AgentDetail.tsx:2413`), not as diverging bars.
-- **`input_from` edges** (§4 item 1). The DAG draws edges from `depends_on`
+- **`input_from` edges** (§4 items 1 and 9). The DAG draws edges from `depends_on`
   only (`dag.ts:1290`).
 - **Scrubbers** (§2.3). Not built.
 - **Events paging** (§6 S1). `GET /v1/tasks/{id}/events` takes `limit` and
@@ -113,7 +113,7 @@ its order.
   on the attempt at `apps/swarm-ui/src/AgentDetail.tsx` (`<CheckpointStrip attempt={a}`).
 - **The diffstat** (§4 item 7): shipped as diverging bars
   (`apps/swarm-ui/src/charts/Diffstat.tsx` (`export function DiffstatChart({`)), mounted at `apps/swarm-ui/src/AgentDetail.tsx` (`<DiffstatChart commits={commits}`).
-- **`input_from` edges** (§4 item 1): partly shipped. Edges are still laid out
+- **`input_from` edges** (§4 items 1 and 9): partly shipped. Edges are still laid out
   from dependencies, because every data edge is also a `depends_on`
   (`apps/swarm-ui/src/dag.ts` (`(validation.py, check 5), so every data edge is an`)). Each drawn edge is now marked data or ordering
   (`apps/swarm-ui/src/dag.ts` (`export function edgeProvenance(`)).
@@ -822,8 +822,8 @@ drops it, and the fix is five lines.
 | 15 | **Duration across retries** | `/v1/tasks/{id}/attempts` → per-attempt `started_at`, `completed_at` | Lollipop, one per attempt, with the summed total stated separately | That `task.started_at` is the agent's start — it is overwritten per attempt (`apps/agent-worker/agent_worker/control.py::ControlPlane.advance_to_running`). Only the sum of per-attempt intervals is agent work. |
 | 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the agent and to the workflow | That `null` is `$0.00`. That an attempt with no figure was free — the worker records spend on every exit, but only what the runner reported, so a CLI run killed on SIGTERM or a hard-killed worker reports nothing and the chart must say *"not recorded for N of M attempts"*, N being `coverage.not_recorded` (corrected for an earlier issue: this cell first said spend was recorded on clean exit only). That a `mock` or `generic` runner spent nothing — it reports nothing. |
 
-Two rows of that table depend on the event page not truncating, and one
- is actively dangerous without seam S1: a two-hour run emits roughly 6 lifecycle
+Two rows of that table (rows 4 and 6) depend on the event page not truncating, and one
+(row 3) is actively dangerous without seam S1: a two-hour run emits roughly 6 lifecycle
 events + ~48 heartbeats (30s × `HEARTBEAT_EVENT_EVERY = 5` = one per 150s) + ~120
 checkpoint events (`checkpoint_interval_seconds = 120`) ≈ 175, and past 200 the
 route drops the **tail** — the terminal event, the last checkpoints, the last
@@ -1059,7 +1059,7 @@ Two options, and they are not exclusive:
 - add `order=desc`, so a caller who wants the *end* of a long run can get it in one
   page.
 
-Without this, §4 rows an earlier issue, earlier issues are built on a page that silently drops the tail,
+Without this, §4 rows 3, 4 and 6 are built on a page that silently drops the tail,
 and a long agent renders as one that never finished. `types.ts:894-900` already
 documents the consequence, which means the UI has been working around it rather than
 it being fixed.

@@ -67,7 +67,7 @@ INPUT 6 · OUTPUT 214 · CACHE READ 73.2k · CACHE WRITE 9.1k`.
 `09-history-timeline.png` shows `TOKENS & SPEND 1 of 7 — 14% of rows carry
 usage; the rest predate the capture, so any total would understate.`
 
-**Consequence for the build.** Visualisation an earlier issue (cost and tokens) is no longer
+**Consequence for the build.** Visualisation 16 (cost and tokens) is no longer
 blocked. It moves into the first buildable batch. The coverage caveats in
 `redesign-v2.md` §Panel 7 all still hold and are restated in §B6.4 — in
 particular that a run whose runner reported no usage records nothing, and those

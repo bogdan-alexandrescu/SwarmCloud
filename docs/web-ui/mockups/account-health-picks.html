@@ -356,7 +356,7 @@ addEventListener('resize',function(){document.querySelectorAll('.pv').forEach(fi
 var tray=document.createElement('div');tray.className='tray';tray.setAttribute('role','region');tray.setAttribute('aria-label','Your picks');
 tray.innerHTML='<div class="in"><b class="t">Your picks</b><span class="chips"></span><button type="button" class="btn" data-copy="1">Copy my picks</button><button type="button" class="btn ghost" data-clear="1">Clear</button><span class="done" aria-live="polite"></span><textarea aria-hidden="true" tabindex="-1"></textarea></div>';
 document.body.appendChild(tray);
-function text(){var lines=['ACCOUNT-HEALTH-MOCKS picks (part of #2302)'],all=FR.map(function(f){return picks[f]}),same=all[0]&&all.every(function(x){return x===all[0]});
+function text(){var lines=['ACCOUNT-HEALTH-MOCKS picks'],all=FR.map(function(f){return picks[f]}),same=all[0]&&all.every(function(x){return x===all[0]});
   if(same)lines.push('Whole design: '+NAMES[all[0]]);
   FR.forEach(function(f){var sec=document.getElementById(f);lines.push(f.toUpperCase()+' '+sec.getAttribute('data-name')+': '+(picks[f]?picks[f].toUpperCase():'not picked'))});
   return lines.join('\n')}
@@ -370,8 +370,8 @@ document.addEventListener('click',function(e){var t=e.target.closest&&e.target.c
   if(t.hasAttribute('data-all')){var p=t.getAttribute('data-all');FR.forEach(function(f){picks[f]=p});render();return}
   if(t.hasAttribute('data-clear')){picks={};render();tray.querySelector('.done').textContent='Cleared.';return}
   if(t.hasAttribute('data-copy')){var s=text(),done=tray.querySelector('.done');
-    var fallback=function(){var ta=tray.querySelector('textarea');ta.value=s;ta.select();var ok=false;try{ok=document.execCommand('copy')}catch(_){}if(ok){done.textContent='Copied. Paste it into the PR or #2302.'}else{ta.classList.add('show');ta.removeAttribute('aria-hidden');ta.setAttribute('aria-label','Your picks as text');done.textContent='This browser would not copy. The text is in the box: select it and copy it.'}};
-    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(s).then(function(){done.textContent='Copied. Paste it into the PR or #2302.'},fallback);else fallback();}});
+    var fallback=function(){var ta=tray.querySelector('textarea');ta.value=s;ta.select();var ok=false;try{ok=document.execCommand('copy')}catch(_){}if(ok){done.textContent='Copied. Paste it into the PR or the lane's issue.'}else{ta.classList.add('show');ta.removeAttribute('aria-hidden');ta.setAttribute('aria-label','Your picks as text');done.textContent='This browser would not copy. The text is in the box: select it and copy it.'}};
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(s).then(function(){done.textContent='Copied. Paste it into the PR or the lane's issue.'},fallback);else fallback();}});
 render();
 var m='system';try{m=localStorage.getItem(K)||'system'}catch(_){}apply(m);
 })();

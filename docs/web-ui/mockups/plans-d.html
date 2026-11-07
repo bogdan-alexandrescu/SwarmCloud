@@ -8,7 +8,7 @@
 /*
  * Proposal D, "Plan conversation" (PLANS-MOCKS-D).
  * Tokens, type scale, lead strip, tables, cards, chips, buttons and the side sheet are
- * automate-a.html's (Config E #2157, Subscription accounts A #2222, Automate #2417), copied
+ * automate-a.html's (Config E, Subscription accounts A, Automate A), copied
  * whole; the plan document, its margin, revisions, diff and trace below are this proposal's.
  * PICKS.md rules: 12px type floor, no all-caps, a theme toggle, an unknown figure is a dash.
  */
@@ -466,7 +466,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <p class="lede">One of four competing proposals (A to D) for how the console shows what automatic runs propose and how a plan is judged before it is approved. Each draws the same frames (P1 to P7). This one treats a plan as a <b>reviewed document with a thread</b>: the planner's reasons sit beside each step, you comment on a step or ask for changes, the planner answers with a new revision (its digest, and a diff from the last), and Approve applies to the revision on the screen.</p>
 
 <div class="idea">
-  <div><h4>Idea</h4><p>Today a plan can be accepted, edited by hand or rejected. Here it can also be <b>shaped</b>: a comment on a step, a requirement or an overlap goes to the planner, which answers in the thread with a new revision. Every revision keeps its digest and its diff from the one before, so "what am I approving" is always one revision, drawn whole, with how it got there beside it. Everything automatic runs propose lands in Automate › Approvals as threads, the ones waiting on you first; a plan opens as a decision page (the #2417 A5 shape), the document on the left and its margin (reasons and thread) on the right. After approval the same thread carries on: steps to tasks, the pull request, CI rounds, the review, the merge.</p></div>
+  <div><h4>Idea</h4><p>Today a plan can be accepted, edited by hand or rejected. Here it can also be <b>shaped</b>: a comment on a step, a requirement or an overlap goes to the planner, which answers in the thread with a new revision. Every revision keeps its digest and its diff from the one before, so "what am I approving" is always one revision, drawn whole, with how it got there beside it. Everything automatic runs propose lands in Automate › Approvals as threads, the ones waiting on you first; a plan opens as a decision page (the Automate A5 shape), the document on the left and its margin (reasons and thread) on the right. After approval the same thread carries on: steps to tasks, the pull request, CI rounds, the review, the merge.</p></div>
   <div><h4>How it differs from the console today</h4><ul>
     <li>Today the plan is in Work › Runs (Runs.tsx) and the inbox projects it as kind <code>plan</code>. Here the plan's page lives at <code>/automate/approvals/&lt;id&gt;</code> and Runs links to it.</li>
     <li>Today there is one plan and a revision number (<code>plan_revision</code>, <code>plan_edited_by</code>). Here every revision is kept and readable, with its diff.</li>

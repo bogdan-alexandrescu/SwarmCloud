@@ -288,11 +288,11 @@ entries:
     apply: "human step, ideally BEFORE first project API enablement: enforce this policy so the default compute service account (<project-number>-compute@developer.gserviceaccount.com) never receives roles/editor automatically"
     verify: "gcloud projects get-iam-policy $P --flatten='bindings[].members' --filter='bindings.role:roles/editor' shows no <number>-compute@developer.gserviceaccount.com member"
     explain: "this repo's own deployer's serviceAccountUser grant on that default compute account (terraform/bootstrap/wif.tf) inherits every permission of whatever role the default account holds; today that is roles/editor, which carries logging.logEntries.list -- documented as an open, unclosed privilege-escalation route"
-    guards: "docs/ci.md:2187 names it route an earlier issue 'closed by a condition? no'; terraform/bootstrap/workspace_deployer.tf:658-664 calls it explicit 'RESIDUAL RISK, NOT TOUCHED HERE ... it is Google's legacy default grant, the other team's workloads may rely on it, and it is removed together with that team, never from this file'"
+    guards: "docs/ci.md:2187 names it route 1 'closed by a condition? no'; terraform/bootstrap/workspace_deployer.tf:658-664 calls it explicit 'RESIDUAL RISK, NOT TOUCHED HERE ... it is Google's legacy default grant, the other team's workloads may rely on it, and it is removed together with that team, never from this file'"
     secret_entry: null
     depends_on: ["switch.project-create-right"]
     evidence: ["docs/ci.md:2187", "docs/ci.md:2198", "terraform/bootstrap/workspace_deployer.tf:658-666"]
-    notes: "SURPRISE for a fresh install: the code's own comment says this risk is 'never' closed in THIS file because example-project is shared and the default SA might be the other team's dependency. On a fresh, single-tenant project that excuse does not apply -- nothing in terraform/bootstrap or terraform/infra removes roles/editor from the fresh project's default compute SA, so either this org policy must be enforced at project creation or an operator must manually strip the grant; no script here does either"
+    notes: "SURPRISE for a fresh install: the code's own comment says this risk is 'never' closed in THIS file because example-shared-project is shared and the default SA might be the other team's dependency. On a fresh, single-tenant project that excuse does not apply -- nothing in terraform/bootstrap or terraform/infra removes roles/editor from the fresh project's default compute SA, so either this org policy must be enforced at project creation or an operator must manually strip the grant; no script here does either"
   - id: "org-policy.cmek"
     kind: "org-policy"
     scope: "core"
@@ -457,7 +457,7 @@ entries:
     secret_entry: null
     depends_on: []
     evidence: ["scripts/prerequisites.sh:150-171"]
-    notes: "not verified: this repository documents example-project as an already-existing shared project and nowhere narrates who created it or what right that took; stated here from the standard GCP precondition, not from a line this repo asserts"
+    notes: "not verified: this repository documents example-shared-project as an already-existing shared project and nowhere narrates who created it or what right that took; stated here from the standard GCP precondition, not from a line this repo asserts"
 
   # ---- stage 1 ----
   - id: "bucket.state"
@@ -963,7 +963,7 @@ entries:
     check: "grep -n '^project_id' terraform/environments/dev/dev.tfvars terraform/environments/prod/prod.tfvars"
     apply: "terraform/environments/dev/dev.tfvars:8 and terraform/environments/prod/prod.tfvars:13 BOTH hardcode project_id = \"example-project\""
     verify: "the two tfvars files currently resolve to the SAME GCP project -- 'dev' and 'prod' are two Terraform workspaces/roots pointed at one shared project, not two projects"
-    explain: "CLAUDE.md names example-project as a SHARED project holding another team's live GKE cluster, VPC, buckets and service accounts, on the SHARED_DENY_LIST. A from-scratch install into a NEW project MUST change project_id in both tfvars files before any apply, or every resource in this inventory is planned against the existing shared, deny-listed project instead of the new one."
+    explain: "CLAUDE.md names example-shared-project as a SHARED project holding another team's live GKE cluster, VPC, buckets and service accounts, on the SHARED_DENY_LIST. A from-scratch install into a NEW project MUST change project_id in both tfvars files before any apply, or every resource in this inventory is planned against the existing shared, deny-listed project instead of the new one."
     guards: "SHARED_DENY_LIST (scripts/lib/common.sh), CLAUDE.md rule 2"
     secret_entry: null
     depends_on: []
@@ -1742,7 +1742,7 @@ entries:
     apply: "every one of the 15 Dockerfiles under images/ and apps/*/ (scripts/build-images.sh's 16 ALL_TARGETS minus the shared agent-runtime-base-nocodex recipe)"
     verify: "a build in a brand-new project either succeeds because that project's Cloud Build SA has artifactregistry.reader on example-project's swarm-mirror-ghcr/swarm-mirror-dockerhub repos, or fails pulling the syntax frontend / FROM base with a permission error"
     explain: "EVERY Dockerfile's first line is `# syntax=us-central1-docker.pkg.dev/example-project/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:...`, and every Dockerfile that declares them defaults ARG MIRROR_DOCKER_HUB / ARG MIRROR_GHCR to `us-central1-docker.pkg.dev/example-project/swarm-mirror-{dockerhub,ghcr}` -- all pointing at the SHARED staging project's Artifact Registry remote-repository cache (terraform/infra/build_mirror.tf), not at the new project's own mirror"
-    guards: "CLAUDE.md rule 2 (example-project is a shared project); OPS-MIRROR"
+    guards: "CLAUDE.md rule 2 (example-shared-project is a shared project); OPS-MIRROR"
     secret_entry: "null"
     depends_on: []
     evidence: ["images/swarm-api/Dockerfile:1", "images/swarm-api/Dockerfile:44-45", "scripts/lib/build-mirror.sh:11-30", "tests/unit/scripts/test_build_mirror.py:150-172"]

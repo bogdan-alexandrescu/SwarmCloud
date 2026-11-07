@@ -359,7 +359,7 @@ code.f,.app code,.phone code{font-family:var(--f-mono);font-size:12px;background
 <tr><td>Review verdict <code>MERGE</code> / <code>NOT_YET</code></td><td class="src"><code>agent_worker/verdict.py:44</code>, <code>swarm_api/validation.py:654</code>, <code>docs/workflows.md:466</code></td><td><span class="pass">on main</span></td><td>The verdict pill.</td></tr>
 <tr><td>Findings</td><td class="src"><code>verdict.py:54</code> keeps up to 50 findings of up to 1000 characters each, as <b>text only</b> (a string, or <code>summary</code>/<code>title</code>/<code>message</code>)</td><td><span class="part">no severity</span></td><td>"Findings by severity" needs a <code>severity</code> per finding, which nothing writes today. The frames group by it and put ungraded findings under "Not graded".</td></tr>
 <tr><td><code>result_summary.verdict_gate</code> (<code>agent_ran: false</code>)</td><td class="src"><code>docs/workflows.md:477</code>; no match in <code>apps/swarm-ui/src</code></td><td><span class="part">not shown</span></td><td>"The fix step ran no agent because the verdict was MERGE".</td></tr>
-<tr><td><code>post-verdict</code> and <code>merge</code> steps, <code>single-pr</code></td><td class="src"><code>docs/merge-step.md</code> (accepted 2026-09-29; build gated on #342); chain §3 :613</td><td><span class="part">design</span></td><td>The six-step workflow page.</td></tr>
+<tr><td><code>post-verdict</code> and <code>merge</code> steps, <code>single-pr</code></td><td class="src"><code>docs/merge-step.md</code> (accepted 2026-09-29; build gated on the signed-specs work); chain §3 :613</td><td><span class="part">design</span></td><td>The six-step workflow page.</td></tr>
 <tr><td><code>MERGE_REFUSED</code> / <code>MERGE_FAILED</code> and the refusal codes</td><td class="src"><code>merge-step.md:1318-1373</code> (rows 6-42, <code>result_summary.merge.refusal</code>); <code>VERDICT_REFUSED</code>/<code>VERDICT_FAILED</code> §6a :1405</td><td><span class="part">design</span></td><td>The merge step's refusal card. Row 34 gives <code>merged_by_this_task</code>.</td></tr>
 <tr><td><code>merge_human_gate</code>, <code>awaiting_human</code></td><td class="src">no match on main, on the 80 most recent remote branches, or in issues</td><td><span class="fail">not found</span></td><td>Drawn from the owner's B13r decision as given in the brief (Terraform, default on). The shape is assumed.</td></tr>
 <tr><td colspan="4"><b>Publish outcomes</b></td></tr>
@@ -488,7 +488,7 @@ code.f,.app code,.phone code{font-family:var(--f-mono);font-size:12px;background
 <li><code>published_nothing</code>, <code>base_pin</code>, <code>merge_human_gate</code> and <code>awaiting_human</code> are not on main, on the recent branches, or in issues. Their shapes here are my reading of the brief.</li>
 <li>The verdict schema has no severity. Grouping by severity needs a field nothing writes today.</li>
 <li>The human gate is drawn as "the step checks everything and does not merge, and a person adds <code>ready</code>". If B13r means the step adds the label itself, A3b's two frames merge into one.</li>
-<li>The merge step and post-verdict are an accepted design, not built. Their build waits on #342.</li>
+<li>The merge step and post-verdict are an accepted design, not built. Their build waits on the signed-specs work.</li>
 </ul>
 </div>
 

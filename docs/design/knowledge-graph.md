@@ -550,7 +550,7 @@ joins repo-index.md §4.1's `REPO INDEX` section inside the same
 | **where the issue lands** | symbol search (C's BM25) over the issue's title, body and named paths and identifiers → top 20 symbols with file, module and community | The planner today clones and greps. Estimate: one fewer exploration round of 5-15 tool calls per plan, based on the turn counts behind CLAUDE.md's "8.9 billion cached tokens" lane measurement. **Measure:** planner turns and tokens before and after. |
 | **impact of each candidate** | `impact(symbol, upstream, depth 2)`: callers, modules and tests; the fan-in count is the risk | Steps name their `tests` from the map instead of guessing. **Measure:** fraction of a plan's `tests` that exist and cover the changed symbols. |
 | **overlap with open PRs** | for every open PR in the snapshot `planner_prompt` already reads (`apps/swarm-api/swarm_api/issueruns.py::_open_work_section`): changed files → changed symbols → upstream depth 1; intersect with the candidates | The overlap list is evidence, not the planner's guess. Today `PlanOverlap` is filled from titles and file lists. |
-| **step splitting by territory** | the communities that contain the candidates; propose one step per community, and put steps that share a file or a seam in one dependency line | This is the earlier issue's conflict cause. §4.9's validator makes it a guarantee for *declared* files. The graph extends it to *undeclared* ones: the call sites a signature change forces. |
+| **step splitting by territory** | the communities that contain the candidates; propose one step per community, and put steps that share a file or a seam in one dependency line | This is the main conflict cause. §4.9's validator makes it a guarantee for *declared* files. The graph extends it to *undeclared* ones: the call sites a signature change forces. |
 | **seams** | file fan-in plus co-change rank; replaces lane-queue.md §4.1's "seeded from the index's `hot_spots`" | `hot_spots` counts edits, not dependants. `main.py`, `App.tsx` and `schemas.py` are seams because everything *registers* there, which fan-in sees and edit counts may not. |
 
 ### 4.2 Implementers (claude-code steps)
@@ -668,7 +668,7 @@ The rule: two steps that are **not** on one dependency line and whose
 §4.1 defines it, make the plan **invalid**.
 
 This is pure, offline and graph-free. It is the cheapest change in this
-document and goes straight at the earlier issue's conflict cause. The graph later widens
+document and goes straight at the main conflict cause. The graph later widens
 `files` with forced call sites and seams. Whether to refuse such a plan or
 auto-chain the steps was owner question Q4. **Owner decision 2026-10-08: refuse
 the plan, with the reason (§9 Q4).** A plan whose parallel steps list the same
