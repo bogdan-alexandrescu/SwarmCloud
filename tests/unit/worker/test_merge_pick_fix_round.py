@@ -482,6 +482,118 @@ def test_a_not_yet_verdict_whose_pick_round_built_the_pick_refuses_verdict_not_m
 
 
 # --------------------------------------------------------------------------
+# 3c. a NOT_YET verdict with no needs_owner and an answered unbuilt pick gets
+#     the round too (#3149)
+# --------------------------------------------------------------------------
+
+#: wf_f0044e94: the implement step built 'Follow-up lane', the owner answered
+#: 'Widen this lane', and the re-review put that in `findings`, not `needs_owner`.
+FOLLOW_UP = "Follow-up lane"
+WIDEN = "Widen this lane"
+
+
+def _lane_question() -> dict[str, Any]:
+    return _question(question="Where does the wider pool view go?",
+                     options=[{"label": FOLLOW_UP, "description": "a later lane"},
+                              {"label": WIDEN, "description": "this lane"},
+                              {"label": "Do not wire yet", "description": "nothing"}],
+                     recommended=FOLLOW_UP, built=FOLLOW_UP, blocking=False)
+
+
+def _owner_less_not_yet(world: MergeWorld, finding: str) -> None:
+    world.verdict = {"verdict": "NOT_YET", "findings": [finding], "needs_owner": []}
+
+
+def test_a_not_yet_verdict_with_no_needs_owner_and_an_unbuilt_pick_parks_for_a_pick_fix_round(
+        tmp_path):
+    world = MergeWorld(tmp_path)
+    _asked(world, _lane_question(), {"choice": WIDEN, "text": None}, needs_owner=False)
+    _owner_less_not_yet(world, f"OWNER DECISION NOT BUILT: the owner chose '{WIDEN}', "
+                               f"the branch built '{FOLLOW_UP}'")
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: refuse an owner-less NOT_YET before the pick check (the #3149
+    # bug) and wf_f0044e94 ends FAILED verdict_not_merge, the pick never built.
+    _parked(outcome, PENDING)
+    assert world.merge_calls() == []
+    (line,) = outcome.ci_wait["pending"]
+    # MUTATION: brief the round without the pick and it builds nothing.
+    assert line.startswith(f"pick {IMPLEMENT} question 0 ")
+    assert repr(WIDEN) in line and repr(FOLLOW_UP) in line
+    assert world.token_reads == 0
+
+
+def test_a_not_yet_verdict_with_no_needs_owner_whose_round_built_the_pick_refuses_verdict_not_merge(
+        tmp_path):
+    world = MergeWorld(tmp_path)
+    _unbuilt(world, needs_owner=False)
+    _owner_less_not_yet(world, "OWNER DECISION NOT BUILT: the owner chose 'Needs a look', "
+                               "the branch built 'Needs action'")
+    _round(world)
+    _round_task(world, report=_built_report())
+    world.pr["head"]["sha"] = BUILT
+    world.serve_checks(BUILT)
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: merge once the round built the pick and a NOT_YET head merges
+    # with no review of it.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "verdict_not_merge", outcome.summary
+    assert "re-review must judge the head" in outcome.summary["refusal"]["message"]
+    assert world.merge_calls() == []
+
+
+@pytest.mark.parametrize("asked", [True, False], ids=["pick-built", "no-questions"])
+def test_a_not_yet_verdict_with_no_needs_owner_and_every_pick_built_refuses_at_once(
+        tmp_path, asked):
+    world = MergeWorld(tmp_path)
+    if asked:
+        _asked(world, _lane_question(), {"choice": FOLLOW_UP, "text": None}, needs_owner=False)
+    _owner_less_not_yet(world, "the tile reads the wrong pool")
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: merge a NOT_YET whose picks are built and its finding ships.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"] == {
+        "code": "verdict_not_merge",
+        # MUTATION: reword it and the failure signature the triage groups on moves.
+        "message": "the review's verdict is NOT_YET, not MERGE (1 finding(s))"}, outcome.summary
+    # MUTATION: park it for the owner and a fixable finding waits on no one.
+    assert outcome.ci_wait is None and outcome.owner_wait is None
+    assert world.merge_calls() == []
+
+
+def test_a_not_yet_verdict_with_no_needs_owner_does_not_wait_on_an_unanswered_question(tmp_path):
+    world = MergeWorld(tmp_path)
+    _owner_less_not_yet(world, "the tile reads the wrong pool")
+    # The merge's pick-fix round 1 asked a blocking question nobody answered.
+    _round(world)
+    _round_task(world, pushed=PINNED)
+    key = f"tenants/{TENANT}/tasks/{ROUND_TASK}/attempts/att_p/artifacts/questions.json"
+    data = json.dumps([_question(built="Needs action", blocking=True)]).encode("utf-8")
+    world.store.upload_bytes(key, data)
+    world.docs[ROUND_TASK]["step_id"] = "fix"
+    world.docs[ROUND_TASK]["result_summary"].update(questions=1, artifacts=[
+        {"name": "questions.json", "uri": world.store.uri(key), "bytes": len(data)}])
+    world.docs[ROUND_TASK]["metadata"]["owner_answers"] = []
+
+    outcome = merge.run_merge(world.context())
+
+    # MUTATION: hold an owner-less NOT_YET for a round's open question and a
+    # finding a fix step can act on now waits on the owner instead.
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == "verdict_not_merge", outcome.summary
+    assert outcome.owner_wait is None and outcome.ci_wait is None
+    assert world.merge_calls() == []
+
+
+# --------------------------------------------------------------------------
 # 4. a pick park whose pull request ended outside the workflow
 # --------------------------------------------------------------------------
 
