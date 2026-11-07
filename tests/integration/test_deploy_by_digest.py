@@ -38,6 +38,7 @@ project, and a call the fake does not model fails loudly rather than passing.
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import os
 import shutil
@@ -45,6 +46,9 @@ import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_P)
 IMAGE_REFS = REPO / "scripts" / "lib" / "image-refs.sh"
 DEPLOY = REPO / "scripts" / "lib" / "deploy.sh"
 
@@ -422,9 +426,13 @@ def sandbox(tmp_path: Path, state: dict, registry: dict) -> tuple[Path, dict[str
     (root / "terraform" / "infra" / ".terraform").mkdir(parents=True)
     # image-refs.sh --applied reads the gated image list terraform reads.
     shutil.copy(REPO / "terraform" / "infra" / "images.json", root / "terraform" / "infra" / "images.json")
-    tfvars = root / "terraform" / "environments" / "dev"
-    tfvars.mkdir(parents=True)
-    (tfvars / "dev.tfvars").write_text("")
+    # tf_var_file reads the deployment's own <env>.tfvars from its configuration
+    # (config/<env>/ beside the never-touch list), never a tracked file; the
+    # placeholder deployment serves that configuration for PROJECT.
+    config = Path(_P.deployment().child_env(PROJECT)["SWARM_DEPLOY_CONFIG_DIR"])
+    tfvars = config / "dev" / "dev.tfvars"
+    tfvars.write_text("")
+    tfvars.chmod(0o600)
 
     env = environment(tmp_path, registry)
     terraform = tmp_path / "bin" / "terraform"

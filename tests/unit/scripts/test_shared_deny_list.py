@@ -135,10 +135,22 @@ def test_an_unreadable_object_refuses(tmp_path: Path) -> None:
     _write(tmp_path, _example())
     target = tmp_path / "config" / "dev" / "deny-list.json"
     target.chmod(0o000)
+    extra: dict[str, str] = {}
+    if os.access(target, os.R_OK):
+        # A user who reads mode-000 files (root in a CI container) is refused the
+        # read by a cp that stands in for the permission bit, so the case runs
+        # everywhere instead of being skipped.
+        fake = tmp_path / "unreadable-bin"
+        fake.mkdir()
+        (fake / "cp").write_text(
+            "#!/usr/bin/env bash\n"
+            f'for a in "$@"; do [[ "$a" == "{target}" ]] && {{ echo "cp: $a: Permission denied" >&2; exit 1; }}; done\n'
+            'exec /bin/cp "$@"\n'
+        )
+        (fake / "cp").chmod(0o755)
+        extra["PATH"] = f"{fake}{os.pathsep}{_env(tmp_path)['PATH']}"
     try:
-        if os.access(target, os.R_OK):
-            pytest.skip("running as a user who reads mode-000 files")
-        _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached"))
+        _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached", **extra))
     finally:
         target.chmod(0o600)
 
