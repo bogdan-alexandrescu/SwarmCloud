@@ -14,13 +14,11 @@ stray top-level tar renamed to it, with one line saying so; several are
 refused, named, and the missing-output check then fails the attempt naming
 `<step>.tar`. A step that wrote its `<step>.tar` is left untouched.
 
-THE LAYOUT IS `swarm_api.qaspec.FLOW_LAYOUT`'s, read the same way as
-`qaspec.check_flow_output` reads it (this image does not ship swarm-api, so
-the three names below are restated from it and the unit tests hold the two
-equal): a flow step's id is `flows-<k>` (a batch) or `flow-<id>` (a mutating
-flow), its tar `<step>.tar`, and a flow's own tar `flow-<id>.tar`, beside its
-`flow-<id>.json`. A tar named by one of the step's flows' jsons is that
-flow's own and is never read as the batch's.
+ONE COPY OF THE RULE: the names and the rule are `swarm_rollup.flowlayout`'s,
+which `swarm_api.qaspec.check_flow_output` reads too (this image does not ship
+swarm-api; both build swarm_rollup). This module only lists the step's
+top-level files, takes a flow's own tar from its `flow-<id>.json`, and does the
+rename the rule picks.
 
 Only a step whose `<step>.tar` is an expected output is touched: the owed
 name is what says the step is a flow step, so no other step's files move.
@@ -29,27 +27,23 @@ name is what says the step is a flow step, so no other step's files move.
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-#: `qaspec.FLOW_LAYOUT["batch_tar"]`, `["flow_tar"]` and `["json"]`.
-BATCH_TAR = "{step}.tar"
-FLOW_TAR = "flow-{id}.tar"
-FLOW_JSON = "flow-{id}.json"
-#: A flow step's id: a batch `flows-<k>` or a mutating flow's `flow-<id>`.
-STEP_ID = re.compile(r"^flows?-[A-Za-z0-9][A-Za-z0-9._-]*$")
-_FLOW_JSON = re.compile(r"^flow-(.+)\.json$")
+from swarm_rollup import flowlayout
+
 #: `result_summary`'s key for what the normalisation found.
 SUMMARY_KEY = "flow_output"
+#: The cause of the RUNNING event that records it on the step's events.
+EVENT_CAUSE = "flow_output"
 
 
 def owed_tar(step_id: Any, expected_outputs: Sequence[str]) -> str | None:
     """The `<step>.tar` this step owes, or None when it is no flow step."""
-    if not isinstance(step_id, str) or not STEP_ID.match(step_id):
+    if not isinstance(step_id, str) or not flowlayout.STEP_ID.match(step_id):
         return None
-    expected = BATCH_TAR.format(step=step_id)
+    expected = flowlayout.BATCH_TAR.format(step=step_id)
     return expected if expected in expected_outputs else None
 
 
@@ -67,24 +61,19 @@ def normalise(artifacts: Path, step_id: Any, expected_outputs: Sequence[str]) ->
         names = sorted(entry.name for entry in os.scandir(artifacts) if entry.is_file(follow_symlinks=False))
     except OSError:
         return None
-    if expected in names:
+    own = {flowlayout.FLOW_TAR.format(id=fid) for fid in flowlayout.flow_ids_from_files(names)}
+    pick = flowlayout.pick_flow_tar(step_id, names, own)
+    if pick.line is None:
         return None
-    own = {FLOW_TAR.format(id=m.group(1)) for n in names if (m := _FLOW_JSON.match(n))}
-    strays = [n for n in names if n.endswith(".tar") and n != expected and n not in own]
     record: dict[str, Any] = {"step": step_id, "expected": expected, "ok": False, "renamed": None, "lines": []}
-    if len(strays) == 1:
+    if pick.renamed is not None:
+        stray = pick.renamed[0]
         try:
-            os.replace(artifacts / strays[0], artifacts / expected)
+            os.replace(artifacts / stray, artifacts / expected)
         except OSError as exc:
-            record["lines"].append(f"{step_id} packaged its flow output as {strays[0]}, not {expected}, "
+            record["lines"].append(f"{step_id} packaged its flow output as {stray}, not {expected}, "
                                    f"and it could not be renamed ({type(exc).__name__})")
             return record
-        record.update(ok=True, renamed=[strays[0], expected])
-        record["lines"].append(f"{step_id} packaged its flow output as {strays[0]}, not {expected}: "
-                               f"renamed to {expected}")
-    elif strays:
-        record["lines"].append(f"{step_id} wrote {', '.join(strays)} in place of {expected}: refused, as the "
-                               f"layout names one tar, {expected}")
-    else:
-        record["lines"].append(f"{step_id} wrote no {expected}")
+        record.update(ok=True, renamed=list(pick.renamed))
+    record["lines"].append(pick.line)
     return record
