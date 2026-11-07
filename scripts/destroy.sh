@@ -97,40 +97,47 @@ UNLABELABLE_TYPES="$(jq -c '.types' "${TYPES_JSON}")"
 # ---------------------------------------------------------------------------
 if [[ "${SELF_TEST}" -eq 1 ]]; then
   step "Guard self-test"
-  FIXTURE="${BUILD_DIR}/destroy-guard-fixture.json"
+  # The placeholder never-touch list (scripts/lib/deny-list.example.json),
+  # through the same loader and rules as a deployment's, in a directory of this
+  # run's own: this mode names no project, so there is no deployment's list to
+  # read, and the fixture below names only that list's placeholders.
+  SELF_TEST_DIR="$(mktemp -d)"
+  trap 'rm -rf "${SELF_TEST_DIR}"' EXIT INT TERM
+  deny_list_use_example "${SELF_TEST_DIR}"
+  FIXTURE="${SELF_TEST_DIR}/destroy-guard-fixture.json"
   cat >"${FIXTURE}" <<'FIXTURE_JSON'
 {"resource_changes":[
  {"address":"ours.bucket","type":"google_storage_bucket",
-  "change":{"actions":["delete"],"before":{"name":"swarm-artifacts-saga-agents-staging",
-    "project":"saga-agents-staging","labels":{"managed-by":"swarm-terraform"}}}},
+  "change":{"actions":["delete"],"before":{"name":"swarm-artifacts-example-project",
+    "project":"example-project","labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"theirs.cluster","type":"google_container_cluster",
-  "change":{"actions":["delete"],"before":{"name":"agents-staging","project":"saga-agents-staging",
+  "change":{"actions":["delete"],"before":{"name":"peer-cluster","project":"example-project",
     "resource_labels":{}}}},
  {"address":"theirs.sa","type":"google_service_account",
-  "change":{"actions":["delete"],"before":{"email":"crawler@saga-agents-staging.iam.gserviceaccount.com",
-    "project":"saga-agents-staging"}}},
+  "change":{"actions":["delete"],"before":{"email":"peer-runner@example-shared-project.iam.gserviceaccount.com",
+    "project":"example-project"}}},
  {"address":"unlabelled.topic","type":"google_pubsub_topic",
-  "change":{"actions":["delete"],"before":{"name":"swarm-scheduler-wake","project":"saga-agents-staging",
+  "change":{"actions":["delete"],"before":{"name":"swarm-scheduler-wake","project":"example-project",
     "labels":{"component":"scheduler"}}}},
  {"address":"ours.iam","type":"google_project_iam_member",
-  "change":{"actions":["delete"],"before":{"project":"saga-agents-staging",
-    "member":"serviceAccount:swarm-worker@saga-agents-staging.iam.gserviceaccount.com"}}},
+  "change":{"actions":["delete"],"before":{"project":"example-project",
+    "member":"serviceAccount:swarm-worker@example-project.iam.gserviceaccount.com"}}},
  {"address":"theirs.subnet","type":"google_compute_subnetwork",
-  "change":{"actions":["delete"],"before":{"name":"agents-staging-subnet","project":"saga-agents-staging",
-    "network":"projects/saga-agents-staging/global/networks/agents-staging-vpc"}}},
+  "change":{"actions":["delete"],"before":{"name":"peer-subnet","project":"example-project",
+    "network":"projects/example-project/global/networks/peer-vpc"}}},
  {"address":"elsewhere.bucket","type":"google_storage_bucket",
-  "change":{"actions":["delete"],"before":{"name":"x","project":"some-other-project",
+  "change":{"actions":["delete"],"before":{"name":"x","project":"example-shared-project",
     "labels":{"managed-by":"swarm-terraform"}}}},
  {"address":"ours.pool_doc","type":"google_firestore_document",
   "change":{"actions":["delete"],"before":{"collection":"pools","document_id":"global",
-    "database":"swarm","project":"saga-agents-staging"}}},
+    "database":"swarm","project":"example-project"}}},
  {"address":"ours.bucket_iam","type":"google_storage_bucket_iam_member",
-  "change":{"actions":["delete"],"before":{"bucket":"swarm-artifacts-saga-agents-staging",
-    "project":"saga-agents-staging",
-    "member":"serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"}}},
+  "change":{"actions":["delete"],"before":{"bucket":"swarm-artifacts-example-project",
+    "project":"example-project",
+    "member":"serviceAccount:swarm-agent-worker-example-tenant@example-project.iam.gserviceaccount.com"}}},
  {"address":"theirs.default_db","type":"google_firestore_document",
   "change":{"actions":["delete"],"before":{"collection":"anything","document_id":"x",
-    "database":"(default)","project":"saga-agents-staging"}}}
+    "database":"(default)","project":"example-project"}}}
 ]}
 FIXTURE_JSON
 
