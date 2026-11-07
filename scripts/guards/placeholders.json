@@ -95,7 +95,38 @@
       {"host": "toolbox.googleapps.com", "why": "Google's public diagnostics host the installer's edge probe names; its tests check it"},
       {"host": "metadata.goog", "why": "the public GCE metadata server name every Google Cloud VM resolves"},
       {"host": "localhost.localdomain", "why": "the conventional loopback name, never a deployment"},
-      {"host": "json.schemastore.org", "why": "the public JSON schema host plugin/.claude-plugin/plugin.json names in its $schema"}
+      {"host": "json.schemastore.org", "why": "the public JSON schema host plugin/.claude-plugin/plugin.json names in its $schema"},
+      {"host": "the-internet.herokuapp.com", "why": "a public QA practice site the browser benchmark and QA flows drive"},
+      {"host": "news.ycombinator.com", "why": "a public news site the browser benchmark and QA flows drive"},
+      {"host": "books.toscrape.com", "why": "a public scraping sandbox the browser benchmark and QA flows drive"},
+      {"host": "quotes.toscrape.com", "why": "a public scraping sandbox the browser benchmark and QA flows drive"},
+      {"host": "todomvc.com", "why": "a public demo app site the browser benchmark and QA flows drive"},
+      {"host": "angular.dev", "why": "a public framework documentation site the browser benchmark and QA flows drive"},
+      {"host": "www.reddit.com", "why": "a public forum site the browser benchmark and QA flows drive"},
+      {"host": "postman-echo.com", "why": "a public HTTP echo service the browser benchmark and QA flows drive"},
+      {"host": "developers.cloudflare.com", "why": "Cloudflare's public developer documentation the QA runbook cites"},
+      {"host": "dash.cloudflare.com", "why": "Cloudflare's public dashboard login the access-token runbook names"},
+      {"host": "docs.aws.amazon.com", "why": "AWS's public documentation the QA runbook cites"},
+      {"host": "aws.amazon.com", "why": "AWS's public product page a pricing test fixture cites"},
+      {"host": "mermaid.js.org", "why": "Mermaid's public documentation a design doc cites"},
+      {"host": "reactflow.dev", "why": "React Flow's public documentation a design doc cites"},
+      {"host": "docs.livekit.io", "why": "LiveKit's public documentation a design doc cites"},
+      {"host": "workspaceupdates.googleblog.com", "why": "Google's public Workspace updates blog a design doc cites"},
+      {"host": "almanac.httparchive.org", "why": "HTTP Archive's public Web Almanac the browser egress doc cites"},
+      {"host": "docs.typesafe.ai", "why": "the TypeSafe provider's public documentation the provider-keys doc cites"},
+      {"host": "telemetry.lightpanda.io", "why": "the browser engine's public telemetry endpoint a design doc names"},
+      {"host": "prod.agora.io", "why": "a public vendor blog post a design doc cites"},
+      {"host": "use-apify.com", "why": "public browser egress vendor research the browser egress doc cites"},
+      {"host": "hostadvice.com", "why": "public browser egress vendor research the browser egress doc cites"},
+      {"host": "aimultiple.com", "why": "public browser egress vendor research the browser egress doc cites"},
+      {"host": "brightdata.com", "why": "a public proxy vendor the browser egress doc cites"},
+      {"host": "docs.brightdata.com", "why": "a public proxy vendor's documentation the browser egress doc cites"},
+      {"host": "oxylabs.io", "why": "a public proxy vendor the browser egress doc cites"},
+      {"host": "afftank.com", "why": "public browser egress vendor research the browser egress doc cites"},
+      {"host": "apis.io", "why": "a public API directory the browser egress doc cites"},
+      {"host": "api.ipify.org", "why": "a public IP-echo service the installer's preflight calls"},
+      {"host": "checkip.amazonaws.com", "why": "a public IP-echo service the installer's preflight calls"},
+      {"host": "tidelift.com", "why": "npm's funding host in the console's package metadata"}
     ],
     "cluster_dns_suffixes": [
       {"suffix": "svc", "why": "Kubernetes in-cluster service DNS (<service>.<namespace>.svc) resolves only inside a cluster"}
@@ -125,7 +156,8 @@
       {"slug": "u-octo", "why": "the conventional placeholder forge user's personal workspace"},
       {"slug": "u-someone-not-in-terraform", "why": "a descriptive test workspace"},
       {"slug": "u-alice-browser-login-github", "why": "the placeholder person's browser-login secret stem in a Terraform test"},
-      {"slug": "u-a-browser-login-github", "why": "a one-letter person's browser-login secret stem in a unit test"}
+      {"slug": "u-a-browser-login-github", "why": "a one-letter person's browser-login secret stem in a unit test"},
+      {"slug": "u-owner", "why": "the personal placeholder workspace the console's fixtures name; a generic test workspace"}
     ],
     "exempt_lines": [
       {"path": "LICENSE", "line": 3, "why": "the licence holder's copyright line, kept by the owner's legal decision of 2026-11-07"}
