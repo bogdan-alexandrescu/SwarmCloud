@@ -265,9 +265,15 @@ data "google_service_account" "plugin_intake" {
   account_id = local.plugin_intake_name
 }
 
-# Deploying a job that runs as the account needs actAs on it.
+# Deploying a job that runs as the account needs actAs on it, so the grant is
+# planned only with the job (local.plugin_intake_on: once the release carries
+# the intake image's digest). The account is bootstrap's and the deployer holds
+# no right to read or set its policy, so planning the grant before then fails
+# every release on iam.serviceAccounts.getIamPolicy. Before the intake image
+# ships, terraform/bootstrap must first give the deployer that right on this
+# account; the owner applies that change.
 resource "google_service_account_iam_member" "plugin_intake_deployer_acts_as" {
-  count = local.deployer_member != "" ? 1 : 0
+  count = local.plugin_intake_on && local.deployer_member != "" ? 1 : 0
 
   # Spelled, so the plan knows it; the read orders it after the account exists.
   service_account_id = "projects/${var.project_id}/serviceAccounts/${local.plugin_intake_email}"
