@@ -6,6 +6,8 @@
 #   ->      the DEPLOYMENT_PATTERNS repository secret (read by the CI guard job)
 #   ->      a new version of the swarm-deployment-patterns Secret Manager entry
 #           (read by the worker's pre-publish gate)
+#           (`swarm addon enable ci` creates the entry; this script creates it
+#           only where the add-on has not run)
 #
 #   scripts/guards/sync-patterns.sh [--repo <owner/name>] [--dry-run]
 #

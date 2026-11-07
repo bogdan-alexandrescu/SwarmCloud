@@ -3,23 +3,46 @@
 # guard's name layer reads a pattern list that lives outside the tree, in two
 # stores written from one private source by scripts/guards/sync-patterns.sh.
 # Both are SwarmCloud's own CI machinery: a deployment that does not develop
-# SwarmCloud reads neither, so both are add-on `ci` entries, which core never
-# satisfies (tests/unit/install/test_addons.py). `step:` names infra.pass-2, the
-# step the CI add-on's other entries name (install/manifest.d/addon-1.yaml):
-# swarm_install.addons' `ci` add-on does not yet list these two in its
-# `satisfies` (the lane's question), so until it does, the operator runs the
-# sync script once, after the owner has written the source object.
+# SwarmCloud reads neither, so all three entries are add-on `ci` entries, which
+# core never satisfies (tests/unit/install/test_addons.py). `step:` names
+# infra.pass-2, the step the CI add-on's other entries name
+# (install/manifest.d/addon-1.yaml). The owner's pick on the lane's question:
+# `swarm addon enable ci` creates the Secret Manager container, so
+# swarm_install.addons' `ci` add-on lists the `.container` entry in its
+# `satisfies`. The list itself (the `.value` entry and the repository secret)
+# is never the engine's to write: the owner writes the source object and runs
+# the sync script, which is not an add-on step.
 version: 1
 entries:
 - id: secret.swarm-deployment-patterns.container
   kind: secret-container
   scope: addon:ci
   stage: 15
+  provider: engine
+  check: gcloud secrets describe swarm-deployment-patterns --project=$P
+  apply: swarm addon enable ci creates it through the Secret Manager API if it is missing (labels
+    managed-by=swarm-install, addon=ci; no version); scripts/guards/sync-patterns.sh still creates it on a
+    project where the add-on has not run
+  verify: gcloud secrets describe swarm-deployment-patterns --project=$P shows labels addon=ci
+  explain: The worker's pre-publish gate reads the pattern list from this entry. The CI add-on creates the
+    container (the owner's pick), so enabling the add-on leaves only the list's version to the owner; an empty
+    container fails the gate's name layer closed, as an absent one does.
+  guards: the engine creates the container and never writes, reads or prints a version
+  depends_on:
+  - api.secretmanager
+  evidence:
+  - apps/swarm-install/swarm_install/addons.py
+  - scripts/guards/deployment_values.py
+  step: infra.pass-2
+- id: secret.swarm-deployment-patterns.value
+  kind: secret-value
+  scope: addon:ci
+  stage: 15
   provider: human-in-terminal
   check: gcloud secrets versions list swarm-deployment-patterns --project=$P --filter=state=ENABLED --limit=1
     lists one version
-  apply: scripts/guards/sync-patterns.sh creates the entry if it is missing (user-managed replication in $R) and
-    adds a version from gs://<state-bucket>/config/deployment-patterns.tsv, first line '# sha256 <digest>'
+  apply: scripts/guards/sync-patterns.sh adds a version from gs://<state-bucket>/config/deployment-patterns.tsv,
+    first line '# sha256 <digest>'
   verify: scripts/guards/deployment-values.sh --tree --patterns-secret prints the same sha256 as the
     DEPLOYMENT_PATTERNS secret's CI run
   explain: The worker's pre-publish gate checks an agent's branch for deployment values before it is pushed, and
@@ -29,7 +52,7 @@ entries:
     printed, never in the tree; the guard prints path:line and a rule id, never a match
   secret_entry: the owner writes the source object; scripts/guards/sync-patterns.sh copies it, never typed or pasted
   depends_on:
-  - api.secretmanager
+  - secret.swarm-deployment-patterns.container
   evidence:
   - scripts/guards/sync-patterns.sh
   - scripts/guards/deployment_values.py
@@ -46,7 +69,7 @@ entries:
   explain: The CI guard job reads the list from this secret; unset or empty under CI is exit 2, so the required
     check is red rather than silently skipping the name layer.
   depends_on:
-  - secret.swarm-deployment-patterns.container
+  - secret.swarm-deployment-patterns.value
   evidence:
   - scripts/guards/sync-patterns.sh
   step: infra.pass-2
