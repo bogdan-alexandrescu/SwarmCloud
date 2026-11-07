@@ -498,6 +498,14 @@ describe('the cards beside the Talk pane', () => {
     expect(screen.getByRole('article', { name: 'Details: The lane asks' }).contains(ai)).toBe(true)
   })
 
+  it('a live session opens exactly one stream: the card list reads it and the stage is handed its events', async () => {
+    installMedia({ audioContext: true })
+    answerStarts()
+    render(<TalkPane />)
+    await start()
+    expect(FakeEventSource.all.map((e) => e.url)).toEqual([`/v1/voice/sessions/${SESSION}/events`])
+  })
+
   it('in fixture mode, the Talk pane draws a fixture card of each kind before a session', () => {
     apiMock.fixtures = true
     render(<TalkPane />)

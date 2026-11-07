@@ -110,7 +110,10 @@ def pauses(monkeypatch) -> list[float]:
 
 
 def _scheduler(store: SchedulerStore) -> tuple[Scheduler, RecordingDispatcher]:
-    settings = scheduler_settings()
+    # One task a transaction: these pin the single-task path, where
+    # `acquire_lease` is what contends. A contended BATCH is pinned in
+    # test_admission_batched.py (B-5).
+    settings = scheduler_settings(admission_batch_size=1)
     dispatcher = RecordingDispatcher()
     scheduler = Scheduler(
         settings=settings,

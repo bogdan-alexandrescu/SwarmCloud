@@ -17,10 +17,13 @@
  * so the visual never pans in a window of its own; the tabs wrap instead of
  * scrolling with no bar.
  *
- * LIVE (part of #2688). While the session is live the stage also reads
- * its stream, the one connection it shares with the card list (CardList.tsx
- * `readSessionStream`; `GET /v1/voice/sessions/{id}/events`, swarm_api/voice/stream.py
- * `STAGE_TYPES`): a `visual.upsert` takes the stage at once, a `focus` moves
+ * LIVE (part of #2688). While the session is live the stage also applies
+ * its stream's visual, note and focus events (swarm_api/voice/stream.py
+ * `STAGE_TYPES`). It opens no stream of its own: the card list reads the
+ * session's one stream (`GET /v1/voice/sessions/{id}/events`) and passes these
+ * events up (CardList.tsx `onStageEvent`), and Talk.tsx hands them over through
+ * a `stageFeed()` (the owner's pick, 7 November 2026: a second stream cost
+ * about 3,600 database reads an hour). A `visual.upsert` takes the stage at once, a `focus` moves
  * it to the visual the planner points at and bands the lines it names, and a
  * `note.upsert` re-reads the visual it names, so a note pinned or resolved
  * shows without waiting for the next read. The reads every few seconds stay,
@@ -28,8 +31,8 @@
  *
  * The speech controls (mic, engine status) are TalkPane's; the stage draws
  * none. It reads only the routes: GET visuals and one visual, PATCH a note's
- * state, GET the pending read-back, POST go or not-that, and the session's
- * stream. Nothing here spends.
+ * state, GET the pending read-back, POST go or not-that, and the events the
+ * card list hands it. Nothing here spends.
  */
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
@@ -48,7 +51,7 @@ import {
 } from '../api'
 import { Button, TOOLTIP_DELAY_MS } from '../components'
 import '../styles/talk-stage.css'
-import { readSessionStream, STAGE_EVENTS } from './CardList'
+import { STAGE_EVENTS, type StreamEvent } from './CardList'
 
 /** How often a live session's visuals are read again. */
 export const STAGE_REFRESH_MS = 5_000
@@ -60,6 +63,28 @@ const READBACK_WINDOW_S = 55
 const ANSWERED_MS = 1_600
 
 export { STAGE_EVENTS }
+
+/** How the card list's stage events reach the stage: the card list emits, the stage listens. */
+export interface StageFeed {
+  emit: (ev: StreamEvent) => void
+  listen: (fn: (ev: StreamEvent) => void) => () => void
+}
+
+/** A feed for one Talk pane: every event emitted reaches every listener, in order, none held back. */
+export function stageFeed(): StageFeed {
+  const listeners = new Set<(ev: StreamEvent) => void>()
+  return {
+    emit: (ev) => {
+      for (const fn of [...listeners]) fn(ev)
+    },
+    listen: (fn) => {
+      listeners.add(fn)
+      return () => {
+        listeners.delete(fn)
+      }
+    },
+  }
+}
 
 /** Where the planner points (`speak`'s `point_at`): the visual, the lines of its anchor, and its caption. */
 interface Focus {
@@ -320,8 +345,19 @@ function HoldCard({ rb, now, busy, problem, onAnswer }: { rb: VoiceReadback; now
 /**
  * The stage of `projectId`'s visuals and `sessionId`'s held read-back. Draws
  * nothing until there is a visual or a hold: an empty stage is not drawn.
+ * `feed` carries the session stream's stage events, from the card list.
  */
-export function TalkStage({ projectId, sessionId, live }: { projectId: string | null; sessionId: string | null; live: boolean }) {
+export function TalkStage({
+  projectId,
+  sessionId,
+  live,
+  feed,
+}: {
+  projectId: string | null
+  sessionId: string | null
+  live: boolean
+  feed?: StageFeed
+}) {
   const [visuals, setVisuals] = useState<VoiceVisual[]>([])
   const [picked, setPicked] = useState<string | null>(null)
   const [detail, setDetail] = useState<VoiceVisualDetail | null>(null)
@@ -400,38 +436,36 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
     if (shownId !== null) readVisual(shownId)
   }, [readVisual, shownId])
 
-  // The session's stream, while it is live: a visual drawn, the planner's focus, a note pinned or resolved.
+  // The session's stage events, while it is live: a visual drawn, the planner's focus, a note pinned or resolved.
   useEffect(() => {
-    if (projectId === null || sessionId === null || !live || typeof EventSource === 'undefined') return
+    if (feed === undefined || projectId === null || sessionId === null || !live) return
     let last = 0
-    // The card list's stream, shared: one connection for the session, however many read it.
-    return readSessionStream(sessionId, 0, {
-      types: STAGE_EVENTS,
-      onEvent: (ev) => {
-        // A resumed stream repeats nothing it already sent; a repeat changes nothing here either.
-        if (!Number.isInteger(ev.seq) || ev.seq <= last) return
-        last = ev.seq
-        if (ev.type === 'visual.upsert') {
-          const v = normVoiceVisual(ev.data.visual)
-          if (v === null) return
-          const held = listed.current.find((x) => x.visual_id === v.visual_id)
-          if (held !== undefined && held.version >= v.version) return
-          setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
-          newest.current = markOf(v)
-          setPicked(null)
-        } else if (ev.type === 'focus') {
-          const f = focusOf(ev.data)
-          if (f === null) return
-          setFocus(f)
-          setPicked(f.visual_id)
-          if (!listed.current.some((x) => x.visual_id === f.visual_id)) pullList.current()
-        } else {
-          const note = (ev.data.note ?? null) as { visual_id?: unknown } | null
-          if (note !== null && typeof note.visual_id === 'string' && note.visual_id !== '') readVisual(note.visual_id)
-        }
-      },
+    // The card list's stream, handed over: the stage opens none of its own.
+    return feed.listen((ev) => {
+      if (!(STAGE_EVENTS as readonly string[]).includes(ev.type)) return
+      // A resumed stream repeats nothing it already sent; a repeat changes nothing here either.
+      if (!Number.isInteger(ev.seq) || ev.seq <= last) return
+      last = ev.seq
+      if (ev.type === 'visual.upsert') {
+        const v = normVoiceVisual(ev.data.visual)
+        if (v === null) return
+        const held = listed.current.find((x) => x.visual_id === v.visual_id)
+        if (held !== undefined && held.version >= v.version) return
+        setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
+        newest.current = markOf(v)
+        setPicked(null)
+      } else if (ev.type === 'focus') {
+        const f = focusOf(ev.data)
+        if (f === null) return
+        setFocus(f)
+        setPicked(f.visual_id)
+        if (!listed.current.some((x) => x.visual_id === f.visual_id)) pullList.current()
+      } else {
+        const note = (ev.data.note ?? null) as { visual_id?: unknown } | null
+        if (note !== null && typeof note.visual_id === 'string' && note.visual_id !== '') readVisual(note.visual_id)
+      }
     })
-  }, [projectId, sessionId, live, readVisual])
+  }, [feed, projectId, sessionId, live, readVisual])
 
   useEffect(() => {
     setOpenPin(null)

@@ -415,7 +415,7 @@ saving from the same base version get a 409, and the second reloads.
 The scheduler reads the version once per admission pass
 (`apps/scheduler/scheduler/loop.py::Scheduler._size_version`) and, for each
 agent, derives one size from it before the lease
-(`apps/scheduler/scheduler/loop.py::Scheduler._admit_one`). That one object
+(`apps/scheduler/scheduler/loop.py::Scheduler._prepare_admission`). That one object
 is the lease's units, the attempt's record (`size_version` and the `sized_*`
 fields) and the pod the GKE renderer draws, so a version saved between the
 lease and the dispatch cannot split them, and a running agent keeps the size it

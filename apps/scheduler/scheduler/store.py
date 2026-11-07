@@ -57,8 +57,10 @@ from google.cloud.firestore_v1.field_path import FieldPath
 from swarm_common.admission import (
     AdmissionConfig,
     AdmissionDenied,
+    AdmissionRequest,
     _snapshot,
     acquire_lease_in_transaction,
+    acquire_leases_in_transaction,
     release_lease_in_transaction,
 )
 from swarm_common.models import (
@@ -2042,6 +2044,146 @@ class SchedulerStore:
                     "tenant_id": task.tenant_id,
                     "lease_id": lease_id,
                     "backend": backend,
+                },
+            )
+
+    def acquire_leases(
+        self,
+        requests: Sequence[AdmissionRequest],
+        *,
+        config: AdmissionConfig,
+    ) -> list[Lease | AdmissionDenied]:
+        """Admit a batch of tasks in ONE transaction. One outcome per request, in order.
+
+        WHY (BGD, 2026-11-06, after the load analysis). `acquire_lease` is one
+        transaction per task, and every one of them writes `pools/global` and
+        the other shared pools: 52 writes in the busiest minute against
+        Firestore's sustained ceiling of about one write per second per
+        document, and ready-to-leased p99 of 476 s overall, 1,680 s for browser
+        and 2,843 s for large, most of it spent losing that document to the
+        next transaction. Here every pool document the batch needs is READ
+        ONCE and WRITTEN ONCE, with the sum of what the admitted tasks take.
+
+        EACH TASK IS STILL ALL-OR-NOTHING (invariant 2). The requests are
+        judged in the order given -- the drain's priority and fairness order
+        -- each against the pools as the tasks before it in this batch left
+        them, by the frozen `evaluate_capacity`. A task that fits takes its
+        share in EVERY pool it needs; one that does not takes nothing, stays
+        READY, and gets its `AdmissionDenied`; the rest of the batch still
+        admits. Firestore commits the batch whole or not at all, so no task
+        is ever half-reserved: an abort writes nothing for any of them.
+
+        THE ADMISSION IS THE FROZEN `acquire_leases_in_transaction` (contract
+        request 140, the owner's pick on PR 3493), which shares its per-task
+        checks, lease document and task write with `acquire_lease_in_transaction`
+        rather than this store restating them: the task is re-read and must be
+        READY with no cancel requested; the fencing generation is
+        `current_generation + 1` (invariant 5). Concurrency still counts from
+        the LEASED task (invariant 3). A two-scheduler race is the same race as
+        before: each pool it read is in the read set, so a commit by anyone
+        else aborts this one and Firestore re-runs it against fresh reads.
+        This store adds only the workflows' derived state, read through the
+        frozen function's `before_writes` hook.
+
+        A request repeated in one batch is admitted once; its repeat is denied
+        `not_ready`, as it would be by the next transaction.
+
+        One log record and one `admission_observer` call per TRANSACTION,
+        with `admission_batch` (requests) and `admission_leased` beside the
+        fields `acquire_lease` logs: the contention signal is the transaction's
+        re-runs, whatever it admits.
+        """
+        if not requests:
+            return []
+        transaction = self._db.transaction()
+        runs = 0
+
+        @firestore.transactional
+        def _acquire(txn: Any) -> list[Lease | AdmissionDenied]:
+            nonlocal runs
+            runs += 1
+            now = self._now()
+            workflows: list[Any] = []
+
+            def _read_workflows(outcomes: list[Lease | AdmissionDenied]) -> None:
+                # READY -> LEASED moves each workflow's derived state (#2838),
+                # as `acquire_lease` writes it; one write per workflow, derived
+                # with every step of it this batch admits. Read here, after
+                # the frozen admission's reads and before its first write:
+                # Firestore refuses a read after a write.
+                changed: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+                for request, outcome in zip(requests, outcomes):
+                    task = request.task
+                    if isinstance(outcome, Lease) and task.workflow_id:
+                        changed.setdefault((task.tenant_id, task.workflow_id), {})[task.id] = {
+                            "workflow_id": task.workflow_id, "tenant_id": task.tenant_id,
+                            "state": TaskState.LEASED.value,
+                        }
+                workflows.extend(
+                    derived_state_write(
+                        txn, self._db, tenant_id=tenant_id, workflow_id=workflow_id,
+                        now=now, changed=docs,
+                    )
+                    for (tenant_id, workflow_id), docs in changed.items()
+                )
+
+            outcomes = acquire_leases_in_transaction(
+                txn,
+                db=self._db,
+                requests=requests,
+                config=config,
+                now=now,
+                before_writes=_read_workflows,
+            )
+            for workflow in workflows:
+                if workflow is not None:
+                    txn.update(*workflow)
+            return outcomes
+
+        started = time.monotonic()
+        outcome = "error"
+        leased = 0
+        try:
+            outcomes = _acquire(transaction)
+            leased = sum(1 for o in outcomes if isinstance(o, Lease))
+            outcome = "leased" if leased else "denied"
+            return outcomes
+        except Aborted:
+            outcome = "aborted"
+            raise
+        except ValueError as exc:
+            if isinstance(exc.__cause__, Aborted):
+                outcome = "aborted"
+            raise
+        finally:
+            latency_ms = (time.monotonic() - started) * 1000.0
+            if self.admission_observer is not None:
+                try:
+                    self.admission_observer(outcome, runs, latency_ms)
+                except Exception:  # noqa: BLE001 -- a metric never decides admission
+                    log.exception("admission observer failed")
+            if outcome == "aborted":
+                level = logging.WARNING
+            elif outcome == "denied" and runs <= 1:
+                level = logging.DEBUG
+            else:
+                level = logging.INFO
+            log.log(
+                level,
+                "admission batch %s requests=%d leased=%d runs=%d latency_ms=%.1f",
+                outcome,
+                len(requests),
+                leased,
+                runs,
+                latency_ms,
+                extra={
+                    "admission_outcome": outcome,
+                    "admission_runs": runs,
+                    "admission_reruns": max(0, runs - 1),
+                    "admission_latency_ms": latency_ms,
+                    "admission_batch": len(requests),
+                    "admission_leased": leased,
+                    "task_ids": [r.task.id for r in requests],
                 },
             )
 
