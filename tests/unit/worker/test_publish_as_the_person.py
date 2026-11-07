@@ -46,12 +46,16 @@ from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
-PERSON = ("Ada Lovelace", "ada@example.com")
+#: A person with a connected GitHub account, as swarm-api records them: their
+#: login and GitHub's no-reply address for it, never an address of their own
+#: (owner rule 2026-11-07).
+PERSON = ("ada-lovelace", "1815+ada-lovelace@users.noreply.github.com")
+SUBMITTER = "ada@example.com"
 #: A Google service account, as `swarm_common.identity` reads one.
 SERVICE_ACCOUNT = "swarm-dispatch@example-project.iam.gserviceaccount.com"
 
 
-def _person_task(task_id: str, dispatch: dict, *, submitted_by: str = PERSON[1],
+def _person_task(task_id: str, dispatch: dict, *, submitted_by: str = SUBMITTER,
                  record: tuple[str, str] | None = PERSON) -> dict:
     dispatch = dict(dispatch)
     if record is not None:
@@ -141,10 +145,10 @@ def test_the_folded_commit_is_the_persons(
     _assert_all_by(commits, PERSON)
 
 
-def test_a_bare_submitter_with_no_record_is_named_by_their_address(
+def test_a_bare_submitter_with_no_record_publishes_as_the_bot(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    """`commit_identity`'s own fallback for a person: the local part names them."""
+    """A person with no connected GitHub account: never their address, the bot."""
     _, config, out = _run(
         worker_factory, monkeypatch, origin,
         task=_person_task("t-person-bare", {"strategy": "direct-pr"}, record=None),
@@ -153,7 +157,7 @@ def test_a_bare_submitter_with_no_record_is_named_by_their_address(
     assert out["published"] is True, out.get("publish_reason")
     _assert_all_by(
         pushed_commits(origin, f"{config.git_branch_prefix}t-person-bare"),
-        ("ada", "ada@example.com"),
+        (config.git_author_name, config.git_author_email),
     )
 
 
@@ -191,7 +195,7 @@ def test_a_task_with_no_person_publishes_as_the_bot(
 # ---------------------------------------------------------------------------
 
 
-OTHER = ("Grace Hopper", "grace@example.com")
+OTHER = ("grace-hopper", "1906+grace-hopper@users.noreply.github.com")
 
 
 def test_the_integrators_merge_commits_are_the_persons(
@@ -205,7 +209,7 @@ def test_the_integrators_merge_commits_are_the_persons(
     for name, who in (("t-pa", PERSON), ("t-pb", OTHER)):
         _, config, out = _run(
             worker_factory, monkeypatch, origin,
-            task=_person_task(name, contributor, submitted_by=who[1], record=who),
+            task=_person_task(name, contributor, submitted_by=f"{who[0]}@example.com", record=who),
             edit=contributor_edit(name),
         )
         assert out["published"] is True, out.get("publish_reason")
