@@ -933,7 +933,7 @@ guard_real_bin() {
 # deny_scan in GUARD_JQ). Joined by the shell: the four jq and the grep the
 # two JSON forms took are gone (GUARD-SPEED).
 # Returns 1, with DENY_LIST_ERROR saying why, when the list cannot be loaded:
-# the judge then refuses the call, because nothing runs without the list.
+# the judge prints that on stderr and refuses the call, because nothing runs without the list.
 GUARD_DENY_LINES=""
 guard_deny_lists() {
   local IFS=$'\n'
@@ -1003,7 +1003,10 @@ guard_judge() {
   local stopped=false result
   [[ -e "${exp}.stop" ]] && stopped=true
   if ! guard_deny_lists; then
-    GUARD_REASON="the never-touch list is not readable, and nothing runs without it: ${DENY_LIST_ERROR}"
+    # A fixed sentence: the reason is the stop record's, and the loader's
+    # detail (the bucket path, the object's own text) stays on stderr.
+    printf 'workspace-guard: %s\n' "${DENY_LIST_ERROR}" | redact >&2
+    GUARD_REASON="the never-touch list is not readable, and nothing runs without it"
     return 0
   fi
   if ! result="$(jq -rn \

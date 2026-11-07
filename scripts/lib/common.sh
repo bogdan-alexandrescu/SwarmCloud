@@ -381,7 +381,7 @@ _config_list() {
   fi
   out="$(_config_gcloud storage objects list "${src}/*" --format='value(name,generation)' 2>&1)" || {
     die_if_auth_failure "${out}"
-    err "could not list ${src}/: $(printf '%s' "${out}" | head -n 1)"
+    err "could not list ${src}/: $(printf '%s' "${out}" | head -n 1 | redact)"
     return 1
   }
   while IFS=$'\t' read -r f gen; do
