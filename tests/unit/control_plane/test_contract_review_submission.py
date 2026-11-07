@@ -97,11 +97,17 @@ def client(context) -> TestClient:
     return TestClient(create_app(context), raise_server_exceptions=False)
 
 
+#: A placeholder tailnet name, as the platform renders it in
+#: SWARM_DECISION_API_TAILNET_NAME beside INTERNAL_DECISION_API_URL.
+TAILNET_NAME = "decision-api.example-tailnet.ts.net"
+
+
 @pytest.fixture
 def routed(monkeypatch):
     """Contracts on, and swarm-api's route to the internal backend rendered."""
     monkeypatch.setenv(wc.SWITCH_ENV, "on")
-    monkeypatch.setenv("INTERNAL_DECISION_API_URL", judgment.INTERNAL_DECISION_ORIGIN)
+    monkeypatch.setenv(judgment.DECISION_API_TAILNET_NAME_ENV, TAILNET_NAME)
+    monkeypatch.setenv("INTERNAL_DECISION_API_URL", f"https://{TAILNET_NAME}")
     monkeypatch.setenv(judgment.INTERNAL_DECISION_API_ADDRESS_ENV, "10.20.0.7")
 
 
@@ -300,7 +306,8 @@ def test_a_failed_call_is_accepted_open_and_recorded_not_run(client, context, db
 def test_no_route_is_not_run_and_never_typesafe(client, context, db, monkeypatch):
     monkeypatch.setenv(wc.SWITCH_ENV, "on")
     monkeypatch.setenv(cr.MODE_ENV, "enforce")
-    monkeypatch.setenv("INTERNAL_DECISION_API_URL", judgment.INTERNAL_DECISION_ORIGIN)
+    monkeypatch.setenv(judgment.DECISION_API_TAILNET_NAME_ENV, TAILNET_NAME)
+    monkeypatch.setenv("INTERNAL_DECISION_API_URL", f"https://{TAILNET_NAME}")
     monkeypatch.delenv(judgment.INTERNAL_DECISION_API_ADDRESS_ENV, raising=False)
     _opt_in(db)
     jev = Jev(UNENFORCEABLE)

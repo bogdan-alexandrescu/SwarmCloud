@@ -53,11 +53,22 @@ def _read(client) -> dict[str, Any]:
     return response.json()
 
 
+#: A placeholder tailnet name (SWARM_DECISION_API_TAILNET_NAME), set for every
+#: test here: the internal backends need it beside INTERNAL_DECISION_API_URL.
+TAILNET_NAME = "decision-api.example-tailnet.ts.net"
+
+
+@pytest.fixture(autouse=True)
+def tailnet_name(monkeypatch) -> str:
+    monkeypatch.setenv(judgment.DECISION_API_TAILNET_NAME_ENV, TAILNET_NAME)
+    return TAILNET_NAME
+
+
 @pytest.fixture
 def routed_client(ldb, people, groups, objects, clock, relay):
     """The same app with the tailnet egress on (INTERNAL_DECISION_API_URL set)."""
     return make_client(ldb, people, groups, objects, clock, relay,
-                       internal_decision_api_url=judgment.INTERNAL_DECISION_ORIGIN)
+                       internal_decision_api_url=f"https://{TAILNET_NAME}")
 
 
 # --------------------------------------------------------------------------- #
