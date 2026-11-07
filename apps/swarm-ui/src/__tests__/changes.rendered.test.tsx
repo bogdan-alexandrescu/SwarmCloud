@@ -322,6 +322,65 @@ describe('an image', () => {
   })
 })
 
+// A CHANGED image (BGD, 2026-11-06): the patch holds it as a delta against
+// bytes it does not carry, so its bytes are the checkpoint's, through the file
+// route's `format=image` read with the tenant header. MUTATION: read the
+// patch alone for an image (this block goes red).
+describe('a changed image is drawn from the step’s checkpoint', () => {
+  const CHANGED = 'docs/design/mocks/hero.png'
+  const DELTA = [`diff --git a/${CHANGED} b/${CHANGED}`, 'index 1111111..2222222 100644', 'GIT binary patch', 'delta 14', 'zcmV?d00001', '', 'delta 14', 'zcmV?d00001', ''].join('\n') + '\n'
+  const changedGit: GitSummary = { base: 'abc', patch: PATCH, files: [{ path: CHANGED, old_path: null, status: 'M', insertions: null, deletions: null, binary: true }] }
+  const fetched: { url: string; init: RequestInit | undefined }[] = []
+
+  beforeEach(() => {
+    fetched.length = 0
+    api.loadCheckpoints.mockResolvedValue(ONE_CHECKPOINT)
+    api.loadArtifactContent.mockImplementation(async (id: string) => ok(served(id, DELTA)))
+  })
+
+  it('reads the member’s bytes and draws them from an object URL', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      fetched.push({ url, init })
+      return url.includes(`/files/repo/${CHANGED}?`)
+        ? new Response(PNG_BYTES, { status: 200, headers: { 'Content-Type': 'image/png' } })
+        : new Response(JSON.stringify({ code: 'not_found', message: 'no' }), { status: 404, headers: { 'Content-Type': 'application/json' } })
+    }))
+    render(<Tab file={CHANGED} git={changedGit} />)
+    const img = (await screen.findByRole('img', { name: CHANGED })) as HTMLImageElement
+    expect(created).toContain(img.getAttribute('src'))
+    const blob = (URL.createObjectURL as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Blob
+    expect(blob.type).toBe('image/png')
+    const read = await new Promise<ArrayBuffer>((res) => {
+      const r = new FileReader()
+      r.onload = () => res(r.result as ArrayBuffer)
+      r.readAsArrayBuffer(blob)
+    })
+    expect(new Uint8Array(read)).toEqual(PNG_BYTES)
+    const first = new URL(fetched[0]!.url, 'http://console')
+    expect(first.pathname).toBe(`/v1/tasks/t_mock/checkpoints/ckpt-00002/files/repo/${CHANGED}`)
+    expect(first.searchParams.get('attempt_id')).toBe('att_1')
+    expect(first.searchParams.get('format')).toBe('image')
+    expect(fetched[0]!.init?.credentials).toBe('same-origin')
+  })
+
+  it('a member the route refuses as not an image says why, and draws nothing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ code: 'checkpoint_member_not_an_image', message: 'its first bytes are not a png' }), { status: 415, headers: { 'Content-Type': 'application/json' } }),
+    ))
+    render(<Tab file={CHANGED} git={changedGit} />)
+    const why = await screen.findByText(/^not read: /)
+    expect(why.textContent).toMatch(/its first bytes are not a png/)
+    expect(screen.queryByRole('img', { name: CHANGED })).toBeNull()
+  })
+
+  it('a body whose type is not an image is not drawn', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })))
+    render(<Tab file={CHANGED} git={changedGit} />)
+    expect((await screen.findByText(/^not read: /)).textContent).toMatch(/text\/html/)
+    expect(screen.queryByRole('img', { name: CHANGED })).toBeNull()
+  })
+})
+
 describe('what cannot be rendered says why, and Diff still works', () => {
   it('a modified page with no checkpoint shows its reason; Diff draws the patch', async () => {
     render(<Tab file={OLD_PAGE} />)
