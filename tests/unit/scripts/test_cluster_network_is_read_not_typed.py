@@ -28,7 +28,7 @@ Two more things apply.sh READS rather than takes on trust, driven the same way:
   * WHICH CLUSTER it is about to write to. The deny-list is matched against the
     cluster a context names -- the last segment of
     `gke_<project>_<location>_<cluster>` -- and never against the project id,
-    which for our own cluster contains the other team's `agents-staging`. And
+    which for our own cluster can contain a never-touch cluster's name. And
     the kubeconfig cluster entry must be gcloud's name for exactly the cluster
     whose network is read: project, location AND cluster;
   * WHICH KSAs are Workload Identity-bound, read from the tenant GSA's IAM
@@ -57,27 +57,41 @@ import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: REGION, ZONE and a never-touch list served for the project a child names
+#: (common.sh has no default for either); see tests/unit/scripts/placeholder_deployment.py.
+placeholder_deployment = _PLACEHOLDERS.deployment()
+#: The shared project's cluster on the never-touch list the placeholder deployment
+#: serves: what a refusal "by the deny-list" names, never a real cluster.
+PEER_CLUSTER = placeholder_deployment.PEER["cluster"]
+#: The project the fake cluster models: the placeholder deployment's, never a real one.
+PROJECT = placeholder_deployment.PROJECT
 APPLY = REPO / "kubernetes" / "apply.sh"
 PARITY = REPO / "scripts" / "lib" / "check-cluster-network-parity.sh"
 CHECKER = REPO / "kubernetes" / "network_parity.py"
 
 #: The context scripts/configure-kubectl.sh writes. The raw gcloud name,
 #: CLUSTER_REF, is accepted too: apply.sh used to refuse it, because it matched
-#: the deny-listed `agents-staging` as a substring of the whole context string
-#: and our project id (saga-agents-staging) contains it.
+#: a deny-listed cluster name as a substring of the whole context string, and
+#: the real project id of the time contained that name.
 CONTEXT = "swarm-dev"
-CLUSTER_REF = "gke_saga-agents-staging_us-central1_swarm-autopilot"
-SOURCE = "gke/saga-agents-staging/us-central1/swarm-autopilot"
+CLUSTER_REF = f"gke_{PROJECT}_us-central1_swarm-autopilot"
+SOURCE = f"gke/{PROJECT}/us-central1/swarm-autopilot"
 
-#: The other team's clusters, as gcloud names their contexts in the kubeconfig
-#: on the reference workstation (scripts/lib/common.sh records both).
-OTHER_TEAM = "gke_saga-agents-staging_us-central1-a_agents-staging"
-OTHER_TEAM_PROD = "gke_saga-agents-prod_us-central1_agents-prod"
+#: The other team's clusters, as gcloud names their contexts in a kubeconfig:
+#: the never-touch cluster in our project (on the placeholder list), and their
+#: production in their own project (on no list of ours).
+OTHER_TEAM = f"gke_{PROJECT}_us-central1-a_{PEER_CLUSTER}"
+OTHER_TEAM_PROD_CLUSTER = "peer-prod"
+OTHER_TEAM_PROD = f"gke_{placeholder_deployment.SHARED_PROJECT}_us-central1_{OTHER_TEAM_PROD_CLUSTER}"
 
 #: eng's namespace and GSA, as render.py derives them.
 NAMESPACE = "swarm-tenant-eng"
-TENANT_GSA = "swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
-WI_POOL = "saga-agents-staging.svc.id.goog"
+TENANT_GSA = f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
+WI_POOL = f"{PROJECT}.svc.id.goog"
 
 #: A cluster whose network appears nowhere in this repository, so a rendered
 #: value that matches it can only have been READ.
@@ -302,6 +316,27 @@ def node_local_dns(network: dict[str, str]) -> dict[str, Any]:
     }
 
 
+#: The Terraform tenants of the environment apply.sh renders for, as its
+#: <env>.tfvars declares them: tf_var_file reads that file from the deployment's
+#: config/<env>/ (here the placeholder deployment's served directory), never
+#: from a tracked file, so the test writes the one block apply.sh reads.
+TERRAFORM_TENANTS_TFVARS = "tenants = {\n  eng = {\n  }\n  smoke = {\n  }\n}\n"
+
+
+def _write_terraform_tenants(env: dict[str, str]) -> None:
+    """The <env>.tfvars apply.sh's tf_var_file reads, in the child's served config directory."""
+    config_dir = env.get("SWARM_DEPLOY_CONFIG_DIR")
+    if not config_dir:
+        return
+    environment = env.get("ENVIRONMENT") or "dev"
+    target = Path(config_dir) / environment
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tfvars = target / f"{environment}.tfvars"
+    if not tfvars.exists():
+        tfvars.write_text(TERRAFORM_TENANTS_TFVARS)
+        tfvars.chmod(0o600)
+
+
 class Cluster:
     """A fake cluster on disk, and the two fake binaries that read it."""
 
@@ -357,7 +392,7 @@ class Cluster:
             "bindings": [
                 {
                     "role": "roles/iam.serviceAccountUser",
-                    "members": ["serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"],
+                    "members": [f"serviceAccount:swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"],
                 }
             ],
             "etag": "BwZcPWGUr7I=",
@@ -377,8 +412,9 @@ class Cluster:
 
     def env(self, **extra: str) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if k not in LEAKY}
+        env.update(placeholder_deployment.child_env(PROJECT))
         # common.sh has no default project any more: name the one the suite models.
-        env["PROJECT_ID"] = "saga-agents-staging"
+        env["PROJECT_ID"] = PROJECT
         env.update(
             PATH=os.pathsep.join(
                 [str(self.bin), str(Path(sys.executable).parent), os.environ.get("PATH", "")]
@@ -387,7 +423,7 @@ class Cluster:
             SWARM_ENV_FILE=str(self.tmp / "no-such.env"),
             # apply.sh has no default project (DAYONE-K8S-1): the one this fake
             # cluster's context and identities name is given, as an operator would.
-            PROJECT_ID="saga-agents-staging",
+            PROJECT_ID=PROJECT,
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             PYTHON_BIN=sys.executable,
             FAKE_CLUSTER_DIR=str(self.dir),
@@ -395,6 +431,7 @@ class Cluster:
             NO_COLOR="1",
         )
         env.update(extra)
+        _write_terraform_tenants(env)
         return env
 
     def run(self, script: Path, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
@@ -436,7 +473,7 @@ def _ip_peers(policy: dict[str, Any]) -> set[str]:
 #: network (DAYONE-K8S-1): the project, both control-plane uniqueIds and the
 #: tenant's quota. kubernetes/apply.sh passes them; this stands in for it.
 CLUSTER_INPUTS = (
-    "--project", "saga-agents-staging",
+    "--project", PROJECT,
     "--scheduler-uid", "100000000000000000011",
     "--reconciler-uid", "100000000000000000022",
     "--quota-pods", "100", "--quota-jobs", "200", "--quota-cpu", "400",
@@ -511,7 +548,7 @@ def test_apply_renders_the_network_the_cluster_reports(tmp_path):
     # Read from the cluster the context points at, through the context.
     gcloud = cluster.log("gcloud")
     assert "container clusters describe swarm-autopilot" in gcloud
-    assert "--location us-central1" in gcloud and "--project saga-agents-staging" in gcloud
+    assert "--location us-central1" in gcloud and f"--project {PROJECT}" in gcloud
     kubectl = cluster.log("kubectl")
     assert "-n kube-system get service kube-dns" in kubectl
     assert "-n kube-system get daemonset node-local-dns" in kubectl
@@ -653,8 +690,8 @@ def test_apply_refuses_when_the_cluster_cannot_be_described(tmp_path):
 #
 # THE DEFECT. The deny-list check was `*"${foreign}"*` over the whole context
 # name, so gcloud's own name for OUR cluster --
-# gke_saga-agents-staging_us-central1_swarm-autopilot -- was refused: the
-# project id contains the other team's cluster name, `agents-staging`. Only the
+# gke_<project>_us-central1_swarm-autopilot -- was refused: the real project
+# id contained the other team's cluster name. Only the
 # renamed `swarm-dev` context from scripts/configure-kubectl.sh got through, and
 # scripts/register-tenant.sh, whose own guard (kube_context_allowed) accepts the
 # gcloud name, hands that name to apply.sh -- so under it, registration would
@@ -682,26 +719,26 @@ def test_apply_accepts_the_swarm_cluster_under_either_context_name(tmp_path, lab
 #:  whether it is the deny-list -- another team -- that refuses it, extra args)
 NOT_OURS = [
     # The other team's live cluster under gcloud's name for it.
-    (OTHER_TEAM, OTHER_TEAM, "agents-staging", True, []),
+    (OTHER_TEAM, OTHER_TEAM, PEER_CLUSTER, True, []),
     # The same cluster behind a label that looks like ours. The label is a
     # nickname; the cluster it resolves to is what gets written to.
-    (CONTEXT, OTHER_TEAM, "agents-staging", True, []),
+    (CONTEXT, OTHER_TEAM, PEER_CLUSTER, True, []),
     # Their production. Not on the shared deny-list (it is not in this
     # project); refused because it is not the swarm's cluster.
-    (OTHER_TEAM_PROD, OTHER_TEAM_PROD, "agents-prod", False, []),
+    (OTHER_TEAM_PROD, OTHER_TEAM_PROD, OTHER_TEAM_PROD_CLUSTER, False, []),
     # A cluster whose name merely CONTAINS ours, behind our label. The old check
     # was a substring match and let it through, while the network apply.sh
     # reads is swarm-autopilot's -- a policy rendered for one cluster applied to
     # another. (Under gcloud's own label the old check refused it too, but only
-    # because that label contains `agents-staging` -- the defect above -- so the
+    # because that label contained the other team's name -- the defect above -- so the
     # label here is swarm-dev, where the substring match was the only guard.)
     (CONTEXT, CLUSTER_REF + "-old", "swarm-autopilot-old", False, []),
     # --cluster naming the other team's cluster outright.
-    (CONTEXT, CLUSTER_REF, "agents-staging", True, ["--cluster", "agents-staging"]),
+    (CONTEXT, CLUSTER_REF, PEER_CLUSTER, True, ["--cluster", PEER_CLUSTER]),
     # OUR CLUSTER'S NAME IN ANOTHER PROJECT, under gcloud's own label for it.
     # Matching only the cluster segment let this through, while the network
-    # apply.sh reads is saga-agents-staging's (`gcloud container clusters
-    # describe swarm-autopilot --project saga-agents-staging`): the policy would
+    # apply.sh reads is our project's (`gcloud container clusters
+    # describe swarm-autopilot --project <ours>`): the policy would
     # be rendered for our cluster and written to that one.
     (
         "gke_other-project_us-central1_swarm-autopilot",
@@ -710,7 +747,7 @@ NOT_OURS = [
     ),
     # Our cluster's name at another LOCATION of our own project, behind our
     # label -- us-central1-a is where the other team's cluster lives.
-    (CONTEXT, "gke_saga-agents-staging_us-central1-a_swarm-autopilot", "us-central1-a", False, []),
+    (CONTEXT, f"gke_{PROJECT}_us-central1-a_swarm-autopilot", "us-central1-a", False, []),
     # A cluster entry that is not in gcloud's shape names no project and no
     # location, so nothing shows it is the cluster whose network is read.
     (CONTEXT, "swarm-autopilot", "cluster 'swarm-autopilot'", False, []),
@@ -754,7 +791,7 @@ def test_apply_takes_the_expected_cluster_entry_from_the_configuration(tmp_path)
     location typed into apply.sh: with a zonal location configured, the zonal
     entry is ours, and the network is read from that same location."""
     cluster = Cluster(tmp_path, FAKE)
-    zonal = "gke_saga-agents-staging_us-central1-a_swarm-autopilot"
+    zonal = f"gke_{PROJECT}_us-central1-a_swarm-autopilot"
     cluster.context(CONTEXT, zonal)
     result = cluster.run(APPLY, "--tenant", "eng", GKE_LOCATION="us-central1-a")
     output = result.stdout + result.stderr
@@ -997,7 +1034,7 @@ def test_apply_renders_the_older_ksa_only_where_iam_binds_it(
 def test_apply_reads_the_bindings_of_the_gsa_it_was_told_to_render(tmp_path):
     """register-tenant.sh passes `--gsa`; the policy read is that account's."""
     cluster = Cluster(tmp_path, FAKE)
-    custom = "custom-eng@saga-agents-staging.iam.gserviceaccount.com"
+    custom = f"custom-eng@{PROJECT}.iam.gserviceaccount.com"
     result = cluster.run(APPLY, "--tenant", "eng", "--gsa", custom)
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"iam service-accounts get-iam-policy {custom}" in cluster.log("gcloud")
@@ -1064,7 +1101,7 @@ def test_apply_refuses_a_bound_ksa_on_the_command_line(tmp_path, args):
 
 #: What the fake gcloud answers for swarm-verify's uniqueId.
 VERIFY_UID = "100000000000000000077"
-VERIFY_GSA = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+VERIFY_GSA = f"swarm-verify@{PROJECT}.iam.gserviceaccount.com"
 
 
 def _verify_binding(manifest: str) -> list[dict[str, Any]]:
@@ -1359,7 +1396,7 @@ def test_policies_mode_binds_and_scopes_the_workspace_deployer_by_uniqueid(tmp_p
     applied = (cluster.dir / "applied.yaml").read_text()
     users = _workspace_deployer_users(applied)
     assert len(users) == 6, users
-    deployer = "swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    deployer = f"swarm-workspace-deployer@{PROJECT}.iam.gserviceaccount.com"
     assert all(u == {deployer, "100000000000000000042"} for u in users), users
     assert '"117405034245659033603"' in applied and '"108023754768362642341"' in applied
 
@@ -1376,14 +1413,14 @@ def test_policies_mode_falls_back_to_the_email_before_the_deployer_exists(tmp_pa
     assert "could not resolve the uniqueId of swarm-workspace-deployer@" in output
     users = _workspace_deployer_users((cluster.dir / "applied.yaml").read_text())
     assert len(users) == 6, users
-    deployer = "swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    deployer = f"swarm-workspace-deployer@{PROJECT}.iam.gserviceaccount.com"
     assert all(u == {deployer} for u in users), users
 
 
 @pytest.mark.parametrize(
     "args,named",
     [
-        (["--cluster", "agents-staging"], "agents-staging"),
+        (["--cluster", PEER_CLUSTER], PEER_CLUSTER),
         (["--namespace", "kube-system"], "not a tenant namespace"),
         (["--context", OTHER_TEAM], "not the swarm cluster's"),
     ],

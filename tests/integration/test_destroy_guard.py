@@ -4,17 +4,18 @@
 resources, unlabelable types and foreign projects. This file exists to cover what that
 fixture does NOT: a near-miss label value, and failing closed on unusable input.
 
-Why bother: the deploy runs unattended against a SHARED project holding a live 4-node
-cluster `agents-staging`, VPC `agents-staging-vpc`, and service accounts for promptlab,
-crawler, aipipeline, external-secrets and tournament-digest. The guard is the only thing
+Why bother: the deploy runs unattended against a project another team may share,
+holding their cluster, VPC, buckets and service accounts. The guard is the only thing
 between a bad plan and another team's production.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -22,51 +23,33 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 DESTROY = REPO / "scripts" / "destroy.sh"
-PROJECT = "saga-agents-staging"
+
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
+PROJECT = _P.PROJECT
 
 COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
 TYPES_JSON = REPO / "scripts" / "lib" / "unlabelable-types.json"
+DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
 
 
 def _shared_deny_list() -> list[str]:
-    """Every entry of `SHARED_DENY_LIST` in scripts/lib/common.sh.
+    """Every entry of the never-touch list the guard is given in tests.
 
-    DERIVED, NOT RESTATED, and that is a defect fixed rather than a tidy-up.
-
-    This file used to carry its own fourteen-entry list of "the real neighbours
-    in the shared project", written by hand. `SHARED_DENY_LIST` has TWENTY
-    entries -- counted on 2026-09-24 by walking the array, after the prose here
-    and in docs/mirrored-values.md had both said twenty-one: one cluster, one
-    VPC, two subnets, the shared default network, three buckets and twelve
-    service accounts. So the suite proving `make destroy` refuses to touch
-    another team's resources was proving it for fourteen of twenty. Missing entirely: the three
-    shared buckets (`saga-agents-crawled-media-staging`,
-    `saga-agents-files-staging`, `saga-agents-terraform-state-staging`) and the
-    other team's Compute Engine default service account. A plan deleting any of
-    those was never shown to be refused.
-
-    The SHAPE was wrong too, which is the more interesting half. The hand-written
-    list held service accounts by short name (`promptlab-runner`); `common.sh`
-    holds them as full emails, and `scripts/destroy.sh` and
-    `scripts/lib/plan-guard.sh` pass those full emails to the guard. So the one
-    matching behaviour production actually depends on was the one the test did
-    not exercise -- and `209012342332-compute@developer.gserviceaccount.com` is
-    not even on `PROJECT`'s domain, so rebuilding an email from a short name, as
-    this file did, cannot produce it at all.
-
-    CLAUDE.md: "The deny-list lives once, in scripts/lib/common.sh."
+    DERIVED, NOT RESTATED: a hand-written copy here once covered fewer entries
+    than the real list, and held service accounts by short name where the guard
+    is given full emails. A deployment's list lives in config/<env>/deny-list.json
+    (read by `deny_list_load` in scripts/lib/common.sh); the repository holds only
+    scripts/lib/deny-list.example.json, which is what the placeholder deployment
+    serves every test, so that is the list judged here, entry by entry, as written.
     """
-    text = COMMON_SH.read_text()
-    assert "SHARED_DENY_LIST=(" in text, (
-        f"{COMMON_SH} no longer declares SHARED_DENY_LIST=( ; the deny-list moved "
-        f"and this suite would otherwise judge by nothing"
+    entries = json.loads(DENY_LIST_EXAMPLE.read_text())["entries"]
+    assert isinstance(entries, list) and all(isinstance(e, str) for e in entries), (
+        f"{DENY_LIST_EXAMPLE} no longer holds an `entries` list of strings; this suite "
+        f"would otherwise judge by nothing"
     )
-    block = text.split("SHARED_DENY_LIST=(", 1)[1].split("\n)", 1)[0]
-    return [
-        line.strip().strip('"')
-        for line in block.splitlines()
-        if line.strip().startswith('"')
-    ]
+    return entries
 
 
 #: The deny-list in the exact form the guard is given it. The two
@@ -109,11 +92,19 @@ def _name_prefix() -> str:
     literal "swarm-" here would keep passing after somebody changed the real
     one, which is the fixture-drift failure this whole pair of files exists
     about.
+
+    This runs at import, before any fixture, so no placeholder deployment is
+    active yet and common.sh (which names no default project and fails closed
+    without a never-touch list) is sourced under a placeholder deployment of
+    its own, built for this one call.
     """
-    proc = subprocess.run(
-        ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
-        capture_output=True, text=True, timeout=60,
-    )
+    with tempfile.TemporaryDirectory() as root:
+        deployment = _P.deployment().PlaceholderDeployment(Path(root))
+        proc = subprocess.run(
+            ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, **deployment.env()},
+        )
     assert proc.returncode == 0, (
         f"guard_name_prefix is not callable in {COMMON_SH}: {proc.stderr}"
     )
@@ -173,7 +164,7 @@ def test_near_miss_label_value_is_an_offender(tmp_path):
     """
     verdict = run_guard([
         deletion("ours", "google_storage_bucket",
-                 name="saga-agents-staging-swarm-artifacts",
+                 name=f"{PROJECT}-swarm-artifacts",
                  labels={"managed-by": "swarm-terraform"}),
         deletion("near_miss", "google_storage_bucket",
                  name="someone-elses-bucket",
@@ -203,27 +194,21 @@ def test_no_labels_key_at_all_is_an_offender(tmp_path):
 def test_the_derived_deny_list_is_the_one_production_passes_the_guard():
     """The derivation, asserted, so a silent parse failure cannot read as a pass.
 
-    A `split()` that stopped finding the array would yield `[]`, every
+    A derivation that stopped finding the entries would yield `[]`, every
     parametrised case below would collapse to nothing, and the suite would go
     green having checked no resource at all -- the failure mode CLAUDE.md calls
     out by name ("Empty output is not success").
 
-    MUTATION: rename `SHARED_DENY_LIST` in common.sh, or delete an entry, and
-    this fails on the count. Drop the `grep -vx default` from `guard_deny_json`
+    MUTATION: delete an entry from scripts/lib/deny-list.example.json and this
+    fails on its own floor. Drop the `grep -vx default` from `guard_deny_json`
     and the third assertion fails.
     """
-    # 30 = the 2026-10-21 read of saga-agents-staging (#1822) -- 19 service
-    # accounts, 6 buckets, 2 Cloud Run services, the cluster, the VPC, two
-    # subnets and `default` -- less the oracle-api@ service account and the bare
-    # "oracle-api" Cloud Run service name, which BGD removed on 2026-10-27
-    # (#1835, answer "Both entries"; see the comment above SHARED_DENY_LIST).
-    # Raise it when the list grows; never lower it to make a shortened list
-    # pass -- only an owner decision to drop an entry lowers it.
-    assert len(SHARED) >= 30, (
-        f"parsed only {len(SHARED)} deny-list entries out of scripts/lib/common.sh; "
-        f"the shared project holds a cluster, a VPC, two subnets, the default "
-        f"network, six buckets, one Cloud Run service and eighteen service "
-        f"accounts (30), so a short list means the parse broke or an entry was lost"
+    # The list's own `floors.total` is the fewest entries it may hold; a list
+    # below it is truncated, and deny_list_load refuses it for the same reason.
+    floor = json.loads(DENY_LIST_EXAMPLE.read_text())["floors"]["total"]
+    assert floor > 0 and len(SHARED) >= floor, (
+        f"read only {len(SHARED)} never-touch entries out of {DENY_LIST_EXAMPLE.name}, "
+        f"below its floor of {floor}, so the read broke or an entry was lost"
     )
     assert len(UNLABELABLE) >= 35, (
         f"parsed only {len(UNLABELABLE)} unlabelable types out of {TYPES_JSON.name}"
@@ -264,10 +249,9 @@ def test_every_real_neighbour_is_caught_even_if_mislabelled(protected, tmp_path)
     all of them are covered. The four that were here proved four.
 
     The entry is fed AS IT IS WRITTEN, never rebuilt: a service account goes in as
-    its own full email, because one of the twelve
-    (`209012342332-compute@developer.gserviceaccount.com`) is not on this
-    project's service-account domain and no `f"{name}@{PROJECT}..."` could
-    produce it.
+    its own full email, because a shared project's accounts (a Compute Engine
+    default account, say) need not be on this project's service-account domain,
+    and no `f"{name}@{PROJECT}..."` could produce them.
     """
     before = {"name": protected}
     if "@" in protected:
@@ -328,7 +312,6 @@ def test_shipped_self_test_passes(tmp_path):
     proc = subprocess.run(
         ["bash", str(DESTROY), "--self-test"],
         capture_output=True, text=True, cwd=REPO, timeout=180,
-        env={**os.environ, "PROJECT_ID": PROJECT, "REGION": "us-central1",
-             "ENVIRONMENT": "dev"},
+        env={**os.environ, "PROJECT_ID": PROJECT, "ENVIRONMENT": "dev"},
     )
     assert proc.returncode == 0, f"destroy.sh --self-test FAILED:\n{proc.stdout}\n{proc.stderr}"

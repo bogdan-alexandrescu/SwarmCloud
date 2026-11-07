@@ -39,6 +39,11 @@ REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
 CALLS = REPO / "scripts" / "lib" / "workspace-calls.json"
 
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_P)
+placeholder_deployment = _P.deployment()
+
 PROJECT = "example-project"
 SCHEDULER_UID = "117405034245659033603"
 RECONCILER_UID = "108023754768362642341"
@@ -1126,12 +1131,19 @@ def test_the_policies_judge_nobody_but_the_deployer(dev_policy_docs):
 APPLY = KUBERNETES / "apply.sh"
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _placeholder_deployment(tmp_path_factory):
+    yield from placeholder_deployment.activate(tmp_path_factory)
+
+
 def _apply(*args: str) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("SWARM_", "GOOGLE_", "CLOUDSDK_"))}
     # apply.sh has no default project (DAYONE-K8S-1) and refuses an unset one
     # first; these refusals are the next ones, so a project is given.
     env.update(SWARM_ENV_FILE="/nonexistent/swarm.env", NO_COLOR="1", KUBECONFIG="/nonexistent/kubeconfig",
                PROJECT_ID=PROJECT)
+    # SWARM_* is stripped above, so the placeholder region, zone and never-touch list go back in.
+    env.update(placeholder_deployment.child_env(PROJECT))
     return subprocess.run(
         ["bash", str(APPLY), *args], cwd=REPO, env=env, capture_output=True, text=True, timeout=120, check=False
     )
