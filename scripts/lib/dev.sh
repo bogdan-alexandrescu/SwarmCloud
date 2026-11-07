@@ -15,6 +15,12 @@
 # Usage: scripts/lib/dev.sh [api|scheduler|quota-broker|emulator] [--port 8080]
 
 set -euo pipefail
+# The emulator's project, set BEFORE common.sh is sourced: common.sh has no
+# default project and stops when PROJECT_ID is unset, and this loop must never
+# borrow the operator's .env project (or, as it once could, the live one).
+DEV_PROJECT="${DEV_PROJECT_ID:-swarm-local}"
+PROJECT_ID="${DEV_PROJECT_ID:-swarm-local}"
+export PROJECT_ID
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
@@ -37,7 +43,6 @@ require_cmd gcloud uv curl jq
 
 EMULATOR_HOST="127.0.0.1:${EMULATOR_PORT}"
 EMULATOR_LOG="${BUILD_DIR}/firestore-emulator.log"
-DEV_PROJECT="${DEV_PROJECT_ID:-swarm-local}"
 
 if ! gcloud components list --only-local-state --format='value(id)' 2>/dev/null \
      | grep -q 'cloud-firestore-emulator'; then

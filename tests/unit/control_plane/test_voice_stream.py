@@ -285,3 +285,48 @@ def test_a_malformed_last_event_id_or_session_id_is_422(client):
     assert client.get(url, headers={**auth_header("alice"), "Last-Event-ID": "x1"}).status_code == 422
     assert client.get("/v1/voice/sessions/not-a-session/events",
                       headers=auth_header("alice")).status_code == 422
+
+
+# ---- the stage's events ---------------------------------------------------------
+
+
+def test_a_visual_a_focus_and_a_note_are_sent_as_the_reads_serve_them_and_a_bad_one_is_not(
+        client, db, clock):
+    from swarm_api.voice import visuals as vvis
+
+    started = _start(client, "alice").json()
+    vid, nid = "vv_" + secrets.token_hex(16), "vn_" + secrets.token_hex(16)
+    visual = {"visual_id": vid, "kind": "spec", "title": "The spec", "version": 2,
+              "source": None, "parts": [], "lines": {"from": 1, "to": 3},
+              "body_ref": f"tenants/eng/voice/{started['project_id']}/visuals/{vid}/000002.txt",
+              "created_by": "planner", "session_id": started["session_id"],
+              "project_id": started["project_id"], "created_at": "2026-11-07T00:00:00+00:00",
+              "updated_at": "2026-11-07T00:01:00+00:00"}
+    note = {"note_id": nid, "visual_id": vid, "visual_version": 2, "anchor": None,
+            "text": "bigger", "by": "alice@example.com", "via": "typed", "state": "resolved",
+            "work": None, "session_id": started["session_id"]}
+    _emit(db, started, "eng", "alice@example.com",
+          {"type": vvis.VISUAL_UPSERT, "visual": {**visual, "body": "not a read's field",
+                                                   "tenant_id": "eng"}},
+          {"type": vvis.FOCUS, "visual_id": vid, "anchor": {"type": "lines", "from": 1, "to": 2},
+           "caption": "Here.", "extra": "dropped"},
+          {"type": vvis.NOTE_UPSERT, "note": {**note, "tenant_id": "eng",
+                                              "person": "alice@example.com"}},
+          {"type": vvis.VISUAL_UPSERT, "visual": {"kind": "spec"}},
+          {"type": vvis.FOCUS, "visual_id": 7},
+          {"type": vvis.NOTE_UPSERT, "note": {"note_id": nid, "visual_id": vid,
+                                              "state": "lost"}})
+    assert _end(client, "alice", started["session_id"]).status_code == 200
+
+    frames = _frames(_collect(_stream(db, started, after=0, clock=clock)))
+
+    assert [(f["id"], f["event"]) for f in frames] == [
+        (1, vvis.VISUAL_UPSERT), (2, vvis.FOCUS), (3, vvis.NOTE_UPSERT)]
+    assert frames[0]["data"]["visual"] == vvis.visual_view(visual)
+    assert {k: v for k, v in frames[1]["data"].items() if k not in ("type", "seq", "at")} == {
+        "visual_id": vid, "anchor": {"type": "lines", "from": 1, "to": 2}, "caption": "Here."}
+    assert frames[2]["data"]["note"] == vvis.note_view(note)
+    assert all("tenant_id" not in json.dumps(f["data"]) for f in frames)
+    # A replay after the focus starts at the note and repeats nothing.
+    again = _frames(_collect(_stream(db, started, after=2, clock=clock)))
+    assert [(f["id"], f["event"]) for f in again] == [(3, vvis.NOTE_UPSERT)]

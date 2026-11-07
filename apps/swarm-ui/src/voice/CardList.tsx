@@ -44,8 +44,14 @@ import { BudgetCard, PlanCard, ReviewCard, StopCard, VoiceCardFrame, WorkCard } 
 
 export const VOICE_EVENTS = '/v1/voice/sessions/{id}/events'
 
-/** The events the stream carries (swarm_api/voice/stream.py `EVENT_TYPES`). */
+/** The events the card list reads (swarm_api/voice/stream.py `EVENT_TYPES`, less the stage's). */
 export const STREAM_EVENTS = ['card.upsert', 'card.remove', 'session.state', 'meter.update'] as const
+
+/** The events the Talk stage reads (swarm_api/voice/stream.py `STAGE_TYPES`). */
+export const STAGE_EVENTS = ['visual.upsert', 'note.upsert', 'focus'] as const
+
+/** Every event the stream carries (swarm_api/voice/stream.py `EVENT_TYPES`). */
+const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS]
 
 /** A card as the stream carries it (swarm_api/voice/cards.py `card_view`). */
 export interface VoiceCard {
@@ -161,6 +167,66 @@ export function streamUrl(sessionId: string, after: number): string {
   return route(VOICE_EVENTS, { id: sessionId }, after > 0 ? new URLSearchParams({ after: String(after) }) : undefined).url
 }
 
+// ---- one stream per session, shared --------------------------------------------
+
+/** One reader of a session's stream: the events it reads, and what it does with each. */
+export interface StreamReader {
+  types: readonly string[]
+  onEvent: (ev: StreamEvent) => void
+  /** The stream opened, or gave up (a refusal, or the session's end). */
+  onLink?: (link: 'open' | 'closed') => void
+}
+
+interface SharedStream {
+  source: EventSource
+  readers: Set<StreamReader>
+}
+
+const sessionStreams = new Map<string, SharedStream>()
+
+/**
+ * Reads `sessionId`'s stream through the one `EventSource` the card list and
+ * the Talk stage share, so a live session holds one connection, not one per
+ * reader. The first reader opens it from `after`; a reader that joins an open
+ * stream reads from where it stands. A reader that joins a stream that gave
+ * up (Reconnect) opens it again from its own `after`, and every reader still
+ * on it moves to the new one. The stream closes when its last reader leaves.
+ * Returns the reader's leave.
+ */
+export function readSessionStream(sessionId: string, after: number, reader: StreamReader): () => void {
+  let shared = sessionStreams.get(sessionId)
+  if (shared === undefined || shared.source.readyState === EventSource.CLOSED) {
+    shared?.source.close()
+    const source = new EventSource(streamUrl(sessionId, after))
+    const next: SharedStream = { source, readers: shared?.readers ?? new Set() }
+    for (const type of SESSION_EVENTS) {
+      source.addEventListener(type, (e) => {
+        const ev = streamEvent(type, e as MessageEvent)
+        if (ev === null) return
+        for (const r of [...next.readers]) if (r.types.includes(type)) r.onEvent(ev)
+      })
+    }
+    // EventSource reconnects by itself while it can; CLOSED means it gave up.
+    source.onerror = () => {
+      if (source.readyState === EventSource.CLOSED) for (const r of [...next.readers]) r.onLink?.('closed')
+    }
+    source.onopen = () => {
+      for (const r of [...next.readers]) r.onLink?.('open')
+    }
+    sessionStreams.set(sessionId, next)
+    shared = next
+  }
+  const held = shared
+  held.readers.add(reader)
+  return () => {
+    held.readers.delete(reader)
+    if (held.readers.size === 0 && sessionStreams.get(sessionId) === held) {
+      sessionStreams.delete(sessionId)
+      held.source.close()
+    }
+  }
+}
+
 // ---- drawing one card -----------------------------------------------------------
 
 /** Kinds whose renderers are later lanes: named in one line, nothing more. */
@@ -219,32 +285,22 @@ export function CardList({ sessionId, fixtures }: { sessionId: string | null; fi
       setLink('unsupported')
       return
     }
-    const source = new EventSource(streamUrl(sessionId, lastSeq.current))
     setLink('open')
-    const on = (type: string) => (e: Event) => {
-      const ev = streamEvent(type, e as MessageEvent)
-      if (ev === null) return
-      if (ev.type === 'card.upsert') {
-        const kind = (ev.data.card as { kind?: unknown } | undefined)?.kind
-        const name = typeof kind === 'string' ? kind : '(none)'
-        if (specOf(kind) === null && !logged.current.has(name)) {
-          logged.current.add(name)
-          console.warn(`Voice it: a card of kind ${JSON.stringify(name)} is not in the catalogue and is not drawn`)
+    return readSessionStream(sessionId, lastSeq.current, {
+      types: STREAM_EVENTS,
+      onEvent: (ev) => {
+        if (ev.type === 'card.upsert') {
+          const kind = (ev.data.card as { kind?: unknown } | undefined)?.kind
+          const name = typeof kind === 'string' ? kind : '(none)'
+          if (specOf(kind) === null && !logged.current.has(name)) {
+            logged.current.add(name)
+            console.warn(`Voice it: a card of kind ${JSON.stringify(name)} is not in the catalogue and is not drawn`)
+          }
         }
-      }
-      dispatch({ type: 'event', ev })
-    }
-    const handlers = STREAM_EVENTS.map((t) => [t, on(t)] as const)
-    for (const [t, h] of handlers) source.addEventListener(t, h)
-    // EventSource reconnects by itself while it can; CLOSED means it gave up (a refusal, or the session's end).
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) setLink('closed')
-    }
-    source.onopen = () => setLink('open')
-    return () => {
-      for (const [t, h] of handlers) source.removeEventListener(t, h)
-      source.close()
-    }
+        dispatch({ type: 'event', ev })
+      },
+      onLink: setLink,
+    })
   }, [sessionId, round])
 
   // Fixture mode (a development build with no live API) draws one card of each kind while no session is live.

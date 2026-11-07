@@ -1023,6 +1023,22 @@ variable "platform_admin_reach" {
   default     = false
 }
 
+variable "platform_memberships" {
+  description = <<-EOT
+    swarm-api's PLATFORM_MEMBERSHIPS (docs/design/join-requests.md §6; #2325):
+    whether an approved join request admits its person to the group workspace.
+    On, approval writes a signed, append-only platform-side membership beside
+    the workspace's Google group, and tenant resolution honours it as a member;
+    there is no Cloud Identity write and no IAM grant, so no GSA, secret or
+    role changes. Off, approval answers admitted: false with the group command
+    for an admin to run by hand. OFF by default, as swarm_api.settings is: it
+    widens who may enter a tenant (invariant 9), so it goes on in dev first, is
+    exercised by the join acceptance probe, and only then in prod.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "contract_review_mode" {
   description = <<-EOT
     swarm-api's SWARM_CONTRACT_REVIEW (apps/swarm-api/swarm_api/contractreview.py;
@@ -1526,10 +1542,12 @@ variable "voice_speech" {
       image         "" until set: a Deep Learning VM image BY NAME,
                     projects/deeplearning-platform-release/global/images/<name>,
                     with the NVIDIA driver and the container toolkit on it.
+                    The driver is 580 or later (its family ends -nvidia-580
+                    or higher): vLLM 0.33 is built on CUDA 13.
                     Never a /family/ path, which moves under a stopped machine
                     and would replace it at the next plan. Required once
-                    enabled; the installer pins the newest image of the family
-                    at install time.
+                    enabled; the installer pins the newest such image at
+                    install time.
       disk_gb       150: the boot disk (pd-balanced, about $15 a month, idle
                     or not), sized for the image with its driver (~50 GB), the
                     server image (~20 GB), the models' weights (~8 GB) and one
@@ -1567,5 +1585,24 @@ variable "voice_speech" {
   validation {
     condition     = var.voice_speech.disk_gb >= 100 && var.voice_speech.idle_minutes >= 1
     error_message = "voice_speech.disk_gb is at least 100 (the image alone is about 50 GB) and idle_minutes at least 1."
+  }
+}
+
+# The managed plugins' bucket (docs/design/managed-plugins.md §3; plugins.tf).
+# Empty is "<project_id>-swarm-plugins", the name the design gives it and the
+# one `swarm install`'s verify check and `swarm doctor` look for: a fresh
+# deployment sets nothing. A name is accepted only to adopt a different one;
+# it is never one of the shared project's buckets (SHARED_DENY_LIST in
+# scripts/lib/common.sh), which all start "saga-" or carry "avatars", so a
+# name must contain "swarm".
+variable "plugins_bucket_name" {
+  description = "The managed plugins' bucket (plugins.tf). Empty: <project_id>-swarm-plugins."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.plugins_bucket_name == "" || (can(regex("^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$", var.plugins_bucket_name)) && strcontains(var.plugins_bucket_name, "swarm"))
+    error_message = "plugins_bucket_name is empty (<project_id>-swarm-plugins) or a bucket name of 3-63 lower-case letters, digits, '-' or '_' that contains \"swarm\"."
   }
 }

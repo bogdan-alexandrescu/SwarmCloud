@@ -53,7 +53,7 @@ counts:
   kind:
     iam-binding: 52
     other: 46
-    switch: 39
+    switch: 40
     custom-role: 30
     gcp-api: 26
     secret-container: 24
@@ -89,14 +89,14 @@ counts:
     oauth-brand: 1
     oauth-client: 1
   scope:
-    core: 376
+    core: 377
     addon:ci: 43
     addon:typesafe: 12
     addon:bright-data-egress: 9
     addon:tailscale: 4
     addon:brave-search: 3
   provider:
-    engine: 392
+    engine: 393
     human-in-terminal: 21
     org-admin: 18
     human-in-console: 13
@@ -113,13 +113,13 @@ counts:
     '8': 10
     '9': 20
     '10': 17
-    '11': 18
+    '11': 19
     '12': 1
     '13': 6
     '14': 5
     '15': 10
   total:
-    entries: 447
+    entries: 448
 
 entries:
 - id: local-tool.checkov
@@ -8659,6 +8659,24 @@ entries:
   refs:
     variable:
     - infra/platform_admin_reach
+- id: switch.platform_memberships
+  kind: switch
+  scope: core
+  stage: 11
+  provider: engine
+  check: grep -n platform_memberships terraform/environments/*/*.tfvars
+  apply: terraform/infra/variables.tf:1026, type bool, default false
+  verify: dev first, exercised by the join acceptance probe (scripts/acceptance/groups/join.sh), only then prod
+  explain: 'swarm-api''s PLATFORM_MEMBERSHIPS: whether an approved join request admits its person to a group workspace, through a signed platform-side membership beside the Google group. No Cloud Identity write, no IAM grant.'
+  guards: widens who may enter a tenant (invariant 9) -- sequenced dev-then-prod deliberately
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - terraform/infra/variables.tf:1026-1040
+  step: infra.pass-2
+  refs:
+    variable:
+    - infra/platform_memberships
 - id: switch.repository_grants_enforced
   kind: switch
   scope: core
@@ -9612,7 +9630,7 @@ env:
   PLATFORM_ADMIN_REACH:
     setter: terraform/infra/locals.tf:949
   PLATFORM_MEMBERSHIPS:
-    setter: 'internal: read at apps/swarm-api/swarm_api/settings.py:982; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+    setter: terraform/infra/locals.tf:985
   PLATFORM_OWNER:
     setter: terraform/infra/locals.tf:910
   PLATFORM_SERVICE_ACCOUNTS:
@@ -9657,6 +9675,12 @@ env:
     setter: 'internal: read at apps/reconciler/reconciler/config.py:519; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   RECONCILER_ENABLE_GKE_EVICTION:
     setter: 'internal: read at apps/reconciler/reconciler/config.py:489; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+  RECONCILER_FULL_SWEEP_EVERY:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:507; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+  RECONCILER_INCREMENTAL_OVERLAP_SECONDS:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:509; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
+  RECONCILER_TICK_SECONDS:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:508; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'
   REGION:
     setter: terraform/infra/locals.tf:682
   REPOSITORY_GRANTS_ENFORCED:

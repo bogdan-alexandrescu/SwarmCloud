@@ -91,6 +91,11 @@ def _stuck_after_overrides() -> tuple[dict[str, int], tuple[str, ...]]:
 #: of three and still small next to any reasonable `max_attempts`.
 STARTUP_REFUND_LIMIT_MAX = 10
 
+#: The ceiling on `never_started_requeue_limit`, for the same reason as the
+#: one above: each re-queue gives back the attempt, so an override with no
+#: ceiling would let a task that never starts be dispatched for ever.
+NEVER_STARTED_REQUEUE_LIMIT_MAX = 10
+
 
 @dataclass(frozen=True)
 class ReconcilerConfig:
@@ -108,6 +113,30 @@ class ReconcilerConfig:
     #: TTL policy on `expires_at` removes them. Long enough to investigate an
     #: incident from last week, short enough not to become a data set.
     pass_retention_hours: int = 168
+
+    # -- The incremental pass (BGD, 2026-11-06) ------------------------------
+    #: Every Nth pass of an instance is a FULL sweep, and its first pass always
+    #: is; the passes between read only what changed since the last pass and
+    #: the leases falling due before the next tick
+    #: (`ControlStore.incremental_snapshot`). 10 at a one-minute tick is a full
+    #: sweep every ten minutes: the load analysis of 2026-11-06 measured a full
+    #: pass at a 26.4 s median and 115.6 s worst on a 60 s tick, growing with
+    #: the documents, while the repairs a full sweep alone finds (a stuck
+    #: attempt, an orphan Job, garbage) are judged on clocks of 5 to 30 minutes
+    #: already. 1 (or less) makes every pass full, which is the reconciler as
+    #: it was before.
+    full_sweep_every: int = 10
+    #: The Cloud Scheduler tick (`*/1`, `reconciler_schedule` in
+    #: terraform/modules/scheduler/variables.tf). An incremental
+    #: pass reads every lease whose `expires_at` falls before the NEXT tick, so
+    #: a lease never expires unseen between two passes.
+    tick_seconds: int = 60
+    #: How far before the previous pass's snapshot the changed-tasks read
+    #: starts. Writers stamp `updated_at` from their own clocks and commit after
+    #: they stamp it, so a cursor at exactly the last snapshot would miss a
+    #: write stamped a moment before it and committed a moment after. Thirty
+    #: seconds is far past both; anything later still is the full sweep's.
+    incremental_overlap_seconds: int = 30
 
     #: How long a task may sit in DISPATCHED/STARTING with no backend execution
     #: before the execution is presumed never to have been created. Image pulls
@@ -323,6 +352,19 @@ class ReconcilerConfig:
     #: FAILED (security review, PR #290).
     startup_refund_limit: int = 3
 
+    #: How many times a task whose lease went silent before any attempt
+    #: reached STARTING is re-queued, its attempt not counted, before it is
+    #: FAILED as never started (part of #2688). Such an attempt ran nothing:
+    #: on 2026-11-06 a task sat DISPATCHED for 485 s while the platform was at
+    #: its API and pool limits and ended FAILED with no attempt, no cost and
+    #: no artifacts. Three, like the startup refund: a platform at its limits
+    #: clears within the requeue backoff's 30 s / 2 min / 8 min, and a task
+    #: that still never starts on the fourth dispatch has a cause no further
+    #: dispatch will fix, so it stops holding capacity. 0 fails it at the
+    #: first such silence, with the never-started words. Bounded at
+    #: `NEVER_STARTED_REQUEUE_LIMIT_MAX`.
+    never_started_requeue_limit: int = 3
+
     #: Minutes an unreleased lease may sit past its TTL -- held back for want
     #: of proof, or because its repair keeps failing -- before the pass says
     #: so at ERROR (once per lease per hour) and lists it in the persisted
@@ -480,6 +522,9 @@ class ReconcilerConfig:
                 "HEARTBEAT_GRACE_SECONDS", max(90, settings.heartbeat_interval_seconds * 3)
             ),
             pass_retention_hours=_int("PASS_RETENTION_HOURS", 168),
+            full_sweep_every=_int("RECONCILER_FULL_SWEEP_EVERY", 10),
+            tick_seconds=max(1, _int("RECONCILER_TICK_SECONDS", 60)),
+            incremental_overlap_seconds=max(0, _int("RECONCILER_INCREMENTAL_OVERLAP_SECONDS", 30)),
             missing_execution_grace_seconds=_int(
                 "MISSING_EXECUTION_GRACE_SECONDS", settings.dispatch_timeout_seconds
             ),
@@ -502,6 +547,10 @@ class ReconcilerConfig:
             ),
             startup_refund_limit=min(
                 STARTUP_REFUND_LIMIT_MAX, max(0, _int("STARTUP_REFUND_LIMIT", 3))
+            ),
+            never_started_requeue_limit=min(
+                NEVER_STARTED_REQUEUE_LIMIT_MAX,
+                max(0, _int("NEVER_STARTED_REQUEUE_LIMIT", 3)),
             ),
             held_lease_alert_minutes=_int("HELD_LEASE_ALERT_MINUTES", 15),
             never_started_release_seconds=max(

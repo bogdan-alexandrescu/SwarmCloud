@@ -33,7 +33,8 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { readFileSync } from 'node:fs'
-import { agentMaxWorkers, clampPoolOptions, type PoolWorkerOptions } from './src/vitestWorkers'
+import { availableParallelism } from 'node:os'
+import { agentMaxWorkers, ciMaxWorkers, clampPoolOptions, type PoolWorkerOptions } from './src/vitestWorkers'
 
 // The container's memory limit (cgroup v2, as GKE Autopilot pods have), or null
 // outside a container or when it is unlimited ("max"). See src/vitestWorkers.ts.
@@ -48,6 +49,10 @@ function containerMemoryLimit(): number | null {
 
 // #1641: sized to the agent container's memory; undefined (vitest's default) elsewhere.
 const agentCap = agentMaxWorkers(process.env, containerMemoryLimit())
+// Part of #2688: a CI shard runs half the CPUs' workers, 4 on the 8-vCPU runner
+// rather than vitest's 7, so the main process answers their RPCs inside the
+// 60 s vitest gives them. Why it is half: src/vitestWorkers.ts.
+const ciCap = ciMaxWorkers(process.env, availableParallelism())
 
 export default defineConfig({
   plugins: [
@@ -125,8 +130,9 @@ export default defineConfig({
     // headroom without giving up the property the timeout exists for.
     testTimeout: 30_000,
     // What this file asks for in an agent container; the plugin above is what
-    // makes it hold against the command line (#2508).
-    maxWorkers: agentCap,
+    // makes it hold against the command line (#2508). In CI, half the CPUs
+    // (ciCap above); elsewhere vitest's default.
+    maxWorkers: agentCap ?? ciCap,
     poolOptions: clampPoolOptions<PoolWorkerOptions>({}, agentCap).poolOptions,
     // `globals` stays OFF. Every test imports `describe`/`it`/`expect` from
     // 'vitest' explicitly, so `tsc -b` typechecks the tests with no ambient

@@ -336,7 +336,13 @@ pool_limits = {
 }
 
 service_max_instances = {
-  "swarm-api"          = 5
+  # 5 -> 8 (BGD's pick, 2026-11-06, part of #2688), with each instance doubled
+  # to 2 vCPU and 2 GiB in terraform/infra/main.tf: swarm-api sat at 5 of 5
+  # for 359 of 360 minutes at 91% CPU and 94% memory. A ceiling, not a floor:
+  # min_instances stays 2, so the fixed cost is ~$210 a month and the three
+  # instances past today's five bill only while they serve (~$105 each a month
+  # if they ran all the time).
+  "swarm-api"          = 8
   "swarm-scheduler"    = 2
   "swarm-quota-broker" = 2
   "swarm-reconciler"   = 1
@@ -778,6 +784,18 @@ api_refusals = {
 # + reach now", lane ROLES-ON-DEV); prod stays off until the acceptance probe
 # (ROLES-ACCEPT) has exercised it here. Kill switch: false and release.
 platform_admin_reach = true
+
+# Platform-side memberships from approved join requests (swarm-api
+# PLATFORM_MEMBERSHIPS, docs/design/join-requests.md §6, #2325): an admin's
+# approval writes a signed, append-only membership beside the workspace's
+# Google group, and tenant resolution honours it. No Cloud Identity write and
+# no IAM grant. ON in dev only (owner decision 2026-10-25 23:34Z on #2325:
+# the variable and its env rendering go into the dev switch-on change, after
+# JOIN-DOCS-ACCEPT; approval stays design A); prod stays off until the join
+# acceptance probe (scripts/acceptance/groups/join.sh) has exercised it here.
+# Kill switch: false and release; approval then answers admitted: false with
+# the group command.
+platform_memberships = true
 
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made

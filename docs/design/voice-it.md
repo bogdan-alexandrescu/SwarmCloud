@@ -577,6 +577,7 @@ drifted here before.
 |---|---|---|
 | Talk | The session's seconds | `gpt-live-1` at $0.05 a minute, billed per second [1][2], silence included |
 | Planner | Each turn's token usage | Opus 5.5 from the platform's `model_prices` (`swarm_api/modelprices.py`) |
+| Speech machine | The own-speech machine's minutes from the start call to the stop, per session, on the day the session started (`docs/design/voice-it-own-speech.md` §13) | The machine's catalogue price; a stop with no price is `unpriced_machine_sessions`, not $0 |
 | Work running | Each started item's step budgets, **times 1.2**, until it ends | The worker's guard kills a step at 120% of its budget (`docs/design/agent-budget.md` §5), so 120% is the true ceiling |
 | Work finished | Each started item's measured `cost_usd`, which replaces its reservation | The platform's estimate at list price |
 | Follow-ups | Agents carrying the project's tag that the platform started for it (fix rounds, merge steps) | Measured `cost_usd`, plus an allowance reserved at start |
@@ -625,6 +626,17 @@ runner minutes and deploys. No SwarmCloud cost figure includes them today
 | File, start, approve, answer, schedule, cancel | No | Yes, act tools, each after the ledger reserves it |
 | Cancel work in flight | Yes, its `stop` tool, which only cancels | Yes |
 | IAM, secrets, the other team's project, budget raises | No | No: not on the grant's allowlist; the platform's holds stop the rest |
+
+**Answering, the first act tool (built; BGD's pick, 6 November 2026).** The
+planner's `answer_question` (`swarm_voice/tools_act.py`) answers an agent's
+question with an option label, the person's own words, or both, through the
+grant's one act route, `POST /v1/tasks/{task_id}/answers`, sent `via:
+voice-it`. Its first call sends nothing: it reads the question back. Only a
+later turn, after the person spoke, sends exactly what was read back. The act
+ledger (`swarm_voice/actledger.py`) reserves it before the call, records the
+outcome, and refuses a second answer to one question in one session unless
+the person says to change it. Who may answer is the route's rule: the
+submitter or an admin, never a viewer.
 
 **The hard stops do not depend on the model's judgement.**
 

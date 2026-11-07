@@ -116,7 +116,34 @@ def _seed(inp: float, out: float, read: float) -> dict[str, Any]:
     }
 
 
-#: Today's figures, exactly as `_LIST_PRICES` held them (module docstring).
+#: Where the figures `_published` seeds were read: the provider's pricing
+#: page (`schedtypes.model_prices_refresh.PRICING_PAGE_URL`), as saved on the
+#: day it was fetched in tests/unit/control_plane/pricing_page_2026-10-19.md,
+#: whose "Model pricing" table lists each figure below. Base input, output,
+#: cache hits and the 5-minute cache write, USD per million tokens.
+_PAGE = "https://platform.claude.com/docs/en/about-claude/pricing.md"
+_PAGE_READ = "2026-10-19"
+
+
+def _published(inp: float, out: float, read: float, write: float,
+               tiers: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    price: dict[str, Any] = {
+        "input": inp,
+        "output": out,
+        "cache_read": read,
+        "cache_write": write,
+        "currency": CURRENCY,
+        "source": _PAGE,
+        "as_of": _PAGE_READ,
+        "updated_by": "swarm_api.modelprices.SEED",
+    }
+    if tiers is not None:
+        price["tiers"] = tiers
+    return price
+
+
+#: Today's figures, exactly as `_LIST_PRICES` held them (module docstring),
+#: and the two `_published` from the saved pricing page.
 #: Two that look wrong are not: `claude-mythos-5-1` is the Project Glasswing
 #: counterpart of Fable 5.1, at Fable 5.1's price, and `claude-opus-5-5` is
 #: priced BELOW Opus 5 ($4/$20).
@@ -132,6 +159,13 @@ SEED: dict[str, dict[str, Any]] = {
     "claude-sonnet-5": _seed(2.0, 10.0, 0.20),
     "claude-sonnet-4-6": _seed(3.0, 15.0, 0.30),
     "claude-haiku-4-5": _seed(1.0, 5.0, 0.10),
+    # The sonnet and haiku classes' pins (BGD, 6 November 2026), at the
+    # figures of the saved pricing page (_PAGE).
+    "claude-sonnet-5-5": _published(2.0, 10.0, 0.10, 2.5),
+    "claude-haiku-5-5": _published(0.10, 0.50, 0.01, 0.125, tiers=[
+        {UP_TO: 100_000, "input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+        {UP_TO: None, "input": 0.50, "output": 2.50, "cache_read": 0.05, "cache_write": 0.625},
+    ]),
 }
 
 

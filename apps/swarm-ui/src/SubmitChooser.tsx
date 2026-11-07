@@ -9,7 +9,8 @@ import { runAddress } from './IssueSubmit'
 import { addressToPath } from './paths'
 import { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM, shortcutsIn, typedIntoField } from './shortcuts'
 import { AGED_AFTER_MS, PageHead, RefreshControl, useClaimPageAge } from './Shell'
-import { firstLine, workflowLabel } from './stepviews'
+import { firstLine } from './stepviews'
+import { workflowName } from './WorkflowFacts'
 import { timeAgo, type Task } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { stateWord } from './words'
@@ -275,7 +276,7 @@ function yourSubmissions(
   for (const w of workflows ?? []) {
     if (!mine(w.submitted_by)) continue
     out.push({
-      kind: 'workflow', id: w.workflow_id, name: workflowLabel(w, byId) ?? w.workflow_id, at: w.created_at, state: stateOf(w.state),
+      kind: 'workflow', id: w.workflow_id, name: workflowName(w, byId) ?? w.workflow_id, at: w.created_at, state: stateOf(w.state),
       to: `work/workflows?${new URLSearchParams({ wf: w.workflow_id }).toString()}`,
     })
   }

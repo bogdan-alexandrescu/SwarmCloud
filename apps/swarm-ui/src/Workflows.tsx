@@ -195,9 +195,10 @@ import { ownerQuestionsHold } from './Handoff'
 import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
 import { finishedQuestionsOf, listNeedItems, workflowNeedItems } from './work/listNeeds'
 import { QuestionsCard, questionCount } from './QuestionsCard'
-import { NeedsYou, StepRetryButton, mergeHeldBecause, type MergeNeed, type NeedKind, type NeedSelection } from './work/NeedsYou'
+import { NeedsYou, StepRetryButton, mergeHeldBecause, type MergeNeed } from './work/NeedsYou'
 import { StageGrid, chipKindOf, chipTimeOf, pullRequestOf, stageGridOf, tallyOf, walkStage } from './work/StageGrid'
 import { LineageStrip, lineageOf } from './work/Lineage'
+import { WorkflowNeedsCard, WorkflowQuestions, jumpToQuestions } from './WorkflowQuestions'
 import {
   anyRunning,
   bucketCounts,
@@ -5849,8 +5850,8 @@ function WorkflowList({
           </table>
         </div>
       )}
-      <p className="wfl-foot">
-        {rows.length} of {all.length} read · {SORT_LABEL[query.sort]} · 100 per read
+      <p className="wfl-foot" title="100 per read">
+        {rows.length} of {all.length} read · {SORT_LABEL[query.sort]}
         {older.more === null ? (
           ' · no older workflows'
         ) : (
@@ -6623,22 +6624,14 @@ function Board({
   // ON A PHONE the Overview is a sheet the reader asks for ("Workflow details").
   const [overviewSheet, setOverviewSheet] = useState(false)
 
-  // THE NEEDS-YOU ROW, from the step blocks the page read (`workflowNeedItems`,
-  // the one the list's bar and row read), its pick held here so the merge
-  // strip's "Answer N questions" can open the questions and the grid can
-  // dim every chip the pick does not name.
+  // THE NEEDS-YOU CARD, from the step blocks the page read (`workflowNeedItems`,
+  // the one the list's bar and row read). The merge strip's "Answer N
+  // questions" and the grid's asks-you mark jump to the step's questions.
   const needItems = useMemo(() => workflowNeedItems(workflow, taskById, (stepId) => stepId), [workflow, taskById])
-  const [needKind, setNeedKind] = useState<NeedKind | null>(null)
-  const [needTasks, setNeedTasks] = useState<readonly string[] | null>(null)
-  const onNeed = useCallback((sel: NeedSelection | null) => {
-    setNeedKind(sel === null ? null : sel.kind)
-    setNeedTasks(sel === null ? null : sel.taskIds)
-  }, [])
-  const bright = useMemo(() => {
-    if (needTasks === null) return null
-    const ids = new Set(needTasks)
-    return new Set(workflow.steps.filter((s) => s.task_id && ids.has(s.task_id)).map((s) => s.step_id))
-  }, [needTasks, workflow.steps])
+  // The asking steps the merge strip's Answer keeps bright on the grid, the
+  // rest dimmed, until a chip is picked or nothing asks any more.
+  const [brightPick, setBright] = useState<ReadonlySet<string> | null>(null)
+  const bright = needItems.some((i) => i.kind === 'question' || (i.kind === 'merge' && ownerQuestionsHold(i.task) !== null)) ? brightPick : null
   const answerQuestions = useCallback(() => {
     // The questions' own steps and the steps a held merge names as asking.
     const ids = new Set<string>()
@@ -6646,9 +6639,14 @@ function Board({
       if (i.kind === 'question') ids.add(i.taskId)
       if (i.kind === 'merge') for (const q of ownerQuestionsHold(i.task)?.questions ?? []) ids.add(q.task_id)
     }
-    onNeed({ kind: 'question', taskIds: [...ids] })
-  }, [needItems, onNeed])
-
+    setBright(new Set(workflow.steps.filter((s) => s.task_id && ids.has(s.task_id)).map((s) => s.step_id)))
+    // The held merge's own block, whose card names each asking step.
+    for (const i of needItems) {
+      if (i.kind !== 'merge' || ownerQuestionsHold(i.task) === null) continue
+      const step = workflow.steps.find((s) => s.task_id === i.task.id)
+      if (step !== undefined && jumpToQuestions(step.step_id)) return
+    }
+  }, [needItems, workflow.steps])
   // THE SAME STEP ACROSS THE BOARD (#112, WF-10): the step inspector's
   // second scrubber, over the workflows of this one's shape, newest first.
   const siblings = useMemo(() => {
@@ -6678,8 +6676,10 @@ function Board({
   }, [pick, choosePick])
 
   const pickStep = useCallback(
-    (stepId: string) =>
-      choosePick(picked === stepId ? null : { workflowId: id, stepId, focus: null }),
+    (stepId: string) => {
+      setBright(null)
+      choosePick(picked === stepId ? null : { workflowId: id, stepId, focus: null })
+    },
     [picked, id, choosePick],
   )
   const closeStep = useCallback(() => choosePick(null), [choosePick])
@@ -6690,7 +6690,7 @@ function Board({
   const main = (
     <div className="wfp wfp-main">
       <WorkflowHead workflow={workflow} taskById={taskById} usage={usage} now={now} />
-      <NeedsYou items={needItems} approvals={null} selected={needKind} onSelect={onNeed} onChanged={reload} cardStep={picked} />
+      <WorkflowNeedsCard items={needItems} workflow={workflow} taskById={taskById} onChanged={reload} />
       <div className="wfp-viewbar">
         <WfTabs id={id} query={query} view={view} steps={workflow.steps.length} onView={focus.onView} />
         {(strays.length > 0 || unreadable.length > 0) && (
@@ -6727,6 +6727,10 @@ function Board({
             now={now}
             // A STAGE'S TALLY OPENS THE TABLE AT THAT STAGE, every state.
             onOpenStage={(stage) => focus.onStageTable(stage.index, STAGE_ANY_STATE)}
+            // THE ASKS-YOU MARK JUMPS TO THE STEP'S QUESTIONS; with no block on the page it picks the chip.
+            onAsk={(stepId) => {
+              if (!jumpToQuestions(stepId)) pickStep(stepId)
+            }}
           />
           <MergeStrip items={needItems} workflow={workflow} onAnswer={answerQuestions} />
           <LiveBrowsers workflow={workflow} taskById={taskById} picked={picked} onPick={pickStep} now={now} />
@@ -6751,6 +6755,7 @@ function Board({
           />
         </div>
       )}
+      <WorkflowQuestions workflow={workflow} taskById={taskById} stateOf={(s) => rowLook(stepState(s, taskById)).word} />
     </div>
   )
 

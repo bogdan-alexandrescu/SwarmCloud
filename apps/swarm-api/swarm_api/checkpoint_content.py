@@ -166,6 +166,11 @@ MAX_ENTRIES = 5000
 #: become one 1 GiB output string.
 _INFLATE_PIECE = 256 * 1024
 
+#: The largest member `read_image` serves. The console's Changes view draws
+#: nothing over 5 MiB (`RENDER_CAP_BYTES` in RenderedFile.tsx), and the
+#: member is held whole to be sent, so this is also what one request may hold.
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
 #: The archive's file name in the whole-archive download.
 _DOWNLOAD_SUFFIX = ".tar.gz"
 
@@ -249,9 +254,10 @@ def content_type_for(path: str) -> str | None:
 
 #: The images an ARTIFACT may be served as, by extension (#184). Used by the
 #: artifact listing's `kind` and by the raw route, which serves an image only
-#: when BOTH this name and the object's own magic bytes say so. Not consulted
-#: for checkpoint members, which stay text-or-refused. SVG is not here: see
-#: `TEXT_EXTENSIONS`.
+#: when BOTH this name and the object's own magic bytes say so. A checkpoint
+#: member is served as an image by the same rule, and only when the caller
+#: asks for one (`?format=image`, `CheckpointContent.read_image`); its text
+#: read never consults this. SVG is not here: see `TEXT_EXTENSIONS`.
 IMAGE_EXTENSIONS: dict[str, str] = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -653,6 +659,22 @@ class ScanBudgetExceeded(ApiError):
     code = "checkpoint_scan_budget_exceeded"
 
 
+class NotAnImage(ApiError):
+    """`?format=image` named a member that is not served as an image: its name
+    is not a png, jpeg, webp or gif, or its first bytes are not that type's
+    signature. Nothing of it is sent."""
+
+    status_code = 415
+    code = "checkpoint_member_not_an_image"
+
+
+class ImageTooLarge(ApiError):
+    """The image member is larger than `max_image_bytes`; none of it is read."""
+
+    status_code = 413
+    code = "checkpoint_image_too_large"
+
+
 class ArchiveCorrupt(ApiError):
     """The archive stops being a readable tar.gz before the member was reached."""
 
@@ -663,6 +685,15 @@ class ArchiveCorrupt(ApiError):
 # --------------------------------------------------------------------------
 # The service
 # --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CheckpointImage:
+    """One image member's bytes, its signature's type and the headers to send."""
+
+    data: bytes
+    media_type: str
+    headers: dict[str, str]
+
 
 @dataclass(frozen=True)
 class ArchiveDownload:
@@ -694,8 +725,10 @@ class CheckpointContent:
         max_scan_bytes: int = MAX_SCAN_BYTES,
         max_inflate_bytes: int = MAX_INFLATE_BYTES,
         max_entries: int = MAX_ENTRIES,
+        max_image_bytes: int = MAX_IMAGE_BYTES,
     ) -> None:
         self._inspection = inspection
+        self._max_image = max_image_bytes
         self._chunk = chunk_bytes
         self._max_scan = max_scan_bytes
         self._max_inflate = max_inflate_bytes
@@ -1301,6 +1334,135 @@ class CheckpointContent:
                 "U+FFFD; the checkpoint download holds them exactly",
             )
         return row
+
+    # -- 2b. one image member, as its bytes -----------------------------------
+    def read_image(
+        self,
+        tenant_id: str,
+        task_id: str,
+        *,
+        submitted_by: str | None,
+        checkpoint_id: str,
+        path: str,
+        attempt_id: str | None = None,
+    ) -> CheckpointImage:
+        """A png, jpeg, webp or gif member, byte for byte (BGD, 2026-11-06).
+
+        `GET .../files/{path}?format=image`. The Changes view draws an image a
+        step CHANGED from here: the patch holds a changed image as a delta
+        against bytes it does not carry.
+
+        THE BYTES DECIDE, NOT THE NAME. The name must be in `IMAGE_EXTENSIONS`
+        (an SVG never is: it can carry script, and stays text) AND the first
+        bytes must be the signature of the type that name says -- the artifact
+        raw route's own `sniff_image`. A `.png` holding HTML, or a JPEG, is a
+        415 and not one byte of it leaves. `Content-Type` is the signature's;
+        the response is an attachment with `nosniff`, `no-store` and a
+        sandboxing CSP, so even a browser that opened it directly would not
+        render anything else from the API's origin. Not redacted -- no rule
+        runs over image bytes -- and `X-Swarm-Redaction: not-applied` says so.
+
+        Refusals, in order: another tenant's task is the 404 a missing task
+        gets, before any object is read (`_scoped`, the text read's own); a
+        hostile `path` is a 422 and a name that is not an image a 415, both
+        before any object is read; a member over `max_image_bytes` is a 413
+        before its bytes are read; a member that is not in the archive, or an
+        archive that is not there, is a 404.
+        """
+        # Imported here: `agent_output` imports this module's tables at load.
+        from .agent_output import download_filename, sniff_image
+
+        task, attempts_root = self._inspection._scoped(tenant_id, task_id, submitted_by=submitted_by)
+        wanted = requested_path(path)
+        named = IMAGE_EXTENSIONS.get(PurePosixPath(wanted).suffix.lower())
+        if named is None:
+            raise NotAnImage(
+                f"{wanted!r} is not a png, jpeg, webp or gif, so it is served only as text",
+                detail={"path": wanted},
+            )
+        reader = self._inspection._reader()
+        ref, objects = self._locate(
+            task,
+            attempts_root,
+            checkpoint_id=checkpoint_id,
+            attempt_id=attempt_id,
+            reader=reader,
+        )
+        missing = NotFound(
+            f"checkpoint {ref.checkpoint_id!r} of attempt {ref.attempt_id!r} has no "
+            f"file {wanted!r}",
+            detail={"checkpoint_id": ref.checkpoint_id, "attempt_id": ref.attempt_id, "path": wanted},
+        )
+        if ref.archive_key not in objects:
+            raise missing
+        try:
+            scan = self._open(reader, ref.archive_key)
+            for member in scan.tar:
+                shown, unsafe = member_path(member.name)
+                if shown != wanted or unsafe or undecodable(member.name):
+                    continue
+                kind = member_type(member)
+                if kind != "file":
+                    raise ValidationFailed(
+                        f"{wanted!r} is a {kind} in this checkpoint, not a regular file",
+                        detail={"path": wanted, "type": kind},
+                    )
+                size = int(member.size or 0)
+                if size > self._max_image:
+                    raise ImageTooLarge(
+                        f"{wanted!r} is {size} bytes, over the {self._max_image} an image "
+                        "is served at; download the whole checkpoint to read it",
+                        detail={"path": wanted, "bytes": size, "max_image_bytes": self._max_image},
+                    )
+                handle = scan.tar.extractfile(member)
+                if handle is None:  # pragma: no cover - isreg() guarantees a handle
+                    raise ArchiveCorrupt(f"{wanted!r} could not be opened inside the archive")
+                head = handle.read(min(ARTIFACT_SNIFF_BYTES, size))
+                if sniff_image(head) != named:
+                    raise NotAnImage(
+                        f"{wanted!r} is named as {named} and its first bytes are not that "
+                        "type's signature, so none of it is served",
+                        detail={"path": wanted},
+                    )
+                data = _span(handle, head, start=0, end=size, chunk=self._chunk)
+                if len(data) != size:
+                    raise ArchiveCorrupt(
+                        f"the archive ends inside {wanted!r}", detail={"path": wanted}
+                    )
+                headers = {
+                    "Content-Disposition": f'attachment; filename="{download_filename(wanted)}"',
+                    "X-Content-Type-Options": "nosniff",
+                    "Cache-Control": "private, no-store",
+                    "Content-Security-Policy": "default-src 'none'; sandbox",
+                    "X-Swarm-Redaction": "not-applied",
+                }
+                return CheckpointImage(data=data, media_type=named, headers=headers)
+            scan.gunzip.finish()
+        except _BudgetExceeded as exc:
+            raise ScanBudgetExceeded(
+                f"{wanted!r} could not be read within this request's "
+                f"{'inflate' if exc.reason == 'inflate_budget' else 'scan'} budget. It "
+                "may well be in the archive; download the whole checkpoint to read it.",
+                detail={"path": wanted, "reason": exc.reason},
+            ) from None
+        except (_Corrupt, tarfile.TarError, EOFError) as exc:
+            raise ArchiveCorrupt(
+                f"the archive stops being a readable tar.gz before {wanted!r} could be "
+                "read: " + redact_detail(str(exc) or type(exc).__name__),
+                detail={"path": wanted},
+            ) from None
+        except ObjectAbsent:
+            raise missing from None
+        except ObjectUnreadable as exc:
+            raise UpstreamUnavailable(
+                "the checkpoint archive could not be read: " + redact_detail(exc.reason)
+            ) from None
+        except _Changed as exc:
+            raise UpstreamUnavailable(
+                f"the checkpoint archive changed while it was being read ({exc}); "
+                "nothing read from it can be trusted"
+            ) from None
+        raise missing
 
     # -- 3. the whole archive --------------------------------------------------
     def download(

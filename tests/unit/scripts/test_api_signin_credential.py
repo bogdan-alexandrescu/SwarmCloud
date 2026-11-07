@@ -141,6 +141,9 @@ def _world(tmp_path: Path, *, signin_token: str = "", sa: str = "") -> dict[str,
         "PYTHONPATH": str(tmp_path / "fakepy"),
         "NO_COLOR": "1",
         "SWARM_ENV_FILE": str(tmp_path / "no.env"),
+        # A laptop's .env names its project, and common.sh has no default one
+        # (DAYONE-DESAGA-2); this world has no .env, so it names one here.
+        "PROJECT_ID": "swarm-test",
         "API_HOST": HOST,
         "GCLOUD_TOKEN": _fake(),
         "SIGNIN_TOKEN": signin_token,

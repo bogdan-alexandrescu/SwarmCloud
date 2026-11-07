@@ -1275,19 +1275,72 @@ def _without_benign(text: str, benign: Sequence[re.Pattern[str]]) -> list[str]:
     return [line for line in text.splitlines() if not any(p.match(line) for p in benign)]
 
 
+def _error_text(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return _error_text(value.get("message"))
+    if isinstance(value, list):
+        return " ".join(text for text in (_error_text(item) for item in value) if text)
+    return value if isinstance(value, str) else ""
+
+
+def _result_error(parsed: Any) -> str:
+    """Why the CLI's stdout result says the run failed, on one line; else "".
+
+    Issue #3547: a `claude --output-format stream-json` run that exits non-zero
+    with an empty stderr writes its reason to stdout -- the last `result` event
+    carries `is_error`, a subtype such as `error_max_turns` or
+    `error_during_execution`, and the result text. Only that last result event
+    (or a single untyped object) is read, and only when it reports an error: a
+    successful result adds nothing, and a stream with no result event (codex)
+    yields "". Not bounded here: the caller scrubs and redacts what this
+    returns and `exit_error` bounds it after, so a cut never splits a secret
+    the scrub would then miss.
+    """
+    events = parsed if isinstance(parsed, list) else [parsed]
+    event: Any = None
+    for candidate in reversed(events):
+        if not isinstance(candidate, Mapping):
+            continue
+        typed = candidate.get("type")
+        if typed == "result" or (typed is None and ("is_error" in candidate or "subtype" in candidate)):
+            event = candidate
+            break
+    if event is None:
+        return ""
+    subtype = event.get("subtype") if isinstance(event.get("subtype"), str) else ""
+    if not (event.get("is_error") is True or subtype.startswith("error")):
+        return ""
+    text = _error_text(event.get("result")) or _error_text(event.get("error")) or _error_text(
+        event.get("errors"))
+    return ": ".join(part for part in (" ".join(subtype.split()), " ".join(text.split())) if part)
+
+
 def exit_error(
-    name: str, exit_code: int | None, stderr: str, benign: Sequence[re.Pattern[str]]
+    name: str,
+    exit_code: int | None,
+    stderr: str,
+    benign: Sequence[re.Pattern[str]],
+    *,
+    result_reason: str = "",
 ) -> str:
-    """The error recorded for a CLI that exited `exit_code` with `stderr`."""
+    """The error recorded for a CLI that exited `exit_code` with `stderr`.
+
+    `result_reason` (from `_result_error`, already scrubbed) is used only when
+    stderr has nothing to say once the benign lines and capture notices are
+    gone (#3547); a real stderr message reads exactly as it did before.
+    """
+    result_reason = result_reason[:_SIGNAL_DETAIL_CHARS]
     lines = _without_benign(stderr, benign)
     sig = _signal_of(exit_code) if exit_code is not None else None
+    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
     if sig is None:
+        if not candidates and result_reason:
+            return f"{name} exited {exit_code}: {result_reason}"
         return f"{name} exited {exit_code}: " + "\n".join(lines).strip()
     verb = "killed" if sig == signal.SIGKILL else "terminated"
     sentence = f"{name} {verb} by {sig.name} (exit {exit_code})"
-    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
     if not candidates:
-        return sentence
+        return f"{sentence}: {result_reason}" if result_reason else sentence
     errors = [line for line in candidates if _ERROR_WORD.search(line)]
     detail = (errors or candidates)[-1]
     return f"{sentence}: {detail[:_SIGNAL_DETAIL_CHARS]}"
@@ -1544,6 +1597,16 @@ INDEX_REPAIR_MAX_TURNS = 1
 #: (`lifecycle.Worker._unreadable_verdict`, cause `unreadable_verdict`); a file
 #: never written keeps the missing-output turn.
 VERDICT_REPAIR_MAX_TURNS = 1
+#: A publishing step whose agent left HEAD where it started, the tree clean and
+#: no verification.md is given ONE turn saying the step opens a pull request:
+#: commit the work, or write verification.md (#3265). wf_3bfea5e9's render step
+#: was asked for frames only, wrote them, committed nothing, took 0 repair
+#: turns and failed `published_nothing`, where the worker reads "no change plus
+#: a non-blank verification.md" as SUCCEEDED no_change
+#: (`lifecycle.Worker._verified_no_change`). One turn: the agent either has the
+#: work to commit or a sentence to write, and a second ask would not change
+#: which. A step that still ends so is the worker's own check's to fail.
+NO_CHANGE_REPAIR_MAX_TURNS = 1
 #: The most of `verdict_problem` a repair prompt and the result carry: it
 #: quotes the value the agent wrote, which may be as long as the file.
 VERDICT_PROBLEM_CHARS = 300
@@ -1609,6 +1672,11 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
 #: `lifecycle.VERIFICATION_FILE`" as SUCCEEDED no_change (Proposal J), but no
 #: prompt said so. It asks only "what you checked", so a brief that wants a
 #: stricter verification.md (an issue run's table) still governs its format.
+#: Widened for #3265: "If the work is already done" alone did not cover a brief
+#: that asks for no repository change -- wf_3bfea5e9's render step wrote its
+#: frames, pr-title.txt and a handoff saying "no commits (none asked)", no
+#: verification.md, and failed `published_nothing`. The repair turn
+#: (`NO_CHANGE_REPAIR_MAX_TURNS`) says the same once more after the turn.
 #: The last sentence is the descent rule (#2277): fix-h9 lost 85 turns to a
 #: `git checkout -B fix-516 FETCH_HEAD`, because the harvest discards a HEAD
 #: that does not descend from the step's start (`lifecycle._head_moved`), and
@@ -1618,10 +1686,10 @@ PUBLISH_PARAGRAPH = (
     "branch after you finish, so never say one is missing for want of GitHub "
     "credentials. Commit your work. Write the pull request's title (one line) to "
     "$SWARM_ARTIFACTS_DIR/pr-title.txt and its body to "
-    "$SWARM_ARTIFACTS_DIR/pr-body.md. If the work is already done, commit "
-    "nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what you "
-    "checked and what showed it is done: the step ends as no change, not a "
-    "failure. Keep your commits on the branch you were cloned onto: to build on "
+    "$SWARM_ARTIFACTS_DIR/pr-body.md. If the work is already done, or your brief "
+    "asks for no change to the repository, commit nothing and write "
+    "$SWARM_ARTIFACTS_DIR/verification.md saying what you delivered and checked "
+    "and what showed it is done: the step ends as no change, not a failure. Keep your commits on the branch you were cloned onto: to build on "
     "another branch, fetch it and merge it in (git merge FETCH_HEAD); never git "
     "checkout -B, git switch or git reset onto another line, because commits "
     "that do not descend from the commit you started on are discarded."
@@ -1642,6 +1710,25 @@ STEP_PUBLISHES_ENV = "SWARM_STEP_PUBLISHES"
 def step_publishes(environ: Mapping[str, str]) -> bool:
     """False only when the worker said this step publishes nothing."""
     return (environ.get(STEP_PUBLISHES_ENV) or "").strip() != "0"
+
+
+def checkout_head(repo: Path, env: Mapping[str, str]) -> str | None:
+    """The checkout's HEAD commit, or None: an empty clone has none, and a git
+    that failed is not read as one."""
+    code, out = ceiling_mod._git(repo, env, "rev-parse", "--verify", "-q", "HEAD")
+    return out if code == 0 and out else None
+
+
+def committed_nothing(repo: Path, env: Mapping[str, str], start_head: str | None) -> bool:
+    """True only when HEAD is still `start_head` and the tree is clean (#3265).
+
+    Any git error is False: the no-change turn is never asked on a guess. An
+    uncommitted change is not nothing either: the worker's harvest commits it.
+    """
+    if start_head is None or checkout_head(repo, env) != start_head:
+        return False
+    code, status = ceiling_mod._git(repo, env, "status", "--porcelain")
+    return code == 0 and not status
 
 
 #: THE STEP'S WALL CLOCK, TOLD TO THE AGENT (#2139). Measured 2026-10-23 by the
@@ -1692,6 +1779,7 @@ def repair_prompt(
     missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str,
     index_problems: Sequence[str] = (),
     verdict_problem: str | None = None,
+    no_change: bool = False,
 ) -> str:
     """The one user message a repair turn is given: what failed, exactly."""
     directory = PurePosixPath(os.path.abspath(os.fspath(artifacts_dir)))
@@ -1737,6 +1825,18 @@ def repair_prompt(
             f"does not read it as a verdict: {verdict_problem}. Rewrite only that file, "
             "from the review you already did; do not review again. "
             f"{expected_mod.verdict_line()} You get this one turn."
+        )
+    if no_change:
+        # #3265; the worker's `lifecycle.VERIFICATION_FILE`, named lazily.
+        from ..lifecycle import VERIFICATION_FILE
+
+        lines.append(
+            "This step opens a pull request after you exit, and you committed "
+            "nothing. Commit the work the brief asked for, or, if the brief asks "
+            "for no change to the repository or the work is already done, write "
+            f"{directory / VERIFICATION_FILE} saying what you delivered and what "
+            "you checked: the step then ends as no change, not a failure. You get "
+            "this one turn."
         )
     return "\n".join(lines)
 
@@ -2180,6 +2280,12 @@ def run_cli_agent(
         env.get(name) for name in (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH)
     )
 
+    # THE CHECKOUT'S HEAD BEFORE THE AGENT RUNS (#3265), read here rather than
+    # from SWARM_CLONE_BASE so the no-change repair check never depends on it:
+    # a resumed attempt starts from the tree the earlier one left. An empty
+    # clone has no HEAD, and then the no-change turn is never asked.
+    start_head = checkout_head(cwd, env) if cwd != ctx.work_dir else None
+
     # When the latest start began, for `spec.session_locator`: a session file
     # an earlier run left in the restored workspace is not this run's.
     started_at = [time.time()]
@@ -2285,8 +2391,13 @@ def run_cli_agent(
         run_watcher: AccountStreamWatcher | None,
         spend: dict[str, Any],
         combined: str,
+        parsed_run: Any,
     ) -> None:
-        """Raise the signal or failure one start of the CLI ended in, if any."""
+        """Raise the signal or failure one start of the CLI ended in, if any.
+
+        `parsed_run` is the parsed stdout of the start being judged: its result
+        reason names a non-zero exit whose stderr says nothing (#3547).
+        """
         if budget is not None and budget.stopped_for is not None:
             # STOPPED FOR THE BUDGET (#2459), at a turn boundary or past 120%
             # mid-turn. Not judged as a rate limit or a refused credential, and
@@ -2363,7 +2474,8 @@ def run_cli_agent(
         if run_result.exit_code != 0:
             raise RunnerFailure(
                 exit_error(
-                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr
+                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr,
+                    result_reason=redact_text(scrub_text(_result_error(parsed_run), secrets)).text,
                 ),
                 spend=spend,
             )
@@ -2505,7 +2617,7 @@ def run_cli_agent(
     # once more from the minimal handoff (below, `refused_handoff`), not judged.
     first_refusal = handoff_refusal(parsed) if resumed_over is not None else None
     if not ceiling_stop_pending() and first_refusal is None:
-        judge(result, watcher, spend, combined)
+        judge(result, watcher, spend, combined, parsed)
 
     def parked_on_question() -> bool:
         """The last start stopped on a question the bridge recorded: no turn
@@ -2595,7 +2707,7 @@ def run_cli_agent(
         combined = detection_text(pass_raw, pass_parsed)
         refusal = handoff_refusal(pass_parsed) if handoff else None
         if not ceiling_stop_pending() and refusal is None:
-            judge(result, watcher, spend, combined)
+            judge(result, watcher, spend, combined, pass_parsed)
         duration_seconds += result.duration_seconds
         stdout_bytes += result.stdout_bytes
         stderr_bytes += result.stderr_bytes
@@ -2811,8 +2923,33 @@ def run_cli_agent(
                 problem = problem[:VERDICT_PROBLEM_CHARS] + "..."
             return problem
 
+        # A PUBLISHING STEP THAT COMMITTED NOTHING (#3265; see
+        # `NO_CHANGE_REPAIR_MAX_TURNS`): HEAD where it started, the tree clean
+        # and no non-blank verification.md (`_verified_no_change`'s rule). Not
+        # for SWARM_STEP_PUBLISHES=0. Its "1" also covers a contributor,
+        # amender or carrier step, for which no change is not a failure: there
+        # the turn is one cheap turn whose verification.md also makes the
+        # worker record no_change. Narrowing the variable is lifecycle.py's,
+        # left out while #3236/#3241/#3260 change that file.
+        no_change_owed = (scan_repo is not None and step_publishes(os.environ)
+                          and start_head is not None)
+
+        def no_change_check() -> bool:
+            if scan_repo is None or not no_change_owed \
+                    or not committed_nothing(scan_repo, env, start_head):
+                return False
+            from ..lifecycle import VERIFICATION_FILE  # lazy, as CREDENTIAL_ADVICE
+
+            path = Path(ctx.artifacts_dir) / VERIFICATION_FILE
+            try:
+                return not (path.is_file() and path.read_text(errors="replace").strip())
+            except OSError:
+                return True
+
         ctx.report["repair_turns"] = 0
         missing, flagged = run_checks()
+        no_change_bad = no_change_check()
+        no_change_turns = 0
         index_problems = index_check()
         index_turns = 0
         verdict_bad = verdict_check()
@@ -2826,7 +2963,8 @@ def run_cli_agent(
         while True:
             ask_index = index_problems if index_turns < INDEX_REPAIR_MAX_TURNS else []
             ask_verdict = verdict_bad if verdict_turns < VERDICT_REPAIR_MAX_TURNS else None
-            if not (missing or flagged or ask_index or ask_verdict):
+            ask_no_change = no_change_bad and no_change_turns < NO_CHANGE_REPAIR_MAX_TURNS
+            if not (missing or flagged or ask_index or ask_verdict or ask_no_change):
                 if index_problems:
                     log.warning(
                         f"{indexspec.INDEX_FILE} is still refused after its repair turn; "
@@ -2839,9 +2977,14 @@ def run_cli_agent(
                         "its repair turn; the worker's own check decides",
                         verdict_problem=verdict_bad,
                     )
+                if no_change_bad:
+                    log.warning(
+                        "the step still committed nothing and wrote no verification after "
+                        "its repair turn; the worker's own check decides",
+                    )
                 break
             if repair_turns >= TITLE_REPAIR_MAX_TURNS and not flagged and not ask_index \
-                    and not ask_verdict \
+                    and not ask_verdict and not ask_no_change \
                     and list(missing) == [PR_TITLE_NAME]:
                 # Only the title is still missing: it had its one follow-up
                 # turn (Proposal B), and the worker decides the rest.
@@ -2890,17 +3033,22 @@ def run_cli_agent(
                 credential_lines=flagged[:REPAIR_LIST_CAP],
                 index_problems=ask_index,
                 verdict_problem=ask_verdict,
+                committed_nothing=ask_no_change,
                 remaining_seconds=round(remaining, 1),
             )
             if ask_index:
                 index_turns += 1
             if ask_verdict:
                 verdict_turns += 1
-            text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index, ask_verdict)
+            if ask_no_change:
+                no_change_turns += 1
+            text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index, ask_verdict,
+                                 no_change=ask_no_change)
             pass_within_ceiling(session, text, step_remaining, "repair")
             after_missing, after_flagged = run_checks()
             index_problems = index_check()
             verdict_bad = verdict_check()
+            no_change_bad = no_change_check()
             # What a turn fixed is what it was asked to fix and no longer fails.
             # A credential line is named by `path:line rule`, so one that only
             # moved when an earlier line was removed reads as fixed here and as
@@ -2917,15 +3065,19 @@ def run_cli_agent(
                 **({"verdict_problem": ask_verdict,
                     "verdict_fixed": bool(ask_verdict) and not verdict_bad}
                    if verdict_owed else {}),
+                **({"no_change_asked": ask_no_change,
+                    "no_change_fixed": ask_no_change and not no_change_bad}
+                   if no_change_owed else {}),
             })
             ctx.report["repairs"] = repairs
             missing, flagged = after_missing, after_flagged
-        if missing or flagged or index_problems or verdict_bad:
+        if missing or flagged or index_problems or verdict_bad or no_change_bad:
             unresolved = {
                 "missing_outputs": missing[:REPAIR_LIST_CAP],
                 "credential_lines": flagged[:REPAIR_LIST_CAP],
                 **({"index_problems": index_problems} if index_run else {}),
                 **({"verdict_problem": verdict_bad} if verdict_owed else {}),
+                **({"no_change": no_change_bad} if no_change_owed else {}),
             }
 
     # JEV'S POST-STEPS (lane CTXQ-JW; `judge.poststeps`). The planner's plan

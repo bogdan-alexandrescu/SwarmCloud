@@ -385,14 +385,18 @@ function Question({
   )
 }
 
-/** The card, at the top of Details; nothing when the agent asked none. */
-export function QuestionsCard({ task }: { task: Task }) {
+/**
+ * The card, at the top of Details; nothing when the agent asked none. `id` is
+ * the section's id, `questions` by default (the agent page's `#questions`); a
+ * page that mounts one card per step passes its own, so ids never repeat.
+ */
+export function QuestionsCard({ task, id = 'questions' }: { task: Task; id?: string }) {
   const count = questionCount(task)
   if (count === 0) return null
-  return <AskedCard task={task} count={count} />
+  return <AskedCard task={task} count={count} id={id} />
 }
 
-function AskedCard({ task, count }: { task: Task; count: number }) {
+function AskedCard({ task, count, id }: { task: Task; count: number; id: string }) {
   // Keyed on the attempt count and the state, so a re-run's file is read once
   // it ends and a parked agent's questions are read again once it resumes.
   const { state } = useRead<QuestionsRead>(
@@ -416,7 +420,7 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
   const who = task.step_id ? `This agent (step ${task.step_id})` : 'This agent'
 
   return (
-    <section id="questions" className="dt-card qc" aria-label="Questions for you">
+    <section id={id} className="dt-card qc" aria-label="Questions for you">
       <div className="dt-card-head">
         {/* AN h2, AS EVERY DETAILS CARD'S TITLE IS (DtCardHead), so the pane's
             headings outline lists it; `.dt-card-head > h2` draws it as the `<b>` was. */}
@@ -489,18 +493,18 @@ function AskedCard({ task, count }: { task: Task; count: number }) {
  * closed there and wakes nothing; only then does this card offer the
  * re-run (`human-ready`), saying why.
  */
-export function HeldQuestionsCard({ task }: { task: Task }) {
+export function HeldQuestionsCard({ task, id = 'held-questions' }: { task: Task; id?: string }) {
   const hold = ownerQuestionsHold(task)
   if (hold === null) return null
-  return <HeldCard task={task} questions={hold.questions} unreadable={hold.unreadable} />
+  return <HeldCard task={task} questions={hold.questions} unreadable={hold.unreadable} id={id} />
 }
 
-function HeldCard({ task, questions, unreadable }: { task: Task; questions: HeldQuestion[]; unreadable: number }) {
+function HeldCard({ task, questions, unreadable, id }: { task: Task; questions: HeldQuestion[]; unreadable: number; id: string }) {
   const roleGate = useRoleGate('member', 'answer')
   const asking = [...new Set(questions.map((q) => q.task_id))]
   const n = questions.length
   return (
-    <section id="held-questions" className="dt-card qc qc-held" aria-label="Questions holding this merge">
+    <section id={id} className="dt-card qc qc-held" aria-label="Questions holding this merge">
       <div className="dt-card-head">
         <h2>Questions holding this merge</h2>
         <span className="dt-card-r">

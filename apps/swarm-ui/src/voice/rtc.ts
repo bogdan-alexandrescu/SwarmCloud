@@ -54,7 +54,10 @@ export const MIC_CONSTRAINTS: MediaStreamConstraints = {
 
 export type TalkMode = 'live' | 'text'
 
-export type StartedSession = { session_id: string; mode: 'live'; answer_sdp: string } | { session_id: string; mode: 'text' }
+/** `project_id` is the project the session talks in: a Resume's, or the one swarm-api opened for a new session. */
+export type StartedSession =
+  | { session_id: string; project_id: string | null; mode: 'live'; answer_sdp: string }
+  | { session_id: string; project_id: string | null; mode: 'text' }
 
 /** Why a start failed, in words for the page. */
 export class TalkError extends Error {
@@ -77,18 +80,19 @@ export async function startVoiceSession(offerSdp: string, projectId: string | nu
   const r = await write(route(VOICE_SESSIONS), 'POST', body)
   if (r.status === 'error' || r.status === 'stale') throw new TalkError(r.error.message, r.error)
   if (r.status !== 'ok') throw new TalkError('swarm-api answered the start with nothing.')
-  const d = r.data as { session_id?: unknown; mode?: unknown; answer_sdp?: unknown } | null
+  const d = r.data as { session_id?: unknown; project_id?: unknown; mode?: unknown; answer_sdp?: unknown } | null
   if (d === null || typeof d.session_id !== 'string' || d.session_id === '') {
     throw new TalkError("swarm-api's answer to the start carried no session id.")
   }
-  if (d.mode === 'text') return { session_id: d.session_id, mode: 'text' }
+  const project_id = typeof d.project_id === 'string' && d.project_id !== '' ? d.project_id : projectId
+  if (d.mode === 'text') return { session_id: d.session_id, project_id, mode: 'text' }
   if (d.mode !== undefined && d.mode !== null && d.mode !== 'live') {
     throw new TalkError(`swarm-api's answer to the start named a mode this console does not know (${String(d.mode).slice(0, 40)}).`)
   }
   if (typeof d.answer_sdp !== 'string' || d.answer_sdp === '') {
     throw new TalkError("swarm-api's answer to the start carried no SDP answer.")
   }
-  return { session_id: d.session_id, mode: 'live', answer_sdp: d.answer_sdp }
+  return { session_id: d.session_id, project_id, mode: 'live', answer_sdp: d.answer_sdp }
 }
 
 /** `POST /v1/voice/sessions/{id}/end`. Never throws: an end is also a page leaving. */
@@ -179,6 +183,8 @@ export interface TalkHandlers {
 
 export interface TalkCall {
   sessionId: string
+  /** The session's project (the start's `project_id`): the stage reads its visuals. */
+  projectId: string | null
   /** "text": no WebRTC; the page listens, sends turns and speaks the replies. */
   mode: TalkMode
   /** The mic's track: mute and push-to-talk set its `enabled`. */
@@ -261,7 +267,7 @@ export async function connectTalk(h: TalkHandlers, projectId: string | null = nu
     const started = await startVoiceSession(offer.sdp, projectId)
     if (started.mode === 'text') {
       closePeer()
-      return { sessionId: started.session_id, mode: 'text', mic, micStream, hangUp }
+      return { sessionId: started.session_id, projectId: started.project_id, mode: 'text', mic, micStream, hangUp }
     }
     try {
       await pc.setRemoteDescription({ type: 'answer', sdp: started.answer_sdp })
@@ -270,7 +276,7 @@ export async function connectTalk(h: TalkHandlers, projectId: string | null = nu
       await endVoiceSession(started.session_id)
       throw e
     }
-    return { sessionId: started.session_id, mode: 'live', mic, micStream, hangUp }
+    return { sessionId: started.session_id, projectId: started.project_id, mode: 'live', mic, micStream, hangUp }
   } catch (e) {
     hangUp()
     if (e instanceof TalkError) throw e

@@ -213,23 +213,22 @@ def test_a_firing_writes_what_changed_with_source_pricing_page_and_the_day_read(
 
     after = prices(ctx)
     # New on the page: written, sourced and dated.
-    assert rates(after["claude-sonnet-5-5"]) == (2.0, 10.0, 0.10, 2.5)
-    assert after["claude-sonnet-5-5"]["source"] == refresh.SOURCE == "pricing-page"
-    assert after["claude-sonnet-5-5"]["as_of"] == DAY
-    assert after["claude-sonnet-5-5"]["updated_by"] == f"schedule:{SCHEDULE_ID}"
-    # The page agrees with the seed's figures, so those entries are not touched.
+    assert rates(after["claude-opus-4-1"]) == (15.0, 75.0, 1.5, 18.75)
+    assert after["claude-opus-4-1"]["source"] == refresh.SOURCE == "pricing-page"
+    assert after["claude-opus-4-1"]["as_of"] == DAY
+    assert after["claude-opus-4-1"]["updated_by"] == f"schedule:{SCHEDULE_ID}"
+    # The page agrees with the seed's figures, so those entries are not
+    # touched: Haiku 5.5's two tiers included (the seed lists them, BGD,
+    # 6 November 2026).
     for name in modelprices.SEED:
         assert after[name] == before[name], name
-    # Haiku 5.5 is written with its two tiers, sourced and dated like the rest.
-    haiku = after["claude-haiku-5-5"]
-    assert haiku["tiers"] == HAIKU_55_TIERS
-    assert (haiku["source"], haiku["as_of"]) == ("pricing-page", DAY)
+    assert after["claude-haiku-5-5"]["tiers"] == HAIKU_55_TIERS
     assert "tiers" not in after["claude-sonnet-5-5"]
     # Every row was read, so the firing is one succeeded item.
     assert [(w["id"], w["outcome"]) for w in work] == [(refresh.REFRESH, "succeeded")]
     changed = work[0]["detail"]["changed"]
-    assert "claude-sonnet-5-5" in changed
-    assert changed["claude-haiku-5-5"]["rates"]["tiers"] == HAIKU_55_TIERS
+    assert "claude-opus-4-1" in changed
+    assert not set(changed) & set(modelprices.SEED)
 
 
 def test_a_changed_figure_replaces_the_stored_one(db, ctx, monkeypatch) -> None:
@@ -331,6 +330,6 @@ def test_a_dry_run_reads_the_page_and_writes_nothing(db, ctx, monkeypatch) -> No
 
     assert reads == [1]
     assert ctx.store.get_platform_settings() == before
-    assert "claude-sonnet-5-5" in out["would_change"]
-    assert out["would_change"]["claude-haiku-5-5"]["rates"]["tiers"] == HAIKU_55_TIERS
+    assert "claude-opus-4-1" in out["would_change"]
+    assert "claude-haiku-5-5" not in out["would_change"], "the seed already holds its tiers"
     assert {row["model"] for row in out["unparsed"]} == {"claude-opus-5-5"}

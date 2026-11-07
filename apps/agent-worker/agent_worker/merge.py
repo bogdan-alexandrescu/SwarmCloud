@@ -123,7 +123,17 @@ entries) goes through the same `_ended_outside`, hold and pick-fix round as
 a MERGE verdict, and only once no question is open and no pick is left to
 build does it refuse `verdict_not_merge`: a NOT_YET is never merged without
 a review of the head, which a re-review gives. A NOT_YET with no
-`needs_owner` refuses at once, exactly as before.
+`needs_owner` is never held for the owner -- not for a fix round's open
+blocking question either -- but before #3149 it refused at once, before the
+picks were read, and wf_f0044e94 died that way: its re-review's one finding
+was that the owner's answered pick was not built, written in `findings`
+rather than `needs_owner`. Now it goes through `_ended_outside` and the
+unbuilt-pick check below too: an answered pick the branch did not build gets
+its pick-fix round (or `owner_pick_not_built` once the rounds are spent),
+and it refuses `verdict_not_merge` once no answered pick is left unbuilt --
+at once, in the words it always used, when none was, and naming the
+re-review when a round built them. Questions that cannot be read refuse it
+`verdict_not_merge` too, as before.
 
 ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
 (ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
@@ -169,7 +179,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Iterable, Mapping, NamedTuple, Protocol
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Protocol
 from urllib.parse import quote
 
 from swarm_common.models import EndCause, utcnow
@@ -197,6 +207,7 @@ from .post_verdict import (
     unavailable,
 )
 from .control import MERGE_WAIT_METADATA_KEY
+from .control import round_heads as _wait_round_heads
 from .specverify import UpstreamSpecUnverified
 
 #: The signed dispatch block naming what this step merges. swarm-api's
@@ -206,6 +217,19 @@ MERGE_TARGET_FIELD = "merge_target"
 
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
+#: The code, and the HUMAN_REQUIRED park's `park_phase`, of a CI wait handed
+#: to a person (part of #2688, 2026-11-06): the repair rounds are spent past
+#: CI_STUCK_SECONDS, or a check that failed at a head a repair round was
+#: claimed at fails again after it. Re-checking every ~16 minutes then only
+#: hides the wait: task_ffe63d609c5d4662ba8e re-checked 28 times over 8
+#: hours, two rounds spent and main red on the same checks, and nothing
+#: raised it.
+CI_WAIT_STUCK = "ci_wait_stuck"
+#: How long a wait with its rounds spent re-checks before it is a person's:
+#: `/sc check`'s CI_PENDING window (swarm_mcp.check.CI_PENDING_MINUTES, held
+#: equal by tests/unit/worker/test_merge_ci_stuck.py), so the step parks for
+#: a person when the check would first flag it.
+CI_STUCK_SECONDS = 90 * 60
 #: The `result_summary` key listing each unanswered advisory question this
 #: merge went ahead past (owner decision, 2 November 2026): `{task_id,
 #: step_id, question_index, question, recommended, built}`. swarm-api's answer
@@ -591,6 +615,18 @@ PLATFORM_COMMITTER_EMAILS = frozenset({
 #: the platform made them. A platform head the step did not accept is a
 #: defect for failure-review, never a person's push.
 WORKER_COMMIT_LINE = "Made by the worker for task "
+
+#: The marks a task carries when it is a writer with a gate of its own, not
+#: a person's plain lane: a CI-fix or PR-side fix (`ci_fix`), a round of a
+#: merge step (`merge_fix_round`, `merge_conflict_round`), pr-shepherd's
+#: conflict fix (`pr_shepherd`) and an issue run's step (`issue_run`). What
+#: `cifix.live_plain_continuation` skips (`PR_WRITER_KINDS` and
+#: `ISSUE_RUN_METADATA_KEY`), restated because the worker image does not
+#: load swarm-api (held equal by tests/unit/worker/test_merge_person_push.py).
+#: A head such a task pushed is the platform's, and `head_moved` when not
+#: accepted (`_person_lane`).
+LANE_WRITER_MARKS = ("ci_fix", "merge_fix_round", "merge_conflict_round", "pr_shepherd",
+                     "issue_run")
 
 #: The summary key listing every base merge the walk took that GitHub did not
 #: commit: a person's (or anyone's) clean merge of the base on top of an
@@ -1217,6 +1253,9 @@ class CommitFacts:
     author_login: str | None = None
     #: The message's last line is the worker's (`WORKER_COMMIT_LINE`).
     by_worker: bool = False
+    #: The task that line names, when it names one: the lane a worker
+    #: commit came from (`_person_lane`).
+    worker_task: str | None = None
 
     @property
     def by_github(self) -> bool:
@@ -1591,6 +1630,8 @@ class GitHubMerger:
             committer_login=_user_login(data.get("committer")),
             author_login=_user_login(data.get("author")),
             by_worker=last.startswith(WORKER_COMMIT_LINE),
+            worker_task=(_task_id(last[len(WORKER_COMMIT_LINE):].strip().rstrip("."))
+                         if last.startswith(WORKER_COMMIT_LINE) else None),
         )
 
     def merge_base(self, first: str, second: str) -> str | None:
@@ -2029,6 +2070,24 @@ class _Run:
             exit_code=ExitCode.PARKED, owner_wait=wait,
         )
 
+    def hand_to_person(self, evidence: dict[str, Any]) -> ActionOutcome:
+        """A CI wait no re-check will end: park HUMAN_REQUIRED with its evidence.
+
+        The owner-question hold's park (`lifecycle._park_for_owner_questions`,
+        `handoff.park_human_required`) under its own `park_phase`,
+        CI_WAIT_STUCK: one fenced transaction, no lease, so the step reaches
+        Needs you and `/sc check`'s owner list instead of re-checking. A
+        person's "I'm ready" returns it, and restarts the wait's clock
+        (`control.ci_wait_span`).
+        """
+        message = ci_stuck_line(evidence)
+        self.summary["wait"] = {"code": CI_WAIT_STUCK, "message": message}
+        return _outcome(
+            TaskState.PARKED, None, self.summary, f"{CI_WAIT_STUCK}: {message}",
+            exit_code=ExitCode.PARKED,
+            owner_wait={"park_phase": CI_WAIT_STUCK, **evidence, "line": message},
+        )
+
     def wait(self, code: str, message: str, *, head: str, pull_request: int,
              pending: list[str], failed: list[str] | None = None) -> ActionOutcome:
         """A fact that may change by itself: park CI_PENDING, holding nothing.
@@ -2113,15 +2172,15 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
             return run.refuse("verdict_unreadable", str(exc))
         summary["verdict"] = verdict.verdict
         found = f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""
-        # #2764: a NOT_YET that names no owner question refuses here, as it
-        # always has; one that names some is held and pick-fixed like a MERGE
-        # verdict below, and refused only after.
-        if verdict.verdict != "MERGE" and not (
-                verdict.needs_owner or verdict.needs_owner_unreadable):
-            return run.refuse(
-                "verdict_not_merge",
-                f"the review's verdict is {verdict.verdict}, not MERGE{found}",
-            )
+        # #2764: a NOT_YET that names owner questions is held and pick-fixed
+        # like a MERGE verdict below, and refused only after. #3149: one that
+        # names none is never held for the owner, but an answered pick its
+        # branch did not build still gets its pick-fix round first: a review
+        # that put "the owner's pick is not built" in `findings` rather than
+        # `needs_owner` (wf_f0044e94) refused the lane the round would mend.
+        owner_less_not_yet = verdict.verdict != "MERGE" and not (
+            verdict.needs_owner or verdict.needs_owner_unreadable)
+        not_merge = f"the review's verdict is {verdict.verdict}, not MERGE{found}"
         # #2441: a hold woken because its pull request was merged or closed
         # outside the workflow ends here, before any question is read again:
         # a merged pull request needs no answers.
@@ -2155,25 +2214,32 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                 ref for ref in verdict.needs_owner
                 if (ref.task_id, ref.question_index) not in merged_past), asked_by_rounds)
         except InputUnavailable as exc:
+            if owner_less_not_yet:
+                # Refused as before #3149: no pick could be checked.
+                return run.refuse("verdict_not_merge", f"{not_merge}; {exc}")
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
+        if owner_less_not_yet and not unbuilt:
+            # Nothing for a pick-fix round to build: the findings are a fix
+            # step's, and the refusal is word for word the one before #3149.
+            return run.refuse("verdict_not_merge", not_merge)
         held = [_held_row(row) for row in asked_by_rounds
-                if row.get("blocking") is True and row.get("answer") is None]
+                if row.get("blocking") is True and row.get("answer") is None
+                and not owner_less_not_yet]
         if held:
             return run.wait_for_owner(held, unreadable=0)
         if unbuilt:
             fixing = _pick_fix(run, target, opener, unbuilt)
             if fixing is not None:
                 return fixing
-        # #2764: the owner's answers are in and their picks built, but a
-        # NOT_YET verdict's findings still stand: never merged without a
+        # #2764, #3149: the owner's answers are in and their picks built, but
+        # a NOT_YET verdict's findings still stand: never merged without a
         # review of the head.
         if verdict.verdict != "MERGE":
             return run.refuse(
                 "verdict_not_merge",
-                f"the review's verdict is {verdict.verdict}, not MERGE{found}; its "
-                "needs_owner questions are answered and their picks built, so a "
-                "re-review must judge the head",
+                f"{not_merge}; its owner questions are answered and their picks "
+                "built, so a re-review must judge the head",
             )
         still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
@@ -3034,6 +3100,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     own = own or {}
     fix_heads = fix_heads or []
     ctx, summary = run.ctx, run.summary
+    # The branch task a person's lane continues (`_person_lane`); none for a
+    # named pull request, which `branch` None marks.
+    lane = _person_lane(ctx, None if branch is None or not branch.startswith(ctx.branch_prefix)
+                        else branch[len(ctx.branch_prefix):])
     if ctx.recheck():
         return cancelled(summary)
     if not merger.can_push():
@@ -3140,8 +3210,9 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if head is None or accepted is None:
         unread = summary.get(FIX_RECORDS_UNREAD_KEY) or []
         record = None if head is None else _head_record(
-            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven)
-        person = None if head is None else _person_push(merger, head=head, pr=pr)
+            merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven,
+            people=pr.people)
+        person = None if head is None else _person_push(merger, head=head, pr=pr, lane=lane)
         if person is not None:
             return _superseded(run, number=number, head=head, was=pinned, person=person,
                                record=record)
@@ -3179,6 +3250,11 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
             return run.refuse("checks_timeout",
                               f"CI has not settled in {int(waited // 60)} min, past "
                               f"{MERGE_CI_MAX_SECONDS // 3600} h: {message}")
+        if code not in _IN_FLIGHT:
+            red = run.reading[2] if run.reading is not None and run.reading[0] == head else []
+            stuck = ci_stuck(own, head=head, pull_request=number, failed=red, now=utcnow())
+            if stuck is not None:
+                return run.hand_to_person(stuck)
         return run.wait(code, message, head=head, pull_request=number, pending=pending)
 
     if _queued_by_this_step(own):
@@ -3318,7 +3394,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         ctx.sleep(MERGEABLE_REREAD_SECONDS)
         pr = merger.pull_request(number)
     if pr.head_sha != head:
-        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr)
+        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr,
+                                                               lane=lane)
         if person is not None:
             return _superseded(run, number=number, head=pr.head_sha, was=head, person=person)
         return run.refuse("head_moved",
@@ -3881,7 +3958,8 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
     return steps, others
 
 
-def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
+def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
+                   lane: Callable[[str], bool] | None = None) -> str | None:
     """The login of the person on `pr` who made `commit`, or None (#2505).
 
     A person's push is a commit that is not a merge (BGD's decision is about
@@ -3893,8 +3971,18 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
     request's author or one of its assignees. GitHub commits a web-UI edit
     itself, so for those the person is the commit's author. Anyone else is
     an unknown branch-mate, and their head is `head_moved` as before.
+
+    One worker commit is a person's push: one whose line names a task
+    `lane` says is a plain lane a person dispatched onto this pull
+    request's branch (`_person_lane`; the recurrence of 2026-11-05, cdcbd71,
+    the owner's `publish_to_pr` lane applying their own pick). The worker
+    publishes as that person (#765), so the person is still the committer
+    GitHub links, held to the pull request's people as any other push is.
     """
-    if len(commit.parents) >= 2 or commit.by_worker:
+    if len(commit.parents) >= 2:
+        return None
+    if commit.by_worker and (lane is None or commit.worker_task is None
+                             or not lane(commit.worker_task)):
         return None
     email = (commit.committer_email or "").lower()
     if email in PLATFORM_COMMITTER_EMAILS:
@@ -3906,13 +3994,57 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts) -> str | None:
     return login if login.lower() in people else None
 
 
-def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts) -> str | None:
+def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts,
+                 lane: Callable[[str], bool] | None = None) -> str | None:
     """`_person_pusher` of the commit at `head`, read best-effort: a read that
     fails names nobody, and the refusal stays `head_moved`."""
     try:
-        return _person_pusher(merger.commit(head), pr)
+        return _person_pusher(merger.commit(head), pr, lane)
     except (forge_mod.ForgeError, ValueError):
         return None
+
+
+def _person_lane(ctx: ActionContext, root: str | None) -> Callable[[str], bool] | None:
+    """Whether a task is a person's plain lane on `root`'s branch (#2505).
+
+    The 2026-11-05 recurrence: PR 3323's merge step parked
+    `owner_pick_fix_pending`, and the owner applied the pick through a
+    one-step `publish_to_pr` lane (task_568ad862, wf_31277a25) whose worker
+    published cdcbd71 as the owner, ending with the worker's line. That is
+    the person's push the decision means, made through the platform. The
+    task must be read through the tenant-gated upstream read, be this
+    tenant's, verify against its own signed workflow -- never this merge's,
+    whose tasks are this merge's own heads -- and continue `root` by its
+    signed `continues` or `publish_to_pr.task_id`, the two kinds
+    `cifix.live_plain_continuation` reads. It carries no writer's mark
+    (`LANE_WRITER_MARKS`): a round of this merge, a CI fix, pr-shepherd or
+    an issue run is the platform's, and its head the step did not accept
+    stays `head_moved` for failure-review. Anything unread is no lane.
+    None (a named pull request with no branch task): no task is a lane.
+    """
+    if root is None:
+        return None
+
+    def lane(task_id: str) -> bool:
+        if task_id in (root, ctx.task_id):
+            return False
+        try:
+            doc = _mapping(ctx.fetch_upstream(task_id))
+            workflow = _task_id(doc.get("workflow_id"))
+            if (workflow is None or workflow == ctx.workflow_id
+                    or doc.get("tenant_id") != ctx.tenant_id):
+                return False
+            ctx.verify_upstream(task_id, doc, of_workflow=workflow)
+        except Exception:  # noqa: BLE001 - unread or unsigned: not a lane
+            return False
+        metadata = _mapping(doc.get("metadata"))
+        if any(mark in metadata for mark in LANE_WRITER_MARKS):
+            return False
+        block = _mapping(metadata.get("dispatch"))
+        return root in (_task_id(block.get("continues")),
+                        _task_id(_mapping(block.get("publish_to_pr")).get("task_id")))
+
+    return lane
 
 
 def _superseded(run: _Run, *, number: int, head: str, was: str, person: str,
@@ -3938,7 +4070,21 @@ def _named(record: Mapping[str, Any]) -> str:
     parents = ", ".join(str(p)[:12] for p in record.get("parents") or []) or "none"
     signed = "signed" if record.get("verified") else "unsigned"
     return (f"; {record['sha']} was committed by {record.get('committer_email') or 'nobody named'} "
-            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}")
+            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}" + _unnamed(record))
+
+
+def _unnamed(record: Mapping[str, Any]) -> str:
+    """Why `_person_pusher` named nobody, from `_head_record`'s person facts."""
+    if "people" not in record:
+        return ""
+    lane = record.get("worker_task")
+    people = ", ".join(record["people"]) or "nobody"
+    return (f"; GitHub links its committer to {record.get('committer_login') or 'no person'} and "
+            f"its author to {record.get('author_login') or 'no person'}, the pull request's "
+            f"people are {people}"
+            + (f", and its last line says worker task {lane} made it, which is not a "
+               "person's plain lane on this branch" if lane else
+               ", and its last line is the worker's" if record.get("by_worker") else ""))
 
 
 def _commit_record(commit: CommitFacts) -> dict[str, Any]:
@@ -4142,17 +4288,27 @@ def _accept(merger: ForgeMerger, *, head: str, pinned: str,
 
 def _head_record(merger: ForgeMerger, *, head: str, pinned: str,
                  fix_heads: list[tuple[str, str]], base: str,
-                 proven: dict[str, str | None] | None = None) -> dict[str, Any]:
+                 proven: dict[str, str | None] | None = None,
+                 people: Iterable[str] | None = None) -> dict[str, Any]:
     """The commit a `head_moved` refusal names: its parents, who committed it,
     whether it is signed, whether its first parent is an accepted head, and
     the first reason the walk did not take it. Read best-effort: a read that
     fails says so in `unreadable`, and the refusal stands either way.
-    `proven` is the walk's `_merge_impurity` cache, so no tree is proved twice."""
+    `proven` is the walk's `_merge_impurity` cache, so no tree is proved twice.
+
+    Given the pull request's `people`, it also records what `_person_pusher`
+    compared (#2505): the logins GitHub links the committer and the author
+    to, the task a worker line names, and those people -- logins only, so
+    the next refusal of a person's push says why it named nobody."""
     proven = {} if proven is None else proven
     record: dict[str, Any] = {"sha": head}
     try:
         commit = merger.commit(head)
         record.update(_commit_record(commit))
+        if people is not None:
+            record.update(committer_login=commit.committer_login,
+                          author_login=commit.author_login, by_worker=commit.by_worker,
+                          worker_task=commit.worker_task, people=list(people))
         first = commit.parents[0] if commit.parents else None
         accepted = first is not None and _accept(
             merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base,
@@ -4824,6 +4980,13 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
                          run_states=run_states)
     if parked is not None:
         return parked
+    stuck = ci_stuck(own, head=head, pull_request=_int_or_none(_mapping(
+        _mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY)).get("pull_request")),
+        failed=failed, now=utcnow())
+    if stuck is not None and stuck["why"] == SAME_CHECK_AFTER_ROUND:
+        # The same check failed after a repair round: a next round, or the
+        # refusal, would only repeat it. A person's (part of #2688).
+        return run.hand_to_person(stuck)
     asked = _rounds_asked(own)
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,
@@ -4930,6 +5093,126 @@ def _await_workflow_patch(run: _Run, message: str, task_id: str, refused: Mappin
                 f"{WORKFLOW_SCOPE_MISSING}, so a CI fix round could only be refused again: "
                 f"an operator pushes {WORKFLOW_PATCH_FILE}{where} to the branch, and this "
                 "step reads the pull request again once its head moves", [])
+
+
+#: The parks a stuck wait does not interrupt: a repair round running, and a
+#: re-run settling -- each a fix in flight whose answer is still to come.
+_IN_FLIGHT = frozenset({CI_FIX_RUNNING, CI_RERUN_PENDING})
+#: `ci_stuck`'s two reasons.
+SAME_CHECK_AFTER_ROUND = "same_check_failed_after_round"
+ROUNDS_SPENT = "rounds_spent"
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def ci_stuck(own: Mapping[str, Any], *, head: str, pull_request: int | None,
+             failed: list[str], now: datetime) -> dict[str, Any] | None:
+    """The evidence that this CI wait is a person's, or None (part of #2688).
+
+    From the step's own record (`merge_wait`, `control.ci_wait_span`;
+    `merge_fix`, the tick's): the wait's first park across its re-checks and
+    the heads its repair rounds pushed, how many re-checks, the checks
+    failing now, the CI-fix rounds run and asked for, and whether the
+    default branch is red on the same checks. A person's when
+
+      * a check failing now failed at a head a CI-fix round was claimed at,
+        and this head is another: the same check fails after a repair
+        round (`SAME_CHECK_AFTER_ROUND`);
+      * or the rounds asked for are all spent and the wait is older than
+        CI_STUCK_SECONDS (`ROUNDS_SPENT`).
+
+    A step with no rounds asked for keeps MERGE_CI_MAX_SECONDS's bound.
+    None, too, for a wait the park about to be made starts afresh
+    (`_wait_restarts`): a person's "I'm ready" re-checks, it is not handed
+    straight back.
+    The record is tenant-writable: a forged one can at most hand the step
+    to a person early, which changes nothing on the forge.
+    """
+    metadata = _mapping(own.get("metadata"))
+    wait = _mapping(metadata.get(MERGE_WAIT_METADATA_KEY))
+    if _wait_restarts(metadata, wait, head):
+        return None
+    rounds = _fix_rounds(own)
+    asked = _rounds_asked(own)
+    round_heads = {str(r.get("head")) for r in rounds if r.get("head")}
+    seen = _mapping(wait.get("failed_heads"))
+    again = sorted(name for name in failed
+                   if isinstance(seen.get(name), list) and (set(seen[name]) & round_heads) - {head})
+    started = _stored_instant(wait.get("wait_started_at")) or _stored_instant(wait.get("first_parked_at"))
+    waited = (now - started).total_seconds() if started is not None else None
+    spent = asked > 0 and len(rounds) >= asked
+    if again:
+        why = SAME_CHECK_AFTER_ROUND
+    elif spent and waited is not None and waited > CI_STUCK_SECONDS:
+        why = ROUNDS_SPENT
+    else:
+        return None
+    main = _mapping(wait.get("main_red"))
+    main_checks = [str(n) for n in main.get("checks") or [] if isinstance(n, str)]
+    return {
+        "why": why,
+        "head": head,
+        "pull_request": pull_request,
+        "wait_started_at": started.isoformat() if started is not None else None,
+        "waited_minutes": int(waited // 60) if waited is not None else None,
+        # This park is the wait's next re-check.
+        "re_checks": _count(wait.get("rechecks")) + 1,
+        "failed_checks": sorted(failed),
+        "failed_again_after_round": again,
+        "fix_rounds_ran": len(rounds),
+        "fix_rounds_asked": asked,
+        "fix_rounds_spent": spent,
+        "main_red_on_same": sorted(set(main_checks) & set(failed)) if main_checks else [],
+        "main_red_head": _str_or_none(main.get("head")),
+    }
+
+
+def _wait_restarts(metadata: Mapping[str, Any], wait: Mapping[str, Any], head: str) -> bool:
+    """Whether the recorded wait ends here, the rule `control.ci_wait_span`
+    applies at the next park: the record was left at a head no repair round
+    worked from, or a person said "I'm ready" (`human_ready.at`) after it
+    started. `ci_stuck` reads the record before that park, so without this a
+    person's return was handed straight back to them (review, part of #2688)."""
+    started = _stored_instant(wait.get("wait_started_at"))
+    if started is None:
+        return False
+    previous = wait.get("head")
+    if previous and previous != head and previous not in _wait_round_heads(metadata):
+        return True
+    returned = _stored_instant(_mapping(metadata.get("human_ready")).get("at"))
+    return returned is not None and returned > started
+
+
+def _str_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def ci_stuck_line(evidence: Mapping[str, Any]) -> str:
+    """`ci_stuck`'s evidence as one line: how long, how many re-checks, what
+    fails, the rounds, and main."""
+    waited = evidence.get("waited_minutes")
+    hours, minutes = divmod(waited, 60) if isinstance(waited, int) else (None, None)
+    span = (f"{hours} h {minutes} m" if hours else f"{minutes} m") if minutes is not None else "an unrecorded time"
+    on = f"PR #{evidence['pull_request']}" if evidence.get("pull_request") else "its pull request"
+    parts = [f"CI on {on} waited {span} over {evidence.get('re_checks')} re-checks"]
+    failed = evidence.get("failed_checks") or []
+    if failed:
+        parts.append("failing: " + ", ".join(failed[:5]) + (", ..." if len(failed) > 5 else ""))
+    asked = evidence.get("fix_rounds_asked") or 0
+    if asked:
+        parts.append(f"fix rounds {evidence.get('fix_rounds_ran')} of {asked}"
+                     + (" spent" if evidence.get("fix_rounds_spent") else ""))
+    if evidence.get("failed_again_after_round"):
+        parts.append("failed again after a fix round: " + ", ".join(evidence["failed_again_after_round"][:5]))
+    if evidence.get("main_red_on_same"):
+        parts.append("main is red on " + ", ".join(evidence["main_red_on_same"][:5]) + " too")
+    return "; ".join(parts)
 
 
 def _ci_wait_age(ctx: ActionContext, head: str) -> float | None:

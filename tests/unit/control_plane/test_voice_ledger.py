@@ -21,6 +21,8 @@ from swarm_api.errors import NotFound, ValidationFailed
 from swarm_api.store import ATTEMPTS
 from swarm_api.voice import ledger as vl
 from swarm_api.voice import sessions as vs
+from swarm_api.voice import speech_catalogue as cat
+from swarm_api.voice import speech_machine as sm
 from swarm_api.voice import store as vstore
 
 from .conftest import auth_header
@@ -233,6 +235,80 @@ def test_a_start_that_would_pass_the_day_cap_is_refused_naming_the_day(db):
     assert refused.value.detail["reason"] == vl.DAY_CAP_REACHED
     assert refused.value.detail["line"] == "day"
     assert "$300 cap" in refused.value.message
+
+
+# ---- the Speech machine line (own-speech §13) -------------------------------------
+
+
+def _machine_stopped(db, session, *, usd, minutes=60.0, tenant="eng", at=NOW):
+    """The stop's `voice_audit` row as SpeechMachine.stop writes it, priced."""
+    db.collection(vs.AUDIT).document().set({
+        "action": sm.AUDIT_STOPPED, "tenant_id": tenant, "by": ALICE, "at": at,
+        "session_id": session, "detail": {"minutes": minutes, "usd": usd}})
+
+
+def test_the_speech_machines_minutes_are_spent_against_the_session_and_the_day(db):
+    _project, session = _session(db)
+    _machine_stopped(db, session, usd=0.71)
+    # Another tenant's row under the same session id is never this session's.
+    _machine_stopped(db, session, usd=50.0, tenant="ops")
+
+    view = _ledger(db).compute(tenant_id="eng", person=ALICE, session_id=session)
+
+    for key in (vl.SESSION, vl.DAY):
+        assert _line(view[key], "speech_machine")["spent_usd"] == pytest.approx(0.71)
+        assert view[key]["total_usd"] == pytest.approx(0.71)
+        assert view[key]["unpriced_machine_sessions"] == 0
+
+
+def test_a_running_machine_counts_from_the_start_call_to_now(db):
+    _project, session = _session(db, state=vs.LIVE)
+    db.collection(sm.COLLECTION).document(sm.LEASE).set({
+        "session_id": session, "tenant_id": "eng", "generation": 1, "state": sm.RUNNING,
+        "machine": cat.DEFAULTS["machine"], "started_at": NOW - timedelta(minutes=30)})
+
+    view = _ledger(db).compute(tenant_id="eng", person=ALICE, session_id=session)
+
+    half_hour = cat.machine(cat.DEFAULTS["machine"]).usd_per_hour / 2
+    assert _line(view["session"], "speech_machine")["spent_usd"] == pytest.approx(half_hour)
+
+
+def test_an_unpriced_stop_is_said_and_never_counted_as_zero(db):
+    _project, session = _session(db)
+    _machine_stopped(db, session, usd=None)
+
+    view = _ledger(db).compute(tenant_id="eng", person=ALICE, session_id=session)
+
+    assert view["session"]["unpriced_machine_sessions"] == 1
+    assert _line(view["session"], "speech_machine")["spent_usd"] == 0.0
+
+
+def test_a_start_the_machines_minutes_push_past_the_session_cap_is_refused(db):
+    project, session = _session(db)
+    _start_row(db, project, session, "task-a", steps=[75.0])  # $90 reserved
+    _machine_stopped(db, session, usd=5.0)  # $95 with the machine
+    ledger = _ledger(db)
+
+    with pytest.raises(vl.VoiceCapReached) as refused:
+        ledger.reserve_or_refuse(tenant_id="eng", person=ALICE, session_id=session,
+                                 steps=[{"usd": 5.0}])  # +$6 -> $101
+
+    assert refused.value.detail["reason"] == vl.SESSION_CAP_REACHED
+    assert refused.value.detail["spent_usd"] == pytest.approx(5.0)
+    assert refused.value.detail["would_be_usd"] == pytest.approx(101.0)
+
+
+def test_an_earlier_sessions_machine_counts_on_the_day_it_started_only(db):
+    _p, earlier = _session(db, created=NOW - timedelta(hours=3))
+    _machine_stopped(db, earlier, usd=2.0, at=NOW - timedelta(hours=2))
+    _p, yesterday = _session(db, created=NOW - timedelta(days=1))
+    _machine_stopped(db, yesterday, usd=7.0, at=NOW - timedelta(days=1))
+    _project, session = _session(db)
+
+    view = _ledger(db).compute(tenant_id="eng", person=ALICE, session_id=session)
+
+    assert _line(view["session"], "speech_machine")["spent_usd"] == 0.0
+    assert _line(view["day"], "speech_machine")["spent_usd"] == pytest.approx(2.0)
 
 
 def test_a_step_without_a_usd_budget_is_refused():

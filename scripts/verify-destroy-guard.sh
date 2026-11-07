@@ -292,7 +292,7 @@ kind_field() {
 # The entry `default` (removed from the token list) and `(default)` (added) are
 # both accounted for here rather than assumed; DENY_TOKENS is built once above.
 ENTRIES=()
-for entry in "${SHARED_DENY_LIST[@]}"; do ENTRIES+=("${entry}"); done
+for entry in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do ENTRIES+=("${entry}"); done
 ENTRIES+=("(default)")
 
 COVERED=0

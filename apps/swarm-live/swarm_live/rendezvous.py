@@ -142,6 +142,19 @@ THE CAPS (§5.10). 10 concurrent viewers per task, 50 per tenant. The relay is a
 single replica (§3.3), so these counts are global. The recorder's connection is
 not a viewer and is not counted.
 
+A THUMBNAIL IS NOT A WATCHER (LIVE-THUMBS-SMALL-JPEG, part of #2688). Every
+viewer link counts against the caps, but only a link that is not in the gate's
+thumbnail mode raises the recorder to `WATCHED_FPS`: a session watched only by
+cards on the Live Browsers wall records at the idle rate, as if nobody
+watched, and a Browser tab opened on it raises the rate again. The relay reads
+the mode from the viewer's own SetEncodings (`ClientStream`), the pseudo-
+encoding `ENCODING_THUMB_WIDTH_0 + width` the gate serves it by, rather than
+from a role swarm-api would name on the ticket: what lowers the recording rate
+is then exactly what the gate is sending that link -- a link cannot be named a
+thumbnail and be served full frames -- and the ticket's shape and swarm-api's
+proxy stay as they are. Only the message framing is read, never a key,
+pointer or pasted byte (below).
+
 THE RECORDER'S CONNECTION IS OPENED AGAIN WHEN THE GATE ENDS IT (part of
 #1346). The gate's `StreamMux` sends CLOSE when the `RfbSession` serving a
 connection returns. For a viewer the relay drops the viewer and noVNC
@@ -167,6 +180,7 @@ import json
 import logging
 import re
 import secrets
+import struct
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
@@ -226,6 +240,19 @@ _OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT, 
 #: RFB client messages that are a person's input (RFC 6143 §7.5): KeyEvent,
 #: PointerEvent, ClientCutText. By the first byte, as swarm-api counts them.
 _RFB_INPUT = frozenset({4, 5, 6})
+#: The gate's thumbnail-mode pseudo-encoding (agent_worker/livegate/rfb.py
+#: `ENCODING_THUMB_WIDTH_0`, `_THUMB_WIDTH_SPAN`): `ENCODING_THUMB_WIDTH_0 + width`.
+ENCODING_THUMB_WIDTH_0 = -0x53571000
+_THUMB_WIDTH_SPAN = 0xFFF
+#: A viewer's bytes before its first client message: ProtocolVersion (12), the
+#: security type it chose (1), ClientInit (1). Security None only (the gate's).
+_RFB_CLIENT_PREAMBLE = 14
+#: Fixed-size client messages by type (RFC 6143 §7.5): SetPixelFormat,
+#: FramebufferUpdateRequest, KeyEvent, PointerEvent. SetEncodings (2) and
+#: ClientCutText (6) carry their length.
+_RFB_CLIENT_SIZES = {0: 20, 3: 10, 4: 8, 5: 6}
+#: The gate's own limit on a SetEncodings (rfb.py `_MAX_ENCODINGS`).
+_RFB_MAX_ENCODINGS = 256
 #: The largest REPORT kept (the gate's `report.MAX_REPORT_BYTES`): a
 #: 253-character host and a device fit in well under half of it.
 MAX_REPORT_BYTES = 4096
@@ -690,6 +717,76 @@ class Tunnel:
     closed: bool = False
 
 
+class ClientStream:
+    """A viewer's RFB client messages, framed to find its SetEncodings (module docstring).
+
+    Fed every byte the viewer sends, in order. Only the message types and
+    lengths are read, and SetEncodings' list; a key, a pointer or pasted text
+    is skipped unread. A message the gate would refuse ends the reading:
+    the link is then counted as a watcher, the safe side for the recording.
+    """
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._preamble = _RFB_CLIENT_PREAMBLE
+        self._skip = 0  # the rest of a ClientCutText's text, never kept
+        self.lost = False
+        self.thumbnail = False
+
+    def feed(self, data: bytes) -> None:
+        if self.lost:
+            return
+        view = memoryview(data)
+        while view:
+            if self._preamble:
+                n = min(self._preamble, len(view))
+                self._preamble -= n
+                view = view[n:]
+            elif self._skip:
+                n = min(self._skip, len(view))
+                self._skip -= n
+                view = view[n:]
+            else:
+                self._buffer += view
+                view = view[len(view):]
+                self._messages()
+
+    def _messages(self) -> None:
+        buf = self._buffer
+        while buf and not self.lost:
+            kind = buf[0]
+            if kind == 2:
+                if len(buf) < 4:
+                    return
+                count = struct.unpack_from(">H", buf, 2)[0]
+                if count > _RFB_MAX_ENCODINGS:
+                    self.lost = True
+                    return
+                if len(buf) < 4 + 4 * count:
+                    return
+                encodings = struct.unpack_from(f">{count}i", buf, 4)
+                self.thumbnail = any(0 < e - ENCODING_THUMB_WIDTH_0 <= _THUMB_WIDTH_SPAN
+                                     for e in encodings)
+                del buf[:4 + 4 * count]
+            elif kind == 6:
+                if len(buf) < 8:
+                    return
+                self._skip = struct.unpack_from(">I", buf, 4)[0]
+                del buf[:8]
+                n = min(self._skip, len(buf))
+                self._skip -= n
+                del buf[:n]
+            elif kind in _RFB_CLIENT_SIZES:
+                size = _RFB_CLIENT_SIZES[kind]
+                if len(buf) < size:
+                    return
+                del buf[:size]
+            else:
+                self.lost = True
+                self.thumbnail = False
+                buf.clear()
+
+
 @dataclass(eq=False)
 class Viewer:
     conn_id: str
@@ -697,6 +794,8 @@ class Viewer:
     tunnel: Tunnel
     outbox: _Outbox
     closed: bool = False
+    #: Its client messages, for the thumbnail mode (module docstring).
+    stream: ClientStream = field(default_factory=ClientStream)
 
 
 class Rendezvous:
@@ -967,12 +1066,17 @@ class Rendezvous:
 
     def _viewers_changed(self, tunnel: Tunnel) -> None:
         if tunnel.recording is not None:
-            tunnel.recording.set_viewers(len(tunnel.viewers))
+            # Thumbnails are not watchers (module docstring).
+            tunnel.recording.set_viewers(sum(not v.stream.thumbnail for v in tunnel.viewers.values()))
 
     async def from_viewer(self, viewer: Viewer, data: bytes) -> None:
         if viewer.closed or viewer.tunnel.closed:
             return
         tunnel = viewer.tunnel
+        thumbnail = viewer.stream.thumbnail
+        viewer.stream.feed(data)
+        if viewer.stream.thumbnail != thumbnail:
+            self._viewers_changed(tunnel)
         if (data[:1] and data[0] in _RFB_INPUT and tunnel.controller != viewer.conn_id
                 and viewer.conn_id in tunnel.granted):
             # This person's input comes from this link now (module docstring).

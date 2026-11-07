@@ -168,14 +168,17 @@ def gcloud(world: dict, argv: list[str]) -> int:
             bind(account["policy"], flag(flags, "--role"), flag(flags, "--member"))
             return 0
 
+    # A bucket named in `bucket_policies` (gs://... -> policy) has its own
+    # policy (the managed plugins bucket); every other is the artifact bucket's.
     if words[:3] == ["storage", "buckets", "get-iam-policy"]:
-        out(world["bucket_policy"])
+        out(world.get("bucket_policies", {}).get(words[3], world["bucket_policy"]))
         return 0
     if words[:3] == ["storage", "buckets", "add-iam-policy-binding"]:
         condition = None
         if "--condition-from-file" in flags:
             condition = json.loads(Path(flag(flags, "--condition-from-file")).read_text())
-        bind(world["bucket_policy"], flag(flags, "--role"), flag(flags, "--member"), condition)
+        policy = world.get("bucket_policies", {}).get(words[3], world["bucket_policy"])
+        bind(policy, flag(flags, "--role"), flag(flags, "--member"), condition)
         return 0
     if words[:2] == ["storage", "cp"]:
         world["objects"][words[3]] = sys.stdin.read()

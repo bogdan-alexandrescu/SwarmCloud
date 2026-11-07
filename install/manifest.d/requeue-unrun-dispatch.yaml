@@ -1,0 +1,8 @@
+# Lane REQUEUE-UNRUN-DISPATCH (part of #2688): the bound on how often the
+# reconciler re-queues a task whose silent lease never reached STARTING
+# before it fails it as never started. A code default (3); nothing renders
+# it, so a fresh deployment needs no installer step for it.
+version: 1
+env:
+  NEVER_STARTED_REQUEUE_LIMIT:
+    setter: 'internal: read at apps/reconciler/reconciler/config.py:553; nothing in terraform/, kubernetes/, images/ or the services'' dispatch code sets it, so a deployed service runs on the reader''s default or an operator''s own environment'

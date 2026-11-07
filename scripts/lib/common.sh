@@ -12,6 +12,8 @@
 #   2. Every shared resource in saga-agents-staging that belongs to another team
 #      is named here, once, in SHARED_DENY_LIST. destroy.sh, purge-data.sh and
 #      configure-kubectl.sh all read it. One list, one place to keep correct.
+#      It is keyed by project: whole when PROJECT_ID is that project, empty for
+#      any other. PROJECT_ID has no default; an unset project is an error.
 
 set -euo pipefail
 
@@ -145,6 +147,15 @@ assert_env_file_is_trustworthy() {
   fi
 }
 
+# require_project: stop unless PROJECT_ID names a project. load_env calls it
+# for every script that did not set SWARM_NO_PROJECT=1; a script that did, but
+# has a mode that does reach a project (a check that finds credentials, say),
+# calls it before that mode, so the opt-out never becomes a guess.
+require_project() {
+  [[ -n "${PROJECT_ID:-}" ]] \
+    || die "PROJECT_ID is not set, and no script here guesses it. Set it in .env (cp .env.example .env) or export it: PROJECT_ID=<your-gcp-project>"
+}
+
 load_env() {
   local env_file="${SWARM_ENV_FILE:-${REPO_ROOT}/.env}"
   if [[ -f "${env_file}" ]]; then
@@ -155,7 +166,21 @@ load_env() {
     set +a
   fi
 
-  PROJECT_ID="${PROJECT_ID:-saga-agents-staging}"
+  # NO DEFAULT. This read `${PROJECT_ID:-saga-agents-staging}`, so a machine
+  # with no .env -- a fresh install, a new operator, a CI job that forgot the
+  # variable -- aimed every script here at the shared project, the one that
+  # holds another team's live cluster. An unset project is an error instead
+  # (Day One plan, lane DAYONE-DESAGA-2, R4). The live deployment's .env and
+  # every workflow name it; .env.example says where to.
+  #
+  # A script that touches no project at all (a local check, a self-test)
+  # says so by setting SWARM_NO_PROJECT=1 before it sources this file. It then
+  # runs with PROJECT_ID empty, and the deny-list stays WHOLE: a project nobody
+  # named is never assumed to be one whose list may be empty.
+  if [[ -z "${PROJECT_ID:-}" ]]; then
+    [[ "${SWARM_NO_PROJECT:-}" == "1" ]] || require_project
+    PROJECT_ID=""
+  fi
   REGION="${REGION:-us-central1}"
   ZONE="${ZONE:-us-central1-a}"
   ENVIRONMENT="${ENVIRONMENT:-dev}"
@@ -225,6 +250,8 @@ load_env() {
   IMAGE_HOST="${IMAGE_HOST:-${REGION}-docker.pkg.dev}"
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
+  key_shared_deny_list
+
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
   export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET ACCEPTANCE_FIXTURE_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
@@ -241,6 +268,13 @@ load_env() {
     export KUBECONFIG
   fi
 }
+
+# The project the list below belongs to. The list is KEYED by it (Day One plan,
+# R4): it applies when PROJECT_ID is this project, and it is empty for any
+# other, whose resources are nobody else's. It stays here, written once, rather
+# than in an environment variable an operator could forget -- a forgotten
+# variable would empty the live guard without a word.
+SHARED_PROJECT_ID="saga-agents-staging"
 
 # Resources owned by other teams in this shared project. Verified against the
 # live project on 2026-09-15, and the service accounts, buckets and Cloud Run
@@ -289,10 +323,27 @@ SHARED_DENY_LIST=(
   "promptlab-api@saga-agents-staging.iam.gserviceaccount.com"
   "oracle-web"
 )
+# The shared project's list as written, kept apart from SHARED_DENY_LIST so
+# re-keying is idempotent: load_env run again after PROJECT_ID moved back to
+# the shared project restores every entry rather than keeping an empty list.
+SHARED_PROJECT_DENY_LIST=("${SHARED_DENY_LIST[@]}")
+
+# key_shared_deny_list: SHARED_DENY_LIST is the shared project's whole list when
+# PROJECT_ID is SHARED_PROJECT_ID or empty (SWARM_NO_PROJECT=1: no project was
+# named, so none is assumed safe), and empty for any other project. load_env
+# calls it once PROJECT_ID is final. An empty array must be expanded as
+# ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"} under bash 3.2's `set -u`.
+key_shared_deny_list() {
+  if [[ -z "${PROJECT_ID:-}" || "${PROJECT_ID}" == "${SHARED_PROJECT_ID}" ]]; then
+    SHARED_DENY_LIST=("${SHARED_PROJECT_DENY_LIST[@]}")
+  else
+    SHARED_DENY_LIST=()
+  fi
+}
 
 is_shared_resource() {
   local candidate="$1" protected
-  for protected in "${SHARED_DENY_LIST[@]}"; do
+  for protected in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     [[ "${candidate}" == "${protected}" ]] && return 0
   done
   return 1
@@ -344,9 +395,14 @@ shared_resource_kind() {
 #   * `(default)` is ADDED. That is Firestore's default database -- the one
 #     CONTRACT.md says must stay free for the other teams in this shared
 #     project -- and it is a name no token-splitting would produce.
+#
+# For a project other than the shared one the list is empty and this prints
+# ["(default)"]: `printf '%s\n'` with no arguments still prints one empty line,
+# so nothing is printed at all then, and grep finding no line is not an error.
 guard_deny_json() {
-  printf '%s\n' "${SHARED_DENY_LIST[@]}" \
-    | grep -vx 'default' | jq -R . | jq -sc '. + ["(default)"]'
+  if [[ "${#SHARED_DENY_LIST[@]}" -gt 0 ]]; then
+    printf '%s\n' "${SHARED_DENY_LIST[@]}"
+  fi | { grep -vx 'default' || [[ $? -eq 1 ]]; } | jq -R . | jq -sc '. + ["(default)"]'
 }
 
 # The platform name prefix `destroy-guard.jq` judges OWNERSHIP by, in the one
@@ -2549,12 +2605,26 @@ redact() {
   local v_argc="[]A-Za-z0-9_.,:=*'\" +/%\\[${keep}-]"
   local v_args="(\\(${v_argc}{0,160}(\\(${v_argc}{0,160}\\)${v_argc}{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}|\"[^\"${secretrun}]{0,128}\"|'[^'${secretrun}]{0,128}')\\])"
   local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
-  # `${NAME}` ends where a value ends: a `;`, `)`, `]` or `}` with a literal
-  # glued after it is not an end (`_SHELL_SUBSTITUTION`; the owner's pick
-  # 'tighten' on PR #3448). The character after it is in the marked span, so
-  # the s command puts it back. Nor is a quote after that run with a literal
-  # glued after the quote (`_GLUED_AFTER_QUOTE`): `token=${NAME});'<v>'`.
-  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}([^];)}]|[];)}]+([,[:space:]]|$|["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))|$)|\{\{ )'
+  # Where a value ends after a placeholder or a shell substitution
+  # (`_VALUE_ENDS`): at most a closing quote, then a blank, the end, or a
+  # `,;)]}` run with no literal glued after it. A quote after a run with no
+  # comma in it ends the value only where the value ends
+  # (`_GLUED_AFTER_QUOTE`): `token=${NAME});'<v>'` is masked. What ends the
+  # value is in the marked span, so the s command puts it back.
+  local v_ends='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
+  # `$(cmd ...)`, `${NAME}` and `${{ expr }}` are kept only as a whole,
+  # closed construct where the value ends (`_SHELL_SUBSTITUTION`; BGD,
+  # 6 November 2026): `${NAME}<v>`, `${NAME},<v>` and `$(cat f);<v>` are masked.
+  # Up to three closing quotes before that end, for nested quoting, and a
+  # `$(` whose line ends in a continuation is kept, as main kept both.
+  local v_shell='"?[$]((\([a-z][a-z0-9_-]{0,31}( [^()]{0,256})?\)|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ [^{}]{0,256}\}\})(\\{0,15}["'"'"'`]){0,3}'"${v_ends}"'|\([a-z][a-z0-9_-]{0,31} [^()]{0,256}\\$)'
+  # A masked run goes on past one `;)]}` and a quote or a comma when a value
+  # character follows (`_GLUED_RUN`): `token=${NAME};"<v>"`, `${NAME},<v>`.
+  # A closed `$(...)` or `${{...}}` with a literal glued after it is masked
+  # as one value (`_CLOSED_CONSTRUCT`): `token = $(cat f);<v>`.
+  local m_glued_tail='(\\*"|,)[];)}]*[^]",[:space:]\\;)}]'
+  local m_glued="[];)}]${m_glued_tail}"
+  local m_construct='[$](\([^()]{0,256}\)|\{\{[^{}]{0,256}\}\})('"${m_glued_tail}"')?'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -2579,9 +2649,8 @@ redact() {
   local a_prefix='([bfru]{1,2}\\{0,15}["'"'"']|\\{0,15}["'"'"'])?'
   local a_scheme='((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:blank:]]+)?'
   local a_name='(\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|[$]\{[A-Za-z_][A-Za-z0-9_]{0,63}\}|[$][A-Za-z_][A-Za-z0-9_]{0,63}|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])'
-  # A quote after a run with no comma in it ends the value only where the
-  # value ends (`_GLUED_AFTER_QUOTE`): `Bearer {TOKEN});'<v>'` is masked.
-  local a_end='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
+  # It ends where `${NAME}` does (`v_ends`): `Bearer {TOKEN});'<v>'` is masked.
+  local a_end="${v_ends}"
   # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
   # restated move for move -- its comment says why each move is there. The
   # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
@@ -2766,7 +2835,7 @@ redact() {
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
     -e "s/(authorization(s|s?[-_](access[-_]?key|key|hash))?(\\\\*\")?)([[:blank:]]*[:=][[:blank:]]*${a_prefix}${a_scheme}${a_name}${a_end})/\\1${keep}\\5/Ig" \
     -e "s/(authorization(\\\\*\")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\\\*\"|\\\\*\")?)((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\4/Ig" \
-    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\*"|\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\*"|\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]]('"${m_glued}"'|[^"\\,[:space:]])*/\1********/Ig' \
     -e "s/(\\\\{1,15})\"${c_qname}(\\\\{1,15})\"/\\1${c_dq}\\2\\4${c_dq}/g" \
     -e "s/\"${c_qname}\"/${c_dq}\\1${c_dq}/g" \
     -e "s/'${c_qname}'/${c_sq}\\1${c_sq}/g" \
@@ -2805,8 +2874,8 @@ redact() {
     -e "s/${secretrun}//g" \
     -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[^"\\,[:space:]]+/\1'"${keep}"'\7********/Ig' \
     -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1'"${keep}"'\5********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[^",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

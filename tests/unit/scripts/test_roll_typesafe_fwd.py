@@ -210,7 +210,7 @@ class Cluster:
             SWARM_ENV_FILE=str(self.tmp / "no.env"),
             # apply.sh has no default project (DAYONE-K8S-1): the one this fake
             # cluster's context and identities name is given, as an operator would.
-            PROJECT_ID="saga-agents-staging",
+            PROJECT_ID=PROJECT,
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             HOME=str(self.tmp),
             TMPDIR=str(self.tmp),
