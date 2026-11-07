@@ -5,7 +5,7 @@ resources, unlabelable types and foreign projects. This file exists to cover wha
 fixture does NOT: a near-miss label value, and failing closed on unusable input.
 
 Why bother: the deploy runs unattended against a SHARED project holding a live 4-node
-cluster `agents-staging`, VPC `agents-staging-vpc`, and service accounts for promptlab,
+cluster `peer-cluster`, VPC `peer-vpc`, and service accounts for a peer application,
 crawler, aipipeline, external-secrets and tournament-digest. The guard is the only thing
 between a bad plan and another team's production.
 """
@@ -40,17 +40,17 @@ def _shared_deny_list() -> list[str]:
     VPC, two subnets, the shared default network, three buckets and twelve
     service accounts. So the suite proving `make destroy` refuses to touch
     another team's resources was proving it for fourteen of twenty. Missing entirely: the three
-    shared buckets (`saga-agents-crawled-media-staging`,
-    `saga-agents-files-staging`, `saga-agents-terraform-state-staging`) and the
+    shared buckets (`peer-bucket`,
+    `peer-bucket-2`, `peer-bucket-3`) and the
     other team's Compute Engine default service account. A plan deleting any of
     those was never shown to be refused.
 
     The SHAPE was wrong too, which is the more interesting half. The hand-written
-    list held service accounts by short name (`promptlab-runner`); `common.sh`
+    list held service accounts by short name (`peer-runner`); `common.sh`
     holds them as full emails, and `scripts/destroy.sh` and
     `scripts/lib/plan-guard.sh` pass those full emails to the guard. So the one
     matching behaviour production actually depends on was the one the test did
-    not exercise -- and `209012342332-compute@developer.gserviceaccount.com` is
+    not exercise -- and `210987654321-compute@developer.gserviceaccount.com` is
     not even on `PROJECT`'s domain, so rebuilding an email from a short name, as
     this file did, cannot produce it at all.
 
@@ -173,7 +173,7 @@ def test_near_miss_label_value_is_an_offender(tmp_path):
     """
     verdict = run_guard([
         deletion("ours", "google_storage_bucket",
-                 name="saga-agents-staging-swarm-artifacts",
+                 name="example-project-swarm-artifacts",
                  labels={"managed-by": "swarm-terraform"}),
         deletion("near_miss", "google_storage_bucket",
                  name="someone-elses-bucket",
@@ -212,10 +212,10 @@ def test_the_derived_deny_list_is_the_one_production_passes_the_guard():
     this fails on the count. Drop the `grep -vx default` from `guard_deny_json`
     and the third assertion fails.
     """
-    # 30 = the 2026-10-21 read of saga-agents-staging (#1822) -- 19 service
+    # 30 = the 2026-10-21 read of the shared project (#1822) -- 19 service
     # accounts, 6 buckets, 2 Cloud Run services, the cluster, the VPC, two
     # subnets and `default` -- less the oracle-api@ service account and the bare
-    # "oracle-api" Cloud Run service name, which BGD removed on 2026-10-27
+    # "oracle-api" Cloud Run service name, which the owner removed on 2026-10-27
     # (#1835, answer "Both entries"; see the comment above SHARED_DENY_LIST).
     # Raise it when the list grows; never lower it to make a shortened list
     # pass -- only an owner decision to drop an entry lowers it.
@@ -265,7 +265,7 @@ def test_every_real_neighbour_is_caught_even_if_mislabelled(protected, tmp_path)
 
     The entry is fed AS IT IS WRITTEN, never rebuilt: a service account goes in as
     its own full email, because one of the twelve
-    (`209012342332-compute@developer.gserviceaccount.com`) is not on this
+    (`210987654321-compute@developer.gserviceaccount.com`) is not on this
     project's service-account domain and no `f"{name}@{PROJECT}..."` could
     produce it.
     """

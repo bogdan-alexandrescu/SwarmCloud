@@ -4,8 +4,8 @@ WHY THIS FILE EXISTS, AND WHY IT IS NOT test_destroy_guard.py.
 
 `make destroy` aborts on anything that belongs to another team and on anything
 without `managed-by=swarm-terraform`. It is the only control between this
-repository and deleting another team's production in `saga-agents-staging`:
-their live GKE cluster `agents-staging`, their VPC, two subnets, three buckets,
+repository and deleting another team's production in the shared project:
+their live GKE cluster `peer-cluster`, their VPC, two subnets, three buckets,
 twelve service accounts, and Firestore's shared `(default)` database.
 
 Until 2026-09-24 that guard had never been run against a real
@@ -21,7 +21,7 @@ database could never reach that branch.
 So this file judges a RECORDING of a real destroy plan:
 `tests/integration/fixtures/destroy-plan-dev-real.json`, 264 real deletions
 across 42 real resource types, produced by `scripts/destroy.sh --dry-run`
-against `saga-agents-staging` and redacted by
+against the shared project and redacted by
 `scripts/verify-destroy-guard.sh --record`. Values survive only for the fields
 the guard reads; every other key survives by NAME, so the recording still states
 what the real provider emits without carrying a service's environment, a

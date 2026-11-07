@@ -258,7 +258,7 @@ if url.startswith("http://metadata.google.internal/"):
     if "/identity" in url:
         respond(200, "fake-id-token")
     if "/email" in url:
-        respond(200, "swarm-verify@swarm-test-project.iam.gserviceaccount.com")
+        respond(200, "swarm-verify@example-project.iam.gserviceaccount.com")
     respond(200, {"access_token": "fake-access-token", "expires_in": 3600})
 
 if re.match(r"^https://firestore\.googleapis\.com/v1/projects/[^/]+/databases/[^/:]+$", url):

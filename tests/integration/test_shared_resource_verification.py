@@ -5,9 +5,9 @@ are used, and the flag itself is read-only.
 
 THE PROPERTY, and why it is worth a file of its own:
 
-    saga-agents-staging holds a live GKE cluster, a VPC and its subnets, buckets,
-    Cloud Run services and service accounts that belong to promptlab, crawler,
-    aipipeline, external-secrets, tournament-digest, ai-studio and oracle --
+    The shared project holds a live GKE cluster, a VPC and its subnets, buckets,
+    Cloud Run services and service accounts that belong to other teams' peer
+    applications --
     every one listed in `SHARED_DENY_LIST` in scripts/lib/common.sh. The last
     thing `make destroy` does is assert they all survived. Every one of those
     lookups was
@@ -18,7 +18,7 @@ THE PROPERTY, and why it is worth a file of its own:
     expired session, a disabled API, a missing permission, a network blip and a
     wrong --location produce. The script then printed
 
-        SHARED RESOURCES ARE MISSING AFTER DESTROY: gke/agents-staging network/...
+        SHARED RESOURCES ARE MISSING AFTER DESTROY: gke/peer-cluster network/...
         This should be impossible -- the plan assertions passed. Escalate immediately.
 
     naming fifteen of another team's resources as deleted, with the real reason
@@ -42,7 +42,7 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "destroy.sh"
 
 # The shared project, by name: common.sh keys SHARED_DENY_LIST by project
-# (DAYONE-DESAGA-2) -- whole for saga-agents-staging, empty for any other -- and
+# (DAYONE-GENERIC-2) -- whole for the shared project, empty for any other -- and
 # these neighbours exist only there. Named in any other project the check has
 # nobody's resources to look at, and the cases below would test nothing.
 PROJECT = "saga-agents-staging"
@@ -62,7 +62,7 @@ case "${args}" in
   *"container clusters list"*)        echo "agents-staging" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0
@@ -93,7 +93,7 @@ case "${args}" in
   *"container clusters list"*)        echo "agents-staging" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
-  *"iam service-accounts describe"*)  echo "sa@example.iam.gserviceaccount.com" ;;
+  *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
   *)                                  : ;;
 esac
 exit 0
