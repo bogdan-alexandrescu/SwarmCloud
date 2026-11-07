@@ -550,8 +550,34 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
     if size > MAX_VERDICT_BYTES:
         raise refuse(f"is {size} bytes, over the {MAX_VERDICT_BYTES}-byte bound")
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise refuse(f"is not JSON ({type(exc).__name__})") from exc
+    return _verdict_of_bytes(data, refuse)
+
+
+def read_verdict_bytes(data: bytes, *, task_id: str, filename: str) -> Verdict:
+    """Read a verdict file's bytes fetched from an upstream's artifacts, or refuse
+    it by name, by `read_verdict`'s rules. A fix loop's merge reads its final
+    review's this way: the review is of another workflow, so nothing stages it."""
+    where = f"the verdict file {filename!r} of task {task_id}"
+    accepted = " or ".join(REVIEW_VERDICTS)
+
+    def refuse(problem: str) -> InputUnavailable:
+        return InputUnavailable(
+            f"{where} {problem}. A verdict file is {EXPECTED_SHAPE}, with "
+            f"`verdict` {accepted}; an unreadable review is not a MERGE"
+        )
+
+    if len(data) > MAX_VERDICT_BYTES:
+        raise refuse(f"is {len(data)} bytes, over the {MAX_VERDICT_BYTES}-byte bound")
+    return _verdict_of_bytes(data, refuse)
+
+
+def _verdict_of_bytes(data: bytes, refuse: Callable[[str], InputUnavailable]) -> Verdict:
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
         raise refuse(f"is not JSON ({type(exc).__name__})") from exc
     if not isinstance(document, dict):
         raise refuse("is not a JSON object")
@@ -745,6 +771,9 @@ _PATCH_HEADER = re.compile(
 
 #: The `result_summary.git` key naming the paths a step's own work changed.
 OWN_FILES_KEY = "own_files"
+#: The signed dispatch list of the paths a fix loop's re-review judges
+#: (`ui_paths_in_dispatch`), written by swarm-api at the round's submission.
+RENDERED_REVIEW_PATHS_KEY = "rendered_review_paths"
 
 
 def _patch_paths(header: str) -> list[str]:
@@ -822,6 +851,32 @@ def ui_paths_in_own_files(summary: Any) -> tuple[list[str], bool] | None:
             found.setdefault(value.lstrip("/"), None)
     truncated = git.get(f"{OWN_FILES_KEY}_truncated") is True
     return list(found), truncated and not found
+
+
+def ui_paths_in_dispatch(block: Any) -> tuple[list[str], bool] | None:
+    """`(UI paths, unknown)` from a signed dispatch block's `rendered_review_paths`.
+
+    A fix loop's `re-review:<k>` (docs/design/fix-loop.md §4.3) is a lone
+    `collect` step: no dependant stages its verdict and it stages no patch,
+    so nothing above can tell it what it reviews. swarm-api signs the lane's
+    own changed paths into its dispatch block, and this list is read as the
+    patch headers would be. None when the block names no list. A list that is
+    not a list of paths is `unknown` -- gated, as a cut file list is -- with
+    whatever UI paths it does name.
+    """
+    if not isinstance(block, dict) or RENDERED_REVIEW_PATHS_KEY not in block:
+        return None
+    rows = block.get(RENDERED_REVIEW_PATHS_KEY)
+    if not isinstance(rows, list):
+        return [], True
+    found: dict[str, None] = {}
+    unknown = False
+    for value in rows:
+        if not isinstance(value, str) or not value:
+            unknown = True
+        elif is_ui_path(value):
+            found.setdefault(value.lstrip("/"), None)
+    return list(found), unknown
 
 
 def ui_paths_in_files(summary: Any) -> tuple[list[str], bool]:
