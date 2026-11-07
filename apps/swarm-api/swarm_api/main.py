@@ -359,6 +359,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
         openapi_url="/openapi.json",
     )
     app.state.ctx = ctx if ctx is not None else build_context()
+    # The submission gate applies a ready workspace's pending loans before it
+    # refuses for want of an account (LOAN-ON-READ, part of #2688).
+    people.wire_ready_loans(app)
     # The GitHub App's user authorisation (docs/onboarding.md §3.2, lane OB3).
     # Builds no client: the App's settings come from the environment, and
     # every route answers "not configured" until they and its client secret
