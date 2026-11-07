@@ -1,11 +1,11 @@
 # A workflow step that runs review-fix rounds until a review says MERGE
 
-Status: **design only, lane FIX-LOOP-DESIGN, part of #2509.** No code changes
-here. BGD asked for the design first (2026-10-26, about 17:20 PDT in Product
-Oracle's session, confirmed on #2509 at about 00:10Z on 2026-10-27). Build
-lanes follow BGD's answers to §9. The working name in the issue is
+Status: **design only, lane FIX-LOOP-DESIGN.** No code changes
+here. The owner asked for the design first (2026-10-26, about 17:20 PDT in Product
+Oracle's session, confirmed on an earlier issue at about 00:10Z on 2026-10-27). Build
+lanes follow the owner's answers to §9. The working name in the issue is
 `fix_until_merge`. This note calls the step a **fix loop**, and §9 Q10 asks
-BGD which name to ship.
+The owner which name to ship.
 
 Symbols are cited by name, not by line number, because line numbers move.
 
@@ -16,9 +16,9 @@ Symbols are cited by name, not by line number, because line numbers move.
 Today a workflow fixes a NOT_YET once. If the second review still says
 NOT_YET, the workflow is over and a person starts another one.
 
-* **Product Oracle** runs build → review. A NOT_YET means a whole new
+* **The second peer application** runs build → review. A NOT_YET means a whole new
   workflow, with a fix lane plus a re-review. Oracle ran 14 workflows on
-  2026-10-26, and 5 of them were fix rounds (#2509).
+  2026-10-26, and 5 of them were fix rounds.
 * **SwarmCloud's own lanes** run implement → review → fix → re-review →
   merge. When the re-review still says NOT_YET, the merge step refuses
   `verdict_not_merge` (`agent_worker.merge`, the `target.review` branch of the
@@ -47,7 +47,7 @@ ride beside it, and the gate ignores all of them:
 * A separate top-level `minors: [{file, call_site, finding}]` list, which the
   lane queue's review prompt asks for (docs/lane-queue.md §7).
 * `requirements` (issue runs, `issueci.evaluate_requirements`).
-* `needs_owner` / `open_questions` (#2070, `verdict.owner_question_refs`).
+* `needs_owner` / `open_questions` (`verdict.owner_question_refs`).
 * `p_real` / `triage` annotations (Jev, `verdict.annotate_findings`).
 
 The **gate** is the fix step's signed `metadata.dispatch.verdict_gate`,
@@ -62,7 +62,7 @@ The **gate** is the fix step's signed `metadata.dispatch.verdict_gate`,
   as neither MERGE nor NOT_YET (docs/workflows.md "What the worker refuses").
 
 swarm-api parses the same file on its side as
-`verdictpublish.parse_verdict`, for the control-plane publish (#748).
+`verdictpublish.parse_verdict`, for the control-plane publish.
 
 ### 2.2 Why only one review-fix round compiles
 
@@ -143,18 +143,18 @@ This design reuses the pick-fix pattern: a park that holds nothing, rounds
 claimed under a guard, signed round records, and "changed nothing" measured
 by the pushed head.
 
-### 2.5 Constraints already decided by BGD that bind this design
+### 2.5 Constraints already decided by the owner that bind this design
 
-* **swarm-api writes no artifact.** BGD declined the pod-less re-review on
+* **swarm-api writes no artifact.** The owner declined the pod-less re-review on
   2026-10-25 ("spin up another pod to re-review and then merge?";
   [no-pod-rereview.md](no-pod-rereview.md)). Every review verdict here
   therefore comes from a review agent's own pod. The loop step publishes no
   verdict file of its own.
 * **No fix agent after MERGE** (owner decision 2026-10-05), and **no
   re-review agent after MERGE** (2026-10-10).
-* **A UI lane's MERGE counts only from a rendered review** (#2184), and a
+* **A UI lane's MERGE counts only from a rendered review**, and a
   review's runtime is chosen from its diff with `runtime: browser_if_ui`
-  (#2322).
+ .
 * **Per-agent budget** (PR 2466, [agent-budget.md](agent-budget.md)): a limit
   per attempt, resolved at submission and pinned into the signed
   `metadata.dispatch.budget`.
@@ -165,9 +165,9 @@ by the pushed head.
 
 | | Where the loop lives | For | Against |
 |---|---|---|---|
-| **A (recommended)** | Its own **control-plane step** (`fix-loop` profile, no pod). swarm-api drives it on `task_finished` wakes and appends rounds as `review-fix:<n>` / `re-review:<n>` steps. | Works with or without a merge step, so issue runs (whose workflow has no merge, §5.3) and Oracle's lanes can use it. One step kind, named in the spec, as #2509 asks. It costs no pod between rounds. It reuses `_submit_round` / `_append_round_step` / the rollup rule. | Needs contract requests: a catalogue profile, and a park reason (§9 Q2). The merge step must learn to read the loop's last review (§4.6). |
+| **A (recommended)** | Its own **control-plane step** (`fix-loop` profile, no pod). swarm-api drives it on `task_finished` wakes and appends rounds as `review-fix:<n>` / `re-review:<n>` steps. | Works with or without a merge step, so issue runs (whose workflow has no merge, §5.3) and Oracle's lanes can use it. One step kind, named in the spec, as an earlier issue asks. It costs no pod between rounds. It reuses `_submit_round` / `_append_round_step` / the rollup rule. | Needs contract requests: a catalogue profile, and a park reason (§9 Q2). The merge step must learn to read the loop's last review (§4.6). |
 | B | **Inside the merge step**, as a fourth kind of merge round beside ci/conflict/pick. The merge parks `CI_PENDING` code `review_fix_pending`. | No contract change. It is PR 2463's shape almost line for line. | Only a workflow with a merge step can loop. Issue runs compile `merge: "off"` (`issueruns.py`, the `auto_merge` paragraph) and would get nothing, and the same goes for Oracle lanes that leave the PR for a person. It mixes "is it good" with "merge it". `/sc check` flags `CI_PENDING` over 90 minutes as stuck (`swarm_mcp.check`, rule c), and a three-round loop can take longer than that. |
-| C | **Pre-declared**: unroll `max_rounds` fix/re-review pairs into the DAG at submission. | No runtime driver. | Needs gated non-integrator steps under `integrate`, which is exactly the publisher rule in §2.2. Every pair whose gate is shut still costs a pod to republish the verdict (`Worker._republish_staged_verdict`). That is the cost the #2322 audit counted 43 times in one day. |
+| C | **Pre-declared**: unroll `max_rounds` fix/re-review pairs into the DAG at submission. | No runtime driver. | Needs gated non-integrator steps under `integrate`, which is exactly the publisher rule in §2.2. Every pair whose gate is shut still costs a pod to republish the verdict (`Worker._republish_staged_verdict`). That is the cost the earlier issue's audit counted 43 times in one day. |
 
 Also rejected: **creating the round agents inside the same workflow as real
 steps** with `depends_on` / `input_from`. That would give staging for free.
@@ -386,7 +386,7 @@ Every `HUMAN_REQUIRED` ending names its reason in the loop's
 ### 4.5 Parked for a person: who resumes it, and how
 
 The loop parks `HUMAN_REQUIRED` with a `park_phase`, the way the merge's
-owner-questions hold does (#2070). It holds no lease, no pool count and no
+owner-questions hold does. It holds no lease, no pool count and no
 execution. A person may then do one of three things:
 
 1. **Add a round.** `POST /v1/workflows/{id}/fix-loop/rounds`.
@@ -408,7 +408,7 @@ execution. A person may then do one of three things:
 `human-ready` refuses a `fix-loop` agent with 409, as it refuses await-input.
 A READY control-plane agent would only be parked again by the scheduler.
 
-The park itself expires after 7 days (§9 Q3, BGD 2026-10-27: (c)). The
+The park itself expires after 7 days (§9 Q3, the owner 2026-10-27: (c)). The
 scheduler's `_expire_human_waits` expires a `park_phase: fix_loop_*` park 7
 days after it opened and ends the loop FAILED `fix_loop_exhausted`, as a
 person's "stop" would, instead of sparing it as it spares `owner_questions`.
@@ -454,7 +454,7 @@ head.
    agent. Nothing is pre-created as a pending pod.
 2. **All-or-nothing reservation.** Each round agent is admitted by the
    scheduler's ordinary transaction. swarm-api writes no lease and no pool
-   count, the same rule that was decided for #748.
+   count, the same rule that was decided for an earlier issue.
 3. **Concurrency counts from LEASED.** The rounds are ordinary agents, so they
    count exactly as their profile does. A loop at most has one live round
    agent at a time.
@@ -497,13 +497,13 @@ head.
 
 ---
 
-## 5. How SwarmCloud's lanes and Product Oracle would use it
+## 5. How SwarmCloud's lanes and the second peer application would use it
 
 ### 5.1 A SwarmCloud lane: implement → review → fix → loop → merge
 
 ```json
 {"strategy": "integrate",
- "repository_url": "https://github.com/bogdan-alexandrescu/SwarmCloud.git",
+ "repository_url": "https://github.com/example-org/example-repo.git",
  "label": "EXAMPLE-LANE",
  "merge": "on_merge_verdict",
  "steps": [
@@ -529,7 +529,7 @@ that `on_merge_verdict` appends today is not appended. The workflow page
 then shows, as rounds run: `re-review:1`, `review-fix:2`, `re-review:2`, and
 so on.
 
-### 5.2 A Product Oracle lane: build → review → fix → loop, no merge
+### 5.2 A second peer application lane: build → review → fix → loop, no merge
 
 Oracle submits as its own service tenant (`u-or-9a0792`,
 docs/multi-tenancy.md) and leaves the pull request for a person to merge:
@@ -655,7 +655,7 @@ place, and §9 Q7 asks whether the loop files minors at all.
 
 ---
 
-## 7. Frozen contract: requests (BGD applies, lane FL-CONTRACT)
+## 7. Frozen contract: requests (the owner applies, lane FL-CONTRACT)
 
 * **A.** A `fix-loop` catalogue profile, `control_plane: true`, shipped
   unavailable until FL-ACCEPT passes, as `await-input` was
@@ -681,7 +681,7 @@ FL-CONTRACT.
 
 | # | lane | files | red-first test it must turn green |
 |---|---|---|---|
-| 0 | **FL-CONTRACT** (BGD applies) | `apps/common/swarm_common/states.py`, `profiles.py`, `terraform/infra/locals.tf`, `tests/terraform/catalogue.tftest.hcl`, `docs/contract-change-requests.md`, `tests/unit/common/test_fix_loop_contract.py` (new) | `fix-loop` is `control_plane`, unavailable, in `profiles_without_a_job`; the new park reason is in no capacity set; the parity script passes |
+| 0 | **FL-CONTRACT** (the owner applies) | `apps/common/swarm_common/states.py`, `profiles.py`, `terraform/infra/locals.tf`, `tests/terraform/catalogue.tftest.hcl`, `docs/contract-change-requests.md`, `tests/unit/common/test_fix_loop_contract.py` (new) | `fix-loop` is `control_plane`, unavailable, in `profiles_without_a_job`; the new park reason is in no capacity set; the parity script passes |
 | 1 | **FL-ROLLUP** | `apps/workflow-rollup/swarm_rollup/__init__.py`, `apps/reconciler/reconciler/model.py` (only if it restates the pattern), `tests/unit/control_plane/test_merge_auto_fix_rounds.py`, `tests/unit/control_plane/test_fix_loop_rollup.py` (new) | `re-review:2` and `review-fix:3` are rounds and `re-review` is not; a FAILED `review-fix:2` under a SUCCEEDED loop rolls up SUCCEEDED |
 | 1 | **FL-SUBMIT** | `apps/swarm-api/swarm_api/schemas.py`, `validation.py`, `service.py`, `tests/unit/control_plane/test_fix_loop_submission.py` (new) | each §4.1 refusal is a 422 naming the step; `max_rounds` 0 and 6 are refused, absent is 3; the block is in the signed dispatch and changes the digest; `on_merge_verdict` with a loop appends a merge with `review_loop` and no `re-review`; first, a measurement of a `direct-pr` no-change review with `allow_empty_diff` |
 | 1 | **FL-SCHED** | `apps/scheduler/scheduler/loop.py`, `apps/scheduler/scheduler/store.py`, `tests/unit/control_plane/test_fix_loop_scheduler.py` (new) | a READY `fix-loop` agent is parked, never leased, with any headroom; `_expire_human_waits` expires a `park_phase: fix_loop_*` park after 7 days and ends the loop FAILED `fix_loop_exhausted` (Q3 (c)), and spares one younger than that |
@@ -702,7 +702,7 @@ and no other lane touches it.
 
 ---
 
-## 9. Questions for BGD
+## 9. Questions for the owner
 
 The same questions, with options, are in this lane's `questions.json`.
 
@@ -713,7 +713,7 @@ The same questions, with options, are in this lane's `questions.json`.
 **Recommended: (a).** It is the only one that serves issue runs and lanes
 without a merge step, and it costs no pod on the MERGE path (§3).
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 **Q2. The park reason while rounds run** (contract request B).
 (a) a new `ParkReason.FIX_ROUNDS_RUNNING`;
@@ -722,7 +722,7 @@ BGD 2026-10-27: (a).
 **Recommended: (a).** (b) and (c) tell every reader that a running loop
 waits for a person.
 
-BGD 2026-10-27: (a). Contract request B, accepted.
+The owner 2026-10-27: (a). Contract request B, accepted.
 
 **Q3. When the loop parks for a person, does the park expire?**
 (a) no expiry, like the owner-questions hold;
@@ -730,7 +730,7 @@ BGD 2026-10-27: (a). Contract request B, accepted.
 (c) 7 days, then FAILED `fix_loop_exhausted`.
 **Recommended: (a).** It holds nothing, and a person decides.
 
-BGD 2026-10-27: (c), not the recommended (a). What changes because of it:
+The owner 2026-10-27: (c), not the recommended (a). What changes because of it:
 §4.5's park expiry is no longer "no expiry". The scheduler's
 `_expire_human_waits` expires a `park_phase: fix_loop_*` park 7 days after
 it opened and ends the loop FAILED `fix_loop_exhausted`, instead of sparing
@@ -744,7 +744,7 @@ total;
 **Recommended: (a).** It matches who may cancel a workflow
 (`Store.cancel_workflow`), and the ceiling bounds cost.
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 **Q5. The default `max_rounds`.**
 (a) 3, the issue run's `fix_rounds` default;
@@ -753,7 +753,7 @@ BGD 2026-10-27: (a).
 **Recommended: (a).** On 2026-10-26 Oracle's 5 fix workflows came from 14
 lanes, so most lanes converge in 1-2 rounds, and 3 leaves room.
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 **Q6. A loop-level spend cap.**
 (a) none beyond the per-agent budget times `max_rounds`, and the loop shows
@@ -763,7 +763,7 @@ the sum;
 (c) a workspace-level loop cap beside the per-agent one.
 **Recommended: (a) now, (b) later if the sums show a need.**
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 **Q7. Minor findings from rounds after the first.**
 (a) the loop files them on the wave epic, as the gated step does for round 1;
@@ -772,7 +772,7 @@ BGD 2026-10-27: (a).
 **Recommended: (a).** CLAUDE.md says minors go to the wave epic, and later
 rounds find them too.
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 **Q8. `on_merge_verdict` and the loop.**
 (a) with a declared loop, append only the merge, reading the loop; without
@@ -783,7 +783,7 @@ integrator is gated;
 **Recommended: (a).** It changes nothing for workflows that do not ask, and
 (b) can follow once loops are proven.
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 **Q9. Issue runs.**
 (a) compile the loop with `max_rounds = fix_rounds`;
@@ -792,7 +792,7 @@ BGD 2026-10-27: (a).
 **Recommended: (a).** The cap already says it means review-fix rounds
 (`issueruns.py`).
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 **Q10. The name.**
 (a) profile `fix-loop`, block `fix_loop`;
@@ -801,7 +801,7 @@ BGD 2026-10-27: (a).
 **Recommended: (a).** It is short, and it follows `await-input` /
 `await_input`.
 
-BGD 2026-10-27: (a).
+The owner 2026-10-27: (a).
 
 ---
 

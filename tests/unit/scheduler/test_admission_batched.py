@@ -1,4 +1,4 @@
-"""Admission reserves a batch of READY tasks in one transaction (BGD, 2026-11-06).
+"""Admission reserves a batch of READY tasks in one transaction (the owner, 2026-11-06).
 
 The load analysis of 2026-11-06 found `pools/global` taking 52 writes in its
 busiest minute -- one per admitted task, each its own transaction -- against

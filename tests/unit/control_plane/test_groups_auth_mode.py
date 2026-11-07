@@ -1,5 +1,5 @@
 """`GROUPS_AUTH`: how swarm-api is authorised to read Cloud Identity groups
-(docs/design/day-one-install.md §8, BGD's Q2 answer in §14; DAYONE-IDENTITY-1,
+(docs/design/day-one-install.md §8, the owner's Q2 answer in §14; DAYONE-IDENTITY-1,
 part of #2688).
 
 `admin_role`: the Workspace "Groups Reader" admin role is assigned to

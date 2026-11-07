@@ -51,7 +51,7 @@ from . import forge_fakes
 from .conftest import api_settings, auth_header
 
 REF = "example-org/widgets#42"
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 
 PLAN = {
     "summary": "Make the widget list sortable by name.",
@@ -741,7 +741,7 @@ def test_a_long_title_is_cut_to_the_cap():
 
 
 def test_an_issue_runs_workflow_belongs_to_its_issue_and_says_what_its_plan_delivers():
-    """BGD, 2026-11-04: the workflow page heads with the feature the work
+    """the owner, 2026-11-04: the workflow page heads with the feature the work
     belongs to and a description of what it delivers. An issue run's feature
     is its issue, by title and URL; its description is the approved plan's
     summary."""
@@ -1033,7 +1033,7 @@ def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
     # And its title and label (RUNS, 2026-10-12): what the console names it by.
     assert dumped["metadata"].pop("title") == "example-org/widgets#42: Make the widget list sortable by name."
     assert dumped["metadata"].pop("unit") == "issue-42"
-    # And what it is about (BGD, 2026-11-04): its issue, and its plan's summary.
+    # And what it is about (the owner, 2026-11-04): its issue, and its plan's summary.
     assert dumped["metadata"].pop("feature") == {
         "title": "example-org/widgets#42", "url": "https://github.com/example-org/widgets/issues/42"}
     assert dumped["metadata"].pop("description") == "Make the widget list sortable by name."

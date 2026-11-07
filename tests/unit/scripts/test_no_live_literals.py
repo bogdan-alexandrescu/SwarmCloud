@@ -85,17 +85,7 @@ def _listed() -> list:
 
 
 #: (file, module constant) -> why it may name the live deployment.
-EXEMPT: dict[tuple[str, str], str] = {
-    ("apps/scheduler/scheduler/judgment.py", "DECISION_API_TAILNET_NAME"): (
-        "the internal decision API add-on's one accepted host, off unless "
-        "INTERNAL_DECISION_API_URL is set; making it per install crosses "
-        "test_dispatch_judgment.py, test_judgment_backend.py and the worker's jev "
-        "wrapper (question 2 of this lane)"
-    ),
-    ("apps/swarm-api/swarm_api/judgment.py", "INTERNAL_DECISION_ORIGIN"): (
-        "restates scheduler.judgment.INTERNAL_DECISION_ORIGIN (same question)"
-    ),
-}
+EXEMPT: dict[tuple[str, str], str] = {}
 
 
 def _sources() -> list[Path]:

@@ -323,7 +323,7 @@ worker: restore checkpoint, stage children's results, start the agent again
    and increments `metadata.child_await_resumes`, while fewer than
    `max_child_await_resumes` are used -- the same bounded-refund shape as the
    reconciler's startup refund (`count_startup_end`,
-   `apps/reconciler/reconciler/model.py::count_startup_end`, #67). Past the bound the park
+   `apps/reconciler/reconciler/model.py::count_startup_end`). Past the bound the park
    counts like any attempt, so a parent that awaits forever still ends at
    `max_attempts`. `child_await_resumes` joins `RESERVED_METADATA_KEYS`
    (`apps/swarm-api/swarm_api/validation.py::RESERVED_METADATA_KEYS`): a caller may not set it.
@@ -776,7 +776,7 @@ every tenant's worker account. The workers already egress `ALL_TRAFFIC`
 through the VPC, the path they reach the internal-ingress quota broker by.
 **All of it is off until `enable_child_tasks` is set**, and item 2's
 measurement -- whether another container of the tenant can read
-`SWARM_CHILD_NONCE` -- has NOT been made; it is deferred to #476 with the
+`SWARM_CHILD_NONCE` -- has NOT been made; it is deferred to an earlier issue with the
 other security findings, and the switch must stay off until it is. CLI agents
 are told how to use the path by the guide the worker writes into the spool
 ([child-tasks-for-agents.md](../child-tasks-for-agents.md)).
@@ -820,7 +820,7 @@ records how they are built and why each rule is where it is.
   (invariant 10). The workflow is submitted with `merge: "off"`, as the
   firing submits it (`custom_prompt.submitted_spec`).
 * **Whom it runs as.** The parent's submitter, in the parent's tenant, read
-  only from a parent whose spec signature verifies (§3.1, #1041), and asked
+  only from a parent whose spec signature verifies (§3.1), and asked
   of the directory again at every start through `routes.runs.run_owner_auth`:
   a submitter who left the tenant, or whose role was narrowed below member,
   starts nothing.
@@ -872,5 +872,5 @@ its run or workflow not terminal as outstanding, read in the parent's tenant
 only. Past `child_await_max_seconds` the sweep does not cancel run children,
 so a parent stays awaiting while a run child is live; a HELD run whose
 predecessor ends unmerged is cancelled by the release, so a HELD row never
-blocks its parent for ever (recorded under BGD's overnight rule, 2026-10-22, as
+blocks its parent for ever (recorded under the owner's overnight rule, 2026-10-22, as
 built).

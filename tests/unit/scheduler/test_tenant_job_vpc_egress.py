@@ -32,7 +32,7 @@ from scheduler.settings import SchedulerSettings
 
 ROOT = Path(__file__).resolve().parents[3]
 JOBS_MODULE = ROOT / "terraform" / "modules" / "cloud_run_jobs" / "main.tf"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 NOW = datetime(2026, 10, 21, 23, 0, tzinfo=timezone.utc)
 NETWORK = f"projects/{PROJECT}/global/networks/swarm-vpc"
 SUBNETWORK = f"projects/{PROJECT}/regions/us-central1/subnetworks/swarm-subnet-us-central1"
@@ -150,7 +150,7 @@ def test_a_scheduler_made_job_missing_the_block_is_refreshed_onto_it():
     stale = _build(vpc=False)  # what this dispatcher made before the switch
     client = _ensure(CloudRunJobDispatcher(_settings(vpc=True), client=object()), stale)
 
-    # MUTATION: drop the VPC check from `_refresh_image` and swarm-job-u-bogdan-*
+    # MUTATION: drop the VPC check from `_refresh_image` and swarm-job-u-owner-*
     # keep reaching swarm-api from the internet until deleted by hand.
     assert len(client.updated) == 1
     vpc = client.updated[0].template.template.vpc_access
@@ -192,7 +192,7 @@ def test_a_job_reading_back_short_names_is_not_rewritten():
 def test_a_job_on_another_subnet_is_moved_to_the_swarm_one():
     wrong = _build(vpc=True)
     wrong.template.template.vpc_access.network_interfaces[0].subnetwork = (
-        f"projects/{PROJECT}/regions/us-central1/subnetworks/agents-staging-subnet"
+        f"projects/{PROJECT}/regions/us-central1/subnetworks/peer-subnet"
     )
     client = _ensure(CloudRunJobDispatcher(_settings(vpc=True), client=object()), wrong)
 

@@ -92,7 +92,7 @@
 /* ---- the cards (phase two): panels of glass around the ring --------------- */
 /* The cards keep the console's own components (Card, Chip, Tag, UsageBar,
    .c-tbl); these rules only seat them in the pane. Each card is a glass
-   panel in arrival order, the newest last; a card waiting on BGD carries the
+   panel in arrival order, the newest last; a card waiting on owner carries the
    paused line on its left edge, a failed one the bad line, as the
    heads-up edge marks a problem. */
 .vt-card-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 10px;

@@ -1,14 +1,14 @@
 # Test services: a repository names the services its tests need, and the pre-publish check runs them
 
-**Status: designed 2026-10-23 (lane TEST-SERVICES-DESIGN, part of #1627),
+**Status: designed 2026-10-23 (lane TEST-SERVICES-DESIGN),
 decided the same day (§10), and built by TS-IMAGE, TS-CATALOGUE, TS-RUN,
 TS-CLOUDRUN-REFUSE, TS-GATE and TS-ACCEPT. §11 records what each lane built
 and where the code departs from this design; TS-SIGNAL is not built.**
-Recorded by the owner as an approved follow-up of #1605 on 2026-10-19. The
+Recorded by the owner as an approved follow-up of an earlier issue on 2026-10-19. The
 repository-facing page on writing the declaration is
 [../test-services.md](../test-services.md).
 
-The request (#1627), as its author wrote it:
+The request, as its author wrote it:
 
 > A repository declares the services its tests need, and the pre-publish check
 > starts them, points the tests at them, and runs the tests for real. For
@@ -69,7 +69,7 @@ the graph says cover the change, run as one `uv run pytest -q -n auto
 --junitxml=<report>` per Python project
 (`apps/agent-worker/agent_worker/prepublish.py::_pytest_project`).
 
-Since PR 1606 (#1605), a failed run whose junitxml report says every test
+Since PR 1606, a failed run whose junitxml report says every test
 errored at setup or collection with a refused connection to a LOCAL address,
 and no test passed or failed on its own, is reported `skipped` with "a
 service the tests need is unreachable (127.0.0.1:5432); every selected test
@@ -88,8 +88,8 @@ to it reaches both.
 
 | repository | service | evidence |
 |---|---|---|
-| product-oracle | PostgreSQL, at `localhost:5432` by default (`ORACLE_TEST_DATABASE_URL`, `api/tests/conftest.py` migrates into it) | #1605: four lanes on 2026-10-19 (task_11c00e381a634e03b7b3, task_523c25d8f2384576b9ae, task_cf4b712bde6d4b3b89e1, task_b396fea765b1489f9978), every selected test `Connect call failed ('127.0.0.1', 5432)`; re-run against a local Postgres 16 the same files pass (95/95, 113/113, 118/118) |
-| sagaxyz/ai-studio | none recorded | its pre-publish findings in this repository (PREPUB-UV-OUTSIDE, #1964) are about uv, not a service |
+| peer-app-2 | PostgreSQL, at `localhost:5432` by default (`ORACLE_TEST_DATABASE_URL`, `api/tests/conftest.py` migrates into it) | An earlier issue: four lanes on 2026-10-19 (task_11c00e381a634e03b7b3, task_523c25d8f2384576b9ae, task_cf4b712bde6d4b3b89e1, task_b396fea765b1489f9978), every selected test `Connect call failed ('127.0.0.1', 5432)`; re-run against a local Postgres 16 the same files pass (95/95, 113/113, 118/118) |
+| example-org/peer-app | none recorded | its pre-publish findings in this repository (PREPUB-UV-OUTSIDE) are about uv, not a service |
 | SwarmCloud itself | the Firestore emulator, in `tests/integration` only | CI's integration job; the unit tests run with no emulator by rule (CLAUDE.md, "Writing Python"), and `graph-pytest` runs unit tests |
 
 Redis, MySQL, MongoDB, Kafka, the Firestore emulator for a tenant: **no
@@ -97,9 +97,9 @@ issue, incident or pre-publish record names any of them**: on 2026-10-23
 `grep -rlw -i redis docs apps tests` found one hit, a rejected design option
 in `docs/design/live-browser.md`, and the worker's pre-publish tests name
 only `5432`. The
-product-oracle repository itself could not be read from this lane (the
+peer-app-2 repository itself could not be read from this lane (the
 platform's private-read tool refused it: not on this tenant's readable
-list), so its CI's service list is not quoted here; #1605's reproduction is
+list), so its CI's service list is not quoted here; an earlier issue's reproduction is
 the evidence. **v1 is Postgres alone**; a second service is added when a
 repository's skipped check names its address (§3.2).
 
@@ -120,7 +120,7 @@ request on GKE Autopilot (contract request 108,
 above runs on GKE Autopilot; claude-code-review, the one claude-code-runner
 profile on Cloud Run Jobs, publishes no branch of its own.
 
-**The standard class is already tight on memory.** #1926 measured 8 GiB
+**The standard class is already tight on memory.** an earlier issue measured 8 GiB
 out-of-memory kills on `claude-code` on 2026-10-22, which is why
 `claude-code-large` exists (contract request 113). Whatever a test service
 costs comes out of the same 8 GiB, so §4 budgets it in MiB, not GiB, and
@@ -188,7 +188,7 @@ Nothing else is accepted. In particular there is no `image`, `command`,
 each is a way for a repository to choose what runs or how big it is
 (invariant 10) or what the platform's process does at start. A repository
 whose tests need a schema, an extension or seed data creates it in its own
-fixtures, exactly as product-oracle's conftest already migrates.
+fixtures, exactly as peer-app-2's conftest already migrates.
 
 ### 2.2 Validation and what an invalid file does
 
@@ -233,8 +233,8 @@ One entry. Everything a repository cannot choose is fixed here:
 | field | value | why |
 |---|---|---|
 | name | `postgres` | the name the declaration uses |
-| versions | `16` | the version #1605's reproduction passed on; one major keeps one set of binaries in the image (Q3) |
-| listen | `127.0.0.1:5432` and a Unix socket in the service's own directory | the address tests already default to (product-oracle: `localhost:5432`); loopback only, so nothing outside the pod can reach it |
+| versions | `16` | the version an earlier issue's reproduction passed on; one major keeps one set of binaries in the image (Q3) |
+| listen | `127.0.0.1:5432` and a Unix socket in the service's own directory | the address tests already default to (peer-app-2: `localhost:5432`); loopback only, so nothing outside the pod can reach it |
 | user | `postgres`, no password, `trust` authentication on loopback and the socket | no credential exists, so nothing can leak and nothing needs redaction; any password a repository's default URL carries is accepted |
 | data | `<cache root>/<attempt>/services/postgres`, mode 0700 | disk, not memory, on GKE; destroyed with the pod (§1.4) |
 | memory settings | `shared_buffers=64MB`, `work_mem=4MB`, `maintenance_work_mem=32MB`, `max_connections=50`, `max_wal_size=256MB` | a resident set measured, not guessed, in phase 1 (§7), held under the budget of §4 |
@@ -293,7 +293,7 @@ when the gate ends or the attempt is torn down.
   CPU: nothing is added to the pod, so admission, units, the bill and
   `requests == limits` are untouched. Budget: **at most 512 MiB resident**
   (*est.* 100-250 MiB for the server with the settings above and 2x CPU
-  test backends, phase 1 measures it under product-oracle's three
+  test backends, phase 1 measures it under peer-app-2's three
   reproduction files). CPU: shared and burstable to the class limit, which
   is the throttle, never a kill.
 * **The memory risk, and its mitigation.** Inside one container a
@@ -323,7 +323,7 @@ when the gate ends or the attempt is torn down.
   cache PVC; on Cloud Run (no second disk) it would be in the tmpfs, so
   charged to memory: the worker uses a 256 MiB cap there and refuses (`error`)
   above it. No profile that runs the gate is on Cloud Run today (§1.3).
-  **Decided (BGD, 2026-10-24): refuse on Cloud Run.** With no `SWARM_CACHE_ROOT` the worker starts no declared service and reports each as "service not started: test services need SWARM_CACHE_ROOT on its own volume; this runner keeps its workspace in memory" (`testservices.NO_CACHE_VOLUME`, TS-CLOUDRUN-REFUSE).
+  **Decided (the owner, 2026-10-24): refuse on Cloud Run.** With no `SWARM_CACHE_ROOT` the worker starts no declared service and reports each as "service not started: test services need SWARM_CACHE_ROOT on its own volume; this runner keeps its workspace in memory" (`testservices.NO_CACHE_VOLUME`, TS-CLOUDRUN-REFUSE).
 * **Isolation.** One attempt is one pod. The server listens on loopback
   and a 0700 socket directory; the pod's network namespace is its own and
   the tenant ingress policy admits nothing to it; the data is on a disk
@@ -348,7 +348,7 @@ scanned by the same gate) or the mirrored official `postgres:16-bookworm`.
   requests summing to the class so units and the bill do not change. **A
   real boundary**: the sidecar's OOM kills only the sidecar. But it is
   reserved for the whole attempt, used or not, so every standard attempt of
-  a declaring repository runs with 7 GiB for the agent, in a class #1926
+  a declaring repository runs with 7 GiB for the agent, in a class an earlier issue
   already found too small.
 * **The declaration must be known at dispatch.** The pod is rendered before
   the clone, so the scheduler cannot read the checked-in file. Either the
@@ -424,7 +424,7 @@ continues with):
 | `DATABASE_URL` | `postgresql://postgres@127.0.0.1:5432/<first database>` |
 | `SWARM_TEST_SERVICES` | `postgres` (the services started, comma-separated, so a conftest can tell) |
 
-A repository whose tests read their own variable (product-oracle's
+A repository whose tests read their own variable (peer-app-2's
 `ORACLE_TEST_DATABASE_URL`) is served by the default address, which is
 what that variable defaults to. Letting the declaration name extra variable
 names to set is Q5. No password is in any value (§3.1), so nothing here is
@@ -466,7 +466,7 @@ repository without the file is `skipped`.
 
 ### 5.4 During the agent's turn
 
-The gate is what #1627 asks for, but the agent also runs tests while it
+The gate is what an earlier issue asks for, but the agent also runs tests while it
 works (CLAUDE.md asks a SwarmCloud agent to). Without the service its own
 run errors the same way and it learns nothing until the gate. Starting the
 service before the turn, for the whole attempt, lets the agent see the
@@ -477,7 +477,7 @@ the service's memory for the whole attempt. Q4.
 
 The data is never checkpointed (it is under the cache root, not the
 workspace). A resumed or re-dispatched attempt starts an empty service;
-tests that need a schema create it, as product-oracle's do. A parked
+tests that need a schema create it, as peer-app-2's do. A parked
 attempt exits, and the pod, the disk and the data go with it (invariant 4).
 
 ---
@@ -532,7 +532,7 @@ TS-CATALOGUE does not. If they are scheduled together, they are one lane.
 per base image pull; *est.* 1-3 s and up to 512 MiB per gate round of a
 declaring repository; nothing at all for a repository that declares nothing.
 What it saves: one CI cycle and one CI-driven fix round per lane whose
-database test breaks (four lanes on product-oracle on 2026-10-19 alone).
+database test breaks (four lanes on peer-app-2 on 2026-10-19 alone).
 
 ---
 
@@ -606,7 +606,7 @@ agent must know to ask, and a new tool surface).
 
 **Q5. May the declaration name environment variables to set to the URL?**
 (a) **no in v1: `DATABASE_URL`, `PG*` and the default address only**
-(recommended: product-oracle's own variable defaults to the address; no
+(recommended: peer-app-2's own variable defaults to the address; no
 variable-name surface to validate);
 (b) yes, a `url_env = ["ORACLE_TEST_DATABASE_URL"]` list, each name
 `[A-Z][A-Z0-9_]{0,63}` and refused if it is a platform or loader variable
@@ -621,7 +621,7 @@ recurring** (recommended: no repository has been recorded needing one);
 
 ## 10. Owner decisions (2026-10-23, ~09:47 PDT)
 
-BGD answered all six questions in Claude Code with the recommended option.
+The owner answered all six questions in Claude Code with the recommended option.
 Each answer is recorded on the design agent (`task_2d20d9db23d941459f06`,
 questions 0-5), so the console shows them as answered.
 
@@ -755,7 +755,7 @@ without it. Tests: `tests/unit/worker/test_testservices_process.py`.
 
 ### 11.4 What TS-CLOUDRUN-REFUSE built
 
-BGD's decision of 2026-10-24 (§4.1, "refuse on Cloud Run"). With no
+The owner's decision of 2026-10-24 (§4.1, "refuse on Cloud Run"). With no
 `SWARM_CACHE_ROOT` in the environment `start` runs no `initdb` and gives each
 declared service the error
 `apps/agent-worker/agent_worker/testservices.py::NO_CACHE_VOLUME`, which
@@ -825,7 +825,7 @@ to write its declaration.
 
 ### 11.7 What TS-ACCEPT built
 
-The deployed half of #1627's acceptance pair, in the claude-code acceptance
+The deployed half of an earlier issue's acceptance pair, in the claude-code acceptance
 group (`scripts/acceptance/groups/claude-code.sh`). The fixture,
 `tests/acceptance/fixtures/test-services`, declares Postgres 16 with one
 database, `swarm_accept`, in
@@ -847,7 +847,7 @@ sandbox keeps fixtures under `tests/acceptance/fixtures/`. So the pair clones
 two branches whose root is the fixture, `CC_TS_DECLARED_REF` and
 `CC_TS_UNDECLARED_REF`, which `scripts/acceptance/sandbox-sync.sh` builds
 from the synced tree with git plumbing and force-updates only when the tree
-differs (BGD's answer of 2026-10-24, "Apply the patch"). Tests:
+differs (the owner's answer of 2026-10-24, "Apply the patch"). Tests:
 `tests/unit/scripts/test_acceptance_test_services.py` holds the fixture to
 the catalogue's parser and the judge to the record a working gate leaves.
 

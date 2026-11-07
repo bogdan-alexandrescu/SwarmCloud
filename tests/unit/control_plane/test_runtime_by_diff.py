@@ -1,6 +1,6 @@
 """A review's runtime is chosen from its parents' diff as it is readied (#2322).
 
-BGD's decision, 2026-10-25: only a review that needs to look at UI gets a
+the owner's decision, 2026-10-25: only a review that needs to look at UI gets a
 browser runtime. A workflow step may say `metadata.runtime = {"policy":
 "browser_if_ui", "browser": "claude-code-browser", "code": "claude-code"}`;
 swarm-api stores it on the browser and signs the `claude-code` spec beside it
@@ -471,7 +471,7 @@ def test_a_policy_step_carrying_a_browser_only_input_is_refused(signed_client, d
 # ---------------------------------------------------------------------------
 # A review pinned to claude-code: its re-review asks for the policy (#2275)
 # ---------------------------------------------------------------------------
-# BGD, 2026-10-27 (Q-2275): the appended re-review of an on_merge_verdict
+# the owner, 2026-10-27 (Q-2275): the appended re-review of an on_merge_verdict
 # workflow whose review is pinned to claude-code carries browser_if_ui, by
 # catalogue names only, so a UI lane's fix round can reach a rendered MERGE
 # and a non-UI lane's still runs on claude-code.

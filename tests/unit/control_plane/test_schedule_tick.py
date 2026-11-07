@@ -63,15 +63,15 @@ from .test_rollup_sweeper_is_narrow import DECIDED as SWEEPER_DECIDED
 
 #: A service-account address, as S13 renders it. Admitted by being on
 #: SCHEDULE_TICK_USERS, never through ALLOWED_USERS or a domain.
-TICK = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+TICK = "swarm-schedule-tick@example-project.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 TICK_HEADERS = {"Authorization": "Bearer token-tick"}
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 
 #: THE OWNER'S DECISION (SD10), as the routes declare it: today one route,
 #: POST /v1/admin/schedules/tick, whose router (`routes.schedule_tick`)
 #: declares the tick its default. Read from the declarations, not a literal
-#: here, so two green changes cannot turn this guard red together (BGD's
+#: here, so two green changes cannot turn this guard red together (the owner's
 #: pick, 6 November 2026); widening the tick still takes a declaration on the
 #: route AND an entry in `auth.SCHEDULE_TICK_ROUTES`, held equal below.
 DECIDED = route_scope.declared(route_scope.SCHEDULE_TICK)

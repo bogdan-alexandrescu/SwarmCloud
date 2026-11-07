@@ -1,6 +1,6 @@
 """Every writer that posts to GitHub writes plain text (ISSUECOMMENTS-PLAIN, part of #2391).
 
-BGD decided on 2026-10-26 (ISSUE-WRITER's question 0) that the failure-review
+the owner decided on 2026-10-26 (ISSUE-WRITER's question 0) that the failure-review
 schedule's way of writing (PR 2485) is every writer's: a title is plain text,
 prose is Markdown with an HTML opener backslash-escaped, and a code span keeps
 its contents as typed. `issuecomments.neutral` wrote `&lt;`/`&gt;`, which

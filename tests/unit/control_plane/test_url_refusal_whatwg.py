@@ -82,7 +82,7 @@ REFUSED = [
     ("http://kubernetes/", "kubernetes", True),
     ("http://localhost/", "localhost", True),
     ("http://a..b.com/", "a..b.com", True),
-    ("http://---.com/", "---.com", True),
+    ("http://---.example/", "---.example", True),
     ("http://a_b.example.com/", "a_b.example.com", True),
     # Names that never leave the node or the cluster.
     ("http://metadata.google.internal/", "metadata.google.internal", True),

@@ -11,7 +11,7 @@ through.
 The cause: `CdpProxy.qa_sign_in` sends the agent's tab to `base_url` and
 releases the agent after `signing_in` is cleared, and the target's state
 becomes `signed_in` only once that is done (`QaTarget.finished`). An app
-that exchanges or refreshes its token as its page loads (AI Studio's
+that exchanges or refreshes its token as its page loads (A peer application's
 production chooser: "Checking your session...") sends that POST in the
 window between the two, while neither "signing in" nor "signed in" held,
 and the gate answered it 403 as a write. The app then keeps a saved

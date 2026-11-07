@@ -782,6 +782,9 @@ def task_to_api(
         "forge_credential_source": forge_credential_source(
             task.forge_credential, (task.metadata or {}).get(FORGE_SOURCE_METADATA_KEY)),
         "cancel_requested": task.cancel_requested,
+        # A single task's own description (#2688), masked as its title is;
+        # null for a workflow's step, which inherits the workflow's.
+        "description": own_description(task, masking),
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,
         # Also inside `metadata`, which is where it is STORED. It is lifted out
@@ -925,6 +928,17 @@ SUMMARY_DROPPED_KEYS: tuple[str, ...] = (
 #: other key stays out: the summary exists because the list moved megabytes of
 #: what it never draws (#168).
 SUMMARY_METADATA_KEYS: tuple[str, ...] = ("title",)
+
+
+def own_description(task: Task, masking: TaskMasking) -> str | None:
+    """A single task's `metadata.description`, masked by its own masker
+    (`TaskMasking.text`), else None. None for a workflow's step: the
+    workflow's description is copied onto its steps' metadata and is the
+    workflow's, served on the workflow's reads (owner, 2026-11-07, #2688)."""
+    value = (task.metadata or {}).get("description")
+    if task.workflow_id is not None or not isinstance(value, str) or not value:
+        return None
+    return masking.text(value)[0]
 
 
 def summary_metadata(task: Task, masking: TaskMasking) -> tuple[dict[str, Any], int]:

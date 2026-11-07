@@ -7,11 +7,11 @@ instructions (QI-INSTRUCT) included. The QI-ACCEPT acceptance case runs in
 request's CI, and nothing is recorded as seen working end to end on dev
 until it has. §8 records what each lane landed and where the code
 departs from this design. Written 2026-10-19 as a design, lane QA-IDENTITY of
-[#1649](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/1649). The
+An earlier issue. The
 owner decided on 2026-10-19 that this lane designs first, and that the owner
 picks before any code is written. The owner's answers are in §7.
 
-The request, from #1649: a SwarmCloud workflow sweeps every console page at
+The request, from an earlier issue: a SwarmCloud workflow sweeps every console page at
 1440×900 and 390 wide, light and dark. It attaches a screenshot per finding
 and a GIF per flow, "and signs in without a person each time, by whichever
 identity option the owner picks". The owner listed three options: a QA Google
@@ -41,10 +41,10 @@ What the design settles, one line each:
   `input.qa_identity: "console"`. That is a name from the frozen catalogue
   (contract request QI-1, §5), as invariant 10 requires.
 * **Option C stays the default for layout sweeps.** The fixture build is free,
-  and it already worked for #1038 and #1427. B is for the pass that has to see
+  and it already worked for earlier issues. B is for the pass that has to see
   the real console, the real API and the real IAP (§3.6).
-* **Option A is turned down.** A Google user account in `saga.xyz` passes
-  every IAP app that admits `domain:saga.xyz`. Its session also carries a full
+* **Option A is turned down.** A Google user account in `example.com` passes
+  every IAP app that admits `domain:example.com`. Its session also carries a full
   Google sign-in that any page can use. And LB-7 keeps saved logins to
   personal workspaces, so the login could not be used where the QA agents run
   (§3.1).
@@ -52,7 +52,7 @@ What the design settles, one line each:
   `frontend_iap_members`, applied by the owner from `terraform/bootstrap`.
   That list only ever names the platform's own `swarm*` backends
   (`terraform/bootstrap/variables.tf`, `frontend_iap_backends`' validation),
-  so no IAM row touches the other team's resources in `saga-agents-staging`.
+  so no IAM row touches the other team's resources in `example-project`.
 * **Five things are unmeasured, and the build cannot start until each is
   measured** (M1 to M5, §4.9). The most important is M1: whether this front
   door accepts a service-account JWT at all. It refuses a service account's
@@ -63,7 +63,7 @@ What the design settles, one line each:
 
 ## 1. The problem, as measured
 
-### 1.1 What #1649 measured
+### 1.1 What an earlier issue measured
 
 A survey of `origin/main` `7c2e148` (2026-10-19) found seven gaps in visual QA
 on SwarmCloud's browser runtimes. This lane owns gap 3, quoted from the issue:
@@ -79,7 +79,7 @@ What that means in practice, read from the code at `2af9bed`:
   `iap { enabled = true }`), and the console holds no token of its own:
   "IAP sits in front and the browser carries the session"
   (`apps/swarm-ui/README.md`). An agent's browser that opens
-  `https://swarm.saga.xyz` (`frontend_hostname` in
+  `https://swarm.example.com` (`frontend_hostname` in
   `terraform/environments/dev/dev.tfvars`) lands on Google's sign-in page.
 * **The only way past that today is a person.** The agent asks for a
   hand-off ([live-browser.md](live-browser.md) §4.1). A tenant member takes
@@ -103,15 +103,15 @@ What that means in practice, read from the code at `2af9bed`:
   `invalid_input`. `swarm_api.validation.PLATFORM_INPUT_KEYS` exempts only
   `prompt` and `territory`. That is read from code, not run. It matches the
   issue's "untested".
-* **The console's own visual QA so far avoided sign-in completely.** #1038 and
-  #1427 ran on the plain `claude-code` profile against the fixture build
+* **The console's own visual QA so far avoided sign-in completely.** an earlier issue and
+  an earlier issue ran on the plain `claude-code` profile against the fixture build
   (`npm run dev`, "fixtures, no network", `apps/swarm-ui/README.md`).
 
 ### 1.2 What "done" lets someone do that they cannot today
 
 * An operator submits one workflow, a `claude-code-browser` step with
   `input.qa_identity: "console"`, and walks away. The agent opens
-  `https://swarm.saga.xyz`, lands on the Overview signed in as
+  `https://swarm.example.com`, lands on the Overview signed in as
   `qa-console`, and sweeps every page at 1440×900 and 390×844, light
   and dark, with no hand-off. It sees what a member of the QA workspace sees,
   backed by the real API.
@@ -208,7 +208,7 @@ untouched, because swarm-api's configuration lives in its own `settings.py`.
 
 ### 3.1 Option A: a QA Google account, signed in once, kept as a saved login
 
-**Shape.** A user account in the domain, `swarm-qa@saga.xyz`. A person signs
+**Shape.** A user account in the domain, `swarm-qa@example.com`. A person signs
 it in once through take-control, then saves the session as a named LB-7 login
 (`swarm-tenant-u-<qa>-browser-login-console`). QA agents name that login.
 
@@ -223,11 +223,11 @@ it in once through take-control, then saves the session as a named LB-7 login
   That is a domain setting outside this repository.
 * *A compromised agent* acts as a full Workspace user, in every Google
   service that account can open and in **every IAP app that admits
-  `domain:saga.xyz`**. In this shared project that is, as read on
+  `domain:example.com`**. In this shared project that is, as read on
   2026-10-19 at 20:30Z (`gcloud compute backend-services list --global`),
   four IAP-enabled backends: the console's two (`swarm-ui-backend`,
-  `swarm-ui-ui-backend`) and Product Oracle's two (`oracle-api-be`,
-  `oracle-web-be`). The other team's gateway backends had IAP off that day,
+  `swarm-ui-ui-backend`) and the second peer application's two (`oracle-api-be`,
+  `peer-web-be`). The other team's gateway backends had IAP off that day,
   but nothing stops one being switched on, and the account would then pass it
   too. The CDP policy refuses cookie reads, but a cookie without
   `HttpOnly` is readable by page script ([live-browser.md](live-browser.md)
@@ -248,9 +248,9 @@ it in once through take-control, then saves the session as a named LB-7 login
 
 | member | role / grant | on | why |
 |---|---|---|---|
-| `user:swarm-qa@saga.xyz` | `roles/iap.httpsResourceAccessor` | both swarm backends | already granted through `domain:saga.xyz`. **No narrower row exists**: the account cannot be kept out of anything else the domain is admitted to |
-| `user:swarm-qa@saga.xyz` | Workspace licence, an OU with third-party OAuth apps and Gmail/Drive off, 2-Step Verification by a security key a person holds | the Google Workspace domain | outside Terraform; the domain admin's |
-| `user:swarm-qa@saga.xyz` | principal of personal workspace `u-<qa>` | Admin › People | where LB-7 can keep the login |
+| `user:swarm-qa@example.com` | `roles/iap.httpsResourceAccessor` | both swarm backends | already granted through `domain:example.com`. **No narrower row exists**: the account cannot be kept out of anything else the domain is admitted to |
+| `user:swarm-qa@example.com` | Workspace licence, an OU with third-party OAuth apps and Gmail/Drive off, 2-Step Verification by a security key a person holds | the Google Workspace domain | outside Terraform; the domain admin's |
+| `user:swarm-qa@example.com` | principal of personal workspace `u-<qa>` | Admin › People | where LB-7 can keep the login |
 | `serviceAccount:swarm-agent-worker-u-<qa>` | `secretAccessor`, `secretVersionAdder` | the one `-browser-login-console` secret | set by swarm-api per secret (lane L8c, existing) |
 
 **Cost.** A Workspace licence. A frozen-contract request to declare
@@ -271,12 +271,12 @@ take-control, saves the login, and repeats whenever it lapses.
 
 ### 3.2 Option B: a QA service account, its IAP JWT added by the gate (recommended)
 
-**Shape.** A service account `qa-console@saga-agents-staging.iam.gserviceaccount.com`
+**Shape.** A service account `qa-console@example-project.iam.gserviceaccount.com`
 with **no project roles and no keys**. It is admitted at the front door and
 is the principal of its own service workspace. swarm-api is the only
 principal that can sign as it, and only through `signJwt`. For an attempt
 that named `qa_identity: "console"` in a granted tenant, swarm-api signs a JWT
-`{iss, sub: the account, aud: "https://swarm.saga.xyz/*", iat, exp: iat+900,
+`{iss, sub: the account, aud: "https://swarm.example.com/*", iat, exp: iat+900,
 jti}` and returns it to the worker, proven by the attempt key. The worker
 hands it to the gate on `ctl.sock`. The gate intercepts, on its **own** CDP
 sessions, the requests the console makes to its own host, and adds
@@ -298,7 +298,7 @@ file exists anywhere. The project should refuse key creation for this account
 anything leaks:
 
 1. *By its audience.* IAP accepts the JWT only for a resource matching
-   `https://swarm.saga.xyz/*`. It is not an OAuth access token, so no Google
+   `https://swarm.example.com/*`. It is not an OAuth access token, so no Google
    API accepts it (M1 confirms both).
 2. *By where the gate sends it.* The gate adds it only to a request whose URL
    is `https`, whose host equals the console host exactly (parsed, not
@@ -349,7 +349,7 @@ JWT already issued remains valid until it expires, at most 15 minutes.
 
 * *A malicious page* cannot read the credential. It can try **cross-site
   request forgery**: a page on `evil.example` submits a form to
-  `https://swarm.saga.xyz/v1/...`. If the gate added the header to that
+  `https://swarm.example.com/v1/...`. If the gate added the header to that
   request, IAP would authenticate it, because an added header, unlike a
   cookie, has no SameSite. That is why the gate adds it only for frames whose
   top-level origin is the console (§4.4). As a second guard, swarm-api
@@ -401,7 +401,7 @@ is deliberate: QI-1's `choices` is `("console",)`.
 (`npm run dev`: "fixtures, no network"). It points its browser at
 `http://127.0.0.1:<port>` in the same pod. The gate's Chromium shares the
 pod's network namespace, and loopback is on the egress bypass (`<local>`).
-#1038 and #1427 did this on plain `claude-code` with headless Playwright.
+earlier issues did this on plain `claude-code` with headless Playwright.
 QA-FLOWS adds a page served over http, because `file://` is blocked.
 
 **Threat model.** None new: no identity, no credential, no front door.
@@ -439,7 +439,7 @@ not the deployed path, which is the one thing B covers that C does not.
 B is the only option that is **scoped by construction**. Its credential
 names one account, one audience and one host, and lasts 15 minutes. Its
 account can reach one workspace. No person is in the loop after the owner's
-one-time steps. A's account cannot be scoped at all: `domain:saga.xyz` admits
+one-time steps. A's account cannot be scoped at all: `domain:example.com` admits
 it to whatever the domain is admitted to. A's credential is a Google session
 measured in days, and it fails LB-7's tenancy rule or forces a person to sign
 in as the bot.
@@ -518,7 +518,7 @@ see the deployed console.
   "state": "granted",
   "granted_by": "<admin email>",
   "granted_at": "2026-10-20T09:00:00Z",
-  "reason": "console visual QA (#1649)",
+  "reason": "console visual QA (#<N>)",
   "revoked_by": null,
   "revoked_at": null
 }
@@ -578,7 +578,7 @@ log (the route is added to the same redaction list as the egress ticket's):
 ```json
 {
   "identity": "console",
-  "host": "swarm.saga.xyz",
+  "host": "swarm.example.com",
   "header": "Proxy-Authorization",
   "scheme": "Bearer",
   "expires_in": 900,
@@ -797,7 +797,7 @@ New module `apps/agent-worker/agent_worker/qa_identity.py`, modelled on
 
 ### 4.8 Infrastructure (Track C)
 
-> **Amended 2026-10-20 (owner, #1649): the account is `qa-console`, with no
+> **Amended 2026-10-20 (owner): the account is `qa-console`, with no
 > `swarm-` prefix.** This design named it `swarm-qa-console`, and QI-IAM built
 > `swarm-qa`. Both start with the platform's prefix, and the workspace flow
 > refuses every such account (`WORKSPACE_SERVICE_PLATFORM`,
@@ -831,7 +831,7 @@ swarm-api from a bootstrap output, or empty.
 
 ### 4.9 Measurements before the build (M1–M5) and the owner's steps
 
-> **Amended 2026-10-20 (owner, #1649): M2 is not a gate before the build.**
+> **Amended 2026-10-20 (owner): M2 is not a gate before the build.**
 > Nothing on swarm-api shows request headers, so whether IAP passes the
 > gate's header through cannot be observed from outside before swarm-api
 > logs it. QI-API was therefore built as if IAP does pass it through:
@@ -865,7 +865,7 @@ No lane past QI-CONTRACT starts until M1 to M3 and M5 are recorded, dated, in
 **with the QA account after step O2**:
 
 * **M1.** A JWT signed by `signJwt` for the QA account, with
-  `aud: https://swarm.saga.xyz/*` and a 15-minute `exp`, in
+  `aud: https://swarm.example.com/*` and a 15-minute `exp`, in
   `Proxy-Authorization: Bearer`, gets a 200 for `/` and for `/v1/tenants/me`.
   The same JWT with another audience gets a 401. The same JWT sent as a bearer to a
   Google Cloud API (Cloud Resource Manager's `projects.get`) gets a 401. **If the first fails,
@@ -912,7 +912,7 @@ One request. The operator files it in `docs/contract-change-requests.md` with
 the next free number once the owner approves this design. It is written here
 in that file's shape and not filed there.
 
-> ### QI-1. `profiles.py`: `claude-code-browser` declares `qa_identity` (QA-IDENTITY, part of #1649)
+> ### QI-1. `profiles.py`: `claude-code-browser` declares `qa_identity` (QA-IDENTITY)
 >
 > **Status:** REQUESTED by lane QA-IDENTITY's design, 2026-10-19. Not accepted.
 >
@@ -983,7 +983,7 @@ Considered and **not** requested:
 
 ## 6. Build plan
 
-> **Amended 2026-10-20 (owner, #1649): M2 is not a gate before the build**
+> **Amended 2026-10-20 (owner): M2 is not a gate before the build**
 > (§4.9). Row 0's measurements no longer all gate the build: QI-API waits for
 > M1, M3 and M4, and QI-GATE waits for M1, M3 and M5. The order-2 rows'
 > "after CONTRACT and M1–M4" and "after CONTRACT, M1–M3 and M5" are read
@@ -1006,7 +1006,7 @@ parts, never written as one literal.
 | 1 | **QI-CONTRACT** (after owner approval of QI-1) | `apps/common/swarm_common/profiles.py`, `docs/contract-change-requests.md`, `tests/unit/common/test_qa_identity_contract.py` (new), and any mirror `scripts/lib/check-contract-parity.sh` names | the three in §5's request; `check-contract-parity.sh` passes |
 | 1 | **QI-IAM** (Track C) | `terraform/bootstrap/qa_identity.tf` (new), `terraform/bootstrap/platform_roles.tf`, `terraform/bootstrap/variables.tf`, `terraform/bootstrap/outputs.tf`, `tests/terraform/qa_identity.tftest.hcl` (new) | with `enable_qa_identity = false` nothing is planned; with it true: one service account and no key resource; `swarmQaJwtSigner` holds exactly `iam.serviceAccounts.signJwt`; its only binding is on the QA account, to swarm-api's account; no project-level binding names the QA account; the precondition fails when `frontend_iap_members` lacks it |
 | 2 | **QI-API** (after CONTRACT and M1–M4) | `apps/swarm-api/swarm_api/qa_identity.py` (new), `apps/swarm-api/swarm_api/routes/qa_identity.py` (new), `apps/swarm-api/swarm_api/main.py`, `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/swarm_api/service.py`, `apps/swarm-api/swarm_api/auth.py`, `apps/swarm-api/swarm_api/refusals.py`, `apps/swarm-api/swarm_api/roles.py` (the member `GET /v1/qa-identities/mine`'s role row), `terraform/infra/locals.tf`, `tests/unit/control_plane/test_qa_identity.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (entries only) | an ungranted tenant's submission is 403 `qa_identity_not_granted`, and a revoked one likewise; signing for a stale generation is 409 and calls the signer fake zero times; a revoke between issue and renewal refuses the renewal; the signed payload's `aud` is exactly `https://<host>/*` and `exp − iat` is the configured lifetime, clamped; the response carries `no-store`, and the access-log fake never sees the credential; grant and its `admin_audit` row commit together (an injected failure leaves neither); a POST as the QA account with `Origin: https://evil.example` is 403 `qa_identity_origin` and with the console origin passes; `GET /v1/qa-identities/mine` as a non-admin member answers its own tenant's `granted` and no other tenant's; no error handler's body contains a request header's value |
-| 2 | **QI-GATE** (after CONTRACT, M1–M3 and M5) | `apps/agent-worker/agent_worker/livegate/qaidentity.py` (new), `livegate/cdpproxy.py`, `livegate/cdppolicy.py`, `livegate/ctl.py`, `livegate/session.py`, `livegate/__main__.py`, `tests/unit/worker/test_livegate_qa_identity.py` (new) | with a fake Chromium: a console-host request from a console frame gets the header and one from an `evil.example` frame does not; `https://swarm.saga.xyz.evil.example/` and `http://swarm.saga.xyz/` do not; an agent-bound `Network.requestWillBeSentExtraInfo` carrying the header arrives without it, and a frame carrying the credential's bytes anywhere arrives with `[qa-identity]`; the agent's `Fetch.continueRequest` with `url` is refused; a console-host request the gate added the header to that answers 302 to `https://evil.example/` is fulfilled with the gate's stopped-redirect page and the fake never sees a request to `evil.example`, while a 302 to another console path is continued; a request to `evil.example` arriving with the header in `request.headers` is continued without it; a request from a dedicated-worker target gets no header; a base64-encoded `getResponseBody` result containing the credential's bytes arrives with `[qa-identity]`; a hand-off on the console host is refused with `qa_identity_host`; `session_export` omits the host's cookies; after `wipe` the verb is refused |
+| 2 | **QI-GATE** (after CONTRACT, M1–M3 and M5) | `apps/agent-worker/agent_worker/livegate/qaidentity.py` (new), `livegate/cdpproxy.py`, `livegate/cdppolicy.py`, `livegate/ctl.py`, `livegate/session.py`, `livegate/__main__.py`, `tests/unit/worker/test_livegate_qa_identity.py` (new) | with a fake Chromium: a console-host request from a console frame gets the header and one from an `evil.example` frame does not; `https://swarm.example.com.evil.example/` and `http://swarm.example.com/` do not; an agent-bound `Network.requestWillBeSentExtraInfo` carrying the header arrives without it, and a frame carrying the credential's bytes anywhere arrives with `[qa-identity]`; the agent's `Fetch.continueRequest` with `url` is refused; a console-host request the gate added the header to that answers 302 to `https://evil.example/` is fulfilled with the gate's stopped-redirect page and the fake never sees a request to `evil.example`, while a 302 to another console path is continued; a request to `evil.example` arriving with the header in `request.headers` is continued without it; a request from a dedicated-worker target gets no header; a base64-encoded `getResponseBody` result containing the credential's bytes arrives with `[qa-identity]`; a hand-off on the console host is refused with `qa_identity_host`; `session_export` omits the host's cookies; after `wipe` the verb is refused |
 | 3 | **QI-WORKER** (after GATE and API) | `apps/agent-worker/agent_worker/qa_identity.py` (new), `apps/agent-worker/agent_worker/handoff.py`, `tests/unit/worker/test_qa_identity_worker.py` (new) | no `qa_identity` input means no call is made; a first refusal `qa_identity_not_granted` fails the attempt before the runner starts; renewal happens at two-thirds of the life; a refusal at renewal sends `failed` to the gate and writes `qa-identity.md`; no log record contains the credential (captured-log scan) |
 | 3 | **QI-UI** (after API) | `apps/swarm-ui/src/QaIdentityGrants.tsx` (new), `apps/swarm-ui/src/Activity.tsx`, `apps/swarm-ui/src/Submit.tsx` (the option, beside `BrowserToolPicker`), `apps/swarm-ui/src/BrowserBadges.tsx` (the badge, drawn by `LiveBrowser.tsx`'s existing `<BrowserBadges>`), `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/qa-identity.test.tsx` (new) | a non-admin sees no panel; Grant without a reason is disabled; a 403 renders the API's message word for word; the submit form offers the option only when `GET /v1/qa-identities/mine` says `granted`; the agent-page badge shows only for an agent that named the identity |
 | 3 | **QI-MCP** (after CONTRACT) | `apps/swarm-mcp/swarm_mcp/details.py`, `tests/unit/mcp/test_qa_identity_details.py` (new) | a step naming `qa_identity` shows `QA identity: console`; one without does not |
@@ -1211,7 +1211,7 @@ each lane of §6 landed, in its order:
   --console-url "$SWARM_ACCEPTANCE_CONSOLE_URL"`, and SKIPs all four checks
   when either is unset. Both reach the `swarm-verify` job from Terraform
   (`acceptance_qa_tenant`, `acceptance_console_url`; dev sets `smoke` and its
-  own console, prod neither). BGD decided on 2026-10-27 that `smoke` is
+  own console, prod neither). The owner decided on 2026-10-27 that `smoke` is
   granted the identity; until a platform admin makes that grant in the
   console, the submission is refused `qa_identity_not_granted` and the first
   check FAILs. The design's redirect probe (a console URL that 302s to an echo

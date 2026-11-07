@@ -32,19 +32,19 @@ import type { Me } from '../types'
 function me(environment: unknown, declared: unknown): Me {
   const base = {
     tenant: {
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       kind: 'user',
       principal: 'someone@example.com',
-      display_name: 'Bogdan',
+      display_name: 'Alex',
       created_at: new Date().toISOString(),
       max_active: 4,
       capacity_units: 8,
       monthly_budget_usd: null,
       enabled: true,
       credentials: ['anthropic'],
-      service_account: 'swarm-agent-worker-u-bogdan@example.iam.gserviceaccount.com',
-      gcs_prefix: 'tenants/u-bogdan',
-      namespace: 'swarm-tenant-u-bogdan',
+      service_account: 'swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com',
+      gcs_prefix: 'tenants/u-owner',
+      namespace: 'swarm-tenant-u-owner',
     },
     principal: { email: 'someone@example.com', domain: 'example.com', groups: [], is_admin: false },
   }

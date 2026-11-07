@@ -1,7 +1,7 @@
 # The outcome ledger: `GET /v1/outcomes`
 
 What the platform's work in a span **ended as**, bucketed by **when it ended**.
-It feeds Work › Timeline. The owner's decisions are in issue #185 (2026-09-25);
+It feeds Work › Timeline. The owner's outcomes-ledger decisions are recorded separately (2026-09-25);
 the code is `apps/swarm-api/swarm_api/outcomes.py`, the only implementation.
 
 This page records why the route is shaped the way it is, so the shape is not
@@ -54,8 +54,8 @@ This rule runs through the whole response:
   0.
 * Under `kind=standalone`, `workflows_failed` does not apply (`applicable:
   false`), and its three counts -- `with_ended_steps`, `with_failed_steps`,
-  `rows_total` -- are null: nothing was counted, so no count is a zero. The
-  review of #196 found them served as 0, which reads as "no workflow failed".
+  `rows_total` -- are null: nothing was counted, so no count is a zero. A later
+  review found them served as 0, which reads as "no workflow failed".
 * A bucket before a tenant's first agent holds sealed zeros. That is a real
   measurement: agents are never TTL'd, and the derive covers every agent.
 
@@ -70,7 +70,7 @@ reason: a written value and a derived value are two records of one fact.
   * the agents that arrived that day;
   * their attempts;
   * their workflow parents, read with `get_all` and checked against the tenant;
-  * the ended agents' account events, for the pool account (#2149, below).
+  * the ended agents' account events, for the pool account (below).
 
   It turns each agent into a small tuple. A parent that is missing or belongs to
   another tenant counts as **unread**. That agent's wait is excluded
@@ -112,9 +112,9 @@ reason: a written value and a derived value are two records of one fact.
   2026-09-25 only `derive_version` was read, so the classifier's version was
   written and never acted on.)
 
-### The nightly seal: the workflow-rollup job (COUNTS-SEAL, #2149)
+### The nightly seal: the workflow-rollup job (COUNTS-SEAL)
 
-BGD's decision, 2026-10-23: `outcome_days` is "sealed nightly by the existing
+[the owner]'s decision, 2026-10-23: `outcome_days` is "sealed nightly by the existing
 rollup job", so a 12-month view on Admin › Platform counts reads sealed days
 instead of spending a reader's derive budget on them. Before this, a day was
 sealed only when somebody happened to read it after its grace.
@@ -169,11 +169,11 @@ sealed only when somebody happened to read it after its grace.
 * A complete fold is cached for 60 s, keyed by the minute. A cache hit keeps
   its original `generated_at`, so the age a reader sees stays true.
 * What is cached is the FOLD, not a payload (owner decision 2026-09-30, the
-  review of #391). The key is the query WITHOUT its `section` list -- scope,
+  review of the fold-caching change). The key is the query WITHOUT its `section` list -- scope,
   the caller's own tenant in tenant scope, the resolved tenant set, span,
   bucket, tz, filters, kind, compare and the minute -- and every
   section is a projection of the entry. `group` is not in the key either
-  (BGD, 2026-10-24 17:26Z, #2149): `groups` and `usage` are made from the
+  ([the owner], 2026-10-24 17:26Z): `groups` and `usage` are made from the
   same placed agents by the request's own group, so picking a breakdown
   never costs a read, and `filters.group` echoes the request, not the entry. The previous span, the terminal count
   and the workflow lookups are made once per entry, the first time a section
@@ -185,7 +185,7 @@ sealed only when somebody happened to read it after its grace.
 * `coverage.derived_now` counts the main span's days only. The previous span
   is read under a derive budget of its own, only when `previous` is asked for,
   so `coverage` is the same value whether or not `previous` came with it.
-  #391 as first written counted both, and a `coverage`-only read on a cold
+  The fold-caching change as first written counted both, and a `coverage`-only read on a cold
   store reported fewer days built than the full read did.
 
 Read costs, measured on 2026-09-25 by the module's own meter over a read-only
@@ -208,10 +208,10 @@ a small `count()` costs 1. It is not a Cloud Billing figure.
   day, plus their attempts. A cold 14-day platform view spent 2,250 of its
   5,000 budget.
 
-## Agents over time: the `usage` block (#2149)
+## Agents over time: the `usage` block
 
 Admin › Platform counts asks "how many agents ran per day, week or month, of
-which type, for how long, on how many tokens, at what estimated cost". BGD's
+which type, for how long, on how many tokens, at what estimated cost". [the owner]'s
 decisions, 2026-10-23 (~19:30Z), and how the route keeps them:
 
 * **The unit is agents, retries shown apart.** `usage=submitted` places each
@@ -233,7 +233,7 @@ decisions, 2026-10-23 (~19:30Z), and how the route keeps them:
   `runner_profile`, `model`, `tenant_id` and `pool_account`
   (`USAGE_BREAKDOWNS`) from the one fold, whatever `group` asked for;
   `usage.groups` stays the requested group, which may also be one of the
-  others (`submitted_by`, `model_class`, `provider`). BGD's answer 3,
+  others (`submitted_by`, `model_class`, `provider`). [the owner]'s answer 3,
   2026-10-24 17:26Z: picking a breakdown must never cost a read. Each
   grouping is `{by, rows_total, rows, series}`.
 * **Without `usage` the response is unchanged**, byte for byte. The Timeline
@@ -241,7 +241,7 @@ decisions, 2026-10-23 (~19:30Z), and how the route keeps them:
   is not a section. It is a projection of the same fold, so it costs no read
   of its own and is not part of the cache key.
 
-### Per-bucket groups: `series` (#2149, BGD's answer 1)
+### Per-bucket groups: `series` ([the owner]'s answer 1)
 
 The view stacks agents by group per bucket (mock-up A, frames F3 and F4), so
 each grouping carries `series`, aligned with `usage.buckets`:
@@ -285,10 +285,9 @@ at `GROUP_ROWS_MAX` per grouping and each series is two integers per bucket.
   `agents` is "k of n agents reported". When k < n, the UI writes "at least
   $X". An agent that reported nothing is never $0.
 * `estimated_usd` is the part of the sum that came from the worker's
-  list-price estimate for a run stopped before it reported (#627,
-  `result_summary.cost_estimated`). It is **included** in `sum_usd` and also
+  list-price estimate for a run stopped before it reported (`result_summary.cost_estimated`). It is **included** in `sum_usd` and also
   shown on its own, so a reader can see how much of the figure is an estimate.
-* `cost.estimated` (BGD's answer 2, 2026-10-24) counts the agents behind
+* `cost.estimated` ([the owner]'s answer 2, 2026-10-24) counts the agents behind
   `estimated_usd`, wherever it is served (span, bucket, group row), so the
   view can print "55 estimated from a stopped run ($56)". It counts only
   agents that reported a cost, the same agents `estimated_usd` sums, and in a
@@ -299,7 +298,7 @@ at `GROUP_ROWS_MAX` per grouping and each series is two integers per bucket.
   open, or it ended after an explicit `until`. `agents_ended` says how many
   were measured. Its `model` and `pool_account` key is "not ended".
 
-### Unused browser time: `browser` (#2322, BROWSER-USE-FLAG)
+### Unused browser time: `browser` (BROWSER-USE-FLAG)
 
 The 2026-10-25 audit of tenant eng found 49 browser agents that never touched
 their browser, and found them only by reading agent logs by hand: the worker
@@ -345,7 +344,7 @@ change to the frozen contract was needed.
   attempt held none, the latest earlier attempt that held one
   (`task_accounts.last_account_id`). An agent whose events name no account
   is "not recorded" -- when it could have held one.
-* **"holds no account"** (BGD's answer 4, 2026-10-24) is the key of an agent
+* **"holds no account"** ([the owner]'s answer 4, 2026-10-24) is the key of an agent
   that never takes a pool account: a profile with no provider (mock), one
   that takes no subscription token (browser, codex, merge), or an agent never
   admitted. It is `task_accounts.could_hold_account` applied at READ time to
@@ -402,8 +401,7 @@ boundary.
 
 ## Why an agent ended: its typed cause first, its text only without one
 
-Contract requests 23 and 24 were accepted by the owner on 2026-09-25 (#185,
-decision 9) and applied in PR #217.
+Contract requests 23 and 24 were accepted by the owner on 2026-09-25 (decision 9) and applied in the pull request that followed.
 
 * **`Task.end_cause` is read first.** Every terminal writer records it beside
   `completed_at`: the worker, the reconciler, the scheduler and the API's
@@ -440,7 +438,7 @@ own dependants. So under `continue`, `a` FAILED -> `b` -> `c` -> `d` cancels
 `b` after `a`, then `c` after `b` (CANCELLED), then `d` after `c`. Read by the
 parent's state, `c` and `d` were "after a cancel" -- a cancel nobody made --
 and left out of the workflow's failure cascade. The first cut of this change
-did exactly that, one hop deep, and the review of #217 caught it before
+did exactly that, one hop deep, and the review of that pull request caught it before
 release. Two halves now close it:
 
 * the scheduler records `failed_parent` when any parent FAILED or was
@@ -513,13 +511,13 @@ Both are in `terraform/modules/firestore/indexes.tf` and asserted in
 
 Arrivals use the existing `tasks-tenant-created`. Attempts use `tenant_id ==`
 plus `task_id in`, with no ordering, which merged single-field indexes serve.
-The pool account's events read (#2149) uses the existing
+The pool account's events read uses the existing
 `events-tenant-task-cause`, the index `task_accounts.py` already needed.
 
 ## Measured against real Firestore
 
 The emulator does not enforce composite indexes, so each query shape was run
-once against dev (`saga-agents-staging`, database `swarm`) on 2026-09-25,
+once against dev (`example-project`, database `swarm`) on 2026-09-25,
 **read-only**, through the module's own methods and the real client. Every
 write RPC was refused in the client before anything was sent.
 
@@ -562,7 +560,7 @@ Still not verified:
   `tzdata`. If it were missing, every zone would fail, and the route answers
   503 naming the image, not 422 blaming the caller.
 
-## What dev showed against #185's checks (2026-09-25)
+## What dev showed against the outcomes-ledger decisions' checks (2026-09-25)
 
 The mockup's figures were read at 19:21 UTC by **submission** day. This route
 places work by **completed_at**. Both give the same headline on dev:
@@ -586,13 +584,13 @@ places work by **completed_at**. Both give the same headline on dev:
 * **The failure split is not the mockup's.** On dev: runner error 13,
   dispatch failed 7, could not start 4, lost worker 3, other 1, and no
   timeout at all. So the mockup's "other" was not hiding timeouts.
-  * The mockup's "outputs missing 6" are the downstream half of #149: 10 of
+  * The mockup's "outputs missing 6" are the downstream half of the input-staging classification work: 10 of
     the 13 runner errors are the worker refusing to stage an input
     (`inputs.InputUnavailable`: "upstream task … did not produce an artifact
     named …", and "upstream tasks … all stage …").
   * The contract put any worker-written end with an exit code under
     "runner error". The owner decided on 2026-09-25 that input staging is its
-    own class (#185, decision 4); `CLASSIFIER_VERSION` and `DERIVE_VERSION`
+    own class (decision 4); `CLASSIFIER_VERSION` and `DERIVE_VERSION`
     went to 2 with it, so dev's stored days are derived again and these 10
     read "inputs unavailable".
 

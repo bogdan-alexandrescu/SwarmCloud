@@ -139,7 +139,7 @@ def test_the_setting_is_seeded_with_todays_figures_from_code(client):
 
 
 def test_the_seed_prices_sonnet_5_5_and_haiku_5_5_from_the_saved_pricing_page():
-    """BGD, 6 November 2026: the seed lists the sonnet and haiku classes'
+    """the owner, 6 November 2026: the seed lists the sonnet and haiku classes'
     pins at the provider's published figures, Haiku 5.5 with both of its
     prompt-length tiers, each sourced to the page and dated the day it was
     read (the saved copy, `pricing_page_2026-10-19.md`)."""

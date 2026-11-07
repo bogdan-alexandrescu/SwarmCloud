@@ -85,7 +85,7 @@ export type ScPaneState = {
 }
 
 /**
- * The band above the prompt (SC-BAND, BGD 2026-10-26): whether it is on (the
+ * The band above the prompt (SC-BAND, the owner 2026-10-26): whether it is on (the
  * project's layout is `band`), folded to its one summary line, and what the
  * last list read showed of each workflow, so the next read queues a chat turn
  * only for what changed.

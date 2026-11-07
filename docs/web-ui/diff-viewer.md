@@ -1,7 +1,7 @@
-# The diff viewer (#310)
+# The diff viewer
 
 `apps/swarm-ui/src/diff/` holds a self-contained viewer for the patch an agent
-produces: `<DiffView patch={string} getFile? />`. This is step 1 of #310. The
+produces: `<DiffView patch={string} getFile? />`. This is step 1 of an earlier issue. The
 component exists and is tested, but no screen mounts it yet. It goes into
 `AgentDetail.tsx` in a later step, once the lane that currently owns that file
 has merged.

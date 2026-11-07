@@ -39,7 +39,7 @@ REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
 CALLS = REPO / "scripts" / "lib" / "workspace-calls.json"
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 SCHEDULER_UID = "117405034245659033603"
 RECONCILER_UID = "108023754768362642341"
 #: Shaped like a uniqueId; not any real account's.
@@ -472,7 +472,7 @@ def test_every_personal_namespace_the_contract_derives_is_in_scope(policy_docs, 
         "swarm-tenant-u-",
         "swarm-tenant-u--",
         "xswarm-tenant-u-alice",
-        "agents-staging",
+        "peer-cluster",
         "",
     ],
 )
@@ -1104,7 +1104,7 @@ def test_a_terraform_tfvars_that_names_no_tenant_is_refused(tmp_path):
         _render("policies", "--terraform-tfvars", str(empty))
 
 
-@pytest.mark.parametrize("name", ["swarm-system", "kube-system", "default", "agents-staging", "swarm-tenant-"])
+@pytest.mark.parametrize("name", ["swarm-system", "kube-system", "default", "peer-cluster", "swarm-tenant-"])
 def test_no_namespace_outside_the_prefix_is_admitted_even_with_the_label(dev_policy_docs, name):
     namespace = _namespace(name, LABELLED)
     namespace["metadata"]["labels"]["swarm-tenant"] = name.removeprefix(render.NAMESPACE_PREFIX)

@@ -1,5 +1,5 @@
 """A platform admin's cell in Admin › People and roles' grid is their EFFECTIVE
-role (lane ROLE-EFFECTIVE-CELL, part of #2391; BGD 2026-10-26, VQ-ROLES).
+role (lane ROLE-EFFECTIVE-CELL, part of #2391; the owner 2026-10-26, VQ-ROLES).
 
 `people.role_cell` is the grid's one cell. It now applies `RoleStore.resolve`'s
 platform-admin rule (roles.py, Q5): a platform admin is `admin` in every group

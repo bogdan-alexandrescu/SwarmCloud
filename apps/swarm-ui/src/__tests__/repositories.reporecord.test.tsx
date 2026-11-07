@@ -10,7 +10,7 @@
 //     `{agents_may_file_issues: <bool>}` and no other field;
 //   * the fixture build answers it, and its list then serves the new value;
 //   * the list card draws the flag from the record `loadRepositories`
-//     returns (a dash for null), read-only for every role (BGD's answer to
+//     returns (a dash for null), read-only for every role (the owner's answer to
 //     VQ-043, 2026-10-26: "Show state only on the card");
 //   * the repository's Settings tab shows the flag, a dash for null, and an
 //     admin's toggle there calls the helper; a member sees it with no control.

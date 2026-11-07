@@ -10,7 +10,7 @@ and nothing here added one.
 
 ## A page whose DOM is ready is a page that can be read
 
-Measured 2026-10-15, QA batch full-1015, profile `browser` (#1363):
+Measured 2026-10-15, QA batch full-1015, profile `browser`:
 
 | case | before | why |
 |---|---|---|

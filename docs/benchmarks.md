@@ -254,9 +254,9 @@ scripts/bench-contention.sh --rates 100,200,400,800 --admitters 16
 scripts/bench-contention.sh --database swarm-bench-b17 --provider none
 ```
 
-### `coldstart` — cold start from history, before anything is changed (#363)
+### `coldstart` — cold start from history, before anything is changed
 
-`scripts/bench-coldstart.sh`. The owner's ruling on #363 is to measure cold
+`scripts/bench-coldstart.sh`. The owner's ruling on the cold-start measurement is to measure cold
 start before shortening it. `bench-dispatch.sh` measures it by submitting
 agents, which on `claude-code` spends provider tokens and samples a handful of
 fresh runs. This reads the event log of the newest terminal agents instead and
@@ -270,7 +270,7 @@ labelled `unknown`, not guessed from the frozen profile catalogue. An agent that
 was dispatched and never reached `running` is a null sample, so it fails the
 gate rather than improving the figure.
 
-### `cache-ttl` — what a 1-hour prompt-cache TTL would cost (#323)
+### `cache-ttl` — what a 1-hour prompt-cache TTL would cost
 
 `scripts/bench-cache-ttl.sh` plus `benchstat.py cache-ttl`. **Read-only, and a
 table rather than a verdict.** A 1-hour cache write costs 2× the base input
@@ -441,8 +441,8 @@ has been measured.
 | question | suite | status (2026-10-02) |
 |---|---|---|
 | Admission contention at 100 / 200 / 400 per minute (§8 row 6, S32) | `contention` | **not yet measured.** Needs the `swarm-bench` database, which the next dev apply creates (`terraform/modules/firestore/bench.tf`) |
-| Cold start p50/p95/p99 per profile and backend (§8 row 5, #363) | `coldstart` | **not yet measured** |
-| 5m vs 1h prompt-cache cost per profile (#323) | `cache-ttl` | **not yet measured** |
+| Cold start p50/p95/p99 per profile and backend (§8 row 5) | `coldstart` | **not yet measured** |
+| 5m vs 1h prompt-cache cost per profile | `cache-ttl` | **not yet measured** |
 
 When a row is measured, record it with the date, the environment, the commit
 of the harness, n per rate, and the full table the suite printed, and copy the

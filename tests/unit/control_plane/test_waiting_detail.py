@@ -34,7 +34,7 @@ from swarm_api.waiting_detail import (
 from .conftest import auth_header, seed_task, seed_tenant
 
 READ_AT = datetime(2026, 10, 21, 20, 10, tzinfo=timezone.utc)
-REPO = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+REPO = "https://github.com/example-org/example-repo.git"
 HEAD = "1968b677" + "c0ffee12" * 4
 PENDING = ["checkov", "ci-gate", "python (unit)", "ui", "integration"]
 
@@ -142,7 +142,7 @@ def test_ci_pending_serves_the_pr_head_checks_and_recheck_schedule():
     # MUTATION: dropping the PR, or building its URL with ".git" left in, turns this red.
     assert d["pull_request"] == {
         "number": 1779,
-        "url": "https://github.com/bogdan-alexandrescu/SwarmCloud/pull/1779",
+        "url": "https://github.com/example-org/example-repo/pull/1779",
     }
     # MUTATION: reading head off anything but the recorded park turns this red.
     assert d["head"] == HEAD
@@ -730,7 +730,7 @@ def test_credential_missing_serves_names_and_never_a_value():
 
 
 def test_no_waiting_text_a_person_reads_says_tenant():
-    """VQ-056 (BGD, 2026-10-26): the console speaks of workspaces. The
+    """VQ-056 (the owner, 2026-10-26): the console speaks of workspaces. The
     `tenant_id` field keeps its name; the words a person reads do not say
     'tenant'."""
     opened = READ_AT - timedelta(hours=1)

@@ -308,13 +308,13 @@ def test_a_signature_by_a_key_the_platform_never_published_is_refused(
         # Another key in the same ring.
         spec_keys.SIGNING_KEY.replace("/step-spec", "/other") + "/cryptoKeyVersions/1",
         # Another project's key of the same name.
-        spec_keys.KEY_VERSION.replace("projects/swarm-test", "projects/attacker"),
+        spec_keys.KEY_VERSION.replace("projects/example-project", "projects/example-shared-project"),
         # Not a version at all.
         spec_keys.SIGNING_KEY,
         spec_keys.SIGNING_KEY + "/cryptoKeyVersions/1/../2",
         spec_keys.SIGNING_KEY + "/cryptoKeyVersions/",
     ],
-    ids=["other-key", "other-project", "the-key-itself", "traversal", "no-digits"],
+    ids=["other-key", "example-shared-project", "the-key-itself", "traversal", "no-digits"],
 )
 def test_a_version_outside_the_signing_key_is_refused_as_a_string(
     version, db, worker_factory, witness
@@ -410,7 +410,7 @@ def test_the_workers_job_name_is_the_schedulers():
     worker image does not carry the scheduler, so they are held together here."""
     from scheduler.dispatch import job_id_for, sanitize_name
 
-    tenants = ["eng", "u-bogdan", "a" * 70, "Research_Team", "9lives"]
+    tenants = ["eng", "u-owner", "a" * 70, "Research_Team", "9lives"]
     for tenant in tenants:
         for name, profile in RUNNER_PROFILES.items():
             for rc in (None, profile.resource_class, "small", "large"):

@@ -1,5 +1,5 @@
 {
- "_why": "The pane bodies of proposal B's frames, cut character for character from docs/design/mockups/sc-browser-b.html in PR 2328 (SC-BROWSER-MOCKS), which BGD picked for every frame on 2026-10-25 (#2318). The terminal's chat column and the trailing blank rows are cut off; every other cell is B's. test_sc_browser_pane.py draws the same states with plugin/hooks/pane/model.ts and compares. B draws its key hints as '↑↓'; in Claude Code a focused pane's arrows scroll and Tab moves, so the pane's hint lines say Tab, and the test compares every line but the hint.",
+ "_why": "The pane bodies of proposal B's frames, cut character for character from docs/design/mockups/sc-browser-b.html in PR 2328 (SC-BROWSER-MOCKS), which the owner picked for every frame on 2026-10-25 (#2318). The terminal's chat column and the trailing blank rows are cut off; every other cell is B's. test_sc_browser_pane.py draws the same states with plugin/hooks/pane/model.ts and compares. B draws its key hints as '↑↓'; in Claude Code a focused pane's arrows scroll and Tab moves, so the pane's hint lines say Tab, and the test compares every line but the hint.",
  "empty": {
   "66": [
    " SwarmCloud · this session                     10:42:07Z [Refresh]",

@@ -810,7 +810,7 @@ def test_a_head_that_is_not_a_github_base_merge_of_the_pushed_head_is_head_moved
 # F05: a person merged main into PR #2376 on top of the head the workflow
 # pinned, and the parked merge step ended FAILED head_moved, though
 # auto-merge.yml's `is_pure_base_merge` accepts the same commit from anyone.
-# BGD, 2026-10-26: "accept a pure base merge, and record who made it". The
+# the owner, 2026-10-26: "accept a pure base merge, and record who made it". The
 # walk takes a two-parent commit from anyone when its second parent is on
 # main and its tree is the clean merge of its two parents, read through
 # GitHub's tree API; anything else stays head_moved, and the refusal names

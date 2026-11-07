@@ -1,4 +1,4 @@
-"""Between full sweeps a pass reads what changed and what falls due (BGD, 2026-11-06).
+"""Between full sweeps a pass reads what changed and what falls due (the owner, 2026-11-06).
 
 WHAT WAS WRONG. Every pass read every live task, every unreleased lease and
 everything hanging off them. On 2026-11-06 the load analysis measured a pass
@@ -59,7 +59,7 @@ from swarm_common.states import TaskState
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,

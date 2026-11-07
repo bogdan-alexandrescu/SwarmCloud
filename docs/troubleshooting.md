@@ -158,11 +158,11 @@ Cloud Run lists as over (`completionTime` set, nothing running, not
 reconciling) is a lost worker. The reconciler fences it, releases it and
 requeues it, or fails it once its attempts are spent, with no GET by name.
 Proof of absence is still required for an execution that is **missing**: the
-GET must answer 404 (#450). On 2026-10-03 task_8fce64316ad14fc981fb was held
+GET must answer 404. On 2026-10-03 task_8fce64316ad14fc981fb was held
 for five hours because its failed execution counted only as "not active". The
 lease then waited on a GET that never answered.
 
-**A worker lost to its own memory limit fails its agent the first time** (#1926).
+**A worker lost to its own memory limit fails its agent the first time**.
 If an attempt's execution ended `OOMKilled` (GKE's reason, or Cloud Run's
 "Memory limit of ... exceeded"), or the attempt was reclaimed as silent or dead
 while its last heartbeats sat at its memory limit, the reconciler fails the agent
@@ -183,7 +183,7 @@ points) **all** read at least **98%** of the heartbeat's `memory_limit_bytes`
 (`reconciler/memory.py`, `OOM_STALL_SAMPLES`, `OOM_STALL_SHARE`). A container
 held at cgroup `memory.max` reads just under the limit, not on it, because the
 kernel reclaims page cache to stay below it. A missing sample is not at the
-limit. If a heartbeat has no samples (a worker older than #1689), it counts
+limit. If a heartbeat has no samples (a worker from before the heartbeat-samples change), it counts
 only when its `peak_rss_bytes` reaches the limit.
 **A node-pressure eviction, or any other lost worker, is still requeued.** Only
 the agent's own limit counts. The fix for the agent is a smaller workload (the
@@ -195,7 +195,7 @@ it once the lease is `NEVER_STARTED_RELEASE_SECONDS` (20 minutes) old. It does
 this even when the execution cannot be read or will not cancel. The fence is
 written in the same transaction as the release, so a container that starts late
 exits without running anything. Until then, the hold's `why` gives the time
-left. A fenced generation whose lease is still held is named as such (#560).
+left. A fenced generation whose lease is still held is named as such.
 
 Executions under a `swarm-` job that carry no task id and no attempt id (CI's
 `gcloud run jobs execute` runs) are not the platform's. They are excluded, and
@@ -205,7 +205,7 @@ they never make Cloud Run count as unreadable. Only an unfinished one is logged
 is counted as `unattributed_finished` in the pass summary instead.
 
 **A Cloud Run execution that refuses cancellation while no lease names it is
-backed off, not retried every pass** (#1822). The reconciler records it in the
+backed off, not retried every pass**. The reconciler records it in the
 `reconciler_wedged_executions` collection (one document per execution, keyed by
 a digest of its name) and logs `cloud run will not cancel this execution and no
 lease holds it; backing off`. It retries the cancel on a backoff that starts at
@@ -285,7 +285,7 @@ This should not happen: `requests == limits`, no bursting, no Spot. When it does
 * Peaks well under the limit -> something else killed the container. Check for pod
   restarts in `make status`, and for GKE node events.
 * `memory guard killed the agent's largest process` in the worker's log -> the
-  sampler (`ResourceSampler._guard_memory` in `agent_worker/metrics.py`, #2504)
+  sampler (`ResourceSampler._guard_memory` in `agent_worker/metrics.py`)
   saw cgroup `memory.current` reach `MEMORY_GUARD_FRACTION` (95%) of
   `memory.max` and SIGKILLed the agent's biggest descendant (its pytest, tsc or
   dev server), never the worker, the runner or the agent CLI. It exists because
@@ -359,7 +359,7 @@ That call does not work in this project, and the platform must not use it — se
 The scripts refuse to act through a context that is not the swarm's:
 
 ```
-kubectl is pointed at 'gke_saga-agents-staging_us-central1-a_agents-staging',
+kubectl is pointed at 'gke_example-project_us-central1-a_peer-cluster',
 which is not the swarm cluster.
 ```
 
@@ -440,7 +440,7 @@ That is the guard doing its job. It prints every offender:
 
 ```
 OFFENDERS -- resources marked for deletion that are not ours:
-  theirs.cluster  google_container_cluster  agents-staging  (deny-listed)
+  theirs.cluster  google_container_cluster  peer-cluster  (deny-listed)
   unlabelled.topic google_pubsub_topic      swarm-scheduler-wake (no managed-by label)
 ```
 

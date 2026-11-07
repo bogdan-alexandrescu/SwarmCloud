@@ -13,7 +13,7 @@ those two sentences, at which point they are the only options left.
 ## 1. The shape
 
 ```
-        caller (Google ID token, hd=saga.xyz)
+        caller (Google ID token, hd=example.com)
           |
           v
    +--------------+     Pub/Sub wake      +---------------+
@@ -126,7 +126,7 @@ Strictly downstream of the lease. Every dispatch failure hands the capacity
 straight back. Where each profile runs, as the catalogue
 (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`) declares it and as
 the 2026-10-21 system analysis found it running (read-only `gcloud` and
-`kubectl`, epic #1822):
+`kubectl`):
 
 * **GKE Autopilot runs nearly every agent:** `browser` (Chromium needs a
   `/dev/shm` Cloud Run will not size), `claude-code` since 2026-10-08
@@ -172,7 +172,7 @@ matters most:
 2. STARTING -> RUNNING;
 3. create an isolated workspace;
 4. restore the checkpoint an earlier attempt of this agent recorded, and
-   nothing on a first attempt (#347; [checkpointing.md](checkpointing.md#3-restore)
+   nothing on a first attempt ([checkpointing.md](checkpointing.md#3-restore)
    says why the prefix is not listed);
 5. optional shallow clone;
 6. resolve the tenant's provider credential;
@@ -205,7 +205,7 @@ agent is still writing to a tenant's repository. A termination that is not
 confirmed therefore does **not** release: one stuck slot until the next pass is
 a far cheaper mistake than two agents on one workspace.
 
-**The fence is never written alone.** Until #560 the generation was invalidated
+**The fence is never written alone.** Until the fence-and-kill ordering fix the generation was invalidated
 first, in a transaction of its own, before the kill. When the kill then failed,
 the pass returned with the agent fenced and the lease still held. Every later
 pass saw a superseded lease whose execution "belonged" to the obsolete-generation
@@ -222,7 +222,7 @@ measured), the repair goes ahead even if the kill is not confirmed or the
 backend cannot be read. It is safe because the fence commits with the release:
 a container that starts late checks its generation before it does anything, and
 exits (invariant 5). A worker that **did** start is still held until something
-proves its execution gone (#450). Until the wait is over, the hold is listed in
+proves its execution gone. Until the wait is over, the hold is listed in
 the pass's `held_past_ttl` and logged at ERROR once an hour, with the time left.
 
 **A cancel with no live worker ends the agent at once.** The API cancels a
@@ -301,10 +301,10 @@ p50 128 s / p90 212 s while Autopilot starts it in about 23 s. That buys back
 the node-side failure modes above for the profile that runs nearly every step;
 mandatory periodic checkpointing makes them cost minutes, not the run, and
 does not make them free ([execution-backends.md](execution-backends.md) §4).
-`indexer` followed on 2026-10-10 (contract request 63), the canary for #939,
+`indexer` followed on 2026-10-10 (contract request 63), the canary for the GKE-migration decision,
 for its internet path rather than its start: a new Cloud Run instance's opens a
 median 20.2 s after start, a GKE pod's 1.17 s. `generic`, `codex` and `merge`
-followed it (contract requests 64-66, #939 option A, owner 2026-10-10) for the
+followed it (contract requests 64-66, the GKE-migration decision's option A, owner 2026-10-10) for the
 same reason, leaving Cloud Run with `mock`, which reaches no internet, and the
 disabled `post-verdict` and `claude-code-review`, each designed to run as an
 account of its own that a GKE pod cannot be.
@@ -328,7 +328,7 @@ inside that memory, on GKE because the pod and its disk `emptyDir`s go with
 it. A memory burst that usually works is one that fails on the busiest day.
 
 CPU is the exception (contract request 108, the runner-sizes design's RS-1,
-accepted by the owner 2026-10-20 for #1689). On GKE Autopilot a container's
+accepted by the owner 2026-10-20 for the CPU-burst change). On GKE Autopilot a container's
 CPU limit may be up to `CPU_BURST_MAX_RATIO` (2) times its request
 (`apps/common/swarm_common/profiles.py::CPU_BURST_MAX_RATIO`), and every class
 runs at that ratio: `standard` requests 4 cores and may use 8. The reasons it
@@ -357,8 +357,8 @@ it was amended; the policy and the renderer are one rule in two places.
 
 The control-plane services follow the same rule on Cloud Run, with one
 recorded exception: swarm-api runs with startup CPU boost on, which bursts
-past its 1 vCPU limit while an instance starts, by BGD's decision of
-2026-10-23 (#1816 option (a)) after slow Python starts outlasted its startup
+past its 1 vCPU limit while an instance starts, by [the owner]'s decision of
+2026-10-23 after slow Python starts outlasted its startup
 probe; every other Cloud Run service keeps boost off, swarm-api keeps CPU
 always allocated, and the terraform tests (`tests/terraform/cloud_run.tftest.hcl`,
 `github_hooks.tftest.hcl`, `mcp_test_server.tftest.hcl`) fail if another
@@ -479,7 +479,7 @@ at once; doing it first costs a fraction of that.
 A shared bearer token carries no identity. Without identity there is no tenant to
 attribute an agent to, no way to scope a list response, and no boundary to
 enforce — so multi-tenancy would be decorative. Tokens are verified per request
-and the hosted domain must be `saga.xyz`.
+and the hosted domain must be `example.com`.
 
 ---
 

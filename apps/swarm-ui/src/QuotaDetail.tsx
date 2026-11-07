@@ -60,7 +60,7 @@ export function QuotaDetailScreen() {
   return (
     <Screen
       title="Provider quota"
-      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, BGD 2026-10-26),
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, owner 2026-10-26),
       // which were the `Reading this screen:` footer under the tables.
       help={QUOTA_TOPICS}
       load={loadAdminQuota}
@@ -230,7 +230,7 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
   const pool = providerTenantPool(q.provider, q.tenant_id)
 
   // AN UNKNOWN STATE IS NOT EXHAUSTION (visual QA run 3, capacity-004). A
-  // cap of 0 alone washed the row red, so the fixture's `UNKNOWN` u-bogdan
+  // cap of 0 alone washed the row red, so the fixture's `UNKNOWN` u-owner
   // row carried the same shading as `EXHAUSTED` eng above it -- a verdict
   // the document does not give. Unknown is not healthy either, so it takes
   // the amber a reader is asked to look at; its cap of 0 is still the figure.
@@ -343,7 +343,7 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
  * TaskRef keeps a task's -- does not, as two boxes of one line, so only a
  * tail wider than the whole column is cut itself. The whole id is the
  * cell's title, and the text is unchanged for a copy. The two boxes are flex
- * items, which an accessible-name walk joins with a space (`u-bogdan-
+ * items, which an accessible-name walk joins with a space (`u-owner-
  * research`), so the element that holds a cut id names itself with the
  * whole id (`aria-label`).
  */
@@ -431,7 +431,7 @@ function Em({ what }: { what: string }) {
  * and cannot finish saying: that the cap is one input to the pool beside it,
  * and where a rate-limit run starts and ends. It is in the screen's index
  * rather than a `?` in the table, which is route 3 of B7.4 -- the index the
- * title's `?` opens since VQ-033 (BGD 2026-10-26), where the footer was.
+ * title's `?` opens since VQ-033 (owner 2026-10-26), where the footer was.
  */
 const QUOTA_TOPICS: readonly TopicId[] = [
   'provider-quota-states',

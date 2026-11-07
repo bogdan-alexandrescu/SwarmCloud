@@ -48,7 +48,7 @@ const CONTENTS = { permission: 'contents', access: 'write', needed_for: "runs ca
 const PULLS = { permission: 'pull_requests', access: 'write', needed_for: "runs can't open or update pull requests, or merge them", capabilities: ['pull_request', 'merge'] }
 const CHECKS = { permission: 'checks', access: 'read', needed_for: "merges and CI fixes can't see check runs", capabilities: ['merge', 'ci'] }
 const ISSUES = { permission: 'issues', access: 'write', needed_for: "issue runs and the observer can't read or comment on issues", capabilities: ['issues'] }
-// forgeperms.py's Actions row since BGD's 2026-11-05 decision: write, for the merge step's re-run of a flaky run's failed jobs.
+// forgeperms.py's Actions row since the owner's 2026-11-05 decision: write, for the merge step's re-run of a flaky run's failed jobs.
 const ACTIONS = {
   permission: 'actions',
   access: 'write',
@@ -215,7 +215,7 @@ describe('Workspace setup › GitHub: one card for the App and one per org', () 
     expect(rows.every((r) => r.getAttribute('data-ok') === 'true')).toBe(true)
   })
 
-  it('asks Actions for Read and write and names the re-run in tooltips, adding no visible words (BGD 2026-11-05)', async () => {
+  it('asks Actions for Read and write and names the re-run in tooltips, adding no visible words (owner 2026-11-05)', async () => {
     routes(() => answer())
     await mountSection()
     await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
@@ -692,7 +692,7 @@ describe('visual QA VQA2-R5', () => {
   })
 })
 
-// PERM-DOT (#1086; BGD 2026-10-27, "Green dot"). An accepted permission draws
+// PERM-DOT (#1086; owner 2026-10-27, "Green dot"). An accepted permission draws
 // the green dot the issue asked for, in the `--ok` token the liveness dot
 // already uses, where it drew the grey check; a gap keeps its red diamond and
 // its Review link, and a neutral row its flat bar.

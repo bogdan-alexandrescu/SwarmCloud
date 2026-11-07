@@ -49,7 +49,7 @@ from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
 CAROL = "carol@example.com"
 ROOT = "root@example.com"
 CAROL_WS = "w-c0ffee"
-SWEEPER = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-tick@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 
 
@@ -637,7 +637,7 @@ def test_a_non_admin_cannot_lend(client, db, pool) -> None:
 # exist yet. So a loan to a workspace that is not ready is recorded pending and
 # applied by the sweep once the job has marked the workspace ready.
 
-CAROL_MEMBER = ("serviceAccount:swarm-agent-worker-u-carol@saga-agents-staging"
+CAROL_MEMBER = ("serviceAccount:swarm-agent-worker-u-carol@example-project"
                 ".iam.gserviceaccount.com")
 
 
@@ -1270,7 +1270,7 @@ def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client,
 
 def test_each_lent_and_lendable_account_carries_its_name_and_nothing_else_new(
         client, db, pool) -> None:
-    """ACCOUNT-NAME-2 (#1913; owner decision 2026-10-22, BGD): the People
+    """ACCOUNT-NAME-2 (#1913; owner decision 2026-10-22, the owner): the People
     payloads rebuild an account by allow-list, so the Name ACCOUNT-NAME put on
     the account document never reached them and the lend controls printed the
     label. Each now carries `display_name` -- the Name, or None for an account

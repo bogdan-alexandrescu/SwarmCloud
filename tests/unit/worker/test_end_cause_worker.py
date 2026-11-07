@@ -69,7 +69,7 @@ def test_a_runner_that_ran_out_of_time_is_a_timeout(db, worker_factory):
     """The ledger could only find this by its text, because the worker records
     the killed child's status and never 76."""
     seed_attempt(db, task_input={"prompt": "slow", "steps": 50, "sleep_seconds": 30.0})
-    # Its continuations at the time limit spent (BGD, 2026-11-02): this stop
+    # Its continuations at the time limit spent (the owner, 2026-11-02): this stop
     # fails, as every stop at the limit did before them.
     _task(db)["metadata"] = {"time_limit_continuations": 2}
     worker, _, _ = worker_factory(timeout_seconds=2, termination_grace_seconds=2)

@@ -1,5 +1,5 @@
 /**
- * AN ACCOUNT AS THE CONSOLE NAMES IT (#1913; owner decision 2026-10-22, BGD,
+ * AN ACCOUNT AS THE CONSOLE NAMES IT (#1913; owner decision 2026-10-22, owner,
  * "Editable display name"): its Name when its owner gave one, else its label,
  * exactly as before there were Names.
  *

@@ -4,7 +4,7 @@ What a QA run of a registered target is, step by step, and why each step has
 the shape it has. The design is
 [visual-qa-any-app.md](../design/visual-qa-any-app.md) §4; this page is the
 built renderer, `apps/swarm-api/swarm_api/qaspec.py` (lane VQ-1 SPEC of
-[agent-autonomy.md](../design/agent-autonomy.md) §6, part of #1933), held by
+[agent-autonomy.md](../design/agent-autonomy.md) §6), held by
 `tests/unit/control_plane/test_qaspec.py`.
 
 There is no template file for it, unlike the console's
@@ -81,8 +81,8 @@ the slowest capture sets the run's length.
 
 ### 2.1 A flow captures what it proves, retries a settling page, and packs one layout (QA-FLOW-CAPTURE)
 
-The AI Studio session's QA re-run 8 (2026-11-06, seven legs of
-ai-studio-staging, part of #2688) found three harness defects in flows. Each
+A peer application session's QA re-run 8 (2026-11-06, seven legs of
+peer-app-staging) found three harness defects in flows. Each
 flow brief (`flows-<k>` and a mutating flow's own `flow-<id>`) now answers
 them, and `qaspec` holds the rules once:
 
@@ -129,7 +129,7 @@ refused, naming the expected tar. A step that claims a state with no
 flagged; a `missing` proof is said as not proven; each flow's retries are
 counted. The flow report's brief applies the same rules to `flows.md`.
 
-**The worker normalises the tar (owner's pick on PR #3521, 2026-11-06).** No
+**The worker normalises the tar (owner's pick, 2026-11-06).** No
 swarm-api route reads a flow step's output, so the tar rule runs where the
 files are: at the end of a flow step whose `<step>.tar` is owed, before the
 upload and the missing-output check, the worker
@@ -200,7 +200,7 @@ through `swarm_redaction.redact` all the same.
 ## 6. Owner decisions this builds on
 
 Recorded in [visual-qa-any-app.md](../design/visual-qa-any-app.md) §9
-(BGD, 2026-10-22 ~06:40Z): VQ-Q1 "Any platform admin, audited" approves a
+([the owner], 2026-10-22 ~06:40Z): VQ-Q1 "Any platform admin, audited" approves a
 target's host (lane VQ-2); VQ-Q2 "One secret per tenant,
 swarm-tenant-<t>-qa" holds the test credential (lane VQ-3); VQ-Q3 "Console
 link by default; evidence branch as a per-target opt-in for private

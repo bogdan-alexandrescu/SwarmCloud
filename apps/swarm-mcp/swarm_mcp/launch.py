@@ -456,10 +456,11 @@ WORKFLOW_MARK = "\u2234"
 
 def _run_title(mark: str, name: Any, tail: str = "") -> str:
     """`SC <mark> <name><tail>`, at most workflows.TITLE_CHARS characters:
-    the NAME is cut, never the tail, at the last word boundary that fits,
+    the NAME is cut at workflows.NAME_MAX_CHARS (#2688), never the tail, at
+    the last word boundary that fits,
     with `…`, as workflows.workflow_title cuts it."""
     prefix = f"SC {mark} "
-    room = max(1, workflows.TITLE_CHARS - len(prefix) - len(tail))
+    room = max(1, min(workflows.NAME_MAX_CHARS, workflows.TITLE_CHARS - len(prefix) - len(tail)))
     flat = workflows._flat(name) or "workflow"
     if len(flat) > room:
         head = flat[: room - 1]

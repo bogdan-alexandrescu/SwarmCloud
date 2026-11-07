@@ -80,13 +80,13 @@ def test_active_only_hides_released_leases_and_default_is_active(db):
 
 def test_no_tenant_means_every_tenant(db):
     _lease(db, "l_a", "eng")
-    _lease(db, "l_b", "u-bogdan")
+    _lease(db, "l_b", "u-owner")
     assert {x.lease_id for x in _store(db).list_leases()} == {"l_a", "l_b"}
 
 
 def test_a_tenant_filter_does_not_leak_another_tenants_lease(db):
     _lease(db, "l_a", "eng")
-    _lease(db, "l_b", "u-bogdan")
+    _lease(db, "l_b", "u-owner")
     assert [x.lease_id for x in _store(db).list_leases("eng")] == ["l_a"]
 
 
@@ -144,7 +144,7 @@ def test_every_attempt_of_a_retried_task_is_readable(db):
 
 def test_attempts_are_tenant_scoped(db):
     _attempt(db, "a1", "eng", "task_x")
-    _attempt(db, "a2", "u-bogdan", "task_y")
+    _attempt(db, "a2", "u-owner", "task_y")
     assert [a.attempt_id for a in _store(db).list_attempts("eng")] == ["a1"]
 
 
@@ -234,14 +234,14 @@ def test_the_per_tenant_provider_pool_has_its_own_name():
     from swarm_common.models import pool_names_for
 
     names = pool_names_for(
-        tenant_id="u-bogdan",
+        tenant_id="u-owner",
         provider="anthropic",
         runner_profile="claude-code",
         resource_class="standard",
         backend="CLOUD_RUN_JOB",
     )
     assert "provider:anthropic" in names
-    assert "provider:anthropic:tenant:u-bogdan" in names, (
+    assert "provider:anthropic:tenant:u-owner" in names, (
         "the per-tenant slice must be a distinct pool, or raising the "
         "provider-wide one would be enough and it is not"
     )

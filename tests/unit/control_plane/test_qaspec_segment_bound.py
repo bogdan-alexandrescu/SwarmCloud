@@ -1,6 +1,6 @@
 """swarm-api's segment bound is the capture tool's, and the report counts by it (part of #2688).
 
-On 2026-11-04 AI Studio's staging run cut its /docs page (about 49,600 px at
+On 2026-11-04 a peer application's staging run cut its /docs page (about 49,600 px at
 the desktop, 65,300 px at 390 px) at the capture's segment cap, and the
 capture now takes every segment of a page up to `MAX_SEGMENTS`. swarm-api
 restates that bound to refuse a screen's `segments` at registration, so:

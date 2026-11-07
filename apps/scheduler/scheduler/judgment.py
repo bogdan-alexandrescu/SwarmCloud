@@ -57,6 +57,8 @@ import binascii
 import hashlib
 import hmac
 import logging
+import os
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -74,14 +76,24 @@ DEFAULT_BACKEND = INTERNAL_JEV
 SETTINGS_COLLECTION = "workspace_settings"
 SETTING_FIELD = "judgment_backend"
 
-#: The internal decision API's tailnet name: what its certificate is issued for, and
-#: what the egress forwarder dials (terraform/infra/tailscale.tf
-#: `tailscale_egress_target`, whose default a test holds equal to this).
-DECISION_API_TAILNET_NAME = "decision-api-staging.taile0bda9.ts.net"
-#: The decision API's origin as a judging pod calls it: the tailnet name over
-#: https, resolved by the pod's `hostAliases` entry to the egress Service.
-#: The only value INTERNAL_DECISION_API_URL may hold besides "" (off).
-INTERNAL_DECISION_ORIGIN = f"https://{DECISION_API_TAILNET_NAME}"
+#: The variable that carries the internal decision API's tailnet name: what
+#: its certificate is issued for, and what the egress forwarder dials.
+#: terraform/infra/locals.tf renders it from `tailscale_egress_target` beside
+#: INTERNAL_DECISION_API_URL, on this service and on swarm-api, and the
+#: dispatcher passes it to a judging pod for the jev wrapper. NO DEFAULT: the
+#: name identifies one deployment, so code never guesses it (owner decision
+#: 2026-11-07, part of #2688).
+DECISION_API_TAILNET_NAME_ENV = "SWARM_DECISION_API_TAILNET_NAME"
+#: The fixed refusal when the internal backends are on (INTERNAL_DECISION_API_URL
+#: set) and the name is not: no pod is given a URL, a label or a hostAliases
+#: entry, so an internal choice is unavailable rather than aimed at a guessed host.
+DECISION_API_NAME_UNSET = (
+    "the internal decision API is enabled (INTERNAL_DECISION_API_URL is set), but "
+    "SWARM_DECISION_API_TAILNET_NAME is unset or not one <host>.<tailnet>.ts.net name: "
+    "the internal judgment backends are refused until the platform renders it"
+)
+#: A MagicDNS name, as terraform/infra/tailscale.tf validates the target.
+_TAILNET_HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9-]+\.ts\.net$")
 #: The egress Service `decision-api`'s clusterIP. FIXED, because a judging
 #: pod pins the tailnet name to it in /etc/hosts: a Service recreated with a
 #: new address would leave every such pod dialling nothing. Stated once, as
@@ -98,15 +110,41 @@ JEV_API_URL_ENV = "JEV_API_URL"
 JUDGE_POD_LABEL = ("swarm-judge", "internal")
 
 
+def decision_api_tailnet_name(raw: str | None = None) -> str:
+    """The decision API's tailnet name from SWARM_DECISION_API_TAILNET_NAME,
+    read at the call, never at import; "" when it is unset or not one MagicDNS
+    name, so nothing is ever dialled at a misrendered host."""
+    value = (os.environ.get("SWARM_DECISION_API_TAILNET_NAME", "") if raw is None else raw).strip()
+    return value if _TAILNET_HOST.fullmatch(value) else ""
+
+
+def internal_decision_origin(raw: str | None = None) -> str:
+    """The decision API's origin as a judging pod calls it: the tailnet name
+    over https, resolved by the pod's `hostAliases` entry to the egress
+    Service. The only value INTERNAL_DECISION_API_URL may hold besides ""
+    (off); "" when the name is not rendered."""
+    name = decision_api_tailnet_name(raw)
+    return f"https://{name}" if name else ""
+
+
 def check_internal_decision_api_url(value: str) -> None:
     """"" (the egress is off) or the decision API's tailnet origin, nothing
     else: the jev wrapper accepts that host alone, and the pod's hostAliases
     entry resolves that name alone, so any other value would light the
-    internal backends up in the console and fail in every pod."""
-    if value and value.rstrip("/") != INTERNAL_DECISION_ORIGIN:
+    internal backends up in the console and fail in every pod. With the name
+    unrendered the refusal is LOGGED, not raised: `jev_dispatch` then gives no
+    pod an internal route, and stopping here would stop every tenant's
+    dispatch for one add-on."""
+    if not value:
+        return
+    origin = internal_decision_origin()
+    if not origin:
+        log.error(DECISION_API_NAME_UNSET)
+        return
+    if value.rstrip("/") != origin:
         raise ValueError(
-            f"INTERNAL_DECISION_API_URL must be empty or {INTERNAL_DECISION_ORIGIN!r} "
-            f"(the decision API by its tailnet name), not {value!r}"
+            f"INTERNAL_DECISION_API_URL must be empty or {origin!r} "
+            f"(the decision API by its tailnet name, {DECISION_API_TAILNET_NAME_ENV}), not {value!r}"
         )
 
 
@@ -121,11 +159,14 @@ def jev_dispatch(backend: str, internal_url: str
     labels: dict[str, str] = {}
     host_aliases: list[dict[str, Any]] = []
     base = (internal_url or "").strip().rstrip("/")
-    if backend in INTERNAL_PATHS and base:
+    name = decision_api_tailnet_name()
+    # The URL must be the named origin: with the name unrendered, or another
+    # host in the URL, the pod gets no route (DECISION_API_NAME_UNSET).
+    if backend in INTERNAL_PATHS and base and name and base == f"https://{name}":
         env[JEV_API_URL_ENV] = f"{base}/{INTERNAL_PATHS[backend]}/v1/decide"
+        env[DECISION_API_TAILNET_NAME_ENV] = name
         labels[JUDGE_POD_LABEL[0]] = JUDGE_POD_LABEL[1]
-        host_aliases.append({"ip": DECISION_API_CLUSTER_IP,
-                             "hostnames": [DECISION_API_TAILNET_NAME]})
+        host_aliases.append({"ip": DECISION_API_CLUSTER_IP, "hostnames": [name]})
     return env, labels, host_aliases
 
 

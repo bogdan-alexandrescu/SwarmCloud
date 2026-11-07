@@ -46,9 +46,9 @@ const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, 
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'cd'.repeat(32)
 const HEAD = '7138b1a' + '0f'.repeat(16) + '9'
-const REF = 'bogdan-alexandrescu/SwarmCloud#72'
-const ISSUE_URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/72'
-const PR_URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/pull/564'
+const REF = 'example-org/example-repo#72'
+const ISSUE_URL = 'https://github.com/example-org/example-repo/issues/72'
+const PR_URL = 'https://github.com/example-org/example-repo/pull/564'
 const RUN_ID = 'run_7a37942a19aa4d2c80d1'
 const WF = 'wf_5d0e2b7c41a94e3f8a61'
 const FIX_WF = 'wf_fix1b2c3d4e5f60718293'
@@ -56,7 +56,7 @@ const FIX_WF = 'wf_fix1b2c3d4e5f60718293'
 const PLAN = {
   summary: 'Draw the live steps on the run page.',
   requirements: ['The run page lists its steps'],
-  overlaps: [{ ref: 'bogdan-alexandrescu/SwarmCloud#560', kind: 'pull_request', note: 'No action: touches another screen.' }],
+  overlaps: [{ ref: 'example-org/example-repo#560', kind: 'pull_request', note: 'No action: touches another screen.' }],
   steps: [
     { step_id: 'impl', title: 'ui: the Steps card', prompt: 'Build it.', depends_on: [] },
     { step_id: 'docs', title: 'docs: the run page', prompt: 'Write it.', depends_on: [] },
@@ -67,8 +67,8 @@ const PLAN = {
 function run(over: Record<string, unknown> = {}) {
   return {
     id: RUN_ID, tenant_id: 'eng', state: 'RUNNING', terminal: false,
-    issue: { ref: REF, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 72, url: ISSUE_URL,
-      repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud' },
+    issue: { ref: REF, owner: 'example-org', repo: 'SwarmCloud', number: 72, url: ISSUE_URL,
+      repository_url: 'https://github.com/example-org/example-repo' },
     plan_approval: 'required', auto_merge: true, fix_rounds: 3, planner_task_id: 'task_planner72',
     plan: PLAN, plan_digest: DIGEST, plan_revision: 1, plan_edited_by: null, workflow_id: WF,
     created_by: 'operator@example.com', created_at: '2026-10-04T20:00:00Z', updated_at: '2026-10-04T20:20:00Z',

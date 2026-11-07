@@ -90,7 +90,7 @@
 # current id (swarm_mcp.session). The matcher includes `clear` for that.
 #
 # AND THIS PROJECT'S RUNNING WORK, AT SESSION START ONLY (SC-BROWSER-FOLLOWUP,
-# BGD 2026-10-25: "at start also try to run attach and see if there are any
+# The owner 2026-10-25: "at start also try to run attach and see if there are any
 # workflows that the project its starting in has any work running in sc that
 # needs to be attached and tracked here"). Beside this session's own work the
 # context also names what is still running for THIS project -- whatever
@@ -102,7 +102,7 @@
 # is the project's saved one, else the plugin's `layout` option, handed on
 # as SWARM_PLUGIN_LAYOUT below.
 #
-# IN THE BAND LAYOUT IT ASKS FOR NOTHING ELSE (SC-BAND, BGD 2026-10-26). With
+# IN THE BAND LAYOUT IT ASKS FOR NOTHING ELSE (SC-BAND, the owner 2026-10-26). With
 # the layout `band` the hooks module opens the strip above the prompt at
 # session start with this session's and this project's running work, read
 # directly, and the plugin starts no /workflows row -- so there is nothing to

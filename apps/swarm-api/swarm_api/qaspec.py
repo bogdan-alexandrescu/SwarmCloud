@@ -124,6 +124,8 @@ from swarm_redaction import redact
 from swarm_rollup import flowlayout
 from swarm_rollup.agentimage import QA_TOOL
 
+from .schemas import NAME_MAX_CHARS
+
 # --------------------------------------------------------------------------
 # Bounds and vocabularies
 # --------------------------------------------------------------------------
@@ -1672,10 +1674,22 @@ def leg_words(target: Mapping[str, Any]) -> tuple[str | None, str]:
 
 
 def _leg_title(kind: str, name: str, target: Mapping[str, Any]) -> str:
-    """`Visual QA: peer-app, moderator, staging`: every leg of one target
-    titled apart (the owner, 2026-11-04: the reviewer and moderator legs read alike)."""
+    """`Visual QA: moderator, staging`: every leg of one target titled apart
+    (the owner, 2026-11-04: the reviewer and moderator legs read alike), within the
+    NAME_MAX_CHARS a name holds (owner, 2026-11-07, part of #2688). The role
+    and environment come first, the words that tell legs apart; the target's
+    name follows only while it fits, and is always in the description and the
+    feature. A first word longer than the room is cut, with `…`."""
     role, environment = leg_words(target)
-    return f"{kind}: {', '.join(w for w in (name, role, environment) if w)}"
+    words = [w for w in (role, environment, " ".join(name.split())) if w]
+    title = f"{kind}: {words[0]}"
+    if len(title) > NAME_MAX_CHARS:
+        return title[: NAME_MAX_CHARS - 1].rstrip() + "…"
+    for word in words[1:]:
+        if len(f"{title}, {word}") > NAME_MAX_CHARS:
+            break
+        title = f"{title}, {word}"
+    return title
 
 
 def _about(name: str, target: Mapping[str, Any], work: str) -> tuple[str, dict[str, str]]:
@@ -1858,7 +1872,7 @@ def render_discovery(target: Mapping[str, Any]) -> dict[str, Any]:
     step = _step("discover", CAPTURE_PROFILE, CAPTURE_MODEL, prompt, timeout=1800, browser_tool="playwright")
     work = (f"One step lists the same-origin screens reachable from its base, at most {pages} pages "
             f"{depth} links deep, for its runs to capture. Nothing is reviewed or filed.")
-    return _workflow(target, _leg_title("Visual QA discovery", name, target), [step],
+    return _workflow(target, _leg_title("Discovery", name, target), [step],
                      _about(name, target, work))
 
 

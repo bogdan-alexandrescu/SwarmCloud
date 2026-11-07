@@ -104,7 +104,7 @@ describe('overview-automate-003: the lifecycle band is three figures across at 3
     // MUTATION: give the phone band one tile per line (`grid-template-columns: minmax(0, 1fr)`).
     expect(painted(band, 'grid-template-columns', PHONE)).toBe('repeat(3, minmax(0, 1fr))')
     // Holding capacity draws no caption since 2026-11-05: its definition is
-    // the name's tooltip (BGD's standing no-prose rule).
+    // the name's tooltip (the owner's standing no-prose rule).
     expect(tiles.filter((t) => t.querySelector('.ov-lc-h small') !== null).length).toBe(2)
     for (const t of tiles) {
       const small = t.querySelector('.ov-lc-h small')

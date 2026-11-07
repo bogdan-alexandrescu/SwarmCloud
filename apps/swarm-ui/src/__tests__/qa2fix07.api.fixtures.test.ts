@@ -43,10 +43,10 @@ describe('admin-shell-01: the eng card\'s link opens pages that describe eng', (
     chooseTenant('eng')
     const profile = ok(await api.loadProfile(), 'profile')
     const acting = profile.workspaces.find((w) => w.is_acting)
-    // MUTATION: `is_acting: true` back on u-bogdan in fixtureProfile -> 'u-bogdan', 'user' -> fails.
+    // MUTATION: `is_acting: true` back on u-owner in fixtureProfile -> 'u-owner', 'user' -> fails.
     expect(acting?.tenant_id).toBe('eng')
     expect(acting?.kind).toBe('group')
-    // MUTATION: `tenant_id: FIXTURE_TENANT` back in fixtureAccess -> 'u-bogdan' -> fails.
+    // MUTATION: `tenant_id: FIXTURE_TENANT` back in fixtureAccess -> 'u-owner' -> fails.
     expect(ok(await api.loadAccess(), 'access').tenant_id).toBe('eng')
   })
 
@@ -56,7 +56,7 @@ describe('admin-shell-01: the eng card\'s link opens pages that describe eng', (
     const setup = ok(await api.loadOnboarding(), 'onboarding') as unknown as {
       tenant_id: string; config_setup: { people: { applies: boolean; reason: string | null } }
     }
-    // MUTATION: `tenant_id: FIXTURE_TENANT` back in fixtureOnboarding -> 'u-bogdan' -> fails.
+    // MUTATION: `tenant_id: FIXTURE_TENANT` back in fixtureOnboarding -> 'u-owner' -> fails.
     expect(setup.tenant_id).toBe('eng')
     // MUTATION: serve the personal workspace's people step whatever the pick -> applies false -> fails.
     expect(setup.config_setup.people.applies).toBe(true)
@@ -66,7 +66,7 @@ describe('admin-shell-01: the eng card\'s link opens pages that describe eng', (
   it('with no pick, the personal workspace is still the acting one', async () => {
     const api = await apiAs('platform-admin')
     const profile = ok(await api.loadProfile(), 'profile')
-    expect(profile.workspaces.find((w) => w.is_acting)?.tenant_id).toBe('u-bogdan')
+    expect(profile.workspaces.find((w) => w.is_acting)?.tenant_id).toBe('u-owner')
   })
 })
 
@@ -88,7 +88,7 @@ describe('automate2-01: the Approvals list can ask for the history, the inbox re
     const asked: string[] = []
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       asked.push(String(url))
-      return new Response(JSON.stringify({ approvals: [], tenant_id: 'u-bogdan' }), {
+      return new Response(JSON.stringify({ approvals: [], tenant_id: 'u-owner' }), {
         status: 200, headers: { 'content-type': 'application/json' },
       })
     }))
@@ -136,8 +136,8 @@ describe('cap2-06: the account sheet, the list and the health board tell one sto
   it('weekly-burn reads limited with two events in 24 h in its sheet, as the board draws it', async () => {
     const api = await apiAs(null)
     const board = ok(await api.loadAccountHealthBoard(), 'board')
-    const onBoard = board.health.kind === 'ok' ? board.health.pool.accounts.find((a) => a.account_id === 'u-bogdan:weekly-burn') : undefined
-    const sheet = ok(await api.loadAccountHealth('u-bogdan:weekly-burn'), 'sheet health')
+    const onBoard = board.health.kind === 'ok' ? board.health.pool.accounts.find((a) => a.account_id === 'u-owner:weekly-burn') : undefined
+    const sheet = ok(await api.loadAccountHealth('u-owner:weekly-burn'), 'sheet health')
     const total = (c: Record<string, number>) => Object.values(c).reduce((n, v) => n + v, 0)
     expect(onBoard?.status).toBe('limited')
     // MUTATION: restore the sheet's own plan (a single network event, healthy) -> 'healthy', 0 -> fails.
@@ -150,8 +150,8 @@ describe('cap2-06: the account sheet, the list and the health board tell one sto
   it('the health board and the sheet end weekly-burn\'s limit at the same instant', async () => {
     const api = await apiAs(null)
     const board = ok(await api.loadAccountHealthBoard(), 'board')
-    const onBoard = board.health.kind === 'ok' ? board.health.pool.accounts.find((a) => a.account_id === 'u-bogdan:weekly-burn') : undefined
-    const sheet = ok(await api.loadAccountHealth('u-bogdan:weekly-burn'), 'sheet health')
+    const onBoard = board.health.kind === 'ok' ? board.health.pool.accounts.find((a) => a.account_id === 'u-owner:weekly-burn') : undefined
+    const sheet = ok(await api.loadAccountHealth('u-owner:weekly-burn'), 'sheet health')
     expect(onBoard?.limited_until).toBeTruthy()
     // MUTATION: serve the board's pool unmoved (on FIXTURE_CLOCK) -> Oct 22 on the board, Nov 1 in the sheet -> fails.
     expect(Math.abs(Date.parse(onBoard?.limited_until ?? '') - Date.parse(sheet.limited_until ?? ''))).toBeLessThan(60_000)
@@ -162,7 +162,7 @@ describe('cap2-06: the account sheet, the list and the health board tell one sto
   it('the Accounts list reads primary as read minutes ago on the page\'s clock, not days', async () => {
     const api = await apiAs(null)
     const board = ok(await api.loadAccountsBoard(), 'accounts')
-    const primary = board.page.accounts.find((a) => a.account_id === 'u-bogdan:primary')
+    const primary = board.page.accounts.find((a) => a.account_id === 'u-owner:primary')
     const ago = Date.now() - Date.parse(primary?.observed_at ?? '')
     // MUTATION: serve fixtureAccounts unmoved -> about ten days -> fails.
     expect(ago).toBeGreaterThanOrEqual(0)
@@ -175,7 +175,7 @@ describe('config2-06: the personal workspace is the signed-in person\'s', () => 
     const api = await apiAs(null)
     const me = ok(await api.loadMe(), 'me')
     expect(me.principal.email).toBe('alice@example.com')
-    // MUTATION: restore 'Bogdan' -> fails.
+    // MUTATION: restore 'Alex' -> fails.
     expect(me.tenant.display_name).toBe('Alice')
   })
 })

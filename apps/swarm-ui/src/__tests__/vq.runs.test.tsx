@@ -1,5 +1,5 @@
 /**
- * VISUAL QA OF THE CONSOLE, WORK › RUNS (#2391, BGD, 2026-10-26):
+ * VISUAL QA OF THE CONSOLE, WORK › RUNS (#2391, owner, 2026-10-26):
  *
  *   VQ-017  at 1440 a run with no workflow drew 'none · the run ended before
  *           a workflow' over the Created column ('a wor7h ago').
@@ -26,8 +26,8 @@ const JSON_HEADERS = { 'content-type': 'application/json' }
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'ef'.repeat(32)
-const REF = 'bogdan-alexandrescu/SwarmCloud#2217'
-const ISSUE_URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/2217'
+const REF = 'example-org/example-repo#2217'
+const ISSUE_URL = 'https://github.com/example-org/example-repo/issues/2217'
 const NOTE = 'none · the run ended before a workflow'
 
 const SHEETS = [STYLES, COMPONENTS_CSS, INTAKE_CSS].join('\n')
@@ -42,8 +42,8 @@ const painted = (el: Element, prop: string, env: CascadeEnv) => {
 function run(id: string, over: Record<string, unknown> = {}) {
   return {
     id, tenant_id: 'eng', state: 'RUNNING', terminal: false,
-    issue: { ref: REF, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 2217, url: ISSUE_URL,
-      repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud' },
+    issue: { ref: REF, owner: 'example-org', repo: 'SwarmCloud', number: 2217, url: ISSUE_URL,
+      repository_url: 'https://github.com/example-org/example-repo' },
     plan_approval: 'auto', auto_merge: true, fix_rounds: 3, planner_task_id: `task_${id}`,
     plan: null, plan_digest: DIGEST, plan_revision: 1, plan_edited_by: null, workflow_id: 'wf_vq0a1b2c3d4e5f60718293',
     created_by: 'operator@example.com', created_at: '2026-10-25T18:00:00Z', updated_at: '2026-10-25T18:30:00Z',

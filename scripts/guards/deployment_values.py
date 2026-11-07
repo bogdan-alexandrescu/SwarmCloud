@@ -40,7 +40,7 @@ import re
 import subprocess
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 
@@ -88,6 +88,11 @@ class Allow:
     tenants: frozenset[str]
     app_ids: frozenset[str]
     repository: str
+    #: The owner's rulings of 2026-11-07 (placeholders.json `_rulings`).
+    cluster_suffixes: frozenset[str] = frozenset()
+    url_paths: tuple[str, ...] = ()
+    tenant_slugs: frozenset[str] = frozenset()
+    exempt: frozenset[tuple[str, int]] = frozenset()
 
     @classmethod
     def load(cls, path: Path = PLACEHOLDERS) -> Allow:
@@ -100,14 +105,25 @@ class Allow:
             domains=domains,
             reserved_tlds=frozenset(allow["reserved_tlds"]),
             email_domains=frozenset(allow["email_domains"]),
-            addresses=frozenset(a.lower() for a in allow["public_addresses"]),
-            hosts=domains + tuple(allow["public_hosts"]),
+            addresses=frozenset([*(a.lower() for a in allow["public_addresses"]),
+                                 *(e["address"].lower() for e in allow["public_service_addresses"])]),
+            hosts=domains + tuple(allow["public_hosts"]) + tuple(e["host"] for e in allow["public_product_hosts"]),
             tailnet=data["tailnet"],
             buckets=frozenset([*data["buckets"], data["shared_project_resources"]["bucket"]]),
             tenants=frozenset(data["tenants"]),
             app_ids=frozenset([data["github"]["app_id"], data["github"]["installation_id"]]),
             repository=data["github"]["repository"],
+            cluster_suffixes=frozenset(e["suffix"] for e in allow["cluster_dns_suffixes"]),
+            url_paths=tuple(e["path"] for e in allow["public_url_paths"]),
+            tenant_slugs=frozenset(e["slug"] for e in allow["tenant_slugs"]),
+            exempt=frozenset((e["path"], int(e["line"])) for e in allow["exempt_lines"]),
         )
+
+    def screened(self, entries: list[Entry]) -> Allow:
+        """Without the generic tenant slugs a list entry matches: nothing on the
+        private pattern list is ever allowed."""
+        return replace(self, tenant_slugs=frozenset(
+            s for s in self.tenant_slugs if not any(e.pattern.search(s) for e in entries)))
 
 
 def _under(host: str, suffixes: Iterable[str]) -> bool:
@@ -148,14 +164,48 @@ def _email_allowed(m: re.Match[str], allow: Allow) -> bool:
     )
 
 
+#: A git config key scoped to a URL, `credential.https://<host>.helper`: the
+#: last label is the variable, not part of the host.
+_GIT_URL_SECTION = re.compile(r"\b(?:credential|http|url)\.$")
+_GIT_URL_VARIABLES = frozenset({
+    "helper", "username", "usehttppath", "proxy", "proxyauthmethod", "extraheader", "sslverify", "sslcert",
+    "sslkey", "sslcainfo", "cookiefile", "useragent", "insteadof", "pushinsteadof", "postbuffer",
+    "lowspeedlimit", "lowspeedtime", "followredirects", "emptyauth", "delegation",
+})
+#: Cloud Run's URL shapes: `<service>-<10-letter hash>-<region code>.a.run.app`
+#: and `<service>-<project number>.<region>.run.app`. The shape is public; a
+#: real hash or a project number outside the placeholders is a deployment value.
+_RUN_APP_HASHED = re.compile(r"^[a-z0-9-]+-([a-z0-9]{10})-[a-z]{2,4}\.a\.run\.app$")
+_RUN_APP_NUMBERED = re.compile(r"^[a-z0-9-]+-(\d{10,13})\.[a-z0-9-]+\.run\.app$")
+
+
+def _run_app_allowed(host: str, allow: Allow) -> bool:
+    if m := _RUN_APP_HASHED.match(host):
+        return len(set(m.group(1))) == 1  # `xxxxxxxxxx`: a placeholder, not a hash
+    if m := _RUN_APP_NUMBERED.match(host):
+        return m.group(1) in allow.numbers
+    return True
+
+
 def _host_allowed(m: re.Match[str], allow: Allow) -> bool:
     host = m.group(1).lower()
-    return host.endswith(".ts.net") or _under(host, allow.hosts) or _reserved(host, allow)
+    head, _, last = host.rpartition(".")
+    if last in _GIT_URL_VARIABLES and "." in head and _GIT_URL_SECTION.search(m.string, 0, m.start()):
+        host = head
+    if host.endswith(".run.app"):
+        return _run_app_allowed(host, allow)
+    return (host.endswith(".ts.net") or _under(host, allow.hosts) or _reserved(host, allow)
+            or host.rsplit(".", 1)[-1] in allow.cluster_suffixes)
+
+
+def _project_path_allowed(m: re.Match[str], allow: Allow) -> bool:
+    """A project id, or a page under a public documentation path (`.../concepts/projects/...`)."""
+    before = m.string[max(0, m.start() - 200):m.start() + len("projects/")]
+    return m.group(1) in allow.projects or before.endswith(allow.url_paths)
 
 
 SHAPE_RULES: tuple[Rule, ...] = (
-    Rule("project-path", "C1", re.compile(r"\bprojects/" + _PROJECT_ID + _END),
-         lambda m, a: m.group(1) in a.projects),
+    Rule("project-path", "C1", re.compile(r"\bprojects/" + _PROJECT_ID + _END), _project_path_allowed),
     Rule("project-flag", "C1", re.compile(r"--project(?:=|[ \t]+)[\"']?" + _PROJECT_ID + _END),
          lambda m, a: m.group(1) in a.projects),
     Rule("workload-pool", "C1", re.compile(r"\b" + _PROJECT_ID + r"\.svc\.id\.goog\b"),
@@ -170,7 +220,10 @@ SHAPE_RULES: tuple[Rule, ...] = (
          _host_allowed),
     Rule("tailnet", "C4", re.compile(r"\b([a-z0-9-]+\.ts\.net)\b"),
          lambda m, a: m.group(1) == a.tailnet),
-    Rule("email", "C5", re.compile(r"(?<![A-Za-z0-9._%+-])([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})\b"),
+    # A string escape is not part of a local part: `"\n@pytest.fixture"` is a
+    # decorator after a newline, and `"text\nname@host"` is still `name@host`.
+    Rule("email", "C5", re.compile(
+        r"(?:(?<![A-Za-z0-9._%+\\-])|(?<=\\[nrt]))([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})\b"),
          _email_allowed),
     Rule("oauth-client", "C6", re.compile(r"\b\d+-[a-z0-9]{32}\.apps\.googleusercontent\.com\b"),
          lambda m, a: False),
@@ -180,7 +233,7 @@ SHAPE_RULES: tuple[Rule, ...] = (
          lambda m, a: m.group(1) in a.buckets),
     Rule("tenant-secret", "C7", re.compile(
         r"\bswarm-tenant-([a-z0-9]+(?:-[a-z0-9]+)*?)-(?:git|anthropic|openai|typesafe|qa|refresh)\b"),
-         lambda m, a: m.group(1) in a.tenants),
+         lambda m, a: m.group(1) in a.tenants or m.group(1) in a.tenant_slugs),
 )
 
 #: C11 (section 1.2): a reference that will point at a different issue once the
@@ -434,7 +487,7 @@ def scan(sources: Iterable[Source], allow: Allow, entries: list[Entry], *, archi
                 line = bisect.bisect_right(starts, m.start())
                 if keep(line):
                     found.add(Finding(source.path, line, entry.category, f"list:{entry.line}"))
-    return sorted(found)
+    return sorted(f for f in found if (f.path, f.line) not in allow.exempt)
 
 
 def directory_of(path: str, depth: int) -> str:
@@ -509,6 +562,7 @@ def check(args: argparse.Namespace) -> int:
         try:
             parsed = parse_list(text)
             entries = parsed.entries
+            allow = allow.screened(entries)
             _say(f"pattern list sha256 {parsed.digest} ({len(entries)} entries)")
         except ListError as exc:
             closed = str(exc)

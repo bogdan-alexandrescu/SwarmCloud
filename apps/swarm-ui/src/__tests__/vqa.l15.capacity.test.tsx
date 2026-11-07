@@ -190,7 +190,7 @@ function keyPx(td: Element): number {
 
 /**
  * The width a key needs: DM Mono advances 0.6em, the key is `--t-micro`. The
- * key is sans since QA-044 (BGD, 2026-10-23) and its column kept the mono
+ * key is sans since QA-044 (owner, 2026-10-23) and its column kept the mono
  * measure, which is an upper bound for the same key in DM Sans.
  */
 function keyNeeds(label: string): number {

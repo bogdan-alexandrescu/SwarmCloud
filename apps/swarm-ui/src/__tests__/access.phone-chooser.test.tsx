@@ -1,4 +1,4 @@
-// CHOOSE REPOSITORIES ON A PHONE (GA-PHONE-CHOOSER; part of #2157, BGD's
+// CHOOSE REPOSITORIES ON A PHONE (GA-PHONE-CHOOSER; part of #2157, the owner's
 // decision of 2026-10-24, mock-up S2f).
 //
 // WHAT EACH CASE HOLDS:

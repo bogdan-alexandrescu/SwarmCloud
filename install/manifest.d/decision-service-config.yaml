@@ -1,0 +1,14 @@
+# Lane decision-service-config (part of #2688; owner decision 7 November 2026):
+# the internal decision API's tailnet name is configuration, not a constant in
+# code. terraform/infra/locals.tf renders SWARM_DECISION_API_TAILNET_NAME from
+# the existing tailscale_egress_target setting (local.decision_api_tailnet_name,
+# empty while internal_decision_api_enabled is off) on swarm-api and on the
+# scheduler, which passes it to a judging browser pod for the jev wrapper. No
+# code holds a default: with INTERNAL_DECISION_API_URL set and this unset, the
+# scheduler, swarm-api and the wrapper refuse the internal backends with a fixed
+# message. The tailscale add-on's existing tfvars ask (tailscale_egress_target)
+# sets it; nothing new is asked.
+version: 1
+env:
+  SWARM_DECISION_API_TAILNET_NAME:
+    setter: terraform/infra/locals.tf:1172

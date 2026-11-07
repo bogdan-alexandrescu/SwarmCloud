@@ -122,7 +122,7 @@ describe('F11 (capacity-009): every quota row feeds a pool the board and Holders
     expect(rows.length, 'the quota read served no rows').toBeGreaterThan(3)
     for (const q of rows) {
       const pool = `provider:${q.provider}:tenant:${q.tenant_id}`
-      // MUTATION: drop pool('provider:openai:tenant:u-bogdan', ...) from fixtureCapacity -> fails on openai u-bogdan.
+      // MUTATION: drop pool('provider:openai:tenant:u-owner', ...) from fixtureCapacity -> fails on openai u-owner.
       expect(board.has(pool), `${pool} is not on the Pools board`).toBe(true)
       expect(held.has(pool), `${pool} is not in Holders' accounting`).toBe(true)
     }

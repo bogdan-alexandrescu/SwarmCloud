@@ -90,7 +90,7 @@ type View = 'mine' | 'choose'
  * the Connection tab, at the bare path; Choose repositories is `?view=choose`.
  *
  * MEMBERS AND BROWSER LOGINS LEFT FOR THE PAGES WHOSE SUBJECT THEY ARE
- * (GA-MOVE-VIEWS, BGD 2026-10-24): Members is People and roles' Members'
+ * (GA-MOVE-VIEWS, owner 2026-10-24): Members is People and roles' Members'
  * GitHub tab (WorkspacePeople.tsx), Browser logins is Secrets' (WorkspaceSecrets.tsx).
  * Their old `?view=` here lands there (paths.ts `MOVED_VIEWS`), so S2 draws no
  * switch in the head.
@@ -307,7 +307,7 @@ export function AccessRefusal({ error, title, onRetry }: { error: ApiError; titl
 
 /**
  * The owner's three rules: each one's headline and the sentences that say how
- * it is held. Each rule's short line is not drawn (BGD's no-prose rule,
+ * it is held. Each rule's short line is not drawn (the owner's no-prose rule,
  * 2026-11-05): `POLICY_TIP` carries them, behind the (i) beside the card's
  * title.
  */
@@ -576,7 +576,7 @@ function Owners({
   grants: AccessGrant[]
   selected: string | null
   /**
-   * PHONE CHOOSER (GA-PHONE-CHOOSER, S2f; BGD 2026-10-24). Under 560px the
+   * PHONE CHOOSER (GA-PHONE-CHOOSER, S2f; owner 2026-10-24). Under 560px the
    * owner column is a select and only the selected owner's card is drawn: a
    * stack of every card put the repositories a screen or more below the top.
    * `selected` may then be an owner not enabled yet, whose card is where
@@ -1567,7 +1567,7 @@ function GitHubLead({ view, overview, open }: { view: 'mine' | 'choose'; overvie
       <ButtonLink kind="primary" size="sm" href={addressToPath(WORKSPACE_SETUP_ADDRESS)}>
         Open Workspace setup
       </ButtonLink>,
-      // BGD's no-prose rule (2026-11-05): why the step reads failed, behind its title.
+      // the owner's no-prose rule (2026-11-05): why the step reads failed, behind its title.
       `Workspace setup's checklist says ${github.line}; its fix is on this page. Workspace setup names what to do.`,
     )
   }
@@ -1878,7 +1878,7 @@ function ChooseTab({ overview, reloadOverview, open, startOwner }: { overview: A
  * THE LEDE SAYS WHAT THE TAB SHOWS (visual QA V232). Since GITHUB-ACCESS-PAGE
  * the reach-as-you list is on Config › Repositories, so the two tabs say what
  * they hold instead. It is the (i) in the page's head, after Refresh, not a
- * line under it (BGD's no-prose rule, 2026-11-05).
+ * line under it (the owner's no-prose rule, 2026-11-05).
  */
 function accessLede(view: View, tenant: string | null): string {
   const inTenant = tenant !== null ? ` in workspace ${tenant}` : ''

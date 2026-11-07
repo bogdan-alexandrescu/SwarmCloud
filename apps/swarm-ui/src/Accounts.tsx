@@ -243,7 +243,7 @@ export function AccountsScreen() {
     <Screen
       key={nonce}
       title="Accounts"
-      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, BGD 2026-10-26:
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, owner 2026-10-26:
       // "Move the topics behind the page's one ?"). They were the `Reading
       // this screen:` footer under the pool; see ACCOUNT_TOPICS.
       help={ACCOUNT_TOPICS}
@@ -374,7 +374,7 @@ function Body({
   // account can be linked to and a reload reopens it. The address wins over
   // the held choice, which is what a followed link means.
   const linked = useLinkedParam('account')
-  // TABLE OR TIMELINE (#2222, BGD "Table default, remembered"): the address
+  // TABLE OR TIMELINE (#2222, owner "Table default, remembered"): the address
   // wins (`?view=timeline`, a followed link), then this browser's last
   // choice, then Table. Choosing writes both, and an account chosen after
   // keeps the view in the address it writes -- the view SHOWN, not the
@@ -436,7 +436,7 @@ function Body({
     <>
       {lead && (
         <>
-          {/* THE TOGGLE BESIDE THE VERDICT (BGD): the answer is the same in
+          {/* THE TOGGLE BESIDE THE VERDICT (owner): the answer is the same in
               both views, so it stays above them and only what follows it
               changes. */}
           <div className="acct-verdict-row">
@@ -767,7 +767,7 @@ function Pool({
 
   // THE TIMELINE (#2222, proposal B): every account on one axis. Pressing a
   // lane opens THE SAME SIDE SHEET a Table row opens -- the whole screen on a
-  // phone -- not proposal B's detail under the lane (BGD, 2026-10-25 10:05Z).
+  // phone -- not proposal B's detail under the lane (owner, 2026-10-25 10:05Z).
   // Only a CHOSEN account opens: the Table's default account is a desktop
   // convenience, and the Timeline has no place to show it.
   const timeline =
@@ -1198,7 +1198,7 @@ function PoolFindings({
 
 /**
  * An identifier that never breaks inside itself (visual QA V070): a hyphen is
- * a line-break opportunity, so `u-bogdan` wrapped to `u-` and `bogdan`. One
+ * a line-break opportunity, so `u-owner` wrapped to `u-` and `owner`. One
  * longer than its line is cut with an ellipsis, whole in its title.
  */
 function Id({ children, className, after }: { children: string; className?: string; after?: string }) {
@@ -1214,7 +1214,7 @@ function Id({ children, className, after }: { children: string; className?: stri
 }
 
 /**
- * The pane's heading, and RENAME (#1913; owner decision 2026-10-22, BGD,
+ * The pane's heading, and RENAME (#1913; owner decision 2026-10-22, owner,
  * "Editable display name").
  *
  * The heading is the account's Name, or its label when it has none. Rename
@@ -1375,7 +1375,7 @@ function Detail({
             <ProviderName provider={account.provider} /> &middot; {lent ? 'lending on' : 'lending off'}
           </Chip>
         </div>
-        {/* AN ID IS ONE WORD (visual QA V070): `u-bogdan` broke at its hyphen
+        {/* AN ID IS ONE WORD (visual QA V070): `u-owner` broke at its hyphen
             onto two lines. Each id is an `.acct-id`, which never breaks inside
             itself; the line breaks between words. */}
         <p className="acct-idt">
@@ -3411,7 +3411,7 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
               {asked.to === 'DRAINING'
                 ? `${agents} on it now will be moved off.`
                 : `${agents} on it now keep running; no new ones start on it.`}{' '}
-              {/* AN ID IS ONE WORD (V070): "loses it u-⏎bogdan". */}
+              {/* AN ID IS ONE WORD (V070): "loses it u-⏎owner". */}
               Every agent in <Id>{account.owner_tenant}</Id>
               {account.lend_to.length > 0 ? ` and the tenants it is lent to` : ''} loses it for new work.
             </p>
@@ -5310,7 +5310,7 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  * happened to be rendered below a pool, which is exactly what the owner
  * directive means by prose that belongs in a dedicated Help section. Every
  * sentence of it is now a topic in `help.ts`, reachable from the index the
- * page title's `?` opens (a footer of links until VQ-033, BGD 2026-10-26),
+ * page title's `?` opens (a footer of links until VQ-033, owner 2026-10-26),
  * from `#help/<id>` and from the Help section in the rail. It was also
  * reachable from a `?` beside the control it was about, on fifty-four of them;
  * B7.4 cut that to two. See the note on ACCOUNT_TOPICS.
@@ -5325,7 +5325,7 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
  *
  * B4.4 narrowed the index below to the six topics that have no `?` anchor on
  * the surface; B7.4 put three back, because they no longer have one either.
- * See the note inside it. Since VQ-033 (BGD 2026-10-26) the list is the index
+ * See the note inside it. Since VQ-033 (owner 2026-10-26) the list is the index
  * the page title's `?` opens rather than a footer, so it renders no words with
  * the card closed; the budget the note weighs it against no longer reads it,
  * and the list stays as it was chosen.

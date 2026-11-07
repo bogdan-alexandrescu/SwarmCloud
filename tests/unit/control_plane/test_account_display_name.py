@@ -1,6 +1,6 @@
 """An account can be renamed: an editable Name shown in place of its label (#1913).
 
-Owner decision 2026-10-22 (BGD, "Editable display name"): each account gets a
+Owner decision 2026-10-22 (the owner, "Editable display name"): each account gets a
 Name -- any text, trimmed, 1 to 60 characters, capitals and spaces allowed, no
 control characters. The id (`<owner>:<label>`), the credential secret, the
 holds, the readings, the history and the lending do not change. So:

@@ -1,4 +1,4 @@
-"""A push bundle's base is fetched again before it is refused (AI Studio's report, 2026-11-06).
+"""A push bundle's base is fetched again before it is refused (A peer application's report, 2026-11-06).
 
 MEASURED (2026-11-05/06): two lanes whose branches touched a workflow file were
 refused at publish with `bad_bundle: the bundle is built on <sha>, which the

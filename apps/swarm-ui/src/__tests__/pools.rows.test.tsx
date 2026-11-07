@@ -7,7 +7,7 @@
 // what applies (owner decision 2026-10-22, c14). What this file added:
 //
 //   * ABNORMAL ROWS FIRST: a full pool leads the board, in Needs a look
-//     (BGD 2026-10-26, VQ-031; it led its own family before), and each
+//     (owner 2026-10-26, VQ-031; it led its own family before), and each
 //     family draws the rest in the one order every pool list shares since
 //     QA G5-22 (this tenant's own, then name) -- no longer by use.
 //   * `N holders` LINKS TO HOLDERS FILTERED TO THAT POOL

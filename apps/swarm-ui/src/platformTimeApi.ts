@@ -3,12 +3,12 @@
  *
  * One read of `GET /v1/outcomes` in platform scope with `usage=submitted`, the
  * v9 `usage` block COUNTS-ROLLUP added (docs/outcomes.md, "Agents over time").
- * BGD's decisions, 2026-10-23: the unit is agents counted on the day they were
+ * the owner's decisions, 2026-10-23: the unit is agents counted on the day they were
  * SUBMITTED, with their retries a second figure in the same bucket; the
  * breakdowns are agent type, model, workspace and pool account; cost is
  * "Estimated cost (list price, not a bill)" with its coverage.
  *
- * EVERY BREAKDOWN COMES WITH THE ONE READ (BGD, 2026-10-24 17:26Z, answer 3;
+ * EVERY BREAKDOWN COMES WITH THE ONE READ (owner, 2026-10-24 17:26Z, answer 3;
  * COUNTS-API-ADDS, #2255). The route serves `usage.breakdowns` -- agent type,
  * model, workspace and pool account, each with its span rows and its
  * per-bucket `series` -- from one fold, whatever `group` asked. So the query
@@ -32,7 +32,7 @@ import { USE_FIXTURES, FIXTURE_CLOCK } from './api'
 import { read, route, type Result } from './fetch'
 import { viewerZone } from './outcomes'
 
-/** The three bucket sizes this view offers, each over BGD's span (#2149): 30 days, 26 weeks, 12 months. */
+/** The three bucket sizes this view offers, each over the owner's span (#2149): 30 days, 26 weeks, 12 months. */
 export type TimeBucket = 'day' | 'week' | 'month'
 
 export const TIME_BUCKETS: ReadonlyArray<{ key: TimeBucket; label: string; span: string; count: number }> = [
@@ -42,7 +42,7 @@ export const TIME_BUCKETS: ReadonlyArray<{ key: TimeBucket; label: string; span:
 ]
 
 /**
- * THE BREAKDOWNS (BGD, 2026-10-23), each a key of the route's
+ * THE BREAKDOWNS (owner, 2026-10-23), each a key of the route's
  * `usage.breakdowns` (`USAGE_BREAKDOWNS`, outcomes.py). `none` draws no group.
  */
 export type BreakdownGroup = 'runner_profile' | 'model' | 'tenant_id' | 'pool_account'
@@ -99,7 +99,7 @@ export interface UsageFigures {
   tokens: Record<TokenKind, TokenSum>
   /**
    * `reporting` of `agents` is "k of n agents reported"; `estimated_usd` is
-   * INCLUDED in `sum_usd`, and `estimated` is how many agents it is over (BGD's
+   * INCLUDED in `sum_usd`, and `estimated` is how many agents it is over (the owner's
    * answer 2, 2026-10-24): "n estimated from a stopped run ($X)". A count, so
    * 0 means none.
    */
@@ -141,7 +141,7 @@ export type UsageBucket = {
 export type UsageGroupRow = { key: string } & UsageFigures
 
 /**
- * ONE KEY PER BUCKET, aligned with `buckets` (BGD's answer 1, 2026-10-24):
+ * ONE KEY PER BUCKET, aligned with `buckets` (the owner's answer 1, 2026-10-24):
  * the five busiest measured keys over the whole span, then `other` ("all
  * others", `keys` of them) when there are more, then each key that is not a
  * measurement ("not recorded", "not ended", "unread") with `measured` false.

@@ -3,7 +3,7 @@
 MEASURED: task_ffc37f64's generation 1 was fenced `dead_worker` at 18:54:19
 and pushed onto PR #2613 at 18:54:35; generation 5's publish then found the
 pull request's head moved and failed `head_moved`. task_118cd828 opened
-ai-studio PR #1170 22 s after its fence. `Worker._publish_git` read the fence
+peer-app PR #1170 22 s after its fence. `Worker._publish_git` read the fence
 before the carrier push and the moved-tip replay only: the plain push, the
 broker push, the replacing push over an earlier attempt, the pull request's
 open or text update and the territory comment were all made without it.

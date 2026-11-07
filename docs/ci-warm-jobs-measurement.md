@@ -1,4 +1,4 @@
-# Does a Cloud Run image import stay cached across a long idle gap? (#888, box 94)
+# Does a Cloud Run image import stay cached across a long idle gap? (box 94)
 
 `scripts/warm-jobs.sh` skips a listed worker job that already has a successful
 execution on the digest it runs, whether that was the previous release's warm
@@ -12,9 +12,9 @@ would settle it. This page records the measurement and what was decided from
 it. It replaces that paragraph of docs/ci.md.
 
 **Measured 2026-10-27 between 05:52 and 06:12 UTC**, read-only, by the
-operator (CLD) from the laptop, at BGD's decision of the same day, against
-`saga-agents-staging`, region `us-central1`. origin/main at read time was
-`17d6c5abd` (#2533). Nothing was created, changed, executed or deleted, and no
+operator (CLD) from the laptop, at [the owner]'s decision of the same day, against
+`example-project`, region `us-central1`. origin/main at read time was
+`17d6c5abd`. Nothing was created, changed, executed or deleted, and no
 secret value was read. The raw field-reduced data (execution name, times,
 image, counts, conditions) stays on the operator's machine and is not
 committed. The numbers below are taken from it as reported. None were

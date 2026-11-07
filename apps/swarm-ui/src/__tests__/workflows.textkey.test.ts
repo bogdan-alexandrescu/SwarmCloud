@@ -1,5 +1,5 @@
 // ONE QUESTION, COUNTED ONCE, WHATEVER ITS OPTIONS (the follow-up picked under
-// BGD's overnight grant, 6 November 2026). The worker keys each artifact
+// the owner's overnight grant, 6 November 2026). The worker keys each artifact
 // question by its words alone (`result_summary.question_text_digests`), and
 // `codec.step_needs` serves those keys beside `questions_unread`, and each open
 // wait question's `text_digest`: an implement and a fix step asking the same

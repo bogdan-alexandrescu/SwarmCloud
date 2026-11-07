@@ -5,7 +5,7 @@
 could not reach Firestore for the whole of its generation check and exited 69
 having written nothing. The agent sat DISPATCHED for another two minutes and
 fifteen seconds, until the 20:40 reconciler pass reclaimed it at the dispatch
-deadline. Attempt 2 succeeded at 20:42:49Z. One attempt was spent. Issue #198.
+deadline. Attempt 2 succeeded at 20:42:49Z. One attempt was spent. This incident is tracked separately.
 
 **The error blamed IPv6. IPv6 was not the cause.** The worker's error ended in
 `ipv6:[2607:f8b0:4001:c00::5f]:443 ... Network is unreachable`. The VPC flow
@@ -19,11 +19,11 @@ VPC egress"
 read 2026-09-25). Every worker job reaches the network that way
 (`terraform/modules/cloud_run_jobs/main.tf`, `vpc_access`). No change to the
 swarm's network removes it, for the reasons in §3. The worker now asks again for
-about 90 s before it gives up (PR #200), and Google's own mitigation is the same
+about 90 s before it gives up, and Google's own mitigation is the same
 thing: test a connection, with retries, before doing work.
 
 > **Note, 2026-09-30.** The figures in this document are as of 2026-09-25 and
-> are left as written. Since then #402 (issue #401) made the worker keep
+> are left as written. Since then the retry-window extension made the worker keep
 > asking for about 180 s, 200 s at worst
 > (`agent_worker.startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`), and contract
 > request 37 raised the lease's dispatch deadline from 300 s to 480 s so that
@@ -49,8 +49,8 @@ Everything below was read on 2026-09-25, with the read-only commands in §6.
 | 20:37:48.886 | a second connection, same destination; 14 packets, 0 payload bytes, no reply, until 20:37:56.013 | VPC flow log |
 | 20:37:56.53 | exit 69: `Timeout of 30.0s exceeded ... 503 failed to connect to all addresses; last error: ... ipv6:... Network is unreachable` | worker log |
 | 20:38:00.57 | execution completed, exit code 69 | execution `status.completionTime` |
-| 20:40:15 | reconciler fences the lease, `generation_fenced` | issue #198 |
-| 20:42:49 | attempt 2 (`swarm-job-eng-mock-fpwx9`) succeeds | issue #198 |
+| 20:40:15 | reconciler fences the lease, `generation_fenced` | this incident |
+| 20:42:49 | attempt 2 (`swarm-job-eng-mock-fpwx9`) succeeds | this incident |
 
 ## 2. What was measured, and why it settles the IPv4 question
 
@@ -102,11 +102,11 @@ time, were not answered for 40 s.
 | Private DNS for `googleapis.com` on `swarm-vpc` (the IPv4 `private.googleapis.com` VIP) | removes the IPv6 address from these errors | The VIP is reached over the same Direct VPC egress path whose SYNs went unanswered, so it would not have prevented this. It changes DNS for the whole VPC, the GKE cluster and the control-plane services included, and the deployer holds no DNS role (`terraform/bootstrap`). Not started. |
 | Force the client to IPv4 | the same | IPv4 is what gRPC tried, and what failed. |
 | Egress `PRIVATE_RANGES_ONLY` | keeps Google API calls off Direct VPC egress | It also takes provider calls off Cloud NAT and the reserved addresses providers allow-list, which is why the job module sets `ALL_TRAFFIC` (`terraform/modules/cloud_run_jobs/main.tf`, `vpc_access.egress`). It is also what guarantees an execution has no public IP of its own. |
-| Ask again (PR #200) | the generation check runs at 0, 30 and 60 s, one warning per failed attempt, 69 only after the last | This is the fix. It outlasts a delay "of a minute or more" by the last attempt's own 30 s of retries. |
+| Ask again | the generation check runs at 0, 30 and 60 s, one warning per failed attempt, 69 only after the last | This is the fix. It outlasts a delay "of a minute or more" by the last attempt's own 30 s of retries. |
 
-## 4. Noticed promptly: what PR #200 changes and what it does not
+## 4. Noticed promptly: what the detect_ended_at_startup reconciler-rule change changes and what it does not
 
-PR #200 adds a reconciler rule (`detect_ended_at_startup`) that requeues an agent
+That change adds a reconciler rule (`detect_ended_at_startup`) that requeues an agent
 still DISPATCHED or STARTING once its execution has ended, 30 s after the end,
 with the exit code and the execution in `last_error`. How much sooner that is
 than the 300 s dispatch deadline depends on how late the worker exits and on
@@ -121,21 +121,21 @@ the reconciler's tick:
   about 20:39:31 and acted at the 20:40 pass, the same pass that reclaimed it.
   For this exit the rule mostly improves `last_error`.
 
-  *Note, 2026-09-30:* with #402's ~180 s of attempts and the 480 s deadline
+  *Note, 2026-09-30:* with the retry-window extension's ~180 s of attempts and the 480 s deadline
   of contract request 37, the execution ends about cold start + 185 s after
   dispatch, and for the same two cold starts the rule is eligible about 160
-  to 70 s before the deadline. The reconciler now ticks `*/1` (PR #202), so
+  to 70 s before the deadline. The reconciler now ticks `*/1`, so
   the rule, not the deadline, is what requeues this exit.
 * **A worker that dies in its first seconds** (an exit 1, a 143) is eligible
   65 to 155 s before the deadline, so a `*/5` pass falls between the two more
   often, and when it does the agent is requeued five minutes sooner.
 * **At a `*/1` tick** either is requeued 30 to 90 s after its execution ends.
-  That change is prepared in draft PR #202 and is the owner's decision: it is
+  That change is prepared in a draft pull request and is the owner's decision: it is
   1,440 reconciler passes a day instead of 288.
 
 ## 5. The 2.5 to 3 minute cold start
 
-Issue #198 noted about three minutes between the image being ready and the
+This incident's own tracking noted about three minutes between the image being ready and the
 worker starting, as a separate question. Read over every execution Cloud Run
 still lists (400, 2026-09-16 to 2026-09-25):
 
@@ -179,7 +179,7 @@ still lists (400, 2026-09-16 to 2026-09-25):
   ends. The reconciler then stops the execution and the worker exits 143
   having written nothing, which is the same outcome as a 69, one pass later.
 
-  *Note, 2026-09-30:* #402 made the worst case of the attempts 200 s and
+  *Note, 2026-09-30:* the retry-window extension made the worst case of the attempts 200 s and
   contract request 37 made the deadline 480 s, so the threshold above is now
   about 274 s from creation (480 - 200 - 6), not 174 s. The 376 s cold start
   of 2026-09-19 would now start inside the deadline and run if its control
@@ -188,36 +188,36 @@ still lists (400, 2026-09-16 to 2026-09-25):
 
 ## 6. How to repeat the measurements
 
-All reads, no writes. Project `saga-agents-staging`, region `us-central1`.
+All reads, no writes. Project `example-project`, region `us-central1`.
 
 ```bash
 # The subnet: IPv4-only, Private Google Access on, flow logs sampled at 0.5.
 gcloud compute networks subnets describe swarm-subnet-us-central1 \
-  --region us-central1 --project saga-agents-staging \
+  --region us-central1 --project example-project \
   --format='yaml(stackType,privateIpGoogleAccess,privateIpv6GoogleAccess,logConfig)'
 
 # The execution's conditions: ContainerReady, startTime, Started, Completed.
 gcloud run jobs executions describe swarm-job-eng-mock-9ngvq \
-  --region us-central1 --project saga-agents-staging --format=json
+  --region us-central1 --project example-project --format=json
 
 # Every flow of the failed instance in the incident's window.
-gcloud logging read 'logName="projects/saga-agents-staging/logs/compute.googleapis.com%2Fvpc_flows"
+gcloud logging read 'logName="projects/example-project/logs/compute.googleapis.com%2Fvpc_flows"
   AND (jsonPayload.connection.src_ip="10.40.0.58" OR jsonPayload.connection.dest_ip="10.40.0.58")
   AND timestamp>="2026-09-25T20:30:00Z" AND timestamp<="2026-09-25T21:00:00Z"' \
-  --project saga-agents-staging --format=json
+  --project example-project --format=json
 
 # Candidates for the same signature elsewhere: zero-payload flows from job
 # instances to :443. Keep the ones to a GOOGLE_API destination that last
 # about 20 s and have no DEST-reported flow back.
-gcloud logging read 'logName="projects/saga-agents-staging/logs/compute.googleapis.com%2Fvpc_flows"
+gcloud logging read 'logName="projects/example-project/logs/compute.googleapis.com%2Fvpc_flows"
   AND jsonPayload.reporter="SRC" AND jsonPayload.bytes_sent="0"
   AND jsonPayload.src_serverless_details.cloud_run_job_details.job_name:*
   AND jsonPayload.connection.dest_port=443' \
-  --project saga-agents-staging --freshness=14d --format=json
+  --project example-project --freshness=14d --format=json
 
 # Cold starts: startTime and the Started condition of every listed execution.
 gcloud run jobs executions list --region us-central1 \
-  --project saga-agents-staging --limit=1000 --format=json
+  --project example-project --limit=1000 --format=json
 ```
 
 In the Logging query language `OR` binds tighter than `AND`. Bracket every `OR`,

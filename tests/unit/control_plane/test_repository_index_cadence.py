@@ -1,4 +1,4 @@
-"""The indexer's model and cadence (#2524, INDEXER-MODEL-CADENCE; BGD 2026-10-27:
+"""The indexer's model and cadence (#2524, INDEXER-MODEL-CADENCE; the owner 2026-10-27:
 "Sonnet, 120 min, skip unchanged").
 
 What is held here:
@@ -13,7 +13,7 @@ What is held here:
     `skipped`; only an explicit full request rebuilds it;
   * the default change interval for a new registration is 120 minutes; a
     value a caller sets wins, even the old default of 30; and reads are
-    LITERAL (BGD 2026-10-28): the 30 every registration stored at creation
+    LITERAL (the owner 2026-10-28): the 30 every registration stored at creation
     before #2524 reads 30 until the one-time
     `scripts/migrate-index-interval.sh` rewrites it.
 
@@ -274,7 +274,7 @@ def test_the_default_change_interval_is_120_minutes(client, db):
 def test_a_stored_interval_reads_literally_even_the_old_default():
     # Every registration before #2524 stored 30 at creation (`_index_defaults`).
     # It reads 30: the move to 120 is the one-time migration script's, never a
-    # read-time rule (BGD, 2026-10-28).
+    # read-time rule (the owner, 2026-10-28).
     assert min_change_interval_of({"min_change_interval_minutes": 30}) == 30
     assert min_change_interval_of({"min_change_interval_minutes": 60}) == 60
     # Only where nothing is stored does the default apply.

@@ -54,7 +54,7 @@ FIXTURE = JEV_DIR / "fixtures" / "internal-decide.json"
 COMPAT = "node_modules/jev-browser/src/internal-compat.mjs"
 JEV = "node_modules/jev-browser/src/jev.mjs"
 INDEX = "node_modules/jev-browser/src/index.mjs"
-INTERNAL_URL = "https://decision-api-staging.example.invalid/jev/v1/decide"
+INTERNAL_URL = "https://decision-api.example.invalid/jev/v1/decide"
 TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
 INTERNAL = {"JEV_API_COMPAT": "internal"}
 

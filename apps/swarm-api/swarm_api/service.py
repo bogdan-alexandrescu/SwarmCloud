@@ -112,7 +112,7 @@ from .provider_keys import submitter_personal_tenant, task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
-from .schemas import StepBudget, TaskCreate, WorkflowCreate, WorkflowStepCreate
+from .schemas import NAME_MAX_CHARS, NAME_METADATA_KEYS, StepBudget, TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
@@ -266,6 +266,23 @@ class McpInheritance:
     servers: tuple[str, ...]
     owners: tuple[str, ...]
 
+
+
+def refuse_long_names(metadata: Mapping[str, Any]) -> None:
+    """Refuse, never cut, a `metadata.title` or `metadata.unit` over
+    NAME_MAX_CHARS (owner, 2026-11-07, part of #2688): a name fits one row of
+    the console, and the detail belongs in `metadata.description`. Through
+    `refusals.refuse`, switched by `name_too_long`; off, the name is stored
+    whole and the log names the refusal it would have made."""
+    for key in NAME_METADATA_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str) and len(value.strip()) > NAME_MAX_CHARS:
+            refusals.refuse(refusals.NameTooLong(
+                f"metadata.{key} is {len(value.strip())} characters and a name holds at most "
+                f"{NAME_MAX_CHARS}, so it fits one row of the console: put the detail in "
+                "metadata.description",
+                detail={"field": f"metadata.{key}", "max_chars": NAME_MAX_CHARS},
+            ))
 
 class SubmissionService:
     def __init__(
@@ -847,6 +864,10 @@ class SubmissionService:
         # human-steps.md §4.1): as a task, a batch entry or a child it has no
         # step to answer and no dependant to hand the answer to.
         refuse_control_plane_outside_workflow(profile, workflow_id=workflow_id)
+        # A single task's name fits one row of the console (#2688); a step's
+        # is the workflow's, refused once by `submit_workflow`.
+        if workflow_id is None:
+            refuse_long_names(spec.metadata)
         # A worker action (merge, post-verdict) only inside a `single-pr`
         # workflow (#295). A workflow's steps were already checked by
         # `validate_step_routing`; this is what refuses one as a plain task.
@@ -1421,6 +1442,8 @@ class SubmissionService:
             # value, and a step's own `input_from` is the only declaration
             # `validate_dag` ever sees (#151).
             reject_reserved_metadata(spec.metadata)
+            # Its title and label fit one row of the console (#2688).
+            refuse_long_names(spec.metadata)
             # A runtime policy is one step's (#2322): copied onto every step,
             # it would put every step on the browser profile or refuse it.
             if RUNTIME_METADATA_KEY in spec.metadata:

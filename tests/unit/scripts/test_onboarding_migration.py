@@ -1,4 +1,4 @@
-"""Onboarding's migration lane, OB10 (#780): the switch is deployed and the docs say what is built.
+"""Onboarding's migration lane, OB10 (the per-person-slots migration): the switch is deployed and the docs say what is built.
 
 WHY THIS EXISTS. `REPOSITORY_GRANTS_ENFORCED` (swarm_api.settings
 `repository_grants_enforced`) decides whether a PERSON's task on a repository
@@ -20,6 +20,7 @@ the commands, routes and codes they name: a runbook step that names a verb
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import io
 import re
 from pathlib import Path
@@ -31,6 +32,10 @@ from .test_docs_spec_amendments import _assert_cites_resolve
 REPO = Path(__file__).resolve().parents[3]
 DOCS = REPO / "docs"
 ONBOARDING = DOCS / "onboarding.md"
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+placeholders = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(placeholders)
+ORG = placeholders.GITHUB_OWNER
 GIT_TOKENS = DOCS / "git-tokens.md"
 REPO_INDEX = DOCS / "repo-index.md"
 REFUSALS_DOC = DOCS / "api-refusals.md"
@@ -142,7 +147,7 @@ def test_onboarding_no_longer_says_nothing_is_built():
     text = _text(ONBOARDING)
     assert "Nothing described here is built" not in text
     head = _flat("\n".join(text.splitlines()[:16]))
-    assert "BUILT" in head and "#780" in head
+    assert "BUILT on 2026-10-09" in head
 
 
 @pytest.mark.parametrize(
@@ -163,7 +168,7 @@ def test_every_lane_of_the_build_plan_is_marked_built_with_its_pull_request():
         if lane == "OB10":
             assert builds.startswith("**built, this lane**"), "OB10 is this change"
             continue
-        assert re.match(r"\*\*built, #\d+(, #\d+)*\*\*", builds), f"{lane} is not marked built with its PR"
+        assert builds.startswith("**built**: "), f"{lane} is not marked built"
 
 
 @pytest.mark.parametrize(
@@ -222,7 +227,7 @@ def test_the_refusals_doc_says_the_switch_is_set_from_tfvars():
 
 def test_the_runbook_lists_the_four_acceptance_checks_from_780():
     text = _text(RUNBOOK)
-    assert "#780" in text
+    assert "the four checks of the per-person-slots migration" in text
     at = [text.index(f"## {check}") for check in ACCEPTANCE_CHECKS]
     assert at == sorted(at), "in the issue's order"
 
@@ -235,8 +240,8 @@ def test_each_check_names_the_observation_that_would_show_it_failed(check):
 
 def test_check_1_covers_both_surfaces_and_both_orgs():
     body = _flat(_section(_text(RUNBOOK), ACCEPTANCE_CHECKS[0]))
-    for needle in ("console", "/sc:setup", "sagaxyz", "personal account", "clone", "push",
-                   "pull request", "uv run sc setup token --owner sagaxyz", "--push-test"):
+    for needle in ("console", "/sc:setup", ORG, "personal account", "clone", "push",
+                   "pull request", f"uv run sc setup token --owner {ORG}", "--push-test"):
         assert needle in body, needle
 
 
@@ -244,7 +249,7 @@ def test_check_3_and_4_name_the_refusal_and_the_removal():
     refused = _flat(_section(_text(RUNBOOK), ACCEPTANCE_CHECKS[2]))
     assert "REPOSITORY_NOT_GRANTED" in refused and ENV_NAME in refused
     removed = _flat(_section(_text(RUNBOOK), ACCEPTANCE_CHECKS[3]))
-    assert "uv run sc access remove-org sagaxyz" in removed
+    assert f"uv run sc access remove-org {ORG}" in removed
     assert "DELETE /v1/access/orgs/{owner}" in removed
 
 

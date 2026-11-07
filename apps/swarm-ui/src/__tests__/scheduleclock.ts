@@ -1,4 +1,4 @@
-// ONE CLOCK READ FOR A SCHEDULE FIXTURE (CLOCK-ONCE, part of #2391; BGD
+// ONE CLOCK READ FOR A SCHEDULE FIXTURE (CLOCK-ONCE, part of #2391; owner
 // 2026-10-26, "Read the clock once in the fixtures").
 //
 // THE DEFECT. The schedules fixtures built every timestamp from its own

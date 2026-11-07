@@ -361,7 +361,7 @@
   border-bottom: 1px solid var(--line);
 }
 
-/* THE OPENED ACCOUNT IS THE TABLE'S SIDE SHEET (BGD, 2026-10-25 10:05Z).
+/* THE OPENED ACCOUNT IS THE TABLE'S SIDE SHEET (owner, 2026-10-25 10:05Z).
    The Timeline sits in an `.acct-split` so the sheet's placement, its scrim,
    its detail layout and the phone's "the account is the screen" are the
    Table's own rules (accounts-ranked.css, capacity.css). The split's card

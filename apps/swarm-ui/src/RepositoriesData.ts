@@ -362,7 +362,7 @@ export interface RepoRecord {
   /**
    * Whether an agent's push that changes `.github/workflows/**` or
    * `.github/actions/**` is made here, by the GitHub App with a token for this
-   * one repository (#2029; BGD's decision 2026-10-22: self-serve, per-repo
+   * one repository (#2029; the owner's decision 2026-10-22: self-serve, per-repo
    * opt-in, off by default). Set by the workspace's admin only. Off, such a
    * push is refused and left as `workflow-lines.patch`. Null: not served -- an
    * API older than WF-APP-TOKEN -- which is not a confident off.

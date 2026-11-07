@@ -1,6 +1,6 @@
 """`POST /v1/workflows` accepts a `fix-loop` step, and refuses everything §4.1 refuses (FL-SUBMIT, part of #2509).
 
-docs/design/fix-loop.md §4.1, §4.6 and §9 (BGD, 2026-10-27). A workflow step
+docs/design/fix-loop.md §4.1, §4.6 and §9 (the owner, 2026-10-27). A workflow step
 on the catalogue profile `fix-loop` carries a `fix_loop` block naming the
 review whose verdict starts the loop, the fix of round 1 (under `integrate`),
 `max_rounds` (1-5, default 3, Q5) and optional `fix_round` / `re_review`

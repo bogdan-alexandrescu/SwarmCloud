@@ -261,8 +261,9 @@ def render(owner: str, repo: str, *, ref: str, working_dir: str, shards: int,
         "merge": "off",
         "repository_url": f"https://github.com/{owner}/{repo}",
         "repository_ref": ref,
-        "title": workflows.check_title(f"Playwright gate · {owner}/{repo}@{ref} · {shards} shards",
-                                       where="swarm_suite_gate"),
+        # A name holds at most 30 characters (workflows.NAME_MAX_CHARS); the
+        # repository and ref are the workflow's own repository_url and ref.
+        "title": workflows.check_title(f"Playwright gate · {shards} shards", where="swarm_suite_gate"),
         "label": "suite-gate",
     }
 

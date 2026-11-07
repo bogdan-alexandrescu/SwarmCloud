@@ -452,7 +452,7 @@ SECRET_PAYLOAD_READERS = {
     "qatargets.py",
     # The Desktop OAuth client's secret, read once at start and served in the
     # unauthenticated discovery document ONLY when DISCOVERY_SERVE_CLIENT_SECRET
-    # is true: BGD's Q1 decision (docs/design/day-one-plan.md §6.3; Google
+    # is true: the owner's Q1 decision (docs/design/day-one-plan.md §6.3; Google
     # classifies a Desktop client's secret as non-confidential). A separate
     # app, swarm-discovery, never mounted on swarm-api's routes.
     "discovery.py",

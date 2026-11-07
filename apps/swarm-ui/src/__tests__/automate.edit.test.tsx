@@ -1,5 +1,5 @@
 // AUTOMATE › A NEW OR EDITED SCHEDULE, PROPOSAL B (#2417, frames A3, A3a, A3b;
-// BGD's pick 2026-10-26; docs/web-ui/mockups/automate-b.html).
+// the owner's pick 2026-10-26; docs/web-ui/mockups/automate-b.html).
 //
 // WHAT EACH CASE HOLDS:
 //   * the form is one page of numbered cards, in B's order: 1 Type and

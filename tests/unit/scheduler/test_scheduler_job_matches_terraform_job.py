@@ -38,7 +38,7 @@ from scheduler.settings import SchedulerSettings
 ROOT = Path(__file__).resolve().parents[3]
 MODULE = ROOT / "terraform" / "modules" / "cloud_run_jobs"
 INFRA_MAIN = ROOT / "terraform" / "infra" / "main.tf"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 #: The formula terraform sizes the workspace with, as written in main.tf.

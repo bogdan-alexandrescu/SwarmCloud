@@ -59,7 +59,7 @@ describe('Q4: the open tab takes the column to its foot', () => {
     expect(painted(s, 'flex-direction', WIDE)).toBe('column')
     // The Logs pane is the column's height less the stuck tab strip, so once
     // the head has scrolled away the log reaches the column's foot
-    // (AGENT-HEAD-B, BGD's pick AH1 B, 2026-10-28; qa.g2.inspector.test.tsx).
+    // (AGENT-HEAD-B, the owner's pick AH1 B, 2026-10-28; qa.g2.inspector.test.tsx).
     expect(painted(pane, 'height', WIDE)).toBe('calc(100% + 18px - 57px)')
     // A column with only a max-height is as short as a short pane. In the
     // grid it is the viewport's height.

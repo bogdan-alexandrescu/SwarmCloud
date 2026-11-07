@@ -82,7 +82,7 @@ function me(isAdmin: boolean): Me {
       monthly_budget_usd: null,
       enabled: true,
       credentials: [],
-      service_account: 'swarm-agent-worker-u-phone@example.iam.gserviceaccount.com',
+      service_account: 'swarm-agent-worker-u-phone@example-project.iam.gserviceaccount.com',
       gcs_prefix: 'tenants/u-phone',
       namespace: 'swarm-tenant-u-phone',
     },

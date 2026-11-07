@@ -1,6 +1,6 @@
 """Contract request 137, the work contract signed with the step, as applied (part of #2688).
 
-Accepted by the owner (BGD) 4 November 2026 ("Sign the key"):
+Accepted by the owner 4 November 2026 ("Sign the key"):
 
   * `"work_contract"` is in `specsign.SIGNED_METADATA_KEYS`;
   * spec format 8, format 7's fields plus `metadata.work_contract`, at which a

@@ -1,7 +1,7 @@
 """Cloud Identity group resolution, pinned to what the project actually allows.
 
 CONTRACT.md records a live finding: `groups/-/memberships:searchTransitiveGroups`
-403s in saga-agents-staging, while `groups:lookup` and
+403s in example-project, while `groups:lookup` and
 `memberships:checkTransitiveMembership` work -- and every call needs
 `x-goog-user-project`, or it fails with SERVICE_DISABLED naming gcloud's shared
 client project.
@@ -21,7 +21,7 @@ from swarm_common.identity import Principal, resolve_tenant, tenant_id_for_group
 
 from swarm_api.groups import CLOUD_IDENTITY_ROOT, CloudIdentityGroups, GroupLookupError
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 T0 = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
 
 
@@ -266,8 +266,8 @@ def test_impersonation_is_applied_when_the_credentials_support_it(monkeypatch):
         groups_mod, "CloudIdentityGroups", groups_mod.CloudIdentityGroups, raising=False
     )
 
-    g = groups_mod.CloudIdentityGroups("proj", impersonate_user="bogdan@example.com")
-    assert g._impersonate_user == "bogdan@example.com"
+    g = groups_mod.CloudIdentityGroups("proj", impersonate_user="owner@example.com")
+    assert g._impersonate_user == "owner@example.com"
 
 
 def test_blank_impersonation_is_normalised_to_none():
@@ -309,7 +309,7 @@ def test_impersonation_does_not_crash_when_credentials_cannot_delegate():
 
 from swarm_common import identity  # noqa: E402
 
-FIXER = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+FIXER = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
 FIXER_UID = "104857600000000000001"
 
 
@@ -331,9 +331,9 @@ def test_a_listed_account_resolves_to_the_group_tenant_that_lists_it():
 
 
 def test_a_listed_account_resolves_to_a_user_tenant_that_lists_it():
-    member = _member(kind="user", principal="bogdan@example.com")
+    member = _member(kind="user", principal="owner@example.com")
     assert identity.resolve_tenant(_caller(), PRIORITY, service_accounts=(member,)) == (
-        identity.tenant_id_for_user("bogdan@example.com")
+        identity.tenant_id_for_user("owner@example.com")
     )
 
 
@@ -387,10 +387,10 @@ def test_the_listing_wins_over_group_membership():
 @pytest.mark.parametrize(
     "email",
     [
-        "swarm-ci-fix2@saga-agents-staging.iam.gserviceaccount.com",
-        "x-swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com",
-        "swarm-ci-fix@other-project.iam.gserviceaccount.com",
-        "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com.evil.example",
+        "swarm-ci-fix2@example-project.iam.gserviceaccount.com",
+        "x-swarm-ci-fix@example-project.iam.gserviceaccount.com",
+        "swarm-ci-fix@example-shared-project.iam.gserviceaccount.com",
+        "swarm-ci-fix@example-project.iam.gserviceaccount.com.evil.example",
     ],
 )
 def test_no_pattern_prefix_suffix_or_domain_match(email):
@@ -402,7 +402,7 @@ def test_no_pattern_prefix_suffix_or_domain_match(email):
 
 
 def test_a_human_address_listed_as_a_member_never_matches():
-    human = "bogdan@example.com"
+    human = "owner@example.com"
     listed = _member(email=human)
     assert identity.tenant_member_for(human, FIXER_UID, (listed,)) is None
     assert identity.resolve_tenant(
@@ -414,7 +414,7 @@ def test_a_human_address_listed_as_a_member_never_matches():
     "email",
     [
         "123456789012-compute@developer.gserviceaccount.com",
-        "saga-agents-staging@appspot.gserviceaccount.com",
+        "example-project@appspot.gserviceaccount.com",
     ],
 )
 def test_a_google_managed_account_never_matches_even_when_listed(email):
@@ -442,7 +442,7 @@ def test_an_unknown_kind_raises_rather_than_resolving_as_a_user():
 
 def test_tenant_member_fields_are_normalised_once_at_construction():
     a = identity.TenantMember(
-        email=" SWARM-CI-FIX@Saga-Agents-Staging.iam.gserviceaccount.com ",
+        email=" SWARM-CI-FIX@example-project.iam.gserviceaccount.com ",
         kind=" GROUP ",
         principal=" Eng@Example.com ",
         uid=f" {FIXER_UID} ",

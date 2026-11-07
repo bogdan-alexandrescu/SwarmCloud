@@ -1,6 +1,6 @@
 // A RE-CHECKED MERGE STEP'S ATTEMPTS PAGE LEADS WITH ONE LINE (part of #2688).
 //
-// BGD, 6 November 2026: a merge step waited on CI for 8 hours and its page at
+// owner, 6 November 2026: a merge step waited on CI for 8 hours and its page at
 // /agents/waiting/<id>/attempts listed 28 identical re-check attempts, one by
 // one, and nothing said how long, how often or why. The page now leads with
 // the wait's one line -- the API's summary for a wait handed to a person, or

@@ -1,6 +1,6 @@
 // WORK › REPOSITORIES › QA TARGETS: a crawl target's discovery, started from
 // the console (lane QA-DISCOVER, part of #1933; docs/design/visual-qa-any-app.md
-// §4.1). BGD, 2026-10-23: "build discovery, so a crawl target is started
+// §4.1). owner, 2026-10-23: "build discovery, so a crawl target is started
 // entirely from the console".
 //
 // WHAT EACH CASE HOLDS, over routes/qatargets.py's shapes:

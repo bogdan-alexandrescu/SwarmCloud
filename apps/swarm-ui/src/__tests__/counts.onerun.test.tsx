@@ -1,4 +1,4 @@
-// PLATFORM COUNTS HAS ONE RUN (COUNTS-ONE-RUN, #2149). BGD, CTV-5
+// PLATFORM COUNTS HAS ONE RUN (COUNTS-ONE-RUN, #2149). owner, CTV-5
 // (2026-10-24 17:30Z): "roster on mount, one shared Run"; and 2026-10-25: one
 // shared Run, and the page in mock-up F1's order (docs/web-ui/mockups/
 // counts-a.html, frames F1 and F7).
@@ -78,7 +78,7 @@ beforeEach(() => {
   loadTenants.mockResolvedValue(roster(3))
 })
 
-describe('one Run for the whole page (BGD, CTV-5)', () => {
+describe('one Run for the whole page (owner, CTV-5)', () => {
   it('draws exactly one Run, in the head, and it is the page’s one primary button', async () => {
     render(<PlatformCountsScreen />)
     await waitFor(() => expect(loadTenants).toHaveBeenCalled())
@@ -208,7 +208,7 @@ describe('mock-up F1’s order: Over time, then Right now, then the ticks', () =
     await waitFor(() => expect(loadTenants).toHaveBeenCalled())
     const over = screen.getByRole('region', { name: 'Over time' })
     const now = screen.getByRole('region', { name: /^Right now/ })
-    // One short line since 2026-11-05 (BGD's standing no-prose rule); the rest is the title's tooltip.
+    // One short line since 2026-11-05 (the owner's standing no-prose rule); the rest is the title's tooltip.
     expect(over.querySelector('.pot-notrun')?.textContent).toBe('Nothing has been read yet.')
     expect(over.querySelector('.pot-prov')?.textContent).toBe('not read yet')
     expect(now.querySelectorAll('.counts-notrun')).toHaveLength(2)

@@ -3,7 +3,7 @@
 Authorisation is by hosted domain, which is exactly right for a company:
 `allowed_domains = ["example.com"]` means the people in that company. It collapses
 for everyone else. A single developer on a personal GCP project has no domain
-of their own, so the only value that would admit them is `["gmail.com"]` --
+of their own, so the only value that would admit them is `["example.net"]` --
 which authorises every Google account on earth to run agents on their billing
 account.
 
@@ -67,7 +67,7 @@ def test_a_domain_caller_still_works_when_no_users_are_listed():
 
 def test_an_outsider_is_still_forbidden_by_default():
     with pytest.raises(Forbidden):
-        _auth(_Settings(), "someone@elsewhere.com").authenticate(None, "assertion")
+        _auth(_Settings(), "someone@example.org").authenticate(None, "assertion")
 
 
 def test_a_named_address_is_admitted_although_its_domain_is_not():
@@ -76,23 +76,23 @@ def test_a_named_address_is_admitted_although_its_domain_is_not():
         class core:
             allowed_domains = ()
 
-        allowed_users = ("alice@gmail.com",)
+        allowed_users = ("alice@example.net",)
 
-    ctx = _auth(_Solo(), "alice@gmail.com").authenticate(None, "assertion")
+    ctx = _auth(_Solo(), "alice@example.net").authenticate(None, "assertion")
     assert ctx.tenant_id == "u-alice"
 
 
 def test_listing_one_gmail_address_does_not_admit_every_gmail_address():
     """The whole point. The alternative configuration -- allowed_domains =
-    ["gmail.com"] -- would admit this caller, and everyone else alive."""
+    ["example.net"] -- would admit this caller, and everyone else alive."""
     class _Solo(_Settings):
         class core:
             allowed_domains = ()
 
-        allowed_users = ("alice@gmail.com",)
+        allowed_users = ("alice@example.net",)
 
     with pytest.raises(Forbidden):
-        _auth(_Solo(), "mallory@gmail.com").authenticate(None, "assertion")
+        _auth(_Solo(), "mallory@example.net").authenticate(None, "assertion")
 
 
 def test_it_is_additive_never_subtractive():
@@ -115,9 +115,9 @@ def test_matching_is_case_insensitive():
         class core:
             allowed_domains = ()
 
-        allowed_users = ("ALICE@GMAIL.COM",)
+        allowed_users = ("ALICE@EXAMPLE.NET",)
 
-    assert _auth(_Upper(), "alice@gmail.com").authenticate(None, "a").tenant_id == "u-alice"
+    assert _auth(_Upper(), "alice@example.net").authenticate(None, "a").tenant_id == "u-alice"
 
 
 def test_the_address_comes_from_the_token_and_not_from_the_caller():
@@ -128,12 +128,12 @@ def test_the_address_comes_from_the_token_and_not_from_the_caller():
         class core:
             allowed_domains = ()
 
-        allowed_users = ("alice@gmail.com",)
+        allowed_users = ("alice@example.net",)
 
     # The caller presents a different verified identity. Being on the list is
     # about who you ARE, and the token decides that.
     with pytest.raises(Forbidden):
-        _auth(_Solo(), "bob@gmail.com").authenticate(None, "assertion")
+        _auth(_Solo(), "bob@example.net").authenticate(None, "assertion")
 
 
 def test_an_empty_list_changes_nothing_at_all():
@@ -143,7 +143,7 @@ def test_an_empty_list_changes_nothing_at_all():
 
     assert _auth(_Empty(), "person@example.com").authenticate(None, "a").tenant_id == "u-person"
     with pytest.raises(Forbidden):
-        _auth(_Empty(), "person@elsewhere.com").authenticate(None, "a")
+        _auth(_Empty(), "person@example.org").authenticate(None, "a")
 
 
 def test_a_deployment_with_neither_domains_nor_users_admits_nobody():
@@ -156,4 +156,4 @@ def test_a_deployment_with_neither_domains_nor_users_admits_nobody():
         allowed_users = ()
 
     with pytest.raises((Forbidden, Unauthenticated)):
-        _auth(_Nothing(), "anyone@anywhere.com").authenticate(None, "a")
+        _auth(_Nothing(), "anyone@example.org").authenticate(None, "a")

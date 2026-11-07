@@ -1,6 +1,6 @@
 /**
  * GITHUB ACCESS' MEMBERS AND BROWSER LOGINS MOVE TO THE PAGES WHOSE SUBJECT
- * THEY ARE (GA-MOVE-VIEWS; part of #2157, BGD 2026-10-24: "Members to Config ›
+ * THEY ARE (GA-MOVE-VIEWS; part of #2157, owner 2026-10-24: "Members to Config ›
  * People and roles, Browser logins to Config › Secrets").
  *
  *   * Config › GitHub access is mock-up S2's two tabs and nothing else: no

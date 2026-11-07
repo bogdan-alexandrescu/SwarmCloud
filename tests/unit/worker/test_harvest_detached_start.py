@@ -5,7 +5,7 @@ about: a step cloned by sha (a by-sha `repository_ref`, or a resumed index
 run) starts on a detached HEAD, so detaching onto a fetched branch is no
 branch change at all, and a review that ran `git checkout --detach
 origin/<reviewed>` -- a line that descends from its start -- still published
-the reviewed commits as its own. BGD decided on 2026-10-23 (~18:39Z, recorded
+the reviewed commits as its own. the owner decided on 2026-10-23 (~18:39Z, recorded
 on task_bf208a4d46f04764869d q1): "Yes, close it."
 
 So a detached end HEAD standing on any `refs/remotes/origin/*` tip is a move,
@@ -179,7 +179,7 @@ def test_a_branch_start_detached_on_its_own_start_sha_publishes_its_edits(
 ):
     """From a branch start: `git checkout --detach` where the clone landed.
     The end HEAD is the start sha, which is also `origin/main`'s tip; it is
-    the start, so it is not a move (BGD's rule: "except the start sha")."""
+    the start, so it is not a move (the owner's rule: "except the start sha")."""
     def edit(repo: Path) -> None:
         _git(repo, "checkout", "--quiet", "--detach")
         (repo / "edit.py").write_text("an uncommitted edit\n")

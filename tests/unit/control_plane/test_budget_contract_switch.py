@@ -1,6 +1,6 @@
 """The per-agent budget on the applied contract (BUDGET-CONTRACT, part of #2459).
 
-BGD accepted contract requests 118-121 on 2026-10-26 (~22:15Z), and this lane
+the owner accepted contract requests 118-121 on 2026-10-26 (~22:15Z), and this lane
 applied them. On swarm-api's side that means:
 
   * 120: submission writes the RESOLVED budget into the typed `Task.budget`
@@ -265,7 +265,7 @@ def test_a_budget_stop_is_classed_by_its_cause_as_its_own_class():
     by_cause = outcomes.classify_failure("FAILED", text, 143, end_cause=EndCause.BUDGET_EXCEEDED)
     by_text = outcomes.classify_failure("FAILED", text, 143)
     # MUTATION: leave the member out of `_FAILURE_OF_CAUSE` and this is "other".
-    # BGD, 2026-10-27: its own class, not the runner error its text reads as.
+    # the owner, 2026-10-27: its own class, not the runner error its text reads as.
     assert by_cause == "budget_exceeded"
     # No text rule was added (CLASSIFIER_VERSION stays): the cause is typed
     # wherever a budget stop is written.

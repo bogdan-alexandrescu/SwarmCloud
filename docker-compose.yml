@@ -20,7 +20,7 @@
 #   docker compose run --rm tests    # unit tests, no cloud credentials at all
 #   docker compose down -v           # discard the emulator's data
 #
-# Nothing here touches saga-agents-staging: there are no cloud credentials in any
+# Nothing here touches a shared project: there are no cloud credentials in any
 # of these containers and the Firestore host is the emulator. Authentication is
 # NOT disabled -- the API has no switch for that, on purpose -- so calls still
 # present a Google ID token. Every port is bound to 127.0.0.1 regardless: an
@@ -37,9 +37,9 @@ x-common-env: &common-env
   # bug that assumes (default) pass here and fail in the shared project.
   FIRESTORE_DATABASE: swarm
   FIRESTORE_EMULATOR_HOST: firestore:8080
-  ALLOWED_DOMAINS: saga.xyz
-  TENANT_GROUPS: eng@saga.xyz
-  ADMIN_GROUPS: eng@saga.xyz
+  ALLOWED_DOMAINS: example.com
+  TENANT_GROUPS: team-a@example.com
+  ADMIN_GROUPS: team-a@example.com
   DISABLE_CLOUD_MONITORING: "1"
   PYTHONUNBUFFERED: "1"
   PYTHONDONTWRITEBYTECODE: "1"
@@ -126,7 +126,7 @@ services:
                 merge=True,
             )
         db.collection("tenants").document("eng").set(
-            {"tenant_id": "eng", "kind": "group", "principal": "eng@saga.xyz",
+            {"tenant_id": "eng", "kind": "group", "principal": "team-a@example.com",
              "enabled": True, "max_active": 10, "capacity_units": 20,
              "credentials": [], "gcs_prefix": "tenants/eng/"},
             merge=True,

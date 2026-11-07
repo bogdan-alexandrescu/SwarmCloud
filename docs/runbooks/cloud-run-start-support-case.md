@@ -1,7 +1,7 @@
-# Runbook: the Cloud Run Jobs start-time support case (#625)
+# Runbook: the Cloud Run Jobs start-time support case
 
 **When to use this.** You are the owner, filing the Google Cloud support case
-you decided on 2026-10-07 (decision (3) on #625): Cloud Run Job executions
+you decided on 2026-10-07 (decision (3) on the start-time measurement issue): Cloud Run Job executions
 spend most of their start in `ResourcesAvailable -> Started`, and that time
 doubled and recovered with nothing on our side changing. Or a Cloud Run
 profile's DISPATCHED -> STARTING has jumped again, and you want the evidence
@@ -14,7 +14,7 @@ into the Google Cloud console's support form. The only commands read.
 
 ## Why this exists
 
-The measurement of 2026-10-07 (#625's second comment, #667, recorded in
+The measurement of 2026-10-07 (the start-time measurement issue's second comment, and the start-time follow-up issue, recorded in
 [`docs/worker-images.md`](../worker-images.md#where-dispatched---starting-goes-measured-2026-10-07))
 found that 90-95 % of a Cloud Run worker's start is Cloud Run's own instance
 provisioning, that nothing of ours changed when it doubled, and that a 27.6 MB
@@ -162,7 +162,7 @@ Created 10-60 s apart, `Started` in the same second (if you found a pair):
 
 ## After you file
 
-Put the case number on #625 or #667 as a comment, not in this file: a case
+Put the case number on the start-time measurement issue or the start-time follow-up issue as a comment, not in this file: a case
 number is a fact about a moving target, and the issue is where its answer will
 be read. If Google names a cause on our side (Direct VPC egress, for example),
 that is a change to `terraform/` and a decision of yours, filed as its own

@@ -26,6 +26,7 @@ was asked to do. A value is built at runtime, never written here as a literal
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -38,6 +39,9 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
+_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+placeholders = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(placeholders)
 RUNBOOK = REPO / "docs" / "runbooks" / "github-app.md"
 SECRET_MODULE = REPO / "terraform" / "modules" / "secret_manager"
 INFRA = REPO / "terraform" / "infra"
@@ -136,7 +140,7 @@ def test_every_store_command_in_the_runbook_reads_stdin() -> None:
 @pytest.mark.parametrize(
     "phrase",
     [
-        "https://swarm.saga.xyz/onboarding/github/callback",
+        f"https://{placeholders.CONSOLE_HOST}/onboarding/github/callback",
         "Request user authorization (OAuth) during installation",
         "Expire user authorization tokens",
         "Contents: Read and write",

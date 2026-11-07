@@ -22,8 +22,8 @@ const iso = (t: number) => new Date(t).toISOString()
 
 function acct(label: string, over: Partial<PoolAccount> = {}): PoolAccount {
   return {
-    account_id: `u-bogdan:${label}`,
-    owner_tenant: 'u-bogdan',
+    account_id: `u-owner:${label}`,
+    owner_tenant: 'u-owner',
     label,
     provider: 'anthropic',
     state: 'AVAILABLE',
@@ -68,10 +68,10 @@ describe('an aged row keeps its text at full contrast (cap2-07)', () => {
 
   it('marks the aged row with a tag beside its name, and a fresh row with none', () => {
     const { container } = render(
-      <AccountsTable accounts={[aged(), acct('primary')]} scope="u-bogdan" now={NOW} chosen={null} phone={false} onChoose={() => {}} />,
+      <AccountsTable accounts={[aged(), acct('primary')]} scope="u-owner" now={NOW} chosen={null} phone={false} onChoose={() => {}} />,
     )
     const rows = [...container.querySelectorAll<HTMLElement>('tr.acct-rank-row')]
-    const row = (label: string) => rows.find((r) => r.textContent?.includes(`u-bogdan:${label}`))!
+    const row = (label: string) => rows.find((r) => r.textContent?.includes(`u-owner:${label}`))!
     // MUTATION: drop the aged tag from `Tags` -> fails.
     const tag = row('overflow').querySelector('.acct-tags .acct-tag.is-aged')
     expect(tag?.textContent).toBe('aged reading')
@@ -80,7 +80,7 @@ describe('an aged row keeps its text at full contrast (cap2-07)', () => {
 
   it('marks the aged card the same way on a phone', () => {
     const { container } = render(
-      <AccountsTable accounts={[aged()]} scope="u-bogdan" now={NOW} chosen={null} phone onChoose={() => {}} />,
+      <AccountsTable accounts={[aged()]} scope="u-owner" now={NOW} chosen={null} phone onChoose={() => {}} />,
     )
     expect(container.querySelector('.acct-card .acct-tag.is-aged')?.textContent).toBe('aged reading')
   })

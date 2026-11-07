@@ -102,11 +102,11 @@ def test_a_pool_that_does_not_exist_is_null_not_a_stand_in(fixed_client, db):
 
 def test_each_row_is_matched_to_its_own_tenants_pool(fixed_client, db):
     _quota(db, "anthropic", "eng")
-    _quota(db, "anthropic", "u-bogdan")
+    _quota(db, "anthropic", "u-owner")
     db.docs["pools/provider:anthropic:tenant:eng"] = {"hard_limit": 40, "active": 0, "enabled": True}
-    db.docs["pools/provider:anthropic:tenant:u-bogdan"] = {"hard_limit": 12, "active": 0, "enabled": True}
+    db.docs["pools/provider:anthropic:tenant:u-owner"] = {"hard_limit": 12, "active": 0, "enabled": True}
 
     rows = _rows(fixed_client)
 
     assert rows["eng"]["feeds_pool"]["effective_limit"] == 40
-    assert rows["u-bogdan"]["feeds_pool"]["effective_limit"] == 12
+    assert rows["u-owner"]["feeds_pool"]["effective_limit"] == 12
