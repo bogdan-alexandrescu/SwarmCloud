@@ -1,12 +1,14 @@
-"""The agent's commits name the person who dispatched the task (P37).
+"""The agent's commits name the dispatcher's GitHub account, never an email of theirs.
 
-Owner decision 2026-10-06: all seven chunk-3 agents that committed failed their
-first `git commit` for want of an identity, then committed as
-`swarm <swarm@localhost>`. The worker now sets GIT_AUTHOR_* and GIT_COMMITTER_*
-in the runner's environment from the task document -- the signed
-`submitted_by`, and `metadata.dispatch.git_identity` where swarm-api recorded
-more than that address -- and the CLI runner carries them to the
-agent. Nothing in `input` reaches them (invariant 10).
+Owner decision 2026-10-06 (P37): commits name the person who dispatched the
+task. Owner hard rule 2026-11-07: no commit carries an email address that
+identifies a person or a company -- GitHub refused every push that exposed a
+private address (GH007). So the worker sets GIT_AUTHOR_* and GIT_COMMITTER_*
+from the signed `metadata.dispatch.git_identity` record ONLY when its email is
+a GitHub no-reply address (swarm-api writes `<login>
+<id+login@users.noreply.github.com>` for a person with a connected GitHub
+account), and otherwise from `BOT_GIT_IDENTITY`. `submitted_by` is never a
+commit email. Nothing in `input` reaches them (invariant 10).
 
 No credentials, no network, no emulator.
 """
@@ -16,19 +18,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agent_worker import workspace as workspace_mod
+from agent_worker.config import ConfigError
 from agent_worker.gitidentity import (
     BOT_GIT_IDENTITY,
     GIT_IDENTITY_ENV,
     commit_identity,
     git_identity_env,
+    is_noreply,
 )
 from swarm_api import gitidentity as api_gitidentity
 
 from worker_seeds import seed_attempt, seed_tenant
 
 ALICE = "alice@example.com"
-FIXER = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"
+FIXER = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
+LOGIN = "octo-alice"
+NOREPLY = f"583231+{LOGIN}@users.noreply.github.com"
+RECORD = {"name": LOGIN, "email": NOREPLY}
 
 
 def _task(submitted_by: str, record: dict | None = None, **input_: str) -> dict:
@@ -42,31 +51,45 @@ def _task(submitted_by: str, record: dict | None = None, **input_: str) -> dict:
 # Who the document names
 # ---------------------------------------------------------------------------
 
-def test_a_task_submitted_by_a_person_commits_as_that_person():
-    task = _task(ALICE, {"name": "Alice Example", "email": ALICE})
-    assert commit_identity(task) == ("Alice Example", ALICE)
+def test_a_person_with_a_connected_github_account_commits_as_their_login():
+    task = _task(ALICE, RECORD)
+    assert commit_identity(task) == (LOGIN, NOREPLY)
     assert git_identity_env(task) == {
-        "GIT_AUTHOR_NAME": "Alice Example",
-        "GIT_AUTHOR_EMAIL": ALICE,
-        "GIT_COMMITTER_NAME": "Alice Example",
-        "GIT_COMMITTER_EMAIL": ALICE,
+        "GIT_AUTHOR_NAME": LOGIN,
+        "GIT_AUTHOR_EMAIL": NOREPLY,
+        "GIT_COMMITTER_NAME": LOGIN,
+        "GIT_COMMITTER_EMAIL": NOREPLY,
     }
 
 
-def test_a_task_with_no_recorded_name_commits_as_the_submitters_local_part():
-    # A document written before the record existed: the signed submitter.
-    assert commit_identity(_task(ALICE)) == ("alice", ALICE)
+def test_a_person_without_a_connected_github_account_commits_as_the_bot():
+    # No record: the signed submitter's address is never a commit email.
+    assert commit_identity(_task(ALICE)) == BOT_GIT_IDENTITY
 
 
-def test_a_record_naming_someone_other_than_the_signed_submitter_is_not_used():
-    # The record is outside the signature; the submitter is inside it.
-    task = _task(ALICE, {"name": "Mallory", "email": "mallory@example.com"})
-    assert commit_identity(task) == ("alice", ALICE)
+def test_a_record_naming_a_persons_own_address_is_never_used():
+    # A record written before 2026-11-07 named the submitter's own address.
+    assert commit_identity(_task(ALICE, {"name": "Alice Example", "email": ALICE})) == BOT_GIT_IDENTITY
+    assert commit_identity(_task(ALICE, {"name": "M", "email": "m@example.com"})) == BOT_GIT_IDENTITY
 
 
-def test_a_service_account_submission_commits_as_the_person_it_records():
-    task = _task(FIXER, {"name": "Alice Example", "email": ALICE})
-    assert commit_identity(task) == ("Alice Example", ALICE)
+@pytest.mark.parametrize("email", [
+    "alice@users.noreply.github.com.example.com",
+    "alice+users.noreply.github.com@example.com",
+    "<x>@users.noreply.github.com",
+    "a b@users.noreply.github.com",
+    "@users.noreply.github.com",
+    "583231+octo_alice@users.noreply.github.com",
+    "users.noreply.github.com",
+    "",
+])
+def test_an_address_that_only_looks_like_a_no_reply_is_not_one(email):
+    assert not is_noreply(email)
+    assert commit_identity(_task(ALICE, {"name": LOGIN, "email": email})) == BOT_GIT_IDENTITY
+
+
+def test_a_service_account_submission_commits_as_the_github_account_it_records():
+    assert commit_identity(_task(FIXER, RECORD)) == (LOGIN, NOREPLY)
 
 
 def test_a_service_account_submission_with_no_person_commits_as_the_bot():
@@ -78,22 +101,75 @@ def test_a_service_account_submission_with_no_person_commits_as_the_bot():
 def test_the_bot_identity_is_the_one_swarm_api_records():
     assert BOT_GIT_IDENTITY == (api_gitidentity.BOT_NAME, api_gitidentity.BOT_EMAIL)
     assert api_gitidentity.GIT_IDENTITY_FIELD == "git_identity"
+    assert api_gitidentity.NOREPLY_SUFFIX == "@users.noreply.github.com"
 
 
 def test_a_name_git_would_refuse_is_cleaned():
-    task = _task(ALICE, {"name": "Alice <evil>\nX", "email": ALICE})
-    name, _ = commit_identity(task)
+    task = _task(ALICE, {"name": "Alice <evil>\nX", "email": NOREPLY})
+    name, email = commit_identity(task)
     assert "<" not in name and ">" not in name and "\n" not in name
+    assert email == NOREPLY
+
+
+def test_a_record_with_no_name_is_named_by_the_login_in_its_address():
+    assert commit_identity(_task(ALICE, {"email": NOREPLY})) == (LOGIN, NOREPLY)
 
 
 def test_input_or_caller_metadata_naming_an_identity_is_ignored():
     task = _task(
-        ALICE, {"name": "Alice Example", "email": ALICE},
+        ALICE, RECORD,
         GIT_AUTHOR_NAME="Mallory", git_author_email="mallory@example.com",
     )
     # A caller's own top-level metadata key: swarm-api stores it, nothing reads it.
-    task["metadata"]["git_identity"] = {"name": "Mallory", "email": "mallory@example.com"}
-    assert commit_identity(task) == ("Alice Example", ALICE)
+    task["metadata"]["git_identity"] = {"name": "mallory", "email": "1+mallory@users.noreply.github.com"}
+    assert commit_identity(task) == (LOGIN, NOREPLY)
+    del task["metadata"]["dispatch"]["git_identity"]
+    assert commit_identity(task) == BOT_GIT_IDENTITY
+
+
+@pytest.mark.parametrize("task", [
+    None,
+    _task(ALICE),
+    _task(FIXER),
+    _task(ALICE, RECORD),
+    _task(ALICE, {"name": "Alice", "email": ALICE}),
+    _task(FIXER, {"name": "Alice", "email": ALICE}),
+    {"submitted_by": ALICE},
+    {"submitted_by": ALICE, "metadata": {"dispatch": {"git_identity": "alice@example.com"}}},
+])
+def test_no_path_yields_an_address_that_is_not_a_github_no_reply(task):
+    _, email = commit_identity(task)
+    assert email.endswith("@users.noreply.github.com") and is_noreply(email)
+    assert email != ALICE
+
+
+# ---------------------------------------------------------------------------
+# The worker's own commits
+# ---------------------------------------------------------------------------
+
+def test_the_workers_own_identity_is_a_github_no_reply(db, worker_factory):
+    seed_attempt(db, runner_profile="mock")
+    seed_tenant(db)
+    worker, _, _ = worker_factory(runner_profile="mock")
+    assert is_noreply(worker.cfg.git_author_email)
+    # A task naming nobody publishes as the worker's own identity: a no-reply.
+    worker._task = _task(ALICE)
+    assert is_noreply(worker._publish_identity()[1])
+    worker._task = _task(ALICE, RECORD)
+    assert worker._publish_identity() == (LOGIN, NOREPLY)
+
+
+@pytest.mark.parametrize("email", ["agent@example.com", "swarm@localhost"])
+def test_a_worker_configured_with_an_address_that_is_not_a_no_reply_refuses_to_start(
+    db, worker_factory, email
+):
+    import dataclasses
+
+    seed_attempt(db, runner_profile="mock")
+    seed_tenant(db)
+    worker, _, _ = worker_factory(runner_profile="mock")
+    with pytest.raises(ConfigError, match="no-reply"):
+        dataclasses.replace(worker.cfg, git_author_email=email)
 
 
 # ---------------------------------------------------------------------------
@@ -105,14 +181,14 @@ def test_the_worker_sets_the_identity_in_the_runners_environment(db, worker_fact
     seed_tenant(db)
     worker, _, _ = worker_factory(runner_profile="mock")
     worker.ws = workspace_mod.create(tmp_path / "ws", "att_1")
-    worker._task = _task(ALICE, {"name": "Alice Example", "email": ALICE})
+    worker._task = _task(ALICE, RECORD)
 
     env = worker._build_child_env()
 
     for name in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
-        assert env[name] == "Alice Example"
+        assert env[name] == LOGIN
     for name in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
-        assert env[name] == ALICE
+        assert env[name] == NOREPLY
 
 
 def _fake_cli(tmp_path: Path) -> Path:
@@ -135,7 +211,7 @@ def test_the_cli_runner_carries_the_identity_to_the_agent(tmp_path, monkeypatch)
 
     monkeypatch.setenv("FAKE_KEY", "fake-" + "k" * 24)
     monkeypatch.setenv("FAKE_BIN", str(_fake_cli(tmp_path)))
-    for name, value in git_identity_env(_task(ALICE, {"name": "Alice Example", "email": ALICE})).items():
+    for name, value in git_identity_env(_task(ALICE, RECORD)).items():
         monkeypatch.setenv(name, value)
     work = tmp_path / "work"
     artifacts = tmp_path / "artifacts"
@@ -159,8 +235,8 @@ def test_the_cli_runner_carries_the_identity_to_the_agent(tmp_path, monkeypatch)
 
     seen = json.loads((artifacts / "git-env.json").read_text())
     assert {name: seen.get(name) for name in GIT_IDENTITY_ENV} == {
-        "GIT_AUTHOR_NAME": "Alice Example",
-        "GIT_AUTHOR_EMAIL": ALICE,
-        "GIT_COMMITTER_NAME": "Alice Example",
-        "GIT_COMMITTER_EMAIL": ALICE,
+        "GIT_AUTHOR_NAME": LOGIN,
+        "GIT_AUTHOR_EMAIL": NOREPLY,
+        "GIT_COMMITTER_NAME": LOGIN,
+        "GIT_COMMITTER_EMAIL": NOREPLY,
     }
