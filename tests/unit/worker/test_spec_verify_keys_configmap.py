@@ -46,7 +46,7 @@ REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
 
 TENANT = "eng"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 ENVIRONMENT = "dev"
 NAMESPACE = f"swarm-tenant-{TENANT}"
 TENANT_GSA = f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"

@@ -5,7 +5,7 @@
 //           at the foot of Providers. A pool near its ceiling is now drawn
 //           `near ceiling` in the full mark's amber (chip, row and track), a
 //           lowered one `lowered`, and both lead the board in Needs a look
-//           (BGD's answer, 2026-10-26: "Needs a look, as the mock-up draws
+//           (the owner's answer, 2026-10-26: "Needs a look, as the mock-up draws
 //           it"), near before lowered.
 //   VQ-032  at 390 each pool was a ~220px record of six keyed lines. It is
 //           one compact row: name and figure, then the use bar and state;
@@ -77,7 +77,7 @@ function board(): Capacity {
       // 46 of 50, lowered from 100 by the provider's quota.
       pool('provider:anthropic:tenant:eng', 46, 100, { quota_derived_limit: 50, effective_limit: 50, available: 4 }),
       // Lowered, with little in use.
-      pool('provider:anthropic:tenant:u-bogdan', 2, 50, { quota_derived_limit: 20, effective_limit: 20, available: 18 }),
+      pool('provider:anthropic:tenant:u-owner', 2, 50, { quota_derived_limit: 20, effective_limit: 20, available: 18 }),
     ],
     runner_profiles: {},
   }
@@ -117,8 +117,8 @@ describe('VQ-031: a pool near its ceiling, or lowered, is drawn so', () => {
 
   it('draws a lowered pool `lowered`, with what lowered it in the title', async () => {
     await renderPools()
-    expect(marks('provider:anthropic:tenant:u-bogdan')).toEqual(['lowered'])
-    const mark = within(row('provider:anthropic:tenant:u-bogdan')).getByText('lowered')
+    expect(marks('provider:anthropic:tenant:u-owner')).toEqual(['lowered'])
+    const mark = within(row('provider:anthropic:tenant:u-owner')).getByText('lowered')
     expect(mark.closest('[title]')?.getAttribute('title')).toMatch(/Provider quota caps this at 20; configured is 50/)
     // An idle pool still reads ok, so `ok` keeps meaning something.
     expect(marks('provider:anthropic:tenant:a-idle')).toEqual(['ok'])
@@ -128,7 +128,7 @@ describe('VQ-031: a pool near its ceiling, or lowered, is drawn so', () => {
     await renderPools()
     expect(familyOrder('Needs a look · 2')).toEqual([
       'provider:anthropic:tenant:eng',
-      'provider:anthropic:tenant:u-bogdan',
+      'provider:anthropic:tenant:u-owner',
     ])
     expect(familyOrder('Providers')).toEqual(['provider:anthropic', 'provider:anthropic:tenant:a-idle'])
   })
@@ -142,7 +142,7 @@ describe('VQ-031: a pool near its ceiling, or lowered, is drawn so', () => {
     expect(document.body.textContent).not.toContain('2 lowered')
   })
 
-  it('heads the board with Needs a look, never Needs action (BGD 2026-10-26)', async () => {
+  it('heads the board with Needs a look, never Needs action (owner 2026-10-26)', async () => {
     await renderPools()
     expect(document.querySelector('.cap-families > section')).toBe(document.querySelector('.cap-needs'))
     expect(document.querySelector('.cap-needs .ctl-card-title')?.textContent).toBe('Needs a look · 2')

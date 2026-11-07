@@ -1,6 +1,6 @@
 """A plan naming workflow files, through the run routes, keys on `workflow_files` (#2029).
 
-BGD, 2026-10-22 (WF-APP-TOKEN): with the registration's switch off -- even on
+the owner, 2026-10-22 (WF-APP-TOKEN): with the registration's switch off -- even on
 the platform's own `platform: true` registration -- the planner's plan is
 refused WORKFLOWS_PATH and a plan edit adding a workflow file is a 422. With
 it on, the plan is stored and held STOP_WORKFLOWS, NEEDS_OWNER (owner decision

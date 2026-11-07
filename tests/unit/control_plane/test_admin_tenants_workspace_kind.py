@@ -64,7 +64,7 @@ def test_a_group_and_a_service_record_are_served_with_their_kind_and_w_id(db, cl
     seed_tenant(db, "s-reports")
     seed_tenant(db, "u-alice")
     group_id = _record(db, "g-research", "research@example.com", "group")
-    service_id = _record(db, "s-reports", "reports-bot@example.iam.gserviceaccount.com", "service")
+    service_id = _record(db, "s-reports", "reports-bot@example-project.iam.gserviceaccount.com", "service")
     # A record written before kinds existed carries no `kind`: it is a person's.
     personal_id = _record(db, "u-alice", "alice@example.com", None)
 
@@ -84,12 +84,12 @@ def test_a_group_and_a_service_record_are_served_with_their_kind_and_w_id(db, cl
 def test_the_record_adds_no_principal_and_no_other_field(db, client):
     """Only the two fields: the record's principal, state and the rest stay out."""
     tenant = seed_tenant(db, "s-reports")
-    _record(db, "s-reports", "reports-bot@example.iam.gserviceaccount.com", "service")
+    _record(db, "s-reports", "reports-bot@example-project.iam.gserviceaccount.com", "service")
 
     _, rows = _rows(client)
 
     assert set(rows["s-reports"]) == set(tenant_to_api(tenant)) | {"workspace_kind", "workspace_id"}
-    assert "reports-bot@example.iam.gserviceaccount.com" not in str(rows["s-reports"])
+    assert "reports-bot@example-project.iam.gserviceaccount.com" not in str(rows["s-reports"])
 
 
 def test_a_terraform_tenant_with_no_record_gets_nulls(db, client):

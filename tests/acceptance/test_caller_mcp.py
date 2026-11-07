@@ -1036,7 +1036,7 @@ def fake_google(aud: str, invoker: str, *, metadata: int = 200,
 def _selftest_token(problems: list[str]) -> None:
     """`token` and `probe` against fake_google: the happy path, every refusal,
     and that no value reaches a file other than secrets.json."""
-    invoker = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+    invoker = "swarm-verify@example-project.iam.gserviceaccount.com"
     url = "https://swarm-mcp-echo-" + secrets.token_hex(5) + "-uc.a.run.app/mcp"
     aud = url[:-len("/mcp")]
     with tempfile.TemporaryDirectory(prefix="mcp-token-") as root:
@@ -1080,7 +1080,7 @@ def _selftest_token(problems: list[str]) -> None:
             ("the metadata server answers a token for another audience",
              fake_google(aud, invoker, token_value=fake_id_token("https://elsewhere.example", invoker))),
             ("the metadata server answers a token for another identity",
-             fake_google(aud, invoker, token_value=fake_id_token(aud, "other@x.iam.gserviceaccount.com"))),
+             fake_google(aud, invoker, token_value=fake_id_token(aud, "other@example-project.iam.gserviceaccount.com"))),
             ("the metadata server answers a token that is about to expire",
              fake_google(aud, invoker, token_value=fake_id_token(aud, invoker, life=30))),
             ("the metadata server answers something that is not a JWT",
@@ -1122,7 +1122,7 @@ def _selftest_server(problems: list[str]) -> dict[str, Any]:
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     url = f"http://127.0.0.1:{httpd.server_address[1]}{server.MCP_PATH}"
-    value = fake_id_token("https://swarm-mcp-echo.a.run.app", "swarm-verify@p.iam.gserviceaccount.com")
+    value = fake_id_token("https://swarm-mcp-echo.a.run.app", "swarm-verify@example-project.iam.gserviceaccount.com")
     auth = {"Authorization": "Bearer " + value, "X-Swarm-Task": "task_" + "a" * 20,
             "X-Swarm-Attempt": "att_" + "b" * 20}
     report: dict[str, Any] = {}
@@ -1414,7 +1414,7 @@ def selftest() -> int:
     with tempfile.TemporaryDirectory(prefix="mcp-mint-") as minted:
         values: dict[str, Any] = mint(Path(minted))
     values["credential"] = fake_id_token("https://swarm-mcp-echo.a.run.app",
-                                         "swarm-verify@p.iam.gserviceaccount.com")
+                                         "swarm-verify@example-project.iam.gserviceaccount.com")
     values["credential_expires_in"] = 3599
     _, claims_segment, signature = values["credential"].split(".")
     # The server hashed its own loopback bearer; the evidence is built for

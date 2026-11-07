@@ -1,5 +1,5 @@
 /**
- * THE SETUP STRIP, FINISHED AND AGED (CONFIG-STRIP-DONE; part of #2157, BGD's
+ * THE SETUP STRIP, FINISHED AND AGED (CONFIG-STRIP-DONE; part of #2157, the owner's
  * pick of 2026-10-24, proposal E, docs/web-ui/mockups/config-e.html `stripD`).
  *
  *   * When every step is done the strip folds to ONE line, "Setup complete ·

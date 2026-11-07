@@ -1,6 +1,6 @@
 """`GET /v1/approvals?state=`: the last 7 days' decided and expired approvals (#2417 A4).
 
-BGD 2026-10-27 (AUTO-A4A5): the approvals API returns recent decisions, so
+the owner 2026-10-27 (AUTO-A4A5): the approvals API returns recent decisions, so
 the console's Approvals page can draw its "decided" and "expired" sections
 from the server rather than from what it already holds. What these hold,
 against the real app and the in-memory Firestore:

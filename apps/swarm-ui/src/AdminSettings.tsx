@@ -62,7 +62,7 @@ import './styles/admin.css'
  * A task takes EVERY pool in its runner profile's list, so its capacity is the
  * MINIMUM across them. Raising one pool changes nothing if another still binds
  * -- which is exactly what happened when five pools went to 40 and
- * `provider:anthropic:tenant:u-bogdan` stayed at 5, holding the real ceiling
+ * `provider:anthropic:tenant:u-owner` stayed at 5, holding the real ceiling
  * at five.
  *
  * The per-profile cards that drew those operands here are gone (owner
@@ -322,8 +322,8 @@ export const NEAR_CEILING = 0.8
 /**
  * `label` IS THE NAME THE TABLE GIVES THE POOL (visual QA pass 1,
  * admin-shell-03, part of #2596): the lead read "Pool
- * provider:anthropic:tenant:u-bogdan is at 100%" over a row named
- * `anthropic · u-bogdan`. The key stays `pool`, for the button's target and
+ * provider:anthropic:tenant:u-owner is at 100%" over a row named
+ * `anthropic · u-owner`. The key stays `pool`, for the button's target and
  * the lead's mono sub-line.
  */
 export type PoolLead =
@@ -446,7 +446,7 @@ export async function loadLimits(): Promise<Result<Capacity>> {
   const [cap, admin, quota] = await Promise.all([
     loadCapacity(),
     Promise.resolve(loadAdminPools()).catch(() => undefined),
-    // THE THIRD READ, FOR THE PROVIDER-TENANT ROWS (POOL-LIMITS-QUOTA, BGD
+    // THE THIRD READ, FOR THE PROVIDER-TENANT ROWS (POOL-LIMITS-QUOTA, owner
     // 2026-10-25): their ceiling is the least of the hard limit this screen
     // edits, the broker's configured max and the AIMD target, and only this
     // admin read serves the last two. It failing, or being refused, never
@@ -846,7 +846,7 @@ export function rowHref(pool: string): string {
  * field were named `tenant:eng`, the raw key the visible text had dropped. A
  * control is heard without its family's head, so the kind follows the label:
  * `eng (workspace)`. A provider's tenant pool is already two names,
- * `anthropic · u-bogdan`; `global` is its own kind.
+ * `anthropic · u-owner`; `global` is its own kind.
  */
 const SPOKEN_KIND: Readonly<Partial<Record<PoolKind, string>>> = {
   tenant: 'workspace',
@@ -1078,10 +1078,10 @@ export function setByWords(pool: Pool): { term: string; detail: string } {
  *
  * A SEGMENT IS A `kind:name` PAIR, NOT A WORD (visual QA run 3, admin-003,
  * 2026-10-21). With a break after every colon, the greedy line at 1440 took
- * `provider:anthropic:tenant:` and left `u-bogdan` alone under it: the
+ * `provider:anthropic:tenant:` and left `u-owner` alone under it: the
  * tenant's kind on one line and its name on the next. A pool key is a path of
  * pairs, so it breaks only between them -- `provider:anthropic:` over
- * `tenant:u-bogdan` -- and a one-pair key (`tenant:eng`, `runner:claude-code`)
+ * `tenant:u-owner` -- and a one-pair key (`tenant:eng`, `runner:claude-code`)
  * offers no break at all. A pair wider than the cell still wraps inside its
  * segment, at its hyphens first (VQA V160, styles/admin.css).
  */
@@ -1779,7 +1779,7 @@ function PoolRow({
 }
 
 /**
- * THE TERMS OF A PROVIDER-TENANT POOL'S CEILING (POOL-LIMITS-QUOTA, BGD
+ * THE TERMS OF A PROVIDER-TENANT POOL'S CEILING (POOL-LIMITS-QUOTA, owner
  * 2026-10-25, part of #2302).
  *
  * WHY THE ROW SAYS WHICH TERM BINDS. anthropic · eng sat full at 14 while this
@@ -1910,7 +1910,7 @@ export function hardMaxWords(name: string, data: unknown): SaveOutcome {
 
 /**
  * THE QUOTA TERMS IN THE SIDE EDITOR, AND THE TWO CONTROLS OVER THEM
- * (POOL-LIMITS-QUOTA; BGD 2026-10-25: "Console reset button", "Console edits
+ * (POOL-LIMITS-QUOTA; owner 2026-10-25: "Console reset button", "Console edits
  * configured max").
  *
  * PLATFORM ADMINS ONLY, AND ONLY WHEN KNOWN TO BE ONE. The hard-limit editor
@@ -2824,7 +2824,7 @@ function typedCeiling(c: BudgetLimits): Record<BudgetUnit, string> {
  * `{usd, tokens}`, either or both: a workspace picks its budget's unit, so a ceiling in dollars alone does not cap a
  * workspace that budgets in tokens. Off by default (`{}`).
  *
- * THE CEILING ALONE TURNS NOTHING ON (BGD, 2026-10-26, question 4): a workspace that sets no budget has none, whatever
+ * THE CEILING ALONE TURNS NOTHING ON (owner, 2026-10-26, question 4): a workspace that sets no budget has none, whatever
  * this says. A workspace default above it is refused on save (422 `budget_above_ceiling`), and one saved earlier
  * above a ceiling lowered now is capped at the next submission, because every attempt's limit is the least of the
  * three. `PUT /v1/admin/settings` with only `agent_budget_ceiling`, replaced whole; what the save did is read off its

@@ -23,10 +23,16 @@ leaving the doc quietly wrong again.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+assert _PLACEHOLDERS_SPEC and _PLACEHOLDERS_SPEC.loader
+placeholders = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(placeholders)
 DOCS = REPO / "docs"
 DR = DOCS / "disaster-recovery.md"
 SCALING = DOCS / "scaling.md"
@@ -79,14 +85,14 @@ def test_dr_gives_firestores_recovery_point_as_point_in_time_not_an_export():
     # MUTATION: restore "| Firestore data | last export |" -> red.
     assert "last export" not in row, row
     assert "point-in-time" in row and "7 days" in row, row
-    # MUTATION: restore "nothing once the database itself is deleted" -> red (#1818: a backup outlives it).
+    # MUTATION: restore "nothing once the database itself is deleted" -> red (the Firestore-backups change: a backup outlives it).
     assert "nothing once the database itself is deleted" not in row, row
     assert "daily backup" in row, row
     body = _flat(objectives)
     # What was read live, with its date and where.
     for fact in (ANALYSIS, "`gcloud firestore backups schedules list --database=swarm`", "`[]`",
-                 "gs://swarm-artifacts-saga-agents-staging/backups/", "No export has ever been taken",
-                 "deleted with the database", "#1818"):
+                 f"gs://{placeholders.ARTIFACT_BUCKET}/backups/", "No export has ever been taken",
+                 "deleted with the database", "the Firestore-backups change"):
         # MUTATION: drop any one of these facts -> red.
         assert fact in body, fact
 
@@ -250,8 +256,8 @@ def test_scaling_ceilings_are_the_terraform_and_code_values():
     assert f"{nat_ips} static IP" in body
     assert f"{quota_jobs} Jobs and {quota_jobs} PVCs" in body
     # The measured numbers, each with its source.
-    for fact in ("3,044", "no available instance", "64,512", "655", "#1471", "216/3,000 vCPU",
-                 "3,299/40,960 GB", "200 instances", "119 Jobs", "#1820", "1.6 admissions/s",
+    for fact in ("3,044", "no available instance", "64,512", "655", "216/3,000 vCPU",
+                 "3,299/40,960 GB", "200 instances", "119 Jobs", "1.6 admissions/s",
                  "`global`", ANALYSIS):
         # MUTATION: drop any one row's number or source -> red.
         assert fact in body, fact

@@ -670,7 +670,7 @@ def test_the_broker_ships_off_and_releases_nothing_while_off(
     Off, Alice's own current attempt is answered 503 before any read."""
     from swarm_api.settings import ApiSettings
 
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.delenv("FORGE_BROKER", raising=False)
     assert ApiSettings.from_env().forge_broker is False
     monkeypatch.setenv("FORGE_BROKER", "true")

@@ -49,7 +49,7 @@ from swarm_common.logging_setup import CloudLoggingFormatter
 from . import forge_fakes
 from .conftest import api_settings, auth_header, seed_task, seed_tenant
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 OWNER, NAME = "example-org", "widgets"
 REPO = f"{OWNER}/{NAME}"

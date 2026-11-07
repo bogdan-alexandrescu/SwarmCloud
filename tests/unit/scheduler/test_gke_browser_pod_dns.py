@@ -46,7 +46,7 @@ from scheduler.settings import SchedulerSettings
 ROOT = Path(__file__).resolve().parents[3]
 BROWSER_TEMPLATE = ROOT / "kubernetes" / "worker-templates" / "worker-job-browser.yaml"
 EGRESS_POLICY = ROOT / "kubernetes" / "network-policies" / "allow-egress.yaml"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 WANTED_OPTIONS = [{"name": "ndots", "value": "1"}]

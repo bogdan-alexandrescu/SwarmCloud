@@ -1,6 +1,6 @@
 """A held merge woken because its pull request ended outside the workflow finishes.
 
-MERGE-OUTSIDE-ENDS, part of #2441 (BGD 2026-10-26). swarm-api's wake tick marks
+MERGE-OUTSIDE-ENDS, part of #2441 (the owner 2026-10-26). swarm-api's wake tick marks
 an owner-question hold whose pull request was merged or closed
 (`merge_wait.owner_hold.wake_reason`), and the scheduler returns it to READY.
 The woken step re-reads the pull request with the tenant's token BEFORE the
@@ -49,7 +49,7 @@ def _held(tmp_path, *, wake_reason: str | None) -> MergeWorld:
 
 def _merged_by_hand(world: MergeWorld) -> None:
     world.pr.update(state="closed", merged=True, merge_commit_sha=MERGED,
-                    merged_by={"login": "bogdan-alexandrescu"},
+                    merged_by={"login": "example-user"},
                     merged_at="2026-10-26T07:25:00Z")
 
 
@@ -68,10 +68,10 @@ def test_a_pull_request_merged_by_hand_ends_the_step_succeeded(tmp_path):
     assert summary["merged_by_this_task"] is False
     # MUTATION: drop who, when or the commit and the summary cannot say what happened.
     assert summary["merge_commit"] == MERGED
-    assert summary["merged_by"] == "bogdan-alexandrescu"
+    assert summary["merged_by"] == "example-user"
     assert summary["merged_at"] == "2026-10-26T07:25:00Z"
     assert "merged outside the workflow" in summary["outcome"]
-    assert MERGED in summary["outcome"] and "bogdan-alexandrescu" in summary["outcome"]
+    assert MERGED in summary["outcome"] and "example-user" in summary["outcome"]
     assert world.token_reads == 1
 
 
@@ -135,6 +135,6 @@ def test_the_merge_facts_carry_who_merged_and_when(tmp_path):
 
     facts = merger.pull_request(41)
 
-    assert facts.merged and facts.merged_by == "bogdan-alexandrescu"
+    assert facts.merged and facts.merged_by == "example-user"
     assert facts.merged_at == "2026-10-26T07:25:00Z"
     assert OPENER in (facts.head_ref or "")

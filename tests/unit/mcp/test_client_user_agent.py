@@ -1,4 +1,4 @@
-"""Every request the bridge and `sc` send names them in `User-Agent` (BGD's
+"""Every request the bridge and `sc` send names them in `User-Agent` (the owner's
 pick, 2026-11-06): 3,299 of 3,300 single-task reads in a 20-minute sample came
 from a caller whose user agent was the bare `Python-urllib` default, so the
 request log could not say which client to slow down.

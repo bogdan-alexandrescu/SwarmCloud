@@ -5,7 +5,7 @@ What is held here, every case offline against a fake GitHub transport:
   * `missing` is each requirement of `REQUIRED` a grant does not meet, read
     by access rank (admin covers write covers read);
   * `pending_update` is true exactly when the App requests a permission an
-    installation has not accepted -- the 2026-10-11 ai-studio state -- and
+    installation has not accepted -- the 2026-10-11 peer-app state -- and
     the org's review link is GitHub's update form for that installation;
   * the App's `settings_url` reaches a platform admin and never a member,
     including a member served from the cache an admin's read filled;
@@ -91,8 +91,8 @@ class FakeGitHub:
 
 def _app(github: FakeGitHub, permissions: dict[str, str] = FULL, *,
          owner_type: str = "Organization") -> None:
-    github.on("/app", 200, {"id": 12345, "slug": "swarmcloud-saga",
-                            "owner": {"login": "sagaxyz", "type": owner_type},
+    github.on("/app", 200, {"id": 123456, "slug": "swarmcloud-app",
+                            "owner": {"login": "peer-org", "type": owner_type},
                             "permissions": {"metadata": "read", **permissions}})
 
 
@@ -111,7 +111,7 @@ def _service(github: FakeGitHub, clock: list[float] | None = None,
              jwt: str | None = None) -> ForgePermissions:
     value = jwt or _jwt()
     held = clock if clock is not None else [0.0]
-    return ForgePermissions(app_jwt=lambda: value, app_slug="swarmcloud-saga", send=github,
+    return ForgePermissions(app_jwt=lambda: value, app_slug="swarmcloud-app", send=github,
                             clock=lambda: held[0])
 
 
@@ -179,7 +179,7 @@ def test_the_apps_own_gap_is_missing_on_the_app():
 
 
 def test_actions_asks_write_and_names_both_reads_and_the_re_run():
-    # BGD 2026-11-05: the merge step re-runs a flaky run's failed jobs
+    # the owner 2026-11-05: the merge step re-runs a flaky run's failed jobs
     # (`POST actions/runs/{id}/rerun-failed-jobs`), refused 403 on read.
     # MUTATION: put "read" back and this, the docs test and the cards fail.
     actions = next(req for req in REQUIRED if req.permission == "actions")
@@ -212,24 +212,24 @@ def test_an_installation_on_actions_read_reports_the_gap_and_only_it():
 def test_pending_update_when_the_app_requests_what_the_org_has_not_accepted():
     github = FakeGitHub()
     _app(github)  # the App now requests statuses: read
-    _installed(github, "sagaxyz", "ai-studio", 101)
+    _installed(github, "peer-org", "peer-app", 101)
     _installation(github, 101, {k: v for k, v in FULL.items() if k != "statuses"})
     _installed(github, "example-org", "api", 202)
     _installation(github, 202, FULL)
-    answer = _read(_service(github), [_repo("sagaxyz", "ai-studio"), _repo("example-org", "api")])
+    answer = _read(_service(github), [_repo("peer-org", "peer-app"), _repo("example-org", "api")])
 
-    saga = _org(answer, "sagaxyz")
-    assert saga["pending_update"] is True
-    assert saga["pending"] == [{"permission": "statuses", "requested": "read", "granted": None}]
-    assert [g["permission"] for g in saga["missing"]] == ["statuses"]
-    assert saga["review_url"] == (
-        "https://github.com/organizations/sagaxyz/settings/installations/101/permissions/update")
-    assert saga["error"] is None
+    org = _org(answer, "peer-org")
+    assert org["pending_update"] is True
+    assert org["pending"] == [{"permission": "statuses", "requested": "read", "granted": None}]
+    assert [g["permission"] for g in org["missing"]] == ["statuses"]
+    assert org["review_url"] == (
+        "https://github.com/organizations/peer-org/settings/installations/101/permissions/update")
+    assert org["error"] is None
 
     other = _org(answer, "example-org")
     assert other["pending_update"] is False and other["missing"] == []
 
-    row = _row(answer, "sagaxyz/ai-studio")
+    row = _row(answer, "peer-org/peer-app")
     assert row["credential"] == "app" and row["installation_id"] == 101
     assert row["capabilities"] == {"push": True, "pull_request": True, "merge": False,
                                    "ci": False, "issues": True, "actions": True}
@@ -241,11 +241,11 @@ def test_pending_update_when_the_app_requests_what_the_org_has_not_accepted():
 def test_pending_is_unknown_when_the_app_could_not_be_read():
     github = FakeGitHub()
     github.on("/app", 502, {})
-    _installed(github, "sagaxyz", "ai-studio", 101)
+    _installed(github, "peer-org", "peer-app", 101)
     _installation(github, 101, FULL)
-    answer = _read(_service(github), [_repo("sagaxyz", "ai-studio")])
+    answer = _read(_service(github), [_repo("peer-org", "peer-app")])
     assert "502" in answer["app"]["error"]
-    org = _org(answer, "sagaxyz")
+    org = _org(answer, "peer-org")
     # The grant was read, so `missing` stands; what the App requests was not.
     assert org["missing"] == [] and org["pending_update"] is None
 
@@ -269,9 +269,9 @@ def test_one_installation_is_read_once_for_all_its_repositories():
     github = FakeGitHub()
     _app(github)
     for name in ("a", "b", "c"):
-        _installed(github, "sagaxyz", name, 101)
+        _installed(github, "peer-org", name, 101)
     _installation(github, 101, FULL)
-    answer = _read(_service(github), [_repo("sagaxyz", n) for n in ("a", "b", "c")])
+    answer = _read(_service(github), [_repo("peer-org", n) for n in ("a", "b", "c")])
     assert len(answer["orgs"]) == 1
     assert github.paths().count("/app/installations/101") == 1
 
@@ -283,17 +283,17 @@ def test_one_installation_is_read_once_for_all_its_repositories():
 def test_one_org_erroring_leaves_the_others_answering(failure):
     github = FakeGitHub()
     _app(github)
-    _installed(github, "sagaxyz", "ai-studio", 101)
+    _installed(github, "peer-org", "peer-app", 101)
     github.on("/app/installations/101", failure, {"message": "nope"})
     _installed(github, "example-org", "api", 202)
     _installation(github, 202, FULL)
-    answer = _read(_service(github), [_repo("sagaxyz", "ai-studio"), _repo("example-org", "api")])
+    answer = _read(_service(github), [_repo("peer-org", "peer-app"), _repo("example-org", "api")])
 
-    broken = _org(answer, "sagaxyz")
+    broken = _org(answer, "peer-org")
     assert broken["error"] and broken["granted"] is None and broken["missing"] is None
     # The link to fix it is still there: it needs no read.
     assert broken["review_url"].endswith("/installations/101/permissions/update")
-    row = _row(answer, "sagaxyz/ai-studio")
+    row = _row(answer, "peer-org/peer-app")
     assert row["credential"] == "app" and row["error"]
     assert row["capabilities"] == {cap: None for cap in forgeperms.CAPABILITIES}
 
@@ -305,11 +305,11 @@ def test_one_org_erroring_leaves_the_others_answering(failure):
 def test_an_installation_lookup_github_did_not_answer_is_that_repositorys_error():
     github = FakeGitHub()
     _app(github)
-    github.on("/repos/sagaxyz/ai-studio/installation", 503, {})
+    github.on("/repos/peer-org/peer-app/installation", 503, {})
     _installed(github, "example-org", "api", 202)
     _installation(github, 202, FULL)
-    answer = _read(_service(github), [_repo("sagaxyz", "ai-studio"), _repo("example-org", "api")])
-    row = _row(answer, "sagaxyz/ai-studio")
+    answer = _read(_service(github), [_repo("peer-org", "peer-app"), _repo("example-org", "api")])
+    row = _row(answer, "peer-org/peer-app")
     assert row["credential"] is None and "503" in row["error"]
     assert row["capabilities"] == {cap: None for cap in forgeperms.CAPABILITIES}
     assert _row(answer, "example-org/api")["capabilities"]["push"] is True
@@ -448,7 +448,7 @@ def test_settings_url_is_served_to_an_admin_and_never_to_a_member():
     service = _service(github, clock)
     admin = _read(service, [], is_admin=True)
     assert admin["app"]["settings_url"] == (
-        "https://github.com/organizations/sagaxyz/settings/apps/swarmcloud-saga/permissions")
+        "https://github.com/organizations/peer-org/settings/apps/swarmcloud-app/permissions")
     # Served from the cache the admin's read filled: still stripped.
     member = _read(service, [], is_admin=False)
     assert member["cached"] is True and member["app"]["settings_url"] is None
@@ -460,7 +460,7 @@ def test_a_user_owned_app_settings_url_is_the_accounts_form():
     github = FakeGitHub()
     _app(github, owner_type="User")
     app = _read(_service(github), [], is_admin=True)["app"]
-    assert app["settings_url"] == "https://github.com/settings/apps/swarmcloud-saga/permissions"
+    assert app["settings_url"] == "https://github.com/settings/apps/swarmcloud-app/permissions"
 
 
 # -- the cache ----------------------------------------------------------------------
@@ -469,14 +469,14 @@ def test_a_user_owned_app_settings_url_is_the_accounts_form():
 def test_the_answer_is_cached_for_a_minute_and_refresh_reads_again():
     github = FakeGitHub()
     _app(github)
-    _installed(github, "sagaxyz", "ai-studio", 101)
+    _installed(github, "peer-org", "peer-app", 101)
     _installation(github, 101, {k: v for k, v in FULL.items() if k != "statuses"})
     clock = [100.0]
     service = _service(github, clock)
-    repos = [_repo("sagaxyz", "ai-studio")]
+    repos = [_repo("peer-org", "peer-app")]
 
     first = _read(service, repos)
-    assert first["cached"] is False and _org(first, "sagaxyz")["pending_update"] is True
+    assert first["cached"] is False and _org(first, "peer-org")["pending_update"] is True
     reads = len(github.calls)
 
     # The org accepts on GitHub; within the minute the cache still answers.
@@ -484,12 +484,12 @@ def test_the_answer_is_cached_for_a_minute_and_refresh_reads_again():
     clock[0] = 159.0
     again = _read(service, repos)
     assert again["cached"] is True and len(github.calls) == reads
-    assert _org(again, "sagaxyz")["pending_update"] is True
+    assert _org(again, "peer-org")["pending_update"] is True
 
     # refresh=true reads again, at once.
     fresh = _read(service, repos, refresh=True)
     assert fresh["cached"] is False and len(github.calls) > reads
-    assert _org(fresh, "sagaxyz")["pending_update"] is False
+    assert _org(fresh, "peer-org")["pending_update"] is False
 
     # And past the minute the cache expires on its own.
     reads = len(github.calls)
@@ -557,8 +557,8 @@ def route(db, tokens, group_map, objects):
         metrics=ApiMetrics(), objects=objects, forge_tokens=forge_tokens,
         now=lambda: T0)
     service = forgeapp.ForgeApp(
-        db, config=forgeapp.AppConfig(client_id="Iv23" + "abcdefgh12", app_id="12345",
-                                      slug="swarmcloud-saga"),
+        db, config=forgeapp.AppConfig(client_id="Iv23" + "abcdefgh12", app_id="123456",
+                                      slug="swarmcloud-app"),
         secrets=FakeAppSecret(), slots=None, send=github, now=lambda: T0)
     client = TestClient(create_app(ctx, forge_app=service), raise_server_exceptions=False)
     return client, github, forge_tokens
@@ -567,10 +567,10 @@ def route(db, tokens, group_map, objects):
 def test_the_route_answers_the_callers_tenant_with_the_apps_jwt(route, db):
     client, github, forge_tokens = route
     _app(github, {k: v for k, v in FULL.items() if k != "statuses"})
-    _seed_repository(db, "eng", "sagaxyz", "ai-studio")
+    _seed_repository(db, "eng", "peer-org", "peer-app")
     _seed_repository(db, "eng", "example-org", "api")
     _seed_repository(db, "research", "other-org", "secret")
-    _installed(github, "sagaxyz", "ai-studio", 101)
+    _installed(github, "peer-org", "peer-app", 101)
     _installation(github, 101, FULL)
     _token_repo(github, role={"push": True, "triage": True}, status=200)
     github.on("/repos/example-org/api/commits/main/status", 200, {})
@@ -579,12 +579,12 @@ def test_the_route_answers_the_callers_tenant_with_the_apps_jwt(route, db):
     assert member.status_code == 200, member.text
     body = member.json()
     assert body["tenant_id"] == "eng"
-    assert {row["repo"] for row in body["repositories"]} == {"sagaxyz/ai-studio",
+    assert {row["repo"] for row in body["repositories"]} == {"peer-org/peer-app",
                                                             "example-org/api"}
     assert body["app"]["settings_url"] is None
     assert [g["permission"] for g in body["app"]["missing"]] == ["statuses"]
     # The org accepted more than the App now asks for: nothing pending.
-    assert _org(body, "sagaxyz")["pending_update"] is False
+    assert _org(body, "peer-org")["pending_update"] is False
     assert forge_tokens.reads == ["eng"]
     # The App's calls carried a signed JWT (three dot-separated parts).
     app_auth = next(auth for _, path, auth in github.calls if path == "/app")
@@ -594,7 +594,7 @@ def test_the_route_answers_the_callers_tenant_with_the_apps_jwt(route, db):
 
     admin = client.get("/v1/forge/permissions", headers=auth_header("root"))
     assert admin.json()["cached"] is True
-    assert admin.json()["app"]["settings_url"].endswith("/apps/swarmcloud-saga/permissions")
+    assert admin.json()["app"]["settings_url"].endswith("/apps/swarmcloud-app/permissions")
 
     calls = len(github.calls)
     fresh = client.get("/v1/forge/permissions?refresh=true", headers=auth_header("alice"))

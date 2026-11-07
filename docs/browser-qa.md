@@ -126,7 +126,7 @@ that crashes before its `record stop` leaves one running. The next
 `record start` does not refuse for that: it stops the earlier recorder as
 `record stop` would (the stop file, at most 30 s, then SIGTERM), keeps its
 GIF, names it in its answer as `replaced` with what it wrote in
-`replaced_result`, and starts the new one (#1981). One recorder runs at a time;
+`replaced_result`, and starts the new one. One recorder runs at a time;
 started again under the same name, the new GIF is written over the old.
 
 ---
@@ -279,8 +279,8 @@ compare within one run for now).
 
 A step on either Claude profile can run the repository's own headless suite
 (`npx playwright test`), with the Chromium revision that repository's
-`@playwright/test` pins. BGD chose this on 2026-10-26 (fix (c) on #2253) after
-three steps of one Product Oracle run could not. Neither image carries the
+`@playwright/test` pins. [the owner] chose this on 2026-10-26 (fix (c), the Chromium-launch fix) after
+three steps of one a peer application run could not. Neither image carries the
 repository's revision: the step installs it, and Chromium's system libraries
 and fonts are already in both images, so **never pass `--with-deps`**. The agent
 is not root, so the flag can only fail on `su` after a download.
@@ -299,7 +299,7 @@ of the 2 GiB checkpoint. A resumed attempt downloads it again. The image
 carries the libraries that Playwright's own `install-deps chromium` list names
 for Debian 12, plus fontconfig, Liberation and Noto Color Emoji. It does not
 carry a browser
-(`images/agent-runtime-base/Dockerfile`). Before #2253 the launch failed on a
+(`images/agent-runtime-base/Dockerfile`). Before the Chromium-launch fix the launch failed on a
 missing `libglib-2.0.so.0`, and a renderer with no font fontconfig could find
 died with `Skia FontConfig FATAL`. CJK and Thai fonts are not in the base
 image, so a screenshot assertion over such text renders it as boxes there.
@@ -312,7 +312,7 @@ swarm-test-browsers npx playwright test
 ```
 
 The agent's own `PLAYWRIGHT_BROWSERS_PATH` is the live-browser stub
-(BROWSER-ENFORCE, #1030), so a bare `npx playwright test` fails to launch,
+(BROWSER-ENFORCE), so a bare `npx playwright test` fails to launch,
 and that is deliberate: the agent's own browsing goes through the live browser
 the person watching sees. `swarm-test-browsers` runs that one command with
 `PLAYWRIGHT_BROWSERS_PATH="$SWARM_TEST_BROWSERS_PATH"`. That is a writable
@@ -330,11 +330,11 @@ what the exception does and does not relax, are in
 
 This section is for lane authors in other repositories. A UI lane's implement
 step can look at its own branch in a real browser and compare each render with
-the repository's frame PNGs before it finishes. BGD decided this on 2026-10-26
-(IMPLEMENT-RENDER, part of #2442), at the AI Studio session's request, and it
+the repository's frame PNGs before it finishes. [the owner] decided this on 2026-10-26
+(IMPLEMENT-RENDER), at a peer application session's request, and it
 applies to **any** repository.
 
-**Why.** AI Studio's ~30 visual-conformance lanes checked their UI fixes only
+**Why.** A peer application's ~30 visual-conformance lanes checked their UI fixes only
 with rendered-HTML tests. None of them looked at a real render. After merge, a
 browser re-check on staging found 28 of 52 desktop rows and 12 of 34 phone rows
 still wrong, plus 6 new regressions. A rendered-HTML test checks the markup
@@ -422,7 +422,7 @@ hand-off to a person (`swarm-handoff request`) does not replace it: the lane
 parks until someone comes, the session is not kept across a park, and on a
 step that runs unattended nobody comes. The way through Cloudflare Access is a
 service token that the platform adds and the agent never sees. That is lane
-CF-ACCESS-TOKEN of #2442, not this one.
+CF-ACCESS-TOKEN, not this one.
 
 ### 6.3 Render the four combinations
 
@@ -438,7 +438,7 @@ command. Both are the gate's, and both hold across navigation and new tabs:
 | phone dark | `swarm-handoff device phone-390` · `swarm-handoff theme dark` |
 
 Use `phone-380` instead of `phone-390` when the repository's phone frames
-are drawn at 380. It is 380×800, the frame AI Studio draws its phone mock-ups
+are drawn at 380. It is 380×800, the frame a peer application draws its phone mock-ups
 in (PHONE-380), with `phone-390`'s scale and user agent. `desktop` is 1440×900. `browser_resize` is refused:
 the gate owns the size.
 
@@ -467,7 +467,7 @@ puts the PNG at a name the compare step can use.
 a full-document shot is not the page as laid out, at any preset. On a phone,
 `swarm_qa` measured a first shot at phone-390 of 980×2121 with the page drawn
 small (`swarm_qa.py`, `_shot`). On the desktop too: a `full_page=True` shot at
-1440 of a 300-item list (epic #1981, comment 7, the visual-QA run's
+1440 of a 300-item list (comment 7, the visual-QA run's
 `flows/10c-long-300-fullpage--1440.png`) repeats the fixed banner and title
 at its bottom. The likely cause, not traced: the gate refuses the metrics
 override a full-page shot uses to grow the viewport to the document, so
@@ -539,7 +539,7 @@ Read only the crop of a frame over threshold: `<name>.crop.png`, which the
 report names as `crop`. Never Read the whole diff image or the render. An image
 Read into a step stays in its context for every turn after it; before this
 rule one lane carried 15.7 MB of tool results, browser implement steps averaged
-~159 turns, and render lanes ran at a 164-382k mean context (#2524, item 2).
+~159 turns, and render lanes ran at a 164-382k mean context (item 2).
 The screenshot tools agree: Playwright MCP runs with `--image-responses omit`,
 so `browser_take_screenshot` saves its file and returns no image.
 
@@ -549,8 +549,7 @@ and compare again. Finish when every frame you touched is within the threshold.
 If a frame cannot be matched, because the frame is wrong or because of a font
 the container lacks, say so for that frame.
 
-**Judging the frames is a Sonnet child per screen** (BGD, 2026-10-27, #2524
-item 2). A score says how much differs, not whether the screen is right
+**Judging the frames is a Sonnet child per screen** ([the owner], 2026-10-27). A score says how much differs, not whether the screen is right
 against the method's checklist, and that judgement needs the images. So a
 review, and an implement step that renders, sends each screen to one child
 with `"model_class": "sonnet"` on `claude-code-browser`. The child renders that

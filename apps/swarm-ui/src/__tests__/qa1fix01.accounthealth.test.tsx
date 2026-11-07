@@ -41,18 +41,18 @@ describe('capacity-04: an account the broker holds back says so beside its healt
     const b = await fixtureBoard()
     const { container } = render(<AccountHealthBody board={b} now={b.readAt} phone={false} />)
     // MUTATION: drop the broker's own reason (BrokerNote) from StatusCellView.
-    expect(row(container, 'u-bogdan:weekly-burn').querySelector('[data-broker]')?.textContent).toMatch(/^Paused: held back for the release run on Monday/)
+    expect(row(container, 'u-owner:weekly-burn').querySelector('[data-broker]')?.textContent).toMatch(/^Paused: held back for the release run on Monday/)
     expect(row(container, 'eng:shared').querySelector('[data-broker]')?.textContent).toMatch(/^Skipped here/)
-    expect(row(container, 'u-bogdan:team-copy').querySelector('[data-broker]')?.textContent).toMatch(/^One subscription twice/)
+    expect(row(container, 'u-owner:team-copy').querySelector('[data-broker]')?.textContent).toMatch(/^One subscription twice/)
     // An account the broker hands out draws no such line.
-    expect(row(container, 'u-bogdan:primary').querySelector('[data-broker]')).toBeNull()
+    expect(row(container, 'u-owner:primary').querySelector('[data-broker]')).toBeNull()
   })
 
   it('says it on the phone’s account card too', async () => {
     const b = await fixtureBoard()
     const { container } = render(<AccountHealthBody board={b} now={b.readAt} phone />)
     fireEvent.click(within(container.querySelector('.ah-switch') as HTMLElement).getByRole('button', { name: 'Accounts' }))
-    const card = container.querySelector('a.ah-acard[data-account="u-bogdan:weekly-burn"]') as HTMLElement
+    const card = container.querySelector('a.ah-acard[data-account="u-owner:weekly-burn"]') as HTMLElement
     expect(card.querySelector('[data-broker]')?.textContent).toMatch(/^Paused/)
   })
 })
@@ -67,7 +67,7 @@ describe('capacity-05: the Erroring tile and the Provider errors column agree', 
     expect(also).not.toBeNull()
     expect(also.getAttribute('data-outranked')).toBe('1')
     expect(also.textContent).toContain('overflow')
-    // The why sits in the Erroring word's tooltip, not on the surface (BGD's
+    // The why sits in the Erroring word's tooltip, not on the surface (the owner's
     // no-prose rule, 5 November 2026).
     expect(also.textContent).not.toContain('outranks')
     const chip = tile.querySelector('.ah-tile-w .ah-st') as HTMLElement
@@ -84,11 +84,11 @@ describe('capacity-06: one "since" for the re-auth incident', () => {
     const accounts = b.page.accounts as HealthAccount[]
     const status = new Map(accounts.map((a) => [a.account_id, a.health_status as HealthStatus | null]))
     const { open } = poolIncidents(b.health.pool, (id) => status.get(id) ?? null, b.readAt)
-    const x = open.find((i) => i.account_id === 'u-bogdan:retired-laptop' && i.family === 'cred')!
+    const x = open.find((i) => i.account_id === 'u-owner:retired-laptop' && i.family === 'cred')!
     const since = `since ${when(x.from, b.readAt)}`
 
     const desk = render(<AccountHealthBody board={b} now={b.readAt} phone={false} />)
-    const banner = desk.container.querySelector('[data-state="reauth"][data-account="u-bogdan:retired-laptop"] b') as HTMLElement
+    const banner = desk.container.querySelector('[data-state="reauth"][data-account="u-owner:retired-laptop"] b') as HTMLElement
     // MUTATION: take the banner's time from the newest auth or reauth event again.
     expect(banner.textContent).toBe(`retired-laptop needs re-auth ${since}`)
     desk.unmount()
@@ -122,7 +122,7 @@ describe('chrome-C26: a Last event message can be read whole', () => {
   it('draws the whole message, wrapping inside its held column, with no one-line cut', async () => {
     const b = await fixtureBoard()
     const { container } = render(<AccountHealthBody board={b} now={b.readAt} phone={false} />)
-    const msg = row(container, 'u-bogdan:retired-laptop').querySelector<HTMLElement>('.ah-msg')!
+    const msg = row(container, 'u-owner:retired-laptop').querySelector<HTMLElement>('.ah-msg')!
     // MUTATION: put the is-one-line class (and its ellipsis rule) back on the message.
     expect(msg.classList.contains('is-one-line')).toBe(false)
     expect(msg.textContent).toBe('not assigned: the account needs re-auth')

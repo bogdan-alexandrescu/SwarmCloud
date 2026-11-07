@@ -1,6 +1,6 @@
 """A flow's capture is faithful to what it records (QA-FLOW-CAPTURE, part of #2688).
 
-The AI Studio session's QA re-run 8 (6 November 2026, target ai-studio-staging,
+The a peer application session's QA re-run 8 (6 November 2026, target peer-app-staging,
 seven legs) reported three harness defects:
 
   (a) a flow's screenshot did not show the state its json claimed: a step
@@ -39,7 +39,7 @@ def _target(**over: Any) -> dict[str, Any]:
     target: dict[str, Any] = {
         "id": "qat_3f9a",
         "revision": 4,
-        "name": "AI Studio",
+        "name": "A peer application",
         "tenant_id": "tenant-a",
         "base_url": "https://studio.example.com",
         "repository": "https://github.com/example-org/studio",

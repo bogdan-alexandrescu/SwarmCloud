@@ -170,7 +170,7 @@ function checkpoint(id: string): CheckpointRecord {
     attempt_created_at: null,
     attempt_completed_at: null,
     prefix: `${PREFIX}att_1/checkpoints/${id}/`,
-    uri: `gs://swarm-artifacts/${PREFIX}att_1/checkpoints/${id}/`,
+    uri: `gs://swarm-artifacts-example-project/${PREFIX}att_1/checkpoints/${id}/`,
     is_latest_pointer: false,
     objects: [],
     stored_bytes: 4096,

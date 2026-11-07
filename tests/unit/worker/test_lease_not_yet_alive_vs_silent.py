@@ -11,7 +11,7 @@ contract request 37) exists to measure, and the two answers disagreed by 180
 seconds.
 
 MEASURED, 2026-09-22, from the live Firestore event streams in
-saga-agents-staging: `dispatched` -> `starting` (the worker's first
+example-project: `dispatched` -> `starting` (the worker's first
 control-plane write) on Cloud Run Jobs --
 
     claude-code   n=41   min 46.2s   p50 122.6s   p90 159.0s   max 226.2s
@@ -54,7 +54,7 @@ NOW = datetime(2026, 9, 22, 4, 0, tzinfo=timezone.utc)
 ADMISSION = AdmissionConfig()
 
 CONFIG = ReconcilerConfig(
-    project_id="saga-agents-staging",
+    project_id="example-project",
     region="us-central1",
     firestore_database="swarm",
 )

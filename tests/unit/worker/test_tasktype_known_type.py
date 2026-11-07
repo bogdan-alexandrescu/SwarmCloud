@@ -3,7 +3,7 @@ November 2026; part of #2688).
 
 SwarmCloud's own usage ledger, 3 to 4 November: 172 of 377 Jev calls were the
 step-type classification (J0, `tasktype.classify_with_jev`), and 122 of those
-typed AI Studio's visual-check capture steps, whose type the QA renderer
+typed a peer application's visual-check capture steps, whose type the QA renderer
 already names. Held here:
 
   * every platform template, rendered by its REAL renderer in swarm-api, is

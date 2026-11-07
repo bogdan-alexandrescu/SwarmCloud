@@ -129,7 +129,7 @@ describe('a platform admin reads every person against every workspace (S5c)', ()
     await mount(platform([BOB, DEVOPS, FAY]))
     // MUTATION: draw the Teams column instead of one per workspace -> fails.
     expect(heads()).toEqual(['Person', 'Platform role', 'Engineering', 'Labs', 'Own workspace', 'Claude account', 'Ceiling', 'Last active', 'Manage'])
-    // bob is a platform admin (the row's `platform_admin` marker): admin in every workspace, whatever is stored (VQ-ROLES, BGD 2026-10-26).
+    // bob is a platform admin (the row's `platform_admin` marker): admin in every workspace, whatever is stored (VQ-ROLES, owner 2026-10-26).
     expect(visible(cell('bob@example.com', 'eng'))).toBe('admin (platform admin)')
     expect(visible(cell('bob@example.com', 'labs'))).toBe('admin (platform admin)')
     expect(cell('fay@example.com', 'eng')?.textContent).toBe('member')
@@ -204,7 +204,7 @@ describe('a workspace admin reads only their workspaces (S5f)', () => {
 
   it("reads only the People route and its workspaces' members lists, and writes nothing", async () => {
     const calls = await mount(SCOPED)
-    // The joined-by-request mark reads each column's members list (BGD, 2026-10-26); SCOPED has one column.
+    // The joined-by-request mark reads each column's members list (owner, 2026-10-26); SCOPED has one column.
     // `/v1/tenants/mine` names the workspaces as the switcher does (VQ-056).
     await waitFor(() => expect(calls.map((c) => c.url).sort()).toEqual(['/v1/admin/people', '/v1/tenants/mine', '/v1/workspace/members']), WAIT)
     expect(calls.filter((c) => c.method !== 'GET')).toEqual([])

@@ -145,7 +145,7 @@ describe('work-a-004: a workflow title is cut the way a lane name is', () => {
 
 // TENANT-WORDING-I (VQ-056, part of #2391): a workflow the batched read did
 // not serve is "not found in this workspace", the console's word for a tenant
-// (BGD, 2026-10-26). The route in the tooltip keeps its technical shape.
+// (owner, 2026-10-26). The route in the tooltip keeps its technical shape.
 describe('VQ-056: a workflow the batch did not serve is named against the workspace', () => {
   it('says "not found in this workspace" in the note and its tooltip', async () => {
     // A 404 from the single read is an id the batch double reports `missing`.

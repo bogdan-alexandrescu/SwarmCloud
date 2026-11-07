@@ -6,11 +6,11 @@
 //                staying the link's title and the copy.
 //   capacity-16  Accounting drift listed all 20 pools in catalogue order,
 //                zeros interleaved with drifted ones; the banner named pools
-//                by raw id beside a table that says `anthropic · u-bogdan`;
+//                by raw id beside a table that says `anthropic · u-owner`;
 //                the foot carried `make pool-check`. Drifted pools first by
 //                the size of their delta, the agreeing ones folded behind a
 //                count, one pool name in banner and table, no Makefile target.
-//   capacity-17  with `?tenant=u-bogdan` the head still said `every tenant`.
+//   capacity-17  with `?tenant=u-owner` the head still said `every tenant`.
 //
 // MUTATION: draw `<TaskRef id={l.task_id} />` with no title again -- the
 // first case finds no agent name. Sort drift rows by `held` again, or draw
@@ -44,7 +44,7 @@ function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-02T10:00:00Z' }
 }
 
-function lease(n: number, pools: string[], tenant = 'u-bogdan'): LeaseRow {
+function lease(n: number, pools: string[], tenant = 'u-owner'): LeaseRow {
   return {
     lease_id: `lease_${String(n).padStart(10, '0')}`,
     task_id: `task_${String(n).padStart(10, '0')}`,
@@ -73,9 +73,9 @@ function pool(name: string, active: number): Pool {
   return { name, active } as unknown as Pool
 }
 
-const RAW = 'provider:anthropic:tenant:u-bogdan'
+const RAW = 'provider:anthropic:tenant:u-owner'
 
-function board(leases: LeaseRow[] = [lease(1, ['global', 'tenant:u-bogdan']), lease(2, ['global', 'tenant:u-bogdan'])]): HoldersBoard {
+function board(leases: LeaseRow[] = [lease(1, ['global', 'tenant:u-owner']), lease(2, ['global', 'tenant:u-owner'])]): HoldersBoard {
   return {
     page: {
       leases,
@@ -87,7 +87,7 @@ function board(leases: LeaseRow[] = [lease(1, ['global', 'tenant:u-bogdan']), le
       truncated: false,
       active_beyond_window: 0,
     } as unknown as LeasePage,
-    // global and tenant:u-bogdan agree at 2; CLOUD_RUN_JOB is off by 1, the
+    // global and tenant:u-owner agree at 2; CLOUD_RUN_JOB is off by 1, the
     // provider pool by 5, and three pools nobody holds agree at 0.
     pools: [
       pool('backend:CLOUD_RUN_JOB', 1),
@@ -96,7 +96,7 @@ function board(leases: LeaseRow[] = [lease(1, ['global', 'tenant:u-bogdan']), le
       pool('global', 2),
       pool('resource:browser', 0),
       pool('resource:standard', 0),
-      pool('tenant:u-bogdan', 2),
+      pool('tenant:u-owner', 2),
     ],
     poolsDetail: null,
   }
@@ -164,7 +164,7 @@ describe('capacity-16: drifted pools first, agreeing ones folded, one name per p
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
-    expect(visible(callout)).toContain('anthropic · u-bogdan counts 5 more than its leases.')
+    expect(visible(callout)).toContain('anthropic · u-owner counts 5 more than its leases.')
     expect(visible(callout), 'the banner still names the pool by its raw id').not.toContain(RAW)
     expect(callout.querySelector(`[title="${RAW}"]`)).not.toBeNull()
   })
@@ -182,7 +182,7 @@ describe('capacity-16: drifted pools first, agreeing ones folded, one name per p
 
 describe('capacity-17: the head names the tenant filter', () => {
   it('reads the filtered tenant, with its own counts, under ?tenant=', async () => {
-    window.history.replaceState(null, '', '/capacity/holders?tenant=u-bogdan')
+    window.history.replaceState(null, '', '/capacity/holders?tenant=u-owner')
     const leases = [lease(1, ['global']), lease(2, ['global']), lease(3, ['global'], 'eng')]
     api.loadHolders.mockResolvedValue(ok(board(leases)))
     api.loadTask.mockResolvedValue({ status: 'loading', since: Date.now() })
@@ -190,7 +190,7 @@ describe('capacity-17: the head names the tenant filter', () => {
     await screen.findByText('Every holder', undefined, WAIT)
     const head = visible(container)
     expect(head, 'the head still claims every tenant under a filter').not.toContain('every tenant')
-    expect(head).toContain('2 unreleased leases · 2 units held · tenant u-bogdan')
+    expect(head).toContain('2 unreleased leases · 2 units held · tenant u-owner')
   })
 
   it('the control: with no filter the head still says every tenant', async () => {

@@ -137,7 +137,7 @@ describe('QA-013: the Needs a look head counts the cards it draws', () => {
 /*
  * QA-061's link took a line of its own on a phone so "quota, all tenants ·
  * admin →" stopped squeezing the title. Since VQ-002 (2026-10-26) a phone
- * draws the card as one line, and since 2026-11-05 (BGD's standing rule: a
+ * draws the card as one line, and since 2026-11-05 (the owner's standing rule: a
  * button, never an arrow link) there is no arrow left to keep there: the
  * card's button steps aside whole, and the card itself is the tap target,
  * its accessible name keeping the words.

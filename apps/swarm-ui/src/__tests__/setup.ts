@@ -28,7 +28,7 @@ import { forgetProbes } from '../fetch'
 // measured; a wait that needs more is a test to fix like those, not a reason to raise this.
 configure({ asyncUtilTimeout: 2000 })
 
-// THE ADVERSARIAL CLOCK (#2379, F10/F11; BGD chose "yes, in setup.ts" on
+// THE ADVERSARIAL CLOCK (#2379, F10/F11; owner chose "yes, in setup.ts" on
 // 2026-10-26). Every test file starts at 23:30:00Z on today's UTC date, and
 // the clock runs forward in real time from there. A test that reads the wall
 // clock and assumes "now + 2h is still today" passed for 22 hours a day and

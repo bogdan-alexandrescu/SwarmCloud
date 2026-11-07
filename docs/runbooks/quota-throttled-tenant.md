@@ -8,7 +8,7 @@ caused the 429s, and you want the tenant back at a chosen concurrency now.
 
 **Who:** a platform admin. The route is not open to pool admins or tenants.
 
-## First: was it one account? (#2302)
+## First: was it one account?
 
 Since 2026-10-25 a 429 from **one pool account** no longer halves the tenant.
 The worker's report names the account it holds, the broker records the 429 on
@@ -26,7 +26,7 @@ health before raising anything:
 ```bash
 scripts/api.sh GET /accounts \
   | jq '.accounts[] | {account_id, health_status, rate_limits_24h: .health_24h.rate_limit}'
-scripts/api.sh GET '/accounts/eng:saga-team/health?scope=platform' \
+scripts/api.sh GET '/accounts/eng:example-team/health?scope=platform' \
   | jq '{status, limited_until, counts: .counts.last_24h, last: .events[:5]}'
 ```
 
@@ -49,7 +49,7 @@ The quota broker runs AIMD per (provider, tenant)
   (`SlotPool.effective_limit`).
 
 That asymmetry is the design: being wrong upwards costs a wall of 429s. Its
-price is the case that asked for this runbook. On 2026-10-14, `u-bogdan` had
+price is the case that asked for this runbook. On 2026-10-14, `example-tenant` had
 pool `hard_limit` 40 and `configured_hard_max` 50, but one 429 at 09:47Z had
 taken the target to 3. Getting from 3 to 40 by additive increase takes
 37 × 20 = 740 clean calls — and with only 3 slots, few calls happen. The owner
@@ -108,7 +108,7 @@ make it explicitly or wait for the window to reopen.
 1. Read the state first, and note it — it is stale the moment you read it:
 
    ```bash
-   scripts/api.sh GET '/admin/quota?tenant_id=u-bogdan' \
+   scripts/api.sh GET '/admin/quota?tenant_id=example-tenant' \
      | jq '.quota[] | select(.provider=="anthropic")
            | {state, configured_hard_max, adaptive_target, effective_limit,
               cooldown_until, last_429_at, pool: .feeds_pool.effective_limit}'
@@ -116,7 +116,7 @@ make it explicitly or wait for the window to reopen.
 
    If `configured_hard_max` is below what you want, the reset clamps to it.
    If the pool's `hard_limit` is, raise that too
-   (`PUT /admin/limits/provider/anthropic/tenant/u-bogdan`): the lease takes
+   (`PUT /admin/limits/provider/anthropic/tenant/example-tenant`): the lease takes
    the lower of the two.
 
 2. Reset. `scripts/api.sh` is curl with the token on stdin rather than in
@@ -124,7 +124,7 @@ make it explicitly or wait for the window to reopen.
    why). It exits non-zero on a non-2xx, so a 409 stops a runbook script.
 
    ```bash
-   scripts/api.sh PUT /admin/quota/anthropic/u-bogdan/adaptive-target \
+   scripts/api.sh PUT /admin/quota/anthropic/example-tenant/adaptive-target \
      '{"target": 40, "reason": "lent two more accounts after the 09:47Z 429"}'
    ```
 

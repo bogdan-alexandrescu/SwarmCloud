@@ -37,7 +37,7 @@ const JSON_HEADERS = { 'content-type': 'application/json' }
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'cd'.repeat(32)
-const OWNER = 'bogdan-alexandrescu'
+const OWNER = 'example-org'
 const REF = `${OWNER}/SwarmCloud#454`
 const ISSUE_URL = `https://github.com/${OWNER}/SwarmCloud/issues/454`
 const RUN_ID = 'run_l12a1b2c3d4e5f607182'

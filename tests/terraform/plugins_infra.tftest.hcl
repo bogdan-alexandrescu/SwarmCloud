@@ -17,6 +17,8 @@
 #     HTTPS), no secret in its environment, no database, max one try; it is
 #     planned only once its gated image has a digest, and swarm-api may start
 #     it with overrides.
+#   * the deployer's actAs on the intake account: planned only with the job
+#     and a named deployer, never before the intake image ships.
 #
 # Conditions are EVALUATED against admitted and refused object names with the
 # startsWith() emulation below, so dropping or widening a clause turns a run
@@ -323,5 +325,70 @@ run "the_intake_job_has_no_egress_and_no_secret" {
       && google_cloud_run_v2_job_iam_member.plugin_intake_api_runs[0].name == "swarm-plugin-intake"
     )
     error_message = "swarm-api starts the intake job with overrides, on that job only"
+  }
+}
+
+# The deployer's actAs on the intake account exists only to deploy the intake
+# job, and the deployer cannot read that account's policy until bootstrap grants
+# it, so the grant is planned only with the job: the image's digest AND a named
+# deployer. Either one alone plans nothing.
+run "the_deployer_acts_as_the_intake_account_only_with_the_job" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    deployer_service_account = "swarm-tf-deployer@${var.project_id}.iam.gserviceaccount.com"
+    image_refs = merge(var.image_refs, {
+      "swarm-plugin-intake" = "us-central1-docker.pkg.dev/${var.project_id}/swarm-images/swarm-plugin-intake@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    })
+  }
+
+  assert {
+    condition = (
+      length(google_service_account_iam_member.plugin_intake_deployer_acts_as) == 1
+      && google_service_account_iam_member.plugin_intake_deployer_acts_as[0].service_account_id == "projects/${var.project_id}/serviceAccounts/swarm-plugin-intake@${var.project_id}.iam.gserviceaccount.com"
+      && google_service_account_iam_member.plugin_intake_deployer_acts_as[0].role == "roles/iam.serviceAccountUser"
+      && google_service_account_iam_member.plugin_intake_deployer_acts_as[0].member == "serviceAccount:swarm-tf-deployer@${var.project_id}.iam.gserviceaccount.com"
+    )
+    error_message = "with the intake image and a named deployer, the deployer acts as the intake account"
+  }
+}
+
+run "no_intake_image_no_deployer_acts_as_grant" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    deployer_service_account = "swarm-tf-deployer@${var.project_id}.iam.gserviceaccount.com"
+  }
+
+  assert {
+    condition     = length(google_cloud_run_v2_job.plugin_intake) == 0 && length(google_service_account_iam_member.plugin_intake_deployer_acts_as) == 0
+    error_message = "before the intake image ships, the deployer's actAs on the intake account is not planned (it would fail 403 getIamPolicy)"
+  }
+}
+
+run "no_deployer_no_deployer_acts_as_grant" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    image_refs = merge(var.image_refs, {
+      "swarm-plugin-intake" = "us-central1-docker.pkg.dev/${var.project_id}/swarm-images/swarm-plugin-intake@sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    })
+  }
+
+  assert {
+    condition     = length(google_cloud_run_v2_job.plugin_intake) == 1 && length(google_service_account_iam_member.plugin_intake_deployer_acts_as) == 0
+    error_message = "with no deployer named, the intake job is planned without a deployer actAs grant"
   }
 }

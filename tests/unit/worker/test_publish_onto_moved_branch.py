@@ -9,7 +9,7 @@ recoveries were the task's own earlier attempt (#1438) and a branch moved
 by merges of the default branch alone (#2179). Every other mover lost the
 fix to `swarm-work.patch`.
 
-DECIDED (BGD, 2026-10-27, recorded on #1821): worker rebase-and-retry. On
+DECIDED (the owner, 2026-10-27, recorded on #1821): worker rebase-and-retry. On
 a rejected push the worker replays the attempt's commits onto the new tip,
 re-runs the publish scan, the authorship check and the fence check, and
 pushes once as a fast-forward, never forced; on conflict it ends

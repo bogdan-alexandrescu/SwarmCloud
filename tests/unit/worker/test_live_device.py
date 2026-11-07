@@ -12,7 +12,7 @@ docs/design/live-browser.md section 6.1. The acceptance test of lane L3b:
 
 Until LIVE-NOMASK (#2298) the list ended "the mask covers a password field on
 every preset where the page draws it"; the live view paints nothing since
-BGD's decision of 2026-10-25 (design §5.3), so that case went with the mask.
+the owner's decision of 2026-10-25 (design §5.3), so that case went with the mask.
 
 The expected sizes below are the design's list (section 6.1), written out
 again here rather than read from presets.py, so a preset that drifts from the
@@ -65,7 +65,7 @@ DESIGN = {
     # QA-KIT (owner decision 2026-10-19): the 390-wide phone a visual QA sweep
     # names, with iPhone 15's mobile flags.
     "phone-390": (390, 844, 3.0, True, "iPhone OS"),
-    # PHONE-380 (BGD, 2026-10-26, part of #2136): AI Studio's phone mock-up
+    # PHONE-380 (the owner, 2026-10-26, part of #2136): A peer application's phone mock-up
     # frame, 380 x 800, with phone-390's mobile flags, user agent and scale.
     "phone-380": (380, 800, 3.0, True, "iPhone OS"),
     "pixel-8": (412, 915, 2.625, True, "Android"),
@@ -444,7 +444,7 @@ def test_the_ctl_device_operation_selects_by_name():
 
 def test_the_controller_takes_a_display_and_no_scale_sink():
     """The scale sink's only user was the mask, gone with LIVE-NOMASK (#2298):
-    BGD, 2026-10-25, "remove it". The display change is observed through the
+    the owner, 2026-10-25, "remove it". The display change is observed through the
     display and `on_resize`, which the tests above read."""
     params = inspect.signature(DeviceController).parameters
     positional = [n for n, p in params.items() if p.kind is not inspect.Parameter.KEYWORD_ONLY]

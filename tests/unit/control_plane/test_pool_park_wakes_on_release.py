@@ -158,7 +158,7 @@ def test_one_release_wakes_both_parks_when_the_account_has_room_for_two(
 
     report = _scheduler(make_scheduler).drain()
 
-    # BGD's pick on PR #3044, "free slots only": a release wakes as many parks
+    # the owner's pick on PR #3044, "free slots only": a release wakes as many parks
     # as the pool has free slots, each gated by `choose()` and a claim.
     # MUTATION: a one-park-per-release budget leaves the newer one PARKED.
     assert db.docs["tasks/task_z_old"]["state"] != "PARKED", report.to_dict()

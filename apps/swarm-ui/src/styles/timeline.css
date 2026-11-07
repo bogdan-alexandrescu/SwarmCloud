@@ -786,7 +786,7 @@
     align-items: center;
     gap: 8px;
   }
-  /* THE LEGEND FOLDS (VQ-024, "Fold the legend", BGD 2026-10-26): its
+  /* THE LEGEND FOLDS (VQ-024, "Fold the legend", owner 2026-10-26): its
      seven marks wrapped to four lines above the first lane at 390. Behind
      `Key`, beside `Filters · N`, closed by default; open, it is the same
      legend in the same place. Desktop keeps it always shown. */

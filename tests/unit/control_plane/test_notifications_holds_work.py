@@ -1,6 +1,6 @@
-"""The bell's task questions: only what still holds work (BGD's pick, 6 November 2026).
+"""The bell's task questions: only what still holds work (the owner's pick, 6 November 2026).
 
-BGD asked "why do I have so many needs me in the console and a ton of
+the owner asked "why do I have so many needs me in the console and a ton of
 question marks even beside completed workflows?". An ended step's unanswered
 questions ring only while its workflow has not finished, or while a merge in it
 is held on the owner's questions; a task in no workflow rings only while it is

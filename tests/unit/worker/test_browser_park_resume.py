@@ -37,7 +37,7 @@ from agent_worker.livegate import tabs as tabs_mod
 from agent_worker.livegate.session import SessionCarry
 from agent_worker.livegate.tabs import TabKeeper, TabsRefused, refusal
 
-PERSONAL = "u-bogdan-example-com"
+PERSONAL = "u-owner-example-com"
 GROUP = "eng"
 TASK = "task_s5resume"
 CTL = "/run/swarm-gate/ctl.sock"

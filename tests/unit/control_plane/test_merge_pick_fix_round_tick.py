@@ -1,6 +1,6 @@
 """swarm-api's wake tick starts a pick-fix round for a merge parked on an unbuilt pick.
 
-PICK-FIX-ROUND (part of #2441; BGD 2026-10-26). A merge whose owner picked an
+PICK-FIX-ROUND (part of #2441; the owner 2026-10-26). A merge whose owner picked an
 option the branch did not build parks CI_PENDING with
 `owner_pick_fix_pending` (agent_worker.merge), one `pending` line per pick.
 The tick reads the park as it reads a CI or a conflict park, and:
@@ -252,7 +252,7 @@ def test_the_brief_takes_only_well_formed_pick_lines():
 
 
 # --------------------------------------------------------------------------
-# ROLLUP-PICK-FIX (part of #2441; BGD 2026-10-26): the round is a step
+# ROLLUP-PICK-FIX (part of #2441; the owner 2026-10-26): the round is a step
 # `pick-fix:<n>` of the lane's workflow, as a CI or conflict round is.
 # --------------------------------------------------------------------------
 

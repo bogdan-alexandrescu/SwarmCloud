@@ -1,6 +1,6 @@
 """The owner-only raw patch: `GET /v1/tasks/{id}/artifacts/raw?redaction=none` (#1857).
 
-BGD's decision, 2026-10-27: a served `.patch` is redacted at read time, so its
+the owner's decision, 2026-10-27: a served `.patch` is redacted at read time, so its
 credential-SHAPED test fixtures come back masked and the patch no longer
 applies. The masking rules stay as they are; the person who SUBMITTED the task
 may download the patch as stored. What is pinned here:

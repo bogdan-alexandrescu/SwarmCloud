@@ -335,6 +335,9 @@ CODECS: tuple[Codec, ...] = (
             "forge_credential_source",
             # BROWSER-USE-FLAG (part of #2322): lifted from `result_summary`.
             "browser_used", "browser_use",
+            # #2688: a single task's own `metadata.description`, masked and
+            # lifted out (null on a workflow's step): `codec.own_description`.
+            "description",
         ),
     ),
     Codec(

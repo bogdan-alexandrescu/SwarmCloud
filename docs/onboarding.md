@@ -1,6 +1,6 @@
 # Onboarding: connect GitHub as yourself, enable orgs, choose repositories
 
-**Status: BUILT on 2026-10-09 (#780; proposed 2026-10-07 as a design, functionality
+**Status: BUILT on 2026-10-09 (proposed 2026-10-07 as a design, functionality
 wave 15, lane C4T).** Every lane of §5 has shipped, each marked there with its
 pull request; the design text below is kept as the record of why. The last
 pieces: the fallback token route `POST /v1/onboarding/github/token` (D5, from
@@ -30,7 +30,7 @@ document only drafts one (§3.3). The checklist's other half, the person's own
 workspace (tenant, identity, namespace), is built: an admin approves it in
 Admin → People and the Cloud Run job `swarm-workspace-apply` makes it, under a
 call guard. §2.7 says what a person sees; the design is
-[workspaces.md](workspaces.md) (#847), and how it is operated is
+[workspaces.md](workspaces.md), and how it is operated is
 [multi-tenancy §7](multi-tenancy.md#7-a-persons-personal-workspace).
 
 Everything here happens inside a deployment that already exists. A new
@@ -54,8 +54,8 @@ What it settles, one line each:
   pages through every repository and accepts a typed `owner/repo` (§5).
 
 The names below are placeholders. `example-user` is a person's own GitHub
-account and `example-org` an organisation that enforces SAML SSO (in #780 these
-are the owner's account and `sagaxyz`); the tenant is `eng`, the console
+account and `example-org` an organisation that enforces SAML SSO (in the GitHub-App onboarding design these
+are the owner's account and `example-org`); the tenant is `eng`, the console
 `swarm.example.com`.
 
 ---
@@ -212,7 +212,7 @@ answer (uninstall) as well as SwarmCloud's own. A fine-grained PAT (A) stays as
 the fallback for an org whose admin will not install the App: it is the same
 user slot, a different `kind`, and the user stores it by stdin. C is rejected:
 it has neither per-org nor per-repo control at GitHub, and a non-expiring token
-that reaches every repository of the user is the opposite of what #780 asks.
+that reaches every repository of the user is the opposite of what the GitHub-App onboarding design asks.
 
 Custody, for every option, and not softened:
 
@@ -257,8 +257,8 @@ authorisation, an uninstalled org) shows as such without anyone editing it.
 The steps, in order: `signed_in`, `workspace`, `claude_account`,
 `github_connected`, `app_installed`, `orgs_enabled`, `repos_chosen`,
 `access_verified`, `ready` (`swarm_api.onboarding.STEPS`). The two workspace
-steps came with #847 and are §2.7's. `app_installed`
-was added on 2026-10-08 (#780) after the owner connected GitHub, authorised
+steps came with the workspace-steps change and are §2.7's. `app_installed`
+was added on 2026-10-08 after the owner connected GitHub, authorised
 the App, never installed it, and found an Access page with no orgs and no
 explanation: authorising the App (Connect) and installing it are two acts at
 GitHub, and only an installation lets SwarmCloud list an org. Each is in one of `todo`,
@@ -346,13 +346,13 @@ state and grants, never a value.
 ### 2.6 GitHub permissions health: what each permission is for
 
 **Why the console shows this.** On 2026-10-11 every merge on
-`sagaxyz/ai-studio` failed with `token_lacks_rights`: the `swarmcloud-saga`
+`example-org/peer-app` failed with `token_lacks_rights`: the `swarmcloud-example`
 App had been changed to request **Commit statuses: read**, but the org had not
 accepted the update, and nothing in the console said so. GitHub never lets
 SwarmCloud grant itself a permission, and a requested one does nothing until
 an org owner accepts it on GitHub. So the platform's job is to say, before a
 run fails, which permission is missing, where, what it breaks, and to link to
-the exact GitHub page that fixes it (#1086, design 2, "Org cards").
+the exact GitHub page that fixes it (design 2, "Org cards").
 
 `GET /v1/forge/permissions` (`apps/swarm-api/swarm_api/forgeperms.py`) answers
 for the caller's tenant:
@@ -639,7 +639,7 @@ does).
    (`/repos/{o}/{r}/commits/{sha}/status`, `apps/agent-worker/agent_worker/merge.py`)
    before every merge, and without it GitHub answers 403 "Resource not
    accessible by integration" and the step refuses `token_lacks_rights`
-   (measured on ai-studio, 2026-10-11, until the permission was added to the
+   (measured on peer-app, 2026-10-11, until the permission was added to the
    App and accepted on the installation).
 2. **A platform secret for the App's client secret**, declared by Terraform
    with no version, value added by `scripts/create-secrets.sh --stdin`;
@@ -661,7 +661,7 @@ does).
    conditional binding per tenant (`forge_slot_reader`, decision D7/U1).
    Every member of a group tenant runs agents as the same worker account, so
    that binding lets Bob's agent read Alice's slot. The owner's 2026-10-11
-   decision that secrets are user-scoped (#1041) supersedes it: swarm-api's
+   decision that secrets are user-scoped supersedes it: swarm-api's
    broker, `POST /v1/attempts/forge-credential`, releases a person's slot
    only to the current attempt of an agent that person submitted
    ([design/user-scoped-secrets.md](design/user-scoped-secrets.md)). It is
@@ -718,7 +718,7 @@ decisions D4, 2026-10-07 and 2026-10-08):**
   403 `REPOSITORY_NOT_GRANTED`, "choose it under Access"
   (`apps/swarm-api/swarm_api/validation.py::repository_not_granted`). This
   happens once `REPOSITORY_GRANTS_ENFORCED` is on. While it is off, the agent
-  runs with the tenant token, as before #780
+  runs with the tenant token, as before the GitHub-App onboarding design
   (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`).
   The switch is `var.repository_grants_enforced`: **on in dev**, where the
   App is registered and people can connect, and **off in prod**, which
@@ -733,7 +733,7 @@ decisions D4, 2026-10-07 and 2026-10-08):**
 **Retiring the tenant token** is the owner's step, not a lane's, and it is
 not a console button. The Access page never grew one, because service
 submissions still need the token. [git-tokens.md](git-tokens.md) ("Built for
-#780") has the procedure. In short: with enforcement on, no person's agent
+the GitHub-App onboarding design") has the procedure. In short: with enforcement on, no person's agent
 reads it. When the tenant runs no service submission on a repository, or
 those have moved to another credential, its version is disabled with
 `create-secrets.sh --disable-previous` semantics and the record kept as
@@ -965,20 +965,20 @@ root, since they do not exist yet.
 
 | lane | phase | builds | territory | needs |
 |---|---|---|---|---|
-| OB0 | 0 | **built, #802**: the Register picker pages with `next_page` until `capped`, filters by owner, and accepts a typed owner/repo that posts to `POST /v1/repositories` | `apps/swarm-ui/src/RepositoriesRegister.tsx`, `apps/swarm-ui/src/RepositoriesData.ts`, `apps/swarm-ui/src/api.ts` | — |
-| OB0b | 0 | **built, #794**: the probe records the `X-GitHub-SSO` header and the orgs a token reaches; the no-access refusal names SSO and the classic-token policy | `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/repositories.py` | — |
-| OB1 | 1 | **built, #801**: the onboarding document and `GET /v1/onboarding`, derived from today's records (tenant token, registrations, probe) | new `swarm_api/onboarding.py`, new `swarm_api/routes/onboarding.py`, `apps/swarm-api/swarm_api/main.py` | OB0b |
-| OB2 | 1 | **built, #809, #823, #824, #840**: the App's registration runbook and Terraform: client-secret slot, user-slot IAM, refresher grants, the scheduler job, indexes, the custom role | `terraform/modules/secret_manager/`, `terraform/modules/tenancy/`, `terraform/modules/scheduler/jobs.tf`, `terraform/modules/firestore/`, new `runbooks/github-app.md` | — |
-| OB3 | 2 | **built, #821, #828, #837, #864**: authorise, exchange, refresh sweep, disconnect; the `app_user` kind; the connection document | new `swarm_api/forgeapp.py`, new `swarm_api/routes/forgeapp.py`, `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/main.py` | OB1, OB2 |
-| OB4 | 3 | **built, #832**: the access API (orgs, repositories with paging and search, grants, verify) and register and readable resolving the caller's slot | new `swarm_api/access.py`, new `swarm_api/routes/access.py`, `apps/swarm-api/swarm_api/repositories.py`, `apps/swarm-api/swarm_api/main.py` | OB3 |
-| OB5 | 3 | **built, #836, #843**: the worker reads the agent's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning and before each push or pull request | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
-| OB6 | 3 | **built, #829**: admission parks an agent whose connection has failed as `CREDENTIAL_MISSING`, and the credential sweep returns it to `READY` when the connection is active | `apps/scheduler/scheduler/credentials.py`, `apps/scheduler/scheduler/loop.py` | OB3 |
-| OB7 | 4 | **built, #845, #857**: submission resolves the grant and refuses an ungranted repository | `apps/swarm-api/swarm_api/validation.py`, `apps/swarm-api/swarm_api/routes/tasks.py` | OB4, OB5 |
-| OB8 | 4 | **built, #846, #863, #870, #899**: the console onboarding checklist and the Access page, from the owner's picks | new `src/Onboarding.tsx`, new `src/Access.tsx`, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `.github/ISSUE_TEMPLATE/` | OB4 |
-| OB9 | 4 | **built, #844**: `sc setup`, `sc access`, the bridge tools, `/sc:setup` | `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/README.md`, new `commands/setup.md` | OB4 |
+| OB0 | 0 | **built**: the Register picker pages with `next_page` until `capped`, filters by owner, and accepts a typed owner/repo that posts to `POST /v1/repositories` | `apps/swarm-ui/src/RepositoriesRegister.tsx`, `apps/swarm-ui/src/RepositoriesData.ts`, `apps/swarm-ui/src/api.ts` | — |
+| OB0b | 0 | **built**: the probe records the `X-GitHub-SSO` header and the orgs a token reaches; the no-access refusal names SSO and the classic-token policy | `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/repositories.py` | — |
+| OB1 | 1 | **built**: the onboarding document and `GET /v1/onboarding`, derived from today's records (tenant token, registrations, probe) | new `swarm_api/onboarding.py`, new `swarm_api/routes/onboarding.py`, `apps/swarm-api/swarm_api/main.py` | OB0b |
+| OB2 | 1 | **built**: the App's registration runbook and Terraform: client-secret slot, user-slot IAM, refresher grants, the scheduler job, indexes, the custom role | `terraform/modules/secret_manager/`, `terraform/modules/tenancy/`, `terraform/modules/scheduler/jobs.tf`, `terraform/modules/firestore/`, new `runbooks/github-app.md` | — |
+| OB3 | 2 | **built**: authorise, exchange, refresh sweep, disconnect; the `app_user` kind; the connection document | new `swarm_api/forgeapp.py`, new `swarm_api/routes/forgeapp.py`, `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/main.py` | OB1, OB2 |
+| OB4 | 3 | **built**: the access API (orgs, repositories with paging and search, grants, verify) and register and readable resolving the caller's slot | new `swarm_api/access.py`, new `swarm_api/routes/access.py`, `apps/swarm-api/swarm_api/repositories.py`, `apps/swarm-api/swarm_api/main.py` | OB3 |
+| OB5 | 3 | **built**: the worker reads the agent's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning and before each push or pull request | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
+| OB6 | 3 | **built**: admission parks an agent whose connection has failed as `CREDENTIAL_MISSING`, and the credential sweep returns it to `READY` when the connection is active | `apps/scheduler/scheduler/credentials.py`, `apps/scheduler/scheduler/loop.py` | OB3 |
+| OB7 | 4 | **built**: submission resolves the grant and refuses an ungranted repository | `apps/swarm-api/swarm_api/validation.py`, `apps/swarm-api/swarm_api/routes/tasks.py` | OB4, OB5 |
+| OB8 | 4 | **built**: the console onboarding checklist and the Access page, from the owner's picks | new `src/Onboarding.tsx`, new `src/Access.tsx`, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `.github/ISSUE_TEMPLATE/` | OB4 |
+| OB9 | 4 | **built**: `sc setup`, `sc access`, the bridge tools, `/sc:setup` | `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/README.md`, new `commands/setup.md` | OB4 |
 | OB10 | 5 | **built, this lane**: migration: `REPOSITORY_GRANTS_ENFORCED` from tfvars, on in dev; the tenant-token fallback policy and how to retire the tenant token; the docs; the acceptance runbook | `docs/git-tokens.md`, `docs/repo-index.md`, `docs/onboarding.md`, `docs/api-refusals.md`, `terraform/infra/variables.tf`, `terraform/infra/locals.tf`, `terraform/environments/dev/dev.tfvars`, `terraform/environments/prod/prod.tfvars`, new `runbooks/onboarding-acceptance.md` | OB7, OB8, OB9 |
 
-**What came after the lanes, in OB10's pull request (#780's plan, steps 1-5):**
+**What came after the lanes, in OB10's pull request (the GitHub-App onboarding design's plan, steps 1-5):**
 D5's fallback token route and its per-owner slot, D6's push test, the
 recorded and re-checked `ORG_APPROVAL_PENDING`, `POST /v1/onboarding/dismiss`,
 `sc setup token --owner`, `sc access verify --push-test` and `sc access
@@ -1029,7 +1029,7 @@ over, because the exchange already needs the client secret in swarm-api.
 * **(b) Terraform declares each user's slot** (S1): reviewable; every new user
   waits for an apply, so onboarding is not operator-free.
 
-**Recommendation:** (a): #780's first acceptance line is "without an
+**Recommendation:** (a): the GitHub-App onboarding design's first acceptance line is "without an
 operator", and the grant it needs carries no read.
 
 ### D4. What does an agent do when its submitter has not connected GitHub?
@@ -1051,7 +1051,7 @@ set per tenant, so nothing that works today stops on the day this ships.
   box.
 
 **Recommendation:** (b), because (a) leaves the fallback needing an operator,
-which is what #780 removes; the route stores and never returns.
+which is what the GitHub-App onboarding design removes; the route stores and never returns.
 
 ### D6. May verification write to a repository?
 

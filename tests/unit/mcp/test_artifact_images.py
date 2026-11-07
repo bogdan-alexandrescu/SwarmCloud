@@ -1,6 +1,6 @@
 """`swarm_artifact` shows a task's image artifact to the session as MCP image content (#2136).
 
-BGD, 2026-10-26: a Claude Code session can look at a lane's `shots/*.png`
+the owner, 2026-10-26: a Claude Code session can look at a lane's `shots/*.png`
 through the sc plugin, not only in the console. `/artifacts/content` answers a
 PNG as `binary` with no bytes; for a name with an image extension the bridge
 now reads `/artifacts/raw?disposition=inline` and answers the bytes as an

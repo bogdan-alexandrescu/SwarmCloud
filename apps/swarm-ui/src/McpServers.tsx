@@ -193,7 +193,7 @@ async function fixtureMcpServers(target: ApiRoute): Promise<Result<McpServerList
   noteFixtureProbe(target, 90, true)
   const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
   const raw = {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     can_manage: true,
     egress_addresses: ['203.0.113.17', '203.0.113.18'],
     last_attached_complete: true,
@@ -290,7 +290,7 @@ function routedTo(address: string) {
 
 /**
  * Where a missing credential is set: Config › Secrets' Add a secret, the
- * server's consumer ticked (MCP-LEAD-FORM, BGD 2026-10-25: "Open the form,
+ * server's consumer ticked (MCP-LEAD-FORM, owner 2026-10-25: "Open the form,
  * consumer picked"). Several servers missing theirs open it with none ticked:
  * one secret is one server's credential. Never `?action=add`: that is the /sc
  * one-time link's address, and the page then says it was opened from one
@@ -959,7 +959,7 @@ export function McpCredentialField({
 /**
  * A URL that may wrap only after a `/` or a `.` (QA2 config2-19). The cell
  * broke anywhere, so the table squeezed the column and a reader saw
- * 'https://mcp.exampl / e.com/docs/mcp'. Each `<wbr>` is a break the browser
+ * 'mcp.exampl / e.com/docs/mcp'. Each `<wbr>` is a break the browser
  * may take; the text, its copy and its title stay the URL itself.
  */
 function UrlBreaks({ url }: { url: string }) {

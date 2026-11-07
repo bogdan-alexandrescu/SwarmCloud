@@ -111,7 +111,7 @@ export function keyLinkToken(pathname: string, search: string): string | null {
 export const SECRETS_ADDRESS = 'settings/workspace/secrets'
 export const SECRETS_LINK_PATH = '/settings/workspace/secrets'
 /**
- * CONFIG › SECRETS (CONFIG-NAV; part of #2157, BGD 2026-10-23): where the
+ * CONFIG › SECRETS (CONFIG-NAV; part of #2157, owner 2026-10-23): where the
  * page lives now. THE LINK KEEPS ITS PATH: the API still mints
  * SECRETS_LINK_PATH (swarm_api `WorkspaceSecrets.mint_link`), App reads its
  * token there before the bar is rewritten to this path, and the route keeps
@@ -127,7 +127,7 @@ export const SECRETS_LOGINS_VIEW = 'logins'
  * The link's token, read off a location: only on the secrets page's paths, as
  * `keyLinkToken`. Since SSC-UI (part of #2158) that includes the TypeSafe key
  * link's old path, which lands on Config › Secrets with its token: Settings ›
- * API keys moved into Keys for agents and MCP (BGD 2026-10-23 23:57Z).
+ * API keys moved into Keys for agents and MCP (owner 2026-10-23 23:57Z).
  */
 export function secretsLinkToken(pathname: string, search: string): string | null {
   const path = pathname.replace(/\/+$/, '')
@@ -143,7 +143,7 @@ export function secretsLinkToken(pathname: string, search: string): string | nul
  * destination `dest=agents|actions`; a form's `action=add|rotate` and, on a
  * rotate, `name` (an add link names no secret); the GitHub Actions link's
  * `name` and `env` (swarm_api `actions_secrets`); the runner-key link's
- * `runner_key=<provider>` (SSC-LINKS, BGD 2026-10-24); and `key=typesafe`,
+ * `runner_key=<provider>` (SSC-LINKS, owner 2026-10-24); and `key=typesafe`,
  * the TypeSafe key form Settings › API keys used to be; and, when none of
  * those forms is named, `add=secret` with an optional `consumer` (Add a
  * secret, a consumer picked: `secretsAddAddress`); and, when none of
@@ -185,7 +185,7 @@ export function secretsLinkView(query: string): string {
 const SECRETS_CONSUMER = /^[a-z][a-z_-]{0,31}:[A-Za-z0-9_.-]{1,128}$/
 
 /**
- * ADD A SECRET, A CONSUMER PICKED (lane MCP-LEAD-FORM, part of #2157; BGD
+ * ADD A SECRET, A CONSUMER PICKED (lane MCP-LEAD-FORM, part of #2157; owner
  * 2026-10-25, "Open the form, consumer picked"; proposal E S5a: the MCP
  * servers lead's button "opens setting it"). Config › Secrets with its Add a
  * secret sheet open and `consumer` ticked at Who reads it. NEVER
@@ -264,7 +264,7 @@ export const FIXED: Readonly<Record<string, string>> = {
   // `/automate/schedules/<id>`, below.
   'automate/schedules': '/automate/schedules',
   // §6.1: Approvals is Automate's second page, at `/automate/approvals` beside
-  // `/automate/schedules` (APPROVALS-MOVE, BGD 2026-10-26, VQ-030). One item is
+  // `/automate/schedules` (APPROVALS-MOVE, owner 2026-10-26, VQ-030). One item is
   // `/automate/approvals/<id>`, below; the old `/approvals` and
   // `/approvals/<id>` land on them (`pathToAddress`).
   'automate/approvals': '/automate/approvals',
@@ -304,8 +304,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   // NAV-ADMIN-ROLE (part of #1633): Admin › Workspaces you admin, the group
   // workspaces whose stored role for the caller is admin.
   'admin/workspaces': '/admin/workspaces',
-  // CONFIG (CONFIG-NAV; part of #2157, BGD 2026-10-23): everything about
-  // setting up and running a workspace, in BGD's order. Each page was
+  // CONFIG (CONFIG-NAV; part of #2157, owner 2026-10-23): everything about
+  // setting up and running a workspace, in the owner's order. Each page was
   // somewhere else until then -- Work › Access, Work › Repositories, Work ›
   // Setup and three Settings pages -- and its old path and its old address
   // still land here (OLD_CONFIG_PATHS, MOVED_TO_CONFIG, below). A
@@ -322,7 +322,7 @@ export const FIXED: Readonly<Record<string, string>> = {
   'config/people': '/config/people',
   'config/workspace': '/config/workspace',
   // Settings › API keys was here (KEYS-UI) until SSC-UI (part of #2158) moved
-  // it into Config › Secrets as Keys for agents and MCP (BGD 2026-10-23
+  // it into Config › Secrets as Keys for agents and MCP (owner 2026-10-23
   // 23:57Z); `/settings/keys` and its link land there (OLD_CONFIG_PATHS).
   // PROFILE-NAV: Settings › Profile, the person's own identity, workspaces,
   // connections, bell and Claude accounts (docs/design/user-profile.md).
@@ -370,7 +370,7 @@ const MOVED_TO_CONFIG: Readonly<Record<string, string>> = {
 
 /**
  * GITHUB ACCESS' TWO OLD VIEWS, EACH ON THE PAGE WHOSE SUBJECT IT IS
- * (GA-MOVE-VIEWS; part of #2157, BGD 2026-10-24: "Members to Config › People
+ * (GA-MOVE-VIEWS; part of #2157, owner 2026-10-24: "Members to Config › People
  * and roles, Browser logins to Config › Secrets"). GitHub access is mock-up
  * S2's two tabs and nothing else since; `?view=members` and `?view=logins`
  * there -- and on `/access` and `#work/access` before it -- name these.

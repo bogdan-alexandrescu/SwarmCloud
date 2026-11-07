@@ -31,7 +31,7 @@ from swarm_api.validation import OWNER_ANSWERS_METADATA_KEY, QUESTION_WAIT_METAD
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 TASK = "task_q"
 OWNER = "alice@example.com"
 MODEL = "Which model writes a generated description?"

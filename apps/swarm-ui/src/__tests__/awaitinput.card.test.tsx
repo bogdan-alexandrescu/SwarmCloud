@@ -343,7 +343,7 @@ describe('the waiting pill', () => {
     expect(within(card).queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 
-  // VQ-056 (BGD, 2026-10-26): the console speaks of workspaces; the `tenant`
+  // VQ-056 (owner, 2026-10-26): the console speaks of workspaces; the `tenant`
   // field keeps its name, the words a person reads do not say "tenant".
   it('says workspace, never tenant, in anything a reader sees', async () => {
     for (const may of [true, false]) {
@@ -362,7 +362,7 @@ describe('the waiting pill', () => {
 describe('the card speaks of workspaces, not tenants (VQ-056, TENANT-WORDING-C)', () => {
   // MUTATION: put back `tenant {v.tenant}` in the head line, the pill's title,
   // the not-a-member hint or the not-open note: the reader-facing noun is
-  // "workspace" (BGD, 2026-10-26); the `tenant` field the API sends is not.
+  // "workspace" (owner, 2026-10-26); the `tenant` field the API sends is not.
   it('names the workspace in the head line, the pill title and the not-a-member hint', async () => {
     const { card } = await mount(view({ may_answer: false }))
     expect(card.querySelector('.wf-card-r')!.textContent).toContain('workspace eng')

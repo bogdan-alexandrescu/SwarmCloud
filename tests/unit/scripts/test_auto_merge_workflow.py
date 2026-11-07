@@ -25,6 +25,7 @@ touches the network.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -41,6 +42,11 @@ from .application_paths import app_paths, reaches
 from .ci_fold_layout import FOLDED_HOSTS, check_steps
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+assert _PLACEHOLDERS_SPEC and _PLACEHOLDERS_SPEC.loader
+placeholders = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(placeholders)
 WORKFLOWS = REPO / ".github" / "workflows"
 AUTO_MERGE = WORKFLOWS / "auto-merge.yml"
 CI_DOC = REPO / "docs" / "ci.md"
@@ -1114,7 +1120,9 @@ def test_docs_carry_the_branch_protection_command_for_the_checks_that_always_run
     add a job from application.yml/terraform.yml to the required list."""
     text = CI_DOC.read_text()
     match = re.search(
-        r"```bash\n(gh api --method PUT \\\n\s+repos/bogdan-alexandrescu/SwarmCloud/branches/main/protection.*?)```",
+        r"```bash\n(gh api --method PUT \\\n\s+repos/"
+        + re.escape(placeholders.GITHUB_REPOSITORY)
+        + r"/branches/main/protection.*?)```",
         text,
         re.DOTALL,
     )
@@ -1726,7 +1734,7 @@ def test_docs_describe_closing_the_merged_pull_requests_issues():
     assert "close-merged-issues.sh" in text
     assert "closingIssuesReferences" in text
     assert "part of #N" in text
-    assert "#621" in text
+    assert "### A merge closes the issues its keywords name" in text
 
 
 # ---------------------------------------------------------------------------
@@ -2480,26 +2488,27 @@ def test_on_a_merge_queue_a_blocked_unarmed_pull_request_still_fails(run_merge):
 
 
 def test_the_runbook_says_only_required_checks_hold_the_merge():
-    """#815. MUTATION: drop the runbook's section."""
+    """MUTATION: drop the runbook's section."""
     text = (REPO / "docs" / "runbooks" / "merge-app.md").read_text()
-    assert "#815" in text
-    assert "check_suite" in text and "24160219" in text and "Trivy" in text
+    assert "### Only a required check holds the merge" in text
+    assert "check_suite" in text and "ruleset `main-protection`" in text and "Trivy" in text
 
 
 def test_docs_describe_the_re_evaluation_of_an_early_ready_label():
     """MUTATION: drop the docs/ci.md paragraph."""
     text = CI_DOC.read_text()
-    assert "#697" in text
+    assert "the ready-while-running incident" in text
     assert "workflow_run" in text and "workflow_dispatch" in text
     assert "re-evaluat" in text
 
 
 def test_docs_ci_describes_the_required_only_wait_and_the_check_suite_backstop():
-    """#815 reversed two decisions docs/ci.md recorded: that `check_suite`
-    never fires here, and that a non-required check still running must hold
-    the merge. MUTATION: restore the pre-#815 paragraph."""
+    """The check-suite-backstop change reversed two decisions docs/ci.md
+    recorded: that `check_suite` never fires here, and that a non-required
+    check still running must hold the merge. MUTATION: restore the earlier
+    paragraph."""
     text = CI_DOC.read_text()
-    assert "#815" in text
+    assert "the check-suite-backstop change" in text
     assert "`check_suite: completed` never fires" not in text
     assert "which is what gate item 5 exists to stop" not in text
     assert "UNSTABLE" in text and "HAS_HOOKS" in text

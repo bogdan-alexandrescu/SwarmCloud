@@ -800,7 +800,7 @@ function footFor(r: Result<unknown>, absent: string, now: number): string | null
  * that reads the destination's name (O1: `All live`, `Pools`). There is no
  * way to draw a card here without naming the screen that goes deeper.
  *
- * A BUTTON, NOT AN ARROW LINK (BGD's standing rule, 2026-11-05): a way out
+ * A BUTTON, NOT AN ARROW LINK (the owner's standing rule, 2026-11-05): a way out
  * of a card is a real button in the theme's style, never a text link with an
  * arrow. It is still an `<a>` with the same `href` (a navigation, never an
  * action), so a middle click and the router behave as before.
@@ -1355,11 +1355,11 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
           </small>
         </span>
         <span className="ov-att-acts">
-          {/* THE CARD OPENS THE FAILED WORKFLOW (#1680 box 6343766999, BGD's
+          {/* THE CARD OPENS THE FAILED WORKFLOW (#1680 box 6343766999, the owner's
               decision of 2026-10-23): the first workflow's link carries the
               card's cover (`is-cover`), so a click on its empty space opens
               that workflow; the list's link is a plain link above it. */}
-          {/* BUTTONS, NOT ARROW LINKS (BGD's standing rule, 2026-11-05): the
+          {/* BUTTONS, NOT ARROW LINKS (the owner's standing rule, 2026-11-05): the
               workflow is the region's button, the list its ghost. */}
           {workflows.map((w, i) => (
             <a
@@ -1395,7 +1395,7 @@ export function CheckCard({ problem, name = NO_NAMES }: { problem: Problem; name
       {/* THE WORDS ARE THEIR OWN SPAN (visual QA VQ-002, 2026-10-26): a
           phone draws the card as one line, mark and title, the whole card
           its tap target; the card's accessible name keeps the words. On a
-          desktop they are drawn as the card's button (BGD's standing rule,
+          desktop they are drawn as the card's button (the owner's standing rule,
           2026-11-05: no arrow links); the card is the one link. */}
       <span className="ov-att-acts">
         <span className={buttonClass({ size: 'sm' }, false, 'ov-att-go')}>
@@ -1480,8 +1480,8 @@ function BadMark() {
 /**
  * The binding pool's name, with the CALLER'S OWN TENANT taken out of it.
  *
- * `poolLabel` renders `provider:anthropic:tenant:u-bogdan` as
- * "anthropic · u-bogdan", which does not fit a half-width column and is
+ * `poolLabel` renders `provider:anthropic:tenant:u-owner` as
+ * "anthropic · u-owner", which does not fit a half-width column and is
  * ellipsised to "anthropic · u-…" -- losing nothing useful, because the card's
  * note already says every figure on it is for that tenant. Repeating the
  * tenant on every row costs the characters that identify WHICH pool binds,
@@ -1795,8 +1795,8 @@ export function PoolRow({ pool: p, among = [] }: { pool: Pool; among?: readonly 
   const label = poolLabelAmong(p.name, among)
   const say = `${label}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : near ? ', nearly full' : ''}${paused ? ', paused' : ''}`
   const name = (
-    // NAMED AS HEADROOM NAMES IT (QA2 ovag2-04): 'anthropic · u-bogdan',
-    // 'Cloud Run', never the raw 'provider:anthropic:tenant:u-bogdan' key,
+    // NAMED AS HEADROOM NAMES IT (QA2 ovag2-04): 'anthropic · u-owner',
+    // 'Cloud Run', never the raw 'provider:anthropic:tenant:u-owner' key,
     // which stays on hover. `poolLabelAmong` qualifies two pools that would
     // print one word.
     <span className="ov-idc ov-pl-k" title={p.name}>

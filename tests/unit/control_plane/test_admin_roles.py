@@ -265,8 +265,8 @@ def test_a_pool_admin_is_refused(db, method):
 
 
 @pytest.mark.parametrize("target", [
-    "worker@saga-agents-staging.iam.gserviceaccount.com",
-    "someone@elsewhere.com",
+    "worker@example-project.iam.gserviceaccount.com",
+    "someone@example.org",
     "not-an-email",
 ])
 def test_grant_is_only_for_an_allowed_domain_person(db, target):

@@ -356,7 +356,7 @@ export const SECTIONS: SectionDef[] = [
       // this section's first pane. See SECTION_ALIASES and MOVED_PANES below.
       { id: 'timeline', label: 'Timeline' },
       // REPOSITORIES, SETUP AND ACCESS LEFT FOR CONFIG (CONFIG-NAV; part of
-      // #2157, BGD 2026-10-23): they are about setting a workspace up, not
+      // #2157, owner 2026-10-23): they are about setting a workspace up, not
       // about its work. `/repositories`, `/setup` and `/access` land there.
       // "Submit a task", not "New agent", and the screen's own copy is why.
       // Submit.tsx creates a TASK at READY or PARKED and then says, in the
@@ -473,7 +473,7 @@ export const SECTIONS: SectionDef[] = [
       // and nobody looks under Settings for that. `#settings/accounts` still
       // works and lands here.
       { id: 'accounts', label: 'Accounts' },
-      // ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302; BGD's pick of
+      // ACCOUNT HEALTH (ACCOUNT-HEALTH-PAGE, part of #2302; the owner's pick of
       // proposal B, 2026-10-25): what has been going wrong on each
       // subscription account, where and when -- rate-limit hits, provider
       // errors, refusals, re-auths. Accounts answers "who can take work";
@@ -497,12 +497,12 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    // CONFIG (CONFIG-NAV; part of #2157, BGD's decisions of 2026-10-23 and
+    // CONFIG (CONFIG-NAV; part of #2157, the owner's decisions of 2026-10-23 and
     // his pick of proposal E, docs/web-ui/mockups/config-e.html S1): one
     // section for everything about setting up and running a workspace, which
     // was spread across Work › Access, Work › Repositories, Work › Setup and
     // four Settings pages. Between Capacity and Admin, as S1 draws it. The
-    // tabs are in BGD's order; Workspace setup (Work › Setup until then) is a
+    // tabs are in the owner's order; Workspace setup (Work › Setup until then) is a
     // part of Workspace Settings rather than a tab, at
     // `/config/workspace/setup`. Every old address lands here
     // (paths.ts `MOVED_TO_CONFIG`, `OLD_CONFIG_PATHS`). A LITERAL id, for the
@@ -578,7 +578,7 @@ export const SECTIONS: SectionDef[] = [
     // one page, which is why the tab carries no `admin: true` mark.
     //
     // PLATFORM COUNTS' CLAUSE ASKS ABOUT TIME SINCE COUNTS-PAGE (part of
-    // #2149, BGD's decisions of 2026-10-23): the page draws how many agents
+    // #2149, the owner's decisions of 2026-10-23): the page draws how many agents
     // ran per day, week or month, for how long and at what estimated cost,
     // below the state counts it always had.
     question:
@@ -626,7 +626,7 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
-    // VOICE IT (docs/design/voice-it.md §10, phase one's first lane; BGD's
+    // VOICE IT (docs/design/voice-it.md §10, phase one's first lane; the owner's
     // decision of 2026-11-01): a section of its own, and the owner's decision
     // is the argument docs/web-ui/redesign.md §2 asks a new section for. Its
     // question is none of the other five's: they each ask what the platform
@@ -725,7 +725,7 @@ function isHomePath(pathname: string): boolean {
  * SETTINGS (KEYS-UI, then PROFILE-NAV): the person's own pages, not a
  * section, for the reason API reads was not one. It held Settings › API keys
  * until SSC-UI (part of #2158) moved it into Config › Secrets as Keys for
- * agents and MCP (BGD 2026-10-23T23:57Z; proposal E S1: Settings keeps only
+ * agents and MCP (owner 2026-10-23T23:57Z; proposal E S1: Settings keeps only
  * Profile). `settings/keys` and its one-time link
  * `settings/keys/typesafe?scope=..&t=..` land there with their token
  * (paths.ts `MOVED_TO_CONFIG`, `secretsLinkToken`).
@@ -1744,10 +1744,10 @@ export function App() {
           // (SetupLink.tsx), mid sign-in, and a remount would drop the sign-in.
           keepOnSwitch={(at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')) || at.sectionId === SETUP_LINK}
           place={pathFor(at)}
-          // ADMIN IS AN ADMIN'S (CONFIG-NAV; BGD 2026-10-23): someone who
+          // ADMIN IS AN ADMIN'S (CONFIG-NAV; owner 2026-10-23): someone who
           // administers nothing, on an Admin address, lands on Overview, and
           // a workspace admin on a platform page lands on Workspaces you
-          // admin (ADMIN-REDIRECT; BGD 2026-10-24). The shell says so only
+          // admin (ADMIN-REDIRECT; owner 2026-10-24). The shell says so only
           // once both of its reads have answered.
           onAdminRedirect={onAdminRedirect}
           // THE BELL (#1206) is the shell's to place: the spine's foot, or the

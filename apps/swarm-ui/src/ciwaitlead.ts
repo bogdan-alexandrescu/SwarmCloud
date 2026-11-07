@@ -5,7 +5,7 @@ import type { Task } from './types'
  * THE ONE LINE A RE-CHECKED MERGE STEP'S ATTEMPTS PAGE LEADS WITH (part of #2688).
  *
  * The merge step re-checks CI about every 16 minutes and each re-check is a
- * new attempt, so a step that waited 8 hours (BGD, 2026-11-06) showed 28
+ * new attempt, so a step that waited 8 hours (owner, 2026-11-06) showed 28
  * identical attempt cards and nothing that said how long, how often, or why.
  *
  *   * A wait handed to a person (`park_phase` `ci_wait_stuck`, the worker's

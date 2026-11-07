@@ -19,9 +19,13 @@ SWARM_JEV_BACKEND names the choice on every live-browser pod. A pod of any
 other profile, or a live-browser pod while the display rollout switch is off
 (no live browser, so no jev), is untouched.
 
-Every restatement of the tailnet origin, the tailnet name and the Service's
+The tailnet name is configuration, SWARM_DECISION_API_TAILNET_NAME, which
+terraform renders from `tailscale_egress_target` and the dispatcher passes to
+the pod for the jev wrapper; no code holds a default (owner decision
+2026-11-07, part of #2688). Unset with the add-on on, no pod gets a route.
+These tests use a placeholder name. The variable's name and the Service's
 clusterIP -- swarm-api's, terraform's, the manifest's and the jev wrapper's --
-is held equal to this module's here.
+are held equal to this module's here.
 
 MUTATION: give the label or the hostAliases entry to a typesafe pod, set
 JEV_API_URL with the egress off, or change the IP in one place only, and the
@@ -51,14 +55,15 @@ from scheduler.dispatch import (
 from scheduler.judgment import (
     BACKENDS,
     DECISION_API_CLUSTER_IP,
-    DECISION_API_TAILNET_NAME,
+    DECISION_API_NAME_UNSET,
+    DECISION_API_TAILNET_NAME_ENV,
     DEFAULT_BACKEND,
-    INTERNAL_DECISION_ORIGIN,
     JEV_API_URL_ENV,
     JEV_BACKEND_ENV,
     JUDGE_POD_LABEL,
     SETTINGS_COLLECTION,
     TYPESAFE_BACKEND,
+    internal_decision_origin,
     jev_dispatch,
     read_backend,
 )
@@ -74,13 +79,23 @@ LOCALS_TF = REPO / "terraform" / "infra" / "locals.tf"
 WRAPPER = REPO / "images" / "agent-runtime-browser" / "jev-browser" / "bin" / "jev-browser-mcp"
 
 LIVE = "claude-code-browser"
-#: What #1380 measured on 2026-10-15: these are the URLs that work.
-JEV_URL = "https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide"
-LAYA_URL = "https://decision-api-staging.taile0bda9.ts.net/laya/v1/decide"
+#: A placeholder tailnet name, as the platform renders it in
+#: SWARM_DECISION_API_TAILNET_NAME (the `tenant` fixture's module sets it).
+DECISION_API_TAILNET_NAME = "decision-api.example-tailnet.ts.net"
+INTERNAL_DECISION_ORIGIN = f"https://{DECISION_API_TAILNET_NAME}"
+JEV_URL = f"{INTERNAL_DECISION_ORIGIN}/jev/v1/decide"
+LAYA_URL = f"{INTERNAL_DECISION_ORIGIN}/laya/v1/decide"
 PINNED_IP = "10.48.6.120"
-HOST_ALIASES = [{"ip": PINNED_IP, "hostnames": ["decision-api-staging.taile0bda9.ts.net"]}]
+HOST_ALIASES = [{"ip": PINNED_IP, "hostnames": [DECISION_API_TAILNET_NAME]}]
 #: The URL the code sent before #1380: the Service has no port 80.
 OLD_SERVICE = "http://decision-api.swarm-system.svc.cluster.local"
+
+
+@pytest.fixture(autouse=True)
+def tailnet_name(monkeypatch) -> str:
+    """The platform renders the name; every test here starts with it set."""
+    monkeypatch.setenv(DECISION_API_TAILNET_NAME_ENV, DECISION_API_TAILNET_NAME)
+    return DECISION_API_TAILNET_NAME
 
 
 @pytest.fixture
@@ -125,8 +140,10 @@ def _host_aliases(job: dict[str, Any]) -> list[dict[str, Any]] | None:
 # -- the pure decision ------------------------------------------------------------
 
 @pytest.mark.parametrize("backend,internal,env,labelled", [
-    ("internal-jev", True, {JEV_BACKEND_ENV: "internal-jev", JEV_API_URL_ENV: JEV_URL}, True),
-    ("internal-laya", True, {JEV_BACKEND_ENV: "internal-laya", JEV_API_URL_ENV: LAYA_URL}, True),
+    ("internal-jev", True, {JEV_BACKEND_ENV: "internal-jev", JEV_API_URL_ENV: JEV_URL,
+                            DECISION_API_TAILNET_NAME_ENV: DECISION_API_TAILNET_NAME}, True),
+    ("internal-laya", True, {JEV_BACKEND_ENV: "internal-laya", JEV_API_URL_ENV: LAYA_URL,
+                             DECISION_API_TAILNET_NAME_ENV: DECISION_API_TAILNET_NAME}, True),
     ("typesafe", True, {JEV_BACKEND_ENV: "typesafe"}, False),
     ("internal-jev", False, {JEV_BACKEND_ENV: "internal-jev"}, False),
     ("internal-laya", False, {JEV_BACKEND_ENV: "internal-laya"}, False),
@@ -174,7 +191,8 @@ def test_the_backends_are_swarm_apis():
     assert BACKENDS == api.BACKENDS
     assert DEFAULT_BACKEND == api.DEFAULT_BACKEND
     assert SETTINGS_COLLECTION == api.SETTINGS_COLLECTION
-    assert INTERNAL_DECISION_ORIGIN == api.INTERNAL_DECISION_ORIGIN
+    assert DECISION_API_TAILNET_NAME_ENV == api.DECISION_API_TAILNET_NAME_ENV
+    assert DECISION_API_NAME_UNSET == api.NAME_UNSET
 
 
 # -- the pod -------------------------------------------------------------------------
@@ -185,8 +203,43 @@ def test_an_internal_backend_pod_has_the_url_the_label_and_the_host_alias(tenant
     env = _worker_env(job)
     assert env[JEV_API_URL_ENV] == url
     assert env[JEV_BACKEND_ENV] == backend
+    # The wrapper reads the name from the pod's environment, never a default.
+    assert env[DECISION_API_TAILNET_NAME_ENV] == DECISION_API_TAILNET_NAME
     assert _pod_labels(job)["swarm-judge"] == "internal"
     assert _host_aliases(job) == HOST_ALIASES
+
+
+@pytest.mark.parametrize("name", ["", "decision-api", "https://decision-api.example-tailnet.ts.net"])
+def test_the_add_on_on_and_the_name_unset_is_refused_with_a_fixed_message(
+        tenant, monkeypatch, caplog, name):
+    """INTERNAL_DECISION_API_URL set and SWARM_DECISION_API_TAILNET_NAME unset
+    or misshapen: the scheduler logs the fixed refusal and gives no pod a URL,
+    a label or a hostAliases entry -- never a guessed host."""
+    if name:
+        monkeypatch.setenv(DECISION_API_TAILNET_NAME_ENV, name)
+    else:
+        monkeypatch.delenv(DECISION_API_TAILNET_NAME_ENV)
+    assert internal_decision_origin() == ""
+    with caplog.at_level("ERROR", logger="scheduler.judgment"):
+        job = _job(tenant, "internal-jev")
+    assert DECISION_API_NAME_UNSET in caplog.text
+    env = _worker_env(job)
+    assert env[JEV_BACKEND_ENV] == "internal-jev"
+    assert JEV_API_URL_ENV not in env and DECISION_API_TAILNET_NAME_ENV not in env
+    assert "swarm-judge" not in _pod_labels(job)
+    assert _host_aliases(job) is None
+    assert jev_dispatch("internal-laya", INTERNAL_DECISION_ORIGIN) == (
+        {JEV_BACKEND_ENV: "internal-laya"}, {}, [])
+
+
+def test_the_name_is_read_from_the_environment_at_the_call(monkeypatch):
+    other = "judge.example-tailnet.ts.net"
+    monkeypatch.setenv(DECISION_API_TAILNET_NAME_ENV, other)
+    env, _, aliases = jev_dispatch("internal-jev", f"https://{other}")
+    assert env[JEV_API_URL_ENV] == f"https://{other}/jev/v1/decide"
+    assert aliases == [{"ip": PINNED_IP, "hostnames": [other]}]
+    # A URL naming another host than the rendered name gets no route.
+    assert JEV_API_URL_ENV not in jev_dispatch("internal-jev", INTERNAL_DECISION_ORIGIN)[0]
 
 
 def test_a_typesafe_pod_has_none_of_the_three(tenant):
@@ -256,9 +309,9 @@ def test_the_setting_is_read_from_the_environment(monkeypatch):
 @pytest.mark.parametrize("value", [
     OLD_SERVICE,  # the old in-cluster http URL: no port 80 (#1380)
     "https://decision-api.swarm-system.svc.cluster.local",  # the certificate is the tailnet name's
-    "http://decision-api-staging.taile0bda9.ts.net",  # the name without TLS
-    "https://decision-api-staging.example.invalid",
-    "https://decision-api-staging.taile0bda9.ts.net.attacker.invalid",
+    f"http://{DECISION_API_TAILNET_NAME}",  # the name without TLS
+    "https://decision-api.example.invalid",
+    f"{INTERNAL_DECISION_ORIGIN}.attacker.invalid",
     f"https://{PINNED_IP}",
 ])
 def test_a_url_other_than_the_tailnet_origin_is_refused(value):
@@ -266,8 +319,7 @@ def test_a_url_other_than_the_tailnet_origin_is_refused(value):
         scheduler_settings(internal_decision_api_url=value)
 
 
-@pytest.mark.parametrize("value", ["", "https://decision-api-staging.taile0bda9.ts.net",
-                                   "https://decision-api-staging.taile0bda9.ts.net/"])
+@pytest.mark.parametrize("value", ["", INTERNAL_DECISION_ORIGIN, f"{INTERNAL_DECISION_ORIGIN}/"])
 def test_off_or_the_tailnet_origin_is_accepted(value):
     assert scheduler_settings(internal_decision_api_url=value).internal_decision_api_url == value
 
@@ -275,8 +327,9 @@ def test_off_or_the_tailnet_origin_is_accepted(value):
 # -- one source each ------------------------------------------------------------------
 
 def test_the_origin_is_the_tailnet_name_over_https():
-    assert DECISION_API_TAILNET_NAME == "decision-api-staging.taile0bda9.ts.net"
-    assert INTERNAL_DECISION_ORIGIN == f"https://{DECISION_API_TAILNET_NAME}"
+    assert internal_decision_origin() == INTERNAL_DECISION_ORIGIN
+    assert internal_decision_origin("judge.example-tailnet.ts.net") == "https://judge.example-tailnet.ts.net"
+    assert DECISION_API_TAILNET_NAME_ENV == "SWARM_DECISION_API_TAILNET_NAME"
 
 
 def test_the_cluster_ip_is_terraforms_one_value():
@@ -294,9 +347,14 @@ def test_the_cluster_ip_is_terraforms_one_value():
 
 
 def test_the_tailnet_name_is_terraforms_egress_target():
-    # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet.
-    tfvars = (TAILSCALE_TF.parents[1] / "environments" / "dev" / "dev.tfvars").read_text()
-    assert f'tailscale_egress_target = "{DECISION_API_TAILNET_NAME}"' in tfvars
+    """terraform renders the name from `tailscale_egress_target` beside the URL,
+    on the scheduler and on swarm-api; no default in code."""
+    locals_tf = LOCALS_TF.read_text()
+    assert ('decision_api_tailnet_name = var.internal_decision_api_enabled ? '
+            'var.tailscale_egress_target : ""') in locals_tf
+    rendered = re.findall(r"^\s*SWARM_DECISION_API_TAILNET_NAME\s*=\s*(\S+)$", locals_tf, re.M)
+    assert rendered == ["local.decision_api_tailnet_name"] * 2
+    assert len(re.findall(r"^\s*INTERNAL_DECISION_API_URL\s*=", locals_tf, re.M)) == 2
 
 
 def test_terraforms_url_is_the_origin_built_from_the_egress_target():
@@ -306,9 +364,9 @@ def test_terraforms_url_is_the_origin_built_from_the_egress_target():
     assert "decision-api.swarm-system.svc.cluster.local" not in locals_tf
 
 
-def test_the_jev_wrapper_accepts_the_same_origin():
-    (stated,) = re.findall(r'^DECISION_SERVICE="([^"]+)"$', WRAPPER.read_text(), re.M)
-    assert stated == INTERNAL_DECISION_ORIGIN
+def test_the_jev_wrapper_reads_the_same_variable():
+    (stated,) = re.findall(r'^DECISION_SERVICE_NAME="([^"]+)"$', WRAPPER.read_text(), re.M)
+    assert stated == "${" + DECISION_API_TAILNET_NAME_ENV + ":-}"
 
 
 # -- the pod reads the backend the router reads (#1334 c31) ------------------------

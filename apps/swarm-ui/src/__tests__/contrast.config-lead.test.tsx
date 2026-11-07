@@ -6,7 +6,7 @@
 // plain card surface instead, because a secondary button's `--ctl-bd` border
 // measured 2.89:1 on that tint in dark (and 2.96:1 in light), under the 3:1 a
 // control boundary is held to (WCAG 2.1 SC 1.4.11; `FLOORS.dividerContrast`
-// in spaceprobe.ts, the floor the spacing sweep holds every control to). BGD,
+// in spaceprobe.ts, the floor the spacing sweep holds every control to). owner,
 // 2026-10-24: keep the tint, and give the lead's buttons a border that clears
 // 3:1 on it in both themes.
 //

@@ -1,4 +1,4 @@
-# Issue runs: from a GitHub issue to a green pull request (#454)
+# Issue runs: from a GitHub issue to a green pull request
 
 An issue run takes `owner/repo#N`, has a planner agent write a plan, waits for
 a person to approve it (or not, with `plan_approval: auto`), runs the plan as
@@ -106,7 +106,7 @@ lines carrying the run id or a fresh nonce, as data.
 
 ## Why the planner reads every open issue and pull request, and what caps apply
 
-#454 asks the planner to avoid conflicts: work already in flight, two issues
+The issue-run guardrails design asks the planner to avoid conflicts: work already in flight, two issues
 editing the same files, a pull request that already does part of it. A plan
 made blind to that is how two lanes overwrite each other (the
 "two issues that edit the same file are one lane" rule in
@@ -162,7 +162,7 @@ and nothing is submitted -- an `auto` run goes `PLANNED → FAILED`, a CI fix
 round is never claimed. A lookup that fails (Cloud Identity unavailable) is
 not a guess either way: the run waits, unchanged, for the next tick.
 
-**The run's owner is signed (#1569).** A tenant's worker can update any
+**The run's owner is signed.** A tenant's worker can update any
 Firestore document it can name, and a run's planner knows its run id, so
 nothing on `issue_runs/<id>` that decides who a submission is made as, or
 whether a person must approve it, is believed unsigned. `start_run` signs
@@ -188,7 +188,7 @@ signed digest. Because the digest and the revision are signed, a signature from
 before a legitimate `plan:edit`, put back on the edited run, does not verify.
 What a signature in the document cannot stop is a worker putting back a whole
 earlier, legitimately signed version of the document; that needs workers to
-lose write access to `issue_runs` (#1457's Firestore-access flip), which is
+lose write access to `issue_runs` (the isolation-cutover design's Firestore-access flip), which is
 the root fix.
 
 **Runs created before the signature are signed once, by a platform admin,
@@ -202,7 +202,7 @@ tenant whose signature is not a verifying current one -- its id, tenant,
 `created_by`, `on_behalf_of`, `plan_approval`, state, whether the person it
 submits as is still a member of its workspace, and whether it may be signed --
 with a `listing_digest` of exactly that list. A person reads the list (CLD
-posts it on #1569) before anything is signed. `dry_run=false` must be given
+posts it on the admin-signing issue) before anything is signed. `dry_run=false` must be given
 that `listing_digest` and is 409 when the runs no longer hash to it, so a field
 rewritten after the list was read is never signed; it then signs each listed
 run's fields exactly as stored, refuses a run whose owner is not a member and
@@ -228,7 +228,7 @@ found nothing to change.
 practice it refuses the run before the planner exists: the open-work read
 runs first, and a refusal (`no_access`, `not_found`, `no_forge_credential`,
 …) creates nothing. A planner that cannot see the repository's open work
-would plan exactly the blind plan #454 exists to stop.
+would plan exactly the blind plan the issue-run guardrails design exists to stop.
 
 **A failed write-back never fails a run.** The run's truth is its Firestore
 document, not a comment. A 403 on a comment (`writeback_forbidden`, usually a
@@ -254,8 +254,7 @@ in `history`. An `auto` run records `approved_by: auto-approval`. The plan
 comment names the approver by the local part of their address only, because
 the comment may be on a public repository.
 
-**Only someone who may approve a plan may reject it** (BGD 2026-10-26,
-#2417). A plan held for review, or one whose schedule names its approvers,
+**Only someone who may approve a plan may reject it** ([the owner] 2026-10-26). A plan held for review, or one whose schedule names its approvers,
 used to be any member's to reject while only some members could approve it,
 so the member a `second_member` hold exists to keep out (the run's creator,
 its last plan editor) could still decide it, just in the other direction.
@@ -381,8 +380,8 @@ plan, in `plan.json`:
 
 ```json
 {"ready": false, "kind": "blocked",
- "reason": "The retry path is rewritten by #612, which is open.",
- "needs": ["depends on #612"]}
+ "reason": "The retry path is rewritten by the retry-path rewrite, which is open.",
+ "needs": ["depends on the retry-path rewrite"]}
 ```
 
 `kind` is one of `already_done` (with the files, functions and tests that show
@@ -464,7 +463,7 @@ rules, the readiness verdict and the territory guard -- is unchanged.
 
 ## The fix-round cap is the only guardrail, and one round is one continuation
 
-Owner decision on #454: "The retry cap on gates is the only guardrail chosen."
+Owner decision on the issue-run guardrails design: "The retry cap on gates is the only guardrail chosen."
 No budget, no wall-clock limit, no per-repository rate. `fix_rounds` is chosen
 at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
 
@@ -483,11 +482,11 @@ at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
   within the same five sections. Each section names the events it failed on
   (`## unit tests (4/10) (failure on push)`), and a job red on push but green
   on pull_request at the same sha gets one line under the header: the branch
-  is behind a fix on main, merge main. Measured on PR #2888, round 2: the
+  is behind a fix on main, merge main. Measured on a sample fix round, round 2: the
   round saw only the gate, never merged main, and main already had the fix
-  (#2937). A jobs or log read that fails leaves the gate's own section.
+ . A jobs or log read that fails leaves the gate's own section.
 
-  **A flake costs no round (#3200).** Before a red head spends a round, or
+  **A flake costs no round.** Before a red head spends a round, or
   the cap refuses one, the run asks GitHub once per head to re-run the
   failed jobs of each failing workflow run (`GitHubWriter.rerun_failed_jobs`;
   `rerun_job` for a job whose run cannot be resolved), when every failing
@@ -501,7 +500,7 @@ at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
   another App's check, which a re-run cannot reach, and a re-run GitHub
   refuses (no `actions: write`) cost nothing: the round or the cap happens
   on that read. The rule is the merge step's (`swarm_api.cirerun`, shared
-  with `mergewake._rerun_first`). Why: run_7eddc5b3 (PR #3150) failed at
+  with `mergewake._rerun_first`). Why: run_7eddc5b3 failed at
   its cap of 3 on a 30 s vitest timeout in one swarm-ui shard of a pull
   request that touched no swarm-ui file, and nothing was ever re-run.
 * **Review-then-fix rounds inside the compiled workflow** -- but only **one** is
@@ -525,7 +524,7 @@ request updates; no second pull request, no rebase of someone else's branch.
 Every round names the integrator, never the previous round, so each round
 resolves to the same root. (Continuing an integrator needed
 `continuation.resolve_continuation` to accept one; it does, for a tenant member
-only, which the CI-loop step of #454 verified and changed in swarm-api -- no
+only, which the CI-loop step of the issue-run guardrails design verified and changed in swarm-api -- no
 frozen-contract change.)
 
 A round is spent **only on a red reading at a new head**. Pending CI submits
@@ -550,7 +549,7 @@ the reading is stored, `read_error` says the move failed, and the next visit
 tries again.
 
 **A read GitHub cannot answer is retried with backoff and says why it is
-stuck (WRITEBACK, 2026-10-12).** `run_0d784c412dbc421a98ec` (#1151) ended
+stuck (WRITEBACK, 2026-10-12).** `run_0d784c412dbc421a98ec` ended
 `FAILED` after 12 hours in `CHECKING` saying only "could not read the
 repository's checks for 12 hours: writeback_failed: the check runs at
 ...@8d98e0c66243 could not be sent to GitHub (URLError)". Nothing in that told
@@ -596,7 +595,7 @@ The console's list reads it. `GET /v1/runs/{id}` is always the full row.
 **`green_sha`** is the head sha at which every required check was green. It is
 set only on `DONE`, and it is what any future merge must pin to (below).
 
-**What a reading records besides its state (#503).** The one state above is
+**What a reading records besides its state.** The one state above is
 what moves the run; it is not enough to read. A run page that said "pending at
 7138b1a" while GitHub listed 7 pending, 5 passed and 3 skipped was the measured
 defect. So every CI read also records on `pull_request`, and `GET /runs/{id}`
@@ -620,7 +619,7 @@ prints "merge not reported" only for `merged: null`.
 
 Repository rule ([CLAUDE.md](../CLAUDE.md#issues)): `Closes #N` only when it is
 unconditionally true. **GitHub reads the keyword and drops every qualifier
-around it** -- "Closes #12 except the GKE half" closes #12 on merge.
+around it** -- "Closes #N except the GKE half" closes #N on merge.
 
 So the decision is not an agent's. The plan lists the issue's `requirements`;
 the compiled review answers each one as `requirements: [{index, met, note}]`
@@ -651,17 +650,17 @@ left to protect -- and `writeback_error` says why the block was not written.
 
 ## Auto-merge: built since contract request 47, not proven live
 
-The issue's build order was **#342 (signed step specs, S0) → #295/#352 (the
+The issue's build order was **the step-spec-signing gate (signed step specs, S0) → the merge-step design (the
 merge step) → this**. A platform that merges code on its own must first be
-unable to run a step spec nobody signed (#342), and then needs a merge step
-that merges only a reviewed, proven sha (#295). Neither is something an issue
+unable to run a step spec nobody signed, and then needs a merge step
+that merges only a reviewed, proven sha. Neither is something an issue
 run should improvise, and until the `merge` profile was enabled an
 `auto_merge` run was refused. Contract request 47 (2026-10-04) enabled it, and
 the merge is now the CI loop's last move:
 
 * **Whether it is offered** is one rule, `issueruns._auto_merge_refusal`: it
   returns nothing while the catalogue's `merge` profile is enabled, and a
-  reason naming #295 (`AUTO_MERGE_REQUIRES`) only if a platform disables it
+  reason naming the merge-step design (`AUTO_MERGE_REQUIRES`) only if a platform disables it
   again. `issueruns.auto_merge_availability`, served on the issue preview,
   reads the same rule, so the console's switch is enabled exactly when
   `POST /v1/runs` would accept it, and `422 auto_merge_unavailable` creates
@@ -707,7 +706,7 @@ Named here so none of it is read as delivered:
   is the related open request: `WorkflowStep` cannot record a verdict gate.
 * **Personal `u-` tenants are not ticked** -- above.
 * **A repository allowlist** -- deliberately not built (owner decision).
-* **Frozen contract.** #454 needed no change to `apps/common/swarm_common/`:
+* **Frozen contract.** The issue-run guardrails design needed no change to `apps/common/swarm_common/`:
   the run is a swarm-api document, and the planner's `issue` input is contract
   request 28
   ([contract-change-requests.md](contract-change-requests.md#28-profilespy-claude-code-and-codex-declare-an-issue-runner-input)),
@@ -717,7 +716,7 @@ Named here so none of it is read as delivered:
 
 ## Acceptance
 
-Each "How would you know it worked?" bullet of #454, mapped to the tests that
+Each "How would you know it worked?" bullet of the issue-run guardrails design, mapped to the tests that
 prove it. Unit tests run offline in CI (`application.yml`, python and ui jobs).
 Paths are from the repository root; Python tests are in
 `tests/unit/control_plane/` unless a path says otherwise.
@@ -781,13 +780,13 @@ its OIDC identity is admitted (the Terraform is validated in CI by
 runs and Actions logs, and a real `claude-code` fix round pushing to a real
 integrator branch.
 
-### 4. "With auto-merge on (after #295), the PR merges at the reviewed sha. Off is the default, and a run without it never merges."
+### 4. "With auto-merge on (after the merge-step design), the PR merges at the reviewed sha. Off is the default, and a run without it never merges."
 
 | claim | test |
 |---|---|
 | off is the default | `test_issue_runs.py::test_the_defaults_are_required_approval_no_auto_merge_and_three_fix_rounds` |
 | on is accepted while the `merge` profile is enabled, and recorded on the run; a run that does not say takes the repository's `merge_policy`, else `merge_by_default` | `test_issue_runs.py::test_auto_merge_is_accepted_and_recorded_on_the_run`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_platform_default`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_repositorys_merge_policy_first` |
-| the console's availability and the API's refusal are one rule: unavailable, naming #295 and the profile's reason, exactly when the profile is disabled | `test_issue_runs.py::test_auto_merge_availability_says_what_the_refusal_does` |
+| the console's availability and the API's refusal are one rule: unavailable, naming the merge-step design and the profile's reason, exactly when the profile is disabled | `test_issue_runs.py::test_auto_merge_availability_says_what_the_refusal_does` |
 | the compiled workflow and every fix round carry no merge, whatever the run or the default says | `test_issue_runs.py::test_the_compiled_workflow_always_says_merge_off`, `test_issue_runs.py::test_an_auto_merge_run_submits_its_workflow_with_no_merge_step`, `test_issue_run_auto_merge.py::test_the_compiled_workflow_and_a_fix_round_never_carry_a_merge` |
 | green with the keyword block written submits ONE merge continuing the agent that pushed the head; not before the block is written | `test_issue_run_auto_merge.py::test_green_with_the_keyword_written_submits_one_merge_continuing_the_integrator`, `test_issue_run_auto_merge.py::test_no_merge_while_the_keyword_block_is_not_written` |
 | red CI on an `auto_merge` run is a fix round, and the merge then continues the fix round's agent | `test_issue_run_auto_merge.py::test_red_ci_on_an_auto_merge_run_is_a_fix_round_then_the_merge_continues_it` |

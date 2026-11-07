@@ -719,7 +719,7 @@ class TestReturnToReady:
 # --------------------------------------------------------------------------
 
 RECONCILER = ReconcilerConfig(
-    project_id="saga-agents-staging",
+    project_id="example-project",
     region="us-central1",
     firestore_database="swarm",
     enable_gc=False,
@@ -767,7 +767,7 @@ def _still_running(task_id: str, lease: Lease) -> ExecutionView:
     """The execution `run_job` did create before its call reported failure."""
     return ExecutionView(
         name=(
-            "projects/saga-agents-staging/locations/us-central1/jobs/swarm-eng-mock/"
+            "projects/example-project/locations/us-central1/jobs/swarm-eng-mock/"
             f"executions/{task_id}-{lease.generation}"
         ),
         backend=BACKEND,

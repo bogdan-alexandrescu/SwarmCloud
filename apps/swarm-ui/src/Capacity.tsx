@@ -81,7 +81,7 @@ export function CapacityScreen() {
       // landed you on. The nav's own rule (App.tsx: sections are named after
       // OBJECTS, not the question they answer) decides which side gives way.
       title="Pools"
-      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, BGD 2026-10-26:
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, owner 2026-10-26:
       // "Move the topics behind the page's one ?"). They were a `Reading this
       // screen:` footer under the families; the `?` takes the section
       // question's place by the title, so the page still draws one glyph.
@@ -99,7 +99,7 @@ export function CapacityScreen() {
           {/* CEILINGS, AS DECIDED ON 2026-10-01 (capacity.html, Variant 1, #125):
               one table per family, with a "Needs a look" group ahead of them
               holding every pool that is full, lowered, paused or near its
-              ceiling (`needsALook`, BGD 2026-10-26). A pool appears once: the
+              ceiling (`needsALook`, owner 2026-10-26). A pool appears once: the
               top group takes it out of its family. The Cards view was the
               alternative set aside and is gone. */}
           {d.pools === 'none' ? (
@@ -301,7 +301,7 @@ function PoolsSummary({ capacity }: { capacity: Capacity }) {
   const count = (w: string) => worst.filter((x) => x === w).length
   const viewer = poolViewer(capacity)
   // EACH CLAUSE IS ONE UNBREAKABLE ITEM (QA-054, 2026-10-20): at 390 the line
-  // wrapped inside the tenant id, at its hyphen -- `tenant u-` / `bogdan`. The
+  // wrapped inside the tenant id, at its hyphen -- `tenant u-` / `owner`. The
   // line now wraps only BETWEEN clauses, at a ` · `, as Accounts' foot does.
   const clauses = [
     `${pools.length} pools in ${families} famil${families === 1 ? 'y' : 'ies'}`,
@@ -362,7 +362,7 @@ export function needsAction(pool: Pool, classes: ResourceClasses | null): boolea
  * as well. `poolProblemRank` is the rule the marks and the family order
  * already use: anything it ranks above `ok` is something to look at.
  *
- * BGD'S ANSWER, 2026-10-26 08:20-08:30Z (VQ-031, task_06d63267fd684e27a419):
+ * owner'S ANSWER, 2026-10-26 08:20-08:30Z (VQ-031, task_06d63267fd684e27a419):
  * "Needs a look, as the mock-up draws it". It REVERSES the 2026-10-01 note
  * that made this group "Needs action", filed by the Agents list's Waiting
  * split, which kept a full or AIMD-lowered pool in its family because
@@ -889,7 +889,7 @@ function classifyPool(pool: Pool, weight: { name: string; units: number | null }
   // full mark's amber, in the chip, the row and the track alike (CP-14: one
   // answer); lowered is a neutral fact about the ceiling -- not a warning on
   // its own -- with what lowered it in its title. Both file the pool under
-  // Needs a look (`needsALook`, BGD 2026-10-26), which `poolProblemRank`
+  // Needs a look (`needsALook`, owner 2026-10-26), which `poolProblemRank`
   // orders.
   const near = nearCeiling(pool)
   const lowered = !paused && !over && loweredCeiling(pool)

@@ -52,7 +52,7 @@ from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
 )
 from .test_schedtypes_observer import _artifacts
 
-SWARM_OWNER, SWARM_REPO = "bogdan-alexandrescu", "SwarmCloud"
+SWARM_OWNER, SWARM_REPO = "example-user", "SwarmCloud"
 SWARM = f"{SWARM_OWNER}/{SWARM_REPO}"
 ENTRY = scheduletypes.get("failure-review")
 SEEDED_ERROR = "mock runner failed: seeded failure 7"

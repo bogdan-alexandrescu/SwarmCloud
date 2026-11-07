@@ -134,7 +134,7 @@ function tenant(over: Partial<Tenant>): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic'],
-    service_account: 'swarm-agent-worker-eng@example.iam.gserviceaccount.com',
+    service_account: 'swarm-agent-worker-eng@example-project.iam.gserviceaccount.com',
     gcs_prefix: null,
     namespace: null,
     ...over,
@@ -158,7 +158,7 @@ describe('the held first column keeps a readable width at 390 (#222)', () => {
       data: {
         tenants: [
           tenant({}),
-          tenant({ tenant_id: 'u-sw-c90291', kind: 'user', principal: 'swarm-verify@example.iam.gserviceaccount.com' }),
+          tenant({ tenant_id: 'u-sw-c90291', kind: 'user', principal: 'swarm-verify@example-project.iam.gserviceaccount.com' }),
           tenant({ tenant_id: 'smoke', enabled: false, service_account: null }),
         ],
       },

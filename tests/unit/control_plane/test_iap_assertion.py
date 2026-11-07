@@ -12,8 +12,8 @@ import pytest
 
 from swarm_api.auth import AuthError, Authenticator, IapAssertionVerifier, Unauthenticated
 
-AUD_A = "/projects/209012342332/global/backendServices/817602226733443034"
-AUD_B = "/projects/209012342332/global/backendServices/6904312892305383900"
+AUD_A = "/projects/123456789012/global/backendServices/817602226733443034"
+AUD_B = "/projects/123456789012/global/backendServices/6904312892305383900"
 
 
 def test_no_audience_means_the_path_is_off_not_unpinned():
@@ -131,7 +131,7 @@ def test_an_assertion_from_outside_the_allowed_domain_is_forbidden_not_unauthent
     """Correct identity, wrong organisation: 403, and IAP does not change that."""
     from swarm_api.auth import Forbidden
 
-    iap = _Iap(claims={"email": "person@elsewhere.com", "sub": "s"})
+    iap = _Iap(claims={"email": "person@example.org", "sub": "s"})
     auth = Authenticator(_Settings(), _Verifier(), _Groups(), iap=iap)
 
     with pytest.raises(Forbidden):
@@ -141,7 +141,7 @@ def test_an_assertion_from_outside_the_allowed_domain_is_forbidden_not_unauthent
 # -- admin by email, the escape hatch -------------------------------------
 
 class _AdminUserSettings(_Settings):
-    admin_users: tuple = ("bogdan@example.com",)
+    admin_users: tuple = ("owner@example.com",)
 
 
 class _MemberGroups:
@@ -155,7 +155,7 @@ class _MemberGroups:
 
 
 def _ctx(settings, groups=()):
-    iap = _Iap(claims={"email": "bogdan@example.com", "sub": "accounts.google.com:1"})
+    iap = _Iap(claims={"email": "owner@example.com", "sub": "accounts.google.com:1"})
     auth = Authenticator(settings, _Verifier(), _MemberGroups(groups), iap=iap)
     return auth.authenticate(None, "good.assertion")
 
@@ -189,7 +189,7 @@ def test_the_email_comes_from_the_assertion_not_from_the_caller():
 
 def test_matching_is_case_insensitive():
     class _Upper(_Settings):
-        admin_users: tuple = ("BOGDAN@EXAMPLE.COM",)
+        admin_users: tuple = ("owner@example.com",)
 
     assert _ctx(_Upper()).is_admin is True
 

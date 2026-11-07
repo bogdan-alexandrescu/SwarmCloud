@@ -783,7 +783,7 @@ locals {
   # Track C's and is asked for in QI-API's questions.json.
   qa_identity_console_account = var.environment == "dev" && local.console_url != "" ? "qa-console@${var.project_id}.iam.gserviceaccount.com" : ""
 
-  # the organisation's decision API through the cluster's ONE Tailscale egress Service in
+  # The internal decision API through the cluster's ONE Tailscale egress Service in
   # swarm-system (JUDGE-NET; owner decision 2026-10-14). Non-empty is what
   # makes the internal Jev judgment backends available (swarm_api.judgment)
   # and what the scheduler builds a live-browser pod's JEV_API_URL from
@@ -793,11 +793,15 @@ locals {
   # pod pins that name to the egress Service (tailscale.tf
   # local.decision_api_cluster_ip), which passes TLS through, so the API's
   # own certificate -- issued for that name -- verifies. The scheduler and
-  # swarm-api accept only this origin (scheduler.judgment
-  # INTERNAL_DECISION_ORIGIN, held equal by tests/unit/control_plane/
-  # test_dispatch_judgment.py), so a changed tailscale_egress_target stops
-  # the scheduler at start rather than failing in every pod.
+  # swarm-api accept only the origin of local.decision_api_tailnet_name,
+  # rendered beside it from the same variable, so the two cannot disagree.
   internal_decision_api_url = var.internal_decision_api_enabled ? "https://${var.tailscale_egress_target}" : ""
+  # SWARM_DECISION_API_TAILNET_NAME: the decision API's tailnet name, which no
+  # code holds a default for (it names one deployment; owner decision
+  # 2026-11-07, part of #2688). The scheduler pins it in a judging pod's
+  # hostAliases and passes it to the browser runner's jev wrapper; swarm-api
+  # sends it as SNI and Host. Empty while the internal backends are off.
+  decision_api_tailnet_name = var.internal_decision_api_enabled ? var.tailscale_egress_target : ""
 
   # swarm-api's address for the live relay (live.tf, LB-L8d). PLAIN ws on 8080,
   # on the internal load balancer's reserved address: owner decision
@@ -1171,6 +1175,8 @@ locals {
       # Whether the internal Jev judgment backends are available
       # (swarm_api.judgment). See local.internal_decision_api_url.
       INTERNAL_DECISION_API_URL = local.internal_decision_api_url
+      # The host that URL must name. See local.decision_api_tailnet_name.
+      SWARM_DECISION_API_TAILNET_NAME = local.decision_api_tailnet_name
 
       # The audience the child routes pin a worker's ID token to
       # (swarm_api.settings `child_audience`, routes/children.py): the custom
@@ -1346,6 +1352,9 @@ locals {
       # internal backend (scheduler.judgment, JUDGE-SELECT). See
       # local.internal_decision_api_url.
       INTERNAL_DECISION_API_URL = local.internal_decision_api_url
+      # The host that URL must name, passed on to a judging pod for the jev
+      # wrapper. See local.decision_api_tailnet_name.
+      SWARM_DECISION_API_TAILNET_NAME = local.decision_api_tailnet_name
 
       # Child tasks (child_tasks.tf): passed through to a worker the scheduler
       # also mints a registration nonce for -- only when it holds

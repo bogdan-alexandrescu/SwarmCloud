@@ -1,6 +1,6 @@
 """A row for a step a person must act on ends; a row never shows a frozen age or hammers the API.
 
-MEASURED, 2026-10-26 (#2441; BGD decision 08:1xZ). Seven merge steps sat
+MEASURED, 2026-10-26 (#2441; the owner decision 08:1xZ). Seven merge steps sat
 PARKED HUMAN_REQUIRED on owner questions for 3 to 7 hours:
 
 * each one's `sc:step` row called `swarm_follow` with `wait_seconds: 1800`

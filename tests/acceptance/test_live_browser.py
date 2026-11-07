@@ -16,7 +16,7 @@ task that `scripts/acceptance/groups/live-browser.sh` submitted:
              control, clicks the password field and types a password generated
              here at run time. Every frame it receives that shows the page has
              the field's box in the field's own magenta, as Chromium drew it:
-             nothing is painted over it (BGD, 2026-10-25; design §5.3).
+             nothing is painted over it (the owner, 2026-10-25; design §5.3).
   recording  the relay's recording of the session: segments are written under
              the task's attempt `live/` key, and their frames, decoded, show the
              field the same way.
@@ -265,7 +265,7 @@ def judge(pixels: bytes, width: int, height: int, *, bpp: int = 4, tol: int = 0,
 
     login.html draws the field, its dots and its caret all in its magenta, so
     a field shown as drawn is magenta across its box, typed into or not, and
-    one painted over is not (BGD, 2026-10-25: the live view paints nothing).
+    one painted over is not (the owner, 2026-10-25: the live view paints nothing).
     `tol` 0 is for the RFB frames, which carry Chromium's pixels exactly; the
     recording is VP8, lossy, and is judged with a tolerance. `field`, when
     given, is where the field was measured to be (the recording is judged at

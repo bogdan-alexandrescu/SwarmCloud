@@ -1,4 +1,4 @@
-"""A step stopped at its time limit with its checkpoint uploaded continues (BGD, 2026-11-02).
+"""A step stopped at its time limit with its checkpoint uploaded continues (the owner, 2026-11-02).
 
 MEASURED (2 November 2026, the 14 days before, Engineering workspace): 75 hours
 went to runs killed at their 1 or 2 hour limit, 46 tasks, ending 37 workflows.
@@ -40,7 +40,7 @@ from fakes import FakeFirestore, FakeTransactionRunner
 from worker_seeds import TENANT, seed_attempt
 
 KEY = "time_limit_continuations"
-#: BGD, 2026-11-02: two. Stated here rather than imported, so a module that
+#: the owner, 2026-11-02: two. Stated here rather than imported, so a module that
 #: lost its constant fails on the behaviour and not on an import.
 CAP = 2
 #: Four steps over six seconds: a two-second limit stops it after one or two.

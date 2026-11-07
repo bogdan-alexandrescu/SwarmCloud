@@ -51,7 +51,7 @@ from swarm_common.states import ParkReason
 from . import forge_fakes
 from .conftest import api_settings, seed_task, seed_tenant
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
 HEAD = "a" * 40
@@ -867,7 +867,7 @@ def test_a_check_red_on_the_default_branch_head_gets_no_round(db, wake_client, g
 
 def test_a_check_red_on_the_default_branch_head_is_recorded_on_the_wait(db, wake_client, github):
     """The evidence a stuck wait is handed to a person with (part of #2688):
-    BGD's 8-hour wait had main red on the same checks, and nothing said so."""
+    the owner's 8-hour wait had main red on the same checks, and nothing said so."""
     fixable_merge(db, github, rounds=2)
     github.branches["main"] = MAIN_HEAD
     github.check(MAIN_HEAD, CHECK, "failure")

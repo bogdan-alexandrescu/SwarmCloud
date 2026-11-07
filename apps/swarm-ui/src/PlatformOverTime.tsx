@@ -38,11 +38,11 @@ import './styles/overtime.css'
 /**
  * ADMIN › PLATFORM COUNTS, OVER TIME (COUNTS-TIME-VIEW, #2149): how many
  * agents ran per day, week or month, of which type, for how long, on how many
- * tokens, at what estimated cost. Built to BGD's pick, Counts proposal A, the
+ * tokens, at what estimated cost. Built to the owner's pick, Counts proposal A, the
  * Analyst dashboard (docs/web-ui/mockups/counts-a.html, frames F2 to F6). Not
  * mounted here: COUNTS-PAGE mounts it on the page.
  *
- * BGD'S DECISIONS, 2026-10-23, AND WHERE EACH IS KEPT:
+ * owner'S DECISIONS, 2026-10-23, AND WHERE EACH IS KEPT:
  *
  *   * THE UNIT IS AGENTS, RETRIES APART. The read is `usage=submitted`
  *     (platformTimeApi.ts): an agent sits in the bucket of the day it was
@@ -51,7 +51,7 @@ import './styles/overtime.css'
  *     their own scale, under the agents', never stacked into them.
  *   * THE FOUR BREAKDOWNS are the route's `usage.breakdowns`, picked from a
  *     menu that says what each groups by and what it does with an agent that
- *     has no value yet. Every one comes with each read (BGD's answer 3,
+ *     has no value yet. Every one comes with each read (the owner's answer 3,
  *     2026-10-24), so picking one draws at once and never costs a read.
  *   * A BREAKDOWN STACKS THE AGENTS CHART (answer 1, mock-up A's F3 and F4):
  *     the route's five busiest keys plus "all others", each a layer, with the
@@ -76,7 +76,7 @@ import './styles/overtime.css'
  * will read and what it costs. `run` is the page's own Run (COUNTS-PAGE's one
  * shared button): each new value is one press, and mounting is none.
  *
- * ONE RUN ON THE PAGE (COUNTS-ONE-RUN; BGD, CTV-5, 2026-10-24, and
+ * ONE RUN ON THE PAGE (COUNTS-ONE-RUN; owner, CTV-5, 2026-10-24, and
  * 2026-10-25). When the page passes `run`, this view draws no Run of its own:
  * two primary buttons each priced half of what the page reads. The page's Run
  * prices both reads summed, so this view hands it its own half through
@@ -182,7 +182,7 @@ export function PlatformOverTime({
         ? 'last read failed'
         : `read ${timeAgo(data.generated_at, now)} · ${int(data.reads)} reads${data.cached ? ', cached' : ''}`
 
-  // NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+  // NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05):
   // what the view counts, what it costs and, before a Run, what Run will read
   // and draw is the title's tooltip. One line stays drawn: nothing refreshes.
   const explain = [
@@ -342,7 +342,7 @@ function NotRun({ busy }: { busy: boolean }) {
         ))}
       </div>
       <div className="ctl-card pot-card pot-notrun">
-        {/* AN EMPTY STATE IS ONE SHORT LINE (BGD's standing rule, 2026-11-05);
+        {/* AN EMPTY STATE IS ONE SHORT LINE (the owner's standing rule, 2026-11-05);
             its action is the bar's Run, and what Run reads and draws is the
             title's tooltip (`notRunWords`). */}
         <p>
@@ -468,9 +468,9 @@ function tokenCell(t: TokenSum, ended: number): Cell {
 function costCell(f: UsageFigures): Cell {
   const c = f.cost
   const cover = [`${int(c.reporting)} of ${int(c.agents)} agents reported`]
-  // BGD's answer 2: the count of agents beside the dollars, as F2's cost tile.
+  // the owner's answer 2: the count of agents beside the dollars, as F2's cost tile.
   if (c.estimated > 0) cover.push(`${int(c.estimated)} estimated from a stopped run${c.estimated_usd === null ? '' : ` (${usd(c.estimated_usd)})`}`)
-  // BGD: a null cost reads "not reported", whatever the reason; a row where
+  // owner: a null cost reads "not reported", whatever the reason; a row where
   // none ended says why on the line under it.
   if (c.sum_usd === null) return { text: 'not reported', tone: 'absent', cover: f.agents_ended === 0 && f.agents > 0 ? ['none ended yet', ...cover] : cover }
   const floor = c.reporting < c.agents
@@ -523,7 +523,7 @@ const FLOOR = 'at least '
  * reported -- because a line of "488 of 488" under every cell pushed the cost
  * column off a 1440 page. The table's note says a figure with no "k of n" was
  * reported by every attempt. Cost always carries its "k of n agents reported"
- * (BGD, 2026-10-23).
+ * (owner, 2026-10-23).
  */
 function CellView({ cell, partialOnly = false, brief = false }: { cell: Cell; partialOnly?: boolean; brief?: boolean }) {
   // In the table the head note says what "k of n" counts, so the cell drops
@@ -1265,7 +1265,7 @@ function Readout({
 
 /**
  * `wide`: Estimated cost, whose covers ("N of N agents reported", "k
- * estimated from a stopped run ($x)") are BGD's words and longer than one
+ * estimated from a stopped run ($x)") are the owner's words and longer than one
  * overlay column. overtime.css gives it two columns over the chart, so each
  * stays on one line. Every other row is one column, and a cover too long for
  * it has its `brief` there instead: eight figures in three rows of three is

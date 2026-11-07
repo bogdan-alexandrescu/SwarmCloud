@@ -4,9 +4,9 @@ Jev's two internal judgment backends, "Internal Jev" (the default) and
 "Internal Laya", call the internal decision API, which only exists on the company
 Tailscale tailnet:
 
-    https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide
-    https://decision-api-staging.taile0bda9.ts.net/laya/v1/decide
-    https://decision-api-staging.taile0bda9.ts.net/v1/decide        (the root answers too)
+    https://decision-api.example-tailnet.ts.net/jev/v1/decide
+    https://decision-api.example-tailnet.ts.net/laya/v1/decide
+    https://decision-api.example-tailnet.ts.net/v1/decide        (the root answers too)
 
 Neither the laptop nor `swarm-autopilot` is on the tailnet. On 2026-10-14 the
 owner chose **Tailscale egress in our cluster**: one egress Service in
@@ -21,7 +21,7 @@ What is built (lane JUDGE-NET):
 |---|---|---|
 | Secret container | `terraform/infra/tailscale.tf` | `swarm-tailscale-oauth`, no version. One reader: the deployer that runs the sync, and only while `enable_tailscale_egress` is on. |
 | The switch | `enable_tailscale_egress` (default `false`) | Off: nobody reads the secret, nothing is rendered, `apply.sh` applies nothing about the tailnet. |
-| The egress | `kubernetes/swarm-system/tailscale-egress.yaml` | Service `decision-api` (443, fixed clusterIP `10.48.6.120`, stated once as `local.decision_api_cluster_ip` in `terraform/infra/tailscale.tf`) in front of ONE unprivileged pod: Tailscale in userspace mode, plus a forwarder that dials `decision-api-staging.taile0bda9.ts.net:443` and nothing else. |
+| The egress | `kubernetes/swarm-system/tailscale-egress.yaml` | Service `decision-api` (443, fixed clusterIP `10.48.6.120`, stated once as `local.decision_api_cluster_ip` in `terraform/infra/tailscale.tf`) in front of ONE unprivileged pod: Tailscale in userspace mode, plus a forwarder that dials `decision-api.example-tailnet.ts.net:443` and nothing else. |
 | Who reaches it | the manifest's `decision-api-egress-ingress`, and `kubernetes/network-policies/allow-judge-egress.yaml` in every tenant namespace | TCP 8443, only from a pod labelled `swarm-judge: internal` in a tenant namespace. |
 | The sync | `kubernetes/apply.sh --swarm-system --confirm` | Copies the secret from Secret Manager into `swarm-system/operator-oauth`, never printing it. |
 | Storing the secret | `scripts/create-secrets.sh --tailscale-oauth --stdin` | Stdin only; refuses anything that is not an OAuth client secret (`tskey-client-…`). |
@@ -54,7 +54,7 @@ iptables, no sysctl and no capability. It joins the tailnet as an **ephemeral**
 node tagged `tag:swarmcloud`, and keeps its state in memory, so it needs no
 Kubernetes API access and no RBAC. A restart joins as a fresh ephemeral node,
 and the tailnet removes the old one by itself. For each connection, the forwarder
-(`busybox nc -lk`) runs `tailscale nc decision-api-staging.taile0bda9.ts.net 443`
+(`busybox nc -lk`) runs `tailscale nc decision-api.example-tailnet.ts.net 443`
 against tailscaled's local socket. The destination is fixed on the command line:
 a caller cannot pick a different host or port.
 
@@ -66,7 +66,7 @@ move to the operator (on a Standard node pool, say) can reuse it.
 Three independent limits. Any one of them alone keeps the cluster to the one
 destination:
 
-1. the forwarder dials exactly `decision-api-staging.taile0bda9.ts.net:443`;
+1. the forwarder dials exactly `decision-api.example-tailnet.ts.net:443`;
 2. the tailnet policy file grants `tag:swarmcloud` that host on `tcp:443` and
    nothing else, and grants nothing on the tailnet a path *to* `tag:swarmcloud`
    (step 2 below);
@@ -107,11 +107,11 @@ In the Tailscale admin console:
 
    ```jsonc
    "hosts": {
-     "decision-api-staging": "100.x.y.z",   // the device's tailnet IPv4
+     "decision-api": "100.x.y.z",   // the device's tailnet IPv4
    },
    "grants": [
      // SwarmCloud's cluster egress: the decision API, HTTPS, nothing else.
-     { "src": ["tag:swarmcloud"], "dst": ["decision-api-staging"], "ip": ["tcp:443"] },
+     { "src": ["tag:swarmcloud"], "dst": ["decision-api"], "ip": ["tcp:443"] },
    ],
    ```
 
@@ -119,7 +119,7 @@ In the Tailscale admin console:
    is `*`, or whose `dst` is `*` or `tag:swarmcloud`, gives the cluster's node
    (or gives others a path to it) more than this. That includes the default
    "allow all" policy of a new tailnet. Use the policy file's **Preview rules**
-   for `tag:swarmcloud` to confirm it can reach only `decision-api-staging:443`
+   for `tag:swarmcloud` to confirm it can reach only `decision-api:443`
    and that nothing can reach it.
 
 3. **The OAuth client.** Settings → OAuth clients → *Generate OAuth client*:
@@ -176,7 +176,7 @@ kubernetes/apply.sh --swarm-system --confirm
 `swarm-system/operator-oauth`. It reads the value with gcloud into a 0600 file,
 builds the Secret with `kubectl create --dry-run=client`, applies it, and
 removes the file. It prints `secret/operator-oauth configured` and never the
-value. Like every `apply.sh` mode, it refuses `agents-staging` (the deny-list in
+value. Like every `apply.sh` mode, it refuses `peer-cluster` (the deny-list in
 `scripts/lib/common.sh`) before it reads anything. The release's
 "roll the live relay" step runs the same apply, so later releases keep the
 Secret in step with Secret Manager.
@@ -195,12 +195,12 @@ the egress is up and nothing can use it.
 
 With the label, and only with it, the dispatcher gives the pod
 
-    hostAliases: [{ip: 10.48.6.120, hostnames: [decision-api-staging.taile0bda9.ts.net]}]
-    JEV_API_URL=https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide   (or /laya/)
+    hostAliases: [{ip: 10.48.6.120, hostnames: [decision-api.example-tailnet.ts.net]}]
+    JEV_API_URL=https://decision-api.example-tailnet.ts.net/jev/v1/decide   (or /laya/)
 
 so the pod calls the decision API **by its tailnet name**, the name resolves to
 the `decision-api` Service, and TLS verifies the API's real certificate end to
-end (owner decision 2026-10-15, #1380). The in-cluster name does not work for
+end (owner decision 2026-10-15). The in-cluster name does not work for
 either scheme: `http://decision-api.swarm-system.svc.cluster.local` times out,
 because the Service has no port 80, and `https://` on it fails TLS, because the
 certificate is issued for the tailnet name. That is why the Service's
@@ -219,9 +219,9 @@ change, after the third probe under Verify passes.
 The Service and the pod:
 
 ```bash
-kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot \
+kubectl --context gke_example-project_us-central1_swarm-autopilot \
   -n swarm-system get svc decision-api
-kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot \
+kubectl --context gke_example-project_us-central1_swarm-autopilot \
   -n swarm-system get pods -l app.kubernetes.io/name=decision-api-egress
 ```
 
@@ -241,10 +241,10 @@ because the namespace's default of 20Gi is over Autopilot's 10Gi cap. Drop any
 of the three and the pod is refused.
 
 ```bash
-CTX=gke_saga-agents-staging_us-central1_swarm-autopilot
+CTX=gke_example-project_us-central1_swarm-autopilot
 NS=swarm-tenant-eng
 OVERRIDES='{"spec":{"automountServiceAccountToken":false,
-  "hostAliases":[{"ip":"10.48.6.120","hostnames":["decision-api-staging.taile0bda9.ts.net"]}],
+  "hostAliases":[{"ip":"10.48.6.120","hostnames":["decision-api.example-tailnet.ts.net"]}],
   "securityContext":{"runAsNonRoot":true,"runAsUser":65532,"seccompProfile":{"type":"RuntimeDefault"}},
   "containers":[{"name":"judge-probe","image":"curlimages/curl:8.11.1","command":["sleep","300"],
   "securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},
@@ -257,10 +257,10 @@ kubectl --context "$CTX" -n "$NS" wait --for=condition=Ready pod/judge-probe --t
 
 kubectl --context "$CTX" -n "$NS" exec judge-probe -- \
   curl -sS -o /dev/null -w '%{http_code}\n' --max-time 20 \
-    --connect-to decision-api-staging.taile0bda9.ts.net:443:decision-api.swarm-system.svc.cluster.local:443 \
+    --connect-to decision-api.example-tailnet.ts.net:443:decision-api.swarm-system.svc.cluster.local:443 \
     -H 'content-type: application/json' \
     -d '{"state":"connectivity probe","questions":{}}' \
-    https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide
+    https://decision-api.example-tailnet.ts.net/jev/v1/decide
 ```
 
 Any HTTP status, a 4xx for the empty question set included, proves the path:
@@ -278,7 +278,7 @@ kubectl --context "$CTX" -n "$NS" exec judge-probe -- \
   curl -sS -o /dev/null -w '%{http_code}\n' --max-time 20 \
     -H 'content-type: application/json' \
     -d '{"state":"connectivity probe","questions":{}}' \
-    https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide
+    https://decision-api.example-tailnet.ts.net/jev/v1/decide
 # expect: an HTTP status (400 for this body on 2026-10-15), never 000
 ```
 
@@ -289,8 +289,8 @@ could have come out the other way:
 kubectl --context "$CTX" -n "$NS" label pod judge-probe swarm-judge-
 kubectl --context "$CTX" -n "$NS" exec judge-probe -- \
   curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 \
-    --connect-to decision-api-staging.taile0bda9.ts.net:443:decision-api.swarm-system.svc.cluster.local:443 \
-    https://decision-api-staging.taile0bda9.ts.net/
+    --connect-to decision-api.example-tailnet.ts.net:443:decision-api.swarm-system.svc.cluster.local:443 \
+    https://decision-api.example-tailnet.ts.net/
 # expect: a timeout, http_code 000
 
 kubectl --context "$CTX" -n "$NS" delete pod judge-probe
@@ -315,10 +315,10 @@ kubectl --context "$CTX" -n "$NS" delete pod judge-probe
    applies nothing about the tailnet from then on. It does **not** delete what
    is already running.
 2. Remove the running objects, through the swarm's own context only (never
-   `agents-staging`):
+   `peer-cluster`):
 
    ```bash
-   kubectl --context gke_saga-agents-staging_us-central1_swarm-autopilot -n swarm-system \
+   kubectl --context gke_example-project_us-central1_swarm-autopilot -n swarm-system \
      delete deployment/decision-api-egress service/decision-api \
      networkpolicy/decision-api-egress-ingress serviceaccount/decision-api-egress \
      secret/operator-oauth

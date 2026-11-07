@@ -10,7 +10,7 @@
 //   b  6:admin-014 (new)        the tiered row's figures sat right, the
 //      inputs' figures left, in one price column.
 //   c  5b (6343789520)           Providers wrapped only
-//      provider:anthropic:tenant:u-bogdan, a lone tall row.
+//      provider:anthropic:tenant:u-owner, a lone tall row.
 //   d  6:admin-010 (6343787880)  Additional repositories' labels touched their
 //      inputs.
 //   e  6:admin-016, 6:admin-017 (new)  at 390 'full' dropped under `edit`, and
@@ -100,7 +100,7 @@ function capacity(pools: Pool[]): Capacity {
 
 function tenant(over: Partial<Tenant>): Tenant {
   return {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     kind: 'user',
     principal: 'alice@example.com',
     display_name: null,
@@ -110,7 +110,7 @@ function tenant(over: Partial<Tenant>): Tenant {
     monthly_budget_usd: null,
     enabled: true,
     credentials: ['anthropic'],
-    service_account: 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com',
+    service_account: 'swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com',
     gcs_prefix: null,
     namespace: null,
     ...over,
@@ -279,10 +279,10 @@ describe('b. 6:admin-014: a price column draws its figures at one alignment', ()
 // c. Providers' lone tall row
 // ---------------------------------------------------------------------------
 
-describe('c. 5b (6343789520): the Pool column holds provider:anthropic:tenant:u-bogdan at 1440', () => {
+describe('c. 5b (6343789520): the Pool column holds provider:anthropic:tenant:u-owner at 1440', () => {
   it('fits the raw key on one line, and keeps the wrap point between pairs', async () => {
     viewport(1440)
-    const name = 'provider:anthropic:tenant:u-bogdan'
+    const name = 'provider:anthropic:tenant:u-owner'
     await limits([pool(name)])
     const row = document.getElementById(`limit-${name}`)!
     const th = row.querySelector('th.pool-name')!
@@ -355,8 +355,8 @@ describe('e. 6:admin-016, 6:admin-017: at 390 the ceiling row keeps "6 /10" toge
 
   it("leaves room for 'full' after edit on the ceiling's row", async () => {
     viewport(390)
-    await limits([pool('provider:anthropic:tenant:u-bogdan', { active: 5, effective_limit: 5, available: 0 })])
-    const cell = document.getElementById('limit-provider:anthropic:tenant:u-bogdan')!.querySelector('td.adm-ceiling-cell')!
+    await limits([pool('provider:anthropic:tenant:u-owner', { active: 5, effective_limit: 5, available: 0 })])
+    const cell = document.getElementById('limit-provider:anthropic:tenant:u-owner')!.querySelector('td.adm-ceiling-cell')!
     const run = cell.querySelector('.adm-fig')!
     const button = cell.querySelector('.limit-edit > button')!
     const full = cell.querySelector('.limit-edit > .adm-full')!
@@ -387,7 +387,7 @@ describe('f. QA-044: the phone card’s field labels are set in the sans face', 
     const cells = [...document.getElementById('limit-global')!.querySelectorAll('td[data-label]')]
     expect(cells.map((c) => c.getAttribute('data-label'))).toEqual(['In use (units)', 'Ceiling (units)', 'Set by', 'Last changed'])
     for (const c of cells) {
-      // The key face is console-wide since BGD's decision of 2026-10-23
+      // The key face is console-wide since the owner's decision of 2026-10-23
       // (QA-044, task_7f0095fb2fd9481790cc q0): styles.css's shared stacked
       // rule draws it sans and admin.css carries no override of its own
       // (qa044.sanskeys.test.tsx holds the other pages).
@@ -431,7 +431,7 @@ describe('h. 6:admin-013: a class whose units exceed its pool’s ceiling is mar
     // MUTATION: drop the mark: a save that leaves `large` unrunnable is silent.
     const mark = within(large as HTMLElement).getByText('too small')
     expect(mark.closest('[data-tone]')?.getAttribute('data-tone')).toBe('paused')
-    // BGD's no-prose rule (2026-11-05): the reason is the mark's tooltip, not a line.
+    // the owner's no-prose rule (2026-11-05): the reason is the mark's tooltip, not a line.
     // MUTATION: draw `One large agent weighs …: none of it can start.` under the mark again.
     expect(large.textContent).not.toContain('none of it can start')
     const tip = mark.closest('[title]')?.getAttribute('title') ?? ''
@@ -476,7 +476,7 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
     api.loadTenants.mockResolvedValue(ok({ tenants: [tenant({})] }))
     api.loadCapacity.mockResolvedValue(ok(capacity([])))
     const { container } = render(<TenantsScreen />)
-    await screen.findByText('u-bogdan', undefined, WAIT)
+    await screen.findByText('u-owner', undefined, WAIT)
     const cell = container.querySelector('td[data-label="Principal"]')!
     const ident = cell.querySelector('.ten-ident')!
     const copy = cell.querySelector('button.ten-copy')!
@@ -495,12 +495,12 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
 
   it('cuts the domain by the same rule in every row', async () => {
     viewport(1440)
-    render(<TenantIdent value="swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com" noun="service account" tenant="u-bogdan" phone={false} />)
+    render(<TenantIdent value="swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com" noun="service account" tenant="u-owner" phone={false} />)
     const head = document.querySelector('.ten-ident-head')!
     const tail = document.querySelector('.ten-ident-tail')!
     // MUTATION: weight the tail by its length again: flexbox shrinks it by
     // its weight times its length, so every row's domain is cut at a
-    // different letter ('swa…u-bogdan@e…').
+    // different letter ('swa…u-owner@e…').
     // NOT CUT AT ALL NOW (visual QA pass 2, admin-shell-18): the domain
     // wraps on its own line, so every row shows all of it.
     expect(painted(tail, 'flex', WIDE)).toBe('0 1 auto')
@@ -512,24 +512,24 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
     expect(painted(head, 'max-width', WIDE)).toBe('100%')
     // The copy control carries the whole value.
     const copy = screen.getByRole('button', { name: /^Copy service account / })
-    expect(copy.getAttribute('title')).toContain('swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com')
+    expect(copy.getAttribute('title')).toContain('swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com')
   })
 
   it("puts a <wbr> before the key and after each '@' and '.', and nowhere else, at 390", () => {
     viewport(390)
-    const value = 'swarm-agent-worker-u-bogdan@example-project.iam.gserviceaccount.com'
-    render(<TenantIdent value={value} noun="service account" tenant="u-bogdan" phone />)
+    const value = 'swarm-agent-worker-u-owner@example-project.iam.gserviceaccount.com'
+    render(<TenantIdent value={value} noun="service account" tenant="u-owner" phone />)
     const ident = document.querySelector('.ten-ident')!
     // The whole value is still the element's text: a selection copies all of it.
     expect(ident.textContent).toBe(value)
     const before = [...ident.querySelectorAll('wbr')].map((w) => (w.previousSibling?.textContent ?? '').slice(-1))
     // MUTATION: break the segments at hyphens too, or draw the value bare.
     // The first break is before the key (visual QA pass 1, admin-shell-02):
-    // `swarm-agent-worker-` / `u-bogdan@` / `example-project.` / ...
+    // `swarm-agent-worker-` / `u-owner@` / `example-project.` / ...
     expect(before).toEqual(['-', '@', '.', '.', '.'])
     expect([...ident.querySelectorAll('.ten-seg')].map((s) => s.textContent)).toEqual([
       'swarm-agent-worker-',
-      'u-bogdan@',
+      'u-owner@',
       'example-project.',
       'iam.',
       'gserviceaccount.',
@@ -542,7 +542,7 @@ describe('j. 6:admin-009, 6:admin-008: Tenants shows principals whole at 1440 an
       expect(painted(seg, 'text-overflow', PHONE)).toBe('ellipsis')
     }
     // MUTATION: leave `overflow-wrap: anywhere` reaching the identity: it
-    // breaks 'bogdan@exampl' / 'e-'.
+    // breaks 'owner@exampl' / 'e-'.
     expect(painted(ident, 'overflow-wrap', PHONE)).toBe('normal')
   })
 

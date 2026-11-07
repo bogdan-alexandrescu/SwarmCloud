@@ -202,7 +202,7 @@ function record(id: string): CheckpointRecord {
     attempt_created_at: at(0),
     attempt_completed_at: null,
     prefix,
-    uri: `gs://swarm-workspaces/${prefix}`,
+    uri: `gs://swarm-artifacts-example-project/${prefix}`,
     is_latest_pointer: true,
     objects: [
       { name: 'manifest.json', key: `${prefix}/manifest.json`, bytes: 412 },

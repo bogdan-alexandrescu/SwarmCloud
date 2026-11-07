@@ -51,7 +51,7 @@ export function ProfilesScreen() {
          whole screen -- because a `?` in each card head would be one per
          profile saying one thing.
          IT OPENS THE SCREEN'S TOPICS (QA1-FIX-24, capacity-13, part of
-         #2596), as Ceilings' `?` has since VQ-033 (BGD 2026-10-26: "Move the
+         #2596), as Ceilings' `?` has since VQ-033 (owner 2026-10-26: "Move the
          topics behind the page's one ?"). By runner profile still ended in
          the `Reading this screen:` row of underlined monospace links; the
          row is gone and its four topics, `pools-all-at-once` among them, are

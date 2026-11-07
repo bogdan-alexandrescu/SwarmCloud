@@ -30,8 +30,8 @@ const JSON_HEADERS = { 'content-type': 'application/json' }
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 // Built at runtime: a 64-hex literal reads as a key to a credential scan.
 const DIGEST = 'sha256:' + 'c3'.repeat(32)
-const REF = 'bogdan-alexandrescu/SwarmCloud#454'
-const URL = 'https://github.com/bogdan-alexandrescu/SwarmCloud/issues/454'
+const REF = 'example-org/example-repo#454'
+const URL = 'https://github.com/example-org/example-repo/issues/454'
 
 /** The planner's summary as the owner measured it: one long paragraph. */
 const LONG_SUMMARY =
@@ -54,8 +54,8 @@ const ISSUE_READ = {
 function run(over: Record<string, unknown> = {}) {
   return {
     id: 'run_d13a2f1b7e1e4eafabfb', tenant_id: 'eng', state: 'PLANNED', terminal: false,
-    issue: { ref: REF, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454, url: URL,
-      repository_url: 'https://github.com/bogdan-alexandrescu/SwarmCloud' },
+    issue: { ref: REF, owner: 'example-org', repo: 'SwarmCloud', number: 454, url: URL,
+      repository_url: 'https://github.com/example-org/example-repo' },
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner1',
     plan: {
       summary: LONG_SUMMARY,

@@ -13,7 +13,7 @@
 @media (max-width: 720px) {
   .asm-fields { grid-template-columns: minmax(0, 1fr); }
 }
-/* NO EXPLANATORY PROSE ON THE SURFACE (BGD, 2026-11-05): the (i) beside a
+/* NO EXPLANATORY PROSE ON THE SURFACE (owner, 2026-11-05): the (i) beside a
    heading, a label whose explanation is its tooltip, and a status tick whose
    tooltip is its reason (AdminSetupHealth's About, Explained, ReasonTick). */
 .c-btn.is-icon.is-sm.asm-about { width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 50%; vertical-align: middle; }

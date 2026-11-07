@@ -52,7 +52,7 @@ from swarm_common.states import TaskState
 from .conftest import auth_header, seed_task
 from .fakes import FakeFirestore
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 REGION = "us-central1"
 TENANT = "eng"
 

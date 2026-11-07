@@ -75,7 +75,7 @@ def test_begin_sign_in_reaches_the_transport():
     """Before the fix this raised TypeError inside _call and never got here."""
     rec = _Recorder(body={"authorize_url": "https://claude.ai/x", "state": "s" * 40})
     out = _client(rec).begin_sign_in(
-        owner_tenant="eng", label="bogdan-primary", provider="anthropic", lend_to=[]
+        owner_tenant="eng", label="owner-primary", provider="anthropic", lend_to=[]
     )
 
     assert len(rec.calls) == 1, "the request never reached the transport"
@@ -84,7 +84,7 @@ def test_begin_sign_in_reaches_the_transport():
     assert call["url"].endswith("/v1/accounts/authorize")
     assert call["body"] == {
         "owner_tenant": "eng",
-        "label": "bogdan-primary",
+        "label": "owner-primary",
         "provider": "anthropic",
         "lend_to": [],
     }
@@ -92,7 +92,7 @@ def test_begin_sign_in_reaches_the_transport():
 
 
 def test_finish_sign_in_reaches_the_transport():
-    rec = _Recorder(status=201, body={"account_id": "eng:bogdan-primary"})
+    rec = _Recorder(status=201, body={"account_id": "eng:owner-primary"})
     out = _client(rec).finish_sign_in(
         state="s" * 40, code="code#hash#state", expected_owner="eng"
     )
@@ -104,7 +104,7 @@ def test_finish_sign_in_reaches_the_transport():
         "code": "code#hash#state",
         "expected_owner": "eng",
     }
-    assert out["account_id"] == "eng:bogdan-primary"
+    assert out["account_id"] == "eng:owner-primary"
 
 
 def test_the_verifier_is_never_sent_or_returned():

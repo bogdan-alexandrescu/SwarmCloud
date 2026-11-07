@@ -23,7 +23,7 @@ decision API, which needs no TypeSafe key and is never sent one -- or TypeSafe.
 when the resolution below finds a key. See
 [design/live-browser.md §3.2.2](design/live-browser.md#322-judgment-backends-judge-select).
 
-**Where these keys sit among the other secrets (built, #1347 and #2158).**
+**Where these keys sit among the other secrets (built).**
 The workspace secrets store ([design/workspace-secrets.md](design/workspace-secrets.md))
 holds any other credential a workspace keeps, granted by checkbox to named
 consumers. Its §6.1 moves this key into that store without breaking the
@@ -92,7 +92,7 @@ provider, present)` is a pure function:
 
 Only the submitter's own key is ever a candidate, and the function takes the
 submitter's **confirmed** personal tenant (`own_personal_tenant`), never an
-email. The frozen slug keeps only the local part, so `dave@partner.com` and
+email. The frozen slug keeps only the local part, so `dave@example.org` and
 `dave@example.com` both derive `u-dave`, and a resolver that derived it would hand
 one person's key to their namesake. Someone with no confirmed personal tenant,
 a service identity included, falls to the tenant key. In a person's own
@@ -106,7 +106,7 @@ tenant would be readable by every member's agents. `u-<alice>` has an account
 only alice's work runs as. The user routes refuse with 404 until that
 workspace is `ready` and its tenant document names this email (the same check
 that offers it as the default tenant, `auth.PersonalTenants`), because the
-frozen slug drops the domain: `alice@partner.com` derives `u-alice` too. `DELETE .../user` needs only the tenant document to
+frozen slug drops the domain: `alice@example.org` derives `u-alice` too. `DELETE .../user` needs only the tenant document to
 name this email: a person whose workspace has left `ready` can still destroy
 their own key.
 
@@ -118,11 +118,11 @@ member's agents, so it is never a prefix and never a default. It is one row
 per (group, person) in `terraform/bootstrap/typesafe_user_keys.tf`
 (`variable "typesafe_user_key_readers" {`), applied by the owner, and the row is the
 person's consent: the same trade the owner accepted for GitHub user slots
-(#780 D7 U1). A path that acts only for the submitter, with swarm-api reading
+(the per-person-slots migration's design, D7 U1). A path that acts only for the submitter, with swarm-api reading
 the key on their behalf, would need a route that serves a credential, which
 `test_no_route_serves_credentials.py` forbids. That is still open.
 
-**The `inject` delivery mode (SEC-INJECT-A, 2026-10-15, part of #1347).**
+**The `inject` delivery mode (SEC-INJECT-A, 2026-10-15).**
 Owner decision Q8 of [the workspace secrets design](design/workspace-secrets.md#35-option-d-the-secret-never-enters-the-pod-inject-first-for-typesafe)
 moves the TypeSafe key out of the agent pod: a platform forwarder in
 swarm-system adds it to jev's and the judge's requests to api.typesafe.ai. The
@@ -206,7 +206,7 @@ pastes the key into the console:
 
 The runner's provider key (`anthropic`, `openai`, any `known_providers()`
 name; `POST /v1/tenants/me/credentials`) gets the same kind of link, because
-BGD's Q8 of [secrets-scopes.md](design/secrets-scopes.md) (§11) is that a
+[the owner]'s Q8 of [secrets-scopes.md](design/secrets-scopes.md) (§11) is that a
 value arrives only through the console form a link opens, or a terminal's
 `--stdin`, and never through a tool:
 
@@ -286,7 +286,7 @@ owner applies it; CI cannot (below).
 | `disable_secret_version` (`workspace_secrets.py`) | `secretmanager.versions.disable` |
 
 The last row is the workspace secrets store's rotation sweep
-(`SecretManagerWorkspaceSecrets`, #1347, owner decision Q5). It runs as the
+(`SecretManagerWorkspaceSecrets`, owner decision Q5). It runs as the
 same swarm-api account on the same `swarm-tenant-*` names. It disables a
 rotated-out version after its 24-hour grace and never destroys one
 (docs/design/workspace-secrets.md §4.3). Its other calls are a subset of the
@@ -305,17 +305,17 @@ production.
 
 ```
 resource.type == "cloudresourcemanager.googleapis.com/Project"
-  || resource.name.startsWith("projects/209012342332/secrets/swarm-tenant-")
+  || resource.name.startsWith("projects/123456789012/secrets/swarm-tenant-")
 ```
 
 * **The name arm uses the project NUMBER.** IAM evaluates Secret Manager names
   with the number, and the project ID "can't be substituted" there. The ID
-  spelling also passes `lintPolicy`, but it would match nothing. 209012342332
-  is `gcloud projects describe saga-agents-staging --format='value(projectNumber)'`,
+  spelling also passes `lintPolicy`, but it would match nothing. 123456789012
+  is `gcloud projects describe example-project --format='value(projectNumber)'`,
   read 2026-10-14. getIamPolicy, setIamPolicy and the three `versions.*`
   permissions are checked on the secret or version, so this arm limits them to
   `swarm-tenant-*`. They never reach `swarm-github-app-*` or the other team's
-  `agents-*` / `promptlab-*`.
+  `agents-*` / `peer-app-*`.
 * **A resource-name condition cannot gate `secrets.create`.** Create is
   evaluated on the parent project, whose name has no secret id in it. With the
   name arm alone every create would be refused and the routes would still 503.
@@ -344,9 +344,9 @@ lists in Terraform with nothing to keep the two in sync. That is the owner's
 call, asked in the KEYS-IAM pull request.
 
 **Why bootstrap and not terraform/infra.** A custom role cannot be defined in
-terraform/infra (#79). Adding a role that carries `secrets.setIamPolicy` to the
+terraform/infra. Adding a role that carries `secrets.setIamPolicy` to the
 CI deployer's grantable list would let CI grant itself rewrite access to any
-secret's policy in the shared project (#69). `hasOnly()` limits which roles can
+secret's policy in the shared project. `hasOnly()` limits which roles can
 be granted. It does not limit who receives them.
 
 ### Applying it (the owner, dev-iam)
@@ -358,9 +358,9 @@ so the clean result means something:
 ```bash
 curl -sS -X POST \
   --oauth2-bearer "$(gcloud auth print-access-token)" \
-  -H "Content-Type: application/json" -H "x-goog-user-project: saga-agents-staging" \
+  -H "Content-Type: application/json" -H "x-goog-user-project: example-project" \
   https://iam.googleapis.com/v1/iamPolicies:lintPolicy \
-  --data '{"fullResourceName":"//cloudresourcemanager.googleapis.com/projects/saga-agents-staging","condition":{"title":"swarm tenant provider keys","expression":"resource.type == \"cloudresourcemanager.googleapis.com/Project\" || resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\")"}}'
+  --data '{"fullResourceName":"//cloudresourcemanager.googleapis.com/projects/example-project","condition":{"title":"swarm tenant provider keys","expression":"resource.type == \"cloudresourcemanager.googleapis.com/Project\" || resource.name.startsWith(\"projects/123456789012/secrets/swarm-tenant-\")"}}'
 ```
 
 Then plan and apply `terraform/bootstrap`. The plan is **2 to add, 0 to change,
@@ -370,7 +370,7 @@ output shows the condition to read the plan against. After applying, the check
 is a live `PUT /v1/provider-keys/typesafe/user` that answers 200 instead of
 503.
 
-Where the role is already applied, the rotation sweep's permission (#1347) is
+Where the role is already applied, the rotation sweep's permission is
 **0 to add, 1 to change, 0 to destroy**. The one change is
 `google_project_iam_custom_role.provider_key_writer[0]`, updated in place, and
 its only differing attribute is `permissions` gaining
@@ -384,7 +384,7 @@ resource type (the header of `provider_keys.tf`). The unit tests run against
 in-memory and fake Secret Manager clients, and the Terraform tests use a mock
 provider. Neither can show what IAM itself answers.
 
-## 7. Secrets scopes: what changes for these keys, and what does not (#2158)
+## 7. Secrets scopes: what changes for these keys, and what does not
 
 [design/secrets-scopes.md](design/secrets-scopes.md), built 2026-10-24
 (its §12), puts every secret on one Config › Secrets page, at the level it
@@ -392,7 +392,7 @@ belongs to. For the keys in this document:
 
 * **The lookup order of §2 is the order the scopes use.** When a person's, a
   repository's and a workspace's secret share a name, the person's wins, then
-  the repository's, then the workspace's (BGD's Q1). It is §2's rule, a
+  the repository's, then the workspace's ([the owner]'s Q1). It is §2's rule, a
   person's TypeSafe key over the tenant's, widened to the scopes, and for the
   same reason: a person who sets their own value under a shared name meant it
   for their own agents.
@@ -407,7 +407,7 @@ belongs to. For the keys in this document:
   is kept.** SwarmCloud seals such a value in swarm-api with PyNaCl, sends it
   to GitHub through the existing SwarmCloud App's one-repository,
   one-permission token, and keeps only the name, who set it and when. The
-  threat model, including the residual risk BGD accepted until
+  threat model, including the residual risk [the owner] accepted until
   user-scoped-secrets step 5 (a repository admin's user token, readable by
   tenant workers from its `-git-u-` slot, could overwrite that repository's
   Actions secrets once the App holds Secrets: write), is in

@@ -124,7 +124,7 @@ describe('config-08: GitHub access’s lead names the step the strip holds, neve
     expect(words).not.toContain('GitHub access is set up')
     expect(words).toContain('Step 1 of 3 · needs you.')
     expect(within(lead).getByRole('heading', { level: 2 }).textContent).toBe('Enable orgs failed')
-    // BGD's no-prose rule (2026-11-05): the line is the fact; why it reads failed is the (i) beside the title.
+    // the owner's no-prose rule (2026-11-05): the line is the fact; why it reads failed is the (i) beside the title.
     // MUTATION: put "but Workspace setup's checklist says …" back in the line.
     expect(visible(lead.querySelector('p.ur-small'))).toBe('GitHub is connected as @octo-dev.')
     const info = within(lead).getByRole('button', { name: 'About Enable orgs failed' })

@@ -42,7 +42,7 @@ from .conftest import ENG_GROUP, RESEARCH_GROUP, NoForgeTokens, api_settings, au
 from .fakes import FakeFirestore
 from .test_continuation_scope_is_narrow import SWEPT
 
-SVC = "ci-bot@saga-agents-staging.iam.gserviceaccount.com"
+SVC = "ci-bot@example-project.iam.gserviceaccount.com"
 
 GROUPS: dict[str, tuple[str, ...]] = {
     "alice@example.com": (ENG_GROUP,),

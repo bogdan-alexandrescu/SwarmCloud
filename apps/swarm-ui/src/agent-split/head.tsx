@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState, type ReactNode } from 'react'
+import { useContext, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 import { AgParentLink } from '../AgentChildren'
 import { SplitClock } from '../AgentDetail'
@@ -66,7 +66,7 @@ export function stepTitle(t: Pick<Task, 'workflow_id' | 'step_id' | 'metadata'>)
  * class · workflow · account · the whole task id with its copy button -- and
  * the dispatch as plain-language chips.
  *
- * THE ID IS ON THE META LINE, NOT A LINE OF ITS OWN (VQ-010, BGD's visual QA
+ * THE ID IS ON THE META LINE, NOT A LINE OF ITS OWN (VQ-010, the owner's visual QA
  * 2026-10-26): with it under the title the header was three lines where v3 A
  * draws two. It is still printed whole, in mono, with its copy
  * (`TaskIdLine`, #94 -- it was once only the button's tooltip).
@@ -188,7 +188,44 @@ export function AgHead({
           </Button>
         </span>
       </div>
+      {task !== null && <AgDescription task={task} />}
       <AgHeadMeta task={task} taskId={taskId} />
+    </div>
+  )
+}
+
+/**
+ * A SINGLE TASK'S OWN DESCRIPTION, under its name (owner, 2026-11-07, part
+ * of #2688): its first line, cut to the column, until More shows it whole.
+ * The submitter's text as text, with nothing said around it; nothing for a
+ * task without one, or for a workflow's step, which inherits nothing.
+ */
+const DESC_FOLDED: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', margin: 0 }
+const DESC_OPEN: CSSProperties = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', margin: 0 }
+
+function AgDescription({ task }: { task: Task }) {
+  const [open, setOpen] = useState(false)
+  const [cut, setCut] = useState(false)
+  const lineRef = useRef<HTMLParagraphElement | null>(null)
+  const text = (task.step_id ?? null) === null && typeof task.description === 'string' ? task.description.trim() : ''
+  const first = text.split('\n')[0] ?? ''
+  // A first line wider than the column is cut too, so it gets the control.
+  useLayoutEffect(() => {
+    const el = lineRef.current
+    if (!open && el !== null) setCut(el.scrollWidth > el.clientWidth)
+  }, [open, first])
+  if (text === '') return null
+  const more = first !== text || cut
+  return (
+    <div className="ag-desc">
+      <p ref={lineRef} className="ag-desc-text" style={open ? DESC_OPEN : DESC_FOLDED}>
+        {open ? text : first}
+      </p>
+      {more && (
+        <Button aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? 'Less' : 'More'}
+        </Button>
+      )}
     </div>
   )
 }

@@ -19,7 +19,7 @@ from swarm_common.profiles import RUNNER_PROFILES, InputRefused, check_inputs
 
 from .conftest import auth_header
 
-REPO = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+REPO = "https://github.com/example-org/example-repo.git"
 
 
 def _tasks(db) -> list[str]:

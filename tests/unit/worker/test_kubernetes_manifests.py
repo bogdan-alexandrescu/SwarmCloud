@@ -36,7 +36,7 @@ REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
 
 TENANT = "eng"
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 
 #: The control plane's numeric uniqueIds in that project. See the assertion at
 #: the bottom of this file for why a RoleBinding needs them at all.
@@ -1662,7 +1662,7 @@ def test_every_gsa_rbac_subject_is_also_bound_by_numeric_unique_id():
         resource "jobs" in API group "batch" in the namespace "swarm-tenant-eng"
 
     while `swarm-dispatcher`'s RoleBinding named
-    `swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com` and nothing
+    `swarm-scheduler@example-project.iam.gserviceaccount.com` and nothing
     else. Both were correct descriptions of the same identity and only one of
     them was the SUBJECT: the scheduler reaches the Kubernetes API with a Google
     OAuth access token (dispatch.py's `install_google_bearer_token`), and on that

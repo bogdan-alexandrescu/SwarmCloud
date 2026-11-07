@@ -643,7 +643,7 @@ test('Help carries the four topics the QA pass found missing (AH-14)', () => {
   // Platform counts: one count per state, per scope, and the admin's second scope.
   assert.match(all('platform-counts'), /count\(\)/, 'platform-counts does not say what one run asks for')
   assert.match(all('platform-counts'), /administrator/i, 'platform-counts does not say who gets the second scope')
-  // Platform counts over time (COUNTS-PAGE, part of #2149, BGD 2026-10-23):
+  // Platform counts over time (COUNTS-PAGE, part of #2149, owner 2026-10-23):
   // what the time view counts, where its figures come from, what its cost is.
   // MUTATION: drop "submitted" from the topic, and this goes red.
   assert.match(all('platform-counts'), /submi(tted|ssion)/i, 'platform-counts does not say agents are counted on the day they were submitted')

@@ -852,8 +852,8 @@ describe('scope and filters', () => {
     await waitFor(() => expect(api.loadMe).toHaveBeenCalled())
     expect(root.querySelector('.ol-scope')).toBeNull()
     const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
-    // The reader's word is workspace (VQ-056); the id is still the tenant id, the fixture's u-bogdan.
-    expect(facts).toContain('workspaceu-bogdan')
+    // The reader's word is workspace (VQ-056); the id is still the tenant id, the fixture's u-owner.
+    expect(facts).toContain('workspaceu-owner')
     expect(facts).toContain('byfinish time')
   })
 
@@ -1106,9 +1106,9 @@ describe('the eight cards', () => {
       'merge failed', 'publish refused', 'budget exceeded', 'fix loop exhausted', 'other', 'no reason recorded',
       'failed on purpose',
     ])
-    // Contract request 118 (BGD 2026-10-27): the fixture's one budget stop on
+    // Contract request 118 (owner 2026-10-27): the fixture's one budget stop on
     // 25 Sep is its own row, after publish refused, and no longer an "other".
-    // Contract request 126 (BGD 2026-10-27): a fix loop that ended without a
+    // Contract request 126 (owner 2026-10-27): a fix loop that ended without a
     // MERGE is its own row after it, drawn as 0 in a fixture that has none.
     expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
       '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '1', '0', '5', '0', '0',
@@ -1277,8 +1277,8 @@ describe('the eight cards', () => {
     const root = await timeline(thirtyDays())
     const strips = [...card(root, /^Why agents failed/).querySelectorAll('.ol-strip')]
     // One per class in the route's vocabulary: eighteen since "fix loop
-    // exhausted" (contract request 126, BGD 2026-10-27), seventeen since "budget
-    // exceeded" (contract request 118, BGD 2026-10-27), sixteen since "failed on
+    // exhausted" (contract request 126, owner 2026-10-27), seventeen since "budget
+    // exceeded" (contract request 118, owner 2026-10-27), sixteen since "failed on
     // purpose" (#631, the caller asked for the failure), fifteen since "publish
     // refused" (contract request 29), fourteen since the worker actions'
     // four (contract requests 33 and 35), ten since "spec signature invalid"
@@ -1800,7 +1800,7 @@ describe('the tenants table', () => {
       monthly_budget_usd: null,
       enabled: true,
       credentials: ['anthropic', 'openai'],
-      service_account: 'swarm-eng@example.iam.gserviceaccount.com',
+      service_account: 'swarm-eng@example-project.iam.gserviceaccount.com',
       gcs_prefix: null,
       namespace: null,
     }

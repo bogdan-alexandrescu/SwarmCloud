@@ -68,7 +68,7 @@ def test_launches_run_closest_to_finish_first_and_the_cap_leaves_out_the_furthes
 
 
 def test_the_workspace_blocks_follow_their_closest_workflow(monkeypatch):
-    listed = [_wf("wf_e1", 0, 2, 10, "eng"), _wf("wf_u1", 1, 2, 10, "u-bogdan"), _wf("wf_e2", 1, 2, 5, "eng")]
+    listed = [_wf("wf_e1", 0, 2, 10, "eng"), _wf("wf_u1", 1, 2, 10, "u-owner"), _wf("wf_e2", 1, 2, 5, "eng")]
     monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 3, "complete": True, "workflows": listed})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     out = launch.for_all(_NoTenants())

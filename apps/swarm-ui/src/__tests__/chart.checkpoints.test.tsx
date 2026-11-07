@@ -24,7 +24,7 @@ const a = attempt(1, {
 const events = [
   ev('checkpoint_completed', at(2), 'att_1', {
     checkpoint_id: 'ck_1',
-    uri: 'gs://acme/ck_1.tar.zst',
+    uri: 'gs://swarm-artifacts-example-project/ck_1.tar.zst',
     size_bytes: 1_000_000,
     seq: 1,
   }),

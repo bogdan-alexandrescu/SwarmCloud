@@ -98,7 +98,7 @@ const PATCH = [
   '',
 ].join('\n')
 
-const REF = { name: 'swarm-work.patch', bytes: PATCH.length, uri: 'gs://swarm-artifacts/tenants/eng/tasks/t/attempts/att_1/artifacts/swarm-work.patch' }
+const REF = { name: 'swarm-work.patch', bytes: PATCH.length, uri: 'gs://swarm-artifacts-example-project/tenants/eng/tasks/t/attempts/att_1/artifacts/swarm-work.patch' }
 
 function served(): ArtifactContent {
   return {

@@ -6,7 +6,7 @@
 //
 //   QA-052  A pool filed under Needs action for being below one task says so.
 //   QA-053  The Use track shows on a tinted (Needs action) row, in both themes.
-//   QA-054  The summary wraps between clauses, never inside `tenant u-bogdan`.
+//   QA-054  The summary wraps between clauses, never inside `tenant u-owner`.
 //   QA-056  The matrix caption says `cells` when a tie outlines several.
 //   QA-057  Provider quota's Feeds pool column takes the table's slack.
 
@@ -64,11 +64,11 @@ const CLASSES: ResourceClasses = {
 /** The preview's shape: `resource:large` at 0 / 2 under a class of 4 units. */
 function board(): Capacity {
   return {
-    tenant_id: 'u-bogdan',
+    tenant_id: 'u-owner',
     generated_at: '2026-10-20T03:00:00Z',
     pools: [
       pool('global', 3, 40),
-      pool('tenant:u-bogdan', 0, 10),
+      pool('tenant:u-owner', 0, 10),
       pool('tenant:eng', 0, 6, { enabled: false }),
       pool('resource:large', 0, 2),
       pool('resource:standard', 1, 20),
@@ -145,16 +145,16 @@ describe('QA-053: the Use track shows on a tinted row', () => {
 })
 
 describe('QA-054: the summary wraps between clauses', () => {
-  it('holds `tenant u-bogdan` on one line at 390', async () => {
+  it('holds `tenant u-owner` on one line at 390', async () => {
     await renderPools()
     // The words are unchanged for a reader and for a copy. `1 too small` is
     // resource:large at 0 / 2 under a 4-unit class, which the summary counts
     // since 6:capacity-011 (QAFIX6-CAPACITY) -- once the class catalogue,
     // read after the board, has arrived, so the line is waited for.
-    const line = /^5 pools in 3 families · 1 paused · 1 too small · tenant u-bogdan$/
+    const line = /^5 pools in 3 families · 1 paused · 1 too small · tenant u-owner$/
     await waitFor(() => expect(document.querySelector('.cap-clause')?.parentElement?.textContent).toMatch(line), WAIT)
     const clauses = [...document.querySelectorAll<HTMLElement>('.cap-clause')]
-    const tenant = clauses.find((c) => c.textContent === 'tenant u-bogdan')
+    const tenant = clauses.find((c) => c.textContent === 'tenant u-owner')
     // MUTATION: render the summary as one text run again -- no clause element
     // holds the tenant, and the line can break at its hyphen.
     expect(tenant, clauses.map((c) => c.textContent).join(' | ')).toBeDefined()
@@ -175,7 +175,7 @@ describe('QA-056: the matrix caption follows how many cells are outlined', () =>
   }
   function capacity(binding: string[]): Capacity {
     return {
-      tenant_id: 'u-bogdan',
+      tenant_id: 'u-owner',
       generated_at: '2026-10-20T03:00:00Z',
       pools: [pool('global', 5, 20), pool('resource:standard', 5, 20), pool('backend:CLOUD_RUN_JOB', 5, 20)],
       runner_profiles: { mock: profile(binding) },
@@ -201,7 +201,7 @@ describe('QA-056: the matrix caption follows how many cells are outlined', () =>
 describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
   function quota(over: Partial<QuotaState> = {}): QuotaState {
     return {
-      provider: 'anthropic', tenant_id: 'u-bogdan', state: 'AVAILABLE', updated_at: new Date().toISOString(),
+      provider: 'anthropic', tenant_id: 'u-owner', state: 'AVAILABLE', updated_at: new Date().toISOString(),
       configured_hard_max: 50, adaptive_target: null, quota_derived_limit: null, requests_remaining: 120,
       tokens_remaining: null, reset_at: null, cooldown_until: null, last_429_at: null,
       retry_after_seconds: null, success_count: 10, rate_limit_count: 0, effective_limit: 50, ...over,
@@ -228,7 +228,7 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
   it('gives the pool name what the bounded columns leave, never less than its old 15%', async () => {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota()] }))
     render(<QuotaDetailScreen />)
-    await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
+    await screen.findAllByRole('rowheader', { name: 'u-owner' }, WAIT)
     const cols = [...document.querySelectorAll<HTMLElement>('.quota-table col')]
     const feeds = cols.find((c) => c.classList.contains('quota-c-feeds'))!
     // MUTATION: give `.quota-c-feeds` a percentage again -- every column then
@@ -237,18 +237,18 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
     for (const c of cols) if (c !== feeds) expect(painted(c, 'width', WIDE), c.className).not.toBeNull()
     // At the ~1054px table the widths were measured on, no narrower than 15%.
     expect(feedsAt(cols, 1054)).toBeGreaterThanOrEqual(0.15 * 1054)
-    // At the capture's ~1300px table the whole `provider:anthropic:tenant:u-bogdan`
+    // At the capture's ~1300px table the whole `provider:anthropic:tenant:u-owner`
     // (34 characters of 14px mono, 0.6em each) fits inside the 10px gutters.
     // MUTATION: put every bounded column back in percentages -- the slack is
     // shared out and the name does not fit.
-    const name = 'provider:anthropic:tenant:u-bogdan'
+    const name = 'provider:anthropic:tenant:u-owner'
     expect(feedsAt(cols, 1300) - 2 * 10).toBeGreaterThanOrEqual(name.length * 14 * 0.6)
   })
 
   it('keeps the pool name its old 15% in a table narrower than the px columns fit', async () => {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota()] }))
     render(<QuotaDetailScreen />)
-    await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
+    await screen.findAllByRole('rowheader', { name: 'u-owner' }, WAIT)
     const cols = [...document.querySelectorAll<HTMLElement>('.quota-table col')]
     // A 1280px viewport with the nav open is a ~894px table; 900px, the
     // narrowest viewport the fixed layout holds at (the auto layout stops at
@@ -266,14 +266,14 @@ describe('QA-057: the Feeds pool column takes the quota table\'s slack', () => {
 describe('QA-049 on Provider quota: a partial mark there has the squared dashed side (owner 2026-10-20)', () => {
   it('carries the Accounts-section scope, so a partial mark inside it is drawn as on Accounts', async () => {
     const row = {
-      provider: 'anthropic', tenant_id: 'u-bogdan', state: 'AVAILABLE', updated_at: new Date().toISOString(),
+      provider: 'anthropic', tenant_id: 'u-owner', state: 'AVAILABLE', updated_at: new Date().toISOString(),
       configured_hard_max: 50, adaptive_target: null, quota_derived_limit: null, requests_remaining: 120,
       tokens_remaining: null, reset_at: null, cooldown_until: null, last_429_at: null,
       retry_after_seconds: null, success_count: 10, rate_limit_count: 0, effective_limit: 50,
     } as QuotaState
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [row] }))
     render(<QuotaDetailScreen />)
-    await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
+    await screen.findAllByRole('rowheader', { name: 'u-owner' }, WAIT)
     // MUTATION: drop the `quota-page` wrapper from QuotaDetail.tsx -- the
     // view loses the scope the squared rule is written against.
     const page = document.querySelector<HTMLElement>('.quota-page')
@@ -292,7 +292,7 @@ describe('QA-049 on Provider quota: a partial mark there has the squared dashed 
 // QAFIX2-CAPACITY (visual QA run 2, wf_b6e2441b419f423a84eb, capacity-002):
 // the slack PR 1714 gave Feeds pool does not exist at 1440 -- the table is
 // ~1054px and the column still ~160px -- so the middle cut ran: `…opic:tenant:eng`,
-// and `…:ten… u-bogdan` with two ellipses once the tail split too.
+// and `…:ten… u-owner` with two ellipses once the tail split too.
 // Since QA1 capacity-18 the link prints the pool's name (`anthropic · eng`),
 // its id in the title, so the colon breaks QA-057 offered are gone; the name
 // still reads whole and still wraps rather than being cut.
@@ -307,17 +307,17 @@ describe('QA-057 (run 2): the Feeds pool name reads whole, wrapping rather than 
   }
 
   it('prints every pool whole, as its name, the id in its title', async () => {
-    api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota('eng'), quota('u-bogdan'), quota('eng', 'openai'), quota('u-bogdan', 'openai')] }))
+    api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota('eng'), quota('u-owner'), quota('eng', 'openai'), quota('u-owner', 'openai')] }))
     render(<QuotaDetailScreen />)
-    await screen.findAllByRole('rowheader', { name: 'u-bogdan' }, WAIT)
-    const names = ['provider:anthropic:tenant:eng', 'provider:anthropic:tenant:u-bogdan', 'provider:openai:tenant:eng', 'provider:openai:tenant:u-bogdan']
+    await screen.findAllByRole('rowheader', { name: 'u-owner' }, WAIT)
+    const names = ['provider:anthropic:tenant:eng', 'provider:anthropic:tenant:u-owner', 'provider:openai:tenant:eng', 'provider:openai:tenant:u-owner']
     for (const name of names) {
       const [, provider, , tenant] = name.split(':')
       const link = screen.getByRole('link', { name: `${provider} · ${tenant}` })
       expect(link.textContent).toBe(`${provider} · ${tenant}`)
       expect(link.getAttribute('title')).toBe(name)
       // MUTATION: put MiddleCut back on the pool -- its head and tail boxes
-      // each ellipsize, which is the double cut `…:ten… u-bogdan`.
+      // each ellipsize, which is the double cut `…:ten… u-owner`.
       expect(link.querySelector('.quota-cut'), `${name} is still cut`).toBeNull()
       for (const env of [WIDE, PHONE]) {
         // MUTATION: leave the link `nowrap` with `text-overflow: ellipsis` --

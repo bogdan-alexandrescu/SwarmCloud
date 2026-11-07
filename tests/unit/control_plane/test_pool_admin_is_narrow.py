@@ -70,7 +70,7 @@ from .conftest import ADMIN_GROUP, api_settings, seed_pool, seed_tenant
 #: The gate's identity in these tests. A service-account address on purpose: it
 #: is outside the allowed domain (example.com) and is admitted through
 #: ALLOWED_USERS, which is exactly how the real swarm-verify reaches swarm-api.
-GATE = "gate@verify-project.iam.gserviceaccount.com"
+GATE = "gate@example-project.iam.gserviceaccount.com"
 #: A full admin, through the admin group in conftest's group map.
 ROOT = "root@example.com"
 

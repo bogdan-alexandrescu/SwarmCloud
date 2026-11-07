@@ -5,8 +5,8 @@ minutes, plus up to ten for IAM to propagate. **Changes:** one OAuth client in
 the project, and one IAP setting on each of the platform's own two backend
 services. Nothing on the other team's backends.
 
-The worked values below are this repository's `dev` deployment (`saga-agents-staging`,
-project number `209012342332`, `https://swarm.saga.xyz`, backends
+The worked values below are this repository's `dev` deployment (`example-project`,
+project number `123456789012`, `https://swarm.example.com`, backends
 `swarm-ui-backend` and `swarm-ui-ui-backend`). Another deployment substitutes
 its own.
 
@@ -36,13 +36,13 @@ else creates anything.
 
 The allowlist is set **per backend service**, not per project. That is the
 line this runbook must not cross: nine of the ten IAP backends in
-`saga-agents-staging` are another team's (their Keycloak and ArgoCD among them),
+`example-project` are another team's (their Keycloak and ArgoCD among them),
 and a project-level IAP setting would change what they accept.
 
 ## Step 1 — look before touching anything (read-only)
 
 ```bash
-gcloud iap oauth-brands list --project=saga-agents-staging \
+gcloud iap oauth-brands list --project=example-project \
   --format='table(name,applicationTitle,orgInternalOnly)'
 ```
 
@@ -50,7 +50,7 @@ Expected, as measured on 2026-09-25:
 
 ```text
 NAME                                       APPLICATION_TITLE  ORG_INTERNAL_ONLY
-projects/209012342332/brands/209012342332  AI Agents          True
+projects/123456789012/brands/123456789012  AI Agents          True
 ```
 
 **The consent screen already exists and is Internal. Do not edit it.** It is the
@@ -62,7 +62,7 @@ the console: **Google Auth Platform → Branding**, then **Audience → Internal
 
 ```bash
 gcloud compute backend-services describe swarm-ui-backend --global \
-  --project=saga-agents-staging --format='value(iap.enabled,iap.oauth2ClientId)'
+  --project=example-project --format='value(iap.enabled,iap.oauth2ClientId)'
 ```
 
 Expected: `True` and nothing after it — IAP on, Google-managed client. If a
@@ -71,7 +71,7 @@ does not apply; `SWARM_IAP_CLIENT_ID` with `SWARM_IMPERSONATE_SA` is that shape.
 
 ## Step 2 — create the Desktop OAuth client (console)
 
-1. Open <https://console.cloud.google.com/auth/clients?project=saga-agents-staging>
+1. Open <https://console.cloud.google.com/auth/clients?project=example-project>
    (**Google Auth Platform → Clients**; older consoles call it **APIs &
    Services → Credentials → Create credentials → OAuth client ID**).
 2. **Create client**.
@@ -80,7 +80,7 @@ does not apply; `SWARM_IAP_CLIENT_ID` with `SWARM_IMPERSONATE_SA` is that shape.
    without registering redirect URIs.
 4. **Name:** `SwarmCloud sc CLI`. Only you see it.
 5. **Create.** The dialog shows two values. Copy both now:
-   * **Client ID** — `209012342332-….apps.googleusercontent.com`. Not secret;
+   * **Client ID** — `123456789012-….apps.googleusercontent.com`. Not secret;
      it goes into Terraform in step 4 and into every developer's plugin.
    * **Client secret** — `GOCSPX-…`. Keep it in the team's password manager.
      Google documents that an installed app's secret is not treated as
@@ -112,7 +112,7 @@ back to their accessor bindings only.
 So check whether you already hold it before asking anyone:
 
 ```bash
-gcloud iap settings get --project=saga-agents-staging \
+gcloud iap settings get --project=example-project \
   --resource-type=compute --service=swarm-ui-backend
 ```
 
@@ -140,7 +140,7 @@ Add the client ID from step 2 to `terraform/bootstrap/terraform.tfvars`:
 # Desktop OAuth client that `sc login` signs developers in with
 # (terraform/bootstrap/iap_programmatic_clients.tf).
 frontend_iap_programmatic_clients = [
-  "209012342332-XXXXXXXX.apps.googleusercontent.com",
+  "123456789012-XXXXXXXX.apps.googleusercontent.com",
 ]
 ```
 
@@ -160,9 +160,9 @@ else, each named at the **service** level:
 
 ```text
 + google_iap_settings.frontend_programmatic_clients["swarm-ui-backend"]
-    name = "projects/209012342332/iap_web/compute/services/swarm-ui-backend"
+    name = "projects/123456789012/iap_web/compute/services/swarm-ui-backend"
 + google_iap_settings.frontend_programmatic_clients["swarm-ui-ui-backend"]
-    name = "projects/209012342332/iap_web/compute/services/swarm-ui-ui-backend"
+    name = "projects/123456789012/iap_web/compute/services/swarm-ui-ui-backend"
 ```
 
 A `name` ending anywhere other than `/services/swarm-…` is the project-wide
@@ -171,7 +171,7 @@ change this runbook exists to avoid. Do not apply it.
 ## Step 5 — verify
 
 ```bash
-gcloud iap settings get --project=saga-agents-staging \
+gcloud iap settings get --project=example-project \
   --resource-type=compute --service=swarm-ui-backend
 ```
 
@@ -181,7 +181,7 @@ Expected:
 accessSettings:
   oauthSettings:
     programmaticClients:
-    - 209012342332-XXXXXXXX.apps.googleusercontent.com
+    - 123456789012-XXXXXXXX.apps.googleusercontent.com
 ```
 
 Run the same `scripts/bootstrap.sh` targets again and require **no changes**.
@@ -197,11 +197,11 @@ Then sign in as a developer would, with the values from step 2 (the
 [plugin setup guide](../plugin-setup.md) has the full flow):
 
 ```bash
-printf '%s\n' 'GOCSPX-…' | uv run sc context add saga-dev \
-  --url https://swarm.saga.xyz \
-  --client-id 209012342332-XXXXXXXX.apps.googleusercontent.com \
+printf '%s\n' 'GOCSPX-…' | uv run sc context add example-dev \
+  --url https://swarm.example.com \
+  --client-id 123456789012-XXXXXXXX.apps.googleusercontent.com \
   --client-secret-stdin
-uv run sc login      # a browser opens; pick your saga.xyz account
+uv run sc login      # a browser opens; pick your example.com account
 uv run sc whoami     # principal is YOU, and your tenant
 ```
 
@@ -218,7 +218,7 @@ If it prints `did not accept it: ... 401`, IAP is refusing the token: step 4 is
 not applied, or has not propagated.
 A **403 that names you** is the other gate — `roles/iap.httpsResourceAccessor`,
 granted through `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
-(`domain:saga.xyz` already covers every account in that domain).
+(`domain:example.com` already covers every account in that domain).
 
 ## Step 6 — tell developers
 
@@ -230,7 +230,7 @@ before anyone installs it, or their server cannot start
 
 | Prompt | Value |
 |---|---|
-| SwarmCloud deployment URL | `https://swarm.saga.xyz` |
+| SwarmCloud deployment URL | `https://swarm.example.com` |
 | OAuth client ID (Desktop app) | the client ID from step 2 |
 | OAuth client secret (Desktop app) | from the password manager |
 

@@ -314,7 +314,7 @@
    content (the widths above, as the percentages gave them at 1054), Tenant
    keeps its share, and Feeds pool sets no width: a fixed table gives an auto
    column what is left. At 1054 that is ~160px, what its 15% was; at ~1300 it
-   is ~400px, the whole of `provider:anthropic:tenant:u-bogdan`. Run 2 shot
+   is ~400px, the whole of `provider:anthropic:tenant:u-owner`. Run 2 shot
    1440 with the nav open, the ~1054 table, so the name still did not fit on
    one line there: it now wraps rather than being cut (`.quota-feeds a`).
    EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (QA-057 review; a container
@@ -360,7 +360,7 @@
 .quota-table thead th { white-space: normal; }
 /* THE POOL NAME WRAPS AT ITS COLONS, WHOLE (QA-057, visual QA run 2). At
    1440 the column is ~160px and the name up to ~265px, so a one-line name
-   was always cut -- twice once its tail split (`…:ten… u-bogdan`).
+   was always cut -- twice once its tail split (`…:ten… u-owner`).
    `PoolName` (QuotaDetail.tsx) offers a `<wbr>` after each colon. */
 .quota-feeds a {
   display: block;
@@ -369,7 +369,7 @@
 }
 /* EACH SEGMENT IS ONE RUN WHILE IT FITS, as Pool limits' `.adm-key-seg`
    (styles/admin.css, VQA V076, V160): an inline block no wider than the
-   cell does not break at the hyphen in `u-bogdan` while it fits a line, and
+   cell does not break at the hyphen in `u-owner` while it fits a line, and
    one that cannot fit any line still wraps rather than run into Requests
    left. An inline block takes no underline from its link, so it takes the
    link's own (`inherit`), hover colour included. */
@@ -637,7 +637,7 @@
 .acct-rename > .warn-text { margin: 0; }
 .acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
 /* AN ID IS ONE WORD (visual QA V070; Accounts.tsx `Id`). A hyphen is a break
-   opportunity, so `u-bogdan` broke to `u-` / `bogdan` in the subtitle, in
+   opportunity, so `u-owner` broke to `u-` / `owner` in the subtitle, in
    Lending's serves list and in Holding now's tenant list. The line breaks
    between ids; one wider than its line is cut, whole in its title. */
 .acct-id {
@@ -882,7 +882,7 @@
   box-shadow: inset 0 0 0 1px var(--line);
 }
 /* THE SUMMARY WRAPS BETWEEN CLAUSES, NEVER INSIDE ONE (QA-054): `tenant
-   u-bogdan` broke at its hyphen at 390. */
+   u-owner` broke at its hyphen at 390. */
 .cap-clause { white-space: nowrap; }
 
 /* G5-15: ONE TASK REFERENCE (TaskRef.tsx). The link, then its copy. */

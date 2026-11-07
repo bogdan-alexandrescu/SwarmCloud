@@ -146,7 +146,7 @@ export function PlatformCountsScreen() {
 
   /**
    * HOW MANY WORKSPACES THE OVER TIME READ COVERS, from the roster read once
-   * on mount (BGD, 2026-10-24, #2149: "Roster on mount"). That read is billed
+   * on mount (owner, 2026-10-24, #2149: "Roster on mount"). That read is billed
    * by the days it covers in each workspace, so its price is a total only once
    * the page knows how many there are; before, the view prices it per
    * workspace. One request, never on a timer. A refused or failed read leaves
@@ -160,7 +160,7 @@ export function PlatformCountsScreen() {
   const [workspaces, setWorkspaces] = useState<number | null>(null)
 
   /**
-   * ONE RUN FOR THE PAGE (COUNTS-ONE-RUN; BGD, CTV-5, 2026-10-24 17:30Z:
+   * ONE RUN FOR THE PAGE (COUNTS-ONE-RUN; owner, CTV-5, 2026-10-24 17:30Z:
    * "roster on mount, one shared Run", and 2026-10-25). The page drew two
    * primary Runs, each priced at half of what the page reads. The head's Run
    * now reads both: `presses` moves Over time's `run` prop, and Over time
@@ -298,9 +298,9 @@ export function PlatformCountsScreen() {
       </PageHead>
 
       {/* OVER TIME (COUNTS-PAGE, #2149): how many agents ran per day, week
-          or month, for how long and at what estimated cost -- the view BGD
+          or month, for how long and at what estimated cost -- the view owner
           picked (counts-a.html F2 to F6). FIRST, then the state counts, then
-          the ticks: mock-up F1's order (BGD, 2026-10-25, COUNTS-ONE-RUN). It
+          the ticks: mock-up F1's order (owner, 2026-10-25, COUNTS-ONE-RUN). It
           is drawn whether or not the count has run, and draws no Run of its
           own: the head's one Run reads it (`run`), priced with its half
           (`onPrice`). */}

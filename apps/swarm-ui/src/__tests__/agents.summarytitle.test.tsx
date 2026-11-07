@@ -1,4 +1,4 @@
-// LANE SUMMARY-TITLE (part of #2391): BGD's decision of 2026-10-26 on VQ-009,
+// LANE SUMMARY-TITLE (part of #2391): the owner's decision of 2026-10-26 on VQ-009,
 // "Have the list's summary view carry metadata.title". The summary row's
 // `metadata` is the title alone (`codec.SUMMARY_METADATA_KEYS`), so a lone
 // agent's row reads its title -- `Fix flaky lease heartbeat test (#248)` --

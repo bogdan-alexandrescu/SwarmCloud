@@ -165,7 +165,7 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     # path is the shim's argument, not the agent's variable.
     assert seen["env"][graphstage.CONTEXT_ENV] == env[graphstage.CONTEXT_ENV]
     assert graphstage.TICKET_FILE_ENV not in seen["env"]
-    # A served graph's implement step gets the lookup line (BGD, 2026-11-06),
+    # A served graph's implement step gets the lookup line (the owner, 2026-11-06),
     # which names the graph in place of the exploration line's graph clause
     # (LANE CAPS, part of #2524), and nothing else ...
     # ... after the line saying what to ask the graph first (AGENTS-USE-TOOLS).
@@ -252,7 +252,7 @@ def test_codex_registers_the_shim_and_its_url_as_toml_overrides(monkeypatch, tmp
     assert parsed == {f"{key}.command": command, f"{key}.args": args,
                       f"{key}.env": {graphstage.URL_ENV: URL}}
     assert seen["env"][graphstage.CONTEXT_ENV] == env[graphstage.CONTEXT_ENV]
-    # An implement step with the graph: the one lookup line (BGD, 2026-11-06).
+    # An implement step with the graph: the one lookup line (the owner, 2026-11-06).
     assert seen["prompt"] == ("Implement it.\n\n" + contextpack.lookup_line(
         {"prompt": "Implement it."}, work, tool=contextpack.GRAPH_LOOKUP_TOOL))
 

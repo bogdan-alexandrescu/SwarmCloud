@@ -60,8 +60,8 @@ NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
 
 def _acct(*, observed: datetime | None, utilisation: float = 0.4) -> Account:
     return Account(
-        account_id=account_id_for("u-bogdan", "primary"),
-        owner_tenant="u-bogdan",
+        account_id=account_id_for("u-owner", "primary"),
+        owner_tenant="u-owner",
         label="primary",
         windows={"five_hour": WindowReading(utilisation, NOW + timedelta(hours=2))}
         if observed is not None

@@ -255,7 +255,7 @@ function stubMe(me: unknown): void {
 
 /**
  * THE APP ON THE LIVE PATH. Under vitest `api.ts` answers from its fixtures
- * unless VITE_LIVE is set, and the fixture's own tenant ('Bogdan', dev) would
+ * unless VITE_LIVE is set, and the fixture's own tenant ('Alex', dev) would
  * make a stubbed `/v1/tenants/me` unreachable: the environment and the tenant
  * these two tests measure would never come from the stub.
  */
