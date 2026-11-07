@@ -101,6 +101,7 @@ from ..forge import ForgeReadError, preview, read_open_work
 from .. import approvals
 from ..issueruns import (
     AUTO_APPROVER,
+    DENY_LIST_UNSET,
     WORKFLOWS_PATH,
     MAX_PLAN_BYTES,
     PLAN_FILE,
@@ -110,6 +111,7 @@ from ..issueruns import (
     IssueRuns,
     RunState,
     compile_plan,
+    deny_list_refusal,
     failure_text,
     issue_read_from_preview,
     owner_refusal,
@@ -422,6 +424,18 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             return runs.transition(
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
                 patch={"error": failure_text(workflows_refusal(refused))},
+            )
+        unlisted = deny_list_refusal(plan)
+        if unlisted:
+            # docs/design/generic-repository.md §2.4: no rendered never-touch
+            # list, no infrastructure change. Refused like the workflow files
+            # above, before anything is stored or submitted.
+            log.warning("issue run %s tenant=%s: plan touches infrastructure and the "
+                        "never-touch list is not rendered; refused (%s)",
+                        run.id, tenant_id, DENY_LIST_UNSET)
+            return runs.transition(
+                tenant_id, run.id, RunState.FAILED, by=SYSTEM,
+                patch={"error": failure_text(unlisted)},
             )
         patch = {"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,
                  "approval_hold": hard_stops_at_plan(ctx, tenant_id, run, plan)}
@@ -1373,6 +1387,11 @@ def edit_plan(
             "workflow_files switched on",
             detail={"code": WORKFLOWS_PATH, "paths": refused[:10]},
         )
+    unlisted = deny_list_refusal(plan)
+    if unlisted:
+        # §2.4: an edit cannot add infrastructure files while the never-touch
+        # list is not rendered, as the planner's plan could not.
+        raise InvalidPlan(unlisted, detail={"code": DENY_LIST_UNSET})
     # An edit can add a hold but never clears one (§4.5): `widen_hold` over
     # the hold the claim reads.
     found = hard_stops_at_plan(ctx, tenant_id, current, plan)

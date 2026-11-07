@@ -345,6 +345,16 @@ def _forbidden_field_hint(errors: list[dict[str, Any]]) -> str | None:
     )
 
 
+#: Why swarm-api will not start without `settings.core.allowed_domains`: the
+#: hosted domains are who may authenticate, and the deployment names its own
+#: (docs/design/generic-repository.md section 2). Fixed, so the operator's log
+#: search finds it.
+ALLOWED_DOMAINS_REQUIRED = (
+    "ALLOWED_DOMAINS is empty: set it to the comma-separated hosted domains whose "
+    "people may sign in; swarm-api refuses to start with open authentication"
+)
+
+
 def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = None,
                access_service: AccessService | None = None,
                input_writer: InputWriter | None = None) -> FastAPI:
@@ -360,6 +370,8 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
         openapi_url="/openapi.json",
     )
     app.state.ctx = ctx if ctx is not None else build_context()
+    if not app.state.ctx.settings.core.allowed_domains:
+        raise RuntimeError(ALLOWED_DOMAINS_REQUIRED)
     # The submission gate applies a ready workspace's pending loans before it
     # refuses for want of an account (LOAN-ON-READ, part of #2688).
     people.wire_ready_loans(app)
