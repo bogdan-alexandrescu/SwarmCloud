@@ -203,7 +203,7 @@ describe('R1/A: the side cards stack each label above its value', () => {
 
   it('breaks a reference only at `/`, `#`, `_`, `::` or a space', () => {
     const pieces = (s: string) => breakAt(s).map((p) => (typeof p === 'string' ? p : '|')).join('')
-    expect(pieces(REF)).toBe('example-org/|SwarmCloud#|454')
+    expect(pieces(REF)).toBe('example-org/|example-repo#|454')
     expect(pieces('a::b_c')).toBe('a::|b_|c')
     expect(pieces('plain')).toBe('plain')
   })

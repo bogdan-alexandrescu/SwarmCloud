@@ -890,7 +890,7 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
     // no longer is true.
     expect(inputs.querySelector('.art-masked'), 'a clean prompt says `masked 0`').toBeNull()
     expect(inputs.textContent).not.toMatch(/not masked/)
-    expect(inputs.textContent).toMatch(/github\.com\/example-org\/SwarmCloud/)
+    expect(inputs.textContent).toMatch(/github\.com\/example-org\/example-repo/)
     expect(inputs.textContent).toMatch(/main/)
     expect(inputs.textContent).toMatch(/0a09be9f3c1d/)
   })
