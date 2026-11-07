@@ -73,6 +73,8 @@ def _access_token(tmp_path: Path, active_account: str) -> tuple[str, list[str]]:
         # than reading the operator's real .env.
         "SWARM_ENV_FILE": str(tmp_path / "no.env"),
         "SWARM_IMPERSONATE_SA": SA,
+        # common.sh has no default project; any project serves this function.
+        "PROJECT_ID": "swarm-unit-test",
     }
 
     proc = subprocess.run(
