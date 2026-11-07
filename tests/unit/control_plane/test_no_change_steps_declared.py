@@ -10,7 +10,9 @@ So swarm-api refuses such a step at submission, 422
 (swarm_api/nochange.py). An explicit `true` or `false` is a declaration and
 is accepted; `collect` and a reader (a review another step reads) are never
 refused; and phrases a committing step writes too do not match. The refusal
-is new, so it ships report-only (`refusals.SWITCHES`): these tests turn it on.
+ships ENFORCED by the owner's decision of 7 November 2026 (`refusals.SWITCHES`,
+default on); the tests below still set it on explicitly, and one test holds
+the default itself.
 
 MUTATIONS: drop the call from `SubmissionService` -- the refused tests see
 201. Read `allow_empty_diff`'s value instead of `model_fields_set` -- the
@@ -124,6 +126,20 @@ def test_a_review_another_step_reads_is_accepted(client, db):
     })
     response = _post(client, spec)
     assert response.status_code == 201, response.text
+
+
+def test_the_refusal_ships_on_by_owner_decision(client, db, monkeypatch):
+    # Shipped report-only in this pull request's first commits; enforced by the
+    # owner's decision of 7 November 2026: report-only would let the next
+    # undeclared read-only workflow fail the same way.
+    switch = refusals.SWITCHES["step_declares_no_change"]
+    assert switch.default is True
+    monkeypatch.delenv(SWITCH, raising=False)
+    response = _post(client, _analysis(BRIEF))
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "step_declares_no_change"
+    # Refused before anything is stored.
+    assert _workflows(db) == []
 
 
 def test_report_only_while_the_switch_is_off(client, db, monkeypatch, caplog):
