@@ -62,6 +62,9 @@ LANE_LINE = "lane: the pull request wrote this line"
 BOT_NAME, BOT_EMAIL = "swarmcloud agent", "swarmcloud-agent@users.noreply.github.com"
 ROBOT = "swarm-accept@project.iam.gserviceaccount.com"
 SUBMITTER = "ada@example.invalid"
+#: The connected GitHub account swarm-api records for SUBMITTER: a no-reply
+#: address, never an address of the person's own (owner rule 2026-11-07).
+PERSON = ("ada-lovelace", "1815+ada-lovelace@users.noreply.github.com")
 MALLORY = ("Mallory", "mallory@example.invalid")
 
 #: The submitters acceptance and a person submit as. `service account` is
@@ -72,7 +75,7 @@ SUBMITTERS: dict[str, dict[str, Any]] = {
         "submitted_by": ROBOT,
         "git_identity": {"name": BOT_GIT_IDENTITY[0], "email": BOT_GIT_IDENTITY[1]}},
     "display name": {"submitted_by": SUBMITTER,
-                     "git_identity": {"name": "Ada Lovelace", "email": SUBMITTER}},
+                     "git_identity": {"name": PERSON[0], "email": PERSON[1]}},
 }
 
 _ENV = {k: v for k, v in os.environ.items()
@@ -366,13 +369,12 @@ def test_a_foreign_committer_is_named_as_the_committer_field(tmp_path: Path):
     world.rebase_through_the_conflict()
     (world.repo / "extra.txt").write_text("extra\n")
     _git(world.repo, "add", "-A")
-    _git(world.repo, "commit", "-q", "-m", "extra", env=_as(("Ada Lovelace", SUBMITTER),
-                                                             committer=MALLORY))
+    _git(world.repo, "commit", "-q", "-m", "extra", env=_as(PERSON, committer=MALLORY))
     refused = world.spool("git_push_branch", {}, "push")["refused"]
     # MUTATION: reporting the author field for a committer-only problem fails.
     assert refused["code"] == "foreign_author" and refused["fields"] == ["committer"]
-    assert refused["found"] == {"author": SUBMITTER, "committer": MALLORY[1]}
-    assert MALLORY[1] in refused["message"] and SUBMITTER in refused["message"]
+    assert refused["found"] == {"author": PERSON[1], "committer": MALLORY[1]}
+    assert MALLORY[1] in refused["message"] and PERSON[1] in refused["message"]
 
 
 def test_the_refusal_is_written_to_git_answers_jsonl_by_the_worker(tmp_path: Path):
