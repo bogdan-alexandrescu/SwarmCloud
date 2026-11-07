@@ -264,6 +264,12 @@ SPEC_KEYS = frozenset(
 #: tests/unit/mcp/test_spec_description_feature.py holds them equal.
 DESCRIPTION_MAX_CHARS = 600
 FEATURE_TITLE_MAX_CHARS = 120
+#: swarm-api's `schemas.NAME_MAX_CHARS`, held equal by
+#: tests/unit/mcp/test_name_cap.py: the most characters a workflow's `title`
+#: or `label`, or a single task's `label`, holds, so it fits one row of the
+#: console (owner, 2026-11-07, part of #2688; measured at 1440 pixels, the
+#: Workflows list's name column holds 34). Refused, never cut (`check_name`).
+NAME_MAX_CHARS = 30
 #: swarm-api's `schemas.ABOUT_*` caps, held equal by
 #: tests/unit/mcp/test_spec_about.py.
 ABOUT_PURPOSE_MAX_CHARS = 300
@@ -281,6 +287,17 @@ _FEATURE_URL = re.compile(
 _GITHUB_REPOSITORY = re.compile(
     r"^(?:https://|ssh://git@|git@)github\.com[/:](?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
     r"(?:\.git)?/?$", re.IGNORECASE)
+
+
+def check_name(value: Any, *, field: str, where: str) -> Any:
+    """`value` as given, refused when it is text over NAME_MAX_CHARS once
+    trimmed: a name fits one row of the console, and the detail belongs in
+    `description`. Refused, never cut, before anything is sent."""
+    if isinstance(value, str) and len(value.strip()) > NAME_MAX_CHARS:
+        raise SwarmError(f"{where}: {field} is {len(value.strip())} characters and a name holds at most "
+                         f"{NAME_MAX_CHARS}, so it fits one row of the console; put the detail in "
+                         "`description`. Nothing was sent")
+    return value
 
 
 def check_description(value: Any, *, where: str) -> str | None:
@@ -701,7 +718,7 @@ def check_title(value: Any, *, where: str) -> str | None:
         return None
     if not isinstance(value, str) or not value.strip():
         raise SwarmError(f"{where}: title must be a non-empty string -- the workflow's short name")
-    return value.strip()
+    return check_name(value.strip(), field="title", where=where)
 
 
 def check_dispatch(value: Any, *, where: str) -> dict[str, Any] | None:
@@ -767,7 +784,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "repository_ref": document.get("repository_ref"),
         "on_step_failure": document.get("on_step_failure"),
         "priority": document.get("priority"),
-        "label": document.get("label"),
+        "label": check_name(document.get("label"), field="label", where=where),
         "title": title,
         "description": description,
         "about": about,
@@ -849,6 +866,8 @@ def submit(
                 "merge: two pull requests. Send one or the other. Nothing was sent"
             )
         merge = None
+    check_name(label, field="label", where="submit")
+    check_name(title, field="title", where="submit")
     description = check_description(description, where="submit")
     about = check_about(about, where="submit")
     feature = check_feature(feature, where="submit", repository_url=repository_url)
@@ -1152,10 +1171,12 @@ def workflow_title(name: str, steps: int) -> str:
     no `[Engineering]` or `[eng@example.com]` in front of any name) took the
     parameter away, so no caller can put it back.
 
-    The NAME is cut, never the step count: at the last word boundary that
-    fits, with `…`; a single word longer than the room is cut inside it."""
+    The NAME is cut, never the step count: at NAME_MAX_CHARS, the cap a name
+    is refused over (#2688), so only a name stored before it is cut, at the
+    last word boundary that fits, with `…`; a single word longer than the
+    room is cut inside it."""
     tail = " · " + _steps_text(steps)
-    room = max(1, TITLE_CHARS - len(TITLE_PREFIX) - len(tail))
+    room = max(1, min(NAME_MAX_CHARS, TITLE_CHARS - len(TITLE_PREFIX) - len(tail)))
     flat = _flat(name) or "workflow"
     if len(flat) > room:
         head = flat[: room - 1]

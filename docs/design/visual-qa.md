@@ -993,7 +993,8 @@ repeats that check (§6).
 
 ```json
 {
-  "title": "Console visual QA: every page at 1440 and 390, light and dark",
+  "title": "Console visual QA",
+  "description": "Every console page captured at 1440 and 390 wide, in light and dark.",
   "label": "console-qa",
   "repository_url": "https://github.com/example-org/example-repo",
   "repository_ref": "main",

@@ -136,6 +136,12 @@ that tracks it. The console's workflow page heads with both, so write them
 for a person who opens the workflow cold. They are sent as
 `metadata.description` and `metadata.feature`; a malformed one is refused
 before anything is sent, and a longer description is refused, never cut.
+`swarm_dispatch` takes the same optional `description` for one task and for
+each entry of `tasks`, sent as `metadata.description` and shown on the
+console's agent page. A workflow's `title` and `label` and a single task's
+`label` are capped at 30 characters, so a name fits one row of the console: a
+longer one is refused before anything is sent, and the detail belongs in
+`description`.
 A spec should send `about: {purpose, goals, output}` -- why the work exists
 (one sentence, at most 300 characters), up to three goals (at most 120 each)
 and what lands (one sentence, at most 300) -- sent as `metadata.about` and
