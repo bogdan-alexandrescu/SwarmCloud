@@ -65,16 +65,17 @@ import pytest
 # The deny-list, parsed out of scripts/lib/common.sh EXACTLY ONCE for this
 # directory. Importing the sibling rather than re-parsing is the whole lesson of
 # the defect above: a second reader of the same list is a second list.
-from test_destroy_guard import GUARD_ARGS, PREFIX, SHARED, UNLABELABLE  # noqa: E402
+from test_destroy_guard import GUARD_ARGS, PREFIX, PROJECT, SHARED, UNLABELABLE  # noqa: E402
+
+import destroy_plan_recording  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-FIXTURE = REPO / "tests" / "integration" / "fixtures" / "destroy-plan-dev-real.json"
+RECORDED = destroy_plan_recording.RECORDING
 CASES_FILE = REPO / "scripts" / "lib" / "destroy-guard-proof-cases.json"
 GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 PLAN_GUARD = REPO / "scripts" / "lib" / "plan-guard.sh"
 COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
 DESTROY = REPO / "scripts" / "destroy.sh"
-PROJECT = "saga-agents-staging"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("jq") is None or not DESTROY.exists(),
@@ -84,12 +85,16 @@ pytestmark = pytest.mark.skipif(
 # NOT a skip. The recording is the subject of this file, so its absence is a
 # collection error with an instruction, not a quietly green run: "unreadable is
 # not the same as clean" is the rule the plan guard itself was fixed to obey.
-assert FIXTURE.exists(), (
-    f"{FIXTURE} is missing. It is a redacted recording of a real destroy plan; "
+assert RECORDED.exists(), (
+    f"{RECORDED} is missing. It is a redacted recording of a real destroy plan; "
     f"regenerate it with:\n"
     f"    scripts/destroy.sh --environment dev --dry-run\n"
     f"    scripts/verify-destroy-guard.sh --record tests/integration/fixtures/destroy-plan-dev-real.json"
 )
+
+#: What every case below judges: the recording with its placeholder project
+#: rendered as the project the deny-list protects (destroy_plan_recording.py).
+FIXTURE = destroy_plan_recording.render(PROJECT)
 
 PLAN = json.loads(FIXTURE.read_text())
 RECORDING = PLAN["_recording"]
@@ -239,7 +244,7 @@ def test_every_field_the_guard_reads_is_carried_by_the_recording():
         f"destroy-guard.jq reads {missing}, and the recorded plan carries no VALUES "
         f"for those fields -- so every assertion here judges them as null. Re-record:\n"
         f"    scripts/destroy.sh --environment dev --dry-run\n"
-        f"    scripts/verify-destroy-guard.sh --record {FIXTURE.relative_to(REPO)}"
+        f"    scripts/verify-destroy-guard.sh --record {RECORDED.relative_to(REPO)}"
     )
 
 

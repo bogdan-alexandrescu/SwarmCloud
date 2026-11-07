@@ -31,12 +31,16 @@ present (0), provably gone (3), could not look (4).
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from destroy_plan_recording import shared_project_id  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "destroy.sh"
@@ -45,7 +49,26 @@ SCRIPT = REPO / "scripts" / "destroy.sh"
 # (DAYONE-GENERIC-2) -- whole for the shared project, empty for any other -- and
 # these neighbours exist only there. Named in any other project the check has
 # nobody's resources to look at, and the cases below would test nothing.
-PROJECT = "saga-agents-staging"
+PROJECT = shared_project_id()
+
+#: The deny-list as common.sh holds it, and each entry's kind by the first rule
+#: of the shared classification table destroy.sh's proof reads -- so the cases
+#: below name the neighbours common.sh names, never a restatement of them.
+_COMMON = (REPO / "scripts" / "lib" / "common.sh").read_text()
+DENY_ENTRIES = [
+    line.strip().strip('"')
+    for line in _COMMON.split("SHARED_DENY_LIST=(", 1)[1].split("\n)", 1)[0].splitlines()
+    if line.strip().startswith('"')
+]
+_CLASSIFY = json.loads((REPO / "scripts" / "lib" / "destroy-guard-proof-cases.json").read_text())["classify"]
+
+
+def _kind(entry: str) -> str | None:
+    return next((rule["kind"] for rule in _CLASSIFY if fnmatch.fnmatchcase(entry, rule["glob"])), None)
+
+
+CLUSTER = next(entry for entry in DENY_ENTRIES if _kind(entry) == "cluster")
+BUCKET = next(entry for entry in DENY_ENTRIES if _kind(entry) == "bucket")
 
 pytestmark = pytest.mark.skipif(
     not SCRIPT.exists() or shutil.which("jq") is None,
@@ -59,7 +82,7 @@ GCLOUD_ALL_PRESENT = r"""#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
 case "${args}" in
-  *"container clusters list"*)        echo "agents-staging" ;;
+  *"container clusters list"*)        echo "@CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
   *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
@@ -86,11 +109,11 @@ GCLOUD_ONE_BUCKET_DELETED = r"""#!/usr/bin/env bash
 set -euo pipefail
 args="$*"
 case "${args}" in
-  *"saga-agents-files-staging"*)
-    echo "ERROR: (gcloud.storage.buckets.describe) gs://saga-agents-files-staging not found: 404." >&2
+  *"@BUCKET@"*)
+    echo "ERROR: (gcloud.storage.buckets.describe) gs://@BUCKET@ not found: 404." >&2
     exit 1
     ;;
-  *"container clusters list"*)        echo "agents-staging" ;;
+  *"container clusters list"*)        echo "@CLUSTER@" ;;
   *"compute networks describe"*)      echo "a-network" ;;
   *"storage buckets describe"*)       echo "a-bucket" ;;
   *"iam service-accounts describe"*)  echo "sa@example-project.iam.gserviceaccount.com" ;;
@@ -98,6 +121,11 @@ case "${args}" in
 esac
 exit 0
 """
+
+GCLOUD_ALL_PRESENT = GCLOUD_ALL_PRESENT.replace("@CLUSTER@", CLUSTER)
+GCLOUD_ONE_BUCKET_DELETED = (
+    GCLOUD_ONE_BUCKET_DELETED.replace("@CLUSTER@", CLUSTER).replace("@BUCKET@", BUCKET)
+)
 
 
 def _verify(tmp: Path, fake_gcloud: str) -> subprocess.CompletedProcess:
@@ -179,7 +207,7 @@ def test_a_resource_that_really_is_gone_still_escalates(tmp_path) -> None:
 
     assert proc.returncode == 3, transcript
     assert "ARE GONE" in transcript, transcript
-    assert "bucket/saga-agents-files-staging" in transcript, transcript
+    assert f"bucket/{BUCKET}" in transcript, transcript
     assert "Escalate immediately" in transcript, transcript
     # ... and it must not be confused with the "could not look" case.
     assert "COULD NOT VERIFY" not in transcript, transcript
@@ -207,7 +235,7 @@ def test_the_verification_names_every_deny_listed_neighbour(tmp_path) -> None:
     # Subnets are covered by the PLAN guard (destroy-guard.jq matches them on the
     # network field), not by a post-apply describe, and `default` is the shared
     # network already checked under its own name.
-    skip = {"agents-staging-subnet", "gke-agents-staging-88280d02-pe-subnet"}
+    skip = {entry for entry in entries if _kind(entry) == "subnet"}
     missing = []
     for entry in entries:
         if entry in skip:

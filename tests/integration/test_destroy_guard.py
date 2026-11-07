@@ -19,13 +19,17 @@ from pathlib import Path
 
 import pytest
 
+from destroy_plan_recording import shared_project_id  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[2]
 GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
 DESTROY = REPO / "scripts" / "destroy.sh"
-PROJECT = "saga-agents-staging"
 
 COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
 TYPES_JSON = REPO / "scripts" / "lib" / "unlabelable-types.json"
+
+#: The project the deny-list protects, asked of common.sh rather than restated.
+PROJECT = shared_project_id()
 
 
 def _shared_deny_list() -> list[str]:
