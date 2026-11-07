@@ -90,7 +90,7 @@ TASK_ID = "task_gkeproof"
 LEASE_ID = "lease_gkeproof"
 ATTEMPT_ID = "att_gkeproof"
 TENANT = "eng"
-API = "https://swarm-api.fake.run.app"
+API = "https://api.swarm.example.com"
 
 
 def load_state():
