@@ -29,7 +29,7 @@ unblocked piece before reporting, report the block in one line, and prepare the
 blocked step's dependants so that what remains is one command
 ([example](docs/working-in-this-repository.md#unblocked-work)).
 
-## The three rules that are not negotiable
+## The four rules that are not negotiable
 
 **1. `apps/common/swarm_common/` is FROZEN.** Import from it. Never redefine its
 types, never edit the files. If you are convinced it needs to change, **say so
@@ -44,6 +44,16 @@ and service accounts, every one in `SHARED_DENY_LIST` (once, in
 **3. Nothing ships as a TODO, a stub or pseudocode.** Everything must run. A
 `NotImplementedError` in a dispatch path is a production outage with a comment
 attached.
+
+**4. SwarmCloud is generic: nothing in it may identify a company, a person or a
+real deployment.** No commit, commit message, PR title or body, issue, code,
+test, doc or comment may carry a real service account, domain, project id or
+number, bucket or secret name, email address, company or product name, or a
+person's name. A deployment's own values come from configuration and
+environment variables at run time; the repository holds only placeholders
+(`example-project`, `example.com`, roles such as "the owner"). Never add a new
+real value, even to a file that still holds old ones: a cleanup program is
+removing those, and a CI guard will refuse them (owner, 7 November 2026).
 
 ## Track ownership
 
