@@ -1,30 +1,28 @@
-"""`is_shared_resource` knows every resource the other teams hold in saga-agents-staging.
+"""The never-touch list comes from the deployment's config object and fails closed.
 
-`SHARED_DENY_LIST` in scripts/lib/common.sh is the one list `destroy.sh`,
-`plan-guard.sh`, the kubectl guard and the workspace call guard judge by. It said
-"Verified against the live project on 2026-09-15". The operator read the live
-project again on 2026-10-21 at 09:45Z (service accounts, buckets, Cloud Run
-services; read-only) and found twelve resources that are not this platform's and
-were missing from it (epic #1822, lane DENY-LIST-REFRESH). A name missing from
-the list is a name every guard above lets through.
+`SHARED_DENY_LIST` used to be a literal array of the shared project's
+other-team resources in scripts/lib/common.sh. Those are deployment values, so
+the list moved to `gs://<state-bucket>/config/<env>/deny-list.json`
+(docs/design/generic-repository.md, section 2.4), read by `deny_list_load`.
+The literal was kept for years because "an environment variable an operator
+forgets would silently empty the live guard"; the object keeps that property:
 
-`qa-console@` is NOT among them: it is this platform's own
-(terraform/bootstrap/qa_identity.tf), and a platform `swarm-` name must still
-answer false, or the guards would refuse this platform's own resources.
+1. no object, an unreadable one or a malformed one: every guard refuses;
+2. an object written for another project: refuse;
+3. fewer entries of a kind than the object's own floor: refuse;
+4. empty only when written so (`"entries": []`, every floor zero, reviewed);
+5. `guard_deny_json` prints `["(default)"]` for that empty list, never `[""]`;
+6. with no object, `kube_context_allowed` refuses a context naming the shared
+   cluster, even with GKE_CLUSTER pointed at it.
 
-`oracle-api@` WAS among them and is not any more: it is also a principal of
-this platform (the service tenant u-or-9a0792, a front-door IAP member, in
-ALLOWED_USERS). BGD decided on 2026-10-27 (#1835, "Both entries") to remove it
-AND the bare `oracle-api` entry (the Cloud Run service name), so neither guard
-refuses a name the platform's own tenant carries. `oracle-web` and the other
-oracle-* service accounts stay.
-
-Offline: sources common.sh in bash and calls the function, nothing else.
+Offline: sources common.sh with SWARM_CONFIG_DIR, the local stand-in for the
+bucket prefix, and every name from the placeholder set. No cloud call.
 """
 
 from __future__ import annotations
 
-import re
+import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -32,140 +30,246 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 COMMON = REPO / "scripts" / "lib" / "common.sh"
-PROJECT = "saga-agents-staging"
-
-#: Read on 2026-10-21 at 09:45Z by the operator, not derived from common.sh:
-#: deriving it from the list under test would make the test agree with any list.
-FOUND_2026_10_21 = [
-    # service accounts
-    f"ai-studio-api@{PROJECT}.iam.gserviceaccount.com",
-    f"ai-studio-deployer@{PROJECT}.iam.gserviceaccount.com",
-    f"ai-studio-runner@{PROJECT}.iam.gserviceaccount.com",
-    f"oracle-ticker@{PROJECT}.iam.gserviceaccount.com",
-    f"oracle-web@{PROJECT}.iam.gserviceaccount.com",
-    f"promptlab-api@{PROJECT}.iam.gserviceaccount.com",
-    # buckets
-    "ai-studio-avatars-staging",
-    "promptlab-avatars-staging",
-    f"{PROJECT}_cloudbuild",
-    # Cloud Run services
-    "oracle-web",
-]
+EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
+PROJECT = "example-project"
+SHARED_SA = "peer-runner@example-shared-project.iam.gserviceaccount.com"
+REFUSAL = "is not readable; nothing that mutates runs without it"
 
 
-def _is_shared(name: str) -> bool:
-    proc = subprocess.run(
-        ["bash", "-c", 'source "$1"; is_shared_resource "$2"', "_", str(COMMON), name],
-        capture_output=True, text=True, timeout=60, check=False,
+def _example() -> dict:
+    return json.loads(EXAMPLE.read_text())
+
+
+def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("PROJECT_ID", "SWARM_ENV_FILE", "KUBECONFIG", "GKE_CLUSTER", "SWARM_CONFIG_DIR")
+    }
+    env.update(
+        PROJECT_ID=PROJECT, REGION="us-central1", ZONE="us-central1-a", ENVIRONMENT="dev",
+        SWARM_ENV_FILE=str(tmp_path / "no-env-file"),
+        SWARM_CONFIG_DIR=str(tmp_path / "config"),
+        XDG_CACHE_HOME=str(tmp_path / "cache"),
+        HOME=str(tmp_path),
     )
-    assert proc.returncode in (0, 1), proc.stderr
-    return proc.returncode == 0
+    env.update(extra)
+    return env
 
 
-#: The two entries removed on 2026-10-27 (#1835, BGD: "Both entries"): the
-#: service account, a SwarmCloud principal, and the bare Cloud Run service name.
-ORACLE_API_ACCOUNT = f"oracle-api@{PROJECT}.iam.gserviceaccount.com"
-ORACLE_API_SERVICE = "oracle-api"
+def _write(tmp_path: Path, body: object, *, raw: str | None = None) -> None:
+    folder = tmp_path / "config" / "dev"
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target = folder / "deny-list.json"
+    target.write_text(raw if raw is not None else json.dumps(body))
+    target.chmod(0o600)
 
-#: SHARED_DENY_LIST as it must read after #1835, written out by hand in
-#: common.sh's order: the 2026-10-26 list less the oracle-api service account
-#: and the bare oracle-api entry, and nothing else. Not derived from
-#: common.sh, for the reason above.
-EXPECTED_AFTER_1835 = [
-    "agents-staging",
-    "agents-staging-vpc",
-    "agents-staging-subnet",
-    "gke-agents-staging-88280d02-pe-subnet",
-    "default",
-    "saga-agents-crawled-media-staging",
-    "saga-agents-files-staging",
-    "saga-agents-terraform-state-staging",
-    "ai-studio-avatars-staging",
-    "promptlab-avatars-staging",
-    f"{PROJECT}_cloudbuild",
-    f"api-service@{PROJECT}.iam.gserviceaccount.com",
-    f"publisher@{PROJECT}.iam.gserviceaccount.com",
-    "209012342332-compute@developer.gserviceaccount.com",
-    f"promptlab-deployer@{PROJECT}.iam.gserviceaccount.com",
-    f"promptlab-runner@{PROJECT}.iam.gserviceaccount.com",
-    f"aipipeline@{PROJECT}.iam.gserviceaccount.com",
-    f"saga-storage-ro@{PROJECT}.iam.gserviceaccount.com",
-    f"saga-storage-rw@{PROJECT}.iam.gserviceaccount.com",
-    f"external-secrets@{PROJECT}.iam.gserviceaccount.com",
-    f"staging-gke-nodes@{PROJECT}.iam.gserviceaccount.com",
-    f"crawler@{PROJECT}.iam.gserviceaccount.com",
-    f"tournament-digest@{PROJECT}.iam.gserviceaccount.com",
-    f"ai-studio-api@{PROJECT}.iam.gserviceaccount.com",
-    f"ai-studio-deployer@{PROJECT}.iam.gserviceaccount.com",
-    f"ai-studio-runner@{PROJECT}.iam.gserviceaccount.com",
-    f"oracle-ticker@{PROJECT}.iam.gserviceaccount.com",
-    f"oracle-web@{PROJECT}.iam.gserviceaccount.com",
-    f"promptlab-api@{PROJECT}.iam.gserviceaccount.com",
-    "oracle-web",
+
+def _run(tmp_path: Path, script: str, **extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", f'source "$1"; {script}', "_", str(COMMON)],
+        capture_output=True, text=True, timeout=60, check=False, env=_env(tmp_path, **extra),
+    )
+
+
+def _refused(proc: subprocess.CompletedProcess[str]) -> None:
+    assert proc.returncode != 0, proc.stdout
+    assert "reached" not in proc.stdout, "a guard let the caller carry on without the list"
+    assert REFUSAL in proc.stderr, proc.stderr
+
+
+GUARDS = [
+    "is_shared_resource swarm-api",
+    "kube_context_allowed swarm-dev",
+    "guard_deny_json >/dev/null",
+    'x="$(guard_deny_json)"',
 ]
 
 
-def _deny_list_from_common_sh() -> list[str]:
-    block = re.search(r"^SHARED_DENY_LIST=\(\n(.*?)^\)", COMMON.read_text(), re.MULTILINE | re.DOTALL)
-    assert block, "scripts/lib/common.sh no longer declares SHARED_DENY_LIST=( ... )"
-    return re.findall(r'^\s*"([^"]+)"', block.group(1), re.MULTILINE)
+@pytest.mark.parametrize("guard", GUARDS)
+def test_no_object_refuses_every_guard(tmp_path: Path, guard: str) -> None:
+    # MUTATION: treat a missing object as an empty list in deny_list_load and
+    # this goes green-for-the-wrong-reason: "reached" is printed.
+    (tmp_path / "config" / "dev").mkdir(parents=True, mode=0o700)
+    proc = _run(tmp_path, f"{guard}; echo reached")
+    _refused(proc)
+    assert "deny-list.json does not exist" in proc.stderr
 
 
-def test_the_list_found_on_2026_10_21_is_the_ten_still_protected() -> None:
-    # MUTATION: drop an entry from FOUND_2026_10_21 and the parametrised case
-    # below silently stops checking it; this count fails instead. Twelve were
-    # read; oracle-api@ and the bare oracle-api left on 2026-10-27 (#1835).
-    assert len(FOUND_2026_10_21) == len(set(FOUND_2026_10_21)) == 10
-    assert ORACLE_API_ACCOUNT not in FOUND_2026_10_21
-    assert ORACLE_API_SERVICE not in FOUND_2026_10_21
+def test_no_config_prefix_at_all_refuses(tmp_path: Path) -> None:
+    _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached"))
 
 
-def test_the_deny_list_is_exactly_the_old_list_less_both_oracle_api_entries() -> None:
-    # Removing the two oracle-api entries must drop nothing else: every other
-    # team's resource stays protected (oracle-web included), and nothing is
-    # added in passing.
-    # MUTATION: delete any other entry from SHARED_DENY_LIST, or put either
-    # oracle-api entry back, and this fails.
-    assert _deny_list_from_common_sh() == EXPECTED_AFTER_1835
-    assert ORACLE_API_ACCOUNT not in EXPECTED_AFTER_1835
-    assert ORACLE_API_SERVICE not in EXPECTED_AFTER_1835
-    assert len(EXPECTED_AFTER_1835) == 30
+def test_no_object_refuses_the_shared_cluster_context(tmp_path: Path) -> None:
+    # The red-first case of the design: with no object, a context naming the
+    # shared cluster is refused even when GKE_CLUSTER was pointed at it, which
+    # the old kube_context_allowed accepted by name alone.
+    (tmp_path / "config" / "dev").mkdir(parents=True, mode=0o700)
+    ctx = f"gke_{PROJECT}_us-central1_peer-cluster"
+    proc = _run(tmp_path, f'if kube_context_allowed "{ctx}"; then echo allowed; fi; echo reached',
+                GKE_CLUSTER="peer-cluster", GKE_LOCATION="us-central1")
+    assert "allowed" not in proc.stdout
+    _refused(proc)
 
 
-@pytest.mark.parametrize("name", EXPECTED_AFTER_1835)
-def test_every_other_entry_is_still_shared(name: str) -> None:
-    # MUTATION: break is_shared_resource for one entry and this fails for it alone.
-    assert _is_shared(name), f"{name} belongs to another team but is_shared_resource says it is ours"
+def test_a_listed_cluster_is_refused_as_a_context(tmp_path: Path) -> None:
+    _write(tmp_path, _example())
+    ctx = f"gke_{PROJECT}_us-central1_peer-cluster"
+    proc = _run(tmp_path, f'kube_context_allowed "{ctx}" && echo allowed || echo refused',
+                GKE_CLUSTER="peer-cluster", GKE_LOCATION="us-central1")
+    assert proc.stdout.strip() == "refused", proc.stderr
+    ours = _run(tmp_path, f'kube_context_allowed "gke_{PROJECT}_us-central1_swarm-autopilot" && echo allowed',
+                GKE_CLUSTER="swarm-autopilot", GKE_LOCATION="us-central1")
+    assert ours.stdout.strip() == "allowed", ours.stderr
 
 
-def test_the_oracle_api_account_is_a_platform_principal_not_a_shared_resource() -> None:
-    # BGD's decision of 2026-10-27 (#1835): the account is the service tenant
-    # u-or-9a0792's principal, so register-tenant.sh's S1 must not refuse it.
-    # MUTATION: re-add oracle-api@ to SHARED_DENY_LIST and this fails.
-    assert not _is_shared(ORACLE_API_ACCOUNT)
+@pytest.mark.parametrize("raw", ["{not json", "[]", '"a string"', ""])
+def test_a_malformed_object_refuses(tmp_path: Path, raw: str) -> None:
+    _write(tmp_path, None, raw=raw)
+    _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached"))
 
 
-def test_the_bare_oracle_api_entry_is_off_the_list() -> None:
-    # BGD's decision of 2026-10-27 (#1835, "Both entries"): the bare name left
-    # with the account.
-    # MUTATION: re-add "oracle-api" to SHARED_DENY_LIST and this fails.
-    assert not _is_shared(ORACLE_API_SERVICE)
+def test_an_unreadable_object_refuses(tmp_path: Path) -> None:
+    _write(tmp_path, _example())
+    target = tmp_path / "config" / "dev" / "deny-list.json"
+    target.chmod(0o000)
+    try:
+        if os.access(target, os.R_OK):
+            pytest.skip("running as a user who reads mode-000 files")
+        _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached"))
+    finally:
+        target.chmod(0o600)
 
 
-@pytest.mark.parametrize("name", FOUND_2026_10_21)
-def test_a_resource_found_on_2026_10_21_is_shared(name: str) -> None:
-    # MUTATION: delete this name from SHARED_DENY_LIST in common.sh and this
-    # case fails for it alone.
-    assert _is_shared(name), f"{name} belongs to another team but is_shared_resource says it is ours"
+def test_an_object_for_another_project_refuses(tmp_path: Path) -> None:
+    # A list copied from another deployment does not protect this one.
+    _write(tmp_path, {**_example(), "project": "example-shared-project"})
+    proc = _run(tmp_path, "is_shared_resource swarm-api; echo reached")
+    _refused(proc)
+    assert "written for project example-shared-project, not example-project" in proc.stderr
 
 
-@pytest.mark.parametrize("name", [
-    f"swarm-api@{PROJECT}.iam.gserviceaccount.com",
-    "swarm-api",
-    f"qa-console@{PROJECT}.iam.gserviceaccount.com",
-])
-def test_a_platform_name_is_not_shared(name: str) -> None:
-    # MUTATION: make is_shared_resource `return 0` unconditionally, or add a
-    # platform name (a swarm- account, qa-console@) to SHARED_DENY_LIST, and
-    # this fails.
-    assert not _is_shared(name), f"{name} is this platform's own but is_shared_resource refuses it"
+@pytest.mark.parametrize("drop", ["peer-cluster", SHARED_SA])
+def test_an_object_below_its_floor_refuses(tmp_path: Path, drop: str) -> None:
+    # A truncated list fails the way verify-destroy-guard.sh's inventory check
+    # did: the floors are asserted independently of the entries.
+    body = _example()
+    body["entries"] = [e for e in body["entries"] if e != drop]
+    _write(tmp_path, body)
+    proc = _run(tmp_path, "is_shared_resource swarm-api; echo reached")
+    _refused(proc)
+    assert "fewer entries than its floors" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"floors": None},
+        {"floors": {"total": -1}},
+        {"floors": {"total": 1.5}},
+        {"entries": "peer-cluster"},
+        {"entries": ["peer-cluster", ""]},
+        {"entries": ["peer-cluster\nswarm-api"]},
+        {"reviewed_by": ""},
+        {"reviewed_at": None},
+        {"classify": [{"glob": "peer-*"}]},
+    ],
+)
+def test_a_badly_shaped_object_refuses(tmp_path: Path, change: dict) -> None:
+    body = {**_example(), **change}
+    body = {k: v for k, v in body.items() if v is not None}
+    _write(tmp_path, body)
+    _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached"))
+
+
+def test_an_empty_list_without_floors_refuses(tmp_path: Path) -> None:
+    # Empty is a statement, never the absence of one.
+    body = {k: v for k, v in _example().items() if k != "floors"}
+    body["entries"] = []
+    _write(tmp_path, body)
+    _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached"))
+
+
+def test_an_empty_list_with_a_nonzero_floor_refuses(tmp_path: Path) -> None:
+    _write(tmp_path, {**_example(), "entries": []})
+    _refused(_run(tmp_path, "is_shared_resource swarm-api; echo reached"))
+
+
+def test_a_list_written_empty_allows(tmp_path: Path) -> None:
+    # A project that shares nothing: entries [] with every floor zero, reviewed.
+    _write(tmp_path, {**_example(), "entries": [], "classify": [],
+                      "floors": {"total": 0, "cluster": 0, "sa": 0}})
+    proc = _run(
+        tmp_path,
+        'deny_list_load && echo loaded; is_shared_resource peer-cluster || echo not-shared; '
+        'printf "guard=%s\\n" "$(guard_deny_json)"; '
+        'kube_context_allowed "gke_${PROJECT_ID}_us-central1_swarm-autopilot" && echo context-ok',
+        GKE_CLUSTER="swarm-autopilot", GKE_LOCATION="us-central1",
+    )
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert lines == ["loaded", "not-shared", 'guard=["(default)"]', "context-ok"], proc.stdout
+
+
+def test_the_example_object_loads_and_guards(tmp_path: Path) -> None:
+    _write(tmp_path, _example())
+    names = ["peer-cluster", "peer-vpc", "peer-subnet", "peer-bucket", SHARED_SA]
+    script = "; ".join(f'is_shared_resource "{n}" && echo "{n}=shared"' for n in names)
+    proc = _run(tmp_path, script + '; is_shared_resource swarm-api || echo "swarm-api=ours"')
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [f"{n}=shared" for n in names] + ["swarm-api=ours"]
+
+
+def test_guard_deny_json_is_the_list_less_default_plus_firestore(tmp_path: Path) -> None:
+    body = _example()
+    body["entries"] = [*body["entries"], "default"]
+    _write(tmp_path, body)
+    proc = _run(tmp_path, "guard_deny_json")
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == [*_example()["entries"], "(default)"]
+
+
+def test_a_failed_list_inside_a_substitution_stops_the_caller(tmp_path: Path) -> None:
+    # destroy.sh and the plan guard read it as DENY_JSON="$(guard_deny_json)":
+    # under `set -e` that line must end the script, not leave DENY_JSON empty.
+    (tmp_path / "config" / "dev").mkdir(parents=True, mode=0o700)
+    proc = _run(tmp_path, 'DENY_JSON="$(guard_deny_json)"; echo "reached [${DENY_JSON}]"')
+    _refused(proc)
+
+
+def test_kinds_and_floors_come_from_the_object(tmp_path: Path) -> None:
+    body = _example()
+    body["entries"] = [*body["entries"], "peer-web"]
+    body["classify"] = [*body["classify"], {"glob": "peer-web", "kind": "run-service"}]
+    body["floors"] = {**body["floors"], "run-service": 1}
+    _write(tmp_path, body)
+    proc = _run(tmp_path, 'deny_list_floors; shared_resource_kind peer-web; echo; shared_resource_kind peer-vpc')
+    assert proc.returncode == 0, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert "run-service\t1" in lines
+    assert lines[-2:] == ["run-service", "network"]
+
+
+def test_a_group_writable_object_is_refused(tmp_path: Path) -> None:
+    # The source is held to load_env's rule for .env: another user who can
+    # write it can empty the list.
+    _write(tmp_path, _example())
+    (tmp_path / "config" / "dev" / "deny-list.json").chmod(0o620)
+    proc = _run(tmp_path, "is_shared_resource swarm-api; echo reached")
+    _refused(proc)
+    assert "group- or world-writable" in proc.stderr
+
+
+def test_no_project_refuses(tmp_path: Path) -> None:
+    # SWARM_NO_PROJECT=1 runs with PROJECT_ID empty: no list can be read for
+    # it, so a guard it reaches refuses rather than judging by nothing.
+    proc = _run(tmp_path, "is_shared_resource swarm-api; echo reached",
+                PROJECT_ID="", SWARM_NO_PROJECT="1")
+    _refused(proc)
+    assert "no project is named" in proc.stderr
+
+
+def test_no_deployment_value_is_written_in_common_sh() -> None:
+    text = COMMON.read_text()
+    assert "SHARED_DENY_LIST=(\n" not in text, "the literal list is back in common.sh"
+    assert "SHARED_PROJECT_ID=" not in text
+    assert "gserviceaccount.com\"\n" not in text
