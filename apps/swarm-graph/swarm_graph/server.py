@@ -42,7 +42,15 @@ THE ANSWER IS THE LOCAL SERVER'S. `initialize`, `ping` and `tools/list` are
 `graphmcp.server.GraphServer.handle` itself, built per request around the
 pinned snapshot and the EMPTY observation (§4.4). `tools/call` is the same
 `tools.compute` and `tools.page` that `tools.call` runs, with the result cache
-between them (§5.2): a hit skips `compute`, never `page`. So an answer here is
+between them (§5.2): a hit skips `compute`, never `page`. On an exact miss the
+cache's carry key is tried (graph-answer-cache.md §2.3 b, cache.py, carry.py).
+
+A DEADLINE BELOW THE SHIM'S (store.ANSWER_DEADLINE_SECONDS, 7 s from arrival):
+a `tools/call` reads a cold manifest and cold shards on the load pool and
+waits for them only until then. An answer that could not read every shard is
+paged as usual with a `partial` head (what it missed and why) and is never
+cached; a manifest not read in time is an error answer saying so. Either way
+the reads finish into the caches, so the same question asked again is whole. So an answer here is
 byte for byte the one `tools.call(snap, Observation.empty(index_sha), ...)`
 gives, which tests/unit/graphsvc/test_graphsvc_server.py holds for every tool.
 
@@ -51,7 +59,8 @@ handler (never a stdlib 501), an unparsable request is 400 with no echo, the
 stdlib's request-line log is silenced, no `Server` version, one request per
 connection. Nothing logged here carries a ticket, a header or a body; a
 `graph_answer` line carries the tenant and repository ids, the tool, the
-status, `cache: hit|miss` and milliseconds (§10 "cache cold"), and the stats
+status, `cache: hit|carried|miss`, `partial`, `temperature: warm|cold` and
+milliseconds (§10 "cache cold"), and the stats
 counters (stats.AnswerCounters) count the outcome right after that line, from
 the same values, so the console and the log-based metric cannot disagree.
 """
@@ -61,6 +70,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Iterable
@@ -78,6 +89,7 @@ from agent_worker.graphmcp.server import (
 from agent_worker.graphmcp.snapshot import Snapshot, SnapshotError
 from swarm_redaction import redact
 
+from .carry import Recorder
 from .cache import (
     ManifestCache,
     ResultCache,
@@ -89,11 +101,15 @@ from .cache import (
 )
 from . import stats
 from .store import (
+    ANSWER_DEADLINE_SECONDS,
+    Deadline,
+    DeadlineSource,
     IndexMissing,
     ManifestMismatch,
     ObjectStore,
     StoreUnavailable,
     TenantSource,
+    load_pool,
     open_snapshot,
 )
 from .ticket import (
@@ -128,6 +144,14 @@ STORE_UNAVAILABLE = "store_unavailable"
 BAD_REQUEST = "bad_request"
 NOT_FOUND = "not_found"
 METHOD_NOT_ALLOWED = "method_not_allowed"
+#: The head an answer cut at the deadline carries, beside its rows.
+PARTIAL = "partial"
+PARTIAL_NOTE = ("the deadline passed before every shard this answer needs was read: rows "
+                "from those shards are missing; they are loading, so ask again")
+LATE_OPEN = ("partial: the deadline passed before this index's manifest was read; it is "
+             "loading, so ask again")
+LATE_UNRESOLVED = ("partial: the deadline passed before every shard this question needs was "
+                   "read, so the name cannot be resolved yet; they are loading, so ask again")
 
 #: Every refusal code, by its HTTP status (the shim's table, §10).
 STATUSES = {
@@ -193,7 +217,9 @@ class GraphService:
                  manifests: ManifestCache | None = None, warmer: Warmer | None = None,
                  clock: Callable[[], float] = time.time, replica: str | None = None,
                  peers: Callable[[], list[str] | None] | None = None,
-                 peer_timeout: float = stats.PEER_TIMEOUT_SECONDS) -> None:
+                 peer_timeout: float = stats.PEER_TIMEOUT_SECONDS,
+                 deadline_seconds: float = ANSWER_DEADLINE_SECONDS,
+                 pool: ThreadPoolExecutor | None = None) -> None:
         self.keys = keys
         self.store = store
         self.enabled = enabled
@@ -208,6 +234,9 @@ class GraphService:
         self.peers = peers if peers is not None else stats.Peers()
         self.peer_timeout = peer_timeout
         self.answers = stats.AnswerCounters()
+        #: Every tools/call answers within this of its arrival (store.Deadline).
+        self.deadline_seconds = deadline_seconds
+        self.pool = pool if pool is not None else load_pool()
 
     # -- the routes -------------------------------------------------------------
 
@@ -292,10 +321,20 @@ class GraphService:
             return self._rpc(_error(None, PARSE_ERROR, "not JSON"))
         if isinstance(message, list):
             return self._rpc(_error(None, INVALID_REQUEST, "batches are not accepted"))
-        snap = self._open(ticket)
         if isinstance(message, dict) and message.get("method") == "tools/call" \
                 and "id" in message and message.get("jsonrpc") == "2.0":
-            return self._tools_call(ticket, snap, message, started)
+            deadline = Deadline(started + self.deadline_seconds)
+            try:
+                snap = self._open(ticket, deadline)
+            except _Late:
+                obs = Observation.empty(ticket.index_sha)
+                self._log(ticket, _tool_name(message), "error", None, started, partial=True,
+                          cold=True)
+                return self._rpc(_result(message["id"], {
+                    "content": [{"type": "text", "text": tools.error_answer(obs, LATE_OPEN)}],
+                    "isError": True}))
+            return self._tools_call(ticket, snap, message, started, deadline)
+        snap = self._open(ticket)
         response = GraphServer(snap, _EmptyFreshness(ticket.index_sha)).handle(message)  # type: ignore[arg-type]
         if response is None:
             return Reply(202, b"", [("Cache-Control", "no-store")])
@@ -307,8 +346,26 @@ class GraphService:
 
     # -- the pinned snapshot ------------------------------------------------------
 
-    def _open(self, ticket: GraphTicket) -> Snapshot:
+    def _open(self, ticket: GraphTicket, deadline: Deadline | None = None) -> Snapshot:
+        """The pinned snapshot. Under a deadline a manifest not held is read on
+        the load pool and waited for only until the deadline (`_Late`); the
+        read goes on into the manifest cache for the next ask."""
         key = (ticket.tenant_id, ticket.repo_id, ticket.manifest_digest)
+        snap = self.manifests.get(key)
+        if snap is None and deadline is not None:
+            deadline.cold = True
+            future = self.pool.submit(self._open_now, ticket, key)
+            try:
+                snap = future.result(timeout=max(0.0, deadline.remaining()))
+            except FutureTimeout:
+                deadline.expired = True
+                raise _Late() from None
+        elif snap is None:
+            snap = self._open_now(ticket, key)
+        self.warmer.saw(ticket.tenant_id, ticket.repo_id, ticket.manifest_digest, snap)
+        return snap
+
+    def _open_now(self, ticket: GraphTicket, key: tuple[str, str, str]) -> Snapshot:
         snap = self.manifests.get(key)
         if snap is None:
             source = TenantSource(ticket, self.store, self.shards)
@@ -328,13 +385,12 @@ class GraphService:
                 raise _Refused(MANIFEST_INVALID) from None
             raw_bytes = len(tools.dumps(snap.manifest))
             self.manifests.put(key, snap, raw_bytes)
-        self.warmer.saw(ticket.tenant_id, ticket.repo_id, ticket.manifest_digest, snap)
         return snap
 
     # -- tools/call -----------------------------------------------------------------
 
     def _tools_call(self, ticket: GraphTicket, snap: Snapshot, message: dict,
-                    started: float) -> Reply:
+                    started: float, deadline: Deadline) -> Reply:
         ident = message["id"]
         params = message.get("params") or {}
         if not isinstance(params, dict):
@@ -345,42 +401,69 @@ class GraphService:
         arguments = params.get("arguments")
         obs = Observation.empty(ticket.index_sha)
         try:
-            text, failed, cache = self.answer(ticket, snap, obs, name, arguments)
+            text, failed, cache = self.answer(ticket, snap, obs, name, arguments,
+                                              deadline=deadline)
         except IndexMissing:
             raise _Refused(INDEX_MISSING) from None
         except StoreUnavailable:
             raise _Refused(STORE_UNAVAILABLE) from None
-        self._log(ticket, name, "error" if failed else "ok", cache, started)
+        self._log(ticket, name, "error" if failed else "ok", cache, started,
+                  partial=deadline.partial, cold=deadline.cold)
         return self._rpc(_result(ident, {"content": [{"type": "text", "text": text}],
                                          "isError": failed}))
 
     def answer(self, ticket: GraphTicket, snap: Snapshot, obs: Observation, name: str,
-               arguments: Any) -> tuple[str, bool, str]:
-        """(answer text, is_error, `hit`|`miss`|`none`): `tools.call`, with the
-        result cache between compute and page. `IndexMissing` and
-        `StoreUnavailable` are raised, never answered: they are statuses."""
+               arguments: Any, *, deadline: Deadline | None = None) -> tuple[str, bool, str]:
+        """(answer text, is_error, `hit`|`carried`|`miss`|`none`): `tools.call`,
+        with the result cache between compute and page. On an exact miss the
+        carry key is tried (graph-answer-cache.md §2.3 b); a computation runs
+        over a `Recorder`, whose read set is kept with the answer. Under a
+        `deadline`, cold shards are read through a `DeadlineSource`: an answer
+        that could not read them all is paged with a `partial` head and is
+        never cached. `IndexMissing` and `StoreUnavailable` are raised, never
+        answered: they are statuses."""
         key = result_key(ticket.tenant_id, ticket.manifest_digest, name, arguments)
         cached = self.results.get(key) if key is not None else None
         cache = "hit" if cached is not None else ("miss" if key is not None else "none")
+        if cached is None and key is not None:
+            carried = self.results.carried(key, ticket.repo_id, snap)
+            if carried is not None:
+                cached, cache = carried, "carried"
+        partial = False
         try:
             if cached is not None:
                 held = decode_result(cached)
             else:
+                source = None if deadline is None else DeadlineSource(
+                    TenantSource(ticket, self.store, self.shards), deadline, self.pool)
+                view = Recorder.over(snap, source)
                 try:
-                    computed = tools.compute(name, snap, arguments)
+                    computed = tools.compute(name, view, arguments)
                 except tools._Unresolved as exc:
+                    if deadline is not None and deadline.partial:
+                        return tools.error_answer(obs, LATE_UNRESOLVED), True, cache
                     held = (str(exc), list(exc.candidates))
                     if key is not None:
-                        self.results.put_result(key, encode_unresolved(*held))
+                        self.results.put_result(key, encode_unresolved(*held),
+                                                repo_id=ticket.repo_id, reads=view.reads)
                 else:
-                    held = computed
-                    if key is not None:
-                        data = encode_computed(computed)
-                        self.results.put_result(key, data)
-                        held = decode_result(data)
+                    # Materialised here, so the rows' own reads are recorded
+                    # and are under the deadline too.
+                    data = encode_computed(computed)
+                    partial = deadline is not None and deadline.partial
+                    if key is not None and not partial:
+                        self.results.put_result(key, data, repo_id=ticket.repo_id,
+                                                reads=view.reads)
+                    held = decode_result(data)
             if isinstance(held, tuple):
                 return tools.error_answer(obs, held[0], held[1]), True, cache
-            return tools.page(obs, held.head, held.rows, tools._cursor(arguments or {}),
+            head = held.head
+            if partial:
+                assert deadline is not None
+                head = {**head, PARTIAL: {
+                    "after_ms": int(self.deadline_seconds * 1000),
+                    "shards_unread": len(deadline.unread), "note": PARTIAL_NOTE}}
+            return tools.page(obs, head, held.rows, tools._cursor(arguments or {}),
                               held.expand), False, cache
         except (IndexMissing, StoreUnavailable):
             raise
@@ -390,13 +473,25 @@ class GraphService:
             return tools.error_answer(obs, str(exc)), True, cache
 
     def _log(self, ticket: GraphTicket, tool: str | None, status: str, cache: str | None,
-             started: float) -> None:
+             started: float, *, partial: bool = False, cold: bool = False) -> None:
         ms = int((time.monotonic() - started) * 1000)
         event("graph_answer", tenant_id=ticket.tenant_id, repo_id=ticket.repo_id,
-              tool=tool, status=status, cache=cache, ms=ms)
+              tool=tool, status=status, cache=cache, ms=ms, partial=partial,
+              temperature="cold" if cold else "warm")
         # Counted from the line's own values, after it is written (§5.3).
         if tool is not None:
-            self.answers.record(ticket.tenant_id, ticket.repo_id, cache, ms, now=self._clock())
+            self.answers.record(ticket.tenant_id, ticket.repo_id, cache, ms, now=self._clock(),
+                                partial=partial, cold=cold)
+
+
+class _Late(Exception):
+    """The deadline passed before the pinned manifest was read."""
+
+
+def _tool_name(message: dict) -> str | None:
+    params = message.get("params")
+    name = params.get("name") if isinstance(params, dict) else None
+    return name if isinstance(name, str) else None
 
 
 def _warmed(tenant_id: str, repo_id: str, result: Warmed, ms: int) -> None:
@@ -494,6 +589,7 @@ __all__ = [
     "HEALTH_PATH",
     "MAX_BODY_BYTES",
     "MCP_PATH",
+    "PARTIAL",
     "PORT",
     "STATUSES",
     "GraphHttpServer",

@@ -9,6 +9,9 @@
 | `bootstrap.pass-2` | 7 | `bootstrap-2` | the IAP programmatic clients and the log view grant |
 | `infra.pass-identity` | 8 | `infra-2` again | none: the admin groups stage 8 recorded, and a version for any platform key pass 2 made (the graph ticket key) |
 | `infra.pass-close` | 14 | `infra-close` | `other.engine-cluster-reach-closed`: the installer's address leaves the control plane's authorised networks, after stage 14's verify steps |
+| `infra.voice-it` | 0 | none | `other.voice-it-choice`: the optional question whether to turn Voice it on |
+| `infra.voice-speech` | 0 | none | `other.voice-speech-choice`, `other.voice-speech-offered`: for a yes to Voice it only, the optional question whether to add its own speech engine |
+| `infra.voice-speech-zone` | 1 | none | `other.voice-speech-zone`: for a yes, the L4 zone, one NVIDIA_L4_GPUS of quota and the pinned image |
 
 The passes declare no manifest entries as `satisfies`: the manifest's
 `depends_on` among the resources one apply makes runs both ways (a container
@@ -63,11 +66,43 @@ closing pass is unmet while that is recorded, so `swarm install`'s stage 14
 closes it again; the verbs close it themselves when they finish
 (`ClusterReach.close`), and a verb that died in between leaves the record for
 the next run's close.
+
+**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). `infra.voice-it`
+asks in stage 0 whether to turn Voice it on, default no, and records
+`outputs["voice_it"]` as `{"enabled": bool}`. A no leaves `voice_it` "off" on
+every pass. A yes walks voice.tf's three steps in the order it needs them
+(`tfvars.voice_it`): the registry pass "off"; infra pass 1 "account" (bootstrap
+pass 1, stage 3, made swarm-voice); infra pass 2 on "on", with the release's
+swarm-voice digest in `image_refs`, once pass 1 has made the cluster whose
+workload pool the binding names; stage 10's `cluster.workloads` then applies
+`swarm_voice_manifest`. voice.tf's middle step, a ChatGPT plan account in the
+Voice it pool, is the console's (Capacity › Accounts): the installer asks for
+no account and reads no secret, and swarm-voice serves once one is added.
+
+**Voice it's own speech engine** (docs/design/voice-it-own-speech.md §15,
+lane L11). It is nested under Voice it: `infra.voice-speech` asks only after a
+yes to Voice it (`other.voice-speech-offered` orders it after the Voice it
+question); after a no it asks nothing and is met, and so is
+`infra.voice-speech-zone`. Under a yes it asks in stage 0 whether to
+add the engine: one stopped L4 machine, with the design's cost line and, when
+the project already exists, the zone it would live in; the answer defaults to
+no and is asked once. Stage 0 cannot read the accelerators of a project stage 1
+has not made yet, so for a yes `infra.voice-speech-zone` runs once Compute
+Engine is on: the first of the region's zones offering `nvidia-l4`
+(`acceleratorTypes`; one zone, one machine, no fallback zone), an
+NVIDIA_L4_GPUS quota of at least 1 (the Quotas page opens, and the step waits
+until it is granted), and the newest Deep Learning VM image of an Ubuntu 22.04
+CUDA family, pinned by name. A region with no L4 zone turns the choice off and
+says why. The engine never starts, stops or makes the machine itself: the
+first infra pass with `voice_it` "on" (pass 2) makes it stopped, and swarm-api
+starts it for a session.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import datetime as dt
+import re
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from .. import record as install_record
@@ -75,7 +110,8 @@ from .. import tfvars
 from ..api_client import deployer_email
 from ..exitcodes import MET, UNMET
 from ..terraform import Terraform
-from . import Observation, Plan, bootstrap
+from ..waits import wait_until
+from . import Observation, Plan, bootstrap, open_page
 from .bootstrap import DEPS, BootstrapPass2Step, Deps, PassStep, applied_key
 from .edge import ADDRESS
 from .secrets import PlatformKeysStep
@@ -313,9 +349,346 @@ wrote), and the bucket
         self.state = self._save(change)
 
 
+# -- Voice it (terraform/infra/voice.tf) ------------------------------------------
+
+#: The install state's key: `{"enabled": bool}` from stage 0 (tfvars.voice_it
+#: renders infra's `voice_it` from it, pass by pass).
+VOICE_IT = tfvars.VOICE_IT
+VOICE_IT_QUESTION = ("Voice it: talk to the deployment by voice, served by swarm-voice on the cluster. "
+                     "Turn it on? Optional, y or n")
+#: Off unless the person says yes: Terraform's own default is "off".
+VOICE_IT_DEFAULT = "n"
+#: The one line after a yes: what the installer does not ask for, and where it goes.
+VOICE_IT_POOL = "Voice it's ChatGPT plan accounts are added later in the console, on Capacity › Accounts."
+
+
+def _voice_it(ctx: Any) -> bool | None:
+    """Stage 0's Voice it answer, or None while it is not answered."""
+    found = ctx.outputs.get(VOICE_IT)
+    if isinstance(found, Mapping) and isinstance(found.get("enabled"), bool):
+        return bool(found["enabled"])
+    return None
+
+
+def _ask_yes_no(ask: Callable[..., str], ctx: Any, step_id: str, question: str, default: str) -> bool:
+    """y or n, asked again on anything else, up to SPEECH_TRIES answers."""
+    asked = question
+    for _ in range(SPEECH_TRIES):
+        answer = ask(ctx, step_id, asked, default=default).strip().lower()
+        if answer in YES or answer in NO:
+            return answer in YES
+        asked = f"{answer!r} is neither y nor n. {question}"
+    raise ValueError(f"no y or n after {SPEECH_TRIES} answers to: {question}; nothing was recorded")
+
+
+# -- Voice it's own speech engine (design voice-it-own-speech.md §15) -----------
+
+#: The install state's key: `{"enabled": bool}` from stage 0, and for a yes the
+#: `zone` and `image` stage 1 adds (tfvars.voice_speech renders them).
+VOICE_SPEECH = "voice_speech"
+#: The machine's one GPU (a g2-standard-4 carries one) and its regional quota.
+L4 = "nvidia-l4"
+L4_QUOTA = "NVIDIA_L4_GPUS"
+L4_QUOTA_METRIC = "compute.googleapis.com/nvidia_l4_gpus"
+#: Deep Learning VM images: Ubuntu 22.04 with a CUDA NVIDIA driver and the
+#: container toolkit (design §5.1), e.g. `common-cu128-ubuntu-2204-nvidia-570`.
+IMAGE_PROJECT = "deeplearning-platform-release"
+IMAGE_FAMILY = re.compile(r"^common-cu[0-9]+-ubuntu-2204(-[a-z0-9-]+)?$")
+#: The speech image's NVIDIA driver floor (vLLM 0.33 is built on CUDA 13, which
+#: needs 580): one rule, in tfvars, which also refuses to render an older image.
+DRIVER_FLOOR = tfvars.DRIVER_FLOOR
+DRIVER_FLOOR_REFUSAL = tfvars.DRIVER_FLOOR_REFUSAL
+image_driver = tfvars.image_driver
+check_speech_image = tfvars.check_speech_image
+#: The design's cost line (§15): about $0.71 an hour while running (§1 pick 1)
+#: and the 150 GB pd-balanced boot disk, kept between sessions.
+SPEECH_COST = "about $0.71 an hour while used, $15 a month for its disk"
+SPEECH_QUESTION = ("Voice it's own speech engine (one stopped L4 machine in {where}; " + SPEECH_COST
+                   + "). Add it? Optional, y or n")
+#: No by default, and never asked while Voice it is off (§15; BGD, 2026-11-05).
+SPEECH_DEFAULT = "n"
+YES = ("y", "yes")
+NO = ("", "n", "no")
+#: An answer that is neither yes nor no is asked again, up to this many answers in all.
+SPEECH_TRIES = 3
+
+
+def _compute() -> str:
+    from .preflight import COMPUTE
+
+    return COMPUTE
+
+
+def l4_zones(gcp: Any, project: str, region: str) -> list[str]:
+    """The zones of `region` offering the L4, by name (`acceleratorTypes.aggregatedList`).
+
+    Only a zone infra's `voice_speech.zone` accepts counts: one letter after the
+    region, so an AI zone such as `<region>-ai1a` is never picked."""
+    zones: set[str] = set()
+    params: dict[str, Any] = {"filter": f'name = "{L4}"'}
+    while True:
+        page = gcp._call("GET", f"{_compute()}/projects/{project}/aggregated/acceleratorTypes", params=params) or {}
+        for scoped in (page.get("items") or {}).values():
+            for found in (scoped or {}).get("acceleratorTypes", []) or []:
+                zone = str(found.get("zone", "")).rsplit("/", 1)[-1]
+                if found.get("name") == L4 and zone.startswith(f"{region}-") and tfvars.SPEECH_ZONE.match(zone):
+                    zones.add(zone)
+        if not page.get("nextPageToken"):
+            return sorted(zones)
+        params["pageToken"] = page["nextPageToken"]
+
+
+def l4_quota(gcp: Any, project: str, region: str) -> int | None:
+    """The region's NVIDIA_L4_GPUS limit (`regions.get`), or None when it is not reported."""
+    from .preflight import _compute_limit
+
+    return _compute_limit(gcp._call("GET", f"{_compute()}/projects/{project}/regions/{region}") or {}, L4_QUOTA)
+
+
+def speech_image(gcp: Any, project: str) -> str:
+    """The newest READY, undeprecated Deep Learning VM image of an Ubuntu 22.04
+    CUDA family whose family states an NVIDIA driver of DRIVER_FLOOR or later,
+    by name: a /family/ path moves under the stopped machine and would replace
+    it at the next plan (variables.tf, `voice_speech.image`)."""
+    images: list[dict[str, Any]] = []
+    params: dict[str, Any] = {"filter": 'family eq "common-cu.*-ubuntu-2204.*"'}
+    while True:
+        page = gcp._call("GET", f"{_compute()}/projects/{IMAGE_PROJECT}/global/images", params=params,
+                         quota_project=project) or {}
+        images.extend(page.get("items", []) or [])
+        if not page.get("nextPageToken"):
+            break
+        params["pageToken"] = page["nextPageToken"]
+    usable = [image for image in images
+              if IMAGE_FAMILY.match(str(image.get("family", ""))) and image.get("status") == "READY"
+              and (image.get("deprecated") or {}).get("state", "ACTIVE") == "ACTIVE"
+              and tfvars.SPEECH_IMAGE.match(f"projects/{IMAGE_PROJECT}/global/images/{image.get('name', '')}")]
+    if not usable:
+        raise LookupError(f"{IMAGE_PROJECT} lists no READY Ubuntu 22.04 CUDA Deep Learning VM image (family "
+                          f"{IMAGE_FAMILY.pattern}); the speech machine has no image to pin")
+    floor = [image for image in usable if (image_driver(str(image["family"])) or 0) >= DRIVER_FLOOR
+             and (image_driver(str(image["name"])) or 0) >= DRIVER_FLOOR]
+    if not floor:
+        raise LookupError(f"{DRIVER_FLOOR_REFUSAL} {IMAGE_PROJECT} lists none: its Ubuntu 22.04 CUDA families "
+                          f"are {', '.join(sorted({str(image['family']) for image in usable}))}.")
+    newest = max(floor, key=lambda image: dt.datetime.fromisoformat(str(image["creationTimestamp"])))
+    return f"projects/{IMAGE_PROJECT}/global/images/{newest['name']}"
+
+
+def _chosen(ctx: Any) -> Mapping[str, Any] | None:
+    found = ctx.outputs.get(VOICE_SPEECH)
+    return found if isinstance(found, Mapping) and isinstance(found.get("enabled"), bool) else None
+
+
+class _SpeechStep:
+    kind = "engine"
+
+    def __init__(self, deps: Deps = DEPS) -> None:
+        self.deps = deps
+
+    def verify(self, ctx: Any) -> Observation:
+        return self.check(ctx)
+
+    def explain(self) -> str:
+        return self._explain
+
+    _explain = ""
+
+
+class VoiceItChoiceStep(_SpeechStep):
+    """Stage 0's optional choice: turn Voice it on (default no)."""
+
+    id = "infra.voice-it"
+    stage = 0
+    read_only = True
+    satisfies = ("other.voice-it-choice",)
+    _explain = (
+        "Voice it lets a person talk to the deployment; swarm-voice serves it on the cluster, and each session "
+        "leases a ChatGPT plan account from the Voice it pool. It is optional and off unless you say yes. "
+        + VOICE_IT_POOL
+    )
+
+    def __init__(self, deps: Deps = DEPS, *, ask: Callable[..., str] | None = None) -> None:
+        super().__init__(deps)
+        self._ask = ask
+
+    @property
+    def ask(self) -> Callable[..., str]:
+        if self._ask is not None:
+            return self._ask
+        from .preflight import ASK
+
+        return ASK
+
+    def check(self, ctx: Any) -> Observation:
+        voice = _voice_it(ctx)
+        if voice is None:
+            return Observation(UNMET, "whether to turn Voice it on is not answered yet")
+        return Observation(MET, "Voice it: " + ("yes" if voice else "no"))
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("ask whether to turn Voice it on (optional; default no)")
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        from .preflight import remember
+
+        enabled = _ask_yes_no(self.ask, ctx, self.id, VOICE_IT_QUESTION, VOICE_IT_DEFAULT)
+        remember(ctx, outputs={VOICE_IT: {"enabled": enabled}})
+        if enabled:
+            ctx.events.emit("step_apply", step=self.id, message=VOICE_IT_POOL)
+
+
+class VoiceSpeechChoiceStep(_SpeechStep):
+    """Stage 0's optional choice: add Voice it's own speech engine (default no)."""
+
+    id = "infra.voice-speech"
+    stage = 0
+    read_only = True
+    satisfies = ("other.voice-speech-choice", "other.voice-speech-offered")
+    _explain = (
+        "Asked only when Voice it is on. Voice it can hear and speak through its own engine on one L4 machine the deployment runs itself, kept "
+        "stopped between sessions. It is optional and costs " + SPEECH_COST + "; without it Voice it uses "
+        "GPT-Live or text."
+    )
+
+    def __init__(self, deps: Deps = DEPS, *, ask: Callable[..., str] | None = None) -> None:
+        super().__init__(deps)
+        self._ask = ask
+
+    @property
+    def ask(self) -> Callable[..., str]:
+        if self._ask is not None:
+            return self._ask
+        from .preflight import ASK
+
+        return ASK
+
+    def check(self, ctx: Any) -> Observation:
+        voice = _voice_it(ctx)
+        if voice is None:
+            return Observation(UNMET, "Voice it is not chosen yet (infra.voice-it asks first)")
+        if not voice:
+            return Observation(MET, "Voice it's own speech engine is not offered: Voice it is off")
+        chosen = _chosen(ctx)
+        if chosen is None:
+            return Observation(UNMET, "whether to add Voice it's own speech engine is not answered yet")
+        return Observation(MET, "Voice it's own speech engine: " + ("yes" if chosen["enabled"] else "no"))
+
+    def plan(self, ctx: Any) -> Plan:
+        return Plan("ask whether to add Voice it's own speech engine (optional; default no)")
+
+    def _zone_now(self, ctx: Any, region: str) -> str | None:
+        """The zone the machine would live in, when the project already exists
+        with Compute Engine on; else None (stage 1 reads it)."""
+        from .preflight import ApiError
+
+        gcp = self.deps.gcp()
+        try:
+            if gcp.project(ctx.project) is None or "compute.googleapis.com" not in gcp.enabled_services(ctx.project):
+                return None
+            zones = l4_zones(gcp, ctx.project, region)
+        except ApiError:
+            return None
+        return zones[0] if zones else None
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        from .preflight import remember
+
+        voice = _voice_it(ctx)
+        if voice is None:
+            raise LookupError("Voice it is not chosen yet; infra.voice-it asks it before its own speech engine")
+        if not voice:
+            return
+        region = str(ctx.state.region)
+        zone = self._zone_now(ctx, region)
+        where = zone or f"the first zone of {region} that offers the L4, read once stage 1 has enabled Compute Engine"
+        enabled = _ask_yes_no(self.ask, ctx, self.id, SPEECH_QUESTION.format(where=where), SPEECH_DEFAULT)
+        remember(ctx, outputs={VOICE_SPEECH: {"enabled": enabled}})
+
+
+class VoiceSpeechZoneStep(_SpeechStep):
+    """For a yes: the L4 zone, one L4 of quota and the pinned image, once the project exists."""
+
+    id = "infra.voice-speech-zone"
+    stage = 1
+    read_only = False
+    satisfies = ("other.voice-speech-zone",)
+    _explain = (
+        "The speech machine lives in one zone, the first of the region's zones offering the NVIDIA L4, with "
+        "a Deep Learning VM image pinned by name so a stopped machine is never replaced under a session. A "
+        "project's accelerators and quotas can only be read once stage 1 has made it and enabled Compute Engine."
+    )
+
+    def check(self, ctx: Any) -> Observation:
+        if _voice_it(ctx) is False:
+            return Observation(MET, "Voice it is off, so its own speech engine needs no zone or image")
+        chosen = _chosen(ctx)
+        if chosen is None:
+            return Observation(UNMET, "Voice it's own speech engine is not chosen yet (infra.voice-speech asks)")
+        if not chosen["enabled"]:
+            return Observation(MET, "Voice it's own speech engine is off: no zone or image is needed")
+        try:
+            speech = tfvars.voice_speech(ctx.state)
+        except (LookupError, ValueError) as exc:
+            return Observation(UNMET, str(exc))
+        if speech is None or not speech["enabled"]:
+            return Observation(UNMET, "Voice it's own speech engine has no zone and image recorded")
+        try:  # an image the operator recorded is held to the same driver floor; apply pins one that meets it
+            check_speech_image(speech["image"])
+        except ValueError as exc:
+            return Observation(UNMET, str(exc))
+        return Observation(MET, f"the speech machine's zone is {speech['zone']}, its image {speech['image']}")
+
+    def plan(self, ctx: Any) -> Plan:
+        region = str(ctx.state.region)
+        return Plan("pick the speech machine's zone and pin its image", (
+            f"the first zone of {region} offering {L4} (acceleratorTypes)",
+            f"{L4_QUOTA} in {region} at least 1, requested on the Quotas page if not",
+            f"the newest Ubuntu 22.04 CUDA image of {IMAGE_PROJECT} with an NVIDIA driver of {DRIVER_FLOOR} or "
+            "later, by name",
+        ))
+
+    def apply(self, ctx: Any, plan: Plan) -> None:
+        from .preflight import QUOTA_WAIT, ApiError, quotas_page, remember
+
+        recorded = _chosen(ctx) or {}
+        if recorded.get("image"):
+            try:
+                check_speech_image(str(recorded["image"]))
+            except ValueError as exc:
+                ctx.events.emit("step_apply", step=self.id, message=f"{exc} The newest image that meets it is pinned.")
+        gcp = self.deps.gcp()
+        region = str(ctx.state.region)
+        zones = l4_zones(gcp, ctx.project, region)
+        if not zones:
+            why = f"no zone of {region} offers the {L4}, so Voice it's own speech engine is off (one zone, one machine)"
+            ctx.events.emit("step_apply", step=self.id, message=why)
+            remember(ctx, outputs={VOICE_SPEECH: {"enabled": False, "unavailable": why}})
+            return
+        quota = l4_quota(gcp, ctx.project, region)
+        if quota is not None and quota < 1:
+            open_page(quotas_page(ctx.project, metric=L4_QUOTA_METRIC, region=region), why=(
+                f"Voice it's own speech engine needs one NVIDIA L4 in {region}, and this project's {L4_QUOTA} quota "
+                f"there is {quota}: request an increase to at least 1 on this page. This installer goes on by "
+                "itself once it is granted."))
+
+            def granted() -> str:
+                try:
+                    found = l4_quota(gcp, ctx.project, region)
+                except ApiError:  # an unreadable poll has not seen it yet; the next one reads again
+                    return UNMET
+                return MET if found is None or found >= 1 else UNMET
+
+            wait_until(f"{self.id}:l4-quota", QUOTA_WAIT, granted, clock=ctx.clock, events=ctx.events,
+                       on_poll=getattr(ctx.engine, "_heartbeat", None))
+        image = speech_image(gcp, ctx.project)
+        ctx.events.emit("step_apply", step=self.id, message=f"the speech machine: {zones[0]}, image {image}")
+        remember(ctx, outputs={VOICE_SPEECH: {"enabled": True, "zone": zones[0], "image": image}})
+
+
 def build_steps(deps: Deps = DEPS) -> list[Any]:
     return [InfraPass1Step(deps), InfraPass2Step(deps), BootstrapPass2Step(deps), IdentityPassStep(deps),
-            ClosingPassStep(deps)]
+            ClosingPassStep(deps), VoiceItChoiceStep(deps), VoiceSpeechChoiceStep(deps), VoiceSpeechZoneStep(deps)]
 
 
 STEPS = build_steps()

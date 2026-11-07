@@ -44,11 +44,13 @@ export interface PoolLoweredBy {
   input: 'adaptive_target' | 'quota_derived_limit' | 'override'
   value: number
   /**
-   * When the value was set: the override's audit instant, else the rate limit
-   * that last cut it (`set_by` says which); null where no record dates it.
+   * When the value was set: the adaptive target's last change
+   * (`target_changed_at`), else the override's audit instant or the rate limit
+   * that last cut it; `set_by` says which made it, `climb` for a target that
+   * rose after the last cut. Null where no record dates it.
    */
   set_at: string | null
-  set_by?: 'override' | 'rate_limit' | null
+  set_by?: 'override' | 'rate_limit' | 'climb' | null
   /** The broker's quota document's last write: any success bumps it. */
   quota_written_at?: string | null
   /** The override's audit action (`adaptive_target_reset`, `hard_max_set`). */
@@ -723,8 +725,12 @@ export interface OwnerAnswerVersion {
   session?: string | null
 }
 
-/** `AnswerBody.via` in agent_questions.py: where an answer was given. */
-export type AnswerVia = 'console' | 'claude-code'
+/**
+ * `AnswerBody.via` in agent_questions.py: where an answer was given --
+ * `github-comment` for one taken from the issue's comment, `voice-it` for one
+ * given in a Voice it session (`voice/grant.py`'s `VIA`).
+ */
+export type AnswerVia = 'console' | 'claude-code' | 'github-comment' | 'voice-it'
 
 /**
  * The owner's answer to one question (`codec.owner_answer_to_api`), with the
@@ -1095,6 +1101,13 @@ export interface Task {
    * task reads `collect`, an old API reads "not reported".
    */
   dispatch?: TaskDispatch | null
+
+  /**
+   * The step's `contract_acceptance` (jev-contract.md sections 5.4 and 8.2),
+   * served on the detail only and only where Jev judged the step's work
+   * contract: read by `ContractJev.contractAcceptance`, drawn as Jev's.
+   */
+  contract_acceptance?: unknown
 }
 
 /**
@@ -2415,6 +2428,17 @@ export interface Runtime {
    * second one declared that could drift from it.
    */
   resources: ResourceClassSpec
+  /**
+   * WHAT THE AGENT'S CONTAINER GETS (#3118), beside `resources` and not in it:
+   * `resources` is the class, and a live-browser pod splits it between the
+   * agent and the display. Null when the platform cannot say; absent from a
+   * platform from before the split was served.
+   */
+  agent_memory_gib?: number | null
+  /** The display container's share; null on a pod with no display. */
+  display_memory_gib?: number | null
+  /** The pod's total, which `resources.memory_gib` is too. */
+  pod_memory_gib?: number | null
 }
 
 /** GiB, binary. The ceilings are GiB, so a GB (1e9) denominator would overstate
@@ -3012,7 +3036,8 @@ export interface Waiting extends WaitingRow {
   /**
    * Per reason (docs/api.md "Why a task is waiting"). CI_PENDING:
    * pull_request {number, url}, head, code, pending, failed, wakes,
-   * attempts_counted, last_checked_at, wake_requested_at. READY_CAPACITY:
+   * attempts_counted, last_checked_at, wake_requested_at, train_since.
+   * READY_CAPACITY:
    * waiting_for, pool, pool_state, active, limit, units, place_in_line,
    * place_in_line_unavailable, last_pass. Provider parks: provider, account,
    * provider_state, source, account_pool_reason, wait_seconds, until.
@@ -6151,6 +6176,13 @@ export interface PersonRow {
    * never who decided (the audit says).
    */
   loan_request: { state: string | null; requested_at: string | null; decided_at?: string | null; reason?: string | null } | null
+  /**
+   * Loans lent while their workspace was not ready, not granted yet
+   * (`people.People._row`, LOAN-NEW): applied by the first read that sees it
+   * ready, or the sweep. `last_error` is the broker's refusal of the last try.
+   * Absent from an older API.
+   */
+  pending_loans?: { account_id: string; owner_tenant: string; since: string | null; last_error: string | null }[]
   first_seen: string | null
   last_seen: string | null
   last_submitted: string | null
@@ -6278,6 +6310,14 @@ export interface WorkspaceLoanAnswer {
   owner_tenant: string
   lent: boolean
   changed: boolean
+  /**
+   * `applied` (granted now), `pending` (the workspace is not ready: recorded,
+   * granted once it is; `changed: false` when it was already pending) or
+   * `reclaimed` (`people.set_loan`). Absent from an older API.
+   */
+  state?: 'applied' | 'pending' | 'reclaimed'
+  /** With `pending`: the API's sentence saying when it applies. */
+  message?: string
 }
 
 /** `POST /v1/admin/people/{workspace_id}/loan/decline` (`people.People.decline_loan`). */
@@ -6951,4 +6991,45 @@ export interface QaIdentityGrantDoc extends QaIdentityGrant {
   identity: string
   revoked_by: string | null
   revoked_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Agent plugins (docs/design/agent-plugins.md): the closed catalogue and a
+// workspace's allowed plugins, as `GET /v1/plugins` and
+// `GET`/`PUT /v1/workspaces/{tenant_id}/plugins` answer them
+// (swarm_api.plugins.view). Names only: no route serves a path, a command, a
+// URL or a version a caller could choose (invariant 10).
+// ---------------------------------------------------------------------------
+
+/** The modes a step may name, in the catalogue's order. */
+export const PLUGIN_MODES = ['unattended', 'planner', 'designer'] as const
+export type PluginMode = (typeof PLUGIN_MODES)[number]
+
+/** One mode of a catalogue plugin: its skills, and whether a step may run it today. */
+export interface PluginModeOffer {
+  skills: string[]
+  available: boolean
+  /** Why not, in the API's words (`BRIDGE_REASON`); null when it runs. */
+  reason: string | null
+}
+
+export interface CataloguePlugin {
+  name: string
+  /** Pinned, built into the agent images; never a caller's to choose. */
+  version: string
+  runner_profiles: string[]
+  /** Only the modes the plugin offers skills in; a missing mode offers none. */
+  modes: Partial<Record<PluginMode, PluginModeOffer>>
+}
+
+export interface WorkspacePlugins {
+  tenant_id: string
+  /** The plugins in force: read only from a block whose signature verifies. */
+  allowed: string[]
+  /** What a workspace nobody has chosen for allows; null when not served. */
+  default_allowed: string[] | null
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+  catalogue: CataloguePlugin[]
 }

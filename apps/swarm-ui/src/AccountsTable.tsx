@@ -65,6 +65,18 @@ import './styles/accounts-ranked.css'
 const PROVIDER_NAMES: Readonly<Record<string, string>> = {
   anthropic: 'Claude subscription',
   openai: 'ChatGPT plan',
+  'openai-api': 'OpenAI API key',
+}
+
+/**
+ * AN ACCOUNT NOBODY MEASURES: the broker's `measured: false`, which an OpenAI
+ * developer API key is (Voice it's, the owner, 4 November 2026). OpenAI
+ * publishes no plan window for a key, so its windows read "not measured" and
+ * never 0, and never "no reading yet": no reading will ever come. A broker
+ * that sends no `measured` means a measured account, as before.
+ */
+export function notMeasured(a: object): boolean {
+  return (a as { measured?: unknown }).measured === false
 }
 
 export function providerName(provider: string): string | null {
@@ -148,7 +160,13 @@ export function whyOf(
     return (
       <>
         <b>Nothing.</b>
-        {said.length > 0 ? ` ${said.join('; ')}` : a.observed_at === null ? ' Not measured yet; it takes one agent until it is' : ''}
+        {said.length > 0
+          ? ` ${said.join('; ')}`
+          : notMeasured(a)
+            ? ' Not measured: OpenAI gives an API key no usage window'
+            : a.observed_at === null
+              ? ' Not measured yet; it takes one agent until it is'
+              : ''}
       </>
     )
   }
@@ -228,6 +246,16 @@ export function WindowCell({ a, k, now }: { a: PoolAccount; k: string; now: numb
   const floor = floorOf(a, k)
   const tick = `${(1 - floor) * 100}%`
   const label = windowName(k)
+  if (notMeasured(a)) {
+    return (
+      <div className="acct-win" data-measured="false">
+        <div className="acct-win-l">
+          <b>{label}</b> <span className="acct-dash">&mdash;</span>
+        </div>
+        <small>not measured: OpenAI gives an API key no usage window</small>
+      </div>
+    )
+  }
   if (r.kind === 'never' || r.kind === 'absent') {
     return (
       <div className="acct-win">
@@ -297,6 +325,7 @@ function FloorTrack({ pct: p, tone, tick, label }: { pct: number | null; tone?: 
 
 /** `read 4m ago`, `read 52m ago · counts at half`, or `no reading yet`. */
 export function ageOf(a: PoolAccount, now: number): string {
+  if (notMeasured(a)) return 'not measured'
   if (a.observed_at === null) return 'no reading yet'
   const at = Date.parse(a.observed_at)
   const age = Number.isFinite(at) ? `read ${ageSpan(now - at)} ago` : 'read at an unknown time'
@@ -402,6 +431,7 @@ function RowFacts({ a, scope, now }: { a: PoolAccount; scope: string | null; now
       <OrgLine a={a} />
       <small className="acct-age">{ageOf(a, now)}</small>
       <small className="acct-given">{givenOut(a, now)}</small>
+      <PoolsCell a={a} />
       <RowMarks a={a} scope={scope} />
     </>
   )
@@ -455,6 +485,77 @@ function OpenName({ a, chosen, onChoose }: { a: PoolAccount; chosen: boolean; on
     >
       {accountName(a)}
     </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Pools (the owner, 2026-11-02: the Voice it pool)
+// ---------------------------------------------------------------------------
+
+/**
+ * THE POOLS AN ACCOUNT SERVES. An account is in the workspace pool (agents),
+ * the Voice it pool (Voice it sessions on a ChatGPT plan), or both at once.
+ * The broker owns the list (`pools` on `account_to_api`) and swarm-api serves
+ * only these two names, in this order; an older broker serves no `pools` at
+ * all, and then nothing here is drawn rather than a pool this page guessed.
+ */
+export const ACCOUNT_POOLS = ['workspace', 'voice-it'] as const
+export type AccountPoolName = (typeof ACCOUNT_POOLS)[number]
+
+export const POOL_WORD: Readonly<Record<AccountPoolName, string>> = { workspace: 'Workspace', 'voice-it': 'Voice it' }
+
+/** The live Voice it hold on an account: which session, whose, since when. */
+export interface VoiceItHolder {
+  voice_session_id: string
+  person: string
+  since: string | null
+}
+
+/** What `GET /v1/accounts` serves about pools, beyond `types.ts` `Account`. */
+export interface PoolFieldsServed {
+  pools?: unknown
+  voice_it_people?: unknown
+  voice_it_holder?: unknown
+}
+
+/** The served pools in the canonical order, or null when the row carries none. */
+export function poolsOf(a: object): AccountPoolName[] | null {
+  const raw = (a as PoolFieldsServed).pools
+  if (!Array.isArray(raw)) return null
+  return ACCOUNT_POOLS.filter((p) => raw.includes(p))
+}
+
+/** `Workspace`, `Voice it`, `Workspace · Voice it`. */
+export function poolsWord(pools: readonly string[]): string {
+  return ACCOUNT_POOLS.filter((p) => pools.includes(p))
+    .map((p) => POOL_WORD[p])
+    .join(' · ')
+}
+
+export function inVoiceItPool(a: object): boolean {
+  return (poolsOf(a) ?? []).includes('voice-it')
+}
+
+/** Who may use the account through the Voice it pool (read-only everywhere here). */
+export function voiceItPeopleOf(a: object): string[] {
+  const raw = (a as PoolFieldsServed).voice_it_people
+  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []
+}
+
+export function voiceItHolderOf(a: object): VoiceItHolder | null {
+  const h = (a as PoolFieldsServed).voice_it_holder as Partial<VoiceItHolder> | null | undefined
+  if (h === null || h === undefined || typeof h !== 'object' || typeof h.voice_session_id !== 'string') return null
+  return { voice_session_id: h.voice_session_id, person: typeof h.person === 'string' ? h.person : '', since: typeof h.since === 'string' ? h.since : null }
+}
+
+/** The row's pools line; nothing when the broker served no pools. */
+export function PoolsCell({ a }: { a: PoolAccount }) {
+  const pools = poolsOf(a)
+  if (pools === null || pools.length === 0) return null
+  return (
+    <small className="acct-pools" data-pools={pools.join(' ')}>
+      Pools: {poolsWord(pools)}
+    </small>
   )
 }
 
@@ -624,6 +725,7 @@ function AccountCards({
                   <p className="acct-card-meta">
                     {ageOf(a, now)} &middot; {givenOut(a, now)} &middot; <span className="raw">{a.account_id}</span>
                   </p>
+                  <PoolsCell a={a} />
                   <RowMarks a={a} scope={scope} />
                   <Tags a={a} names={names} />
                 </article>

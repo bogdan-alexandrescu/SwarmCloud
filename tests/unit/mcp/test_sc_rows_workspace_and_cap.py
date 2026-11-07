@@ -131,15 +131,15 @@ def test_the_plugin_version_moved_past_the_release_before_sc_rows():
 
 
 def test_a_title_carries_no_workspace():
-    assert workflows.workflow_title("DEVB-GATE: ship it", 5) == "SC · DEVB-GATE: ship it · 5 steps"
-    assert workflows.workflow_title("ship it", 1) == "SC · ship it · 1 step"
+    assert launch.workflow_run_title("DEVB-GATE: ship it", 5) == "SC ∴ DEVB-GATE: ship it · 5 steps"
+    assert launch.workflow_run_title("ship it", 1) == "SC ∴ ship it · 1 step"
 
 
 def test_a_long_title_cuts_the_name_never_the_step_count():
     name = "word " * 60
-    title = workflows.workflow_title(name, 12)
+    title = launch.workflow_run_title(name, 12)
     assert len(title) <= workflows.TITLE_CHARS
-    assert title.startswith("SC · word")
+    assert title.startswith("SC ∴ word")
     assert title.endswith("… · 12 steps")
 
 
@@ -157,7 +157,7 @@ def test_the_run_js_title_is_the_bridges_title(tmp_path):
         "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []},
     })
     result = got["result"]
-    assert result["title"] == workflows.workflow_title(workflows.title_name(stored=name), 1)
+    assert result["title"] == launch.workflow_run_title(workflows.title_name(stored=name), 1)
     assert result["workspace"] == "u-bogdan"
 
 
@@ -211,7 +211,7 @@ def test_a_submitted_workflows_rows_carry_the_workspace_the_reply_names(tmp_path
     assert got["result"]["state"] == "SUCCEEDED", got["result"]
     assert step_rows == ["[SwarmCloud] gate · stage 1 · implement"]
     assert got["result"]["workspace"] == "u-bogdan"
-    assert got["result"]["title"] == "SC · gate · 1 step"
+    assert got["result"]["title"] == "SC ∴ gate · 1 step"
 
 
 def _tasks(count: int, workspace: str = "eng") -> list[dict]:
@@ -333,7 +333,7 @@ def test_launch_all_honours_the_100_cap_and_names_each_workspace(_plugin_root, m
     assert len(out["launches"]) == 100 and len(out["not_followed"]) == 5
     first = out["launches"][0]
     # SC-WS-DESC: the run's name has no workspace; its description leads with it.
-    assert first["title"] == "SC · flow 000 · 3 steps"
+    assert first["title"] == "SC ∴ flow 000 · 3 steps"
     assert first["workspace"] == "eng"
     assert first["args"] == {"attach": "wf_000", "title": "flow 000", "workspace": "eng", "rows": "summary",
                              "titled_copy": first["script_path"]}
@@ -349,11 +349,12 @@ def test_launch_all_honours_the_plugin_option(_plugin_root, monkeypatch):
         for n in range(7)]})
     out = launch.for_all(_NoTenants())
     workflow_launches = [l for l in out["launches"] if "workflow_id" in l]
-    task_launch = [l for l in out["launches"] if "task_ids" in l][0]
+    task_launches = [l for l in out["launches"] if "task_ids" in l]
     assert len(workflow_launches) == 4
-    assert len(task_launch["task_ids"]) == 4 and task_launch["args"]["max_rows"] == 4
-    assert all(r["workspace"] == "eng" for r in task_launch["args"]["attach_tasks"])
-    assert task_launch["title"] == "SC · lane 0 +3 · 4 tasks"
+    # The cap counts single tasks too, and each followed task is a run of its own.
+    assert [l["task_ids"] for l in task_launches] == [[f"task_{n}"] for n in range(4)]
+    assert all(r["workspace"] == "eng" for l in task_launches for r in l["args"]["attach_tasks"])
+    assert [l["title"] for l in task_launches] == [f"SC · lane {n}" for n in range(4)]
     assert len(out["not_followed"]) == 2 + 3
 
 
@@ -373,7 +374,8 @@ def test_launch_all_groups_several_workspaces_and_uses_display_names(_plugin_roo
 def test_for_tasks_follows_100_and_lists_the_rest_with_their_workspace(_plugin_root):
     entries = [{"task_id": f"task_{n:03d}", "label": f"lane {n}", "workspace": "u-bogdan"} for n in range(103)]
     out = launch.for_tasks(entries)
-    assert len(out["args"]["attach_tasks"]) == 100 and out["args"]["max_rows"] == 100
+    assert len(out["launches"]) == 100 and out["task_ids"] == [f"task_{n:03d}" for n in range(100)]
+    assert all(len(copy["args"]["attach_tasks"]) == 1 and copy["args"]["max_rows"] == 1 for copy in out["launches"])
     first = dict(out["args"]["attach_tasks"][0])
     assert first.pop("details").startswith("Workspace: u-bogdan · ")
     assert first == {"task_id": "task_000", "title": "lane 0", "workspace": "u-bogdan"}

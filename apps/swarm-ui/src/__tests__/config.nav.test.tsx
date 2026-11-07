@@ -3,9 +3,11 @@
  * BGD's decisions of 2026-10-23 and his pick of 2026-10-24, proposal E,
  * docs/web-ui/mockups/config-e.html S1a-S1g).
  *
- *   * Config is a section of its own, between Capacity and Admin, with six
- *     pages in BGD's order: GitHub access, Repositories, Secrets, MCP servers,
- *     People and roles, Workspace Settings.
+ *   * Config is a section of its own, between Capacity and Admin, with its
+ *     pages in BGD's order: GitHub access, Repositories, Secrets, MCP servers.
+ *     People and roles and Workspace Settings were its last two until the
+ *     admin routes lane (part of #2688) made them the workspace page's tabs;
+ *     their addresses open that page.
  *   * Work keeps no Repositories, Setup or Access; Settings keeps Profile and
  *     API keys and nothing else.
  *   * Every old address lands on its new one -- paths, the old hash router's
@@ -15,7 +17,8 @@
  *   * The workspace secrets one-time link, minted by the API at
  *     `/settings/workspace/secrets?action=add&t=..`, still opens the add form,
  *     and its token still never enters the bar.
- *   * Admin is not drawn for a person who administers nothing, and its
+ *   * Admin is not drawn for a person in no group workspace (a member of one
+ *     has Admin › Workspaces, BGD 3 November), and its
  *     addresses keep their path and say the refusal in place once both
  *     reads say so (admin-shell-23, BGD 2026-10-28, reversing CONFIG-NAV's
  *     redirect to Overview for this case); a workspace
@@ -31,7 +34,12 @@ import { join } from 'node:path'
 
 type Json = Record<string, unknown>
 
-const CONFIG_TABS = ['GitHub access', 'Repositories', 'Secrets', 'MCP servers', 'People and roles', 'Workspace Settings']
+// People and roles and Workspace Settings are the workspace page's tabs since
+// the admin routes lane (part of #2688): the panel draws five pages (Plugins joined it, part of #2688), and
+// SECTIONS keeps Workspace Settings for Add a new workspace's address alone.
+// Plugins (part of #2688): the owner picked the settings table for Config › Plugins on 4 November 2026.
+const CONFIG_PANEL = ['GitHub access', 'Repositories', 'Secrets', 'MCP servers', 'Plugins']
+const CONFIG_TABS = [...CONFIG_PANEL, 'Workspace Settings']
 
 const ME = (isAdmin: boolean, tenant = 'eng'): Json => ({
   tenant: { tenant_id: tenant, kind: tenant.startsWith('u-') ? 'user' : 'group', display_name: `${tenant}@example.com` },
@@ -101,7 +109,7 @@ afterEach(() => {
 })
 
 describe('the Config section (CONFIG-NAV)', () => {
-  it('lists exactly the six pages, in BGD\'s order, between Capacity and Admin', async () => {
+  it('lists exactly its pages, in BGD\'s order, between Capacity and Admin', async () => {
     const { App } = await routing()
     const config = App.SECTIONS.find((s) => s.id === 'config')
     // MUTATION: drop the Config entry from SECTIONS -> fails.
@@ -114,7 +122,7 @@ describe('the Config section (CONFIG-NAV)', () => {
     expect(App.SECTIONS.map((s) => s.id)).toEqual(['overview', 'work', 'automate', 'capacity', 'config', 'admin', 'voice'])
   })
 
-  it('draws the same six pages in the panel, and Config on the spine between Capacity and Admin', async () => {
+  it('draws the five pages in the panel, and Config on the spine between Capacity and Admin', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')])
     await app('/config/github')
     await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="config"]')).not.toBeNull())
@@ -123,19 +131,18 @@ describe('the Config section (CONFIG-NAV)', () => {
     expect(spine.indexOf('config')).toBe(spine.indexOf('capacity') + 1)
     const rows = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)
     // MUTATION: list the panel's pages in another order -> fails.
-    await waitFor(() => expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_TABS))
+    // MUTATION: leave People and roles or Workspace Settings in PANEL_PAGES.config -> fails.
+    await waitFor(() => expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_PANEL))
     expect(rows.length).toBeGreaterThan(0)
     expect(document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')?.textContent).toBe('GitHub access')
   })
 
-  it('leaves People and roles out of a personal workspace\'s Config (S1e)', async () => {
+  it('draws a personal workspace the same five pages: People and roles is no Config page now (S1e)', async () => {
     serve(ME(true, 'u-ana'), [PERSONAL])
     await app('/config/github')
     await waitFor(() => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com'))
-    // MUTATION: draw PANEL_PAGES.config unfiltered -> People and roles is listed and this fails.
-    await waitFor(() =>
-      expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_TABS.filter((t) => t !== 'People and roles')),
-    )
+    await waitFor(() => expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_PANEL))
+    expect(document.querySelector('.sk-pnote')?.textContent ?? '').not.toContain('People and roles')
   })
 
   it('knows a personal workspace from its own tenant, even for someone in no group', async () => {
@@ -144,10 +151,8 @@ describe('the Config section (CONFIG-NAV)', () => {
     serve(ME(false, 'u-ana'), [])
     await app('/config/github')
     await waitFor(() => expect(document.querySelector('.sk-pfoot small')?.getAttribute('title')).toBe('ana.b@example.com'))
-    // MUTATION: read "personal" off the tenants list -> an empty list draws People and roles and four steps, and this fails.
-    await waitFor(() =>
-      expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_TABS.filter((t) => t !== 'People and roles')),
-    )
+    // MUTATION: read "personal" off the tenants list -> an empty list draws four steps, and this fails.
+    await waitFor(() => expect([...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)).toEqual(CONFIG_PANEL))
     const strip = await screen.findByRole('list', { name: 'Workspace setup steps' })
     expect(within(strip).getAllByRole('listitem')).toHaveLength(3)
   })
@@ -169,8 +174,10 @@ describe('the Config section (CONFIG-NAV)', () => {
 describe('every old address lands on its new one', () => {
   const MOVED: readonly [string, string][] = [
     ['/access', '/config/github'],
-    // GA-MOVE-VIEWS: Members is People and roles' tab, Browser logins Secrets'.
-    ['/access?view=members', '/config/people?view=members'],
+    // GA-MOVE-VIEWS: Members was People and roles' tab, Browser logins Secrets'.
+    // Members' GitHub is a fold of the workspace page's People tab now: the
+    // workspace in hand's, named once a choice names it (App.tsx).
+    ['/access?view=members', '/admin/workspaces?tab=people'],
     ['/access?view=logins', '/config/secrets?view=logins'],
     ['/repositories', '/config/repositories'],
     ['/repositories/register', '/config/repositories/register'],
@@ -179,12 +186,19 @@ describe('every old address lands on its new one', () => {
     ['/repositories/acme%2Fapi', '/config/repositories/acme%2Fapi'],
     ['/repositories/acme%2Fapi/graph?view=tests&q=src', '/config/repositories/acme%2Fapi/graph?view=tests&q=src'],
     ['/repositories?page=qa-targets', '/config/repositories?page=qa-targets'],
-    ['/setup', '/config/workspace/setup'],
-    ['/settings/workspace', '/config/workspace'],
+    ['/setup', '/admin/workspaces?tab=setup'],
+    ['/settings/workspace', '/admin/workspaces?tab=settings'],
     ['/settings/workspace/secrets', '/config/secrets'],
     ['/settings/workspace/secrets?action=rotate&name=gh-token', '/config/secrets?action=rotate&name=gh-token'],
     ['/settings/mcp-servers', '/config/mcp-servers'],
-    ['/settings/people', '/config/people'],
+    ['/settings/people', '/admin/workspaces?tab=people'],
+    // The pages that left Config for the workspace page (admin routes lane).
+    ['/config/people', '/admin/workspaces?tab=people'],
+    ['/config/people?view=members', '/admin/workspaces?tab=people'],
+    ['/config/workspace', '/admin/workspaces?tab=settings'],
+    ['/config/workspace/setup', '/admin/workspaces?tab=setup'],
+    // Add a new workspace is no workspace's tab: it keeps its address.
+    ['/config/workspace?part=new', '/config/workspace?part=new'],
     ['/config', '/config/github'],
   ]
 
@@ -203,14 +217,17 @@ describe('every old address lands on its new one', () => {
     const { App, paths } = await routing()
     const OLD: readonly [string, string][] = [
       ['work/access', '/config/github'],
-      ['work/setup', '/config/workspace/setup'],
+      ['work/setup', '/admin/workspaces?tab=setup'],
       ['work/repositories', '/config/repositories'],
       ['work/repositories?repo=acme%2Fapi&tab=settings', '/config/repositories/acme%2Fapi/settings'],
       ['work/repositories?page=qa-targets', '/config/repositories?page=qa-targets'],
-      ['settings/workspace', '/config/workspace'],
+      ['settings/workspace', '/admin/workspaces?tab=settings'],
       ['settings/workspace/secrets?action=add', '/config/secrets?action=add'],
       ['settings/mcp-servers', '/config/mcp-servers'],
-      ['settings/people', '/config/people'],
+      ['settings/people', '/admin/workspaces?tab=people'],
+      ['config/people', '/admin/workspaces?tab=people'],
+      ['config/workspace', '/admin/workspaces?tab=settings'],
+      ['config/workspace?part=setup', '/admin/workspaces?tab=setup'],
     ]
     for (const [address, path] of OLD) {
       // MUTATION: let addressToPath write the old path for an old address -> fails.
@@ -223,7 +240,8 @@ describe('every old address lands on its new one', () => {
   it('keeps the plugin\'s and the API\'s anchors on the setup page', async () => {
     const { paths } = await routing()
     // `/setup#workspace` is what swarm_api's notifications link to.
-    expect(paths.pathToAddress('/setup', '', '#workspace')?.address).toBe('config/workspace?part=setup')
+    // The checklist is the workspace page's Setup tab since the admin routes lane.
+    expect(paths.pathToAddress('/setup', '', '#workspace')?.address).toBe('admin/workspaces?tab=setup')
   })
 
   it('rewrites the bar of an old bookmark in place', async () => {
@@ -264,7 +282,7 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
   // admin-shell-23, part of #2596; BGD 2026-10-28 reversed CONFIG-NAV's
   // redirect to Overview for this case): the address stays, and the page's
   // place says which page, the role and the workspace, with a link to Overview.
-  it('refuses a member in place at /admin/limits, and draws no Admin', async () => {
+  it('refuses a member in place at /admin/limits, and draws Admin as their Workspaces alone', async () => {
     serve(ME(false), [PERSONAL, group('eng', 'member')])
     await app('/admin/limits')
     // MUTATION: keep the redirect to Overview (or drop the refusal) -> this is not found.
@@ -272,7 +290,8 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     expect(document.querySelector('[data-refused="admin"]')?.textContent).toMatch(/You are a member of \S+\./)
     expect(screen.getByRole('link', { name: 'Open Overview' })).toBeTruthy()
     expect(window.location.pathname).toBe('/admin/limits')
-    expect(document.querySelector('.sk-spine a[data-sec="admin"]')).toBeNull()
+    // A member of a group workspace reaches Admin › Workspaces (BGD, 3 November), and nothing else there.
+    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces'))
   })
 
   // QA1B-04 review: the owner of a personal workspace is its admin, as the
@@ -302,7 +321,7 @@ describe('Admin is drawn only for an admin (CONFIG-NAV)', () => {
     const work = refusal.closest('main.work')
     expect(work).not.toBeNull()
     expect(work!.parentElement!.classList.contains('app')).toBe(true)
-    expect(work!.querySelector('.c-phead h1')?.textContent).toBe('People and roles')
+    expect(work!.querySelector('.c-phead h1')?.textContent).toBe('Platform people')
     // The inset is `.app`'s own: a gutter on both sides at every width.
     const css = readFileSync(join(__dirname, '..', 'styles.css'), 'utf8')
     expect(css).toMatch(/\n\.app \{[^}]*padding: 0 var\(--app-pad\) 48px;/)
@@ -367,7 +386,7 @@ describe('a workspace admin on a platform Admin page is refused in place, and a 
     }
   })
 
-  it('renders People and roles at /admin/people for a workspace admin instead of redirecting (ADMIN-PEOPLE-ROLES)', async () => {
+  it('renders Platform people at /admin/people for a workspace admin instead of redirecting (ADMIN-PEOPLE-ROLES)', async () => {
     const scoped = {
       scope: 'workspaces',
       workspaces: [{ tenant_id: 'eng', group: 'eng@example.com', display_name: 'Engineering', default_role: 'member', unavailable: false }],
@@ -378,7 +397,7 @@ describe('a workspace admin on a platform Admin page is refused in place, and a 
     }
     serve(ME(false), [PERSONAL, group('eng', 'admin')], (url) => (url.includes('/v1/admin/people') ? scoped : undefined))
     await app('/admin/people')
-    await screen.findByRole('heading', { name: 'People and roles', level: 1 })
+    await screen.findByRole('heading', { name: 'Platform people', level: 1 })
     await waitFor(() => expect(document.querySelector('.pp-grid th[data-tenant="eng"]')).not.toBeNull())
     await new Promise((r) => setTimeout(r, 30))
     // MUTATION: keep People out of a workspace admin's Admin pages -> the
@@ -386,7 +405,7 @@ describe('a workspace admin on a platform Admin page is refused in place, and a 
     expect(window.location.pathname).toBe('/admin/people')
     const rows = [...document.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((e) => e.textContent)
     // Their workspaces' group, then the In Automate links (CONFIG-PANEL-E); no platform page.
-    expect(rows.slice(0, 2)).toEqual(['People and roles', 'Workspaces you admin'])
+    expect(rows.slice(0, 2)).toEqual(['Platform people', 'Workspaces'])
     expect(rows.join(' ')).not.toMatch(/Pool limits|Runner sizes|Tenants|Platform counts/)
     // The Admin item still lands on Workspaces you admin, as ADMIN-REDIRECT drew it.
     expect(document.querySelector('.sk-spine a[data-sec="admin"]')?.getAttribute('href')).toBe('/admin/workspaces')
@@ -445,7 +464,9 @@ describe('the setup strip (proposal E)', () => {
   // setup.ts' 2s `asyncUtilTimeout`, so its own wait is 10s: still a failure,
   // not a hang (MCP-LEAD-FORM, 2026-10-25).
   const STRIP_WAIT = { timeout: 10_000 }
-  it.each(['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers', '/config/people', '/config/workspace', '/config/workspace/setup'])(
+  // People and roles and Workspace Settings are the workspace page's tabs now,
+  // and the page draws its own setup chip and checklist (WorkspacePage.tsx).
+  it.each(['/config/github', '/config/repositories', '/config/secrets', '/config/mcp-servers'])(
     'runs across every Config page: %s',
     async (path) => {
       serve(ME(false), [PERSONAL, group('eng', 'admin')])

@@ -253,6 +253,15 @@ MAX_SYMBOL_TEST_MAP = 200_000
 # level does not fit; every file-level edge is in the graph, on the source
 # file's row (`files[].tests`), so a reader pages it by the file's module.
 MAX_FILE_TEST_MAP = 200_000
+#: The cuts an incremental run can build on (2026-11-03). Both test maps are
+#: derived: every run walks them again from its symbols and its edges (the
+#: base's verbatim, the changed files' fresh), and reads neither from the base.
+#: A base cut only there is as carriable as an uncut one. SwarmCloud's map
+#: passes MAX_SYMBOL_TEST_MAP, and refusing it made each of a week's 222 runs
+#: a ~42-minute full rebuild. Any other cut is a list a run carries verbatim,
+#: and still refuses. `swarm_api.repoindex.DERIVED_TRUNCATIONS` is the same
+#: set, held equal by tests/unit/worker/test_repo_index_incremental.py.
+DERIVED_TRUNCATIONS = frozenset({"symbol_test_map", "file_test_map"})
 
 # How often the walk looks at the clock. Cheap enough to be frequent.
 _CLOCK_EVERY = 256
@@ -1581,9 +1590,10 @@ def incremental_changes(base: Base, head_blobs: dict[str, str] | None, budget: B
                 f"{EXTRACTOR_NAME}, this is version {EXTRACTOR_VERSION!r}")
     if extractor.get("budget") != _budget_record(budget):
         return "the base was extracted under another size budget"
-    if extractor.get("files_not_listed") or graph.get("truncated"):
+    cut = [str(name) for name in graph.get("truncated") or []]
+    if extractor.get("files_not_listed") or set(cut) - DERIVED_TRUNCATIONS:
         return ("the base graph was truncated "
-                f"({', '.join(graph.get('truncated') or ['files'])}), so it cannot be carried")
+                f"({', '.join(cut or ['files'])}), so it cannot be carried")
     rows = graph.get("files")
     if not isinstance(rows, list):
         return "the base graph lists no files"
@@ -1735,7 +1745,14 @@ def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sit
         if version is None:
             # Never initialized: a crash keeps the base's answers, as the
             # files it would have asked keep their `ast` edges; a total that
-            # ran out first does not, as no version was checked.
+            # ran out first does not, as no version was checked -- unless
+            # this run's install is the one the base recorded its version
+            # with (`_same_install`): then the version is the base's, as the
+            # driver's known-version shortcut reads it, and the row records
+            # it so the next run carries these answers on too.
+            if row is not None and _same_install(recorded, server, row.counts):
+                row.counts["server_version"] = base_version
+                continue
             if row is not None and row.status == lsp_pass.STATUS_TIMED_OUT:
                 not_carried[language] = ("the LSP pass's total ran out before this run's server "
                                          "version was learnt, so the base's answers are not carried")
@@ -1750,6 +1767,20 @@ def _lsp_on_base(root: Path, lsp_files: dict[str, str], symbols: list[dict], sit
         carried -= paths
         asked |= paths
     return result, asked, carried, not_carried
+
+
+def _same_install(recorded: "lsp_pass.Answered", server: str | None,
+                  counts: dict[str, Any]) -> bool:
+    """Whether a server that reported no version this run is the one the
+    base's answers came from: the same server, whose base version was
+    reported, at the same install (`lsp_pass.server_build`, the fingerprint
+    of its installed files, which the image pins). BGD's pick, 2026-11-06:
+    without it the most expensive server, last in the pass, dropped every
+    carried answer each time its grant ran out before initialize answered,
+    and 0-3.8% of the servers' answers were carried between builds."""
+    build = counts.get("server_build")
+    return (isinstance(build, str) and bool(build) and recorded.build == build
+            and lsp_pass.answers_kept(recorded, server, recorded.version))
 
 
 def _carry_lsp_edges(edges: "_Edges", base_graph: Any, carried: set[str]) -> None:
@@ -3318,6 +3349,14 @@ def extract(root: Path, budget: Budget | None = None,
             "blob_ids": head_blobs is not None and all(
                 isinstance(row.get("blob"), str) and bool(row["blob"]) for row in files),
             "history": history,
+            # What this run rebuilt and what it carried (`run_work`): the
+            # index canary's reused-versus-recomputed counts
+            # (scripts/index_canary_report.py), read off the graph manifest.
+            # Counts only, never a duration: the output stays byte-identical
+            # for the same input.
+            "work": run_work(
+                files, affected if changes is not None else None,
+                None if lsp is None else (set(facts) if asked is None else asked), carried_lsp),
             "lsp": None if lsp_result is None else {
                 "servers": dict(sorted(lsp_result.servers.items())),
                 "request_timeout_seconds": lsp_result.request_timeout_seconds,
@@ -3561,6 +3600,30 @@ def _modules(files: list[dict], truncated: set[str]) -> list[dict]:
         modules.append({"path": directory, "language": language, "files": len(members),
                         "lines": sum(f["lines"] for f in members)})
     return modules[:MAX_MODULES]
+
+
+def run_work(files: list[dict], affected: set[str] | None, asked: set[str] | None,
+             carried_lsp: set[str]) -> dict:
+    """How much of the parsed tree this run rebuilt, and how much it carried.
+
+    `recomputed` is the parsed files whose edges this run resolved itself:
+    every one in a full run, the `affected` set in an incremental one (the
+    changed files and every file that calls into them, `_affected`). The rest
+    of the parsed files are `reused`: their edges are the base's, verbatim
+    (`_carry_edges`). Every file is re-parsed either way; what a carry saves
+    is resolution and the language servers. `lsp_asked` is the files a server
+    was asked about and `lsp_carried` the files whose base answers were kept;
+    both None when no LSP pass ran, which is not zero.
+    """
+    parsed = {row["path"] for row in files if row.get("status") == "parsed"}
+    recomputed = parsed if affected is None else parsed & set(affected)
+    return {
+        "parsed": len(parsed),
+        "recomputed": len(recomputed),
+        "reused": len(parsed) - len(recomputed),
+        "lsp_asked": None if asked is None else len(asked),
+        "lsp_carried": None if asked is None else len(carried_lsp),
+    }
 
 
 def _lsp_coverage(lsp_result: Any, asked: set[str] | None, carried: set[str]) -> set[str]:

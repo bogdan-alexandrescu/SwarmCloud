@@ -8,7 +8,12 @@ each time it is read from facts other code already keeps:
                 it, else live_at -> ended_at, or -> now while live) at
                 `gpt-live-1`'s per-minute price (`modelprices.per_minute_cost`)
   Planner       each turn's `usage` at the platform's `model_prices`
-                (Opus 5.5 unless the turn names its model)
+                (Opus 5.5 unless the turn names its model). A turn run on a
+                Claude subscription account from the pool (`usage.billing ==
+                "subscription"`, swarm-voice's planner, §3.6) has no measured
+                price: its estimate is RESERVED, never spent and never $0, so
+                it still counts against both caps, and `subscription_turns`
+                says how many were not measured
   Work running  each `voice_starts` row's step budgets times 1.2 (the
                 worker's guard kills a step at 120%, agent-budget.md §5),
                 plus any follow-up allowance reserved with it, until the
@@ -20,6 +25,14 @@ each time it is read from facts other code already keeps:
   Follow-ups    tasks carrying the project's tag (`voice:<project>`) that no
                 start covers: fix rounds, merge steps the platform started;
                 their recorded `cost_usd`
+
+  Speech machine the own-speech machine's minutes from the start call to
+                the stop, at the catalogue's price, per session
+                (`speech_machine_lines`, own-speech §13), spent against
+                both caps on the day the session started, as talk is; a
+                session whose stop carries no price is
+                `unpriced_machine_sessions` (null is not zero). Voice it ›
+                Telemetry reads the same line
 
 A second running total is the kind of mirrored value that has drifted here
 before; the start rows hold only what was reserved for them, which is a fact
@@ -64,6 +77,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from .. import modelprices
 from ..errors import Conflict, NotFound, ValidationFailed
 from . import sessions as vs
+from . import speech_catalogue as cat
+from . import speech_machine as sm
 from . import store as vstore
 
 log = logging.getLogger(__name__)
@@ -77,6 +92,9 @@ RESERVE_FACTOR = 1.2
 #: The live voice model and the planner's model (§3.8).
 TALK_MODEL = "gpt-live-1"
 PLANNER_MODEL = "claude-opus-5-5"
+#: `usage.billing` of a turn run on a pool subscription account (§3.6).
+BILLING = "billing"
+SUBSCRIPTION = "subscription"
 #: The largest one step's budget the ledger accepts: far above any lane, far
 #: below a figure that would make the arithmetic meaningless.
 MAX_STEP_USD = 1_000.0
@@ -91,13 +109,19 @@ TERMINAL = frozenset({"SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTERED"})
 
 SESSION = "session"
 DAY = "day"
-LINES = ("talk", "planner", "work_running", "work_finished", "followups")
+LINES = ("talk", "planner", "speech_machine", "work_running", "work_finished", "followups")
 NOT_COUNTED = ("pod compute for lanes", "CI runner minutes", "deploys")
 
 #: `detail.reason` of a refusal; the code is the established `conflict`
 #: (tests/unit/control_plane/test_new_refusals_ship_off.py).
 SESSION_CAP_REACHED = "voice_session_cap"
 DAY_CAP_REACHED = "voice_day_cap"
+
+#: Why a session's Speech machine figure is null: a stop whose machine had
+#: no catalogue price (null is not zero, as for an unmeasured attempt).
+MACHINE_UNPRICED = "machine_unpriced"
+#: `in` takes at most 30 values per query.
+_IN_MAX = 30
 
 
 class VoiceCapReached(Conflict):
@@ -258,6 +282,7 @@ def turn_cost(usage: Any, prices: Mapping[str, Mapping[str, Any]]) -> float | No
     {model: counts}}`. None when a model has no price; 0.0 with no usage."""
     if not isinstance(usage, Mapping) or not usage:
         return 0.0
+    usage = {k: v for k, v in usage.items() if k != BILLING}
     by_model = usage.get("by_model")
     if not isinstance(by_model, Mapping):
         model = usage.get("model") if isinstance(usage.get("model"), str) else PLANNER_MODEL
@@ -317,8 +342,8 @@ class _Totals:
     def __init__(self, cap: float) -> None:
         self.cap = cap
         self.lines = {name: {"spent_usd": 0.0, "reserved_usd": 0.0} for name in LINES}
-        self.notes = {"unpriced_turns": 0, "unmeasured_items": 0, "running_items": 0,
-                      "finished_items": 0, "followup_tasks": 0}
+        self.notes = {"unpriced_turns": 0, "subscription_turns": 0, "unmeasured_items": 0, "running_items": 0,
+                      "finished_items": 0, "followup_tasks": 0, "unpriced_machine_sessions": 0}
 
     def add(self, line: str, *, spent: float = 0.0, reserved: float = 0.0) -> None:
         self.lines[line]["spent_usd"] += spent
@@ -398,19 +423,26 @@ class VoiceLedger:
         session = _Totals(SESSION_CAP_USD)
         day = _Totals(DAY_CAP_USD)
         found = False
+        #: {session_id: (in this session, on this day)} for the Speech machine line.
+        machine_owners: dict[str, tuple[bool, bool]] = {}
 
         for project_id, _project in self._projects(tenant_id, person):
             sessions = self._children(project_id, vs.SESSIONS, tenant_id, person)
             found = found or any(sid == session_id for sid, _ in sessions)
             for sid, doc in sessions:
                 cost = modelprices.per_minute_cost(TALK_MODEL, talk_seconds(doc, now)) or 0.0
-                if sid == session_id:
+                mine, today_session = sid == session_id, day_of(doc.get("created_at"), tz) == today
+                if mine:
                     session.add("talk", spent=cost)
-                if day_of(doc.get("created_at"), tz) == today:
+                if today_session:
                     day.add("talk", spent=cost)
+                if mine or today_session:
+                    machine_owners[sid] = (mine, today_session)
 
             for _tid, turn in self._children(project_id, vstore.TURNS, tenant_id, person):
                 cost = turn_cost(turn.get("usage"), prices)
+                usage = turn.get("usage")
+                subscription = isinstance(usage, Mapping) and usage.get(BILLING) == SUBSCRIPTION
                 mine = turn.get("session_id") == session_id
                 today_turn = day_of(turn.get("created_at"), tz) == today
                 for totals, counts in ((session, mine), (day, today_turn)):
@@ -418,6 +450,10 @@ class VoiceLedger:
                         continue
                     if cost is None:
                         totals.notes["unpriced_turns"] += 1
+                    elif subscription:
+                        # Not measured: the estimate holds against the cap.
+                        totals.add("planner", reserved=cost)
+                        totals.notes["subscription_turns"] += 1
                     else:
                         totals.add("planner", spent=cost)
 
@@ -461,6 +497,19 @@ class VoiceLedger:
 
         if not found:
             raise NotFound(f"voice session {session_id!r} not found")
+        # A read that fails raises: a start is refused rather than admitted
+        # past a cap the ledger could not compute.
+        machine = speech_machine_lines(self._db, {sid: tenant_id for sid in machine_owners},
+                                       now=lambda: now)
+        for sid, (mine, today_session) in machine_owners.items():
+            line = machine[sid]
+            for totals, counts in ((session, mine), (day, today_session)):
+                if not counts:
+                    continue
+                if line["usd"] is None:
+                    totals.notes["unpriced_machine_sessions"] += 1
+                else:
+                    totals.add("speech_machine", spent=line["usd"])
         return {
             "session_id": session_id,
             "date": today,
@@ -517,3 +566,81 @@ def _follows(starts: Sequence[tuple[datetime | None, Any]], created_at: datetime
             owner = session_id
     return owner
 
+
+
+def speech_machine_lines(db: Any, sessions: Mapping[str, str], *,
+                         now: Callable[[], datetime]) -> dict[str, dict[str, Any]]:
+    """The Speech machine line (docs/design/voice-it-own-speech.md §13) of
+    each session in `sessions` ({session_id: tenant_id}): the machine's
+    minutes from the start call to the stop, at the catalogue's price, for
+    the session that held the lease.
+
+    A finished start is its stop's `voice_audit` row, which
+    `SpeechMachine.stop` priced from the catalogue when it wrote it; the
+    start still holding the lease is its minutes from `started_at` to now at
+    the same catalogue's price. A row under another tenant is not this
+    session's. `{usd, minutes, reason}` per session: `usd` is None with
+    `reason` MACHINE_UNPRICED when a stop carries no price. A read that fails
+    raises: the caller says the ledger could not be read."""
+    lines = {sid: {"usd": 0.0, "minutes": 0.0, "reason": None} for sid in sessions}
+
+    def add(line: dict[str, Any], minutes: Any, usd: Any) -> None:
+        line["minutes"] = round(line["minutes"] + float(minutes or 0.0), 3)
+        if line["reason"] is not None:
+            return
+        if not isinstance(usd, (int, float)) or isinstance(usd, bool):
+            line.update(usd=None, reason=MACHINE_UNPRICED)
+        else:
+            line["usd"] = round(line["usd"] + float(usd), 4)
+
+    ids = sorted(lines)
+    for i in range(0, len(ids), _IN_MAX):
+        query = (db.collection(vs.AUDIT)
+                 .where(filter=FieldFilter("session_id", "in", ids[i:i + _IN_MAX]))
+                 .where(filter=FieldFilter("action", "==", sm.AUDIT_STOPPED)))
+        for snap in query.stream():
+            row = snap.to_dict() or {}
+            sid = row.get("session_id")
+            if sid not in lines or row.get("tenant_id") != sessions[sid]:
+                continue
+            detail = row.get("detail") or {}
+            add(lines[sid], detail.get("minutes"), detail.get("usd"))
+    snap = db.collection(sm.COLLECTION).document(sm.LEASE).get()
+    lease = (snap.to_dict() or {}) if getattr(snap, "exists", False) else {}
+    sid = lease.get("session_id")
+    started = _aware(lease.get("started_at"))
+    # STOPPING: the stop has not written its row yet, so the lease still counts.
+    if sid in lines and lease.get("tenant_id") == sessions[sid] and started is not None \
+            and lease.get("state") in (sm.HOLDING | {sm.STOPPING}):
+        minutes = round(max(0.0, (now() - started).total_seconds()) / 60.0, 3)
+        machine = cat.machine(str(lease.get("machine") or "")) \
+            or cat.machine(cat.DEFAULTS["machine"])
+        add(lines[sid], minutes,
+            round(minutes / 60.0 * machine.usd_per_hour, 4) if machine else None)
+    return lines
+
+
+def speech_machine_stops(db: Any, *, start: datetime, end: datetime,
+                         tenant_id: str | None) -> list[dict[str, Any]]:
+    """The Speech machine line's finished starts stopped in [start, end),
+    under one tenant or (None) every tenant: `{session_id, tenant_id, at,
+    minutes, usd}` from each stop's `voice_audit` row, `usd` None when the
+    stop carries no price. Read by `at` alone (a single-field index) and
+    filtered here, so no composite index. A read that fails raises."""
+    query = (db.collection(vs.AUDIT)
+             .where(filter=FieldFilter("at", ">=", start))
+             .where(filter=FieldFilter("at", "<", end)))
+    stops = []
+    for snap in query.stream():
+        row = snap.to_dict() or {}
+        at = _aware(row.get("at"))
+        if row.get("action") != sm.AUDIT_STOPPED or at is None \
+                or (tenant_id is not None and row.get("tenant_id") != tenant_id):
+            continue
+        detail = row.get("detail") or {}
+        usd = detail.get("usd")
+        stops.append({"session_id": row.get("session_id"), "tenant_id": row.get("tenant_id"),
+                      "at": at, "minutes": detail.get("minutes"),
+                      "usd": float(usd) if isinstance(usd, (int, float))
+                      and not isinstance(usd, bool) else None})
+    return stops

@@ -17,8 +17,20 @@
 # JEV_API_URL is https://__TAILNET_FQDN__/...; curl by hand spells it
 # `--connect-to`. The runbook has both.
 #
-# A TEMPLATE, with TWO placeholders (the tailnet name and the Service's
-# clusterIP, terraform's local.decision_api_cluster_ip), filled by
+# swarm-api reaches the same forwarder another way (docs/design/agent-quality/
+# jev-contract.md section 4.1; the owner's answer to Q1, 3 November 2026): it
+# is Cloud Run, so it can neither resolve the Service nor pin a name in
+# /etc/hosts. It dials the internal passthrough load balancer
+# `decision-api-internal` below, at
+#
+#   __DECISION_API_ROUTE_ADDRESS__:443
+#
+# through its Direct VPC egress, and sends SNI and Host for the tailnet name,
+# so TLS is still end to end and the API's own certificate verifies.
+#
+# A TEMPLATE, with FOUR placeholders (the tailnet name, the Service's
+# clusterIP, terraform's local.decision_api_cluster_ip, the load balancer's
+# reserved address and swarm-api's egress range), filled by
 # terraform/infra/tailscale.tf and served as its `tailscale_egress_manifest`
 # output; `kubernetes/apply.sh --swarm-system` applies it after the relay and
 # swarm-egress, and then syncs the Tailscale OAuth client secret into the
@@ -116,11 +128,14 @@ metadata:
 # and has no Google identity: it reads nothing from Secret Manager itself.
 automountServiceAccountToken: false
 ---
-# Who may reach the forwarder, from the moment it exists: a pod the dispatcher
-# labelled `swarm-judge: internal` in a tenant namespace, on 8443. ONE peer
-# with both selectors (two would be an OR: every pod in every tenant namespace,
-# or a pod so labelled in ANY namespace). Before the Service and the
-# Deployment, so the pod is never selected by no policy at all.
+# Who may reach the forwarder, from the moment it exists, on 8443 and nothing
+# else: a pod the dispatcher labelled `swarm-judge: internal` in a tenant
+# namespace -- ONE peer with both selectors (two would be an OR: every pod in
+# every tenant namespace, or a pod so labelled in ANY namespace) -- and
+# swarm-api's Direct VPC egress range, through decision-api-internal below
+# (terraform/infra/tailscale.tf local.decision_api_swarm_api_cidr, the range
+# swarm-live-ingress and swarm-graph-ingress admit). Before the Services and
+# the Deployment, so the pod is never selected by no policy at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -148,6 +163,12 @@ spec:
       ports:
         - protocol: TCP
           port: 8443
+    - from:
+        - ipBlock:
+            cidr: __SWARM_API_EGRESS_CIDR__
+      ports:
+        - protocol: TCP
+          port: 8443
 ---
 # decision-api.swarm-system.svc.cluster.local:443 -> the forwarder's 8443.
 # A ClusterIP Service, not headless, so callers use 443 as the brief names it;
@@ -170,6 +191,38 @@ metadata:
 spec:
   type: ClusterIP
   clusterIP: __DECISION_API_CLUSTER_IP__
+  selector:
+    app.kubernetes.io/name: decision-api-egress
+  ports:
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 8443
+---
+# swarm-api's way in (jev-contract.md section 4.1): an INTERNAL passthrough
+# load balancer on the address terraform/infra/tailscale.tf reserved
+# (google_compute_address.decision_api_route), 443 -> the forwarder's 8443,
+# exactly as decision-api above. Passthrough: it terminates nothing, so TLS
+# stays between swarm-api and the decision API. A second Service rather than
+# decision-api turned into a LoadBalancer, so the fixed clusterIP every judging
+# pod pins is never touched. externalTrafficPolicy Cluster, as
+# swarm-graph-stats: the load balancer health-checks the nodes, not the pod,
+# so the ingress policy needs no health-check range.
+apiVersion: v1
+kind: Service
+metadata:
+  name: decision-api-internal
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: decision-api-egress
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+    swarm.saga.xyz/tailnet-fqdn: __TAILNET_FQDN__
+spec:
+  type: LoadBalancer
+  loadBalancerIP: __DECISION_API_ROUTE_ADDRESS__
+  externalTrafficPolicy: Cluster
   selector:
     app.kubernetes.io/name: decision-api-egress
   ports:

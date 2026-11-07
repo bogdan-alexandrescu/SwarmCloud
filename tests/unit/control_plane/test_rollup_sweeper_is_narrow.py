@@ -31,6 +31,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from swarm_api import auth as auth_module
+from swarm_api import route_scope
 from swarm_api.auth import ROLLUP_SWEEPER_ROUTES, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import AppContext, build_context
@@ -40,7 +42,7 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from .conftest import api_settings, auth_header, seed_task, seed_tenant
-from .test_continuation_scope_is_narrow import SWEPT, _ids, _send
+from .test_continuation_scope_is_narrow import SWEPT, _ids, _send, fixture_router
 from .test_workflow_state_rollup import make_workflow, seed_workflow
 
 #: The identity terraform/modules/scheduler/jobs.tf gives the rollup jobs. A
@@ -49,67 +51,18 @@ from .test_workflow_state_rollup import make_workflow, seed_workflow
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 
-#: THE OWNER'S DECISION as a closed set, deliberately a literal: derived from
-#: ROLLUP_SWEEPER_ROUTES, widening that set would widen what a stolen sweeper
-#: token reaches and every test here would still pass.
-#: The issue-run tick (#454, owner decision "Advancing runs: swarm-api, on a
-#: Cloud Scheduler tick") was added to it on purpose: it moves only runs
-#: already in the named tenant, as their own creators.
-#: The repository index poll (docs/repo-index.md §3.3, lane RI4) was added for
-#: the same reason: it reads only the named tenant's registrations and
-#: submits an index run as the registration's creator, never as the sweeper.
-#: The merge wake (docs/merge-step.md "Revised 2026-10-06" §1, lane MS2) was
-#: added on the owner's 2026-10-06 plan: it reads only the named tenant's
-#: CI_PENDING parks, with that tenant's token, and its one write is the wake
-#: marker on them -- it submits nothing and moves no task.
-#: The GitHub user-token refresh sweep (docs/onboarding.md §3.4 item 6, owner
-#: decision D2 on #780, lane OB3) was added for the swarm-forge-refresh job
-#: OB2 built: it refreshes due connections into their own users' slots, and
-#: submits nothing and moves no task.
-#: The personal-workspace dispatch sweep (docs/workspaces.md §2.2, lane W7
-#: of #847) is called by swarm-tick every 5 minutes: it publishes again the
-#: opaque id of a workspace an admin already approved, and approves nothing.
-#: The `task_finished` push (#748, filed by the owner 2026-10-06) was added
-#: so a MERGE verdict's pull request is opened without a worker: it acts only
-#: on the finished task's own tenant's gated integrator, with that tenant's
-#: token, and moves only a step it claimed (`swarm_api.verdictpublish`).
-DECIDED = frozenset({
-    ("POST", "/v1/admin/workflows/rollup"),
-    ("POST", "/v1/admin/runs/advance"),
-    ("POST", "/v1/admin/repositories/poll"),
-    ("POST", "/v1/admin/merges/wake"),
-    ("POST", "/v1/admin/forge/refresh"),
-    ("POST", "/v1/admin/workspaces/sweep"),
-    ("POST", "/v1/admin/tasks/finished"),
-    # NOT POST /v1/admin/issues/sweep: the issue sweeper's job and route were
-    # removed on 2026-10-12 (Schedules S9, second change), replaced by the
-    # tenant's `issue-sweep` schedule, which the schedule tick fires.
-    # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`): it
-    # reads only the named tenant's pull requests and writes only its
-    # `stranded_prs` document; a redrive from this identity is refused
-    # (test_stranded_prs.py), so it can submit nothing.
-    ("POST", "/v1/admin/stranded-prs/sweep"),
-    # The workspace secrets rotation sweep (#1347, owner decision Q5;
-    # jobs.tf `secrets_rotation_sweep`): it disables previous versions whose
-    # 24-hour grace has passed and never destroys one. It reads no value,
-    # grants nothing, submits nothing, and takes no argument: what it may
-    # disable is fixed by the records' own `disable_after`.
-    ("POST", "/v1/admin/workspace-secrets/rotation-sweep"),
-    # The GitHub push hint (docs/design/graph-service.md §6.2; owner decision
-    # 2026-10-16 on #1384, lane GS-HOOKS): the public receiver
-    # swarm-github-hooks RUNS AS this account and forwards a verified push's
-    # repository name here. The route reads no payload sha, takes no tenant,
-    # and only polls now what the five-minute poll would poll anyway, each
-    # registration with its own workspace's token. The owner accepted that a
-    # public-facing service then holds every route in this set.
-    ("POST", "/v1/admin/repositories/push"),
-    # The per-run MCP credential sweep (docs/design/registered-mcp-servers.md
-    # §4.4, owner decision Q2 of #1433; jobs.tf, lane MCP-IAM): it deletes the
-    # `-mcpc-` secret of a credential whose task ended or whose expiry passed,
-    # and marks the row. It takes no argument, reads no value, submits
-    # nothing and grants nothing; what it may destroy is fixed by each row.
-    ("POST", "/v1/admin/mcp-credentials/sweep"),
-})
+#: THE OWNER'S DECISIONS, as the routes declare them: every route whose
+#: handler says `route_scope.reachable_by(ROLLUP_SWEEPER)`, the line on the
+#: route that review sees. Each decision's reason is beside its entry in
+#: `auth.ROLLUP_SWEEPER_ROUTES` (the rollup, the issue-run advance, the index
+#: poll and push, the merge wake, the forge refresh, the workspace dispatch
+#: sweep, `task_finished`, the stranded-PR sweep, the secrets rotation sweep
+#: and the MCP credential sweep); NOT the issue sweeper's route, removed on
+#: 2026-10-12. It used to be a literal here, which two green changes that
+#: each added a route turned red together (BGD's pick, 6 November 2026);
+#: widening the sweeper still takes a declaration on the route AND an entry
+#: in the gate, held equal below.
+DECIDED = route_scope.declared(route_scope.ROLLUP_SWEEPER)
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]
 
@@ -147,6 +100,27 @@ def sweeper_client(sweeper_context) -> TestClient:
 
 def test_the_allow_list_is_the_decided_one() -> None:
     assert set(ROLLUP_SWEEPER_ROUTES) == set(DECIDED)
+
+
+def test_a_fixture_route_added_without_a_declaration_is_unreachable_by_the_sweeper(
+    sweeper_context, monkeypatch
+) -> None:
+    """A change adds a route and declares nothing: the guard's allow-set does
+    not gain it, and the gate held equal to that set refuses the sweeper."""
+    router = fixture_router("/v1/admin/fixture/undeclared", declared=False)
+    derived = route_scope.declared(route_scope.ROLLUP_SWEEPER, [*route_scope.route_routers(), router])
+    assert derived == DECIDED
+    assert ("POST", "/v1/admin/fixture/undeclared") not in derived
+    monkeypatch.setattr(auth_module, "ROLLUP_SWEEPER_ROUTES", derived)
+    app = create_app(sweeper_context)
+    app.include_router(router)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    refused = client.post("/v1/admin/fixture/undeclared", headers=SWEEPER_HEADERS)
+    assert refused.status_code == 403, refused.text
+    assert "rollup sweeper may not call" in refused.text
+    # The control: the route itself answers a member, so the 403 is the scope.
+    assert client.post("/v1/admin/fixture/undeclared", headers=auth_header("alice")).status_code == 200
 
 
 def test_the_sweep_is_not_empty_and_contains_the_decided_route() -> None:

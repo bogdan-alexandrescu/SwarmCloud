@@ -124,11 +124,15 @@ def test_it_checkpoints_at_the_catalogues_default_interval():
 
 
 def test_it_is_claude_code_in_every_other_field():
+    claude = RUNNER_PROFILES["claude-code"]
+    # Every input but pull_request, the owner's pick on #3470 for claude-code,
+    # codex and claude-code-review alone.
     expected = dataclasses.replace(
-        RUNNER_PROFILES["claude-code"],
+        claude,
         name=NAME,
         resource_class="large",
         timeout_seconds=14_400,
+        inputs={k: v for k, v in claude.inputs.items() if k != "pull_request"},
     )
     # MUTATION: give the entry its own `inputs`, `secrets`, `runner_argv`,
     # `image`, `provider`, `secret_slots` or model classes and it is no

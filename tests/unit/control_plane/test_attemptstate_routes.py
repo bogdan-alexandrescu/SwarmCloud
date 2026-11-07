@@ -55,6 +55,28 @@ def test_context_serves_the_grant_of_the_signed_submitter_and_repository(client,
     assert body["forge_grant"]["id"] == grant and body["forge_grant"]["mode"] == "write"
 
 
+def test_context_serves_the_platforms_extra_repository_budget_and_nothing_else(client, db):
+    """A worker switched to the state routes builds no Firestore client, so the
+    admin's `additional_repositories_budget_gib` reaches it only here (owner,
+    3 November 2026). Only that one field of `control/settings` is served."""
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs["control/settings"] = {"additional_repositories_budget_gib": 11,
+                                   "model_prices": {"claude": {"input": 3.0}},
+                                   "agent_budget_ceiling": {"usd": 50}}
+    body = worker.get(client, "context").json()
+    assert body["platform_settings"] == {"additional_repositories_budget_gib": 11}
+
+
+def test_context_serves_no_budget_when_the_platform_has_not_set_one(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    body = worker.get(client, "context").json()
+    assert body["platform_settings"] == {}
+    db.docs["control/settings"] = {"merge_by_default": True}
+    assert worker.get(client, "context").json()["platform_settings"] == {}
+
+
 def test_poll_reads_this_tenants_quota_and_the_fence(client, db):
     worker = Worker()
     opened(client, db, worker, cancel_requested=True)
@@ -245,6 +267,39 @@ def test_a_swarm_api_ci_park_at_a_new_head_starts_fresh(client, db):
     assert wait["first_parked_at"] == wait["parked_at"]
 
 
+TRAIN = "merge_train_waiting"
+
+
+def test_a_swarm_api_first_train_park_records_the_trains_start(client, db):
+    """Part of #2688: `/sc check` ages a train wait from this, exactly."""
+    wait = _ci_park(client, db, last=_last_ci(datetime.now(timezone.utc) - timedelta(hours=2)),
+                    code=TRAIN)
+    # MUTATION: the park records no train start -> None, fails.
+    assert wait["train_entered_at"] == wait["parked_at"]
+
+
+def test_a_swarm_api_train_re_park_keeps_the_trains_start(client, db):
+    entered = datetime.now(timezone.utc) - timedelta(hours=8)
+    wait = _ci_park(client, db, last=_last_ci(entered, code=TRAIN, train_entered_at=entered),
+                    code=TRAIN)
+    # MUTATION: every train park restarts it -> the re-park's instant, fails.
+    assert wait["train_entered_at"] == entered
+
+
+def test_a_swarm_api_ci_park_clears_the_trains_start(client, db):
+    entered = datetime.now(timezone.utc) - timedelta(hours=8)
+    wait = _ci_park(client, db, last=_last_ci(entered, code=TRAIN, train_entered_at=entered))
+    # MUTATION: a CI park carries it -> a later train wait reads 8 h, fails.
+    assert wait["train_entered_at"] is None
+
+
+def test_a_swarm_api_train_park_after_another_park_starts_the_train_afresh(client, db):
+    entered = datetime.now(timezone.utc) - timedelta(hours=8)
+    wait = _ci_park(client, db, last=_last_ci(entered, train_entered_at=entered), code=TRAIN)
+    # MUTATION: carry a start the last (CI) park did not belong to -> fails.
+    assert wait["train_entered_at"] == wait["parked_at"]
+
+
 def test_merge_slot_acquire_then_release_hands_on_and_wakes_the_waiter(client, db):
     worker = Worker()
     opened(client, db, worker)
@@ -275,3 +330,33 @@ def test_merge_train_register_derives_the_entry_from_the_tuple(client, db):
     assert entry["tenant_id"] == "eng" and entry["task_id"] == TASK
     again = worker.post(client, "merge-train", POST_BODIES["merge-train"]).json()
     assert again["entry"]["enqueued_at"] == first.json()["entry"]["enqueued_at"]
+
+
+# -- the whole CI wait across repair rounds' heads (part of #2688, 2026-11-06) --
+
+
+def test_a_swarm_api_ci_park_carries_the_whole_wait_across_a_repair_rounds_head(client, db):
+    """task_ffe63d609c5d4662ba8e re-checked 28 times over 8 hours: each new
+    head a repair round pushed restarted `first_parked_at`."""
+    started = datetime.now(timezone.utc) - timedelta(hours=8)
+    worker = Worker()
+    opened(client, db, worker, metadata={
+        "merge_wait": _last_ci(started, wait_started_at=started.isoformat(), rechecks=27,
+                               failed_heads={"ci-gate": [HEAD]}),
+        "merge_fix": {"rounds": [{"round": 1, "head": HEAD}]}})
+    body = {"request_id": "ci", "reason": "CI_PENDING", "detail": {"failed": ["ci-gate"]},
+            "ci": {"code": "checks_pending", "head": "e" * 40, "pull_request": 7}}
+    assert worker.post(client, "park", body).status_code == 200
+    wait = db.docs[f"tasks/{TASK}"]["metadata"]["merge_wait"]
+    # MUTATION: restart the whole wait at the round's head -> fails.
+    assert wait["wait_started_at"] == started
+    assert wait["first_parked_at"] == wait["parked_at"]
+    assert wait["rechecks"] == 28
+    assert wait["failed_heads"] == {"ci-gate": [HEAD, "e" * 40]}
+
+
+def test_a_swarm_api_ci_park_at_a_head_no_round_worked_from_starts_a_new_wait(client, db):
+    started = datetime.now(timezone.utc) - timedelta(hours=8)
+    wait = _ci_park(client, db, last=_last_ci(started, wait_started_at=started, rechecks=27),
+                    head="e" * 40)
+    assert wait["wait_started_at"] == wait["parked_at"] and wait["rechecks"] == 1

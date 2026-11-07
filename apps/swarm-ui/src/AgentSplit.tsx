@@ -28,7 +28,7 @@ import { useListGroup } from './agent-split/group'
 import { AgHandoff } from './agent-split/handoff'
 import { AgHead } from './agent-split/head'
 import { useOpeningPane } from './agent-split/opening'
-import { AgTabsEdge, paneTabs } from './agent-split/tabs'
+import { AgQuestionsRow, AgTabsEdge, paneTabs, useAgentQuestions } from './agent-split/tabs'
 import './styles/agents.css'
 
 /*
@@ -120,6 +120,7 @@ export function AgentSplit({
   go,
   onGroup,
   base,
+  hosted = false,
 }: {
   taskId: string
   pane: TaskPane
@@ -149,6 +150,12 @@ export function AgentSplit({
   onGroup?: (tab: AgentTab) => void
   /** This agent's address, `work/task/<id>`: every tab is a segment under it. */
   base: string
+  /**
+   * In the Agents page's docked inspector (work/hostedAgent.ts, the owner's
+   * pick on #3146): the inspector's handle sizes it and folds it, so the
+   * list's divider, its published width and `[` are not this view's.
+   */
+  hosted?: boolean
 }) {
   const close = () => go(closeTo)
   // Opening an output writes its name into the address; closing it takes it out.
@@ -216,10 +223,12 @@ export function AgentSplit({
   }, [panelDrawn, taskId])
   useEffect(() => () => agentPanelGone(taskId), [taskId])
 
-  useListWidth(snap, pane === 'changes')
+  useListWidth(snap, pane === 'changes', !hosted)
 
   // `[` folds the list to the strip and back, as `«`/`»` in the list header does.
+  // Hosted, the list is the inspector's left pane and has no strip to fold to.
   useEffect(() => {
+    if (hosted) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== '[' || e.metaKey || e.ctrlKey || e.altKey) return
       const el = e.target as HTMLElement | null
@@ -228,7 +237,7 @@ export function AgentSplit({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [hosted])
 
   useSplitFocus(panel, close, taskId)
 
@@ -306,7 +315,19 @@ export function AgentSplit({
     base,
   })
 
-  const tabs = paneTabs({ task, base, hasBrowser, sessionOpen: sessionLive, childCount, runs, ckpt, ckptCount, pane })
+  const asked = useAgentQuestions(task)
+  const tabs = paneTabs({
+    task,
+    base,
+    hasBrowser,
+    sessionOpen: sessionLive,
+    childCount,
+    runs,
+    ckpt,
+    ckptCount,
+    pane,
+    questions: asked.open ?? undefined,
+  })
   const selected: TaskPane = pane
   // THE THEATER ASKED FOR IS HELD UNTIL THE BROWSER TAB IS DRAWN (part of
   // #1346, comment 3): the route drops `?theater=1` after arrival, and the
@@ -343,7 +364,7 @@ export function AgentSplit({
 
   return (
     <div
-      className={`drawer ctl-drawer ag-split${selected === 'logs' ? ' on-logs' : ''}${selected === 'changes' ? ' on-changes' : ''}`}
+      className={`drawer ctl-drawer ag-split${hosted ? ' is-hosted' : ''}${selected === 'logs' ? ' on-logs' : ''}${selected === 'changes' ? ' on-changes' : ''}`}
       // A region, not a dialog, once it is laid out under the phone header
       // (QA-116): `useSplitFocus` sets the role from where the panel sits.
       role="dialog"
@@ -370,10 +391,11 @@ export function AgentSplit({
         }
       }}
     >
-      <AgDivider snap={snap} panel={panel} />
+      {!hosted && <AgDivider snap={snap} panel={panel} />}
       {/* THE WAY BACK TO THE LIST: on a phone the list and the agent are two
           pages, and this is the agent page's back link. Shown wherever the
           agent covers the list (below 1100px). */}
+      {/* Hosted in the inspector, it is drawn only on the phone sheet (styles.css). */}
       <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
         ‹ {backLabel(closeTo)}
       </button>
@@ -427,6 +449,12 @@ export function AgentSplit({
           />
         )}
         {task !== null && <PodStartProblem task={task} />}
+        {/* THE AGENT'S QUESTIONS ON EVERY TAB (part of #2688): one row, and
+            Answer opens the card under it; Details leads with the cards. A
+            tab switch is a new visit, so an answered row is not drawn again. */}
+        {task !== null && !deciding && selected !== 'detail' && (
+          <AgQuestionsRow key={`${taskId}:${selected}`} task={task} asked={asked} />
+        )}
 
         <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (

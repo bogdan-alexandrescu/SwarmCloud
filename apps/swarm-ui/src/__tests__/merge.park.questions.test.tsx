@@ -53,6 +53,7 @@ const { handoffOf, needsYou, ownerQuestionsHold } = await import('../Handoff')
 const { fromAddress } = await import('../App')
 const { resetListSnap } = await import('../listSnap')
 const { waitingShort } = await import('../waitingShort')
+const { HeldQuestionsCard } = await import('../QuestionsCard')
 
 const ID = 'task_7ee2d99642c84dc0b3b2'
 const IMPL = 'task_a1b2c3d4e5f6a7b8c9d0'
@@ -332,6 +333,20 @@ describe('the questions are drawn inline, with the answer control', () => {
     // MUTATION: drop `UnreadableHold` -- an unreadable hold has no way back but this.
     expect(within(held).getByRole('button', { name: 'Re-run the merge' })).toBeTruthy()
     expect(held.textContent).toContain('could not be read')
+  })
+
+  it("keeps the agent page's held-questions id, and takes a page's own id for each mount", async () => {
+    // MUTATION: drop the card's `id` prop, or its `held-questions` default.
+    const c = await draw(mergeHeld())
+    const card = await within(c).findByRole('region', { name: 'Questions holding this merge' })
+    expect(card.id).toBe('held-questions')
+    const { container } = render(
+      <>
+        <HeldQuestionsCard task={mergeHeld()} id="questions-merge-a-held" />
+        <HeldQuestionsCard task={mergeHeld({ id: 'task_secondmerge000000000' })} id="questions-merge-b-held" />
+      </>,
+    )
+    expect([...container.querySelectorAll('.qc-held')].map((e) => e.id)).toEqual(['questions-merge-a-held', 'questions-merge-b-held'])
   })
 
   it('draws no held-questions card for a hand-off park', async () => {

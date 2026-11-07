@@ -433,7 +433,8 @@ def _run_body(module: Any, monkeypatch: pytest.MonkeyPatch, work: Path,
 
     monkeypatch.setattr(module, "run_cli_agent", fake_run)
     for name in ("SWARM_GIT", "SWARM_CHILDREN", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH",
-                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV):
+                 "SWARM_CDP_ENDPOINT", graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV,
+                 graphstage.SHAPE_ENV):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -457,17 +458,22 @@ def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
     work = tmp_path / "work"
     snapshot = str(work / ".swarm-context" / "snapshot")
     seen = _run_body(claude_code, monkeypatch, work, {
-        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context")})
+        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context"),
+        graphstage.SHAPE_ENV: graphstage.SHAPE_TOOLS})
     servers = _mcp_servers(seen)
     assert servers == {graphstage.SERVER_NAME: {
         "type": "stdio", "command": sys.executable,
         "args": ["-I", "-m", "agent_worker.graphmcp", "--snapshot", snapshot,
                  "--workdir", str(work / "repo")], "alwaysLoad": True}}
     assert seen["env"][graphstage.CONTEXT_ENV] == str(work / ".swarm-context")
-    # What to ask the graph first (AGENTS-USE-TOOLS, 2026-11-02), then its
-    # exploration line (LANE CAPS, part of #2524), and nothing else.
-    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.GRAPH_FIRST_NOTE + "\n\n"
-                              + claude_code.exploration_note(graph=True, children=""))
+    # What to ask the graph first (AGENTS-USE-TOOLS, 2026-11-02), then the
+    # implement step's lookup line (BGD, 2026-11-06), which takes the place of
+    # the exploration line's graph clause (LANE CAPS, part of #2524).
+    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                              + claude_code.GRAPH_FIRST_NOTE + "\n\n"
+                              + claude_code.graph_lookup_line(
+                                  {"prompt": "Implement it."}, work,
+                                  shape=graphstage.SHAPE_TOOLS))
 
     # The control: nothing staged, no server and no config at all.
     seen = _run_body(claude_code, monkeypatch, work, {})
@@ -741,6 +747,8 @@ def test_the_default_record_is_the_one_staging_wrote_before_this_lane(db, store,
     after = _prepare(db, store, checkout, second, ticket=_FakeTicket())
     new = _record(checkout)
     old.pop("seconds"), new.pop("seconds")
+    # Timings, as `seconds` is (lane REVIEW-STARTUP-WAIT): the shape is the same.
+    assert set(old.pop("phases")) == set(new.pop("phases"))
     assert before == after and old == new
 
 
@@ -779,7 +787,13 @@ def test_service_pins_instead_of_copying_and_hands_the_runner_the_shims_variable
     assert stage["blobs"] == 0 and stage["bytes"] == len(manifest)
     assert marks == [{"graph": {"delivery": "service", "seconds": stage["seconds"],
                                 "bytes": len(manifest), "blobs": 0,
-                                "reason": stage["reason"]}}]
+                                "reason": stage["reason"], "history_seconds": None,
+                                "phases": stage["phases"]}}]
+    # Every start-up phase the worker runs before the agent, timed, in the
+    # mark and in stage.json (lane REVIEW-STARTUP-WAIT). MUTATION: a phase
+    # left untimed is the next half hour no record can place.
+    assert set(stage["phases"]) == {"stage", "additional", "jev_setup"}
+    assert all(isinstance(v, float) and v >= 0 for v in stage["phases"].values())
 
 
 def test_the_pin_is_what_the_shim_and_the_pack_open(db, store, clone):

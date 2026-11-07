@@ -141,6 +141,17 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
 | 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
 | 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner (BGD) 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
+| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (BGD, answering question 0 of PR 3095: merge as built on the current class, and file this request) |
+| 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
+| 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
+| 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
+| 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
+| 139 | `specsign.py`: `SETTINGS_MAC_FIELDS["plugins"]` becomes `("allowed", "defaults", "configs_digest")`, so a workspace's every-step plugins and its plugin settings' digest are signed with the Allowed list (managed plugins P1, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): an absent key projects as null and a null added key is left out of the bytes, so every stored block still verifies; `plugins.PluginsStore.put` drops a planted value of either key |
+| 140 | `specsign.py`: `canonical_plugin_record(kind, fields)`, purpose `swarm.plugin-record/v1`, the bytes swarm-api MACs for a plugin install, version and intake, scope and tenant inside (managed plugins P2, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688): every stored key covered but the MAC and the writer record |
+| 141 | `models.py`: `Tenant.plugin_secret_name(install_id, field)`, `swarm-tenant-<t>-plg-<16 hex>`, and the secret consumer kind `plugin` (managed plugins P3, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 142 | `profiles.py`: `runtime_capabilities` `("claude_plugins", "node", "bun", "python3", "bash")` on the five claude-code profiles (managed plugins P4, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 143 | `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1`, fields `work_contracts` and `contract_review` (managed plugins P5, part of #2688) | ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five", answering docs/design/managed-plugins.md section 18) and APPLIED 2026-11-06 by the pull request that adds this line (lane managed-plugins-contract, part of #2688) |
+| 145 | `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"`, so a merge step a person on its pull request pushed over ends `CANCELLED` with a cause of its own instead of `FAILED`/`MERGE_REFUSED` (#2505, epic #2525) | REQUESTED 2026-11-05 by the pull request that adds this line, on the owner's decision of 2026-10-27 (#2505, epic #2525); not applied |
 
 ---
 
@@ -16067,3 +16078,1171 @@ PR 2678, REVIEW-GATE-DEFAULT). The shape -- step field resolved against the
 profile, rather than a profile field alone -- is this request's proposal
 and BGD's to accept. The owner chose on 2026-11-02 to carry PR 2682 onto
 main rather than drop it.
+
+---
+
+## 134. `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688)
+
+**Status:** open, REQUESTED 2026-11-03 by the builder lane of PR 3095
+(task_98b46c02fd214e56a012) at the owner's instruction. BGD answered that
+pull request's question 0 the same day: *merge this pull request as built,
+on the current builder class*, and file a frozen-contract change request for
+a 12-CPU, 16 GiB builder class (about +$0.31 per builder hour). PR 3095
+merges on `standard`; this request is the class change, and nothing in it is
+applied. `apps/common/swarm_common/` is frozen.
+
+### What is true today
+
+Read on main on 2026-11-03. Builder steps run on their profile's class, and
+every coding profile's is `standard`: a 4-CPU request, an 8-CPU limit on GKE
+(request 108) and 8 GiB of memory, 4 of it workspace tmpfs. PR 3095 makes the
+pre-publish gate run the changed-guards check as parts of about 40
+CI-seconds, side by side, as many as the pod has CPUs (`pod_cpus`), inside a
+600 s budget (`GUARDS_BUDGET_SECONDS`), and leaves what does not fit to CI.
+Measured in a 6-CPU SwarmCloud container on 2026-11-03, that ran about 1.78
+CI-seconds a second: roughly a third of a 3,365 CI-second selection in the
+budget, related parts first. More CPUs run more parts in the same budget,
+with no code change.
+
+The class cannot be made 12 CPUs by an admin size today. `ResourceClass.__post_init__`
+refuses a request above 8 CPUs ("exceeds the Cloud Run Jobs ceiling") and
+`CPU_REQUEST_MAX = 8` bounds every admin size (requests 109-110), because
+every class can be reached by a Cloud Run profile's step or fallback Job.
+`CLASS_ORDER` names three classes and no fourth.
+
+### The change
+
+A fourth class, GKE only, between `browser` and `large`:
+
+```python
+# profiles.py
+RESOURCE_CLASSES["builder"] = ResourceClass(
+    "builder", cpu=12, memory_gib=16, disk_gib=8, units=3, cpu_limit=12,
+)
+CLASS_ORDER = ("standard", "browser", "builder", "large")
+```
+
+with the ceiling check moved from "every class" to "every class a Cloud Run
+profile can reach": a class above 8 CPUs is refused on a profile whose
+backend, or fallback, is Cloud Run, and `CPU_REQUEST_MAX` becomes a GKE bound
+(the GKE Autopilot general-purpose maximum) with the Cloud Run ceiling of 8
+kept for Cloud Run profiles. 16 GiB over 12 CPUs is 1.33 GiB a core, inside
+`MEMORY_PER_CPU_MIN`..`MEMORY_PER_CPU_MAX`. `units_for(12, 16)` is 3. The
+CPU limit equals the request, so the class adds no burst. The coding profiles
+that run builder steps would name `builder`, or a workflow's builder step
+would name it as its `resource_class` (a larger class than the profile's,
+which `validate_resource_class_override` refuses today, so the profile's
+class is the place).
+
+The smaller alternative, which needs no contract change: an admin size
+(requests 109-110) of a 6-CPU request with a 12-CPU limit and 16 GiB on
+`standard`. It fits every bound today, bursts only onto idle requested CPU,
+and charges 2 units instead of 1; it does not guarantee the 12 CPUs.
+
+### What it would break if accepted
+
+Cost and capacity, not code. At list Autopilot prices (quoted by PR 3095, not
+re-checked on 2026-11-03) a builder hour costs about $0.31 more, and each
+builder charges 3 capacity units instead of 1, so a pool fits a third as many
+builders at once. Every reader of `CLASS_ORDER` and `RESOURCE_CLASSES` (the
+admin sizes route, the console's class list, admission's unit charge, the
+scheduler's pod rendering) sees one more class; the tests that pin three
+classes change with it. A Cloud Run runtime cannot run the class, so a
+builder step whose GKE runtime is down waits instead of falling back.
+
+### If it is declined
+
+PR 3095's gate runs on `standard` as merged: it reads the CPUs the pod has
+and runs that many parts, and what does not fit the 600 s budget is left to
+CI, never reported as passed. The gate stays at about ten minutes on a large
+selection and covers less of it before CI does.
+
+### Invariants
+
+**7** holds: memory and ephemeral storage stay request equal to limit, and
+the CPU limit equals the request, inside `CPU_BURST_MAX_RATIO`. **10** holds:
+a caller still names a profile, and the class comes from the profile, never
+from the caller. **2** and **3** hold: admission charges the class's units in
+the same all-or-nothing transaction, counted from `LEASED`. **6** holds: no
+Spot. **1**, **4**, **5**, **8** and **9** are untouched.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first:
+`tests/unit/common/test_runner_size_bounds.py` for the class, its units and
+the Cloud Run refusal of a class above 8 CPUs; the admin sizes and
+admission-follows-size tests for the fourth class; and a scheduler test that
+a builder pod renders a 12-CPU request and limit and 16 GiB.
+
+### Who decided
+
+BGD, 2026-11-03, on PR 3095: merge on the current class and file this
+request. Whether to accept it, and in which shape (the class, or the admin
+size alternative), is BGD's.
+
+---
+
+## 135. `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688)
+
+**Status:** REQUESTED 2026-11-03 by lane contract-request-builder-cpus (part
+of #2688). Not applied: `apps/common/swarm_common/` is frozen, and which of
+the two shapes below is built is the owner's choice. The owner chose on
+3 November 2026, answering the publish check lane's question on builder
+machine size (after his earlier note to time-box the guard run and to use
+faster guard machines), to merge the time-boxed, parallel guard check as
+built and to request a 12-CPU, 16 GiB builder class as a frozen-contract
+change. This entry is that request. Drafted as 134 and renumbered 135 when
+main took 134 for BUILDER-CLASS-12CPU (PR 3095, issue #3100), the same
+owner answer filed from another lane; which of the two, if either, is
+accepted is the owner's.
+
+### What is true today
+
+Read on main (ff447a8) on 2026-11-03.
+
+* **The classes** (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`):
+  `standard` and `browser` are 4 CPU requested, 8 CPU limit, 8 GiB memory,
+  4 GiB workspace, 1 unit; `large` is 8 CPU requested, 16 limit, 32 GiB,
+  16 GiB workspace, 4 units. The workspace is a tmpfs slice of the memory
+  (the "WORKSPACE SIZES ARE MEMORY, NOT DISK" comment above `RESOURCE_CLASSES`), and memory and workspace are
+  request and limit both.
+* **Which profiles use which** (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`):
+  `standard` -- `claude-code` (GKE Autopilot), `codex`, `generic`, `merge`,
+  `indexer`, `claude-code-lightpanda`, and on Cloud Run `mock`,
+  `post-verdict` and `claude-code-review`; `await-input` and `fix-loop`
+  name it but are control-plane steps and never reserve. `browser` --
+  `browser` and `claude-code-browser`. `large` -- `claude-code-large`,
+  picked by name for a lane whose cause was an out-of-memory kill or a
+  timeout (request 113).
+* **Every step that builds runs on `claude-code`, so on `standard`.** The
+  issue-run compiler writes its `implement-<id>` steps and its `fix` step on
+  `apps/swarm-api/swarm_api/issueruns.py::STEP_PROFILE` (`"claude-code"`;
+  the step ids are `apps/swarm-api/swarm_api/issueruns.py::_impl_id` and
+  `apps/swarm-api/swarm_api/issueruns.py::FIX_STEP`), and its review on
+  `apps/swarm-api/swarm_api/issueruns.py::REVIEW_PROFILE`, the runtime
+  policy's profile: `claude-code` for a change without UI. A review, a requirements
+  check and a merge therefore weigh exactly what an implement step weighs.
+* **The bounds a class must keep:** `ResourceClass.__post_init__` (`apps/common/swarm_common/profiles.py::ResourceClass.__post_init__`)
+  refuses a request above 8 CPU or 32 GiB, Cloud Run's ceiling, and a
+  limit outside request to `CPU_BURST_MAX_RATIO` (2) x request; an admin's
+  size (`apps/common/swarm_common/profiles.py::check_size`) must keep
+  `CPU_REQUEST_MAX = 8`, `MEMORY_PER_CPU_MIN` to `MEMORY_PER_CPU_MAX`
+  (1.0 to 6.5 GiB per requested core) and `CLASS_ORDER`: standard <=
+  browser <= large in CPU request, memory and workspace.
+* **How units count:** `apps/common/swarm_common/profiles.py::units_for` charges one unit per
+  4 requested cores or per 8 GiB, whichever is more, and every class's
+  `units` must equal it (checked when the module loads). Admission reserves
+  a lease's units in each of the pools
+  `apps/common/swarm_common/models.py::pool_names_for` lists (`global`,
+  `tenant:<t>`, `resource:<class>`, `runner:<profile>`, `backend:<b>`)
+  all at once, and 1 in each `provider:*` pool whatever the size (request
+  129, `apps/common/swarm_common/models.py::pool_units_for`, checked in
+  `apps/common/swarm_common/admission.py::evaluate_capacity`).
+* **What a 2-unit builder does to how many fit.** At the numbers
+  `terraform/environments/dev/dev.tfvars` states in its `pool_limits` block (the live pools are
+  set by `scripts/pool-limit.sh` and were not read for this request):
+  `runner:claude-code` 80 units is 80 one-unit steps today and 40 two-unit
+  builders; `default_tenant` 40 is 40 one-unit steps per workspace and 20
+  builders; `global` 180 is 90 builders. The provider pools are unchanged,
+  since a lease takes 1 there whatever its class. A request of 12 CPU would
+  not be 2 units but 3 (`units_for(12, 16) = max(3, 2)`), and is refused by
+  `ResourceClass.__post_init__` in any case.
+* **Where the class sets the gate's parallel parts:**
+  `apps/agent-worker/agent_worker/runners/cliagent.py::agent_resource_budget`
+  sets `PYTEST_XDIST_AUTO_NUM_WORKERS` (`XDIST_WORKERS_ENV`), which `-n auto`
+  uses, to the container's CPU limit (cgroup `cpu.max`) capped at (memory
+  limit - `AGENT_MEMORY_HEADROOM_BYTES`, 2 GiB) / `XDIST_WORKER_BYTES`
+  (1 GiB per xdist worker). On `standard`
+  that is min(8, (8 - 2) / 1) = **6**: today's cap is the memory, not the
+  CPU. It rises with the class and needs no code change: at 16 GiB with a
+  12-CPU limit it is min(12, 14) = **12**. `scripts/changed-guards.sh`
+  runs its selection in one `pytest -n auto` call inside a 540 s pytest
+  budget (`scripts/changed-guards.sh` (`PYTEST_SECONDS=540`)), so the guard check's parallelism is this number.
+* **The publish check lane's measurements** (reported by that lane, not
+  re-measured here): on the current 6 usable CPUs about a third of a
+  343-file guard selection runs inside the 10-minute budget; the selection
+  ran 1.06 CI-seconds of tests a second one part after another against 1.78
+  side by side; on 12 CPUs about two thirds would fit.
+* **The cost** (the same lane's estimate, at list Autopilot prices that this
+  request did not re-read): about +6 vCPU and +8 GiB for the step's length,
+  about +$0.31 per 60-minute builder step. Autopilot bills the request, so
+  the shape proposed below, which raises the request by 4 vCPU and the
+  memory by 8 GiB, bills less than that figure; the extra 4 cores to the
+  limit are borrowed from idle requests on the node and are not billed.
+
+### The change
+
+The owner's 12 CPUs, as the frozen bounds allow: the request cannot pass 8
+(`ResourceClass.__post_init__`, `CPU_REQUEST_MAX`), so the 12 is the GKE limit and 8 is what is
+guaranteed. One size for both shapes: **8 CPU requested, 12 CPU limit,
+16 GiB memory, 8 GiB workspace**, which is `units_for(8, 16)` = **2 units**,
+2 GiB per core, a limit of 1.5 x the request, and gives
+`PYTEST_XDIST_AUTO_NUM_WORKERS` = 12 on GKE.
+
+Two shapes; both keep invariant 10 (a caller picks a `runner_profile` by
+name and never a resource spec):
+
+* **A. Raise the class `claude-code` already uses.** `standard` becomes
+  8/12/16 GiB/8 GiB, 2 units. Every `standard` step pays it: every
+  `claude-code` step, reviews and requirements checks included, and
+  `codex`, `generic`, `merge`, `indexer` and `claude-code-lightpanda`.
+  `CLASS_ORDER` forces `browser` up to at least 8 CPU and 16 GiB too, so
+  live-browser work doubles as well. (The same numbers could be set on GKE
+  without a contract change, as an admin size version through requests
+  109-110's route (`apps/common/swarm_common/profiles.py::effective_size`), with the same
+  blast radius.) Concurrency halves for every profile in the list:
+  `runner:claude-code` 80 is 40 agents of any kind.
+* **B. A `builder` class used only by the steps that build.** This request
+  proposes B:
+  * `RESOURCE_CLASSES["builder"] = ResourceClass("builder", cpu=8,
+    memory_gib=16, disk_gib=8, units=2, cpu_limit=12)`, and `CLASS_ORDER =
+    ("standard", "browser", "builder", "large")`: builder sits between browser
+    and large in CPU request (4 <= 8 <= 8), memory (8 <= 16 <= 32) and
+    workspace (4 <= 8 <= 16), so `check_size` holds the order.
+  * `BUILD_STAGES = ("implement", "build", "fix")` and
+    `RunnerProfile.build_resource_class: str | None = None`, set to
+    `"builder"` on `claude-code` only, and one frozen function,
+    `resource_class_for_stage(profile, stage) -> str`, which returns the
+    profile's `build_resource_class` for a stage in `BUILD_STAGES` and its
+    `resource_class` otherwise.
+  * **The platform chooses it, never a caller.** swarm-api's compilers call
+    it with the stage they are writing (the issue run's `implement-<id>`
+    and `fix` steps, a lane's build step) and store the class on the step;
+    the stage is the compiler's own argument, never read from a step id, an
+    input or anything else a caller sends. A caller's own `resource_class`
+    still goes through `validate_resource_class_override`
+    (`apps/swarm-api/swarm_api/validation.py::validate_resource_class_override`), unchanged: it may only
+    shrink, so `builder` on `claude-code` from a caller is refused as larger.
+  * Reviews, requirements checks, merges, `codex`, `generic` and the
+    browser profiles keep their classes and their concurrency.
+
+B is proposed because the guard check runs in the steps that build: a
+review or a requirements check gains nothing from 12 cores and, under A,
+would take two units of every compute pool for it. B is the larger contract
+edit (a class, a field, a function), A the smaller one (three numbers) with
+the larger bill and the larger loss of concurrency. The choice is the
+owner's.
+
+### What reads it
+
+Under B: the scheduler's admission (`pool_names_for` gains
+`resource:builder`, which needs a `pool_limits.resource_classes.builder`
+in `terraform/infra` and each environment's tfvars, set live by
+`scripts/pool-limit.sh`), the GKE pod renderer and its manifest guards
+(`tests/unit/control_plane/test_dispatch_manifests.py`,
+`test_gke_workspace_fits.py`), swarm-api's compilers and its admin sizes
+route (`check_size` judges four classes), the console's capacity views and
+`/v1/capacity` (which read the served classes), and `specsign`, which
+already signs `resource_class`. The worker reads
+nothing new: `agent_resource_budget` reads the cgroup. Under A: the same
+readers, with no new pool.
+
+### What it would break if accepted
+
+Nothing at once under B: no stored lease or step names `builder`, and an
+attempt reserved before the change releases its own units. What changes is
+the room: each builder takes 2 units of `global`, `tenant:<t>`,
+`runner:claude-code` and `backend:GKE_AUTOPILOT`, so a workspace runs half
+as many concurrent builders as it runs implement steps today unless its
+limits are raised. Until `resource:builder` has a stated limit it is
+whatever an unconfigured pool gets, so the applying lane states one. Under
+A every `standard` and `browser` profile halves at once, and the pod of a
+live-browser step changes size.
+
+### If it is declined
+
+The time-boxed, parallel guard check on main stays the gate: on 6 workers
+about a third of a 343-file selection fits the 10-minute budget, and the
+rest is CI's. `claude-code-large` (8 requested, 16 limit, 32 GiB) already
+gives 16 xdist workers today, but it is picked by name for an
+out-of-memory or timeout lane and costs 4 units of every compute pool. An
+admin size version for `standard` on GKE is shape A without the contract
+change.
+
+### Invariants
+
+* **1:** demand is still created only by `LEASED`, `DISPATCHED`, `STARTING`
+  and `RUNNING`: a builder is an ordinary lease with a larger class, and a
+  queued builder costs nothing.
+* **2:** the builder's 2 units in each compute pool, and 1 in each provider
+  pool, are reserved in the one admission transaction across every pool,
+  all or nothing, as every class's are; release is unchanged.
+* **3:** concurrency is counted from `LEASED`: the units are taken at
+  reserve, and `concurrency-judge.jq` sums each lease's held share, so a
+  2-unit lease is counted as 2 the moment it is leased.
+* **7:** memory 16 GiB and workspace 8 GiB are request and limit both; CPU
+  is 8 requested <= 12 limit <= `CPU_BURST_MAX_RATIO` (2) x 8 = 16, on GKE
+  only. Cloud Run renders the request, 8, as its one limit, which is within
+  Cloud Run's ceiling, so `ResourceClass.__post_init__` accepts it. The
+  pod's QoS class stays Burstable.
+* **10:** a caller still names a profile and never a size; under B the
+  class is the platform's choice from the stage, and a caller's
+  `resource_class` may still only shrink.
+* **5:** the class is in the signed spec, so a changed class fails the
+  worker's check before the agent runs. **4**, **6**, **8** and **9** are
+  untouched: no checkpointing, Spot, park or tenant boundary moves.
+
+### How it is tested
+
+When it is applied, by the applying lane, red first: the class table's own
+module-load check (`units` equals `units_for`) and a test in
+`tests/unit/common/test_runner_size_shape.py` that `builder` is 8/12/16/8
+with 2 units and keeps `CLASS_ORDER` under `check_size`; a swarm-api test
+that an issue run's `implement-<id>` and `fix` steps are stored with
+`builder` and its review with `standard`, and that a caller-sent
+`resource_class: builder` on `claude-code` is refused as larger; an
+admission test that a builder lease takes 2 units in each compute pool and
+1 in each provider pool; a manifest test that the builder pod renders
+requests 8 CPU and 16 GiB with limits 12 CPU and 16 GiB; and a case in
+`tests/unit/worker/test_agent_env_resource_budget.py` that a 16 GiB
+container with a 12-core `cpu.max` sets `PYTEST_XDIST_AUTO_NUM_WORKERS` to
+12.
+
+### Who decided
+
+BGD, 3 November 2026: merge the time-boxed, parallel guard check as built
+and request a 12-CPU, 16 GiB builder class as a frozen-contract change
+(answering the publish check lane's question on builder machine size). The
+8-requested, 12-limit reading of "12 CPU", forced by Cloud Run's ceiling on
+the request, and the proposal of shape B over shape A are this request's;
+both are the owner's to accept.
+
+## 136. A shared `workcontract.py`, a `"plugins"` settings block and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 2026-11-03 and APPLIED 2026-11-03 by
+the pull request that adds this status (lane
+apply-contract-request-work-contract-plugins, part of #2688). Requested
+2026-11-03 by lane aq-work-contract, the work contract package of the owner's
+agent quality program (BGD, 3 November 2026). What reads it is listed under
+"What reads it"; none of those readers is built by the applying change.
+
+Applied exactly as worded:
+
+* **A.** `apps/common/swarm_common/workcontract.py` holds `CONTRACT_PURPOSE`,
+  `SCHEMA_VERSION`, the limit keys, `Requirement`, `WorkContract` with its
+  `to_document` projection, `canonical_bytes(document)` and
+  `contract_digest(document) -> str`. `swarm_api.workcontract` imports them
+  (its `WorkContract` subclasses the shared one and adds only
+  `requirement_ids` and `components`) and keeps the schema validation and the
+  amendment protocol. The digest of every existing test vector is pinned
+  before and after the move
+  (`tests/unit/control_plane/test_work_contract_common.py`), and the
+  pinned-bytes test in `tests/unit/control_plane/test_work_contract.py` is
+  unchanged and green.
+* **B.** `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`. Every other block's
+  canonical bytes are pinned unchanged (`tests/unit/common/test_settings_block.py`),
+  so every stored MAC still verifies. `swarm_api.judgment.WRITER_FIELDS`
+  gains `"plugins": ()` beside it: no route writes the block yet, so the
+  re-sign pass holds a stored `plugins.allowed`, never signs it, and does not
+  fail on it.
+* **C.** `RunnerProfile.runtime_capabilities: tuple[str, ...] = ()`, last in
+  the class, refused when it is not a tuple of distinct capability names, and
+  stated as `()` on every catalogue profile until the routing package fills
+  them in (`tests/unit/common/test_runtime_capabilities_contract.py`).
+
+### What is true today
+
+Read on main (3e3a987) on 2026-11-03.
+
+* `swarm_api.workcontract` (added by the pull request that adds this entry)
+  decodes a versioned work contract, digests it as RFC 8785 under the purpose
+  `swarm.work-contract/v1` through the frozen `swarm_common.specsign.jcs`, and
+  compiles it into today's step fields plus a reference
+  (`id`, `revision`, `digest`, `strictness`, `requirements`) written at
+  `metadata.dispatch.work_contract`. `dispatch` is in
+  `swarm_common.specsign.SIGNED_METADATA_KEYS`, so the step-spec signature
+  already covers the reference: no spec format bump is needed to sign it.
+* The digest function lives in swarm-api only. A worker that wanted to check
+  a stored contract body against the signed reference would need a second
+  copy of it, and two copies are two opinions about what is signed (the
+  reason `canonical_step_spec` is in `swarm_common`).
+* `swarm_api.workcontract.WORKER_ENFORCED_TODAY` is the repository binding
+  and the limits only, because those compile into signed task fields the
+  worker already acts on. `compile_contract` refuses
+  (`work_contract_not_enforceable`) a strict contract that sets a write or
+  read scope, protected paths, runtime capabilities, plugins, verification or
+  artifacts.
+* `swarm_common.specsign.SETTINGS_MAC_FIELDS` has no block saying which
+  catalogue plugins a workspace may use, and `RunnerProfile` has no field
+  naming the runtime capabilities a runner provides
+  (`dom_automation`, `screenshots`, `write_isolation` ...), so swarm-api
+  cannot check a contract's capabilities against the profile it names.
+
+### The change
+
+* **A.** `apps/common/swarm_common/workcontract.py`: `CONTRACT_PURPOSE`,
+  `SCHEMA_VERSION`, the canonical projection (`WorkContract.to_document` as
+  built in swarm-api) and `contract_digest(document) -> str`, moved from
+  `swarm_api.workcontract` unchanged in bytes (the pinned-bytes test in
+  `tests/unit/control_plane/test_work_contract.py` holds that). swarm-api then
+  imports them and keeps the schema validation and amendment protocol.
+* **B.** `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`: the workspace's
+  admin-only, signed list of catalogue plugins its steps may name
+  (docs/design/agent-plugins.md, "A closed plugin catalogue").
+* **C.** `RunnerProfile.runtime_capabilities: tuple[str, ...] = ()`, each a
+  name from `swarm_api.workcontract.RUNTIME_CAPABILITIES`, empty on every
+  profile until the routing package fills them in.
+
+### What reads it
+
+* A: the worker, verifying a contract body it fetched against the reference
+  inside its verified spec before it enforces anything of it.
+* B: swarm-api, refusing a contract that names a plugin its workspace has not
+  allowed; the worker, loading only allowed plugins.
+* C: swarm-api, refusing a strict contract whose runtime capabilities its
+  profile does not provide; the routing package.
+
+### What it would break if accepted
+
+Nothing stored: no task document carries a contract while
+`SWARM_WORK_CONTRACTS` is off, and none of A-C changes a spec's signed bytes.
+B adds a block every reader of `SETTINGS_MAC_FIELDS` must re-sign in the
+rollout that adds it (empty on every workspace, so nothing to re-sign).
+
+### If it is declined
+
+Strict contracts stay refused for every component but the repository binding
+and the limits, and advisory contracts carry the rest as text the agent reads
+and the platform does not enforce. The plugins plan's per-step selection has
+no signed workspace allow-list.
+
+### Invariants
+
+No capacity, lease, fencing or tenant-isolation rule changes. Invariant 10
+holds: a contract names a runner profile, model class, plugins, skills and
+capabilities by name only, never an image, command, path or resource spec.
+
+### How it is tested
+
+`tests/unit/control_plane/test_work_contract.py` pins schema 1's bytes, so
+moving A into `swarm_common` must leave that test green unchanged.
+
+### Who decided
+
+Nobody yet: this is a request. The program's rule that a strict contract never
+silently degrades to advisory is the owner's (BGD, 3 November 2026).
+
+## 137. `specsign.py`: the stored work contract is signed with the step, spec format 8 (WORK-CONTRACT-SIGNED, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 4 November 2026 ("Sign the key") and
+APPLIED 2026-11-04 by the pull request that adds this section (lane
+work-contract-signed-metadata-key, part of #2688), on the plugins catalogue's
+pull request (PR 3156). Requested the same day by that pull request's red
+cover test, `tests/unit/common/test_specsign_covers.py::
+test_every_metadata_key_the_worker_reads_is_signed`.
+
+### What is true today
+
+Read on the plugins catalogue's branch (c9c4c43) on 2026-11-04.
+
+* With `SWARM_WORK_CONTRACTS` on, swarm-api decodes the contract a caller
+  sends at `metadata.work_contract`, stores its canonical document under the
+  same key, and writes its reference (`id`, `revision`, `digest`,
+  `strictness`, `requirements`) into the signed dispatch block at
+  `metadata.dispatch.work_contract` (`swarm_api.workcontract.prepare` and
+  `attach`).
+* The worker reads the step's plugins from `metadata.work_contract.
+  capabilities.plugins` (`agent_worker.plugins.selected`), and only when
+  `swarm_common.workcontract.contract_digest` of the stored document is the
+  digest in the signed reference.
+* `SIGNED_METADATA_KEYS` is `("dispatch", "input_from", "expected_outputs")`,
+  so the stored document itself is outside the step-spec signature and the
+  cover test is red: the worker reads a metadata key the signature does not
+  cover.
+
+### The change
+
+* `SIGNED_METADATA_KEYS` gains `"work_contract"`, and `SPEC_FORMAT` becomes 8
+  (`SPEC_FORMATS` gains 8), in the shape of formats 2-7: format 8's
+  projection is format 7's with `work_contract` in its `metadata` map.
+* Formats 1-7 keep exactly the `metadata` map they had (`dispatch`,
+  `input_from`, `expected_outputs`), so every signature stored before the
+  change still verifies. A document at one of them that sets
+  `metadata.work_contract` (non-None) has no canonical form, as a set
+  `max_turns` below format 7: a contract added to an agent signed without one
+  fails its worker's check.
+* `signing_format` returns 8 only for an agent whose metadata carries a
+  contract, so every other agent keeps the format and bytes it had. Rollout
+  order: workers first, then swarm-api, as for formats 2-7; a worker built
+  before format 8 refuses an agent signed at 8 (`SPEC_SIGNATURE_INVALID`), and
+  only an agent with a contract is signed at 8, which needs
+  `SWARM_WORK_CONTRACTS` on.
+* The worker's digest check stays as a second guard: a document whose digest
+  is not the signed reference's still loads no plugin.
+
+The alternative the owner rejected: leave the key unsigned and list it in
+the cover test as a digest-verified allowance list. Rejected because it gives
+"signed" a second, weaker meaning: the cover test would then pass for a key
+the signature does not cover.
+
+### What reads it
+
+swarm-api's spec signer (`signing_format`, `canonical_step_spec`), every
+verifier through `SPEC_FORMATS` (the worker's `specverify`, the upstream
+check, the forge broker's and the verdict publisher's format checks), and
+the worker's plugins selection, which acts on the verified document.
+
+### What it would break if accepted
+
+An agent signed at format 1-7 that carries a caller's free-form
+`metadata.work_contract` (written while `SWARM_WORK_CONTRACTS` was off,
+before this change) is refused by a worker built after it, on its next
+attempt: the key is now refused below format 8. swarm-api signs a new
+submission of the same agent at format 8.
+
+The brief also asked to add the key to swarm-api's
+`validation.RESERVED_METADATA_KEYS`. Not applied, and asked of the owner in
+the pull request: a caller SENDS its contract at `metadata.work_contract`
+(`swarm_api.workcontract.METADATA_KEY`), and `reject_reserved_metadata` runs
+on that metadata, so reserving the key would refuse every contract at
+submission; and the reserved tuple is `task_input.PLATFORM_METADATA_KEYS`,
+served unmasked, which would serve the caller's contract text unmasked. The
+cover test's parity check names the key as signed and caller-sent
+(`CALLER_SENT_SIGNED_KEYS`) instead.
+
+### If it is declined
+
+The cover test stays red and the plugins catalogue's pull request cannot
+merge; the worker trusts the stored contract by its digest alone.
+
+### Invariants
+
+Invariant 5 (fencing): unchanged. The spec check runs before the agent and
+refuses a stale or rewritten spec without touching the lease; the fencing
+generation is checked as before. Invariant 10 (callers name, never supply):
+a contract names plugins, skills, a runner profile and limits by name only,
+and the worker checks every plugin name against its own catalogue; signing
+the document adds no field a caller can use to supply an image, a command or
+a resource spec.
+
+### How it is tested
+
+`tests/unit/common/test_work_contract_signed_contract.py` pins each of
+formats 1-7's digests from before the change, signs a contract at 8 only,
+and refuses a contract below 8; `tests/unit/common/test_specsign_covers.py`
+is green; `tests/unit/common/test_specsign.py` and
+`tests/unit/common/test_max_turns_contract.py` pin the new format;
+`tests/unit/worker/test_work_contract_signed_worker.py` refuses a rewritten
+contract before the agent runs.
+
+### Who decided
+
+The owner (BGD), 4 November 2026: "Sign the key".
+
+## 138. `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 4 November 2026 and APPLIED
+2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)" (lane
+contract-review-signed-settings-applied): `SETTINGS_MAC_FIELDS` lists
+`"contract_review": ("enabled",)`, and everything under "What empties in
+swarm-api once it is applied" is done in that pull request. Requested
+4 November 2026 by the pull request that added this section (swarm-api's Jev
+review of a work contract at submission, part of #2688), on the owner's
+answer to that lane's second question: the block goes into the frozen
+contract's signed settings fields by a contract change request.
+
+### What is true today
+
+Read on that pull request's branch on 2026-11-04.
+
+* `workspace_settings/{tenant_id}.contract_review: {enabled, set_at, set_by,
+  mac}` is written by `apps/swarm-api/swarm_api/contractreview.py::
+  ContractReviewStore.put` (`PUT /v1/workspaces/{tenant_id}/contract-review`:
+  the workspace's owner, its admin or a platform admin, audited as
+  `workspace_contract_review_set`). With `enabled` true, and the platform's
+  `SWARM_CONTRACT_REVIEW` at `report` or `enforce`, swarm-api sends the
+  workspace's work contracts' requirement texts to the workspace's Jev
+  backend at submission (docs/design/agent-quality/jev-contract.md section
+  4, the owner's answer 9 of 3 November 2026).
+* `swarm_common.specsign.SETTINGS_MAC_FIELDS` does not list the block, so
+  `canonical_settings_block` refuses it (`SpecNotCanonical`). swarm-api signs
+  it anyway through a list of its own, `judgment.API_SETTINGS_MAC_FIELDS =
+  {"contract_review": ("enabled",)}`, and `judgment._canonical_block`, which
+  builds the SAME bytes `canonical_settings_block` would: JCS of
+  `{"purpose": SETTINGS_PURPOSE, "tenant_id", "block": "contract_review",
+  "fields": {"enabled": ...}}`.
+* The re-sign pass (`judgment.resign_workspace_settings`,
+  `scripts/resign-workspace-settings.sh`) covers the block through
+  `judgment._covered_by_block`, which adds `API_SETTINGS_MAC_FIELDS` to the
+  frozen list, and treats `enabled` as written by its writer
+  (`judgment._unowned` answers `()` for a block outside the frozen list).
+* Only swarm-api reads the block. No scheduler, worker or other service
+  verifies it.
+
+### Why
+
+Two lists now say which settings blocks are signed and which keys each
+covers. Every other signed block is named once, in the frozen module, so
+the settings-integrity design's one statement of "what a MAC covers"
+(design/tenant-settings-integrity.md) has an exception only swarm-api knows
+about. A service that later needs to verify the opt-in (the scheduler
+vouching for it, as it does for `quality_gates`) would have to copy
+swarm-api's list, or could not verify it at all, because
+`canonical_settings_block` refuses the name.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "plugins": ("allowed",),
+    "contract_review": ("enabled",),
+})
+```
+
+Only `enabled` is covered: `set_at` and `set_by` record who changed it and
+no reader acts on them. A comment beside the entry names this request, as
+the other entries name theirs. Nothing else in `specsign.py` changes;
+`tests/unit/common/test_settings_block.py` gains the entry.
+
+### What empties in swarm-api once it is applied
+
+In the same pull request that applies it:
+
+* `judgment.API_SETTINGS_MAC_FIELDS` loses `contract_review` and, empty, is
+  removed with `judgment._canonical_block` (whose only job was building the
+  frozen bytes for a name the frozen list refused): `_sig` calls
+  `canonical_settings_block` directly again.
+* `judgment._covered_by_block` and `judgment._unowned` collapse to
+  `SETTINGS_MAC_FIELDS` and `unowned_covered_keys`.
+* `judgment.WRITER_FIELDS` gains `"contract_review": ("enabled",)`
+  (`ContractReviewStore.put` writes it), so
+  `tests/unit/control_plane/test_settings_mac.py::
+  test_each_writers_fields_are_the_ones_the_module_writes` (which holds
+  `WRITER_FIELDS` and `SETTINGS_MAC_FIELDS` to the same block names) stays
+  green.
+* `contractreview.py`'s docstring drops "until the frozen
+  `SETTINGS_MAC_FIELDS` lists it", and
+  `tests/unit/control_plane/test_contract_review_submission.py::
+  test_the_signing_list_names_the_new_block_only` asserts the frozen list
+  names the block instead of swarm-api's.
+
+### How the re-sign pass then covers the block
+
+Through the frozen list, as every other block: `_blocks` walks
+`SETTINGS_MAC_FIELDS`, and `unowned_covered_keys("contract_review")` is `()`
+because `WRITER_FIELDS` lists `enabled`, so a stored block is never `held`.
+The bytes do not change -- `_canonical_block` already built exactly
+`canonical_settings_block`'s bytes for the name -- so every MAC swarm-api
+stored before the change still verifies after it: the first pass after
+applying finds those blocks `signed` and writes nothing. A block stored
+without a MAC (written before this deployment had a key) is signed as it is
+stored, never turned on.
+
+### What it would break if accepted
+
+Nothing: a new block changes no other block's bytes, and the block's own
+bytes are the ones already signed. A service built before the change that
+calls `canonical_settings_block(block="contract_review")` would have raised
+`SpecNotCanonical`; none does.
+
+### If it is declined
+
+swarm-api keeps `API_SETTINGS_MAC_FIELDS` and the re-sign pass keeps
+covering it through `_covered_by_block`. The block stays signed and
+verified by swarm-api; the cost is the second list, and that no other
+service can verify the opt-in without copying it.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Invariant 9 (per-tenant isolation): the
+tenant and the block are inside the signed bytes, so a block copied onto
+another workspace's document, or into another block, does not verify; a
+tenant worker's direct write of `enabled: true` reads as off for a tenant
+cut over in SETTINGS_MAC_TENANTS, and nothing is sent to Jev.
+
+### How it is tested
+
+`tests/unit/common/test_settings_block.py` pins the entry;
+`tests/unit/control_plane/test_contract_review_submission.py` signs a block
+with `ContractReviewStore.put`, reads a forged and a copied block as off,
+and re-signs a block after a key rotation through the pass; its MAC made
+before the change verifies after it.
+
+### Who decided
+
+Requested by the pull request that adds this section, on the owner's
+(BGD) answer of 4 November 2026 to its second question.
+
+## 139. `profiles.py`: `pull_request` declared as a runner input of claude-code, codex and claude-code-review (PR-CONTEXT-INPUT, pull request #3470, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026, picking "declare"
+on pull request #3470's question, and APPLIED by that pull request.
+
+### What is true today
+
+Read on that pull request's branch on 2026-11-06. The worker stages the
+pull request a step works on as `work/pull_request.md`
+(`agent_worker/pull_request.py`) and finds its number from the signed
+`publish_to_pr`, or the pull request its `builds_on` (or, for a single-pr
+reader or amender, its `pr_author`) step recorded opening. Before this
+change no profile declared `input.pull_request`, so swarm-api refused it
+with 422 `invalid_input` and a caller could not name the pull request
+itself.
+
+### The change
+
+`_PULL_REQUEST_INPUTS` declares `pull_request`, an integer 1..999999 (the
+`issue` input's bound, for the same reason), on claude-code and codex
+(`_CLI_AGENT_PR_INPUTS`) and claude-code-review
+(`_CLI_AGENT_REVIEW_INPUTS`). `pull_request.from_input` reads it only where
+the agent's profile declares it; it is read first, before `publish_to_pr`
+and `builds_on`. claude-code-large, claude-code-lightpanda,
+claude-code-browser and indexer do not gain it: the question named the
+three.
+
+### What it would break if accepted
+
+Nothing: a key a caller could not send before is now accepted on three
+profiles. The generated input tables in `docs/workflows.md` and
+`plugin/README.md` and the UI fixture's input contracts gain the row.
+
+### Invariants
+
+Invariant 10: the caller names a pull request by number, data, never an
+image, a command or a resource spec; the worker reads it read-only with the
+tenant's own forge credential, in the agent's own repository (invariant 9),
+and no token reaches the container.
+
+### How it is tested
+
+`tests/unit/mcp/test_runner_inputs.py` pins which profiles declare it and
+holds the key to the worker module that reads it;
+`tests/unit/worker/test_pull_request_context.py` reads it through
+`from_input` on the three and not on the others;
+`tests/unit/mcp/test_runner_input_prose.py` holds the generated tables.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, answering pull request #3470's question.
+
+---
+
+## 140. `specsign.py`: `SETTINGS_MAC_FIELDS["plugins"]` becomes `("allowed", "defaults", "configs_digest")` (managed plugins P1, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five",
+his answers to docs/design/managed-plugins.md section 18) and APPLIED
+2026-11-06 by the pull request that adds this section (lane
+managed-plugins-contract, part of #2688). Requested by
+docs/design/managed-plugins.md section 14, request P1.
+
+### What is true today
+
+Read on main at 0772457 on 2026-11-06. The `plugins` block is
+`{allowed, set_at, set_by, mac}`, written and signed by
+`swarm_api.plugins.PluginsStore.put` (request 136); its MAC covers
+`{"allowed": [...]}` only.
+
+### Why
+
+The managed plugins design adds two values the control plane acts on: the
+install ids on for every step of the workspace (`defaults`, section 7) and
+the digest of the workspace's plugin settings documents (`configs_digest`,
+section 6.2), so a forged default or a forged non-secret setting does not
+verify. A tenant identity can write its own `workspace_settings` document, so
+both must be inside the block's MAC.
+
+### The change
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "plugins": ("allowed", "defaults", "configs_digest"),
+    ...,
+})
+_SETTINGS_ADDED_FIELDS = MappingProxyType({"plugins": ("defaults", "configs_digest")})
+```
+
+An absent key projects as null, as for every block. The request also says
+"so every block stored today still verifies", and a literal null in the
+bytes would break that: `{"allowed": [...]}` would become
+`{"allowed": [...], "configs_digest": null, "defaults": null}` and every
+stored MAC would fail. So `canonical_settings_block` leaves a null key of
+`_SETTINGS_ADDED_FIELDS` (keys a block gained after MACs over it were stored)
+out of the bytes. Null and absent remain one value. A set value is covered:
+a default planted on a block signed without one, a signed default removed or
+nulled, an emptied list, a swapped digest, each changes the bytes.
+
+Crossing into swarm-api (its track's files, for this reason only):
+`judgment.unowned_covered_keys("plugins")` becomes
+`("defaults", "configs_digest")`, because no swarm-api path writes them yet.
+`PluginsStore.put` carried over every key it does not own, so it would have
+signed a planted `defaults` with the list the admin chose. It now drops
+the unowned covered keys, as `codeintel` already does.
+`tests/unit/control_plane/test_settings_mac.py` pins both.
+
+### What it would break if accepted
+
+Nothing stored. A block carrying `defaults` or `configs_digest` can only come
+from a direct Firestore write today: the re-sign pass holds it (`held`), and
+the next `PUT /v1/workspaces/{tenant_id}/plugins` drops the value. The lane
+that writes `defaults` adds both keys to `judgment.WRITER_FIELDS["plugins"]`.
+
+### If it is declined
+
+The defaults and the settings digest would need a block of their own, and the
+Allowed list and the defaults could then be swapped independently.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Invariant 9: the tenant and the block are
+inside the bytes, as before.
+
+### How it is tested
+
+`tests/unit/common/test_settings_block.py` pins the list, the bytes a block
+stored before the change covers (unchanged, explicit nulls included) and the
+bytes with both keys set, and asserts each forgery changes the bytes.
+`tests/unit/control_plane/test_settings_mac.py` asserts that the writer drops
+a planted default and that the block still verifies.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 141. `specsign.py`: `canonical_plugin_record(kind, fields)`, purpose `swarm.plugin-record/v1` (managed plugins P2, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five")
+and APPLIED 2026-11-06 by the pull request that adds this section (lane
+managed-plugins-contract, part of #2688). Requested by
+docs/design/managed-plugins.md section 14, request P2.
+
+### Why
+
+`plugin_installs/{install_id}`, its `versions/{version_id}` and
+`plugin_intake/{intake_id}` are written by swarm-api only. But the tenant GSAs
+hold project-wide Firestore access, so any tenant's worker can write any of
+them. A forged version could swap the `runnable_sha256` that every
+workspace's steps are signed with. swarm-api acts on one only when its MAC,
+under `swarm-settings-key`, verifies. These are the bytes of that MAC (design
+sections 1.1 and 2.3).
+
+### The change
+
+```python
+PLUGIN_RECORD_PURPOSE = "swarm.plugin-record/v1"
+PLUGIN_RECORD_KINDS = ("install", "version", "intake")
+PLUGIN_SCOPES = ("platform", "workspace")
+PLUGIN_RECORD_IDS = {"install": ("install_id",),
+                     "version": ("install_id", "version_id"),
+                     "intake": ("intake_id",)}
+PLUGIN_RECORD_UNCOVERED = ("mac", "created_at", "created_by", "updated_at", "updated_by")
+
+def canonical_plugin_record(kind, fields) -> bytes:
+    # JCS of {"purpose", "kind", "scope", "tenant_id", "fields"}
+```
+
+* The scope and the tenant are inside the bytes. A workspace record must
+  name its tenant, and a platform record names none (absent or null), so a
+  record copied onto another workspace, or lifted to platform scope, does not
+  verify. The kind is inside the bytes too: an intake's MAC never verifies an
+  install.
+* A document's id is not one of its stored fields. Its writer and reader put
+  the ids into `fields` (`PLUGIN_RECORD_IDS`, each a non-empty string), so a
+  version copied under another install does not verify. An intake for a new
+  install names no `install_id`. One for an update does, and it is covered.
+* Every other key is covered, except the MAC and who wrote the record and
+  when. The design names the documents' fields but not the intake's
+  spelling, and the lane that writes them is not written yet. Covering
+  everything leaves nothing stored outside the MAC, so no key name is
+  guessed and a later key needs no further request. A covered value must
+  have a JSON form: a Firestore timestamp outside the writer-record keys is
+  refused (`SpecNotCanonical`).
+
+### What it would break if accepted
+
+Nothing: no document of these kinds exists yet.
+
+### If it is declined
+
+swarm-api would have to define its own canonical form, a second opinion
+about what is signed.
+
+### Invariants
+
+None changes. Invariant 9: the tenant is inside the bytes. Invariant 10: a
+record names a plugin by install id and never takes an image, a command or a
+resource spec from a caller.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins the bytes of an
+install, a version and an intake. It also covers the scope, the tenant and
+the kind inside them, the uncovered keys, a planted key changing the bytes,
+and the refusals (an unknown kind, an incoherent scope, a missing id, a
+timestamp).
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 142. `models.py`: `Tenant.plugin_secret_name(install_id, field)` and the secret consumer kind `plugin` (managed plugins P3, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five";
+secrets are per workspace only) and APPLIED 2026-11-06 by the pull request
+that adds this section (lane managed-plugins-contract, part of #2688).
+Requested by docs/design/managed-plugins.md section 14, request P3.
+
+### The change
+
+```python
+SECRET_CONSUMER_KINDS = ("profile", "tool", "component", "mcp", "plugin")
+
+def plugin_secret_name(self, install_id: str, field: str) -> str:
+    # swarm-tenant-<t>-plg-<first 16 hex of sha256(install_id + "/" + field)>
+```
+
+The name is derived from the workspace, the plugin and the field (design
+section 6.2), never from anything a caller types, so no value can be
+addressed into another workspace's or plugin's name. It is built with
+`secret_name`, so the frozen `swarm-tenant-<t>-` prefix has one definition.
+An empty id or field is refused, and so is an install id holding the "/"
+separator, so ("a/b", "c") cannot name ("a", "b/c")'s secret. `plugin:<install
+id>` names the consumer of a released plugin secret. Its name passes the
+generic consumer check, and its membership in the workspace's catalogue is
+checked by its reader, as for `mcp:`.
+
+### What it would break if accepted
+
+Nothing. The tests that pinned the four kinds pin five. A `-plg-` suffix is
+21 characters, like `-wsec-`, so the tenant-id budget is unchanged. No shell
+script builds a plugin secret name (`create-secrets.sh` does not store them:
+swarm-api's one-time form does), so the contract-parity script has no mirror
+to update.
+
+### Invariants
+
+Invariant 9: the tenant is in the name and the hash. The tenant GSA holds no
+grant on a `-plg-` secret (design section 6.2), which is Terraform and
+swarm-api's.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins the shape and the
+derivation, checks that a different workspace, plugin or field gives a
+different name, and covers the refusals and the consumer's round trip.
+`test_workspace_secret_contract.py` and `test_mcp_contract.py` pin the five
+kinds.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 143. `profiles.py`: `runtime_capabilities` on the five claude-code profiles (managed plugins P4, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five")
+and APPLIED 2026-11-06 by the pull request that adds this section (lane
+managed-plugins-contract, part of #2688). Requested by
+docs/design/managed-plugins.md section 14, request P4.
+
+### The change
+
+`claude-code`, `claude-code-large`, `claude-code-review`,
+`claude-code-browser` and `claude-code-lightpanda` (swarm-api's
+`plugincatalogue.CLAUDE_CODE_PROFILES`, every one running
+`agent_worker.runners.claude_code`) state
+`runtime_capabilities=("claude_plugins", "node", "bun", "python3", "bash")`.
+`claude_plugins` means the runner loads Claude Code plugins. The rest are the
+design's closed list of plugin runtimes (section 5), each shipped by
+`agent-runtime-base` and by the browser and lightpanda images built on it
+(node from `NODE_IMAGE`, bun copied from the gstack build stage, python3,
+bash). Every other profile keeps `()`: codex loads no Claude Code plugin, and
+the indexer is a platform step.
+
+### What it would break if accepted
+
+Nothing reads a profile's capabilities yet. A strict work contract's runtime
+capabilities are `swarm_api.workcontract.RUNTIME_CAPABILITIES` names, and
+these names are not among them, so no contract is admitted or refused
+differently. `tests/unit/common/test_runtime_capabilities_contract.py`
+allowed only those names on a profile, and now also allows the five plugin
+capabilities.
+
+### Invariants
+
+Invariant 10: names only, never a binary or a path.
+
+### How it is tested
+
+`tests/unit/common/test_runtime_capabilities_contract.py` pins the five
+profiles' tuple, checks that they are the plugin catalogue's
+`CLAUDE_CODE_PROFILES` running the claude-code runner, and checks that every
+other profile is still empty.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+---
+
+## 144. `specsign.py`: `canonical_platform_settings(fields)`, purpose `swarm.platform-settings/v1` (managed plugins P5, part of #2688)
+
+**Status:** ACCEPTED by the owner (BGD) 6 November 2026 ("accept all five";
+a platform switch change is confirmed in a dialog) and APPLIED 2026-11-06 by
+the pull request that adds this section (lane managed-plugins-contract, part
+of #2688). Requested by docs/design/managed-plugins.md section 14, request
+P5.
+
+### Why
+
+The platform switches `SWARM_WORK_CONTRACTS` and `SWARM_CONTRACT_REVIEW`
+become console settings in `platform_settings/switches` (design section 11).
+Any tenant's worker can write that document, so swarm-api acts on it only
+when its MAC verifies.
+
+### The change
+
+```python
+PLATFORM_SETTINGS_PURPOSE = "swarm.platform-settings/v1"
+PLATFORM_SETTINGS_MAC_FIELDS = ("work_contracts", "contract_review")
+
+def canonical_platform_settings(fields) -> bytes:
+    # JCS of {"purpose", "fields": {work_contracts, contract_review}}
+```
+
+Only the two switches are covered, and an absent one is null. `set_by`,
+`set_at` and `mac` are not covered, and a key outside the list must not be
+acted on. It names no tenant, because there is one platform. Its purpose is
+not a workspace block's, so neither MAC verifies the other's document.
+
+### What it would break if accepted
+
+Nothing: no such document exists yet.
+
+### Invariants
+
+None changes.
+
+### How it is tested
+
+`tests/unit/common/test_managed_plugins_contract.py` pins the bytes, an unset
+switch as null, a changed switch changing them, an uncovered key, and the
+refusal of a non-map. It also checks that specsign's public names are exactly
+the ones before plus those requests 141 and 144 add.
+
+### Who decided
+
+The owner (BGD), 6 November 2026, 02:43 UTC: "accept all five".
+
+## 145. `models.py`: `EndCause.SUPERSEDED_BY_PERSON_PUSH`, a `CANCELLED` end for a merge step a person pushed over (#2505, epic #2525)
+
+**Status:** REQUESTED 2026-11-05 by the pull request that adds this section,
+on the owner's decision of 2026-10-27 (BGD, issue triage, epic #2525): "A
+distinct non-failure end: superseded_by_person_push (not FAILED) when the
+committer is not the platform identity, so failure-review stops filing it; a
+foreign head from an unknown branch-mate still refuses. If the end cause is
+typed in the frozen contract, it goes in as a contract request first." The
+worker side of the decision is on main; this is the contract request the
+decision promised and nobody filed. Not applied.
+
+### What is true today
+
+Read on main (a515b65) on 2026-11-05.
+
+* `EndCause` in `apps/common/swarm_common/models.py` has no member for it.
+* A parked merge step whose pull request a person on it (its author or an
+  assignee) pushed a non-merge commit to, which the platform did not make,
+  ends `FAILED` with `end_cause` `merge_refused` and
+  `result_summary.merge.refusal.code` `superseded_by_person_push`
+  (`agent_worker.merge.SUPERSEDED_BY_PERSON_PUSH`, chosen by
+  `merge._person_pusher`, ended by `merge._superseded`). The refusal itself
+  is unchanged: `merge._accept` takes no head a person made of content and
+  nothing merges.
+* `swarm_api.failuredigest._person_push` skips both the refusal code and the
+  string `superseded_by_person_push` as an `end_cause`, so failure-review does
+  not file the step either way.
+* `docs/merge-step.md` (section "Revised 2026-10-27: a person's push
+  supersedes the merge step"), `docs/design/failure-review.md` and the
+  comments on `merge.SUPERSEDED_BY_PERSON_PUSH` and
+  `failuredigest.SUPERSEDED_BY_PERSON_PUSH` all say "until contract request
+  SUPERSEDED_BY_PERSON_PUSH lands"; until this entry, no such request existed.
+
+### Why
+
+`EndCause` is "why a task reached a FAILED or CANCELLED state". A step a person
+took over by pushing to its pull request did not fail: the platform's guarantee
+(a person's content commit is never merged unreviewed) held, and the person
+went on by hand. Ending it `FAILED` puts it in the failed-step counts, the
+outcome ledger's `merge_refused` class and any reader that treats `FAILED` as
+something to look at, and only failure-review's rule, which reads the refusal
+code, tells it apart.
+
+### The change
+
+```python
+class EndCause(str, Enum):
+    ...
+    SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
+```
+
+* The member's value is the string the refusal code already carries, so the
+  two never differ.
+* Its one writer is the worker (`agent_worker.control`), beside
+  `completed_at`, when the merge step ends `CANCELLED` having found a head a
+  person on the pull request made. The `EndCause` docstring's list of the
+  worker's causes gains `SUPERSEDED_BY_PERSON_PUSH`.
+* The worker ends such a step `CANCELLED` (exit code `ExitCode.CANCELLED`)
+  with the refusal still in `result_summary.merge.refusal`, as
+  `merge._outcome` already does for `pull_request_closed`. Nothing merges.
+
+### What empties once it is applied
+
+In the same pull request that applies it:
+
+* `merge._superseded` writes `CANCELLED` with
+  `EndCause.SUPERSEDED_BY_PERSON_PUSH` instead of `FAILED` with
+  `EndCause.MERGE_REFUSED`; the comment on `merge.SUPERSEDED_BY_PERSON_PUSH`
+  loses "until contract request SUPERSEDED_BY_PERSON_PUSH lands".
+* `failuredigest` needs no change: `_person_push` already reads the string as
+  an `end_cause`, and the refusal-code branch stays for steps ended before.
+  Its comment loses "while `EndCause` has no member for it".
+* `swarm_api.outcomes` classifies the new member (`_CANCEL_OF_CAUSE`, a
+  cancel cause of its own), because
+  `test_every_end_cause_has_exactly_one_class` holds the two maps to the
+  enum; the ledger's `DERIVE_VERSION` moves with it.
+* `docs/merge-step.md`'s table row, "`MERGE_REFUSED` `superseded_by_person_push`
+  ... `CANCELLED` once contract request ... lands", and its paragraph "The end
+  cause is frozen" become one statement of the new end; the same line in
+  `docs/design/failure-review.md` is updated.
+* `tests/unit/worker/test_merge_person_push.py` asserts the `CANCELLED` end
+  and the cause.
+
+### What it would break if accepted
+
+A reader that sorts `FAILED` steps by `end_cause` and has no branch for an
+unknown value: `swarm_api.outcomes` is the one in this repository, and its
+parity test names it. A step ended before the change keeps `FAILED`/
+`merge_refused` and its code; every reader that reads the code keeps working.
+
+### If it is declined
+
+The step stays `FAILED`/`MERGE_REFUSED` with the refusal code, which is
+today's state: failure-review skips it by the code, and the failed-step counts
+and the ledger's `merge_refused` class carry a step nobody should look at.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Capacity and fencing are untouched: the
+step is already ended by the worker holding the current generation, and no
+state that creates infrastructure demand changes.
+
+### How it is tested
+
+`tests/unit/worker/test_merge_person_push.py` holds the worker's end and
+the parity of the two modules' constants;
+`tests/unit/control_plane/test_outcomes_classifier_parity.py` and the
+`EndCause` partition test hold the ledger to the enum once it has the member.
+
+### Who decided
+
+The decision is the owner's (BGD), 2026-10-27, epic #2525; this request is
+filed by the pull request that adds it, for #2505, and awaits the owner's
+acceptance.
+
+---

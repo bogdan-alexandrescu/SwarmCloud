@@ -105,6 +105,16 @@ class GitTransient(GitError):
         self.tries = tries
 
 
+class MergedHeadUnreadable(GitError):
+    """A branch the agent merged is a commit the clean repository cannot read (#3359).
+
+    The fold keeps every branch the agent merged as a parent of its one commit,
+    so a parent it cannot read cannot be kept, and folding without it would
+    drop that branch's history in silence. The publish fails instead; the
+    caller keeps the agent's branch as `swarm-work.bundle`, merges included.
+    """
+
+
 class PushRejected(GitError):
     """The forge refused a push because the branch holds commits HEAD does not
     descend from: a non-fast-forward, or a `--force-with-lease` whose expected
@@ -183,6 +193,9 @@ _GIT_TRANSIENT = re.compile(
             r"(?:recv|send) failure",
             r"gnutls recv error",
             r"ssl_error_syscall",
+            # GitHub's sideband when its server-side ref update fails
+            # (#3222); the same push a moment later lands.
+            r"fatal error in commit_refs",
         )
     ),
     re.IGNORECASE,
@@ -672,6 +685,19 @@ def validate_ref(ref: str | None) -> str | None:
     return ref
 
 
+def is_full_refname(ref: str | None) -> bool:
+    """True when `ref` names a ref in full, `refs/...`, rather than a branch or tag.
+
+    GitHub serves a pull request's head and merge commit only as
+    `refs/pull/<n>/head` and `refs/pull/<n>/merge`, which `git clone --branch`
+    cannot reach: it takes a branch or tag NAME (#3347). A full refname is
+    therefore fetched as itself, as a sha is. Safe to hand `git fetch` as its
+    refspec once `validate_ref` has passed it: `_SAFE_REF` admits no `:`, `+`
+    or `*`, so the fetch writes FETCH_HEAD and no local ref.
+    """
+    return bool(ref) and str(ref).startswith("refs/")
+
+
 def _credential_host(url: str) -> str | None:
     """The host to store the forge token for, or None when `url` gets none.
 
@@ -1043,6 +1069,11 @@ def shallow_clone(
 ) -> CloneResult:
     """Clone `url` at `ref` into `destination`, shallow and single-branch.
 
+    `ref`: a branch or tag name is cloned with `--branch`; a sha or a full
+    refname (`refs/pull/<n>/head`, `is_full_refname`, #3347) is fetched alone
+    at depth 1 and checked out detached. Everything after -- the history, the
+    pull base, the trace -- is the same for both.
+
     `pull_base` (a `publish_to_pr` step, #2901): the pull request's base
     branch. After the one-commit clone, it is fetched as `origin/<base>` and
     both sides deepened until they share a merge base (`fetch_pull_base`),
@@ -1079,8 +1110,11 @@ def shallow_clone(
         config_args += peers.config_args()
 
     is_sha = bool(ref and _SHA_RE.match(ref))
-    if is_sha:
-        # A shallow clone cannot target a bare commit, so fetch it explicitly.
+    if is_sha or is_full_refname(ref):
+        # A shallow clone cannot target a bare commit, nor a full refname such
+        # as `refs/pull/<n>/head` (`--branch` takes a name, #3347), so fetch
+        # it explicitly. `remote add` maps every branch, as TRACK_EVERY_BRANCH
+        # does after a clone; the fetch of an explicit ref writes FETCH_HEAD.
         steps = [
             [git_binary, *config_args, "init", "--quiet", str(destination)],
             [git_binary, *config_args, "-C", str(destination), "remote", "add", "origin", url],
@@ -1100,8 +1134,8 @@ def shallow_clone(
             [git_binary, *config_args, "-C", str(destination), *TRACK_EVERY_BRANCH],
         ]
 
-    # Every step is traced into the same two files, so a by-sha clone's
-    # fetch and checkout land on one timeline (`clone_phase_timings`).
+    # Every step is traced into the same two files, so a by-sha (or by full
+    # refname) clone's fetch and checkout land on one timeline (`clone_phase_timings`).
     trace = _CloneTrace.create(private_dir)
     phases: dict[str, Any] = {}
     failed: GitError | None = None
@@ -1520,6 +1554,99 @@ def fetch_base_history(
     return None
 
 
+#: The scratch repository `fetch_commit_history` fetches into, under the
+#: caller's `private_dir`: never the checkout, which keeps its depth.
+ANCESTRY_HISTORY_DIR = "ancestry-history.git"
+#: What `fetch_commit_history`'s scratch repository's config is rewritten to
+#: once the fetch lands: no `extensions.partialClone` and no promisor remote,
+#: so an object the proof asks for and the fetch did not bring is an answer
+#: ("not there"), never a lazy fetch from the forge with no token and no bound.
+_HISTORY_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+
+
+def fetch_commit_history(
+    *,
+    url: str,
+    base_sha: str,
+    private_dir: Path,
+    token: str | None = None,
+    depth: int = ANCESTRY_FETCH_DEPTH,
+    timeout_seconds: float = ANCESTRY_FETCH_TIMEOUT_SECONDS,
+    git_binary: str = "git",
+) -> Path | str:
+    """`depth` commits behind `base_sha`, with their trees and no file
+    contents, in a scratch bare repository of their own: its path, else a
+    short reason (never git's own words).
+
+    `fetch_base_history` deepens the checkout, which brings every blob the
+    `depth` commits changed: on a large repository (AI Studio's, 2026-11-06)
+    that ran past the 20-second limit on 213 of 637 steps and the graph was
+    not delivered. An ancestry proof reads commits (`merge-base`,
+    `rev-list --count`) and trees (`diff --name-only`), never a blob, so
+    `--filter=blob:none` brings what it reads and nothing else. A forge that
+    does not honour the filter sends the blobs too, under the same limit.
+
+    The scratch repository is new each call, with the global and system
+    config off (`_clone_env`), so no config a restored checkpoint planted is
+    read and the token, when given, is held as a clone holds it: no
+    `_token_unsafe_config` withholding applies. Its config is rewritten once
+    the fetch lands (`_HISTORY_CONFIG`).
+    """
+    if not _FULL_SHA_RE.match(base_sha or ""):
+        return "the base is not a full commit sha"
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    repo = private_dir / ANCESTRY_HISTORY_DIR
+    shutil.rmtree(repo, ignore_errors=True)
+    started = time.monotonic()
+    try:
+        env, config_args, cred_file = _clone_env(url, token, private_dir, _QuietLog())
+    except GitError:
+        return "the forge token could not be held for the history fetch"
+    if cred_file is not None:
+        config_args = ["-c", "credential.helper=", *config_args]
+    common = [git_binary, *config_args, "-c", "http.proxy=", "-c", "core.hooksPath=/dev/null",
+              *_NO_AUTO_MAINTENANCE]
+    try:
+        init = run_child([*common, "init", "--quiet", "--bare", str(repo)], cwd=private_dir,
+                         env=env, stdout_path=private_dir / "git-history.out.log",
+                         stderr_path=private_dir / "git-history.err.log",
+                         timeout_seconds=timeout_seconds,
+                         grace_seconds=ANCESTRY_FETCH_GRACE_SECONDS,
+                         max_stdout_bytes=16 * 1024, max_stderr_bytes=16 * 1024,
+                         logger=_QuietLog())
+        if init.exit_code != 0 or init.timed_out:
+            shutil.rmtree(repo, ignore_errors=True)
+            return "the history repository could not be made"
+        left = timeout_seconds - (time.monotonic() - started)
+        argv = [*common, "-C", str(repo), "fetch", "--quiet", "--no-tags",
+                "--no-write-fetch-head", "--no-recurse-submodules", "--filter=blob:none",
+                f"--depth={int(depth)}", "--", url, base_sha]
+        done = run_child(argv, cwd=private_dir, env=env,
+                         stdout_path=private_dir / "git-history.out.log",
+                         stderr_path=private_dir / "git-history.err.log",
+                         timeout_seconds=max(left, 0.1),
+                         grace_seconds=ANCESTRY_FETCH_GRACE_SECONDS,
+                         max_stdout_bytes=64 * 1024, max_stderr_bytes=64 * 1024,
+                         logger=_QuietLog())
+    except OSError as exc:
+        shutil.rmtree(repo, ignore_errors=True)
+        return f"the history fetch did not start ({type(exc).__name__})"
+    finally:
+        _remove_credentials(cred_file, _QuietLog())
+    if done.timed_out or done.exit_code != 0:
+        shutil.rmtree(repo, ignore_errors=True)
+        if done.timed_out:
+            return f"the commit history fetch timed out after {timeout_seconds:g} s"
+        return f"the commit history fetch failed (git exit {done.exit_code})"
+    try:
+        (repo / "config").write_text(_HISTORY_CONFIG)
+    except OSError as exc:
+        shutil.rmtree(repo, ignore_errors=True)
+        return f"the history repository could not be closed ({type(exc).__name__})"
+    return repo
+
+
 #: Config sections in a checkout's own `.git/config` that could send a
 #: credential somewhere other than the repository's forge, or hand it to a
 #: program, and that a `-c` on the command line cannot reliably undo:
@@ -1659,10 +1786,15 @@ def clone_at_commit(
                 branch=branch, commit=commit, error=str(exc)[:300],
             )
             # Not shallow: the pinned commit is somewhere in the branch's past,
-            # and a depth would have to guess how far.
+            # and a depth would have to guess how far. A full refname (a pull
+            # request's `refs/pull/<n>/head`, #3347) is fetched as itself.
+            history_ref = (
+                branch if is_full_refname(branch)
+                else f"refs/heads/{branch}" if branch else "HEAD"
+            )
             by_branch = [
                 [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "-C", str(destination),
-                 "fetch", "--no-tags", "origin", f"refs/heads/{branch}" if branch else "HEAD"],
+                 "fetch", "--no-tags", "origin", history_ref],
                 [*g, "checkout", "--quiet", commit],
             ]
             total += _run_git_steps(
@@ -2795,7 +2927,9 @@ def commit_dirty(
     # that. It is not a failure -- the agent may have committed everything
     # itself -- so it is distinguished here rather than raised.
     diff_code, _ = run([*g, "diff", "--cached", "--quiet"], "publish-staged")
-    if diff_code == 0:
+    # A merge in progress (`_carry_merge_in_progress`) is concluded even when
+    # it changes no file: its parents are the change (#3359).
+    if diff_code == 0 and not (repo / ".git" / "MERGE_HEAD").is_file():
         return None
 
     # `--author` as well as the identity keys: this commit concludes a
@@ -2868,6 +3002,8 @@ def fold_agent_commits(
     logger: Any,
     git_binary: str = "git",
     merged: str = "",
+    history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
 ) -> int:
     """Replace every commit made since `base` with ONE commit the worker makes.
 
@@ -2901,19 +3037,45 @@ def fold_agent_commits(
     was cloned, so every commit in it is the agent's, and they are replaced by
     one worker commit with no parent.
 
+    EVERY BRANCH THE AGENT MERGED STAYS A PARENT (#3359). The one commit has
+    `base` as its first parent and, after it, the head of every branch the
+    agent merged since the base: each non-first parent of each merge commit in
+    `base..HEAD` that `base` does not already contain, less any that another
+    kept head contains. A lane that merged `origin/train/an` into a pull
+    request is still a merge of train/an once folded, so merging the pull
+    request back does not raise again every conflict the lane resolved (six
+    files on one pull request, sixteen on another, 5 November 2026). Folded
+    to one parent, the commit held train/an's TREE without its HISTORY.
+
+    A head is read in this repository, the clean one the agent's objects were
+    fetched into with every parent checked. One it cannot read fails the fold
+    (`MergedHeadUnreadable`) rather than fold without it. One whose own
+    commits carry Claude attribution -- a side branch the agent committed on
+    and merged -- is not kept, as the fold exists to keep exactly those off
+    the forge; its changes are in the tree, as they always were. Nor is one
+    whose own commits `history_leaks` finds a credential in (#259): kept as a
+    parent, every commit on that side would be pushed, a key added and
+    removed there included.
+
     `merged`, when given, is the default branch's commit the agent's work
-    merged, proven on the forge by the caller (`Worker._scan_floor`). The one
-    commit then has it as its SECOND PARENT, so a lane that merged `main` --
-    a merge step's conflict fix round above all -- is still a merge once
-    folded, and its pull request's merge base moves to `main` (#1321). It is
-    ignored unless HEAD contains it and `base` does not.
+    merged, proven on the forge by the caller (`Worker._scan_floor`), and is
+    one head of that rule kept without the attribution read, as the forge
+    already holds it: a lane that merged `main` -- a merge step's conflict
+    fix round above all -- is still a merge once folded, and its pull
+    request's merge base moves to `main` (#1321). It is ignored unless HEAD
+    contains it and `base` does not.
 
     `keep` is left alone only when it is the sole commit AND it reads back as
     the worker's. The sha alone does not prove that: a commit that concludes a
     cherry-pick the agent left in progress is authored as the picked commit
     was, whoever ran `git commit`. `commit_dirty` passes `--author` against
     exactly that, and this check is what folds the commit anyway if some other
-    route lends it an author.
+    route lends it an author. A `keep` that concludes a merge the agent left
+    in progress (`commit_dirty`, #3359) is never the sole commit: the merged
+    branch's own commits are in the count, so it is folded like any merge.
+
+    `on_forge`, when given, says whether the forge holds a merged head; one
+    it holds is kept whatever its commits say (`merged_head_kept`).
     """
     empty = base == EMPTY_CLONE_BASE
     if not empty and (not base or not _SHA_RE.match(base.strip())):
@@ -2989,21 +3151,24 @@ def fold_agent_commits(
                                 "publish-fold-redundant")
                 if code != 0 or inside == 0:
                     merged = ""
+        heads = _merged_heads(run, g, base=base, proven=merged, logger=logger,
+                              history_leaks=history_leaks, on_forge=on_forge)
         code, _ = run([*g, "reset", "--soft", base], "publish-fold-reset")
         if code != 0:
             raise GitError("could not rewind to the clone base to replace the agent's commits")
 
         # Commits that add up to no change leave nothing staged; HEAD is the base.
         code, _ = run([*g, "diff", "--cached", "--quiet"], "publish-fold-staged")
-        if merged:
-            # A merge of the default branch: one commit with two parents, so
-            # `git commit` (one parent) is not enough. The tree is the index,
-            # everything the agent left, exactly as the commit below takes it.
+        if heads:
+            # A merge: one commit with the base and every merged head as its
+            # parents, so `git commit` (one parent) is not enough. The tree is
+            # the index, everything the agent left, as the commit below takes it.
             code, tree = run([*g, "write-tree"], "publish-fold-tree")
             if code != 0 or not tree.strip():
                 raise GitError("could not write the agent's work as a tree")
+            parents = [arg for head in heads for arg in ("-p", head)]
             code, made = run(
-                [*g, "commit-tree", tree.strip(), "-p", base, "-p", merged, "-m", message],
+                [*g, "commit-tree", tree.strip(), "-p", base, *parents, "-m", message],
                 "publish-fold-merge",
             )
             if code != 0 or not _SHA_RE.match(made.strip()):
@@ -3024,6 +3189,172 @@ def fold_agent_commits(
                 raise GitError("could not commit the agent's work as the worker")
     logger.info("folded the agent's commits into one worker commit", replaced=count)
     return count
+
+
+#: Claude attribution in a merged branch's own commits: the identity Claude
+#: Code commits as where no git identity is set, and the lines it ends a
+#: message with. Narrower than `ATTRIBUTION_MARKERS`, and read as an identity
+#: and as whole lines: a person's `Co-authored-by` on a forge branch the agent
+#: merged, or a message that quotes a marker, is no reason to drop the branch.
+_CLAUDE_EMAIL_DOMAIN = "@anthropic.com>"
+_CLAUDE_LINE_STARTS = (
+    "co-authored-by: claude",
+    "generated with [claude code]",
+    "\N{ROBOT FACE} generated with",
+)
+
+
+def _claude_attributed(log: str) -> bool:
+    """Whether `log` (author, committer and message per commit, NUL-separated,
+    from `merged_head_kept`) holds a commit Claude Code wrote or signed off."""
+    for part in log.split("\0"):
+        lowered = part.strip().lower()
+        if lowered.endswith(_CLAUDE_EMAIL_DOMAIN) and "\n" not in lowered:
+            return True
+        if any(line.strip().startswith(_CLAUDE_LINE_STARTS) for line in lowered.splitlines()):
+            return True
+    return False
+
+
+def merged_head_kept(
+    run: Any,
+    g: list[str],
+    head: str,
+    *,
+    base: str,
+    upstream: str,
+    logger: Any,
+    history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
+) -> bool:
+    """Whether `head`, a parent after the first of a merge the agent made, stays a
+    parent of what the worker pushes (#3359): the fold's and the replay's one rule.
+
+    Not when `base` already contains it -- a redundant parent -- nor when its
+    own commits since `base` carry Claude attribution (`_claude_attributed`):
+    a side branch the agent committed on as Claude, whose commits would reach
+    the forge as written. `upstream` is a commit of the default branch the
+    forge holds (`Worker._scan_floor`): it and its ancestors are kept without
+    that read, as they are published already. Raises
+    `MergedHeadUnreadable` when this repository cannot read it.
+
+    Nor when `history_leaks`, given the head's own commits (`head --not base
+    [upstream]`), says one of them adds a credential (#259 review): the
+    replay's scan reads HEAD's first-parent line and the final tree, never
+    a side branch's commits, so a key the agent added on a branch and
+    removed before merging it would be pushed in that branch's history.
+    Dropped, the branch's changes still reach the forge in the merged tree,
+    which `final_tree_leak` scans.
+
+    A HEAD THE FORGE ALREADY HOLDS IS KEPT WITHOUT EITHER READ (#3359, again
+    on 6 November 2026). `on_forge(head)` asks the forge itself
+    (`forge_holds_commit`); a branch fetched from it -- a merge train, any
+    branch, by name or by refspec -- is published already, so keeping it as a
+    parent pushes nothing the forge lacks. Measured on Product Oracle's pull
+    request 1292: its train branch held a commit with a `Co-Authored-By:
+    Claude` trailer made outside this platform, the read above dropped the
+    train, and the agent's "merge train AO head" reached the pull request
+    with ONE parent and the train's tree, so the next merge would have
+    raised the train's 88 files again as conflicts.
+    """
+    code, _ = run([*g, "cat-file", "-e", f"{head}^{{commit}}"], "publish-merged-head-read")
+    if code != 0:
+        raise MergedHeadUnreadable(
+            f"the agent merged commit {head[:12]}, which the clean publish repository "
+            "cannot read, so the worker cannot keep it as a parent; nothing was pushed "
+            "rather than a commit that drops that branch's history"
+        )
+    if base:
+        code, _ = run([*g, "merge-base", "--is-ancestor", head, base], "publish-merged-head-base")
+        if code == 0:
+            return False
+    if upstream:
+        code, _ = run([*g, "merge-base", "--is-ancestor", head, upstream],
+                      "publish-merged-head-upstream")
+        if code == 0:
+            return True
+    if on_forge is not None and on_forge(head):
+        logger.info("a branch the agent merged is on the forge already; kept as a parent",
+                    head=head[:12])
+        return True
+    argv = [*g, "log", "--format=%an <%ae>%x00%cn <%ce>%x00%B%x00", head]
+    code, log = run([*argv, "--not", base] if base else argv, "publish-merged-head-log")
+    if code != 0:
+        raise MergedHeadUnreadable(
+            f"the agent merged commit {head[:12]}, whose history the clean publish "
+            "repository cannot read, so the worker cannot keep it as a parent; nothing "
+            "was pushed rather than a commit that drops that branch's history"
+        )
+    if _claude_attributed(log):
+        logger.warning("a branch the agent merged carries Claude attribution, so its "
+                       "changes are published without its history", head=head[:12])
+        return False
+    if history_leaks is not None:
+        argv = [*g, "rev-list", head, "--not", *[rev for rev in (base, upstream) if rev]]
+        code, text = run(argv, "publish-merged-head-commits")
+        if code != 0:
+            raise MergedHeadUnreadable(
+                f"the agent merged commit {head[:12]}, whose commits the clean publish "
+                "repository cannot list, so the worker cannot scan them; nothing was "
+                "pushed rather than a commit that drops that branch's history"
+            )
+        if history_leaks(text.split()):
+            logger.warning("a commit on a branch the agent merged adds a credential, so "
+                           "its changes are published without its history", head=head[:12])
+            return False
+    return True
+
+
+def _merged_heads(
+    run: Any,
+    g: list[str],
+    *,
+    base: str,
+    proven: str,
+    logger: Any,
+    history_leaks: Callable[[list[str]], bool] | None = None,
+    on_forge: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """The heads the fold keeps as parents after `base`, in the order merged (#3359).
+
+    Every non-first parent of every merge commit in `base..HEAD`, plus
+    `proven` (the default branch's commit, from the forge), less those `base`
+    contains and those another kept head contains. Raises
+    `MergedHeadUnreadable` for a head this repository cannot read. A head
+    whose own commits carry Claude attribution, or one `history_leaks`
+    finds a credential in, is left out and logged, unless `on_forge` says
+    the forge holds it (`merged_head_kept`).
+    """
+    code, text = run([*g, "rev-list", "--reverse", "--merges", "--parents", f"{base}..HEAD"],
+                     "publish-fold-merges")
+    if code != 0:
+        raise GitError("could not list the merges the agent made since the clone base")
+    found: list[str] = []
+    for line in text.splitlines():
+        for head in line.split()[2:]:
+            if head not in found:
+                found.append(head)
+    if proven and proven not in found:
+        found.insert(0, proven)
+    candidates = [
+        head for head in found
+        if merged_head_kept(run, g, head, base=base, upstream=proven, logger=logger,
+                            history_leaks=history_leaks, on_forge=on_forge)
+    ]
+    kept: list[str] = []
+    for head in candidates:
+        inside = False
+        for other in candidates:
+            if other == head:
+                continue
+            code, _ = run([*g, "merge-base", "--is-ancestor", head, other],
+                          "publish-fold-head-inside")
+            if code == 0:
+                inside = True
+                break
+        if not inside:
+            kept.append(head)
+    return kept
 
 
 def verify_merged_default_branch(
@@ -3461,8 +3792,15 @@ def prepare_publish_repo(
     local_branch: str = "swarm-publish",
     allow_unknown_base: bool = False,
     confirm_on_origin: Callable[[list[str]], list[str]] | None = None,
+    carry_merge: bool = False,
 ) -> Path:
     """Build the worker-owned CLEAN repository the publish decides and pushes from.
+
+    `carry_merge`: a merge the agent left IN PROGRESS -- `git merge
+    --no-commit`, or a conflicted merge it resolved and staged but never
+    committed -- is carried over (`_carry_merge_in_progress`), so the
+    worker's commit of the uncommitted work (`commit_dirty`) concludes it as
+    a merge rather than squashing the merged branch into one parent (#3359).
 
     TWO GUARANTEES LIVE HERE, and both come from where the repository is, not
     from a list of settings to switch off.
@@ -3628,42 +3966,54 @@ def prepare_publish_repo(
     # agent's content descends from it, so the walk still reaches every
     # commit the agent wrote. A line origin does not confirm -- one the agent
     # forged to cut its own key commit out of the walk -- is never added.
+    #
+    # THE BASE'S OWN HISTORY IS ORIGIN'S TOO (#3174). A sibling the agent
+    # fetched -- at full depth, or deep enough to reach the base's history --
+    # joins that history below the base, so the walk from HEAD crosses into
+    # it and needs every cut-off the clone has there: one per side branch a
+    # deepened clone (the pull base, the graph's ancestry fetch) cut. Asked
+    # of origin, those lines ran past the `_SHALLOW_MAX_LINES` question, or
+    # went unasked where the attempt has no git tools relay, and the walk
+    # read a parent the clone never had ("Could not read <sha>"). A line that
+    # is an ANCESTOR OF THE RECORDED BASE needs no question: the base is on
+    # origin and names its parents by hash, so everything under it is
+    # origin's. `_base_ancestry_shallow` proves it here, in this repository:
+    # the base alone is fetched with the clone's lines as its boundary, and
+    # only lines `git rev-list` then reaches from the base join. A line the
+    # agent forged on its own commits is no ancestor of a base recorded
+    # before it ran, so it still needs origin's word, as before.
     if empty:
         shallow_file = "/dev/null"
     else:
+        listed = [] if unknown else _clone_shallow_lines(source_repo)
+        lines = [sha for sha in listed if sha != floor]
+        proven = _base_ancestry_shallow(
+            run, source_repo=source_repo, publish_dir=publish_dir, floor=floor,
+            listed=listed, git_binary=git_binary, logger=logger,
+        ) if lines else []
+        unproven = [sha for sha in lines if sha not in proven]
+        if confirm_on_origin is not None and len(unproven) > _SHALLOW_MAX_LINES:
+            # More lines than one question holds: ask only those the walk
+            # from HEAD meets, so a stale cut-off (one a later, shallower
+            # fetch superseded) does not crowd out one the walk needs.
+            reached = _lines_head_reaches(
+                source_repo=source_repo, private_dir=private_dir, logs_dir=logs_dir,
+                target=target, listed=listed, git_binary=git_binary,
+                timeout_seconds=timeout_seconds, logger=logger,
+            )
+            if reached is not None:
+                unproven = [sha for sha in unproven if sha in reached]
         confirmed = _origin_confirmed_shallow(
-            source_repo, floor=floor, confirm_on_origin=confirm_on_origin, logger=logger
+            unproven, confirm_on_origin=confirm_on_origin, logger=logger,
         )
         boundary = publish_dir / ".git" / "swarm-source-shallow"
-        boundary.write_text("".join(f"{sha}\n" for sha in [floor, *confirmed]))
+        boundary.write_text("".join(f"{sha}\n" for sha in [floor, *proven, *confirmed]))
         shallow_file = str(boundary)
-    upload_pack = " ".join(
-        [
-            "env",
-            *_UPLOAD_PACK_ENV,
-            f"GIT_SHALLOW_FILE={shlex.quote(shallow_file)}",
-            shlex.quote(git_binary),
-            *_UPLOAD_PACK_CONFIG,
-            # The wants are shas, not advertised refs.
-            "-c", "uploadpack.allowAnySHA1InWant=true",
-            "upload-pack",
-        ]
-    )
     refspecs = [f"+{target}:refs/swarm/head"]
     if not empty and not unknown:
         refspecs.append(f"+{floor}:refs/swarm/base")
     fetch_code, _ = run(
-        [
-            git_binary, *_NO_HOOKS,
-            "-c", "transfer.fsckObjects=true",
-            "-c", "fetch.fsckObjects=true",
-            "-c", "fetch.recurseSubmodules=false",
-            "-c", "submodule.recurse=false",
-            *_NO_AUTO_MAINTENANCE,
-            "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
-            f"--upload-pack={upload_pack}",
-            "--", str(source_repo), *refspecs,
-        ],
+        _publish_fetch_argv(git_binary, source_repo, shallow_file, refspecs),
         "publish-fetch",
     )
     if fetch_code != 0:
@@ -3682,9 +4032,74 @@ def prepare_publish_repo(
     )
     if checkout_code != 0:
         raise GitError("could not check out the agent's work in the publish repository")
+    if carry_merge and not empty:
+        _carry_merge_in_progress(run, source_repo=source_repo, publish_dir=publish_dir,
+                                 shallow_file=shallow_file, git_binary=git_binary,
+                                 logger=logger)
 
     logger.info("clean publish repository prepared", branch=local_branch)
     return publish_dir
+
+
+#: The most `MERGE_HEAD` lines the publish carries over: an octopus merge
+#: names one per branch, and more is past any real one.
+_MERGE_HEAD_MAX_LINES = 16
+
+
+def _carry_merge_in_progress(
+    run: Callable[[list[str], str], tuple[int, str]],
+    *,
+    source_repo: Path,
+    publish_dir: Path,
+    shallow_file: str,
+    git_binary: str,
+    logger: Any,
+) -> list[str]:
+    """Carry the clone's merge in progress into the publish repository (#3359).
+
+    Returns the heads carried, oldest line first, or [] when the agent left no
+    merge in progress.
+
+    WHY. An agent that ran `git merge --no-commit <branch>`, or resolved a
+    conflicted merge and staged it without `git commit`, leaves the merge in
+    `.git/MERGE_HEAD`. The worker commits that uncommitted work in THIS
+    repository, which had no `MERGE_HEAD`, so its one commit held the merged
+    tree with ONE parent: the merged branch's history was dropped, and the
+    pull request's next merge raised every conflict the agent resolved.
+
+    `MERGE_HEAD` is read AS DATA (`_read_in_git_dir`), full 40-hex lines only,
+    at most `_MERGE_HEAD_MAX_LINES`; each head is fetched with the object
+    checks every other fetch here uses, and only then written as this
+    repository's own `MERGE_HEAD`, so `git commit` in `commit_dirty` makes the
+    merge. Whether a head stays a parent of what is pushed is still
+    `merged_head_kept`'s rule, applied by the replay and the fold. A head the
+    clone cannot send raises `MergedHeadUnreadable`: nothing is pushed rather
+    than the merge squashed.
+    """
+    raw = _read_in_git_dir(source_repo, "MERGE_HEAD", cap=_REF_FILE_MAX_BYTES)
+    if not raw:
+        return []
+    heads: list[str] = []
+    for line in raw.decode("ascii", "replace").splitlines():
+        sha = line.strip()
+        if _FULL_SHA_RE.match(sha) and sha not in heads:
+            heads.append(sha)
+    heads = heads[:_MERGE_HEAD_MAX_LINES]
+    if not heads:
+        return []
+    refspecs = [f"+{sha}:refs/swarm/merging/{index}" for index, sha in enumerate(heads)]
+    code, _ = run(_publish_fetch_argv(git_binary, source_repo, shallow_file, refspecs),
+                  "publish-fetch-merging")
+    if code != 0:
+        raise MergedHeadUnreadable(
+            "the agent left a merge in progress whose merged commit the clean publish "
+            "repository could not fetch, so the worker cannot conclude it as a merge; "
+            "nothing was pushed rather than a commit that drops that branch's history"
+        )
+    (publish_dir / ".git" / "MERGE_HEAD").write_text("".join(f"{sha}\n" for sha in heads))
+    logger.info("carried the agent's merge in progress into the publish repository",
+                heads=[sha[:12] for sha in heads])
+    return heads
 
 
 #: The most of the agent's `.git/shallow` the publish reads, and the most of
@@ -3699,32 +4114,171 @@ _SHALLOW_MAX_LINES = 16
 _STDERR_TAIL_CHARS = 500
 
 
-def _origin_confirmed_shallow(
-    source_repo: Path,
-    *,
-    floor: str,
-    confirm_on_origin: Callable[[list[str]], list[str]] | None,
-    logger: Any,
+def _publish_fetch_argv(
+    git_binary: str, source_repo: Path, shallow_file: str, refspecs: list[str]
 ) -> list[str]:
-    """The clone's shallow cut-offs that origin says it has (#2559).
+    """The object-checked fetch from the clone into a publish repository, its
+    upload side's shallow boundary `shallow_file` (see `prepare_publish_repo`)."""
+    upload_pack = " ".join(
+        [
+            "env",
+            *_UPLOAD_PACK_ENV,
+            f"GIT_SHALLOW_FILE={shlex.quote(shallow_file)}",
+            shlex.quote(git_binary),
+            *_UPLOAD_PACK_CONFIG,
+            # The wants are shas, not advertised refs.
+            "-c", "uploadpack.allowAnySHA1InWant=true",
+            "upload-pack",
+        ]
+    )
+    return [
+        git_binary, *_NO_HOOKS,
+        "-c", "transfer.fsckObjects=true",
+        "-c", "fetch.fsckObjects=true",
+        "-c", "fetch.recurseSubmodules=false",
+        "-c", "submodule.recurse=false",
+        *_NO_AUTO_MAINTENANCE,
+        "fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--update-shallow",
+        f"--upload-pack={upload_pack}",
+        "--", str(source_repo), *refspecs,
+    ]
 
-    `.git/shallow` is read AS DATA (`_read_in_git_dir`: O_NOFOLLOW at every
-    component, a regular file only, capped), never through git in the clone.
-    Only full 40-hex lines are asked, the floor and duplicates dropped, at
-    most `_SHALLOW_MAX_LINES`; the answer is kept only where it names a sha
-    that was asked. A confirmer that raises answers nothing."""
-    if confirm_on_origin is None:
-        return []
+
+def _clone_shallow_lines(source_repo: Path) -> list[str]:
+    """The clone's `.git/shallow` lines, in file order.
+
+    Read AS DATA (`_read_in_git_dir`: O_NOFOLLOW at every component, a
+    regular file only, at most `_SHALLOW_MAX_BYTES`, nothing past it), never
+    through git in the clone. Only full 40-hex lines, duplicates dropped."""
     raw = _read_in_git_dir(source_repo, "shallow", cap=_SHALLOW_MAX_BYTES)
     if not raw:
         return []
-    asked: list[str] = []
+    lines: list[str] = []
+    seen: set[str] = set()
     for line in raw.decode("ascii", "replace").splitlines():
         sha = line.strip()
-        if _FULL_SHA_RE.match(sha) and sha != floor and sha not in asked:
-            asked.append(sha)
-            if len(asked) == _SHALLOW_MAX_LINES:
-                break
+        if _FULL_SHA_RE.match(sha) and sha not in seen:
+            seen.add(sha)
+            lines.append(sha)
+    return lines
+
+
+def _base_ancestry_shallow(
+    run: Callable[[list[str], str], tuple[int, str]],
+    *,
+    source_repo: Path,
+    publish_dir: Path,
+    floor: str,
+    listed: list[str],
+    git_binary: str,
+    logger: Any,
+) -> list[str]:
+    """The clone's shallow lines (`listed`) that are ancestors of `floor` (#3174).
+
+    `floor` is the clone base the worker recorded before the agent ran, so it
+    is origin's, and a commit names its parents by hash: any commit `git
+    rev-list floor` reaches over checked objects is origin's history. The
+    base is fetched into the publish repository `publish_dir` with the
+    clone's lines as the upload side's boundary -- the same pinned
+    `upload-pack`, object checks and `--update-shallow` as the publish fetch
+    -- and only lines `rev-list` there reaches are returned.
+
+    The lines the boundary is built from are the agent's to write, and that
+    is safe here: the walk is of the base's history alone, which holds none
+    of the agent's commits. A forged line only cuts that history short (fewer
+    lines proven: the publish fetch then fails as before), and a removed one
+    sends the walk into history the clone lacks: this fetch fails and proves
+    nothing. Never raises; a failure proves nothing."""
+    boundary = publish_dir / ".git" / "swarm-base-ancestry-shallow"
+    boundary.write_text("".join(f"{sha}\n" for sha in listed))
+    code, _ = run(
+        _publish_fetch_argv(git_binary, source_repo, str(boundary),
+                            [f"+{floor}:refs/swarm/base"]),
+        "publish-base-ancestry",
+    )
+    if code != 0:
+        logger.warning("could not fetch the clone base's history to place its shallow lines",
+                       lines=len(listed))
+        return []
+    code, text = run([git_binary, *_NO_HOOKS, "rev-list", "refs/swarm/base"],
+                     "publish-base-ancestry-list")
+    if code != 0:
+        return []
+    reached = set(text.split())
+    proven = [sha for sha in listed if sha != floor and sha in reached]
+    logger.info("clone shallow lines under the clone base", lines=len(listed),
+                proven=len(proven))
+    return proven
+
+
+def _lines_head_reaches(
+    *,
+    source_repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    target: str,
+    listed: list[str],
+    git_binary: str,
+    timeout_seconds: int,
+    logger: Any,
+) -> set[str] | None:
+    """The clone's shallow lines the walk from `target` meets, or None (#3174).
+
+    Only CHOOSES which lines to put to origin; it never adds one to a
+    boundary. `target` is fetched into a scratch repository of the worker's
+    with every listed line as the upload side's boundary (the same pinned
+    `upload-pack` and object checks), and `git rev-list` there names the
+    lines it reaches. A line the agent forged or removed can only change
+    which lines are asked, and a needed line left unasked fails the publish
+    fetch, as before. Removed afterwards; never raises."""
+    scratch: Path | None = None
+    try:
+        scratch = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="reach-"))
+
+        def run(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(argv, repo=scratch, private_dir=private_dir, logs_dir=logs_dir,
+                             slug=slug, timeout_seconds=timeout_seconds, logger=logger)
+
+        code, _ = run([git_binary, *_NO_HOOKS, "init", "--quiet", str(scratch)], "publish-reach-init")
+        if code != 0:
+            return None
+        boundary = scratch / ".git" / "swarm-source-shallow"
+        boundary.write_text("".join(f"{sha}\n" for sha in listed))
+        code, _ = run(_publish_fetch_argv(git_binary, source_repo, str(boundary),
+                                          [f"+{target}:refs/swarm/head"]), "publish-reach-fetch")
+        if code != 0:
+            return None
+        code, text = run([git_binary, *_NO_HOOKS, "rev-list", "refs/swarm/head"],
+                         "publish-reach-list")
+        if code != 0:
+            return None
+        commits = set(text.split())
+        return {sha for sha in listed if sha in commits}
+    except OSError as exc:
+        logger.warning("could not tell which shallow lines the walk meets", error=str(exc))
+        return None
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _origin_confirmed_shallow(
+    candidates: list[str],
+    *,
+    confirm_on_origin: Callable[[list[str]], list[str]] | None,
+    logger: Any,
+) -> list[str]:
+    """Which of the clone's shallow cut-offs `candidates` origin says it has (#2559).
+
+    The candidates are the clone's `.git/shallow` lines, read as data
+    (`_clone_shallow_lines`), less the floor and the lines already proven
+    ancestors of the base (`_base_ancestry_shallow`), so the question is
+    spent on the rest: at most `_SHALLOW_MAX_LINES` of them; the answer is
+    kept only where it names a sha that was asked. A confirmer that raises
+    answers nothing."""
+    if confirm_on_origin is None:
+        return []
+    asked = list(dict.fromkeys(candidates))[:_SHALLOW_MAX_LINES]
     if not asked:
         return []
     try:
@@ -3738,6 +4292,164 @@ def _origin_confirmed_shallow(
     logger.info("clone shallow lines confirmed on origin", asked=len(asked),
                 confirmed=len(confirmed))
     return confirmed
+
+
+#: The artifact a failed publish keeps the agent's branch in (#3174), beside
+#: `swarm-work.patch`: a patch is the final tree flat, and loses the merges
+#: the agent made; the bundle keeps every commit, merges included.
+WORK_BUNDLE_NAME = "swarm-work.bundle"
+#: The one ref the bundle carries. A hand push is
+#: `git fetch swarm-work.bundle swarm-work && git push origin FETCH_HEAD:<branch>`.
+WORK_BUNDLE_REF = "refs/heads/swarm-work"
+
+
+@dataclass
+class WorkBundle:
+    """What `keep_work_bundle` kept: `name` is None when no bundle was kept,
+    and `note` then says why."""
+
+    name: str | None = None
+    bytes: int = 0
+    omitted: bool = False
+    commits: int = 0
+    base: str | None = None
+    note: str | None = None
+
+
+def keep_work_bundle(
+    *,
+    source_repo: Path,
+    base: str | None,
+    private_dir: Path,
+    logs_dir: Path,
+    bundle_path: Path,
+    max_bytes: int,
+    timeout_seconds: int,
+    logger: Any,
+    leaks: Callable[[Path, list[str]], str | None],
+    git_binary: str = "git",
+) -> WorkBundle:
+    """Keep the agent's branch as a git bundle at `bundle_path` (#3174). Never raises.
+
+    For a publish that failed after the work exists: the clean publish
+    repository could not be built, so nothing was pushed, and the flat
+    `swarm-work.patch` loses the agent's merge commits. The bundle carries
+    `WORK_BUNDLE_REF` -- the clone's HEAD, read as data -- and every commit
+    under it that `base` does not reach, merges and the merged branch's own
+    commits included, with `base` as its one prerequisite. No other ref and
+    no object outside that range goes in.
+
+    WHERE IT IS BUILT: in a THIRD repository the worker `git init`s here,
+    neither the agent's clone nor the clean publish repository. Not the
+    clone: no git runs there but the pinned `upload-pack` (#259), and
+    `git bundle create` there would read the agent's config, grafts,
+    replacements and commit-graph. Not the publish repository: it is the one
+    that could not be built. The commits are fetched in exactly as the
+    publish fetches them (`_publish_fetch_argv`: object checks, no hooks),
+    with every shallow line the clone lists in the upload side's boundary,
+    UNCONFIRMED. That is safe here and only here: nothing is pushed from this
+    repository, and a line the agent forged only leaves commits out of the
+    bundle, so a hand push of it fails rather than publishes. What does go in
+    is scanned commit by commit (`leaks(repo, commits)`, the publish's own
+    per-commit scan, each commit against its first parent): a hit keeps no
+    bundle. Over `max_bytes` (the patch's cap) the bundle is discarded
+    whole, never truncated."""
+    out = WorkBundle(base=base)
+    empty = base == EMPTY_CLONE_BASE
+    floor = "" if empty else (base or "").strip()
+    if not empty and not _FULL_SHA_RE.match(floor):
+        out.note = "the clone base is unknown, so there was no base to bundle the branch from"
+        return out
+    try:
+        target = (read_head_as_data(Path(source_repo)) or "").strip()
+    except GitError as exc:
+        out.note = f"the clone's HEAD could not be read: {exc}"
+        return out
+    if not _FULL_SHA_RE.match(target):
+        out.note = "the clone's HEAD names no commit to bundle"
+        return out
+    private_dir = Path(private_dir)
+    bundle_dir: Path | None = None
+    staged: Path | None = None
+    try:
+        private_dir.mkdir(parents=True, exist_ok=True)
+        bundle_dir = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="bundle-"))
+
+        def run(argv: list[str], slug: str) -> tuple[int, str]:
+            return _git_text(
+                argv, repo=bundle_dir, private_dir=private_dir, logs_dir=logs_dir,
+                slug=slug, timeout_seconds=timeout_seconds, logger=logger,
+            )
+
+        code, _ = run([git_binary, *_NO_HOOKS, "init", "--quiet", str(bundle_dir)],
+                      "bundle-init")
+        if code != 0:
+            out.note = "the worker could not initialise a repository to bundle the branch in"
+            return out
+        refspecs = [f"+{target}:{WORK_BUNDLE_REF}"]
+        if empty:
+            shallow_file = "/dev/null"
+        else:
+            refspecs.append(f"+{floor}:refs/swarm/base")
+            boundary = bundle_dir / ".git" / "swarm-source-shallow"
+            listed = [sha for sha in _clone_shallow_lines(Path(source_repo)) if sha != floor]
+            boundary.write_text("".join(f"{sha}\n" for sha in [floor, *listed]))
+            shallow_file = str(boundary)
+        code, _ = run(_publish_fetch_argv(git_binary, Path(source_repo), shallow_file, refspecs),
+                      "bundle-fetch")
+        if code != 0:
+            out.note = ("the agent's commits could not be fetched to bundle them"
+                        + _stderr_tail(Path(logs_dir) / "git-bundle-fetch.err.log"))
+            return out
+        span = [WORK_BUNDLE_REF] if empty else [WORK_BUNDLE_REF, f"^{floor}"]
+        code, text = run([git_binary, *_NO_HOOKS, "rev-list", *span], "bundle-commits")
+        commits = text.split()
+        if code != 0 or not commits:
+            out.note = "the branch has no commit on top of the clone base to bundle"
+            return out
+        out.commits = len(commits)
+        try:
+            leaking = leaks(bundle_dir, commits)
+        except Exception as exc:  # noqa: BLE001 - an unscanned bundle is not kept
+            out.note = f"the bundle's commits could not be scanned ({type(exc).__name__}); none was kept"
+            return out
+        if leaking:
+            out.note = (f"commit {leaking[:12]} adds credential-shaped text, so the branch "
+                        "was not kept as a bundle")
+            return out
+        staged = private_dir / f"{bundle_dir.name}.bundle"
+        code, _ = run([git_binary, *_NO_HOOKS, "bundle", "create", "--quiet", str(staged), *span],
+                      "bundle-create")
+        if code != 0 or not staged.is_file():
+            out.note = "git could not write the bundle"
+            return out
+        size = staged.stat().st_size
+        out.bytes = size
+        if size > max_bytes:
+            out.omitted = True
+            out.note = (f"the bundle was {size} bytes, over the {max_bytes} cap, and was "
+                        "discarded rather than truncated")
+            return out
+        code, _ = run([git_binary, *_NO_HOOKS, "bundle", "verify", "--quiet", str(staged)],
+                      "bundle-verify")
+        if code != 0:
+            out.note = "the bundle git wrote did not verify"
+            return out
+        bundle_path = Path(bundle_path)
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(staged, bundle_path)
+        out.name = bundle_path.name
+        logger.info("kept the agent's branch as a bundle", bundle=out.name, bytes=size,
+                    commits=out.commits)
+        return out
+    except Exception as exc:  # noqa: BLE001 - the failure path never raises
+        out.note = f"the bundle could not be written ({type(exc).__name__})"
+        return out
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+        if bundle_dir is not None:
+            shutil.rmtree(bundle_dir, ignore_errors=True)
 
 
 def _stderr_tail(path: Path) -> str:
@@ -5469,6 +6181,74 @@ def fetch_branch_tip(
     )
     sha = text.strip()
     return sha if code == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def forge_holds_commit(
+    *,
+    url: str,
+    sha: str,
+    token: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> bool:
+    """Whether the forge at `url` serves commit `sha` (#3359): a merged head
+    the publish may keep as a parent whatever its commits say.
+
+    Asked of the forge, never the agent's clone, whose refs and objects the
+    agent writes. The commit is fetched BY SHA into a fresh, empty
+    repository under `private_dir` (removed after), so nothing local can
+    answer for the forge: a fetch into the publish repository, which holds
+    the commit already, would succeed without the forge sending a byte.
+    `--depth=1 --filter=tree:0` keeps it to the one commit object where the
+    forge filters (GitHub does). Any failure -- the forge does not have it,
+    refuses a sha want, or cannot be reached -- is False, and the head is
+    read as before. The token is the tenant's own, written to a credential
+    file as `fetch_branch_tip` does, never to the command line or a log.
+    """
+    if not _FULL_SHA_RE.match(sha or ""):
+        return False
+    try:
+        url = validate_repository_url(url)
+    except GitError:
+        return False
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    probe = Path(tempfile.mkdtemp(dir=str(private_dir), prefix="forge-probe-"))
+    cred_file = _write_credentials(url, token, private_dir)
+    config_args = [*_TOKEN_SAFE]
+    if cred_file is not None:
+        config_args += ["-c", f"credential.helper=store --file={cred_file}"]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(argv, repo=probe, private_dir=private_dir, logs_dir=logs_dir,
+                         slug=slug, timeout_seconds=timeout_seconds, logger=logger)
+
+    try:
+        code, _ = run([git_binary, *_NO_HOOKS, "init", "--quiet", str(probe)], "forge-probe-init")
+        if code != 0:
+            return False
+        code, _ = run(
+            [
+                git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "fetch", "--quiet",
+                "--no-tags", "--depth=1", "--filter=tree:0", "--", url, sha,
+            ],
+            "forge-probe-fetch",
+        )
+        if code != 0:
+            return False
+        code, _ = run([git_binary, *_NO_HOOKS, "cat-file", "-e", f"{sha}^{{commit}}"],
+                      "forge-probe-read")
+        return code == 0
+    finally:
+        try:
+            if cred_file is not None:
+                cred_file.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("could not remove the git credential file", error=str(exc))
+        shutil.rmtree(probe, ignore_errors=True)
 
 
 def commit_tree_onto(

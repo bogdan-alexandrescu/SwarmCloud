@@ -70,6 +70,7 @@ from .base import (
     RunnerFailure,
 )
 from . import ceiling as ceiling_mod
+from . import question_bridge
 from .budgetwatch import BudgetStreamWatcher, budget_watcher
 from .limits import platform_ceilings, resolve_limits
 from .streams import AgentStreamFiles
@@ -177,14 +178,17 @@ def budget_line(memory_max: int, workers: int) -> str:
     With #2507's rules: two heavy commands at once, a test run backgrounded
     and forgotten, and a timed-out command whose children outlived it are the
     other ways the container reached its limit. Node's heap is capped
-    `OLD_SPACE_HEADROOM_BYTES` below the limit, never below 256 MiB.
+    `OLD_SPACE_HEADROOM_BYTES` below the limit, never below 256 MiB. The
+    backgrounded test run is `time_limit_line`'s one sentence, never restated
+    here (ONE-PLACE, the owner's ask of 2026-11-03 for prompts without
+    repeated instructions).
     """
     old_space = max(256, (memory_max - OLD_SPACE_HEADROOM_BYTES) // (1 << 20))
     return (
         f"Memory budget: this container has {_gib(memory_max)} (${MEMORY_LIMIT_ENV}), and "
         "at that limit the kernel kills the whole container, this attempt with it. Run "
-        "one heavy command (a test run, tsc, a build) at a time, and never background a "
-        "test run with & or nohup; when a command times out, kill its process group "
+        "one heavy command (a test run, tsc, a build) at a time; when a command times "
+        "out, kill its process group "
         "(kill -- -PGID) before starting another. Stop any dev server you started (next "
         "dev, uvicorn, postgres) before running tsc or the tests; never pass pytest -n "
         f"above {workers} (${XDIST_WORKERS_ENV}, which -n auto already uses); never set "
@@ -480,6 +484,12 @@ RESUME_RELOADED = "credential_reloaded"
 #: A new attempt continuing a step that stopped at its time limit (BGD,
 #: 2026-11-02): set by the worker, with a session to resume or without one.
 RESUME_TIME_LIMIT = "time_limit"
+#: A new attempt resuming a session that parked on a question a person has
+#: now answered (`question_bridge`): its one new message is the answer, which
+#: the worker writes to the file `QUESTION_ANSWER_FILE_ENV` names, in its
+#: private directory, outside `work/`.
+RESUME_ANSWERED = "question_answered"
+QUESTION_ANSWER_FILE_ENV = "SWARM_QUESTION_ANSWER_FILE"
 
 #: What a resumed CLI is told. The conversation, the tool results and the
 #: workspace are all as they were; this is the one new user message.
@@ -509,6 +519,25 @@ TIME_LIMIT_RESUME_PROMPT = (
     "your notes in $SWARM_ARTIFACTS_DIR before relying on it, then carry on "
     "where you left off and finish the task."
 )
+
+
+def resumed_message(environ: Mapping[str, str]) -> str:
+    """The resumed session's one new message: the answer to its parked
+    question when the worker resumes it with one (`RESUME_ANSWERED`), else
+    `resume_prompt`. A resume with an answer the file does not hold is
+    refused: the session never continues as if the person said nothing."""
+    reason = environ.get(RESUME_REASON_ENV, "").strip()
+    if reason != RESUME_ANSWERED:
+        return resume_prompt(reason)
+    path = environ.get(QUESTION_ANSWER_FILE_ENV, "").strip()
+    try:
+        message = Path(path).read_text(encoding="utf-8").strip() if path else ""
+    except (OSError, UnicodeDecodeError):
+        message = ""
+    if not message:
+        raise RunnerFailure("question_resume_failed: the session was to resume with a "
+                            "person's answer, and the answer was not handed to the runner")
+    return message
 
 
 def resume_prompt(reason: str | None) -> str:
@@ -1246,19 +1275,72 @@ def _without_benign(text: str, benign: Sequence[re.Pattern[str]]) -> list[str]:
     return [line for line in text.splitlines() if not any(p.match(line) for p in benign)]
 
 
+def _error_text(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return _error_text(value.get("message"))
+    if isinstance(value, list):
+        return " ".join(text for text in (_error_text(item) for item in value) if text)
+    return value if isinstance(value, str) else ""
+
+
+def _result_error(parsed: Any) -> str:
+    """Why the CLI's stdout result says the run failed, on one line; else "".
+
+    Issue #3547: a `claude --output-format stream-json` run that exits non-zero
+    with an empty stderr writes its reason to stdout -- the last `result` event
+    carries `is_error`, a subtype such as `error_max_turns` or
+    `error_during_execution`, and the result text. Only that last result event
+    (or a single untyped object) is read, and only when it reports an error: a
+    successful result adds nothing, and a stream with no result event (codex)
+    yields "". Not bounded here: the caller scrubs and redacts what this
+    returns and `exit_error` bounds it after, so a cut never splits a secret
+    the scrub would then miss.
+    """
+    events = parsed if isinstance(parsed, list) else [parsed]
+    event: Any = None
+    for candidate in reversed(events):
+        if not isinstance(candidate, Mapping):
+            continue
+        typed = candidate.get("type")
+        if typed == "result" or (typed is None and ("is_error" in candidate or "subtype" in candidate)):
+            event = candidate
+            break
+    if event is None:
+        return ""
+    subtype = event.get("subtype") if isinstance(event.get("subtype"), str) else ""
+    if not (event.get("is_error") is True or subtype.startswith("error")):
+        return ""
+    text = _error_text(event.get("result")) or _error_text(event.get("error")) or _error_text(
+        event.get("errors"))
+    return ": ".join(part for part in (" ".join(subtype.split()), " ".join(text.split())) if part)
+
+
 def exit_error(
-    name: str, exit_code: int | None, stderr: str, benign: Sequence[re.Pattern[str]]
+    name: str,
+    exit_code: int | None,
+    stderr: str,
+    benign: Sequence[re.Pattern[str]],
+    *,
+    result_reason: str = "",
 ) -> str:
-    """The error recorded for a CLI that exited `exit_code` with `stderr`."""
+    """The error recorded for a CLI that exited `exit_code` with `stderr`.
+
+    `result_reason` (from `_result_error`, already scrubbed) is used only when
+    stderr has nothing to say once the benign lines and capture notices are
+    gone (#3547); a real stderr message reads exactly as it did before.
+    """
+    result_reason = result_reason[:_SIGNAL_DETAIL_CHARS]
     lines = _without_benign(stderr, benign)
     sig = _signal_of(exit_code) if exit_code is not None else None
+    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
     if sig is None:
+        if not candidates and result_reason:
+            return f"{name} exited {exit_code}: {result_reason}"
         return f"{name} exited {exit_code}: " + "\n".join(lines).strip()
     verb = "killed" if sig == signal.SIGKILL else "terminated"
     sentence = f"{name} {verb} by {sig.name} (exit {exit_code})"
-    candidates = [line.strip() for line in lines if line.strip() and not _is_capture_notice(line)]
     if not candidates:
-        return sentence
+        return f"{sentence}: {result_reason}" if result_reason else sentence
     errors = [line for line in candidates if _ERROR_WORD.search(line)]
     detail = (errors or candidates)[-1]
     return f"{sentence}: {detail[:_SIGNAL_DETAIL_CHARS]}"
@@ -1515,6 +1597,16 @@ INDEX_REPAIR_MAX_TURNS = 1
 #: (`lifecycle.Worker._unreadable_verdict`, cause `unreadable_verdict`); a file
 #: never written keeps the missing-output turn.
 VERDICT_REPAIR_MAX_TURNS = 1
+#: A publishing step whose agent left HEAD where it started, the tree clean and
+#: no verification.md is given ONE turn saying the step opens a pull request:
+#: commit the work, or write verification.md (#3265). wf_3bfea5e9's render step
+#: was asked for frames only, wrote them, committed nothing, took 0 repair
+#: turns and failed `published_nothing`, where the worker reads "no change plus
+#: a non-blank verification.md" as SUCCEEDED no_change
+#: (`lifecycle.Worker._verified_no_change`). One turn: the agent either has the
+#: work to commit or a sentence to write, and a second ask would not change
+#: which. A step that still ends so is the worker's own check's to fail.
+NO_CHANGE_REPAIR_MAX_TURNS = 1
 #: The most of `verdict_problem` a repair prompt and the result carry: it
 #: quotes the value the agent wrote, which may be as long as the file.
 VERDICT_PROBLEM_CHARS = 300
@@ -1580,25 +1672,63 @@ def credential_lines(repo: Path) -> tuple[list[str], str | None]:
 #: `lifecycle.VERIFICATION_FILE`" as SUCCEEDED no_change (Proposal J), but no
 #: prompt said so. It asks only "what you checked", so a brief that wants a
 #: stricter verification.md (an issue run's table) still governs its format.
+#: Widened for #3265: "If the work is already done" alone did not cover a brief
+#: that asks for no repository change -- wf_3bfea5e9's render step wrote its
+#: frames, pr-title.txt and a handoff saying "no commits (none asked)", no
+#: verification.md, and failed `published_nothing`. The repair turn
+#: (`NO_CHANGE_REPAIR_MAX_TURNS`) says the same once more after the turn.
 #: The last sentence is the descent rule (#2277): fix-h9 lost 85 turns to a
 #: `git checkout -B fix-516 FETCH_HEAD`, because the harvest discards a HEAD
 #: that does not descend from the step's start (`lifecycle._head_moved`), and
 #: nothing had told the agent so.
 PUBLISH_PARAGRAPH = (
     "You do not push or open a pull request; the worker publishes your committed "
-    "branch. Commit your work. Write the pull request's title (one line) to "
+    "branch after you finish, so never say one is missing for want of GitHub "
+    "credentials. Commit your work. Write the pull request's title (one line) to "
     "$SWARM_ARTIFACTS_DIR/pr-title.txt and its body to "
-    "$SWARM_ARTIFACTS_DIR/pr-body.md. Do not say in your answer that no pull "
-    "request exists because you lack GitHub credentials: the worker opens it "
-    "after you finish. If the work is already done and nothing needs changing, "
-    "commit nothing and write $SWARM_ARTIFACTS_DIR/verification.md saying what "
-    "you checked and what showed it is done; that ends the step as no change "
-    "instead of a failure. Keep your commits on the branch you were cloned "
-    "onto: to build on another branch, fetch it and merge it in (git merge "
-    "FETCH_HEAD); never git checkout -B, git switch or git reset onto another "
-    "line, because commits that do not descend from the commit you started on "
-    "are discarded."
+    "$SWARM_ARTIFACTS_DIR/pr-body.md. If the work is already done, or your brief "
+    "asks for no change to the repository, commit nothing and write "
+    "$SWARM_ARTIFACTS_DIR/verification.md saying what you delivered and checked "
+    "and what showed it is done: the step ends as no change, not a failure. Keep your commits on the branch you were cloned onto: to build on "
+    "another branch, fetch it and merge it in (git merge FETCH_HEAD); never git "
+    "checkout -B, git switch or git reset onto another line, because commits "
+    "that do not descend from the commit you started on are discarded."
 )
+
+
+#: WHETHER THIS STEP PUBLISHES (ONE-PLACE, the owner's ask of 2026-11-03 for
+#: prompts without bloat). The worker knows whether a step's branch or pull
+#: request is its deliverable (`lifecycle.Worker._deliverable_branch`); the
+#: runner is told through this variable, platform-set and never from
+#: `input`. "0" is a step that publishes nothing -- a review, a `collect`
+#: step, a `single-pr` reader -- and gets no PUBLISH_PARAGRAPH. Unset, or any
+#: other value, keeps the paragraph: a worker that predates the variable
+#: never leaves a publishing step without it.
+STEP_PUBLISHES_ENV = "SWARM_STEP_PUBLISHES"
+
+
+def step_publishes(environ: Mapping[str, str]) -> bool:
+    """False only when the worker said this step publishes nothing."""
+    return (environ.get(STEP_PUBLISHES_ENV) or "").strip() != "0"
+
+
+def checkout_head(repo: Path, env: Mapping[str, str]) -> str | None:
+    """The checkout's HEAD commit, or None: an empty clone has none, and a git
+    that failed is not read as one."""
+    code, out = ceiling_mod._git(repo, env, "rev-parse", "--verify", "-q", "HEAD")
+    return out if code == 0 and out else None
+
+
+def committed_nothing(repo: Path, env: Mapping[str, str], start_head: str | None) -> bool:
+    """True only when HEAD is still `start_head` and the tree is clean (#3265).
+
+    Any git error is False: the no-change turn is never asked on a guess. An
+    uncommitted change is not nothing either: the worker's harvest commits it.
+    """
+    if start_head is None or checkout_head(repo, env) != start_head:
+        return False
+    code, status = ceiling_mod._git(repo, env, "status", "--porcelain")
+    return code == 0 and not status
 
 
 #: THE STEP'S WALL CLOCK, TOLD TO THE AGENT (#2139). Measured 2026-10-23 by the
@@ -1612,7 +1742,11 @@ PUBLISH_PARAGRAPH = (
 #: a test can hold it; minutes rounded down and the end time in UTC, so it is
 #: never later than the deadline it names. It carries no rate-limit or
 #: credential marker for a CLI that echoes it -- the minutes are the one number
-#: in it, and only a 429-minute limit would spell one.
+#: in it, and only a 429-minute limit would spell one. ONE PLACE (2026-11-03):
+#: the pull request's files are PUBLISH_PARAGRAPH's alone, which a step that
+#: publishes nothing does not get, and which tests to run is the related-tests
+#: note's (`claude_code.RELATED_TESTS_NOTE`); this line keeps only the
+#: deadline and the one background-test rule every step shares.
 def time_limit_line(timeout_seconds: float, now: datetime | None = None) -> str:
     """The one platform line naming this run's limit and when it ends."""
     start = now if now is not None else datetime.now(timezone.utc)
@@ -1622,10 +1756,9 @@ def time_limit_line(timeout_seconds: float, now: datetime | None = None) -> str:
         f"This step has a wall-clock limit of {minutes} minute{'' if minutes == 1 else 's'} "
         f"and is stopped at "
         f"{end.strftime('%Y-%m-%dT%H:%M:%SZ')} (UTC), whatever it is doing; work "
-        "that is not committed by then is lost. Commit your work and write the "
-        "pull request's title and body well before that time. Do not run the "
-        "whole test suite in the background and poll it with sleep: run the "
-        "tests related to your change, in the foreground."
+        "that is not committed by then is lost, so commit well before that time. "
+        "Never run tests in the background (`&`, `nohup`) and poll them with "
+        "sleep: run them in the foreground."
     )
 
 
@@ -1646,6 +1779,7 @@ def repair_prompt(
     missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str,
     index_problems: Sequence[str] = (),
     verdict_problem: str | None = None,
+    no_change: bool = False,
 ) -> str:
     """The one user message a repair turn is given: what failed, exactly."""
     directory = PurePosixPath(os.path.abspath(os.fspath(artifacts_dir)))
@@ -1691,6 +1825,18 @@ def repair_prompt(
             f"does not read it as a verdict: {verdict_problem}. Rewrite only that file, "
             "from the review you already did; do not review again. "
             f"{expected_mod.verdict_line()} You get this one turn."
+        )
+    if no_change:
+        # #3265; the worker's `lifecycle.VERIFICATION_FILE`, named lazily.
+        from ..lifecycle import VERIFICATION_FILE
+
+        lines.append(
+            "This step opens a pull request after you exit, and you committed "
+            "nothing. Commit the work the brief asked for, or, if the brief asks "
+            "for no change to the repository or the work is already done, write "
+            f"{directory / VERIFICATION_FILE} saying what you delivered and what "
+            "you checked: the step then ends as no change, not a failure. You get "
+            "this one turn."
         )
     return "\n".join(lines)
 
@@ -1769,10 +1915,42 @@ def _stopped_start_spend(watcher: ceiling_mod.CeilingWatcher, result: Any) -> di
     for the worker to price (`ceiling.UNPRICED_KEY`, #2896), and its wall
     time as `duration_ms`, so the attempt's duration adds up every session."""
     spend = watcher.start_spend()
+    if not watcher.start_usage_read:
+        # A stopped session whose stream showed no usage is not a free one:
+        # its cost is unknown, and the attempt's is never reported complete
+        # (`ceiling.COST_INCOMPLETE_KEY`).
+        watcher.note_unread()
     seconds = getattr(result, "duration_seconds", None)
     if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
         spend["duration_ms"] = int(round(seconds * 1000))
     return spend
+
+
+def ceiling_state_file() -> Path | None:
+    """The attempt's context-ceiling state (`ceiling.STATE_NAME`), beside the
+    worker's channel or session file, or None when the worker named neither."""
+    return ceiling_mod.state_path(
+        os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
+        or os.environ.get(SESSION_FILE_ENV, "").strip()
+        or None
+    )
+
+
+def _attempt_spend(
+    spend: dict[str, Any], watcher: ceiling_mod.CeilingWatcher | None
+) -> dict[str, Any]:
+    """The spend this runner reports for every session it ran.
+
+    When one of them was stopped with its usage unread, the cost the others
+    reported is not the attempt's: `total_cost_usd` is dropped, so the worker
+    prices the whole capture and marks the figure estimated, and the spend
+    says it is incomplete (`ceiling.COST_INCOMPLETE_KEY`). Never a partial
+    figure presented as the whole."""
+    if watcher is None or not watcher.unread_here or not spend:
+        return spend
+    out = {k: v for k, v in spend.items() if k != "total_cost_usd"}
+    out[ceiling_mod.COST_INCOMPLETE_KEY] = True
+    return out
 
 
 def run_cli_agent(
@@ -1894,18 +2072,27 @@ def run_cli_agent(
     ceiling_state_path: Path | None = None
     ceiling_seed: dict[str, Any] | None = None
     resumed_over: str | None = None
+    # The previous session's last words in a handoff: OFF unless
+    # SWARM_CEILING_SESSION_TAIL turns them on (BGD, 2026-11-06). Its own
+    # assistant text fed back as user input got the fresh session's first
+    # call refused by the provider's safeguards (task_a27c0b2241d1492492ee,
+    # `ceiling.SESSION_TAIL_ENV`); the note file, todos, notes files, diff
+    # summary and commits carry what it knew.
+    ceiling_session_tail = ceiling_mod.session_tail_enabled(os.environ)
     if spec.context_ceiling:
-        ceiling_state_path = ceiling_mod.state_path(
-            os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
-            or os.environ.get(SESSION_FILE_ENV, "").strip()
-            or None
-        )
+        ceiling_state_path = ceiling_state_file()
         ceiling_seed = ceiling_mod.read_state(ceiling_state_path)
         ceiling_watcher = ceiling_mod.CeilingWatcher(
             ceiling_mod.resolve_limits(payload, os.environ.get(RUNNER_PROFILE_ENV)),
             fresh_sessions=ceiling_mod.spent_sessions(ceiling_seed),
         )
-        if resume and ceiling_watcher.armed:
+        # The attempt's sessions so far, an earlier runner process's included,
+        # so the count and the cost's completeness cover every one of them.
+        ceiling_watcher.carry(ceiling_seed)
+        # NEVER FOR A PARKED QUESTION: the answered question is in that
+        # session alone, and a fresh session from a handoff would drop it.
+        answered = os.environ.get(RESUME_REASON_ENV, "").strip() == RESUME_ANSWERED
+        if resume and ceiling_watcher.armed and not answered:
             resumed_over = ceiling_mod.over_state(ceiling_seed, resume, ceiling_watcher.limits)
             if resumed_over is not None:
                 resume = ""
@@ -1957,10 +2144,13 @@ def run_cli_agent(
         # A continuation at the time limit with no session to resume (BGD,
         # 2026-11-02): the task again, in the restored workspace, and the note.
         first_prompt = f"{TIME_LIMIT_RESUME_PROMPT}\n\n{first_prompt}"
-    if cwd != ctx.work_dir:
+    if cwd != ctx.work_dir and step_publishes(os.environ):
         # A task with a repository (Proposal A, owner decision 2026-10-08):
         # the platform paragraph, last. Not on a resume: the session
-        # already holds it.
+        # already holds it. Nor on a step the worker says publishes nothing
+        # (`step_publishes`): 88 of 90 measured steps wrote pr-title.txt
+        # and pr-body.md because this paragraph asked, where no pull
+        # request was ever opened.
         task_prompt = f"{task_prompt}\n\n{PUBLISH_PARAGRAPH}"
         first_prompt = f"{first_prompt}\n\n{PUBLISH_PARAGRAPH}"
     if resume:
@@ -1968,8 +2158,9 @@ def run_cli_agent(
         # A resumed session is told the time it has left, as a fresh start is
         # (#2139, owner decision 2026-10-28): `limits` is what the worker
         # handed this restart (#2363), the time left now, never the start's.
+        # A session resumed with a person's answer is told that answer.
         stdin_prompt = (
-            f"{resume_prompt(os.environ.get(RESUME_REASON_ENV, '').strip())}\n\n"
+            f"{resumed_message(os.environ)}\n\n"
             f"{time_limit_line(limits.timeout_seconds)}"
         )
     else:
@@ -2089,6 +2280,12 @@ def run_cli_agent(
         env.get(name) for name in (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH)
     )
 
+    # THE CHECKOUT'S HEAD BEFORE THE AGENT RUNS (#3265), read here rather than
+    # from SWARM_CLONE_BASE so the no-change repair check never depends on it:
+    # a resumed attempt starts from the tree the earlier one left. An empty
+    # clone has no HEAD, and then the no-change turn is never asked.
+    start_head = checkout_head(cwd, env) if cwd != ctx.work_dir else None
+
     # When the latest start began, for `spec.session_locator`: a session file
     # an earlier run left in the restored workspace is not this run's.
     started_at = [time.time()]
@@ -2133,6 +2330,8 @@ def run_cli_agent(
         last_watcher[0] = run_watcher
         if ceiling_watcher is not None:
             ceiling_watcher.begin(fresh=fresh, seed=seed)
+            # The session count, for a runner restarted inside this attempt.
+            ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
         if run_watcher is None and budget is None and ceiling_watcher is None:
             run_result = run_child(
                 run_argv,
@@ -2192,8 +2391,13 @@ def run_cli_agent(
         run_watcher: AccountStreamWatcher | None,
         spend: dict[str, Any],
         combined: str,
+        parsed_run: Any,
     ) -> None:
-        """Raise the signal or failure one start of the CLI ended in, if any."""
+        """Raise the signal or failure one start of the CLI ended in, if any.
+
+        `parsed_run` is the parsed stdout of the start being judged: its result
+        reason names a non-zero exit whose stderr says nothing (#3547).
+        """
         if budget is not None and budget.stopped_for is not None:
             # STOPPED FOR THE BUDGET (#2459), at a turn boundary or past 120%
             # mid-turn. Not judged as a rate limit or a refused credential, and
@@ -2270,7 +2474,8 @@ def run_cli_agent(
         if run_result.exit_code != 0:
             raise RunnerFailure(
                 exit_error(
-                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr
+                    spec.name, run_result.exit_code, _tail(stderr_path, 2000), spec.benign_stderr,
+                    result_reason=redact_text(scrub_text(_result_error(parsed_run), secrets)).text,
                 ),
                 spend=spend,
             )
@@ -2285,6 +2490,16 @@ def run_cli_agent(
             + "\n"
             + _without_capture_notices(_tail(stderr_path))
         )
+
+    def handoff_refusal(parsed_run: Any) -> str | None:
+        """The refusal a fresh session from a handoff ended in on its first
+        call (`ceiling.first_call_refusal`), unless the start ended for a
+        reason `judge` reads first: a timeout, the budget, a swap, the ceiling."""
+        if (ceiling_watcher is None or result.timed_out or ceiling_stop_pending()
+                or (budget is not None and budget.stopped_for is not None)
+                or (watcher is not None and watcher.stopped_for is not None)):
+            return None
+        return ceiling_mod.first_call_refusal(parsed_run)
 
     def ceiling_stop_pending() -> bool:
         """Whether the last start was stopped at the context ceiling, and by
@@ -2310,8 +2525,13 @@ def run_cli_agent(
         )
         return stop
 
+    #: The minimal handoff (`ceiling.minimal_handoff_prompt`) of the last
+    #: handoff written, until a refusal of its fresh session spends it.
+    handoff_minimal: list[str | None] = [None]
+
     def ceiling_handoff(stop: dict[str, Any], then: str | None) -> str:
-        """Commit the tree, and the prompt the fresh session starts from (#2524)."""
+        """Commit the tree, and the prompt the fresh session starts from (#2524);
+        the minimal one it starts from if refused goes to `handoff_minimal`."""
         from ..prepublish import CLONE_BASE_ENV, EMPTY_BASE  # lazy, as the gate's
 
         diff_stat: str | None = None
@@ -2331,14 +2551,20 @@ def run_cli_agent(
                 cwd, env, base if base and base != EMPTY_BASE else None)
             ctx.report["context_ceiling"] = ceiling_watcher.summary() if ceiling_watcher else None
         # The previous session's notes (#2897): its note file, the notes
-        # files it kept, its todo list and its own last words -- all of this
-        # attempt's own artifacts and stream, scrubbed of the run's secrets.
-        tail = ceiling_watcher.session_tail() if ceiling_watcher is not None else None
+        # files it kept, its todo list and -- only with the setting on -- its
+        # own last words: all of this attempt's own artifacts and stream,
+        # scrubbed of the run's secrets.
+        tail = (ceiling_watcher.session_tail()
+                if ceiling_watcher is not None and ceiling_session_tail else None)
+        note = ceiling_mod.agent_note(Path(ctx.artifacts_dir))
+        todos = _scrub_json(ceiling_watcher.todos, secrets) if ceiling_watcher else None
+        handoff_minimal[0] = ceiling_mod.minimal_handoff_prompt(
+            task_prompt=task_prompt, note=note, todos=todos, then=then)
         return ceiling_mod.handoff_prompt(
             stop=stop, task_prompt=task_prompt, diff_stat=diff_stat, commits=commits,
-            wip=wip, note=ceiling_mod.agent_note(Path(ctx.artifacts_dir)), then=then,
+            wip=wip, note=note, then=then,
             session_tail=scrub_text(tail, secrets) if tail else None,
-            todos=_scrub_json(ceiling_watcher.todos, secrets) if ceiling_watcher else None,
+            todos=todos,
             files=ceiling_mod.notes_files(Path(ctx.artifacts_dir)),
         )
 
@@ -2385,9 +2611,23 @@ def run_cli_agent(
         # Stopped at the ceiling before the CLI printed its totals (#2524).
         assert ceiling_watcher is not None
         spend = _stopped_start_spend(ceiling_watcher, result)
+        ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
     combined = detection_text(raw_stdout, parsed)
-    if not ceiling_stop_pending():
-        judge(result, watcher, spend, combined)
+    # A fresh session from a handoff refused on its first call is started
+    # once more from the minimal handoff (below, `refused_handoff`), not judged.
+    first_refusal = handoff_refusal(parsed) if resumed_over is not None else None
+    if not ceiling_stop_pending() and first_refusal is None:
+        judge(result, watcher, spend, combined, parsed)
+
+    def parked_on_question() -> bool:
+        """The last start stopped on a question the bridge recorded: no turn
+        follows -- no wrap-up, ceiling handoff, finish, repair or gate turn --
+        because each would resume the session without the answer, and the
+        worker parks the step and publishes nothing (`question_bridge`)."""
+        stopped = question_bridge.stopped_on_question(parsed)
+        if stopped:
+            ctx.report["question_parked"] = True
+        return stopped
 
     # RESUMED ONCE TO FINISH (owner decision 2026-10-05; see `pending_work`).
     # The run succeeded, but its answer announces work still in flight -- or
@@ -2402,14 +2642,19 @@ def run_cli_agent(
     # current one: a resume's totals are its session's alone (#2524).
     ended_spend: dict[str, Any] = {}
     session_spend = spend
+    spend = _attempt_spend(spend, ceiling_watcher)
 
-    def resume_pass(session: str | None, pass_prompt: str, remaining: float) -> Any:
+    def resume_pass(
+        session: str | None, pass_prompt: str, remaining: float, *, handoff: bool = False
+    ) -> Any:
         """Continue `session` once with `pass_prompt`; return that pass's own parsed output.
 
         Shared by the finish pass and the repair turns. The step's record is
         kept whole: the captures, the spend, the durations and what the
         transcript and summary read cover every start. `session` None starts
-        a fresh session instead (a context-ceiling handoff, #2524).
+        a fresh session instead (a context-ceiling handoff, #2524); `handoff`
+        says `pass_prompt` is one, so a refusal of its first call is retried
+        once from the minimal handoff (`refused_handoff`).
         """
         nonlocal result, watcher, capture, raw_stdout, parsed, spend, combined
         nonlocal duration_seconds, stdout_bytes, stderr_bytes, ended_spend, session_spend
@@ -2451,19 +2696,51 @@ def run_cli_agent(
         if ceiling_stop_pending() and not pass_spend:
             assert ceiling_watcher is not None
             pass_spend = _stopped_start_spend(ceiling_watcher, result)
+            ceiling_mod.write_state(ceiling_state_path, ceiling_watcher.state())
         if fresh:
             ended_spend = _combined_spend(ended_spend, session_spend, fresh=True)
             session_spend = pass_spend
         else:
             session_spend = _combined_spend(session_spend, pass_spend)
-        spend = _combined_spend(ended_spend, session_spend, fresh=True)
+        spend = _attempt_spend(
+            _combined_spend(ended_spend, session_spend, fresh=True), ceiling_watcher)
         combined = detection_text(pass_raw, pass_parsed)
-        if not ceiling_stop_pending():
-            judge(result, watcher, spend, combined)
+        refusal = handoff_refusal(pass_parsed) if handoff else None
+        if not ceiling_stop_pending() and refusal is None:
+            judge(result, watcher, spend, combined, pass_parsed)
         duration_seconds += result.duration_seconds
         stdout_bytes += result.stdout_bytes
         stderr_bytes += result.stderr_bytes
+        if refusal is not None:
+            return refused_handoff(refusal, remaining - result.duration_seconds)
         return pass_parsed
+
+    def refused_handoff(refusal: str, left: float) -> Any:
+        """A fresh session started from a handoff was refused on its first
+        call: start it ONCE more from the minimal handoff -- the task, the note
+        file and the todos only -- and record that in the ceiling summary. A
+        second refusal fails the step, naming the refusal."""
+        assert ceiling_watcher is not None
+        minimal = handoff_minimal[0]
+        handoff_minimal[0] = None
+        if minimal is None or left < FINISH_MIN_SECONDS:
+            again = "again, from the minimal handoff" if minimal is None else (
+                "with too little of the step's budget left to start it once more")
+            raise RunnerFailure(
+                f"{spec.name}: the fresh session started from a context-ceiling handoff "
+                f"was refused on its first call ({refusal}) {again}",
+                spend=spend,
+            )
+        ceiling_watcher.refusal_restarts.append(
+            {"refusal": refusal, "session": ceiling_watcher.sessions})
+        ctx.report["context_ceiling"] = ceiling_watcher.summary()
+        log.warning(
+            "the fresh session started from a context-ceiling handoff was refused on its "
+            "first call; starting it once more from the minimal handoff (the task, the "
+            "note file and the todos only)",
+            refusal=refusal, remaining_seconds=round(left, 1),
+        )
+        return resume_pass(None, minimal, left, handoff=True)
 
     def step_remaining() -> float:
         return limits.timeout_seconds - duration_seconds
@@ -2490,7 +2767,7 @@ def run_cli_agent(
             # A handoff with nothing else to ask ends with what is left of the
             # step's wall clock (#2139), which the fresh session was never told.
             last = resume_pass(
-                None, ceiling_handoff(stop, then or time_limit_line(left)), left)
+                None, ceiling_handoff(stop, then or time_limit_line(left)), left, handoff=True)
         return last
 
     def pass_within_ceiling(
@@ -2502,11 +2779,17 @@ def run_cli_agent(
                if ceiling_watcher is not None and ceiling_watcher.armed else None)
         if why is not None:
             stop = note_ceiling_stop(at=ceiling_mod.AT_RESUME, why=why, resume_reason=reason)
-            done = resume_pass(None, ceiling_handoff(stop, pass_prompt), remaining())
+            done = resume_pass(
+                None, ceiling_handoff(stop, pass_prompt), remaining(), handoff=True)
         else:
             done = resume_pass(session, pass_prompt, remaining())
         later = carry_on(pass_prompt, remaining)
         return later if later is not None else done
+
+    if first_refusal is not None:
+        # The handoff this run started from (a resume over the ceiling) was
+        # refused on its first call.
+        refused_handoff(first_refusal, step_remaining())
 
     # RESUMED ONCE TO WRAP UP (#2139; see WRAP_UP_PROMPT). The watched run was
     # stopped at a turn boundary with less than the wrap-up margin left;
@@ -2515,7 +2798,8 @@ def run_cli_agent(
     # twice, and the passes after it count every start's duration. A session
     # over the context ceiling wraps up in a fresh session instead (#2524).
     resumed_to_wrap_up = False
-    if watcher is not None and watcher.stopped_to_wrap_up and not result.timed_out:
+    if (watcher is not None and watcher.stopped_to_wrap_up and not result.timed_out
+            and not parked_on_question()):
         remaining = step_remaining()
         session = _session_of(parsed) or watcher.session_id
         if session is None or remaining < FINISH_MIN_SECONDS:
@@ -2542,9 +2826,12 @@ def run_cli_agent(
 
     # THE CONTEXT CEILING (#2524): a session stopped at it goes on fresh, and
     # what follows -- the finish pass, the repairs, the gate -- reads the last.
-    carry_on(None, step_remaining)
+    if not parked_on_question():
+        carry_on(None, step_remaining)
 
-    pending = pending_work(parsed) if spec.finish_on_pending and spec.resume_flag else None
+    pending = (pending_work(parsed)
+               if spec.finish_on_pending and spec.resume_flag and not parked_on_question()
+               else None)
     if pending is not None:
         # The whole step's starts, not the last one's: after a wrap-up pass
         # the finish pass gets what both left, never more (#2139).
@@ -2599,7 +2886,7 @@ def run_cli_agent(
     repair_skipped: str | None = None
     repair_scan_error: str | None = None
     unresolved: dict[str, list[str]] | None = None
-    if spec.repair_checks and spec.resume_flag:
+    if spec.repair_checks and spec.resume_flag and not parked_on_question():
         # The scan reads the diff the publish reads, so only a task with a
         # checkout has one to scan.
         scan_repo = cwd if cwd != ctx.work_dir else None
@@ -2636,8 +2923,33 @@ def run_cli_agent(
                 problem = problem[:VERDICT_PROBLEM_CHARS] + "..."
             return problem
 
+        # A PUBLISHING STEP THAT COMMITTED NOTHING (#3265; see
+        # `NO_CHANGE_REPAIR_MAX_TURNS`): HEAD where it started, the tree clean
+        # and no non-blank verification.md (`_verified_no_change`'s rule). Not
+        # for SWARM_STEP_PUBLISHES=0. Its "1" also covers a contributor,
+        # amender or carrier step, for which no change is not a failure: there
+        # the turn is one cheap turn whose verification.md also makes the
+        # worker record no_change. Narrowing the variable is lifecycle.py's,
+        # left out while #3236/#3241/#3260 change that file.
+        no_change_owed = (scan_repo is not None and step_publishes(os.environ)
+                          and start_head is not None)
+
+        def no_change_check() -> bool:
+            if scan_repo is None or not no_change_owed \
+                    or not committed_nothing(scan_repo, env, start_head):
+                return False
+            from ..lifecycle import VERIFICATION_FILE  # lazy, as CREDENTIAL_ADVICE
+
+            path = Path(ctx.artifacts_dir) / VERIFICATION_FILE
+            try:
+                return not (path.is_file() and path.read_text(errors="replace").strip())
+            except OSError:
+                return True
+
         ctx.report["repair_turns"] = 0
         missing, flagged = run_checks()
+        no_change_bad = no_change_check()
+        no_change_turns = 0
         index_problems = index_check()
         index_turns = 0
         verdict_bad = verdict_check()
@@ -2651,7 +2963,8 @@ def run_cli_agent(
         while True:
             ask_index = index_problems if index_turns < INDEX_REPAIR_MAX_TURNS else []
             ask_verdict = verdict_bad if verdict_turns < VERDICT_REPAIR_MAX_TURNS else None
-            if not (missing or flagged or ask_index or ask_verdict):
+            ask_no_change = no_change_bad and no_change_turns < NO_CHANGE_REPAIR_MAX_TURNS
+            if not (missing or flagged or ask_index or ask_verdict or ask_no_change):
                 if index_problems:
                     log.warning(
                         f"{indexspec.INDEX_FILE} is still refused after its repair turn; "
@@ -2664,9 +2977,14 @@ def run_cli_agent(
                         "its repair turn; the worker's own check decides",
                         verdict_problem=verdict_bad,
                     )
+                if no_change_bad:
+                    log.warning(
+                        "the step still committed nothing and wrote no verification after "
+                        "its repair turn; the worker's own check decides",
+                    )
                 break
             if repair_turns >= TITLE_REPAIR_MAX_TURNS and not flagged and not ask_index \
-                    and not ask_verdict \
+                    and not ask_verdict and not ask_no_change \
                     and list(missing) == [PR_TITLE_NAME]:
                 # Only the title is still missing: it had its one follow-up
                 # turn (Proposal B), and the worker decides the rest.
@@ -2715,17 +3033,22 @@ def run_cli_agent(
                 credential_lines=flagged[:REPAIR_LIST_CAP],
                 index_problems=ask_index,
                 verdict_problem=ask_verdict,
+                committed_nothing=ask_no_change,
                 remaining_seconds=round(remaining, 1),
             )
             if ask_index:
                 index_turns += 1
             if ask_verdict:
                 verdict_turns += 1
-            text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index, ask_verdict)
+            if ask_no_change:
+                no_change_turns += 1
+            text = repair_prompt(missing, flagged, ctx.artifacts_dir, ask_index, ask_verdict,
+                                 no_change=ask_no_change)
             pass_within_ceiling(session, text, step_remaining, "repair")
             after_missing, after_flagged = run_checks()
             index_problems = index_check()
             verdict_bad = verdict_check()
+            no_change_bad = no_change_check()
             # What a turn fixed is what it was asked to fix and no longer fails.
             # A credential line is named by `path:line rule`, so one that only
             # moved when an earlier line was removed reads as fixed here and as
@@ -2742,15 +3065,19 @@ def run_cli_agent(
                 **({"verdict_problem": ask_verdict,
                     "verdict_fixed": bool(ask_verdict) and not verdict_bad}
                    if verdict_owed else {}),
+                **({"no_change_asked": ask_no_change,
+                    "no_change_fixed": ask_no_change and not no_change_bad}
+                   if no_change_owed else {}),
             })
             ctx.report["repairs"] = repairs
             missing, flagged = after_missing, after_flagged
-        if missing or flagged or index_problems or verdict_bad:
+        if missing or flagged or index_problems or verdict_bad or no_change_bad:
             unresolved = {
                 "missing_outputs": missing[:REPAIR_LIST_CAP],
                 "credential_lines": flagged[:REPAIR_LIST_CAP],
                 **({"index_problems": index_problems} if index_run else {}),
                 **({"verdict_problem": verdict_bad} if verdict_owed else {}),
+                **({"no_change": no_change_bad} if no_change_owed else {}),
             }
 
     # JEV'S POST-STEPS (lane CTXQ-JW; `judge.poststeps`). The planner's plan
@@ -2767,7 +3094,8 @@ def run_cli_agent(
     # repair turns, so the checks read the tree they left. A task with no
     # checkout has nothing to publish.
     prepublish_record: dict[str, Any] | None = None
-    if spec.prepublish and spec.resume_flag and cwd != ctx.work_dir:
+    if (spec.prepublish and spec.resume_flag and cwd != ctx.work_dir
+            and not parked_on_question()):
         # The checks' own time counts against the step's budget as the
         # agent's does: `duration_seconds` sums only the CLI's starts.
         gate_started, agent_before = time.monotonic(), duration_seconds
@@ -2806,6 +3134,18 @@ def run_cli_agent(
             log=log, resume=resume_for_gate, remaining=gate_remaining, judge=jev,
             staged_patches=[p for p in staged if p.endswith(STAGED_PATCH_SUFFIXES)],
         )
+
+    # JC2, THE END-OF-STEP CONTRACT JUDGMENT (jev-contract.md section 5; the
+    # owner's answers 4 and 8). After the agent and the gate's turns, so the
+    # agent can neither see nor answer it, and over the commit the gate left.
+    # One bounded round on the budget's reserve; with Jev unavailable it is
+    # `not_run`, never a pass. Recorded in the report; the worker posts it to
+    # `state/contract-verdict` once the step is published
+    # (`lifecycle.Worker._deliver_contract_verdict`).
+    if result.exit_code == 0 and cwd != ctx.work_dir and not parked_on_question():
+        verdict = _contract_post_step(jev, cwd, log)
+        if verdict is not None:
+            ctx.report["contract_judgment"] = verdict
 
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
     # is the canonical transcript and is uploaded either way.
@@ -2897,6 +3237,10 @@ def run_cli_agent(
             "duration_seconds": round(duration_seconds, 3),
             "stdout_bytes": stdout_bytes,
             "stderr_bytes": stderr_bytes,
+            # How many sessions the attempt ran -- a context-ceiling restart
+            # starts another -- and whether every one's usage was read.
+            **({ceiling_mod.SESSIONS_METRIC: ceiling_watcher.sessions_record()}
+               if ceiling_watcher is not None else {}),
         },
     }
 
@@ -3027,6 +3371,29 @@ def _jev_post_steps(ctx: RunnerContext, jev: Any, cwd: Path, log: StructuredLogg
                     error=type(exc).__name__)
         out["error"] = type(exc).__name__
     return out
+
+
+def _contract_post_step(jev: Any, cwd: Path, log: StructuredLogger) -> dict[str, Any] | None:
+    """JC2 over the contract the worker named (`poststeps.read_contract`):
+    the verdict to post, or None with no contract to judge. Never raises."""
+    from .. import prepublish
+    from ..judge import poststeps
+
+    try:
+        document, digest = poststeps.read_contract(os.environ)
+        if digest is None and document is None:
+            return None
+        verdict = poststeps.contract_post_step(
+            jev, document, digest, cwd,
+            base=os.environ.get(prepublish.CLONE_BASE_ENV, "").strip() or None,
+            deadline_left=prepublish.deadline_left(os.environ))
+    except Exception as exc:  # noqa: BLE001 -- a judgment that failed did not run
+        log.warning("the contract judgment failed", error=type(exc).__name__)
+        return None
+    if verdict is not None:
+        log.info("contract judgment", outcome=verdict.get("outcome"),
+                 reason=verdict.get("reason"), verdicts=len(verdict.get("verdicts") or ()))
+    return verdict
 
 
 def _parse_cli_output(raw_stdout: str) -> Any:

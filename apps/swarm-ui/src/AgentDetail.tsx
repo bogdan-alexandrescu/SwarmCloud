@@ -1,4 +1,4 @@
-import { Banner, Button, ButtonLink, CIcon, Chip, Count, ToneMark } from './components'
+import { Button, ButtonLink, CIcon, Chip, Count, ToneMark } from './components'
 import { Children, Fragment, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -23,6 +23,7 @@ import { UtilisationPanel } from './UtilisationPanel'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
+import { ContractAcceptanceCard } from './ContractJev'
 import { DecisionCard } from './DecisionCard'
 import { AdditionalRepositoryRows } from './Dispatch'
 import { PersonName } from './PersonName'
@@ -32,7 +33,8 @@ import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { backendWord, eventWord, parkWord, stateWord } from './words'
-import { chooseTenant, num, type ApiError, type Result } from './fetch'
+import { num, route, type Result } from './fetch'
+import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
 import { addressToPath } from './paths'
@@ -202,22 +204,24 @@ export function AgentDetailScreen({
       mounted.current = false
     }
   }, [])
-  // THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS THIS TASK (#1194 c15):
-  // set from a 404 whose probe found it (`taskElsewhere`), cleared by any
-  // other answer. Offered under the failed panel, never switched to unasked.
-  const [elsewhere, setElsewhere] = useState<NonNullable<ApiError['elsewhere']> | null>(null)
-  useEffect(() => setElsewhere(null), [taskId])
+  // A 404 FOR THIS TASK ASKS THE PERSON'S OTHER WORKSPACES (#1194 c15; the
+  // owner's pick of 2026-11-04, elsewhere.tsx): set from a read that answered
+  // 404, cleared by any other answer. What they answer is offered under the
+  // failed panel, never switched to unasked.
+  const [missing, setMissing] = useState(false)
+  useEffect(() => setMissing(false), [taskId])
   const load = useCallback(
     () =>
       loadAgentRun(taskId).then((r) => {
         if (mounted.current && shown.current === taskId) {
           if (r.status === 'ok' || r.status === 'stale') setName(agentName(r.data.task))
-          if (r.status !== 'loading') setElsewhere(r.status === 'error' ? (r.error.elsewhere ?? null) : null)
+          if (r.status !== 'loading') setMissing(r.status === 'error' && r.error.kind === 'not_found')
         }
         return r
       }),
     [taskId],
   )
+  const elsewhere = useElsewhere(missing ? route('/v1/tasks/{id}', { id: taskId }) : null)
   // `Screen` owns its own retry nonce and does not expose it to children, so
   // the stop control needs one of its own: bumping this re-keys `Screen`,
   // which remounts it and re-runs the load. It is in the key rather than in a
@@ -270,34 +274,23 @@ export function AgentDetailScreen({
         {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} links={links} lastLine={lastLine} />}
       </Screen>
   )
-  // THE SWITCH IS OFFERED, NOT MADE: the person chose the tenant they are in,
-  // and a link must not move them out of it. Pressing it makes the choice
-  // (`chooseTenant`) and reads the task again under it. Its own top margin
-  // keeps it a separate notice: flush under the failed panel, the two
-  // bordered boxes read as one.
+  // THE SWITCH IS OFFERED, NOT MADE: the person chose the workspace they are
+  // in, and a link must not move them out of it. Pressing it makes the choice
+  // as the switcher does and reads the task again under it. The notice keeps
+  // its own top margin: flush under the failed panel, the two bordered boxes
+  // read as one. The failed panel above is the page's own 404, unchanged.
   const switchEl =
     elsewhere === null ? null : (
-      <div className="tenant-switch-offer" style={{ marginTop: 'var(--ctl-s3)' }}>
-      <Banner
-        tone="info"
-        role="status"
-        title={`This task is in ${elsewhere.display_name}`}
-        actions={
-          <Button
-            kind="primary"
-            onClick={() => {
-              setElsewhere(null)
-              chooseTenant(elsewhere.tenant_id)
-              reload()
-            }}
-          >
-            {`Switch to ${elsewhere.display_name}`}
-          </Button>
-        }
-      >
-        It is one of your workspaces, so it can be read there. This one answers as it would for a task that does not exist.
-      </Banner>
-      </div>
+      <ElsewhereNotice
+        found={elsewhere}
+        what="agent"
+        back={{ onClick: onClose }}
+        notFound={null}
+        onSwitched={() => {
+          setMissing(false)
+          reload()
+        }}
+      />
     )
   if (headed) {
     return (
@@ -520,6 +513,10 @@ export function Run({
           2026-11-02): what jev-belay and jev-enforce did, or why they did not
           run. Nothing for an attempt whose summary has no `quality_gates`. */}
       <QualityGatesLine task={task} />
+      {/* JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4; the
+          owner's pick on PR #3255): the record the approval screen draws,
+          served on the task detail too. Nothing for a step never judged. */}
+      <ContractAcceptanceCard raw={task.contract_acceptance} />
       {/* RESOURCES ARE ONE ROW (BGD 2026-10-27, DETAILS-BUILDING): "too much
           prose on this page, we don't need so much text for showing resource
           consumption". The strip and the Resources card are unchanged, one

@@ -45,6 +45,10 @@ report the conflict.
 
 ---
 
+
+The owner's instruction, 2026-09-23: *"I dont care what track it is... I want to make sure
+this is done and we never refuse or circumvent work that we said we will do."*
+
 ## Unblocked work
 
 A blocked step does not block the whole request. Decide whether the block is **real** — a
@@ -309,7 +313,13 @@ agent-hours, almost none of it output. Cost is turns × context. Whole-file read
 and waiting inside agents made lanes carry 300-500k tokens on every turn.
 
 * **Read by window.** Never read a whole file over 1,000 lines (a hook refuses it).
-  `grep -n` or `rg` first, then read 100-300 lines around the hit.
+  When the code graph is loaded (a SwarmCloud step with code intelligence on), ask it
+  first where a symbol lives, who calls it and which tests cover it; otherwise
+  `grep -n` or `rg` first. Then read 100-300 lines around the hit. The graph answers
+  in one call what a search takes several to find, and this rule used to say grep
+  first with no exception, which agents followed (experiment batch two, 3 November
+  2026: one graph call in six build steps against 1,910 other tool calls, more than
+  half of them searches).
 * **Never wait or poll.** No `sleep` loops, `gh run watch`, `--watch`, or waiting
   for a PR to merge. The orchestrator waits for CI at zero token cost, and it
   dispatches a dependent lane only after its dependency has merged.
@@ -462,3 +472,14 @@ ordinary crash. Checkpointing is what makes any of those cost minutes instead of
 the whole attempt. Do not relax it on the grounds that live migration is now
 available — migration covers infrastructure moves, not the application-level
 interruptions above.
+
+## Generic content
+
+SwarmCloud is generic: nothing in it may identify a company, a person or a real deployment
+(owner, 7 November 2026). No commit, commit message, pull request title or body, issue, code,
+test, doc or comment may carry a real service account, domain, project id or number, bucket or
+secret name, email address, company or product name, or a person's name. A deployment's own
+values come from configuration and environment variables at run time; the repository holds only
+placeholders (`example-project`, `example.com`, roles such as "the owner"). Never add a new real
+value, even to a file that still holds old ones: a cleanup program is removing those, and a CI
+guard will refuse them.

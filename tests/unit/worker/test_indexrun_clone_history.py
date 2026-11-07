@@ -188,7 +188,7 @@ def test_the_worker_passes_the_window_for_an_index_run_only(
                                        timeout_seconds=3600)
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
     worker._task = {"task_id": "task_1"}
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     worker._deadline = time.monotonic() + 3600
     worker._clone_keeping_lease(worker._task)
     assert len(seen) == 1

@@ -48,7 +48,7 @@ import { Banner, Button, ButtonLink, NamedMark, Toaster, acknowledge, routedClic
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, preferencesUnavailableSnapshot, probeSnapshot, read, route, subscribePreferencesUnavailable, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
-import { addressToPath } from './paths'
+import { addressToPath, workspacePagePathTenant } from './paths'
 import { PageHead } from './Shell'
 import { AdminRoleRefusal } from './WorkspaceRefusal'
 import { shortcut, typedIntoField } from './shortcuts'
@@ -66,8 +66,10 @@ import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 import { voiceItOpen } from './voice/Section'
+import { HOME_JUMPS } from './Home'
+import { aboutOf } from './WorkflowFacts'
 
-export type SpineSection = 'profile' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
+export type SpineSection = 'profile' | 'home' | 'overview' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice' | 'help' | null
 
 /** The spine sections that draw a panel of pages. */
 type PanelSection = 'profile' | 'work' | 'automate' | 'capacity' | 'config' | 'admin' | 'voice'
@@ -170,16 +172,17 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: API_READS_KEY, label: 'API reads', icon: 'api', to: `capacity/${API_READS_KEY}` },
   ],
   // CONFIG (CONFIG-NAV; part of #2157, proposal E S1a): App.tsx SECTIONS'
-  // six tabs in BGD's order. People and roles is left out of a personal
-  // workspace (S1e, `configPagesFor`). Workspace setup is a part of Workspace
-  // Settings, which lights for both its addresses.
+  // tabs in BGD's order. People and roles and Workspace Settings left this
+  // list for the workspace's own page (admin routes lane, part of #2688: the
+  // owner picked a page per workspace), Admin › Workspaces › <workspace>,
+  // whose tabs People, Roles, Settings and Setup they are; their addresses
+  // open it (paths.ts `movedToWorkspacePage`).
   config: [
     { key: 'github', label: 'GitHub access', icon: 'github', to: 'config/github' },
     { key: 'repositories', label: 'Repositories', icon: 'repo', to: 'config/repositories' },
     { key: 'secrets', label: 'Secrets', icon: 'key', to: 'config/secrets' },
     { key: 'mcp-servers', label: 'MCP servers', icon: 'plug', to: 'config/mcp-servers' },
-    { key: 'people', label: 'People and roles', icon: 'accounts', to: 'config/people' },
-    { key: 'workspace', label: 'Workspace Settings', icon: 'gear', to: 'config/workspace' },
+    { key: 'plugins', label: 'Plugins', icon: 'runtimes', to: 'config/plugins' },
   ],
   admin: [
     { key: 'limits', label: 'Pool limits', icon: 'admin', to: 'admin/limits' },
@@ -200,12 +203,14 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // #847 W8 (docs/workspaces.md §6.4): a SECTIONS tab and a route, and
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again. SECTIONS' label, People
-    // and roles, since ADMIN-PEOPLE-ROLES (part of #2157).
-    { key: 'people', label: 'People and roles', icon: 'people', to: 'admin/people' },
-    // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person
-    // administers, last. The only Admin page a workspace admin who is not a
-    // platform admin is shown (`adminPagesFor`).
-    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces you admin', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
+    // and roles, since ADMIN-PEOPLE-ROLES (part of #2157); Platform people
+    // since the admin routes lane (part of #2688): the deployment-wide page,
+    // beside each workspace's own, the same page and reads.
+    { key: 'people', label: 'Platform people', icon: 'people', to: 'admin/people' },
+    // NAV-ADMIN-ROLE (part of #1633): the group workspaces the person may
+    // see, last, each opening its own page. A member's only Admin page
+    // (`adminPagesFor`): their group workspaces, read only.
+    { key: WORKSPACES_YOU_ADMIN_TAB, label: 'Workspaces', icon: 'tenants', to: `admin/${WORKSPACES_YOU_ADMIN_TAB}` },
     // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
     // every tenant's schedules are Automate › Schedules, All tenants.
   ],
@@ -257,9 +262,23 @@ export function adminWorkspaces(choices: readonly TenantChoice[]): TenantChoice[
  */
 export const WORKSPACE_ADMIN_PAGE_KEYS: ReadonlySet<string> = new Set(['people', WORKSPACES_YOU_ADMIN_TAB])
 
-export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean): readonly PanelPage[] {
+/**
+ * A MEMBER REACHES ADMIN › WORKSPACES (admin routes lane, part of #2688; BGD,
+ * 3 November): `member` is someone in at least one group workspace
+ * (`memberWorkspaces`), who administers none. Their Admin is that one page --
+ * their group workspaces, each page read only -- and nothing else: Platform
+ * people's read refuses them, so it is not theirs. Someone in no group
+ * workspace still has no Admin at all.
+ */
+export function adminPagesFor(platformAdmin: boolean, workspaceAdmin: boolean, member = false): readonly PanelPage[] {
   if (platformAdmin) return PANEL_PAGES.admin
-  return workspaceAdmin ? PANEL_PAGES.admin.filter((p) => WORKSPACE_ADMIN_PAGE_KEYS.has(p.key)) : []
+  if (workspaceAdmin) return PANEL_PAGES.admin.filter((p) => WORKSPACE_ADMIN_PAGE_KEYS.has(p.key))
+  return member ? PANEL_PAGES.admin.filter((p) => p.key === WORKSPACES_YOU_ADMIN_TAB) : []
+}
+
+/** The group workspaces a person is in: their own entries, never a platform admin's reach. */
+export function memberWorkspaces(choices: readonly TenantChoice[]): TenantChoice[] {
+  return choices.filter((c) => c.kind === 'group' && !isReach(c))
 }
 
 /**
@@ -312,14 +331,6 @@ export function inAutomateLinks(platformAdmin: boolean): readonly PanelPage[] {
   ]
 }
 
-/**
- * Config's pages for the workspace in hand: all six in a group workspace, and
- * no People and roles in the person's own, which has nobody else in it (S1e).
- * `personal` null is unread: all six, rather than a page that comes and goes.
- */
-export function configPagesFor(personal: boolean | null): readonly PanelPage[] {
-  return personal === true ? PANEL_PAGES.config.filter((p) => p.key !== 'people') : PANEL_PAGES.config
-}
 
 /** Each panel's heading: its spine section's label. */
 export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { profile: 'Profile', work: 'Work', automate: 'Automate', capacity: 'Capacity', config: 'Config', admin: 'Admin', voice: 'Voice it' }
@@ -351,6 +362,8 @@ export function litPage(section: PanelSection, tab: string, agentTab: AgentTab):
 
 /** The path an address is written as, for a link's `href`. */
 export function hrefOf(to: string): string {
+  // Home is the console's root, `/` (App.tsx `HOME`): no address writes it.
+  if (to === HOME_ADDRESS) return '/'
   return addressToPath(to)
 }
 
@@ -1338,6 +1351,12 @@ function CountMark({ c }: { c: PanelCount | undefined }) {
 // ---------------------------------------------------------------------------
 
 const ICONS: Readonly<Record<string, ReactNode>> = {
+  home: (
+    <>
+      <path d="M4 11 12 4.5 20 11" />
+      <path d="M6.5 9.5V19.5h4v-5h3v5h4V9.5" />
+    </>
+  ),
   overview: (
     <>
       <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
@@ -1566,7 +1585,14 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
  */
 const PROFILE_ITEM: { key: 'profile'; label: string; to: string } = { key: 'profile', label: 'Profile', to: PROFILE_ADDRESS }
 
+/** Home's address, as `go()` takes it (App.tsx `HOME`); its path is the root, `/`. */
+const HOME_ADDRESS = 'home'
+
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
+  // HOME, THE FIRST ENTRY, ABOVE OVERVIEW (the owner's pick of the 'desk'
+  // mock-up, 2026-11-02): the signed-in person's own page at the console's
+  // root. App.tsx's navigation comment says why it passes the section test.
+  { key: 'home', label: 'Home', to: HOME_ADDRESS },
   { key: 'overview', label: 'Overview', to: 'overview/now' },
   // WORK STILL OPENS AGENTS (QA-112, part of #1680, left as it is): the same
   // click opens the Work panel, where Workflows is the row after Agents, so
@@ -1713,7 +1739,7 @@ export function SkyShell({
   // WHO SEES ADMIN (NAV-ADMIN-ROLE; part of #1633): a platform admin, or the
   // stored admin of a group workspace. Both reads unread is no Admin at all,
   // never a locked one that then disappears.
-  const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0)
+  const adminPages = adminPagesFor(admin, adminWorkspaces(dataOf(mine) ?? []).length > 0, memberWorkspaces(dataOf(mine) ?? []).length > 0)
   // Their names, for the note a workspace admin's Admin panel carries (S1c).
   const adminOf = useMemo(() => nameTenants(adminWorkspaces(dataOf(mine) ?? []), null).map((w) => w.display_name), [mine])
   const landing = adminLanding(admin, adminPages)
@@ -1748,7 +1774,17 @@ export function SkyShell({
   const [openedAtAdmin, setOpenedAtAdmin] = useState(() => /^\/admin\/?$/.test(globalThis.location?.pathname ?? '') || /^#\/?admin\/?$/.test(globalThis.location?.hash ?? ''))
   const platformPage = section === 'admin' && adminDecided && landing !== null && !missing
     && PANEL_PAGES.admin.some((p) => p.to === `admin/${tab}`) && !adminPages.some((p) => p.to === `admin/${tab}`)
-  const adminRefused = section === 'admin' && adminDecided && !missing && (landing === null || (platformPage && !openedAtAdmin))
+  // A PERSON'S OWN WORKSPACE'S PAGE IS NEVER REFUSED (admin routes lane review,
+  // part of #2688): Config's People and roles and Workspace Settings open the
+  // workspace in hand's page (paths.ts `movedToWorkspacePage`), and someone
+  // whose only workspace is their personal one administers no group, so has no
+  // Admin pages -- the gate refused the settings Config used to give them. The
+  // page is theirs when it is the one in hand (not yet named), the one `me`
+  // reads, or one of their own `/v1/tenants/mine` entries (never a reach).
+  const pageTenant = section === 'admin' ? workspacePagePathTenant(place) : undefined
+  const ownWorkspacePage = pageTenant !== undefined && who !== null
+    && (pageTenant === null || pageTenant === who.tenant.tenant_id || (dataOf(mine) ?? []).some((c) => c.tenant_id === pageTenant && !isReach(c)))
+  const adminRefused = section === 'admin' && adminDecided && !missing && !ownWorkspacePage && (landing === null || (platformPage && !openedAtAdmin))
   const refusedEntry = PANEL_PAGES.admin.find((p) => p.to === `admin/${tab}`)
   const refusedPage = refusedEntry?.label ?? 'Admin'
   const refusedHere = (dataOf(mine) ?? []).find((c) => c.tenant_id === who?.tenant.tenant_id)
@@ -1763,7 +1799,9 @@ export function SkyShell({
   // group, which left a personal workspace drawn as a group one (CONFIG-NAV
   // review, phone People and roles). Unread is null, the group shape.
   const personal = who === null ? null : who.tenant.kind === 'user'
-  const configPages = configPagesFor(personal)
+  // The same four in every workspace: People and roles, which a personal
+  // workspace's Config left out (S1e), is the workspace page's tab now.
+  const configPages = PANEL_PAGES.config
   // THE SETUP READ (proposal E): `GET /v1/onboarding`, once per workspace and
   // again on each Config page, so the strip a page draws is that visit's. The
   // spine's dot on Config and the panel's meter read the same answer.
@@ -2224,7 +2262,7 @@ export function SkyShell({
           // once and stays until a choice, Escape or a click elsewhere;
           // `Open the panel` in it, and the spine's own expand, still
           // undo the collapse. Overview has no pages, so it expands.
-          if (collapsed && on && s.key !== 'overview' && !drawer) {
+          if (collapsed && on && s.key !== 'overview' && s.key !== 'home' && !drawer) {
             if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
             setFly(s.key)
             return
@@ -2325,7 +2363,6 @@ export function SkyShell({
         adminPages={adminPages}
         adminOf={adminOf}
         configPages={configPages}
-        personal={personal === true}
         nav={nav}
         counts={counts}
         adminCounts={adminCounts}
@@ -2640,7 +2677,8 @@ export function SkyShell({
                     <div className="app">
                       <main className="work">
                         <PageHead title={refusedPage} />
-                        {landing === null ? (
+                        {/* A member, whose one Admin page is Workspaces, is told their role as before. */}
+                        {landing === null || adminOf.length === 0 ? (
                           <AdminRoleRefusal
                             page={refusedPage}
                             role={refusedRole(refusedHere, personal === true)}
@@ -3257,7 +3295,6 @@ function PanelPages({
   adminPages,
   adminOf = [],
   configPages,
-  personal = false,
   nav,
   counts,
   adminCounts = {},
@@ -3276,10 +3313,8 @@ function PanelPages({
   adminPages: readonly PanelPage[]
   /** The names of the group workspaces the person administers, for a workspace admin's note (S1c). */
   adminOf?: readonly string[]
-  /** Config's pages for the workspace in hand (`configPagesFor`). */
+  /** Config's pages (PANEL_PAGES.config). */
   configPages: readonly PanelPage[]
-  /** The workspace in hand is the person's own (S1e): Config says why People and roles is missing. */
-  personal?: boolean
   nav: (to: string) => void
   counts: Readonly<Record<string, PanelCount>>
   /** The Admin rows' badges (`adminPanelCounts`, S1b, S1c). */
@@ -3308,6 +3343,29 @@ function PanelPages({
           <a key={s.key} className="sk-pk" {...routed(s.to, () => nav(s.to))}>
             <Icon name={s.key} />
             <span className="sk-pl">{s.label}</span>
+          </a>
+        ))}
+      </>
+    )
+  }
+  // HOME'S PANEL IS ITS OWN REGIONS, as Overview's is (Home.tsx `HOME_JUMPS`).
+  if (section === 'home') {
+    return (
+      <>
+        <div className="sk-pt">On this page</div>
+        {HOME_JUMPS.map((j) => (
+          <a
+            key={j.id}
+            className="sk-pk"
+            href={`/#${j.id}`}
+            onClick={(e) => {
+              if (!routedClick(e)) return
+              e.preventDefault()
+              if (onJump === undefined) jumpTo(j.id)
+              else onJump(j.id)
+            }}
+          >
+            <span className="sk-pl">{j.label}</span>
           </a>
         ))}
       </>
@@ -3400,8 +3458,6 @@ function PanelPages({
           <PanelRows sec={sec} rows={g.rows} lit={lit} nav={nav} counts={sec === 'admin' ? adminCounts : counts} apiFailuresOnly={apiFailuresOnly} onApiFilter={onApiFilter} />
         </div>
       ))}
-      {/* S1e: why a personal workspace's Config has no People and roles. */}
-      {sec === 'config' && personal && <p className="sk-pnote">A personal workspace has no People and roles: nobody else is in it.</p>}
       {/* A WORKSPACE ADMIN IS TOLD WHOSE PAGES THESE ARE (S1c), and that the
           platform's are not hidden behind a lock but simply not theirs. */}
       {sec === 'admin' && !platformAdmin && (
@@ -3567,7 +3623,9 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
     for (const id of ids) askedThisLoad.add(id)
     void loadWorkflowsById(ids).then((r) => {
       if (r.status !== 'ok' && r.status !== 'stale') return
-      refreshRecentWorkflows([...r.data.reads.values()].map(({ workflow: w }) => ({ id: w.workflow_id, state: derivedStateOf(w), name: null })))
+      // RECENT NAMES A WORKFLOW BY ITS SERVED TITLE (`workflowName`'s first
+      // choice); with none, the name the list or the page recorded is kept.
+      refreshRecentWorkflows([...r.data.reads.values()].map(({ workflow: w }) => ({ id: w.workflow_id, state: derivedStateOf(w), name: aboutOf(w).title ?? null })))
     })
   }, [unreadKey])
   if (items.length === 0) return null

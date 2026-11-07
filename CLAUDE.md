@@ -29,7 +29,7 @@ unblocked piece before reporting, report the block in one line, and prepare the
 blocked step's dependants so that what remains is one command
 ([example](docs/working-in-this-repository.md#unblocked-work)).
 
-## The three rules that are not negotiable
+## The four rules that are not negotiable
 
 **1. `apps/common/swarm_common/` is FROZEN.** Import from it. Never redefine its
 types, never edit the files. If you are convinced it needs to change, **say so
@@ -45,6 +45,9 @@ and service accounts, every one in `SHARED_DENY_LIST` (once, in
 `NotImplementedError` in a dispatch path is a production outage with a comment
 attached.
 
+**4. Nothing may identify a company, a person or a real deployment**
+([in full](docs/working-in-this-repository.md#generic-content)).
+
 ## Track ownership
 
 Several tracks work here at once
@@ -57,9 +60,7 @@ more. When the owner asks for something, do it, wherever it lives, and say in
 the commit which track's files you crossed into and why. Reclassify the area if
 that is what the work needs. Never answer a request with "that belongs to
 another track"; never quietly narrow a task to the part that sits inside your
-own area. Owner's instruction, 2026-09-23: *"I dont care what track it is... I
-want to make sure this is done and we never refuse or circumvent work that we
-said we will do."*
+own area ([the owner's words](docs/working-in-this-repository.md#track-ownership)).
 
 ## Invariants to check before you claim a change is done
 
@@ -188,8 +189,9 @@ default explained next to its value.
 
 Cost is turns × context ([measured](docs/working-in-this-repository.md#lanes)).
 
-* **Read by window.** Never read a whole file over 1,000 lines; `grep -n` or
-  `rg` first, then read 100-300 lines around the hit.
+* **Read by window.** Never read a whole file over 1,000 lines; when the
+  code graph is loaded, ask it first where a symbol lives and who calls it,
+  otherwise `grep -n` or `rg` first; then read 100-300 lines around the hit.
 * **Never wait or poll.** No `sleep` loops, `gh run watch`, `--watch`, or
   waiting for a PR to merge; the orchestrator waits for CI.
 * **Red first.** Push the tests alone to the PR branch, the fix to

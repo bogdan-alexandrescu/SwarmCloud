@@ -182,6 +182,23 @@ def test_no_switch_adds_nothing_to_the_attempts_summary(tmp_path):
         "code_intelligence": {"value": None}, "jev_judgments": {"value": "off"}}
 
 
+@pytest.mark.parametrize("arm", ["off", "on"])
+def test_contract_jev_is_recorded_in_the_attempts_switches(tmp_path, arm):
+    # What `scripts/benchstat.py contract-jev` reads the arm back from.
+    assert graphstage.switches_summary(tmp_path, {"contract_jev": arm}) == {
+        "code_intelligence": {"value": None}, "jev_judgments": {"value": None},
+        "contract_jev": {"value": arm}}
+    both = graphstage.switches_summary(tmp_path, {"contract_jev": arm, "jev_judgments": "on"})
+    assert both is not None and both["contract_jev"] == {"value": arm}
+    assert both["jev_judgments"] == {"value": "on"}
+
+
+def test_a_block_without_contract_jev_records_no_arm(tmp_path):
+    summary = graphstage.switches_summary(tmp_path, {"jev_judgments": "on"})
+    assert summary is not None and "contract_jev" not in summary
+    assert graphstage.switches_summary(tmp_path, {"contract_jev": "maybe"}) is None
+
+
 # --------------------------------------------------------------------------
 # jev_judgments
 # --------------------------------------------------------------------------
@@ -237,12 +254,16 @@ def test_on_runs_the_judgments_on_claude_code_with_the_workspace_key(tmp_path):
     assert not key_file.exists()
 
 
-def test_without_the_switch_no_workspace_key_is_resolved(tmp_path):
-    """Today's behaviour: only a live-browser attempt's key file is read."""
+def test_without_the_switch_the_signed_opt_in_resolves_the_workspace_key(tmp_path):
+    """Since lane jev-on-coding-profiles (4 November 2026) the switch is not
+    needed: the signed opt-in alone runs a coding step's judgments, as it
+    runs a live browser's (tests/unit/worker/test_jev_on_coding_profiles.py)."""
     env, record, asked = _judged(tmp_path, TYPESAFE_ON, switch=None,
                                  key="ts-" + secrets.token_hex(8))
-    assert env == {} and asked == []
-    assert record["value"] is None and record["on"] is False
+    assert attempt.CONFIG_ENV in env and asked == [1]
+    assert record["value"] is None and record["on"] is True
+    assert record["source"] == "workspace"
+    attempt.finish(env)
 
 
 @pytest.mark.parametrize("workspace", [

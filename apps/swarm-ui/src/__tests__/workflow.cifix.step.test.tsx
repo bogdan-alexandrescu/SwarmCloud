@@ -16,7 +16,7 @@
  * MUTATIONS: join `taskById` only from tasks whose `workflow_id` is the
  * page's, or draw only the submitted steps -- each turns a case red.
  */
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -86,13 +86,18 @@ function workflow(): Workflow {
   } as unknown as Workflow
 }
 
+const realWidth = window.innerWidth
+
 beforeEach(() => {
   api.loadWorkflowBoard.mockReturnValue(new Promise(() => {}))
   api.loadWorkflow.mockResolvedValue(ok({ workflow: workflow(), tasks: TASKS }))
+  // The inspector starts folded below 1366px; this test opens it.
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
 })
 
 afterEach(() => {
   window.history.replaceState(null, '', '/')
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
 })
 
 describe('STATUS-TRUE: a running ci-fix round is a step of the page', () => {
@@ -105,12 +110,18 @@ describe('STATUS-TRUE: a running ci-fix round is a step of the page', () => {
 
   it('draws the round as a step, with its state and its stop control', async () => {
     const { container } = render(<WorkflowsScreen view={`wf=${WF}`} />)
-    await waitFor(() => expect(container.querySelector('.node[data-step="ci-fix:1"]')).not.toBeNull())
-    const node = container.querySelector('.node[data-step="ci-fix:1"]') as HTMLElement
+    // The round's chip is on the stage grid now (the canvas is off the page).
+    await waitFor(() => expect(container.querySelector('.sg [data-step="ci-fix:1"]')).not.toBeNull())
+    const chip = container.querySelector('.sg [data-step="ci-fix:1"]') as HTMLElement
     // MUTATION: drawing only the submitted steps, or the round unjoined, turns these red.
-    expect(node.textContent).toMatch(/running/i)
-    expect(node.textContent).not.toMatch(/unread/i)
+    expect(chip.getAttribute('aria-label')).toMatch(/running/i)
+    expect(chip.getAttribute('aria-label')).not.toMatch(/not known/i)
+    // Picking it opens the step in the inspector, where its stop control lives.
+    fireEvent.click(chip)
+    await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Step ci-fix:1'))
+    const dock = document.querySelector('.wi-dock') as HTMLElement
     // The stop control is drawn only beside a step whose task was joined.
-    expect(node.parentElement?.querySelector('.node-stop')).not.toBeNull()
+    const bar = within(dock).getByRole('toolbar', { name: 'Step actions' })
+    expect(within(bar).getByRole('button', { name: 'Stop' })).not.toBeNull()
   })
 })

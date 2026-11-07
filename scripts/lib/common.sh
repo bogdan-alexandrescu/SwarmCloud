@@ -12,6 +12,8 @@
 #   2. Every shared resource in saga-agents-staging that belongs to another team
 #      is named here, once, in SHARED_DENY_LIST. destroy.sh, purge-data.sh and
 #      configure-kubectl.sh all read it. One list, one place to keep correct.
+#      It is keyed by project: whole when PROJECT_ID is that project, empty for
+#      any other. PROJECT_ID has no default; an unset project is an error.
 
 set -euo pipefail
 
@@ -145,6 +147,15 @@ assert_env_file_is_trustworthy() {
   fi
 }
 
+# require_project: stop unless PROJECT_ID names a project. load_env calls it
+# for every script that did not set SWARM_NO_PROJECT=1; a script that did, but
+# has a mode that does reach a project (a check that finds credentials, say),
+# calls it before that mode, so the opt-out never becomes a guess.
+require_project() {
+  [[ -n "${PROJECT_ID:-}" ]] \
+    || die "PROJECT_ID is not set, and no script here guesses it. Set it in .env (cp .env.example .env) or export it: PROJECT_ID=<your-gcp-project>"
+}
+
 load_env() {
   local env_file="${SWARM_ENV_FILE:-${REPO_ROOT}/.env}"
   if [[ -f "${env_file}" ]]; then
@@ -155,7 +166,21 @@ load_env() {
     set +a
   fi
 
-  PROJECT_ID="${PROJECT_ID:-saga-agents-staging}"
+  # NO DEFAULT. This read `${PROJECT_ID:-saga-agents-staging}`, so a machine
+  # with no .env -- a fresh install, a new operator, a CI job that forgot the
+  # variable -- aimed every script here at the shared project, the one that
+  # holds another team's live cluster. An unset project is an error instead
+  # (Day One plan, lane DAYONE-DESAGA-2, R4). The live deployment's .env and
+  # every workflow name it; .env.example says where to.
+  #
+  # A script that touches no project at all (a local check, a self-test)
+  # says so by setting SWARM_NO_PROJECT=1 before it sources this file. It then
+  # runs with PROJECT_ID empty, and the deny-list stays WHOLE: a project nobody
+  # named is never assumed to be one whose list may be empty.
+  if [[ -z "${PROJECT_ID:-}" ]]; then
+    [[ "${SWARM_NO_PROJECT:-}" == "1" ]] || require_project
+    PROJECT_ID=""
+  fi
   REGION="${REGION:-us-central1}"
   ZONE="${ZONE:-us-central1-a}"
   ENVIRONMENT="${ENVIRONMENT:-dev}"
@@ -225,6 +250,8 @@ load_env() {
   IMAGE_HOST="${IMAGE_HOST:-${REGION}-docker.pkg.dev}"
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
+  key_shared_deny_list
+
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
   export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET ACCEPTANCE_FIXTURE_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
@@ -241,6 +268,13 @@ load_env() {
     export KUBECONFIG
   fi
 }
+
+# The project the list below belongs to. The list is KEYED by it (Day One plan,
+# R4): it applies when PROJECT_ID is this project, and it is empty for any
+# other, whose resources are nobody else's. It stays here, written once, rather
+# than in an environment variable an operator could forget -- a forgotten
+# variable would empty the live guard without a word.
+SHARED_PROJECT_ID="saga-agents-staging"
 
 # Resources owned by other teams in this shared project. Verified against the
 # live project on 2026-09-15, and the service accounts, buckets and Cloud Run
@@ -289,10 +323,27 @@ SHARED_DENY_LIST=(
   "promptlab-api@saga-agents-staging.iam.gserviceaccount.com"
   "oracle-web"
 )
+# The shared project's list as written, kept apart from SHARED_DENY_LIST so
+# re-keying is idempotent: load_env run again after PROJECT_ID moved back to
+# the shared project restores every entry rather than keeping an empty list.
+SHARED_PROJECT_DENY_LIST=("${SHARED_DENY_LIST[@]}")
+
+# key_shared_deny_list: SHARED_DENY_LIST is the shared project's whole list when
+# PROJECT_ID is SHARED_PROJECT_ID or empty (SWARM_NO_PROJECT=1: no project was
+# named, so none is assumed safe), and empty for any other project. load_env
+# calls it once PROJECT_ID is final. An empty array must be expanded as
+# ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"} under bash 3.2's `set -u`.
+key_shared_deny_list() {
+  if [[ -z "${PROJECT_ID:-}" || "${PROJECT_ID}" == "${SHARED_PROJECT_ID}" ]]; then
+    SHARED_DENY_LIST=("${SHARED_PROJECT_DENY_LIST[@]}")
+  else
+    SHARED_DENY_LIST=()
+  fi
+}
 
 is_shared_resource() {
   local candidate="$1" protected
-  for protected in "${SHARED_DENY_LIST[@]}"; do
+  for protected in ${SHARED_DENY_LIST[@]+"${SHARED_DENY_LIST[@]}"}; do
     [[ "${candidate}" == "${protected}" ]] && return 0
   done
   return 1
@@ -344,9 +395,14 @@ shared_resource_kind() {
 #   * `(default)` is ADDED. That is Firestore's default database -- the one
 #     CONTRACT.md says must stay free for the other teams in this shared
 #     project -- and it is a name no token-splitting would produce.
+#
+# For a project other than the shared one the list is empty and this prints
+# ["(default)"]: `printf '%s\n'` with no arguments still prints one empty line,
+# so nothing is printed at all then, and grep finding no line is not an error.
 guard_deny_json() {
-  printf '%s\n' "${SHARED_DENY_LIST[@]}" \
-    | grep -vx 'default' | jq -R . | jq -sc '. + ["(default)"]'
+  if [[ "${#SHARED_DENY_LIST[@]}" -gt 0 ]]; then
+    printf '%s\n' "${SHARED_DENY_LIST[@]}"
+  fi | { grep -vx 'default' || [[ $? -eq 1 ]]; } | jq -R . | jq -sc '. + ["(default)"]'
 }
 
 # The platform name prefix `destroy-guard.jq` judges OWNERSHIP by, in the one
@@ -413,6 +469,25 @@ owner_pinned_job_variable() {
   done
   return 1
 }
+
+# THE TESTS THAT GATE A RELEASE (owner pick on PR 3344, issue 3336: "decouple
+# build, gate the release"). Until then application.yml's `build images`
+# needed these jobs, so a commit whose tests failed was never built and never
+# released -- and the build started 18 to 44 minutes after its push, behind
+# them. Now it starts at once, alongside them, and the release gates instead:
+# scripts/lib/ci-built-images.sh hands a release the build's record only once
+# every job named here, in the same run, concluded success or skipped (by its
+# own paths), and refuses it when one failed or was cancelled.
+# scripts/lib/build-superseded.sh reads the same list. The same three jobs the
+# build needed, by their names in application.yml (`python`, `shell`,
+# `manifests`); tests/unit/scripts/test_ci_built_images.py holds the names to
+# application.yml.
+# shellcheck disable=SC2034  # consumed by the scripts that source this library
+CI_RELEASE_TEST_JOBS=(
+  "format / unit tests"
+  "shellcheck"
+  "kubernetes manifests"
+)
 
 # THE PROMOTION MARK. Moving `:<channel>` leaves no trace of the digest it
 # moved away from, so nothing could answer "did some earlier release promote
@@ -1952,6 +2027,121 @@ curl_retry_no_answer() {
   done
 }
 
+#: gh_api_read_retry OUT ERR API_ARGS...
+#:
+#: Run `gh api API_ARGS... --include` as a READ, its body written to OUT and
+#: its stderr to ERR, and retry it while the failure is transient: up to three
+#: more attempts, waiting SWARM_GH_RETRY_DELAYS seconds ("5 15 30") before
+#: each. Returns 0 on the first success, else the exit code of the last
+#: attempt, with that attempt's stderr in ERR and its body in OUT, so the
+#: caller's own failure handling (a 404 read as "not found", a `die` naming
+#: what could not be read) is unchanged. Every retry, its number and its wait
+#: are printed to stderr; so is giving up.
+#:
+#: WHY (#2688, 2026-11-04). The workflow page redesign's pull request was
+#: labelled `ready` at 13:57 UTC; at 14:00 auto-merge.yml's "queue for
+#: auto-merge" check (run 41842863519) failed because
+#: scripts/check-closing-references.sh's `gh api graphql` read hit `dial tcp
+#: ...:443: i/o timeout` on the self-hosted runner. The merge train boards only
+#: pull requests whose checks are all green, so it passed that one over for
+#: eight hours without a word. One blip of the runner's network should not
+#: cost a merge.
+#:
+#: TRANSIENT, AND ONLY THAT. Retried: no answer at all (a connection timeout,
+#: reset or refusal, a DNS failure, a TLS handshake timeout, a dropped
+#: connection); HTTP 502, 503 or 504; and a rate limit -- 429, or a 403 that
+#: carries a rate-limit header (`Retry-After`, or `X-RateLimit-Remaining: 0`)
+#: or whose message says "rate limit" (GitHub's secondary-limit 403 does
+#: not always carry the header). A rate-limited retry waits at least the
+#: `Retry-After` GitHub sent, capped at SWARM_GH_RETRY_AFTER_MAX (120) so a
+#: CI step stays bounded. Never retried: any other answer -- a 404, a 401, a
+#: 403 without a rate-limit header, a 422 -- because asking again gets the
+#: same answer and only reports it late; and a failure with neither a status
+#: nor a network error, which is not known to be a blip. Unlike
+#: curl_retry_no_answer (owner decision 2026-09-30, no HTTP status retried),
+#: 502/503/504 ARE retried here: from GitHub's API they are its own documented
+#: transient gateway errors, not a refusal.
+#:
+#: FAIL CLOSED STAYS THE RULE: a read that never succeeds returns non-zero,
+#: and every caller fails as it did before.
+#:
+#: ONLY READS. A write (`gh issue close`, `gh pr comment`) is not passed
+#: through this: a write whose answer was lost may have happened, and a retry
+#: would do it twice.
+#:
+#: `--include` is how the status and `Retry-After` are seen: gh then prints the
+#: status line and headers before the body. They are split off here, so OUT
+#: holds the body (or the `--jq` output) alone; an answer with no status line
+#: is taken whole.
+gh_api_read_retry() {
+  local out="$1" err="$2" raw hdr first rc attempt=1 attempts status retry_after reason delay
+  local cap="${SWARM_GH_RETRY_AFTER_MAX:-120}"
+  local blip='i/o timeout|timed out|timeout exceeded|deadline exceeded|connection reset|connection refused|no such host|server misbehaving|temporary failure in name resolution|TLS handshake timeout|unexpected EOF|network is unreachable'
+  local -a delays
+  shift 2
+  read -r -a delays <<<"${SWARM_GH_RETRY_DELAYS:-5 15 30}"
+  attempts=$(( ${#delays[@]} + 1 ))
+  raw="${out}.raw"
+  hdr="${out}.headers"
+  while :; do
+    rc=0
+    gh api "$@" --include >"${raw}" 2>"${err}" </dev/null || rc=$?
+    # The status line and headers end at the first empty line. CR is stripped
+    # from them only; the body is copied as it came.
+    first=""
+    IFS= read -r first <"${raw}" || true
+    if [[ "${first}" == HTTP/* ]]; then
+      awk '{ sub(/\r$/, "") } $0 == "" { exit } { print }' "${raw}" >"${hdr}"
+      awk 'body { print; next } { sub(/\r$/, "") } $0 == "" { body = 1 }' "${raw}" >"${out}"
+      status="$(awk 'NR == 1 { print $2 }' "${hdr}")"
+      retry_after="$(awk 'tolower($1) == "retry-after:" { print $2; exit }' "${hdr}")"
+    else
+      : >"${hdr}"
+      cp "${raw}" "${out}"
+      status="$(grep -oE 'HTTP [0-9]{3}' "${err}" | tail -n 1 | awk '{ print $2 }' || true)"
+      retry_after=""
+    fi
+    rm -f "${raw}"
+    if [[ "${rc}" -eq 0 ]]; then
+      rm -f "${hdr}"
+      return 0
+    fi
+    reason=""
+    case "${status}" in
+      502|503|504) reason="HTTP ${status}" ;;
+      429) reason="rate limited (HTTP 429)" ;;
+      403)
+        if [[ -n "${retry_after}" ]] \
+            || grep -qiE '^x-ratelimit-remaining: *0$' "${hdr}" \
+            || grep -qi 'rate limit' "${err}" "${out}"; then
+          reason="rate limited (HTTP 403)"
+        fi
+        ;;
+      "")
+        if grep -qiE "${blip}" "${err}"; then
+          reason="no answer: $(grep -oiE "${blip}" "${err}" | head -n 1 || true)"
+        fi
+        ;;
+    esac
+    rm -f "${hdr}"
+    if [[ -z "${reason}" ]]; then
+      return "${rc}"
+    fi
+    if [[ "${attempt}" -ge "${attempts}" ]]; then
+      warn "gh api ${1:-}: ${reason} on attempt ${attempt} of ${attempts}; giving up"
+      return "${rc}"
+    fi
+    delay="${delays[$(( attempt - 1 ))]}"
+    if [[ "${retry_after}" =~ ^[0-9]+$ ]]; then
+      if (( retry_after > cap )); then retry_after="${cap}"; fi
+      if (( retry_after > delay )); then delay="${retry_after}"; fi
+    fi
+    warn "gh api ${1:-}: ${reason} on attempt ${attempt} of ${attempts}; retry ${attempt} of $(( attempts - 1 )) in ${delay}s"
+    sleep "${delay}"
+    attempt=$(( attempt + 1 ))
+  done
+}
+
 #: Whether the Firestore database exists.
 #:
 #: THREE ANSWERS, NOT TWO. The exit code is the answer:
@@ -2415,7 +2605,26 @@ redact() {
   local v_argc="[]A-Za-z0-9_.,:=*'\" +/%\\[${keep}-]"
   local v_args="(\\(${v_argc}{0,160}(\\(${v_argc}{0,160}\\)${v_argc}{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}|\"[^\"${secretrun}]{0,128}\"|'[^'${secretrun}]{0,128}')\\])"
   local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
-  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )'
+  # Where a value ends after a placeholder or a shell substitution
+  # (`_VALUE_ENDS`): at most a closing quote, then a blank, the end, or a
+  # `,;)]}` run with no literal glued after it. A quote after a run with no
+  # comma in it ends the value only where the value ends
+  # (`_GLUED_AFTER_QUOTE`): `token=${NAME});'<v>'` is masked. What ends the
+  # value is in the marked span, so the s command puts it back.
+  local v_ends='(\\{0,15}["'"'"'`])?([[:space:]]|$|[],;)}]+([[:space:]]|$)|[],;)}]*,[],;)}]*["'"'"'`]|[];)}]+["'"'"'`][];)}"'"'"'`\\]*([,[:space:]]|$))'
+  # `$(cmd ...)`, `${NAME}` and `${{ expr }}` are kept only as a whole,
+  # closed construct where the value ends (`_SHELL_SUBSTITUTION`; BGD,
+  # 6 November 2026): `${NAME}<v>`, `${NAME},<v>` and `$(cat f);<v>` are masked.
+  # Up to three closing quotes before that end, for nested quoting, and a
+  # `$(` whose line ends in a continuation is kept, as main kept both.
+  local v_shell='"?[$]((\([a-z][a-z0-9_-]{0,31}( [^()]{0,256})?\)|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ [^{}]{0,256}\}\})(\\{0,15}["'"'"'`]){0,3}'"${v_ends}"'|\([a-z][a-z0-9_-]{0,31} [^()]{0,256}\\$)'
+  # A masked run goes on past one `;)]}` and a quote or a comma when a value
+  # character follows (`_GLUED_RUN`): `token=${NAME};"<v>"`, `${NAME},<v>`.
+  # A closed `$(...)` or `${{...}}` with a literal glued after it is masked
+  # as one value (`_CLOSED_CONSTRUCT`): `token = $(cat f);<v>`.
+  local m_glued_tail='(\\*"|,)[];)}]*[^]",[:space:]\\;)}]'
+  local m_glued="[];)}]${m_glued_tail}"
+  local m_construct='[$](\([^()]{0,256}\)|\{\{[^{}]{0,256}\}\})('"${m_glued_tail}"')?'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
@@ -2430,6 +2639,18 @@ redact() {
   # `_CONTAINER` (#2237): an empty `[]`/`{}`/`()` where a value ends, an
   # opening bracket at the end of the line, or `{` and a blank.
   local v_container="(\\[[[:blank:]]*\\]|\\{[[:blank:]]*\\}|\\([[:blank:]]*\\))${v_end}|[[{(][[:blank:]]*\$|\\{[[:blank:]]"
+  # AN `Authorization` VALUE THAT ONLY NAMES A VARIABLE IS CODE
+  # (`swarm_redaction.rules._AUTH_PLACEHOLDER`; the owner's pick 'align' on PR
+  # #3448): after a name holding `authorization`, an optional string prefix
+  # and quote, an optional scheme word, then ONE `{name}`, `${NAME}`, `$NAME`
+  # or `%(name)s`, at most a closing quote, and where a value ends. $keep goes
+  # between the name and its separator, so neither the scheme-word rule nor
+  # the assignment rule takes it. What ends the value is in the marked span.
+  local a_prefix='([bfru]{1,2}\\{0,15}["'"'"']|\\{0,15}["'"'"'])?'
+  local a_scheme='((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:blank:]]+)?'
+  local a_name='(\{[A-Za-z_][A-Za-z0-9_.]{0,63}\}|[$]\{[A-Za-z_][A-Za-z0-9_]{0,63}\}|[$][A-Za-z_][A-Za-z0-9_]{0,63}|%\([A-Za-z_][A-Za-z0-9_]{0,63}\)[sr])'
+  # It ends where `${NAME}` does (`v_ends`): `Bearer {TOKEN});'<v>'` is masked.
+  local a_end="${v_ends}"
   # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
   # restated move for move -- its comment says why each move is there. The
   # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
@@ -2612,8 +2833,9 @@ redact() {
     -e 's/(xox[abprs]-)[A-Za-z0-9-]{8,}/\1********/g' \
     -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
-    -e "s/(authorization(\\*\")?[[:space:]]*[:=][[:space:]]*)((\\*\")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\3/Ig" \
-    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e "s/(authorization(s|s?[-_](access[-_]?key|key|hash))?(\\\\*\")?)([[:blank:]]*[:=][[:blank:]]*${a_prefix}${a_scheme}${a_name}${a_end})/\\1${keep}\\5/Ig" \
+    -e "s/(authorization(\\\\*\")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\\\*\"|\\\\*\")?)((token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\4/Ig" \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*([bfru]{1,2}\\*"|\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]]('"${m_glued}"'|[^"\\,[:space:]])*/\1********/Ig' \
     -e "s/(\\\\{1,15})\"${c_qname}(\\\\{1,15})\"/\\1${c_dq}\\2\\4${c_dq}/g" \
     -e "s/\"${c_qname}\"/${c_dq}\\1${c_dq}/g" \
     -e "s/'${c_qname}'/${c_sq}\\1${c_sq}/g" \
@@ -2650,10 +2872,10 @@ redact() {
     -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
     -e "s/${secretrun}//g" \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[^"\\,[:space:]]+/\1'"${keep}"'\7********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?)([[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2})?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1'"${keep}"'\5********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[^",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?([bfru]{1,2}"|"?))('"${m_construct}"'|\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])('"${m_glued}"'|[^",[:space:]])*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

@@ -60,7 +60,9 @@ def test_no_profile_sets_a_ceiling_so_no_running_agent_changes():
 def test_the_fields_default_to_none_or_false_and_come_last():
     profile = RUNNER_PROFILES["mock"]
     assert profile.supports_max_turns is False and profile.max_turns is None
-    assert [f.name for f in fields(type(profile))][-2:] == ["supports_max_turns", "max_turns"]
+    # Contract request 136 appends `runtime_capabilities` after them.
+    assert [f.name for f in fields(type(profile))][-3:] == [
+        "supports_max_turns", "max_turns", "runtime_capabilities"]
     assert [f.name for f in fields(Task)][-1] == "max_turns"
     assert [f.name for f in fields(WorkflowStep)][-1] == "max_turns"
     assert WorkflowStep(step_id="a", runner_profile="mock", input={}).max_turns is None
@@ -74,7 +76,8 @@ def test_a_profile_ceiling_is_a_positive_integer(bad):
 
 
 def test_a_cap_is_signed_at_format_7_and_only_a_cap_is():
-    assert specsign.SPEC_FORMAT == 7 and specsign.SPEC_FORMATS[-1] == 7
+    # Format 8 (contract request 137, `metadata.work_contract`) came after it.
+    assert specsign.SPEC_FORMATS[6] == 7 and specsign.SPEC_FORMAT > 7
     # MUTATION: leave `signing_format` without format 7 and this is 1.
     assert signing_format({**DOC, "max_turns": 30}) == 7
     assert signing_format({**DOC, "max_turns": 30, "budget": {"usd": 1.0}}) == 7

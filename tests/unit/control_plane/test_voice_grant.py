@@ -37,7 +37,7 @@ from swarm_api.voice import sessions as vs
 from swarm_api.waker import NullWaker
 
 from .conftest import NoForgeTokens, OfflineSecretMetadata, api_settings, auth_header, seed_task
-from .test_voice_sessions import OFFER, FakeVoice, _store_sign_in, _version
+from .test_voice_sessions import OFFER, FakeVoice
 
 VOICE_TOKEN = "token-swarm-voice-" + secrets.token_hex(4)
 OTHER_SA_TOKEN = "token-other-sa-" + secrets.token_hex(4)
@@ -71,9 +71,6 @@ def _build(db, tokens, group_map, objects, voice, *, aud: str | None = AUDIENCE,
     app = create_app(ctx)
     app.state.secret_metadata = OfflineSecretMetadata()
     app.state.voice_client = voice
-    # A start needs the person's stored ChatGPT sign-in (voice/sessions.py).
-    for person in settings.voice_people:
-        _store_sign_in(db, person, _version(person))
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -169,7 +166,7 @@ def test_a_wrong_grant_or_session_is_401(client, db, voice):
     wrong = secrets.token_urlsafe(32)
     other_session = vs.StartCall(session_id="vs_" + secrets.token_hex(16),
                                  project_id=call.project_id, tenant_id=call.tenant_id,
-                                 person=call.person, credential=call.credential, offer=OFFER,
+                                 person=call.person, offer=OFFER,
                                  grant=call.grant)
 
     for headers in (_grant_headers(call, grant=wrong),
@@ -373,7 +370,7 @@ def test_no_typed_confirmation_or_secret_value_route_is_on_the_allowlist(client)
                  if any(_SENSITIVE_FIELD.search(f) for f in _body_fields(r))
                  or re.search(r"secret|credential", p, re.I)]
     assert sensitive, "the walk found no typed-confirmation or secret-value route"
-    assert not set(sensitive) & vg.ALLOWED_ROUTES
+    assert not set(sensitive) & (vg.ALLOWED_ROUTES | vg.WRITE_ROUTES)
 
 
 def _fill(path: str) -> str:
@@ -385,7 +382,7 @@ def test_every_route_off_the_allowlist_refuses_a_live_grant(client, db, voice):
     headers = _grant_headers(call)
     walked, reachable = 0, []
     for method, path, _route in _authenticated(client.app):
-        if (method, path) in vg.ALLOWED_ROUTES:
+        if (method, path) in vg.ALLOWED_ROUTES or (method, path) in vg.WRITE_ROUTES:
             continue
         walked += 1
         response = client.request(method, _fill(path), headers=headers)

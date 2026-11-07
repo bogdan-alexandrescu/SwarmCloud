@@ -146,8 +146,8 @@ const PAGES: readonly { path: string; title: string; tabs: boolean }[] = [
   { path: '/config/repositories?page=qa-targets', title: 'QA targets', tabs: true },
   { path: '/config/secrets', title: 'Secrets', tabs: true },
   { path: '/config/mcp-servers', title: 'MCP servers', tabs: false },
-  { path: '/config/people', title: 'People and roles', tabs: false },
-  { path: '/config/workspace', title: 'Workspace Settings', tabs: true },
+  // People and roles and Workspace Settings are the workspace page's tabs under
+  // Admin since the admin routes lane (part of #2688): no Config page, no strip.
 ]
 
 describe('every Config page: its head and tabs are its own box\'s children, in a box the rule dissolves (VQ-040)', () => {

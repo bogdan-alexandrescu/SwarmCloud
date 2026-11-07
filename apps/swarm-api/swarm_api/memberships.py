@@ -52,7 +52,6 @@ from typing import Any, Callable, Iterable, Mapping
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from prometheus_client import Counter
 
 from .admins import AUDIT_COLLECTION
 from .errors import (
@@ -233,25 +232,6 @@ def _shape_problem(doc: Mapping[str, Any], subject: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Metrics: registered on the app's registry the first time a store is made
-# ---------------------------------------------------------------------------
-
-_COUNTERS_LOCK = threading.Lock()
-
-
-def counter(metrics: ApiMetrics, attr: str, name: str, doc: str) -> Counter:
-    """A reason-labelled counter on `metrics`' registry, made once per
-    registry. A rising count is a forged, edited or replayed record being
-    skipped -- the same alert shape as `swarm_api_role_grant_invalid_total`."""
-    with _COUNTERS_LOCK:
-        found = getattr(metrics, attr, None)
-        if found is None:
-            found = Counter(name, doc, ["reason"], registry=metrics.registry)
-            setattr(metrics, attr, found)
-        return found
-
-
-# ---------------------------------------------------------------------------
 # Records
 # ---------------------------------------------------------------------------
 
@@ -323,9 +303,7 @@ class MembershipStore:
         self._settings = settings
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._ttl = float(getattr(settings, "role_cache_seconds", 15.0) or 0.0)
-        self._invalid = counter(
-            metrics or ApiMetrics(), "membership_invalid", "swarm_api_membership_invalid_total",
-            "Platform workspace memberships the reader skipped, by reason (mac, shape).")
+        self._invalid = (metrics or ApiMetrics()).membership_invalid
         self._lock = threading.Lock()
         #: subject -> (monotonic expiry, the read)
         self._cache: dict[str, tuple[float, MembershipRead]] = {}

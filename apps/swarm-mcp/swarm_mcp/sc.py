@@ -9,11 +9,12 @@ used at the moment it is needed.
 
 THE ONE EXCEPTION IS `sc account ...` (S10, owner decision 2026-10-01): pause,
 resume, drain and remove one of your own accounts, set how many agents it may
-hold (`max-agents`, #2222), and add one through the API's browser sign-in. The
+hold (`max-agents`, #2222), put it in or take it out of the workspace and
+Voice it pools (`pool`), and add one through the API's browser sign-in. The
 API served those routes and nothing reached them. They are a separate
 subcommand, never a view, held out of every skill's grant by
-`test_plugin_commands.py`, and `remove` and `max-agents` take the label typed
-back.
+`test_plugin_commands.py`, and `remove`, `max-agents` and `pool` take the
+label typed back.
 
 THE SECOND IS THE ISSUE RUN (#454): `sc run --issue owner/repo#N` creates a
 run -- one planner task -- and `sc plan approve|edit|reject <run>` moves its
@@ -1863,6 +1864,91 @@ def cmd_account_max_agents(client: SwarmClient, args, out) -> int:
         f"{now if isinstance(now, int) else max_agents} agents at once; agents already "
         "on it stay, and the cap applies from the next assignment\n"
     )
+    return EXIT_OK
+
+
+ACCOUNT_POOLS = render.ACCOUNT_POOLS
+account_pools = render.account_pools
+
+
+def set_account_pools(
+    client: SwarmClient, account: dict[str, Any], pools: list[str], confirm_label: str
+) -> Any:
+    """`PUT /v1/accounts/{id}/pools` with the pools and the label as TYPED:
+    the API checks the label again, so a typed confirmation is not only local."""
+    account_id = urllib.parse.quote(str(account["account_id"]), safe="")
+    return client.request(
+        "PUT",
+        f"/v1/accounts/{account_id}/pools",
+        payload={"pools": list(pools), "confirm_label": confirm_label},
+    )
+
+
+def cmd_account_pool(client: SwarmClient, args, out) -> int:
+    """Add an account to, or take it out of, a pool -- the agents' workspace
+    pool or the Voice it pool -- after its label is TYPED back.
+
+    SWARM_ASSUME_YES IS IGNORED, as for `remove` and `max-agents`: taking an
+    account out of a pool is how every workspace (or every Voice it session)
+    that ran on it stops being able to. The last pool is refused HERE, before
+    anything is asked or sent: an account in no pool serves nothing, and the
+    API would refuse an empty set anyway. A pool the account holds a live lease
+    of is refused by the API (409 pool_in_use), and that refusal is printed in
+    its own words.
+    """
+    add, remove = args.add, args.remove
+    if bool(add) == bool(remove):
+        raise SwarmError("name one change: --add POOL or --remove POOL; nothing was sent")
+    account = resolve_account(client, args.account)
+    label = str(account.get("label") or "")
+    before = account_pools(account)
+    if add:
+        after = [p for p in ACCOUNT_POOLS if p in before or p == add]
+    else:
+        after = [p for p in before if p != remove]
+        if not after:
+            raise SwarmError(
+                f"{remove} is the only pool {label} ({account.get('account_id')}) is in; an "
+                "account in no pool serves nothing. Add it to another pool first, or "
+                f"`{terminal_command('sc account remove')} {label}`. Nothing was sent"
+            )
+    if after == before:
+        word = "already in" if add else "not in"
+        out.write(f"{label} ({account.get('account_id')}) is {word} {add or remove}; nothing was sent\n")
+        return EXIT_OK
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; an account's pools are typed\n")
+    typed = _ask(
+        f"move {label} ({account.get('account_id')}) from pools {','.join(before)} to "
+        f"{','.join(after)}? Type its label to confirm: "
+    )
+    if not label or typed.strip() != label:
+        raise SwarmError(f"the label typed was not {label!r}; nothing was changed")
+    try:
+        answer = set_account_pools(client, account, after, typed.strip())
+    except SwarmError as refused:
+        if refused.status == 409:
+            raise SwarmError(
+                f"refused: {label} holds a live lease in the {remove or 'changed'} pool right now, "
+                "so it cannot leave it (pool_in_use). Try again once that agent or Voice it "
+                f"session has finished. The API said: {refused}",
+                status=409, code=refused.code, detail=refused.detail,
+            ) from refused
+        if refused.status in (400, 422):
+            raise SwarmError(
+                f"refused: the API would not set {label}'s pools to {','.join(after)}. "
+                f"The API said: {refused}",
+                status=refused.status, code=refused.code, detail=refused.detail,
+            ) from refused
+        raise
+    served = answer.get("account") if isinstance(answer, dict) else None
+    now = account_pools(served) if isinstance(served, dict) else after
+    if args.json:
+        out.write(json.dumps({"account_id": account.get("account_id"), "label": label,
+                              "from_pools": before, "requested_pools": after,
+                              "pools": now}, indent=2, default=str) + "\n")
+        return EXIT_OK
+    out.write(f"{label} ({account.get('account_id')}) is now in pools {','.join(now)}\n")
     return EXIT_OK
 
 
@@ -4505,6 +4591,7 @@ def cmd_run(client: SwarmClient, args, out) -> int:
         plan_approval=args.plan_approval,
         auto_merge=args.auto_merge,
         fix_rounds=args.fix_rounds,
+        security_review=args.security_review,
     )
     if args.follow and not args.json:
         style = _run_style(args, out)
@@ -5262,7 +5349,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- the account verbs: WRITE to the pool (see `ACCOUNT_VERBS`) -------
     ac = sub.add_parser(
-        "account", help="change one of your accounts: add, pause, resume, drain, remove, max-agents"
+        "account", help="change one of your accounts: add, pause, resume, drain, remove, max-agents, pool"
     )
     ac_sub = ac.add_subparsers(dest="account_command", required=True)
     for verb, state in ACCOUNT_VERBS.items():
@@ -5284,6 +5371,18 @@ def build_parser() -> argparse.ArgumentParser:
     am.add_argument("max_agents", metavar="N", help="1 to 50")
     _common(am, root=False)
     am.set_defaults(func=cmd_account_max_agents)
+    ap = ac_sub.add_parser(
+        "pool", help="add your account to, or take it out of, the workspace or voice-it pool "
+        "(type its label to confirm)"
+    )
+    ap.add_argument("account", help="its label or id")
+    # Not `required=True`: neither flag is refused by the handler, in this
+    # command's words and before anything is resolved or sent.
+    ap_change = ap.add_mutually_exclusive_group()
+    ap_change.add_argument("--add", choices=ACCOUNT_POOLS, help="the pool to add it to")
+    ap_change.add_argument("--remove", choices=ACCOUNT_POOLS, help="the pool to take it out of")
+    _common(ap, root=False)
+    ap.set_defaults(func=cmd_account_pool)
     aa_help = "add an account by signing in to Claude (or a ChatGPT plan) in your browser"
     aa = ac_sub.add_parser("add", help=aa_help)
     aa.add_argument("--label", required=True, help="the account's name in the pool")
@@ -5454,6 +5553,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rn.add_argument("--fix-rounds", type=int, default=None, metavar="N",
                     help="CI fix rounds after the pull request opens (the API's default is 3)")
+    rn.add_argument("--security-review", action="store_true",
+                    help="add the security review step after the fix (off by default); the "
+                         "merge then needs its verdict too")
     rn.add_argument("--follow", action="store_true",
                     help="keep reading the run, one row per step, until it ends or waits for you")
     rn.add_argument("--interval", type=float, default=10.0, help="seconds between reads with --follow")

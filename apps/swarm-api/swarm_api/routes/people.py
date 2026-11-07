@@ -67,12 +67,14 @@ on `app.state` so a test injects a fake, exactly as `account_pool` is.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field
 
+from .. import route_scope
 from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
@@ -105,6 +107,8 @@ from ..schemas import StrictModel
 from ..specsigning import signer_from_settings
 from .accounts import account_pool
 from .roles import _member as group_member
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/admin", tags=["people"])
 
@@ -277,6 +281,44 @@ def approval_signer(request: Request, ctx: AppContext = Depends(get_context)) ->
     return request.app.state.workspace_approval_signer
 
 
+class _AppOnly:
+    """The one part of a request `account_pool` and `workspace_publisher`
+    read, `request.app`, for a caller that has the app and no request: the
+    submission gate's hook (`wire_ready_loans`)."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+
+def apply_ready_loans(app: Any, tenant_id: str) -> int:
+    """LOAN-ON-READ: `People.apply_ready_loans` for ONE tenant, with the
+    broker client and the publisher the routes use, built here so that a
+    read which finds the workspace ready needs neither as a dependency. A
+    People without a signer or a directory: applying a loan uses neither.
+    Never raises; 0 when the broker client cannot be built (the sweep, the
+    backstop, then applies the loan)."""
+    holder = _AppOnly(app)
+    ctx = app.state.ctx
+    try:
+        pool = account_pool(holder, ctx)  # type: ignore[arg-type]
+        people = People(ctx.db, publisher=workspace_publisher(holder, ctx),  # type: ignore[arg-type]
+                        now=ctx.now, console_url=ctx.settings.console_url,
+                        project_id=ctx.settings.project_id)
+    except Exception as exc:  # noqa: BLE001 - a read is served; the sweep applies it
+        log.warning("pending loans not applied on read: %s", type(exc).__name__)
+        return 0
+    return people.apply_ready_loans(pool, tenant_id, store=ctx.store)
+
+
+def wire_ready_loans(app: Any) -> None:
+    """Give the submission gate (`Workspaces.check`) its LOAN-ON-READ hook:
+    a person's first submission into a ready workspace with no account
+    applies that tenant's pending loans before it is refused."""
+    workspaces = getattr(getattr(app.state.ctx, "submissions", None), "workspaces", None)
+    if workspaces is not None:
+        workspaces.ready_loans = lambda tenant_id: apply_ready_loans(app, tenant_id)
+
+
 def people_service(
     ctx: AppContext = Depends(get_context),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
@@ -445,8 +487,15 @@ def list_people(
     if scope is not None:
         return people.in_workspaces(ctx.roles, scope, join_requests, join_error,
                                     platform_admins=platform_admins)
+    # The broker client, built before the list so a pending loan of a ready
+    # workspace is applied before its row is read (LOAN-ON-READ). When it
+    # cannot be built the loans wait for the sweep and the list is served.
+    try:
+        pool, pool_error = account_pool(request, ctx), None
+    except Exception as exc:  # noqa: BLE001 - one section, never the page
+        pool, pool_error = None, getattr(exc, "code", None) or type(exc).__name__
     body = people.everyone(store=ctx.store, join_requests=join_requests,
-                           join_requests_error=join_error)
+                           join_requests_error=join_error, pool=pool)
     body["scope"] = SCOPE_PLATFORM
     # The grid's columns fail alone, like the two sections below: a registry
     # that cannot be read leaves the list served and says why.
@@ -460,11 +509,11 @@ def list_people(
     except Exception as exc:  # noqa: BLE001 - one section, never the page
         body["workspaces"] = None
         body["workspaces_error"] = getattr(exc, "code", None) or type(exc).__name__
+    body["lendable_accounts"], body["lendable_error"] = None, pool_error
     try:
-        pool = account_pool(request, ctx)
-        body["lendable_accounts"] = people.lendable(pool, admin_email=auth.email,
-                                                    store=ctx.store)
-        body["lendable_error"] = None
+        if pool is not None:
+            body["lendable_accounts"] = people.lendable(pool, admin_email=auth.email,
+                                                        store=ctx.store)
     except Exception as exc:  # noqa: BLE001 - one section, never the page
         body["lendable_accounts"] = None
         body["lendable_error"] = getattr(exc, "code", None) or type(exc).__name__
@@ -485,6 +534,7 @@ def admin_holders(ctx: AppContext) -> tuple[list[dict[str, Any]] | None, str | N
 
 
 @router.post("/workspaces/sweep")
+@route_scope.reachable_by(route_scope.ROLLUP_SWEEPER)
 def sweep_workspaces(
     request: Request,
     auth: AuthContext = Depends(admin_auth),

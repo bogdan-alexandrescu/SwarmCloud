@@ -232,6 +232,17 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 CACHE_MOUNT = "/cache"
 CACHE_ROOT_ENV = "SWARM_CACHE_ROOT"
 
+#: THE IMAGE THE WORKER RUNS, told to it (part of #2688; the owner's pick
+#: "add both", 2026-11-03): `image_uri`'s value, the same one the Cloud Run
+#: Job and the GKE pod are given, so the worker's start-up line, the live
+#: gate's refusal record and the capture manifest's `worker` can say which
+#: image ran (agent_worker.buildinfo, whose IMAGE_ENV is this name;
+#: tests/unit/control_plane/test_dispatch_names_the_worker_image.py holds the
+#: two equal). Set on both backends, and on the GKE live pod's display sidecar,
+#: where the gate runs. A platform value from the scheduler's own settings,
+#: never a caller's (invariant 10), and not a secret: it is the pod's `image`.
+WORKER_IMAGE_ENV = "SWARM_WORKER_IMAGE"
+
 #: THE GKE POD'S LOCAL SCRATCH VOLUMES, and the variable that tells the worker
 #: which they are (#2436): `scratch_volumes_value`. kubelet evicts the pod with
 #: no grace period when one passes its sizeLimit, so the worker reads their
@@ -949,9 +960,10 @@ def with_live_display(job: dict[str, Any], *, rc: Any,
         "command": list(DISPLAY_COMMAND),
         # Native sidecar: started before the worker, stopped after it.
         "restartPolicy": "Always",
-        # Paths only. No task, tenant, lease or attempt identifier and no
-        # secret: the tunnel ticket arrives over ctl.sock from the worker
-        # (§3.3, §5.4.2), and the gate needs to know nothing else.
+        # Paths, and the image this container runs. No task, tenant, lease or
+        # attempt identifier and no secret: the tunnel ticket arrives over
+        # ctl.sock from the worker (§3.3, §5.4.2), and the gate needs to know
+        # nothing else.
         "env": [
             # Chromium writes under HOME (crash reports, caches); the root is
             # read-only, so HOME is the sidecar's own memory /tmp.
@@ -962,6 +974,9 @@ def with_live_display(job: dict[str, Any], *, rc: Any,
             {"name": "SWARM_BROWSER_DOWNLOADS", "value": LIVE_DOWNLOADS_MOUNT},
             {"name": "SWARM_BROWSER_UPLOADS", "value": LIVE_UPLOADS_MOUNT},
             {"name": "SWARM_CDP_LISTEN", "value": LIVE_CDP_LISTEN},
+            # The gate's build names its image (WORKER_IMAGE_ENV): the
+            # worker's own, which this container runs too.
+            {"name": WORKER_IMAGE_ENV, "value": image},
         ],
         "resources": {
             "requests": {"cpu": cpu_quantity(display_share.cpu_request), **display_fixed},
@@ -1040,11 +1055,13 @@ def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backen
     """Whether this attempt's TypeSafe key is delivered by the forwarder, so its
     pod is labelled `swarm-typesafe: inject` (design §3.5).
 
-    Also, since 2026-11-01, an attempt whose signed workflow switch says
-    `jev_judgments: on` (`judgments_switched_on`, `jev_judgments_switched_on`)
-    on a profile that carries the Jev client (`runs_jev_client`), live
-    browser or not: the worker then resolves the workspace's TypeSafe key for
-    its judgments, so the forwarder serves it as it serves the browser's.
+    Also, since 2026-11-01, an attempt whose judgments run
+    (`judgments_switched_on`, from `jev_judgments_run`: the signed workflow
+    switch `jev_judgments: on`, and since lane jev-on-coding-profiles on
+    2026-11-04 the workspace's signed opt-in alone) on a profile that carries
+    the Jev client (`runs_jev_client`), live browser or not: the worker then
+    resolves the workspace's TypeSafe key for its judgments, so the forwarder
+    serves it as it serves the browser's.
 
     Also, since 2026-11-02 (the owner's pick "Label quality-gate pods too"),
     an attempt whose quality gates run (`quality_gates_on`, `quality_gates_run`
@@ -1060,10 +1077,10 @@ def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backen
     All four, FROM CONFIGURATION ONLY (invariant 10): the forwarder switched on,
     the tenant listed by exact name, a live-browser pod (the profile and the
     display rollout switch), and the workspace's stored judgment backend is
-    `typesafe`. A TypeSafe-backed jev or judge is exactly that attempt: the
-    worker resolves a TypeSafe key only for a live-browser attempt on the
-    TypeSafe backend (`jevkey.prepare`), and the judge reads the key jevkey
-    wrote, so neither runs on TypeSafe anywhere else. GKE only, because this is
+    `typesafe` -- the live-browser pod standing in for any of the attempts
+    above. The worker resolves a TypeSafe key for jev only on a live-browser
+    attempt (`jevkey.prepare`), and for the judge on any attempt whose
+    judgments run (`judge.attempt.setup`). GKE only, because this is
     called only from GkeJobDispatcher: a Cloud Run Job cannot reach the
     forwarder and keeps today's path.
     """
@@ -1283,6 +1300,28 @@ def judges_internally(reading: JevJudgments | None, task: Any) -> bool:
     if switch == "off":
         return False
     return reading.on or switch == "on"
+
+
+def jev_judgments_run(reading: JevJudgments | None, task: Any) -> bool:
+    """Whether this attempt's worker may run its Jev judgments, on any
+    backend: a profile with the Jev client (`reading` is not None) whose
+    workspace's signed `code_intelligence.jev` is on, or whose signed
+    dispatch block says `jev_judgments: on`, and never one whose block says
+    `off` -- `judges_internally` without the backend.
+
+    Lane jev-on-coding-profiles (the owner's choice of 4 November 2026): the
+    pod's TypeSafe route (`_with_judgments_forwarder`) used to follow the
+    switch alone, so a coding step under the signed opt-in got neither the
+    forwarder's label nor the direct one, while a live browser got them from
+    its profile. The worker still decides; this only routes its pod."""
+    if reading is None:
+        return False
+    metadata = getattr(task, "metadata", None)
+    block = metadata.get("dispatch") if isinstance(metadata, Mapping) else None
+    switch = block.get(JEV_JUDGMENTS_SWITCH) if isinstance(block, Mapping) else None
+    if switch == "off":
+        return False
+    return reading.on or jev_judgments_switched_on(task)
 
 
 def typesafe_judge_needs_gke(settings: Any, *, tenant_id: str, profile: Any,
@@ -2561,6 +2600,8 @@ class CloudRunJobDispatcher:
         step_model(self._settings, profile, task)
         name = self.ensure_job(profile, tenant, resource_class_for(task, profile))
         env = worker_env(task=task, lease=lease, tenant=tenant, settings=self._settings)
+        # The image the Job runs (ensure_job just gave it this one).
+        env[WORKER_IMAGE_ENV] = image_uri(self._settings, profile)
         env.update(quality_gates_dispatch_env(self._quality_gates, tenant.tenant_id, profile))
         judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)
         if judgments is not None:
@@ -3240,6 +3281,8 @@ class GkeJobDispatcher:
         env = [{"name": k, "value": v} for k, v in
                gke_worker_env(task=task, lease=lease, tenant=tenant,
                               settings=self._settings).items()]
+        # The image the pod's worker container runs, from the same call.
+        env.append({"name": WORKER_IMAGE_ENV, "value": image_uri(self._settings, profile)})
         gates_env = quality_gates_dispatch_env(self._quality_gates, tenant.tenant_id, profile)
         env.extend({"name": k, "value": v} for k, v in gates_env.items())
         judgments = jev_judgments_reading(self._jev_judgments, tenant.tenant_id, profile)
@@ -3491,13 +3534,15 @@ class GkeJobDispatcher:
             if browser_egress_on(self._settings, tenant_id=tenant.tenant_id, profile=profile):
                 job = with_browser_egress(
                     job, bypass=getattr(self._settings, "browser_egress_bypass", ()))
-        elif jev_judgments_switched_on(task) or quality_gates_run(gates_env, task):
-            # The signed workflow switch `jev_judgments: on` (2026-11-01), or
-            # quality gates this service vouched for (2026-11-02): the
-            # TypeSafe forwarder's label and variable only, nothing else.
+        elif jev_judgments_run(judgments, task) or quality_gates_run(gates_env, task):
+            # Judgments the signed opt-in or the signed workflow switch
+            # `jev_judgments: on` runs (2026-11-01; the opt-in alone since
+            # lane jev-on-coding-profiles, 2026-11-04), or quality gates this
+            # service vouched for (2026-11-02): the TypeSafe forwarder's
+            # label and variable, or the direct label, nothing else.
             self._with_judgments_forwarder(
                 job, tenant, profile,
-                judgments=jev_judgments_switched_on(task),
+                judgments=jev_judgments_run(judgments, task),
                 gates=quality_gates_run(gates_env, task))
         if judges_internally(judgments, task):
             assert judgments is not None
@@ -3553,8 +3598,9 @@ class GkeJobDispatcher:
     def _with_judgments_forwarder(self, job: dict[str, Any], tenant: Tenant,
                                   profile: Any, *, judgments: bool = True,
                                   gates: bool = False) -> None:
-        """A pod with no live browser whose signed workflow switch says
-        `jev_judgments: on` (2026-11-01, `judgments`), or whose quality gates
+        """A pod with no live browser whose judgments run (`judgments`,
+        `jev_judgments_run`: the signed opt-in, or the signed workflow switch
+        `jev_judgments: on` of 2026-11-01), or whose quality gates
         run (2026-11-02, `gates`, `quality_gates_run`): the `swarm-typesafe:
         inject` label and SWARM_TYPESAFE_INJECT=on when the forwarder serves
         its tenant on the TypeSafe backend (`typesafe_forwarder_on`), so the
@@ -3562,8 +3608,8 @@ class GkeJobDispatcher:
         is written. Nothing else of `_with_judgment`: every other pod is
         returned exactly as built.
 
-        Without the forwarder, a TypeSafe-backed pod whose judgments are
-        switched on and that carries the Jev client gets
+        Without the forwarder, a TypeSafe-backed pod whose judgments run
+        and that carries the Jev client gets
         TYPESAFE_DIRECT_POD_LABEL instead: its worker resolves the workspace's
         key and calls TypeSafe itself (`jevkey.resolve_workspace`). A gated pod
         without the forwarder is labelled from its rendered environment by

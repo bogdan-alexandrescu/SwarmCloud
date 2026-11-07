@@ -77,10 +77,12 @@ WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-bro
 # the worker package in (docs/design/graph-service.md §2.4), and
 # swarm-github-hooks (GS-HOOKS, apps/swarm-github-hooks/Dockerfile), which
 # copies only the contract and redaction in, and swarm-voice (VOICE-STATEFULSET,
-# apps/swarm-voice/Dockerfile), which copies only the contract in.
+# apps/swarm-voice/Dockerfile), which copies only the contract in, and
+# swarm-speech (own speech L3, apps/swarm-speech/Dockerfile), which copies
+# nothing of ours but its own app.
 ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress",
                                   "swarm-typesafe-fwd", "swarm-graph", "swarm-github-hooks",
-                                  "swarm-voice", "workspace-apply"}
+                                  "swarm-voice", "swarm-speech", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -137,7 +139,9 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # #641's shape: the base's Dockerfile reaches the base and both images
         # built FROM it; the repo-index package lives beside the indexer since
         # #625, so it reaches the indexer alone.
-        (["images/agent-runtime-base/Dockerfile"], WORKER),
+        # swarm-voice reads Claude Code's pinned version from it (its
+        # `claudecli` stage COPYs the file), so a version bump rebuilds it.
+        (["images/agent-runtime-base/Dockerfile"], WORKER | {"swarm-voice"}),
         (["images/agent-runtime-indexer/repo-index/lsp/servers.py"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/Dockerfile"], {"agent-runtime-indexer"}),
         (["images/agent-runtime-indexer/cloudbuild.yaml"], {"agent-runtime-indexer"}),
@@ -194,6 +198,12 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-voice/swarm_voice/main.py"], {"swarm-voice"}),
         (["apps/swarm-voice/uv.lock"], {"swarm-voice"}),
         (["apps/swarm-voice/Dockerfile"], {"swarm-voice"}),
+        # Voice it's own speech server (own speech L3): the same shape again,
+        # copying nothing of ours but itself, so a contract change above does
+        # not reach it.
+        (["apps/swarm-speech/swarm_speech/server.py"], {"swarm-speech"}),
+        (["apps/swarm-speech/uv.lock"], {"swarm-speech"}),
+        (["apps/swarm-speech/Dockerfile"], {"swarm-speech"}),
         # The quota broker redacts account health messages on write, so its
         # image and the scheduler's (which installs the broker's package)
         # copy apps/redaction in too (ACCOUNT-429-FOLLOWUP).
@@ -513,6 +523,40 @@ def test_affected_by_needs_no_gcloud_and_takes_no_targets(tmp_path):
     )
     assert proc.returncode != 0
     assert "--affected-by" in proc.stderr, proc.stderr
+
+
+@pytest.mark.parametrize("args", [["--affected-by", "-"], ["--inputs"]])
+def test_offline_modes_need_no_project(tmp_path, args):
+    """application.yml's `changes` job runs these before it authenticates and
+    names no PROJECT_ID; common.sh has no default project (DAYONE-DESAGA-2)."""
+    env = _env(tmp_path)
+    env.pop("PROJECT_ID")
+    proc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "build-images.sh"), *args],
+        input="apps/swarm-api/swarm_api/__init__.py\n",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "swarm-api" in proc.stdout, proc.stdout
+
+
+def test_a_build_still_needs_a_project(tmp_path):
+    env = _env(tmp_path)
+    env.pop("PROJECT_ID")
+    proc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "build-images.sh"), "--build-only", "swarm-api"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode != 0
+    assert "PROJECT_ID is not set" in proc.stderr, proc.stderr
 
 
 # ---------------------------------------------------------------------------

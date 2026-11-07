@@ -13,7 +13,7 @@
 # Runs are now cut by recorded weight, so the weights have to be refreshable.
 #
 # WHERE THE FIGURES COME FROM. vitest's default reporter prints one line a file
-# in each 'swarm-ui component tests (k/4)' job's log:
+# in each 'swarm-ui component tests (k/N)' job's log:
 #   ✓ src/__tests__/spacing.capacity.test.tsx (1 test) 259018ms
 # This reads those jobs through `gh run view --job <id> --log` and hands the
 # text to scripts/lib/ui_weights.py. It changes no workflow on purpose: a
@@ -36,6 +36,9 @@
 # (an unread log is never "every file is light"). Review the diff and commit it.
 set -euo pipefail
 
+# This script touches no project: it reads GitHub's test reports. It says so, so common.sh
+# (no default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"

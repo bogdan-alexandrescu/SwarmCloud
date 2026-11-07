@@ -119,14 +119,18 @@ class FakePool:
         if self._error is not None:
             raise self._error
 
-    def list_accounts(self, tenant_id: str) -> dict:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict:
         self.calls.append(("list_accounts", tenant_id))
         self._maybe_fail()
-        visible = [
-            dict(a)
-            for a in self.accounts.values()
-            if a["owner_tenant"] == tenant_id or tenant_id in a["lend_to"]
-        ]
+        # The broker's rule: an account in the Voice it pool only serves no
+        # tenant, so a scoped listing names it only to its owner, and only
+        # when `include_reserved` asks for it.
+        def serves(a: dict) -> bool:
+            if "workspace" not in a.get("pools", ["workspace"]):
+                return include_reserved and a["owner_tenant"] == tenant_id
+            return a["owner_tenant"] == tenant_id or tenant_id in a["lend_to"]
+
+        visible = [dict(a) for a in self.accounts.values() if serves(a)]
         return {"accounts": visible, "tenant_id": tenant_id}
 
     def register(self, *, owner_tenant, label, provider, lend_to, credential) -> dict:
@@ -419,13 +423,15 @@ def test_register_returns_no_key_material_and_says_so(client, pool):
 def test_the_pool_takes_rotating_pairs_only_so_provider_is_not_free(
     client, pool, provider
 ):
-    """One kind of credential, two providers: anything else is refused.
+    """One kind of credential, two providers, and Voice it's key: anything
+    else is refused.
 
-    An account here is an OAuth pair the broker rotates on a timer -- a Claude
-    subscription or, since 2026-11-01 (#2688), a ChatGPT plan. There is no
-    API-key account in the pool: a provider with no subscription to refresh
-    would be a pool entry nothing in the platform could ever renew, which is
-    the shape that looks healthy and dies at its first expiry.
+    A workspace pool account is an OAuth pair the broker rotates on a timer --
+    a Claude subscription or, since 2026-11-01 (#2688), a ChatGPT plan. The one
+    API-key kind is the broker's Voice-it-only `openai-api` (4 November 2026),
+    a platform admin's alone: a provider with no subscription to refresh would
+    otherwise be a pool entry nothing in the platform could ever renew, which
+    is the shape that looks healthy and dies at its first expiry.
     """
     response = client.post(
         "/v1/accounts",
@@ -436,7 +442,7 @@ def test_the_pool_takes_rotating_pairs_only_so_provider_is_not_free(
     assert response.status_code == 422
     body = response.json()
     assert body["code"] == "validation_failed"
-    assert body["detail"]["known_providers"] == ["anthropic", "openai"]
+    assert body["detail"]["known_providers"] == ["anthropic", "openai", "openai-api"]
     assert pool.registered == []
 
 

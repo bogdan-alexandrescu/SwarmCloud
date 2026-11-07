@@ -18,8 +18,8 @@
 //
 // Every assertion names the mutation that turns it red.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
 import type { Result } from '../fetch'
@@ -74,6 +74,8 @@ const TASKS = new Map<string, Task>([
   ['t_test', task('t_test', 'FAILED', { step_id: 'test', last_error: 'exit status 1: pytest collected 2 failures' })],
 ])
 
+const realWidth = window.innerWidth
+
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
   // MUTATION: answer this read 2.5 s late (past setup.ts's 2000 ms window)
@@ -92,6 +94,13 @@ beforeEach(() => {
   } catch {
     /* storage refused */
   }
+  // The inspector starts folded below 1366px (graph-notes D·8b); these cases
+  // pick a step in it.
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+})
+
+afterEach(() => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
 })
 
 function Routed({ initial }: { initial: string }) {
@@ -109,19 +118,35 @@ function Routed({ initial }: { initial: string }) {
 async function arrived(): Promise<HTMLElement> {
   await landed(api.loadWorkflow)
   await landed(api.loadWorkflowBoard)
-  const el = document.querySelector<HTMLElement>('section.wf-inspect')
-  expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
-  return el!
+  // NO ARRIVAL PICK ANY MORE (brief, "What moved where"): the page opens on
+  // the Overview, so this picks the failed step's chip on the stage grid
+  // itself, the replacement for "the page picks the first failure".
+  const chip = await waitFor(() => {
+    const c = document.querySelector<HTMLButtonElement>('.sg [data-step="test"]')
+    expect(c).toBeTruthy()
+    return c!
+  })
+  if (chip.getAttribute('aria-pressed') !== 'true') fireEvent.click(chip)
+  // THE PAGE'S CARD IS StepCard, NOT StepInspector (owner's pick, 2026-11-05,
+  // StepCard.tsx): `section.sc-card`, not `section.wf-inspect` (that class
+  // stays on the non-page inspector, unchanged).
+  return waitFor(() => {
+    const el = document.querySelector<HTMLElement>('section.sc-card')
+    expect(el?.getAttribute('aria-label')).toBe('Step test of wf_tests')
+    return el!
+  })
 }
 
 describe('QA-121: a step card links to the step agent\'s logs', () => {
-  it('offers Logs beside Open agent on the failed step the page opens on, to that agent\'s Logs tab', async () => {
+  it('offers Logs beside Agent on the failed step the page opens on, to that agent\'s Logs tab', async () => {
     render(<Routed initial="wf=wf_tests" />)
-    // The page picks the first failure on arrival.
+    // The reader picks the failed step (no arrival pick any more).
     const card = await arrived()
-    const open = within(card).getByRole('link', { name: 'Open agent →' })
-    // MUTATION: drop the Logs link from StepInspector's head and this is red.
-    const logs = within(card).getByRole('link', { name: 'Logs ›' })
+    // THE BAR'S BUTTONS ARE ICON + LABEL ("Agent", "Logs"), not "Open agent
+    // →"/"Logs ›" (StepCard's toolbar, owner's pick 2026-11-05).
+    const open = within(card).getByRole('link', { name: 'Agent' })
+    // MUTATION: drop the Logs link from the bar and this is red.
+    const logs = within(card).getByRole('link', { name: 'Logs' })
     // A FAILED task sits in Recent; its Logs tab is the agent's path plus `/logs`.
     // MUTATION: point it at the bare agent (no `/logs`), or at the Live
     // list a finished task is not in, and this is red.
@@ -143,60 +168,74 @@ describe('WG-4, WG-6: the step card says each figure in words', () => {
       data: { attempts: [attempt(1, { task_id: 't_test', exit_code: 1, error: 'exit status 1', checkpoints: ['ckpt-00001'] })] },
     })
     const card = await openCard()
-    const scrub = card.querySelector<HTMLElement>('[data-scrub="attempt"]')!
-    await waitFor(() => expect(scrub.querySelector('.ctl-facts')).not.toBeNull())
-    const keys = [...scrub.querySelectorAll('.ctl-fact > b')].map((b) => b.textContent)
-    // MUTATION: print `f.key` as the label again (FactList) and this reads
-    // ['gen', 'took', 'exit', 'cost', 'tokens', 'ckpts', 'error'].
-    // 'lease generation' and 'this attempt’s cost' since QAFIX5 (run 5b L4, D2).
-    // 'saved checkpoints', and no 'error' restating the exit code ('exit
-    // status 1' beside 'exit code 1'), since QAFIX6 (run 6, F2).
-    // The lease generation folds under More about this attempt since
-    // QA1-FIX-29 (overview-agents-66): last, behind its summary.
-    expect(keys).toEqual(['took', 'exit code', 'this attempt’s cost', 'tokens', 'saved checkpoints', 'lease generation'])
-    expect(scrub.querySelector('details.wf-inspect-more .ctl-fact > b')?.textContent).toBe('lease generation')
-    const fact = (k: string) => [...scrub.querySelectorAll<HTMLElement>('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === k)
-    // The figures are the attempt's own; only their labels changed.
-    // MUTATION: map a label onto the wrong fact and one of these is red.
-    // The generation's figure, then what it is for (`FACT_HINT`, QAFIX5).
-    expect(fact('lease generation')?.textContent).toMatch(/^lease generation1 · raised by every new lease/)
-    expect(fact('exit code')?.textContent).toBe('exit code1')
-    expect(fact('saved checkpoints')?.textContent).toBe('saved checkpoints1')
+    // THE SCRUBBER'S `.ctl-fact` LIST IS GONE FROM THE PAGE'S CARD (owner's
+    // pick, 2026-11-05): StepCard shows Elapsed/Attempt/Cost/Tokens as tiles
+    // and keys the rest -- Exit code, Checkpoints, Generation -- as `<dt>`s
+    // in the Details fold's `dl.sc-facts`, in words, never the raw
+    // `attemptFacts` keys ('gen', 'exit', 'ckpts').
+    const tileLabels = [...card.querySelectorAll('.sc-tile > .sc-tile-k')].map((el) => el.textContent)
+    // MUTATION: print the tile's own key again and this reads something else.
+    expect(tileLabels).toEqual(['Elapsed', 'Attempt', 'Cost', 'Tokens'])
+    const exitTile = card.querySelector<HTMLElement>('.sc-tile[data-tile="attempt"] .sc-tile-v')
+    // The fixture's one attempt failed with exit 1; the "Attempt" tile is the
+    // position (1 / 3 allowed), not the exit code -- that is Details' own row.
+    expect(exitTile?.textContent).toBe('1 / 3')
+    // Details is a closed <details>; open it to read its facts.
+    const details = card.querySelector<HTMLDetailsElement>('details.sc-more')!
+    fireEvent.click(details.querySelector('summary')!)
+    const dl = details.querySelector<HTMLElement>('dl.sc-facts')!
+    const factKeys = [...dl.querySelectorAll('dt')].map((d) => d.textContent)
+    // MUTATION: print `f.key` ('exit', 'ckpts', 'gen') again and this is red.
+    expect(factKeys).toEqual(['Exit code', 'Checkpoints', 'Generation'])
+    const factValue = (label: string) =>
+      [...dl.querySelectorAll('dt')].find((d) => d.textContent === label)?.nextElementSibling?.textContent
+    expect(factValue('Exit code')).toBe('1')
+    expect(factValue('Checkpoints')).toBe('1')
+    expect(factValue('Generation')).toBe('1')
   })
 
   it('says submitted, not sub, in the head -- and on the workflow’s own page leaves the times to the page head', async () => {
     const card = await openCard()
+    expect(card.querySelector('.wf-inspect-times')).toBeNull()
     // QAFIX5 (QA-120, run 5b): on the workflow's page the card is headed by
     // the step, and the workflow's start and submit are the page head's
     // count note (#138), not repeated in the card.
-    // MUTATION: draw `.wf-inspect-times` under the step heading again.
-    expect(card.querySelector('.wf-inspect-times')).toBeNull()
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): StepCard draws no head of its own at all -- `.wf-inspect-times`
+    // is a class only the non-page StepInspector ever drew, so there is
+    // nothing of that shape to assert against here any more.
+    // The start is the head's facts card's When (the picked facts card,
+    // 2026-11-05), so the count note no longer says it.
+    const when = [...document.querySelectorAll('.wff-facts dt')].find((dt) => dt.textContent === 'When')
+    expect(when?.nextElementSibling?.textContent ?? '').toMatch(/Z$/)
     const note = (document.querySelector<HTMLElement>('.c-count-note')?.textContent ?? '').replace(/\s+/g, ' ')
-    expect(note).toMatch(/started/)
+    expect(note).not.toMatch(/started/)
     // MUTATION: print `· sub ${submitted}` again (StepInspector's times line).
     expect(note).not.toMatch(/\bsub\b/)
   })
 
-  it("words the same-step row's shape as the page head does: its steps, its stages, then the widths", async () => {
-    const card = await openCard()
-    // ONE WORKFLOW OF THIS SHAPE: nothing to page, so since QA1-FIX-29
-    // (overview-agents-67) the shape is the sentence's title, not a line.
-    const shape = card.querySelector<HTMLElement>('[data-scrub="workflow"] .wf-scrub-pos')!
-    // MUTATION: print `${shape.text} · ${shape.steps} steps` again and the
-    // row reads '1 → 1 · 2 steps', the bare widths QA-119 named in the head.
-    expect(shape.getAttribute('title')).toBe('This workflow’s shape: 2 steps in 2 stages (1 → 1). Only workflows of this shape are compared.')
-    expect(card.querySelector('[data-scrub="workflow"] .wf-scrub-shape')).toBeNull()
-  })
+  // The page's step card is the action bar and stat tiles (owner's pick,
+  // 2026-11-05): the same-step scrubber's shape sentence is gone from the
+  // page entirely. With only one workflow of this shape (`siblings.length`
+  // is 1), StepCard's Details fold does not even draw its "Other workflows"
+  // pager (`others = siblings.length > 1`), so there is no shape sentence
+  // left on the page to word. The non-page inspector (Workflows list/board)
+  // still draws `[data-scrub="workflow"]` unchanged -- see WorkflowViews.tsx.
 })
 
 describe("WG-7: the step card's changes link names the step, not the workflow's Changes tab", () => {
-  it("reads This step's changes, and opens the Changes tab filtered to the step", async () => {
+  it("reads Changes, with the step named in its title, and opens the Changes tab filtered to the step", async () => {
     const card = await openCard()
-    // MUTATION: label the link 'Changes ›' again and there is no link of this name.
-    const link = within(card).getByRole('link', { name: /^This step’s changes/ })
+    // THE BAR'S CHANGES BUTTON IS LABELLED "Changes" (icon + word, like every
+    // other bar button); the step it scopes to is said in its `title`, not
+    // its accessible name any more (StepCard.tsx `ChangesButton`).
+    // MUTATION: go back to a link named 'Changes ›' and this finds nothing.
+    const link = within(card).getByRole('link', { name: 'Changes' })
     expect(link.getAttribute('href')).toBe('/workflows/wf_tests/changes?step=test')
-    // MUTATION: keep a second link on the card called just 'Changes' and this is red.
-    expect(within(card).queryByRole('link', { name: /^Changes\b/ })).toBeNull()
+    // This run's task carries no git summary, so `changesCount` could not
+    // count the files changed; the button's title says why, standing in for
+    // `changes.say`.
+    expect(link.getAttribute('title')).toBe('This run wrote no git summary, so what it changed is not known.')
     // The tab it filters keeps its own name.
     const tabs = within(document.body).getByRole('tablist', { name: 'Views of this workflow' })
     expect(within(tabs).getByRole('tab', { name: 'Changes' })).toBeTruthy()

@@ -54,6 +54,28 @@ as `swarm-install`, so the cluster stages (10, 11) and stage 14's verify reads
 plane, whose module admits no public Google range; `infra-close`, the last
 pass, leaves it out.
 
+**Voice it** (terraform/infra/voice.tf; BGD, 2026-11-05). Stage 0's
+`infra.voice-it` records `outputs["voice_it"]` as `{"enabled": bool}`. A no
+renders `voice_it` "off" on every infra pass. A yes renders voice.tf's three
+steps in its order: "off" on the registry pass, "account" on infra-1 (bootstrap
+pass 1 made swarm-voice; this root only reads it), "on" from infra-2, once
+infra-1 has made the cluster whose workload pool the Workload Identity binding
+names, with the release's swarm-voice digest in `image_refs` (a release
+without one is a `LookupError`, never a silent "off"). voice.tf's middle step,
+a ChatGPT plan account in the Voice it pool, is added in the console; swarm-voice
+reads no secret. An install state with no answer (older than the question)
+keeps Terraform's default, off.
+
+**Voice it's own speech** (docs/design/voice-it-own-speech.md §15). Stage 0's
+`infra.voice-speech`, asked only after a yes to Voice it, records `outputs["voice_speech"]` as `{"enabled": bool}`;
+for a yes, stage 1's `infra.voice-speech-zone` adds the zone (the first of the
+region's zones offering the L4) and the Deep Learning VM image it pinned by
+name. Every infra pass renders infra's `voice_speech` with `enabled`, `zone`
+and `image` from that, checked against infra's own validations; no would-be
+machine is made while `voice_it` is not "on" (voice_speech.tf), and after a no
+to Voice it `voice_speech` renders off whatever was recorded. An install
+state with no answer (older than the question) keeps Terraform's default, off.
+
 A value a pass needs that the state does not hold yet is a `LookupError` that
 names the step recording it, never a default.
 """
@@ -61,6 +83,7 @@ names the step recording it, never a default.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -141,6 +164,18 @@ PLUGIN_MIN_VERSION = "0.5.74"
 #: On from infra pass 2: BGD turned it on (DAYONE-TFVARS-2, review finding 12).
 SCHEDULED_DOCTOR_SHIPPED = True
 
+#: swarm-api's SWARM_CONTRACT_REVIEW (infra's `contract_review_mode`): off, as
+#: on the live deployment, until the deployment's owner turns it on (owner's
+#: choice, 2026-11-04). Rendered on every infra pass, so a fresh deployment
+#: carries the same environment as the live one.
+CONTRACT_REVIEW_MODE = "off"
+
+#: swarm-api's SWARM_WORK_CONTRACTS (infra's `work_contracts`): on, so a fresh
+#: deployment's plugins (Config > Plugins) load through a step's signed work
+#: contract, as on the live deployment (BGD, 2026-11-06). Contract review above
+#: stays off: a fresh deployment may have no TypeSafe key or internal route.
+WORK_CONTRACTS = "on"
+
 #: `sizing.mode` (decision 7): one person, or a team of `members` people.
 INDIVIDUAL = "individual"
 TEAM = "team"
@@ -161,7 +196,51 @@ RECORDED_BY = {
     "github_org": "stage 0 (preflight)",
     "org_domain": "stage 0 (preflight)",
     "installer_cidr": "stage 0 (preflight)",
+    "voice_speech": "stage 1 (infra.voice-speech-zone)",
+    "swarm-voice": "stage 4 (images.copy, from the release's images.json)",
 }
+
+#: The install state's key for stage 0's Voice it choice, `{"enabled": bool}`.
+VOICE_IT = "voice_it"
+#: The release image Voice it's "on" needs (voice.tf `voice_it_has_an_image`).
+VOICE_IMAGE = "swarm-voice"
+
+#: terraform/infra's `voice_speech` validations (variables.tf): one zone, and a
+#: Deep Learning VM image by name, never a /family/ path, which moves under the
+#: stopped machine and would replace it at the next plan.
+SPEECH_ZONE = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
+SPEECH_IMAGE = re.compile(r"^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$")
+#: The speech image's NVIDIA driver floor: vLLM 0.31 and later are built on
+#: torch 2.13+ with cuda-toolkit 13.0.3, and CUDA 13 needs a host driver of 580
+#: or later (PR 3538). The driver is carried by the image's FAMILY, as the
+#: suffix `-nvidia-<driver>` (`common-cu129-ubuntu-2204-nvidia-580`); an image's
+#: name is its family plus `-v<date>`, so the name carries it too. Checked on
+#: 2026-11-07 against Google's Deep Learning VM images page
+#: (docs.cloud.google.com/deep-learning-vm/docs/images: "the images come with
+#: the NVIDIA driver version 580. They are denoted by the -ubuntu-2204-nvidia-580
+#: ... suffixes in the image family name"). A family with no suffix (the older
+#: `common-cu124-ubuntu-2204`) states no driver, and counts as below the floor.
+DRIVER_FLOOR = 580
+SPEECH_DRIVER = re.compile(r"-nvidia-([0-9]+)(?:-|$)")
+DRIVER_FLOOR_REFUSAL = (f"Voice it's own speech engine needs a Deep Learning VM image with an NVIDIA driver of "
+                        f"{DRIVER_FLOOR} or later, because vLLM 0.33 is built on CUDA 13.")
+
+
+def image_driver(family_or_name: str) -> int | None:
+    """The NVIDIA driver a Deep Learning VM family or image name states (`-nvidia-<driver>`), or None."""
+    found = SPEECH_DRIVER.search(family_or_name)
+    return int(found.group(1)) if found else None
+
+
+def check_speech_image(image: str) -> str:
+    """`image` (projects/.../global/images/<name>) when its name states a driver
+    of DRIVER_FLOOR or later; else ValueError with DRIVER_FLOOR_REFUSAL."""
+    name = str(image).rsplit("/", 1)[-1]
+    driver = image_driver(name)
+    if driver is None or driver < DRIVER_FLOOR:
+        raise ValueError(f"{DRIVER_FLOOR_REFUSAL} {image} states "
+                         + ("no driver" if driver is None else f"driver {driver}") + ".")
+    return str(image)
 
 
 def desktop_client(state: Any) -> str:
@@ -290,6 +369,55 @@ def service_max_instances(found: Mapping[str, Any]) -> dict[str, Any]:
                              "positive whole max-instances")
         out[str(name)] = int(value)
     return out
+
+
+def voice_it_chosen(state: Any) -> bool | None:
+    """Stage 0's Voice it answer, or None for an install state recorded before the question."""
+    found = state.outputs.get(VOICE_IT)
+    if found is None:
+        return None
+    if not isinstance(found, Mapping) or not isinstance(found.get("enabled"), bool):
+        raise ValueError(f"the install state's voice_it is {found!r}, not {{\"enabled\": true or false}}; "
+                         "rerun stage 0")
+    return bool(found["enabled"])
+
+
+def voice_it(state: Any, pass_name: str) -> str | None:
+    """infra's `voice_it` for `pass_name`: voice.tf's steps in its order for a
+    yes ("off" on the registry pass, "account" on infra-1, "on" from infra-2),
+    "off" for a no, None for an install state recorded before the question."""
+    chosen = voice_it_chosen(state)
+    if chosen is None:
+        return None
+    if not chosen or not after(pass_name, "infra-1"):
+        return "off"
+    return "on" if after(pass_name, "infra-2") else "account"
+
+
+def voice_speech(state: Any) -> dict[str, Any] | None:
+    """infra's `voice_speech` from the own-speech choice, or None for an
+    install state recorded before the question (Terraform's default, off).
+    Off after a no to Voice it: the engine is offered only under a yes."""
+    found = state.outputs.get("voice_speech")
+    if found is None:
+        return None
+    if not isinstance(found, Mapping):
+        raise ValueError(f"the install state's voice_speech is {type(found).__name__}, not a mapping; rerun stage 0")
+    if found.get("enabled") is not True or voice_it_chosen(state) is False:
+        return {"enabled": False}
+    zone, image = found.get("zone"), found.get("image")
+    if not zone or not image:
+        raise LookupError(f"the install state has no voice_speech zone and image yet; {RECORDED_BY['voice_speech']} "
+                          "records them")
+    region = _required(state, "region")
+    if not SPEECH_ZONE.match(str(zone)) or not str(zone).startswith(f"{region}-"):
+        raise ValueError(f"voice_speech zone {zone!r} is not one zone of {region}, like {region}-b")
+    if not SPEECH_IMAGE.match(str(image)):
+        raise ValueError(f"voice_speech image {image!r} is not a Deep Learning VM image by name "
+                         "(projects/deeplearning-platform-release/global/images/<name>)")
+    # Never render an image below the driver floor; infra.voice-speech pins one that meets it.
+    check_speech_image(str(image))
+    return {"enabled": True, "zone": str(zone), "image": str(image)}
 
 
 def iap_members(state: Any, installer: str) -> list[str]:
@@ -441,6 +569,8 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
         "repository_grants_enforced": True,
         "workspace_gate": True,
         "groups_auth": groups_auth(outputs),
+        "contract_review_mode": CONTRACT_REVIEW_MODE,
+        "work_contracts": WORK_CONTRACTS,
         "artifact_registry_repository": REPOSITORY,
         "image_refs": image_refs(project, region, outputs.get("image_digests") or {}),
     }
@@ -448,6 +578,15 @@ def infra_inputs(state: Any, *, pass_name: str, installer: str,
     if found:
         inputs["pool_limits"] = pool_limits(found)
         inputs["service_max_instances"] = service_max_instances(found)
+    voice = voice_it(state, pass_name)
+    if voice is not None:
+        if voice == "on" and VOICE_IMAGE not in inputs["image_refs"]:
+            raise LookupError(f"Voice it is on but the install state has no {VOICE_IMAGE} image digest; "
+                              f"{RECORDED_BY[VOICE_IMAGE]} records it")
+        inputs["voice_it"] = voice
+    speech = voice_speech(state)
+    if speech is not None:
+        inputs["voice_speech"] = speech
     if outputs.get("admin_groups"):
         inputs["admin_groups"] = list(outputs["admin_groups"])
     if inputs["groups_auth"] == DELEGATION and outputs.get("groups_impersonate_user"):

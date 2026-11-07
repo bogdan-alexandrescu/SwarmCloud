@@ -2,7 +2,7 @@
 # changed-guards: run the repo-wide guard tests, and every unit test file that
 # reads a path this checkout changes, in one quiet pass.
 #
-#   scripts/changed-guards.sh [--base <rev>] [--files <file>|-] [--list] [--shard <k>/<n>]
+#   scripts/changed-guards.sh [--base <rev>] [--files <file>|-] [--list] [--shard <k>/<n>] [--only <file>] [--workers <n>]
 #
 # WHY (#642). 25% of lane PRs (33 of 131, measured 2026-10-05) were red on
 # their first CI run, and the reds were mostly repo-wide guard tests that a
@@ -69,6 +69,18 @@
 # contract-parity check runs in part 1 only. Without --shard, a selection that
 # heavy runs its parts in turn (see SHARD_HINT_WEIGHT).
 #
+# `--only <file>` keeps only the entries of the selection the file names, one
+# a line, as `--list` prints them: test files, the stylesheet guards'
+# `apps/swarm-ui/...` lines and the `bash scripts/lib/check-contract-parity.sh`
+# line; the parity check and the stylesheet guards run only when named. Lines
+# the selection does not hold are ignored, so the caller cuts, never widens.
+# It is how the worker's pre-publish gate runs the guards for the files the
+# step changed first and the rest in parts while its budget lasts (GUARDS-
+# TIMEBOX, owner decision 2026-11-03; agent_worker.prepublish). A subset is not
+# the selection, so an --only run writes no record and never splits itself.
+# `--workers <n>` runs pytest with `-n <n>` instead of `-n auto`: the gate runs
+# its parts side by side, each on its share of the pod's CPUs.
+#
 # The diff is `git diff --name-only <base>...HEAD` plus uncommitted and
 # untracked files, since the worker commits those too. <base> is --base, else
 # SWARM_CLONE_BASE, else origin/main; an unresolvable base exits 2 rather than
@@ -88,6 +100,11 @@ set -euo pipefail
 # push-images tests red under this script, green in a plain pytest. So the
 # tests run in the caller's environment: every name sourcing added is unset.
 caller_env="$(compgen -e)"
+
+# This script touches no project: it reads the tree. It says so, so
+# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# PROJECT_ID. Not exported: the tests still run in the caller's environment.
+SWARM_NO_PROJECT=1
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -213,6 +230,8 @@ base="${SWARM_CLONE_BASE:-origin/main}"
 files_from=""
 list_only=0
 shard=""
+only_from=""
+workers="auto"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)
@@ -225,6 +244,12 @@ while [[ $# -gt 0 ]]; do
     --shard)
       [[ $# -ge 2 ]] || { usage; exit 2; }
       shard="$2"; shift 2 ;;
+    --only)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      only_from="$2"; shift 2 ;;
+    --workers)
+      [[ $# -ge 2 ]] || { usage; exit 2; }
+      workers="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; usage; exit 2 ;;
   esac
@@ -240,6 +265,15 @@ if [[ -n "${shard}" ]]; then
   fi
   shard_k="${BASH_REMATCH[1]}"
   shard_n="${BASH_REMATCH[2]}"
+fi
+
+if [[ ! "${workers}" =~ ^(auto|[1-9][0-9]*)$ ]]; then
+  err "--workers takes auto or a positive count, not ${workers}"
+  exit 2
+fi
+if [[ -n "${only_from}" && ! -r "${only_from}" ]]; then
+  err "cannot read the --only list ${only_from}"
+  exit 2
 fi
 
 work="$(mktemp -d)"
@@ -352,6 +386,14 @@ sort -u "${work}/own-tests" "${work}/readers" | while IFS= read -r test_file; do
   grep -qxF -- "${test_file}" "${work}/selected" || printf '%s\n' "${test_file}" >>"${work}/selected"
 done
 
+# --only: the selection's entries the caller named, in the selection's order.
+if [[ -n "${only_from}" ]]; then
+  sed -e 's/\r$//' -e '/^[[:space:]]*$/d' "${only_from}" >"${work}/only"
+  grep -xF -f "${work}/only" "${work}/selected" >"${work}/kept" || true
+  mv "${work}/kept" "${work}/selected"
+  grep -qxF "bash ${PARITY_CHECK}" "${work}/only" || run_parity=0
+fi
+
 # The selection's weight in CI-seconds, and with --shard the part to run.
 weights="${REPO_ROOT}/${DURATIONS}"
 [[ -r "${weights}" ]] || weights=/dev/null
@@ -385,7 +427,8 @@ if [[ "${shard_k}" -le 1 ]] && grep -qE "^${UI_DIR}/.*\.css\$" "${work}/changed"
     --stylesheet-guards >"${work}/style-guards" \
     || { err "${STYLESHEET_SELECTOR} could not name the stylesheet guards"; exit 2; }
   while IFS= read -r guard; do
-    if [[ -n "${guard}" ]]; then
+    if [[ -n "${guard}" ]] \
+        && { [[ -z "${only_from}" ]] || grep -qxF "${UI_DIR}/${guard}" "${work}/only"; }; then
       style_guards+=("${guard}")
     fi
   done <"${work}/style-guards"
@@ -402,6 +445,8 @@ if [[ "${docs_only}" -eq 1 ]]; then
 fi
 if [[ "${shard_n}" -gt 0 ]]; then
   info "part ${shard_k} of ${shard_n}: ${#selected[@]} of the ${total_count} file(s)"
+elif [[ -n "${only_from}" ]]; then
+  info "--only ${only_from}: ${#selected[@]} of the ${total_count} file(s)"
 elif [[ "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
   warn "the selection weighs ${weight} CI-seconds (${DURATIONS}), more than one ${PYTEST_SECONDS} s run may hold: it runs as ${parts} parts in turn; under a 10-minute command limit, ${split_hint}"
 fi
@@ -425,7 +470,7 @@ fi
 record_file=""
 record_tree=""
 record_base=""
-if [[ -z "${files_from}" ]]; then
+if [[ -z "${files_from}" && -z "${only_from}" ]]; then
   git_dir="$(git -C "${REPO_ROOT}" rev-parse --absolute-git-dir)"
   scratch_index="${work}/index"
   if [[ -f "${git_dir}/index" ]]; then
@@ -492,7 +537,7 @@ fi
 # it names (#1334: this lane's own 21 files ran past 540 s as one call). The
 # whole run is then up to parts x 540 s; an agent whose command limit is 10
 # minutes runs the parts as separate commands instead (`--shard`).
-if [[ "${shard_n}" -eq 0 && "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
+if [[ "${shard_n}" -eq 0 && -z "${only_from}" && "${weight}" -gt "${SHARD_HINT_WEIGHT}" ]]; then
   info "running the selection as ${parts} parts, each under ${PYTEST_SECONDS} s"
   part_failed=0
   part_timed_out=0
@@ -527,11 +572,12 @@ failed=0
 
 pytest_status=0
 if [[ ${#selected[@]} -eq 0 ]]; then
-  # More parts than files: pytest given no file would run all of tests/unit.
-  info "part ${shard_k} of ${shard_n} holds no test file; pytest has nothing to run"
+  # More parts than files, or an --only list of none: pytest given no file
+  # would run all of tests/unit.
+  info "no test file to run in this part; pytest has nothing to run"
 else
-  step "pytest: ${#selected[@]} file(s), -n auto"
-  (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${py[@]}" -m pytest -q -n auto -p no:warnings \
+  step "pytest: ${#selected[@]} file(s), -n ${workers}"
+  (cd "${REPO_ROOT}" && "${caller_only[@]}" ${deadline[@]+"${deadline[@]}"} "${py[@]}" -m pytest -q -n "${workers}" -p no:warnings \
     --durations=10 -o "faulthandler_timeout=${FAULTHANDLER_SECONDS}" \
     ${selected[@]+"${selected[@]}"}) >"${log}" 2>&1 || pytest_status=$?
   tail -n 25 "${log}" | redact
@@ -545,7 +591,7 @@ else
     else
       err "no test ran past ${FAULTHANDLER_SECONDS} s: many moderate tests filled the cap; read the log's durations"
     fi
-    if [[ "${shard_n}" -eq 0 ]]; then
+    if [[ "${shard_n}" -eq 0 && -z "${only_from}" ]]; then
       err "the selection weighs ${weight} CI-seconds; ${split_hint}"
     fi
   fi
@@ -603,7 +649,11 @@ rm -f "${log}" "${log}.vitest" "${log}.parity"
 if [[ ${#style_guards[@]} -gt 0 ]]; then
   ok "${#style_guards[@]} stylesheet guard(s) pass"
 fi
-if [[ "${run_parity}" -eq 0 ]]; then
+if [[ -n "${only_from}" ]]; then
+  parity_note=""
+  [[ "${shard_k}" -gt 1 || "${run_parity}" -eq 0 ]] || parity_note=" and contract parity"
+  ok "--only: ${#selected[@]} of ${total_count} test file(s)${parity_note} pass"
+elif [[ "${run_parity}" -eq 0 ]]; then
   ok "${#selected[@]} doc guard and doc-reading test file(s) pass"
 elif [[ "${shard_n}" -eq 0 ]]; then
   ok "${#selected[@]} guard and source-reading test file(s) and contract parity pass"

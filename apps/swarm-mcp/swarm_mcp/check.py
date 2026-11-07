@@ -36,7 +36,9 @@ THE RULES, each with the control that is NOT flagged:
     flagged only for its age, never as a fault.
 (c) `parked` (STUCK): PARKED with HUMAN_REQUIRED (only a person promotes it),
     CI_PENDING for longer than 90 minutes (the CI wait's age across its
-    re-parks, `_ci_entered`, #2999; its last reading is the evidence), or
+    re-parks and the heads its repair rounds pushed, `_ci_entered`, #2999,
+    part of #2688; its last reading, its re-checks, the rounds run and spent
+    and whether main is red on the same checks are the evidence), or
     DEPENDENCY_INCOMPLETE whose
     dependency FAILED, was CANCELLED or DEAD_LETTERED. Any other park reason
     -- a provider quota window, a retry backoff -- is the platform waiting by
@@ -70,6 +72,24 @@ THE RULES, each with the control that is NOT flagged:
     schedule tick ends an overdue wait within one, so a wait still parked
     after two means the sweep is not running. HUMAN_REQUIRED stays STUCK
     under (c), as before.
+(h) `merge_train_stalled` (STUCK): a merge step parked on the repository's
+    merge train (CI_PENDING with the code `merge_train_waiting`) for more
+    than 60 minutes, aged from the FIRST train park of the unbroken run of
+    train parks (`_train_entered`). A train park stops the CI clock by
+    design, so (c) never ages it: on 2026-11-04 a pull request whose
+    `queue for auto-merge` check had failed waited eight hours, the train
+    passing over it on every tick because it boards only pull requests
+    whose checks are all green, and nothing flagged it. The API serves the
+    train's start, `waiting.detail.train_since` (the park's
+    `merge_wait.train_entered_at`; its `waiting.since` is the paused CI
+    clock), read from the task route when a listing served no detail, and
+    the age is then exact. Where it serves none -- an older deployment, a
+    park recorded before it was kept -- the parked events age it, read back
+    up to `TRAIN_EVENT_PAGES` pages. The evidence
+    names the pull request's failed or cancelled checks at its head, from
+    GitHub's public API (`github_failed_checks`, unauthenticated, as (d)
+    reads the state), or says why they were not read; `next` is the pull
+    request. A train park under the bound is not flagged.
 (g) `owner_questions` (PLUGIN-OWNER-QUESTIONS, part of #1904): this
     session's tasks in this project, finished in the last
     `OWNER_QUESTIONS_DAYS`, whose agent asked the owner questions (its
@@ -120,6 +140,19 @@ from .sc import WORKFLOW_PAGE_SIZE
 DEFAULT_STALE_MINUTES = 20
 #: (c): a merge step's CI wait is flagged past this many minutes.
 CI_PENDING_MINUTES = 90
+#: (h): a merge step's wait on the merge train is flagged past this many
+#: minutes. 60 BECAUSE a healthy train lands a ready pull request within a
+#: few of its ticks, and a wait past an hour is one the train keeps passing
+#: over (a red or missing check), which only a person ends.
+MERGE_TRAIN_MINUTES = 60
+#: The CI-park code of a wait on the merge train (`agent_worker.mergetrain.
+#: TRAIN_WAITING`, `swarm_api.attemptstate.TRAIN_WAITING`). Spelled again:
+#: neither is installed with the bridge.
+TRAIN_WAITING = "merge_train_waiting"
+#: Event pages (of EVENT_PAGE) read back for (h)'s first train park, the
+#: newest included: each re-park is about six events, so five pages hold
+#: about sixteen re-parks. Past them the age is a lower bound.
+TRAIN_EVENT_PAGES = 5
 
 #: How many of a task's newest events one read asks for: enough to hold the
 #: event that entered its state, past a few heartbeats.
@@ -166,7 +199,7 @@ EXPIRY_TICK_SECONDS = 60
 EXPIRY_TICKS = 2
 
 #: The order flagged items are reported in: what needs a person first.
-_RULE_ORDER = {"merge_refused": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
+_RULE_ORDER = {"merge_refused": 0, "merge_train_stalled": 0, "parked": 1, AWAITING_INPUT: 1, "no_heartbeat": 2, "state_disagrees": 3,
                "waiting_for_capacity": 4}
 
 ALL = ("all", "*")
@@ -307,6 +340,72 @@ class _PullStates:
             return self.seen[(key, number)]
 
 
+#: The check-run conclusions (h) names: a failed or cancelled check, which
+#: keeps the train from boarding the pull request.
+FAILED_CONCLUSIONS = ("failure", "cancelled", "timed_out", "startup_failure")
+#: Check runs one read asks GitHub for (its maximum page).
+CHECK_RUNS_PAGE = 100
+
+
+def _github_get(url: str) -> Any:
+    """One unauthenticated GET of GitHub's public REST API (as
+    `github_pull_state`): no token is ever sent. Raises SwarmError."""
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                                   "User-Agent": "swarm-mcp-check"})
+    try:
+        with urllib.request.urlopen(request, timeout=PULL_STATE_TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise SwarmError(f"GitHub answered HTTP {exc.code} for {url}") from None
+    except (OSError, ValueError) as exc:
+        raise SwarmError(f"GitHub could not be read for {url}: {type(exc).__name__}") from None
+
+
+def github_failed_checks(key: str, number: int, head: str | None) -> list[dict[str, Any]]:
+    """The failed or cancelled check runs of pull request `number` at `head`
+    (its current head when the park named none), from GitHub's public REST
+    API, unauthenticated: `[{name, conclusion}]`, empty when none is red.
+    Raises SwarmError when they could not be read."""
+    host, _, path = str(key).partition("/")
+    owner, _, repo = path.partition("/")
+    if host != "github.com" or not owner or not repo:
+        raise SwarmError(f"{key} is not a GitHub repository, and GitHub is the only forge read")
+    base = f"{GITHUB_API}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(repo)}"
+    if not head:
+        pull = _github_get(f"{base}/pulls/{int(number)}")
+        head = (pull.get("head") or {}).get("sha") if isinstance(pull, dict) else None
+        if not isinstance(head, str) or not head:
+            raise SwarmError(f"GitHub served no head for pull request #{number}")
+    query = urllib.parse.urlencode({"filter": "latest", "per_page": CHECK_RUNS_PAGE})
+    data = _github_get(f"{base}/commits/{urllib.parse.quote(head)}/check-runs?{query}")
+    runs = data.get("check_runs") if isinstance(data, dict) else None
+    if not isinstance(runs, list):
+        raise SwarmError(f"GitHub served no check runs for {head[:12]}")
+    return [{"name": str(run.get("name")), "conclusion": run.get("conclusion")}
+            for run in runs if isinstance(run, dict) and run.get("conclusion") in FAILED_CONCLUSIONS]
+
+
+class _PullChecks:
+    """The failed checks one check reads: each `(repository, number, head)`
+    at most once, whatever its outcome. Thread-safe."""
+
+    def __init__(self, reader: Callable[[str, int, str | None], list[dict[str, Any]]] | None = None) -> None:
+        self.reader = reader
+        self.lock = threading.Lock()
+        self.seen: dict[tuple[str, int, str | None], tuple[list[dict[str, Any]] | None, str | None]] = {}
+
+    def read(self, key: str, number: int, head: str | None) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """`(failed, None)`, or `(None, why they were not read)`."""
+        with self.lock:
+            if (key, number, head) not in self.seen:
+                reader = self.reader or github_failed_checks
+                try:
+                    self.seen[(key, number, head)] = (reader(key, number, head), None)
+                except SwarmError as exc:
+                    self.seen[(key, number, head)] = (None, str(exc))
+            return self.seen[(key, number, head)]
+
+
 # --------------------------------------------------------------------------
 # Reading, under one budget
 # --------------------------------------------------------------------------
@@ -323,6 +422,9 @@ class _Reads:
         self._capacity: dict[str, Any] | None = None
         self._capacity_error: str | None = None
         self._capacity_read = False
+        #: Each task's next older page of events: its token, None when the
+        #: history ended, absent when the API served no token.
+        self._older: dict[str, str | None] = {}
 
     def _take(self) -> bool:
         with self.lock:
@@ -344,8 +446,32 @@ class _Reads:
             return None
         query = urllib.parse.urlencode({"order": "desc", "limit": EVENT_PAGE})
         data = self.client.request("GET", f"/v1/tasks/{task_id}/events?{query}")
+        return self._page(task_id, data)
+
+    def _page(self, task_id: str, data: Any) -> list[dict[str, Any]]:
+        with self.lock:
+            if isinstance(data, dict) and "next_page_token" in data:
+                token = data.get("next_page_token")
+                self._older[task_id] = str(token) if token else None
+            else:
+                self._older.pop(task_id, None)
         events = data.get("events") if isinstance(data, dict) else None
         return [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
+
+    def older_events(self, task_id: str) -> list[dict[str, Any]] | None:
+        """The page of events older than the last one read for the task,
+        newest first: `[]` when the history ended, None when it could not be
+        read (the API served no page token, or the budget is spent)."""
+        with self.lock:
+            if task_id not in self._older:
+                return None
+            token = self._older[task_id]
+        if token is None:
+            return []
+        if not self._take():
+            return None
+        query = urllib.parse.urlencode({"order": "desc", "limit": EVENT_PAGE, "page_token": token})
+        return self._page(task_id, self.client.request("GET", f"/v1/tasks/{task_id}/events?{query}"))
 
     def capacity(self) -> tuple[dict[str, Any] | None, str | None]:
         """`/v1/capacity`, read at most once per check."""
@@ -426,6 +552,14 @@ def _ci_entered(task: dict[str, Any], events: list[dict[str, Any]],
     that name no reason.
     """
     found: list[dict[str, Any]] = []
+    whole = render.parse_time(_merge_wait(task).get("wait_started_at"))
+    if whole is not None:
+        # The whole wait (part of #2688, 2026-11-06): `first_parked_at`
+        # restarts at every head a repair round pushes, so a step re-checked
+        # 28 times over 8 hours read as under 90 minutes old.
+        found.append({"since": whole, "exact": True,
+                      "source": "its CI wait's first re-check, across its repair rounds' heads "
+                                "(`merge_wait.wait_started_at`)"})
     waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
     since = render.parse_time(waiting.get("since")) if waiting.get("reason") == "CI_PENDING" else None
     if since is not None:
@@ -438,7 +572,9 @@ def _ci_entered(task: dict[str, Any], events: list[dict[str, Any]],
             continue
         detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
         at = render.parse_time(event.get("at"))
-        if detail.get("reason") != "CI_PENDING" or at is None:
+        # A train park stops the CI clock (h): it ends the CI run as a park
+        # for another reason does.
+        if detail.get("reason") != "CI_PENDING" or detail.get("code") == TRAIN_WAITING or at is None:
             bounded = True
             break
         start = at
@@ -450,6 +586,149 @@ def _ci_entered(task: dict[str, Any], events: list[dict[str, Any]],
     if not found:
         return _entered(events, "PARKED", created)
     return min(found, key=lambda entry: entry["since"])
+
+
+def _merge_wait(task: dict[str, Any]) -> dict[str, Any]:
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    wait = metadata.get("merge_wait")
+    return wait if isinstance(wait, dict) else {}
+
+
+def _ci_history(task: dict[str, Any]) -> dict[str, Any]:
+    """The whole CI wait's record, as evidence (part of #2688): its re-checks,
+    the checks failed in it, the CI-fix rounds run and asked for, and whether
+    the default branch is red on the same checks -- the merge step's own
+    `merge_wait` and `merge_fix`. Only what was recorded."""
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    wait = _merge_wait(task)
+    out: dict[str, Any] = {}
+    rechecks = wait.get("rechecks")
+    if isinstance(rechecks, int) and not isinstance(rechecks, bool):
+        out["re_checks"] = rechecks
+    seen = wait.get("failed_heads")
+    if isinstance(seen, dict) and seen:
+        out["failed_in_wait"] = sorted(str(name) for name in seen)
+    fix = metadata.get("merge_fix") if isinstance(metadata.get("merge_fix"), dict) else {}
+    rounds = [r for r in fix.get("rounds") or [] if isinstance(r, dict)] if isinstance(fix.get("rounds"), list) else []
+    asked = metadata.get("merge_fix_rounds")
+    if isinstance(asked, int) and not isinstance(asked, bool) and asked > 0:
+        out["fix_rounds"] = {"ran": len(rounds), "asked": asked, "spent": len(rounds) >= asked}
+    elif rounds:
+        out["fix_rounds"] = {"ran": len(rounds), "asked": None, "spent": None}
+    main = wait.get("main_red") if isinstance(wait.get("main_red"), dict) else {}
+    checks = [str(n) for n in main.get("checks") or [] if isinstance(n, str)]
+    if checks:
+        out["main_red_on"] = checks
+    return out
+
+
+def _ci_words(evidence: dict[str, Any]) -> str:
+    """`_ci_history`'s evidence in words, for the flag's one line."""
+    parts: list[str] = []
+    if evidence.get("re_checks"):
+        parts.append(f"{evidence['re_checks']} re-checks")
+    failed = evidence.get("checks_failed") or evidence.get("failed_in_wait") or []
+    if failed:
+        parts.append("failing: " + ", ".join(str(n) for n in failed[:5]) + (", ..." if len(failed) > 5 else ""))
+    rounds = evidence.get("fix_rounds")
+    if rounds:
+        of = f" of {rounds['asked']}" if rounds.get("asked") else ""
+        parts.append(f"fix rounds {rounds['ran']}{of}" + (" spent" if rounds.get("spent") else ""))
+    if evidence.get("main_red_on"):
+        same = sorted(set(evidence["main_red_on"]) & set(failed)) or evidence["main_red_on"]
+        parts.append("main red on " + ", ".join(same[:5]) + " too")
+    return ("; " + "; ".join(parts)) if parts else ""
+
+
+def _train_park(event: dict[str, Any]) -> bool:
+    detail = event.get("detail") if isinstance(event.get("detail"), dict) else {}
+    return (str(event.get("type") or "").lower() == "parked" and detail.get("reason") == "CI_PENDING"
+            and detail.get("code") == TRAIN_WAITING)
+
+
+def on_train(task: dict[str, Any], events: list[dict[str, Any]]) -> bool:
+    """Whether a CI_PENDING park is a wait on the merge train: the API's
+    `waiting.detail.code`, else the park's `blocked_by` code, else its
+    newest `parked` event's."""
+    if task.get("park_reason") != "CI_PENDING":
+        return False
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if detail.get("code"):
+        return detail.get("code") == TRAIN_WAITING
+    for block in task.get("blocked_by") or []:
+        if isinstance(block, dict) and block.get("reason") == "CI_PENDING" and block.get("code"):
+            return block.get("code") == TRAIN_WAITING
+    newest = next((e for e in events if str(e.get("type") or "").lower() == "parked"), None)
+    return newest is not None and _train_park(newest)
+
+
+def served_train_start(task: dict[str, Any]) -> datetime | None:
+    """The API's start of a merge-train wait, `waiting.detail.train_since`
+    of a CI_PENDING wait, or None when it serves none."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    if waiting.get("reason") != "CI_PENDING":
+        return None
+    return render.parse_time(detail.get("train_since"))
+
+
+def serves_wait_detail(task: dict[str, Any]) -> bool:
+    """Whether the task was read with its `waiting.detail` (the task route);
+    a listing serves a row without it."""
+    waiting = task.get("waiting")
+    return isinstance(waiting, dict) and isinstance(waiting.get("detail"), dict)
+
+
+def _train_entered(task: dict[str, Any], events: list[dict[str, Any]],
+                   older: Callable[[], list[dict[str, Any]] | None]) -> dict[str, Any]:
+    """When a merge step's wait on the merge train began: the API's
+    `waiting.detail.train_since` when served, exact; else the oldest train
+    park of the unbroken run of them, newest first, reading older pages
+    (`older`) while the run reaches the oldest event read, up to
+    TRAIN_EVENT_PAGES pages in all.
+
+    From the events, exact when a park for anything else (a CI park, a slot
+    wait) bounds the run, or the history ended; else a LOWER bound, from the
+    oldest train park read. The API's `waiting.since` is not used: for a
+    train park it is the CI clock the train paused, never the train's
+    start."""
+    served = served_train_start(task)
+    if served is not None:
+        return {"since": served, "exact": True,
+                "source": "its first merge-train park (the API's `waiting.detail.train_since`)"}
+    created = render.parse_time(task.get("created_at"))
+    start: datetime | None = None
+    page, pages = events, 1
+    while True:
+        for event in page:
+            if str(event.get("type") or "").lower() != "parked":
+                continue
+            at = render.parse_time(event.get("at"))
+            if not _train_park(event) or at is None:
+                return {"since": start, "exact": True,
+                        "source": "the first of its unbroken merge-train parks"}
+            start = at
+        if len(page) < EVENT_PAGE:
+            return {"since": start or created, "exact": start is not None,
+                    "source": ("the first of its unbroken merge-train parks (its whole history read)"
+                               if start is not None else "its creation (no train park was read)")}
+        if pages >= TRAIN_EVENT_PAGES:
+            break
+        got = older()
+        if got is None:
+            break
+        if not got:
+            return {"since": start or created, "exact": start is not None,
+                    "source": "the first of its unbroken merge-train parks (its whole history read)"}
+        page, pages = got, pages + 1
+    if start is None:
+        oldest = render.parse_time(page[-1].get("at")) if page else None
+        return {"since": oldest or created, "exact": False,
+                "source": "the oldest event read (no train park among them)"}
+    return {"since": start, "exact": False,
+            "source": f"the oldest of its merge-train parks on its newest {pages} page(s) of events "
+                      "(the run goes back further)"}
 
 
 def _age_evidence(entered: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -634,9 +913,10 @@ def _answer_with(task: dict[str, Any]) -> str:
 
 
 def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
-            dependencies: dict[str, Any] | None) -> dict[str, Any] | None:
+            dependencies: dict[str, Any] | None, checks: _PullChecks | None = None) -> dict[str, Any] | None:
     """(c): HUMAN_REQUIRED, CI_PENDING past 90 min, or a dependency that failed.
-    (f): AWAITING_INPUT, as information, or STUCK once its sweep is overdue."""
+    (f): AWAITING_INPUT, as information, or STUCK once its sweep is overdue.
+    (h): a wait on the merge train past 60 min."""
     reason = task.get("park_reason")
     if reason == "AWAITING_INPUT":
         return _awaiting(task, now)
@@ -654,6 +934,8 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         return None
     created = render.parse_time(task.get("created_at"))
     events = _need(reads.events(str(task_id_of(task))))
+    if reason == "CI_PENDING" and on_train(task, events):
+        return _train_wait(task, reads, events, now, checks)
     entered = (_ci_entered(task, events, created) if reason == "CI_PENDING"
                else _entered(events, "PARKED", created))
     evidence = _age_evidence(entered, now)
@@ -664,8 +946,9 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
             return None
         evidence["window_minutes"] = CI_PENDING_MINUTES
         evidence.update(_ci_reading(task))
+        evidence.update(_ci_history(task))
         text = (f"PARKED on CI_PENDING for {evidence['age_is']} {age} min (over {CI_PENDING_MINUTES}): "
-                "its pull request's checks have not finished")
+                "its pull request's checks have not finished" + _ci_words(evidence))
     elif _question_wait(task) is not None:
         # ITS AGENT'S BLOCKING QUESTIONS (#2860): the question, not a generic
         # wait. The API's line for this park is the hand-off's sign-in
@@ -689,6 +972,69 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
                else "only a person promotes it -- open its console and take control")
         text = f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: {why}"
     return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": _with_summary(evidence, task)}
+
+
+def _train_facts(task: dict[str, Any], events: list[dict[str, Any]]) -> tuple[int | None, str | None]:
+    """The pull request and the head a train park waits at: the API's
+    `waiting.detail`, else the newest train park's event."""
+    waiting = task.get("waiting") if isinstance(task.get("waiting"), dict) else {}
+    detail = waiting.get("detail") if isinstance(waiting.get("detail"), dict) else {}
+    pull = detail.get("pull_request")
+    number = pull.get("number") if isinstance(pull, dict) else pull
+    head = detail.get("head")
+    newest = next((e for e in events if _train_park(e)), None)
+    parked = newest.get("detail") if newest is not None and isinstance(newest.get("detail"), dict) else {}
+    if not isinstance(number, int) or isinstance(number, bool):
+        number = parked.get("pull_request")
+    if not isinstance(number, int) or isinstance(number, bool):
+        summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
+        number = summary.get("pull_request")
+    head = head or parked.get("head")
+    return (number if isinstance(number, int) and not isinstance(number, bool) else None,
+            str(head) if head else None)
+
+
+def _train_wait(task: dict[str, Any], reads: _Reads, events: list[dict[str, Any]], now: datetime,
+                checks: _PullChecks | None) -> dict[str, Any] | None:
+    """(h): a merge step on the merge train for more than MERGE_TRAIN_MINUTES."""
+    task_id = str(task_id_of(task))
+    if not serves_wait_detail(task):
+        # A listing's row: the task route serves the train's start.
+        task = {**task, **_need(reads.task(task_id))}
+    entered = _train_entered(task, events, lambda: reads.older_events(task_id))
+    evidence = _age_evidence(entered, now)
+    age = evidence["age_minutes"]
+    if age is None or age <= MERGE_TRAIN_MINUTES:
+        return None
+    number, head = _train_facts(task, events)
+    link = pull_request_link(task.get("repository_url"), number)
+    evidence.update({"park_reason": "CI_PENDING", "code": TRAIN_WAITING,
+                     "window_minutes": MERGE_TRAIN_MINUTES, "pull_request": number,
+                     "pull_request_url": link, "head": head})
+    failed: list[dict[str, Any]] | None = None
+    if link is None:
+        why = "the step names no pull request they could be read for"
+    else:
+        failed, why = (checks or _PullChecks()).read(str(repo_key(task.get("repository_url"))), number, head)
+    evidence["failed_checks"] = failed
+    if failed is None:
+        evidence["checks_unread_because"] = (
+            f"checks not read: {why}. Whether a check is red is unknown: open the link to see"
+        )
+        said = "its checks not read"
+    elif failed:
+        said = "red at its head: " + ", ".join(f"{c['name']} ({c['conclusion']})" for c in failed)
+    else:
+        said = "no failed or cancelled check at its head"
+    on = f"PR #{number}" if number else "its pull request"
+    text = (f"{on} has waited on the merge train for {evidence['age_is']} {age} min "
+            f"(over {MERGE_TRAIN_MINUTES}); the train boards only pull requests whose checks are "
+            f"all green; {said}")
+    flag = {"kind": STUCK, "rule": "merge_train_stalled", "reason": text,
+            "evidence": _with_summary(evidence, task)}
+    if link:
+        flag["next"] = link
+    return flag
 
 
 def _ci_reading(task: dict[str, Any]) -> dict[str, Any]:
@@ -810,15 +1156,16 @@ def _merge(task: dict[str, Any], step: dict[str, Any],
 
 
 def classify_task(task: dict[str, Any], reads: _Reads, *, now: datetime, window: int,
-                  dependencies: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """The one flag rules (a)-(c) raise on `task`, or None (not flagged)."""
+                  dependencies: dict[str, Any] | None = None,
+                  checks: _PullChecks | None = None) -> dict[str, Any] | None:
+    """The one flag rules (a)-(c), (f) and (h) raise on `task`, or None (not flagged)."""
     state = task.get("state")
     if state in QUIET_STATES:
         return _quiet(task, reads, now, window)
     if state in WAITING_STATES:
         return _waiting(task, reads, now, window)
     if state == "PARKED":
-        return _parked(task, reads, now, dependencies)
+        return _parked(task, reads, now, dependencies, checks)
     return None
 
 
@@ -1199,9 +1546,10 @@ def _parked_questions(client: SwarmClient, parked: list[dict[str, Any]], names: 
 
 def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: datetime,
                   names: dict[str, str], sid: str | None = None,
-                  pulls: _PullStates | None = None) -> dict[str, Any]:
+                  pulls: _PullStates | None = None, checks: _PullChecks | None = None) -> dict[str, Any]:
     reads = _Reads(client, MAX_TASK_READS)
     pulls = pulls or _PullStates()
+    checks = checks or _PullChecks()
     record = session.project_record()
     running, recent, notes = _workflow_lists(client, server_scope(scope, sid, record))
     # THIS SESSION'S OWN (SC-SESSION-SCOPE): a list row that already names
@@ -1353,7 +1701,7 @@ def _check_tenant(client: SwarmClient, scope: str | None, window: int, now: date
     def run(job: tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]) -> Any:
         task, where, deps = job
         try:
-            flag = classify_task(task, reads, now=now, window=window, dependencies=deps)
+            flag = classify_task(task, reads, now=now, window=window, dependencies=deps, checks=checks)
         except _Budget:
             return ("unchecked", {"task_id": task_id_of(task), "workflow_id": where.get("workflow_id"),
                                   "why": f"the check's read budget ({MAX_TASK_READS} task reads) was spent"})
@@ -1445,8 +1793,9 @@ def run(
     seen_tenants: list[Any] = []
     per_tenant: list[dict[str, Any]] = []
     pulls = _PullStates()  # one cache for the whole check, across tenants
+    checks = _PullChecks()  # the same, for (h)'s failed checks
     for reader in _readers(client, tenants):
-        result = _check_tenant(reader, scope["key"], window, now, shown, sid, pulls)
+        result = _check_tenant(reader, scope["key"], window, now, shown, sid, pulls, checks)
         if result["tenant_id"] in seen_tenants:
             continue
         seen_tenants.append(result["tenant_id"])
@@ -1498,6 +1847,15 @@ def run(
     }
     if scope.get("note"):
         out["repository_note"] = scope["note"]
+    # A DISPATCH WHOSE ROWS NEVER STARTED (Product Oracle, 2026-11-06): each
+    # running task this session dispatched that no row followed, by a line
+    # naming it and the launch that starts its row. `new_only` leaves these
+    # out (the launch was written), so only this line catches a skipped one.
+    from . import launch
+
+    rowless = launch.rowless(out["running"]["single_tasks"])
+    if rowless:
+        out["rowless_tasks"] = rowless
     if not out["running"]["workflows"] and not out["running"]["single_tasks"]:
         # Said, not acted on (SC-AUTO-WATCH, owner 2026-10-14): an armed watch
         # with nothing to watch costs one read per interval, so the check

@@ -66,6 +66,13 @@ case "${BASH_SOURCE[0]}" in
   */*) GUARD_SELF_DIR="${BASH_SOURCE[0]%/*}"; GUARD_SELF_DIR="${GUARD_SELF_DIR:-/}" ;;
   *)   GUARD_SELF_DIR="." ;;
 esac
+# self-test judges the fixture cases and touches no project, and says so, so
+# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# PROJECT_ID. Every other subcommand runs inside a workspace build that names
+# one.
+case "${1:-}" in
+  self-test|--self-test) SWARM_NO_PROJECT=1 ;;
+esac
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "${GUARD_SELF_DIR}" && pwd)/common.sh"
@@ -204,6 +211,10 @@ def obj_fail($ns; $flagns; $rules; $label):
     elif ($o.name // "") == "" then "a \($k) has no name"
     elif (($o.namespace // $flagns) // "") != $ns then
       "\($k) \($o.name) is in namespace \((($o.namespace // $flagns) // "<none>") | tojson), not \($ns)"
+    # A kind held under one fixed name only (kube_kind_names: the
+    # TypeSafe hostname policy of a tenant).
+    elif (($rules.kube_kind_names // {}) | has($k)) and (($rules.kube_kind_names[$k] | has_el($o.name)) | not) then
+      "\($k) \($o.name) is not one of \($rules.kube_kind_names[$k] | join(", "))"
     elif $k == "Role" and (($rules.kube_role_names | has_el($o.name)) | not) then
       "Role \($o.name) is not one of \($rules.kube_role_names | join(", "))"
     elif $k == "RoleBinding" and ((($o.role_ref.kind // "") != "Role")
@@ -924,7 +935,7 @@ guard_real_bin() {
 GUARD_DENY_LINES=""
 guard_deny_lists() {
   local IFS=$'\n'
-  GUARD_DENY_LINES="${SHARED_DENY_LIST[*]}"
+  GUARD_DENY_LINES="${SHARED_DENY_LIST[*]+${SHARED_DENY_LIST[*]}}"
 }
 
 # ---------------------------------------------------------------------------

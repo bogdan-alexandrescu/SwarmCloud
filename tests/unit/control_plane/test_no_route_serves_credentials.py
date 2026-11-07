@@ -456,6 +456,12 @@ SECRET_PAYLOAD_READERS = {
     # classifies a Desktop client's secret as non-confidential). A separate
     # app, swarm-discovery, never mounted on swarm-api's routes.
     "discovery.py",
+    # A workspace's TypeSafe key, read only when the workspace chose the
+    # TypeSafe Jev backend and opted in to the contract review at submission
+    # (jev-contract.md section 4), and sent only as the bearer of that one
+    # call; the client's sanitizer drops it from the state, and no answer,
+    # record or log carries it.
+    "contractreview.py",
     # gittools.py read the `-git-wf` slot until #2029 (WF-APP-TOKEN) removed
     # it: a workflow-touching push now uses an App installation token minted
     # per push, never a stored secret. MUTATION: keep the slot reader and

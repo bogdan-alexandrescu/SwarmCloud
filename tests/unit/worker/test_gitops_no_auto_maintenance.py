@@ -53,6 +53,8 @@ REMOTE = "starts it only in the receiving repository"
 #: forge's.
 _MEASURED: dict[tuple[str, ...], str] = {
     ("add",): NONE,
+    ("bundle", "create"): NONE,
+    ("bundle", "verify"): NONE,
     ("cat-file",): NONE,
     ("check-ignore",): NONE,
     ("checkout",): NONE,
@@ -317,6 +319,10 @@ def test_the_classification_holds_on_this_git(tmp_path: Path) -> None:
     step(("log",), work, "log", "--format=%H", "-n", "2")
     step(("ls-tree",), work, "ls-tree", "-r", "--name-only", "-z", "HEAD")
     step(("cat-file",), work, "cat-file", "commit", "HEAD")
+    bundle = tmp_path / "work.bundle"
+    step(("bundle", "create"), work, "bundle", "create", "--quiet", str(bundle), "HEAD",
+         "^HEAD~1")
+    step(("bundle", "verify"), work, "bundle", "verify", "--quiet", str(bundle))
     step(("merge-base",), work, "merge-base", "--is-ancestor", "origin/side", "HEAD",
          check=False)
     step(("merge-tree",), work, "merge-tree", "--write-tree", "HEAD", "origin/side")

@@ -317,4 +317,13 @@ class FakeClient:
             return {"tasks": [dict(t) for t in chunk], "next_page_token": following, "tenant_id": "t-acme"}
         if parts[:2] == ["v1", "tasks"] and len(parts) == 4 and parts[3] == "events":
             return {"events": list(self.data["events"].get(parts[2], []))}
+        if parts[:2] == ["v1", "tasks"] and len(parts) == 4 and parts[3] == "questions":
+            # The stored answers, by index (`progress.stored_answers`): none
+            # unless a test puts some in `data["answers"]`.
+            if self.fail == "answers":
+                raise SwarmError(f"GET {path} answered HTTP 503")
+            answers = (self.data.get("answers") or {}).get(parts[2]) or {}
+            asked = self.data["questions"].get(parts[2]) or []
+            return {"status": "ok" if asked else "none",
+                    "questions": [{**q, "answer": answers.get(i)} for i, q in enumerate(asked)]}
         raise AssertionError(f"the board read {path}, which this fixture does not serve")

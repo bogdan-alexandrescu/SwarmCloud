@@ -64,8 +64,10 @@ def test_a_good_answer_is_returned_and_counted(tmp_path: Path) -> None:
     ledger = jev.ledger.read()
     assert ledger["calls"] == 1 and ledger["input_tokens"] == 2850
     (row,) = ledger["audit"]
-    assert set(row) == {"call_id", "kind", "backend", "bytes", "input_tokens", "ms", "outcome"}
+    assert set(row) == {"call_id", "kind", "backend", "bytes", "input_tokens", "ms", "outcome",
+                        "requested_model", "tokens_estimated"}
     assert row["kind"] == "J1" and row["outcome"] == "ok" and row["input_tokens"] == 2850
+    assert row["tokens_estimated"] is False
     # The audit never holds the payload.
     assert "implement" not in json.dumps(ledger["audit"])
 
@@ -175,7 +177,7 @@ def test_the_ninth_call_is_skipped(tmp_path: Path) -> None:
     assert [g.ok for g in got] == [True] * 8 + [False]
     assert got[-1].reason == "budget_calls"
     assert len(fake.requests) == 8
-    assert budget.MAX_CALLS_PER_TASK == 8
+    assert budget.SHARED_CALLS_PER_TASK == 8
 
 
 def test_the_token_budget_stops_calls_past_120k(tmp_path: Path) -> None:
@@ -184,7 +186,7 @@ def test_the_token_budget_stops_calls_past_120k(tmp_path: Path) -> None:
     outcomes = [jev.decide("J1", {"a": 1}, QUESTIONS) for _ in range(3)]
     assert [o.ok for o in outcomes] == [True, True, False]
     assert outcomes[-1].reason == "budget_tokens"
-    assert budget.MAX_INPUT_TOKENS_PER_TASK == 120_000
+    assert budget.SHARED_INPUT_TOKENS_PER_TASK == 120_000
 
 
 def test_the_monthly_cap_stops_calls_before_the_task_budget(tmp_path: Path) -> None:

@@ -78,7 +78,7 @@ def _fields(text: str) -> dict[str, str]:
     """`{field: value}` of a details line, in the order found."""
     out: dict[str, str] = {}
     for name in FIELDS:
-        match = re.search(re.escape(name) + r": (.*?)(?: · (?:" + "|".join(map(re.escape, FIELDS)) + r"): | · SC · |$)", text)
+        match = re.search(re.escape(name) + r": (.*?)(?: · (?:" + "|".join(map(re.escape, FIELDS)) + r"): | · SC [·∴] |$)", text)
         if match:
             out[name] = match.group(1)
     return out
@@ -313,7 +313,7 @@ def test_no_run_js_label_or_title_carries_the_workspace(tmp_path):
         "[SwarmCloud] gate · stage 1 · implement",
         "[SwarmCloud] gate · 1 step · wf_a · setup · result",
     ]
-    assert got["result"]["title"] == "SC · gate · 1 step" == workflows.workflow_title("gate", 1)
+    assert got["result"]["title"] == "SC ∴ gate · 1 step" == launch.workflow_run_title("gate", 1)
     assert got["result"]["workspace"] == "u-bogdan", "the result object still says where it ran"
     assert not any(line.startswith("[u-bogdan]") for line in got["logs"]), got["logs"]
     tasks = _run(tmp_path, {"attach_tasks": [{"task_id": "task_a", "title": "lane-a", "workspace": "u-bogdan"}]},

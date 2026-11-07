@@ -23,23 +23,29 @@
 #
 #   1. `swarm-voice-egress`, a NetworkPolicy, puts the pod under egress
 #      isolation and admits only what has a fixed address: cluster DNS and
-#      the GKE metadata server (the Workload Identity access token for Secret
-#      Manager, and the ID token it presents to swarm-api).
+#      the GKE metadata server (the ID tokens it presents to swarm-api and the
+#      quota broker, and the planner's Workload Identity access token).
 #   2. `swarm-voice-egress-hosts`, a GKE FQDNNetworkPolicy, admits TCP 443 to
 #      the hosts by name, and only these:
 #        * api.openai.com   -- the GPT-Live call and its sideband;
-#        * auth.openai.com  -- the refresh of the person's own credential
-#                              (swarm_voice/credential.py TOKEN_URL);
+#        * chatgpt.com      -- the text conversation on the ChatGPT plan
+#                              (swarm_voice/textchat.py CODEX_BASE, the
+#                              plan's Codex Responses API), when the Voice it
+#                              pool holds no OpenAI API key;
 #        * api.anthropic.com -- the planner (phase two; named now so the
 #                              phase-two lane changes no network policy);
 #        * swarm-api's own run.app host -- every read and write (§3.6);
-#        * secretmanager.googleapis.com -- the person's OpenAI secret, read
-#                              and its rotated refresh token stored;
+#        * the quota broker's run.app host -- the Voice it pool lease of each
+#                              session's ChatGPT plan account, its renewal
+#                              and release (swarm_voice/accountlease.py);
+#        * secretmanager.googleapis.com -- the planner's Anthropic key
+#                              (swarm_voice/planner.py), never an OpenAI
+#                              credential;
 #        * www.googleapis.com -- Google's public certificates, which the
 #                              caller check verifies swarm-api's ID token
 #                              against (google.oauth2.id_token).
 #      The last two are Google's, not "outside the cluster" in the sense the
-#      design means: without them the pod can read no credential and admit no
+#      design means: without them the planner has no key and the pod admits no
 #      caller.
 #
 # FAILS CLOSED. Egress isolation from (1) holds whether or not (2) is
@@ -121,9 +127,10 @@ spec:
   egress:
     - matches:
         - name: api.openai.com
-        - name: auth.openai.com
+        - name: chatgpt.com
         - name: api.anthropic.com
         - name: __SWARM_API_HOST__
+        - name: __QUOTA_BROKER_HOST__
         - name: secretmanager.googleapis.com
         - name: www.googleapis.com
       ports:

@@ -5,6 +5,7 @@ import { patchWindow } from './ArtifactViewer'
 import { publishRefusals } from './AgentDetail'
 import { Button } from './components'
 import { DiffView, httpUrl, type DiffPin } from './diff/DiffView'
+import { RenderedOrDiff, renderKind, type RenderSource } from './RenderedFile'
 import { parseUnifiedDiff, type DiffFile } from './diff/parse'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { agentPath } from './OverviewRegions'
@@ -387,9 +388,11 @@ export function PatchChanges({
     onFileChange: onFile,
     ...(pullRequest === undefined ? {} : { pullRequest }),
   }
-  return (
-    <div className="chg-patch">
-      {summary}
+  // THE OPEN FILE, RENDERED WHEN IT IS A PAGE, AN SVG OR AN IMAGE (BGD,
+  // 2026-11-06), as the matrix's file pane draws it; Diff is the viewer below.
+  const rendered = file !== null && renderKind(file) !== null
+  const sections = rendered ? patchSections(w === null ? data.content : w.patch).sections : null
+  const viewer = (
       <div className="chg-diff">
         {w === null ? (
           <DiffView patch={data.content} {...view} />
@@ -419,6 +422,15 @@ export function PatchChanges({
           />
         )}
       </div>
+  )
+  return (
+    <div className="chg-patch">
+      {summary}
+      {rendered ? (
+        <RenderedOrDiff key={file} path={file} source={{ taskId, section: sections?.get(file) ?? null }} framesSource={{ taskId, section: sections?.get(`${file.slice(0, file.lastIndexOf('/') + 1)}frames.json`) ?? null }} diff={viewer} />
+      ) : (
+        viewer
+      )}
     </div>
   )
 }
@@ -1491,15 +1503,24 @@ function FileByStep({
       ))}
     </div>
   )
-  return (
-    <section className="chg-mx-file-view" aria-label={`${path}, by step`}>
-      <p className="chg-sum">
-        <span className="mono">{path}</span>
-        <span>changed by {changedBy.join(', ')}</span>
-      </p>
-      {parts.length === 0 ? (
-        meta
-      ) : (
+  // A PAGE, AN SVG OR AN IMAGE OPENS RENDERED (BGD, 2026-11-06), as the last
+  // shown step that changed it left it: its checkpoint, else its patch.
+  let source: RenderSource | null = null
+  let framesSource: RenderSource | null = null
+  if (renderKind(path) !== null) {
+    const framesPath = `${path.slice(0, path.lastIndexOf('/') + 1)}frames.json`
+    for (let i = cols.length - 1; i >= 0 && source === null; i--) {
+      const f = facts[i]!
+      if (!shown[i] || cellOf(f, path).kind !== 'count') continue
+      const sections = f.kind === 'patch' && f.read?.kind === 'ok' ? f.read.sections : null
+      source = { taskId: cols[i]!.taskId, section: sections?.get(path) ?? null }
+      framesSource = { taskId: cols[i]!.taskId, section: sections?.get(framesPath) ?? null }
+    }
+  }
+  const diff =
+    parts.length === 0 ? (
+      meta
+    ) : (
         <div className="chg-diff chg-mx-diff">
           <DiffView
             key={path}
@@ -1515,7 +1536,14 @@ function FileByStep({
             {...(pullRequest === null ? {} : { pullRequest })}
           />
         </div>
-      )}
+      )
+  return (
+    <section className="chg-mx-file-view" aria-label={`${path}, by step`}>
+      <p className="chg-sum">
+        <span className="mono">{path}</span>
+        <span>changed by {changedBy.join(', ')}</span>
+      </p>
+      {source === null ? diff : <RenderedOrDiff key={path} path={path} source={source} framesSource={framesSource} diff={diff} />}
     </section>
   )
 }

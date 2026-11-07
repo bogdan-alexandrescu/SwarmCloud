@@ -93,7 +93,7 @@ import { VALUE_LABEL_GAP_PX } from './charts/parts'
 import { axisZone } from './charts/series'
 import { SKIPPED_WORD } from './dag'
 import { gateVerdictOf, skippedByVerdict } from './wfreview'
-import { workflowLabel } from './stepviews'
+import { workflowName } from './WorkflowFacts'
 import { eventWord } from './words'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/timeline.css'
@@ -1163,14 +1163,15 @@ export function TimelineLanesScreen({
   /**
    * THE NAMES THE WORKFLOWS LIST SHOWS (live QA RT-25, 2026-10-11): the
    * Workflow filter and the group heads were bare `wf_…` ids beside a list
-   * that calls them PERM-2 and S9. A workflow's label is its step tasks'
-   * `metadata.unit` (`workflowLabel`), from the workflow read.
+   * that calls them PERM-2 and S9. A workflow's name is the one the list
+   * gives it (`workflowName`: its served title, else its step tasks'
+   * `metadata.unit` or `title`), from the workflow read.
    */
   const wfNames = useMemo(() => {
     const m = new Map<string, string>()
     for (const [id, w] of workflows) {
       if (w.status !== 'ok') continue
-      const label = workflowLabel(w.read.workflow, new Map(w.read.tasks.map((t) => [t.id, t])))
+      const label = workflowName(w.read.workflow, new Map(w.read.tasks.map((t) => [t.id, t])))
       if (label !== null) m.set(id, label)
     }
     return m
@@ -1780,8 +1781,8 @@ function Axis({
  * group row printed the raw id and "workflow: reading…" for seconds, until the
  * workflow read landed and `workflowLabel` named it from its steps' tasks --
  * tasks the lanes already carry. The same rule (`unit` before `title`, the
- * first that has one), over the lanes drawn; the workflow read's own label
- * wins once it lands.
+ * first that has one), over the lanes drawn; the workflow read's own name
+ * (`workflowName`: its served title, else that label) wins once it lands.
  */
 export function lanesLabel(lanes: readonly Lane[]): string | null {
   for (const key of ['unit', 'title'] as const) {
@@ -2626,7 +2627,7 @@ function LaneDetail({
   onClose: () => void
   onOlder: () => void
   onRead: () => void
-  /** The lane's workflow by its label (`workflowLabel`), null when it has none or was not read. */
+  /** The lane's workflow by its name (`workflowName`), null when it has none or was not read. */
   workflowName?: string | null
 }) {
   useEffect(() => {

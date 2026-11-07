@@ -44,6 +44,10 @@
 # it is set.
 
 set -euo pipefail
+# This script touches no project: it reads GitHub only. It says so, so
+# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
@@ -94,8 +98,14 @@ work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 answer="${work}/answer.json"
 
-if ! gh api graphql -f query="${QUERY}" -f owner="${repo%%/*}" -f name="${repo#*/}" \
-    -F number="${pr}" >"${answer}"; then
+# Through gh_api_read_retry: a connection timeout on the runner failed this
+# read on 2026-11-04 and left a `ready` pull request off the merge train for
+# eight hours. A transient failure is asked again; one that never clears, or
+# any real answer, fails closed as before.
+answer_err="${work}/answer.err"
+if ! gh_api_read_retry "${answer}" "${answer_err}" graphql -f query="${QUERY}" \
+    -f owner="${repo%%/*}" -f name="${repo#*/}" -F number="${pr}"; then
+  cat "${answer_err}" >&2
   die "could not read #${pr}'s text and closing references from ${repo}"
 fi
 
@@ -151,7 +161,7 @@ while read -r number; do
   visited=$((visited + 1))
   item="${work}/item-${number}.json"
   item_err="${work}/item-${number}.err"
-  if ! gh api "repos/${repo}/issues/${number}" >"${item}" 2>"${item_err}"; then
+  if ! gh_api_read_retry "${item}" "${item_err}" "repos/${repo}/issues/${number}"; then
     if grep -q "HTTP 404" "${item_err}"; then
       info "#${number} does not exist in ${repo}: nothing to close"
       note "* #${number}: not found; nothing to close"

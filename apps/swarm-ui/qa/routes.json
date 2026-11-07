@@ -37,15 +37,15 @@
         "ready": "main h1"
       },
       {
-        "id": "settings-profile",
-        "address": "settings/profile",
-        "path": "/settings/profile",
+        "id": "config-plugins",
+        "address": "config/plugins",
+        "path": "/config/plugins",
         "ready": "main h1"
       },
       {
-        "id": "config-people",
-        "address": "config/people",
-        "path": "/config/people",
+        "id": "settings-profile",
+        "address": "settings/profile",
+        "path": "/settings/profile",
         "ready": "main h1"
       }
     ],

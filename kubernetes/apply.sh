@@ -1288,35 +1288,33 @@ else
   # environment does). Discovery, which every authenticated caller may read
   # (GKE's system:discovery): no grant is needed to ask.
   #
-  # Skipped, with a line saying so, when the cluster does not serve it, when the
-  # question cannot be answered, and under the workspace job's call guard
-  # (SWARM_CALL_GUARD): scripts/lib/workspace-calls.json admits neither this
-  # read nor the kind, and a refused call stops the job. The policy only names
-  # a host rule 4 of allow-egress.yaml already admits, so a namespace without
-  # it loses nothing a packet notices today; onboarding never waits on it.
+  # Asked the same way under the workspace job's call guard (SWARM_CALL_GUARD):
+  # scripts/lib/workspace-calls.json admits this one discovery read on the
+  # swarm cluster's context, and the kind under the name
+  # swarm-allow-typesafe-direct alone, in the tenant's own namespace (C1, C7,
+  # kube_kind_names). Skipped, with a line saying so, when the cluster does not
+  # serve it and when the question cannot be answered. The policy only names a
+  # host rule 4 of allow-egress.yaml already admits, so a namespace without it
+  # loses nothing a packet notices today; onboarding never waits on it.
   FQDN_ARGS=()
   FQDN_RESOURCE="$("${PYTHON}" "${HERE}/render.py" fqdn-resource)" \
     || die "could not ask render.py which resource the hostname policy needs (above)"
-  if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then
-    info "hostname policy  skipped: the workspace call guard admits no ${FQDN_RESOURCE} read; swarm-allow-typesafe-direct is not rendered"
-  else
-    FQDN_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-fqdn-probe.XXXXXX")"
-    # To files, not $(...): the status and the error are both kept.
-    if "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
-        --api-group=networking.gke.io -o name >"${FQDN_WORK}/resources" 2>"${FQDN_WORK}/err"; then
-      if grep -Fxq "${FQDN_RESOURCE}" "${FQDN_WORK}/resources"; then
-        FQDN_ARGS=(--fqdn-network-policy)
-        info "hostname policy  the cluster serves ${FQDN_RESOURCE}: rendering swarm-allow-typesafe-direct"
-      else
-        info "hostname policy  skipped: the cluster does not serve ${FQDN_RESOURCE} (FQDN network policy is off); swarm-allow-typesafe-direct is not rendered"
-      fi
+  FQDN_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-fqdn-probe.XXXXXX")"
+  # To files, not $(...): the status and the error are both kept.
+  if "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" api-resources \
+      --api-group=networking.gke.io -o name >"${FQDN_WORK}/resources" 2>"${FQDN_WORK}/err"; then
+    if grep -Fxq "${FQDN_RESOURCE}" "${FQDN_WORK}/resources"; then
+      FQDN_ARGS=(--fqdn-network-policy)
+      info "hostname policy  the cluster serves ${FQDN_RESOURCE}: rendering swarm-allow-typesafe-direct"
     else
-      warn "hostname policy  skipped: could not read whether the cluster serves ${FQDN_RESOURCE}:"
-      redact <"${FQDN_WORK}/err" | sed -n '1,3p' | sed 's/^/     /' >&2
-      dim "  swarm-allow-typesafe-direct is not rendered; re-run once the cluster answers discovery."
+      info "hostname policy  skipped: the cluster does not serve ${FQDN_RESOURCE} (FQDN network policy is off); swarm-allow-typesafe-direct is not rendered"
     fi
-    rm -rf "${FQDN_WORK}"
+  else
+    warn "hostname policy  skipped: could not read whether the cluster serves ${FQDN_RESOURCE}:"
+    redact <"${FQDN_WORK}/err" | sed -n '1,3p' | sed 's/^/     /' >&2
+    dim "  swarm-allow-typesafe-direct is not rendered; re-run once the cluster answers discovery."
   fi
+  rm -rf "${FQDN_WORK}"
 
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" --project "${PROJECT_ID}" \
     ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
@@ -1429,6 +1427,8 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
     dim "  --confirm then compares swarm-system's policies with ${SWARM_API_EGRESS_CIDR}"
     dim "    (kubernetes/network_parity.py --live-ingress)"
     if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+      dim "  --confirm then compares swarm-system/decision-api-egress-ingress with ${SWARM_API_EGRESS_CIDR}"
+      dim "    (kubernetes/network_parity.py --jev-egress-ingress)"
       dim "  --confirm then copies Secret Manager ${TAILSCALE_OAUTH_GSM_NAME} into swarm-system/${TAILSCALE_K8S_OBJECT}"
       dim "    (never printed; a dry run does not read it)"
     fi
@@ -1555,6 +1555,28 @@ if [[ "${MODE}" == "swarm-system" ]]; then
       --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
     rm -rf "${LIVE_WORK}"
     die "applied, but swarm-system's ingress does not match what was rendered (above)."
+  fi
+  # THE JEV TAILNET EGRESS (the owner's choice, 4 November 2026; part of
+  # #2688). decision-api-egress-ingress admits swarm-api's range on 8443, and
+  # terraform rendered that range from local.decision_api_swarm_api_cidr, its
+  # own copy of the subnet: judged here, as the API server now holds it,
+  # against the range just READ from swarm-api's service. A stale range or a
+  # second port fails the apply with both values named; a range nothing
+  # compares closes swarm-api's route to the Jev backend silently. Only when
+  # this run applied the tailnet egress: with enable_tailscale_egress off the
+  # policy does not exist and there is nothing to compare.
+  if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+    info "comparing swarm-system/decision-api-egress-ingress with swarm-api's ${SWARM_API_EGRESS_CIDR}"
+    if ! "${PYTHON}" "${HERE}/network_parity.py" --jev-egress-ingress \
+        --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
+      # policies.json is swarm-system's alone (`get networkpolicies -n`, above).
+      JEV_ADMITTED="$(jq -r '[.items[]? | select(.metadata.name == "decision-api-egress-ingress")
+          | .spec.ingress[]?.from[]?.ipBlock.cidr // empty] | join(", ")' "${LIVE_WORK}/policies.json" 2>/dev/null || true)"
+      rm -rf "${LIVE_WORK}"
+      die "applied, but swarm-system/decision-api-egress-ingress admits swarm-api's range as '${JEV_ADMITTED:-nothing}',
+       but swarm-api egresses from ${SWARM_API_EGRESS_CIDR} (${SWARM_API_EGRESS_SOURCE}); the rule must admit exactly
+       that range, on TCP 8443 alone (above). terraform's local.decision_api_swarm_api_cidr is stale, or the rule was widened."
+    fi
   fi
   rm -rf "${LIVE_WORK}"
 fi

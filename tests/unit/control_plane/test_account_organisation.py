@@ -685,7 +685,7 @@ def test_swarm_api_shows_another_tenants_caller_no_label_even_from_an_unredacted
     from swarm_api.main import create_app as create_api
 
     class _Pool:
-        def list_accounts(self, tenant_id):
+        def list_accounts(self, tenant_id, include_reserved: bool = False):
             return {"accounts": [{
                 "account_id": "research:theirs", "owner_tenant": RESEARCH, "label": "theirs",
                 "duplicate_of": "eng:mine",

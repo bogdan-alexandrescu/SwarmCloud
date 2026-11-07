@@ -10,9 +10,9 @@ Held here, from the phase-one row and CONTRACT.md:
     request equals the limit and whose CPU limit is at most
     CPU_BURST_MAX_RATIO times the request (invariant 7);
   * kubernetes/network-policies/swarm-system-voice.yaml admits only swarm-api's
-    egress range in, and out only DNS, the metadata server and, by name, OpenAI,
-    Anthropic, swarm-api and the two Google endpoints the credential and the
-    caller check need. Nothing else, and no open CIDR;
+    egress range in, and out only DNS, the metadata server and, by name, OpenAI
+    (the API and chatgpt.com, the plan's text conversation), Anthropic, swarm-api, the quota broker (the Voice it pool lease) and the two
+    Google endpoints the planner's key and the caller check need. Nothing else, and no open CIDR;
   * the image ships: `swarm-voice` is in ALL_TARGETS of build-images.sh and
     push-images.sh, and apps/swarm-voice/Dockerfile runs the service as the
     manifest's uid, installed by hash.
@@ -40,10 +40,11 @@ SELECTOR = {"app.kubernetes.io/name": "swarm-voice"}
 # The hosts swarm-voice may open TCP 443 to, and the code that needs each.
 HOSTS = {
     "api.openai.com",  # swarm_voice/live.py OPENAI_API, OPENAI_WS
-    "auth.openai.com",  # swarm_voice/credential.py TOKEN_URL
+    "chatgpt.com",  # swarm_voice/textchat.py CODEX_BASE, the plan's text conversation
     "api.anthropic.com",  # the planner, phase two
     "__SWARM_API_HOST__",  # swarm-api, rendered by voice.tf
-    "secretmanager.googleapis.com",  # credential.py SECRET_MANAGER
+    "__QUOTA_BROKER_HOST__",  # the quota broker's Voice it pool, accountlease.py
+    "secretmanager.googleapis.com",  # planner.py SECRET_MANAGER, the Anthropic key only
     "www.googleapis.com",  # google.oauth2.id_token's certificates
 }
 
@@ -99,6 +100,14 @@ def test_memory_and_ephemeral_storage_request_equals_limit():
         assert _quantity(resources["requests"][name]) == _quantity(resources["limits"][name]), name
 
 
+def test_memory_is_2gi_for_the_planner_s_claude_code_child():
+    # Each planner turn runs a Claude Code child in this pod; 1Gi left it no
+    # headroom beside the sidebands (owner's pick on PR #3112).
+    resources = _container()["resources"]
+    assert _quantity(resources["requests"]["memory"]) == _quantity("2Gi")
+    assert _quantity(resources["limits"]["memory"]) == _quantity("2Gi")
+
+
 def test_cpu_request_is_at_most_the_limit_and_the_limit_at_most_the_burst_ratio():
     resources = _container()["resources"]
     request = _quantity(resources["requests"]["cpu"])
@@ -123,6 +132,27 @@ def test_the_pod_acts_as_its_own_account_and_checks_its_caller():
     assert env["SWARM_VOICE_AUDIENCE"] == "__SWARM_VOICE_AUDIENCE__"
     assert env["SWARM_VOICE_CALLERS"] == "__SWARM_VOICE_CALLERS__"
     assert env["PORT"] == "8080" and env["PROJECT_ID"] == "__PROJECT_ID__"
+
+
+def test_the_planner_reaches_swarm_api_at_the_host_its_egress_policy_admits():
+    # main.build_sessions hands Sessions a planner only when SWARM_API_URL is
+    # set; swarm-api is Cloud Run, so its address from the cluster is the
+    # run.app host voice.tf renders, the one the egress policy names. The
+    # audience defaults to that URL, swarm-api's own API_AUDIENCE.
+    env = {e["name"]: e["value"] for e in _container()["env"]}
+    assert env["SWARM_API_URL"] == "https://__SWARM_API_HOST__"
+    assert "SWARM_API_AUDIENCE" not in env
+
+
+def test_the_pod_leases_from_the_quota_brokers_voice_it_pool_and_reads_no_openai_secret():
+    # accountlease.build_broker reads both; voice.tf renders the broker's URL and
+    # audience, and the egress policy admits the broker's host. No variable names
+    # an OpenAI secret or a person's sign-in.
+    env = {e["name"]: e["value"] for e in _container()["env"]}
+    assert env["QUOTA_BROKER_URL"] == "__QUOTA_BROKER_URL__"
+    assert env["QUOTA_BROKER_AUDIENCE"] == "__QUOTA_BROKER_AUDIENCE__"
+    assert not [name for name in env if "OPENAI" in name or "SECRET" in name]
+    assert "auth.openai.com" not in POLICY.read_text()
 
 
 def test_every_object_is_labelled_managed_by_swarm_terraform():
@@ -165,6 +195,10 @@ def test_the_egress_policy_isolates_the_pod_and_admits_only_dns_and_the_metadata
 
 
 def test_the_egress_hosts_are_openai_anthropic_swarm_api_and_googles_two():
+    # chatgpt.com is textchat.py's host, held here so the two never drift.
+    textchat = (REPO / "apps" / "swarm-voice" / "swarm_voice" / "textchat.py").read_text()
+    (codex_host,) = re.findall(r'^CODEX_BASE = "https://([^/"]+)/', textchat, re.M)
+    assert codex_host in HOSTS
     hosts = _one(POLICY, "FQDNNetworkPolicy", "swarm-voice-egress-hosts")
     assert hosts["apiVersion"] == "networking.gke.io/v1alpha1"
     assert hosts["metadata"]["namespace"] == "swarm-system"  # namespace-prefix-exempt: the platform namespace, not a tenant

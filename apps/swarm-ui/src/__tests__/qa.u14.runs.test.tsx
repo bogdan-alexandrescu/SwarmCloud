@@ -203,7 +203,7 @@ describe('1: a running run draws a live Steps card under its status line', () =>
     for (const [step, id, mark, tab] of [['impl', 'task_impl', 'running', 'live'], ['docs', 'task_docs', 'parked', 'waiting'], ['wire', 'task_wire', 'queued', 'waiting']] as const) {
       const row = rowOf(card, step)
       expect(row, step).toBeDefined()
-      const open = within(row).getByRole('link', { name: /Open agent/ })
+      const open = within(row).getByRole('link', { name: /^Agent$/ })
       expect(open.getAttribute('href')).toBe(`/agents/${tab}/${id}`)
       expect(row.querySelector('[data-mark]')?.getAttribute('data-mark'), step).toBe(mark)
       expect(visible(row), step).toMatch(/attempt|no attempt yet/)
@@ -235,7 +235,7 @@ describe('1: a running run draws a live Steps card under its status line', () =>
     const card = await stepsCard(container)
     await waitFor(() => expect(rowOf(card, 'ci-fix')).toBeDefined(), WAIT)
     expect(visible(rowOf(card, 'ci-fix'))).toContain('fix round 1')
-    expect(within(rowOf(card, 'ci-fix')).getByRole('link', { name: /Open agent/ }).getAttribute('href')).toBe('/agents/live/task_fix1')
+    expect(within(rowOf(card, 'ci-fix')).getByRole('link', { name: /^Agent$/ }).getAttribute('href')).toBe('/agents/live/task_fix1')
   })
 
   it('says the workflow could not be read, rather than drawing no steps', async () => {
@@ -262,7 +262,7 @@ describe('2: after approval the plan\'s steps carry their live state and link', 
     const first = plan.querySelectorAll('.rn-step').item(0) as HTMLElement
     await waitFor(() => expect(first.querySelector('[data-mark]')?.getAttribute('data-mark')).toBe('running'), WAIT)
     expect(visible(first)).not.toContain('starts at once')
-    expect(within(first).getByRole('link', { name: /Open agent/ }).getAttribute('href')).toBe('/agents/live/task_impl')
+    expect(within(first).getByRole('link', { name: /^Agent$/ }).getAttribute('href')).toBe('/agents/live/task_impl')
     // A dependent step still says what it waits for, beside its state.
     const third = plan.querySelectorAll('.rn-step').item(2) as HTMLElement
     expect(visible(third)).toContain('after impl, docs')
@@ -290,7 +290,7 @@ describe('3: Progress interleaves the steps\' changes with the run\'s', () => {
     expect(at('docs parked')).toBeGreaterThan(at('impl started'))
     expect(at('docs parked')).toBe(rows.length - 1)
     // Not the Steps card again: no agent links in Progress.
-    expect(within(history).queryByRole('link', { name: /Open agent/ })).toBeNull()
+    expect(within(history).queryByRole('link', { name: /^Agent$/ })).toBeNull()
   })
 })
 

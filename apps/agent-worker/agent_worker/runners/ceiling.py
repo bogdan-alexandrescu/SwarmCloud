@@ -106,6 +106,25 @@ USAGE_FIELDS = (
 #: and adds them to the reported cost, so the attempt's cost is every
 #: session's. The shape is `lifecycle._stream_usage`'s `usage_by_model`.
 UNPRICED_KEY = "unpriced_usage_by_model"
+#: What a spend says when one of its sessions' usage was not read
+#: (COST-ACROSS-SESSIONS, part of #2688): measured in experiment batches one
+#: and two, 17 steps restarted at the ceiling and their recorded cost left the
+#: stopped session out ($17.04 recorded against about $85 read off the
+#: streams). A session whose stream showed no usage is not a free one, so the
+#: runner never reports such a cost as complete: it drops the reported
+#: `total_cost_usd`, which the worker then prices from the whole capture and
+#: marks estimated (`lifecycle._collect_spend`), and says so under this key.
+COST_INCOMPLETE_KEY = "cost_incomplete"
+#: Where the runner reports the attempt's sessions, in its `metrics` (copied
+#: whole into `result_summary.runner.metrics`): `count`, `usage_unread` (the
+#: session numbers whose usage was not read) and `cost_complete`.
+SESSIONS_METRIC = "sessions"
+#: The state key the tool calls per family of this attempt's ENDED runner
+#: processes are carried under, so a runner restarted inside the attempt (an
+#: account swap, a credential reload, a resume over the ceiling) reports every
+#: session's calls, not only those of its own capture.
+EARLIER_TOOL_CALLS_KEY = "earlier_tool_calls"
+
 #: The width, in prompt tokens, of a `prompt_buckets` row: equal to
 #: `lifecycle._PROMPT_BUCKET_TOKENS` (a test holds the two equal).
 PROMPT_BUCKET_TOKENS = 1_000
@@ -125,6 +144,19 @@ BUCKET_FIELDS = (
 #: findings "in my context" and the session after it rebuilt them from
 #: screenshots, because the handoff carried only the note file.
 SESSION_TAIL_MAX_CHARS = 12 * 1024
+#: Whether a handoff carries that tail at all: OFF unless this is "1"/"true"
+#: (BGD, 2026-11-06). The tail is the previous session's own assistant text
+#: fed back in as user input, and a fresh session started from it was refused
+#: on its FIRST call -- `model_refusal_no_fallback`, "safeguards flagged this
+#: message ... [reasoning_extraction]" (task_a27c0b2241d1492492ee,
+#: task_56ad2dba41f041aa835f) -- which failed every long task at the
+#: ceiling. The note file, the todos, the notes files, the diff summary and
+#: the commits still go in; the agent is told to keep its findings in files.
+SESSION_TAIL_ENV = "SWARM_CEILING_SESSION_TAIL"
+#: What a fresh session's first call ending in a refusal looks like in the
+#: stream: the CLI's own system event, or the provider's refusal text.
+REFUSAL_SUBTYPE = "model_refusal_no_fallback"
+_REFUSAL_MARKERS = (REFUSAL_SUBTYPE, "safeguards flagged")
 #: The most files of $SWARM_ARTIFACTS_DIR a handoff lists by name (#2897).
 NOTES_LIST_MAX = 40
 #: What a handoff lists of $SWARM_ARTIFACTS_DIR: the files an agent keeps
@@ -140,12 +172,10 @@ _GIT_TIMEOUT_SECONDS = 60.0
 HANDOFF_NOTE = (
     "This session may be stopped at a turn boundary once its context passes "
     f"{CONTEXT_CEILING_TOKENS:,} tokens or it has made {TOOL_CALL_CEILING} tool "
-    "calls, and the task continued by a fresh session that starts from a "
-    "handoff. As you work, keep a short note for that session in "
-    f"$SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME}: what is done, what is left, "
-    "and anything you learnt that it would otherwise have to find again. Keep "
-    "findings and working notes in files under $SWARM_ARTIFACTS_DIR as you go, "
-    "never only in your context: the fresh session does not see your context."
+    "calls, and the task continued by a fresh session that sees only a handoff. "
+    f"As you work, keep a short note for it in $SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME} "
+    "(what is done, what is left, what you learnt) and your findings in files "
+    "under $SWARM_ARTIFACTS_DIR, never only in your context."
 )
 
 
@@ -162,6 +192,40 @@ def _lowered(value: Any, cap: int) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         return None
     return min(value, cap)
+
+
+def session_tail_enabled(environ: Mapping[str, str]) -> bool:
+    """Whether a handoff carries the previous session's last words
+    (`SESSION_TAIL_ENV`, off by default)."""
+    return environ.get(SESSION_TAIL_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def first_call_refusal(parsed: Any) -> str | None:
+    """The refusal a session's stream ended in on its FIRST model call, or None.
+
+    `parsed` is one start's events (`cliagent._parse_cli_output`). A start
+    that got an answer -- a top-level assistant message that is not the
+    CLI's own API-error message -- did not end on its first call, whatever
+    followed. Otherwise a `system` event `model_refusal_no_fallback`, or a
+    failed `result` naming a safeguards refusal, is what it ended in; the
+    marker is returned so the failure can name it."""
+    events = [e for e in parsed if isinstance(e, Mapping)] if isinstance(parsed, list) else []
+    found: str | None = None
+    for event in events:
+        kind = event.get("type")
+        if kind == "assistant" and not event.get("parent_tool_use_id") and not (
+                event.get("isApiErrorMessage") or event.get("error")):
+            return None
+        if kind == "system" and event.get("subtype") == REFUSAL_SUBTYPE:
+            found = found or REFUSAL_SUBTYPE
+        elif kind in ("result", "assistant", "system"):
+            text = json.dumps(event.get("result") if kind == "result" else event.get("message"))
+            lowered = text.lower()
+            for marker in _REFUSAL_MARKERS:
+                if marker in lowered:
+                    found = found or ("safeguards refusal" if marker == "safeguards flagged"
+                                      else marker)
+    return found
 
 
 def resolve_limits(payload: Mapping[str, Any] | None, profile: str | None) -> CeilingLimits:
@@ -203,13 +267,34 @@ class CeilingWatcher:
         self.stops: list[dict[str, Any]] = []
         #: Why a ceiling stop was called for but no fresh session followed.
         self.skipped: str | None = None
+        #: Fresh sessions refused on their first call and started once more
+        #: from the minimal handoff (`minimal_handoff_prompt`).
+        self.refusal_restarts: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._fed: list[bytes] = []
         self._partial = b""
         self._start_usage = {}
         self._start_spend_messages: dict[str, tuple[str, dict[str, int]]] = {}
         self._start_turns = 0
+        #: The sessions this attempt has run, an earlier runner process's
+        #: included (`carry`), and the numbers of those whose usage was not
+        #: read; `_unread_here` is whether one of THIS process's was.
+        self.sessions = 0
+        self.unread_sessions: list[int] = []
+        self._unread_here = False
+        self.earlier_tool_calls: dict[str, int] | None = None
         self._reset()
+
+    def carry(self, state: Mapping[str, Any] | None) -> None:
+        """Carry on the attempt's session record from the state an earlier
+        runner process of the same attempt left (`STATE_NAME`)."""
+        state = state or {}
+        self.sessions = max(self.sessions, _count(state.get("sessions")))
+        unread = state.get("unread_sessions")
+        for number in unread if isinstance(unread, list) else []:
+            if _count(number) and number not in self.unread_sessions:
+                self.unread_sessions.append(number)
+        self.earlier_tool_calls = family_counts(state.get(EARLIER_TOOL_CALLS_KEY))
 
     def _reset(self) -> None:
         self.session_id: str | None = None
@@ -257,7 +342,12 @@ class CeilingWatcher:
         self._start_turns = 0
         if fresh:
             self._reset()
+            self.sessions += 1
         else:
+            # A resume carries on a session already counted -- by this
+            # process, or by the earlier one whose state was carried; one
+            # that left no state is still a session.
+            self.sessions = max(self.sessions, 1)
             self.stopped_for = None
             self.passed = None
             if seed:
@@ -401,6 +491,33 @@ class CeilingWatcher:
             spend[UNPRICED_KEY] = by_model
         return spend
 
+    @property
+    def start_usage_read(self) -> bool:
+        """Whether this start's stream showed the usage of any message."""
+        return bool(self._start_usage or self._start_spend_messages)
+
+    def note_unread(self) -> None:
+        """This start's usage was not read: the current session's cost is
+        unknown, so the attempt's is never reported complete."""
+        number = max(self.sessions, 1)
+        if number not in self.unread_sessions:
+            self.unread_sessions.append(number)
+        self._unread_here = True
+
+    @property
+    def unread_here(self) -> bool:
+        """Whether a session THIS process ran had its usage unread."""
+        return self._unread_here
+
+    def sessions_record(self) -> dict[str, Any]:
+        """`SESSIONS_METRIC`: how many sessions the attempt ran, and whether
+        every one's usage was read."""
+        return {
+            "count": max(self.sessions, 1),
+            "usage_unread": sorted(self.unread_sessions),
+            "cost_complete": not self.unread_sessions,
+        }
+
     def record_stop(self, *, at: str, why: str, **extra: Any) -> dict[str, Any]:
         """Note a ceiling stop the runner acts on: a fresh session follows."""
         self.fresh_sessions += 1
@@ -425,6 +542,10 @@ class CeilingWatcher:
             "tool_calls": self.tool_calls,
             "turns": self.turns,
             "fresh_sessions": self.fresh_sessions,
+            "sessions": self.sessions,
+            "unread_sessions": sorted(self.unread_sessions),
+            **({EARLIER_TOOL_CALLS_KEY: dict(self.earlier_tool_calls)}
+               if self.earlier_tool_calls is not None else {}),
         }
 
     def summary(self) -> dict[str, Any]:
@@ -435,6 +556,8 @@ class CeilingWatcher:
             "fresh_sessions": self.fresh_sessions,
             "stops": list(self.stops),
             "skipped": self.skipped,
+            "refusal_restarts": list(self.refusal_restarts),
+            **self.sessions_record(),
         }
 
 
@@ -484,6 +607,32 @@ def merged_usage_by_model(first: Any, second: Any) -> dict[str, dict[str, Any]]:
             mine["prompt_buckets"] = _merged_buckets(
                 mine["prompt_buckets"], counts.get("prompt_buckets"))
     return out
+
+
+def family_counts(value: Any) -> dict[str, int] | None:
+    """A `{family: calls}` map with only non-negative integer counts, or None."""
+    if not isinstance(value, Mapping):
+        return None
+    return {str(k): _count(v) for k, v in value.items()}
+
+
+def carry_tool_calls(
+    path: Path | None, families: Mapping[str, int] | None
+) -> dict[str, int] | None:
+    """This runner process's tool calls per family, plus those of the
+    attempt's runner processes before it (`EARLIER_TOOL_CALLS_KEY`); the sum
+    is written back for the next one. `families` None (the capture could not
+    be read) carries the earlier counts on unchanged and returns None."""
+    state = read_state(path) or {}
+    earlier = family_counts(state.get(EARLIER_TOOL_CALLS_KEY)) or {}
+    if families is None:
+        return None
+    total = dict(earlier)
+    for family, calls in families.items():
+        total[family] = total.get(family, 0) + _count(calls)
+    if path is not None:
+        write_state(path, {**state, EARLIER_TOOL_CALLS_KEY: total})
+    return total
 
 
 def over_state(state: Mapping[str, Any] | None, session: str, limits: CeilingLimits) -> str | None:
@@ -705,8 +854,9 @@ def handoff_prompt(
 
     It carries the previous session's notes (#2897): its note file, the
     notes files it kept in $SWARM_ARTIFACTS_DIR (`files`), its last todo
-    list (`todos`) and its own last words (`session_tail`) -- what it knew
-    and had not yet written down."""
+    list (`todos`) and, only when `SESSION_TAIL_ENV` turns it on, its own
+    last words (`session_tail`) -- off by default, because that text fed back
+    as user input got the fresh session's first call refused."""
     why = (
         f"its context reached {stop.get('context_tokens', 0):,} tokens"
         if stop.get("why") == WHY_CONTEXT
@@ -749,6 +899,31 @@ def handoff_prompt(
             "What it said as it worked, including anything it had found and "
             f"not yet written down.\n\n{session_tail}"
         )
+    parts.append(f"## The task, as the first session was given it\n\n{task_prompt}")
+    if then:
+        parts.append(f"## And now\n\n{then}")
+    return "\n\n".join(parts)
+
+
+def minimal_handoff_prompt(
+    *, task_prompt: str, note: str | None, todos: Any = None, then: str | None = None,
+) -> str:
+    """The handoff a fresh session refused on its first call starts from once
+    more: the task, the note file and the todo list, nothing else of the
+    previous session's (no branch summary, file list or last words). `then`
+    is what this pass was to do -- the time left, or a finish, repair or gate
+    turn's prompt -- which is the platform's, not the session's."""
+    parts = [
+        "CONTEXT CEILING HANDOFF (#2524). You are a fresh session continuing a task "
+        "another session started; nothing in the workspace was undone and its "
+        "changes are on the branch or in the tree. Check the tree, read "
+        "$SWARM_ARTIFACTS_DIR, and carry the task on; do not redo finished work.",
+        f"## The previous session's note ($SWARM_ARTIFACTS_DIR/{AGENT_HANDOFF_NAME})\n\n"
+        + (note or "(it wrote none)"),
+    ]
+    todo_text = _todo_lines(todos)
+    if todo_text:
+        parts.append(f"## Its todo list, as it last wrote it\n\n{todo_text}")
     parts.append(f"## The task, as the first session was given it\n\n{task_prompt}")
     if then:
         parts.append(f"## And now\n\n{then}")

@@ -1,0 +1,91 @@
+/*
+ * The stage grid (StageGrid.tsx): a row per stage, a column per feature, a
+ * chip per step. Lifted from the picked Work redesign (Graph direction, d.css's
+ * matrix), on the console's own tokens so both themes come from styles.css.
+ *
+ * The narrowing is driven by the grid's measured width (`.sg.is-<density>`,
+ * `densityAt`), not by the viewport: the same grid sits beside a wide
+ * inspector at 1440 and alone at 1280. What a chip drops stays in its tooltip.
+ */
+.sg { --sg-stage: 6.5em; display: flex; flex-direction: column; gap: 6px; min-width: 0; max-width: 100%; }
+.sg.is-no-pr, .sg.is-no-time, .sg.is-marks { --sg-stage: 5.5em; }
+
+.sg-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--t-meta); color: var(--text-dim); }
+.sg-legend > span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.sg.is-marks .sg-legend { gap: 2px 8px; }
+
+.sg-grid { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sg-row { display: grid; grid-template-columns: var(--sg-stage) repeat(var(--sg-cols, 1), minmax(0, 1fr)); gap: 4px; align-items: stretch; min-width: 0; }
+.sg-row.is-head { align-items: end; }
+
+/* No side padding: 4px of it cut `workflows` (56px of text) to `workfl…` in the 57px an eighth column gets at
+   1440 with the inspector open. The 4px column gap keeps two headers apart. */
+.sg-col { min-width: 0; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); color: var(--text-dim); }
+.sg.is-marks .sg-col { writing-mode: vertical-rl; transform: rotate(180deg); justify-self: center; max-height: 6.5em; padding: 2px 0; }
+
+.sg-stage { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; font-size: var(--t-meta); color: var(--text); }
+.sg-stage-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.sg-tally { display: flex; flex-wrap: wrap; gap: 0 5px; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-size: 12px; text-align: left; font-variant-numeric: tabular-nums; }
+button.sg-tally { cursor: pointer; border-radius: var(--ctl-radius-sm, 6px); }
+button.sg-tally:hover { text-decoration: underline; }
+button.sg-tally:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.sg-n { display: inline-flex; align-items: center; gap: 1px; white-space: nowrap; }
+.sg-n.is-done { color: var(--ok-ink, var(--ok)); }
+.sg-n.is-failed { color: var(--bad-ink, var(--bad)); }
+.sg-n.is-running { color: var(--info-ink, var(--info)); }
+.sg-n.is-waiting, .sg-n.is-stopped { color: var(--text-dim); }
+.sg-n.is-unknown { color: var(--text-dim); font-style: italic; }
+
+.sg-gap { min-height: 46px; }
+
+/* A chip's cell: the chip fills it, and its asks-you mark sits on its corner as a sibling control. */
+.sg-cell { position: relative; display: flex; min-width: 0; }
+.sg-cell > .sg-chip { flex: 1 1 auto; }
+
+.sg-chip {
+  position: relative; display: flex; flex-wrap: wrap; align-content: center; align-items: center; gap: 2px 5px;
+  min-width: 0; min-height: 46px; padding: 4px 6px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm, 6px);
+  background: var(--surface); color: var(--text);
+  font: inherit; font-size: 12px; text-align: left; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.sg-chip:hover { border-color: var(--info); }
+.sg-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; z-index: 1; }
+.sg-chip.is-running { border-color: color-mix(in srgb, var(--info) 60%, var(--line)); background: color-mix(in srgb, var(--info) 8%, var(--surface)); }
+.sg-chip.is-done { background: color-mix(in srgb, var(--ok) 9%, var(--surface)); }
+/* Skipped by its verdict gate (#264): striped and dashed, never the solid fill of a step that ran. */
+.sg-chip.is-skipped { border-style: dashed; background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--ok) 12%, transparent) 4px 8px); }
+.sg-chip.is-failed { border: 2px solid var(--s-bad); background: var(--s-badb, var(--surface)); padding: 3px 5px; }
+.sg-chip.is-waiting { border-style: dashed; background: transparent; color: var(--text-dim); }
+.sg-chip.is-parked { border-color: var(--s-park); }
+.sg-chip.is-stopped { color: var(--text-dim); }
+/* Not read: the warning's dashed outline, never a state's hue (dag.ts stepLook). */
+.sg-chip.is-unknown { border-style: dashed; border-color: var(--s-warn, var(--line)); background: transparent; color: var(--text-dim); }
+.sg-chip.is-selected { outline: 2px solid var(--info); outline-offset: 1px; z-index: 1; }
+.sg-chip.is-dimmed { opacity: .35; }
+.sg-chip.is-dimmed:hover, .sg-chip.is-dimmed:focus-visible { opacity: .7; }
+
+.sg-chip-mark { display: inline-flex; flex: none; }
+.sg-chip-time { font-weight: 600; white-space: nowrap; }
+.sg-chip-pr { font-family: var(--mono); font-size: 12px; color: var(--text-dim); white-space: nowrap; }
+
+.sg-ask {
+  position: absolute; top: -6px; right: -6px; display: grid; place-items: center;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--s-park); color: var(--surface); box-shadow: 0 0 0 2px var(--bg);
+  font-weight: 700; font-size: 12px; line-height: 1;
+}
+/* Above a selected chip's outline (z-index 1), and dimmed with its chip. */
+.sg-cell > .sg-ask { z-index: 2; }
+button.sg-ask { padding: 0; border: 0; font-family: inherit; cursor: pointer; }
+button.sg-ask:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.sg-chip.is-dimmed + .sg-ask { opacity: .35; }
+.sg-ask.is-inline { position: static; display: inline-grid; width: 16px; height: 16px; box-shadow: none; }
+
+/* Marks only: a square of state, the "?" smaller so it stays inside the chip's corner. */
+.sg.is-marks .sg-chip, .sg.is-marks .sg-gap { min-height: 30px; padding: 2px; justify-content: center; }
+.sg.is-marks .sg-chip.is-failed { padding: 1px; }
+.sg.is-marks .sg-ask { width: 14px; height: 14px; top: -4px; right: -4px; font-size: 11px; }
+.sg.is-no-time .sg-chip, .sg.is-no-time .sg-gap { min-height: 34px; justify-content: center; }
+
+.sg-empty { color: var(--text-dim); font-size: var(--t-meta); }

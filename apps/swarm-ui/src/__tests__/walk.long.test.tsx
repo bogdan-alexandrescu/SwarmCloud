@@ -10,7 +10,7 @@
  * Overview's Headroom tiles and its agent names, and the panel's Recent list
  * -- and the page title gives way before it pushes the row off the screen.
  * The band is gone: no empty strip or view bar is drawn between the tabs and
- * the card, and the page's rows sit 12px apart.
+ * the stage grid, and the page's rows sit 12px apart.
  *
  * MUTATIONS: put `flex: none` back on the page head's title block, drop the
  * clamp from any of the five, drop a title attribute, or render the empty
@@ -86,7 +86,7 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
   // `review` at its hyphen. One line, never broken, in a tile wide enough
   // for it (qa.u11b.overview.test.tsx), cut with its title past that.
   it('draws each Headroom tile’s profile name on one line, never hyphen-broken, in the sans face', async () => {
-    const tile = await page('/', '.ov-hp > .ov-idc')
+    const tile = await page('/overview', '.ov-hp > .ov-idc')
     const names = [...document.querySelectorAll('.ov-hp > .ov-idc')]
     expect(names.length).toBeGreaterThan(0)
     for (const n of names) {
@@ -99,7 +99,7 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
   })
 
   it('clamps an agent’s name on the Overview cards', async () => {
-    await page('/', '.ov-page')
+    await page('/overview', '.ov-page')
     const names = await waitFor(() => {
       const n = [...document.querySelectorAll('a.ov-name')]
       expect(n.length).toBeGreaterThan(0)
@@ -145,13 +145,23 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
 })
 
 describe('C: no empty band between the workflow page’s tabs and its card', () => {
+  // THE GRAPH WORK REDESIGN (part of #2688) draws the tabs in the page's own
+  // view bar and the stage grid straight under it, with no card wrapping the
+  // Graph: the band is asked between the view bar and the grid.
   it('draws nothing between the tabs and the card, and holds them 12px apart', async () => {
-    const tabs = await page(`/workflows/${WF}`, '.wfp:not(.is-loading) > .c-tabs')
-    const board = tabs.nextElementSibling!
-    expect(board.classList.contains('wf-board'), `the tabs are followed by ${board.className}`).toBe(true)
-    expect(board.firstElementChild?.classList.contains('wf-card'), 'something is drawn above the card').toBe(true)
-    // Nothing empty inside the card's head either: a view bar is drawn only when it holds a mark.
-    for (const bar of document.querySelectorAll('.wf-viewbar')) expect(bar.children.length, 'an empty view bar').toBeGreaterThan(0)
-    expect(resolveVars(painted(tabs.parentElement!, ['gap', 'row-gap'], WIDE) ?? '', TABLES.dark)).toBe('12px')
+    const tabs = await page(`/workflows/${WF}`, '.wfp.wfp-main > .wfp-viewbar > .c-tabs')
+    const bar = tabs.parentElement!
+    // Wait for the grid: the page draws its view bar before the board read lands.
+    const grid = await waitFor(() => {
+      const g = bar.nextElementSibling
+      expect(g?.classList.contains('sg'), `the tabs are followed by ${g?.className}`).toBe(true)
+      return g!
+    })
+    expect(grid.parentElement).toBe(bar.parentElement)
+    // Nothing empty between them: a chrome strip is drawn only when it holds a caveat.
+    for (const strip of document.querySelectorAll('.wf-chrome')) expect(strip.textContent!.trim(), 'an empty chrome strip').not.toBe('')
+    // Nothing empty inside the page's head either: a view bar is drawn only when it holds a mark.
+    for (const b of document.querySelectorAll('.wf-viewbar')) expect(b.children.length, 'an empty view bar').toBeGreaterThan(0)
+    expect(resolveVars(painted(bar.parentElement!, ['gap', 'row-gap'], WIDE) ?? '', TABLES.dark)).toBe('12px')
   })
 })

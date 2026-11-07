@@ -70,16 +70,23 @@ gke_enable_private_endpoint = false
 gke_enable_fqdn_network_policy = true
 
 # Voice it's swarm-voice (terraform/infra/voice.tf), step 3 of its three:
-# "on" binds the swarm-voice service account to its KSA, grants it read and
-# add-version on the owner's own OpenAI secret (swarm-tenant-u-bogdan-openai)
-# and nothing else in Secret Manager, run.invoker on swarm-api, reserves its
-# internal address, sets swarm-api's SWARM_VOICE_URL and renders the manifest
-# the release's deploy applies. It changes IAM, so its release waits at the
-# IAM gate for the owner. Step 2, the owner's ChatGPT sign-in stored under
-# Voice it > Preferences, came first: the bindings name that secret. Set
-# 2026-11-02 after the owner reported "Voice it is unavailable: swarm-voice is
-# not deployed here (SWARM_VOICE_URL is unset)".
+# "on". The owner picked the Voice it pool on 2 Nov 2026 ("Pool only, wait for
+# it"): swarm-voice reads NO secret -- no Secret Manager grant at all -- and
+# only leases a ChatGPT plan account from the quota broker for each session.
+# So "on" grants it exactly the Workload Identity binding, run.invoker on
+# swarm-api and run.invoker on swarm-quota-broker (which admits swarm-voice's
+# own service account to the voice lease, renew and release routes), and reserves its
+# internal address. These are IAM changes: the release carrying them waits at
+# the IAM gate for the owner.
 voice_it = "on"
+
+# Voice it's own speech engine (terraform/infra/voice_speech.tf): OFF. Its one
+# stopped L4 machine, firewall pair and grants are made only once the owner
+# turns this on, with voice_it "on" and a pinned Deep Learning VM image
+# (docs/design/voice-it-own-speech.md section 5). Off, it makes nothing.
+voice_speech = {
+  enabled = false
+}
 
 # gke_master_authorized_cidrs USED TO BE deliberately empty here and passed at
 # apply time as the operator's own /32. That is no longer what this does.
@@ -329,7 +336,13 @@ pool_limits = {
 }
 
 service_max_instances = {
-  "swarm-api"          = 5
+  # 5 -> 8 (BGD's pick, 2026-11-06, part of #2688), with each instance doubled
+  # to 2 vCPU and 2 GiB in terraform/infra/main.tf: swarm-api sat at 5 of 5
+  # for 359 of 360 minutes at 91% CPU and 94% memory. A ceiling, not a floor:
+  # min_instances stays 2, so the fixed cost is ~$210 a month and the three
+  # instances past today's five bill only while they serve (~$105 each a month
+  # if they ran all the time).
+  "swarm-api"          = 8
   "swarm-scheduler"    = 2
   "swarm-quota-broker" = 2
   "swarm-reconciler"   = 1
@@ -772,6 +785,18 @@ api_refusals = {
 # (ROLES-ACCEPT) has exercised it here. Kill switch: false and release.
 platform_admin_reach = true
 
+# Platform-side memberships from approved join requests (swarm-api
+# PLATFORM_MEMBERSHIPS, docs/design/join-requests.md §6, #2325): an admin's
+# approval writes a signed, append-only membership beside the workspace's
+# Google group, and tenant resolution honours it. No Cloud Identity write and
+# no IAM grant. ON in dev only (owner decision 2026-10-25 23:34Z on #2325:
+# the variable and its env rendering go into the dev switch-on change, after
+# JOIN-DOCS-ACCEPT; approval stays design A); prod stays off until the join
+# acceptance probe (scripts/acceptance/groups/join.sh) has exercised it here.
+# Kill switch: false and release; approval then answers admitted: false with
+# the group command.
+platform_memberships = true
+
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
 # CI's deployer need IAP admin rights that could not be scoped to our backends.
@@ -1141,3 +1166,17 @@ settings_mac_key_ready = true
 # settings; checks on request").
 settings_mac_tenants  = ["eng"]
 settings_mac_required = true
+
+# The Jev review of a contract at submission (swarm-api's SWARM_CONTRACT_REVIEW,
+# terraform/infra/variables.tf contract_review_mode). Rendered from 2026-11-04
+# (owner's choice) and left off until BGD chose REPORT on 2026-11-06: each
+# contract is reviewed and the refusal or amendment it would make is logged,
+# never applied. It reviews only for a workspace whose own signed
+# contract_review setting is on. "enforce" refuses.
+contract_review_mode = "report"
+
+# Work contracts (swarm-api's SWARM_WORK_CONTRACTS, terraform/infra/variables.tf
+# work_contracts). On by BGD's choice of 2026-11-06, after he enabled gstack and
+# security-audit on Config > Plugins: off, swarm-api refuses every step that
+# names a plugin. A step with no contract and no plugins submits as before.
+work_contracts = "on"

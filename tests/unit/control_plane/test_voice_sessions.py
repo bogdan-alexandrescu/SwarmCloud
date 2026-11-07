@@ -6,11 +6,11 @@ is 404. The body and paths are the Talk pane's (apps/swarm-ui/src/voice/rtc.ts):
 `offer_sdp` in, `answer_sdp` out, and ending by the session id alone.
 swarm-voice is a fake on `app.state.voice_client`; no network.
 
-The start call swarm-api sends is swarm-voice's `StartRequest` field for field
-(apps/swarm-voice/swarm_voice/main.py), its `credential` the version reference
-of the person's own stored ChatGPT sign-in (voice/signin.py); a person with no
-stored sign-in is refused, pointing at Voice it › Preferences, before anything
-is written or sent (owner, 2026-11-02).
+The start call swarm-api sends carries no credential: swarm-voice leases the
+ChatGPT plan account from the quota broker's Voice it pool itself (owner,
+2026-11-02), so the body is {voice_session_id, person, offer, project_id,
+grant}. swarm-voice's pool refusals (403, 409 `voice_pool_busy` /
+`voice_pool_refused`) reach the browser with swarm-voice's own sentence.
 """
 
 from __future__ import annotations
@@ -30,15 +30,12 @@ from swarm_api.deps import build_context
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
-from swarm_api.provider_keys import KEYS_COLLECTION, USER, ProviderKeys
 from swarm_api.settings import ApiSettings
 from swarm_api.voice import sessions as vs
-from swarm_api.voice import signin as vsi
 from swarm_api.waker import NullWaker
 
 from .conftest import (
     ENG_GROUP,
-    PROJECT,
     RESEARCH_GROUP,
     NoForgeTokens,
     OfflineSecretMetadata,
@@ -52,23 +49,11 @@ _VOICE = str(Path(__file__).resolve().parents[3] / "apps" / "swarm-voice")
 if _VOICE not in sys.path:
     sys.path.insert(0, _VOICE)
 
-from swarm_voice.main import StartRequest  # noqa: E402
 
 OFFER = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\n"
 ANSWER = "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=-\r\n"
-#: The people the `client` fixture has signed in with ChatGPT (Voice it › Preferences).
-SIGNED_IN = ("alice@example.com", "bob@example.com")
-
-
-def _version(person: str, n: int = 1) -> str:
-    return f"projects/{PROJECT}/secrets/{vsi.personal_secret_id(person)}/versions/{n}"
-
-
-def _store_sign_in(db, person: str, version: str) -> None:
-    """What `ChatGPTSignIn.finish` records: the provider-keys record, never a value."""
-    ProviderKeys(db, now=lambda: None).record(
-        tenant_id=vsi.tenant_id_for_user(person), provider=vsi.PROVIDER, scope=USER,
-        by=person, version=version, via_link=False)
+#: What the start call to swarm-voice carries, and nothing else.
+START_FIELDS = {"voice_session_id", "project_id", "person", "offer", "grant"}
 
 
 class FakeVoice:
@@ -76,11 +61,15 @@ class FakeVoice:
 
     def __init__(self, *, refuse: bool = False) -> None:
         self.refuse = refuse
+        #: An exception the next starts raise (a pool refusal), when set.
+        self.pool_refusal: Exception | None = None
         self.starts: list[vs.StartCall] = []
         self.ends: list[tuple[str, str]] = []
 
     def start(self, call: vs.StartCall) -> vs.StartAnswer:
         self.starts.append(call)
+        if self.pool_refusal is not None:
+            raise self.pool_refusal
         if self.refuse:
             raise vs.VoiceUnreachable("swarm-voice refused the session (HTTP 500); it was ended.")
         return vs.StartAnswer(answer=ANSWER, live_session_id="live_" + call.session_id[3:13])
@@ -95,9 +84,7 @@ def voice() -> FakeVoice:
     return FakeVoice()
 
 
-def _client(db, tokens, group_map, objects, voice, *, signed_in=SIGNED_IN, **settings) -> TestClient:
-    for person in signed_in:
-        _store_sign_in(db, person, _version(person))
+def _client(db, tokens, group_map, objects, voice, **settings) -> TestClient:
     ctx = build_context(
         settings=api_settings(**settings),
         db=db,
@@ -179,7 +166,7 @@ def test_a_new_talk_gets_an_untitled_project_and_the_answer_comes_back(client, d
     # alone is stored; the grant is never returned to the browser.
     (call,) = voice.starts
     assert call.offer == OFFER and call.tenant_id == "eng" and call.project_id == body["project_id"]
-    assert call.credential == _version("alice@example.com")
+    assert not hasattr(call, "credential")
     assert session["live_session_id"] == "live_" + body["session_id"][3:13]
     assert session["grant_hash"] == hashlib.sha256(call.grant.encode()).hexdigest()
     assert call.grant not in response.text
@@ -394,55 +381,68 @@ def test_a_session_left_starting_by_a_crash_stops_holding_the_person(client, db,
     assert _start(client, "alice").status_code == 200
 
 
-def test_a_person_with_no_stored_sign_in_is_told_to_sign_in_and_nothing_is_sent(
-        db, tokens, group_map, objects, voice):
-    client = _client(db, tokens, group_map, objects, voice, signed_in=("bob@example.com",),
-                     voice_url="http://voice.internal:8080",
-                     voice_people=("alice@example.com", "bob@example.com"))
-
-    response = _start(client, "alice")
-
-    assert response.status_code == 403, response.text
-    assert response.json()["code"] == "forbidden"
-    assert "Voice it › Preferences" in response.json()["message"]
-    assert "Sign in with ChatGPT" in response.json()["message"]
-    assert voice.starts == []
-    assert _docs(db, vs.PROJECTS) == {} and _docs(db, vs.LIVE_MARKERS) == {}
-    assert _docs(db, vs.AUDIT + "/") == {}
-    # Bob's stored sign-in is his alone: it is never what alice's start carries.
-    assert _start(client, "bob").status_code == 200
-    (call,) = voice.starts
-    assert call.person == "bob@example.com" and call.credential == _version("bob@example.com")
-
-
-@pytest.mark.parametrize("stored", [
-    lambda: _version("bob@example.com"),
-    lambda: f"projects/another-project/secrets/{vsi.personal_secret_id('alice@example.com')}/versions/1",
-    lambda: f"projects/{PROJECT}/secrets/{vsi.personal_secret_id('alice@example.com')}/versions/latest",
-], ids=["another-persons-secret", "another-project", "not-a-version"])
-def test_a_stored_reference_outside_the_persons_own_secret_is_never_sent(
-        db, tokens, group_map, objects, voice, stored):
-    client = _client(db, tokens, group_map, objects, voice, signed_in=(),
-                     voice_url="http://voice.internal:8080",
-                     voice_people=("alice@example.com",))
-    _store_sign_in(db, "alice@example.com", stored())
-
-    response = _start(client, "alice")
-
-    assert response.status_code == 403, response.text
-    assert "Voice it › Preferences" in response.json()["message"]
-    assert stored() not in response.text
-    assert voice.starts == [] and _docs(db, vs.PROJECTS) == {}
-
-
-def test_the_newest_stored_sign_in_is_the_one_sent(client, db, voice):
-    _store_sign_in(db, "alice@example.com", _version("alice@example.com", 4))
-
+def test_the_start_reads_no_secret_and_sends_no_credential(client, db, voice):
+    # No sign-in of anyone's is stored anywhere: the start still goes through,
+    # because swarm-voice leases the Voice it pool's account itself.
     assert _start(client, "alice").status_code == 200
     (call,) = voice.starts
-    assert call.credential == _version("alice@example.com", 4)
-    record = db.docs[f"{KEYS_COLLECTION}/{vsi.personal_secret_id('alice@example.com')}"]
-    assert record["version"] == call.credential
+    assert call.person == "alice@example.com"
+    assert "credential" not in vs.StartCall.__dataclass_fields__
+
+
+def test_the_personal_chatgpt_sign_in_routes_are_gone(client):
+    for method, path in (("GET", "/v1/voice/chatgpt"),
+                         ("POST", "/v1/voice/chatgpt/authorize"),
+                         ("POST", "/v1/voice/chatgpt/exchange")):
+        response = client.request(method, path, headers=auth_header("alice"),
+                                  json={"state": secrets.token_hex(8), "callback": "x" * 8})
+        assert response.status_code == 404, (method, path, response.text)
+
+
+@pytest.mark.parametrize(("refusal", "status", "reason"), [
+    (lambda m: vs.pool_refusal(403, ('{"detail": "%s"}' % m).encode()), 403, "voice_pool_refused"),
+    (lambda m: vs.pool_refusal(409, ('{"code": "voice_pool_busy", "message": "%s"}' % m).encode()),
+     409, "voice_pool_busy"),
+    (lambda m: vs.pool_refusal(409, ('{"detail": {"code": "voice_pool_refused", "message": "%s"}}'
+                                     % m).encode()), 409, "voice_pool_refused"),
+], ids=["403-not-in-pool", "409-busy", "409-refused"])
+def test_a_pool_refusal_reaches_the_browser_with_its_sentence_and_frees_the_person(
+        client, db, voice, refusal, status, reason):
+    sentence = "The Voice it account is in use by another session " + secrets.token_hex(4) + "."
+    voice.pool_refusal = refusal(sentence)
+
+    response = _start(client, "alice")
+
+    assert response.status_code == status, response.text
+    body = response.json()
+    assert body["message"] == (vs.NO_API_KEY_SENTENCE if reason == "voice_pool_refused" and status == 409
+                               else sentence)
+    assert body["detail"]["reason"] == reason
+    assert body["code"] == ("forbidden" if status == 403 else "conflict")
+    (session,) = _sessions(db).values()
+    assert session["state"] == vs.ENDED and session["end_cause"] == vs.END_VOICE_POOL_REFUSED
+    assert _docs(db, vs.LIVE_MARKERS) == {}
+    voice.pool_refusal = None
+    assert _start(client, "alice").status_code == 200
+
+
+def test_a_start_with_no_api_key_in_the_pool_says_so_and_never_502s(client, db, voice):
+    """swarm-voice's 409 `voice_pool_refused` is the broker finding no
+    Live-capable account (an OpenAI API key) in the Voice it pool: the person
+    is told where to add one, whatever older sentence swarm-voice sent."""
+    voice.pool_refusal = vs.pool_refusal(
+        409, b'{"code": "voice_pool_refused", "message": "Voice it has no ChatGPT plan account set up yet."}')
+
+    response = _start(client, "alice")
+
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["message"] == vs.NO_API_KEY_SENTENCE
+    assert body["message"] == (
+        "Voice it needs an OpenAI API key in the Voice it pool: add one on Admin \u203a Accounts")
+    assert body["detail"]["reason"] == "voice_pool_refused"
+    (session,) = _sessions(db).values()
+    assert session["state"] == vs.ENDED and session["end_cause"] == vs.END_VOICE_POOL_REFUSED
 
 
 def test_a_malformed_offer_is_422(client, db, voice):
@@ -507,7 +507,10 @@ def swarm_voice():
             body = seen[-1]["body"]
             # swarm-voice's start answer (swarm_voice/main.py, `start`); its end answers 200.
             payload = json.dumps(
-                {"voice_session_id": state["voice_session_id"] or body.get("voice_session_id"),
+                state["refusal"] if state.get("refusal") is not None and self.path == "/internal/sessions"
+                else {"voice_session_id": state["voice_session_id"] or body.get("voice_session_id"),
+                      "mode": "text"} if body.get("mode") == "text"
+                else {"voice_session_id": state["voice_session_id"] or body.get("voice_session_id"),
                  "live_session_id": "live_0123456789", "answer": ANSWER}
                 if self.path == "/internal/sessions" else {})
             self.send_response(state["status"] if self.path == "/internal/sessions"
@@ -539,9 +542,8 @@ def test_the_http_client_sends_the_offer_and_grant_with_an_id_token(swarm_voice)
     client = vs.HttpVoiceClient(url, token=token)
     grant = secrets.token_urlsafe(32)
     session_id = "vs_" + secrets.token_hex(16)
-    credential = _version("alice@example.com", 3)
     call = vs.StartCall(session_id=session_id, project_id="vp_" + secrets.token_hex(16), tenant_id="eng",
-                        person="alice@example.com", credential=credential, offer=OFFER, grant=grant)
+                        person="alice@example.com", offer=OFFER, grant=grant)
 
     # swarm-voice answers 201 with the session's id, its live id and the SDP answer.
     assert client.start(call) == vs.StartAnswer(answer=ANSWER, live_session_id="live_0123456789")
@@ -550,15 +552,15 @@ def test_the_http_client_sends_the_offer_and_grant_with_an_id_token(swarm_voice)
     start, end = seen
     assert start["path"] == "/internal/sessions"
     assert start["authorization"] == f"Bearer {bearer}"
-    # swarm-voice's StartRequest, field for field: the version reference, never a value.
+    # No credential: swarm-voice leases the Voice it pool account itself.
     assert start["body"] == {"voice_session_id": session_id, "project_id": call.project_id,
-                             "person": "alice@example.com", "credential": credential,
-                             "offer": OFFER, "grant": grant}
-    assert set(start["body"]) == set(StartRequest.model_fields)
-    parsed = StartRequest.model_validate(start["body"])
-    assert parsed.credential == credential and parsed.voice_session_id == session_id
+                             "person": "alice@example.com", "offer": OFFER, "grant": grant}
+    assert set(start["body"]) == START_FIELDS
+    # Every field sent is one swarm-voice's StartRequest names.
+    from swarm_voice.main import StartRequest
+    assert set(start["body"]) <= set(StartRequest.model_fields)
     assert end["path"] == f"/internal/sessions/{session_id}/end"
-    assert grant not in repr(call) and credential not in repr(call)
+    assert grant not in repr(call)
 
 
 def test_the_http_client_reads_an_answer_for_another_session_as_unreachable(swarm_voice):
@@ -566,8 +568,7 @@ def test_the_http_client_reads_an_answer_for_another_session_as_unreachable(swar
     state["voice_session_id"] = "vs_" + secrets.token_hex(16)
     client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
     call = vs.StartCall(session_id="vs_" + secrets.token_hex(16), project_id="vp_1", tenant_id="eng",
-                        person="alice@example.com", credential=_version("alice@example.com"),
-                        offer=OFFER, grant=secrets.token_urlsafe(32))
+                        person="alice@example.com", offer=OFFER, grant=secrets.token_urlsafe(32))
 
     with pytest.raises(vs.VoiceUnreachable):
         client.start(call)
@@ -578,13 +579,224 @@ def test_the_http_client_reads_a_refusal_as_unreachable(swarm_voice):
     state["status"] = state["end_status"] = 500
     client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
     call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
-                        credential=_version("alice@example.com"), offer=OFFER, grant="g")
+                        offer=OFFER, grant="g")
 
     with pytest.raises(vs.VoiceUnreachable):
         client.start(call)
     assert client.end("vs_1", cause=vs.END_BY_PERSON) is False
 
 
+@pytest.mark.parametrize(("status", "payload", "kind", "reason"), [
+    (403, {"detail": "bob@example.com is not in the Voice it pool."}, vs.VoicePoolRefused,
+     "voice_pool_refused"),
+    (409, {"code": "voice_pool_busy", "message": "The Voice it account is busy."}, vs.VoicePoolBusy,
+     "voice_pool_busy"),
+    (409, {"detail": {"code": "voice_pool_refused", "message": "The broker refused the lease."}},
+     vs.VoicePoolBusy, "voice_pool_refused"),
+], ids=["403", "409-busy", "409-refused"])
+def test_the_http_client_reads_a_pool_refusal_with_its_sentence(swarm_voice, status, payload, kind, reason):
+    url, seen, state = swarm_voice
+    state["status"], state["refusal"] = status, payload
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="bob@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(kind) as raised:
+        client.start(call)
+    sentence = payload.get("message") or payload["detail"]
+    sentence = sentence["message"] if isinstance(sentence, dict) else sentence
+    if status == 409 and reason == "voice_pool_refused":
+        sentence = vs.NO_API_KEY_SENTENCE
+    assert raised.value.message == sentence
+    assert raised.value.detail == {"reason": reason}
+    assert "credential" not in seen[0]["body"]
+
+
+def test_a_409_that_names_no_pool_code_is_the_generic_refusal(swarm_voice):
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 409, {"detail": "this voice session already has a live session"}
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="bob@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoiceUnreachable):
+        client.start(call)
+
+
 def test_no_url_means_no_client():
     assert vs.client_for(api_settings()) is None
     assert isinstance(vs.client_for(api_settings(voice_url="http://v:8080")), vs.HttpVoiceClient)
+
+
+def _openai_refused(status, code, kind) -> dict:
+    """swarm-voice's own 502 body for a Live session OpenAI refused (swarm_voice/main.py)."""
+    import json
+
+    from swarm_voice.live import LiveRefused
+    from swarm_voice.main import openai_refusal
+    return json.loads(openai_refusal(LiveRefused("the Live session", status, code, kind)).body)
+
+
+def test_the_http_client_says_what_openai_answered_when_it_refused_the_live_session(swarm_voice):
+    """Measured 2026-11-04: OpenAI answered a Voice it pool account's create 403, and
+    the person read only 'swarm-voice refused the session (HTTP 502)'."""
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 502, _openai_refused(403, "unsupported_plan", "invalid_request_error")
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoiceUnreachable) as raised:
+        client.start(call)
+    assert raised.value.message == (
+        "OpenAI refused the Live session for the Voice it account "
+        "(403, unsupported_plan, invalid_request_error); the session was ended.")
+    assert raised.value.detail == {"reason": "openai_refused", "openai_status": 403,
+                                   "openai_code": "unsupported_plan", "openai_type": "invalid_request_error"}
+
+
+@pytest.mark.parametrize(("refusal", "sentence"), [
+    ({"code": "openai_refused", "openai_status": 403, "openai_code": "unreadable",
+      "openai_type": "unreadable"}, "(403, unreadable)"),
+    ({"code": "openai_refused", "openai_status": None, "openai_code": "plan_not_allowed",
+      "openai_type": "plan_not_allowed"}, "(on the sideband, plan_not_allowed)"),
+    ({"code": "openai_refused", "openai_status": "403", "openai_code": "Bearer QUOTED",
+      "openai_type": "x" * 65}, "(on the sideband, unreadable)"),
+], ids=["unreadable", "sideband", "held-to-the-pattern"])
+def test_the_openai_refusal_sentence_holds_what_it_repeats_to_the_pattern(swarm_voice, refusal, sentence):
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 502, refusal
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoiceUnreachable) as raised:
+        client.start(call)
+    assert raised.value.message == (
+        f"OpenAI refused the Live session for the Voice it account {sentence}; the session was ended.")
+    assert "QUOTED" not in raised.value.message and "QUOTED" not in str(raised.value.detail)
+
+
+def test_a_502_that_is_not_openais_refusal_is_the_generic_one(swarm_voice):
+    url, _, state = swarm_voice
+    state["status"], state["refusal"] = 502, {"detail": "the Live sideband could not attach (OSError)"}
+    client = vs.HttpVoiceClient(url, audience="swarm-voice", token=lambda a, t: "x")
+    call = vs.StartCall(session_id="vs_1", project_id="vp_1", tenant_id="eng", person="alice@example.com",
+                        offer=OFFER, grant="g")
+
+    with pytest.raises(vs.VoiceUnreachable) as raised:
+        client.start(call)
+    assert raised.value.message == "swarm-voice refused the session (HTTP 502); it was ended."
+
+
+def test_the_browser_reads_openais_refusal_as_served(db, tokens, group_map, objects):
+    refusing = FakeVoice()
+    refusing.pool_refusal = vs.VoiceUnreachable(
+        "OpenAI refused the Live session for the Voice it account (403, unsupported_plan); "
+        "the session was ended.", detail={"reason": "openai_refused"})
+    client = _client(db, tokens, group_map, objects, refusing,
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com",))
+
+    response = _start(client, "alice")
+
+    assert response.status_code == 502, response.text
+    assert response.json()["message"] == refusing.pool_refusal.message
+    (session,) = _sessions(db).values()
+    assert session["end_cause"] == vs.END_VOICE_UNREACHABLE
+
+
+# --------------------------------------------------------------------------
+# The session's models: Voice it › Settings, read at the start
+# --------------------------------------------------------------------------
+
+#: Terraform's `local.runner_models`, as `model_class_env` hands it to swarm-api.
+CLASS_PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", "sonnet": "claude-sonnet-5-5",
+              "haiku": "claude-haiku-5-5"}
+
+
+def _voice_settings(db, **fields) -> None:
+    from swarm_api.voice import settings as vsettings
+    db.collection(vsettings.COLLECTION).document(vsettings.DOCUMENT).set({"version": 1, **fields})
+
+
+@pytest.fixture
+def pinned(db, tokens, group_map, objects, voice) -> TestClient:
+    """`client`, on a deployment whose settings pin the classes to CLASS_PINS."""
+    return _client(db, tokens, group_map, objects, voice,
+                   voice_url="http://voice.internal:8080",
+                   voice_people=("alice@example.com", "bob@example.com"),
+                   worker_class_models=dict(CLASS_PINS))
+
+
+def test_the_start_sends_the_settings_planner_and_conversation_models(pinned, db, voice):
+    """BGD, 6 November 2026 ('wire-in-follow-up', 'front-reads-it'): the
+    planner class's pin and the conversation model's id, read at the start.
+    A change reaches the next session's start, never the one already started."""
+    client = pinned
+    _voice_settings(db, planner_model="opus", conversation_model="claude-sonnet-5")
+    first = _start(client, "alice")
+    assert first.status_code == 200, first.text
+    _voice_settings(db, planner_model="sonnet", conversation_model="claude-haiku-5-5")
+    assert _end(client, "alice", first.json()["session_id"]).status_code == 200
+    second = _start(client, "alice")
+    assert second.status_code == 200, second.text
+
+    assert [(c.planner_model, c.conversation_model) for c in voice.starts] == [
+        ("claude-opus-5-5", "claude-sonnet-5"), ("claude-sonnet-5-5", "claude-haiku-5-5")]
+
+
+def test_unset_or_unlisted_models_are_none_so_swarm_voice_keeps_its_pins(pinned, db, voice):
+    client = pinned
+    first = _start(client, "alice")  # no settings document at all
+    assert first.status_code == 200, first.text
+    assert _end(client, "alice", first.json()["session_id"]).status_code == 200
+    _voice_settings(db, planner_model="mythos", conversation_model="gpt-4o")
+    second = _start(client, "alice")
+    assert second.status_code == 200, second.text
+
+    assert [(c.planner_model, c.conversation_model) for c in voice.starts] == [(None, None), (None, None)]
+
+
+def test_the_planner_pin_is_swarm_apis_own_class_models_not_the_environment(
+        db, tokens, group_map, objects, voice, monkeypatch):
+    """BGD, 6 November 2026: the voice route builds its sessions with
+    `Settings.worker_class_models`, the map every other swarm-api caller
+    reads, never a second read of WORKER_CLASS_MODELS. The environment here
+    pins `opus` to one model and the settings to another: the settings' wins."""
+    import json
+
+    monkeypatch.setenv("WORKER_CLASS_MODELS", json.dumps(CLASS_PINS))
+    settings_pins = {**CLASS_PINS, "opus": "claude-opus-5"}
+    client = _client(db, tokens, group_map, objects, voice,
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com",),
+                     worker_class_models=settings_pins)
+    _voice_settings(db, planner_model="opus")
+
+    started = _start(client, "alice")
+
+    assert started.status_code == 200, started.text
+    assert [c.planner_model for c in voice.starts] == ["claude-opus-5"]
+
+
+@pytest.mark.parametrize("mode", [vs.MODE_LIVE, vs.MODE_TEXT])
+def test_the_http_client_sends_the_models_when_set_and_omits_them_when_not(swarm_voice, mode):
+    from swarm_voice.main import StartRequest
+
+    url, seen, _ = swarm_voice
+    client = vs.HttpVoiceClient(url, token=lambda audience, timeout: secrets.token_hex(16))
+    for models in ({"planner_model": "claude-opus-5-5", "conversation_model": "claude-sonnet-5"}, {}):
+        call = vs.StartCall(session_id="vs_" + secrets.token_hex(16), project_id="vp_" + secrets.token_hex(16),
+                            tenant_id="eng", person="alice@example.com",
+                            offer=OFFER if mode == vs.MODE_LIVE else "", grant=secrets.token_urlsafe(32),
+                            mode=mode, **models)
+        client.start(call)
+
+    sent, bare = (s["body"] for s in seen)
+    assert sent["planner_model"] == "claude-opus-5-5"
+    assert sent["conversation_model"] == "claude-sonnet-5"
+    assert "planner_model" not in bare and "conversation_model" not in bare
+    # Otherwise the body is today's, field for field.
+    assert set(sent) - set(bare) == {"planner_model", "conversation_model"} and set(bare) <= set(sent)
+    assert set(sent) <= set(StartRequest.model_fields)

@@ -65,6 +65,10 @@ from swarm_common.states import (
     worker_may_transition,
 )
 
+from . import contractevidence as ce
+from . import contractjudge as cj
+from . import contractreask as cr
+from . import workcontract as wc
 from .access import grant_id_for
 from .attempt_totals import stored_totals, task_attempt_docs
 from .childkey import PURPOSE_STATE, AttemptTuple, state_request_message, verify_proof
@@ -83,7 +87,8 @@ from .repositories import parse_repository, repo_id_for
 from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
 from .rollup import derived_state_write
 from .task_accounts import account_after
-from .store import EVENTS, LEASES, TASKS
+from .store import CONTROL, EVENTS, LEASES, SETTINGS_DOC, TASKS
+from .validation import HUMAN_READY_METADATA_KEY
 from .verdictpublish import spec_refusal
 from .workspaces import personal_tenant_id
 
@@ -97,6 +102,13 @@ REPOSITORIES = "repositories"
 TENANT_SETTINGS = "tenant_settings"
 #: The park's upload carry (#166), `control.CARRY_COLLECTION` / `CARRY_INDEX_ID`.
 CARRY = "carry"
+#: The fields of `control/settings` (`store.SETTINGS_DOC`) `state/context`
+#: serves. A worker switched to the state routes builds no Firestore client,
+#: so the admin's extra-repository size budget reaches its clone check only
+#: this way (owner's pick, 3 November 2026; `agent_worker.extrarepos.
+#: BUDGET_SETTING`). The platform's other settings -- prices, the budget
+#: ceiling -- are the control plane's, so none is served.
+PLATFORM_SETTINGS_SERVED = ("additional_repositories_budget_gib",)
 CARRY_INDEX = "parks"
 MERGE_SLOTS = "merge_slots"
 MERGE_TRAIN_ENTRIES = "merge_train_entries"
@@ -167,6 +179,7 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 #: An event id the worker chooses for an idempotent event: `new_id("evt")`.
 _EVENT_ID = re.compile(r"^evt_[0-9a-f]{20}$")
 #: A lease release's reason, `parked:<reason>`, `terminal:<state>`, `retry:<cause>`.
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
 _REASON = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 _PROVIDER = re.compile(r"^[a-z0-9-]{1,64}$")
 _GITHUB_URL = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
@@ -255,6 +268,13 @@ class MergeWakeRefused(ApiError):
 class StateConflict(ApiError):
     status_code = 409
     code = "state_conflict"
+
+
+class ContractVerdictStale(StateConflict):
+    """Section 9: a verdict about another revision, another commit, or one
+    this attempt already recorded. Nothing is written. It answers with the
+    state routes' own `state_conflict` (a write over a document that changed
+    under it), so it adds no new refusal code to switch (refusals.SWITCHES)."""
 
 
 # --------------------------------------------------------------------------
@@ -385,6 +405,45 @@ class MergeTrainBody(_Tuple):
     message: str | None = Field(default=None, max_length=65_536)
 
 
+class MechanicalIn(_Strict):
+    kind: str = Field(min_length=1, max_length=32)
+    passed: bool | None = None
+    named: list[str] = Field(default_factory=list, max_length=32)
+
+
+class VerdictIn(_Strict):
+    requirement_id: str = Field(min_length=1, max_length=32)
+    verdict: str = Field(min_length=1, max_length=32)
+    reason: str | None = Field(default=None, max_length=64)
+    evidence_item: str | None = Field(default=None, max_length=16)
+    p: float
+
+
+class ContractVerdictBody(_Requested):
+    """JC2's verdict (docs/design/agent-quality/jev-contract.md sections 5 and
+    9): what the worker's post-step judged -- the contract digest it was
+    given, the commit it read and its base, what it sent (the changed paths in
+    item order, the mechanical results, the state's sha256) and Jev's typed
+    verdicts -- or `not_run` with why. Every value is a closed one or a
+    bounded name; nothing here is acted on but through `contract_verdict`'s
+    checks."""
+
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    base: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    outcome: Literal["judged", "not_run"]
+    reason: str | None = Field(default=None, max_length=64)
+    call_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    changed: list[str] = Field(default_factory=list, max_length=cj.MAX_CHANGED)
+    #: Each changed item's hunk text as the state sent it, in `changed`'s
+    #: order; None for an item the state sent by path alone. The record keeps
+    #: the text of the cited ones (`contractreask.cited_hunks`).
+    hunks: list[str | None] = Field(default_factory=list, max_length=cj.MAX_CHANGED)
+    mechanical: list[MechanicalIn] = Field(default_factory=list, max_length=cj.MAX_MECHANICAL)
+    verdicts: list[VerdictIn] = Field(default_factory=list, max_length=cj.MAX_QUESTIONS)
+
+
 class CiFixBody(_Tuple):
     pull_request: int = Field(ge=1)
     root_task_id: str = Field(min_length=1, max_length=128)
@@ -508,6 +567,68 @@ def _end_cause(value: str | None) -> EndCause | None:
 
 def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+#: Bounds on `merge_wait.failed_heads`, as the direct path's
+#: (`agent_worker.control.FAILED_HEADS_MAX_NAMES`/`_PER_NAME`).
+FAILED_HEADS_MAX_NAMES = 40
+FAILED_HEADS_MAX_PER_NAME = 10
+
+
+def _wait_instant(value: Any) -> datetime | None:
+    """An aware instant from `merge_wait`: a stored datetime or ISO text."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return value if isinstance(value, datetime) and value.tzinfo is not None else None
+
+
+def _round_heads(metadata: Mapping[str, Any]) -> set[str]:
+    fix = _mapping(metadata.get("merge_fix"))
+    heads: set[str] = set()
+    for kind in ("rounds", "conflict_rounds"):
+        rounds = fix.get(kind)
+        for entry in rounds if isinstance(rounds, list) else []:
+            if isinstance(entry, Mapping) and isinstance(entry.get("head"), str) and entry["head"]:
+                heads.add(entry["head"])
+    return heads
+
+
+def ci_wait_span(metadata: Mapping[str, Any], last: Mapping[str, Any], head: str,
+                 failed: Any, now: datetime) -> dict[str, Any]:
+    """The whole CI wait a merge step's park continues, as the direct path
+    keeps it (`agent_worker.control.ci_wait_span`, part of #2688):
+    `wait_started_at` carried at this head or across a head a repair round
+    was claimed at, restarted by any other head move or a person's "I'm
+    ready" after it; `rechecks` this wait's parks; `failed_heads` each check
+    failed in the wait and the heads it failed at."""
+    started = _wait_instant(last.get("wait_started_at"))
+    previous = last.get("head")
+    if started is not None and previous and previous != head and previous not in _round_heads(metadata):
+        started = None
+    returned = _wait_instant(_mapping(metadata.get(HUMAN_READY_METADATA_KEY)).get("at"))
+    if started is not None and returned is not None and returned > started:
+        started = None
+    carried = started is not None
+    heads: dict[str, list[str]] = {}
+    old = last.get("failed_heads") if carried else None
+    for name, seen in (old.items() if isinstance(old, Mapping) else []):
+        if isinstance(seen, list) and len(heads) < FAILED_HEADS_MAX_NAMES:
+            heads[str(name)[:256]] = [str(h)[:64] for h in seen if isinstance(h, str)][-FAILED_HEADS_MAX_PER_NAME:]
+    for name in failed if isinstance(failed, list) else []:
+        key = str(name)[:256]
+        if key not in heads and len(heads) >= FAILED_HEADS_MAX_NAMES:
+            continue
+        seen = heads.setdefault(key, [])
+        if head not in seen:
+            seen.append(head)
+            del seen[:-FAILED_HEADS_MAX_PER_NAME]
+    return {"wait_started_at": started if started is not None else now,
+            "rechecks": (_count(last.get("rechecks")) if carried else 0) + 1,
+            "failed_heads": heads,
+            "main_red": dict(last["main_red"]) if carried and isinstance(last.get("main_red"), Mapping) else None}
 
 
 def park_attempt_error(reason: ParkReason, event_detail: Mapping[str, Any]) -> str:
@@ -1508,12 +1629,21 @@ class AttemptState:
                 first = now
             elif paused is not None:
                 first, paused = first + max(now - paused, timedelta(0)), None
+            # The train's start, as the direct path keeps it (part of #2688):
+            # set by the first train park of an unbroken run, carried by the
+            # next ones, cleared by any other park. `waiting_detail` serves it
+            # as `train_since`, the start `/sc check` ages a train wait from.
+            train = None
+            if counter == "train_waits":
+                train = last.get("train_entered_at") if last.get("code") == TRAIN_WAITING else None
+                train = train if isinstance(train, datetime) else now
             names = [str(n)[:256] for n in ci.pending]
             metadata[MERGE_WAIT] = {
                 "code": ci.code, "head": ci.head, "pull_request": ci.pull_request,
                 "pending": names, **counts, "updates": _count(last.get("updates")),
                 "first_parked_at": first, "ci_paused_at": paused,
-                "parked_at": now,
+                "train_entered_at": train, "parked_at": now,
+                **ci_wait_span(metadata, last, ci.head, body.detail.get("failed"), now),
             }
             payload["metadata"] = metadata
             payload["next_eligible_at"] = now + timedelta(seconds=CI_FALLBACK_SECONDS)
@@ -1669,58 +1799,246 @@ class AttemptState:
             if seen is not None:
                 return self._answer(seen, repeat=True)
             task = self._fenced(txn, attempt)
-            current = TaskState(task["state"])
-            attempt_count = _count(task.get("attempt_count"))
-            max_attempts = _count(task.get("max_attempts", 3))
-            if task.get("cancel_requested"):
-                target = TaskState.CANCELLED
-            elif retries_exhausted(attempt_count, max_attempts):
-                target = TaskState.FAILED
-            else:
-                target = TaskState.READY
-            if not worker_may_transition(current, target):
-                raise TransitionRefused(
-                    f"a worker may not move a task from {current.value} to {target.value}"
-                )
-            payload: dict[str, Any] = {
-                "state": target.value, "updated_at": now, "current_lease_id": None,
-                "last_error": (f"cancelled on request; {body.error}"
-                               if target is TaskState.CANCELLED else body.error),
+            return self._retry_writes(
+                txn, attempt, task, error=body.error, cause=body.cause, end_cause=cause,
+                exit_code=body.exit_code, summary=summary, detail=detail,
+                retry_delay_seconds=body.retry_delay_seconds, request_id=body.request_id,
+                event_id=event_id, now=now)
+
+        return self._run(_apply)
+
+    def _retry_writes(self, txn: Any, attempt: AttemptTuple, task: Mapping[str, Any], *,
+                      error: str, cause: str, end_cause: EndCause | None,
+                      exit_code: int | None, summary: dict[str, Any] | None,
+                      detail: Mapping[str, Any], retry_delay_seconds: int, request_id: str,
+                      event_id: str, now: datetime,
+                      extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """The retry transition's reads and writes for a FENCED `task`: the
+        one place READY, FAILED or CANCELLED is decided after an attempt. Its
+        reads come first, so a caller calls it after every read of its own and
+        writes nothing before it; `extra` rides on the task's own update."""
+        current = TaskState(task["state"])
+        attempt_count = _count(task.get("attempt_count"))
+        max_attempts = _count(task.get("max_attempts", 3))
+        if task.get("cancel_requested"):
+            target = TaskState.CANCELLED
+        elif retries_exhausted(attempt_count, max_attempts):
+            target = TaskState.FAILED
+        else:
+            target = TaskState.READY
+        if not worker_may_transition(current, target):
+            raise TransitionRefused(
+                f"a worker may not move a task from {current.value} to {target.value}"
+            )
+        payload: dict[str, Any] = {
+            "state": target.value, "updated_at": now, "current_lease_id": None,
+            "last_error": (f"cancelled on request; {error}"
+                           if target is TaskState.CANCELLED else error),
+        }
+        if summary is not None:
+            payload["result_summary"] = summary
+        if target is TaskState.READY:
+            payload["next_eligible_at"] = now + timedelta(seconds=retry_delay_seconds)
+            release_reason = f"retry:{cause}"
+        else:
+            payload["completed_at"] = now
+            payload["next_eligible_at"] = None
+            ended = cancel_end_cause(task) if target is TaskState.CANCELLED else end_cause
+            payload["end_cause"] = ended.value if ended is not None else None
+            release_reason = f"terminal:{target.value}"
+        payload.update(extra or {})
+        kind = {TaskState.READY: EventType.RETRYING, TaskState.FAILED: EventType.FAILED,
+                TaskState.CANCELLED: EventType.CANCELLED}[target]
+        # Contract request 132: the end counted, in the end's own commit.
+        totals = self._totals(attempt, {"completed_at": now, "exit_code": exit_code,
+                                        "error": error})
+        if totals is not None:
+            payload["attempt_totals"] = totals
+        events = [self._event(attempt, kind, {
+            "exit_code": exit_code, "error": error, "cause": cause,
+            **detail, "to_state": target.value, "attempt_count": attempt_count,
+            "max_attempts": max_attempts, "retries_exhausted": target is TaskState.FAILED,
+            "request_id": request_id}, at=now, event_id=event_id)]
+        workflow = self._workflow_write(txn, attempt, task, payload, now)
+        self._release(txn, attempt, release_reason, now=now, events=events)
+        txn.update(self._task_ref(attempt), payload)
+        if workflow is not None:
+            txn.update(*workflow)
+        txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
+            "completed_at": now, "exit_code": exit_code, "error": error,
+            "tenant_id": attempt.tenant_id}, merge=True)
+        for event in events:
+            txn.set(*event)
+        return self._answer({**task, **payload})
+
+    # -- JC2: the contract verdict (jev-contract.md sections 5.4 and 9) -----
+
+    def _published_head(self, attempt: AttemptTuple) -> str | None:
+        """The head THIS attempt reported publishing: the `head` of its latest
+        `published` mark (`lifecycle._emit_published`, a RUNNING event with
+        `detail.cause = "published"`, written through the proven `event`
+        route), or None when it published nothing. Read before the verdict's
+        transaction, outside it: an event is an append-only record of its own
+        tuple, so a read here can only miss a mark posted after it. A verdict
+        on a head published between this read and the transaction is therefore
+        refused (`ContractVerdictStale`, nothing written; the worker re-posts),
+        never accepted against a head this read did not see."""
+        query = self._task_ref(attempt).collection(EVENTS).where(
+            filter=FieldFilter("attempt_id", "==", attempt.attempt_id))
+        try:
+            rows = [snap.to_dict() or {} for snap in query.stream()]
+        except gexc.GoogleAPIError as exc:
+            raise StateUnavailable(
+                f"the state store did not answer ({type(exc).__name__}); retry") from None
+        marks = [r for r in rows
+                 if r.get("tenant_id") == attempt.tenant_id
+                 and r.get("generation") == attempt.generation
+                 and r.get("type") == EventType.RUNNING.value
+                 and _mapping(r.get("detail")).get("cause") == "published"
+                 and isinstance(r.get("at"), datetime)]
+        if not marks:
+            return None
+        head = _mapping(max(marks, key=lambda r: r["at"]).get("detail")).get("head")
+        return head if isinstance(head, str) and _SHA40.fullmatch(head) else None
+
+    def contract_verdict(self, call: Call) -> dict[str, Any]:
+        """JC2's verdict on this attempt's step, checked and written in ONE
+        fenced transaction (section 9), or refused with NOTHING written:
+
+        1. the attempt proof (`call`), as every state route;
+        2. the fence: this attempt is the task's current one at this
+           generation (`_fenced`, 409 `attempt_fenced`);
+        3. the digest is the one the task's SIGNED dispatch reference names,
+           whose body is stored beside it (409 `state_conflict`, `ContractVerdictStale`);
+        4. the commit is the head this attempt reported publishing (409);
+        5. every verdict names a requirement of this revision that names
+           `judgment`, in the closed lists, citing only items the state sent
+           (422); and this attempt has not already recorded one (409).
+
+        Then (section 5.4): `met` everywhere writes passed evidence; any
+        `unmet` writes failed evidence and sends the step back through the
+        retry transition to READY, cause `contract_unmet` (invariant 1: READY
+        costs nothing), until the cap of `contractjudge.MAX_SEND_BACKS` or the
+        last of `max_attempts`, past which it goes to the owner; `not_run` or
+        any `cannot_judge` leaves it `judgment_pending`, waiting on the
+        control plane's re-ask (`contractreask`, the owner's answer 5)."""
+        body: ContractVerdictBody = call.body
+        attempt = call.attempt
+        if body.reason is not None and not _REASON.fullmatch(body.reason):
+            raise ValidationFailed("reason must be a short reason code")
+        if body.outcome == cr.OUTCOME_NOT_RUN:
+            if body.verdicts:
+                raise ValidationFailed("a not_run verdict carries no verdicts")
+            if body.reason is None:
+                raise ValidationFailed("a not_run verdict names why it did not run")
+        elif not body.verdicts:
+            raise ValidationFailed("a judged verdict carries its verdicts")
+        if any(not path or len(path) > 512 for path in body.changed):
+            raise ValidationFailed("a changed path is empty or too long")
+        if len(body.hunks) > len(body.changed):
+            raise ValidationFailed("a hunk names no changed item")
+        if any(h is not None and len(h) > cj.HUNK_CHARS for h in body.hunks):
+            raise ValidationFailed("a hunk is longer than the state cuts one")
+        if any(m.kind not in wc.VERIFICATION_KINDS or m.kind == wc.VERIFICATION_JUDGMENT
+               for m in body.mechanical):
+            raise ValidationFailed("a mechanical entry is not a mechanical proof kind")
+        paths = cr.item_paths(body.changed)
+        items = set(paths) | {f"m{n}" for n in range(len(body.mechanical))}
+        event_id = request_event_id(attempt, "contract-verdict", body.request_id)
+        now = self._now()
+        published = self._published_head(attempt)
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            seen = self._seen(txn, attempt, event_id)
+            if seen is not None:
+                return self._answer(seen, repeat=True)
+            task = self._fenced(txn, attempt)
+            contract = cr.signed_contract(self._settings, task, attempt.task_id)
+            if isinstance(contract, str):
+                raise ContractVerdictStale(contract)
+            if wc.digest(contract) != body.digest:
+                raise ContractVerdictStale(
+                    "the verdict judged another revision of the contract than the signed one")
+            if published is None or published != body.commit:
+                raise ContractVerdictStale(
+                    "the verdict judged a commit this attempt did not report publishing")
+            prior = _mapping(task.get(cr.ACCEPTANCE_FIELD))
+            if prior.get("attempt_id") == attempt.attempt_id \
+                    and prior.get("generation") == attempt.generation:
+                raise ContractVerdictStale("this attempt's verdict is already recorded")
+            if not cj.judged_requirements(contract):
+                raise ValidationFailed("this revision has no requirement that names judgment")
+            posted: list[cj.Verdict] = []
+            for raw in body.verdicts:
+                verdict = cr.checked_verdict(contract, raw.model_dump(), items=items)
+                if isinstance(verdict, str):
+                    raise ValidationFailed(verdict)
+                if any(v.requirement_id == verdict.requirement_id for v in posted):
+                    raise ValidationFailed("a requirement is judged twice")
+                posted.append(verdict)
+            verdicts = cr.complete(contract, posted)
+            judged = body.outcome == cr.OUTCOME_JUDGED
+            outcome = cj.judgment_outcome(verdicts) if judged else cj.JUDGMENT_PENDING
+            evidence = ce.writes(
+                self._db, contract, verdicts if judged else (), tenant_id=attempt.tenant_id,
+                task_id=attempt.task_id, commit=body.commit, attempt_id=attempt.attempt_id,
+                generation=attempt.generation, call_id=body.call_id, source=ce.SOURCE_WORKER,
+                paths=paths, state_sha256=body.state_sha256, at=now)
+            record: dict[str, Any] = {
+                "status": outcome, "waiting_on": None, "owner_reason": None,
+                "attempt_id": attempt.attempt_id, "lease_id": attempt.lease_id,
+                "generation": attempt.generation, "contract_id": contract.contract_id,
+                "revision": contract.revision, "digest": body.digest, "commit": body.commit,
+                "base": body.base, "outcome": body.outcome, "reason": body.reason,
+                "call_id": body.call_id, "state_sha256": body.state_sha256,
+                "verdicts": [v.to_document() for v in verdicts] if judged else [],
+                "changed": list(body.changed),
+                cr.HUNKS_FIELD: cr.cited_hunks(verdicts, body.hunks, body.changed) if judged else {},
+                "mechanical": [m.model_dump() for m in body.mechanical],
+                "reask": None, "at": now,
             }
-            if summary is not None:
-                payload["result_summary"] = summary
-            if target is TaskState.READY:
-                payload["next_eligible_at"] = now + timedelta(seconds=body.retry_delay_seconds)
-                release_reason = f"retry:{body.cause}"
-            else:
-                payload["completed_at"] = now
-                payload["next_eligible_at"] = None
-                ended = cancel_end_cause(task) if target is TaskState.CANCELLED else cause
-                payload["end_cause"] = ended.value if ended is not None else None
-                release_reason = f"terminal:{target.value}"
-            kind = {TaskState.READY: EventType.RETRYING, TaskState.FAILED: EventType.FAILED,
-                    TaskState.CANCELLED: EventType.CANCELLED}[target]
-            # Contract request 132: the end counted, in the end's own commit.
-            totals = self._totals(attempt, {"completed_at": now, "exit_code": body.exit_code,
-                                            "error": body.error})
-            if totals is not None:
-                payload["attempt_totals"] = totals
-            events = [self._event(attempt, kind, {
-                "exit_code": body.exit_code, "error": body.error, "cause": body.cause,
-                **detail, "to_state": target.value, "attempt_count": attempt_count,
-                "max_attempts": max_attempts, "retries_exhausted": target is TaskState.FAILED,
-                "request_id": body.request_id}, at=now, event_id=event_id)]
-            workflow = self._workflow_write(txn, attempt, task, payload, now)
-            self._release(txn, attempt, release_reason, now=now, events=events)
-            txn.update(self._task_ref(attempt), payload)
-            if workflow is not None:
-                txn.update(*workflow)
-            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
-                "completed_at": now, "exit_code": body.exit_code, "error": body.error,
-                "tenant_id": attempt.tenant_id}, merge=True)
-            for event in events:
-                txn.set(*event)
-            return self._answer({**task, **payload})
+            send_backs = _count(task.get(cr.SEND_BACKS_FIELD))
+            if outcome == cj.SENT_BACK:
+                retries_left = (_count(task.get("max_attempts", 3))
+                                - _count(task.get("attempt_count")))
+                if cj.after_send_back(send_backs=send_backs,
+                                      retries_left=retries_left) == cj.SENT_BACK:
+                    unmet = [v.requirement_id for v in verdicts if v.verdict == cj.UNMET]
+                    answer = self._retry_writes(
+                        txn, attempt, task,
+                        error=f"Jev judged {', '.join(unmet)} unmet at commit {body.commit}",
+                        cause="contract_unmet", end_cause=None, exit_code=None, summary=None,
+                        detail={"contract_digest": body.digest, "commit": body.commit,
+                                "unmet": unmet, "send_backs": send_backs + 1},
+                        retry_delay_seconds=0, request_id=body.request_id,
+                        event_id=event_id, now=now,
+                        extra={cr.ACCEPTANCE_FIELD: record,
+                               cr.SEND_BACKS_FIELD: send_backs + 1,
+                               cr.SEND_BACK_FIELD: cr.send_back_blocks(
+                                   contract, verdicts, commit=body.commit, paths=paths)})
+                    for write in evidence:
+                        txn.set(*write)
+                    return {**answer, "outcome": cj.SENT_BACK, "waiting_on": None,
+                            "sent_back": True}
+                # Past the cap, or on the last attempt: a step that did its
+                # work and was judged short reaches a person, never FAILED.
+                record.update(status=cj.JUDGMENT_PENDING, waiting_on=cr.WAITING_OWNER,
+                              owner_reason=(cr.OWNER_SEND_BACK_CAP
+                                            if send_backs >= cj.MAX_SEND_BACKS
+                                            else cr.OWNER_ATTEMPTS_EXHAUSTED))
+            elif outcome == cj.JUDGMENT_PENDING:
+                record.update(waiting_on=cr.WAITING_REASK, reask=cr.pending_schedule(now))
+            txn.update(self._task_ref(attempt), {cr.ACCEPTANCE_FIELD: record,
+                                                 "updated_at": now})
+            txn.set(*self._event(attempt, EventType.RUNNING, {
+                "cause": "contract_verdict", "outcome": record["status"],
+                "waiting_on": record["waiting_on"], "contract_digest": body.digest,
+                "commit": body.commit, "request_id": body.request_id}, at=now,
+                event_id=event_id))
+            for write in evidence:
+                txn.set(*write)
+            return self._answer(task, outcome=record["status"],
+                                waiting_on=record["waiting_on"], sent_back=False)
 
         return self._run(_apply)
 
@@ -1790,8 +2108,10 @@ class AttemptState:
 
     def context(self, attempt: AttemptTuple) -> dict[str, Any]:
         """What the worker reads of its OWN tenant's settings, keys and grant
-        (`secrets.load_tenant`, `jevkey`, `judge/attempt.py`, `graphstage.py`).
-        Every id is derived from the tuple and the task's signed fields."""
+        (`secrets.load_tenant`, `jevkey`, `judge/attempt.py`, `graphstage.py`),
+        and of the platform's settings only `PLATFORM_SETTINGS_SERVED`
+        (`extrarepos.budget_bytes`). Every id is derived from the tuple and
+        the task's signed fields."""
         task = self._own_task(attempt)
         tenant_id = attempt.tenant_id
         tenant = self._read(self._ref(TENANTS, tenant_id))
@@ -1827,7 +2147,15 @@ class AttemptState:
             "provider_keys": keys,
             "personal_tenant_id": personal,
             "forge_grant": jsonable(grant),
+            "platform_settings": self._platform_settings(),
         }
+
+    def _platform_settings(self) -> dict[str, Any]:
+        """`control/settings`, cut to `PLATFORM_SETTINGS_SERVED`, each field as
+        stored and left out when absent: the worker keeps its own default for
+        a field it is not given and checks the value's shape itself."""
+        stored = self._read(self._ref(CONTROL, SETTINGS_DOC)) or {}
+        return {key: jsonable(stored[key]) for key in PLATFORM_SETTINGS_SERVED if key in stored}
 
     def upstream(self, attempt: AttemptTuple, upstream_task_id: str) -> dict[str, Any]:
         """`fetch_parent_states` and `inputs.fetch_upstream_task`: ONLY an id

@@ -113,6 +113,11 @@ resource "google_service_account_iam_member" "deployer_admin" {
     google_service_account.discovery,
     google_service_account.doctor,
     google_service_account.voice,
+    # Not granted on (swarm-speech is modules/service_account_ids' speech_id,
+    # deliberately off bootstrap_platform; its actAs grant is
+    # platform_service_accounts.tf's), listed so every account that file makes
+    # is ordered before this the same way.
+    google_service_account.speech,
   ]
 
   lifecycle {

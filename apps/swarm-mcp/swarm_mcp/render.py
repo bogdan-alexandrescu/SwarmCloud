@@ -869,7 +869,19 @@ _ACCOUNT_FIELDS = (
     "duplicate_of",
     "duplicate_reason",
     "possible_duplicate",
+    # Which pools it serves -- the agents' "workspace" pool, the "voice-it"
+    # pool, or both -- and who holds it for Voice it right now
+    # (voice-it-pool). The holder has its own allow-list below.
+    "pools",
 )
+#: The live Voice it hold, as swarm-api serves it to the owner's members: who
+#: and since when. The session id is the voice service's business, not a
+#: listing's, so it is not carried.
+_HOLDER_FIELDS = ("person", "since")
+#: The pools an account can serve (voice-it-pool interface): "workspace", the
+#: agents' pool, and "voice-it", the Voice it pool, in the order swarm-api
+#: serves them. `sc account pool` sends sets in this order too.
+ACCOUNT_POOLS = ("workspace", "voice-it")
 _WINDOW_FIELDS = ("utilization", "resets_at", "reset")
 #: What one `blocked_by` entry may carry: a window under its floor
 #: (`window, used, floor, resets_at, aged_reading`), a full account (`cap,
@@ -975,7 +987,35 @@ def public_account(account: dict[str, Any], tenant: str | None = None) -> dict[s
             for name, entry in windows.items()
             if isinstance(entry, dict)
         }
+    if "pools" in account:
+        out["pools"] = account_pools(account)
+    if "voice_it_holder" in account:
+        holder = account.get("voice_it_holder")
+        out["voice_it_holder"] = (
+            {key: holder[key] for key in _HOLDER_FIELDS if key in holder}
+            if isinstance(holder, dict) else None
+        )
     return out
+
+
+def account_pools(account: dict[str, Any]) -> list[str]:
+    """The pools an account serves, as swarm-api serves them: absent or empty
+    reads as ["workspace"] (the voice-it-pool interface), unknown names are
+    dropped, and the order is always workspace, voice-it."""
+    served = account.get("pools")
+    names = [p for p in served if p in ACCOUNT_POOLS] if isinstance(served, list) else []
+    return [p for p in ACCOUNT_POOLS if p in names] or ["workspace"]
+
+
+def holder_words(account: dict[str, Any], now: datetime, style: Style) -> str | None:
+    """Who holds `account` for Voice it right now, in words, or None."""
+    holder = account.get("voice_it_holder")
+    if not isinstance(holder, dict):
+        return None
+    person = details.shown(holder.get("person")) or "someone"
+    since = format_ago(holder.get("since"), now, style)
+    when = "" if since == style.dash else f", taken {since}"
+    return f"{account.get('account_id')} is held for Voice it by {person}{when}"
 
 
 def render_accounts(
@@ -1033,6 +1073,12 @@ def render_accounts(
     # plan for the codex runner -- and then names every account's.
     if any(str(a.get("provider") or "anthropic") != "anthropic" for a in accounts):
         columns.insert(1, Column("provider", "PROVIDER", drop=7))
+    # WHICH POOLS (voice-it-pool): the agents' workspace pool, the Voice it
+    # pool, or both. Only when the API says: an older one serves no `pools`,
+    # and every account then is in the workspace pool, so a column of
+    # "workspace" would say nothing.
+    if any("pools" in a for a in accounts):
+        columns.insert(1, Column("pools", "POOLS", drop=3))
     tenant = listing_tenant(accounts)
 
     rows: list[dict[str, Any]] = []
@@ -1053,6 +1099,7 @@ def render_accounts(
             {
                 "account": Cell(account_id),
                 "provider": Cell(str(account.get("provider") or "anthropic")),
+                "pools": Cell(",".join(account_pools(account))),
                 "short": format_window(short, style),
                 "long": format_window(long, style),
                 "clears": Cell(
@@ -1081,6 +1128,10 @@ def render_accounts(
         )
         lines += detail(head + "; ".join(said), style, tone="warn" if refused else "dim")
 
+    for account in accounts:
+        held = holder_words(account, now, style)
+        if held:
+            lines += detail(held, style)
     for account in accounts:
         if account.get("lend_to"):
             who = ", ".join(str(t) for t in account["lend_to"])
@@ -1556,6 +1607,8 @@ JEV_GROUP_LABEL = {
     "quality_gate": "Quality gate",
     "decision_tool": "Agent decision tool",
     "jev_browser": "Jev browser",
+    "control_plane_reask": "Control-plane re-ask",
+    "contract_review": "Contract review at submission",
     "unattributed": "Not split by kind",
     "other": "Other",
 }

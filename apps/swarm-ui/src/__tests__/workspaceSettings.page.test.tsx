@@ -136,7 +136,7 @@ describe('Config › Workspace Settings: its settings and its Workspace setup pa
     expect(visible(ws)).toContain('member')
     // MUTATION: leave Workspace setup out of the page's parts, or point it at the old Work › Setup -> fails.
     const setup = within(parts()).getByRole('tab', { name: 'Workspace setup' })
-    expect(setup.getAttribute('href')).toBe('/config/workspace/setup')
+    expect(setup.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
     expect(within(parts()).getByRole('tab', { name: 'Settings' }).getAttribute('aria-current')).toBe('page')
   })
 
@@ -186,7 +186,7 @@ describe('each part\'s lead agrees with the checklist under it', () => {
     // MUTATION: call setup done while the checklist has a failed step -> fails.
     expect(visible(lead)).toContain('Enable orgs: failed')
     expect(screen.queryByText('Nothing here needs you')).toBeNull()
-    expect(within(lead).getByRole('link', { name: 'Open Workspace setup' }).getAttribute('href')).toBe('/config/workspace/setup')
+    expect(within(lead).getByRole('link', { name: 'Open Workspace setup' }).getAttribute('href')).toBe('/admin/workspaces?tab=setup')
   })
 })
 
@@ -330,7 +330,7 @@ describe('the leads follow the strip once the checklist is done (S6a, S6b)', () 
     const lead = await screen.findByRole('region', { name: 'Setup’s next step' })
     // MUTATION: stop at the checklist -> no People step named, fails.
     expect(visible(lead)).toContain('Setup’s next step is on People and roles')
-    expect(within(lead).getByRole('link', { name: 'Go to People and roles' }).getAttribute('href')).toBe('/config/people')
+    expect(within(lead).getByRole('link', { name: 'Go to People and roles' }).getAttribute('href')).toBe('/admin/workspaces?tab=people')
     cleanup()
     await withSetup('settings', setup(0, true))
     // MUTATION: never go green -> fails.
@@ -359,7 +359,7 @@ describe('the leads follow the strip once the checklist is done (S6a, S6b)', () 
     const people = within(card).getByRole('listitem', { name: 'People invited' })
     expect(visible(people)).toContain('only you so far')
     // MUTATION: point Invite anywhere but Config › People and roles -> fails.
-    expect(within(people).getByRole('link', { name: 'Invite' }).getAttribute('href')).toBe('/config/people')
+    expect(within(people).getByRole('link', { name: 'Invite' }).getAttribute('href')).toBe('/admin/workspaces?tab=people')
   })
 
   it('has no People invited row in a personal workspace, which has nobody to invite', async () => {
@@ -401,7 +401,7 @@ describe('Settings: This workspace names the default role (S6a)', () => {
     await waitFor(() => expect(visible(ws)).toContain('Default role'))
     await waitFor(() => expect(visible(within(ws).getByTestId('ws-default-role'))).toContain('viewer'))
     // MUTATION: link the row anywhere but Config › People and roles -> fails.
-    expect(within(ws).getByRole('link', { name: 'People and roles' }).getAttribute('href')).toBe('/config/people')
+    expect(within(ws).getByRole('link', { name: 'People and roles' }).getAttribute('href')).toBe('/admin/workspaces?tab=people')
   })
 })
 

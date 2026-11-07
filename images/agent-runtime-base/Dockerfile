@@ -113,6 +113,9 @@ COPY apps/redaction/ /src/apps/redaction/
 # (#2838). `apps/agent-worker/pyproject.toml` resolves it through
 # `{ path = "../workflow-rollup" }`.
 COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
+# The Jev client the worker's judge.client and judge.sanitize re-export, shared
+# with swarm-api (docs/design/agent-quality/jev-contract.md, answer 10).
+COPY apps/jev-client/ /src/apps/jev-client/
 COPY apps/agent-worker/ /src/apps/agent-worker/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
@@ -121,6 +124,7 @@ COPY apps/agent-worker/ /src/apps/agent-worker/
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
+ && uv build --wheel --out-dir /wheels /src/apps/jev-client \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
 
 # Floors, not pins: both ship inside the stdlib venv at versions Debian's
@@ -179,7 +183,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # means no index is ever asked for them; `--no-deps` because their third-party
 # dependencies are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-redaction swarm-workflow-rollup swarm-agent-worker
+      swarm-common swarm-redaction swarm-workflow-rollup swarm-jev swarm-agent-worker
 
 # pytest for the generic runner's `python -m pytest` (see the venv step above).
 RUN uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
@@ -188,6 +192,142 @@ RUN uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
 # export left out. `uv pip check` does, here, instead of an ImportError at the
 # runtime stage's import check or inside a tenant's task.
 RUN uv pip check --python /opt/venv/bin/python
+
+# ---------------------------------------------------------------------------
+# gstack-build: gstack and Bun, at their pins, for the runtime to copy from
+# ---------------------------------------------------------------------------
+# THE AGENT PLUGINS' FIRST PLUGIN (owner decision 3 November 2026, part of
+# #2688): gstack is baked into the agent images at a pinned version through
+# the build mirror, chosen per step by name from the platform's closed
+# catalogue; /cso is left out of the first catalogue and no outside AI is on.
+# This is the packaging spike's image build proposal exactly
+# (docs/design/agent-plugins-packaging.md, "The image build proposal"):
+#
+#   * Bun 1.4.2 (gstack's own tested pin, GSTACK_BUN_TESTED) and gstack
+#     v1.92.55.0's source archive are read from the tool mirror at the
+#     sha256 the spike downloaded them at (tool-mirror.sha256; Bun's matches
+#     the release's SHASUMS256.txt), and the archive's commit is checked
+#     against GSTACK_COMMIT, the tag's commit, by the pax header GitHub
+#     writes into it.
+#   * gstack is unpacked AT ITS FINAL PATH, /opt/swarm/plugins/gstack: the
+#     compiled `browse` embeds the path it was built at (finding 7), and the
+#     rendered skills name ~/.claude/skills/gstack, which the runner links to
+#     this path in the attempt's HOME (finding 1).
+#   * `./setup --host claude --no-browser` runs with HOME and gstack's state
+#     root in a throwaway folder (setup registers a Stop hook and writes
+#     ~/.claude.json and ~/.gstack there, none of which ships: finding 2), and
+#     GSTACK_SKIP_FONTS=1, GSTACK_SETUP_SKIP_CSO_BUILD=1 (no /cso launcher),
+#     GSTACK_SECURITY_OFF=1 (no scanner images, no 112 MB model). Its npm
+#     packages come from `bun install --frozen-lockfile` against gstack's own
+#     bun.lock, whose integrity hashes Bun checks, fetched in this stage only.
+#   * gstack-layers check then fails the build when the closure that
+#     scripts/gstack_packaging_measure.py walks differs from the checked-in
+#     lists (gstack-base-files.txt here, gstack-browser-files.txt beside the
+#     browser image's Dockerfile), naming every file; `gstack-layers stage`
+#     copies the base list to /out/gstack, directories 0755, files 0644,
+#     helpers 0755, and never `.git` (finding 3: with it, every skill start
+#     prints a lease warning). Everything else stays in this stage.
+#
+# Bumping the pin is one PR: the ARGs here and in the browser image's
+# Dockerfile, the two rows in tool-mirror.sha256, and both lists regenerated
+# with `gstack-layers derive` (tests/unit/scripts/test_gstack_image.py).
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS gstack-build
+
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
+ && apt-get install --no-install-recommends -y ca-certificates curl git \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG GSTACK_VERSION=1.92.55.0
+ARG GSTACK_SHA256=63c118f13ccf0d72d06d7bff56231dc08ce3da29ce405ed567224dd303cf5bd2
+ARG GSTACK_COMMIT=2512dd7624a474fee036326989ea0c6bb8470e69
+ARG BUN_VERSION=1.4.2
+ARG BUN_SHA256=36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    --mount=type=bind,source=scripts/gstack_packaging_measure.py,target=/tmp/gstack-build/gstack_packaging_measure.py \
+    --mount=type=bind,source=images/agent-runtime-base,target=/tmp/gstack-build/base \
+    --mount=type=bind,source=images/agent-runtime-browser/gstack-browser-files.txt,target=/tmp/gstack-build/gstack-browser-files.txt \
+    scratch="$(mktemp -d)" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/bun.zip \
+      "file:///tmp/tool-mirror/github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/gstack.tar.gz \
+      "file:///tmp/tool-mirror/github.com/garrytan/gstack/archive/refs/tags/v${GSTACK_VERSION}.tar.gz" \
+ && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
+ && echo "${GSTACK_SHA256}  /tmp/gstack.tar.gz" | sha256sum -c - \
+ && python3 -m zipfile -e /tmp/bun.zip "${scratch}/bun" \
+ && install -o root -g root -m 0755 "${scratch}/bun/bun-linux-x64/bun" /usr/local/bin/bun \
+ && test "$(/usr/local/bin/bun --version)" = "${BUN_VERSION}" \
+ && test "$(gzip -dc /tmp/gstack.tar.gz | git get-tar-commit-id)" = "${GSTACK_COMMIT}" \
+ && mkdir -p /opt/swarm/plugins/gstack "${scratch}/home" \
+ && tar -xzf /tmp/gstack.tar.gz -C /opt/swarm/plugins/gstack --strip-components=1 \
+ && test "$(cat /opt/swarm/plugins/gstack/VERSION)" = "${GSTACK_VERSION}" \
+ && cd /opt/swarm/plugins/gstack \
+ && HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
+    GSTACK_SKIP_FONTS=1 GSTACK_SETUP_SKIP_CSO_BUILD=1 GSTACK_SECURITY_OFF=1 \
+      ./setup --host claude --no-browser \
+ && python3 /tmp/gstack-build/base/gstack-layers check \
+      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+      --base-list /tmp/gstack-build/base/gstack-base-files.txt \
+      --browser-list /tmp/gstack-build/gstack-browser-files.txt \
+ && python3 /tmp/gstack-build/base/gstack-layers stage \
+      --measure /tmp/gstack-build/gstack_packaging_measure.py --install /opt/swarm/plugins/gstack \
+      --base-list /tmp/gstack-build/base/gstack-base-files.txt --list base --out /out/gstack \
+ && rm -rf "${scratch}" /tmp/bun.zip /tmp/gstack.tar.gz
+
+# ---------------------------------------------------------------------------
+# security-audit-build: Cloudflare's security audit skill, at its pinned commit
+# ---------------------------------------------------------------------------
+# THE AGENT PLUGINS' SECOND PLUGIN (owner decision 4 November 2026, part of
+# #2688): github.com/cloudflare/security-audit-skill (MIT), baked into the
+# agent images beside gstack at commit c1c8a8c1 (14 September 2026), chosen
+# per step by name from the closed catalogue. No new runner profile, no new
+# image, nothing installed at runtime (docs/design/agent-plugins-packaging.md,
+# "The second plugin: Cloudflare's security audit skill"):
+#
+#   * the commit's source archive is read from the tool mirror at the sha256
+#     it was downloaded at (tool-mirror.sha256), and its commit is checked
+#     against SECURITY_AUDIT_COMMIT by the pax header GitHub writes into it,
+#     as gstack's is;
+#   * ONLY skills/security-audit/ (SKILL.md, the fourteen method files,
+#     report-schema.json and the two zero-dependency Node validators with
+#     their tests) and LICENSE are staged, at the archive's own relative
+#     paths, to /out/security-audit: directories 0755, files 0644, the
+#     validators run as `node <file>`, so nothing needs an execute bit.
+#     README.md and everything else stays in this stage. There is no setup
+#     step and no package to install: the skill is markdown, JSON and two
+#     self-contained .cjs files.
+#
+# Bumping the pin is one PR: SECURITY_AUDIT_COMMIT and SECURITY_AUDIT_SHA256
+# here, the row in tool-mirror.sha256 and the catalogue's version
+# (tests/unit/scripts/test_security_audit_image.py holds the four equal and
+# runs the skill's own validator tests on the pinned copy).
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS security-audit-build
+
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
+ && apt-get install --no-install-recommends -y ca-certificates curl git \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG SECURITY_AUDIT_COMMIT=c1c8a8c1471069fb0e188eeaff69b8e8db6564a8
+ARG SECURITY_AUDIT_SHA256=53e708ebf770dfe35b57df0586a5058707081a870cd149ce30a2d57c51ed29b6
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    scratch="$(mktemp -d)" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/security-audit.tar.gz \
+      "file:///tmp/tool-mirror/github.com/cloudflare/security-audit-skill/archive/${SECURITY_AUDIT_COMMIT}.tar.gz" \
+ && echo "${SECURITY_AUDIT_SHA256}  /tmp/security-audit.tar.gz" | sha256sum -c - \
+ && test "$(gzip -dc /tmp/security-audit.tar.gz | git get-tar-commit-id)" = "${SECURITY_AUDIT_COMMIT}" \
+ && tar -xzf /tmp/security-audit.tar.gz -C "${scratch}" --strip-components=1 \
+ && test -f "${scratch}/skills/security-audit/SKILL.md" \
+ && test -f "${scratch}/LICENSE" \
+ && mkdir -p /out/security-audit/skills \
+ && cp -R "${scratch}/skills/security-audit" /out/security-audit/skills/security-audit \
+ && cp "${scratch}/LICENSE" /out/security-audit/LICENSE \
+ && test -z "$(find /out/security-audit ! -type f ! -type d)" \
+ && find /out/security-audit -type d -exec chmod 0755 {} + \
+ && find /out/security-audit -type f -exec chmod 0644 {} + \
+ && rm -rf "${scratch}" /tmp/security-audit.tar.gz
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -707,7 +847,12 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # v0.59.0, below the fixed go1.27.2 and x/net 0.60.0, and no Google build is
 # newer, so the plugin's findings are accepted in .trivyignore.yaml until a
 # fixed build ships. Measured with `go version -m` and `trivy rootfs` over the
-# unpacked .debs. Neither .deb
+# unpacked .debs.
+# The plugin moved alone to 592.0.0 on 2026-11-06 (GKE_PLUGIN_VERSION): Google's
+# index lists it, and its binary, read with `go version -m` after the index's
+# SHA256 matched, is go1.27.3 with golang.org/x/net v0.61.0, which fixes
+# CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 in it. The CLI stays at
+# 591.0.0, so the agents' gcloud is unchanged. Neither .deb
 # declares a Depends. The auth plugin is not on the §2.12 list, but kubectl
 # cannot authenticate to a GKE cluster without it, so without it the kubectl
 # below would only reach clusters nobody here runs.
@@ -715,8 +860,9 @@ ARG GCLOUD_VERSION=591.0.0
 ARG GCLOUD_POOL_ID=a9222e6bee57d1c0f6eb73c93218c714
 ARG GCLOUD_SHA256=e11c443efa5d59bbb457cdf28e025246483d01db5b7fde772fe8a339a7ca20d0
 # Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031 reads "AUTH" in an ARG name as a secret and fails the PR; these are public package pool ids and checksums.
-ARG GKE_PLUGIN_POOL_ID=0f14e7e21ca8f8a0ba22a1f83c4b26b1
-ARG GKE_PLUGIN_SHA256=b46d7490fd2b596e3b58b0d94aa8f0328c288fcfa517a6f6b8a01e704b5760c7
+ARG GKE_PLUGIN_VERSION=592.0.0
+ARG GKE_PLUGIN_POOL_ID=a8fc8016eccf144b786a0d64a6f464aa
+ARG GKE_PLUGIN_SHA256=3a1da42673e0df59b86958c817d2369ef89d5b435767d1fea85e453707007df4
 # kubectl 1.36.6: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
 # on 2026-10-28), built on go1.26.10, which fixes CVE-2026-111943 and
 # CVE-2026-56857 in kubectl (1.36.5 was go1.26.8), and CVE-2026-78667 in
@@ -737,7 +883,7 @@ RUN mkdir -p /tmp/toolbox \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/google-cloud-cli.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli_${GCLOUD_VERSION}-0_amd64_${GCLOUD_POOL_ID}.deb" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
-      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
+      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GKE_PLUGIN_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GCLOUD_SHA256}  /tmp/toolbox/google-cloud-cli.deb" | sha256sum -c - \
@@ -1101,6 +1247,34 @@ RUN --mount=type=bind,source=images/agent-runtime-base/jev-gates,target=/tmp/jev
     fi \
  && chmod -R a+rX,a-w /opt/swarm/jev-gates
 
+# gstack, the first agent plugin (the gstack-build stage above says how it is
+# built and why). Bun goes in /usr/local/bin, not under the plugin, because
+# gstack's helpers and the compiled `browse` run `bun` from PATH. The plugin is
+# the base list only: the 18 catalogue skills' pages and the helpers they run,
+# no node_modules and no compiled binary. COPY writes uid 0, so both are
+# root-owned and out of the agent's reach (gstack-layers stage wrote no write
+# bit for group or other, and no `.git`). The build stage ran
+# `bun --version` against BUN_VERSION.
+# An image ENV would not reach the agent's CLI (the runner builds its
+# environment from scratch), so the runner, not this image, sets gstack's
+# environment and links the step's skills into the attempt's HOME.
+# SIZE (measured 3 November 2026): +86.2 MB uncompressed, +38.8 MB gzip -6
+# (Bun 79.5 MB / 36.7 MB; the base list 6.7 MB / 2.1 MB as tar).
+COPY --from=gstack-build /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=gstack-build /out/gstack/ /opt/swarm/plugins/gstack/
+
+# Cloudflare's security audit skill, the second agent plugin (the
+# security-audit-build stage above says how it is fetched and checked): its
+# one skill folder and LICENSE, at the archive's relative paths, so the skill
+# is /opt/swarm/plugins/security-audit/skills/security-audit. COPY writes
+# uid 0 and the stage wrote no write bit for group or other, so the agent
+# cannot change it; the runner links the step's skill folder into the
+# attempt's HOME (agent_worker.plugins). The browser and Lightpanda images
+# are built FROM this one and inherit it.
+# SIZE (measured 4 November 2026): +0.32 MB uncompressed (315,748 bytes in
+# 21 files; 0.34 MB as tar), +0.09 MB gzip -6 (93,267 bytes).
+COPY --from=security-audit-build /out/security-audit/ /opt/swarm/plugins/security-audit/
+
 # A warmed npm cache for this repository's UI (docs/design/agent-autonomy.md
 # §3.10, lane AU-8). Built from apps/swarm-ui's lockfile with `npm ci --cache
 # /opt/npm-cache`; the node_modules that install wrote is then thrown away and
@@ -1229,6 +1403,14 @@ RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shel
  && rm -rf "$HOME" \
  && if [ -n "$missing" ]; then echo "toolbox smoke: missing or broken:$missing" >&2; exit 1; fi \
  && echo "toolbox smoke: $n tools ok"
+
+# The commit this image was built from, for the worker's build line
+# (agent_worker.buildinfo reads SWARM_GIT_SHA; part of #2688, the owner's pick
+# "add both"). scripts/build-images.sh and the checked-in recipes pass GIT_SHA
+# to every build. Declared last, so a new commit rebuilds no layer above it;
+# empty when a build passes none, and the worker then reports no commit.
+ARG GIT_SHA=""
+ENV SWARM_GIT_SHA=${GIT_SHA}
 
 # tini reaps orphaned grandchildren; the worker still terminates its own process
 # group itself, so signals reach exactly one direct child.

@@ -429,7 +429,7 @@ def test_a_merge_verdict_still_opens_the_one_pull_request_carrying_it(
         "integrates": ["task_impl"], "builds_on": "task_impl",
     }}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._maybe_clone(task) is not None
     # What `_evaluate_verdict_gate` records when the verdict does not name
     # this step; the agent then never runs, so nothing is edited.
@@ -511,7 +511,7 @@ def test_a_generation_bumped_after_the_shut_gate_fences_the_publish(
     worker, _config, _exporter = worker_factory(
         task_id="task_2", attempt_id="att_2", lease_id="lease_2", repository_url=url,
     )
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
 
     def refuse(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("the runner was started behind a shut verdict gate")
@@ -556,7 +556,7 @@ def test_building_on_a_branch_that_was_never_pushed_fails_the_clone_by_name(
     task = {"task_id": "task_fix",
             "metadata": {"dispatch": {"strategy": "integrate", "builds_on": "task_gone"}}}
     worker._task = task
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
 
     with pytest.raises(WorkerError, match="task_gone"):
         worker._maybe_clone(task)

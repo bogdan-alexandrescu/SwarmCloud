@@ -19,7 +19,10 @@ test_qa_target_signin's scripted Chromium:
     lands on a page without that element (an access-pending page) ends the
     sign-in `failed`, although the IdP session is real and every page the
     agent or the crawler then loads is signed in: every page load's token
-    exchange is then refused, on every tab, for the rest of the attempt.
+    exchange was then refused, on every tab, for the rest of the attempt.
+    FIXED on 2026-11-03 (test_qa_idp_token_production_legs): the exception
+    holds from the gate's sign-in's start until the wipe, whatever its
+    verdict, so the (b) tests below now hold that every load goes.
 (c) THE COMPARISON: ruled out for what Chromium sends (host in lower case, no
     default port, no fragment), but the record cannot tell a query string
     apart: it keeps the path and never the query, so a refused POST with a
@@ -182,7 +185,7 @@ def test_a_the_crawlers_own_tab_is_judged_by_the_same_signed_in_gate(tmp):
 # --------------------------------------------------------------------------
 
 
-def test_b_a_sign_in_that_lands_without_the_selector_fails_and_every_load_is_refused(tmp):
+def test_b_a_sign_in_that_lands_without_the_selector_fails_and_every_load_still_goes(tmp):
     async def body() -> None:
         # The account signs in, and the app lands it on a page that does not
         # draw `signed_in_selector` (an access-pending page): the probe reads
@@ -195,13 +198,13 @@ def test_b_a_sign_in_that_lands_without_the_selector_fails_and_every_load_is_ref
         await rig.settle()
         loads = [_token_post(rig, tab) for _ in range(15)]
         await rig.settle()
-        # Every screen of the crawl: refused, none reached the network.
-        assert all(_refused(rig, r) for r in loads)
-        assert not any(u == TOKEN_URL for u, _ in rig.fake.network)
-        records = rig.target.refusals()["refusals"]
-        assert len(records) == 15
-        assert {(r["method"], r["origin"], r["path"], r["code"]) for r in records} == {
-            ("POST", SSO, TOKEN_PATH, gate_qt.WRITE_REFUSED)}
+        # Every screen of the crawl reaches the provider, recorded as allowed.
+        # MUTATION: read the sign-in's verdict and all 15 are refused (the old rule).
+        assert not any(_refused(rig, r) for r in loads)
+        assert sum(1 for u, _ in rig.fake.network if u == TOKEN_URL) == 15
+        assert rig.target.refusals()["refusals"] == []
+        assert {(r["method"], r["origin"], r["path"], r["code"]) for r in rig.target.refusals()["allowed"]} == {
+            ("POST", SSO, TOKEN_PATH, gate_qt.IDP_TOKEN_ALLOWED)}
         await rig.fake.stop()
 
     run(body)
@@ -214,10 +217,11 @@ def test_b_the_agent_signing_in_through_its_own_tab_does_not_change_the_gates_st
         # it to), and the IdP session completes there: nothing the gate counts.
         tab = _new_tab(rig)
         await rig.settle()
-        refused = _token_post(rig, tab)
+        sent = _token_post(rig, tab)
         await rig.settle()
         assert rig.target.state == gate_qt.STATE_FAILED
-        assert _refused(rig, refused)
+        # The state stays failed, and the token POST goes all the same.
+        assert not _refused(rig, sent)
         await rig.fake.stop()
 
     run(body)

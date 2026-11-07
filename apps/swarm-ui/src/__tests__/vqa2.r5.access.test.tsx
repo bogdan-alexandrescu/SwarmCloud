@@ -31,6 +31,14 @@ import { serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 
+// THE FIRST LOAD OF THE ACCESS SCREENS, AT COLLECTION. `mount` imports them
+// afresh after `vi.resetModules()`, which re-runs modules already fetched;
+// the first test paid the cold fetch and transform of their whole graph
+// (9.4 s idle of V165's 13 s) inside its 30 s, and on a starved runner ran
+// out of it. Collection loads them once with no test's clock running.
+await import('../Access')
+await import('../ReachableRepositories')
+
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 400 }
 const LONG = 'an-organisation-with-a-really-quite-long-name-for-an-owner'
@@ -155,7 +163,19 @@ describe('Access (VQA2-R5)', () => {
   it('V165: "Install on <a long owner>" shrinks to its card and wraps, at 400 and at 1440', async () => {
     api([ORG('example-org'), UNINSTALLED])
     await mount('choose')
-    const link = await screen.findByRole('link', { name: `Install on ${LONG}` })
+    // Wait on the drawn link, then hold it by role ONCE, within its owner's
+    // card: polled through `findByRole`, each poll walked the whole Access
+    // page's accessibility tree (2.4 s for one walk, idle), and a starved
+    // runner fit no poll after the owners read landed (reads.ts says why).
+    const drawn = await waitFor(
+      () => {
+        const a = [...document.querySelectorAll('a')].find((n) => n.textContent === `Install on ${LONG}`)
+        expect(a, 'no Install on link drawn yet').toBeDefined()
+        return a!
+      },
+      { timeout: 5000 },
+    )
+    const link = within(drawn.closest('li') ?? document.body).getByRole('link', { name: `Install on ${LONG}` })
     expect(link.parentElement!.classList.contains('ac-owner-acts')).toBe(true)
     for (const env of [WIDE, PHONE]) {
       expect(painted(link, 'white-space', env), `nowrap at ${env.width}`).toBe('normal')
@@ -248,10 +268,16 @@ describe('Access (VQA2-R5)', () => {
 
   // Members and Browser logins left the page with GA-MOVE-VIEWS (part of #2157);
   // their ledes went with them to People and roles and Secrets.
-  it('V232: the lede says what Connection and Choose repositories each show', async () => {
+  it('V232: the lede says what Connection and Choose repositories each show, as the (i) beside the title', async () => {
     api([ORG('example-org')])
     await mount()
-    const lede = () => visible(document.querySelector('.ac-page > .ur-sub'))
+    // BGD's no-prose rule (2026-11-05): no line under the title; the (i) carries it.
+    // MUTATION: draw `<p className="ur-sub">` under the tabs again.
+    expect(document.querySelector('.ac-page > .ur-sub')).toBeNull()
+    const lede = () => {
+      const info = document.querySelector('.ac-page .c-phead > .head button[aria-label="About GitHub access"]')
+      return visible(info === null ? null : document.getElementById(info.getAttribute('aria-describedby')!))
+    }
     await waitFor(() => expect(lede()).toContain('in workspace eng'))
     // The reach-as-you list left the page (GITHUB-ACCESS-PAGE), so no tab's lede promises it.
     // MUTATION: put "The orgs and repositories SwarmCloud may reach as you" back as Mine's lede.

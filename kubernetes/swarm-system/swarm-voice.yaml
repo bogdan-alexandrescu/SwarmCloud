@@ -172,14 +172,50 @@ spec:
             # Who may call: swarm-api's service account, and no one else.
             - name: SWARM_VOICE_CALLERS
               value: __SWARM_VOICE_CALLERS__
+            # Where the planner reads and draws cards as the session's person,
+            # through the session grant (swarm_voice/planner.py). swarm-api is
+            # Cloud Run: its run.app host, the one the egress policy admits;
+            # the ID token's audience defaults to this URL, swarm-api's own.
+            - name: SWARM_API_URL
+              value: https://__SWARM_API_HOST__
+            # The quota broker, whose Voice it pool leases each session's
+            # ChatGPT plan account (swarm_voice/accountlease.py), and the
+            # audience its ID-token check pins. swarm-voice reads no secret
+            # for the voice: the lease carries the access token.
+            - name: QUOTA_BROKER_URL
+              value: __QUOTA_BROKER_URL__
+            - name: QUOTA_BROKER_AUDIENCE
+              value: __QUOTA_BROKER_AUDIENCE__
+            # The planner's Claude Code (swarm_voice/claudeturn.py), installed
+            # by the image at agent-runtime-base's pinned version. Each turn
+            # runs it on a Claude account the same broker leases from the
+            # workspace pool (swarm_voice/plannerlease.py), with a private
+            # HOME under /tmp removed after the turn; the token is in that
+            # child's environment only, never in this pod's.
+            - name: CLAUDE_CODE_BIN
+              value: /opt/claude/bin/claude
+            # The two model pins, rendered by voice.tf from Terraform's
+            # local.runner_models (voice-it-own-speech.md §14.1): own speech's
+            # fast front answers each sentence on the haiku class, picked by
+            # first-reply latency; the planner runs the planning class, fable,
+            # on both engines (swarm_voice/claudeturn.py reads both).
+            - name: VOICE_FRONT_MODEL
+              value: __VOICE_FRONT_MODEL__
+            - name: VOICE_PLANNER_MODEL
+              value: __VOICE_PLANNER_MODEL__
+          # Memory is 2Gi, not 1Gi: each planner turn starts a Claude Code
+          # child (CLAUDE_CODE_BIN above) beside the live sidebands, and the
+          # child's Node runtime alone can take several hundred MiB. Request
+          # equals limit (invariant 7), so the pod is never OOM-killed for a
+          # neighbour's burst; owner's pick on PR #3112.
           resources:
             requests:
               cpu: 500m
-              memory: 1Gi
+              memory: 2Gi
               ephemeral-storage: 1Gi
             limits:
               cpu: "1"
-              memory: 1Gi
+              memory: 2Gi
               ephemeral-storage: 1Gi
           readinessProbe:
             httpGet:

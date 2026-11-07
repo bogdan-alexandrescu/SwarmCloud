@@ -1,3 +1,7 @@
+// THE APP-WIDE RATCHET IS proseapp.tsx (BOGDAN'S RULE, 2026-11-05): every
+// page the nav reaches shows no more words or arrowed links than it did on the
+// change's base. This file keeps its own screen-level budget.
+//
 // THE PROSE BUDGET, AS A NUMBER.
 //
 // The owner's directive is "remove prose from views, just features, data and

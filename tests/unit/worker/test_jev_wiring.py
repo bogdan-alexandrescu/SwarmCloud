@@ -892,7 +892,10 @@ def test_j0_is_never_asked_when_the_role_is_known(work, tmp_path, monkeypatch, p
     fake = _j0_answering("design", 0.99)
     pack = _prepared(work, tmp_path, payload, _judge(tmp_path, fake))
     assert pack["task_type"] != "design"
-    assert "J0" not in _ledger_kinds(tmp_path)
+    # The type was known, so J0 was not asked: its one row is the skip, which
+    # the usage page counts as skipped, never as a call (owner, 2026-11-04).
+    audit = budget.Ledger(tmp_path / "judge-ledger.json").read()["audit"]
+    assert [r["outcome"] for r in audit if r["kind"] == "J0"] == ["skipped:known_type"]
     assert all("role" not in r["questions"] for r in fake.requests)
 
 
@@ -903,4 +906,7 @@ def test_j0_failure_leaves_the_pack_byte_identical_to_local_only(work, tmp_path,
     local = _prepared(work, tmp_path, AD_HOC, None)
     local_bytes = _pack_bytes(work)
     jev = _prepared(work, tmp_path, AD_HOC, FAILURES[failure](tmp_path))
+    # The artifact's `seconds` is the pack's wall time (lane
+    # REVIEW-STARTUP-WAIT): a timing, never the same twice.
+    assert isinstance(jev.pop("seconds"), float) and isinstance(local.pop("seconds"), float)
     assert _pack_bytes(work) == local_bytes and jev == local

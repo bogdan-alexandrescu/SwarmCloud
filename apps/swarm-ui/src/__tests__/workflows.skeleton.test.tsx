@@ -137,6 +137,10 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
   it('draws the head row with its actions disabled, the view tabs and a body card, then the page in the same places', async () => {
     let land: (r: Result<WorkflowBoard>) => void = () => {}
     api.loadWorkflowBoard.mockReturnValue(new Promise<Result<WorkflowBoard>>((r) => (land = r)))
+    // The loaded page's Overview lives in the docked inspector, which starts
+    // folded below 1366px (jsdom's default innerWidth is 1024).
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     render(<Routed initial="wf=wf_one&tab=table" />)
 
     const page = document.querySelector<HTMLElement>('.wfp.is-loading')
@@ -148,12 +152,14 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     const order = [...page!.children].map((c) => c.className.split(' ')[0])
     expect(order).toEqual(['wfp-head', 'c-tabs', 'wfp-skel-body'])
     const head = page!.querySelector<HTMLElement>('.wfp-head')!
-    const actions = within(head).getAllByRole('button')
-    // No Stop workflow before the state is read (WF-18a): it may have ended, or not exist.
-    // Copy id is reserved beside Copy link, as the loaded head draws them (overview-agents-80, #2596).
-    expect(actions.map((b) => b.textContent)).toEqual(['Copy id', 'Copy link'])
-    expect(head.querySelector('.wfp-skel-act')).not.toBeNull()
-    expect(actions.every((b) => (b as HTMLButtonElement).disabled)).toBe(true)
+    // No buttons in the head while it reads: Stop workflow, Copy id and Copy
+    // link are the Overview's now (the Graph Work redesign), so the loaded
+    // head has none either and nothing is reserved for them (WF-18a: no Stop
+    // before the state is read).
+    expect(within(head).queryAllByRole('button')).toHaveLength(0)
+    expect(head.querySelector('.wfp-skel-act')).toBeNull()
+    // The tally line's bar holds the line the loaded head's tally draws.
+    expect(head.querySelector('.wfp-tally > .wfl-skel')).not.toBeNull()
     // The chips are bars, not words: a skeleton answers nothing.
     const chips = head.querySelector('.wfp-chips')!
     expect(chips.querySelectorAll('.wfl-skel').length).toBeGreaterThan(0)
@@ -172,14 +178,22 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
 
     land({ status: 'ok', data: fixture(), fetchedAt: T0 })
     await waitFor(() => expect(document.querySelector('.wfp.is-loading')).toBeNull())
+    // The loaded page is `Board`'s own frame, `.wfp.wfp-main`, drawn in
+    // the inspector shell's left pane -- the head ahead of the view bar that
+    // now holds the tabs. Nothing in the fixture needs you, so no Needs-you
+    // card is drawn between them (WorkflowQuestions.tsx: nothing waits, no card).
     const loaded = document.querySelector<HTMLElement>('.wfp')!
-    expect(loaded.className).toBe('wfp')
-    expect([...loaded.children].map((c) => c.className.split(' ')[0]).slice(0, 2)).toEqual(['wfp-head', 'c-tabs'])
-    expect(within(loaded.querySelector<HTMLElement>('.wfp-head')!).getByRole('button', { name: 'Copy link' })).not.toHaveProperty(
+    expect(loaded.className).toBe('wfp wfp-main')
+    expect([...loaded.children].map((c) => c.className.split(' ')[0]).slice(0, 2)).toEqual(['wfp-head', 'wfp-viewbar'])
+    // Copy link moved into the Overview, the inspector at rest, and is no
+    // longer in the head once the read lands.
+    expect(within(loaded.querySelector<HTMLElement>('.wfp-head')!).queryByRole('button', { name: 'Copy link' })).toBeNull()
+    expect(within(document.querySelector<HTMLElement>('.wfp-ov')!).getByRole('button', { name: 'Copy link' })).not.toHaveProperty(
       'disabled',
       true,
     )
     expect(tabLabels(loaded)).toEqual(['Graph', 'Table', 'Steps over time', 'Changes'])
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 
   it('lets a tab be chosen during the load: each view is an address, not a control the data drives', () => {
@@ -313,6 +327,7 @@ describe('#113: every `.ctl-pending` loading bar is visible in both themes', () 
       'ArtifactViewer.tsx',
       'Artifacts.tsx',
       'CheckpointBrowser.tsx',
+      'RenderedFile.tsx',
       'WorkflowChanges.tsx',
     ])
     expect(found.get('ol-pending')).toEqual(['../Activity.tsx'])

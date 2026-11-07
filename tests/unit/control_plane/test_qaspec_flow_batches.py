@@ -68,6 +68,7 @@ def _flows(n: int, *, goal: str = "reach the frame state", mutating_every: int =
         flow: dict[str, Any] = {"id": f"frame-{i:03d}", "goal": f"{goal} {i}", "start_path": f"/frames/{i}"}
         if mutating_every and i % mutating_every == 0:
             flow["mutating"] = True
+            flow["writes"] = f"One frame state record for flow {i}."
         flows.append(flow)
     return flows
 

@@ -9,16 +9,17 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { chosenTenant, noteFixtureProbe, read, readGeneration, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { chosenTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
 // four states, not a second list written out here.
 import { CONCURRENCY_STATES, MODEL_PRICE_RATES, TERMINAL_STATES } from './types'
+import { PLUGIN_MODES, type CataloguePlugin, type PluginModeOffer, type WorkspacePlugins } from './types'
 // The one rule for summing a nullable measurement: null until something
 // actually reported it, so an unmeasured sample never becomes a confident zero.
 import { sumReported } from './measure'
-import { stateEnteredAt, summaryTaskById, type StepTaskSummary } from './stepviews'
+import { stateEnteredAt, summaryTaskById, type StepNeedQuestion, type StepNeeds, type StepTaskSummary } from './stepviews'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { normUtilisation, type UtilisationRead } from './utilisation'
 import { noteProfile, revisionAfterZoneSaves } from './timezone'
@@ -388,73 +389,6 @@ export interface AgentDetail {
   eventsDetail: string | null
 }
 
-/**
- * HOW MANY OF THE CALLER'S OTHER TENANTS A TASK 404 ASKS (#1194 c15). The
- * probes run one after another, so a caller in many groups costs this many
- * reads at most, once per task and chosen tenant (`ELSEWHERE_KEEP_MS`, and
- * until a write or sign-out: `readGeneration`), never a burst against the
- * 20 rps per-principal budget. A chosen value: a task in a tenant past the
- * eighth is drawn as today's 404, which is never a wrong answer.
- */
-export const ELSEWHERE_PROBE_CAP = 8
-
-/**
- * How long one probe's answer is kept for the same task under the same chosen
- * tenant. The drawer re-reads a failed task on its back-off, and asking every
- * other tenant again on each of those reads would multiply the probe by the
- * poll; a minute covers the reads a person waits through before they act.
- */
-export const ELSEWHERE_KEEP_MS = 60_000
-
-const elsewhereKept = new Map<string, { at: number; answer: Promise<TenantChoice | null> }>()
-
-/**
- * THE ONE OTHER TENANT OF THE CALLER'S THAT HOLDS `taskId`, or null.
- *
- * `GET /v1/tasks/{id}` answers the same 404 for a task that does not exist and
- * for one in another tenant (store.py), and this does not widen that answer:
- * it asks ONLY under the tenants `GET /v1/tenants/mine` lists for this caller
- * -- each with that tenant's own `X-Swarm-Tenant`, which the API honours only
- * for a membership it confirmed -- one at a time and at most
- * `ELSEWHERE_PROBE_CAP`. Exactly one 200 names the tenant; none, or more than
- * one (a task id is unique, so that would be a confused API), is null and the
- * 404 is drawn as it always was. The choice itself is never changed here.
- */
-export function taskElsewhere(taskId: string): Promise<TenantChoice | null> {
-  const chosen = chosenTenant()
-  const key = `${readGeneration()}\n${chosen ?? ''}\n${taskId}`
-  const kept = elsewhereKept.get(key)
-  if (kept !== undefined && Date.now() - kept.at < ELSEWHERE_KEEP_MS) return kept.answer
-  const answer = (async (): Promise<TenantChoice | null> => {
-    const mine = await loadMyTenants()
-    if (mine.status !== 'ok' && mine.status !== 'stale') return null
-    // The chosen tenant already answered 404. With no choice the API applied
-    // the caller's default, which /v1/tenants/me names and this does not
-    // read; asking it again under its own header costs one read and is safe.
-    const others = mine.data.filter((t) => t.tenant_id !== chosen).slice(0, ELSEWHERE_PROBE_CAP)
-    const holders: TenantChoice[] = []
-    for (const t of others) {
-      const r = await read<unknown>(route('/v1/tasks/{id}', { id: taskId }), () => false, { tenant: t.tenant_id, frame: true })
-      if (r.status === 'ok') holders.push(t)
-    }
-    return holders.length === 1 ? (holders[0] ?? null) : null
-  })()
-  elsewhereKept.set(key, { at: Date.now(), answer })
-  return answer
-}
-
-/**
- * A task read's failure, with `elsewhere` set when it was a 404 and one other
- * tenant of the caller's holds the task (`taskElsewhere`). Every other failure
- * is returned as it came.
- */
-async function withElsewhere(taskId: string, failed: { status: 'error'; error: ApiError }): Promise<{ status: 'error'; error: ApiError }> {
-  if (failed.error.kind !== 'not_found') return failed
-  const found = await taskElsewhere(taskId)
-  if (found === null) return failed
-  return { ...failed, error: { ...failed.error, elsewhere: { tenant_id: found.tenant_id, display_name: found.display_name } } }
-}
-
 export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetail>> {
   if (USE_FIXTURES) return fixtureAgentDetail(taskId)
 
@@ -465,8 +399,8 @@ export async function loadAgentDetail(taskId: string): Promise<Result<AgentDetai
   ])
 
   if (task.status === 'loading') return task
-  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
-  if (task.status === 'error') return withElsewhere(taskId, task)
+  // A 404 is the page's to look for elsewhere (elsewhere.tsx), once, not each loader's.
+  if (task.status === 'error') return task
   if (task.status === 'empty') {
     return {
       status: 'error',
@@ -2172,7 +2106,11 @@ async function fixtureWorkflowRead(workflowId: string): Promise<Result<WorkflowR
   const stepTasks = new Set(workflow.steps.map((s) => s.task_id).filter((id): id is string => !!id))
   const tasks =
     page.status === 'ok' ? page.data.tasks.filter((t) => t.workflow_id === workflowId || stepTasks.has(t.id)) : []
-  return { status: 'ok', fetchedAt: Date.now(), data: { workflow, tasks } }
+  // EACH STEP'S `task_summary`, needs block included, as the live read serves
+  // it (`step_totals` given, codec.workflow_to_api): without it no fixture
+  // page counted a question, so a finished workflow's quiet tick never drew.
+  const [summarised] = withTaskSummaries([workflow], tasks)
+  return { status: 'ok', fetchedAt: Date.now(), data: { workflow: summarised ?? workflow, tasks } }
 }
 
 /**
@@ -2227,6 +2165,38 @@ export async function cancelWorkflow(workflowId: string): Promise<Result<CancelW
   return write(route('/v1/workflows/{id}/cancel', { id: workflowId }), 'POST') as Promise<
     Result<CancelWorkflowResult>
   >
+}
+
+/**
+ * RE-RUN ONE FAILED WORKFLOW STEP INSIDE ITS WORKFLOW.
+ * `POST /v1/workflows/{id}/steps/{step}/rerun`
+ * (apps/swarm-api/swarm_api/routes/workflows.py `rerun_workflow_step`,
+ * `swarm_api/steprerun.py`). The body is empty: the step's runner profile and
+ * spec are the ones the API resolved at submission (invariant 10). The failed
+ * step, and the steps its failure cancelled, get new tasks; the answer names
+ * each step's old and new task id. Refused 409 `conflict` while a step still
+ * runs, for a step that did not fail, for a cancelled workflow, and when
+ * another re-run or a cancel landed first (`detail.reason` says which; the
+ * message says it in words). Called by Needs you's Retry on a
+ * failed step (work/NeedsYou.tsx). The fixture build sends nothing.
+ */
+export async function rerunWorkflowStep(workflowId: string, stepId: string): Promise<Result<StepRerunResult>> {
+  const target = route('/v1/workflows/{id}/steps/{step}/rerun', { id: workflowId, step: stepId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, false)
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build re-runs no steps.' },
+    }
+  }
+  return (await write(target, 'POST')) as Result<StepRerunResult>
+}
+
+/** What `rerun_workflow_step` answers: each re-run step's old and new task id. */
+export interface StepRerunResult {
+  workflow_id: string
+  step_id: string
+  replaced: Record<string, { from: string; to: string }>
 }
 
 /** Only what this client reads of the cancel response (store.py `cancel_workflow`). */
@@ -2285,6 +2255,7 @@ async function fixtureArtifactContent(
   }
   // The Jev review's verdict file, with `p_real` on its findings.
   if (taskId === FIXTURE_JEV_REVIEW) bodies['verdict.json'] = FIXTURE_JEV_VERDICT
+  if (name === FIXTURE_MOCKUP_PATCH) bodies[name] = await fixtureMockupPatch()
   const content = bodies[name] ?? `fixture artifact ${name}\n`
   const bytes = new TextEncoder().encode(content).length
   return {
@@ -2664,8 +2635,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
       : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
   if (task.status === 'loading') return task
-  // A 404 asks the caller's other tenants whether one holds it (#1194 c15).
-  if (task.status === 'error') return withElsewhere(taskId, task)
+  // A 404 is the page's to look for elsewhere (elsewhere.tsx), once, not each loader's.
+  if (task.status === 'error') return task
   if (task.status === 'empty') {
     return {
       status: 'error',
@@ -4849,8 +4820,8 @@ type FixtureInputContract = RunnerInputContract & { inputs?: Record<string, unkn
 const FIXTURE_INPUT_CONTRACTS: Record<string, FixtureInputContract> = {
   "mock": {"required_keys": []},
   "generic": {"required_keys": []},
-  "claude-code": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
-  "codex": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}}},
+  "claude-code": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "pull_request": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt"}}},
+  "codex": {"required_keys": ["prompt"], "inputs": {"issue": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt"}, "mcp_servers": {"kind": "list", "minimum": 1, "maximum": 4, "choices": [], "required": false, "means": "registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md)"}, "pull_request": {"kind": "integer", "minimum": 1, "maximum": 999999, "choices": [], "required": false, "means": "a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt"}}},
   "browser": {"required_keys": []},
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
@@ -5068,7 +5039,18 @@ const FIXTURE_HELD = [
   { task_id: 'task_wait_asked_fix', step_id: 'fix', question_index: 1, question: 'Rename the views flag in this change or in a follow-up?' },
 ]
 
-/** What each asking task of the fixture's held merge asked: `GET /v1/tasks/{id}/questions`. */
+/** The owner's answer to `wf_quiet_q_01`'s first question, as `metadata.owner_answers` stores it. */
+const FIXTURE_QUIET_ANSWER = {
+  question_index: 0,
+  question: 'Keep the old views address as a redirect?',
+  choice: 'Redirect',
+  text: null,
+  by: 'alice@example.com',
+  at: new Date(FIXTURE_NOW - 40 * 60_000).toISOString(),
+  history: [],
+}
+
+/** What each asking fixture task asked (the held merge's and `wf_quiet_q_01`'s): `GET /v1/tasks/{id}/questions`. */
 function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
   const option = (label: string, description: string) => ({ label, description })
   const asked: Record<string, AgentQuestion[]> = {
@@ -5098,6 +5080,25 @@ function fixtureHeldQuestions(taskId: string): TaskQuestions | null {
           option('This change', 'One pull request; the review re-runs on the rename.'),
           option('Follow-up', 'This merges as reviewed; the rename is its own lane.'),
         ],
+        recommended: 'Follow-up',
+        context: null,
+        answer: null,
+      },
+    ],
+    task_f278adec: [
+      {
+        question: FIXTURE_QUIET_ANSWER.question,
+        options: [
+          option('Redirect', 'Old links keep working.'),
+          option('Remove', 'Old links 404.'),
+        ],
+        recommended: 'Redirect',
+        context: null,
+        answer: FIXTURE_QUIET_ANSWER,
+      },
+      {
+        question: 'Rename the views flag in this change or in a follow-up?',
+        options: [option('This change', 'One pull request.'), option('Follow-up', 'Its own lane.')],
         recommended: 'Follow-up',
         context: null,
         answer: null,
@@ -5549,6 +5550,180 @@ const FIXTURE_JEV_FINDINGS = [
 /** The review's `verdict.json` as Jev's post-step left it. */
 const FIXTURE_JEV_VERDICT = JSON.stringify({ verdict: 'NOT_YET', findings: FIXTURE_JEV_FINDINGS }, null, 2)
 
+// ---------------------------------------------------------------------------
+// A step's mock-ups, for the Changes view's Rendered pane (BGD, 2026-11-06)
+// ---------------------------------------------------------------------------
+//
+// The ux-mockups kit's shape: a desktop frame recorded at 1440x900, a phone
+// frame named `-390`, a frames.json beside them, and a PNG. The frames set
+// their theme from a `?theme=` script, which the console's sandbox never runs:
+// the pane writes `data-theme` on the html element instead, and the CSS below
+// keys on it. The PNG and its `GIT binary patch` literal are BUILT at load
+// time (CompressionStream), never written here as base85, which reads as
+// credential-shaped text to the publish scan.
+
+const FIXTURE_MOCKUP_PATCH = 'mockups.patch'
+const FIXTURE_MOCKUP_DIR = 'docs/design/mocks/settings-parity/frames'
+
+const FIXTURE_MOCKUP_FRAMES_JSON = JSON.stringify(
+  [
+    { name: 'sp1-a-rest', viewport: { width: 1440, height: 900 } },
+    { name: 'sp1-a-rest-390', viewport: { width: 390, height: 844 } },
+  ],
+  null,
+  2,
+)
+
+const fixtureLines = (text: string) => text.split('\n').length
+
+const FIXTURE_MOCKUP_FILES = [
+  { path: `${FIXTURE_MOCKUP_DIR}/frames.json`, old_path: null, status: 'A', insertions: fixtureLines(FIXTURE_MOCKUP_FRAMES_JSON), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.html`, old_path: null, status: 'A', insertions: fixtureLines(fixtureMockupFrame('Settings · rest', false)), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest-390.html`, old_path: null, status: 'A', insertions: fixtureLines(fixtureMockupFrame('Settings · rest · phone', true)), deletions: 0, binary: false },
+  { path: `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.png`, old_path: null, status: 'A', insertions: null, deletions: null, binary: true },
+]
+
+function fixtureMockupFrame(title: string, phone: boolean): string {
+  const width = phone ? 390 : 1440
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    `<meta name="viewport" content="width=${width}">`,
+    `<title>${title}</title>`,
+    '<style>',
+    ':root { --bg: #f7f7f5; --fg: #1d1d1b; --card: #fff; --line: #e2e2dc; --accent: #3a5bd9 }',
+    'html[data-theme="dark"] { --bg: #16171a; --fg: #ececea; --card: #212226; --line: #34353a; --accent: #8aa2ff }',
+    'body { margin: 0; font: 15px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg) }',
+    `main { padding: ${phone ? 16 : 40}px; display: grid; gap: 16px; grid-template-columns: ${phone ? '1fr' : '240px 1fr'} }`,
+    '.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px }',
+    'button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px }',
+    '</style>',
+    // The kit's theme script: inert in the sandbox, which is the point.
+    "<script>document.documentElement.dataset.theme = new URLSearchParams(location.search).get('theme') || 'light'</script>",
+    '</head>',
+    '<body>',
+    '<main>',
+    '<nav class="card">Settings<br>Profile<br>Workspaces<br>Tokens</nav>',
+    '<section class="card"><h1>Profile</h1><p>Name, e-mail and the default workspace.</p><button>Save</button></section>',
+    '</main>',
+    '</body>',
+    '</html>',
+  ].join('\n')
+}
+
+function fixtureAddedSection(path: string, text: string): string {
+  const lines = text.split('\n')
+  return [`diff --git a/${path} b/${path}`, 'new file mode 100644', '--- /dev/null', `+++ b/${path}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((l) => `+${l}`)].join('\n') + '\n'
+}
+
+async function fixtureDeflate(data: Uint8Array): Promise<Uint8Array> {
+  const out = await new Response(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(data)
+        c.close()
+      },
+    }).pipeThrough(new CompressionStream('deflate') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>),
+  ).arrayBuffer()
+  return new Uint8Array(out)
+}
+
+function fixtureCrc32(bytes: Uint8Array): number {
+  let c = 0xffffffff
+  for (const b of bytes) {
+    c ^= b
+    for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xedb88320 : c >>> 1
+  }
+  return (c ^ 0xffffffff) >>> 0
+}
+
+/** A 96x64 PNG: two bands and a block, so a reviewer can tell it was decoded, not just named. */
+async function fixtureMockupPng(): Promise<Uint8Array> {
+  const w = 96
+  const h = 64
+  const raw = new Uint8Array(h * (1 + w * 3))
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 3)] = 0
+    for (let x = 0; x < w; x++) {
+      const at = y * (1 + w * 3) + 1 + x * 3
+      const block = x > 56 && x < 84 && y > 20 && y < 48
+      const rgb = block ? [58, 91, 217] : y < 14 ? [29, 29, 27] : [247, 247, 245]
+      raw.set(rgb, at)
+    }
+  }
+  const chunk = (type: string, data: Uint8Array): Uint8Array => {
+    const out = new Uint8Array(12 + data.length)
+    const view = new DataView(out.buffer)
+    view.setUint32(0, data.length)
+    out.set(new TextEncoder().encode(type), 4)
+    out.set(data, 8)
+    view.setUint32(8 + data.length, fixtureCrc32(out.subarray(4, 8 + data.length)))
+    return out
+  }
+  const ihdr = new Uint8Array(13)
+  const hv = new DataView(ihdr.buffer)
+  hv.setUint32(0, w)
+  hv.setUint32(4, h)
+  ihdr.set([8, 2, 0, 0, 0], 8)
+  const parts = [Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', await fixtureDeflate(raw)), chunk('IEND', new Uint8Array(0))]
+  const png = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+  let at = 0
+  for (const p of parts) {
+    png.set(p, at)
+    at += p.length
+  }
+  return png
+}
+
+const FIXTURE_B85 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~'
+
+/** Bytes as `git diff --binary` writes them: 52 to a line, a length letter first. */
+function fixtureBase85Lines(data: Uint8Array): string[] {
+  const out: string[] = []
+  for (let at = 0; at < data.length; at += 52) {
+    const chunk = data.subarray(at, at + 52)
+    const padded = new Uint8Array(Math.ceil(chunk.length / 4) * 4)
+    padded.set(chunk)
+    let line = String.fromCharCode(chunk.length <= 26 ? 64 + chunk.length : 96 + chunk.length - 26)
+    for (let i = 0; i < padded.length; i += 4) {
+      let acc = ((padded[i]! << 24) >>> 0) + (padded[i + 1]! << 16) + (padded[i + 2]! << 8) + padded[i + 3]!
+      let group = ''
+      for (let j = 0; j < 5; j++) {
+        group = FIXTURE_B85[acc % 85]! + group
+        acc = Math.floor(acc / 85)
+      }
+      line += group
+    }
+    out.push(line)
+  }
+  return out
+}
+
+async function fixtureMockupPatch(): Promise<string> {
+  const png = await fixtureMockupPng()
+  const pngPath = `${FIXTURE_MOCKUP_DIR}/sp1-a-rest.png`
+  const binary =
+    [
+      `diff --git a/${pngPath} b/${pngPath}`,
+      'new file mode 100644',
+      'index 0000000..5d3c1e0',
+      'GIT binary patch',
+      `literal ${png.length}`,
+      ...fixtureBase85Lines(await fixtureDeflate(png)),
+      '',
+      'literal 0',
+      ...fixtureBase85Lines(await fixtureDeflate(new Uint8Array(0))),
+      '',
+    ].join('\n') + '\n'
+  return (
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/frames.json`, FIXTURE_MOCKUP_FRAMES_JSON) +
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/sp1-a-rest.html`, fixtureMockupFrame('Settings · rest', false)) +
+    fixtureAddedSection(`${FIXTURE_MOCKUP_DIR}/sp1-a-rest-390.html`, fixtureMockupFrame('Settings · rest · phone', true)) +
+    binary
+  )
+}
+
 /**
  * `result_summary.quality_gates` as `agent_worker/lifecycle.py`
  * `_record_quality_gates` writes it when the hooks ran.
@@ -5961,7 +6136,19 @@ function fixtureTaskRows(): Task[] {
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_bcdc9180e4fb4a209f31 },
     }),
     mk('task_99284d38', 'SUCCEEDED', 'claude-code', 50),
-    mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48),
+    // THE FINISHED WORKFLOW'S QUIET TICK (part of #2688): this unnamed row
+    // converted, so every task total stands, into the implement step of
+    // `wf_quiet_q_01`. It asked two questions and the owner answered the
+    // first, so its page draws '? 1' and the list no '?'
+    // (`fixtureHeldQuestions` serves both).
+    mk('task_f278adec', 'SUCCEEDED', 'claude-code', 48, {
+      workflow_id: 'wf_quiet_q_01', step_id: 'implement', depends_on: [],
+      metadata: {
+        title: FIXTURE_WORKFLOW_TITLES.wf_quiet_q_01,
+        owner_answers: [FIXTURE_QUIET_ANSWER],
+      },
+      result_summary: { artifacts: 1, checkpoints: 2, questions: 2 },
+    }),
     // THE FINISHED BROWSER AGENT (FIXTURE-BROWSER-DONE, part of #2423; BGD
     // 2026-10-26 "Convert one"): this row was an ordinary claude-code one
     // no test named, converted rather than a row added so every fixture
@@ -6002,6 +6189,14 @@ function fixtureTaskRows(): Task[] {
       workflow_id: 'wf_audit_01', step_id: 'scan-scripts', depends_on: ['plan'],
       metadata: { title: FIXTURE_WORKFLOW_TITLES.wf_audit_01 },
       dispatch: { strategy: 'integrate', carrier: 'checkpoints', role: 'contributor', integrates: [] },
+      // THE MOCK-UPS IN THE CHANGES VIEW (BGD, 2026-11-06): this step's patch
+      // adds a desktop frame, a phone frame and a PNG, so the file pane's
+      // Rendered view is looked at in development (`FIXTURE_MOCKUP_PATCH`).
+      result_summary: {
+        artifacts: 1,
+        checkpoints: 2,
+        git: { base: 'd41f0c9a7b', patch: FIXTURE_MOCKUP_PATCH, files: FIXTURE_MOCKUP_FILES },
+      },
     }),
     mk('task_wf_scan_b', 'RUNNING', 'claude-code', 24, {
       workflow_id: 'wf_audit_01', step_id: 'scan-terraform', depends_on: ['plan'],
@@ -6070,6 +6265,7 @@ const FIXTURE_WORKFLOW_TITLES = {
   wf_audit_01: 'Audit the operator scripts and the Terraform',
   wf_5e5ad3b6f7da4299a839: 'Check the five contract invariants, then write one synthesis',
   wf_bcdc9180e4fb4a209f31: 'Research, draft and review the restore runbook',
+  wf_quiet_q_01: 'Views',
 } as const
 
 async function fixtureWorkflowBoard(): Promise<Result<WorkflowBoard>> {
@@ -6125,11 +6321,152 @@ function withTaskSummaries(workflows: Workflow[], tasks: readonly Task[]): Workf
         last_attempt_duration_s: null,
         attempts_read: 'ok',
         last_error_line: t.last_error ? (t.last_error.split('\n')[0] ?? null) : null,
+        needs: fixtureStepNeeds(t),
       }
       return { ...s, task_summary }
     }),
   }))
 }
+
+const isIndex = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
+const textOf = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+
+/** A question wait as the worker writes it (`agent_questions._wait_shape`), else null. */
+function fixtureWaitShape(value: unknown): { questions: Record<string, unknown>[]; blocking: number[]; attempt_id: string } | null {
+  if (!isRecord(value)) return null
+  const { questions, blocking, attempt_id } = value
+  if (!Array.isArray(questions) || questions.length === 0 || !questions.every(isRecord)) return null
+  if (!Array.isArray(blocking) || blocking.length === 0 || !blocking.every((i) => isIndex(i) && i < questions.length)) return null
+  if (typeof attempt_id !== 'string') return null
+  return { questions, blocking: blocking as number[], attempt_id }
+}
+
+/** The indices `metadata.owner_answers` answers (`codec.owner_answers_by_index`). */
+function fixtureAnswered(metadata: Record<string, unknown> | null): Set<number> {
+  const raw = metadata?.owner_answers
+  return new Set((Array.isArray(raw) ? raw : []).filter(isRecord).map((e) => e.question_index).filter(isIndex))
+}
+
+/**
+ * Each fixture step's `task_summary.needs`, as `codec.step_needs` builds it
+ * off the step's task document, so the fixture build's Needs-you bar counts
+ * the fixture's own hand-offs, holds, questions and pull requests rather than
+ * reading "not known". The fixture's texts are its own, so nothing is masked.
+ */
+export function fixtureStepNeeds(t: Task): StepNeeds {
+  const wait = isRecord(t.human_wait) ? t.human_wait : null
+  const human_wait = wait !== null && t.state === 'RUNNING'
+    ? { reason: textOf(wait.reason), expect: textOf(wait.expect), deadline: textOf(wait.deadline) }
+    : null
+  const humanPark = t.state === 'PARKED' && t.park_reason === 'HUMAN_REQUIRED'
+  const blockers = ((t.blocked_by ?? []) as unknown[]).filter(isRecord).filter((b) => b.reason === 'HUMAN_REQUIRED')
+  let owner_questions: StepNeeds['owner_questions'] = null
+  const held = humanPark ? blockers.find((b) => b.park_phase === 'owner_questions') : undefined
+  if (held !== undefined) {
+    const record = isRecord(held.owner_questions) ? held.owner_questions : {}
+    const questions = (Array.isArray(record.questions) ? record.questions : []).map((q) =>
+      isRecord(q)
+        ? {
+            task_id: textOf(q.task_id),
+            step_id: textOf(q.step_id),
+            question_index: isIndex(q.question_index) ? q.question_index : null,
+            question: textOf(q.question),
+          }
+        : null,
+    )
+    owner_questions = { questions, unreadable: isIndex(record.unreadable) ? record.unreadable : null }
+  }
+  // THE WAIT THE TASK IS PARKED ON NOW (`agent_questions.parked_wait`); its
+  // stored answers are its own only once adopted (`current_wait`).
+  let parked: ReturnType<typeof fixtureWaitShape> = null
+  let parkedRaw: Record<string, unknown> | null = null
+  if (humanPark) {
+    for (const b of blockers) {
+      parked = fixtureWaitShape(b.question_wait)
+      if (parked !== null) {
+        parkedRaw = b.question_wait as Record<string, unknown>
+        break
+      }
+    }
+  }
+  const metadata = isRecord(t.metadata) ? t.metadata : null
+  const questions: StepNeedQuestion[] = []
+  if (parked !== null) {
+    const recorded = fixtureWaitShape(metadata?.question_wait)
+    const answered = recorded !== null && recorded.attempt_id === parked.attempt_id ? fixtureAnswered(metadata) : new Set<number>()
+    for (const index of parked.blocking) {
+      if (answered.has(index)) continue
+      const entry = parked.questions[index]!
+      questions.push({
+        index,
+        question: textOf(entry.question),
+        options: (Array.isArray(entry.options) ? entry.options : [])
+          .filter(isRecord)
+          .map((o) => ({ label: textOf(o.label), description: textOf(o.description) })),
+        recommended: textOf(entry.recommended),
+      })
+    }
+  }
+  // `questions_unread`: an ended task's questions.json, at most the worker's cap.
+  const counted = t.result_summary?.questions
+  const count = isIndex(counted) ? Math.min(counted, FIXTURE_MAX_ARTIFACT_QUESTIONS) : 0
+  const answeredAll = fixtureAnswered(metadata)
+  const questions_unread = TERMINAL_STATES.has(t.state)
+    ? Array.from({ length: count }, (_, i) => i).filter((i) => !answeredAll.has(i))
+    : []
+  const git = t.result_summary?.git
+  const pr = isRecord(git) && isRecord(git.pull_request) ? git.pull_request : null
+  const pull_request = pr !== null && isIndex(pr.number) ? { number: pr.number, url: textOf(pr.url) } : null
+  return {
+    park_reason: t.park_reason ?? null,
+    next_eligible_at: t.next_eligible_at,
+    updated_at: t.updated_at,
+    human_wait,
+    owner_questions,
+    question_wait: parked !== null,
+    questions,
+    questions_unread,
+    pull_request,
+    plugin_ask: parkedRaw === null ? null : fixturePluginAsk(t, metadata, parkedRaw),
+  }
+}
+
+/** `agent_questions.BRIDGE_WAIT_MAX_SECONDS` and `QUESTION_WAIT_MAX_SECONDS`, in ms. */
+const FIXTURE_BRIDGE_WAIT_MS = 24 * 3600_000
+const FIXTURE_QUESTION_WAIT_MS = 72 * 3600_000
+
+/**
+ * A fixture plugin step's `plugin_ask`, as `codec.step_needs` builds it for a
+ * task parked on `wait`: its work contract's plugins with a mode, and the
+ * wait's clock from the earliest instant the park names
+ * (`agent_questions.asked_at`) and the skill that asked off the wait's bridge
+ * block (`agent_questions.asked_by_skill`); null for a step that runs no plugin.
+ */
+function fixturePluginAsk(t: Task, metadata: Record<string, unknown> | null, wait: Record<string, unknown>): StepNeeds['plugin_ask'] {
+  const contract = metadata?.work_contract
+  const caps = isRecord(contract) ? contract.capabilities : null
+  const stored = isRecord(caps) ? caps.plugins : null
+  const plugins = isRecord(stored)
+    ? Object.entries(stored).flatMap(([name, p]) => (isRecord(p) && typeof p.mode === 'string' && p.mode !== '' ? [{ name, mode: p.mode }] : []))
+    : []
+  if (plugins.length === 0) return null
+  const moments = [t.next_eligible_at, wait.asked_at, t.updated_at]
+    .map((v) => (typeof v === 'string' ? Date.parse(v) : NaN))
+    .filter((ms) => Number.isFinite(ms))
+  const began = moments.length > 0 ? Math.min(...moments) : null
+  const span = isRecord(wait.bridge) ? FIXTURE_BRIDGE_WAIT_MS : FIXTURE_QUESTION_WAIT_MS
+  const skill = isRecord(wait.bridge) && typeof wait.bridge.skill === 'string' && wait.bridge.skill.trim() !== '' ? wait.bridge.skill.trim() : null
+  return {
+    plugins,
+    repository_url: t.repository_url ?? null,
+    asked_at: began === null ? null : new Date(began).toISOString(),
+    expires_at: began === null ? null : new Date(began + span).toISOString(),
+    skill,
+  }
+}
+
+/** `codec.MAX_ARTIFACT_QUESTIONS`: the most questions one questions.json holds. */
+const FIXTURE_MAX_ARTIFACT_QUESTIONS = 20
 
 /**
  * The workflow rows, ONCE, because two screens read them.
@@ -6305,7 +6642,59 @@ function fixtureWorkflowRows(rows: Task[] = fixtureTaskRows()): Workflow[] {
           step('review', ['draft'], 'task_1beb89a5'),
         ],
       },
+      {
+        workflow_id: 'wf_quiet_q_01',
+        tenant_id: 'u-bogdan',
+        state: 'SUCCEEDED',
+        stored_state: 'SUCCEEDED',
+        state_source: 'derived',
+        rollup: {
+          state: 'SUCCEEDED',
+          complete: true,
+          reason: 'all_steps_succeeded',
+          counts: {},
+          unreadable_steps: [],
+          unstarted_steps: [],
+          steps_read: 1,
+        },
+        ...spanOf(['task_f278adec']),
+        submitted_by: 'alice@example.com',
+        priority: 0,
+        on_step_failure: 'FAIL_WORKFLOW',
+        cancel_requested: false,
+        steps: [step('implement', [], 'task_f278adec')],
+      },
   ]
+  // WHAT SWARM-API SERVES ABOUT EACH WORKFLOW (`routes/workflows.py`
+  // `workflow_about`; the facts card's follow-up, part of #2688): read off its
+  // first step task, so the title is the one its steps carry and the
+  // repository is theirs. wf_audit_01 carries a submitted description and
+  // every fact. wf_5e5ad3b6f7da4299a839 carries its title alone: the prose
+  // ratchet's workflow pages (proseapp.tsx) and the overscroll test render it,
+  // and its facts card stays as main draws it, so a fixture adds no words and
+  // no box to those pages. wf_bcdc9180e4fb4a209f31 stands for an API older
+  // than the route and carries none of the keys, so the card's 'not recorded'
+  // is still drawn.
+  const repositoryUrl = 'https://github.com/example-org/agent-swarm-infra'
+  const about: Record<string, Record<string, unknown>> = {
+    wf_audit_01: {
+      title: FIXTURE_WORKFLOW_TITLES.wf_audit_01,
+      description:
+        'Read every operator script and the Terraform root against the contract, list what breaks a rule, and publish one report with each finding at its file and line.',
+      description_source: 'submitted',
+      feature: { title: 'Operator tooling audit', url: 'https://github.com/example-org/agent-swarm-infra/issues/42' },
+      started_from: 'console',
+      repository_url: repositoryUrl,
+    },
+    wf_5e5ad3b6f7da4299a839: {
+      title: FIXTURE_WORKFLOW_TITLES.wf_5e5ad3b6f7da4299a839,
+    },
+  }
+  for (let i = 0; i < workflows.length; i++) {
+    const w = workflows[i]!
+    const served = about[w.workflow_id]
+    if (served !== undefined) workflows[i] = { ...w, ...served } as Workflow
+  }
   // THE ROLLUP COUNTS ITS OWN STEPS (QAFIX6-FIXTURE i, run 5b QA-042, box
   // 6343779183): Workflows' Steps done reads `rollup.counts.SUCCEEDED`, and
   // wf_audit_01's were typed as one succeeded beside two step tasks the
@@ -7264,6 +7653,21 @@ let fixtureAccounts: ServedAccount[] = [
       seven_day: { utilization: 0.35, resets_at: ISO(5 * 86_400_000), reset: false },
     },
   }),
+  // VOICE IT'S OPENAI API KEY (the owner, 4 November 2026): in the Voice it
+  // pool alone, so it serves no workspace and draws only in that section,
+  // where its windows read "not measured" (`measured: false`), never 0.
+  fixtureAccount('u-bogdan', 'openai-key', {
+    provider: 'openai-api',
+    max_agents: 1,
+    can_take_new_agent: true,
+    blocked_by: [],
+    next_eligible_at: null,
+    observed_at: null,
+    measured: false,
+    pools: ['voice-it'],
+    voice_it_people: ['alice@example.com'],
+    voice_it_holder: null,
+  } as Partial<ServedAccount>),
   fixtureAccount('u-bogdan', 'team-copy', {
     max_agents: 6,
     can_take_new_agent: false,
@@ -8473,16 +8877,20 @@ function fixtureGraphCache(url: string): unknown {
   const digest = (seed: string) => `sha256:${seed.repeat(Math.ceil(64 / seed.length)).slice(0, 64)}`
   const current = digest(`${r.sha}c`)
   const warm = { digest: current, ms: 2140, shards: 46, replayed: 200 }
+  // One served-latency group (graph_cache.py `merge_summaries`'s shape).
+  const lat = (count: number, p50: number, p95: number, p99: number, max: number, exact: boolean) => ({ count, p50_ms: p50, p95_ms: p95, p99_ms: p99, max_ms: max, exact })
   const replicas = [
     {
       replica: 'swarm-graph-0', state: 'read', started_at: fixtureAgo(3 * 24 * FIXTURE_HOUR), uptime_seconds: 3 * 24 * 3600,
       result_bytes: 61 * MiB, result_bound: 256 * MiB, shard_bytes: 188 * MiB, shard_bound: 512 * MiB,
       answers_hot: 412, shards_hot: 31, last_warm: warm,
+      answer_latency: { ...lat(900, 6, 30, 80, 410, true), by_temperature: { warm: lat(820, 5, 20, 40, 60, true), cold: lat(80, 60, 300, 410, 410, true) } },
     },
     {
       replica: 'swarm-graph-1', state: 'read', started_at: fixtureAgo(5 * FIXTURE_HOUR), uptime_seconds: 5 * 3600,
       result_bytes: 23 * MiB, result_bound: 256 * MiB, shard_bytes: 97 * MiB, shard_bound: 512 * MiB,
       answers_hot: 140, shards_hot: 18, last_warm: { ...warm, ms: 1870 },
+      answer_latency: { ...lat(384, 8, 40, 120, 380, true), by_temperature: { warm: lat(340, 6, 25, 50, 90, true), cold: lat(44, 80, 380, 380, 380, true) } },
     },
     { replica: 'swarm-graph-2', state: 'not_read', reason: 'timeout' },
   ]
@@ -8508,6 +8916,16 @@ function fixtureGraphCache(url: string): unknown {
     facts: {
       window_hours: 5, answers: 1284, hit: 1168, carried: null, miss: 116, hit_rate: 1168 / 1284,
       reused_share: null, served_p95_ms: 38, last_warm: warm,
+      // Two replicas answered, so a percentile is the slower one's (an upper
+      // bound); swarm-graph-2 was not read and is named, never counted as 0.
+      answer_latency: {
+        state: 'read', replicas_read: 2, not_read: ['swarm-graph-2'], window_hours: 5, ...lat(1284, 8, 40, 120, 410, false),
+        by_outcome: {
+          hit: lat(1168, 6, 25, 50, 90, false), carried: { count: 0, p50_ms: null, p95_ms: null, p99_ms: null, max_ms: null, exact: true }, miss: lat(104, 70, 300, 410, 410, false),
+          partial: lat(2, 7000, 7000, 7000, 7000, true), uncached: lat(10, 9, 30, 30, 30, true),
+        },
+        by_temperature: { warm: lat(1160, 6, 25, 50, 90, false), cold: lat(124, 80, 380, 410, 410, false) },
+      },
     },
     replicas,
     stats: { state: 'read' },
@@ -8802,7 +9220,7 @@ function fixtureCodeIntelligence(): unknown {
 /** `GET /v1/qa-settings` (QA-FLOWS-UI): no value stored, so the default 15; the owner may change it. */
 function fixtureQaSettings(): unknown {
   return {
-    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, defaults: { qa_flows_per_step: 15 },
+    tenant_id: FIXTURE_TENANT, qa_flows_per_step: 15, writing_flows: true, defaults: { qa_flows_per_step: 15, writing_flows: true },
     bounds: { qa_flows_per_step: { min: 1, max: 30 } }, set_at: null, set_by: null, can_edit: true,
   }
 }
@@ -9135,8 +9553,50 @@ export type GraphCacheReplica =
       answers_hot: number | null
       shards_hot: number | null
       last_warm: GraphCacheWarm | null
+      /** This replica's own served answer latency; null when it served none. */
+      answer_latency: GraphCacheReplicaLatency | null
     }
   | { replica: string; state: 'not_read'; reason: GraphCacheReason }
+
+/**
+ * One group of served answer latency (swarm_graph/stats.py `answer_latency`):
+ * the middle (p50), slow (p95, p99) and slowest answer of `count` answers.
+ * Every figure is null with a count of 0, never a 0 ms that was not measured.
+ * `exact` true: one replica answered, or every replica that answered served
+ * its histogram counts and the route read each percentile off their sum.
+ * `exact` false: a replica served no counts (mixed versions during a
+ * roll-out), so each percentile is the slowest replica's, an upper bound
+ * (graph_cache.py `merge_summaries`).
+ */
+export interface GraphCacheLatencyGroup {
+  count: number
+  p50_ms: number | null
+  p95_ms: number | null
+  p99_ms: number | null
+  max_ms: number | null
+  exact: boolean
+}
+
+export interface GraphCacheReplicaLatency extends GraphCacheLatencyGroup {
+  by_temperature: Partial<Record<'warm' | 'cold', GraphCacheLatencyGroup>>
+}
+
+/**
+ * `facts.answer_latency` (lane graph-cache-panel-latency, part of #2688): the
+ * replicas' served answer latency merged, by outcome and by temperature, with
+ * the replicas whose figure was not read named in `not_read`; or not read
+ * with its reason when no replica's figure was.
+ */
+export type GraphCacheServedLatency =
+  | (GraphCacheLatencyGroup & {
+      state: 'read'
+      replicas_read: number
+      not_read: string[]
+      window_hours: number | null
+      by_outcome: Partial<Record<string, GraphCacheLatencyGroup>>
+      by_temperature: Partial<Record<'warm' | 'cold', GraphCacheLatencyGroup>>
+    })
+  | { state: 'not_read'; reason: GraphCacheReason; not_read: string[] }
 
 /** §5.2's tiles, summed over the replicas read; null where nothing was read. */
 export interface GraphCacheFacts {
@@ -9150,6 +9610,8 @@ export interface GraphCacheFacts {
   reused_share: number | null
   served_p95_ms: number | null
   last_warm: GraphCacheWarm | null
+  /** The replicas' served answer latency, beside `latency`, the indexer's uncached one. */
+  answer_latency: GraphCacheServedLatency
 }
 
 /**
@@ -9206,6 +9668,53 @@ function normGraphCacheWarm(v: unknown): GraphCacheWarm | null {
   return digest === null ? null : { digest, ms: gcNum(w.ms), shards: gcNum(w.shards), replayed: gcNum(w.replayed) }
 }
 
+/** One latency group, or null when it is not one: a count is a number. */
+function normGraphCacheLatencyGroup(v: unknown): GraphCacheLatencyGroup | null {
+  const g = gcRec(v)
+  const count = gcNum(g.count)
+  if (count === null) return null
+  const ms = (x: unknown) => (count === 0 ? null : gcNum(x))
+  return { count, p50_ms: ms(g.p50_ms), p95_ms: ms(g.p95_ms), p99_ms: ms(g.p99_ms), max_ms: ms(g.max_ms), exact: g.exact !== false }
+}
+
+function normGraphCacheGroups<K extends string>(v: unknown, names: readonly K[]): Partial<Record<K, GraphCacheLatencyGroup>> {
+  const t = gcRec(v)
+  const out: Partial<Record<K, GraphCacheLatencyGroup>> = {}
+  for (const name of names) {
+    const g = normGraphCacheLatencyGroup(t[name])
+    if (g !== null) out[name] = g
+  }
+  return out
+}
+
+/** swarm-graph's answer outcomes and temperatures (stats.LATENCY_OUTCOMES, TEMPERATURES). */
+export const GRAPH_CACHE_OUTCOMES = ['hit', 'carried', 'miss', 'partial', 'uncached'] as const
+export const GRAPH_CACHE_TEMPERATURES = ['warm', 'cold'] as const
+
+const gcNames = (v: unknown): string[] => (Array.isArray(v) ? v.flatMap((x) => (gcStr(x) === null ? [] : [x as string])) : [])
+
+function normGraphCacheReplicaLatency(v: unknown): GraphCacheReplicaLatency | null {
+  const g = normGraphCacheLatencyGroup(v)
+  return g === null ? null : { ...g, by_temperature: normGraphCacheGroups(gcRec(v).by_temperature, GRAPH_CACHE_TEMPERATURES) }
+}
+
+/** Anything but a figure the route says it read is one not read, never a zero. */
+function normGraphCacheServedLatency(v: unknown): GraphCacheServedLatency {
+  const l = gcRec(v)
+  const notRead = gcNames(l.not_read)
+  const g = l.state === 'read' ? normGraphCacheLatencyGroup(l) : null
+  if (g === null) return { state: 'not_read', reason: gcStr(l.reason) ?? 'bad_response', not_read: notRead }
+  return {
+    ...g,
+    state: 'read',
+    replicas_read: gcNum(l.replicas_read) ?? 0,
+    not_read: notRead,
+    window_hours: gcNum(l.window_hours),
+    by_outcome: normGraphCacheGroups(l.by_outcome, GRAPH_CACHE_OUTCOMES),
+    by_temperature: normGraphCacheGroups(l.by_temperature, GRAPH_CACHE_TEMPERATURES),
+  }
+}
+
 function normGraphCacheReplica(v: unknown): GraphCacheReplica | null {
   const r = gcRec(v)
   const replica = gcStr(r.replica)
@@ -9224,6 +9733,7 @@ function normGraphCacheReplica(v: unknown): GraphCacheReplica | null {
     answers_hot: gcNum(r.answers_hot),
     shards_hot: gcNum(r.shards_hot),
     last_warm: normGraphCacheWarm(r.last_warm),
+    answer_latency: normGraphCacheReplicaLatency(r.answer_latency),
   }
 }
 
@@ -9296,6 +9806,7 @@ export function normGraphCache(raw: unknown): GraphCacheDoc {
       reused_share: gcNum(f.reused_share),
       served_p95_ms: gcNum(f.served_p95_ms),
       last_warm: normGraphCacheWarm(f.last_warm),
+      answer_latency: normGraphCacheServedLatency(f.answer_latency),
     },
     replicas: (Array.isArray(d.replicas) ? d.replicas : []).map(normGraphCacheReplica).filter((r): r is GraphCacheReplica => r !== null),
     stats: stats.state === 'read' ? { state: 'read' } : { state: 'not_read', reason: gcStr(stats.reason) ?? 'bad_response' },
@@ -11188,6 +11699,7 @@ export function budgetRefusalWords(error: ApiError): string | null {
  * setting: `qa_flows_per_step`, how many read-only flows one live-browser step of a QA run runs when the run names
  * none of its own. Its default and bounds are the API's, served with it, so this file does not restate them; the
  * fallbacks below are only for an answer that omits them (`qaspec.FLOWS_PER_STEP_DEFAULT`, `MIN_`/`MAX_FLOWS_PER_STEP`).
+ * And `writing_flows` (part of #2688; BGD, 2026-11-05): whether the workspace's flows may write at all, on by default.
  */
 export interface QaSettings {
   tenant_id: string
@@ -11197,6 +11709,8 @@ export interface QaSettings {
   default_flows_per_step: number
   min_flows_per_step: number
   max_flows_per_step: number
+  /** Whether a mutating flow, its `writes` declared, may write on a non-production leg; off, every flow reads only. */
+  writing_flows: boolean
   /** The workspace's owner or admin, or a platform admin; the API is the gate. */
   can_edit: boolean
   set_at: string | null
@@ -11218,6 +11732,8 @@ function normQaSettings(raw: unknown): QaSettings {
     default_flows_per_step: fallback,
     min_flows_per_step: qaInt(bound.min, 1),
     max_flows_per_step: qaInt(bound.max, 30),
+    // On unless the API says off: the default is on (`qasettings.WRITING_DEFAULT`).
+    writing_flows: r.writing_flows !== false,
     can_edit: r.can_edit === true,
     set_at: keyField(r.set_at),
     set_by: keyField(r.set_by),
@@ -11236,6 +11752,12 @@ export async function loadQaSettings(): Promise<Result<QaSettings>> {
  */
 export async function putQaSettings(tenantId: string, flowsPerStep: number): Promise<Result<QaSettings>> {
   const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { qa_flows_per_step: flowsPerStep })
+  return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
+}
+
+/** The same PUT with `{writing_flows}` alone: the same gate, the flows-per-step setting untouched. */
+export async function putQaWritingFlows(tenantId: string, on: boolean): Promise<Result<QaSettings>> {
+  const r = await writeTo(route('/v1/workspaces/{tenant_id}/qa-settings', { tenant_id: tenantId }), 'PUT', { writing_flows: on })
   return r.status === 'ok' || r.status === 'stale' ? { ...r, data: normQaSettings(r.data) } : (r as Result<QaSettings>)
 }
 
@@ -12089,10 +12611,13 @@ export async function setJoinLink(on: boolean, rotate = false): Promise<Result<J
 
 /** `GET /v1/workspace/members` (admin): who holds a platform membership here, by an approved request. */
 export async function loadJoinedMembers(): Promise<Result<JoinedMembers>> {
-  return readAs(route('/v1/workspace/members'), (raw) => {
-    const r = isObj(raw) ? raw : {}
-    return { platform_memberships: r.platform_memberships === true, members: list(r.members, normJoinedMember) }
-  })
+  return readAs(route('/v1/workspace/members'), normJoinedMembers)
+}
+
+/** `GET /v1/workspace/members`' body as `JoinedMembers`: an entry without an email is dropped. */
+export function normJoinedMembers(raw: unknown): JoinedMembers {
+  const r = isObj(raw) ? raw : {}
+  return { platform_memberships: r.platform_memberships === true, members: list(r.members, normJoinedMember) }
 }
 
 /** `DELETE /v1/workspace/members/person {email, reason?}` (admin): ends a platform membership; the email in the body. */
@@ -12600,12 +13125,125 @@ export interface ApprovalDetail {
     requirements_unmet?: string[]
     files_checked_head?: string | null
   }
+  /**
+   * The step's `contract_acceptance` record (jev-contract.md sections 5.4 and
+   * 8.2), where the item decides a step whose work contract Jev judged: read
+   * by `ContractJev.contractAcceptance`, and drawn as Jev's, never as the
+   * platform's.
+   */
+  contract_acceptance?: unknown
 }
 
 export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
   const target = route('/v1/approvals/{id}', { id: itemId })
-  if (USE_FIXTURES) return scheduleNotServed(target)
+  if (USE_FIXTURES) {
+    const made = fixtureContractApproval(itemId)
+    if (made === null) return scheduleNotServed(target)
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: made }
+  }
   return read(target, () => false)
+}
+
+/**
+ * THE FIXTURE BUILD'S JEV JUDGMENTS (jev-contract.md lane 7), each a merge
+ * waiting on its owner and opened by address, `/automate/approvals/<id>`: the
+ * inbox stays empty, as the fixture build's inbox always is.
+ *
+ *   * `apr_fixture_contract_judged`: Jev judged three requirements, one unmet,
+ *     and the step was already sent back twice;
+ *   * `apr_fixture_contract_not_run`: Jev did not run, and the control plane's
+ *     three re-asks did not get a verdict either;
+ *   * `apr_fixture_contract_cannot_judge`: Jev could not judge one requirement
+ *     after the three re-asks.
+ *
+ * The records are the shape `contractreask.ACCEPTANCE_FIELD` stores. Digests
+ * and commits are built, never written as literals.
+ */
+export const FIXTURE_CONTRACT_APPROVALS = ['apr_fixture_contract_judged', 'apr_fixture_contract_not_run', 'apr_fixture_contract_cannot_judge'] as const
+
+function fixtureContractApproval(itemId: string): ApprovalDetail | null {
+  if (!(FIXTURE_CONTRACT_APPROVALS as readonly string[]).includes(itemId)) return null
+  const at = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString()
+  const commit = '4be1d07' + '3'.repeat(33)
+  const changed = ['apps/swarm-api/swarm_api/leases.py', 'tests/unit/control_plane/test_leases.py', 'docs/leases.md']
+  const mechanical = [{ kind: 'unit_tests', passed: true, named: ['tests/unit/control_plane/test_leases.py'] }, { kind: 'ci', passed: null }]
+  const spent = { tries: 3, first_at: at(-1), next_at: at(-0.6), deadline: at(-0.5), last: { try: 3, at: at(-0.6), outcome: 'not_run', reason: 'timeout', call_id: null } }
+  const base = {
+    status: 'judgment_pending', waiting_on: 'owner', attempt_id: 'att_fixture_contract', generation: 2,
+    contract_id: 'wc-lease-release', revision: 2, digest: '9d'.repeat(32), commit, outcome: 'judged', reason: null,
+    call_id: 'jc2-fixture-0001', changed, mechanical, at: at(-0.5),
+    // The text of each cited hunk, as the record stores it (the owner's pick
+    // on PR #3255); `i1` is not cited by any fixture verdict, so it has none.
+    hunks: {
+      i0: '@@ -88,6 +88,9 @@ def cancel(lease):\n     if lease.released_at is not None:\n         return lease\n+    lease.released_at = now()\n+    capacity.release(lease.reservation)\n+    return lease',
+      i2: '@@ -12,3 +12,5 @@ Leases\n A lease holds capacity until it ends.\n+\n+Cancelling a task releases its lease at once.',
+    },
+  }
+  const acceptance =
+    itemId === 'apr_fixture_contract_judged'
+      ? {
+          ...base, owner_reason: 'send_back_cap', reask: null,
+          verdicts: [
+            { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i0', p: 0.92 },
+            { requirement_id: 'REQ-2', verdict: 'unmet', reason: 'partially_done', evidence_item: 'i2', p: 0.81 },
+            { requirement_id: 'REQ-3', verdict: 'met', reason: 'satisfied', evidence_item: 'm0', p: 0.88 },
+          ],
+        }
+      : itemId === 'apr_fixture_contract_not_run'
+        ? { ...base, owner_reason: 'reask_exhausted', outcome: 'not_run', reason: 'skipped:budget_calls', call_id: null, verdicts: [], reask: spent }
+        : {
+            ...base, owner_reason: 'reask_exhausted', reask: { ...spent, last: { ...spent.last, outcome: 'judged', call_id: 'jc2-fixture-0004' } },
+            call_id: 'jc2-fixture-0004',
+            verdicts: [
+              { requirement_id: 'REQ-1', verdict: 'met', reason: 'satisfied', evidence_item: 'i0', p: 0.9 },
+              { requirement_id: 'REQ-2', verdict: 'cannot_judge', reason: 'evidence_missing', evidence_item: null, p: 0.45 },
+            ],
+          }
+  return {
+    approval: {
+      approval_id: itemId, kind: 'merge',
+      subject: { run_id: 'run_fixture_contract', issue: 'example-org/example-api#2364' },
+      digest: { head_sha: commit, verdict: 'MERGE' },
+      summary: 'example-org/example-api#2364: pull request #2392 releases a lease on cancel',
+      approvers: 'owner_only', state: 'pending', requested_at: at(-0.5), expires_at: at(71.5),
+      may_decide: { approve: true, reject: true, why: null, deciders: ['owner_only'] },
+    } as ApprovalDetail['approval'],
+    merge: {
+      green_sha: commit,
+      pull_request: { number: 2392, url: 'https://github.com/example-org/example-api/pull/2392' },
+      requirements_met: true, requirements_unmet: [], files_checked_head: commit,
+    },
+    contract_acceptance: acceptance,
+  }
+}
+
+/**
+ * THE FIXTURE BUILD'S CONTRACT REFUSAL (jev-contract.md section 4.5): the task
+ * form's submit answers it when the prompt is exactly this sentence, so the
+ * refusal can be seen and measured without a work contract editor. Any other
+ * submit is the fixture's 201, as before.
+ */
+export const FIXTURE_CONTRACT_REFUSAL_PROMPT = 'Show Jev’s contract refusal'
+
+export function fixtureContractRefusal(body: Record<string, unknown>): { code: string; message: string; detail: Record<string, unknown> } | null {
+  const input = body.input
+  if (typeof input !== 'object' || input === null || (input as Record<string, unknown>).prompt !== FIXTURE_CONTRACT_REFUSAL_PROMPT) return null
+  noteFixtureProbe(route('/v1/tasks'), 0, true)
+  return {
+    code: 'validation_failed',
+    message: 'contract wc-lease-release is strict, and Jev found requirements no worker could enforce: REQ-2, REQ-4',
+    detail: {
+      reason: 'work_contract_not_enforceable', contract_id: 'wc-lease-release', revision: 1, digest: '5e'.repeat(32), unenforced: [],
+      jev: {
+        call_id: 'jc1-fixture-0001', backend: 'internal-jev',
+        requirements: [
+          { id: 'REQ-2', class: 'unenforceable', reason: 'vague_outcome', p: 0.83 },
+          { id: 'REQ-4', class: 'unenforceable', reason: 'depends_on_a_later_event', p: 0.71 },
+        ],
+      },
+    },
+  }
 }
 
 /**
@@ -13508,6 +14146,8 @@ export interface SetupVerify {
   deadline: number | null
   /** `passed`, `failed`, or null while verify runs. */
   result: string | null
+  /** Verify's one-line cause, as swarm install printed it in the terminal (`engine.verify.detail`); null when the route serves none. */
+  detail: string | null
 }
 
 /** `stages[n]` of the engine document: `{state, at, by}`, or null for a stage not started. */
@@ -13622,6 +14262,8 @@ export interface SetupSmoke {
   state: string
   detail: string | null
   url: string | null
+  /** When the smoke agent started (`smoke.started_at`); null when the record holds none, drawn as not recorded. */
+  started_at: string | null
 }
 
 /** The route's word for a smoke that passed; `finish` waits for exactly this. */
@@ -13704,7 +14346,19 @@ export interface SetupAccount {
   owner: string | null
   link_expires: string | null
   signed_in_at: string | null
+  /** When its one-time link was made (`accounts[].link_made_at`); null when the route serves none, never derived from the expiry. */
+  link_made_at: string | null
 }
+
+/**
+ * `typical_s`: how long each wait usually takes, in seconds, as the route
+ * serves it. The keys the console finish reads: `sign_in_pass` (the infra
+ * pass that applies the sign-in client), `pass_3` (the pass that gives
+ * swarm-api the App's id), `workspace_build`, `smoke`, `groups` (Google
+ * Groups showing an added member), `verify` and `install` (the whole console
+ * finish). A key the route does not serve is drawn as not recorded.
+ */
+export type SetupTypical = Record<string, number>
 
 export interface SetupAddon {
   name: string
@@ -13736,6 +14390,8 @@ export interface SetupState {
   personal: SetupPersonal | null
   /** Whether the first-team and invites steps are needed, as the route says; null from a route that serves none. */
   steps: { first_team: SetupStepNeed | null; invites: SetupStepNeed | null } | null
+  /** The usual length of each wait (`typical_s`); empty when the route serves none. */
+  typical_s: SetupTypical
 }
 
 const objOf = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null)
@@ -13778,6 +14434,7 @@ function normVerify(raw: unknown): SetupVerify | null {
     expected_end: numOf(v.expected_end),
     deadline: numOf(v.deadline),
     result: strOf(v.result),
+    detail: strOf(v.detail),
   }
 }
 
@@ -13835,7 +14492,9 @@ function normGitHubApp(raw: unknown): SetupGitHubApp | null {
 
 function normSmoke(raw: unknown): SetupSmoke | null {
   const smoke = objOf(raw)
-  return smoke === null ? null : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url) }
+  return smoke === null
+    ? null
+    : { state: strOf(smoke.state) ?? 'waiting', detail: strOf(smoke.detail) ?? strOf(smoke.reason), url: strOf(smoke.url), started_at: timeOf(smoke.started_at) }
 }
 
 function normGrant(raw: unknown): SetupGrant | null {
@@ -13956,7 +14615,7 @@ export function normSetupState(raw: unknown): SetupState {
       .sort()
       .map((label) => {
         const a = objOf(accounts[label]) ?? {}
-        return { label, owner: strOf(a.owner), link_expires: strOf(a.link_expires), signed_in_at: strOf(a.signed_in_at) }
+        return { label, owner: strOf(a.owner), link_expires: strOf(a.link_expires), signed_in_at: strOf(a.signed_in_at), link_made_at: timeOf(a.link_made_at) }
       }),
     finished: finished === null ? null : { at: strOf(finished.at), by: strOf(finished.by) },
     addons: Array.isArray(d.addons)
@@ -13972,7 +14631,15 @@ export function normSetupState(raw: unknown): SetupState {
     mode,
     personal: mode === 'individual' ? normPersonal(d.personal) : null,
     steps: steps === null ? null : { first_team: normStepNeed(steps.first_team), invites: normStepNeed(steps.invites) },
+    typical_s: normTypical(d.typical_s),
   }
+}
+
+/** `typical_s`: only a finite, positive number of seconds is a usual time. */
+function normTypical(raw: unknown): SetupTypical {
+  const out: SetupTypical = {}
+  for (const [k, v] of Object.entries(objOf(raw) ?? {})) if (typeof v === 'number' && Number.isFinite(v) && v > 0) out[k] = v
+  return out
 }
 
 /** `POST /v1/admin/setup/github-app/manifest`: the App manifest and the github.com form it posts to. */
@@ -13999,7 +14666,8 @@ export interface SetupLink {
   expires_at: string | null
 }
 
-export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret'
+/** `voice-api-key`: Voice it's OpenAI API key, minted on Admin › Accounts by a platform admin for themself, ten minutes. */
+export type SetupLinkKind = 'pool-account' | 'team-git' | 'addon-secret' | 'voice-api-key'
 
 /**
  * One check's last result in `health/latest`, read from the row
@@ -14182,7 +14850,7 @@ export function restartSetupSmoke(): Promise<Result<{ workspace: string | null; 
     'POST',
     undefined,
     (raw) => ({ workspace: strOf(objOf(raw)?.workspace), smoke: normSmoke(objOf(raw)?.smoke) }),
-    () => ({ workspace: 'engineering', smoke: { state: 'running', detail: null, url: null } }),
+    () => ({ workspace: 'engineering', smoke: { state: 'running', detail: null, url: null, started_at: null } }),
   )
 }
 
@@ -14214,7 +14882,7 @@ export function mintSetupLink(body: { kind: SetupLinkKind; label: string; owner:
       const d = objOf(raw) ?? {}
       return { kind: strOf(d.kind) ?? body.kind, label: strOf(d.label) ?? body.label, owner: strOf(d.owner) ?? body.owner, url: strOf(d.url), path: strOf(d.path) ?? '', expires_at: strOf(d.expires_at) }
     },
-    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + 24 * 3_600_000).toISOString() }),
+    () => ({ ...body, url: null, path: '/setup/link', expires_at: new Date(FIXTURE_NOW + (body.kind === 'voice-api-key' ? 600_000 : 24 * 3_600_000)).toISOString() }),
   )
 }
 
@@ -14381,4 +15049,616 @@ export function fixtureSetupHealth(): Record<string, unknown> {
       findings: rows.filter((r) => r.status !== 'met'),
     },
   }
+}
+
+// ---------------------------------------------------------------------------
+// Config › Plugins (docs/design/agent-plugins.md): the catalogue and the
+// workspace's signed setting, `swarm_api.routes.plugin_settings`.
+// ---------------------------------------------------------------------------
+
+const PLUGINS_SELECTED = '/v1/plugins'
+const PLUGINS_OF = '/v1/workspaces/{tenant_id}/plugins'
+
+function pluginStrings(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string' && s !== '') : []
+}
+
+function pluginRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+}
+
+function normCataloguePlugin(raw: unknown): CataloguePlugin | null {
+  const r = pluginRecord(raw)
+  if (typeof r.name !== 'string' || r.name === '') return null
+  const served = pluginRecord(r.modes)
+  const modes: Partial<Record<(typeof PLUGIN_MODES)[number], PluginModeOffer>> = {}
+  for (const m of PLUGIN_MODES) {
+    if (!(m in served)) continue
+    const o = pluginRecord(served[m])
+    // Only an explicit true runs: an unread flag is never offered as running.
+    modes[m] = { skills: pluginStrings(o.skills), available: o.available === true, reason: typeof o.reason === 'string' && o.reason !== '' ? o.reason : null }
+  }
+  return {
+    name: r.name,
+    version: typeof r.version === 'string' ? r.version : '',
+    runner_profiles: pluginStrings(r.runner_profiles),
+    modes,
+  }
+}
+
+/** What `GET /v1/plugins` and both forms of the workspace route answer (`swarm_api.plugins.view`). */
+export function normWorkspacePlugins(raw: unknown): WorkspacePlugins {
+  const r = pluginRecord(raw)
+  const defaults = pluginRecord(pluginRecord(r.defaults).plugins)
+  return {
+    tenant_id: typeof r.tenant_id === 'string' ? r.tenant_id : '',
+    allowed: pluginStrings(pluginRecord(r.plugins).allowed),
+    default_allowed: Array.isArray(defaults.allowed) ? pluginStrings(defaults.allowed) : null,
+    set_at: typeof r.set_at === 'string' && r.set_at !== '' ? r.set_at : null,
+    set_by: typeof r.set_by === 'string' && r.set_by !== '' ? r.set_by : null,
+    // Only an explicit true may edit: an unread flag never offers a live switch.
+    can_edit: r.can_edit === true,
+    catalogue: (Array.isArray(r.catalogue) ? r.catalogue : []).map(normCataloguePlugin).filter((p): p is CataloguePlugin => p !== null),
+  }
+}
+
+/**
+ * The fixture build's plugins setting: the platform's catalogue as
+ * `swarm_api.plugincatalogue` holds it (gstack and Cloudflare's security
+ * audit skill, planner and designer refused until the question bridge
+ * lands), gstack allowed, and a save that holds for the tab (the API signs
+ * it; the fixture stores what was asked).
+ */
+const FIXTURE_PLUGIN_BRIDGE = 'runs an interview with a person, which needs the question bridge; until it lands only unattended mode runs'
+const FIXTURE_PLUGIN_PROFILES = ['claude-code', 'claude-code-large', 'claude-code-review', 'claude-code-browser', 'claude-code-lightpanda']
+let fixturePluginsSaved: { allowed: string[]; set_at: string; set_by: string } | null = null
+
+function fixturePlugins(): Record<string, unknown> {
+  const later = (m: Record<string, unknown>) => ({ ...m, available: false, reason: FIXTURE_PLUGIN_BRIDGE })
+  return {
+    tenant_id: 'u-bogdan',
+    plugins: { allowed: fixturePluginsSaved?.allowed ?? ['gstack'] },
+    defaults: { plugins: { allowed: [] } },
+    set_at: fixturePluginsSaved?.set_at ?? new Date(FIXTURE_NOW - 26 * 3_600_000).toISOString(),
+    set_by: fixturePluginsSaved?.set_by ?? 'bogdan@example.com',
+    can_edit: true,
+    catalogue: [
+      {
+        name: 'gstack', version: '1.92.55.0', runner_profiles: FIXTURE_PLUGIN_PROFILES,
+        modes: {
+          unattended: {
+            available: true,
+            skills: ['review', 'investigate', 'health', 'qa-only', 'qa', 'design-review', 'document-generate', 'document-release', 'ship', 'plan-eng-review', 'plan-design-review', 'autoplan'],
+          },
+          planner: later({ skills: ['office-hours', 'plan-ceo-review', 'plan-eng-review', 'plan-devex-review', 'autoplan', 'spec'] }),
+          designer: later({ skills: ['design-consultation', 'plan-design-review', 'design-review', 'design-html'] }),
+        },
+      },
+      {
+        name: 'security-audit', version: 'c1c8a8c1471069fb0e188eeaff69b8e8db6564a8', runner_profiles: FIXTURE_PLUGIN_PROFILES,
+        modes: { unattended: { available: true, skills: ['security-audit'] } },
+      },
+    ],
+  }
+}
+
+/** `GET /v1/plugins`: the selected workspace's plugins, the catalogue, and whether this caller may change them. */
+export async function loadWorkspacePlugins(): Promise<Result<WorkspacePlugins>> {
+  const target = route(PLUGINS_SELECTED)
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normWorkspacePlugins(fixturePlugins()) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
+  return r
+}
+
+/**
+ * `PUT /v1/workspaces/{tenant_id}/plugins` with `{allowed}`, catalogue names
+ * only: the API signs the block under the settings key and audits the change.
+ * It answers the same view as the GET, so the page draws what is now in force.
+ */
+export async function saveWorkspacePlugins(tenantId: string, allowed: readonly string[]): Promise<Result<WorkspacePlugins>> {
+  const target = route(PLUGINS_OF, { tenant_id: tenantId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 60, true)
+    fixturePluginsSaved = { allowed: [...new Set(allowed)].sort(), set_at: new Date().toISOString(), set_by: 'bogdan@example.com' }
+    return { status: 'ok', fetchedAt: Date.now(), data: normWorkspacePlugins(fixturePlugins()) }
+  }
+  const r = await write(target, 'PUT', { allowed: [...allowed] })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normWorkspacePlugins(r.data) }
+  return r
+}
+
+// --------------------------------------------------------------------------
+// Voice it › Settings (swarm-api routes/voice_settings.py)
+// --------------------------------------------------------------------------
+
+/** `GET` the settings, `PATCH {version, <field>: <name>}` to change them. */
+export const VOICE_SETTINGS = '/v1/voice/settings'
+/** Every name a setting may take: the page offers these and nothing else. */
+export const VOICE_SETTINGS_CATALOGUE = '/v1/voice/settings/catalogue'
+
+/** The fields a write may name (speech_catalogue.FIELDS). */
+export type VoiceSettingField = 'engine' | 'machine' | 'stt_model' | 'tts_model' | 'tts_voice' | 'conversation_model' | 'planner_model' | 'idle' | 'zone'
+export const VOICE_SETTING_FIELDS: readonly VoiceSettingField[] = ['engine', 'machine', 'stt_model', 'tts_model', 'tts_voice', 'conversation_model', 'planner_model', 'idle', 'zone']
+
+export interface VoiceCatalogue {
+  engines: { name: string; label: string; uses_machine: boolean }[]
+  machines: { name: string; vcpu: number; memory_gb: number; gpu: string | null; gpus: number; usd_per_hour: number; price_read_at: string | null; price_source: string | null }[]
+  stt_models: { name: string; disk_gb: number | null }[]
+  tts_models: { name: string; voices: string[]; default_voice: string }[]
+  conversation_models: { name: string; label: string; model: string }[]
+  planner_models: { name: string; label: string; model: string | null }[]
+  idle: { name: string; seconds: number }[]
+  zones: string[]
+}
+
+/** The OpenAI key's status: whether it is set, by whom and when. Never the key. */
+export interface VoiceKeyStatus {
+  set: boolean | null
+  by: string | null
+  at: string | null
+  link: { open: boolean; expires_at: string | null }
+}
+
+export interface VoiceSettingsView {
+  settings: Record<VoiceSettingField, string>
+  version: number
+  updated_by: string | null
+  updated_at: string | null
+  /** What the speech machine last started with; null before its first start. */
+  applied: { machine: string | null; stt_model: string | null; tts_model: string | null; idle: string | null; zone: string | null; at: string | null } | null
+  /** The machine fields the next start changes. */
+  pending: VoiceSettingField[]
+  openai_key: VoiceKeyStatus
+}
+
+const finiteOf = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+const listOf = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])
+const isField = (v: unknown): v is VoiceSettingField => typeof v === 'string' && (VOICE_SETTING_FIELDS as readonly string[]).includes(v)
+
+/** The catalogue as served, every entry without a name dropped. */
+export function normVoiceCatalogue(raw: unknown): VoiceCatalogue {
+  const d = objOf(raw) ?? {}
+  const named = (v: unknown) => listOf(v).map(objOf).filter((o): o is Record<string, unknown> => o !== null && strOf(o.name) !== null)
+  return {
+    engines: named(d.engines).map((e) => ({ name: strOf(e.name)!, label: strOf(e.label) ?? strOf(e.name)!, uses_machine: e.uses_machine === true })),
+    machines: named(d.machines).map((m) => ({
+      name: strOf(m.name)!,
+      vcpu: finiteOf(m.vcpu) ?? 0,
+      memory_gb: finiteOf(m.memory_gb) ?? 0,
+      gpu: strOf(m.gpu),
+      gpus: finiteOf(m.gpus) ?? 0,
+      usd_per_hour: finiteOf(m.usd_per_hour) ?? 0,
+      price_read_at: strOf(m.price_read_at),
+      price_source: strOf(m.price_source),
+    })),
+    stt_models: named(d.stt_models).map((m) => ({ name: strOf(m.name)!, disk_gb: finiteOf(m.disk_gb) })),
+    tts_models: named(d.tts_models).map((m) => ({
+      name: strOf(m.name)!,
+      voices: listOf(m.voices).filter((v): v is string => typeof v === 'string'),
+      default_voice: strOf(m.default_voice) ?? '',
+    })),
+    conversation_models: named(d.conversation_models).map((m) => ({ name: strOf(m.name)!, label: strOf(m.label) ?? strOf(m.name)!, model: strOf(m.model) ?? strOf(m.name)! })),
+    planner_models: named(d.planner_models).map((m) => ({ name: strOf(m.name)!, label: strOf(m.label) ?? strOf(m.name)!, model: strOf(m.model) })),
+    idle: named(d.idle).map((i) => ({ name: strOf(i.name)!, seconds: finiteOf(i.seconds) ?? 0 })),
+    zones: named(d.zones).filter((z) => z.machine !== false).map((z) => strOf(z.name)!),
+  }
+}
+
+/**
+ * The settings as served. The key's status keeps `set`, `by`, `at` and the
+ * link's state, and nothing else the answer might carry.
+ */
+export function normVoiceSettings(raw: unknown): VoiceSettingsView {
+  const d = objOf(raw) ?? {}
+  const s = objOf(d.settings) ?? {}
+  const settings = Object.fromEntries(VOICE_SETTING_FIELDS.map((f) => [f, strOf(s[f]) ?? ''])) as Record<VoiceSettingField, string>
+  const a = objOf(d.applied)
+  const k = objOf(d.openai_key) ?? {}
+  const link = objOf(k.link) ?? {}
+  return {
+    settings,
+    version: finiteOf(d.version) ?? 0,
+    updated_by: strOf(d.updated_by),
+    updated_at: strOf(d.updated_at),
+    applied: a === null ? null : { machine: strOf(a.machine), stt_model: strOf(a.stt_model), tts_model: strOf(a.tts_model), idle: strOf(a.idle), zone: strOf(a.zone), at: strOf(a.at) },
+    pending: listOf(d.pending).filter(isField),
+    openai_key: {
+      set: typeof k.set === 'boolean' ? k.set : null,
+      by: strOf(k.by),
+      at: strOf(k.at),
+      link: { open: link.open === true, expires_at: strOf(link.expires_at) },
+    },
+  }
+}
+
+/** The development fixture: the catalogue's current names, one zone. */
+function fixtureVoiceCatalogue(): unknown {
+  return {
+    engines: [
+      { name: 'own', label: 'Own speech', uses_machine: true },
+      { name: 'gpt-live', label: 'GPT-Live', uses_machine: false },
+    ],
+    machines: [
+      { name: 'g2-standard-4', vcpu: 4, memory_gb: 16, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.71, price_read_at: '2026-11-05', price_source: 'Owner figure' },
+      { name: 'g2-standard-8', vcpu: 8, memory_gb: 32, gpu: 'nvidia-l4', gpus: 1, usd_per_hour: 0.85, price_read_at: '2026-11-05', price_source: 'On-demand list price, machine plus one L4' },
+    ],
+    stt_models: [{ name: 'qwen3-asr-0.6b', disk_gb: 2 }],
+    tts_models: [{ name: 'kokoro-82m', voices: ['af_heart', 'am_michael', 'bf_emma', 'bm_george'], default_voice: 'af_heart' }],
+    conversation_models: [
+      { name: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (fastest)', model: 'claude-haiku-5-5' },
+      { name: 'claude-sonnet-5', label: 'Claude Sonnet 5', model: 'claude-sonnet-5' },
+    ],
+    planner_models: [
+      { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-1' },
+      { name: 'opus', label: 'Opus class (coding)', model: 'claude-opus-5-5' },
+    ],
+    idle: [
+      { name: '2m', seconds: 120 },
+      { name: '5m', seconds: 300 },
+      { name: '10m', seconds: 600 },
+    ],
+    zones: [{ name: 'us-central1-a', machine: true }],
+  }
+}
+
+let fixtureVoiceSaved: { settings: Record<string, string>; version: number; updated_at: string } | null = null
+
+function fixtureVoiceSettings(): unknown {
+  const settings = fixtureVoiceSaved?.settings ?? {
+    engine: 'own', machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', tts_voice: 'af_heart',
+    conversation_model: 'claude-haiku-5-5', planner_model: 'fable', idle: '5m', zone: 'us-central1-a',
+  }
+  const applied = { machine: 'g2-standard-4', stt_model: 'qwen3-asr-0.6b', tts_model: 'kokoro-82m', idle: '5m', zone: 'us-central1-a', at: new Date(FIXTURE_NOW - 3_600_000).toISOString() }
+  return {
+    settings,
+    version: fixtureVoiceSaved?.version ?? 3,
+    updated_by: 'owner@example.com',
+    updated_at: fixtureVoiceSaved?.updated_at ?? new Date(FIXTURE_NOW - 86_400_000).toISOString(),
+    applied,
+    pending: (['machine', 'stt_model', 'tts_model', 'idle', 'zone'] as const).filter((f) => applied[f] !== settings[f]),
+    openai_key: { set: true, by: 'owner@example.com', at: new Date(FIXTURE_NOW - 2 * 86_400_000).toISOString(), label: 'voice-openai', link: { open: false, expires_at: null } },
+  }
+}
+
+/** `GET /v1/voice/settings`. */
+export async function loadVoiceSettings(): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_SETTINGS)
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
+/** `GET /v1/voice/settings/catalogue`. */
+export async function loadVoiceCatalogue(): Promise<Result<VoiceCatalogue>> {
+  const target = route(VOICE_SETTINGS_CATALOGUE)
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 80))
+    noteFixtureProbe(target, 80, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceCatalogue(fixtureVoiceCatalogue()) }
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceCatalogue(r.data) }
+  return r as Result<VoiceCatalogue>
+}
+
+/**
+ * `PATCH /v1/voice/settings` with the version the page read: swarm-api
+ * refuses it 409 when someone else saved first, and 422 naming the field
+ * for a name its catalogue does not list. Platform admins only.
+ */
+export async function saveVoiceSettings(version: number, changes: Partial<Record<VoiceSettingField, string>>): Promise<Result<VoiceSettingsView>> {
+  const target = route(VOICE_SETTINGS)
+  if (USE_FIXTURES) {
+    if (!fixtureIsAdmin) return fixtureAdminRefusal<VoiceSettingsView>(target, 60)
+    noteFixtureProbe(target, 60, true)
+    const now = normVoiceSettings(fixtureVoiceSettings())
+    if (version !== now.version) {
+      return { status: 'error', error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'the settings changed since they were read; read them again', detail: { field: 'version', version: now.version }, method: 'PATCH' } }
+    }
+    fixtureVoiceSaved = { settings: { ...now.settings, ...changes }, version: now.version + 1, updated_at: new Date().toISOString() }
+    return { status: 'ok', fetchedAt: Date.now(), data: normVoiceSettings(fixtureVoiceSettings()) }
+  }
+  const r = await write(target, 'PATCH', { version, ...changes })
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: normVoiceSettings(r.data) }
+  return r as Result<VoiceSettingsView>
+}
+
+// ---- Voice it: the Talk stage's visuals, notes and read-backs -------------------
+
+/** swarm-api's visual routes (routes/voice_visuals.py) and read-back routes (routes/voice_readback.py). */
+export const VOICE_VISUALS = '/v1/voice/projects/{project_id}/visuals'
+export const VOICE_VISUAL = '/v1/voice/projects/{project_id}/visuals/{visual_id}'
+export const VOICE_NOTE = '/v1/voice/projects/{project_id}/visuals/{visual_id}/notes/{note_id}'
+export const VOICE_READBACK_PENDING = '/v1/voice/sessions/{session_id}/readbacks/pending'
+export const VOICE_READBACK_GO = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/go'
+export const VOICE_READBACK_NOT_THAT = '/v1/voice/sessions/{session_id}/readbacks/{readback_id}/not-that'
+
+export type VoiceVisualKind = 'mockup' | 'diagram' | 'spec' | 'code' | 'log'
+
+/** Where on a visual (swarm_api/voice/visuals.py `check_anchor`); null is the whole visual. */
+export type VoiceAnchor =
+  | { type: 'point'; x: number; y: number }
+  | { type: 'region'; x: number; y: number; w: number; h: number }
+  | { type: 'part'; part_id: string }
+  | { type: 'lines'; from: number; to: number }
+  | null
+
+/** A visual as the routes serve it (`visual_view`): no body, no tenant. */
+export interface VoiceVisual {
+  visual_id: string
+  kind: VoiceVisualKind
+  title: string
+  version: number
+  /** A file slice `{repo, ref, path, from, to}`, a diff `{repo, pull}` or a log `{task_id, step}`; null when drawn. */
+  source: Record<string, unknown> | null
+  parts: { part_id: string; title?: string }[]
+  /** The body's first and last line numbers, for a code, log or spec body. */
+  lines: { from: number; to: number } | null
+  created_by: string | null
+  updated_at: string | null
+}
+
+export interface VoiceNote {
+  note_id: string
+  visual_id: string
+  anchor: VoiceAnchor
+  text: string
+  via: 'voice' | 'typed' | 'tap'
+  state: 'open' | 'resolved' | 'work'
+  created_at: string | null
+}
+
+export interface VoiceVisualDetail {
+  visual: VoiceVisual
+  body: string
+  notes: VoiceNote[]
+}
+
+/** A read-back as the routes answer it (`readback.view`). */
+export interface VoiceReadback {
+  readback_id: string
+  session_id: string | null
+  heard: string
+  action: string
+  target_name: string
+  state: 'pending' | 'confirmed' | 'refused' | 'expired' | 'superseded' | 'used'
+  expires_at: string | null
+}
+
+const VISUAL_KINDS: readonly VoiceVisualKind[] = ['mockup', 'diagram', 'spec', 'code', 'log']
+const READBACK_STATES: readonly VoiceReadback['state'][] = ['pending', 'confirmed', 'refused', 'expired', 'superseded', 'used']
+
+const vStr = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+const vNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+function normAnchor(v: unknown): VoiceAnchor {
+  const a = (v ?? null) as Record<string, unknown> | null
+  if (a === null || typeof a !== 'object') return null
+  const [x, y, w, h, from, to] = [vNum(a.x), vNum(a.y), vNum(a.w), vNum(a.h), vNum(a.from), vNum(a.to)]
+  if (a.type === 'lines' && from !== null && to !== null) return { type: 'lines', from, to }
+  if (a.type === 'region' && x !== null && y !== null && w !== null && h !== null) return { type: 'region', x, y, w, h }
+  if (a.type === 'point' && x !== null && y !== null) return { type: 'point', x, y }
+  if (a.type === 'part' && typeof a.part_id === 'string') return { type: 'part', part_id: a.part_id }
+  return null
+}
+
+export function normVoiceVisual(v: unknown): VoiceVisual | null {
+  const d = (v ?? null) as Record<string, unknown> | null
+  if (d === null || typeof d !== 'object') return null
+  const id = vStr(d.visual_id)
+  const kind = VISUAL_KINDS.find((k) => k === d.kind)
+  if (id === null || kind === undefined) return null
+  const lines = (d.lines ?? null) as Record<string, unknown> | null
+  const from = vNum(lines?.from)
+  const to = vNum(lines?.to)
+  return {
+    visual_id: id,
+    kind,
+    title: vStr(d.title) ?? id,
+    version: vNum(d.version) ?? 1,
+    source: d.source !== null && typeof d.source === 'object' ? (d.source as Record<string, unknown>) : null,
+    parts: Array.isArray(d.parts)
+      ? d.parts.flatMap((p) => {
+          const part = p as Record<string, unknown> | null
+          const pid = vStr(part?.part_id)
+          return pid === null ? [] : [{ part_id: pid, title: vStr(part?.title) ?? undefined }]
+        })
+      : [],
+    lines: from !== null && to !== null ? { from, to } : null,
+    created_by: vStr(d.created_by),
+    updated_at: vStr(d.updated_at),
+  }
+}
+
+function normVoiceNote(v: unknown): VoiceNote | null {
+  const d = (v ?? null) as Record<string, unknown> | null
+  const id = vStr(d?.note_id)
+  const text = vStr(d?.text)
+  if (d === null || id === null || text === null) return null
+  return {
+    note_id: id,
+    visual_id: vStr(d.visual_id) ?? '',
+    anchor: normAnchor(d.anchor),
+    text,
+    via: d.via === 'typed' || d.via === 'tap' ? d.via : 'voice',
+    state: d.state === 'resolved' || d.state === 'work' ? d.state : 'open',
+    created_at: vStr(d.created_at),
+  }
+}
+
+export function normVoiceReadback(v: unknown): VoiceReadback | null {
+  const d = (v ?? null) as Record<string, unknown> | null
+  const id = vStr(d?.readback_id)
+  const state = READBACK_STATES.find((s) => s === d?.state)
+  if (d === null || id === null || state === undefined) return null
+  return {
+    readback_id: id,
+    session_id: vStr(d.session_id),
+    heard: vStr(d.heard) ?? '',
+    action: vStr(d.action) ?? '',
+    target_name: vStr(d.target_name) ?? '',
+    state,
+    expires_at: vStr(d.expires_at),
+  }
+}
+
+// The fixture project: one file slice with a note on two of its lines, and one log.
+const FIXTURE_VISUALS: readonly VoiceVisualDetail[] = [
+  {
+    visual: {
+      visual_id: 'vv_fixture_code',
+      kind: 'code',
+      title: 'WorkflowSteps.tsx',
+      version: 2,
+      source: { repo: 'acme-labs/console', ref: 'main', path: 'src/WorkflowSteps.tsx', from: 40, to: 52, pull: null },
+      parts: [],
+      lines: { from: 40, to: 52 },
+      created_by: 'planner',
+      updated_at: new Date(FIXTURE_NOW - 60_000).toISOString(),
+    },
+    body: [
+      'export function StepFilters({ steps, onPick }: StepFiltersProps) {',
+      '  const [picked, setPicked] = useState<StepState | null>(null)',
+      '  const counts = useMemo(() => countByState(steps), [steps])',
+      '  return (',
+      '    <div className="wf-filters" role="toolbar" aria-label="Filter steps">',
+      '      {STATES.map((s) => (',
+      '        <Chip key={s} pressed={picked === s} onClick={() => { setPicked(s); onPick(s) }}>',
+      '          {WORD[s]} {counts[s] ?? 0}',
+      '        </Chip>',
+      '      ))}',
+      '    </div>',
+      '  )',
+      '}',
+    ].join('\n'),
+    notes: [
+      {
+        note_id: 'vn_fixture_sticky',
+        visual_id: 'vv_fixture_code',
+        anchor: { type: 'lines', from: 44, to: 45 },
+        text: 'Keep the filter row in view when the steps scroll.',
+        via: 'voice',
+        state: 'open',
+        created_at: new Date(FIXTURE_NOW - 30_000).toISOString(),
+      },
+    ],
+  },
+  {
+    visual: {
+      visual_id: 'vv_fixture_log',
+      kind: 'log',
+      title: 'e2e, step 4',
+      version: 1,
+      source: { task_id: 'task_fixture_e2e', step: 'e2e' },
+      parts: [],
+      lines: { from: 1, to: 4 },
+      created_by: 'planner',
+      updated_at: new Date(FIXTURE_NOW - 120_000).toISOString(),
+    },
+    body: [
+      'Running 14 tests using 2 workers',
+      '  ✘  workflow.spec.ts:62 › keeps the filter row in view (30.0s)',
+      '  Error: Timed out 30000ms waiting for expect(locator).toBeInViewport()',
+      '    Received: outside viewport (y = -48)',
+    ].join('\n'),
+    notes: [],
+  },
+]
+
+let fixtureReadback: VoiceReadback | null = null
+let fixtureNotesResolved = new Set<string>()
+
+function voiceFixtureOk<T>(target: ApiRoute, data: T): Result<T> {
+  noteFixtureProbe(target, 40, true)
+  return { status: 'ok', fetchedAt: Date.now(), data }
+}
+
+/** `GET /v1/voice/projects/{p}/visuals`: the project's visuals, the most recently drawn first. */
+export async function loadVoiceVisuals(projectId: string): Promise<Result<VoiceVisual[]>> {
+  const target = route(VOICE_VISUALS, { project_id: projectId })
+  if (USE_FIXTURES) return voiceFixtureOk(target, FIXTURE_VISUALS.map((v) => v.visual))
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const rows = (r.data as { visuals?: unknown } | null)?.visuals
+  return { ...r, data: Array.isArray(rows) ? rows.flatMap((v) => normVoiceVisual(v) ?? []) : [] }
+}
+
+/** `GET /v1/voice/projects/{p}/visuals/{v}`: the visual, its body as text, and its notes. */
+export async function loadVoiceVisual(projectId: string, visualId: string): Promise<Result<VoiceVisualDetail>> {
+  const target = route(VOICE_VISUAL, { project_id: projectId, visual_id: visualId })
+  if (USE_FIXTURES) {
+    const found = FIXTURE_VISUALS.find((v) => v.visual.visual_id === visualId)
+    if (found === undefined) return { status: 'empty', fetchedAt: Date.now() }
+    return voiceFixtureOk(target, { ...found, notes: found.notes.map((n) => (fixtureNotesResolved.has(n.note_id) ? { ...n, state: 'resolved' as const } : n)) })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  const d = (r.data ?? {}) as { visual?: unknown; body?: unknown; notes?: unknown }
+  const visual = normVoiceVisual(d.visual)
+  if (visual === null) return { status: 'empty', fetchedAt: r.fetchedAt }
+  return {
+    ...r,
+    data: {
+      visual,
+      body: typeof d.body === 'string' ? d.body : '',
+      notes: Array.isArray(d.notes) ? d.notes.flatMap((n) => normVoiceNote(n) ?? []) : [],
+    },
+  }
+}
+
+/** `PATCH /v1/voice/projects/{p}/visuals/{v}/notes/{n}` with `{state: "resolved"}`. */
+export async function resolveVoiceNote(projectId: string, visualId: string, noteId: string, sessionId: string | null): Promise<Result<unknown>> {
+  const target = route(VOICE_NOTE, { project_id: projectId, visual_id: visualId, note_id: noteId })
+  if (USE_FIXTURES) {
+    fixtureNotesResolved = new Set([...fixtureNotesResolved, noteId])
+    return voiceFixtureOk(target, { note_id: noteId, state: 'resolved' })
+  }
+  return write(target, 'PATCH', sessionId === null ? { state: 'resolved' } : { state: 'resolved', session_id: sessionId })
+}
+
+/** `GET /v1/voice/sessions/{s}/readbacks/pending`: the read-back waiting on the person, or null. */
+export async function loadPendingReadback(sessionId: string): Promise<Result<VoiceReadback | null>> {
+  const target = route(VOICE_READBACK_PENDING, { session_id: sessionId })
+  if (USE_FIXTURES) {
+    fixtureReadback ??= {
+      readback_id: 'rb_fixture',
+      session_id: sessionId,
+      heard: 'cancel the nightly run',
+      action: 'cancel',
+      target_name: 'run nightly-e2e #482',
+      state: 'pending',
+      expires_at: new Date(Date.now() + 45_000).toISOString(),
+    }
+    return voiceFixtureOk(target, fixtureReadback.state === 'pending' ? fixtureReadback : null)
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
+}
+
+/**
+ * Go (`.../go`) or Not that (`.../not-that`) on a pending read-back. Either is
+ * 409 once it is no longer pending (answered, superseded or expired), and then
+ * nothing runs. Answers the read-back as it now stands.
+ */
+export async function answerReadback(sessionId: string, readbackId: string, go: boolean): Promise<Result<VoiceReadback | null>> {
+  const target = route(go ? VOICE_READBACK_GO : VOICE_READBACK_NOT_THAT, { session_id: sessionId, readback_id: readbackId })
+  if (USE_FIXTURES) {
+    const was = fixtureReadback
+    fixtureReadback = was === null ? null : { ...was, state: go ? 'confirmed' : 'refused' }
+    return voiceFixtureOk(target, fixtureReadback)
+  }
+  const r = await write(target, 'POST')
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
 }

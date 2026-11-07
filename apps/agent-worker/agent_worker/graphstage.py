@@ -271,6 +271,21 @@ DELIVERY_SETTINGS_COLLECTION = SETTINGS_COLLECTION
 #: The workflow switch in the signed `task.metadata.dispatch` block
 #: (`swarm_api.validation.DISPATCH_SWITCHES`, 2026-11-01): `on` | `off`.
 SWITCH_CODE_INTELLIGENCE = "code_intelligence"
+#: The workflow switch choosing the SHAPE a graph-on step's graph takes
+#: (SKILL-ON-DEMAND, the owner's pick of 3 November 2026, part of #2688;
+#: `swarm_api.validation.DISPATCH_SWITCHES`): `skill` (the code-graph skill
+#: over the one `slice` tool, with a grep nudge), `tools` (batch two's ten
+#: tools loaded on every turn) or `off` (no graph, as `code_intelligence:
+#: off`). Unset is `DEFAULT_SHAPE`. It only chooses a shape: whether a step
+#: is staged at all is still the setting, the A/B and `code_intelligence`.
+SWITCH_GRAPH_SHAPE = "graph_shape"
+SHAPE_SKILL, SHAPE_TOOLS = "skill", "tools"
+SHAPES = (SHAPE_SKILL, SHAPE_TOOLS, "off")
+#: The owner's pick: the skill on demand, with the nudge.
+DEFAULT_SHAPE = SHAPE_SKILL
+#: The runner's reading of the shape (`claude_code.graph_shape`), set beside
+#: the graph's own variables and only with them.
+SHAPE_ENV = "SWARM_GRAPH_SHAPE"
 #: The deciding source when the switch decided.
 SOURCE_SWITCH = "workflow switch"
 #: `stage.json`'s record of the workflow switches: `{code_intelligence:
@@ -346,6 +361,26 @@ def switch_of(dispatch: Mapping[str, Any] | None, name: str) -> str | None:
     absent or not one of the two words (an older or newer control plane)."""
     value = dispatch.get(name) if isinstance(dispatch, Mapping) else None
     return value if value in (ON, OFF) else None
+
+
+def shape_of(dispatch: Mapping[str, Any] | None) -> str | None:
+    """`skill`, `tools` or `off` from the signed block's `graph_shape`; None
+    when absent or another word."""
+    value = dispatch.get(SWITCH_GRAPH_SHAPE) if isinstance(dispatch, Mapping) else None
+    return value if value in SHAPES else None
+
+
+def shape_env(shape: str | None) -> dict[str, str]:
+    """`{SHAPE_ENV: shape}` for a shape the switch chose, else nothing: the
+    runner reads an absent variable as `DEFAULT_SHAPE`, so a step that chose
+    none hands the runner exactly the variables it did before."""
+    return {SHAPE_ENV: shape} if shape in (SHAPE_SKILL, SHAPE_TOOLS) else {}
+
+
+def graph_switch(dispatch: Mapping[str, Any] | None) -> str | None:
+    """The `code_intelligence` switch as staging reads it: `off` also when
+    `graph_shape` says `off`, so that shape is no graph at all."""
+    return OFF if shape_of(dispatch) == OFF else switch_of(dispatch, SWITCH_CODE_INTELLIGENCE)
 
 
 @dataclass(frozen=True)
@@ -472,7 +507,7 @@ def _not_an_ancestor(index_sha: str, base_sha: str) -> str:
 
 def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
                    index_state: Mapping[str, Any],
-                   deepen: Callable[[], str | None] | None = None) -> Ancestry | str:
+                   deepen: Callable[[], Path | str | None] | None = None) -> Ancestry | str:
     """How `index_sha` is known to be an ancestor of `base_sha`, or why it is not.
 
     `deepen` (lane GRAPH-ANCESTRY, part of #2540) makes the clone's history
@@ -486,6 +521,10 @@ def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
     were refused here, against 3 proven by git. The rule is unchanged: only
     a proof stages, and a fetch that fails or does not reach the index
     commit leaves the ancestry not shown.
+
+    `deepen` may instead answer a Path: the repository the history was
+    fetched into (`gitops.fetch_commit_history`, commits and trees without
+    file contents), where git is asked in place of the checkout.
     """
     if index_sha == base_sha:
         return Ancestry(basis="same", behind_by=0, changed=[])
@@ -514,11 +553,19 @@ def prove_ancestry(checkout: Path | None, index_sha: str, base_sha: str,
     if deepen is None or checkout is None:
         return unshown
     why = deepen()
-    if why is not None:
+    if isinstance(why, str):
         return f"{unshown} ({why})"
-    local = is_ancestor(checkout, index_sha, base_sha)
+    history = why if isinstance(why, Path) else checkout
+    local = is_ancestor(history, index_sha, base_sha)
     if local is True:
-        return _git_ancestry(checkout, index_sha, base_sha)
+        found = _git_ancestry(history, index_sha, base_sha)
+        if found.changed is None and history != checkout:
+            # The scratch history holds no file contents and fetches nothing
+            # lazily: a tree it lacks leaves the changed files unknown, and
+            # a graph whose staleness is unknown is not staged as current.
+            return f"{unshown} (the files changed since the index could not be read " \
+                   "from the fetched history)"
+        return found
     if local is False:
         return _not_an_ancestor(index_sha, base_sha)
     return f"{unshown} (not within the history fetched behind the base)"
@@ -528,15 +575,15 @@ class _HistoryOnce:
     """One staging's `deepen`: the fetch runs at most once, for the first
     candidate that needs it, and every later candidate reads its answer."""
 
-    def __init__(self, fetch: Callable[[Path, str], str | None], checkout: Path,
+    def __init__(self, fetch: Callable[[Path, str], Path | str | None], checkout: Path,
                  base_sha: str) -> None:
         self._fetch, self._checkout, self._base = fetch, checkout, base_sha
         self._asked = False
-        self._answer: str | None = None
+        self._answer: Path | str | None = None
         #: Seconds the fetch took, or None when it was not needed.
         self.seconds: float | None = None
 
-    def __call__(self) -> str | None:
+    def __call__(self) -> Path | str | None:
         if not self._asked:
             self._asked = True
             started = time.monotonic()
@@ -547,17 +594,41 @@ class _HistoryOnce:
             self.seconds = round(time.monotonic() - started, 3)
         return self._answer
 
+    def close(self) -> None:
+        """The scratch history repository, gone once the staging has read it."""
+        if isinstance(self._answer, Path) and self._answer != self._checkout:
+            shutil.rmtree(self._answer, ignore_errors=True)
+
+
+#: Below this many seconds left of the fetch limit, the fallback deepen of
+#: the checkout is not started: it could not land a pack in that time.
+HISTORY_FALLBACK_MIN_SECONDS = 2.0
+
 
 def history_fetcher(repository_url: str | None, private_dir: Path, *,
                     token: Callable[[], str | None] | None = None,
-                    ) -> Callable[[Path, str], str | None]:
-    """The production `deepen` fetch: `gitops.fetch_base_history` from the
-    task's SIGNED `repository_url`, validated as a clone validates it.
+                    timeout_seconds: float | None = None,
+                    git_binary: str = "git",
+                    ) -> Callable[[Path, str], Path | str | None]:
+    """The production `deepen` fetch from the task's SIGNED `repository_url`,
+    validated as a clone validates it.
+
+    First `gitops.fetch_commit_history`: the commits behind the base with
+    their trees and no file contents, in a scratch repository, which is what
+    the proof reads (lane GRAPH-DELIVERY, 2026-11-06: the blob-carrying
+    deepen ran past its limit on a third of AI Studio's steps). When that
+    fails for any reason but the limit -- a forge that refuses the filter,
+    say -- the bounded fallback is the old `gitops.fetch_base_history`
+    deepen of the checkout, in what is left of the same limit, so a step
+    never waits longer than `timeout_seconds` in all. A reason names both.
 
     `token` supplies the tenant's forge token for a private repository; with
     none, the fetch is anonymous, which a public repository answers and a
     private one refuses -- a reason in `stage.json`, as before this lane."""
-    def fetch(checkout: Path, base_sha: str) -> str | None:
+    limit = (gitops.ANCESTRY_FETCH_TIMEOUT_SECONDS if timeout_seconds is None
+             else timeout_seconds)
+
+    def fetch(checkout: Path, base_sha: str) -> Path | str | None:
         try:
             url = gitops.validate_repository_url(repository_url or "")
         except gitops.GitError:
@@ -570,9 +641,19 @@ def history_fetcher(repository_url: str | None, private_dir: Path, *,
             secret = token() if token is not None else None
         except Exception as exc:  # noqa: BLE001 -- a token read is a reason, never a failure
             secret, unread = None, f" (forge token not read: {type(exc).__name__})"
+        started = time.monotonic()
+        got = gitops.fetch_commit_history(url=url, base_sha=base_sha, private_dir=private_dir,
+                                          token=secret or None, timeout_seconds=limit,
+                                          git_binary=git_binary)
+        if isinstance(got, Path):
+            return got
+        left = limit - (time.monotonic() - started)
+        if "timed out" in got or left < HISTORY_FALLBACK_MIN_SECONDS:
+            return f"{got}{unread}"
         why = gitops.fetch_base_history(checkout, url=url, base_sha=base_sha,
-                                        private_dir=private_dir, token=secret or None)
-        return f"{why}{unread}" if why is not None else None
+                                        private_dir=private_dir, token=secret or None,
+                                        timeout_seconds=left, git_binary=git_binary)
+        return f"{got}; {why}{unread}" if why is not None else None
     return fetch
 
 
@@ -823,6 +904,11 @@ class StageResult:
     #: Seconds the ancestry proof's history fetch took (lane GRAPH-ANCESTRY);
     #: None when no fetch was needed. In `stage.json` only when it ran.
     history_seconds: float | None = None
+    #: Seconds of each start-up phase `prepare` runs before the agent (lane
+    #: REVIEW-STARTUP-WAIT): `stage` (this decision, `seconds`), `additional`
+    #: (the additional repositories' graphs) and `jev_setup`. In `stage.json`
+    #: and the `graph_ready` mark, so a slow start is placed from the record.
+    phases: dict[str, float] = field(default_factory=dict)
 
     @property
     def delivery(self) -> str:
@@ -857,6 +943,7 @@ class StageResult:
             **({"fallback": self.fallback} if self.fallback else {}),
             **({"history_seconds": self.history_seconds}
                if self.history_seconds is not None else {}),
+            **({"phases": dict(self.phases)} if self.phases else {}),
             **self.facts,
         }
 
@@ -876,6 +963,10 @@ def ready_detail(result: StageResult) -> dict[str, Any]:
         "bytes": result.facts.get("bytes") if delivered else None,
         "blobs": result.facts.get("blobs") if delivered else None,
         "reason": result.reason,
+        # The ancestry fetch's seconds (None when none ran) and every timed
+        # start-up phase: the batch-two wait had no number to show it.
+        "history_seconds": result.history_seconds,
+        "phases": dict(result.phases),
     }}
 
 
@@ -1029,6 +1120,7 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
     wants_service = delivery == DELIVERY_SERVICE
     if wants_service:
         result.fallback = unserved or service.unavailable()
+    deepen: _HistoryOnce | None = None
     try:
         if not base_sha or not _SHA.match(base_sha):
             raise StageRefused("the step has no base commit to compare the index with")
@@ -1072,6 +1164,9 @@ def _stage(*, db: Any, store: Any, tenant_id: str, repository_url: str | None, t
         result.reason = str(refused)
     except Exception as exc:  # noqa: BLE001 -- see `stage`
         result.reason = f"staging failed ({type(exc).__name__})"
+    finally:
+        if deepen is not None:
+            deepen.close()
     return result
 
 
@@ -1124,10 +1219,13 @@ def switches_summary(work: Path, dispatch: Mapping[str, Any] | None
     the step (no `stage.json`), each set switch with its value alone. Never
     raises."""
     from .judge import attempt as judge_attempt
+    from .judge import poststeps
 
-    names = (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH, "quality_gates")
+    names = (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH, "quality_gates",
+             poststeps.CONTRACT_JEV_SWITCH)
     set_ = {name: switch_of(dispatch, name) for name in names}
-    if not any(set_.values()):
+    shape = shape_of(dispatch)
+    if not any(set_.values()) and not shape:
         return None
     try:
         stored = json.loads((Path(work) / CONTEXT_DIR_NAME / STAGE_RECORD_NAME)
@@ -1135,9 +1233,23 @@ def switches_summary(work: Path, dispatch: Mapping[str, Any] | None
     except (OSError, ValueError, AttributeError):
         stored = None
     stored = dict(stored) if isinstance(stored, Mapping) else {}
-    return {name: stored.get(name) if isinstance(stored.get(name), Mapping)
-            else {"value": set_[name]}
-            for name in (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH)}
+    summary = {name: stored.get(name) if isinstance(stored.get(name), Mapping)
+               else {"value": set_[name]}
+               for name in (SWITCH_CODE_INTELLIGENCE, judge_attempt.SWITCH)}
+    if shape:
+        # The shape the step's graph took, only when the block chose one,
+        # so every other attempt's summary is the one it wrote before.
+        record = stored.get(SWITCH_GRAPH_SHAPE)
+        summary[SWITCH_GRAPH_SHAPE] = (record if isinstance(record, Mapping)
+                                       else {"value": shape})
+    arm = set_[poststeps.CONTRACT_JEV_SWITCH]
+    if arm:
+        # The Jev work-contract experiment's arm, only when the block set it,
+        # so `scripts/benchstat.py contract-jev` can tell the arms apart.
+        record = stored.get(poststeps.CONTRACT_JEV_SWITCH)
+        summary[poststeps.CONTRACT_JEV_SWITCH] = (record if isinstance(record, Mapping)
+                                                  else {"value": arm})
+    return summary
 
 
 def offers_graph(runner_argv: Sequence[str]) -> bool:
@@ -1207,7 +1319,8 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
     `dispatch` is the task's SIGNED `metadata.dispatch` block (the worker
     verified the spec before this runs); only its workflow switches are read
     (`switch_of`): `code_intelligence` here, `jev_judgments` by the judge's
-    setup, which asks `jev_key` for the workspace's TypeSafe key under `on`
+    setup, which asks `jev_key` for the workspace's TypeSafe key whenever the
+    step is opted in on that backend with no key file or shim
     (`judge.attempt.setup`). `stage.json` records both (`SWITCHES_FIELD`). A
     step whose `code_intelligence` switch is `off` gets no graph tool at all:
     nothing staged or pinned, no ticket, no additional repository's graph.
@@ -1222,7 +1335,9 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         context_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         service = ServiceRoute(ticket=graph_ticket, private_dir=private_dir, backend=backend,
                                url=service_url, probe=probe)
-        switch = switch_of(dispatch, SWITCH_CODE_INTELLIGENCE)
+        switch = graph_switch(dispatch)
+        shape = shape_of(dispatch)
+        began = time.monotonic()
         result = stage(db=db, store=store, tenant_id=tenant_id, repository_url=repository_url,
                        task_id=task_id, checkout=checkout, base_sha=base_sha,
                        context_dir=context_dir, call_options=call_options, service=service,
@@ -1235,6 +1350,7 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                            repository_url, private_dir if private_dir is not None
                            else context_dir,
                            token=forge_token if private_dir is not None else None))
+        result.phases["stage"] = _since(began)
         if not result.served:
             # A restored checkpoint's pin is not this attempt's decision either.
             remove_pin(context_dir)
@@ -1252,6 +1368,7 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
                      delivery=result.delivery, seconds=result.seconds,
                      bytes=result.facts.get("bytes"), blobs=result.facts.get("blobs"),
                      fallback=result.fallback, route=result.route)
+        began = time.monotonic()
         prepare_additional(
             # The switch `off` runs no graph, so no additional repository's
             # either: `prepare_additional` still clears what a checkpoint left.
@@ -1261,36 +1378,47 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
             repos_dir=repos_dir if repos_dir is not None else work / REPOS_DIR_NAME,
             call_options=call_options, graph_ticket=graph_ticket, private_dir=private_dir,
             backend=backend, service_url=service_url, probe=probe, log=log)
-        if mark is not None and result.wanted:
-            try:
-                mark(ready_detail(result))
-            except Exception as exc:  # noqa: BLE001 -- a measurement is never worth the graph
-                if log is not None:
-                    log.warning("graph_ready not marked", error=type(exc).__name__)
+        result.phases["additional"] = _since(began)
         # Jev for J1-J5 (lane CTXQ-JW): decided by the workspace's own stored
         # opt-in, written as `<attempt>/judge/config.json` or not at all.
         # Here, not in the lifecycle, because this is its one setup call.
         from .judge import attempt as judge_attempt
 
         judgments: dict[str, Any] = {}
-        jev = judge_attempt.setup(work=work, db=db, tenant_id=tenant_id,
-                                  repository_url=repository_url, call_options=call_options,
-                                  log=log, secret_env_names=secret_env_names,
-                                  switch=switch_of(dispatch, judge_attempt.SWITCH),
-                                  resolve_key=jev_key, record=judgments)
+        began = time.monotonic()
+        try:
+            jev = judge_attempt.setup(work=work, db=db, tenant_id=tenant_id,
+                                      repository_url=repository_url, call_options=call_options,
+                                      log=log, secret_env_names=secret_env_names,
+                                      switch=switch_of(dispatch, judge_attempt.SWITCH),
+                                      resolve_key=jev_key, record=judgments)
+        finally:
+            result.phases["jev_setup"] = _since(began)
+            # After every timed phase, so the mark carries them all; marked
+            # even when Jev's setup raised.
+            if mark is not None and result.wanted:
+                try:
+                    mark(ready_detail(result))
+                except Exception as exc:  # noqa: BLE001 -- a measurement is never worth the graph
+                    if log is not None:
+                        log.warning("graph_ready not marked", error=type(exc).__name__)
         # What this attempt ran with, and why (2026-11-01): the experiment
         # proves each step's condition from this record.
         (context_dir / STAGE_RECORD_NAME).write_text(
             json.dumps({**result.record(), SWITCHES_FIELD: {
                 SWITCH_CODE_INTELLIGENCE: result.switch_record(switch),
+                SWITCH_GRAPH_SHAPE: {"value": shape,
+                                     "shape": None if shape == OFF else shape or DEFAULT_SHAPE,
+                                     "source": SOURCE_SWITCH if shape else "default"},
                 judge_attempt.SWITCH: {k: v for k, v in judgments.items() if k != "switch"},
             }}, indent=2, default=str) + "\n", encoding="utf-8")
         if result.served and result.pin is not None and result.ticket_file is not None:
             return {CONTEXT_ENV: str(context_dir), PIN_ENV: str(result.pin),
                     TICKET_FILE_ENV: str(result.ticket_file), URL_ENV: str(service_url),
-                    **jev}
+                    **shape_env(shape), **jev}
         if result.staged and result.snapshot is not None:
-            return {CONTEXT_ENV: str(context_dir), SNAPSHOT_ENV: str(result.snapshot), **jev}
+            return {CONTEXT_ENV: str(context_dir), SNAPSHOT_ENV: str(result.snapshot),
+                    **shape_env(shape), **jev}
         if result.wanted:
             return {UNSTAGED_ENV: result.reason, **jev}
         return dict(jev)
@@ -1300,6 +1428,10 @@ def prepare(work: Path, *, profile_name: str, runner_argv: Sequence[str], db: An
         if log is not None:
             log.warning("graph context not staged", error=type(exc).__name__)
         return {}
+
+
+def _since(began: float) -> float:
+    return round(time.monotonic() - began, 3)
 
 
 def _clear(path: Path) -> None:
@@ -1405,22 +1537,28 @@ def _stage_additional(entry: Mapping[str, Any], *, directory: Path,
                  service=service, unserved=unserved)
 
 
-def server_argv(snapshot: str, workdir: str | None) -> list[str]:
+def server_argv(snapshot: str, workdir: str | None, shape: str | None = None) -> list[str]:
     """The command a CLI runs as `swarm-graph`: this interpreter, `-I` so a module
-    the agent wrote in the checkout is never what runs (`children.git_shim_argv`)."""
+    the agent wrote in the checkout is never what runs (`children.git_shim_argv`).
+    `shape` (`SHAPES`) is what its tools/list answers; none lists the ten."""
     argv = [sys.executable, "-I", "-m", SERVER_MODULE, "--snapshot", snapshot]
     if workdir:
         argv += ["--workdir", workdir]
+    if shape:
+        argv += ["--shape", shape]
     return argv
 
 
-def shim_argv(pin: str, ticket_file: str, workdir: str | None) -> list[str]:
+def shim_argv(pin: str, ticket_file: str, workdir: str | None,
+              shape: str | None = None) -> list[str]:
     """The command a CLI runs as `swarm-graph` when the graph is served (§4.2):
     the shim, under this interpreter with `-I`, as `server_argv`. It names no
     host, bucket or commit; the URL is the server entry's `env`."""
     argv = [sys.executable, "-I", "-m", SHIM_MODULE, "--pin", pin, "--ticket-file", ticket_file]
     if workdir:
         argv += ["--workdir", workdir]
+    if shape:
+        argv += ["--shape", shape]
     return argv
 
 
@@ -1464,7 +1602,8 @@ __all__ = [
     "MIN_FORMAT", "PIN_ENV", "PIN_MANIFEST_NAME", "PIN_NAME", "READY_MARK",
     "REPOSITORY_CONTEXT_FIELD", "REPOS_CONTEXT_DIR_NAME", "REPOS_DIR_NAME", "SERVER_NAME",
     "SETTINGS_COLLECTION", "SHIM_MODULE", "SOURCE_SWITCH", "SWITCHES_FIELD",
-    "SWITCH_CODE_INTELLIGENCE",
+    "SWITCH_CODE_INTELLIGENCE", "SWITCH_GRAPH_SHAPE", "SHAPES", "SHAPE_ENV", "SHAPE_SKILL",
+    "SHAPE_TOOLS", "DEFAULT_SHAPE", "shape_of", "shape_env", "graph_switch",
     "SNAPSHOT_DIR_NAME", "SNAPSHOT_ENV", "STAGE_RECORD_NAME", "STAGING_BACKENDS",
     "ServiceRoute", "StageResult", "TICKET_FILE_ENV", "UNSTAGED_ENV", "URL_ENV",
     "assign_arm", "checked_manifest", "decide", "delivery_of", "history_fetcher",

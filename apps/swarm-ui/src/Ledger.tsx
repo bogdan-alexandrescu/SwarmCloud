@@ -35,7 +35,8 @@ import { Segmented, Tag, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
 import { useMoreRight } from './WorkflowViews'
 import { WORKFLOW_IDS_PER_READ, loadWorkflowsById, type WorkflowRead } from './api'
-import { listRowName, workflowLabel } from './stepviews'
+import { listRowName } from './stepviews'
+import { workflowName } from './WorkflowFacts'
 import { stepsRead } from './workflowlist'
 import { type TopicId } from './help'
 import {
@@ -448,8 +449,8 @@ function shortId(id: string): string {
 /**
  * THE FAILED WORKFLOWS' NAMES (visual QA runs2-36, 2026-10-29): the card
  * listed "wf_bcdc…9f31" and nothing else, and the route serves no name. The
- * name is the spec's label or title off the step tasks (`workflowLabel`, what
- * Work › Workflows leads with), read in one `GET /v1/workflows?ids=` per card.
+ * name is the one Work › Workflows leads with (`workflowName`: its served
+ * title, else the label off the step tasks), read in one `GET /v1/workflows?ids=` per card.
  * Null until that read lands or when it fails: the row then keeps the id alone,
  * as the workflow list does for a row whose steps are not read.
  */
@@ -473,7 +474,7 @@ function useWorkflowNames(ids: readonly string[]): ReadonlyMap<string, WorkflowR
 function WorkflowName({ id, read }: { id: string; read: ReadonlyMap<string, WorkflowRead> | null }) {
   const one = read?.get(id) ?? null
   const taskById = one === null ? null : new Map(one.tasks.map((t) => [t.id, t]))
-  const label = one === null ? null : workflowLabel(one.workflow, taskById)
+  const label = one === null ? null : workflowName(one.workflow, taskById)
   // "Untitled workflow" only when every step's task came back, as Work ›
   // Workflows says it (`stepsRead`): a read missing a step's task is not
   // known to have no name, so the id stays alone (review of runs2-36).

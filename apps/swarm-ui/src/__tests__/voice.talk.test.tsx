@@ -11,10 +11,14 @@
 //     Audio and the browser's echo cancellation stays on;
 //   * captions of both sides land in the role=log region; a partial line is
 //     drawn muted outside it, so only final segments are announced;
-//   * End posts the session's end, closes the peer and stops the mic.
+//   * End posts the session's end, closes the peer and stops the mic;
+//   * after Resume (Projects.tsx hands the project over), the first Start
+//     talking sends that project as project_id, so the session continues it;
+//     a later start opens a new one.
 //
 // MUTATIONS: put the partial line inside the log; connect the analyser to the
-// context's destination; drop the end POST; leave the mic track running.
+// context's destination; drop the end POST; leave the mic track running;
+// start without the resumed project.
 //
 // THE CARDS BESIDE IT (section 10, phase two, "The console renders work,
 // review, plan, budget, stop and details cards"): the list reads the
@@ -41,12 +45,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
 const fetchMock = vi.hoisted(() => ({ write: vi.fn() }))
-const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn() }))
+const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn(), loadVoiceVisuals: null as null | ReturnType<typeof vi.fn> }))
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
+  // The stage's list read, passed through to api.ts: a test reads which project it asked for.
+  apiMock.loadVoiceVisuals = vi.fn(actual.loadVoiceVisuals)
   return {
     ...actual,
+    loadVoiceVisuals: apiMock.loadVoiceVisuals,
     get USE_FIXTURES() {
       return apiMock.fixtures
     },
@@ -67,10 +74,12 @@ vi.mock('../fetch', async (importOriginal) => ({
   write: fetchMock.write,
 }))
 
+import { RESUME_KEY } from '../voice/Projects'
 import { CardList, FIXTURE_CARDS, applyStreamEvent, EMPTY_LIST, type VoiceCard } from '../voice/CardList'
 import { CARD_KINDS } from '../voice/cards'
 import { TalkPane } from '../voice/Talk'
 import { applyCaption, captionEvent, type CaptionLine } from '../voice/captions'
+import { connectTalk } from '../voice/rtc'
 
 const SESSION = 'vs-0001'
 
@@ -98,6 +107,7 @@ describe('the Talk pane', () => {
   })
   afterEach(() => {
     fetchMock.write.mockReset()
+    window.sessionStorage.clear()
   })
 
   it('starts the session through swarm-api with the offer, and applies the answer', async () => {
@@ -195,6 +205,48 @@ describe('the Talk pane', () => {
     expect(screen.getByRole('alert').textContent).toBe('Voice it is for its owner only.')
     expect(pc.closed).toBe(true)
     expect(mic.stop).toHaveBeenCalled()
+  })
+
+  it('continues the resumed project at the first Start talking, and opens a new one after', async () => {
+    const resumed = 'vp_' + '7'.repeat(32)
+    window.sessionStorage.setItem(RESUME_KEY, resumed)
+    render(<TalkPane />)
+    await start()
+    const starts = () => fetchMock.write.mock.calls.filter(([t]) => t.url === '/v1/voice/sessions')
+    expect(starts()[0]?.[2]).toEqual({ offer_sdp: 'v=0 fake-offer', project_id: resumed })
+    expect(window.sessionStorage.getItem(RESUME_KEY)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'End' }))
+    await settle(act)
+    await start()
+    expect(starts()[1]?.[2]).toEqual({ offer_sdp: 'v=0 fake-offer' })
+  })
+
+  it("keeps a new session's project_id on the call, and the stage reads that project's visuals", async () => {
+    const project = 'vp_' + '9'.repeat(32)
+    fetchMock.write.mockImplementation(async (target: { url: string }) =>
+      target.url === '/v1/voice/sessions'
+        ? { status: 'ok', data: { project_id: project, session_id: SESSION, answer_sdp: 'v=0 fake-answer' }, fetchedAt: Date.now() }
+        : { status: 'ok', data: null, fetchedAt: Date.now() },
+    )
+    const call = await connectTalk({ onEvent: () => undefined, onVoice: () => undefined, onDropped: () => undefined })
+    expect(call.projectId).toBe(project)
+    call.hangUp()
+
+    apiMock.loadVoiceVisuals?.mockClear()
+    render(<TalkPane />)
+    await start()
+    expect(apiMock.loadVoiceVisuals?.mock.calls.map(([p]) => p)).toContain(project)
+  })
+
+  it('keeps the resumed project for the next try when the first start is refused', async () => {
+    const resumed = 'vp_' + '8'.repeat(32)
+    window.sessionStorage.setItem(RESUME_KEY, resumed)
+    fetchMock.write.mockResolvedValueOnce({ status: 'error', error: { kind: 'unavailable', httpStatus: 503, code: null, message: 'Voice it is not deployed.' } })
+    render(<TalkPane />)
+    await start()
+    await start()
+    const starts = fetchMock.write.mock.calls.filter(([t]) => t.url === '/v1/voice/sessions')
+    expect(starts.map(([, , body]) => body.project_id)).toEqual([resumed, resumed])
   })
 
   it('draws the card area empty before a session, and says cards appear as you talk', () => {

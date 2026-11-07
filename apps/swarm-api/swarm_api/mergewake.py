@@ -228,6 +228,11 @@ whose own loop fixes CI before it merges). Three things come with them:
   refused, the other's fixed 600 s window lapsed while its fan-in
   `ci-gate` run was still running. This is still one answered re-run per
   head, with at most one retry of a refusal.
+  The rule itself -- which failing checks a re-run reaches, what is asked
+  of GitHub, whether an accepted re-run still runs, and the bounds -- is
+  `cirerun`'s, shared with an issue run in CHECKING, which re-runs a red
+  head's failed Actions jobs once before it spends or refuses a CI-fix
+  round of its own (#3200); the bookkeeping here stays `merge_fix.reruns`.
 * EACH ROUND IS A STEP OF THE MERGE'S WORKFLOW. After the round's own
   workflow is submitted, the tick appends a step `ci-fix:<n>`,
   `conflict-fix:<n>` or `pick-fix:<n>` (ROLLUP-PICK-FIX) naming the round's
@@ -333,6 +338,14 @@ from .auth import AuthContext
 from .cifix import (
     BRANCH_PREFIX, PR_WRITER_KINDS, live_claim, live_plain_continuation, live_pr_writer,
 )
+from .cirerun import (
+    ACTIONS_APP_SLUG,  # noqa: F401 - re-exported: mergewake.ACTIONS_APP_SLUG
+    RERUN_REFUSALS_MAX,
+    RERUN_SETTLE_SECONDS,
+    rerun_running as _rerun_running,
+    rerun_targets as _rerun_targets,
+    rerunnable as _rerunnable,
+)
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import (
@@ -341,7 +354,7 @@ from .forgechecks import (
     CiReading,
     evaluate,
     required_status_checks,
-    workflow_run_of,
+    workflow_run_of,  # noqa: F401 - the re-run's targets resolve runs through it (cirerun)
 )
 from . import forge_limits
 from .forge import GITHUB_API_HOST
@@ -351,8 +364,14 @@ from .forgewrite import (
 )
 from .issueci import (
     CI_READ_SECONDS,
+    LOG_READ_BYTES,
     LOST_ROUND_SECONDS,
+    MAX_EXCERPT_CHECKS,
+    MAX_TITLE_CHARS,
     NO_CHANGE_MARKER,
+    _bound,
+    _clip,
+    _log_failures,
     ci_fix_continuation,
     excerpt_at,
     pushing_task,
@@ -438,6 +457,27 @@ MERGE_SLOT_WAIT = "merge_slot_wait"
 #: train coordinator (`mergetrain.tick_tenant`, on this same tick) marks it
 #: when its entry lands, is ejected or is returned. The tick skips it.
 MERGE_TRAIN_WAITING = "merge_train_waiting"
+#: The park code of a green head the repository's merge train ejected twice
+#: (#3313, `agent_worker.merge.TRAIN_FIX_PENDING`; held equal by
+#: test_merge_wake_train_round.py): the worker's one re-board there is spent
+#: and a CI-fix round is left. Its checks are green, so they are never read
+#: as red: `_on_train` submits the round with the train run's failing jobs.
+TRAIN_FIX_PENDING = "train_fix_pending"
+#: The worker's park while a CI-fix round claimed at its head runs
+#: (`agent_worker.merge.CI_FIX_RUNNING`, held equal there too).
+CI_FIX_RUNNING = "ci_fix_running"
+#: The `pending` line every park after a train re-board carries
+#: (`agent_worker.merge.TRAIN_REBOARDED`, held equal there too): a
+#: CI_FIX_RUNNING park with it waits on a train round at a GREEN head, so it
+#: goes to `_on_train` too; read as CI, green would wake it every
+#: CI_READ_SECONDS for the worker to park the same again.
+TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
+#: How the merge train's ejection comment begins (scripts/merge-train.sh
+#: `eject_pr`; `agent_worker.merge.REPOSITORY_TRAIN_EJECTED`, held equal there too).
+REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
+#: The wake reason of a train park with no CI-fix round to ask for: the
+#: worker, woken, refuses `train_ejected` itself.
+TRAIN_EJECTED = "train_ejected"
 #: The wake reason of a queued pull request that left the queue unmerged.
 DEQUEUED = "dequeued"
 
@@ -485,19 +525,9 @@ CONFLICT_FIX_STEP = "conflict-fix"
 #: `{round, head, claimed_at}` as a round is claimed, then `jobs`, `runs`
 #: and `requested_at`, or `error` when GitHub refused.
 RERUNS_KEY = "reruns"
-#: How long after a re-run was requested the tick keeps reading the same
-#: failed check runs as "GitHub has not made the new ones yet" rather than as
-#: the re-run's answer. Ten minutes: GitHub queues a re-run in seconds, and
-#: past this a re-run that never registered gives way to a round -- unless a
-#: workflow run it asked of still reads not `completed` (#3006), which holds
-#: on; the window is the floor when that status cannot be read.
-RERUN_SETTLE_SECONDS = 600
-#: The re-run requests GitHub may refuse at one head before the step is
-#: woken without one (#3006): a refused re-run ran nothing, so it is asked
-#: once more, and a credential without `actions: write` costs one request.
-RERUN_REFUSALS_MAX = 2
-#: The App whose check runs are Actions jobs, the only ones a re-run reaches.
-ACTIONS_APP_SLUG = "github-actions"
+#: RERUN_SETTLE_SECONDS, RERUN_REFUSALS_MAX and ACTIONS_APP_SLUG are
+#: `cirerun`'s, imported above: the issue run's CHECKING read shares the
+#: re-run rule (#3200), so it is defined there once.
 #: A merge parked on an owner pick its branch did not build (PICK-FIX-ROUND,
 #: part of #2441): the worker's park codes (PENDING asks for the next round,
 #: RUNNING waits on the claimed one), the rounds' list in `merge_fix`, their
@@ -1080,63 +1110,6 @@ def round_step_id(key: str, round_no: int) -> str:
     return f"{ROUND_KIND[key]}-fix:{int(round_no)}"
 
 
-def _rerunnable(reading: CiReading | None) -> list[int]:
-    """The failing Actions jobs a re-run could turn green, or [] when it could not.
-
-    Every failing check must be an Actions job: a red commit status or
-    another App's check run is not re-run by this, so re-running the rest
-    could not make the reading green and would only delay the round.
-    """
-    if reading is None or reading.failing_statuses or not reading.failing_runs:
-        return []
-    jobs: list[int] = []
-    for run in reading.failing_runs:
-        job = run.get("id")
-        app = _mapping(run.get("app"))
-        if (app.get("slug") != ACTIONS_APP_SLUG or not isinstance(job, int)
-                or isinstance(job, bool)):
-            return []
-        jobs.append(job)
-    return sorted(set(jobs))
-
-
-def _rerun_targets(reading: CiReading | None, jobs: list[int]) -> tuple[list[int], list[int]]:
-    """(the workflow runs whose failed jobs to re-run, the jobs to re-run alone).
-
-    A failing job whose run can be resolved is re-run through its run, which
-    re-runs its failed needs too (#2841); the rest as their own job.
-    """
-    runs: set[int] = set()
-    alone: set[int] = set()
-    by_id = {r.get("id"): r for r in (reading.failing_runs if reading else [])}
-    for job in jobs:
-        run_id = workflow_run_of(by_id.get(job) or {})
-        if run_id is None:
-            alone.add(job)
-        else:
-            runs.add(run_id)
-    return sorted(runs), sorted(alone)
-
-
-def _rerun_running(ctx: Any, ref: IssueRef, entry: Mapping[str, Any], token: str) -> bool:
-    """True while a workflow run an accepted re-run asked of has a latest
-    attempt that has not completed (#3006: a fan-in `ci-gate` run still
-    re-running its needs past RERUN_SETTLE_SECONDS). A run whose status
-    cannot be read counts as answered: the window alone holds then."""
-    for run_id in entry.get("runs") or []:
-        if not isinstance(run_id, int) or isinstance(run_id, bool):
-            continue
-        try:
-            status = ctx.forge_writer.read_run(ref, run_id, token).get("status")
-        except Exception as exc:  # noqa: BLE001 - an unread run falls back to the window
-            log.info("merge wake: the status of re-run Actions run %d is unread (%s)",
-                     run_id, type(exc).__name__)
-            continue
-        if status != "completed":
-            return True
-    return False
-
-
 def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
                  head: str, read: _Reading, token: str, now: datetime) -> tuple[str, None] | None:
     """Re-run the failed jobs of a red head's failing Actions checks' workflow
@@ -1162,7 +1135,7 @@ def _rerun_first(ctx: Any, db: Any, tenant_id: str, doc: Mapping[str, Any], ref:
         if (
             asked & set(jobs) and isinstance(since, datetime) and since <= now
             and (now - since < timedelta(seconds=RERUN_SETTLE_SECONDS)
-                 or _rerun_running(ctx, ref, entry, token))
+                 or _rerun_running(ctx.forge_writer, ref, entry, token))
         ):
             return _WAITING, None
         return None
@@ -1334,6 +1307,11 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
             log.info("merge wake %s tenant=%s: CI fix round waits: %s red at the default "
                      "branch's head %s too", task_id, tenant.tenant_id,
                      redact(", ".join(names)).text, sha[:12])
+            # The evidence a stuck wait is handed to a person with (part of
+            # #2688): the merge step and `/sc check` read it off the record.
+            _record(db, tenant.tenant_id, task_id, head,
+                    {"main_red": {"checks": [str(n)[:256] for n in names[:40]],
+                                  "head": sha, "read_at": now}})
             return _WAITING, None
         return _rerun_first(ctx, db, tenant.tenant_id, doc, ref, head, read, token, now)
 
@@ -1396,6 +1374,125 @@ def _on_conflict(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: Is
     return _hand_off(ctx, db, tenant, doc, head, read, now, key=CONFLICT_ROUNDS_KEY,
                      asked=MERGE_CONFLICT_ROUNDS_MAX, spent=CONFLICTING, label="conflict fix",
                      build=build)
+
+
+def _train_park(wait: Mapping[str, Any]) -> bool:
+    """A park on a train round at a green head (#3313): TRAIN_FIX_PENDING, or
+    CI_FIX_RUNNING after the step's train re-board (`TRAIN_REBOARDED`)."""
+    code = wait.get("code")
+    pending = wait.get("pending")
+    return code == TRAIN_FIX_PENDING or (
+        code == CI_FIX_RUNNING and isinstance(pending, list) and TRAIN_REBOARDED in pending)
+
+
+#: A failing line of the train's ejection comment: `- [name](url)`, as
+#: `eject_pr` writes it (`agent_worker.merge._EJECTION_FAILED`'s first form).
+_EJECTION_LINE = re.compile(r"^\s*[-*]\s+\[(?P<name>[^\]]+)\]\((?P<url>\S+)\)\s*$")
+
+
+def train_excerpt(writer: GitHubWriter, ref: IssueRef, head: str, failed: Sequence[Any],
+                  token: str, *, label: str) -> str:
+    """The merge train's failing jobs for a train round's prompt: redacted, then bounded.
+
+    The worker's park names them (`failed`); the latest comment on the pull
+    request that begins REPOSITORY_TRAIN_EJECTED links each to its Actions
+    job, whose log's failing lines (`issueci._log_failures`, as a red head's
+    excerpt reads them) follow it. A link outside this repository's Actions
+    is shown, never read. Every read fails soft, to the comment's lines, or
+    to the names alone; `label` names the caller in the one log line a
+    failed read writes.
+    """
+    names = [_clip(n, MAX_TITLE_CHARS) for n in failed if isinstance(n, str) and n.strip()][:20]
+    parts = [f"The merge train failed at {head[:12]}, this head being green on its own: "
+             f"{', '.join(names) or 'a required check'}"]
+    try:
+        comments = writer.issue_comments_tail(ref, ref.number, token)
+    except Exception as exc:  # noqa: BLE001 -- the names alone, as the worker parked them
+        log.info("%s: the train's ejection comment not read (%s)", label, type(exc).__name__)
+        comments = []
+    body = next((str(c.get("body")) for c in reversed(comments)
+                 if str(c.get("body") or "").startswith(REPOSITORY_TRAIN_EJECTED)), "")
+    jobs = re.compile(rf"^https://github\.com/{re.escape(ref.owner)}/{re.escape(ref.repo)}"
+                      r"/actions/runs/\d+/job/(?P<job>\d+)(?:[?#]\S*)?$", re.IGNORECASE)
+    lines = [m for m in map(_EJECTION_LINE.match, body.splitlines()) if m is not None]
+    for matched in lines[:MAX_EXCERPT_CHECKS]:
+        section = [f"## {_clip(matched.group('name'), MAX_TITLE_CHARS)} (failed in the merge "
+                   "train)", _clip(matched.group("url"), 500)]
+        job = jobs.match(matched.group("url"))
+        if job is not None:
+            try:
+                tail = writer.job_log_tail(ref, int(job.group("job")), token,
+                                           limit=LOG_READ_BYTES)
+            except Exception as exc:  # noqa: BLE001 -- the line alone
+                log.info("%s: log of %s not read (%s)", label, job.group("job"),
+                         type(exc).__name__)
+                tail = None
+            heading, kept = _log_failures(tail or "")
+            if kept:
+                section += [heading, kept]
+        parts.append("\n".join(section))
+    if len(lines) > MAX_EXCERPT_CHECKS:
+        parts.append(f"[{len(lines) - MAX_EXCERPT_CHECKS} more failing jobs not shown]")
+    # Redact BEFORE the bound, as `excerpt_at` does.
+    return _bound(redact("\n\n".join(parts), extra=(token,)).text)
+
+
+def _on_train(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], wait: Mapping[str, Any],
+              ref: IssueRef, head: str, read: _Reading, token: str,
+              now: datetime) -> tuple[str, str | None]:
+    """A train park at a green `head` (#3313): its CI-fix round, or wake it.
+
+    The round is a red head's (`_hand_off`, key `rounds`): the same budget
+    the worker's `_fix_rounds` reads, one per head, waited on until it ends,
+    one writer per pull request. A PR-side fix's claim at the head holds it,
+    as `_on_red` holds; no free re-run, the worker's re-board was it. With
+    no round asked or left, or a pull request off the root's branch, the
+    step is woken `train_ejected` and refuses.
+    """
+    task_id = str(doc.get("id") or "")
+    asked = _rounds_asked(_mapping(doc.get("metadata")))
+
+    def first() -> tuple[str, None] | None:
+        held = live_claim(db, tenant.tenant_id, str(doc.get("repository_url") or ""),
+                          ref.number, head, now)
+        if held is None:
+            return None
+        log.info("merge wake %s tenant=%s: train CI fix round waits: PR-side fix %s (%s) "
+                 "holds pull request #%d at %s", task_id, tenant.tenant_id,
+                 held.get("task_id"), held.get("workflow_id"), ref.number, head[:12])
+        return _WAITING, None
+
+    def build(target: str, round_no: int, resource_class: str | None) -> WorkflowCreate:
+        failed = wait.get("failed")
+        excerpt = train_excerpt(ctx.forge_writer, ref, head,
+                                failed if isinstance(failed, list) else [], token,
+                                label=f"merge {task_id}")
+        return ci_fix_continuation(
+            continues_task=target,
+            repository_url=str(doc.get("repository_url") or ""),
+            lead=(
+                f"The merge train of {read.pull.base_ref or 'the base branch'} plus pull "
+                f"request #{ref.number} ({read.pull.url}) alone failed twice, while the pull "
+                "request's own head is green; this workflow's merge step merges it once the "
+                "train lands it."
+            ),
+            round_no=round_no,
+            rounds=asked,
+            excerpt=excerpt,
+            step_input={},
+            resource_class=resource_class,
+            metadata={"merge_fix_round": {
+                "merge_task": task_id,
+                "round": round_no,
+                "head_sha": head,
+                "pull_request": ref.number,
+            },
+                # The merge task's session (SC-SESSION-SCOPE).
+                **sessiontag.inherit(doc.get("metadata"))},
+        )
+
+    return _hand_off(ctx, db, tenant, doc, head, read, now, key="rounds", asked=asked,
+                     spent=TRAIN_EJECTED, label="train CI fix", build=build, first=first)
 
 
 def pick_keys(lines: Sequence[Any]) -> list[dict[str, Any]]:
@@ -2464,6 +2561,9 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                     forge_limits.log_deferred("merge wake", tenant_id, deferral)
                 continue
             picking = wait.get("code") in PICK_FIX_CODES
+            # A train round's park (#3313) is green at its head: the pull
+            # request is read, never the checks, as for a pending update.
+            training = _train_park(wait)
             try:
                 with forge_limits.acting_as(reading_credential):
                     if picking:
@@ -2472,7 +2572,8 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                         read = _read_pull(writer, ref, reading_token)
                     else:
                         read = _read(writer, ref, head, reading_token,
-                                     update_pending=wait.get("code") in HEAD_MOVE_CODES,
+                                     update_pending=training
+                                     or wait.get("code") in HEAD_MOVE_CODES,
                                      queued=wait.get("code") == MERGE_QUEUED)
                 reason = read.reason
                 if picking:
@@ -2481,6 +2582,19 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                             kind, reason = _on_pick(ctx, db, tenant, doc, wait, head, read, now)
                         if kind == _FIXING:
                             report.fixing += 1
+                            continue
+                elif training:
+                    if reason is None:
+                        with forge_limits.acting_as(tenant_credential):
+                            kind, reason = _on_train(ctx, db, tenant, doc, wait, ref, head, read,
+                                                     token, now)
+                        if kind == _FIXING:
+                            # Recorded at the head: woken, so the worker
+                            # parks CI_FIX_RUNNING on it, as for a red head.
+                            report.fixing += 1
+                            _record(db, tenant_id, task_id, head,
+                                    {"checked_at": now, WAKE_MARKER: now,
+                                     "wake_reason": "train_fix_round"})
                             continue
                 elif reason == "red":
                     with forge_limits.acting_as(tenant_credential):

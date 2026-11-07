@@ -40,11 +40,13 @@ from swarm_common.states import (
     TaskState,
     can_transition,
 )
+from swarm_rollup import settled_unpin
 
 from .backends import TENANT_NAMESPACE_MISMATCH, _namespace_mismatch_due, sanitize_name
 from .config import ReconcilerConfig
 from .model import (
     DISK_EVICTIONS_KEY,
+    NEVER_STARTED_REQUEUES_KEY,
     STARTUP_REFUNDS_KEY,
     AttemptView,
     ControlSnapshot,
@@ -55,8 +57,10 @@ from .model import (
     WorkflowView,
     cancel_end_cause,
     count_disk_eviction,
+    count_never_started,
     count_startup_end,
     disk_evictions_used,
+    never_started_requeues_used,
     startup_refunds_used,
 )
 from .model import as_datetime as _as_datetime
@@ -165,6 +169,18 @@ class RepairPlan:
     #: counted in `metadata.disk_evictions`, and FAILED past
     #: `DISK_EVICTION_RETRIES` (`count_disk_eviction`).
     disk_eviction: bool = False
+    #: The silent lease's worker never started (part of #2688): re-queued
+    #: without counting the attempt, up to this many times, counted in
+    #: `metadata.never_started_requeues`, then FAILED (`count_never_started`).
+    #: Applied only while the task, as this transaction reads it, is still
+    #: LEASED or DISPATCHED; one a worker moved on is judged as before. None:
+    #: not this rule.
+    never_started_requeue_limit: int | None = None
+
+
+#: The states in which no attempt of a task has reached STARTING: a worker
+#: writes STARTING before it runs anything.
+NEVER_STARTED_STATES = (TaskState.LEASED, TaskState.DISPATCHED)
 
 
 @dataclass(frozen=True)
@@ -185,6 +201,9 @@ class OneRepair:
     #: newer than the one the finding was made on and within the grace
     #: (`heartbeat_resumed`). The worker is alive (#1822).
     heartbeat_resumed: bool = False
+    #: The never-started rule decided the repair: the re-queue count the task
+    #: holds afterwards. None when that rule did not decide it.
+    never_started_requeues: int | None = None
 
 
 def heartbeat_resumed(
@@ -233,6 +252,11 @@ class WorkflowPage(WorkflowRead):
     next_after: str | None = None
 
 
+def _active_states() -> list[str]:
+    """The four concurrency states, as the `in` filter's values (invariant 1)."""
+    return [state.value for state in sorted(CONCURRENCY_STATES, key=lambda s: s.value)]
+
+
 class ControlStore:
     def __init__(
         self,
@@ -254,29 +278,14 @@ class ControlStore:
 
     # -- reads -----------------------------------------------------------
     def snapshot(self, *, lease_lookback_hours: int = 48) -> ControlSnapshot:
+        """Every task in a concurrency state and every unreleased lease: the FULL sweep."""
         snapshot = ControlSnapshot(taken_at=utcnow())
 
-        active_states = [state.value for state in sorted(CONCURRENCY_STATES, key=lambda s: s.value)]
         tasks_query = self._db.collection("tasks").where(
-            filter=self._filter("state", "in", active_states)
+            filter=self._filter("state", "in", _active_states())
         )
         for doc in tasks_query.stream():
-            try:
-                snapshot.tasks[doc.id] = TaskView.from_doc(doc.to_dict() or {}, doc.id)
-            except _MALFORMED_TASK_DOC as exc:
-                # One malformed task must not abort the pass for every other
-                # task of every other tenant (security review, PR #290) --
-                # the same reasoning as `quota_broker.accountstore.list`
-                # skipping a malformed account (#180). Recorded in
-                # `unreadable_tasks` too: an execution that names this task id
-                # must not be read as an orphan just because the document
-                # could not be decoded this pass (see `detect.py`).
-                self._log.warning(
-                    "a task document is malformed and cannot be read; skipping it",
-                    task_id=doc.id,
-                    error=type(exc).__name__,
-                )
-                snapshot.unreadable_tasks.add(doc.id)
+            self._add_task(snapshot, doc)
 
         leases_query = self._db.collection("leases").where(
             filter=self._filter("released_at", "==", None)
@@ -287,32 +296,154 @@ class ControlStore:
         # half the evidence -- see `_withhold`.
         withheld: set[str] = set()
         for doc in leases_query.stream():
-            data = doc.to_dict() or {}
-            try:
-                lease = LeaseView.from_doc(data, doc.id)
-            except _MALFORMED_TASK_DOC as exc:
-                # The same rule as the task loop above, for the same reason: one
-                # document with `generation` or `units` of NaN or Infinity
-                # (`int()` raises on both) must not stop the pass for every
-                # tenant (#294).
-                self._log.warning(
-                    "a lease document is malformed and cannot be read; skipping it",
-                    lease_id=doc.id,
-                    task_id=_named_task(data),
-                    error=type(exc).__name__,
-                )
-                withheld.add(_named_task(data))
-                continue
-            if lease.created_at is not None and lease.created_at < cutoff:
-                # Ancient unreleased leases are a data-integrity problem, not a
-                # reconciliation one; they are reported, never auto-repaired.
-                self._log.warning(
-                    "lease older than the reconciliation window",
-                    lease_id=lease.lease_id,
-                    created_at=str(lease.created_at),
-                )
-            snapshot.leases[lease.lease_id] = lease
+            self._add_lease(snapshot, doc.to_dict() or {}, doc.id, withheld, cutoff=cutoff)
 
+        self._read_lease_attempts(snapshot, withheld)
+        _withhold(snapshot, withheld)
+        return snapshot
+
+    def incremental_snapshot(
+        self,
+        *,
+        changed_since: datetime,
+        due_by: datetime,
+        lease_lookback_hours: int = 48,
+    ) -> ControlSnapshot:
+        """What changed since the last pass, and what falls due before the next one.
+
+        The pass between two full sweeps (BGD, 2026-11-06: the full pass took a
+        26.4 s median on a 60 s tick and grew with the documents). Two indexed
+        reads, then by-id reads that close the set over itself:
+
+          * tasks in a concurrency state whose `updated_at` is after
+            `changed_since` (index `tasks-state-updated`): every admission,
+            dispatch, start, requeue, park and finish stamps it;
+          * unreleased leases whose `expires_at` is at or before `due_by`
+            (index `leases-released-expires`): a worker that stopped
+            heartbeating, and a lease that never heartbeated, whose
+            `expires_at` comes before its dispatch deadline;
+          * each such task's own lease, when it is unreleased, and each such
+            lease's task, when it is in a concurrency state -- so no rule sees
+            a task without the lease the full read would have shown beside
+            it (the leaseless rule would requeue it), nor a lease without its
+            live task -- and each lease's attempt, as `snapshot()` reads it.
+
+        `full` is False on what this returns. The rules that conclude from an
+        ABSENCE across the whole platform (an orphan execution, garbage) are
+        the full sweep's alone; the pass scopes them out (`Reconciler`).
+        """
+        snapshot = ControlSnapshot(taken_at=utcnow(), full=False)
+        tasks_query = (
+            self._db.collection("tasks")
+            .where(filter=self._filter("state", "in", _active_states()))
+            .where(filter=self._filter("updated_at", ">", changed_since))
+        )
+        for doc in tasks_query.stream():
+            self._add_task(snapshot, doc)
+
+        leases_query = (
+            self._db.collection("leases")
+            .where(filter=self._filter("released_at", "==", None))
+            .where(filter=self._filter("expires_at", "<=", due_by))
+        )
+        cutoff = utcnow() - timedelta(hours=lease_lookback_hours)
+        withheld: set[str] = set()
+        for doc in leases_query.stream():
+            self._add_lease(snapshot, doc.to_dict() or {}, doc.id, withheld, cutoff=cutoff)
+
+        # Each due lease's task. One in a concurrency state joins `tasks`,
+        # where the full read would have put it; any other is kept for the
+        # orphan-lease rule exactly as `Reconciler._read_lease_tasks` keeps it.
+        for task_id in sorted({lease.task_id for lease in snapshot.leases.values()}):
+            if not task_id or task_id in snapshot.tasks or task_id in snapshot.unreadable_tasks:
+                continue
+            doc = self._db.collection("tasks").document(task_id).get()
+            if not doc.exists:
+                continue
+            task = self._add_task(snapshot, doc, only_active=True)
+            if task is not None and task.task_id not in snapshot.tasks:
+                snapshot.lease_tasks[task.task_id] = task
+
+        # Each task's own lease, unreleased, as the full read's query returns it.
+        for task in list(snapshot.tasks.values()):
+            if not task.lease_id or task.lease_id in snapshot.leases:
+                continue
+            doc = self._db.collection("leases").document(task.lease_id).get()
+            if not doc.exists:
+                continue
+            data = doc.to_dict() or {}
+            if data.get("released_at") is not None:
+                continue
+            self._add_lease(snapshot, data, task.lease_id, withheld, cutoff=cutoff)
+
+        self._read_lease_attempts(snapshot, withheld)
+        _withhold(snapshot, withheld)
+        return snapshot
+
+    def _add_task(
+        self, snapshot: ControlSnapshot, doc: Any, *, only_active: bool = False
+    ) -> TaskView | None:
+        """Decode one task document into `snapshot.tasks`; the decoded task, or None.
+
+        `only_active`: a task outside the concurrency states is returned but
+        not added, since `tasks` holds those four alone.
+        """
+        try:
+            task = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+        except _MALFORMED_TASK_DOC as exc:
+            # One malformed task must not abort the pass for every other
+            # task of every other tenant (security review, PR #290) --
+            # the same reasoning as `quota_broker.accountstore.list`
+            # skipping a malformed account (#180). Recorded in
+            # `unreadable_tasks` too: an execution that names this task id
+            # must not be read as an orphan just because the document
+            # could not be decoded this pass (see `detect.py`).
+            self._log.warning(
+                "a task document is malformed and cannot be read; skipping it",
+                task_id=doc.id,
+                error=type(exc).__name__,
+            )
+            snapshot.unreadable_tasks.add(doc.id)
+            return None
+        if not only_active or task.state in CONCURRENCY_STATES:
+            snapshot.tasks[doc.id] = task
+        return task
+
+    def _add_lease(
+        self,
+        snapshot: ControlSnapshot,
+        data: dict[str, Any],
+        lease_id: str,
+        withheld: set[str],
+        *,
+        cutoff: datetime,
+    ) -> None:
+        try:
+            lease = LeaseView.from_doc(data, lease_id)
+        except _MALFORMED_TASK_DOC as exc:
+            # The same rule as the task loop above, for the same reason: one
+            # document with `generation` or `units` of NaN or Infinity
+            # (`int()` raises on both) must not stop the pass for every
+            # tenant (#294).
+            self._log.warning(
+                "a lease document is malformed and cannot be read; skipping it",
+                lease_id=lease_id,
+                task_id=_named_task(data),
+                error=type(exc).__name__,
+            )
+            withheld.add(_named_task(data))
+            return
+        if lease.created_at is not None and lease.created_at < cutoff:
+            # Ancient unreleased leases are a data-integrity problem, not a
+            # reconciliation one; they are reported, never auto-repaired.
+            self._log.warning(
+                "lease older than the reconciliation window",
+                lease_id=lease.lease_id,
+                created_at=str(lease.created_at),
+            )
+        snapshot.leases[lease.lease_id] = lease
+
+    def _read_lease_attempts(self, snapshot: ControlSnapshot, withheld: set[str]) -> None:
         for lease in snapshot.leases.values():
             if not lease.attempt_id or lease.attempt_id in snapshot.attempts:
                 continue
@@ -333,8 +464,6 @@ class ControlStore:
                         error=type(exc).__name__,
                     )
                     withheld.add(lease.task_id)
-        _withhold(snapshot, withheld)
-        return snapshot
 
     def task_and_attempts(self, task_id: str) -> tuple[TaskView | None, list[AttemptView]]:
         """Everything checkpoint retention needs about one task.
@@ -783,9 +912,15 @@ class ControlStore:
             snap = _snapshot(txn.get(ref))
             if not snap.exists:
                 return "workflow_missing"
-            if (snap.to_dict() or {}).get("state") != expected.value:
+            stored = snap.to_dict() or {}
+            if stored.get("state") != expected.value:
                 return "state_changed"
-            txn.update(ref, {"state": to.value, "updated_at": utcnow()})
+            # A settled workflow's graph pins go with the same write (#3116):
+            # a worker that crashed after its graph ticket and before its
+            # step's end left them, and this repair is what settles it.
+            txn.update(
+                ref, {"state": to.value, "updated_at": utcnow(), **settled_unpin(to, stored)}
+            )
             return None
 
         return self._txn.run(_apply)
@@ -1333,6 +1468,7 @@ class ControlStore:
         startup_refund_limit: int | None,
         fenced_generation: int | None,
         disk_eviction: bool = False,
+        never_started_requeue_limit: int | None = None,
     ) -> tuple[TaskState, dict[str, Any]] | None:
         """`repair_task_state`'s judgement on a document read in the caller's
         transaction: the state it moves to and the payload, or None to refuse.
@@ -1413,6 +1549,32 @@ class ControlStore:
             if evicted.exhausted:
                 target = TaskState.FAILED
             message = f"{error}; {evicted.tail}" if error else evicted.tail
+        elif (
+            target is TaskState.READY
+            and never_started_requeue_limit is not None
+            and current in NEVER_STARTED_STATES
+        ):
+            # The never-started requeue (part of #2688), from this re-read:
+            # a task still LEASED or DISPATCHED here has no attempt that
+            # reached STARTING. Its count is written even when it fails, so
+            # the caller reads which rule decided from the payload.
+            metadata = data.get("metadata")
+            never = count_never_started(
+                int(data.get("attempt_count", 0)),
+                int(data.get("max_attempts", 3)),
+                never_started_requeues_used(metadata),
+                max(0, int(never_started_requeue_limit)),
+            )
+            counting["attempt_count"] = never.attempt_count
+            counting["metadata"] = {
+                **(metadata if isinstance(metadata, dict) else {}),
+                NEVER_STARTED_REQUEUES_KEY: never.requeues,
+            }
+            if never.exhausted:
+                target = TaskState.FAILED
+                message = f"{never.words}; {error}" if error else never.words
+            else:
+                message = f"{error}; {never.words}" if error else never.words
         elif target is TaskState.READY:
             # ONLY a READY target is ever downgraded. A CANCELLED target is
             # the user's decision and survives exhausted attempts: recording
@@ -1631,7 +1793,20 @@ class ControlStore:
                         new_generation if repair.startup_refund_limit is not None else None
                     ),
                     disk_eviction=repair.disk_eviction,
+                    never_started_requeue_limit=repair.never_started_requeue_limit,
                 )
+            never_started: int | None = None
+            if (
+                decided is not None
+                and repair is not None
+                and repair.never_started_requeue_limit is not None
+            ):
+                # Only the never-started branch writes this key on a plan that
+                # carries the limit: the startup and disk-eviction rules are
+                # other findings' plans.
+                written = decided[1].get("metadata")
+                if isinstance(written, dict) and NEVER_STARTED_REQUEUES_KEY in written:
+                    never_started = int(written[NEVER_STARTED_REQUEUES_KEY])
 
             # ---- writes --------------------------------------------------
             # The frozen release reads the lease and its pools before it
@@ -1684,6 +1859,7 @@ class ControlStore:
                 repaired_to=decided[0] if decided is not None else None,
                 release_refused=refused,
                 attempt_ended=attempt_ended,
+                never_started_requeues=never_started,
             )
 
         return self._txn.run(_apply)

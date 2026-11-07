@@ -27,9 +27,8 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
-import { TABLES, painted } from './marks'
-import { resolveVars } from './spaceprobe'
-import { MONO_ADVANCE_EM, mixChipW, monoW } from '../dag'
+import { painted } from './marks'
+import { MONO_ADVANCE_EM, monoW } from '../dag'
 import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
@@ -150,26 +149,31 @@ class NeverInView {
   }
 }
 
-function viewport(width: number) {
-  vi.stubGlobal('matchMedia', (query: string) => {
-    const max = /max-width:\s*(\d+)px/.exec(query)
-    const min = /min-width:\s*(\d+)px/.exec(query)
-    return {
-      matches: (max === null || width <= Number(max[1])) && (min === null || width >= Number(min[1])) && (max !== null || min !== null),
-      media: query,
-      onchange: null,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    }
-  })
-}
-
 function Routed({ initial }: { initial: string }) {
   const [view, setView] = useState(initial)
   return <WorkflowsScreen view={view} onView={setView} />
+}
+
+/** `WorkflowCard` directly: the canvas is off the redesigned page (brief,
+ *  "What moved where" -- "render it directly"). */
+function CardHarness({ workflow: w, taskById }: { workflow: Workflow; taskById: Map<string, Task> }) {
+  const [stages, setStages] = useState<Record<string, boolean>>({})
+  return (
+    <WorkflowCard
+      workflow={w}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={stages}
+      onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+      reload={() => {}}
+    />
+  )
+}
+
+const realWidth = window.innerWidth
+/** The inspector starts folded below 1366px (graph-notes D·8b); these cases pick a step in it. */
+function atWidth(px: number): void {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: px })
 }
 
 beforeEach(() => {
@@ -192,9 +196,10 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
+  atWidth(realWidth)
 })
 
-const row = (id: string) => document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${id}"]`)!
+const row = (id: string) => document.querySelector<HTMLElement>(`.wfg-table tr[data-workflow="${id}"]`)!
 
 describe('VQ-013: the list is compact rows under one note', () => {
   // MUTATION: draw the two notes as two CountNotes again.
@@ -203,7 +208,7 @@ describe('VQ-013: the list is compact rows under one note', () => {
     serve([chain, older], chainTasks, ['page', 'two'].join('-'))
     render(<WorkflowsScreen />)
     await waitFor(() => expect(row('wf_older')).toBeTruthy())
-    const notes = document.querySelectorAll('.wfl .c-count-note')
+    const notes = document.querySelectorAll('.wfg .c-count-note')
     expect(notes).toHaveLength(1)
     expect(notes[0]!.textContent).toBe(
       'Counts and order are of the 2 newest workflows; older ones are on the server and not read yet · ' +
@@ -213,63 +218,43 @@ describe('VQ-013: the list is compact rows under one note', () => {
     expect(painted(notes[0]!, 'margin', { width: 1440 })).toBe('0')
   })
 
-  // MUTATION: put the runner mix back on a line of its own. The id is the
-  // line under the name since visual QA pass 1 (overview-agents-61, #2596).
-  it('draws the name and its runners on one line, the id under it, and the current step as the one line under that', async () => {
+  // THE ROW IS ONE LINE (the redesign, frame graph-workflows-rest): the name
+  // alone in its cell; the id, the runners and the current step moved into
+  // the inspector's summary the row opens.
+  // MUTATION: draw the id, the mix or the why line in the row again, or drop
+  // any of them from `WorkflowSummary`.
+  it('draws the name alone on the row, and the id, its runners and the current step in the summary the row opens', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(row('wf_chain')).toBeTruthy())
     const name = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    const line = name.querySelector<HTMLElement>(':scope > .wfl-line')!
-    expect(line, 'no name line').toBeTruthy()
-    expect([...line.children].map((c) => c.className)).toEqual(['', 'wfl-mix'])
-    expect(line.querySelector(':scope > a')!.textContent).toBe('JOIN-UI-PERSON')
-    expect(name.querySelector(':scope > .id')!.textContent).toBe('wf_chain')
-    // The current step is outside the line: the row's only second line, cut with its title.
-    const why = name.querySelector<HTMLElement>(':scope > .wfl-why')!
+    expect([...name.children].map((c) => c.tagName)).toEqual(['A'])
+    expect(name.querySelector(':scope > a')!.textContent).toBe('JOIN-UI-PERSON')
+    expect(name.querySelector('.id, .wfl-why, .wf-mix')).toBeNull()
+    fireEvent.click(row('wf_chain').querySelector<HTMLElement>('[data-col="state"]')!)
+    const sum = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')!
+    expect(sum, 'no summary').toBeTruthy()
+    expect(sum.querySelector(':scope > .id')!.textContent).toBe('wf_chain')
+    expect(sum.querySelector('.wf-mix')!.getAttribute('title')).toBe('Runner profiles: claude-code ×3')
+    const why = sum.querySelector<HTMLElement>('.wfg-sum-why > .wfl-why')!
     expect(why.textContent).toBe('build running')
     expect(why.title).toBe('build running')
-    expect(painted(why, 'white-space', { width: 1440 })).toBe('nowrap')
-    // One line in the table; the phone card lets it wrap.
-    expect(painted(line, 'display', { width: 1440 })).toBe('flex')
-    expect(painted(line, 'flex-wrap', { width: 1440 })).toBe('nowrap')
-    expect(painted(line, 'flex-wrap', { width: 390 })).toBe('wrap')
-    // The runner mix rides the line where the Runners column is not drawn, and not where it is.
-    const mix = line.querySelector(':scope > .wfl-mix')!
-    expect(painted(mix, 'display', { width: 1440 })).toBe('block')
-    expect(painted(mix, 'display', { width: 1680 })).toBe('none')
+    // The summary has the room: the step reads whole, wrapped, never cut.
+    expect(painted(why, 'white-space', { width: 1440 }) ?? 'normal').toBe('normal')
   })
 
-  // MUTATION: put back `flex: 1 0 0; min-width: 56px`, which left the mix
-  // 56px beside the name at 1440 and cut every row's runners to 'clau…'.
-  it('keeps room on the name’s line for one whole runner chip, and cuts the name instead', async () => {
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const line = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"] > .wfl-line')!
-    const mix = line.querySelector(':scope > .wfl-mix')!
-    // One folded chip as `Mix` measures it: the `×N` chip plus the seven characters ' · N steps' adds.
-    const oneChip = mixChipW({ profile: 'claude-code', count: 5 }) + monoW(7, 12)
-    const px = (v: string | null) => {
-      const m = /^([\d.]+)(px|rem)$/.exec(v ?? '')
-      expect(m, `not a length: ${v}`).not.toBeNull()
-      return Number(m![1]) * (m![2] === 'rem' ? 16 : 1)
-    }
-    expect(px(painted(mix, 'min-width', { width: 1440 }))).toBeGreaterThanOrEqual(oneChip)
-    const [grow, shrink, basis] = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)
-    expect(grow).toBe('1')
-    expect(shrink, 'the mix gives way before the id and the name').toBe('0')
-    expect(px(basis!)).toBeGreaterThanOrEqual(oneChip)
-    // The name gives way, down to its floor; the id is not on this line (overview-agents-61).
-    expect(line.querySelector(':scope > .id')).toBeNull()
-    const [, nameShrink] = (painted(line.querySelector(':scope > a')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)
-    expect(Number(nameShrink)).toBeGreaterThan(0)
-  })
+  // 'keeps room on the name’s line for one whole runner chip' went with the
+  // runners on the row: the redesign (frame graph-workflows-rest) draws them
+  // in the inspector's summary, tested above.
 })
 
 describe('VQ-014: a graph that fits across is as tall as it is', () => {
   // MUTATION: drop the `fits-x` class, or its rule: the canvas box is held to
   // the screen again and is a second scroller under the page's head.
+  // THE CANVAS IS OFF THE REDESIGNED PAGE (brief, "What moved where"): the
+  // stage grid has no second scroller to bound, so this renders `WorkflowCard`
+  // directly, where the canvas still lives.
   it('lets a short chain’s canvas box grow with the page, and keeps a wide one bounded', async () => {
-    render(<Routed initial="wf=wf_chain" />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const wrap = await waitFor(() => {
       const w = document.querySelector<HTMLElement>('.wf-canvas-row > .wf-canvas-wrap')
       expect(w).toBeTruthy()
@@ -322,169 +307,82 @@ describe('VQ-015: one back path, by name, and Stop step', () => {
 
   // MUTATION: hand the card StopRun's inline `stop` again.
   it('gives the step card a Stop step button in the page head’s danger style', async () => {
+    // `Stop workflow` is in the Overview now, not the head (brief, "What
+    // moved where"); the inspector starts folded below 1366px.
+    atWidth(1440)
     render(<Routed initial="wf=wf_chain" />)
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('.wi-dock[aria-label="Workflow overview"]')
+      expect(d).toBeTruthy()
+      return d!
+    })
+    const cancel = within(dock).getByRole('button', { name: 'Stop workflow' })
+    // Stop workflow: the danger outline at the default size.
+    expect(cancel.classList.contains('is-danger')).toBe(true)
+    // No arrival pick any more: picking the running step's chip opens its card.
+    const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="build"]')!
+    fireEvent.click(chip)
+    // THE PAGE'S CARD IS StepCard, NOT StepInspector + a `.wf-inspect-acts`
+    // group (owner's pick, 2026-11-05): Stop sits in the bar's own `.sc-end`,
+    // beside Agent/Logs/Changes, with no group of its own any more.
     // Found by selector, then by role inside it: a role query over the whole
     // page walks every node's accessible name and ran past findBy's 1s.
-    const group = await waitFor(
+    const card = await waitFor(
       () => {
-        const g = document.querySelector<HTMLElement>('.wf-inspect-acts[role="group"]')
-        expect(g).toBeTruthy()
-        return g!
+        const c = document.querySelector<HTMLElement>('.wi-dock section.sc-card')
+        expect(c).toBeTruthy()
+        return c!
       },
       { timeout: 5000 },
     )
-    expect(group.getAttribute('aria-label')).toBe('Stop step')
     // `Stop`, and the head's `Stop workflow`: one verb (visual QA pass 1 overview-agents-83, #2596).
-    const stop = within(group).getByRole('button', { name: 'Stop' })
-    const head = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')!
-    const cancel = within(head).getByRole('button', { name: 'Stop workflow' })
-    // The head's Stop workflow: the danger outline at the default size.
-    expect(cancel.classList.contains('is-danger')).toBe(true)
-    expect(stop.classList.contains('is-danger'), 'Stop step is not the danger outline').toBe(true)
-    expect(stop.classList.contains('is-sm'), 'Stop step is the small button').toBe(false)
+    const stop = within(card).getByRole('button', { name: 'Stop' })
+    expect(stop.classList.contains('is-danger'), 'Stop is not the danger outline').toBe(true)
+    expect(stop.classList.contains('is-sm'), 'Stop is the bar’s small button').toBe(false)
   })
 })
 
 describe('VQ-016: the Table and the Timeline arrive whole', () => {
-  // MUTATION: draw the arrival pick's card under its row again.
+  // NO ARRIVAL PICK, AND NO CARD UNDER THE ROW EITHER, ANY MORE (brief, "What
+  // moved where"): the redesign's `Board` never hands `WorkflowSteps`
+  // a `detail` to draw under a row -- every pick opens in the docked
+  // inspector (`workflow.page.split.test.tsx` already covers "never under
+  // the row" as the new, permanent form of this). This checks the view
+  // arrives whole, with nothing picked, and that picking opens the dock.
   for (const tabName of ['table', 'timeline'] as const) {
     it(`opens no card under the running step on arrival in the ${tabName}, and opens it when the row is asked for`, async () => {
-      viewport(1099)
+      atWidth(1440)
       render(<Routed initial={`wf=wf_chain&tab=${tabName}`} />)
       const pick = await waitFor(() => {
         const b = document.querySelector<HTMLButtonElement>('.wf-pick[data-step="build"]')
-        expect(b?.getAttribute('aria-pressed')).toBe('true')
+        expect(b).toBeTruthy()
         return b!
       })
-      expect(document.querySelector('.wf-inspect'), 'the arrival pick drew its card under the row').toBeNull()
+      expect(pick.getAttribute('aria-pressed')).toBe('false')
+      expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Workflow overview')
+      expect(document.querySelector('.wi-main .wf-inspect'), 'a card was drawn under the row').toBeNull()
       fireEvent.click(pick)
-      await waitFor(() => expect(document.querySelector('.wf-inspect')).toBeTruthy())
-      expect(document.activeElement?.classList.contains('wf-inspect-close')).toBe(true)
+      await waitFor(() => expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Step build'))
+      expect(pick.getAttribute('aria-pressed')).toBe('true')
+      expect(document.querySelector('.wi-main .wf-inspect'), 'still no card under the row').toBeNull()
     })
   }
 })
 
-/** Every `.wfl-line` reports `px` as its width; everything else is unmeasured (0), as jsdom leaves it. */
-function lineIs(px: number): void {
-  vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockImplementation(function (this: HTMLElement) {
-    return this.classList.contains('wfl-line') ? px : 0
-  })
-}
-
-describe('VQ-013 re-review: the name and the runners both read at 1440', () => {
-  /** The line's width the name keeps beside a mix on the line: less the mix's basis and its one gap (the id is the line under, overview-agents-61). */
-  const nameBesideMix = (line: number, mix: Element) => {
-    const basis = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)[2]!
-    const m = /^([\d.]+)rem$/.exec(basis)
-    expect(m, `the mix's basis is not a rem length: ${basis}`).not.toBeNull()
-    return line - Number(m![1]) * 16 - 8
-  }
-
-  // MUTATION: keep the mix on the name's line whatever the line's width: at
-  // 1440 with the nav open the line is 319px and the name got 127px of it
-  // ('Audit the operator s…').
-  it('moves the runners under the name, above the current step, when the name would keep under 200px', async () => {
-    viewport(1440)
-    lineIs(319)
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    const line = td.querySelector<HTMLElement>(':scope > .wfl-line')!
-    await waitFor(() => expect(line.querySelector(':scope > .wfl-mix'), 'the mix is still on the name’s line').toBeNull())
-    expect([...line.children].map((c) => c.className)).toEqual([''])
-    // The second line: the runners, then the current step.
-    const sub = td.querySelector<HTMLElement>(':scope > .wfl-sub')!
-    expect(sub, 'no second line').toBeTruthy()
-    expect([...sub.children].map((c) => c.className.split(' ')[0])).toEqual(['wfl-mix', 'wfl-why'])
-    expect(sub.querySelector('.wf-mix')!.getAttribute('title')).toBe('Runner profiles: claude-code ×3')
-    expect(painted(sub, 'display', { width: 1440 })).toBe('flex')
-    // It wraps: the step is a line of its own under the runners (#2391 comment 58).
-    expect(painted(sub, 'flex-wrap', { width: 1440 })).toBe('wrap')
-    const mix = sub.querySelector(':scope > .wfl-mix')!
-    expect(painted(mix, 'display', { width: 1440 }), 'the runners are not drawn where the Runners column is hidden').toBe('block')
-    expect(painted(mix, 'display', { width: 1680 }), 'the runners are drawn twice where the column is shown').toBe('none')
-    // One whole chip still: the mix does not give way to the step.
-    const oneChip = mixChipW({ profile: 'claude-code', count: 5 }) + monoW(7, 12)
-    const [grow, shrink, basis] = (painted(mix, 'flex', { width: 1440 }) ?? '').split(/\s+/)
-    expect([grow, shrink]).toEqual(['0', '0'])
-    expect(Number(/^([\d.]+)rem$/.exec(basis!)![1]) * 16).toBeGreaterThanOrEqual(oneChip)
-    // The step under it is one line, cut with its title, never wrapped.
-    const why = sub.querySelector<HTMLElement>(':scope > .wfl-why')!
-    expect(why.textContent).toBe('build running')
-    expect(painted(why, 'white-space', { width: 1440 })).toBe('nowrap')
-    expect(painted(why, 'text-overflow', { width: 1440 })).toBe('ellipsis')
-    expect(painted(why, 'min-width', { width: 1440 })).toBe('0')
-    // The arithmetic the row decided by: beside the mix the name had less than 200px.
-    expect(nameBesideMix(319, document.querySelector('.wfl-line > .wfl-mix, .wfl-sub > .wfl-mix')!)).toBeLessThan(200)
-  })
-
-  // The control: a line with room for both keeps the one-line row.
-  it('keeps the runners on the name’s line while the name keeps 200px beside them', async () => {
-    viewport(1440)
-    lineIs(420)
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    const line = td.querySelector<HTMLElement>(':scope > .wfl-line')!
-    const mix = line.querySelector(':scope > .wfl-mix')!
-    expect(mix, 'a 420px line moved the mix off it').toBeTruthy()
-    expect(td.querySelector(':scope > .wfl-sub')).toBeNull()
-    expect(nameBesideMix(420, mix)).toBeGreaterThanOrEqual(200)
-  })
-
-  // MUTATION: change `.wfl-mix`'s 11rem or `--ctl-s2` in the sheet and leave
-  // `LINE_MIX_PX` / `LINE_GAP_PX` (Workflows.tsx) as they are: the row then
-  // decides at a width the sheet no longer draws (re-review minor).
-  it('moves the runners at the width the sheet’s own basis and gap give, not at a restated one', async () => {
-    viewport(1440)
-    // The threshold from the sheet: the floor, the mix's basis, and the line's
-    // column gap once (the mix's; the id is the line under the name, overview-agents-61).
-    const host = document.createElement('table')
-    host.className = 'wfl'
-    host.innerHTML = '<tbody><tr><td class="wfl-name"><span class="wfl-line"><a>n</a><span class="wfl-mix"></span></span></td></tr></tbody>'
-    const probe = document.createElement('div')
-    probe.className = 'wfl'
-    probe.appendChild(host)
-    document.body.appendChild(probe)
-    const line = probe.querySelector('.wfl-line')!
-    const basisRem = /^([\d.]+)rem$/.exec((painted(line.querySelector('.wfl-mix')!, 'flex', { width: 1440 }) ?? '').split(/\s+/)[2] ?? '')
-    expect(basisRem, 'the mix’s basis is not a rem length').not.toBeNull()
-    const gaps = resolveVars(painted(line, 'gap', { width: 1440 }) ?? '', TABLES.dark).split(/\s+/)
-    const gap = Number.parseFloat(gaps[gaps.length - 1]!)
-    probe.remove()
-    expect(Number.isFinite(gap)).toBe(true)
-    const edge = 200 + Number(basisRem![1]) * 16 + gap
-    for (const [px, under] of [
-      [edge, false],
-      [edge - 1, true],
-    ] as const) {
-      lineIs(px)
-      render(<WorkflowsScreen />)
-      await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-      const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-      await waitFor(() => expect(td.querySelector(':scope > .wfl-sub > .wfl-mix') !== null, `a ${px}px line`).toBe(under))
-      cleanup()
-    }
-  })
-
-  // The control: the phone card is not the band; its mix keeps its own line in the card.
-  it('leaves the phone card’s runners where they were', async () => {
-    viewport(390)
-    lineIs(319)
-    render(<WorkflowsScreen />)
-    await waitFor(() => expect(row('wf_chain')).toBeTruthy())
-    const td = row('wf_chain').querySelector<HTMLElement>('td[data-col="workflow"]')!
-    expect(td.querySelector(':scope > .wfl-line > .wfl-mix')).toBeTruthy()
-    expect(td.querySelector(':scope > .wfl-sub')).toBeNull()
-  })
-})
+// VQ-013 RE-REVIEW (the name and the runners both read at 1440, by
+// `mixGoesUnder` measuring the name's line against LINE_MIX_PX) went with the
+// runners on the row: the redesign (frame graph-workflows-rest) draws the row
+// as one line and the runners in the inspector's summary.
 
 describe('VQ-WORKFLOWS re-review minors', () => {
   // MUTATION: drop the slot's grid, which leaves the stop control anchored to
   // the slot's foot while the card's rows run on under it (it covered
   // scan-terraform's `↑ plan (plan.md)` at 1440).
+  // THE CANVAS IS OFF THE REDESIGNED PAGE (brief, "What moved where"): the
+  // stop control's own grid cell is the canvas node's, so this renders
+  // `WorkflowCard` directly.
   it('gives the graph card’s stop control a place in the card’s own box, below everything the card draws', async () => {
-    render(<Routed initial="wf=wf_chain" />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const node = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('.wf-canvas .node[data-step="build"]')
       expect(n).toBeTruthy()
@@ -516,8 +414,10 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   // `min-height`. A grid with a fixed height holds its one row, and so the
   // card, to `layoutOf`'s figure in the browser, and the stop covered
   // `(plan.md)` at 1440 in both themes (VQ-WORKFLOWS-FIX3 review).
+  // THE CANVAS IS OFF THE REDESIGNED PAGE (brief, "What moved where"), so
+  // this renders `WorkflowCard` directly, as above.
   it('lets a card taller than its slot carry the stop below its last line, not over it', async () => {
-    render(<Routed initial="wf=wf_chain" />)
+    render(<CardHarness workflow={chain} taskById={chainTasks} />)
     const node = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('.wf-canvas .node[data-step="build"]')
       expect(n).toBeTruthy()
@@ -664,6 +564,9 @@ describe('VQ-WORKFLOWS re-review minors', () => {
   it('draws the workflow id once, behind its Copy id control', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    // Copy id moved to the Overview (brief, "What moved where"); the
+    // inspector starts folded below 1366px.
+    atWidth(1440)
     render(<Routed initial="wf=wf_chain" />)
     const head = await waitFor(() => {
       const h = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-head')
@@ -672,21 +575,32 @@ describe('VQ-WORKFLOWS re-review minors', () => {
     })
     expect(head.querySelector('.id'), 'the head prints the id as text').toBeNull()
     expect(head.textContent).not.toContain('wf_chain')
-    const copy = within(head).getByRole('button', { name: 'Copy workflow id wf_chain' })
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('.wi-dock[aria-label="Workflow overview"]')
+      expect(d).toBeTruthy()
+      return d!
+    })
+    const copy = within(dock).getByRole('button', { name: 'Copy workflow id wf_chain' })
     expect(copy.textContent).toBe('Copy id')
     expect(copy.getAttribute('title')).toBe('wf_chain')
     fireEvent.click(copy)
     expect(writeText).toHaveBeenCalledWith('wf_chain')
     await waitFor(() => expect(copy.textContent).toBe('Id copied'))
-    // The inspector's same-step row does not render it again on the page:
-    // not drawn and hidden, absent.
-    const scrub = await waitFor(() => {
-      const el = document.querySelector<HTMLElement>('.wfp-screen .wf-scrub[data-scrub="workflow"]')
+    // THE PAGE'S CARD IS StepCard, NOT StepInspector's same-step scrubber
+    // (owner's pick, 2026-11-05): there is no `.wf-scrub` on the page's card
+    // at all any more to carry the id. Confirm the card renders and still
+    // says nothing of the workflow id, rather than checking a scrubber row
+    // that no longer exists on the page.
+    const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="build"]')!
+    fireEvent.click(chip)
+    const card = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.wfp-screen section.sc-card')
       expect(el).toBeTruthy()
       return el!
     })
-    expect(scrub.querySelector('.id'), 'the same-step row renders the id').toBeNull()
-    expect(scrub.textContent).not.toContain('wf_chain')
+    expect(card.querySelector('.wf-scrub[data-scrub="workflow"]'), 'the old same-step scrubber is back').toBeNull()
+    expect(card.querySelector('.id'), 'the card renders the id').toBeNull()
+    expect(card.textContent).not.toContain('wf_chain')
   })
 
   // MUTATION: drop the id from every same-step row, not only the page's, or

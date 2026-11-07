@@ -38,7 +38,12 @@ WHAT THE REVIEW DOES WITH THEM is said once, in `guidance`, appended to its
 prompt: copy each UNANSWERED question that should hold the merge into
 `verdict.needs_owner`, list the other unanswered ones in
 `verdict.open_questions`. `merge.run_merge` holds only for the first, and
-re-reads the answers before it does.
+re-reads the answers before it does. An ANSWERED question whose answer is
+the option its `built` names goes in neither; one whose answer is not its
+`built` goes in `verdict.needs_owner` too, and is not by itself a NOT_YET
+finding: the merge step builds the owner's pick in a pick-fix round (#3149;
+wf_f0044e94's re-review wrote it as a finding instead, and the merge
+refused).
 
 A workflow, or a review, with no questions behaves exactly as before: no
 file, no prompt text.
@@ -370,7 +375,11 @@ def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
         "is unanswered, nor once its answer picks an option other than its `built`; "
         "it merges past the others, and past an unanswered non-blocking one with a "
         "recommended option the branch built that touches nothing sensitive (it stays "
-        "open for the owner). An answered question goes in neither. "
+        "open for the owner). An answered question whose answer is the option its "
+        "`built` names goes in neither. An answered question whose answer is NOT its "
+        "`built` (another option, or free text) goes in "
+        f"`{NEEDS_OWNER_KEY}` too: the merge step builds the owner's pick in a "
+        "pick-fix round, so it is not by itself a NOT_YET finding. "
         "A finding that waits only on an unanswered owner question is not a NOT_YET "
         f"finding: put that question in `{NEEDS_OWNER_KEY}` (the merge step holds for "
         "its answer and builds the owner's pick in a pick-fix round) and give MERGE if "

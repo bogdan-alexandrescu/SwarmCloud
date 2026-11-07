@@ -284,6 +284,19 @@ _MCP_CREDENTIALS_SCHEMA: dict[str, Any] = {
     ),
 }
 
+#: `retry_of`: a dispatch of the same prompt again, ON PURPOSE (6 November
+#: 2026: a task the reconciler failed before it ran could only be re-sent by
+#: changing its prompt). Recorded on the new task as `metadata.retry_of`.
+_RETRY_OF_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "The id of an earlier task this dispatch deliberately runs again, with the same "
+        "prompt. Only needed when that task ran or is still running: one that ended FAILED "
+        "or CANCELLED before any attempt started is retried without it. Recorded on the "
+        "new task as `metadata.retry_of`."
+    ),
+}
+
 #: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
 #: the profile under the API's own name. Read by `_dispatch_batch`, so the
 #: schema and the check cannot disagree.
@@ -306,13 +319,14 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
         "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
         "model_class": _MODEL_CLASS_SCHEMA,
+        "retry_of": _RETRY_OF_SCHEMA,
     },
     "required": ["prompt"],
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
 _SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files",
-                     "mcp_credentials", "additional_repositories", "model_class")
+                     "mcp_credentials", "additional_repositories", "model_class", "retry_of")
 
 #: Why `tasks` takes no `publish_to_pr` (#2183, PTP-DISPATCH): a pull request's
 #: branch takes one lane's fast-forward, so several tasks publishing onto one
@@ -378,10 +392,11 @@ TOOLS: list[dict[str, Any]] = [
             "`local` sends nothing; `hybrid` sends nothing when `needs_local` "
             "names anything. The reply's `target` says which applied and why.\n"
             "\n"
-            "THE REPLY STARTS ITS OWN ROWS: `rows` is a titled /sc:swarmcloud "
-            "script that shows each task just sent as one live [SwarmCloud] row. "
-            "Launch it at once with the Workflow tool, {scriptPath: "
-            "<rows.script_path>, args: <rows.args>}, as `rows.start_now` says; "
+            "THE REPLY STARTS ITS OWN ROWS: `rows.launches` holds one titled "
+            "/sc:swarmcloud script per task just sent, `SC · <label>`, each "
+            "showing that task as one live [SwarmCloud] row, whatever the `rows` "
+            "setting. Launch them at once, one Workflow tool call per entry, "
+            "{scriptPath: <script_path>, args: <args>}, as `rows.start_now` says; "
             "`rows.error` means it could not be written, and `/sc attach --all` "
             "gives the task its row instead.\n"
             "\n"
@@ -418,6 +433,15 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "The agent's instructions."},
+                "rows": {
+                    "type": "string",
+                    "enum": ["summary", "per-step", "pane"],
+                    "description": (
+                        "The row mode of the reply's `rows` launch, as `swarm_workflow_launch`'s "
+                        "`rows`. Unset, this project's layout (`/sc layout`) and then the sc "
+                        "plugin's `rows` setting decide, as they do for an attach."
+                    ),
+                },
                 "profile": {
                     "type": "string",
                     "default": "claude-code",
@@ -472,6 +496,7 @@ TOOLS: list[dict[str, Any]] = [
                 "mcp_credentials": _MCP_CREDENTIALS_SCHEMA,
                 "additional_repositories": _ADDITIONAL_REPOSITORIES_SCHEMA,
                 "model_class": _MODEL_CLASS_SCHEMA,
+                "retry_of": _RETRY_OF_SCHEMA,
                 "publish_to_pr": {
                     "type": ["integer", "string"],
                     "description": (
@@ -517,6 +542,13 @@ TOOLS: list[dict[str, Any]] = [
             "name -- a name the catalogue does not hold is refused, and a "
             "profile that is `available: false` is refused WITH a reason that "
             "names the remedy, so it is never a typo to go hunting for.\n"
+            "\n"
+            "SIZE A STEP BY `agent_memory_gib`: what the step's agent, its "
+            "tools and anything it starts (a dev server, a browser) share "
+            "before the container is OOM-killed. `memory_gib` and "
+            "`pod_memory_gib` are the whole pod's; on a live-browser profile "
+            "the display's container holds `display_memory_gib` of it, which "
+            "the agent cannot use. Null means the platform did not say.\n"
             "\n"
             "There is no image and no command here, and that is deliberate "
             "rather than missing. A caller names a profile and the image, the "
@@ -900,13 +932,20 @@ TOOLS: list[dict[str, Any]] = [
             "`artifacts_unavailable_because` says why.\n"
             "\n"
             "`owner_questions` is what the task's agent asks the owner instead of "
-            "guessing: the items of its questions.json the worker validated, each "
-            "{question, options: [{label, description}], recommended, context}, "
-            "read through the same redacted artifact read as swarm_artifact. It "
-            "is absent when the agent asked none, and a file the worker rejected "
-            "is never served. `questions_unavailable_because` means the worker "
-            "counted questions this read could not get. They are for a person "
-            "to answer: show them; never pick an option yourself.\n"
+            "guessing and nobody has answered yet: the items of its questions.json "
+            "the worker validated that have no stored answer, each {index, question, "
+            "options: [{label, description}], recommended, context}, `index` its "
+            "0-based place in the file (swarm_task_answer's `question_index`), read "
+            "through the same redacted artifact read as swarm_artifact. It is absent "
+            "when the agent asked none or every question is answered, and a file the "
+            "worker rejected is never served. A question carrying "
+            "`answer_unknown_because` is listed because its stored answer could not "
+            "be read, not because it is known to be open. `questions_unavailable_because` "
+            "means the worker counted questions this read could not get. They are for "
+            "a person to answer: show them; never pick an option yourself. "
+            "`owner_questions_asked` is EVERY question, answered ones included, each "
+            "with `answered` (true, false, or null when it could not be told), for a "
+            "person browsing the task; never put an answered one to them again.\n"
             "\n"
             "`owner_answers` is what the owner answered, in the console, to "
             "those questions: [{question_index, question, choice, text, by, at, "
@@ -1521,8 +1560,12 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_workflow_launch",
         "description": (
             "Write the script a /sc:swarmcloud run is launched from, titled after "
-            "its SwarmCloud workflow: `SC · <name> · N steps` (single tasks: `SC · "
-            "<label> · task`), at most 150 characters, where <name> is the spec's "
+            "its SwarmCloud workflow: `SC ∴ <name> · N steps` (single tasks: `SC · "
+            "<label>`; a spec not yet submitted: `SC ∴ <name>`, without a count, "
+            "because SwarmCloud may append steps), at most 150 characters -- the "
+            "mark right after `SC` is the run's kind, three dots a workflow, one "
+            "dot a task, so the ~28 characters Claude Code's panel shows still "
+            "say it -- where <name> is the spec's "
             "`title`, else its `label` cut at a word, else (attach) the title or label "
             "SwarmCloud stored, else the workflow id; the step count is never cut. "
             "No run or row name carries a workspace. The run's description STARTS with "
@@ -1564,9 +1607,11 @@ TOOLS: list[dict[str, Any]] = [
             "and the cap counts workflows. `per-step`: a row per unfinished step, "
             "and the cap counts step rows; a workflow with more than Claude Code "
             "runs per run (min(16, CPU cores - 2)) comes back as SPLIT copies, "
-            "`SC · <name> · N steps · rows 1-8`, `rows 9-16`..., each a run of its "
-            "own: launch EVERY entry of `launches`. A batch of single tasks follows "
-            "`rows` too.\n"
+            "`SC ∴ <name> · N steps · rows 1-8`, `rows 9-16`..., each a run of its "
+            "own: launch EVERY entry of `launches`. Single tasks never follow "
+            "`rows`: each is a run of its own titled `SC · <label>`, with one "
+            "sc:task row, whatever the setting (owner 2026-11-04) -- one entry of "
+            "`launches` each.\n"
             "\n"
             "`arm_watch` (SC-AUTO-WATCH): when this launches a spec, an attach, or at "
             "least one attach-all run, the CronCreate call that arms the sc plugin's "
@@ -1781,7 +1826,10 @@ TOOLS: list[dict[str, Any]] = [
             "`running` lists the project's running workflows and your single tasks; "
             "`unchecked` names what was not checked and why; `repository: null` means "
             "the check was not scoped (`repository_note` says why). Then attach rows "
-            "with swarm_workflow_launch {attach: \"all\", repository, new_only: true}."
+            "with swarm_workflow_launch {attach: \"all\", repository, new_only: true}. "
+            "`rowless_tasks`, when present: a running task this session dispatched whose row "
+            "never started, each `line` naming it and the Workflow call that starts its row "
+            "(`launch`): make that call."
         ),
         "inputSchema": {
             "type": "object",
@@ -1973,6 +2021,14 @@ TOOLS: list[dict[str, Any]] = [
                 "plan_approval": {"type": "string", "enum": ["required", "auto"], "default": "required"},
                 "auto_merge": {"type": "boolean", "default": False},
                 "fix_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+                "security_review": {
+                    "type": "boolean", "default": False,
+                    "description": (
+                        "Add the security review step after the fix (the security-audit "
+                        "skill over the pull request's diff); the merge then needs its "
+                        "verdict too. Off by default: it costs more than a code review."
+                    ),
+                },
                 "model_class": {
                     **_MODEL_CLASS_SCHEMA,
                     "description": (
@@ -2772,7 +2828,10 @@ TOOLS: list[dict[str, Any]] = [
             "The subscription account pool, in the columns `cs status` uses: "
             "account, 5-hour and 7-day utilisation with bars, when the binding "
             "window clears, and state (available / paused / draining / reauth "
-            "needed). Carries no credential material of any kind. A stale "
+            "needed); POOLS says which pools each account serves (workspace, "
+            "voice-it or both) and a line under the table names who holds a "
+            "voice-it account for Voice it now. Carries no credential "
+            "material of any kind. A stale "
             "reading is marked '~' and an unread one is an em dash."
         ),
         "inputSchema": {
@@ -2968,7 +3027,8 @@ TOOLS: list[dict[str, Any]] = [
             "shows it as answered in Claude Code; neither changes who may answer: the "
             "task's submitter or an admin, a viewer never. Re-answering replaces the "
             "answer and keeps the earlier one in its history. Answers with the questions "
-            "as the API now serves them, or the API's refusal word for word."
+            "as the API now serves them (`reply: \"short\"`: only the answer's record), or "
+            "the API's refusal word for word."
         ),
         "inputSchema": {
             "type": "object",
@@ -2986,8 +3046,49 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "The person's own words, or what they chose (at most 2,000 characters).",
                 },
+                "reply": {
+                    "type": "string",
+                    "enum": ["short", "full"],
+                    "description": (
+                        "`full` (the default): the task's questions as the API now serves them. "
+                        "`short`: only {status, task_id, question_index, recorded_at, by}."
+                    ),
+                },
             },
             "required": ["task_id", "question_index"],
+        },
+    },
+    {
+        "name": "swarm_task_answers",
+        "description": (
+            "Record many answers at once (at most 200): each entry goes through the same "
+            "route as swarm_task_answer with the short reply, as you, so each is checked "
+            "as a single answer is -- the task's submitter or an admin, a viewer never. "
+            "The same rule holds: only the person's own pick or words (or their decision, "
+            "such as closing finished tasks' questions as moot), never an answer the agent "
+            "chose itself. A refused entry does not stop the rest. Answers with counts and "
+            "one line per entry: {task_id, question_index, status} or {..., refused: <code>}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entries": {
+                    "type": "array",
+                    "maxItems": 200,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "question_index": {"type": "integer"},
+                            "choice": {"type": "string"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["task_id", "question_index"],
+                    },
+                    "description": "Up to 200 {task_id, question_index, choice?, text?}.",
+                },
+            },
+            "required": ["entries"],
         },
     },
     {
@@ -3041,11 +3142,16 @@ def _dispatch_strategy(value: Any) -> str | None:
     return text
 
 
-#: Signatures of dispatches already sent, per CLIENT (one proxy session):
-#: `id(client)` isn't safe (a garbage-collected client can hand its address to
-#: a new object), so this is keyed on the client itself, and an entry
-#: disappears the moment its client does.
-_DISPATCHED: "weakref.WeakKeyDictionary[Any, set[tuple]]" = weakref.WeakKeyDictionary()
+#: Signatures of dispatches already sent, per CLIENT (one proxy session),
+#: each with the id of the task it last created (None when the API's answer
+#: named none): `id(client)` isn't safe (a garbage-collected client can hand
+#: its address to a new object), so this is keyed on the client itself, and an
+#: entry disappears the moment its client does.
+_DISPATCHED: "weakref.WeakKeyDictionary[Any, dict[tuple, str | None]]" = weakref.WeakKeyDictionary()
+
+#: The ends a task can reach without its work having run: the reconciler fails
+#: a task it cannot place, a person cancels one still queued.
+_UNRUN_ENDS = ("FAILED", "CANCELLED")
 
 
 def check_mcp_credentials(raw: Any, named: Any, *, where: str) -> dict[str, Any] | None:
@@ -3173,7 +3279,42 @@ def _dispatch_signature(profile: str, prompt: str, strategy: str | None, reposit
     )
 
 
-def _refuse_a_repeat_dispatch(client: Any, signature: tuple) -> None:
+def _retry_of(value: Any, *, where: str) -> str | None:
+    """The call's `retry_of`, checked: a task id, or None when not given."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{where}: `retry_of` is the id of the task this dispatch runs again. "
+                         "Nothing was sent")
+    return value.strip()
+
+
+def _never_ran(client: Any, task_id: str) -> tuple[bool, dict[str, Any] | None, str]:
+    """Whether `task_id` ended without any of its work running, the task as
+    read, and its state as a word for a refusal.
+
+    Only a MEASUREMENT says it never ran: the task read, its state FAILED or
+    CANCELLED, no `started_at` on it, and its attempts read with none started.
+    A read that fails is "unknown", never "did not run" -- so the guard refuses.
+    """
+    try:
+        task = client.task(task_id)
+    except Exception as exc:  # noqa: BLE001 - any failed read is an unknown, and refused
+        return False, None, f"unread: {exc}"
+    state = str(task.get("state") or "") if isinstance(task, dict) else ""
+    if not isinstance(task, dict) or state not in _UNRUN_ENDS or task.get("started_at"):
+        return False, task if isinstance(task, dict) else None, state or "unknown"
+    try:
+        attempts = client.attempts(task_id)
+    except Exception as exc:  # noqa: BLE001 - as above
+        return False, task, f"{state}, its attempts unread: {exc}"
+    if any(isinstance(a, dict) and a.get("started_at") for a in attempts):
+        return False, task, f"{state} after an attempt that started"
+    return True, task, state
+
+
+def _refuse_a_repeat_dispatch(client: Any, signature: tuple, *,
+                              retry_of: str | None = None) -> dict[str, Any] | None:
     """`sc:remote` keeps `swarm_dispatch` in its tool list for its whole row --
     Claude Code has no way to narrow a plugin agent's tools mid-turn -- so
     nothing stops a haiku row calling it a second time with its own
@@ -3184,18 +3325,66 @@ def _refuse_a_repeat_dispatch(client: Any, signature: tuple) -> None:
     the signature is recorded separately, only once the dispatch actually
     reaches the API, so a retry after a FAILED dispatch is never blocked by
     its own earlier attempt.
+
+    TWO REPEATS ARE LET THROUGH, and each is answered as a retry: the dict
+    returned names the earlier task and is recorded on the new one.
+      * The earlier task ended FAILED or CANCELLED before any attempt started
+        (the Product Oracle session, 6 November 2026: the reconciler failed
+        its task before it ran, and re-sending the work was refused). Nothing
+        of it ran, so sending it again is not a duplicate.
+      * The caller names the earlier task in `retry_of`: a deliberate retry.
+    Every other repeat -- a task queued, running, succeeded, or failed after
+    it ran -- is refused, naming that task, its state and its console link.
+    None when this is not a repeat and no retry was named.
     """
-    if signature in _DISPATCHED.get(client, ()):
+    seen = _DISPATCHED.get(client) or {}
+    if signature not in seen:
+        return {"retry_of": retry_of, "retry": "deliberate"} if retry_of else None
+    earlier = seen[signature]
+    if retry_of and (earlier is None or retry_of == earlier):
+        return {"retry_of": retry_of, "retry": "deliberate"}
+    if retry_of:
         raise SwarmError(
-            "this exact prompt (profile, repository and strategy unchanged) was already "
-            "dispatched once in this session; swarm_dispatch is refused a second time for "
-            "it. `sc:remote` dispatches its instructions exactly once -- follow the task "
-            "already running, or change the prompt if this is genuinely different work"
+            f"`retry_of` names {retry_of}, and this exact prompt was dispatched in this "
+            f"session as {earlier}: pass `retry_of: \"{earlier}\"` to run it again. "
+            "Nothing was sent"
         )
+    task: dict[str, Any] | None = None
+    state = "unknown: the API named no task id"
+    if earlier is not None:
+        unrun, task, state = _never_ran(client, earlier)
+        if unrun:
+            return {"retry_of": earlier, "retry": "unrun", "earlier_state": state}
+    named = f" as task {earlier}" if earlier else ""
+    link = console_link(task)
+    raise SwarmError(
+        "this exact prompt (profile, repository and strategy unchanged) was already "
+        f"dispatched once in this session{named} (state {state}"
+        + (f"; console {link}" if link else "")
+        + "); swarm_dispatch is refused a second time for it. `sc:remote` dispatches its "
+        "instructions exactly once -- follow the task already sent with swarm_follow"
+        + (f", or pass `retry_of: \"{earlier}\"` to run the same work again on purpose"
+           if earlier else ", or pass `retry_of` with its id to run the same work again on purpose")
+    )
 
 
-def _remember_dispatch(client: Any, signature: tuple) -> None:
-    _DISPATCHED.setdefault(client, set()).add(signature)
+def _retry_answer(retry: dict[str, Any]) -> dict[str, Any]:
+    """The reply's `retry_of`: which task this dispatch runs again, and why it was let through."""
+    if retry["retry"] == "unrun":
+        why = (f"{retry['retry_of']} ended {retry['earlier_state']} before any attempt "
+               "started, so nothing of it ran; this dispatch is its retry")
+    else:
+        why = f"a deliberate retry of {retry['retry_of']}, as `retry_of` asked"
+    return {"task_id": retry["retry_of"], "kind": retry["retry"], "why": why}
+
+
+def _retry_metadata(retry: dict[str, Any] | None) -> dict[str, Any]:
+    """What a retry records on the new task's metadata: the task it runs again, and how."""
+    return {"retry_of": retry["retry_of"], "retry": retry["retry"]} if retry else {}
+
+
+def _remember_dispatch(client: Any, signature: tuple, task_id: str | None) -> None:
+    _DISPATCHED.setdefault(client, {})[signature] = task_id or None
 
 
 #: How a per-call `target` is named in a reply, beside a session default's source.
@@ -3306,10 +3495,11 @@ def _batch_limit(client: Any) -> tuple[int | None, str | None]:
 #: What a dispatch reply's `rows` tells the session to do with it (#830).
 ROWS_START_NOW = (
     "Start the live [SwarmCloud] row of what you just dispatched NOW, without being "
-    "asked: call the Workflow tool once with {scriptPath: <rows.script_path>, args: "
-    "<rows.args>}. It starts one sc:task row per task, titled from its label, follows "
-    "it until it finishes, and submits nothing. Skip it only when you are already that "
-    "task's row (sc:remote follows the task it dispatched itself)"
+    "asked: one Workflow tool call per entry of `rows.launches`, each {scriptPath: "
+    "<script_path>, args: <args>}. Each is a run of its own, `SC · <label>`, that starts "
+    "one sc:task row for its one task, follows it until it finishes, and submits "
+    "nothing. Skip an entry only when you are already that task's row (sc:remote "
+    "follows the task it dispatched itself)"
 )
 
 
@@ -3329,10 +3519,28 @@ def _submitted_session_fields() -> dict[str, Any]:
     return out
 
 
-def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[str, Any]:
+def _dispatch_rows_mode(rows: Any) -> str | None:
+    """`swarm_dispatch`'s `rows`, checked before anything is sent: one of the
+    modes `swarm_workflow_launch` takes, or None (unset)."""
+    if rows is None:
+        return None
+    if rows not in (*config.ROWS_MODES, config.ROWS_PANE):
+        raise SwarmError(
+            f"swarm_dispatch: `rows` is one of {[*config.ROWS_MODES, config.ROWS_PANE]}; it was "
+            f"{rows!r}. Nothing was sent"
+        )
+    return rows
+
+
+def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]], rows: Any = None) -> dict[str, Any]:
     """The row launch for tasks just dispatched (#830): `swarm_dispatch`'s
     reply hands it back so a dispatched task gets a row without anyone asking
     for one. `sent` is `(task_id, label, task)` per task.
+
+    THE ROW MODE IS THE ATTACH'S (Product Oracle, 2026-11-06: a dispatch's
+    rows said `summary` in a per-step project): `rows`, the call's own,
+    outranks this project's saved layout and the plugin's `rows` option,
+    exactly as `swarm_workflow_launch`'s does (`layout.row_mode`).
 
     Never a reason for the dispatch to fail: the tasks are already in
     SwarmCloud, so a copy that cannot be written -- a bridge started outside
@@ -3354,7 +3562,7 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
         entry["task"] = task
         entries.append(with_console(entry, task))
     try:
-        rows = launch.for_tasks(entries)
+        rows = launch.for_tasks(entries, rows=_dispatch_rows_mode(rows))
     except (SwarmError, OSError) as exc:
         return {"error": str(exc), "attach_with": "/sc attach --all"}
     if rows.get("followed_by") != "band":
@@ -3895,7 +4103,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             "(its /v1/stats `limits`); nothing was sent. Split the list"
         )
     accepted = set(_BATCH_TASK_SCHEMA["properties"])
-    prepared: list[tuple[dict[str, Any], tuple, Any, str | None]] = []
+    prepared: list[tuple[dict[str, Any], tuple, Any, str | None, dict[str, Any] | None]] = []
     units: list[tuple[Any, dict[str, Any]]] = []
     seen: dict[tuple, int] = {}
     for index, item in enumerate(tasks):
@@ -3928,7 +4136,8 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         signature = _dispatch_signature(profile, prompt, strategy, repository, inputs, additional,
                                         model_class)
         try:
-            _refuse_a_repeat_dispatch(client, signature)
+            retry = _refuse_a_repeat_dispatch(
+                client, signature, retry_of=_retry_of(item.get("retry_of"), where=where))
         except SwarmError as exc:
             raise SwarmError(f"{where}: {exc}. Nothing in this list was sent") from None
         if signature in seen:
@@ -3948,7 +4157,8 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             runner_profile=profile,
             repository_url=repository.url,
             repository_ref=repository.ref,
-            metadata={"unit": item["label"]} if item.get("label") else None,
+            metadata={**({"unit": item["label"]} if item.get("label") else {}),
+                      **_retry_metadata(retry)} or None,
             inputs=inputs or None,
             strategy=strategy,
             additional_repositories=additional,
@@ -3956,7 +4166,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         )
         if credentials:
             payload["mcp_credentials"] = credentials
-        prepared.append((payload, signature, repository, strategy))
+        prepared.append((payload, signature, repository, strategy, retry))
 
     # THE TERRITORY, read before the one send and reported after it: a
     # warning, never a refusal (see "territory" above).
@@ -3965,9 +4175,10 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
     # The request reached the API, so every signature is remembered BEFORE the
     # answer is judged: a reply this bridge cannot read is not proof nothing
     # was created, and a retry must not create the list twice.
-    for _, signature, _, _ in prepared:
-        _remember_dispatch(client, signature)
     ids = [task_id_of(task) for task in created]
+    answered = len(created) == len(prepared)
+    for index, (_, signature, *_) in enumerate(prepared):
+        _remember_dispatch(client, signature, ids[index] if answered else None)
     if len(created) != len(prepared) or not all(ids):
         raise SwarmError(
             f"the API accepted a batch of {len(prepared)} and answered {len(created)} task(s) "
@@ -3980,10 +4191,11 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
                 "state": task.get("state"),
                 "strategy": _accepted_strategy(task, strategy),
                 "repository": repository.as_dict(),
+                **({"retry_of": _retry_answer(retry)} if retry else {}),
             },
             task,
         )
-        for task_id, task, (_, _, repository, strategy) in zip(ids, created, prepared)
+        for task_id, task, (_, _, repository, strategy, retry) in zip(ids, created, prepared)
     ]
     answer: dict[str, Any] = {
         "task_ids": ids,
@@ -3998,7 +4210,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         "rows": _dispatch_rows([
             (task_id, (item.get("label") if isinstance(item, dict) else None) or None, task)
             for task_id, task, item in zip(ids, created, tasks)
-        ]),
+        ], args.get("rows")),
     }
     if limit_note:
         answer["max_batch_size_unread_because"] = limit_note
@@ -4046,9 +4258,23 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # none -- which is also every file the worker rejected. A counted file
     # that could not be read says so in `questions_unavailable_because`.
     # Data for the reader, never acted on.
+    #
+    # ONLY THE OPEN ONES (5 November 2026): a question answered with
+    # swarm_task_answer or in the console was handed back as if it were not,
+    # and the session asked the person again. `owner_questions` is the ones
+    # with no stored answer, each with its `index`, read from the questions
+    # route on every call (`progress.open_owner_questions`); one whose answer
+    # could not be read stays, with `answer_unknown_because`.
+    # `owner_questions_asked` is every question, `answered` on each -- for a
+    # person browsing the task, never to be put to them again.
     asked = progress.owner_questions(client, task)
-    if asked["questions"]:
-        described["owner_questions"] = asked["questions"]
+    every = progress.asked_with_answers(client, task, asked)
+    if every:
+        described["owner_questions_asked"] = every
+        open_ = [{k: v for k, v in q.items() if k != "answered"} for q in every if q["answered"] is not True]
+        if open_:
+            described["owner_questions"] = open_
+        described["questions_answered"] = len(every) - len(open_)
     if asked.get("questions_unavailable_because"):
         described["questions_unavailable_because"] = asked["questions_unavailable_because"]
     # WHAT THE OWNER ANSWERED (TASK-ANSWERS, owner decision 2026-10-13): the
@@ -4069,6 +4295,11 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     browser = progress.browser_words(task)
     if browser is not None:
         described["browser"] = browser
+    # A LIVE-BROWSER RUN THAT NEVER USED IT (2026-11-05): one line, advice
+    # only; no key for true, null or a non-browser profile.
+    unused = progress.browser_unused_line(task)
+    if unused is not None:
+        described["browser_unused"] = unused
     # Where to watch it: the API's link, as served, or no key (`console_link`).
     return with_console(described, task)
 
@@ -4632,6 +4863,7 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             plan_approval=approval,
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
+            security_review=_flag(args, "security_review"),
             **({"model_class": model_class} if model_class is not None else {}),
         )
         return json.dumps(_run_summary(client, run), indent=2, default=str)
@@ -5165,6 +5397,8 @@ def _call(
     timeout. The answer is text, except `swarm_artifact`'s image, which is an
     `artifacts.ImageAnswer` that `serve` sends as text and image blocks."""
     _refuse_unknown_arguments(name, args)
+    if name == "swarm_dispatch" and args.get("rows") is not None:
+        _dispatch_rows_mode(args["rows"])
     if name == "swarm_dispatch" and args.get("tasks") is not None:
         # Before any request, `/v1/stats` included: neither the call nor a
         # task of it may name a pull request to publish onto (#2183).
@@ -5237,7 +5471,8 @@ def _call(
         )
         signature = _dispatch_signature(profile, args["prompt"], strategy, repository, inputs, additional,
                                         model_class, publish_to_pr)
-        _refuse_a_repeat_dispatch(client, signature)
+        retry = _refuse_a_repeat_dispatch(
+            client, signature, retry_of=_retry_of(args.get("retry_of"), where="swarm_dispatch"))
         if strategy == "direct-pr" and not repository.url:
             raise SwarmError(
                 "strategy 'direct-pr' pushes the agent's branch and opens a pull "
@@ -5256,7 +5491,8 @@ def _call(
             runner_profile=profile,
             repository_url=repository.url,
             repository_ref=repository.ref,
-            metadata={"unit": args["label"]} if args.get("label") else None,
+            metadata={**({"unit": args["label"]} if args.get("label") else {}),
+                      **_retry_metadata(retry)} or None,
             inputs=inputs or None,
             strategy=strategy,
             # Only when named, so a dispatch naming none calls exactly as before.
@@ -5279,7 +5515,7 @@ def _call(
         # dispatch that raised above (a bad profile, a refused repository, a
         # transport failure) never marks its signature, so retrying it after
         # fixing the problem is never refused as a repeat.
-        _remember_dispatch(client, signature)
+        _remember_dispatch(client, signature, task_id)
         reply = with_console({
                 "task_id": task_id,
                 "state": task.get("state"),
@@ -5301,8 +5537,10 @@ def _call(
             # What was sent, so the caller reads which pull request the task
             # publishes onto in the form the API received.
             reply["publish_to_pr"] = {"pull_request": publish_to_pr}
+        if retry:
+            reply["retry_of"] = _retry_answer(retry)
         # Its live row, started by the session from this reply (#830).
-        reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
+        reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)], args.get("rows"))
         reply.update(_submitted_session_fields())
         reply.update(territory)
         for check in checks:
@@ -5375,6 +5613,10 @@ def _call(
         args = {**args, "since": since_token}
         reply = _follow_rows(client, args, expected_step, parents, keepalive=keepalive)
         _remember_person_waits(reply)
+        # A row follows these: `swarm_check` no longer names them rowless.
+        from . import launch
+
+        launch.remember_row_follow(args["task_ids"])
         reply["since"] = progress.HANDLES.issue(follower, reply["since"])
         if since_note:
             reply["since_note"] = since_note
@@ -5414,7 +5656,12 @@ def _call(
         # what the agent actually produced.
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
-                task["result"] = describe_task(client.task(task["task_id"]), client)
+                read = client.task(task["task_id"])
+                task["result"] = describe_task(read, client)
+                # A live-browser run that never used it (2026-11-05).
+                unused = progress.browser_unused_line(read)
+                if unused is not None:
+                    task["result"]["browser_unused"] = unused
         # The same position as `cursor`, as one token, for a caller that would
         # rather not copy a nested object back by hand.
         report["since"] = progress.encode_since(
@@ -5440,10 +5687,13 @@ def _call(
             # (SC-ROWS), which `/sc status` prints first on the task's line.
             # `waiting`/`waiting_line` (#1782): why a waiting task waits, in
             # the API's words, printed after the state; absent otherwise.
-            rows.append(with_console(
-                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
-                 "masked": masked_counts(task), **progress.waiting_fields(task)}, task
-            ))
+            row = {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                   "masked": masked_counts(task), **progress.waiting_fields(task)}
+            # A FINISHED live-browser run that never used it (2026-11-05).
+            unused = progress.browser_unused_line(task)
+            if unused is not None:
+                row["browser_unused"] = unused
+            rows.append(with_console(row, task))
         return json.dumps(rows, indent=2)
 
     if name == "swarm_wait":
@@ -5880,6 +6130,11 @@ def _call(
             publish_to_pr=publish_to_pr,
             # Only a whole spec carries the workflow switches (2026-11-01).
             dispatch=fields.get("dispatch"),
+            # Nor a description or a feature (BGD, 2026-11-04).
+            description=fields.get("description"),
+            feature=fields.get("feature"),
+            # Nor its three-part about (BGD, 2026-11-06).
+            about=fields.get("about"),
         )
         reply = _workflow_created(without_credentials(envelope), placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
@@ -5927,6 +6182,12 @@ def _call(
                 describe=_describe_step if name == "swarm_workflow_result" else None,
             ),
         )
+        if name == "swarm_workflow_result":
+            # The steps that ran on a live browser and never used it, once
+            # each (2026-11-05); no key when there is none.
+            unused = workflows.browser_unused_steps(envelope)
+            if unused:
+                reported["browser_unused"] = unused
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
 
@@ -6105,6 +6366,13 @@ def _call(
         from . import answers
 
         return json.dumps(answers.record(client, args), indent=2)
+
+    if name == "swarm_task_answers":
+        # One POST per entry through the same route, `reply=short`; a
+        # refusal is that entry's line and the next is still sent.
+        from . import answers
+
+        return json.dumps(answers.record_many(client, args), indent=2)
 
     if name == "swarm_cancel":
         for task_id in args["task_ids"]:

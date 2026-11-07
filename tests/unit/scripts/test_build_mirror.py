@@ -204,7 +204,7 @@ def test_no_dockerfile_names_a_project() -> None:
         ["git", "ls-files", "--", "*Dockerfile*"], cwd=REPO, capture_output=True, text=True, check=True,
     ).stdout.split()
     assert sorted(tracked) == sorted(_rel(p) for p in DOCKERFILES), tracked
-    assert len(tracked) == 17, tracked  # 17 since apps/swarm-voice/Dockerfile (VOICE-STATEFULSET)
+    assert len(tracked) == 19, tracked  # 19 since apps/plugin-intake/Dockerfile (managed plugins lane 4, #2688)
     hits = []
     for rel in tracked:
         text = (REPO / rel).read_text()

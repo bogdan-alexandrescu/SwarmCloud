@@ -1,7 +1,9 @@
 """Voice it session routes (docs/design/voice-it.md §3.6, §3.7, §10 phase 1).
 
-    POST /v1/voice/sessions                   {offer_sdp, project_id?}
-        -> {project_id, session_id, state, new_project, answer_sdp}
+    POST /v1/voice/sessions                   {offer_sdp?, project_id?}
+        -> {project_id, session_id, state, new_project, mode, answer_sdp (live only)}
+    POST /v1/voice/sessions/{session_id}/turns  {text}
+        -> {turn_id, reply, cards}
     POST /v1/voice/sessions/{session_id}/end
         -> {project_id, session_id, state, changed, voice_told}
 
@@ -12,8 +14,19 @@
     GET    /v1/voice/preferences              -> {preferences, revision, can_undo, previous}
     PATCH  /v1/voice/preferences              {changes, revision?} -> the same, plus changed
     POST   /v1/voice/preferences/undo         {revision?} -> the same
+    GET    /v1/voice/pool                     -> {pool, account, reason}
     GET    /v1/voice/sessions/{session_id}/ledger
         -> {session_id, date, time_zone, session, day, not_counted}
+
+THE VOICE IT POOL (owner, 2026-11-02). Voice it talks on the ChatGPT plan
+account the quota broker reserves in its "voice-it" pool; swarm-voice leases
+it per session. `GET /v1/voice/pool` (Voice it › Preferences) asks the
+broker, as this service's platform identity, which account the CALLER's next
+session would lease, without leasing it: `{"pool": "voice-it", "account":
+{label, display_name, provider} | null, "reason": "" | "not_in_voice_pool" |
+"no_voice_account_registered" | "no_voice_account_available"}`. The person
+is the verified email, never a query parameter, so nobody can ask about
+someone else. No credential is read or served.
 
 THE LEDGER (§3.8; swarm_api/voice/ledger.py) is computed on every read from
 the session's seconds, its turns' usage and what Voice it started, against
@@ -22,6 +35,7 @@ The same who-guard and workspace: another tenant's session, or another
 person's, is the same 404 as a missing one. It needs no swarm-voice.
 
     GET    /v1/voice/cards/schema             -> the card catalogue and the planner's tools
+    POST   /v1/voice/sessions/{session_id}/cards  {card} -> {card}
     GET    /v1/voice/sessions/{session_id}/events[?after=N]
                                               -> text/event-stream, resumes by sequence
 
@@ -34,6 +48,18 @@ belongs to on this request; another tenant's session, another person's, and a
 missing one are the same 404. It ends itself before 600 seconds, under the
 660-second request timeout, and the browser resumes from `Last-Event-ID`; once
 the session has ended and everything is sent, a reconnect is 204.
+
+THE CARD WRITE (§3.5, §3.6, §4). `POST /v1/voice/sessions/{session_id}/cards`
+takes `{card}` and writes it through `cards.write_card` as the caller's
+person, with the tenant, the project and the session from the session
+document, never from the body or a header the writer chose; another tenant's
+or another person's session is the same 404 as a missing one, and an ended
+session is 409. It is the one write a session grant reaches
+(`voice.grant.WRITE_ROUTES`): swarm-voice's planner draws its cards here, as
+the session's person, with the `voice_audit` row every grant request writes
+first. A grant writes only to its own session: any other session id is 403.
+`VoiceStore.put_card` validates against the catalogue again, so no write path
+bypasses it.
 
 PROJECTS AND PREFERENCES (§3.7, §3.11, §10 phase 2; swarm_api/voice/store.py
 and voice/preferences.py). The same who-guard and the same workspace: a
@@ -61,14 +87,31 @@ tenant-scoped route declares; the person is the verified email, never a
 field of the body.
 
 ORDER. Who first (403), then whether swarm-voice is deployed (503
-`voice_unavailable`, nothing written), then the person's stored ChatGPT
-sign-in (403 `forbidden` naming Voice it › Preferences, nothing written or
-sent: `ChatGPTSignIn.stored_version`, voice/signin.py, whose version
-reference alone is what swarm-voice is sent as `credential`), then the
-transaction that refuses a second live session (409 `conflict`), then
-swarm-voice. The
+`voice_unavailable`, nothing written), then the transaction that refuses a
+second live session (409 `conflict`), then swarm-voice. No credential is
+read or sent: swarm-voice leases the ChatGPT plan account from the quota
+broker's Voice it pool itself, and its pool refusals (403, or 409
+`voice_pool_busy`/`voice_pool_refused`) reach the browser with its sentence
+(voice/sessions.py, `pool_refusal`). The
 browser's offer goes to swarm-voice unchanged and its answer comes back
 unchanged; neither is logged or stored.
+
+THE MODE AND THE TURNS (owner, 4 November 2026: "both paths"; voice/
+sessions.py, `pick_mode`). The start asks the broker what the Voice it pool
+holds: with an OpenAI API key the session is `live` (GPT-Live, today's path:
+`offer_sdp` is required and `answer_sdp` comes back); with none it is `text`,
+on the pool's ChatGPT plan, which serves text but not Live: no SDP, any
+offer sent is dropped unread, and the browser posts each spoken turn to
+`/turns` as `{"text": 1..4000 characters}`, answered `{turn_id, reply,
+cards}`. A turn passes the same guards as every Voice it action -- the
+person on the Voice it list (403), the console's selected workspace through
+`tenant_scope`, the session the caller's own there (else the same 404) --
+and is 409 `conflict` (`voice_session_not_live`) on a session that is not a
+live text one; the plan's usage limit is 429 `rate_limited` with
+`detail.resets_at`. It is not on the grant's lists (voice/grant.py): the
+session grant is what swarm-voice's planner acts with during the turn, and
+never what posts one. The person's text is never logged: it rides in the
+body alone, and nothing here writes it anywhere.
 
 swarm-voice's client is `app.state.voice_client` when one is set (a test's
 fake), else the deployment's from SWARM_VOICE_URL, else none.
@@ -85,18 +128,18 @@ from starlette.concurrency import run_in_threadpool
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
-from ..errors import ValidationFailed
+from ..errors import Conflict, ValidationFailed
+from ..brokerclient import AccountPool
+from .accounts import VOICE_POOL, account_pool
 from .profile import preferences_store
 from ..preferences import Preferences
 from ..voice import cards as vcards
+from ..voice import grant as vgrant
 from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
 from ..voice import sessions as vs
-from ..voice import signin as vsi
 from ..voice import store as vstore
 from ..voice import stream as vstream
-from ..workspace_secrets import SecretWriter
-from .workspace_secrets import secret_writer
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
@@ -108,8 +151,16 @@ class StartSession(BaseModel):
     #: Not stripped: the SDP goes to swarm-voice byte for byte.
     model_config = ConfigDict(extra="forbid")
 
-    offer_sdp: str = Field(min_length=1, max_length=vs.MAX_SDP_BYTES)
+    #: Required for a Live session; a text session (no OpenAI API key in the
+    #: Voice it pool) has no WebRTC and drops it unread.
+    offer_sdp: str | None = Field(default=None, min_length=1, max_length=vs.MAX_SDP_BYTES)
     project_id: str | None = Field(default=None, min_length=1, max_length=_ID_MAX)
+
+
+class TextTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=vs.MAX_TURN_CHARS)
 
 
 def voice_client(request: Request, ctx: AppContext = Depends(get_context)) -> Any:
@@ -134,13 +185,41 @@ def _service(ctx: AppContext, client: Any) -> vs.VoiceSessions:
         raise vs.unavailable()
     return vs.VoiceSessions(ctx.db, client,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
-                            project=str(ctx.settings.project_id or ""), now=ctx.now)
+                            now=ctx.now,
+                            class_models=ctx.settings.worker_class_models)
 
 
-def _stored_sign_in(ctx: AppContext, writer: SecretWriter, person: str) -> str | None:
-    """The version reference of the person's own stored ChatGPT sign-in. Only the
-    provider-keys record is read: the writer and token endpoint are never called."""
-    return vsi.ChatGPTSignIn(ctx.db, writer, vsi.HttpTokenEndpoint(), now=ctx.now).stored_version(person)
+#: The broker's reasons for "no account" (`GET /v1/voice/pool`); anything
+#: else it sends reads as unavailable rather than passing an unknown word on.
+POOL_REASONS = frozenset({"", "not_in_voice_pool", "no_voice_account_registered",
+                          "no_voice_account_available"})
+
+
+def _pool_answer(raw: Any) -> dict[str, Any]:
+    """The broker's answer by the allow-list: the account's label, Name and
+    provider (never its id, owner or anything else), and the reason."""
+    raw = raw if isinstance(raw, dict) else {}
+    account = raw.get("account")
+    shown = None
+    if isinstance(account, dict) and isinstance(account.get("label"), str):
+        display = account.get("display_name")
+        provider = account.get("provider")
+        shown = {"label": account["label"],
+                 "display_name": display if isinstance(display, str) else None,
+                 "provider": provider if isinstance(provider, str) else None}
+    reason = raw.get("reason")
+    reason = reason if isinstance(reason, str) and reason in POOL_REASONS else (
+        "" if shown is not None else "no_voice_account_available")
+    return {"pool": VOICE_POOL, "account": shown, "reason": reason}
+
+
+@router.get("/pool")
+async def voice_pool(
+    person: str = Depends(allowed_person),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Which Voice it pool account the caller's next session would lease."""
+    return _pool_answer(await run_in_threadpool(pool.voice_pool, person))
 
 
 def _check_id(value: str, prefix: str, what: str) -> None:
@@ -155,20 +234,37 @@ async def start_session(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
     client: Any = Depends(voice_client),
-    writer: SecretWriter = Depends(secret_writer),
+    pool: AccountPool = Depends(account_pool),
 ) -> dict:
     service = _service(ctx, client)
-    if not body.offer_sdp.startswith("v=0"):
-        raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
+    mode = await run_in_threadpool(vs.pick_mode, pool, person)
+    if mode == vs.MODE_LIVE and (body.offer_sdp is None or not body.offer_sdp.startswith("v=0")):
+        raise ValidationFailed("offer_sdp is not an SDP offer", detail={"field": "offer_sdp"})
 
     def _start() -> dict:
-        return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp,
-                             project_id=body.project_id,
-                             credential=_stored_sign_in(ctx, writer, person))
+        return service.start(tenant_id=tenant_id, person=person, offer=body.offer_sdp or "",
+                             project_id=body.project_id, mode=mode)
 
     return await run_in_threadpool(_start)
+
+
+@router.post("/sessions/{session_id}/turns")
+async def text_turn(
+    session_id: str,
+    body: TextTurn,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+) -> dict:
+    service = _service(ctx, client)
+    _check_id(session_id, "vs_", "session_id")
+    if not body.text.strip():
+        raise ValidationFailed("a turn needs some text", detail={"field": "text"})
+    return await run_in_threadpool(
+        service.turn, tenant_id=tenant_id, person=person, session_id=session_id, text=body.text)
 
 
 @router.post("/sessions/{session_id}/end")
@@ -328,6 +424,39 @@ async def undo_preferences(
 @router.get("/cards/schema")
 async def card_schema(person: str = Depends(allowed_person)) -> dict:
     return vcards.catalogue()
+
+
+class WriteCard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The writer's fields of one card; `cards.validate` judges them.
+    card: dict[str, Any]
+
+
+@router.post("/sessions/{session_id}/cards")
+async def write_card(
+    session_id: str,
+    body: WriteCard,
+    person: str = Depends(allowed_person),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    _check_id(session_id, "vs_", "session_id")
+    tenants = vstream.tenants_of(auth)
+    if auth.via == vgrant.VIA:
+        # A grant writes only to the session it was minted for, in its
+        # session's workspace (the authenticator resolved it to that one).
+        if auth.voice_session != session_id:
+            raise vgrant.RouteNotGranted("a Voice it grant writes only to its own session")
+        tenants = frozenset({auth.tenant_id})
+    found = await run_in_threadpool(
+        vstream.find_session, ctx.db, person=person, session_id=session_id, tenants=tenants)
+    if found.state != vs.LIVE:
+        raise Conflict(f"voice session {session_id!r} has ended; no card is drawn on it")
+    card = await run_in_threadpool(
+        vcards.write_card, vstore.VoiceStore(ctx.db, now=ctx.now), tenant_id=found.tenant_id,
+        person=person, project_id=found.project_id, session_id=found.session_id, card=body.card)
+    return {"card": card}
 
 
 def stream_timing(request: Request) -> dict[str, Any]:

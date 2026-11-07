@@ -672,6 +672,37 @@ def _read_body(response: Any, limit: int | None = None) -> bytes:
     return bytes(out if limit is None else out[:limit])
 
 
+#: WHO IS ASKING, on every request (BGD's pick, 2026-11-06): a 20-minute
+#: sample of swarm-api's request log had 3,299 of 3,300 single-task reads from
+#: a caller whose user agent was urllib's bare `Python-urllib/3.x`, so the log
+#: could not tell this bridge from `sc`, a worker or a script. The kind is
+#: `cli` until `pace_for_bridge` makes it `bridge`.
+USER_AGENT_PRODUCT = "swarm-mcp"
+
+
+def _installed_version() -> str:
+    from importlib import metadata
+
+    try:
+        return metadata.version("swarm-mcp")
+    except metadata.PackageNotFoundError:
+        return "0"
+
+
+#: Read ONCE, at import: a request is no reason to read package metadata.
+_CLIENT_VERSION = _installed_version()
+
+
+def client_version() -> str:
+    """This package's version, or "0" for a working copy not installed as one."""
+    return _CLIENT_VERSION
+
+
+def user_agent(kind: str) -> str:
+    """`swarm-mcp/<version> (<kind>)`: `bridge` or `cli`."""
+    return f"{USER_AGENT_PRODUCT}/{client_version()} ({kind})"
+
+
 @dataclass
 class _Token:
     value: str
@@ -1406,6 +1437,9 @@ class SwarmClient:
         self._shared: SharedReads | None = None
         self._gate: RateGate | None = None
         self._sleep: Any = time.sleep
+        #: `User-Agent` on every request (`user_agent`); the bridge's from
+        #: `pace_for_bridge`.
+        self.user_agent = user_agent("cli")
 
         if self.tier is _auth.Tier.IAP:
             # The audience IAP accepts is its OAuth client id, never the
@@ -1747,6 +1781,7 @@ class SwarmClient:
         self._shared = SharedReads(ttl, clock=clock)
         self._gate = RateGate(rate, burst, clock=clock)
         self._sleep = sleep
+        self.user_agent = user_agent("bridge")
 
     # -- transport ---------------------------------------------------------
     def request(
@@ -1874,6 +1909,7 @@ class SwarmClient:
         if self.tenant:
             req.add_header(TENANT_HEADER, self.tenant)
         req.add_header("Accept", "application/json" if raw_limit is None else "*/*")
+        req.add_header("User-Agent", self.user_agent)
         # swarm-api gzips a whole answer of 1 KB or more for a caller that asks
         # (#1822): a board page is 1.43 MB plain, and this client is most of the
         # API's requests. An older API ignores it and answers plain, which
@@ -2320,6 +2356,7 @@ class SwarmClient:
         auto_merge: bool = False,
         fix_rounds: int | None = None,
         model_class: str | None = None,
+        security_review: bool = False,
     ) -> dict[str, Any]:
         """Plan `issue` (`owner/repo#N` or its URL). DATA only (invariant 10):
         no profile, image or command -- the planner and every step are the
@@ -2329,7 +2366,12 @@ class SwarmClient:
         `model_class` is the PLANNER's class, by name (#1435); each plan step's
         class is the planner's to write (R1). Sent only when named, and a
         deployment that does not take it yet refuses it with a 422 that is
-        passed back as it came."""
+        passed back as it came.
+
+        `security_review` adds the optional security review after the fix
+        (docs/design/security-review-step.md). Sent only when asked, so a
+        run that did not ask sends exactly the body it sent before, and the
+        API's default (off) decides."""
         payload: dict[str, Any] = {
             "issue": issue,
             "plan_approval": plan_approval,
@@ -2337,6 +2379,8 @@ class SwarmClient:
         }
         if fix_rounds is not None:
             payload["fix_rounds"] = fix_rounds
+        if security_review:
+            payload["security_review"] = True
         if model_class:
             payload["model_class"] = model_class
         # The session that asked (SC-SESSION-SCOPE). swarm-api copies it onto

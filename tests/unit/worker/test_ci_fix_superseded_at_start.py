@@ -128,7 +128,7 @@ def _worker(db, worker_factory, monkeypatch, origin: Path, dispatch: dict[str, A
     db.doc("tasks/task_1")["metadata"] = {"dispatch": dict(dispatch)}
     monkeypatch.setattr(lifecycle.Worker, "_title_owed", lambda self, task: False)
     worker, _config, _ = worker_factory(repository_url=f"file://{origin}")
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     return worker
 
 
@@ -272,7 +272,7 @@ def test_an_attempt_restored_from_a_checkpoint_is_not_checked(
     worker._task = {"task_id": "task_1", "metadata": {"dispatch": _dispatch("0" * 40)}}
     worker._repo_url = f"file://{origin}"
     worker._clone_commit = red
-    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    monkeypatch.setattr(worker, "_git_token", lambda **_: "not-a-real-token")
     assert worker._ci_fix_superseded({"path": lifecycle.REPO_DIR_NAME,
                                       "from_checkpoint": True}) is None
     assert pull.reads == 0

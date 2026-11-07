@@ -25,6 +25,14 @@
  *     `hidden`. Reopening, or the page becoming visible, reads once at once.
  *     The shard list is asked for (`shards=1`) only while it is unfolded, so an
  *     index of thousands of shards costs nothing while the list is closed.
+ *   * THE SERVED ANSWER LATENCY IS EVERY REPLICA'S, MERGED BY THE ROUTE (lane
+ *     graph-cache-panel-latency, part of #2688): the middle, slow and slowest
+ *     answer, by outcome (carried answers on their own row) and cold or warm,
+ *     beside the indexer's uncached measurement. A replica whose figure was not
+ *     read is named, never counted as zero answers; a percentile over several
+ *     replicas is read off their summed histogram counts and drawn as it is.
+ *     Only while a replica serves no counts (mixed versions during a roll-out)
+ *     is it the slowest replica's, an upper bound, drawn as "≤".
  *   * A FAILED READ KEEPS THE LAST GOOD VALUES (§5.5), with the time they were
  *     read and the reason the new read failed; it never blanks them.
  *
@@ -35,11 +43,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Dash, StatTile, UsageBar, buttonClass, type TileValue } from './components'
 import {
+  GRAPH_CACHE_OUTCOMES,
+  GRAPH_CACHE_TEMPERATURES,
   loadRepositoryGraphCache,
   type GraphCacheDoc,
   type GraphCacheFacts,
   type GraphCacheLatency,
+  type GraphCacheLatencyGroup,
   type GraphCacheReplica,
+  type GraphCacheServedLatency,
   type GraphCacheShardRow,
   type GraphCacheShards,
 } from './api'
@@ -72,6 +84,8 @@ const REASON_WORDS: Readonly<Record<string, string>> = {
   no_ticket_key: 'swarm-api holds no graph ticket key to ask with',
   no_index: 'no index is promoted',
   no_graph: 'the current index has no graph',
+  no_replica_read: 'no replica was read',
+  not_served: 'the replicas read do not serve it yet',
 }
 
 export function reasonWords(reason: string): string {
@@ -259,7 +273,9 @@ function CacheBody({
         <StatTile label="Reused from the last index" tile={reuseTile(doc.facts, doc.stats)} />
         <StatTile label="p95 served / uncached" tile={latencyTile(doc.facts, doc.latency)} />
         <StatTile label="Last promotion warm-up" tile={warmTile(doc.facts, doc.stats)} />
+        <StatTile label="Answer latency, served" tile={servedLatencyTile(doc.facts.answer_latency)} />
       </div>
+      {doc.facts.answer_latency.state === 'read' && <LatencyTable served={doc.facts.answer_latency} />}
       {doc.replicas.length > 0 && (
         <div className="ur-cache-replicas" data-row="replicas" style={REPLICA_GRID}>
           {doc.replicas.map((r) => (
@@ -328,6 +344,134 @@ function warmTile(f: GraphCacheFacts, stats: Stats): TileValue {
 }
 
 // ---------------------------------------------------------------------------
+// The served answer latency (lane graph-cache-panel-latency)
+// ---------------------------------------------------------------------------
+
+// Short, so the table's five columns fit a phone's width before it scrolls.
+const OUTCOME_WORDS: Readonly<Record<string, string>> = {
+  hit: 'Cache hit',
+  carried: 'Carried',
+  miss: 'Cache miss',
+  partial: 'Cut at deadline',
+  uncached: 'No cache key',
+}
+const TEMPERATURE_WORDS: Readonly<Record<string, string>> = {
+  warm: 'Warm (memory)',
+  cold: 'Cold (storage)',
+}
+const UPPER_BOUND_WHY = 'A replica served no histogram (an older version during a roll-out): the slowest replica’s figure, so at most this'
+
+/** A percentile in words: "≤ 40 ms" when it is an upper bound, not merged from counts. */
+function latencyMs(ms: number, exact: boolean): string {
+  return exact ? msWords(ms) : `≤ ${msWords(ms)}`
+}
+
+function LatencyCell({ g, field }: { g: GraphCacheLatencyGroup | undefined; field: 'p50_ms' | 'p95_ms' | 'max_ms' }) {
+  if (g === undefined) return <Dash why="Not served" />
+  const ms = g[field]
+  if (ms === null) return <Dash why={g.count === 0 ? 'No answers in the window' : 'Not served'} />
+  // The slowest answer is the slowest any replica saw, exact either way.
+  const exact = field === 'max_ms' || g.exact
+  return exact ? <>{msWords(ms)}</> : <span title={UPPER_BOUND_WHY}>{latencyMs(ms, false)}</span>
+}
+
+/** "2 of 3 replicas": a replica whose figure was not read is named, never a zero. */
+function replicasNote(served: GraphCacheServedLatency): string | null {
+  if (served.not_read.length === 0) return null
+  const read = served.state === 'read' ? served.replicas_read : 0
+  return `${read} of ${read + served.not_read.length} replicas; not read: ${served.not_read.join(', ')}`
+}
+
+function servedLatencyTile(served: GraphCacheServedLatency): TileValue {
+  if (served.state === 'not_read') {
+    const note = replicasNote(served)
+    return { kind: 'unknown', why: `Not read: ${reasonWords(served.reason)}${note === null ? '' : ` (${note})`}` }
+  }
+  if (served.count === 0 || served.p50_ms === null || served.p95_ms === null) {
+    return { kind: 'unknown', why: 'No answers in the window' }
+  }
+  const value = `${latencyMs(served.p50_ms, served.exact)} / ${latencyMs(served.p95_ms, served.exact)}`
+  const slowest = served.max_ms === null ? '' : ` · slowest ${msWords(served.max_ms)}`
+  const words = `middle / slow (p95) of ${thousands(served.count)} answers${slowest}`
+  const window = served.window_hours !== null && served.window_hours < FULL_WINDOW_HOURS ? ` · over ${served.window_hours} h` : ''
+  const missed = replicasNote(served)
+  if (missed !== null) return { kind: 'partial', value, missed: `${words}${window} · ${missed}` }
+  return { kind: 'value', value, note: `${words}${window}` }
+}
+
+function LatencyRow({ label, g, kind }: { label: string; g: GraphCacheLatencyGroup | undefined; kind: string }) {
+  return (
+    <tr data-latency-row={kind}>
+      <td>{label}</td>
+      <td className="is-num">{g === undefined ? <Dash why="Not served" /> : thousands(g.count)}</td>
+      <td className="is-num">
+        <LatencyCell g={g} field="p50_ms" />
+      </td>
+      <td className="is-num">
+        <LatencyCell g={g} field="p95_ms" />
+      </td>
+      <td className="is-num">
+        <LatencyCell g={g} field="max_ms" />
+      </td>
+    </tr>
+  )
+}
+
+/** By outcome, carried answers on their own row, then cold or warm. */
+function LatencyTable({ served }: { served: Extract<GraphCacheServedLatency, { state: 'read' }> }) {
+  return (
+    <div className="c-tbl" data-row="answer-latency">
+      <table aria-label="Served answer latency by outcome and temperature">
+        <thead>
+          <tr>
+            <th>Answers</th>
+            <th className="is-num">Count</th>
+            <th className="is-num">Middle (p50)</th>
+            <th className="is-num">Slow (p95)</th>
+            <th className="is-num">Slowest</th>
+          </tr>
+        </thead>
+        <tbody>
+          {GRAPH_CACHE_OUTCOMES.map((o) => (
+            <LatencyRow key={o} kind={o} label={OUTCOME_WORDS[o] ?? o} g={served.by_outcome[o]} />
+          ))}
+          {GRAPH_CACHE_TEMPERATURES.map((t) => (
+            <LatencyRow key={t} kind={t} label={TEMPERATURE_WORDS[t] ?? t} g={served.by_temperature[t]} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** One replica's own served latency, or why there is none. */
+function ReplicaLatency({ r }: { r: Extract<GraphCacheReplica, { state: 'read' }> }) {
+  const l = r.answer_latency
+  if (l === null) {
+    return (
+      <p className="ur-small" data-row="replica-latency">
+        Answer latency: <Dash why="This replica does not serve it yet" />
+      </p>
+    )
+  }
+  if (l.count === 0 || l.p50_ms === null || l.p95_ms === null) {
+    return (
+      <p className="ur-small ur-mu" data-row="replica-latency">
+        Answer latency: no answers in the window
+      </p>
+    )
+  }
+  const cold = l.by_temperature.cold
+  return (
+    <p className="ur-small" data-row="replica-latency">
+      Answer latency: middle <b>{msWords(l.p50_ms)}</b>, slow <b>{msWords(l.p95_ms)}</b>
+      {l.max_ms !== null && <>, slowest {msWords(l.max_ms)}</>} over {thousands(l.count)} answers
+      {cold !== undefined && cold.count > 0 && cold.p95_ms !== null && <> · cold slow {msWords(cold.p95_ms)}</>}
+    </p>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // One panel per replica (§5.2)
 // ---------------------------------------------------------------------------
 
@@ -380,6 +524,7 @@ function ReplicaPanel({ r }: { r: GraphCacheReplica }) {
         {r.answers_hot === null ? <Dash why="Not served" /> : <b>{thousands(r.answers_hot)}</b>} answers and{' '}
         {r.shards_hot === null ? <Dash why="Not served" /> : <b>{thousands(r.shards_hot)}</b>} shards hot
       </p>
+      <ReplicaLatency r={r} />
     </div>
   )
 }

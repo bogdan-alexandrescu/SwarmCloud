@@ -39,9 +39,6 @@ import { build, painted } from './marks'
 import { cellStyle, fixedColumns, nowrap, textPx } from './tablefit'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const LIST_AT_1440 = 1440 - 84 - 236 - 64
-/** The mark beside a state word: 12px glyph and its 6px gap. */
-const MARK = 18
 
 const hosts: HTMLElement[] = []
 
@@ -54,61 +51,57 @@ async function list(): Promise<HTMLTableElement> {
   window.history.replaceState(null, '', '/workflows')
   render(<App />)
   return waitFor(() => {
-    const t = document.querySelector<HTMLTableElement>('.wfl .wfl-table')
+    const t = document.querySelector<HTMLTableElement>('.wfg .wfg-table')
     expect(t).not.toBeNull()
-    expect(t!.querySelectorAll('tbody tr.wfl-row:not(.is-skel)').length).toBeGreaterThan(0)
+    expect(t!.querySelectorAll('tbody tr.wfg-row:not(.is-skel)').length).toBeGreaterThan(0)
     return t!
   })
 }
 
+// THE REDESIGN (frame graph-workflows-rest): the list is an auto-layout
+// table of one-line rows -- State, Workflow, Steps, Needs you, Spent, Owner,
+// Changed. Steps done is the Steps cell's `done/total`; Duration and Shape
+// moved to the inspector's summary, which a click on the row opens.
 describe('D8: the Workflows list never cuts a state, a count or a duration', () => {
-  it('sizes State, Steps done and Duration to the longest value each holds', async () => {
+  it('sizes State, Steps and Changed to what they hold, and gives the name the rest', async () => {
     const t = await list()
-    const { cols } = fixedColumns(t, LIST_AT_1440, WIDE)
-    const row = t.querySelector('tbody tr.wfl-row')!
-    const width = (col: string) => {
-      const box = cols.find((c) => c.col === col)!
-      const st = cellStyle(row.querySelector(`td[data-col="${col}"]`)!, WIDE)
-      return box.end - box.start - st.pl - st.pr
+    const row = t.querySelector('tbody tr.wfg-row')!
+    // The old fixed-table column widths went with the redesign: the table
+    // is `table-layout: auto`, so a column with no width is as wide as its
+    // longest value, and only the name takes the room left over.
+    expect(painted(t, 'table-layout', WIDE)).toBe('auto')
+    for (const col of ['state', 'steps', 'changed']) {
+      expect(painted(row.querySelector(`td[data-col="${col}"]`)!, 'width', WIDE), col).toBeNull()
     }
-    const state = row.querySelector('td[data-col="state"]')!
-    const done = row.querySelector('td[data-col="done"] small')!
-    const dur = row.querySelector('td[data-col="duration"]')!
-    expect(width('state'), 'state').toBeGreaterThanOrEqual(MARK + textPx('dead-lettered', state, WIDE))
-    // The bar keeps 24px beside the count.
-    expect(width('done'), 'steps done').toBeGreaterThanOrEqual(24 + 6 + textPx('10/10', done, WIDE))
-    expect(width('duration'), 'duration').toBeGreaterThanOrEqual(textPx('23h 59m so far', dur, WIDE))
-    // The name keeps the most room of any column. A head the cascade hides
-    // (Shape and Runners below 1680, G3-09) draws no column, and its width
-    // goes to the name, the one column with no width: `fixedColumns` counts
-    // every head, so it is given back here (from 1280 Cost is 136px, c28 and QAFIX5 work-a-010).
-    const hidden = cols.filter((c) => painted(t.querySelector(`thead th[data-col="${c.col}"]`)!, 'display', WIDE) === 'none')
-    expect(hidden.map((c) => c.col)).toEqual(['shape', 'runners'])
-    const name = width('workflow') + hidden.reduce((a, c) => a + c.end - c.start, 0)
-    for (const c of cols) if (c.col !== 'workflow' && !hidden.includes(c)) expect(name, c.col).toBeGreaterThanOrEqual(c.end - c.start - 20)
+    expect(painted(row.querySelector('td[data-col="workflow"]')!, 'width', WIDE)).toBe('100%')
+    expect(row.querySelector('td[data-col="steps"] small')?.textContent).toMatch(/^\d+\/\d+$|steps?/)
   })
 
   it('never cuts those three with an ellipsis, and never wraps them', async () => {
     const t = await list()
-    const row = t.querySelector('tbody tr.wfl-row')!
-    for (const col of ['state', 'done', 'duration']) {
+    const row = t.querySelector('tbody tr.wfg-row')!
+    for (const col of ['state', 'steps', 'changed']) {
       const td = row.querySelector(`td[data-col="${col}"]`)!
       expect(painted(td, 'text-overflow', WIDE) ?? 'clip', col).toBe('clip')
       expect(nowrap(td, WIDE), col).toBe(true)
     }
   })
 
-  it('gives the name and the shape their whole text as a title', async () => {
+  it('gives the name its whole text as a title, and the shape in the summary its words', async () => {
     const t = await list()
-    const rows = [...t.querySelectorAll('tbody tr.wfl-row')]
+    const rows = [...t.querySelectorAll<HTMLElement>('tbody tr.wfg-row')]
     expect(rows.length).toBeGreaterThan(0)
     for (const row of rows) {
-      const a = row.querySelector<HTMLAnchorElement>('td[data-col="workflow"] > .wfl-line > a')!
-      expect(a.getAttribute('title'), 'the name has no title').toBe(a.textContent)
-      const shape = row.querySelector<HTMLElement>('td[data-col="shape"]')!
-      expect(shape.getAttribute('title'), 'the shape has no title').toBeTruthy()
-      expect(painted(shape, 'text-overflow', WIDE)).toBe('ellipsis')
+      const a = row.querySelector<HTMLAnchorElement>('td[data-col="workflow"] > a')!
+      // The id joins the name in the title when the name is not the id.
+      expect([a.textContent, `${a.textContent} · ${row.getAttribute('data-workflow')}`], 'the name has no title').toContain(a.getAttribute('title'))
+      expect(painted(row.querySelector('td[data-col="workflow"]')!, 'text-overflow', WIDE)).toBe('ellipsis')
     }
+    fireEvent.click(rows[0]!.querySelector('[data-col="state"]')!)
+    const aside = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"]')!
+    const dt = [...aside.querySelectorAll('.wfg-sum-dl > dt')].find((d) => d.textContent === 'Shape')!
+    const shape = dt.nextElementSibling as HTMLElement
+    expect(shape.getAttribute('title'), 'the shape has no title').toBeTruthy()
   })
 })
 
@@ -205,16 +198,17 @@ describe('D30: the same-step scrubber keeps its arrows with the position', () =>
   it('holds ◀ position ▶ in one unit that never wraps, and cuts the shape after it', async () => {
     const wrap = await steps()
     fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
-    const row = await waitFor(() => {
-      const r = document.querySelector<HTMLElement>('[data-scrub="workflow"]')
-      expect(r).not.toBeNull()
-      return r!
+    // The page's step card is the action bar and stat tiles (owner's pick,
+    // 2026-11-05): THE FIXTURE'S WORKFLOWS ARE EACH OF THEIR OWN SHAPE, so it
+    // draws no same-step row at all -- no pager, no sentence -- and the
+    // scrubber below is the board inspector's.
+    const card = await waitFor(() => {
+      const c = document.querySelector<HTMLElement>('.sc-card')
+      expect(c).not.toBeNull()
+      return c!
     })
-    // THE FIXTURE'S WORKFLOWS ARE EACH OF THEIR OWN SHAPE, so this row has
-    // nothing to page: since QA1-FIX-29 (overview-agents-67) it is one
-    // sentence, with no arrows, the shape in its title.
-    expect(row.querySelector(':scope > .wf-scrub-nav')).toBeNull()
-    expect(row.querySelector(':scope > .wf-scrub-pos')?.getAttribute('title')).toMatch(/^This workflow’s shape: .* Only workflows of this shape are compared.$/)
+    expect(card.querySelector('[data-scrub="workflow"]')).toBeNull()
+    expect([...card.querySelectorAll('.sc-facts dt')].map((d) => d.textContent)).not.toContain('Other workflows')
     // With more than one, the unit is drawn by the sheet as before: built
     // here, since no fixture workflow shares a shape (workflow.views.test.tsx
     // U5 pages two of one shape and holds the DOM order).

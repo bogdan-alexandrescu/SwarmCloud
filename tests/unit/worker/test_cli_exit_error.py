@@ -11,17 +11,27 @@ was killed by SIGTERM, exit 143, and recorded
 permissions problem. The runner now drops known-benign stderr lines before it
 chooses what to record, and names a signal exit plainly.
 
-The first three tests run the real claude-code runner against a fake CLI that
-writes the given stderr and exits with the given code; the rest pin the pure
-composition in `cliagent.exit_error`.
+The runner tests run the real claude-code runner against a fake CLI that
+writes the given stderr (and stdout) and exits with the given code; the rest
+pin the pure composition in `cliagent.exit_error` and `cliagent._result_error`.
+
+Issue #3547: t1's prd_draft writers exited non-zero with an empty stderr and
+recorded only "claude-code exited 1:". A failing stream-json run writes its
+reason to stdout, in its `result` event (is_error, subtype, result text), so
+when stderr has nothing to say the reason is taken from there -- scrubbed of
+the run's secrets, redacted, on one line and bounded. A real stderr message
+still wins and reads exactly as before.
 
 MUTATIONS: empty `claude_code.SPEC.benign_stderr` (the trust-line tests go
 red); make `exit_error` return the old `exited N: <tail>` for every code (the
-SIGTERM/SIGKILL tests go red).
+SIGTERM/SIGKILL tests go red); drop the stdout reason (pass no
+`result_reason` from `judge`, or make `_result_error` return "") and the
+result-reason tests go red.
 """
 
 from __future__ import annotations
 
+import json
 import secrets as pysecrets
 from pathlib import Path
 
@@ -59,16 +69,23 @@ def _ctx(tmp_path: Path) -> RunnerContext:
 FAKE_CLI = r'''#!/usr/bin/env python3
 import sys
 sys.stdin.read()
+sys.stdout.write(STDOUT)
+sys.stdout.flush()
 sys.stderr.write(STDERR)
 sys.stderr.flush()
 sys.exit(CODE)
 '''
 
 
-def _run(tmp_path: Path, monkeypatch, stderr: str, code: int) -> str:
+def _run(
+    tmp_path: Path, monkeypatch, stderr: str, code: int, stdout: str = "", key: str | None = None
+) -> str:
     ctx = _ctx(tmp_path)
     cli = tmp_path / "fake-cli"
-    cli.write_text(FAKE_CLI.replace("STDERR", repr(stderr)).replace("CODE", str(code)))
+    cli.write_text(
+        FAKE_CLI.replace("STDOUT", repr(stdout)).replace("STDERR", repr(stderr))
+        .replace("CODE", str(code))
+    )
     cli.chmod(0o755)
     monkeypatch.setenv("CLAUDE_CODE_BIN", str(cli))
     for name in (
@@ -76,7 +93,7 @@ def _run(tmp_path: Path, monkeypatch, stderr: str, code: int) -> str:
         cliagent.ACCOUNT_STREAM_ENV, cliagent.RESUME_SESSION_ENV, cliagent.RESUME_REASON_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", _anthropic_key())
+    monkeypatch.setenv("ANTHROPIC_API_KEY", key or _anthropic_key())
     with pytest.raises(RunnerFailure) as caught:
         claude_code.body(ctx)
     return str(caught.value)
@@ -142,3 +159,130 @@ def test_capture_notices_are_never_the_line_kept():
     notice = cliagent._CAPTURE_MARK + " 4096 bytes dropped"
     error = cliagent.exit_error("claude-code", 143, f"real failure\n{notice}\n", ())
     assert error == "claude-code terminated by SIGTERM (exit 143): real failure"
+
+
+# ---------------------------------------------------------------------------
+# Issue #3547: the reason a stream-json run printed to stdout
+# ---------------------------------------------------------------------------
+
+INIT = {"type": "system", "subtype": "init", "session_id": "s1"}
+
+
+def _stream(*events: dict) -> str:
+    return "".join(json.dumps(event) + "\n" for event in events)
+
+
+def _failed(**fields) -> dict:
+    return {"type": "result", "is_error": True, **fields}
+
+
+def test_an_empty_stderr_exit_records_the_stream_json_result_reason(tmp_path, monkeypatch):
+    stdout = _stream(INIT, _failed(subtype="error_during_execution", result="X-unique-reason"))
+    error = _run(tmp_path, monkeypatch, "", 1, stdout=stdout)
+    assert error.startswith("claude-code exited 1:"), error
+    assert "X-unique-reason" in error, error
+    assert "error_during_execution" in error, error
+
+
+def test_an_error_max_turns_result_without_text_records_its_subtype(tmp_path, monkeypatch):
+    error = _run(tmp_path, monkeypatch, "", 1, stdout=_stream(INIT, _failed(subtype="error_max_turns")))
+    assert error == "claude-code exited 1: error_max_turns", error
+
+
+def test_a_real_stderr_message_still_wins_over_the_result(tmp_path, monkeypatch):
+    real = "Error: ENOSPC: no space left on device, write"
+    stdout = _stream(INIT, _failed(subtype="error_during_execution", result="X-unique-reason"))
+    error = _run(tmp_path, monkeypatch, f"{TRUST_LINE}\n{real}\n", 1, stdout=stdout)
+    assert error == f"claude-code exited 1: {real}", error
+
+
+def test_the_result_reason_is_scrubbed_of_registered_secrets(tmp_path, monkeypatch):
+    key = _anthropic_key()
+    stdout = _stream(INIT, _failed(subtype="error_during_execution", result=f"bad key {key} refused"))
+    error = _run(tmp_path, monkeypatch, "", 1, stdout=stdout, key=key)
+    assert error.startswith("claude-code exited 1: error_during_execution"), error
+    assert "refused" in error, error
+    assert key not in error, "the registered key reached the failure message"
+    assert key[-16:] not in error
+
+
+def test_the_result_reason_is_bounded(tmp_path, monkeypatch):
+    long_text = "word " * 2000
+    stdout = _stream(INIT, _failed(subtype="error_during_execution", result=long_text))
+    error = _run(tmp_path, monkeypatch, "", 1, stdout=stdout)
+    reason = error.removeprefix("claude-code exited 1: ")
+    assert reason.startswith("error_during_execution"), error
+    assert len(reason) <= cliagent._SIGNAL_DETAIL_CHARS, len(reason)
+    assert "\n" not in error
+
+
+def test_a_non_error_result_adds_nothing(tmp_path, monkeypatch):
+    stdout = _stream(INIT, {"type": "result", "subtype": "success", "is_error": False,
+                            "result": "all done"})
+    error = _run(tmp_path, monkeypatch, "", 1, stdout=stdout)
+    # Today's form for an exit with nothing to say, byte for byte.
+    assert error == "claude-code exited 1: ", error
+
+
+def test_a_signal_exit_without_stderr_names_the_result_reason():
+    error = cliagent.exit_error(
+        "claude-code", 143, f"{TRUST_LINE}\n", claude_code.SPEC.benign_stderr,
+        result_reason="error_during_execution: interrupted",
+    )
+    assert error == "claude-code terminated by SIGTERM (exit 143): error_during_execution: interrupted"
+
+
+def test_exit_error_without_a_result_reason_is_unchanged():
+    assert cliagent.exit_error("claude-code", 1, "", ()) == "claude-code exited 1: "
+    assert cliagent.exit_error("claude-code", 1, "boom\n", (), result_reason="r") == (
+        "claude-code exited 1: boom"
+    )
+
+
+@pytest.mark.parametrize(
+    ("parsed", "reason"),
+    [
+        (None, ""),
+        ([], ""),
+        ("prose", ""),
+        ({"type": "result", "is_error": False, "subtype": "success", "result": "ok"}, ""),
+        ({"type": "result", "is_error": True, "subtype": "error_max_turns"}, "error_max_turns"),
+        ({"type": "result", "subtype": "error_during_execution", "result": "boom"},
+         "error_during_execution: boom"),
+        ({"is_error": True, "result": "single  object\n  failure"}, "single object failure"),
+        ({"type": "result", "is_error": True, "subtype": "error_during_execution",
+          "errors": ["first", "second"]}, "error_during_execution: first second"),
+        ({"type": "result", "is_error": True, "error": "quota"}, "quota"),
+        # The last result event is the one that counts.
+        ([{"type": "result", "is_error": True, "subtype": "error_max_turns"},
+          {"type": "result", "is_error": False, "subtype": "success"}], ""),
+        ([INIT, {"type": "result", "is_error": False, "subtype": "success"},
+          {"type": "assistant"}, _failed(subtype="error_during_execution", result="late")],
+         "error_during_execution: late"),
+        # Codex's stream carries no `result` event: nothing is taken from it.
+        ([{"type": "thread.started", "thread_id": "t"},
+          {"type": "turn.failed", "error": {"message": "stream error"}}], ""),
+        ([INIT, {"type": "assistant", "is_error": True}], ""),
+    ],
+)
+def test_result_error_reads_the_last_result_event(parsed, reason):
+    assert cliagent._result_error(parsed) == reason
+
+
+def test_result_error_is_one_line_and_left_whole_for_the_scrub():
+    reason = cliagent._result_error(_failed(subtype="error_during_execution", result="a\nb " * 1000))
+    assert "\n" not in reason
+    # Bounded by exit_error, after the scrub: a cut here could split a secret.
+    assert len(reason) > cliagent._SIGNAL_DETAIL_CHARS
+    bounded = cliagent.exit_error("claude-code", 1, "", (), result_reason=reason)
+    assert bounded == "claude-code exited 1: " + reason[: cliagent._SIGNAL_DETAIL_CHARS]
+
+
+def test_a_secret_across_the_bound_is_masked_not_cut(tmp_path, monkeypatch):
+    key = _anthropic_key()
+    subtype = "error_during_execution"
+    pad = "x" * (cliagent._SIGNAL_DETAIL_CHARS - len(subtype) - len(": ") - 10)
+    stdout = _stream(INIT, _failed(subtype=subtype, result=f"{pad}{key} tail"))
+    error = _run(tmp_path, monkeypatch, "", 1, stdout=stdout, key=key)
+    assert key[:10] not in error, "a cut-off prefix of the registered key reached the message"
+    assert error.startswith(f"claude-code exited 1: {subtype}: {pad}"), error

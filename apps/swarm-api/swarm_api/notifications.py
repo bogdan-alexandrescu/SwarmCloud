@@ -109,7 +109,9 @@ document of its own; no task, lease or slot is touched.
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import logging
+import re
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -132,7 +134,9 @@ from .agent_questions import (
     current_wait,
     owner_questions_hold,
     parked_wait,
-    unanswered,
+    question_count,
+    question_digests,
+    unanswered_indices,
 )
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
@@ -557,7 +561,10 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
     §4.1), and one of the caller's PARKED `HUMAN_REQUIRED` after its hold
     expired (§4.3), which only a person promotes. Both link to the Browser tab.
     A PARKED merge step held by owner questions is no hand-off: its item, if
-    it has one, is `_held_merge_item`'s, linked to Details (#2313).
+    it has one, is `_held_merge_item`'s, linked to Details (#2313). Nor is
+    one parked on a question wait (`parked_wait`), which is HUMAN_REQUIRED
+    too: its blocking questions are answered, not taken over, and ring as
+    `agent_questions`' item (the console's `stepNeedItems` reads the same).
 
     An open hand-off is "Agent needs you" for everyone who may take control
     of it (`handoff.may_control`, §5.1): its submitter, and the tenant's
@@ -601,6 +608,8 @@ def handoffs(reading: Reading) -> list[dict[str, Any]]:
             if item is not None:
                 items.append(item)
             continue
+        if parked_wait(task) is not None:
+            continue
         items.append(_item(
             f"task:handoff:{task.id}:{task.current_generation}", TASK, True,
             "Your agent parked until you take over its browser", f"Task {task.id}",
@@ -626,13 +635,10 @@ def _owner_questions_hold(task: Any) -> Mapping[str, Any] | None:
 
 def _asked_indices(reading: Reading) -> dict[str, set[int]]:
     """Which questions already ring from the task that asked them: each
-    task `agent_questions` lists, with the indices its item stands for."""
-    asked: dict[str, set[int]] = {}
-    for task in reading.own_tasks():
-        found = _asked_item(reading, task)
-        if found is not None:
-            asked[task.id] = found[1]
-    return asked
+    task `agent_questions` lists, with the indices its item stands for --
+    a question it leaves to the same words asked earlier in its workflow
+    (`_question_key`) included, since that one rings for it."""
+    return {task_id: indices for task_id, _, indices in _question_rows(reading)}
 
 
 def _lane_label(task: Any) -> str:
@@ -794,47 +800,178 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     says the agent is
     waiting and how many blocking questions are open. Its id is the same
     `task:questions:<id>`, so the console's card marks it read as before;
-    the last blocking answer resumes the agent and the item goes."""
-    items = []
-    for task in reading.own_tasks():
-        found = _asked_item(reading, task)
-        if found is not None:
-            items.append(found[0])
-    return items
+    the last blocking answer resumes the agent and the item goes.
+
+    ONLY WHAT STILL HOLDS WORK (BGD's pick, 6 November 2026): an ended
+    task's questions ring only while its workflow has not finished or a
+    merge in it is held on the owner's questions (`_holding_workflows`); a
+    task in no workflow rings only while it is parked on them. The same
+    words asked by two steps of one workflow ring once (`_question_rows`).
+    The console's Workflows list and Needs you count by the same rule
+    (`apps/swarm-ui/src/work/listNeeds.ts`, `workflowNeedItems`). The plugin's
+    `swarm_check` still lists a finished task's open questions: that is how a
+    Claude Code session raises them."""
+    return [item for _, item, _ in _question_rows(reading) if item is not None]
 
 
-def _asked_item(reading: Reading, task: Any) -> tuple[dict[str, Any], set[int]] | None:
-    """`task`'s questions item, with the question indices it stands for, else
-    None: the one rule `agent_questions` lists by and `handoffs` counts a
-    held merge's questions by, so the two never disagree about which
-    question already rings."""
+#: A workflow's end states (its stored state, which the rollup converges):
+#: a finished workflow waits on nobody's answer.
+_FINISHED_WORKFLOW = frozenset(_ENDED)
+
+
+def _question_key(text: Any) -> str:
+    """A question's words as two steps compare them, case and spacing aside:
+    an implement step and its fix step often ask the same question with
+    other option labels, so the text alone is matched (the console's
+    `questionKey` reads the same)."""
+    return " ".join(str(text or "").split()).lower()
+
+
+#: `result_summary` key: the worker's digest of each counted question's words
+#: alone (`agent_worker.questions.text_digest`), in index order: what an ended
+#: task's artifact questions are matched by across its workflow, their words
+#: being in an artifact this feed does not open (the follow-up picked under
+#: BGD's overnight grant, 6 November 2026).
+QUESTION_TEXT_DIGESTS_KEY = "question_text_digests"
+#: The worker's digest: 16 lowercase hex characters (`DIGEST_CHARS`). The task
+#: document is tenant-writable, so nothing else is read or served as one.
+_TEXT_DIGEST = re.compile(r"[0-9a-f]{16}")
+
+
+def question_text_digest(text: Any) -> str | None:
+    """The worker's `text_digest` of a question's words (`_question_key`),
+    computed here for a question wait's words on the task; None for none."""
+    key = _question_key(text) if isinstance(text, str) else ""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16] if key else None
+
+
+def question_text_digests(summary: Mapping[str, Any] | None) -> list[str] | None:
+    """The worker's text key of each counted question, in index order, else
+    None: for a task summarised before the worker wrote them, and for a list
+    that does not hold one digest per counted question. Such a task counts
+    as it always did, its questions matched with no other."""
+    summary = dict(summary) if isinstance(summary, Mapping) else {}
+    raw = summary.get(QUESTION_TEXT_DIGESTS_KEY)
+    if not isinstance(raw, list) or len(raw) != question_count(summary):
+        return None
+    if not all(isinstance(d, str) and _TEXT_DIGEST.fullmatch(d) for d in raw):
+        return None
+    return raw
+
+
+def _merge_held(task: Any) -> bool:
+    """Whether `task` is a merge step PARKED on the owner's questions now."""
+    return (task.state == TaskState.PARKED and task.park_reason == ParkReason.HUMAN_REQUIRED
+            and _owner_questions_hold(task) is not None)
+
+
+def _holding_workflows(reading: Reading, tasks: list[Any], workflow_ids: set[str]) -> set[str]:
+    """Those of `workflow_ids` that still hold work: not SUCCEEDED, FAILED,
+    CANCELLED or DEAD_LETTERED, or with a merge the caller's read shows held
+    on the owner's questions among `tasks`. One read of the workflows, only
+    when a task ended with open questions in one; a workflow not found holds
+    nothing."""
+    if not workflow_ids:
+        return set()
+    held = {t.workflow_id for t in tasks if t.workflow_id in workflow_ids and _merge_held(t)}
+    found = reading.store.workflows_by_id(reading.viewer.tenant_id, sorted(workflow_ids - held),
+                                          submitted_by=None)
+    return held | {w.workflow_id for w in found if w.state not in _FINISHED_WORKFLOW}
+
+
+def _question_rows(reading: Reading) -> list[tuple[str, dict[str, Any] | None, set[int]]]:
+    """(task id, its questions item or None, the indices that item stands for)
+    for each of the caller's tasks with open questions that still hold work,
+    newest first: the one rule `agent_questions` lists by and `handoffs`
+    counts a held merge's questions by, so the two never disagree about which
+    question already rings. Read once per feed read.
+
+    THE SAME QUESTION ONCE: a question whose words an older task of the same
+    workflow already asks is left to that one (its indices still ring,
+    through it), and a task left with none is no item. A question wait's
+    words are on the task; an ended task's are in its artifact, not read
+    here, and are matched by the worker's text key of each
+    (`question_text_digests`). An ended task summarised before the key is
+    matched with no other, and counted by index as before."""
+    # The caller's tasks are read first: `_once` holds the reading's lock
+    # while it derives, and the derivation must take no other `_once`.
+    tasks = reading.own_tasks()
+    return reading._once("questions", lambda: _derive_question_rows(reading, tasks))
+
+
+def _derive_question_rows(reading: Reading,
+                          tasks: list[Any]) -> list[tuple[str, dict[str, Any] | None, set[int]]]:
+    found = [(task, *opened) for task in tasks
+             if (opened := _open_questions(reading, task)) is not None]
+    holding = _holding_workflows(reading, tasks, {t.workflow_id for t, _, wait in found
+                                           if wait is None and t.workflow_id})
+    rows: dict[str, tuple[str, dict[str, Any] | None, set[int]]] = {}
+    seen: dict[str, set[str]] = {}
+    for task, open_, wait in sorted(found, key=lambda f: (_aware(f[0].created_at) or _EPOCH, f[0].id)):
+        if wait is None and task.workflow_id not in holding:
+            continue
+        if wait is None:
+            digests = question_text_digests(task.result_summary)
+            keyed = [digests[i] if digests else None for i in open_]
+        else:
+            keyed = [question_text_digest(wait["questions"][i].get("question")) for i in open_]
+        fresh = open_
+        if task.workflow_id:
+            keys = seen.setdefault(task.workflow_id, set())
+            fresh = []
+            for index, key in zip(open_, keyed):
+                if key and key in keys:
+                    continue
+                if key:
+                    keys.add(key)
+                fresh.append(index)
+        if not fresh:
+            item = None
+        elif wait is None:
+            item = _ended_item(task)
+        else:
+            item = _waiting_item(task, len(fresh))
+        rows[task.id] = (task.id, item, set(open_))
+    return [rows[t.id] for t, _, _ in found if t.id in rows]
+
+
+def _open_questions(reading: Reading, task: Any) -> tuple[list[int], dict[str, Any] | None] | None:
+    """`task`'s open questions and the wait it is parked on (None for an
+    ended task's artifact questions), else None."""
     wait = parked_wait(task)
     if wait is not None:
         _, adopted = current_wait(task)
         open_ = blocking_unanswered(wait, task.metadata if adopted else None)
-        if not open_:
-            return None
-        return _item(
-            f"task:questions:{task.id}", TASK, True,
-            f"Your agent is waiting for your answer to {len(open_)} "
-            f"question{'s' if len(open_) != 1 else ''}",
-            f"{task.step_id or task.runner_profile} · Task {task.id}",
-            f"/agents/recent/{task.id}#questions", task.updated_at, topic=T_QUESTION), set(open_)
+        return (open_, wait) if open_ else None
     count = _question_count(task)
     if count <= 0 or task.state not in _ENDED:
         return None
-    if unanswered(count, task.metadata) == 0:
+    # The questions file is not read here: the worker's digests say which
+    # question each index asks now, so an answer to an earlier attempt's
+    # question there does not silence this one (docs/notifications.md).
+    open_ = unanswered_indices(count, task.metadata, digests=question_digests(task.result_summary))
+    if not open_ or not _recent(reading, task.completed_at or task.updated_at):
         return None
-    ended = task.completed_at or task.updated_at
-    if not _recent(reading, ended):
-        return None
-    answered = owner_answers_by_index(task.metadata)
+    return open_, None
+
+
+def _waiting_item(task: Any, count: int) -> dict[str, Any]:
+    return _item(
+        f"task:questions:{task.id}", TASK, True,
+        f"Your agent is waiting for your answer to {count} "
+        f"question{'s' if count != 1 else ''}",
+        f"{task.step_id or task.runner_profile} · Task {task.id}",
+        f"/agents/recent/{task.id}#questions", task.updated_at, topic=T_QUESTION)
+
+
+def _ended_item(task: Any) -> dict[str, Any]:
+    count = _question_count(task)
     return _item(
         f"task:questions:{task.id}", TASK, True,
         f"Your agent asked {count} question{'s' if count != 1 else ''}",
         f"{task.step_id or task.runner_profile} · Task {task.id}",
-        f"/agents/recent/{task.id}#questions", ended,
-        topic=T_QUESTION), {i for i in range(count) if i not in answered}
+        f"/agents/recent/{task.id}#questions", task.completed_at or task.updated_at,
+        topic=T_QUESTION)
 
 
 # --------------------------------------------------------------------------

@@ -76,9 +76,9 @@ def test_rows_per_step_on_attach_all_writes_split_copies(monkeypatch):
     assert out["rows"] == "per-step"  # MUTATION: never pass `rows` to for_all -- "summary", the setting.
     assert [len(s) for s in _shares(out)] == [8, 8, 2]  # MUTATION: one summary copy -- KeyError on row_share.
     assert [l["title"] for l in out["launches"]] == [  # MUTATION: no split on attach-all -- one title.
-        "SC · wf_big · 18 steps · rows 1-8",
-        "SC · wf_big · 18 steps · rows 9-16",
-        "SC · wf_big · 18 steps · rows 17-18",
+        "SC ∴ wf_big · 18 steps · rows 1-8",
+        "SC ∴ wf_big · 18 steps · rows 9-16",
+        "SC ∴ wf_big · 18 steps · rows 17-18",
     ]
 
 
@@ -97,8 +97,9 @@ def test_rows_reaches_the_single_task_batch_of_attach_all(monkeypatch):
              for i in range(3)]
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 3, "tasks": tasks})
     out = launch.for_all(_Client(_envelope(0)), rows="per-step")
-    (batch,) = [l for l in out["launches"] if "attach_tasks" in l["args"]]
-    assert batch["args"]["rows"] == "per-step"  # MUTATION: for_tasks reads the setting, not `rows` -- "summary".
+    copies = [l for l in out["launches"] if "attach_tasks" in l["args"]]
+    assert len(copies) == 3, "one run per single task"
+    assert [c["args"]["rows"] for c in copies] == ["per-step"] * 3  # MUTATION: for_tasks reads the setting, not `rows` -- "summary".
 
 
 def test_rows_per_step_on_one_attach_splits_it():

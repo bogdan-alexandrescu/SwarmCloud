@@ -79,7 +79,7 @@ class FakePool:
         self.accounts = {a["account_id"]: dict(a) for a in accounts}
         self.calls: list[tuple] = []
 
-    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
+    def list_accounts(self, tenant_id: str, include_reserved: bool = False) -> dict[str, Any]:
         self.calls.append(("list_accounts", tenant_id))
         return {"accounts": [dict(a) for a in self.accounts.values()
                              if a["owner_tenant"] == tenant_id or tenant_id in a["lend_to"]]}
@@ -844,6 +844,153 @@ def test_the_list_shows_a_pending_loan_on_the_persons_row(client, db, pool) -> N
     [pending] = row["pending_loans"]
     assert (pending["account_id"], pending["owner_tenant"]) == ("acct-eng", "eng")
     assert pending["last_error"] is None
+
+
+# --------------------------------------------------------------------------
+# a pending loan applies on the first read that sees the workspace ready
+# (LOAN-ON-READ, part of #2688)
+# --------------------------------------------------------------------------
+#
+# Measured 2026-11-06: a loan to w-4e4036 was recorded pending at 21:48:12,
+# the workspace turned ready at 21:50:14, and at 21:53 the loan was still
+# pending: only the 10-minute sweep applied it. The person's setup poll, the
+# admin People list and the gate of their first submission all read the
+# record, so the first of them that finds it ready applies the loan.
+
+
+class MirroringPool(FakePool):
+    """A broker that also writes `accounts/{id}` as the real one does, so
+    the submission gate (which counts accounts from Firestore) sees a lend."""
+
+    def __init__(self, db, *accounts: dict[str, Any]) -> None:
+        super().__init__(*accounts)
+        self.db = db
+        for account in accounts:
+            db.docs[f"accounts/{account['account_id']}"] = dict(account)
+
+    def set_lending(self, account_id: str, *, lend_to: list[str]) -> dict[str, Any]:
+        answer = super().set_lending(account_id, lend_to=lend_to)
+        self.db.docs[f"accounts/{account_id}"] = dict(self.accounts[account_id])
+        return answer
+
+
+def _pending_then(client, db, pool, *, state: str = "applying") -> None:
+    """A loan request, and acct-eng lent while the workspace is `state`."""
+    seed_tenant(db, "eng")
+    if "acct-eng" not in pool.accounts:
+        pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state=state)
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert _loan(client, "acct-eng", True).json()["state"] == "pending"
+
+
+def test_a_read_before_the_workspace_is_ready_applies_nothing(client, db, pool) -> None:
+    _pending_then(client, db, pool)
+    assert client.get("/v1/workspace", headers=auth_header("carol")).status_code == 200
+    assert client.get("/v1/admin/people", headers=auth_header("root")).status_code == 200
+    assert _grants(pool) == []
+    [pending] = db.docs["pending_loans/u-carol"]["loans"]
+    assert pending["last_attempt_at"] is None and pending["last_error"] is None
+    assert _audit(db, "lend") == []
+
+
+def test_the_persons_first_poll_after_ready_applies_the_pending_loan_once(
+        client, db, pool) -> None:
+    _pending_then(client, db, pool)
+    # The job marks it ready (swarm-api never writes `ready`); no sweep runs.
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    response = client.get("/v1/workspace", headers=auth_header("carol"))
+    assert response.status_code == 200 and response.json()["state"] == "ready"
+    assert _grants(pool) == [("set_lending", "acct-eng", ("u-carol",))]
+    assert db.docs["pending_loans/u-carol"]["loans"] == []
+    assert db.docs["loan_requests/u-carol"]["state"] == "lent"
+    [entry] = _audit(db, "lend")
+    assert entry["by"] == ROOT and entry["target_workspace_id"] == CAROL_WS
+    assert entry["detail"]["account_id"] == "acct-eng" and entry["detail"]["pending_since"]
+    # Once: the next polls, the list and the sweep grant nothing more.
+    client.get("/v1/workspace", headers=auth_header("carol"))
+    client.get("/v1/admin/people", headers=auth_header("root"))
+    body = client.post("/v1/admin/workspaces/sweep", headers=SWEEPER_HEADERS).json()
+    assert body["loans"] == {"applied": 0, "failed": 0, "waiting": 0, "dropped": 0}
+    assert len(_grants(pool)) == 1 and len(_audit(db, "lend")) == 1
+
+
+def test_the_consoles_first_tenant_list_after_ready_applies_the_pending_loan(
+        client, db, pool) -> None:
+    _personal_tenant(db)
+    _pending_then(client, db, pool)
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    response = client.get("/v1/tenants/mine", headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    assert [e["tenant_id"] for e in response.json() if e["kind"] == "user"] == ["u-carol"]
+    assert _grants(pool) == [("set_lending", "acct-eng", ("u-carol",))]
+    assert db.docs["pending_loans/u-carol"]["loans"] == [] and len(_audit(db, "lend")) == 1
+
+
+def test_the_admin_list_applies_a_pending_loan_of_a_ready_workspace_before_its_row(
+        client, db, pool) -> None:
+    _pending_then(client, db, pool)
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    [row] = [r for r in body["people"] if (r.get("workspace") or {}).get("workspace_id") == CAROL_WS]
+    assert row["pending_loans"] == []
+    assert _grants(pool) == [("set_lending", "acct-eng", ("u-carol",))]
+    assert len(_audit(db, "lend")) == 1
+    assert body["lendable_accounts"] is not None and body["lendable_error"] is None
+
+
+def test_a_broker_refusal_on_read_leaves_the_loan_pending_with_the_reason(
+        client, db, monkeypatch) -> None:
+    monkeypatch.setenv("REFUSAL_LOAN_GRANT_FAILED", "on")
+    refusing = RefusingPool(_pool_account("acct-eng", "eng"), reason=INVALID_ARGUMENT)
+    client.app.state.account_pool = refusing
+    _pending_then(client, db, refusing)
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    response = client.get("/v1/workspace", headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    [pending] = db.docs["pending_loans/u-carol"]["loans"]
+    assert CAROL_MEMBER in pending["last_error"] and "InvalidArgument" in pending["last_error"]
+    assert pending["last_attempt_at"] is not None
+    assert refusing.accounts["acct-eng"]["lend_to"] == [] and _audit(db, "lend") == []
+    assert len(_grants(refusing)) == 1
+    # A busy page does not hammer the broker: the next reads within
+    # READ_APPLY_EVERY try nothing ...
+    client.get("/v1/workspace", headers=auth_header("carol"))
+    client.get("/v1/admin/people", headers=auth_header("root"))
+    assert len(_grants(refusing)) == 1
+    # ... and once it has passed, a read tries again.
+    pending["last_attempt_at"] = _now() - people_mod.READ_APPLY_EVERY - timedelta(seconds=1)
+    client.get("/v1/workspace", headers=auth_header("carol"))
+    assert len(_grants(refusing)) == 2
+
+
+def test_a_read_applies_only_its_own_tenants_pending_loans(client, db, pool) -> None:
+    _pending_then(client, db, pool)
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    _record(db, tenant_id="u-dave", workspace_id="w-da7e00", principal="dave@example.com",
+            state="ready")
+    db.docs["pending_loans/u-dave"] = {
+        "tenant_id": "u-dave", "workspace_id": "w-da7e00", "loans": [{
+            "account_id": "acct-eng", "owner_tenant": "eng", "by": ROOT, "at": _now(),
+            "last_error": None, "last_attempt_at": None}]}
+    client.get("/v1/workspace", headers=auth_header("carol"))
+    assert _grants(pool) == [("set_lending", "acct-eng", ("u-carol",))]
+    assert len(db.docs["pending_loans/u-dave"]["loans"]) == 1
+
+
+def test_the_first_submission_into_a_ready_workspace_applies_a_pending_loan(
+        app_context, client, db) -> None:
+    mirroring = MirroringPool(db, _pool_account("acct-eng", "eng"))
+    client.app.state.account_pool = mirroring
+    _personal_tenant(db)
+    _pending_then(client, db, mirroring)
+    app_context.submissions.workspaces.gate = True
+    db.docs["workspaces/u-carol"]["state"] = "ready"
+    response = client.post("/v1/tasks", headers=auth_header("carol"),
+                           json={"runner_profile": "mock", "input": {"prompt": "x"}})
+    assert response.status_code == 201, response.text
+    assert _grants(mirroring) == [("set_lending", "acct-eng", ("u-carol",))]
+    assert db.docs["pending_loans/u-carol"]["loans"] == [] and len(_audit(db, "lend")) == 1
 
 
 # --------------------------------------------------------------------------

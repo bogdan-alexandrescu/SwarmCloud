@@ -66,6 +66,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 
 from ..errors import Conflict, NotFound, UpstreamUnavailable, ValidationFailed
+from . import cards as vcards
 from . import sessions as vs
 
 log = logging.getLogger(__name__)
@@ -93,6 +94,11 @@ TITLE_MAX = 120
 #: holds 1 MiB, and a card body over CARD_BODY_MAX goes to the bucket.
 BRIEF_MAX_BYTES = 64 * 1024
 CARD_BODY_MAX_BYTES = 256 * 1024
+
+#: The validated card's fields `put_card` stores as a card document's `body`
+#: (the same ones `cards.write_card` hands it).
+CARD_STORED_FIELDS = ("state", "title", "created_by", "references", "summary", "body")
+
 #: The list route's page. Version one has one person, so one page is all of it.
 LIST_LIMIT = 200
 #: Firestore commits at most 500 writes in one batch.
@@ -500,14 +506,22 @@ class VoiceStore:
     def put_card(self, *, tenant_id: str, person: str, project_id: str, card_id: str,
                  kind: str, body: dict[str, Any], session_id: str | None = None,
                  turn_id: str | None = None) -> dict[str, Any]:
-        """Write the card's next version. A body over CARD_BODY_MAX_BYTES is
-        refused here: the caller puts it in the bucket (`create_blob`) and
-        stores the key."""
+        """Write the card's next version. `body` is the card's state, title,
+        created_by, references, summary and body; the whole card is validated
+        against the catalogue here (`cards.validate`), so no write path stores
+        an unknown kind, a field its kind does not carry, or a credential. A
+        body over CARD_BODY_MAX_BYTES is refused here: the caller puts it in
+        the bucket (`create_blob`) and stores the key."""
         self._owned(tenant_id, person, project_id)
         check_id(card_id, "vc_", "card_id")
         if not isinstance(kind, str) or not kind.strip():
             raise ValidationFailed("kind is required", detail={"field": "kind"})
-        if not isinstance(body, dict) or _json_size(body) > CARD_BODY_MAX_BYTES:
+        if not isinstance(body, dict):
+            raise ValidationFailed("a card body is an object", detail={"field": "body"})
+        checked = vcards.validate({**body, "card_id": card_id, "kind": kind})
+        kind = checked["kind"]
+        body = {k: checked[k] for k in CARD_STORED_FIELDS}
+        if _json_size(body) > CARD_BODY_MAX_BYTES:
             raise ValidationFailed("a card body over 256 KiB goes to the bucket",
                                    detail={"field": "body"})
         ref = self._sub_ref(project_id, CARDS, card_id)
@@ -702,7 +716,15 @@ class VoiceStore:
         for snap in sessions:
             refs.extend(e.reference for e in snap.reference.collection(EVENTS).stream())
             refs.append(snap.reference)
-        for collection in (CARDS, TURNS):
+        # The visuals lane's documents (visuals.py names them; imported here
+        # because visuals.py imports this module). A visual's notes go before
+        # the visual, as a session's events go before the session, so a
+        # partial failure never orphans notes a retry could no longer list.
+        from . import visuals as vvis
+        for visual in project_ref.collection(vvis.VISUALS).stream():
+            refs.extend(n.reference for n in visual.reference.collection(vvis.NOTES).stream())
+            refs.append(visual.reference)
+        for collection in (CARDS, TURNS, vvis.POINTERS):
             refs.extend(s.reference for s in project_ref.collection(collection).stream())
         refs.extend(s.reference for s in self._starts(tenant_id, project_id)
                     if self._mine(s.to_dict(), tenant_id, person))

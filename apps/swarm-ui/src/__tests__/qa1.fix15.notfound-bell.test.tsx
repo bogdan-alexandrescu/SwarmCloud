@@ -100,7 +100,7 @@ describe('C-27: the bell says where its count is answered', () => {
       item('u', { needs_you: false, group: 'finished' }),
     ] as never)
     // MUTATION: count read items or updates too -- an Approvals part appears.
-    expect(split).toBe('2 in Work › Agents · 1 in Admin › People and roles')
+    expect(split).toBe('2 in Work › Agents · 1 in Admin › Platform people')
     expect(split).not.toContain('task_one')
   })
 
@@ -122,7 +122,7 @@ describe('C-27: the bell says where its count is answered', () => {
     fireEvent.click(document.querySelector<HTMLButtonElement>('button.nt-bell')!)
     // MUTATION: remove the `nt-split` line.
     await waitFor(
-      () => expect(document.querySelector('.nt-panel .nt-split')?.textContent).toBe('1 in Admin › People and roles · 1 in Work › Agents'),
+      () => expect(document.querySelector('.nt-panel .nt-split')?.textContent).toBe('1 in Admin › Platform people · 1 in Work › Agents'),
       WAIT,
     )
   })

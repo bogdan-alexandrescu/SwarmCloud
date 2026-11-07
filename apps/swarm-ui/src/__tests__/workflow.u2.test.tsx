@@ -32,7 +32,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { CancelWorkflow, WorkflowsScreen } = await import('../Workflows')
+const { CancelWorkflow, WorkflowsScreen, WorkflowCard } = await import('../Workflows')
 const { edgePath, layoutOf, partialDeps, stageMix, stageGlyph } = await import('../dag')
 const { recentWorkflows, SkyShell } = await import('../Spine')
 const wl = await import('../workflowlist')
@@ -162,7 +162,7 @@ function Routed({ initial, onView }: { initial: string; onView?: (v: string) => 
 }
 
 function rowIds(): string[] {
-  return [...document.querySelectorAll<HTMLElement>('.wfl-table tbody tr')].map((r) => r.dataset.workflow ?? '')
+  return [...document.querySelectorAll<HTMLElement>('.wfg-table tbody tr')].map((r) => r.dataset.workflow ?? '')
 }
 
 /**
@@ -218,49 +218,35 @@ describe('the list groups running first and failed after succeeded (#503, workfl
 })
 
 describe('the list table fits 1440 with no sideways scroll (#503)', () => {
-  it('lays the table out fixed at the wrapper width, and the wrapper does not scroll at 1440', async () => {
+  // THE ONE-LINE ROW (the redesign, frame graph-workflows-rest): seven
+  // columns sized to what they hold, the name taking the rest, and no
+  // sideways scroll. The fixed layout's per-column widths, and Shape,
+  // Runners, Submitted and Duration, went with the old table: those four are
+  // in the inspector's summary.
+  it('lays the table out at the wrapper width, the name taking the rest, and the wrapper does not scroll at 1440', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
-    const table = document.querySelector('.wfl-table')!
+    const table = document.querySelector('.wfg-table')!
     const wrap = table.parentElement!
-    expect(at(table, 'table-layout')).toBe('fixed')
+    expect(wrap.classList.contains('wfg-scroll')).toBe(true)
     expect(at(table, 'width')).toBe('100%')
-    expect(at(wrap, 'overflow-x')).toBe('visible')
-    // Every head has a width the fixed layout honours; together they are the table.
-    const heads = [...document.querySelectorAll('.wfl-table thead th')]
-    // #111's Started and Duration stay (workflow.readability.test.tsx holds them against "Age"); all nine fit.
-    expect(heads.map((h) => h.textContent)).toEqual([
-      'State',
-      'Workflow',
-      'Shape',
-      'Steps done',
-      'Runners',
-      'Cost',
-      'Owner',
-      'Submitted',
-      'Duration',
-    ])
-    // Browser QA D8 (2026-10-04): State, Steps done and Duration are px wide,
-    // sized to what they hold; the name takes what the rest leave at 1056px.
-    const widths = heads.map((h) => at(h, 'width') ?? '')
-    const named = heads.map((h, i) => [h.getAttribute('data-col'), widths[i]!] as const).filter(([c]) => c !== 'workflow')
-    for (const [c, w] of named) expect(w, `${c} has no width: ${widths.join(', ')}`).toMatch(/(%|px)$/)
-    // A head the cascade hides (Shape and Runners below 1680, G3-09) draws no
-    // column, so it takes nothing from the name (from 1280 Cost is 136px, c28 and QAFIX5 work-a-010).
-    const hidden = heads.filter((h) => at(h, 'display') === 'none').map((h) => h.getAttribute('data-col'))
-    expect(hidden).toEqual(['shape', 'runners'])
-    const used = named.filter(([c]) => !hidden.includes(c)).reduce((t, [, w]) => t + (w.endsWith('%') ? (Number.parseFloat(w) / 100) * 1056 : Number.parseFloat(w)), 0)
-    // 200px until U12 R10 (owner QA, 2026-10-04): Cost and Owner were cut
-    // ('$0.6024 1/3' by 3px, 'swarm-…' in 74px), and each now holds what it
-    // shows. The name still keeps the most room of any column (D8), cut with
-    // its whole text in its title.
-    expect(1056 - used, 'the name column at 1056px').toBeGreaterThanOrEqual(160)
+    expect(at(wrap, 'overflow')).toBe('hidden')
+    const heads = [...document.querySelectorAll('.wfg-table thead th')]
+    expect(heads.map((h) => h.textContent)).toEqual(['State', 'Workflow', 'Repository', 'Steps', 'Needs you', 'Spent', 'Owner', 'Changed'])
+    expect(heads.filter((h) => at(h, 'display') === 'none')).toEqual([])
+    // The name's cell takes every pixel the others leave, and is cut there
+    // with its whole text in its link's title; no cell wraps.
+    const name = document.querySelector('tr[data-workflow="wf_broker"] td[data-col="workflow"]')!
+    expect(at(name, 'width')).toBe('100%')
+    expect(at(name, 'max-width')).toBe('1px')
+    expect(at(name, 'text-overflow')).toBe('ellipsis')
+    for (const td of document.querySelectorAll('tr[data-workflow="wf_broker"] td')) expect(at(td, 'white-space')).toBe('nowrap')
   })
 
   it('prints the owner as the name before the @, with the address whole in its title', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
-    const owner = document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] .wfl-owner')!
+    const owner = document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] td[data-col="owner"]')!
     expect(owner.textContent).toBe('priya')
     expect(owner.getAttribute('title')).toBe('priya@example.com')
   })
@@ -280,14 +266,19 @@ describe('the list row draws the stage-shape glyph (wide-workflows.html §6)', (
     ])
   })
 
+  // The shape is in the inspector's summary the row opens since the redesign
+  // (frame graph-workflows-rest), not a column of the row.
   it('draws it beside the text shape, and the text survives', async () => {
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_broker']))
-    const cell = document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] .wf-sgl')!
+    expect(document.querySelector('tr[data-workflow="wf_broker"] .wf-sgl')).toBeNull()
+    fireEvent.click(document.querySelector<HTMLElement>('tr[data-workflow="wf_broker"] [data-col="state"]')!)
+    const sum = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum')!
+    const cell = sum.querySelector<HTMLElement>('.wfg-sum-dl .wf-sgl')!
     expect(cell).toBeTruthy()
     expect(cell.getAttribute('aria-hidden')).toBe('true')
     expect(cell.querySelectorAll(':scope > i')).toHaveLength(3)
-    expect(document.querySelector('tr[data-workflow="wf_broker"] .wf-shape')!.textContent).toContain('1 → 2 → 1')
+    expect(cell.parentElement!.querySelector('.wf-shape')!.textContent).toContain('1 → 2 → 1')
   })
 })
 
@@ -299,12 +290,16 @@ describe('the list row marks partial dependencies (wide-workflows.html §6)', ()
     expect(partialDeps([...roots, step('x', ['a']), step('y', ['b']), step('z', ['c'])])).toBe(false)
   })
 
-  it('draws the chip in the Shape cell', async () => {
+  // The Shape cell is the summary's Shape since the redesign (frame graph-workflows-rest).
+  it('draws the chip in the summary’s Shape', async () => {
     serve([workflow('wf_p', 'RUNNING', 'sam', [step('a', []), step('b', []), step('c', []), step('x', ['a', 'b'])])])
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_p']))
+    fireEvent.click(document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] [data-col="state"]')!)
+    const dl = document.querySelector<HTMLElement>('aside[aria-label="Workflow inspector"] .wfg-sum-dl')!
+    const shape = [...dl.querySelectorAll('dt')].find((d) => d.textContent === 'Shape')!.nextElementSibling!
     // The canonical chip (components.html A).
-    const chip = document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] .wfl-shape .c-chip')!
+    const chip = shape.querySelector<HTMLElement>('.c-chip')!
     expect(chip.textContent).toBe('partial')
     expect(chip.getAttribute('title')).toBe('Some steps depend on part of the level above, not all of it')
   })
@@ -312,8 +307,22 @@ describe('the list row marks partial dependencies (wide-workflows.html §6)', ()
 
 describe('the 390px phone form of the graph (workflows.html B, phone frame)', () => {
   it('draws the stages as stacked cards, naming the steps that need a look and counting the rest', async () => {
-    serve([reviewWave().w], reviewWave().tasks)
-    await page('wf=wf_wave')
+    // WfPhoneStages is drawn only inside `WorkflowCard`'s own canvas: the
+    // redesigned page's graph tab is the stage grid, which has no
+    // phone-stacked form of its own. A CANVAS behaviour, so the card is
+    // rendered directly (the Graph Work redesign brief).
+    const { w, tasks } = reviewWave()
+    render(
+      <WorkflowCard
+        workflow={w}
+        taskById={tasks}
+        usage={{ kind: 'ready', usage: null }}
+        openStages={{}}
+        onToggleStage={() => {}}
+        reload={() => {}}
+        page
+      />,
+    )
     const list = await waitFor(() => {
       const l = document.querySelector<HTMLElement>('.wf-ph-stages')
       expect(l).toBeTruthy()
@@ -330,7 +339,9 @@ describe('the 390px phone form of the graph (workflows.html B, phone frame)', ()
     expect([...impl.querySelectorAll<HTMLElement>('button.wf-ph-step')].map((b) => b.dataset.phStep)).toEqual(['impl-6', 'impl-3'])
     expect(impl.querySelector('.wf-ph-more')!.textContent).toBe('+6 more in this stage')
     fireEvent.click(impl.querySelector<HTMLButtonElement>('button.wf-ph-step[data-ph-step="impl-3"]')!)
-    await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the picked step's card is `StepCard` (`.sc-card`), not the shared `.wf-inspect`.
+    await waitFor(() => expect(document.querySelector('.sc-card')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
     // The shipped sheet shows it only at phone width, and hides the canvas there.
     expect(at(list, 'display', 1440)).toBe('none')
     expect(at(list, 'display', 390)).toBe('flex')
@@ -392,6 +403,11 @@ async function page(view = 'wf=wf_broker'): Promise<void> {
 
 describe('the workflow page head (#503, workflows.html frame B)', () => {
   it('titles the page by the workflow name, with no second heading, and a meta line that does not open on a dot', async () => {
+    // The Overview, where Copy id/link and Stop workflow now live, is in the
+    // docked inspector, which starts folded below 1366px (jsdom's default
+    // innerWidth is 1024).
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     await page()
     await waitFor(() => expect(document.querySelector('h1')!.textContent).toBe('refactor-broker'))
     expect(document.querySelector('.wfp-label'), 'the name is drawn twice').toBeNull()
@@ -403,15 +419,23 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     // The shape names its stages (visual QA QA-119): `1 → 2 → 1` alone said
     // nothing of what it counted.
     expect(sub).toContain('4 steps in 3 stages (1 → 2 → 1)')
-    // The id is still on the page, whole, behind the head's Copy id (VQ-015:
-    // drawn once, as that control's title, not as a text chip).
+    // The id is still on the page, whole, behind Copy id (VQ-015: drawn once,
+    // as that control's title, not as a text chip) -- moved off the head into
+    // the Overview, the inspector at rest (the Graph Work redesign).
     const head = document.querySelector('.wfp-head')!
     expect(head.querySelector('.id'), 'the head prints the id as text').toBeNull()
-    expect(within(head as HTMLElement).getByRole('button', { name: 'Copy workflow id wf_broker' }).getAttribute('title')).toBe('wf_broker')
-    // Copy link and Cancel workflow sit in the head's own row.
-    expect(within(head as HTMLElement).getByRole('button', { name: 'Copy link' })).toBeTruthy()
-    expect(within(head as HTMLElement).getByRole('button', { name: 'Stop workflow' })).toBeTruthy()
-    expect(at(head, 'align-items')).toBe('center')
+    expect(within(head as HTMLElement).queryByRole('button', { name: 'Copy workflow id wf_broker' }), 'Copy id is still in the head').toBeNull()
+    // At 1440 the inspector opens docked already (folded only below 1366px).
+    const overview = document.querySelector<HTMLElement>('.wfp-ov')!
+    expect(within(overview).getByRole('button', { name: 'Copy workflow id wf_broker' }).getAttribute('title')).toBe('wf_broker')
+    // Copy link and Stop workflow sit in the Overview's own actions row now.
+    expect(within(overview).getByRole('button', { name: 'Copy link' })).toBeTruthy()
+    expect(within(overview).getByRole('button', { name: 'Stop workflow' })).toBeTruthy()
+    // The head is two stacked lines now (`.wfp-line`, `.wfp-tally`), not one
+    // centred row of chips and actions: `.wfp-head.wfp-top` stretches them
+    // (styles.css), a more specific rule than workflows.css's row-centring.
+    expect(at(head, 'align-items')).toBe('stretch')
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 
   it('draws underline tabs under the title, Graph · Table with its count · Timeline, and no boxed control in the card', async () => {
@@ -420,7 +444,8 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const tabs = await waitFor(() => {
       // The canonical underline tabs (components.html A): a link per view --
       // the loaded page's, since its skeleton draws them too, uncounted (#113).
-      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) > .c-tabs[role="tablist"][aria-label="Views of this workflow"]')
+      // They sit in the view bar now, not a direct child of `.wfp`.
+      const t = document.querySelector<HTMLElement>('.wfp:not(.is-loading) .wfp-viewbar > .c-tabs[role="tablist"][aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })
@@ -476,44 +501,89 @@ describe('Cancel workflow asks for the id to be typed while a step runs (states.
   })
 })
 
-describe('the picked step card sits under the graph below 1280 (#503), beside it from 1280 (QAFIX5 QA-120)', () => {
-  it('stacks the card under the canvas on the page below 1280, docks it beside from 1280, with Open agent → and Stop step', async () => {
+describe('the picked step opens in the docked inspector, folded below 1366 and docked from it (#503, QAFIX5 QA-120)', () => {
+  it('starts the inspector as a rail below 1366 and opens it on a pick, with Open agent → and Stop step', async () => {
+    // Below the fold threshold the inspector starts as a rail, not a card
+    // stacked under the grid (the Graph Work redesign); a pick opens it.
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1100 })
     await page()
-    const split = await waitFor(() => {
-      const s = document.querySelector<HTMLElement>('.wf-split.has-panel')
-      expect(s).toBeTruthy()
-      return s!
+    expect(document.querySelector('.wi.is-folded')).toBeTruthy()
+    fireEvent.click(await waitFor(() => {
+      const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="core"]')
+      expect(chip).toBeTruthy()
+      return chip!
+    }))
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step core"]')
+      expect(d).toBeTruthy()
+      return d!
     })
-    expect(split.className).toContain('is-stack')
-    expect(at(split, 'display', 1100)).toBe('block')
-    expect(at(split, 'display', 1440)).toBe('grid')
-    const panel = split.querySelector<HTMLElement>(':scope > .wf-panel')!
-    expect(at(panel, 'position', 1100)).toBe('static')
-    expect(at(panel, 'position', 1440)).toBe('sticky')
-    expect(within(panel).getByText('Open agent →')).toBeTruthy()
-    // StopRun's own control, in a group named for what it stops (VQ-015: `Stop step`, as workflows.html B draws it).
-    expect(within(within(panel).getByRole('group', { name: 'Stop step' })).getByRole('button', { name: 'Stop' })).toBeTruthy()
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the bar's first action is a plain "Agent" link, not "Open agent →".
+    expect(within(dock).getByRole('link', { name: 'Agent' })).toBeTruthy()
+    // StopRun's own control (`what` is now `step <id>`, VQ-015): the bar's `Stop` button opens a
+    // confirm scoped by name to this step, rather than sitting in a group already named for it.
+    fireEvent.click(within(dock).getByRole('button', { name: 'Stop' }))
+    expect(within(dock).getByRole('group', { name: 'Stop step core' })).toBeTruthy()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 
-  it('keeps the same-step strip inside the card: at most 15 marks, the rest counted', async () => {
+  it('docks the inspector open from 1366, with the same step panel', async () => {
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    await page()
+    fireEvent.click(await waitFor(() => {
+      const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="core"]')
+      expect(chip).toBeTruthy()
+      return chip!
+    }))
+    expect(document.querySelector('.wi.is-docked')).toBeTruthy()
+    const dock = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step core"]')!
+    expect(within(dock).getByRole('link', { name: 'Agent' })).toBeTruthy()
+    fireEvent.click(within(dock).getByRole('button', { name: 'Stop' }))
+    expect(within(dock).getByRole('group', { name: 'Stop step core' })).toBeTruthy()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
+  })
+
+  // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+  // the dock no longer draws a strip of up to 15 sibling marks with the rest counted in
+  // prose -- the same siblings are a "n / N" pager behind the Details fold instead.
+  it('keeps the same-step siblings as a pager inside the Details fold, counted, not a capped strip', async () => {
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     const many = Array.from({ length: 62 }, (_, i) => {
       const w = workflow(`wf_m${i}`, 'RUNNING', 'sam', [step('a', [], { task_id: `tm${i}` })], 100 + i)
       return w
     })
     serve(many, new Map(many.map((_, i) => [`tm${i}`, task(`tm${i}`, 'RUNNING')] as const)))
     await page('wf=wf_m0')
-    const strip = await waitFor(() => {
-      const s = document.querySelector<HTMLElement>('.wf-scrub-strip')
-      expect(s).toBeTruthy()
-      return s!
+    // No arrival pick any more (the Graph Work redesign): the step is picked.
+    fireEvent.click(await waitFor(() => {
+      const chip = document.querySelector<HTMLButtonElement>('.sg [data-step="a"]')
+      expect(chip).toBeTruthy()
+      return chip!
+    }))
+    const dock = await waitFor(() => {
+      const d = document.querySelector<HTMLElement>('aside.wi-dock[aria-label="Step a"]')
+      expect(d).toBeTruthy()
+      return d!
     })
-    expect(strip.querySelectorAll('li').length).toBeLessThanOrEqual(15)
-    expect(strip.closest('.wf-scrub')!.textContent).toContain('+47')
+    fireEvent.click(within(dock).getByText('Details'))
+    const others = within(dock).getByRole('group', { name: /other workflows/i })
+    expect(others.textContent).toContain('1 / 62')
+    expect(dock.querySelector('.wf-scrub-strip')).toBeNull()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 })
 
 describe('state marks in the step table and inspector are the brand marks (#503)', () => {
   it('draws RUNNING as the live haloed disc and PARKED as the violet pause bars, never a .ctl-dot', async () => {
+    // The inspector is docked, which starts folded below 1366px (jsdom's
+    // default innerWidth is 1024), and there is no arrival pick any more
+    // (the Graph Work redesign): the row has to be picked.
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     await page('wf=wf_broker&tab=table')
     const cell = (id: string) =>
       document.querySelector<HTMLElement>(`.wf-table tr[data-step="${id}"] td[data-col="state"]`)!
@@ -521,13 +591,18 @@ describe('state marks in the step table and inspector are the brand marks (#503)
     expect(cell('core').querySelector('[data-mark="running"][data-hue="live"]')).toBeTruthy()
     expect(cell('docs').querySelector('[data-mark="parked"][data-hue="park"]')).toBeTruthy()
     expect(document.querySelector('.wf-table .ctl-dot'), 'a .ctl-dot is still drawn in the step table').toBeNull()
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.wf-table button.wf-pick[data-step="core"]')!)
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the card has no head of its own any more, so the picked step's mark is read from
+    // the dock's own head (`.wi-state`), not a `.wf-inspect-head` inside the card.
     const inspect = await waitFor(() => {
-      const i = document.querySelector<HTMLElement>('.wf-inspect-head')
+      const i = document.querySelector<HTMLElement>('.wi-dock[aria-label="Step core"] .wi-state')
       expect(i).toBeTruthy()
       return i!
     })
     expect(inspect.querySelector('[data-mark="running"][data-hue="live"]')).toBeTruthy()
     expect(inspect.querySelector('.ctl-dot')).toBeNull()
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
   })
 })
 
@@ -589,9 +664,24 @@ describe('a wide stage band: mix bar, slots held, named chips (wide-workflows.ht
     expect(mix.chips.map((c) => c.stepId)).toEqual(['impl-6', 'impl-3', 'impl-4', 'impl-7', 'impl-5'])
   })
 
+  // THE WIDE STAGE BAND is a COLLAPSED stage's summary, drawn only by
+  // `WorkflowCard`'s own canvas: the page's stage grid never collapses a
+  // stage -- every step is always its own chip (`StageGrid`'s own doc
+  // comment) -- so this is exercised on the card directly (the Graph Work
+  // redesign brief).
   it('draws the bar, the hold line and the chips, and a chip picks its step', async () => {
-    serve([reviewWave().w], reviewWave().tasks)
-    await page('wf=wf_wave')
+    const { w, tasks } = reviewWave()
+    render(
+      <WorkflowCard
+        workflow={w}
+        taskById={tasks}
+        usage={{ kind: 'ready', usage: null }}
+        openStages={{}}
+        onToggleStage={() => {}}
+        reload={() => {}}
+        page
+      />,
+    )
     const band = await waitFor(() => {
       const b = [...document.querySelectorAll<HTMLElement>('.wf-band')].find((x) => x.textContent?.includes('impl-1 … impl-8'))
       expect(b).toBeTruthy()
@@ -609,30 +699,56 @@ describe('a wide stage band: mix bar, slots held, named chips (wide-workflows.ht
     const chips = [...band.querySelectorAll<HTMLButtonElement>('.wf-band-chips > button.c-chip.is-pick')]
     expect(chips.map((c) => c.textContent)).toEqual(['impl-6', 'impl-3', 'impl-4', 'impl-7', 'impl-5'])
     fireEvent.click(chips[1]!)
-    await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
+    // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+    // the picked step's card is `StepCard` (`.sc-card`), not the shared `.wf-inspect`.
+    await waitFor(() => expect(document.querySelector('.sc-card')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
 
     // The named steps are the canonical pick Chip (#503 swap): a toggle, pressed when picked.
     await waitFor(() => expect(document.querySelector('.wf-band-chips > button.c-chip[aria-pressed="true"]')?.textContent).toBe('impl-3'))
   })
 
   it('opens the Table filtered to the stage and state from a band count', async () => {
-    const onView = vi.fn()
-    serve([reviewWave().w], reviewWave().tasks)
-    render(<Routed initial="wf=wf_wave" onView={onView} />)
+    // Same reason as above: the band count is a canvas control. The card is
+    // handed the Table's filter state itself, the way the page's own
+    // `focus.onStageTable`/`filter`/`onClearFilter` would.
+    const { w, tasks } = reviewWave()
+    function Card() {
+      const [view, setView] = useState<'graph' | 'timeline' | 'table' | 'changes'>('graph')
+      const [filter, setFilter] = useState<{ level: number; word: string } | null>(null)
+      return (
+        <WorkflowCard
+          workflow={w}
+          taskById={tasks}
+          usage={{ kind: 'ready', usage: null }}
+          openStages={{}}
+          onToggleStage={() => {}}
+          reload={() => {}}
+          page
+          view={view}
+          onView={(_, v) => setView(v)}
+          tableFilter={filter}
+          onStageTable={(level, word) => {
+            setFilter({ level, word })
+            setView('table')
+          }}
+          onClearFilter={() => setFilter(null)}
+        />
+      )
+    }
+    render(<Card />)
     const count = await waitFor(() => {
       const c = [...document.querySelectorAll<HTMLButtonElement>('button.wf-band-count')].find((b) => b.textContent === '3 running')
       expect(c).toBeTruthy()
       return c!
     })
     fireEvent.click(count)
-    expect(onView).toHaveBeenLastCalledWith('wf=wf_wave&tab=table&stage=1&stepstate=running')
     await waitFor(() => expect(document.querySelector('.wf-table')).toBeTruthy())
     const rows = [...document.querySelectorAll<HTMLElement>('.wf-table tbody tr[data-step]')].map((r) => r.dataset.step)
     expect(rows).toEqual(['impl-3', 'impl-4', 'impl-7'])
     const chip = document.querySelector<HTMLElement>('.wf-filter')!
     expect(chip.textContent).toContain('stage 2 · running')
     fireEvent.click(within(chip).getByRole('button', { name: 'Clear the stage filter' }))
-    expect(onView).toHaveBeenLastCalledWith('wf=wf_wave&tab=table')
+    await waitFor(() => expect(document.querySelector('.wf-filter')).toBeNull())
   })
 
   it('round-trips the stage filter through the address, only on a workflow Table', () => {
@@ -661,10 +777,26 @@ describe('edges: one lane per target step, lit on hover and select', () => {
   })
 
   it('lights the picked step’s own edges and fades the rest, and hover does the same', async () => {
-    await page()
+    // Edges (`[data-edge]`, the SVG lanes) are a CANVAS drawing: the page's
+    // stage grid has none. The page also no longer arrives with a step
+    // picked (the Graph Work redesign's no-arrival-pick rule), so the card is
+    // rendered directly, controlled and picked from the start.
+    const b = broker()
+    render(
+      <WorkflowCard
+        workflow={b.w}
+        taskById={b.tasks}
+        usage={{ kind: 'ready', usage: null }}
+        openStages={{}}
+        onToggleStage={() => {}}
+        reload={() => {}}
+        page
+        picked="core"
+        onPick={() => {}}
+      />,
+    )
     await waitFor(() => expect(document.querySelector('[data-edge="plan->core"]')).toBeTruthy())
-    // `core` arrives picked: its edges in and out are lit.
-    await waitFor(() => expect(document.querySelector('[data-edge="plan->core"]')!.getAttribute('class')).toContain('is-lit'))
+    expect(document.querySelector('[data-edge="plan->core"]')!.getAttribute('class')).toContain('is-lit')
     expect(document.querySelector('[data-edge="core->verify"]')!.getAttribute('class')).toContain('is-lit')
     expect(document.querySelector('[data-edge="plan->docs"]')!.getAttribute('class')).toContain('is-faded')
     fireEvent.mouseEnter(document.querySelector<HTMLElement>('button.node[data-step="docs"]')!)
@@ -685,15 +817,31 @@ describe('1:1 children are aligned under their parents', () => {
   })
 })
 
-/** Put `id` in the step card, unless the page already arrived with it picked (a second click puts it down). */
+/**
+ * Widen the page so the docked inspector -- folded below 1366px, jsdom's
+ * default innerWidth is 1024 -- actually renders. Returns the restore.
+ */
+function wideInspector(): () => void {
+  const realWidth = window.innerWidth
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+  return () => Object.defineProperty(window, 'innerWidth', { configurable: true, value: realWidth })
+}
+
+/**
+ * Put `id` in the docked inspector, by the stage grid's chip (the page's
+ * graph is the grid now, not the canvas; there is no arrival pick any more,
+ * so every caller clicks).
+ */
 async function pickNode(id: string): Promise<void> {
-  const node = await waitFor(() => {
-    const n = document.querySelector<HTMLElement>(`button.node[data-step="${id}"]`)
+  const chip = await waitFor(() => {
+    const n = document.querySelector<HTMLElement>(`.sg [data-step="${id}"]`)
     expect(n).toBeTruthy()
     return n!
   })
-  if (node.getAttribute('aria-pressed') !== 'true') fireEvent.click(node)
-  await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toContain(`Step ${id} `))
+  if (chip.getAttribute('aria-pressed') !== 'true') fireEvent.click(chip)
+  // The page's step card is the action bar and stat tiles (owner's pick, 2026-11-05):
+  // the picked step's card is `StepCard` (`.sc-card`), not the shared `.wf-inspect`.
+  await waitFor(() => expect(document.querySelector('.sc-card')!.getAttribute('aria-label')).toContain(`Step ${id} `))
 }
 
 // ---------------------------------------------------------------------------
@@ -741,8 +889,10 @@ describe('a step skipped by its verdict gate never reads as one that ran', () =>
     const { w, tasks } = chain({ result_summary: gateSummary(false, 'MERGE', []) })
     serve([w], tasks)
     await page('wf=wf_pr')
+    // What the page's graph shows: the stage grid's chip (the old canvas's
+    // `.node` is gone from the page), which marks a skipped step as such.
     const node = await waitFor(() => {
-      const n = document.querySelector<HTMLElement>('button.node[data-step="fix"]')
+      const n = document.querySelector<HTMLElement>('.sg [data-step="fix"]')
       expect(n).toBeTruthy()
       return n!
     })
@@ -750,7 +900,7 @@ describe('a step skipped by its verdict gate never reads as one that ran', () =>
     expect(node.querySelector('[data-mark="skipped"]')).toBeTruthy()
     expect(node.textContent).toContain('skipped by verdict')
     expect(node.textContent).not.toMatch(/\bran\b/)
-    const ran = document.querySelector<HTMLElement>('button.node[data-step="implement"]')!
+    const ran = document.querySelector<HTMLElement>('.sg [data-step="implement"]')!
     expect(ran.className).not.toContain('is-skipped')
     // The rows are the Table tab's alone (overview-agents-73, #2596).
     fireEvent.click(screen.getByRole('tab', { name: /^Table/ }))
@@ -789,6 +939,7 @@ describe('the verdict card on a review step (agent-detail-2.html A3)', () => {
   })
 
   it('shows the card when the review step is picked, findings as plain text', async () => {
+    const restore = wideInspector()
     const { w, tasks } = chain({ result_summary: gateSummary(true, 'NOT_YET', ['<b>not markup</b>']) })
     serve([w], tasks)
     await page('wf=wf_pr')
@@ -802,11 +953,13 @@ describe('the verdict card on a review step (agent-detail-2.html A3)', () => {
     expect(card.textContent).toContain('Not graded')
     expect(card.querySelector('b b'), 'a finding was rendered as markup').toBeNull()
     expect(card.textContent).toContain('<b>not markup</b>')
+    restore()
   })
 })
 
 describe("Jev's triage on the verdict card's findings (CLD's Jev report, 2026-11-02)", () => {
   it('chips each judged finding from the review\'s verdict.json, and none on a finding Jev did not judge', async () => {
+    const restore = wideInspector()
     const mark = '[verify before acting: Jev judged this unlikely to be real] '
     const verdict = JSON.stringify({
       verdict: 'NOT_YET',
@@ -825,6 +978,7 @@ describe("Jev's triage on the verdict card's findings (CLD's Jev report, 2026-11
     const rows = [...document.querySelectorAll<HTMLElement>('.wf-verdict .wf-finding')]
     expect(rows.map((r) => r.querySelector('.triage-chip')?.textContent ?? null)).toEqual(['likely real 62%', 'verify before acting', null])
     expect(rows[1]?.textContent).not.toContain('Jev judged this unlikely')
+    restore()
   })
 })
 
@@ -845,6 +999,7 @@ describe('the merge step’s checklist card (agent-detail-2.html A3, A3b)', () =
   }
 
   it('lists each check in order with its state, and the refusal reason', async () => {
+    const restore = wideInspector()
     const { w, tasks } = chain({}, refused)
     serve([w], tasks)
     await page('wf=wf_pr')
@@ -860,6 +1015,7 @@ describe('the merge step’s checklist card (agent-detail-2.html A3, A3b)', () =
     const items = [...card.querySelectorAll<HTMLElement>('ol > li')]
     expect(items.map((li) => li.dataset.check)).toEqual(['passed', 'failed', 'not_read'])
     expect(items[2]!.textContent).toContain('not read')
+    restore()
   })
 
   it('says awaiting a person, with and without the ready label', () => {
@@ -876,12 +1032,14 @@ describe('the merge step’s checklist card (agent-detail-2.html A3, A3b)', () =
   })
 
   it('draws nothing for a step whose result has no merge block', async () => {
+    const restore = wideInspector()
     const { w, tasks } = chain({})
     serve([w], tasks)
     await page('wf=wf_pr')
     await pickNode('merge')
     expect(document.querySelector('.wf-merge')).toBeNull()
     expect(review.mergeOf(task('m', 'SUCCEEDED'))).toBeNull()
+    restore()
   })
 })
 

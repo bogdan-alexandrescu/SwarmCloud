@@ -1023,6 +1023,67 @@ variable "platform_admin_reach" {
   default     = false
 }
 
+variable "platform_memberships" {
+  description = <<-EOT
+    swarm-api's PLATFORM_MEMBERSHIPS (docs/design/join-requests.md §6; #2325):
+    whether an approved join request admits its person to the group workspace.
+    On, approval writes a signed, append-only platform-side membership beside
+    the workspace's Google group, and tenant resolution honours it as a member;
+    there is no Cloud Identity write and no IAM grant, so no GSA, secret or
+    role changes. Off, approval answers admitted: false with the group command
+    for an admin to run by hand. OFF by default, as swarm_api.settings is: it
+    widens who may enter a tenant (invariant 9), so it goes on in dev first, is
+    exercised by the join acceptance probe, and only then in prod.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "contract_review_mode" {
+  description = <<-EOT
+    swarm-api's SWARM_CONTRACT_REVIEW (apps/swarm-api/swarm_api/contractreview.py;
+    docs/design/agent-quality/jev-contract.md Q7, owner's answer 7): the Jev
+    review of a contract at submission. "off" runs no review; "report"
+    reviews and logs the refusal it would make; "enforce" refuses. It runs
+    only for a workspace whose own contract_review setting is on. OFF by
+    default, the state swarm-api reads when the variable is unset, so the live
+    plan shows one new variable and no behaviour change; the owner turns it on
+    per environment (owner's choice, 2026-11-04). contractreview.mode() reads a
+    typo as off; the validation refuses one instead, so a misspelt "enforce"
+    never ships as a silent off.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["off", "report", "enforce"], var.contract_review_mode)
+    error_message = "contract_review_mode is off, report or enforce (swarm_api.contractreview.MODES)."
+  }
+}
+
+variable "work_contracts" {
+  description = <<-EOT
+    swarm-api's SWARM_WORK_CONTRACTS (apps/swarm-api/swarm_api/workcontract.py
+    SWITCH_ENV; docs/design/agent-quality/work-contract.md): "on" reads a
+    step's signed work contract at submission, and with it the plugins a step
+    names (swarm_api.plugins.with_step_plugins) and an issue run's security
+    review; "off" ignores metadata.work_contract and refuses every step that
+    names a plugin. OFF by default, the state swarm-api reads when the
+    variable is unset, so an environment that does not set it plans no
+    behaviour change; each environment's tfvars turns it on (dev: BGD,
+    2026-11-06). workcontract.enabled() reads anything but exactly "on" as
+    off; the validation refuses any other value instead, so a misspelt "On"
+    or "true" never ships as a silent off.
+  EOT
+  type        = string
+  default     = "off"
+
+  validation {
+    condition     = contains(["on", "off"], var.work_contracts)
+    error_message = "work_contracts is on or off (swarm_api.workcontract.enabled reads exactly \"on\")."
+  }
+}
+
 variable "additional_repositories_enabled" {
   description = <<-EOT
     swarm-api's ADDITIONAL_REPOSITORIES_ENABLED (#1434,
@@ -1459,4 +1520,89 @@ variable "setup_github_org" {
   EOT
   type        = string
   default     = ""
+}
+
+variable "voice_speech" {
+  description = <<-EOT
+    Voice it's own speech engine: the one speech machine (voice_speech.tf;
+    docs/design/voice-it-own-speech.md §5). It is made only while `voice_it`
+    is "on" as well, and it is made STOPPED: swarm-api starts it for a session
+    and stops it after.
+
+      enabled       false: nothing is made. Off in every environment's tfvars
+                    until the owner turns it on; the installer offers it.
+      zone          "us-central1-a": the one zone the machine lives in. One
+                    zone, one machine (owner, 2026-11-05): a stock-out falls
+                    back to text mode, no second machine. Must be in
+                    var.region and offer L4s.
+      machine_type  "g2-standard-4": 4 vCPU, 16 GB, one NVIDIA L4, about
+                    $0.71 an hour while running (§1 pick 1). Terraform sets it
+                    at create only; swarm-api applies Settings' pick
+                    afterwards.
+      image         "" until set: a Deep Learning VM image BY NAME,
+                    projects/deeplearning-platform-release/global/images/<name>,
+                    with the NVIDIA driver and the container toolkit on it.
+                    The driver is 580 or later (its family ends -nvidia-580
+                    or higher): vLLM 0.33 is built on CUDA 13.
+                    Never a /family/ path, which moves under a stopped machine
+                    and would replace it at the next plan. Required once
+                    enabled; the installer pins the newest such image at
+                    install time.
+      disk_gb       150: the boot disk (pd-balanced, about $15 a month, idle
+                    or not), sized for the image with its driver (~50 GB), the
+                    server image (~20 GB), the models' weights (~8 GB) and one
+                    previous server image during an update (§5.1).
+      idle_minutes  5: the session ends after this long without speech or
+                    tool activity, and the machine stops (§4.4, pick 1).
+                    Written to the machine's metadata at create; Settings
+                    change it afterwards.
+  EOT
+  type = object({
+    enabled      = optional(bool, false)
+    zone         = optional(string, "us-central1-a")
+    machine_type = optional(string, "g2-standard-4")
+    image        = optional(string, "")
+    disk_gb      = optional(number, 150)
+    idle_minutes = optional(number, 5)
+  })
+  default = {}
+
+  validation {
+    condition     = !var.voice_speech.enabled || can(regex("^projects/deeplearning-platform-release/global/images/[a-z0-9-]+$", var.voice_speech.image))
+    error_message = "voice_speech.enabled needs voice_speech.image: a Deep Learning VM image by name (projects/deeplearning-platform-release/global/images/<name>), never a /family/ path."
+  }
+
+  validation {
+    condition     = can(regex("^[a-z]+-[a-z]+[0-9]+-[a-z]$", var.voice_speech.zone))
+    error_message = "voice_speech.zone is one zone, e.g. us-central1-a."
+  }
+
+  validation {
+    condition     = startswith(var.voice_speech.machine_type, "g2-standard-")
+    error_message = "voice_speech.machine_type is a g2 type (the L4 comes with it)."
+  }
+
+  validation {
+    condition     = var.voice_speech.disk_gb >= 100 && var.voice_speech.idle_minutes >= 1
+    error_message = "voice_speech.disk_gb is at least 100 (the image alone is about 50 GB) and idle_minutes at least 1."
+  }
+}
+
+# The managed plugins' bucket (docs/design/managed-plugins.md §3; plugins.tf).
+# Empty is "<project_id>-swarm-plugins", the name the design gives it and the
+# one `swarm install`'s verify check and `swarm doctor` look for: a fresh
+# deployment sets nothing. A name is accepted only to adopt a different one;
+# it is never one of the shared project's buckets (SHARED_DENY_LIST in
+# scripts/lib/common.sh), which all start "saga-" or carry "avatars", so a
+# name must contain "swarm".
+variable "plugins_bucket_name" {
+  description = "The managed plugins' bucket (plugins.tf). Empty: <project_id>-swarm-plugins."
+  type        = string
+  default     = ""
+  nullable    = false
+
+  validation {
+    condition     = var.plugins_bucket_name == "" || (can(regex("^[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]$", var.plugins_bucket_name)) && strcontains(var.plugins_bucket_name, "swarm"))
+    error_message = "plugins_bucket_name is empty (<project_id>-swarm-plugins) or a bucket name of 3-63 lower-case letters, digits, '-' or '_' that contains \"swarm\"."
+  }
 }

@@ -30,13 +30,14 @@ from __future__ import annotations
 import base64
 import copy
 import dataclasses
+from datetime import UTC, datetime
 import hashlib
 import hmac
 import secrets
 
 import pytest
 
-from swarm_api import codeintel, judgment, mergesettings
+from swarm_api import codeintel, judgment, mergesettings, plugins
 from swarm_api.auth import TENANT_HEADER
 from swarm_common.identity import tenant_id_for_user
 from swarm_common.specsign import SETTINGS_MAC_FIELDS, canonical_settings_block
@@ -213,6 +214,10 @@ def test_each_writers_fields_are_the_ones_the_module_writes():
     assert judgment.unowned_covered_keys("code_intelligence") == ("judgment_backend",)
     assert judgment.unowned_covered_keys("top") == ()
     assert judgment.unowned_covered_keys("merge") == ()
+    assert judgment.WRITER_FIELDS["plugins"] == (plugins.ALLOWED,)
+    # Contract request 140 covers the block's every-step defaults and settings
+    # digest; no swarm-api path writes them yet, so they are unowned.
+    assert judgment.unowned_covered_keys("plugins") == ("defaults", "configs_digest")
 
 
 # -- the readers ------------------------------------------------------------------
@@ -427,3 +432,51 @@ def test_a_resigned_document_reads_the_same_once_cut_over(client, seeded, api_co
     assert get_backend(client, "eng") == "typesafe"
     assert get_merge(client, "eng")["mode"] == "train"
     assert get_ci(client, "eng")["jev"] is True
+
+
+def test_the_plugins_writer_never_signs_a_planted_default():
+    """Contract request 140: `defaults` and `configs_digest` are covered, and
+    no swarm-api path writes them yet, so a value there was planted by a direct
+    write. `PluginsStore.put` drops it rather than signing it with the list
+    the admin chose."""
+    db = FakeFirestore()
+    key = new_key()
+    db.docs["workspace_settings/eng"] = {
+        "tenant_id": "eng",
+        "plugins": {"allowed": [], "defaults": ["gstack"], "configs_digest": "0" * 64,
+                    "note": "kept"},
+    }
+    store = plugins.PluginsStore(db, now=lambda: datetime(2026, 11, 6, tzinfo=UTC),
+                                 mac=judgment.SettingsMac(keys=(key,)))
+    store.put("eng", ["gstack"], by="root@example.com")
+    block = db.docs["workspace_settings/eng"]["plugins"]
+    assert "defaults" not in block and "configs_digest" not in block
+    assert block["note"] == "kept"  # a key outside the MAC is carried over, as before
+    assert reference_verifies(key, "eng", "plugins", block)
+
+
+def test_a_key_rotation_re_signs_the_plugins_list_the_route_wrote():
+    """PUT /v1/workspaces/{tenant_id}/plugins writes and signs `plugins.allowed`
+    (`plugins.PluginsStore.put`), so `allowed` is a writer's field: after a key
+    rotation the re-sign pass signs the stored list again under the new key,
+    exactly as it re-signs the workspace's other blocks, and never holds it."""
+    db = FakeFirestore()
+    legacy(db)
+    old, new = new_key(), new_key()
+    store = plugins.PluginsStore(db, now=lambda: datetime(2026, 11, 4, tzinfo=UTC),
+                                 mac=judgment.SettingsMac(keys=(old,)))
+    store.put("eng", ["gstack"], by="root@example.com")
+    assert reference_verifies(old, "eng", "plugins", db.docs["workspace_settings/eng"]["plugins"])
+
+    plan = judgment.resign_workspace_settings(db, new, apply=True)
+    statuses = {(b["tenant_id"], b["block"]): b["status"] for b in plan["blocks"]}
+    assert statuses[("eng", "plugins")] == "unsigned"
+    eng = db.docs["workspace_settings/eng"]
+    assert eng["plugins"]["allowed"] == ["gstack"]
+    assert reference_verifies(new, "eng", "plugins", eng["plugins"])
+    assert reference_verifies(new, "eng", "top", eng)
+    assert plan["written"] == 5  # eng's four blocks and research's top; its CI block is held
+    rotated = judgment.SettingsMac(keys=(new, old), tenants=("*",))
+    assert plugins.allowed_plugins("eng", eng, rotated) == ("gstack",)
+    again = judgment.resign_workspace_settings(db, new, apply=True)
+    assert again["written"] == 0

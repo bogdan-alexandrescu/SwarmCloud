@@ -1,0 +1,31 @@
+# Lane 4 of the managed plugins plan (part of #2688; docs/design/managed-plugins.md
+# §2.2-§2.3, §17): apps/plugin-intake/, the isolated Cloud Run job that checks
+# one quarantined plugin archive and writes its pinned copy and report.
+#
+# Its environment variables are set per execution by swarm-api (one execution,
+# one intake). Nothing renders them until lane 3 adds the swarm-plugin-intake
+# job and swarm-api's execution override; an env: name cannot be restated by
+# another fragment, so lane 3 edits these setters to its path:line in its own PR.
+#
+# Its image: no build target in scripts/build-images.sh yet and no entry in
+# terraform/infra/images.json, so the install neither builds nor copies it;
+# the lane that adds the build target replaces the ignore below with an
+# image.plugin-intake entry.
+version: 1
+env:
+  SWARM_INTAKE_ID:
+    setter: 'internal: read at apps/plugin-intake/plugin_intake/main.py:56; the intake id swarm-api minted, set on the swarm-plugin-intake job execution, which lane 3 of the managed plugins plan adds; until then nothing runs the job'
+  SWARM_INTAKE_SCOPE:
+    setter: 'internal: read at apps/plugin-intake/plugin_intake/main.py:57; platform or workspace, set on the swarm-plugin-intake job execution, which lane 3 of the managed plugins plan adds; until then nothing runs the job'
+  SWARM_INTAKE_TENANT:
+    setter: 'internal: read at apps/plugin-intake/plugin_intake/main.py:58; the tenant of a workspace intake, set on the swarm-plugin-intake job execution, which lane 3 of the managed plugins plan adds; until then nothing runs the job'
+  SWARM_INTAKE_MOUNT:
+    setter: 'internal: read at apps/plugin-intake/plugin_intake/main.py:66; the plugins bucket''s Cloud Storage volume mount path in the swarm-plugin-intake job, which lane 3 of the managed plugins plan defines; defaults to main.py''s DEFAULT_MOUNT'
+  SWARM_INTAKE_SUBDIR:
+    setter: 'internal: read at apps/plugin-intake/plugin_intake/main.py:83; the plugin''s folder inside the archive when the admin asked for one, set on the job execution by swarm-api (lane 3 of the managed plugins plan)'
+  SWARM_INTAKE_OVERLAY:
+    setter: 'internal: read at apps/plugin-intake/plugin_intake/main.py:84; the admin''s overlay as JSON (managed-plugins.md §6.3), set on the job execution by swarm-api (lane 3 of the managed plugins plan)'
+ignored:
+  image:
+  - match: dockerfile:apps/plugin-intake/Dockerfile
+    reason: 'swarm-plugin-intake has no build target in scripts/build-images.sh and no entry in terraform/infra/images.json yet, so the install neither builds nor copies it; the lane that adds the build target replaces this with an image.plugin-intake entry (part of #2688)'

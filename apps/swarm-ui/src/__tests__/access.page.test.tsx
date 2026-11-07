@@ -200,12 +200,33 @@ describe('the page states what SwarmCloud may do as you', () => {
     // Config › GitHub access since CONFIG-NAV (part of #2157).
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('GitHub access')
     const d9 = visible(document.querySelector('[data-rule="D9"]'))
-    expect(d9).toContain('SwarmCloud enforces it')
+    // That SwarmCloud enforces it is the card's (i) since BGD's no-prose rule (2026-11-05).
+    expect(visible(document.querySelector('.ac-policy [role="tooltip"]'))).toContain('SwarmCloud enforces it')
+    expect(d9).toContain('held by SwarmCloud, not by GitHub')
     expect(d9).toContain('GitHub itself would let the push through')
     const d8 = visible(document.querySelector('[data-rule="D8"]'))
     expect(d8).toContain('does not ask for workflows write')
     expect(d8).toContain('.github/workflows/')
     expect(visible(document.querySelector('[data-rule="D6"]'))).toContain('Nothing is written to GitHub')
+  })
+})
+
+// THE OLD MENU WORDING (admin routes lane follow-up, part of #2688): a
+// connection that is not active points at the selected workspace's own Setup
+// tab, named by the workspace, never at Config › Workspace Settings.
+describe('a connection that is not active', () => {
+  it("names the selected workspace's Setup tab as the place with the recovery steps", async () => {
+    api((m, url) => {
+      if (m === 'GET' && url === '/v1/access') return { status: 200, body: overview({ connection: { ...CONNECTION, state: 'refresh_failed', failure: 'REFRESH_FAILED' } }) }
+      if (m === 'GET' && url === '/v1/tenants/me') return { status: 200, body: { tenant: { tenant_id: 'eng', kind: 'group', display_name: 'Platform team' } } }
+      return null
+    })
+    await mount()
+    await policyDrawn()
+    const link = await screen.findByRole('link', { name: 'Admin › Workspaces › Platform team › Setup' }, { timeout: 4000 })
+    expect(link.getAttribute('href')).toBe('/admin/workspaces?tab=setup')
+    expect(visible(link.parentElement)).toContain('Admin › Workspaces › Platform team › Setup carries the recovery steps.')
+    expect(visible(document.body)).not.toContain('Workspace Settings')
   })
 })
 
@@ -934,7 +955,7 @@ describe('visual QA (VQA-L06)', () => {
     expect(folds.map((d) => d.parentElement!.dataset.rule)).toEqual(['D9', 'D8', 'D6'])
     expect(folds.every((d) => !d.open), 'a rule opens unfolded').toBe(true)
     expect(folds.map((d) => d.querySelector('summary')!.textContent)).toEqual([
-      'Read means read, and SwarmCloud enforces it.',
+      'Read means read.',
       'No workflow changes.',
       'Verifying only reads.',
     ])
@@ -980,7 +1001,7 @@ describe('visual QA (VQA-L06)', () => {
     // MUTATION: fold the headline itself behind a summary on a desktop, as the phone does.
     expect([...rules.querySelectorAll('summary')].map((s) => s.textContent)).toEqual(['How', 'How', 'How'])
     expect([...rules.querySelectorAll('.ac-rule-t > b')].map((b) => b.textContent)).toEqual([
-      'Read means read, and SwarmCloud enforces it.',
+      'Read means read.',
       'No workflow changes.',
       'Verifying only reads.',
     ])

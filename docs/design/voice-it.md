@@ -5,6 +5,10 @@
 2026-10-31) was a session scratchpad file; the facts this design rests on are
 restated here with their sources (§13), so this file stands alone.
 
+**A second engine (BGD, 2026-11-05):** speech on our own L4 machine beside GPT-Live, with
+Settings, Telemetry, spoken read-backs and visuals on the Talk page, is designed in
+[voice-it-own-speech.md](voice-it-own-speech.md).
+
 **The owner's ask (BGD, 2026-10-31):** a console page used mainly to talk by
 voice, with live captions of both sides and a voice oscilloscope while the
 agent speaks, to an agent that is a product designer, software architect and
@@ -105,7 +109,7 @@ Read on `origin/main`, 2026-11-01.
 | A fix workflow can push onto an existing pull request's branch by naming the agent | `apps/swarm-api/swarm_api/continuation.py` (`WorkflowCreate.continues_task`) | The rescue path fixes a red pull request in place |
 | A person's preferences live in a document whose id is an HMAC no worker can compute | `apps/swarm-api/swarm_api/preferences.py` | Voice it preferences use the same id scheme (§3.7) |
 | Artifacts are served as `text/plain`, and no screen ever builds HTML from artifact bytes; no diagram renderer exists | `apps/swarm-api/swarm_api/routes/tasks.py` (artifact content), `apps/swarm-ui/src/ArtifactViewer.tsx` | Mock-ups need a sandboxed frame; diagrams need a renderer (§4) |
-| A workspace secret may name provider `openai`; provider-key links are TypeSafe-only; the account pool holds Claude **subscriptions**, not API keys; the codex runner is disabled, and eng's `swarm-tenant-eng-openai` holds one version OpenAI refused on 2026-09-23 | `workspace_secrets.py` (`PROVIDERS`), `validation.py` (`PROVIDER_KEY_PROVIDERS`), `apps/quota-broker/quota_broker/oauth.py`, `apps/common/swarm_common/profiles.py` (the `codex` entry) | BGD adds a fresh personal OpenAI key through Config › Secrets. The planner needs an Anthropic **API key**; the pool is not used (§3.6) |
+| A workspace secret may name provider `openai`; provider-key links are TypeSafe-only; the account pool holds Claude **subscriptions**, not API keys; the codex runner is disabled, and eng's `swarm-tenant-eng-openai` holds one version OpenAI refused on 2026-09-23 | `workspace_secrets.py` (`PROVIDERS`), `validation.py` (`PROVIDER_KEY_PROVIDERS`), `apps/quota-broker/quota_broker/oauth.py`, `apps/common/swarm_common/profiles.py` (the `codex` entry) | BGD adds a fresh personal OpenAI key through Config › Secrets. The planner runs on a Claude subscription account leased from the pool through Claude Code (§3.6, owner 2026-11-02) |
 | swarm-api reads the artifact bucket but may write only under narrow, conditioned, create-only grants, one per purpose | `terraform/modules/iam/bindings.tf` (`api_reader`), `terraform/infra/await_input.tf`, `terraform/infra/git_tools.tf` | Voice it's GCS prefix is one more such grant: an IAM change (§10) |
 | `swarm-live` and `swarm-graph` are rolled by named steps in the release and hotfix workflows | `.github/workflows/release.yml`, `.github/workflows/hotfix.yml` | A new service in `swarm-system` needs workflow lines: held for BGD (§10) |
 
@@ -161,6 +165,7 @@ both there, with nothing for the page to override.
 | **Talk pane** | BGD's browser | The WebRTC peer, the mic and the agent's track, captions, the oscilloscope, the card list | Media must be peer to peer with OpenAI to keep audio off our servers and to get the browser's echo cancellation, which covers WebRTC remote audio [14] |
 | **GPT-Live session** | OpenAI | The live conversation, its turn-taking and barge-in, the voice | BGD's choice |
 | **swarm-voice** (new) | One-replica StatefulSet in `swarm-system` on the GKE cluster | Each live session's sideband WebSocket, the planner loop, the session grant (in memory) | It holds long-lived outbound sockets for the length of a conversation, which no request-shaped service can (§3.4) |
+| **Text conversation** (no API key in the pool) | Inside swarm-voice (`swarm_voice/textchat.py`), calling the ChatGPT plan's Codex Responses route | Each text session's turns and its plan lease, in memory | OpenAI serves the plan text but refuses it Live (§3.6, "Both paths"), so the browser sends each spoken turn as text and swarm-voice answers it |
 | **Planner** | Inside swarm-voice, calling the Anthropic Messages API | Nothing between turns: every turn reads the project from Firestore through swarm-api | Opus always thinks [10], so it stays off the spoken path; the voice speaks while it works |
 | **swarm-api** (extended) | Cloud Run, as today | The Voice it routes, the session grant check, the card stream, the ledger, storage | The one authenticator: every action Voice it takes passes the same role floor, holds, refusals and tenant scope as a click |
 | **Firestore and GCS** | As today | Projects, sessions, cards, turns, starts, preferences; transcripts and large card bodies | Invariant 9: the tenant's documents and its own prefix |
@@ -304,41 +309,239 @@ Voice it, because it is the same route.
 
 **Keys.**
 
-* **OpenAI:** a personal secret BGD adds through Config › Secrets with
-  provider `openai`. It is new, because eng's existing key was refused by
-  OpenAI on 2026-09-23 (`profiles.py`, the `codex` entry).
-* **Anthropic:** the planner calls the Messages API, so it needs an
-  **API key**, not a subscription. It resolves the way every secret does,
-  the person's before the workspace's (`docs/design/secrets-scopes.md`).
-  Whose key it is stays open (question 2).
-* swarm-voice reads both from Secret Manager by version reference, with a
-  per-secret accessor grant on its own service account, as `swarm-live`
-  reads its key (`terraform/infra/live.tf`). It never writes them, logs
-  them, or sends them to the browser.
+* **OpenAI:** an **OpenAI developer API key** in the quota broker's **Voice
+  it pool** for a Live session (below, "Why a key and not the ChatGPT
+  plan"); with no key in the pool, the pool's **ChatGPT plan** for a text
+  conversation (below, "Both paths"). No person's own OpenAI secret is read
+  any more, and a ChatGPT plan is never leased for a Live session.
+* **Anthropic: the planner runs on a pool lease** (below, "The planner's
+  Claude account"). No person's Anthropic secret is read and swarm-voice
+  holds no accessor grant for one.
+* swarm-voice never writes a credential, logs one, or sends one to the
+  browser.
 
-**How a session reaches the OpenAI credential (owner, 2026-11-02).** The
-OpenAI secret's first version is the ChatGPT sign-in the person makes under
-Voice it › Preferences (`swarm_api/voice/signin.py`). swarm-api's start call
-sends swarm-voice's `StartRequest` field for field: `voice_session_id`,
-`person`, `offer`, the grant and its project, and as `credential` the
-version reference `ChatGPTSignIn.stored_version` names. It reads swarm-voice's
-`201 {voice_session_id, live_session_id, answer}` and keeps the live id on the
-session document. Only the reference travels, never the value. swarm-api
-sends it only when it is a numbered version of the caller's own personal
-secret in this deployment's project, and swarm-voice's `check_scope` checks
-the same again. A person with no stored sign-in is refused with a 403 that
-tells them to sign in under Voice it › Preferences. That happens before a
-session is written or swarm-voice is called. swarm-voice refreshes the
-credential the way the ChatGPT-plan pool refreshes the same Codex client's
-tokens (`quota_broker.openai_plan`, measured live). It sends a form POST to
-`https://auth.openai.com/oauth/token` with `grant_type`, `client_id` and
-`refresh_token`, and no `resource`. That address is stated once, as
-`swarm_voice.credential.TOKEN_URL`.
+**How a session reaches the OpenAI credential: the Voice it pool (owner,
+2026-11-02 and 2026-11-03).** The owner connected a ChatGPT plan and asked
+that it be "reserved for the voice it feature ... and its not used by any
+other agent or any other user besides voice it". They picked "A separate
+Voice it pool" and "Pool only, wait for it", then on 3 November: "We should
+allow accounts to be in more than one pool at a time".
 
-**Why not the account pool.** The pool holds Claude subscriptions, which the
-quota broker refreshes and hands to workers with leases. Their five-hour
-windows are the lanes' capacity, and a planner drawing on them would compete
-with the very lanes it starts.
+* **The pools.** A pool account's `pools` is a set: `workspace`, which every
+  account was in before, and `voice-it`, which also lists `voice_it_people`.
+  Version one lists the platform owner only. An account in `voice-it` only is
+  **reserved**. `Account.may_serve` refuses it to every tenant, so no agent of
+  any workspace or profile is ever assigned it, it is never lent, and the
+  scheduler's admission count (`accounts_serving`) leaves it out. An account
+  in **both** pools is shared. Either side may lease it, and its `max_agents`
+  and windows hold across both, because every hold of either kind sits on
+  the one document's `holds`.
+* **Moving an account between pools.** `PUT /v1/accounts/{id}/pools` is for
+  platform admins only and is audited. It needs the label typed back, keeps
+  at least one pool, and refuses (`pool_in_use`) to remove a pool the
+  account holds a lease of. You can do it from Capacity › Accounts'
+  "Pools…" or with `sc account pool <label> --add|--remove`.
+* **The lease.** At session start swarm-voice calls the broker's
+  `POST /v1/voice/lease` for the session's person
+  (`swarm_voice/accountlease.py`, shaped like the worker's
+  `agent_worker/accountlease.py`). The broker picks an account with
+  `choose_voice`: it must be an OpenAI API key (`capability: "live"`, above),
+  be in the Voice it pool, list the person, and be AVAILABLE with a free
+  slot. The broker records a hold with `pool: voice-it`, the person, the
+  session id and no tenant. It hands back the key, read from the account's
+  `{base}` secret. Until 4 November it handed back a ChatGPT plan's access
+  token and account id, which OpenAI refused. swarm-voice renews the hold
+  every four minutes and gets the credential again each time. It releases
+  the hold when the
+  session ends or fails. If swarm-voice dies, the hold lapses on its own
+  after `VOICE_HOLD_TTL` (ten minutes).
+* **Pool only.** With no account free, or for a person the pool does not
+  list, the session is refused with a spoken reason and nothing starts.
+  There is no fallback to a personal sign-in. That path is removed: the
+  Preferences sign-in, swarm-api's `/v1/voice/chatgpt*` routes, and
+  swarm-voice's personal-secret read and add-version. Voice it ›
+  Preferences says which pool account the next session will use
+  (`GET /v1/voice/pool`).
+* **Nothing secret travels further.** The token goes from the broker to
+  swarm-voice's process, in memory. It never reaches a log, a card, a
+  transcript, the browser or the console. swarm-voice holds no Secret
+  Manager binding at all (`terraform/infra/voice.tf`). Its only new grant
+  is run.invoker on the quota broker, and the broker admits only its
+  service account to the voice routes.
+
+**Why a key and not the ChatGPT plan: OpenAI refused the plan (measured 4
+November 2026, 02:00 UTC).** swarm-voice leased the ChatGPT plan account
+`eng:chatgpt-1` from the Voice it pool and `POST
+https://api.openai.com/v1/live/sessions` answered **403 Forbidden**
+(`swarm_voice/live.py`). The pool's token is the Codex sign-in, scope `openid
+profile email offline_access` (`quota_broker/openai_plan.py`). OpenAI's own
+documentation says why it cannot work: Sign in with ChatGPT's identity scopes
+do not grant OpenAI API resources, and plan use is limited to text Responses
+for selected partners (https://developers.openai.com/siwc/quickstart).
+GPT-Live is a developer API model billed per minute
+(https://developers.openai.com/api/docs/models/gpt-live-1). So the plan path
+is recorded as **refused by OpenAI**, and the owner said "fix it":
+
+* **A new account kind, `openai-api`** (`quota_broker/openai_api_key.py`):
+  an OpenAI developer API key. It is allowed **only in the Voice it pool**.
+  Registration files it there alone, with the broker's `VOICE_IT_PEOPLE`.
+  It is never lent, `PUT .../pools` refuses to move it into the workspace
+  pool, and an agent leasing an `openai` account never matches its provider, so no
+  agent or workspace is ever handed it. Adding one is for platform admins
+  only, like a pool move.
+* **Stored as the broker stores every credential.** One Secret Manager
+  secret, `{base}`, holds the key. The broker is its only writer and its only
+  accessor: no worker service account is bound, because no agent runs on it.
+  There is no `{base}-refresh` and nothing to refresh, so the refresh sweep
+  skips it (`Account.refreshes`). OpenAI gives a key no usage window, so the
+  usage poller never asks. Its windows read **not measured**, never 0
+  (`measured: false` on the listing). The "one agent before its first
+  reading" rule waits for a reading that never comes, so it does not apply,
+  and `max_agents` is the cap.
+* **The lease asks for a Live-capable account.** swarm-voice sends
+  `capability: "live"` on `POST /v1/voice/lease`, which is also the default.
+  `choose_voice` then offers only `openai-api` accounts, so a key is chosen
+  for every Live session and a ChatGPT plan never is. The plan stays in the
+  pools for codex steps. The credential comes back as `{"access_token",
+  "kind": "api_key"}` with no account id. swarm-voice's `Bearer` for a key
+  sends the key in the `Authorization` header only, with no `ChatGPT-Account-Id`,
+  even when a broker sends an id.
+* **No key, no Live lease.** With no `openai-api` account in the Voice it
+  pool, the broker answers a `capability: "live"` lease
+  `no_voice_account_registered` before it takes any hold. Since 4 November
+  swarm-api asks first (`GET /v1/voice/pool`) and starts that session as a
+  **text** conversation on the plan instead (below, "Both paths"). A Live
+  start that still meets the refusal (a key removed between the two calls)
+  is 409 `voice_pool_refused`, and swarm-api tells the person "Voice it needs
+  an OpenAI API key in the Voice it pool: add one on Admin › Accounts". It is
+  never a 502.
+* **Adding the key.** The owner pastes it himself through the console's
+  one-time link, so it never passes through a model, a log, a tool argument
+  or the repository. The broker's `POST /v1/accounts` with `provider:
+  "openai-api"` parses it and stores it before any document is written. The
+  console side of that link, and swarm-api's account route accepting the
+  provider, are a separate change (the PR that added this kind says which).
+  A Day One install needs nothing new. The key is added after install,
+  through the same link.
+
+**Both paths: the ChatGPT plan's text conversation (owner, 4 November
+2026).** Asked whether OpenAI plans could work here "in the same exact way as
+AI Studio", the owner chose both paths. OpenAI refuses the plan's token for
+GPT-Live (above), but AI Studio runs text inference on the plan, so the plan
+serves Voice it as **text only**:
+
+* **The mode.** `POST /v1/voice/sessions` answers `mode`. swarm-api asks the
+  broker which account the person's next Live session would lease
+  (`voice/sessions.py`, `pick_mode`): `no_voice_account_registered`, the
+  answer for a pool with no OpenAI API key, makes it `"text"`. Anything else,
+  and a broker that cannot be asked, keeps it `"live"`, today's GPT-Live path
+  with its SDP answer, unchanged. A text session has no SDP and no WebRTC: an
+  `offer_sdp` sent anyway is dropped unread, and no `answer_sdp` comes back.
+  The session document records `mode`.
+* **The turns.** The browser turns each spoken turn into text and sends it:
+  `POST /v1/voice/sessions/{session_id}/turns {"text": <1..4000 chars>}`,
+  answered `200 {"turn_id", "reply", "cards"}`. The route passes the same
+  guards as every Voice it action (the Voice it list, the console's
+  workspace through `tenant_scope`, the session the caller's own), is 409
+  `conflict` (`voice_session_not_live`) on a session that is not a live text
+  one, and 429 `rate_limited` with `detail.resets_at` when the plan's usage
+  limit refuses the turn. Ending is the existing end route. The captions are
+  the turns themselves. The person's text is never logged or stored by
+  swarm-api.
+* **The lease.** swarm-voice leases the Voice it pool's plan with
+  `capability: "text"` (`accountlease.CAPABILITY_TEXT`) and holds it, renewed
+  every four minutes like a Live hold, until the session ends or sits idle
+  for fifteen minutes (`textchat.IDLE_SECONDS`, so a closed tab never keeps
+  the plan). The broker is the plan token's one writer and refreshes it; a
+  401 only asks the lease for a fresh token.
+* **The wire, as AI Studio measured it (2026-08-10, live ChatGPT Plus
+  token).** `POST https://chatgpt.com/backend-api/codex/responses` with
+  the plan's access token as the `Authorization` header's bearer, `OpenAI-Beta:
+  responses=experimental`, `originator: codex_cli_rs`, `chatgpt-account-id`
+  and `session_id` (the Voice it session id, echoed back as the prompt cache
+  key). The body is `{model, instructions, input, stream: true, store:
+  false, include: ["reasoning.encrypted_content"]}`: `stream: false` and
+  `max_output_tokens` are each a 400, and there is no temperature, top_p,
+  system role or response_format. `textchat.build_body` refuses to build any
+  of them. The answer is SSE whose terminal `response.completed` carries an
+  empty `output`; the reply is read from the `response.output_item.done`
+  items. The model is the first of `gpt-5.5`, `gpt-5.6-sol`, `gpt-5.4-mini`
+  that `GET /models?client_version=0.147.0` lists.
+* **Quota.** Each answer's `x-codex-primary-*` and `x-codex-secondary-*`
+  headers (used percent, window minutes, reset) are named as the broker
+  names a plan's windows (`five_hour`, `seven_day`, a 0 to 1 utilization) and
+  reported against the session's hold. A refusal of type
+  `usage_limit_reached` carries `resets_at`, which the person reads on the
+  429.
+* **The egress.** swarm-voice's FQDN egress policy
+  (`kubernetes/network-policies/swarm-system-voice.yaml`) admits
+  `chatgpt.com` on 443 beside `api.openai.com`, by exact name and no
+  wildcard (owner pick, 4 November 2026: "Add it in this PR"). Without it the
+  policy fails closed and every text turn is a connection refusal.
+* **Delegation works as on the Live path.** The text model is offered one
+  `delegate` tool. A turn that asks for a plan comes back as that call and
+  becomes a planner turn over the conversation so far, with the session's
+  person and grant. The planner's at most two sentences are the reply, and
+  its cards stream to the console as they do today.
+* **What the broker still needs.** Its `VoiceLease.capability` accepts only
+  `"live"` today, and it has no route that records a voice hold's reading.
+  Until it accepts `"text"` (choosing the Voice it pool's `openai` plan) and
+  serves `POST /v1/voice/lease/{account_id}/readings`, a text start is a 502
+  from the broker and the windows are logged as not taken. Both are outside
+  this change's files and are asked for in its PR.
+
+**The planner's Claude account: a pool lease through Claude Code (owner,
+2 November 2026).** The owner picked "Pool account via Claude Code": "we have
+a pool of account for anthropic, lets use one of the accounts there". The
+planner used to call the Messages API with an Anthropic API key read from the
+person's own secret, which needed a per-secret accessor grant and a stored key.
+It now runs each delegation turn the way a worker runs an agent:
+
+* **One lease per turn** (`swarm_voice/plannerlease.py`). swarm-voice asks the
+  broker's `POST /v1/accounts/assign` for an `anthropic` account with holder
+  `voice-planner`, the session's person and the voice session id. The broker
+  resolves the person's OWN workspace (never one the body names), picks the
+  account with `choose()` over that workspace's pool, and records the hold on
+  the account like an agent's, so `max_agents` and the windows see it. The hold
+  is renewed every four minutes and released in a `finally` whatever the turn
+  did. If swarm-voice dies the hold lapses on the broker's TTL, which a turn
+  (four minutes at most) never outlives unrenewed.
+* **A full pool is a refusal, never a wait.** With no account free the voice
+  says so ("Every Claude account in your workspace's pool is busy right
+  now..."), or that the workspace has none, and nothing runs.
+* **Claude Code, headless** (`swarm_voice/claudeturn.py`): `claude -p` with
+  `claude-opus-5-5`, stream-json output, `--no-session-persistence`, the
+  planner's system prompt, and a private temporary HOME (0700, also its cwd
+  and TMPDIR) removed after the turn. Its environment is built, not
+  inherited: the leased token in `CLAUDE_CODE_OAUTH_TOKEN` and nothing else
+  secret, never `ANTHROPIC_API_KEY`. `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`
+  and `DISABLE_TELEMETRY` are set, so the CLI reaches `api.anthropic.com`
+  only, which swarm-voice's egress already admits. The subscription token is
+  used only through Claude Code, never sent to the Messages API directly.
+* **Only the planner's tools** (`swarm_voice/mcp_server.py`). `--tools ""`
+  removes every built-in tool, so the child has no file, shell, web or agent
+  tool. The only MCP server is the turn's own (`--strict-mcp-config`), and
+  only its tools are allowed. It lists the catalogue's `draw_<kind>` tools,
+  the read tools and `speak`. It holds nothing itself: each call goes over a
+  unix socket in the private HOME (checked against a per-turn nonce) back to
+  swarm-voice, which runs it through swarm-api with the session grant the
+  child never sees. The turn stops the child once `speak` is answered.
+* **Nothing secret captured.** Every line the child prints is scrubbed of the
+  token and the grant before it is parsed, as the worker's redaction does. So
+  are the prompt, the tool results, the cards and the spoken summary.
+* **Cost: not measured.** A subscription has no per-token price. The turn's
+  `usage` carries its token counts, the model and `billing: "subscription"`.
+  The ledger (§3.8) RESERVES its estimate at Opus prices against the
+  session's $100 and the day's $300, never counts it as $0 spent, and counts
+  it in `subscription_turns`.
+* **The windows.** A planner turn is one agent on one account for at most
+  four minutes. It competes with the workspace's lanes for that account's
+  five-hour window exactly as one more short agent would, and the broker's
+  `choose()` spreads it like one. This was the reason the earlier design kept
+  the planner off the pool. The owner accepted that cost on 2 November 2026.
+* **The CLI** is in swarm-voice's image at the version
+  `images/agent-runtime-base/Dockerfile` pins, read from that file at build
+  time, so there is one source for it.
 
 ### 3.7 Storage: Firestore and the tenant's prefix
 
@@ -374,6 +577,7 @@ drifted here before.
 |---|---|---|
 | Talk | The session's seconds | `gpt-live-1` at $0.05 a minute, billed per second [1][2], silence included |
 | Planner | Each turn's token usage | Opus 5.5 from the platform's `model_prices` (`swarm_api/modelprices.py`) |
+| Speech machine | The own-speech machine's minutes from the start call to the stop, per session, on the day the session started (`docs/design/voice-it-own-speech.md` §13) | The machine's catalogue price; a stop with no price is `unpriced_machine_sessions`, not $0 |
 | Work running | Each started item's step budgets, **times 1.2**, until it ends | The worker's guard kills a step at 120% of its budget (`docs/design/agent-budget.md` §5), so 120% is the true ceiling |
 | Work finished | Each started item's measured `cost_usd`, which replaces its reservation | The platform's estimate at list price |
 | Follow-ups | Agents carrying the project's tag that the platform started for it (fix rounds, merge steps) | Measured `cost_usd`, plus an allowance reserved at start |
@@ -422,6 +626,17 @@ runner minutes and deploys. No SwarmCloud cost figure includes them today
 | File, start, approve, answer, schedule, cancel | No | Yes, act tools, each after the ledger reserves it |
 | Cancel work in flight | Yes, its `stop` tool, which only cancels | Yes |
 | IAM, secrets, the other team's project, budget raises | No | No: not on the grant's allowlist; the platform's holds stop the rest |
+
+**Answering, the first act tool (built; BGD's pick, 6 November 2026).** The
+planner's `answer_question` (`swarm_voice/tools_act.py`) answers an agent's
+question with an option label, the person's own words, or both, through the
+grant's one act route, `POST /v1/tasks/{task_id}/answers`, sent `via:
+voice-it`. Its first call sends nothing: it reads the question back. Only a
+later turn, after the person spoke, sends exactly what was read back. The act
+ledger (`swarm_voice/actledger.py`) reserves it before the call, records the
+outcome, and refuses a second answer to one question in one session unless
+the person says to change it. Who may answer is the route's rule: the
+submitter or an admin, never a viewer.
 
 **The hard stops do not depend on the model's judgement.**
 
@@ -807,6 +1022,11 @@ is 128.
 | Mermaid's `sandbox` security level in the pinned version | Render inside the mock-up card's sandboxed frame |
 | Whether the research's per-hour figures hold for BGD's real talk | The meter measures them from the first session |
 | GKE and Cloud Run hourly rates | Shown as estimates |
+| That the plan's Codex Responses route accepts the `delegate` function tool, `tool_choice` and `parallel_tool_calls` beside the measured body (the Codex CLI sends its own tools the same way; AI Studio's measurement did not include one) | Drop the tool from the body and send a turn to the planner when the person's words ask for a plan; a 400 on the first text turn shows the refusal at once |
+| That the plan's usage-limit refusal arrives as HTTP 429 with `error.type: usage_limit_reached` and a unix `resets_at` (the Codex CLI's reading; AI Studio measured the headers, not a refusal) | `response.failed` with the same error is read too, and a refusal with no `resets_at` takes the binding window's reset header |
+| That the `x-codex-*-reset-at` headers are unix seconds | An ISO 8601 value is read as well; a window whose reset is unreadable is not reported |
+| That the broker's `capability: "text"` lease and its voice readings route exist: neither does on 4 November 2026 | A text start is a 502 until the broker accepts the capability; the windows are logged as not taken |
+| **Answered 4 November 2026:** whether a ChatGPT plan's sign-in can open a GPT-Live session. **No.** `POST /v1/live/sessions` answered 403 Forbidden on the Codex sign-in's token (scope `openid profile email offline_access`), and OpenAI documents that Sign in with ChatGPT does not grant API resources (https://developers.openai.com/siwc/quickstart) | Live sessions lease an OpenAI developer API key from the Voice it pool (§3.6, "Why a key and not the ChatGPT plan"); the plan stays in the pools for codex steps |
 
 ---
 
@@ -887,7 +1107,10 @@ grace window.
     accessor, invoker on swarm-api);
   * the storage lane (swarm-api's create and delete grants on the voice
     prefix);
-  * the planner lane (the Anthropic secret accessor).
+  * the planner lane: none any more. The planner runs on a pool lease
+    (§3.6) through the broker swarm-voice already invokes; what it needs is
+    the broker admitting swarm-voice as a service holder on
+    `POST /v1/accounts/assign`, which the owner approves as an access change.
 * **Workflow file:** the release, hotfix and security workflow lines.
 * **Frozen contract:** none.
 
@@ -919,8 +1142,9 @@ states, not where they are drawn.
 
 1. **The OpenAI key:** a new personal key added through Config › Secrets.
    Eng's existing key was refused by OpenAI on 2026-09-23.
-2. **The planner's Anthropic key:** BGD's personal API key, or a workspace
-   one? The account pool's subscriptions are not used.
+2. **The planner's Anthropic key:** answered on 2 November 2026: no key.
+   The planner runs on a Claude subscription account leased from the pool
+   through Claude Code (§3.6).
 3. **Budget raises:** a click with a typed amount only (recommended), or also
    by voice?
 4. **The grace window on spending actions:** 5 s (recommended), none, or

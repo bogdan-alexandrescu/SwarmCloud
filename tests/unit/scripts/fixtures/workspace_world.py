@@ -36,7 +36,7 @@ GCLOUD_VALUE_FLAGS = {
 }
 KUBECTL_VALUE_FLAGS = {
     "--context", "-n", "--namespace", "-o", "--output", "-f", "--filename", "--dry-run", "--raw",
-    "--field-selector", "--validate", "--request-timeout", "--type", "-p", "--patch",
+    "--field-selector", "--validate", "--request-timeout", "--type", "-p", "--patch", "--api-group",
 }
 CURL_VALUE_FLAGS = {"-m", "--max-time", "-o", "--output", "-w", "--write-out", "-X", "--request", "-H",
                     "--header", "-K", "--config", "--data-binary"}
@@ -168,14 +168,17 @@ def gcloud(world: dict, argv: list[str]) -> int:
             bind(account["policy"], flag(flags, "--role"), flag(flags, "--member"))
             return 0
 
+    # A bucket named in `bucket_policies` (gs://... -> policy) has its own
+    # policy (the managed plugins bucket); every other is the artifact bucket's.
     if words[:3] == ["storage", "buckets", "get-iam-policy"]:
-        out(world["bucket_policy"])
+        out(world.get("bucket_policies", {}).get(words[3], world["bucket_policy"]))
         return 0
     if words[:3] == ["storage", "buckets", "add-iam-policy-binding"]:
         condition = None
         if "--condition-from-file" in flags:
             condition = json.loads(Path(flag(flags, "--condition-from-file")).read_text())
-        bind(world["bucket_policy"], flag(flags, "--role"), flag(flags, "--member"), condition)
+        policy = world.get("bucket_policies", {}).get(words[3], world["bucket_policy"])
+        bind(policy, flag(flags, "--role"), flag(flags, "--member"), condition)
         return 0
     if words[:2] == ["storage", "cp"]:
         world["objects"][words[3]] = sys.stdin.read()
@@ -264,6 +267,17 @@ def kubectl(world: dict, argv: list[str], stdin: str) -> int:
     if pos[:2] == ["config", "view"]:
         config = yaml.safe_load(Path(os.environ["KUBECONFIG"]).read_text())
         sys.stdout.write(config["contexts"][0]["context"]["cluster"])
+        return 0
+    if pos[:1] == ["api-resources"]:
+        # Discovery: the world's `api_resources` (resource.group names) is what
+        # the cluster serves; absent, it serves none of them, as a GKE cluster
+        # without FQDN network policy serves no fqdnnetworkpolicies.
+        if world.get("cluster_down"):
+            sys.stderr.write("Unable to connect to the server: dial tcp: i/o timeout\n")
+            return 1
+        group = flag(flags, "--api-group")
+        served = [r for r in world.get("api_resources", []) if not group or r.split(".", 1)[-1] == group]
+        sys.stdout.write("".join(r + "\n" for r in served) if output == "name" else json.dumps(served))
         return 0
     if pos[:1] == ["get"] and "--raw" in flags:
         if world.get("cluster_down"):

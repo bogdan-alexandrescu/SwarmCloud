@@ -25,6 +25,10 @@
 # Usage: scripts/lib/check-contract-parity.sh
 
 set -euo pipefail
+# This script touches no project: it reads the tree. It says so, so
+# common.sh (no default project, DAYONE-DESAGA-2) does not stop on an unset
+# PROJECT_ID.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
@@ -2129,6 +2133,23 @@ fi
 # printed, for the reason section 6 gives.
 step "Redaction-filter parity"
 
+# redact_wait_batch -- wait for every redact() started since the last call,
+# pid by pid, and mark a case whose redact() failed with a `.failed` file
+# holding its exit status. The case index is the pid's position counted back
+# from REDACT_SEEN, the count of cases started so far.
+redact_wait_batch() {
+  local n="${#REDACT_PIDS[@]}" k=0 rc
+  while [[ "${k}" -lt "${n}" ]]; do
+    rc=0
+    wait "${REDACT_PIDS[${k}]}" || rc=$?
+    if [[ "${rc}" -ne 0 ]]; then
+      printf '%s' "${rc}" >"${REDACT_DIR}/$(( REDACT_SEEN - n + k )).failed"
+    fi
+    k=$(( k + 1 ))
+  done
+  REDACT_PIDS=()
+}
+
 REDACT_FIXTURE="${REPO_ROOT}/tests/fixtures/redaction-parity.json"
 if [[ ! -s "${REDACT_FIXTURE}" ]]; then
   err "the redaction parity fixture is missing: ${REDACT_FIXTURE}"
@@ -2137,20 +2158,69 @@ else
   REDACT_CASES="$(jq '.cases | length' "${REDACT_FIXTURE}")"
 
   # The shell half: redact() as this file sourced it from common.sh.
+  #
+  # ONE jq CALL READS EVERY CASE. Four jq runs per case cost about 20 s over
+  # 114 cases and pushed this script past changed-guards.sh's PARITY_SECONDS.
+  # Each case is four NUL-terminated fields -- name, text, expected, and the
+  # `never` list one per line -- because texts span lines (the PEM cases) and
+  # NUL is the one byte a bash string cannot hold anyway. The trailing-newline
+  # trim is what `$(jq -r ...)` did to each field before. The records come in
+  # on fd 3 so that nothing in the loop can read them off stdin.
+  #
+  # REDACT() RUNS IN PARALLEL (owner's pick on #3286). One call costs about
+  # 147 ms -- its sed programs, not this loop -- so 114 of them in a row were
+  # about 16.7 s of this section's 17.3 s. The first pass starts each case's
+  # redact() in the background, REDACT_JOBS at a time, writing its output to
+  # a file per case and its exit status beside it; the second pass compares,
+  # in fixture order, exactly as before. A batch is waited on pid by pid, so a
+  # redact() that fails is reported against its case instead of vanishing in a
+  # bare `wait`, which always returns 0. Batches, not `wait -n`: bash 3.2.
+  REDACT_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  [[ "${REDACT_JOBS}" =~ ^[0-9]+$ && "${REDACT_JOBS}" -ge 1 ]] || REDACT_JOBS=4
+  # Capped: past 8 the sed processes only contend for the same few cores a CI
+  # runner has, and the check's own memory stays small.
+  [[ "${REDACT_JOBS}" -le 8 ]] || REDACT_JOBS=8
+  REDACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/redact-parity.XXXXXX")"
+  # shellcheck disable=SC2064 # expand REDACT_DIR now, it is set once
+  trap "rm -rf -- '${REDACT_DIR}'" EXIT
   REDACT_SEEN=0
+  REDACT_PIDS=()
+  while IFS= read -r -d '' -u 3 R_NAME \
+    && IFS= read -r -d '' -u 3 R_TEXT \
+    && IFS= read -r -d '' -u 3 R_WANT \
+    && IFS= read -r -d '' -u 3 R_NEVERS; do
+    printf '%s' "${R_NAME}" >"${REDACT_DIR}/${REDACT_SEEN}.name"
+    printf '%s' "${R_WANT}" >"${REDACT_DIR}/${REDACT_SEEN}.want"
+    printf '%s' "${R_NEVERS}" >"${REDACT_DIR}/${REDACT_SEEN}.never"
+    printf '%s\n' "${R_TEXT}" | redact >"${REDACT_DIR}/${REDACT_SEEN}.got" 3<&- &
+    REDACT_PIDS+=("$!")
+    REDACT_SEEN=$(( REDACT_SEEN + 1 ))
+    if [[ "${#REDACT_PIDS[@]}" -ge "${REDACT_JOBS}" ]]; then
+      redact_wait_batch
+    fi
+  done 3< <(jq -j '.cases[]
+    | (.name | tostring), (.text | tostring | sub("\n+$"; "")),
+      (.expected | tostring | sub("\n+$"; "")),
+      ((.never // []) | map(tostring) | join("\n"))
+    | . + "\u0000"' "${REDACT_FIXTURE}")
+  redact_wait_batch
+
   REDACT_DRIFT=0
   REDACT_AT=0
-  while [[ "${REDACT_AT}" -lt "${REDACT_CASES}" ]]; do
-    R_NAME="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].name' "${REDACT_FIXTURE}")"
-    R_TEXT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].text' "${REDACT_FIXTURE}")"
-    R_WANT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].expected' "${REDACT_FIXTURE}")"
-    R_GOT="$(printf '%s\n' "${R_TEXT}" | redact)"
+  while [[ "${REDACT_AT}" -lt "${REDACT_SEEN}" ]]; do
+    R_NAME="$(<"${REDACT_DIR}/${REDACT_AT}.name")"
+    R_WANT="$(<"${REDACT_DIR}/${REDACT_AT}.want")"
+    R_NEVERS="$(<"${REDACT_DIR}/${REDACT_AT}.never")"
+    R_GOT="$(<"${REDACT_DIR}/${REDACT_AT}.got")"
     R_LEFT=""
     while IFS= read -r R_NEVER; do
       [[ -n "${R_NEVER}" ]] || continue
       [[ "${R_GOT}" != *"${R_NEVER}"* ]] || R_LEFT="${R_NEVER}"
-    done < <(jq -r --argjson i "${REDACT_AT}" '.cases[$i].never[]' "${REDACT_FIXTURE}")
-    if [[ -n "${R_LEFT}" ]]; then
+    done <<<"${R_NEVERS}"
+    if [[ -e "${REDACT_DIR}/${REDACT_AT}.failed" ]]; then
+      err "redact() in common.sh FAILED on case '${R_NAME}' (exit $(<"${REDACT_DIR}/${REDACT_AT}.failed"))"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    elif [[ -n "${R_LEFT}" ]]; then
       err "redact() in common.sh printed what case '${R_NAME}' must never show: ${R_LEFT}"
       REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
     elif [[ "${R_GOT}" != "${R_WANT}" ]]; then
@@ -2159,11 +2229,13 @@ else
       err "    got      : ${R_GOT}"
       REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
     fi
-    REDACT_SEEN=$(( REDACT_SEEN + 1 ))
     REDACT_AT=$(( REDACT_AT + 1 ))
   done
   if [[ "${REDACT_SEEN}" -eq 0 ]]; then
     err "the redaction fixture holds no cases; nothing was compared"
+    FAILED=1
+  elif [[ "${REDACT_SEEN}" -ne "${REDACT_CASES}" ]]; then
+    err "the shell half read ${REDACT_SEEN} of ${REDACT_CASES} cases; the rest were not compared"
     FAILED=1
   elif [[ "${REDACT_DRIFT}" -gt 0 ]]; then
     err "${REDACT_DRIFT} of ${REDACT_SEEN} redaction cases differ in the shell filter"
