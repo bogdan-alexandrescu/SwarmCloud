@@ -101,13 +101,16 @@ def test_the_token_refresh_on_the_landing_load_continues_after_a_completed_sign_
 
 @pytest.mark.parametrize("outcome", [(gate_qt.STATE_FAILED, gate_qt.SIGN_IN_FAILED),
                                      (gate_qt.STATE_CHALLENGE, gate_qt.CHALLENGE)])
-def test_a_sign_in_that_did_not_complete_still_refuses_it(monkeypatch, outcome):
+def test_a_sign_in_that_did_not_complete_is_recorded_before_the_landing(monkeypatch, outcome):
     monkeypatch.setattr(_SignIn, "outcome", outcome)
     target = _target()
     proxy = _Proxy(target)
     asyncio.run(proxy._run_qa_sign_in())
     (verdict,) = proxy.landed
-    assert verdict.action == "refuse"
+    # The approved token path continues in every sign-in state (the gate's rule since the
+    # IdP-token-during-sign-in change); what this change adds is the outcome on the target
+    # before the landing load, so that load's records read failed or challenge, not signing_in.
+    assert verdict.action == "continue" and verdict.allowed == gate_qt.IDP_TOKEN_ALLOWED
     assert (target.state, target.cause) == outcome
 
 
