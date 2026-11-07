@@ -41,7 +41,11 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "destroy.sh"
 
-PROJECT = "swarm-test-project"
+# The shared project, by name: common.sh keys SHARED_DENY_LIST by project
+# (DAYONE-DESAGA-2) -- whole for saga-agents-staging, empty for any other -- and
+# these neighbours exist only there. Named in any other project the check has
+# nobody's resources to look at, and the cases below would test nothing.
+PROJECT = "saga-agents-staging"
 
 pytestmark = pytest.mark.skipif(
     not SCRIPT.exists() or shutil.which("jq") is None,

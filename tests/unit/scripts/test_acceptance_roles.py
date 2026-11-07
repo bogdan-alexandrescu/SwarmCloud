@@ -233,7 +233,7 @@ def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     override, and only when set."""
     env = {"PATH": f"{_fake_gcloud(tmp_path)}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
            "NO_COLOR": "1", "FAKE_DIR": str(tmp_path), "TMPDIR": str(tmp_path),
-           "SWARM_ENV_FILE": str(tmp_path / "no.env"),
+           "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-test-project",
            SETTINGS[0]: "roles-accept", SETTINGS[1]: "swarm-qa@p.iam.gserviceaccount.com"}
     proc = subprocess.run(["bash", str(VERIFY_REMOTE), TARGET], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
@@ -297,6 +297,7 @@ def test_acc_api_as_mints_the_id_token_inside_cloud_run_without_gcloud(tmp_path)
               f'acc_api_as {sa} roles-accept GET /workspace/roles "" "{tmp_path}/out"\n')
     env = {"PATH": str(bin_dir), "HOME": str(tmp_path), "NO_COLOR": "1", "TMPDIR": str(tmp_path),
            "SWARM_ENV_FILE": str(tmp_path / "no.env"), "CLOUD_RUN_JOB": "swarm-verify",
+           "PROJECT_ID": "swarm-test-project",
            "API_URL": "https://swarm-api.example.a.run.app", "API_HOST": "front.example.com",
            "FAKE_DIR": str(tmp_path), "FAKE_ACCESS": access, "FAKE_ID": id_token}
     proc = subprocess.run([str(bin_dir / "bash"), "-c", script], cwd=REPO, env=env,

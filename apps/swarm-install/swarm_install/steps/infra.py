@@ -394,6 +394,12 @@ L4_QUOTA_METRIC = "compute.googleapis.com/nvidia_l4_gpus"
 #: container toolkit (design §5.1), e.g. `common-cu128-ubuntu-2204-nvidia-570`.
 IMAGE_PROJECT = "deeplearning-platform-release"
 IMAGE_FAMILY = re.compile(r"^common-cu[0-9]+-ubuntu-2204(-[a-z0-9-]+)?$")
+#: The speech image's NVIDIA driver floor (vLLM 0.33 is built on CUDA 13, which
+#: needs 580): one rule, in tfvars, which also refuses to render an older image.
+DRIVER_FLOOR = tfvars.DRIVER_FLOOR
+DRIVER_FLOOR_REFUSAL = tfvars.DRIVER_FLOOR_REFUSAL
+image_driver = tfvars.image_driver
+check_speech_image = tfvars.check_speech_image
 #: The design's cost line (§15): about $0.71 an hour while running (§1 pick 1)
 #: and the 150 GB pd-balanced boot disk, kept between sessions.
 SPEECH_COST = "about $0.71 an hour while used, $15 a month for its disk"
@@ -441,8 +447,9 @@ def l4_quota(gcp: Any, project: str, region: str) -> int | None:
 
 def speech_image(gcp: Any, project: str) -> str:
     """The newest READY, undeprecated Deep Learning VM image of an Ubuntu 22.04
-    CUDA family, by name: a /family/ path moves under the stopped machine and
-    would replace it at the next plan (variables.tf, `voice_speech.image`)."""
+    CUDA family whose family states an NVIDIA driver of DRIVER_FLOOR or later,
+    by name: a /family/ path moves under the stopped machine and would replace
+    it at the next plan (variables.tf, `voice_speech.image`)."""
     images: list[dict[str, Any]] = []
     params: dict[str, Any] = {"filter": 'family eq "common-cu.*-ubuntu-2204.*"'}
     while True:
@@ -459,7 +466,12 @@ def speech_image(gcp: Any, project: str) -> str:
     if not usable:
         raise LookupError(f"{IMAGE_PROJECT} lists no READY Ubuntu 22.04 CUDA Deep Learning VM image (family "
                           f"{IMAGE_FAMILY.pattern}); the speech machine has no image to pin")
-    newest = max(usable, key=lambda image: dt.datetime.fromisoformat(str(image["creationTimestamp"])))
+    floor = [image for image in usable if (image_driver(str(image["family"])) or 0) >= DRIVER_FLOOR
+             and (image_driver(str(image["name"])) or 0) >= DRIVER_FLOOR]
+    if not floor:
+        raise LookupError(f"{DRIVER_FLOOR_REFUSAL} {IMAGE_PROJECT} lists none: its Ubuntu 22.04 CUDA families "
+                          f"are {', '.join(sorted({str(image['family']) for image in usable}))}.")
+    newest = max(floor, key=lambda image: dt.datetime.fromisoformat(str(image["creationTimestamp"])))
     return f"projects/{IMAGE_PROJECT}/global/images/{newest['name']}"
 
 
@@ -621,6 +633,10 @@ class VoiceSpeechZoneStep(_SpeechStep):
             return Observation(UNMET, str(exc))
         if speech is None or not speech["enabled"]:
             return Observation(UNMET, "Voice it's own speech engine has no zone and image recorded")
+        try:  # an image the operator recorded is held to the same driver floor; apply pins one that meets it
+            check_speech_image(speech["image"])
+        except ValueError as exc:
+            return Observation(UNMET, str(exc))
         return Observation(MET, f"the speech machine's zone is {speech['zone']}, its image {speech['image']}")
 
     def plan(self, ctx: Any) -> Plan:
@@ -628,12 +644,19 @@ class VoiceSpeechZoneStep(_SpeechStep):
         return Plan("pick the speech machine's zone and pin its image", (
             f"the first zone of {region} offering {L4} (acceleratorTypes)",
             f"{L4_QUOTA} in {region} at least 1, requested on the Quotas page if not",
-            f"the newest Ubuntu 22.04 CUDA image of {IMAGE_PROJECT}, by name",
+            f"the newest Ubuntu 22.04 CUDA image of {IMAGE_PROJECT} with an NVIDIA driver of {DRIVER_FLOOR} or "
+            "later, by name",
         ))
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         from .preflight import QUOTA_WAIT, ApiError, quotas_page, remember
 
+        recorded = _chosen(ctx) or {}
+        if recorded.get("image"):
+            try:
+                check_speech_image(str(recorded["image"]))
+            except ValueError as exc:
+                ctx.events.emit("step_apply", step=self.id, message=f"{exc} The newest image that meets it is pinned.")
         gcp = self.deps.gcp()
         region = str(ctx.state.region)
         zones = l4_zones(gcp, ctx.project, region)

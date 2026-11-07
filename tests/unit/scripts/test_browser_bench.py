@@ -193,7 +193,8 @@ def test_unknown_prompt_or_tool_is_refused():
 
 def _bench_env(tmp_path: Path) -> dict[str, str]:
     env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "TERM": "dumb",
-           "SWARM_BROWSER_BENCH_DIR": str(tmp_path / "bench"), "NO_COLOR": "1"}
+           "SWARM_BROWSER_BENCH_DIR": str(tmp_path / "bench"), "NO_COLOR": "1",
+           "PROJECT_ID": "saga-agents-staging"}
     return env
 
 

@@ -320,7 +320,9 @@ def test_a_link_left_on_fails_link_off(tmp_path):
 
 
 def _bash(script: str, **env: str) -> subprocess.CompletedProcess:
-    full = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"), "NO_COLOR": "1", **env}
+    # No script guesses the project any more, so the caller names one.
+    full = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"), "NO_COLOR": "1",
+            "PROJECT_ID": "swarm-dev-test", **env}
     return subprocess.run(["bash", "-c", f'source "{REPO}/scripts/lib/common.sh"\nsource "{GROUP}"\n{script}'],
                           cwd=REPO, env=full,
                           capture_output=True, text=True, timeout=60)
@@ -340,10 +342,15 @@ def test_it_names_every_missing_setting():
 def test_it_never_runs_in_the_smoke_tenant_a_personal_one_or_as_a_service_account():
     full = dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET)))
     assert _bash("join_settings_problem && echo OK", **full).stdout.strip() == "OK"
+    # The never-touch list is whole only in the shared project (keyed by PROJECT_ID), so the
+    # deny-listed secret is tried there; the project id is read from common.sh, not restated.
+    shared = _bash('printf %s "$SHARED_PROJECT_ID"').stdout.strip()
+    assert shared
     for name, value in ((SETTINGS[0], "smoke"), (SETTINGS[0], "u-someone"), (SETTINGS[0], "Eng"),
                         (SETTINGS[2], "swarm-qa@p.iam.gserviceaccount.com"),
                         (SETTINGS[3], "a/b"), (SETTINGS[3], "oracle-web")):
-        proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value})
+        project = {"PROJECT_ID": shared} if value == "oracle-web" else {}
+        proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value, **project})
         assert "REFUSED" in proc.stdout, (name, value)
 
 
@@ -384,7 +391,7 @@ def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
            "NO_COLOR": "1", "FAKE_DIR": str(tmp_path), "TMPDIR": str(tmp_path),
-           "SWARM_ENV_FILE": str(tmp_path / "no.env"),
+           "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-dev-test",
            SETTINGS[0]: TENANT, SETTINGS[2]: PERSON, SETTINGS[3]: PERSON_SECRET}
     proc = subprocess.run(["bash", str(VERIFY_REMOTE), TARGET], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
