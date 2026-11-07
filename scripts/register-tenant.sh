@@ -225,6 +225,8 @@ esac
 #   A3 identity   create the worker account if absent
 #   A4 its IAM    Workload Identity x2 and act-as x2, each read first
 #   A5 access     the two tenants/<tenant>/ bucket grants and the .tenant marker
+#                 and, when the expectation names the plugins bucket, the read
+#                 of its platform/ and tenants/<tenant>/ (managed-plugins.md §3)
 #   A6 forge slot the empty slot and its -refresh twin, the worker on the slot
 #   A7 namespace  kubernetes/apply.sh with the record's quota (§8)
 #   A8 limits     the tenant and pool documents with the record's limits
@@ -406,6 +408,12 @@ WS_FALLBACK="false"
 WS_LABEL=""
 WS_SERVICE=""
 WS_FRONT_DOOR=""
+# The managed plugins bucket and the worker's read of it (managed-plugins.md
+# section 3), from the guard's expectation: all three or none. None leaves the
+# read out of A5 and A9 (the guard admits no call on that bucket then).
+WS_PLUGINS_BUCKET=""
+WS_PLUGINS_BUCKET_URL=""
+WS_PLUGINS_READ_EXPR=""
 
 # The object kinds and names a tenant render holds, one `Kind<TAB>name` line
 # each, read from render.py's YAML without a YAML library (the job's image has
@@ -813,6 +821,18 @@ ws_load_names() {
            WS_FIRESTORE_WITHHELD="projects/${PROJECT_ID}/roles/$(ws_expect firestore_role_id)" ;;
     *) die "the guard's expectation says worker_firestore_access '${WS_FIRESTORE_ACCESS}'; nothing past A1 can run" ;;
   esac
+  WS_PLUGINS_BUCKET="$(ws_expect plugins_bucket)"
+  WS_PLUGINS_BUCKET_URL="$(ws_expect plugins_bucket_url)"
+  WS_PLUGINS_READ_EXPR="$(ws_expect plugins_read_expr)"
+  if [[ -n "${WS_PLUGINS_BUCKET}${WS_PLUGINS_BUCKET_URL}${WS_PLUGINS_READ_EXPR}" ]]; then
+    # Tenant isolation: the read is rendered here for THIS tenant and must be
+    # the expectation's, character for character, so no expectation can hand
+    # the worker another workspace's tenants/ prefix.
+    [[ -n "${WS_PLUGINS_BUCKET}" && "${WS_PLUGINS_BUCKET_URL}" == "gs://${WS_PLUGINS_BUCKET}" ]] \
+      || die "the guard's expectation names the plugins bucket only in part; nothing past A1 can run"
+    [[ "${WS_PLUGINS_READ_EXPR}" == "$(plugins_read_expr "${WS_PLUGINS_BUCKET}" "${WS_TENANT}")" ]] \
+      || die "the guard's expectation holds a plugins read that is not tenant ${WS_TENANT}'s; nothing past A1 can run"
+  fi
   WS_META_ROLE="$(ws_expect bucket_metadata_role)"
   WS_CONTEXT="gke_${PROJECT_ID}_$(ws_expect gke_location)_$(ws_expect gke_cluster)"
   # One switch, read from the guard's own rules, so the script makes the WD9
@@ -1388,6 +1408,19 @@ ws_condition_file() {
     '{title: $t, description: $d, expression: $e}' >"${file}"
 }
 
+# A tenant's read of the managed plugins bucket (managed-plugins.md section 3):
+# platform/ and its OWN tenants/<tenant>/, get only (a list names the bucket,
+# never an object, so no prefix condition is true of one). The expression
+# terraform/infra/plugins.tf renders for a Terraform tenant
+# (local.plugins_tenant_read), character for character, so either one's
+# binding reads as the other's. startsWith, never matches(): Cloud Storage
+# refuses matches() in a condition.
+plugins_read_expr() {
+  local objects="projects/_/buckets/$1/objects"
+  printf 'resource.name.startsWith("%s/platform/") || resource.name.startsWith("%s/tenants/%s/")' \
+    "${objects}" "${objects}" "$2"
+}
+
 ws_bucket_has() {
   jq -e --arg r "$2" --arg m "serviceAccount:${WS_WORKER_EMAIL}" --arg e "$3" \
     'any((.bindings? // [])[]; .role == $r and any(.members[]?; . == $m)
@@ -1451,6 +1484,30 @@ ws_put_marker() {
   esac
 }
 
+# A5's read of the managed plugins bucket, when the guard's expectation names
+# it: read the bucket's policy, add the one conditioned objectViewer binding if
+# the same role, member and expression is not there. Additive, as every grant
+# here; the job never removes one (C9).
+ws_plugins_read() {
+  if [[ -z "${WS_PLUGINS_BUCKET}" ]]; then
+    dim "  plugins: the guard's expectation names no plugins bucket, so the worker's read of platform/ is not made"
+    return 0
+  fi
+  local policy="${WS_WORK}/plugins-policy.json"
+  ws_call "${policy}" gcloud storage buckets get-iam-policy "${WS_PLUGINS_BUCKET_URL}" \
+    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 1; }
+  if ws_bucket_has "${policy}" roles/storage.objectViewer "${WS_PLUGINS_READ_EXPR}"; then
+    ok "plugins: read of platform/ and ${WS_GCS_PREFIX}/ already granted"
+    return 0
+  fi
+  ws_condition_file "${WS_WORK}/plugins-condition.json" "swarm-plugins-read-${WS_TENANT}" \
+    "Read plugin copies under platform/ and ${WS_GCS_PREFIX}/ only, get and no list." "${WS_PLUGINS_READ_EXPR}"
+  ws_call /dev/null gcloud storage buckets add-iam-policy-binding "${WS_PLUGINS_BUCKET_URL}" --project "${PROJECT_ID}" \
+    --member "serviceAccount:${WS_WORKER_EMAIL}" --role roles/storage.objectViewer \
+    --condition-from-file "${WS_WORK}/plugins-condition.json" || { ws_show_err; return 1; }
+  ok "plugins: read of platform/ and ${WS_GCS_PREFIX}/ only"
+}
+
 ws_a5() {
   local policy="${WS_WORK}/bucket-policy.json" stale role
   ws_call "${policy}" gcloud storage buckets get-iam-policy "${WS_BUCKET_URL}" \
@@ -1483,6 +1540,7 @@ ws_a5() {
       --member "serviceAccount:${WS_WORKER_EMAIL}" --role roles/storage.objectUser \
       --condition-from-file "${WS_WORK}/write-condition.json" || { ws_show_err; return 1; }
   fi
+  ws_plugins_read || return 1
   if [[ "${WS_FALLBACK}" == "true" ]]; then
     # WD9's fallback (§2.3): no principal-set grant, so the person's worker gets
     # the bucket-metadata, database and telemetry roles one by one.
@@ -1823,6 +1881,13 @@ ws_a9() {
   ws_bucket_has "${WS_WORK}/bucket-policy.json" roles/storage.objectUser "${WS_WRITE_EXPR}" \
     || { ws_object "bucket grant"; return 1; }
   n=$((n + 2))
+  if [[ -n "${WS_PLUGINS_BUCKET}" ]]; then
+    ws_call "${WS_WORK}/plugins-policy.json" gcloud storage buckets get-iam-policy "${WS_PLUGINS_BUCKET_URL}" \
+      --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "plugins grant"; return 1; }
+    ws_bucket_has "${WS_WORK}/plugins-policy.json" roles/storage.objectViewer "${WS_PLUGINS_READ_EXPR}" \
+      || { ws_object "plugins grant"; return 1; }
+    n=$((n + 1))
+  fi
   if [[ "${WS_FALLBACK}" == "true" ]]; then
     ws_bucket_has "${WS_WORK}/bucket-policy.json" "${WS_META_ROLE}" "" || { ws_object "bucket grant"; return 1; }
     ws_call "${WS_WORK}/project-policy.json" gcloud projects get-iam-policy "${PROJECT_ID}" --format=json \
