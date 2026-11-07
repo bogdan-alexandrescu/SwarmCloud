@@ -31,6 +31,13 @@
 // a known card id; accept an older version; drop the sequence check; reopen
 // the stream without `after`.
 //
+// ONE STREAM PER LIVE SESSION (the owner's pick, 7 November 2026): the card
+// list's stream is the only one; it hands the stage's events up and the pane
+// passes them to the stage, so a focus on that stream moves the stage.
+//
+// MUTATIONS: let the stage open a stream of its own; drop the hand-off from
+// the card list or the pane.
+//
 // THE CARDS' STYLESHEET: every `vt-card*` class the card markup carries has a
 // rule in styles/talk-pane.css, and the rules draw from console tokens only.
 //
@@ -476,6 +483,48 @@ describe('the cards beside the Talk pane', () => {
     await act(async () => second.upsert(2, card('budget', 'vc_b', 1, 'Budget')))
     await act(async () => second.upsert(4, card('stop', 'vc_s', 1, 'Held')))
     expect(drawn(region)).toEqual(['plan:vc_p', 'budget:vc_b', 'stop:vc_s'])
+  })
+
+  it("opens exactly one stream for a live session, and a focus on it moves the stage through the card list", async () => {
+    const project = 'vp_' + '7'.repeat(32)
+    fetchMock.write.mockImplementation(async (target: { url: string }) =>
+      target.url === '/v1/voice/sessions'
+        ? { status: 'ok', data: { project_id: project, session_id: SESSION, answer_sdp: 'v=0 fake-answer' }, fetchedAt: Date.now() }
+        : { status: 'ok', data: null, fetchedAt: Date.now() },
+    )
+    const visual = (visual_id: string, title: string) => ({
+      visual_id,
+      kind: 'log',
+      title,
+      version: 1,
+      source: { task_id: 'task_t', step: 'e2e' },
+      parts: [],
+      lines: { from: 1, to: 1 },
+      body_ref: `tenants/t/voice/${project}/visuals/${visual_id}/1.txt`,
+      created_by: 'planner',
+      session_id: SESSION,
+      project_id: project,
+      created_at: '2026-11-07T09:00:00Z',
+      updated_at: '2026-11-07T09:00:00Z',
+    })
+    const visuals = apiMock.loadVoiceVisuals!
+    const passthrough = visuals.getMockImplementation()
+    visuals.mockImplementation(async () => ({ status: 'ok', fetchedAt: Date.now(), data: [visual('vv_new', 'Newest'), visual('vv_old', 'Older')] }))
+    try {
+      installMedia({ audioContext: true })
+      render(<TalkPane />)
+      await start()
+      const stage = await screen.findByRole('region', { name: 'Stage' })
+      expect(within(stage).getByRole('button', { name: /Newest/ }).getAttribute('aria-pressed')).toBe('true')
+      // One connection for the session: the card list's.
+      expect(FakeEventSource.all.map((e) => e.url)).toEqual([`/v1/voice/sessions/${SESSION}/events`])
+
+      await act(async () => FakeEventSource.last.frame('focus', 1, { visual_id: 'vv_old', anchor: null, caption: null }))
+      expect(within(stage).getByRole('button', { name: /Older/ }).getAttribute('aria-pressed')).toBe('true')
+      expect(FakeEventSource.all).toHaveLength(1)
+    } finally {
+      visuals.mockImplementation(passthrough!)
+    }
   })
 
   it('keeps the list pure: a repeated sequence is a no-op', () => {

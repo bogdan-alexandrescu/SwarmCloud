@@ -26,6 +26,11 @@
  * rescue renderers are later lanes; until they merge, those kinds are named
  * in the list as one line each (their title and summary) and nothing else.
  *
+ * ONE STREAM PER SESSION. The card list's stream is the session's only one:
+ * it also carries the Talk stage's events (`STAGE_EVENTS`), which the list
+ * hands up through `onStageEvent` for the Talk pane to pass to the stage
+ * (Stage.tsx `feed`), so a live session holds one connection.
+ *
  * NOTHING HERE SPENDS. The stream is read-only; the only action a card draws
  * in phase two is a link to where the thing lives (Open in Work, Open diff,
  * Open where you act) and the await-input card's own answer, which goes
@@ -167,64 +172,33 @@ export function streamUrl(sessionId: string, after: number): string {
   return route(VOICE_EVENTS, { id: sessionId }, after > 0 ? new URLSearchParams({ after: String(after) }) : undefined).url
 }
 
-// ---- one stream per session, shared --------------------------------------------
+// ---- the session's one stream ---------------------------------------------------
 
-/** One reader of a session's stream: the events it reads, and what it does with each. */
+/** What a stream's reader does with each event, and with the link. */
 export interface StreamReader {
-  types: readonly string[]
   onEvent: (ev: StreamEvent) => void
   /** The stream opened, or gave up (a refusal, or the session's end). */
   onLink?: (link: 'open' | 'closed') => void
 }
 
-interface SharedStream {
-  source: EventSource
-  readers: Set<StreamReader>
-}
-
-const sessionStreams = new Map<string, SharedStream>()
-
 /**
- * Reads `sessionId`'s stream through the one `EventSource` the card list and
- * the Talk stage share, so a live session holds one connection, not one per
- * reader. The first reader opens it from `after`; a reader that joins an open
- * stream reads from where it stands. A reader that joins a stream that gave
- * up (Reconnect) opens it again from its own `after`, and every reader still
- * on it moves to the new one. The stream closes when its last reader leaves.
- * Returns the reader's leave.
+ * Opens `sessionId`'s stream from `after` and reads every event it carries,
+ * the card list's and the stage's. Returns its close.
  */
-export function readSessionStream(sessionId: string, after: number, reader: StreamReader): () => void {
-  let shared = sessionStreams.get(sessionId)
-  if (shared === undefined || shared.source.readyState === EventSource.CLOSED) {
-    shared?.source.close()
-    const source = new EventSource(streamUrl(sessionId, after))
-    const next: SharedStream = { source, readers: shared?.readers ?? new Set() }
-    for (const type of SESSION_EVENTS) {
-      source.addEventListener(type, (e) => {
-        const ev = streamEvent(type, e as MessageEvent)
-        if (ev === null) return
-        for (const r of [...next.readers]) if (r.types.includes(type)) r.onEvent(ev)
-      })
-    }
-    // EventSource reconnects by itself while it can; CLOSED means it gave up.
-    source.onerror = () => {
-      if (source.readyState === EventSource.CLOSED) for (const r of [...next.readers]) r.onLink?.('closed')
-    }
-    source.onopen = () => {
-      for (const r of [...next.readers]) r.onLink?.('open')
-    }
-    sessionStreams.set(sessionId, next)
-    shared = next
+export function openSessionStream(sessionId: string, after: number, reader: StreamReader): () => void {
+  const source = new EventSource(streamUrl(sessionId, after))
+  for (const type of SESSION_EVENTS) {
+    source.addEventListener(type, (e) => {
+      const ev = streamEvent(type, e as MessageEvent)
+      if (ev !== null) reader.onEvent(ev)
+    })
   }
-  const held = shared
-  held.readers.add(reader)
-  return () => {
-    held.readers.delete(reader)
-    if (held.readers.size === 0 && sessionStreams.get(sessionId) === held) {
-      sessionStreams.delete(sessionId)
-      held.source.close()
-    }
+  // EventSource reconnects by itself while it can; CLOSED means it gave up.
+  source.onerror = () => {
+    if (source.readyState === EventSource.CLOSED) reader.onLink?.('closed')
   }
+  source.onopen = () => reader.onLink?.('open')
+  return () => source.close()
 }
 
 // ---- drawing one card -----------------------------------------------------------
@@ -260,15 +234,26 @@ type Link = 'off' | 'open' | 'closed' | 'unsupported'
  * becomes null) the stream closes and the cards stay; a new session starts
  * an empty list. `fixtures` draws the given cards with no stream; the
  * console's fixture mode draws `FIXTURE_CARDS` while no session is live, so
- * a review can see every kind without a call.
+ * a review can see every kind without a call. `onStageEvent` receives the
+ * stream's stage events (`STAGE_EVENTS`) as they arrive.
  */
-export function CardList({ sessionId, fixtures }: { sessionId: string | null; fixtures?: readonly VoiceCard[] }) {
+export function CardList({
+  sessionId,
+  fixtures,
+  onStageEvent,
+}: {
+  sessionId: string | null
+  fixtures?: readonly VoiceCard[]
+  onStageEvent?: (ev: StreamEvent) => void
+}) {
   const [s, dispatch] = useReducer(reducer, EMPTY_LIST)
   const [link, setLink] = useState<Link>('off')
   const [round, setRound] = useState(0)
   const lastSeq = useRef(0)
   const logged = useRef(new Set<string>())
   const shownFor = useRef<string | null>(null)
+  const toStage = useRef(onStageEvent)
+  toStage.current = onStageEvent
   lastSeq.current = s.lastSeq
 
   useEffect(() => {
@@ -286,9 +271,9 @@ export function CardList({ sessionId, fixtures }: { sessionId: string | null; fi
       return
     }
     setLink('open')
-    return readSessionStream(sessionId, lastSeq.current, {
-      types: STREAM_EVENTS,
+    return openSessionStream(sessionId, lastSeq.current, {
       onEvent: (ev) => {
+        if ((STAGE_EVENTS as readonly string[]).includes(ev.type)) toStage.current?.(ev)
         if (ev.type === 'card.upsert') {
           const kind = (ev.data.card as { kind?: unknown } | undefined)?.kind
           const name = typeof kind === 'string' ? kind : '(none)'
