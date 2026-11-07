@@ -2231,7 +2231,7 @@ Theater", linked from #1030. In summary:
   `human-ready` and opens the tab. In the theater, the left column becomes the
   hand-off checklist.
 * **The workflow graph** (`WorkflowViews.tsx`). A running browser step's node
-  expands an inline card with a low-rate (about 1 fps) live thumbnail. The card
+  expands an inline card with a live thumbnail (2-10 fps, §6.4). The card
   carries Open Browser tab and ⤢ Theater. In the theater, prev and next step
   through that workflow's live steps.
 * **All live browsers**: a **Live** filter on the Agents list, with a device
@@ -2290,7 +2290,7 @@ and a bullet above disagree, this list wins.
     login, ✓ you took control, the current step, and return control. It ends
     in a green "I'm done, return control" button.
 23. On the workflow graph, a RUNNING browser step's node expands an inline
-    card. The card has a live thumbnail at about 1 fps, "Open Browser tab" and
+    card. The card has a live thumbnail (2-10 fps, §6.4), "Open Browser tab" and
     "⤢ Theater".
 24. A theater opened from a workflow uses prev and next to step through that
     workflow's live steps.
@@ -2553,9 +2553,7 @@ connected in the tab, the session is read every `LIVE_STREAMING_POLL_MS`
 control moves or the session ends. Without a connected socket it stays 3 s.
 
 **Thumbnails.** A workflow card asks for no frame while it is scrolled out
-of view, and asks every 250 ms instead of every 1 s while three or fewer
-cards are on screen (`THUMB_FEW_VISIBLE`); with more it keeps the 1 s floor
-of §6, so a long graph costs what is on screen.
+of view, so a long graph costs what is on screen. Its pace is §6.4's table.
 
 **Encoding: adaptive JPEG, on at quality 70.** The gate's Tight was
 lossless only because the owner asked for a sharp picture (STREAM-SMOOTH, the
@@ -2595,6 +2593,50 @@ link carries 1.8 MB a second; on a link of 8 Mbit/s lossless falls to about
 explained by the encoder alone: the reconnects (each a new ticket, a new
 handshake and a full frame) and the API's slow reads were the larger cost.
 
+### 6.4 Thumbnails: the gate's thumbnail mode, paced by cards on screen (2026-11-06)
+
+BGD asked on 6 November 2026 for a faster Live Browsers wall and what 20
+agents doing visual QA at 5 fps or more would cost, and picked the adaptive
+rate: **10 fps with six or fewer cards on screen, 5 fps for 7 to 20, 2 fps
+beyond 20**, nothing for a card off screen (LiveThumb.tsx `THUMB_INTERVALS`:
+100, 200 and 500 ms between requests). One request is outstanding per card,
+and a card is still view only: it never sends a key, a pointer or cut text.
+
+**Why the old thumbnail could not go faster.** Until then a card asked the
+gate for RAW 32 bpp frames at the page's full 1440x900 and shrank them in the
+browser: 2.8 MB an update of a scrolling Desktop page, about 28 MB a second
+for one card at 10 fps, carried pod -> relay -> swarm-api -> browser.
+
+**Thumbnail mode.** A card names the private pseudo-encoding
+`ENCODING_THUMB_WIDTH_0 + width` (`livegate/rfb.py`) in its SetEncodings,
+with Tight and DesktopSize, at its own device-pixel width. The gate scales
+the frame to that width (aspect kept, at most `THUMB_MAX_WIDTH`, 640),
+announces the scaled size with DesktopSize, diffs at the scaled size -- an
+unchanged page sends nothing -- and sends the changes as Tight Fill and Tight
+JPEG at `THUMB_JPEG_QUALITY` (60), never refined losslessly: at a third of the
+page's width the difference does not show. The card decodes the JPEG with
+`createImageBitmap`, off the main thread where the browser allows. The
+Browser tab's full-size Tight path is unchanged byte for byte
+(`test_live_rfb_thumb.py`).
+
+Measured with `python -m agent_worker.livegate.bench --thumbs` (Pillow
+13), one card on the 1440x987 Desktop page scrolling every frame, in a
+SwarmCloud container on 2026-11-06:
+
+| One card | Bytes an update | Bytes a second at 10 fps | Gate CPU a frame |
+| --- | ---: | ---: | ---: |
+| RAW, full size (before) | 2,821,944 | 28.2 MB | 14.6 ms |
+| thumbnail mode, 480 wide | 14,086 | 0.14 MB | 11.3 ms |
+
+So twenty cards at the 5 fps tier are about 1.4 MB a second on a page that
+never stops moving, and nothing while the pages stand still.
+
+**A thumbnail is not a watcher (§7).** The relay reads each viewer link's
+SetEncodings and does not count a thumbnail-mode link when it sets the
+recorder's rate, so a session watched only by cards records at 1 fps; a
+Browser tab raises it to 10. The per-agent and per-tenant viewer caps (§5.10)
+still count every link.
+
 ## 7. Recording and replay (LB-4)
 
 **What is recorded.** The frames the gate publishes, which since BGD's
@@ -2608,7 +2650,9 @@ with everything else in the pod.
 
 * `tenants/<t>/tasks/<task>/attempts/<a>/live/rec-<seq>.live.webm`: one-minute
   VP8 segments, 1 fps when nobody is watching and up to 10 fps while someone
-  is (Q11 asks whether to record when nobody watches at all).
+  is (Q11 asks whether to record when nobody watches at all). A Live
+  Browsers card is not someone watching: a session seen only by thumbnails
+  records at 1 fps (§6.4).
 * `tenants/<t>/tasks/<task>/attempts/<a>/live/actions-<seq>.live.jsonl`: one
   line per agent CDP **method** the proxy forwarded (`Page.navigate` with the
   redacted URL; `Input.insertText` as a length, never text), and one per
