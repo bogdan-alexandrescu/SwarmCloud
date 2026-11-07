@@ -597,3 +597,29 @@ def speech_machine_lines(db: Any, sessions: Mapping[str, str], *,
         add(lines[sid], minutes,
             round(minutes / 60.0 * machine.usd_per_hour, 4) if machine else None)
     return lines
+
+
+def speech_machine_stops(db: Any, *, start: datetime, end: datetime,
+                         tenant_id: str | None) -> list[dict[str, Any]]:
+    """The Speech machine line's finished starts stopped in [start, end),
+    under one tenant or (None) every tenant: `{session_id, tenant_id, at,
+    minutes, usd}` from each stop's `voice_audit` row, `usd` None when the
+    stop carries no price. Read by `at` alone (a single-field index) and
+    filtered here, so no composite index. A read that fails raises."""
+    query = (db.collection(vs.AUDIT)
+             .where(filter=FieldFilter("at", ">=", start))
+             .where(filter=FieldFilter("at", "<", end)))
+    stops = []
+    for snap in query.stream():
+        row = snap.to_dict() or {}
+        at = _aware(row.get("at"))
+        if row.get("action") != sm.AUDIT_STOPPED or at is None \
+                or (tenant_id is not None and row.get("tenant_id") != tenant_id):
+            continue
+        detail = row.get("detail") or {}
+        usd = detail.get("usd")
+        stops.append({"session_id": row.get("session_id"), "tenant_id": row.get("tenant_id"),
+                      "at": at, "minutes": detail.get("minutes"),
+                      "usd": float(usd) if isinstance(usd, (int, float))
+                      and not isinstance(usd, bool) else None})
+    return stops

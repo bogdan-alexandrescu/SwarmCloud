@@ -830,23 +830,32 @@ class SpeechMachine:
         return report
 
 
-def stockouts(db: Any, *, tenant_id: str | None) -> list[dict[str, Any]]:
-    """The starts refused for want of an L4 in the zone: every AUDIT_NO_L4
-    row `start` wrote, as {session_id, tenant_id, at}, under one tenant or
-    (None) every tenant. Read by equality only, so no composite index; a
-    stock-out is rare, and the caller places each on its day. A read that
-    fails raises."""
-    query = db.collection(vs.AUDIT).where(filter=FieldFilter("action", "==", AUDIT_NO_L4))
-    if tenant_id is not None:
-        query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+def stockouts(db: Any, *, tenant_id: str | None, session_ids: list[str] | None = None,
+              start: datetime | None = None, end: datetime | None = None) -> list[dict[str, Any]]:
+    """The starts refused for want of an L4 in the zone: the AUDIT_NO_L4 rows
+    `start` wrote, as {session_id, tenant_id, at}, under one tenant or (None)
+    every tenant; those of `session_ids`, else those written in [start, end).
+    Equality or a range on `at` alone, filtered here, so no composite index.
+    A read that fails raises."""
+    if session_ids is not None:
+        queries = [db.collection(vs.AUDIT)
+                   .where(filter=FieldFilter("session_id", "in", session_ids[i:i + 30]))
+                   .where(filter=FieldFilter("action", "==", AUDIT_NO_L4))
+                   for i in range(0, len(session_ids), 30)]
+    else:
+        queries = [db.collection(vs.AUDIT)
+                   .where(filter=FieldFilter("at", ">=", start))
+                   .where(filter=FieldFilter("at", "<", end))]
     rows = []
-    for snap in query.stream():
-        row = snap.to_dict() or {}
-        at = _aware(row.get("at"))
-        if at is None or (tenant_id is not None and row.get("tenant_id") != tenant_id):
-            continue
-        rows.append({"session_id": row.get("session_id"), "tenant_id": row.get("tenant_id"),
-                     "at": at})
+    for query in queries:
+        for snap in query.stream():
+            row = snap.to_dict() or {}
+            at = _aware(row.get("at"))
+            if row.get("action") != AUDIT_NO_L4 or at is None \
+                    or (tenant_id is not None and row.get("tenant_id") != tenant_id):
+                continue
+            rows.append({"session_id": row.get("session_id"),
+                         "tenant_id": row.get("tenant_id"), "at": at})
     return rows
 
 
