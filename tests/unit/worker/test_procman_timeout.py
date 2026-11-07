@@ -180,7 +180,7 @@ def test_argv_must_be_a_list_never_a_command_string():
 
 def test_worker_timeout_fails_the_task_and_releases_the_lease(db, worker_factory):
     seed_attempt(db, task_input={"prompt": "slow", "steps": 50, "sleep_seconds": 30.0})
-    # Its continuations at the time limit spent (BGD, 2026-11-02): this stop
+    # Its continuations at the time limit spent (the owner, 2026-11-02): this stop
     # fails, as every stop at the limit did before them.
     db.doc("tasks/task_1")["metadata"] = {"time_limit_continuations": 2}
     worker, _, _ = worker_factory(timeout_seconds=2, termination_grace_seconds=2)

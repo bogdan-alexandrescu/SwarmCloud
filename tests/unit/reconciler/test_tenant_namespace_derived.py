@@ -91,7 +91,7 @@ def test_the_backend_then_reads_the_derived_namespace_for_that_tenant(db):
 @pytest.mark.parametrize(
     "stored, severity",
     [
-        # Outside the prefix: the pre-2026-09-23 spelling tenants/u-bogdan carried.
+        # Outside the prefix: the pre-2026-09-23 spelling tenants/u-owner carried.
         ("swarm-eng", "ERROR"),  # namespace-prefix-exempt: stale, on purpose
         # The bare prefix names no tenant at all.
         (PREFIX, "ERROR"),

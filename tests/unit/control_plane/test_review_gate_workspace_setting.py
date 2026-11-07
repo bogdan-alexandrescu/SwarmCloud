@@ -3,7 +3,7 @@
     GET /v1/workspaces/{tenant_id}/review-gate
     PUT /v1/workspaces/{tenant_id}/review-gate   `{enabled, min_lines, risk_paths}`
 
-BGD 2026-10-28: the gate applies to every review step by default, "settable
+the owner 2026-10-28: the gate applies to every review step by default, "settable
 per workspace the way other workflow defaults are". What these hold: the
 owner or admin (here a platform admin) sets it, audited; a member who is not
 its admin is refused 403 and nothing is written; a malformed value is a 422;

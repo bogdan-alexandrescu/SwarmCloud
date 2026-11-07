@@ -25,8 +25,8 @@ from swarm_api import delegation
 from swarm_api.delegation import DelegatedCredentials, DelegationError, delegate
 
 SCOPE = "https://www.googleapis.com/auth/cloud-identity.groups.readonly"
-SA = "swarm-api@example.iam.gserviceaccount.com"
-USER = "bogdan@example.com"
+SA = "swarm-api@example-project.iam.gserviceaccount.com"
+USER = "owner@example.com"
 
 
 class _Response:

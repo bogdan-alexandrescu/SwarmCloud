@@ -96,21 +96,21 @@ def _logger():
     return StructuredLogger(stream=stream, component="test"), stream
 
 
-def _world(*, user_key: str | None, tenant_key: str | None, principal: str = "bogdan@example.com"):
+def _world(*, user_key: str | None, tenant_key: str | None, principal: str = "owner@example.com"):
     docs: dict[str, dict] = {
-        "tenants/u-bogdan": {"tenant_id": "u-bogdan", "kind": "user", "principal": principal},
+        "tenants/u-owner": {"tenant_id": "u-owner", "kind": "user", "principal": principal},
     }
     values = {}
     if user_key is not None:
-        docs["provider_keys/swarm-tenant-u-bogdan-typesafe"] = {"set": True}
-        values["swarm-tenant-u-bogdan-typesafe"] = user_key
+        docs["provider_keys/swarm-tenant-u-owner-typesafe"] = {"set": True}
+        values["swarm-tenant-u-owner-typesafe"] = user_key
     if tenant_key is not None:
         docs["provider_keys/swarm-tenant-eng-typesafe"] = {"set": True}
         values["swarm-tenant-eng-typesafe"] = tenant_key
     return _Db(docs), values
 
 
-def _prepare(tmp_path, db, client, *, endpoint=ENDPOINT, submitted_by="bogdan@example.com"):
+def _prepare(tmp_path, db, client, *, endpoint=ENDPOINT, submitted_by="owner@example.com"):
     from agent_worker import jevkey
 
     log, stream = _logger()
@@ -128,11 +128,11 @@ def test_the_order_is_swarm_apis_over_every_combination():
     from agent_worker import jevkey
     from swarm_api.provider_keys import resolve_provider_key
 
-    user, tenant = "swarm-tenant-u-bogdan-typesafe", "swarm-tenant-eng-typesafe"
+    user, tenant = "swarm-tenant-u-owner-typesafe", "swarm-tenant-eng-typesafe"
     seen = 0
-    for personal, has_user, has_tenant in itertools.product(("u-bogdan", None), (0, 1), (0, 1)):
+    for personal, has_user, has_tenant in itertools.product(("u-owner", None), (0, 1), (0, 1)):
         present = {s for s, on in ((user, has_user), (tenant, has_tenant)) if on}
-        for task_tenant in ("eng", "u-bogdan"):
+        for task_tenant in ("eng", "u-owner"):
             mine = jevkey.candidates(task_tenant, personal, present)
             theirs = resolve_provider_key(task_tenant, personal, "typesafe", present)
             assert (mine[0][1] if mine else None) == theirs, (task_tenant, personal, present)
@@ -153,7 +153,7 @@ def test_the_submitters_own_key_wins(tmp_path):
 
 def test_a_namesakes_personal_tenant_is_not_the_submitters(tmp_path):
     user_key, tenant_key = _fake_key(), _fake_key()
-    db, values = _world(user_key=user_key, tenant_key=tenant_key, principal="bogdan@partner.com")
+    db, values = _world(user_key=user_key, tenant_key=tenant_key, principal="owner@example.org")
     env, _ = _prepare(tmp_path, db, _Secrets(values))
     assert Path(env["SWARM_JEV_KEY_FILE"]).read_text() == tenant_key
 
@@ -161,7 +161,7 @@ def test_a_namesakes_personal_tenant_is_not_the_submitters(tmp_path):
 def test_an_unreadable_personal_key_falls_to_the_tenant_key_and_says_so(tmp_path):
     user_key, tenant_key = _fake_key(), _fake_key()
     db, values = _world(user_key=user_key, tenant_key=tenant_key)
-    env, logs = _prepare(tmp_path, db, _Secrets(values, denied=("swarm-tenant-u-bogdan-typesafe",)))
+    env, logs = _prepare(tmp_path, db, _Secrets(values, denied=("swarm-tenant-u-owner-typesafe",)))
     assert Path(env["SWARM_JEV_KEY_FILE"]).read_text() == tenant_key
     assert "jev_key_unreadable" in logs and "PermissionError" in logs
 
@@ -277,7 +277,7 @@ def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None, browse
     # on (scheduler.judgment.jev_dispatch); `route=False` is the egress off,
     # where the runner registers no jev (JEV-OFF, #1345).
     if backend in ("internal-jev", "internal-laya") and route:
-        monkeypatch.setenv("JEV_API_URL", "https://decision-api-staging.taile0bda9.ts.net/"
+        monkeypatch.setenv("JEV_API_URL", "https://decision-api.example-tailnet.ts.net/"
                                           + backend.split("-", 1)[1] + "/v1/decide")
     claude_code.body(_ctx(tmp_path, browser_tool))
     return seen
@@ -399,7 +399,7 @@ def test_an_internal_backend_never_reads_or_writes_a_key(tmp_path):
         private = tmp_path / backend
         private.mkdir()
         env = jevkey.prepare(endpoint=ENDPOINT, db=db, client=client, tenant_id="eng",
-                             submitted_by="bogdan@example.com", private_dir=private,
+                             submitted_by="owner@example.com", private_dir=private,
                              logger=log, backend=backend)
         assert env == {} and client.reads == [] and not list(private.iterdir())
 

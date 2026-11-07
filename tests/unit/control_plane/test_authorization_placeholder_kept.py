@@ -1,6 +1,6 @@
 """An `Authorization` value that only NAMES a variable is code, and is kept.
 
-AI Studio's session reported it on 6 November 2026 (part of #2688): applying
+A peer application's session reported it on 6 November 2026 (part of #2688): applying
 a lane's swarm-work.patch back, the redaction had masked three test lines
 holding `"Authorization": f"Bearer {TOKEN}"` -- a template with a variable
 placeholder and no value -- so the patch no longer applied. Two rules did it:
@@ -10,7 +10,7 @@ the key/value rule took the f-string's `f` prefix for the value under the
 
 A placeholder (`{TOKEN}`, `${TOKEN}`, `$TOKEN`, `%(token)s`) alone after the
 scheme word now leaves the line whole. Every literal is still masked, and so
-is a literal glued to a placeholder. The fourth span AI Studio saw, a CI
+is a literal glued to a placeholder. The fourth span a peer application saw, a CI
 service's `POSTGRES_PASSWORD: <literal>`, stays MASKED: it is a literal value
 in a file, and no allow list is added for it.
 
@@ -45,7 +45,7 @@ def _literal(length: int) -> str:
 @pytest.mark.parametrize(
     "line",
     [
-        # AI Studio's three test lines.
+        # A peer application's three test lines.
         '    response = client.get("/v1/runs", headers={"Authorization": f"Bearer {TOKEN}"})',
         '        headers = {"Authorization": f"Bearer {TOKEN}"}',
         '+    headers={"Authorization": f"Bearer {TOKEN}"},',

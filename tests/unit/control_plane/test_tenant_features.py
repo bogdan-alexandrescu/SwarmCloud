@@ -1,6 +1,6 @@
 """`GET /v1/tenants/me` says whether three features are on for the workspace (FEATURES-READ, part of #1748).
 
-Owner decision, 2026-10-20. A caller such as Product Oracle (`u-or-9a0792`)
+Owner decision, 2026-10-20. A caller such as a peer application (`u-or-9a0792`)
 must not have to learn at submit or answer time whether
 
   * `caller_mcp`: registered MCP servers, `mcp_servers.mcp_servers_enabled()`
@@ -43,7 +43,7 @@ from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
 
 AWAIT = "await-input"
 #: A service tenant's principal and its tenant, from the frozen rule.
-ORACLE = "oracle-api@saga-agents-staging.iam.gserviceaccount.com"
+ORACLE = "oracle-api@example-project.iam.gserviceaccount.com"
 ORACLE_TENANT = tenant_id_for_user(ORACLE)
 
 

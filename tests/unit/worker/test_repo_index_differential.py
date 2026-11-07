@@ -1,6 +1,6 @@
 """Differential tests: an incremental index equals a full one of the same commit.
 
-The owner's agent quality program (BGD, 2026-11-03) proves the landed
+The owner's agent quality program (the owner, 2026-11-03) proves the landed
 incremental carry before relying on it: a graph cut only in its test maps is
 carried, and an incremental run's facts are the facts a full extraction of
 the same commit gives. Each case here indexes a fixture repository in full,

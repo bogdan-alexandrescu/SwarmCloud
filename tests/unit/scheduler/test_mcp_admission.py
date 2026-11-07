@@ -10,8 +10,8 @@ existing credential park and before any lease,
   * a `dispatch` server whose credential row is destroyed or past `expires_at`
     is never leased. On a WORKFLOW's task (a step, or a child of one) it parks
     CREDENTIAL_MISSING with `credential: "mcp"`, the code, the server and
-    `expired_at`, because its caller can re-store the credential (BGD
-    2026-10-26, Product Oracle's runs); the sweep promotes it once the row is
+    `expired_at`, because its caller can re-store the credential (the owner
+    2026-10-26, a peer application's runs); the sweep promotes it once the row is
     live, and ends it FAILED past `MCP_CREDENTIAL_PARK_MAX_SECONDS`. On a task
     that is no workflow's it ends FAILED `mcp_credential_expired` from READY
     or PARKED (contract request 99), no lease, no reservation, no retry.
@@ -434,7 +434,7 @@ def mcp_parks(db, task_id: str) -> list[dict]:
 def test_a_workflow_steps_expired_credential_parks_and_never_fails(
     db, make_scheduler, dispatcher, why, row, start
 ):
-    """BGD 2026-10-26 (Product Oracle's five Code map runs, failed at once on
+    """the owner 2026-10-26 (A peer application's five Code map runs, failed at once on
     promotion at 22:45Z): a step whose workflow credential lapsed while it
     waited parks CREDENTIAL_MISSING, before any lease, with the detail a
     caller watches for, and stays parked drain after drain at no cost."""

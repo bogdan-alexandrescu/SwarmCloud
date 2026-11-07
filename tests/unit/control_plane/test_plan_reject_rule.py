@@ -1,6 +1,6 @@
 """Rejecting a run's plan asks who may approve it (PLAN-REJECT-RULE, part of #2417).
 
-BGD 2026-10-26 (~23:40Z, "Yes, in a follow-up lane"): POST
+the owner 2026-10-26 (~23:40Z, "Yes, in a follow-up lane"): POST
 /v1/runs/{id}/plan:reject asks the rule PR 2501 gave the approvals inbox's
 `:reject` -- ONLY SOMEONE WHO MAY APPROVE MAY REJECT, and a workspace admin
 decides a `second_member` hold alone. The rule is the inbox's own

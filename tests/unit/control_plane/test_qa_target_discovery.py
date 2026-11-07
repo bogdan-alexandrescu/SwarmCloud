@@ -1,7 +1,7 @@
 """A QA target's discovery, started and stored by swarm-api
 (docs/design/visual-qa-any-app.md §4.1; lane QA-DISCOVER, part of #1933).
 
-BGD, 2026-10-23, after `ai-studio-staging-crawl` (qat_2c0948220748fda5)
+the owner, 2026-10-23, after `peer-app-staging-crawl` (qat_2c0948220748fda5)
 could not be started from the console: "build discovery, so a crawl target is
 started entirely from the console". What these tests hold, over the real app
 and the in-memory Firestore:

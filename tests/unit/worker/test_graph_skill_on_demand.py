@@ -219,7 +219,7 @@ def test_a_graph_on_step_gets_the_skill_not_the_ten_tools(monkeypatch, tmp_path,
     assert entry["args"][-2:] == ["--shape", graphstage.SHAPE_SKILL]
     assert claude_code.GRAPH_FIRST_NOTE not in seen["prompt"]
     # An implement step: the lookup line names the skill, in place of the
-    # exploration line's clause (BGD, 2026-11-06).
+    # exploration line's clause (the owner, 2026-11-06).
     assert claude_code.GRAPH_LOOKUP_SKILL in seen["prompt"]
     assert claude_code.EXPLORATION_SKILL_CLAUSE not in seen["prompt"]
     system = _system(seen)

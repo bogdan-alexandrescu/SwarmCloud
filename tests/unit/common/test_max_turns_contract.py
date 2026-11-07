@@ -1,6 +1,6 @@
 """Contract request 133, the turn cap, as applied (part of #2524 and #2688).
 
-Accepted by the owner (BGD) 2 November 2026 ("Accept and build"). The
+Accepted by the owner 2 November 2026 ("Accept and build"). The
 request's own shape in docs/contract-change-requests.md:
 
   * `RunnerProfile.supports_max_turns` (False by default; True on the six
@@ -116,6 +116,6 @@ def test_the_request_is_marked_accepted_and_applied():
     text = REQUESTS.read_text()
     row = next(line for line in text.splitlines() if line.startswith("| 133 |"))
     assert "ACCEPTED by the owner" in row and "APPLIED 2026-11-02" in row
-    assert "owner accepted 2 November 2026" in row and "REQUESTED for BGD" not in row
+    assert "owner accepted 2 November 2026" in row and "REQUESTED for the owner" not in row
     section = text.split("\n## 133. ", 1)[1].split("\n## ", 1)[0]
-    assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner (BGD)")
+    assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner")

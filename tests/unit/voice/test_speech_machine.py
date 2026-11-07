@@ -370,10 +370,10 @@ def test_the_config_reads_the_swarm_speech_environment():
         "SWARM_SPEECH_PROJECT": "proj", "SWARM_SPEECH_ZONES": ZONE,
         "SWARM_SPEECH_INSTANCE": "swarm-speech-a", "SWARM_SPEECH_ADDR": "10.40.0.9",
         "SWARM_SPEECH_SWEEP_AUDIENCE": "https://swarm-api.dev.swarm.internal",
-        "SWARM_SPEECH_SWEEP_CALLERS": "Tick@proj.iam.gserviceaccount.com"})
+        "SWARM_SPEECH_SWEEP_CALLERS": "Tick@example-project.iam.gserviceaccount.com"})
     assert config.enabled and config.stream_url == "ws://10.40.0.9:8080/v1/stream"
     assert config.audience == "swarm-speech"
-    assert config.sweep_callers == ("tick@proj.iam.gserviceaccount.com",)
+    assert config.sweep_callers == ("tick@example-project.iam.gserviceaccount.com",)
     assert not sm.SpeechConfig.from_env({}).enabled
 
 

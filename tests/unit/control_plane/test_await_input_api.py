@@ -49,8 +49,8 @@ PROFILE = "await-input"
 SIGNER = LocalSpecSigner()
 #: A service account admitted by ALLOWED_USERS and confirmed in eng: an
 #: ordinary member to every route but the answer.
-BOT = "swarm-bot@saga-agents-staging.iam.gserviceaccount.com"
-TICK = "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+BOT = "swarm-bot@example-project.iam.gserviceaccount.com"
+TICK = "swarm-schedule-tick@example-project.iam.gserviceaccount.com"
 
 
 def fake_token() -> str:
@@ -341,7 +341,7 @@ def live_client(db, tokens, objects, writer, directory, await_enabled, monkeypat
     monkeypatch.delenv("SCHEDULES_ENABLED", raising=False)
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
-    groups = CloudIdentityGroups("saga-agents-staging", session=directory, ttl_seconds=3_600)
+    groups = CloudIdentityGroups("example-project", session=directory, ttl_seconds=3_600)
     context = make_context(db, tokens, objects, groups)
     return TestClient(create_app(context, input_writer=writer), raise_server_exceptions=False)
 
@@ -395,7 +395,7 @@ def _personal_tenant(db) -> Tenant:
         tenant_id="u-carol", kind="user", principal="carol@example.com",
         created_at=datetime.now(timezone.utc), display_name="carol", max_active=4,
         capacity_units=8, enabled=True, credentials=[],
-        service_account="swarm-agent-worker-u-carol@x.iam.gserviceaccount.com",
+        service_account="swarm-agent-worker-u-carol@example-project.iam.gserviceaccount.com",
         gcs_prefix="gs://b/tenants/u-carol", namespace="swarm-tenant-u-carol",
     )
     from dataclasses import asdict
@@ -424,7 +424,7 @@ def test_a_personal_tenants_step_refuses_anyone_but_its_owner(client, db, api_co
 
 
 def test_a_refusal_a_person_reads_says_workspace_never_tenant(api_context):
-    """VQ-056 (BGD, 2026-10-26): every reader-facing 'tenant' is 'workspace'.
+    """VQ-056 (the owner, 2026-10-26): every reader-facing 'tenant' is 'workspace'.
     The reason codes and field names do not change; only the words."""
     with pytest.raises(awaitinput.Forbidden) as refused:
         awaitinput.member_refusal(api_context, _person("alice@example.com", "ghost"), "ghost")

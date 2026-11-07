@@ -1,4 +1,4 @@
-"""A spec's `description` and `feature` reach swarm-api as metadata (BGD, 2026-11-04).
+"""A spec's `description` and `feature` reach swarm-api as metadata (the owner, 2026-11-04).
 
 The console's workflow page heads with what the work is meant to deliver and
 the feature it belongs to. A spec says both at its top level, beside

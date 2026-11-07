@@ -1,11 +1,11 @@
 """Every server-side forge read resolves its slot the way a task's would
 (INDEX-USER-SLOT; part of #1041).
 
-Owner report 2026-10-13: "Index now" in the personal tenant u-bogdan was
-refused with "swarm-api may not read swarm-tenant-u-bogdan-git: its
+Owner report 2026-10-13: "Index now" in the personal tenant u-owner was
+refused with "swarm-api may not read swarm-tenant-u-owner-git: its
 per-secret accessor grant ... is missing". Measured the same day: no
-`swarm-tenant-u-bogdan-git` exists; the tenant's only GitHub credential is
-its owner's connection slot, `swarm-tenant-u-bogdan-git-u-<hex>`. swarm-api
+`swarm-tenant-u-owner-git` exists; the tenant's only GitHub credential is
+its owner's connection slot, `swarm-tenant-u-owner-git-u-<hex>`. swarm-api
 read the tenant-wide `-git` slot unconditionally, and, holding no
 project-wide `secrets.get`, got PermissionDenied for the missing secret, so
 the message blamed a grant.
@@ -40,7 +40,7 @@ from .repo_fakes import make_client
 from .repo_index_fakes import REPOSITORY, IndexGitHub, sha
 
 PROJECT = "p"
-OWNER = "bogdan@example.com"
+OWNER = "owner@example.com"
 NOW = datetime(2026, 10, 13, 12, 40, tzinfo=timezone.utc)
 
 
@@ -82,7 +82,7 @@ class SecretsByName:
         raise gexc.PermissionDenied("denied")
 
 
-def _personal(tenant_id: str = "u-bogdan", owner: str = OWNER) -> Tenant:
+def _personal(tenant_id: str = "u-owner", owner: str = OWNER) -> Tenant:
     return Tenant(tenant_id=tenant_id, kind="user", principal=owner, created_at=NOW)
 
 
@@ -116,16 +116,16 @@ def _user_secret(tenant_id: str, email: str) -> str:
 def test_a_personal_tenant_with_only_its_owners_user_slot_reads_that_slot(db) -> None:
     from swarm_api.repoindex import read_head
 
-    _user_record(db, "u-bogdan", OWNER)
+    _user_record(db, "u-owner", OWNER)
     value = _token()
-    reader, client = _reader(db, {_user_secret("u-bogdan", OWNER): value})
+    reader, client = _reader(db, {_user_secret("u-owner", OWNER): value})
     github = IndexGitHub(heads={"main": sha("one")})
     record = {"owner": "example-org", "repo": "widgets", "default_branch": "main"}
 
     head = read_head(record, _personal(), tokens=reader, forge=forge.GitHubIssues(send=github))
 
     assert head == sha("one")
-    assert client.names == [client.secret(_user_secret("u-bogdan", OWNER))]
+    assert client.names == [client.secret(_user_secret("u-owner", OWNER))]
     assert reader.resolve(_personal()).source == "owner"
 
 
@@ -150,11 +150,11 @@ def test_neither_slot_says_connect_github_not_a_missing_grant(db) -> None:
         reader.token_for(_personal(), person=OWNER)
     text = str(raised.value)
     assert raised.value.code == "no_forge_credential"
-    assert text.startswith("No GitHub credential for u-bogdan: connect GitHub under "
+    assert text.startswith("No GitHub credential for u-owner: connect GitHub under "
                            "Setup › Git tokens")
-    assert "swarm-tenant-u-bogdan-git" in text
+    assert "swarm-tenant-u-owner-git" in text
     assert "grant" not in text and "terraform" not in text
-    assert client.names == [client.secret("swarm-tenant-u-bogdan-git")]
+    assert client.names == [client.secret("swarm-tenant-u-owner-git")]
 
 
 def test_a_known_git_slot_that_is_refused_still_names_its_grant(db) -> None:
@@ -178,7 +178,7 @@ def test_a_persons_own_slot_is_preferred_when_present(db) -> None:
 
 
 def test_a_revoked_user_slot_is_not_resolved(db) -> None:
-    _user_record(db, "u-bogdan", OWNER, state=TokenState.REVOKED)
+    _user_record(db, "u-owner", OWNER, state=TokenState.REVOKED)
     reader, _client = _reader(db, {})
     slot = reader.resolve(_personal(), person=OWNER)
     assert (slot.provider, slot.known) == ("git", False)
@@ -187,10 +187,10 @@ def test_a_revoked_user_slot_is_not_resolved(db) -> None:
 def test_another_tenants_record_does_not_resolve_a_slot_here(db) -> None:
     # The record's id is a hash of ITS tenant; a document under this
     # tenant's id that says another tenant is no record (invariant 9).
-    record = _user_record(db, "u-bogdan", OWNER)
+    record = _user_record(db, "u-owner", OWNER)
     other = record_for_slot("u-mallory", Scope.USER, user=OWNER, registered_by=OWNER, now=NOW)
     doc = dict(db.docs[f"git_tokens/{record.token_id}"])
-    doc["tenant_id"] = "u-bogdan"
+    doc["tenant_id"] = "u-owner"
     db.collection("git_tokens").document(other.token_id).set(doc)
     reader, _client = _reader(db, {})
     assert reader.resolve(_personal("u-mallory")).known is False

@@ -1,6 +1,6 @@
 """swarm-api drives a `fix-loop` step's rounds on `task_finished` (FL-DRIVE, part of #2509).
 
-docs/design/fix-loop.md §4.2-§4.5, §4.7, §4.8 and BGD's answers in §9
+docs/design/fix-loop.md §4.2-§4.5, §4.7, §4.8 and the owner's answers in §9
 (2026-10-27). A `fix-loop` step is a control-plane step: the scheduler parks
 it FIX_ROUNDS_RUNNING and never leases it (FL-SCHED). swarm-api's
 `fixloop.on_task_finished`, called from the `task_finished` push beside
@@ -64,7 +64,7 @@ from . import forge_fakes
 from .conftest import PROJECT, api_settings, auth_header, seed_tenant
 from .spec_signer import KEY_VERSION, LocalSpecSigner
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 BUCKET = f"swarm-artifacts-{PROJECT}"
 REPO = "https://github.com/example-org/widgets"
@@ -745,7 +745,7 @@ def test_an_exhausted_loop_ends_failed_fix_loop_exhausted_through_end(loop_clien
 
 
 # --------------------------------------------------------------------------
-# Later rounds' minors go to the wave epic (§6.5, BGD's Q7 (a))
+# Later rounds' minors go to the wave epic (§6.5, the owner's Q7 (a))
 # --------------------------------------------------------------------------
 
 EPIC = 77

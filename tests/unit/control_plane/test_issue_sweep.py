@@ -60,7 +60,7 @@ from . import forge_fakes
 from .conftest import api_settings, auth_header, seed_tenant
 from .test_issue_runs import _finish_planner
 
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 OWNER, REPO = "example-org", "widgets"
 REPOSITORY = f"{OWNER}/{REPO}"
@@ -649,7 +649,7 @@ def test_the_old_settings_routes_answer_not_found(client, path):
 def test_the_platform_switch_is_gone(monkeypatch):
     assert "sweep_enabled" not in ApiSettings.__dataclass_fields__
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("SWEEP_ENABLED", "true")
     assert not hasattr(ApiSettings.from_env(), "sweep_enabled")
 

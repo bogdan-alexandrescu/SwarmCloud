@@ -35,7 +35,7 @@ from state_routes_harness import RoutesOpener, api_client, remote_control
 from state_routes_harness import seed_attempt as seed_routes_attempt
 from worker_seeds import seed_attempt
 
-VERIFY_SA = "swarm-verify@saga-agents-staging.iam.gserviceaccount.com"
+VERIFY_SA = "swarm-verify@example-project.iam.gserviceaccount.com"
 PERSON = "alice.person@example.com"
 
 
@@ -61,8 +61,8 @@ def _raw_fence_lines(stream) -> list[str]:
     ("principal", "expected"),
     [
         (VERIFY_SA, "swarm-verify"),
-        ("Swarm-Verify@saga-agents-staging.iam.gserviceaccount.com ", "swarm-verify"),
-        ("swarm-ci-fix@other-project-1.iam.gserviceaccount.com", "swarm-ci-fix"),
+        ("Swarm-Verify@example-project.iam.gserviceaccount.com ", "swarm-verify"),
+        ("swarm-ci-fix@example-shared-project.iam.gserviceaccount.com", "swarm-ci-fix"),
         (PERSON, SUBMITTER_NOT_SERVICE),
         # Google-managed accounts name no workload of ours: every workload in a
         # project can run as them (swarm_common.identity.SERVICE_ACCOUNT_EMAIL).

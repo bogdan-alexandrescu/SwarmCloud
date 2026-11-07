@@ -304,7 +304,7 @@ def test_a_not_yet_hold_whose_pull_request_merged_outside_ends(tmp_path):
         "wake_requested_at": hold["wake_requested_at"], "wake_reason": hold["wake_reason"],
         merge.OWNER_HOLD_KEY: hold}}
     world.pr.update(state="closed", merged=True, merge_commit_sha=MERGED,
-                    merged_by={"login": "bogdan-alexandrescu"},
+                    merged_by={"login": "example-user"},
                     merged_at="2026-10-26T07:25:00Z")
 
     outcome = merge.run_merge(world.context())

@@ -49,7 +49,7 @@ from .test_issue_runs import PLAN, _create, _docs, _finish_planner, _run
 
 OWNER = "root@example.com"
 SWITCH = refusals.env_name("hold_approver_required")
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 
 
 def _plan(*files: str, prompt: str = "Change what the issue asks.") -> dict:
@@ -429,7 +429,7 @@ def test_an_edit_can_add_a_hold(client, db, objects, switch_on):
 
 def test_rejecting_a_held_run_is_anyones_only_with_the_reject_rule_off(client, db, objects, switch_on,
                                                                         monkeypatch):
-    """BGD 2026-10-26 (#2417): only someone who may approve may reject, so the
+    """the owner 2026-10-26 (#2417): only someone who may approve may reject, so the
     creator a second_member hold keeps out is refused; with the reject rule's
     switch off, rejecting is anyone's, as it was (test_plan_reject_rule.py)."""
     _register(db, platform=True)

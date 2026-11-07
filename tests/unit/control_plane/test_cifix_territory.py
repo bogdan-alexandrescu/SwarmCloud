@@ -7,7 +7,7 @@ it. The fixer had been told nothing about the lane's territory, and its task
 declared none, so the worker's TERRITORY-WARN check (#1468) had nothing to
 compare its push with.
 
-BGD's decision for lanes (#1468, 2026-10-19) is a loud warning, never a
+the owner's decision for lanes (#1468, 2026-10-19) is a loud warning, never a
 refusal, and it holds for a round too. So `cifix.stamp` copies the lane's
 `inputs.territory` -- read from the lane's own task record, never from the
 failing log or anything an agent wrote -- onto the round's step, and the

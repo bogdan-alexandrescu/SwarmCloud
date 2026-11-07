@@ -1,7 +1,7 @@
 """The plugin's MCP server has to start on a machine that has only the plugin.
 
 MEASURED 2026-09-25 on 0.4.0 (commit ea1355d). `/plugin marketplace add
-bogdan-alexandrescu/SwarmCloud` then `/plugin install sc@swarmcloud` copies
+example-org/example-repo` then `/plugin install sc@swarmcloud` copies
 ONLY `plugin/` into `~/.claude/plugins/cache/swarmcloud/sc/0.4.0/` -- Claude
 Code's plugin loading reference says it in as many words: "Files outside the
 plugin directory aren't copied, so when a script inside a copied plugin reads a

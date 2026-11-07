@@ -1,6 +1,6 @@
 """Superseded secret versions are destroyed, and only ever this platform's own.
 
-WHY THESE TESTS EXIST. `swarm-tenant-u-bogdan-anthropic` held 1,816 versions on
+WHY THESE TESTS EXIST. `swarm-tenant-u-owner-anthropic` held 1,816 versions on
 2026-09-22, every one of them ENABLED and none of them destroyed. Only `latest`
 is ever read -- `agent_worker.secrets.SecretManagerClient.access` defaults to
 it, `SecretManagerStore.access` pins it, and the Cloud Run mount the dispatcher
@@ -11,7 +11,7 @@ and leaves its predecessor enabled has not rotated.
 Two halves, and they fail differently:
 
   * doing too little is a slow security problem -- old credentials accumulate;
-  * doing too much is an immediate one, and not only ours. `saga-agents-staging`
+  * doing too much is an immediate one, and not only ours. `example-project`
     is SHARED, the broker's `swarmSecretLister` grant is project-WIDE, and the
     one thing standing between a retention bug and another team's credentials
     is the name guard. The guard tests below are the ones in this file that
@@ -34,11 +34,11 @@ from quota_broker.secretstore import (
 
 from .conftest import PROJECT
 
-SECRET = "swarm-tenant-u-bogdan-anthropic"
+SECRET = "swarm-tenant-u-owner-anthropic"
 
 #: The number Secret Manager puts in every resource name it RETURNS, whatever
 #: the request was addressed with. Made up, as is the one beside it.
-PROJECT_NUMBER = "209012342332"
+PROJECT_NUMBER = "123456789012"
 FOREIGN_NUMBER = "998877665544"
 
 
@@ -231,7 +231,7 @@ def test_retention_never_leaves_a_secret_with_no_enabled_version(monkeypatch):
 
 
 def test_a_secret_outside_the_platform_naming_scheme_is_never_touched():
-    """saga-agents-staging is SHARED, and this is what keeps retention out of it.
+    """example-project is SHARED, and this is what keeps retention out of it.
 
     Nothing in this platform calls `add_version` with a name like this, and the
     point of the test is that the guard does not depend on that: the broker's
@@ -240,7 +240,7 @@ def test_a_secret_outside_the_platform_naming_scheme_is_never_touched():
     the refusal comes before the listing call, which is why `listed` is
     asserted empty and not merely `destroyed`.
     """
-    other = "agents-staging-postgres"
+    other = "peer-cluster-postgres"
     client = _Client({other: [_Version(_version_name(other, n)) for n in range(1, 11)]})
 
     _store(client).add_version(other, "token")
@@ -254,9 +254,9 @@ def test_a_secret_outside_the_platform_naming_scheme_is_never_touched():
     "name",
     [
         "swarm-tenant-eng-anthropic",
-        "swarm-tenant-u-bogdan-anthropic-refresh",
+        "swarm-tenant-u-owner-anthropic-refresh",
         "swarm-account-eng--team",
-        "swarm-account-u-bogdan--devops-main-refresh",
+        "swarm-account-u-owner--devops-main-refresh",
     ],
 )
 def test_the_guard_admits_the_names_this_platform_creates(name):
@@ -267,10 +267,10 @@ def test_the_guard_admits_the_names_this_platform_creates(name):
 @pytest.mark.parametrize(
     "name",
     [
-        "agents-staging-postgres",
-        "agents-staging-swarm-tenant-eng-anthropic",  # why the leading anchor
+        "peer-cluster-postgres",
+        "peer-cluster-swarm-tenant-eng-anthropic",  # why the leading anchor
         "swarm-tenant-eng-anthropic\nagents-staging-postgres",  # why \Z and not $
-        "swarm-tenant-eng-anthropic/../agents-staging-postgres",
+        "swarm-tenant-eng-anthropic/../peer-cluster-postgres",
         "swarm-other-eng-anthropic",
         "swarm-tenant-",
         "swarm-tenant",
@@ -291,7 +291,7 @@ def test_a_version_listed_under_another_secret_is_refused():
     without looking at them. It looks.
     """
     client = _with_versions(5)
-    client.secrets[SECRET][0] = _Version(_version_name("agents-staging-postgres", 1))
+    client.secrets[SECRET][0] = _Version(_version_name("peer-cluster-postgres", 1))
 
     _store(client).add_version(SECRET, "token")
 
@@ -487,8 +487,8 @@ def test_a_lookup_answering_for_another_project_refuses_the_pass():
 @pytest.mark.parametrize(
     "answer",
     [
-        f"projects/{PROJECT_NUMBER}/secrets/agents-staging-postgres",
-        f"projects/not-a-number/secrets/{SECRET}",
+        f"projects/{PROJECT_NUMBER}/secrets/peer-cluster-postgres",
+        f"projects/example-project/secrets/{SECRET}",
         "",
     ],
 )

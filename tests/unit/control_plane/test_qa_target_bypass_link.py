@@ -1,7 +1,7 @@
 """A QA target's challenge bypass value arrives through a one-time link
 (docs/design/secrets-scopes.md §6.2, §11 Q8; lane SSC-LINKS, part of #2158).
 
-BGD, 2026-10-23 (Q8): a value arrives only through the console form a
+the owner, 2026-10-23 (Q8): a value arrives only through the console form a
 one-time link opens, or a terminal's --stdin; no route, tool or log takes or
 prints one. The credential link gains `field`; the bypass PUT takes the
 link's token as the credential's PUT does.

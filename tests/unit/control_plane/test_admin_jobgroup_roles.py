@@ -265,7 +265,7 @@ def test_an_unreadable_registry_is_503_and_writes_nothing(
 
 def test_a_job_made_id_another_principal_already_holds_is_409_and_writes_nothing(client, db):
     db.document("tenants/research").set({"tenant_id": "research",
-                                         "principal": "research@partner.com", "kind": "group"})
+                                         "principal": "research@example.org", "kind": "group"})
     response = call(client, "PUT", "/v1/admin/workspaces/research/roles/person",
                     {"email": "bob@example.com", "role": "admin"})
     assert response.status_code == 409, response.text

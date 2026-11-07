@@ -1,6 +1,6 @@
 """A codex step leases a ChatGPT plan from the "openai" pool (part of #2688).
 
-BGD, 2026-11-01: codex runs on a shared pool of ChatGPT-plan accounts the way
+the owner, 2026-11-01: codex runs on a shared pool of ChatGPT-plan accounts the way
 claude-code runs on the pool of Claude subscriptions. The worker's half:
 
   * a codex step whose profile declares CODEX_PLAN_ACCESS_TOKEN and
