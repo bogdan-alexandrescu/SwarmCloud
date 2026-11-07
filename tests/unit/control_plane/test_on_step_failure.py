@@ -628,7 +628,7 @@ def test_the_prewarm_sweep_cancels_a_quota_parked_step_before_it_resumes(
         steps["resumable"],
         "PROVIDER_QUOTA_EXHAUSTED",
         next_eligible_at=datetime.now(timezone.utc) + timedelta(hours=2),
-        latest_checkpoint=f"gs://bucket/checkpoints/{steps['resumable']}/2",
+        latest_checkpoint=f"gs://swarm-artifacts-example-project/checkpoints/{steps['resumable']}/2",
         attempt_count=1,
     )
     worker_finished(db, steps["broken"], "DEAD_LETTERED")
@@ -768,7 +768,7 @@ def test_under_a_cutoff_a_workflow_with_no_creation_time_gets_no_policy(
 def _settings_from_env(monkeypatch, value: str | None):
     from scheduler.settings import SchedulerSettings
 
-    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("REGION", "us-central1")
     if value is None:
         monkeypatch.delenv("ON_STEP_FAILURE_ENFORCED_SINCE", raising=False)
@@ -842,7 +842,7 @@ def _seed_audit_world(db) -> dict[str, datetime]:
     task("t_a_ready", "wf_swept", "READY", "waiting")
     task("t_a_quota", "wf_swept", "PARKED", "resumable",
          park_reason="PROVIDER_QUOTA_EXHAUSTED")
-    db.docs["tasks/t_a_quota"]["latest_checkpoint"] = "gs://bucket/checkpoints/t_a_quota/2"
+    db.docs["tasks/t_a_quota"]["latest_checkpoint"] = "gs://swarm-artifacts-example-project/checkpoints/t_a_quota/2"
     task("t_a_running", "wf_swept", "RUNNING", "busy")
     # fail_workflow, nothing failed yet: cancelled only if a step fails later.
     workflow("wf_exposed", FAIL, now)

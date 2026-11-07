@@ -1,7 +1,7 @@
 """Contract requests 140-144: the managed plugins design's five requests.
 
 docs/design/managed-plugins.md section 14, requests P1-P5, accepted by the
-owner (BGD) on 6 November 2026 ("accept all five"):
+owner (the owner) on 6 November 2026 ("accept all five"):
 
   * 139 (P1) `SETTINGS_MAC_FIELDS["plugins"]` gains `defaults` and
     `configs_digest` (pinned in test_settings_block.py);

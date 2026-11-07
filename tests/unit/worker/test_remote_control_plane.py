@@ -167,7 +167,7 @@ def test_an_unprotected_heap_registers_a_state_only_key(api_db, opener):
 def test_a_restore_attempt_is_served_by_a_second_open_with_the_same_key(api_db, opener):
     earlier = "att_remote_0"
     seed_attempt(api_db, latest_checkpoint=(
-        f"gs://bucket/tenants/{TENANT}/tasks/{TASK}/attempts/{earlier}/checkpoints/c1/"))
+        f"gs://swarm-artifacts-example-project/tenants/{TENANT}/tasks/{TASK}/attempts/{earlier}/checkpoints/c1/"))
     api_db.docs[f"attempts/{earlier}"] = {
         "attempt_id": earlier, "task_id": TASK, "tenant_id": TENANT, "generation": 1,
         "checkpoints": ["c1"], "checkpoint_sha256": {"c1": DIGEST},
@@ -312,7 +312,7 @@ def test_a_heartbeat_extends_this_lease(api_db, opener):
 
 def test_a_checkpoint_records_its_digest_the_pointer_and_the_event(api_db, opener):
     control = _running(api_db, opener)
-    uri = f"gs://bucket/tenants/{TENANT}/tasks/{TASK}/attempts/{ATTEMPT}/checkpoints/c1/"
+    uri = f"gs://swarm-artifacts-example-project/tenants/{TENANT}/tasks/{TASK}/attempts/{ATTEMPT}/checkpoints/c1/"
 
     control.record_checkpoint(checkpoint_id="c1", uri=uri, size_bytes=10, seq=1,
                               archive_sha256=DIGEST)

@@ -1,6 +1,6 @@
 """A dead pool token moves the attempt; a declined pool parks (H12-MOVE-2560).
 
-#1855 (BGD 2026-10-28: "it should automatically move in the future on this
+#1855 (the owner 2026-10-28: "it should automatically move in the future on this
 error"). A long claude-code attempt failed after 6,160 s on "401 OAuth access
 token has expired": the worker reloaded the SAME account's secret, which held
 the same dead token, and then failed. Now a refused credential on a held

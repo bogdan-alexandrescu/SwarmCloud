@@ -29,7 +29,7 @@ from swarm_common.identity import tenant_id_for_user
 ENG = "eng"
 PERSON = "person@example.com"
 PERSONAL = tenant_id_for_user(PERSON)
-VOICE = "swarm-voice@test-project.iam.gserviceaccount.com"
+VOICE = "swarm-voice@example-project.iam.gserviceaccount.com"
 
 
 class _Identity:
@@ -48,7 +48,7 @@ class _Identity:
 
     def as_tenant(self, tenant_id: str) -> None:
         self.tenant = tenant_id
-        self.email = f"{tenant_id}-worker@test-project.iam.gserviceaccount.com"
+        self.email = f"{tenant_id}-worker@example-project.iam.gserviceaccount.com"
 
     def as_voice(self) -> None:
         self.tenant, self.email = None, VOICE
@@ -85,7 +85,7 @@ def client(broker, accounts, monkeypatch):
     monkeypatch.delenv("PROJECT_ID", raising=False)
     monkeypatch.setenv("VOICE_SERVICE_ACCOUNTS", VOICE)
     monkeypatch.setenv(
-        "WORKER_SERVICE_ACCOUNT_TEMPLATE", "swarm-worker-{tenant}@test-project.iam.gserviceaccount.com"
+        "WORKER_SERVICE_ACCOUNT_TEMPLATE", "swarm-worker-{tenant}@example-project.iam.gserviceaccount.com"
     )
     identity = _Identity()
     app = create_app(broker, identity=identity, account_store=accounts)

@@ -47,7 +47,7 @@ def _account(label: str, **extra) -> dict:
         "can_take_new_agent": True,
         "blocked_by": [],
         "next_eligible_at": None,
-        "organisation": {"name": "Saga", "plan": "Team"},
+        "organisation": {"name": "Example", "plan": "Team"},
         "duplicate_of": None,
         "duplicate_reason": None,
         "possible_duplicate": None,
@@ -193,7 +193,7 @@ def test_the_json_carries_the_new_fields():
     assert weekly["can_take_new_agent"] is False
     assert weekly["next_eligible_at"] == "2026-10-25T18:59:00+00:00"
     assert weekly["blocked_by"][0]["window"] == "seven_day"
-    assert weekly["organisation"] == {"name": "Saga", "plan": "Team"}
+    assert weekly["organisation"] == {"name": "Example", "plan": "Team"}
     assert accounts["own-pair"]["duplicate_of"] == f"{TENANT}:open"
 
 
@@ -209,10 +209,10 @@ def test_the_json_never_names_another_workspaces_account():
 
 def test_a_blocked_by_entry_carries_only_known_fields():
     smuggled = _account("x", blocked_by=[{"cap": 6, "max_agents": 6, "access_token_len": 108}],
-                        organisation={"name": "Saga", "plan": "Team", "id": "org-uuid"})
+                        organisation={"name": "Example", "plan": "Team", "id": "org-uuid"})
     public = render.public_account(smuggled, TENANT)
     assert public["blocked_by"] == [{"cap": 6, "max_agents": 6}]
-    assert public["organisation"] == {"name": "Saga", "plan": "Team"}
+    assert public["organisation"] == {"name": "Example", "plan": "Team"}
 
 
 def test_a_listing_that_did_not_say_whose_it_is_names_no_duplicate():

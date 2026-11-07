@@ -25,9 +25,9 @@ from swarm_mcp.client import SwarmError
 NOW = datetime(2026, 11, 4, 22, 0, tzinfo=timezone.utc)
 HEAD = "9c1e0f4b2d7a83e65f10c2b9a4d8e7f6031b5a2c"
 PR = 3190
-REPO = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+REPO = "https://github.com/example-org/example-repo.git"
 #: The link the bridge builds (`check.pull_request_link`: its key is lowercased).
-PR_URL = f"https://github.com/bogdan-alexandrescu/swarmcloud/pull/{PR}"
+PR_URL = f"https://github.com/example-org/example-repo/pull/{PR}"
 #: The events one re-check writes after its park, newest first: the lease is
 #: released, the step promoted, leased, dispatched and run again.
 CYCLE = ("lease_released", "ready", "leased", "starting", "running")
@@ -133,7 +133,7 @@ def test_a_train_park_of_61_minutes_across_five_re_parks_is_flagged_from_its_sta
     assert evidence["pull_request_url"] == PR_URL and evidence["head"] == HEAD
     assert evidence["failed_checks"] == []
     assert flag["next"] == PR_URL
-    assert checks.asked == [("github.com/bogdan-alexandrescu/swarmcloud", PR, HEAD)]
+    assert checks.asked == [("github.com/example-org/example-repo", PR, HEAD)]
     assert "merge train for exact 61 min" in flag["reason"], flag["reason"]
 
 

@@ -1,5 +1,5 @@
 """S9b's Remove: a workspace admin dismisses a found route, so no later run of
-the QA target offers it for Promote, and restores it (lane QA-RUN-REMOVE, BGD
+the QA target offers it for Promote, and restores it (lane QA-RUN-REMOVE, the owner
 2026-10-25, part of #2157; docs/web-ui/mockups/config-e.html).
 
 What these tests hold, over the real app and the in-memory Firestore:
@@ -93,7 +93,7 @@ def capture_route_lists(db, workflow_id: str) -> list[dict[str, Any]]:
 
 
 def test_a_later_run_tells_every_capture_step_to_skip_a_dismissed_route(client, db, objects, seeded) -> None:
-    """QA-CRAWL-SKIP (BGD 2026-10-25): a dismissed route is skipped by later
+    """QA-CRAWL-SKIP (the owner 2026-10-25): a dismissed route is skipped by later
     runs' crawls, on every leg; the tool reads it as its key's sha256."""
     target, billing = staging_found(client, db, objects)
     before = run_leg(client, target["id"], "production")

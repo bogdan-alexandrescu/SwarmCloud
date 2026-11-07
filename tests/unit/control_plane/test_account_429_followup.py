@@ -1,6 +1,6 @@
 """ACCOUNT-429-SCOPE's follow-ups, in the quota broker (part of #2302).
 
-BGD answered three questions on 2026-10-25, and each is pinned here:
+the owner answered three questions on 2026-10-25, and each is pinned here:
 
   1. ASSIGNMENT HONOURS `limited_until`. ACCOUNT-429-SCOPE (PR 2305) stopped
      an account's 429 halving the tenant and recorded it on the account's
@@ -72,7 +72,7 @@ class _Identity:
         return (None, True) if self.platform else (self.tenant, False)
 
     def verified_email(self, authorization):  # noqa: ANN001
-        return "swarm-api@example.iam.gserviceaccount.com"
+        return "swarm-api@example-project.iam.gserviceaccount.com"
 
 
 def _windows(now: datetime, used: float = 0.2) -> dict[str, WindowReading]:
@@ -361,7 +361,7 @@ def test_a_hard_max_change_writes_a_quota_audit_entry_with_who_and_why(client, d
     [audit] = _hard_max_audits(db)
     assert audit["requested_by"] == "root@example.com"
     assert audit["reason"] == "eng asked for less"
-    assert audit["caller"] == "swarm-api@example.iam.gserviceaccount.com"
+    assert audit["caller"] == "swarm-api@example-project.iam.gserviceaccount.com"
     assert audit["from_hard_max"] == HARD_MAX and audit["to_hard_max"] == 30
     assert audit["provider"] == PROVIDER and audit["tenant_id"] == ENG
 

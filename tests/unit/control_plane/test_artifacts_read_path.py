@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 
 #: The exact shape `AgentLifecycle._finalize` writes. Kept literal rather than
 #: imported so that a change on the worker side shows up here as a failure

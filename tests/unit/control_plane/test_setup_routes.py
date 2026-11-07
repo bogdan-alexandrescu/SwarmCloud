@@ -481,7 +481,7 @@ def test_engine_identity_admitted_only_on_hook_and_probe(setup_client, fake_secr
                                                          db) -> None:
     """`swarm-tf-deployer@<project>` gets through on the hook and the groups
     probe, and 403 on every other route (review-fix finding 2)."""
-    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 4242, "slug": "swarmcloud"}
+    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 123456, "slug": "swarmcloud"}
     fake_secrets.add_version("swarm-github-app-webhook-secret", secrets.token_hex(16))
     admitted = {("POST", "/v1/admin/setup/github-app/hook"),
                 ("POST", "/v1/admin/setup/health/groups-probe")}
@@ -530,13 +530,13 @@ class PassingAppCheck:
     """`ForgeApp.check_app_key`'s answer shape, passing."""
 
     def check_app_key(self) -> dict[str, Any]:
-        return {"ok": True, "app_id": "4242", "slug": "swarmcloud", "reason": None}
+        return {"ok": True, "app_id": "123456", "slug": "swarmcloud", "reason": None}
 
 
 def install_app(db, github, repositories: tuple[str, ...] = (f"{ORG}/demo", f"{ORG}/api")):
     """The App created and installed on ORG, covering `repositories`, and its
     self-check passed (infra pass 3 has landed)."""
-    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 4242, "installed_on": ORG,
+    db.docs[f"swarm-install/{ENV}/console/github_app"] = {"id": 123456, "installed_on": ORG,
                                                           "self_check": {"ok": True}}
     github.installations = [{"id": 77, "account": {"login": ORG, "type": "Organization"},
                              "repository_selection": "selected"}]
@@ -759,7 +759,7 @@ def verify_started(setup_client, db, github) -> str:
 @pytest.mark.parametrize("raw", ["FAILED", "CANCELLED"])
 def test_a_failed_verify_task_starts_again_and_keeps_the_workflow(setup_client, db, github,
                                                                   runs, raw) -> None:
-    """BGD, 2026-10-30: "swarm-api restarts a failed key". A recorded task
+    """the owner, 2026-10-30: "swarm-api restarts a failed key". A recorded task
     that failed or was cancelled counts as missing: a fresh task replaces its
     id and the running workflow is kept."""
     from swarm_api.routes.setup import run_state

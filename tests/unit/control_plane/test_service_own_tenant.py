@@ -55,12 +55,12 @@ from .test_await_input_api import (  # noqa: F401 - fixtures
     writer,
 )
 
-PROJECT_DOMAIN = "saga-agents-staging.iam.gserviceaccount.com"
+PROJECT_DOMAIN = "example-project.iam.gserviceaccount.com"
 #: The acceptance suite's caller, in eng's group (as it is in smoke's on dev).
 VERIFY = f"swarm-verify@{PROJECT_DOMAIN}"
 VERIFY_TENANT = tenant_id_for_user(VERIFY)
 #: Same local part, another project: the frozen slug may derive one id for both.
-TWIN = "ci-bot@other-project.iam.gserviceaccount.com"
+TWIN = "ci-bot@example-shared-project.iam.gserviceaccount.com"
 BOT = f"ci-bot@{PROJECT_DOMAIN}"
 BOT_TENANT = tenant_id_for_user(BOT)
 #: A worker identity, under its own derived id.
@@ -143,7 +143,7 @@ def test_its_headerless_default_is_still_the_group(store):
 
 
 def test_a_tenant_whose_principal_is_not_the_caller_is_refused(store):
-    """The frozen slug drops the domain: ci-bot@other-project derives ci-bot's
+    """The frozen slug drops the domain: ci-bot@example-shared-project derives ci-bot's
     id, and only the full-email principal tells them apart."""
     _seed_user_tenant(store, BOT_TENANT, BOT)
     assert tenant_id_for_user(TWIN) == BOT_TENANT
@@ -157,7 +157,7 @@ def test_a_tenant_whose_principal_is_not_the_caller_is_refused(store):
 
 @pytest.mark.parametrize("change", [
     {"kind": "group"}, {"principal": ""}, {"principal": BOT},
-    {"principal": "swarm-verify@other-project.iam.gserviceaccount.com"},
+    {"principal": "swarm-verify@example-shared-project.iam.gserviceaccount.com"},
 ])
 def test_a_tenant_document_that_does_not_name_the_caller_is_refused(store, change):
     store.docs[f"tenants/{VERIFY_TENANT}"].update(change)

@@ -1,6 +1,6 @@
 """The merge step on a private repository whose plan has no rulesets.
 
-Measured 2026-10-10T02:18Z: the merge step for sagaxyz/ai-studio PR 244
+Measured 2026-10-10T02:18Z: the merge step for example-org/peer-app PR 244
 (workflow wf_8340fb3c) failed `token_lacks_rights` because GitHub answered
 `GET /repos/{o}/{r}/rules/branches/main` with 403 "Upgrade to GitHub Pro or
 make this repository public to enable this feature." That is the plan, not a

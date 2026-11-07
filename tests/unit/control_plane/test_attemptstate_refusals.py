@@ -303,7 +303,7 @@ def test_a_checkpoint_cannot_point_at_a_peer_tasks_prefix(client, db):
     mine, peer = _two_attempts(client, db)
     before = copy.deepcopy(db.docs)
     body = {**POST_BODIES["checkpoint"],
-            "uri": f"gs://bucket/tenants/eng/tasks/{PEER_TASK}/attempts/{PEER_ATTEMPT}/c.tar"}
+            "uri": f"gs://swarm-artifacts-example-project/tenants/eng/tasks/{PEER_TASK}/attempts/{PEER_ATTEMPT}/c.tar"}
 
     assert mine.post(client, "checkpoint", body).status_code == 422
     assert db.docs == before

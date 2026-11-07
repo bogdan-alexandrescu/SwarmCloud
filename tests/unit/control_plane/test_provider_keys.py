@@ -282,22 +282,22 @@ def test_a_person_without_a_ready_personal_workspace_cannot_store_one(client, se
 
 
 def test_a_personal_tenant_named_for_someone_else_is_not_the_callers(client, seeded, credentials):
-    """The frozen slug keeps only the local part: alice@partner.com would
+    """The frozen slug keeps only the local part: alice@example.org would
     derive u-alice too. The tenant document's principal decides whose it is."""
-    seed_personal(seeded, "carol", principal="carol@partner.com")
+    seed_personal(seeded, "carol", principal="carol@example.org")
     assert put_user(client, "carol", fake_key()).status_code == 404
     assert client.delete(f"{BASE}/user", headers=as_("carol")).status_code == 404
     assert credentials._versions == {}
 
 
 def test_a_namesakes_key_is_never_resolved_for_the_caller(client, seeded):
-    """dave@example.com is in eng; `u-dave` belongs to dave@partner.com, who has
+    """dave@example.com is in eng; `u-dave` belongs to dave@example.org, who has
     a key in it. The frozen slug derives `u-dave` for both, so a resolver fed
     the email would hand the partner's key to dave's tasks in eng."""
-    seed_personal(seeded, "dave", principal="dave@partner.com")
+    seed_personal(seeded, "dave", principal="dave@example.org")
     seeded.docs["provider_keys/swarm-tenant-u-dave-typesafe"] = {
         "tenant_id": "u-dave", "provider": TYPESAFE, "scope": "user", "set": True,
-        "set_at": datetime.now(timezone.utc), "set_by": "dave@partner.com",
+        "set_at": datetime.now(timezone.utc), "set_by": "dave@example.org",
         "version": "projects/local/secrets/swarm-tenant-u-dave-typesafe/versions/1",
     }
     status = status_of(client, "dave", "eng")

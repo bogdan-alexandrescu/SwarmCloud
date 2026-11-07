@@ -31,7 +31,7 @@ import pytest
 
 from .conftest import auth_header, seed_task, seed_tenant
 
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 
 
 def prefix(tenant="eng", task="task_a", attempt="att_1") -> str:
@@ -286,7 +286,7 @@ def test_a_manifest_uri_that_disagrees_with_the_layout_is_refused(
     """
     a_finished_task(db, objects, tenant="eng", task="task_a")
     db.docs["tasks/task_a"]["result_summary"]["artifacts"][0]["uri"] = (
-        f"gs://other-bucket/{artifact_key('synthesis.md')}"
+        f"gs://peer-bucket/{artifact_key('synthesis.md')}"
     )
 
     response = get(client, "task_a", "synthesis.md")

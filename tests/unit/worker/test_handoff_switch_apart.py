@@ -1,6 +1,6 @@
 """`swarm-handoff device` and `theme` are answered while the worker's loop is busy (PHONE-SWITCH).
 
-MEASURED 2026-11-03 (QA target ai-studio-prod, five production legs, capture
+MEASURED 2026-11-03 (QA target peer-app-prod, five production legs, capture
 steps on GKE Autopilot): every phone-390 route of every leg failed with
 "swarm-handoff device phone-390 exited 5: the worker did not answer the
 device switch" or "swarm-handoff theme light exited 5: the worker did not

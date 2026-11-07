@@ -2,7 +2,7 @@
 
 PR 2197 taught swarm-api's `TaskCreate` a top-level `publish_to_pr`: one
 task's commits are pushed onto an existing pull request's branch instead of
-opening a replacement. BGD's answer of 2026-10-24 to PTP-PLUGIN's owner
+opening a replacement. the owner's answer of 2026-10-24 to PTP-PLUGIN's owner
 question: "Add it to swarm_dispatch". The single-task form takes it in every
 form `parse_pull_request` reads and sends it top-level in the `POST /v1/tasks`
 body, only when given; the `tasks` form refuses it, because one pull request

@@ -360,7 +360,7 @@ def test_no_scan_in_the_walked_commits_says_how_far_it_looked(db, ctx, repo_id, 
     assert row["outcome"] == "no_scan" and "last 3 commits" in row["why"]
 
 
-# CHECK-STUCK-2 (BGD, 2026-10-23, task_9e9080121b104370b079 Q1; part of
+# CHECK-STUCK-2 (the owner, 2026-10-23, task_9e9080121b104370b079 Q1; part of
 # #2031): the scan lookup reads a check run as finished the way every merge
 # judge does (`forgechecks.check_run_finished`) -- `status` completed, OR a
 # conclusion together with a completed_at. GitHub left PR 2006's `secret

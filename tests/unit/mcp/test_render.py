@@ -739,10 +739,10 @@ class TestTask:
     )
 
     def test_it_shows_commits_patch_and_pull_request(self):
-        out = text(render_task(self.FINISHED, WIDE, NOW, patch="gs://bucket/p.patch"))
+        out = text(render_task(self.FINISHED, WIDE, NOW, patch="gs://swarm-artifacts-example-project/p.patch"))
         assert "deadbeefca" in out
         assert "the fix" in out
-        assert "gs://bucket/p.patch" in out
+        assert "gs://swarm-artifacts-example-project/p.patch" in out
         assert "https://example.test/pr/7" in out
 
     def test_a_missing_pull_request_carries_its_reason(self):
@@ -773,8 +773,8 @@ class TestTask:
     @pytest.mark.parametrize("width", [80, 60, 44, 34])
     def test_it_fits_however_narrow_the_terminal_is(self, width):
         style = Style(width=width)
-        for line in render_task(self.FINISHED, style, NOW, patch="gs://bucket/patches/p.patch"):
-            assert len(line) <= style.usable + len("gs://bucket/patches/p.patch"), line
+        for line in render_task(self.FINISHED, style, NOW, patch="gs://swarm-artifacts-example-project/patches/p.patch"):
+            assert len(line) <= style.usable + len("gs://swarm-artifacts-example-project/patches/p.patch"), line
         for line in render_task(self.FINISHED, style, NOW):
             assert isinstance(line, str)
 

@@ -1,6 +1,6 @@
 """swarm_check ages a merge step's CI wait across its repair rounds' heads (part of #2688).
 
-Reported by BGD on 2026-11-06 (about 05:20Z): a speech relay lane's merge
+Reported by the owner on 2026-11-06 (about 05:20Z): a speech relay lane's merge
 step (task_ffe63d609c5d4662ba8e) waited on CI for 8 hours with 28 attempts
 and `/sc check` never flagged it. The merge step re-checks about every 16
 minutes and each re-check is a new attempt; `first_parked_at` (the API's

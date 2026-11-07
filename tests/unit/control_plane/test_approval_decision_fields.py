@@ -1,6 +1,6 @@
 """What the Automate decision page reads, and who may reject (AUTO-API-APPROVALS, part of #2417).
 
-BGD picked the Automate design on 2026-10-26: A4 (the approvals list) from
+the owner picked the Automate design on 2026-10-26: A4 (the approvals list) from
 proposal A, A5 (one approval) from proposal B. Their "new fields" lists name
 what the API did not serve; this lane serves them, read-only:
 
@@ -14,7 +14,7 @@ what the API did not serve; this lane serves them, read-only:
   * `reason_files` on a hold: which matched file each reason came from (B's
     A5 card 2), absent for a reason no file pairs with by path.
 
-And BGD's rule change (A5f): ONLY SOMEONE WHO MAY APPROVE AN ITEM MAY REJECT
+And the owner's rule change (A5f): ONLY SOMEONE WHO MAY APPROVE AN ITEM MAY REJECT
 IT. A member the approve would refuse is 403 `reject_approver_required` on
 `:reject`, behind its refusal switch, which ships on; off, any member rejects,
 as before.
@@ -183,7 +183,7 @@ def test_a_held_plans_creator_may_not_reject_it_and_a_second_member_may(client, 
     assert rejected.status_code == 200, rejected.text
     assert db.docs[f"issue_runs/{run['id']}"]["state"] == "REJECTED"
 
-    # BGD 2026-10-26, "let an admin approve it, no need for two approvers":
+    # the owner 2026-10-26, "let an admin approve it, no need for two approvers":
     # once alice is eng's admin, her own held run is hers to reject.
     again = _planned(client, db, objects, _bootstrap_plan())
     _name_admin(client, "alice@example.com")
@@ -203,7 +203,7 @@ def _name_admin(client, email: str, tenant: str = "eng") -> None:
 
 def test_a_workspace_admin_approves_their_own_held_run_alone(client, db, objects, switch_on):
     """Under a `second_member` hold a workspace admin needs no second member,
-    even as the run's creator (BGD 2026-10-26)."""
+    even as the run's creator (the owner 2026-10-26)."""
     _name_admin(client, "alice@example.com")
     run = _planned(client, db, objects, _bootstrap_plan())
     assert run["approval_hold"]["approvers"] == "second_member"

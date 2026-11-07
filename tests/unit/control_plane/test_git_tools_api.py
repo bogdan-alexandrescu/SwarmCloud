@@ -1008,7 +1008,7 @@ def test_pr_checks_reads_check_runs_first_and_never_the_actions_jobs_when_it_can
 # --------------------------------------------------------------------------
 
 #: GitHub's answer to `rules/branches/{b}` for a private repository owned by a
-#: user on the free plan, measured on bogdan-alexandrescu/swarmcloud-sandbox
+#: user on the free plan, measured on example-org/example-sandbox
 #: 2026-10-22 08:4xZ with the owner's own token.
 PLAN_403 = {
     "message": "Upgrade to GitHub Pro or make this repository public to enable this feature.",

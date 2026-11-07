@@ -1,4 +1,4 @@
-"""A spec's `about` reaches swarm-api as `metadata.about` (BGD, 2026-11-06).
+"""A spec's `about` reaches swarm-api as `metadata.about` (the owner, 2026-11-06).
 
 The console's workflow page says what the work is for (purpose), what it
 must achieve (goals) and what it will produce (expected output). A spec says

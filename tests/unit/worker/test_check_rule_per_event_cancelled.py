@@ -1,15 +1,15 @@
 """A cancelled latest run is pending, not failed; and a first red reading waits once for the free re-run (#1778, part of #2351).
 
-#1778's second expectation (BGD released bundle H09, 2026-10-27): "a check
+#1778's second expectation (the owner released bundle H09, 2026-10-27): "a check
 whose LATEST run is cancelled is still not green and waits, rather than
-failing the merge". The CHECK-RULE (BGD 2026-10-22) already judges a check by
+failing the merge". The CHECK-RULE (the owner 2026-10-22) already judges a check by
 the latest run of each event, so a cancelled run superseded by a success is
 green. What was left: a cancelled LATEST run read as `failed`, so the step
 refused `checks_failed` on a run the operator had cancelled to re-run. Now it
 is pending -- unless another event's latest run is red, which a re-run of the
 cancelled one cannot make green. Red still wins.
 
-#2351's merge half (BGD 2026-10-27, "Both halves"): with no CI-fix round
+#2351's merge half (the owner 2026-10-27, "Both halves"): with no CI-fix round
 asked and no re-run recorded at the head, `_red` refused on its FIRST red
 reading, so swarm-api's free re-run (`mergewake._rerun_first`, which runs only
 for a merge parked CI_PENDING) never ran: a transient red (trivy failing to

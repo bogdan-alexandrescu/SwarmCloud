@@ -75,7 +75,7 @@ from swarm_common.profiles import (  # noqa: E402
     resolve_backend,
 )
 
-TENANT = "u-bogdan"
+TENANT = "u-owner"
 
 # RELATIVE TO THE REAL CLOCK, not a frozen literal.
 #
@@ -119,7 +119,7 @@ TASK_DOCS: list[dict[str, Any]] = [
         "runner_profile": "claude-code",
         "resource_class": "standard",
         "input": {"prompt": "Audit the admission path for the all-or-nothing invariant."},
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "provider": "anthropic",
         "model": "claude-opus-4",
         "attempt_count": 1,
@@ -128,7 +128,7 @@ TASK_DOCS: list[dict[str, Any]] = [
         "started_at": ago(minutes=38),
         "workflow_id": "wf_0d97f873656a4f0b9c11",
         "step_id": "research",
-        "latest_checkpoint": "gs://swarm-artifacts-dev/u-bogdan/task_27a0faef396c43f58878/ckpt-4",
+        "latest_checkpoint": "gs://swarm-artifacts-example-project/u-owner/task_27a0faef396c43f58878/ckpt-4",
     },
     {
         # PARKED on a provider wait. Invariant 4's visible face.
@@ -140,7 +140,7 @@ TASK_DOCS: list[dict[str, Any]] = [
         "runner_profile": "claude-code",
         "resource_class": "standard",
         "input": {"prompt": "Draft the migration note."},
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "provider": "anthropic",
         "attempt_count": 2,
         "park_reason": "PROVIDER_QUOTA_EXHAUSTED",
@@ -160,7 +160,7 @@ TASK_DOCS: list[dict[str, Any]] = [
         "runner_profile": "claude-code",
         "resource_class": "standard",
         "input": {"prompt": "Summarise yesterday's incident."},
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "provider": "anthropic",
         "attempt_count": 1,
         "started_at": ago(hours=4, minutes=52),
@@ -180,7 +180,7 @@ TASK_DOCS: list[dict[str, Any]] = [
         "runner_profile": "codex",
         "resource_class": "standard",
         "input": {"prompt": "Port the reconciler detection tests."},
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "provider": "openai",
         "attempt_count": 3,
         "started_at": ago(hours=6, minutes=58),
@@ -197,7 +197,7 @@ TASK_DOCS: list[dict[str, Any]] = [
         "runner_profile": "browser",
         "resource_class": "browser",
         "input": {"prompt": "Capture the pricing page at three widths."},
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "provider": "anthropic",
     },
     {
@@ -211,7 +211,7 @@ TASK_DOCS: list[dict[str, Any]] = [
         "runner_profile": "mock",
         "resource_class": "standard",
         "input": {"prompt": "smoke"},
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "attempt_count": 1,
         "started_at": ago(hours=1, minutes=4),
         "completed_at": ago(hours=1),
@@ -404,16 +404,16 @@ TENANT_DOCS: list[dict[str, Any]] = [
     {
         "tenant_id": TENANT,
         "kind": "user",
-        "principal": "bogdan@example.com",
+        "principal": "owner@example.com",
         "created_at": ago(days=38),
-        "display_name": "Bogdan Alexandrescu",
+        "display_name": "Example Owner",
         "max_active": 20,
         "capacity_units": 40,
         "monthly_budget_usd": 400.0,
         "enabled": True,
         "credentials": ["anthropic"],
         "service_account": f"swarm-tenant-{TENANT}@example-project.iam.gserviceaccount.com",
-        "gcs_prefix": f"gs://swarm-artifacts-dev/{TENANT}/",
+        "gcs_prefix": f"gs://swarm-artifacts-example-project/{TENANT}/",
         "namespace": f"swarm-tenant-{TENANT}",
     },
     {
@@ -436,7 +436,7 @@ WORKFLOW_DOCS: list[dict[str, Any]] = [
         "created_at": ago(hours=3, minutes=20),
         "updated_at": ago(minutes=2),
         "state": "RUNNING",
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "steps": [
             {"step_id": "research", "runner_profile": "claude-code", "input": {"prompt": "research"},
              "task_id": "task_27a0faef396c43f58878"},
@@ -455,7 +455,7 @@ WORKFLOW_DOCS: list[dict[str, Any]] = [
         # Nothing in the repository ever advances a workflow state, so a
         # workflow that has been QUEUED since submission is the honest fixture.
         "state": "QUEUED",
-        "submitted_by": "bogdan@example.com",
+        "submitted_by": "owner@example.com",
         "steps": [
             {"step_id": "collect", "runner_profile": "browser", "input": {"prompt": "collect"}},
             {"step_id": "report", "runner_profile": "generic", "input": {"prompt": "report"},
@@ -661,7 +661,7 @@ def me() -> dict[str, Any]:
     return {
         "tenant": tenant_to_api(tenant_from_dict(TENANT_DOCS[0])),
         "principal": {
-            "email": "bogdan@example.com",
+            "email": "owner@example.com",
             "domain": "example.com",
             "groups": ["eng@example.com"],
             "is_admin": True,

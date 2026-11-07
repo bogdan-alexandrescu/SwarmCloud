@@ -46,7 +46,7 @@ from swarm_api.routes import voice_speech as rvs  # noqa: E402
 from swarm_api.voice import sessions as vs  # noqa: E402
 from swarm_api.voice import speech_machine as sm  # noqa: E402
 
-SCHEDULER = "swarm-tick@proj.iam.gserviceaccount.com"
+SCHEDULER = "swarm-tick@example-project.iam.gserviceaccount.com"
 SWEEP = dict(sweep_audience="https://api.example.com/v1/internal/voice/speech/sweep",
              sweep_callers=(SCHEDULER,))
 

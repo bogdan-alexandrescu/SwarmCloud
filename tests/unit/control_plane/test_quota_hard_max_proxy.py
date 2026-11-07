@@ -1,6 +1,6 @@
 """A platform admin can set a tenant's configured max from the console (POOL-LIMITS-QUOTA).
 
-BGD, 2026-10-25 (part of #2302): the anthropic · eng pool sat full at 14 and
+the owner, 2026-10-25 (part of #2302): the anthropic · eng pool sat full at 14 and
 Admin › Pool limits could only edit its hard limit (100), which was not the
 term that bound. The effective limit is the least of the hard limit, the
 broker's `configured_hard_max` and the AIMD `adaptive_target`; the target had

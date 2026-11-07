@@ -231,7 +231,7 @@ def test_a_non_actions_failure_is_not_rerun(client, db, objects, writes, clock, 
     else:
         writes.require("unit", app_id=None)
         running = _to_checking(client, db, objects, writes, clock)
-        writes.check(SHA_A, "unit", "failure", app_id=999, app_slug="buildkite", run_id=77)
+        writes.check(SHA_A, "unit", "failure", app_id=12345678, app_slug="buildkite", run_id=77)
 
     run = _read(client, clock, running["id"])
 

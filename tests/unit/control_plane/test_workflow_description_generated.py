@@ -1,7 +1,7 @@
-"""A generated description for a workflow submitted without one (BGD, 2026-11-04).
+"""A generated description for a workflow submitted without one (the owner, 2026-11-04).
 
 When a workflow arrives with no `metadata.description` or `metadata.about`,
-swarm-api writes the three parts (purpose, goals, expected output; BGD,
+swarm-api writes the three parts (purpose, goals, expected output; the owner,
 2026-11-06) after the submission returns: Claude Haiku on Vertex AI behind
 SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex (Terraform ships it "off"; swarm-api
 reads it into `ApiSettings.workflow_description_model`), else an
@@ -386,11 +386,11 @@ def test_the_vertex_call_asks_for_at_most_the_token_ceiling():
     session = FakeSession(FakeResponse(200, {
         "content": [{"type": "text", "text": MODEL_TEXT}], "stop_reason": "end_turn",
         "usage": {"input_tokens": 500, "output_tokens": 40}}))
-    vertex = VertexSummariser(project_id="proj-1", session=session)
+    vertex = VertexSummariser(project_id="example-project", session=session)
     summary = vertex.summarise("Step 1 brief:\nBuild it.")
     assert summary == Summary(text=MODEL_TEXT, input_tokens=500, output_tokens=40)
     ((url, body, timeout),) = session.calls
-    assert url == ("https://aiplatform.googleapis.com/v1/projects/proj-1/locations/global"
+    assert url == ("https://aiplatform.googleapis.com/v1/projects/example-project/locations/global"
                    "/publishers/anthropic/models/claude-haiku-4-5@20251001:rawPredict")
     assert body["max_tokens"] == MAX_OUTPUT_TOKENS and body["anthropic_version"] == "vertex-2023-10-16"
     assert timeout > 0
@@ -401,16 +401,16 @@ def test_a_refused_vertex_answer_still_counts_its_tokens(client, db, held, api_c
         "content": [], "stop_reason": "refusal", "usage": {"input_tokens": 300, "output_tokens": 2}}))
     workflow = _post(client)
     outcome = generate(db, _tasks(api_context, workflow),
-                       summariser=VertexSummariser(project_id="proj-1", session=session))
+                       summariser=VertexSummariser(project_id="example-project", session=session))
     assert outcome == "extractive:model_stop_refusal"
     row = _row(db, workflow)
     assert (row["calls"], row["input_tokens"], row["output_tokens"]) == (1, 300, 2)
 
 
 def test_the_switch_is_off_unless_it_says_vertex():
-    assert summariser_for("", project_id="proj-1", environ={}) is None
-    assert summariser_for("on", project_id="proj-1", environ={}) is None
-    assert isinstance(summariser_for("vertex", project_id="proj-1", environ={}), VertexSummariser)
+    assert summariser_for("", project_id="example-project", environ={}) is None
+    assert summariser_for("on", project_id="example-project", environ={}) is None
+    assert isinstance(summariser_for("vertex", project_id="example-project", environ={}), VertexSummariser)
 
 
 def test_swarm_api_reads_the_switch_into_its_settings_and_refuses_a_misspelt_one(monkeypatch):
@@ -418,7 +418,7 @@ def test_swarm_api_reads_the_switch_into_its_settings_and_refuses_a_misspelt_one
     check sees the read, and a value that is neither "off" nor "vertex" stops
     the service rather than quietly writing the extract."""
     assert api_settings().workflow_description_model == ""
-    monkeypatch.setenv("PROJECT_ID", "swarm-test-project")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("ENVIRONMENT", "test")
     monkeypatch.delenv(MODEL_SWITCH_ENV, raising=False)
     assert ApiSettings.from_env().workflow_description_model == ""
@@ -442,7 +442,7 @@ def test_terraform_ships_the_switch_off_for_swarm_api():
     locals_tf = (TERRAFORM / "infra" / "locals.tf").read_text()
     api_env = locals_tf.split('"swarm-api" = merge(', 1)[1].split('\n    "swarm-', 1)[0]
     assert re.search(rf'^\s*{MODEL_SWITCH_ENV}\s*=\s*"off"\s*$', api_env, re.MULTILINE)
-    assert summariser_for("off", project_id="proj-1", environ={}) is None
+    assert summariser_for("off", project_id="example-project", environ={}) is None
     bindings = (TERRAFORM / "modules" / "iam" / "bindings.tf").read_text()
     api_roles = bindings.split('"swarm-api" = concat(', 1)[1].split("])", 1)[0]
     assert '"roles/aiplatform.user"' not in api_roles

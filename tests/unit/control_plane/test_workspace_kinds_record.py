@@ -527,7 +527,7 @@ def test_the_owners_service_request_is_approved_at_once(client, db, publisher) -
      "WORKSPACE_SERVICE_PLATFORM"),
     ("123456789012-compute@developer.gserviceaccount.com", "WORKSPACE_SERVICE_PLATFORM"),
     (LISTED_BOT, "WORKSPACE_SERVICE_ALREADY_RESOLVES"),
-    ("reports-bot@another-project.iam.gserviceaccount.com",
+    ("reports-bot@example-shared-project.iam.gserviceaccount.com",
      "WORKSPACE_SERVICE_NOT_IN_PROJECT"),
     (CAROL, "WORKSPACE_SERVICE_NOT_IN_PROJECT"),
 ])

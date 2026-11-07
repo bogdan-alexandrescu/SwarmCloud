@@ -3,7 +3,7 @@
 The codex profile runs `codex exec --json` (CODEX-JSON, PR 2515). The worker
 renders the capture readable once the run ends, but while it RUNS the Logs
 tab's live tail is the raw event stream, and the transcript reader sniffed it
-as `ndjson` and drew every event as an empty `other` row. BGD, 2026-10-27
+as `ndjson` and drew every event as an empty `other` row. the owner, 2026-10-27
 (PR 2515 question 2): teach swarm-api codex's events.
 
 Pinned here:
@@ -18,7 +18,7 @@ Pinned here:
      output is masked after decoding, and in an MCP call's arguments by
      their structure.
   4. A window cut mid-line counts the fragment in `skipped_lines`.
-  5. (CODEX-ROWS, part of #2459; BGD, 2026-10-28, proposal B) a
+  5. (CODEX-ROWS, part of #2459; the owner, 2026-10-28, proposal B) a
      `turn.completed` is a `usage` row whose figures are in meta -- an absent
      figure absent, never 0 -- and numbered only when the window can count
      its turns; `turn.failed`, a top-level `error` and an `error` item are

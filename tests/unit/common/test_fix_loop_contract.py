@@ -1,6 +1,6 @@
 """Contract requests 124-126: the fix loop's frozen contract (FL-CONTRACT, part of #2509).
 
-docs/design/fix-loop.md §7 requests A and B, accepted by BGD on 2026-10-27
+docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-27
 (Q1, Q2 and Q10 of §9). What is held here:
 
   * the `fix-loop` entry is `control_plane`, ships unavailable with a reason,
@@ -12,7 +12,7 @@ docs/design/fix-loop.md §7 requests A and B, accepted by BGD on 2026-10-27
     (`_parked_window(ParkReason.X)`), or through PREWARM_REASONS;
   * `scripts/lib/check-contract-parity.sh` still passes with the new member;
   * the requests are filed: 124 and 125 accepted and applied, and 126 (the end
-    cause Q3 (c) needs) accepted by BGD on 2026-10-27 and applied: the frozen
+    cause Q3 (c) needs) accepted by the owner on 2026-10-27 and applied: the frozen
     `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
     it as its own failure class, and the console's `EndCause` list carries it.
 
@@ -205,7 +205,7 @@ def test_requests_a_and_b_are_filed_as_accepted_and_applied():
 
 
 def test_request_c_is_accepted_and_applied():
-    """Q3 (c) ends a loop FAILED `fix_loop_exhausted`. BGD accepted request 126
+    """Q3 (c) ends a loop FAILED `fix_loop_exhausted`. the owner accepted request 126
     on 2026-10-27 ('accept-126'), so the frozen enum has the member, appended
     after request 118's `budget_exceeded` so no reader's order moves.
 

@@ -348,11 +348,11 @@ def test_every_service_written_key_is_reserved_in_one_place():
         # the quota park. A caller who set it would choose how many refunds
         # the task has left.
         "quota_park_resumes",
-        # The continuations at the time limit whose attempt was refunded (BGD,
+        # The continuations at the time limit whose attempt was refunded (the owner,
         # 2026-11-02), written only by the park at the time limit. A caller
         # who set it would choose how many more time limits the task runs past.
         "time_limit_continuations",
-        # The issue run a task or workflow belongs to (BGD, 2026-11-04),
+        # The issue run a task or workflow belongs to (the owner, 2026-11-04),
         # written only by the issue-run code. A caller who set it would have
         # its work read as an issue run's.
         "issue_run",

@@ -1,6 +1,6 @@
 """A workflow-touching push is made with the workspace's App token, per repository switch (#2029).
 
-BGD, 2026-10-22 (WF-APP-TOKEN): the `-git-wf` slot is gone. `git_push_branch`
+the owner, 2026-10-22 (WF-APP-TOKEN): the `-git-wf` slot is gone. `git_push_branch`
 reads the pushed range's paths from the bundle; a range touching
 `.github/workflows/**` or `.github/actions/**` is pushed only when the task's
 OWN registration has `workflow_files` switched on, and then with a token the

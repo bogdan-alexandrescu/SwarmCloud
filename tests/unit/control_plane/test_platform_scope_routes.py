@@ -4,7 +4,7 @@ PLATFORM-SCHED-APPROVALS (PR 2292) refused `POST /v1/approvals/{id}:approve`
 and `:reject` of a platform-scope schedule's item to anyone but a platform
 admin. Two more routes decided the same items, and the failure-review
 schedule reaches both, since it creates issue runs with plan and merge gates.
-BGD decided on 2026-10-25 to close them with the same check:
+the owner decided on 2026-10-25 to close them with the same check:
 
 * `POST /v1/runs/{id}/plan:approve` and `:reject` (`sc plan approve`);
 * the `/swarmcloud approve` comment, on a plan and on a merge

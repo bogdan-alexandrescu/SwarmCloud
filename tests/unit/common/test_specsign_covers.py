@@ -136,7 +136,7 @@ def test_every_metadata_key_the_worker_reads_is_signed():
         # The quota parks refunded so far (#2350), read by the quota park the
         # same way.
         "quota_park_resumes",
-        # The continuations at the time limit so far (BGD, 2026-11-02), read
+        # The continuations at the time limit so far (the owner, 2026-11-02), read
         # by the stop at the limit the same way.
         "time_limit_continuations",
         # The repair rounds swarm-api's wake tick claims for a merge step
@@ -178,9 +178,9 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: And the release waits refunded so far (AU7-REFUND), written by the
 #: worker's release-wait park between attempts, as `child_await_resumes` is.
 #: And the quota parks refunded so far (#2350), written by the quota park.
-#: And the continuations at the time limit so far (BGD, 2026-11-02), written
+#: And the continuations at the time limit so far (the owner, 2026-11-02), written
 #: by the park at the time limit.
-#: And the issue run a task or workflow belongs to (BGD, 2026-11-04), written
+#: And the issue run a task or workflow belongs to (the owner, 2026-11-04), written
 #: by the issue-run code at submission, read by swarm-api; no worker acts on it.
 #: And the never-started re-queues so far (part of #2688), written by the
 #: reconciler when a silent lease's worker never started.
