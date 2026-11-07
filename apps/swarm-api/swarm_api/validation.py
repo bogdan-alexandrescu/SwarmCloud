@@ -1601,6 +1601,15 @@ QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 #: (`control.TIME_LIMIT_CONTINUATIONS_METADATA_KEY`).
 TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
 
+#: The reconciler's count of re-queues of a task whose lease went silent
+#: before any attempt reached STARTING (part of #2688,
+#: `reconciler.model.NEVER_STARTED_REQUEUES_KEY`), counted against
+#: NEVER_STARTED_REQUEUE_LIMIT. A caller who set it would choose how many more
+#: silent leases the task gets before it fails. Restated for the reason
+#: STARTUP_REFUNDS_METADATA_KEY is;
+#: tests/unit/control_plane/test_input_from_is_reserved.py holds them equal.
+NEVER_STARTED_REQUEUES_METADATA_KEY = "never_started_requeues"
+
 #: The pull requests a workflow's root step waits for before it may start
 #: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
 #: from the spec's `after` and then only by the wake tick. A caller who set
@@ -1653,6 +1662,7 @@ RESERVED_METADATA_KEYS = (
     QUOTA_PARK_RESUMES_METADATA_KEY,
     TIME_LIMIT_CONTINUATIONS_METADATA_KEY,
     ISSUE_RUN_METADATA_KEY,
+    NEVER_STARTED_REQUEUES_METADATA_KEY,
 )
 
 #: Reserved like every key above, and refused by the same function in the
@@ -2564,6 +2574,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{TIME_LIMIT_CONTINUATIONS_METADATA_KEY} is reserved: it is set "
         "only by the worker's park at the time limit, to count the continuations "
         "whose attempt was refunded. Drop the key from metadata."
+    ),
+    NEVER_STARTED_REQUEUES_METADATA_KEY: (
+        f"metadata.{NEVER_STARTED_REQUEUES_METADATA_KEY} is reserved: it is set "
+        "only by the reconciler, to count the times a task whose worker never "
+        "started went back to READY. Drop the key from metadata."
     ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
