@@ -608,6 +608,9 @@ GUARDED_SECRETS: dict[str, tuple[frozenset[str], str]] = {
     "merge-train.yml:tick": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "accept.yml:sandbox": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
     "accept.yml:sandbox-results": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
+    # The deployment-values guard's private pattern list
+    # (docs/design/generic-repository.md, section 4): never on a fork's run.
+    "security.yml:checks": (frozenset({"DEPLOYMENT_PATTERNS"}), SECRETS_ON_VMS),
 }
 
 #: Every job NOT on the guarded expression. Keyed `file:job`.
@@ -646,6 +649,7 @@ HOSTED_JOBS: dict[str, str] = {
     "application.yml:ui": KEEPER,
     "security.yml:secrets": KEEPER,
     "security.yml:policy": KEEPER,
+    "security.yml:deployment-values": KEEPER,
     "terraform.yml:validate": KEEPER,
     "terraform.yml:test": KEEPER,
     "terraform.yml:plan-not-run": SUMMARY,

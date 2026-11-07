@@ -3462,7 +3462,7 @@ below is kept as the record of why each value is what it is, and
 `auto-merge.yml` would still count its checks if it were applied.)
 
 **3. Branch protection on `main`**, requiring only the checks that run on
-**every** pull request — `security.yml`'s four jobs. `application.yml` (until
+**every** pull request — `security.yml`'s five jobs. `application.yml` (until
 2026-10-07) and `terraform.yml` both have a `pull_request` path filter
 ([table above](#the-workflows-and-what-each-one-is-responsible-for)), so
 none of their jobs — including `shellcheck` and
@@ -3483,7 +3483,8 @@ gh api --method PUT \
       {"context": "trivy (repo)", "app_id": 15368},
       {"context": "secret scan", "app_id": 15368},
       {"context": "checkov (terraform + kubernetes)", "app_id": 15368},
-      {"context": "platform policy assertions", "app_id": 15368}
+      {"context": "platform policy assertions", "app_id": 15368},
+      {"context": "deployment-values", "app_id": 15368}
     ]
   },
   "enforce_admins": false,
@@ -3495,8 +3496,9 @@ JSON
 
 Why each value:
 
-* **The four checks are exactly `security.yml`'s jobs that run on every pull
-  request.** Its fifth job, `trivy (published images)`, runs only on a
+* **The five checks are exactly `security.yml`'s jobs that run on every pull
+  request**, `deployment-values` among them (docs/design/generic-repository.md,
+  section 4). Its sixth job, `trivy (published images)`, runs only on a
   schedule or `workflow_dispatch`, never on a pull request, so it is not
   listed for the same reason `build images` and `plan` are not: a required
   check that is never reported holds the pull request forever.

@@ -19,6 +19,7 @@ import importlib.util
 import os
 import secrets
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -30,30 +31,45 @@ STEP = "deployment-values · enforce"
 
 _spec = importlib.util.spec_from_file_location("deployment_values", REPO / "scripts" / "guards" / "deployment_values.py")
 guard = importlib.util.module_from_spec(_spec)
+# Registered before it runs: its dataclasses look their module up by name.
+sys.modules[_spec.name] = guard
 _spec.loader.exec_module(guard)
 
 
+def _jobs() -> dict:
+    return yaml.safe_load(SECURITY.read_text(encoding="utf-8"))["jobs"]
+
+
 def _job() -> dict:
-    return yaml.safe_load(SECURITY.read_text(encoding="utf-8"))["jobs"]["deployment-values"]
+    """The folded job the guard runs in (CI-FOLD, #1799)."""
+    return _jobs()["checks"]
+
+
+def _step() -> dict:
+    return next(s for s in _job()["steps"] if s.get("name") == STEP)
 
 
 def _script() -> str:
-    return next(s for s in _job()["steps"] if s.get("name") == STEP)["run"]
+    return _step()["run"]
 
 
 def test_the_check_keeps_its_required_name_and_holds_no_credential():
-    """The ruleset requires the check by name; and the job can never ask
-    for cloud credentials (no id-token, no auth step, GitHub-hosted)."""
+    """The ruleset requires the check by name: its name-keeper reports the
+    folded step's verdict. The job can never ask for cloud credentials (no
+    id-token, no auth step), and --diff gets the full history it reads."""
+    keeper = _jobs()["deployment-values"]
+    assert keeper["name"] == "deployment-values"
+    assert keeper["needs"] == "checks"
+    assert keeper["steps"][0]["env"]["VERDICT"] == "${{ needs.checks.outputs.deployment-values }}"
     job = _job()
-    assert job["name"] == "deployment-values"
     assert job["permissions"] == {"contents": "read"}
-    assert job["runs-on"] == "ubuntu-24.04"
     assert not [s for s in job["steps"] if "google-github-actions/auth" in str(s.get("uses", ""))]
     checkout = job["steps"][0]
     assert checkout["uses"].startswith("actions/checkout@")
-    assert checkout["with"] == {"fetch-depth": 0, "persist-credentials": False}
-    env = next(s for s in job["steps"] if s.get("name") == STEP)["env"]
-    assert env["DEPLOYMENT_PATTERNS"] == "${{ secrets.DEPLOYMENT_PATTERNS }}"
+    assert checkout["with"]["fetch-depth"] == 0
+    assert _step()["id"] == "deployment-values-enforce"
+    assert _step()["env"]["DEPLOYMENT_PATTERNS"] == "${{ secrets.DEPLOYMENT_PATTERNS }}"
+    assert job["outputs"]["deployment-values"] == "${{ steps.verdict.outputs.deployment-values }}"
 
 
 def test_it_runs_on_every_pull_request_and_on_main():

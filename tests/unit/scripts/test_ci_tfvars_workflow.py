@@ -1,8 +1,8 @@
 """CI plans with the deployment's own tfvars, fetched, never the checkout's.
 
 docs/design/generic-repository.md, sections 2.2-2.3: the real
-`<env>.tfvars` are deployment values, untracked and git-ignored, kept under
-config/<env>/ in the state bucket. Every job that plans -- release-apply (the
+`<env>.tfvars` are deployment values, kept under config/<env>/ in the state
+bucket, and the tracked copies are on their way out of the checkout. Every job that plans -- release-apply (the
 release and hotfix lanes) and terraform.yml's `plan` -- fetches them through
 scripts/lib/resolve.sh (config_fetch), the read a laptop's `make tf-plan`
 makes, into the runner's temporary directory outside the checkout, and plans

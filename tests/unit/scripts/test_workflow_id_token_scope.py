@@ -245,6 +245,6 @@ def test_acceptance_federates_as_its_own_account_never_the_deployer():
         for job in jobs.values()
         for step in _auth_steps(job)
     }
-    assert accounts == {"${{ vars.GCP_ACCEPT_SA }}"}, accounts
+    assert accounts == {"${{ secrets.GCP_ACCEPT_SA }}"}, accounts
     bound = (REPO / "terraform" / "bootstrap" / "acceptance.tf").read_text()
     assert '.github/workflows/accept.yml@refs/heads/main"' in bound

@@ -1,4 +1,4 @@
-# Blank issues stay on, for the reason a peer application keeps them on: an
+# Blank issues stay on, for the reason saga-prompt-lab keeps them on: an
 # engineer filing a quick chore or a note-to-self shouldn't have to answer a
 # triage form. Use the forms for anything reported from the outside, where the
 # reporter and the fixer are different people. An agent filing from the CLI
