@@ -8,7 +8,6 @@ import {
   useState,
   useSyncExternalStore,
   type CSSProperties,
-  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from 'react'
 
@@ -6648,16 +6647,6 @@ function Board({
       if (step !== undefined && jumpToQuestions(step.step_id)) return
     }
   }, [needItems, workflow.steps])
-  const onAskMark = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
-    // THE GRID'S ASKS-YOU MARK JUMPS TO THE STEP'S QUESTIONS instead of picking the chip.
-    const ask = (e.target as Element).closest?.('.sg-ask')
-    const step = ask?.closest('[data-step]')?.getAttribute('data-step')
-    if (step && jumpToQuestions(step)) {
-      e.preventDefault()
-      e.stopPropagation()
-    }
-  }, [])
-
   // THE SAME STEP ACROSS THE BOARD (#112, WF-10): the step inspector's
   // second scrubber, over the workflows of this one's shape, newest first.
   const siblings = useMemo(() => {
@@ -6699,7 +6688,7 @@ function Board({
   const unreadable = unreadableOf(workflow, taskById)
   const view = focus.view
   const main = (
-    <div className="wfp wfp-main" onClickCapture={onAskMark}>
+    <div className="wfp wfp-main">
       <WorkflowHead workflow={workflow} taskById={taskById} usage={usage} now={now} />
       <WorkflowNeedsCard items={needItems} workflow={workflow} taskById={taskById} onChanged={reload} />
       <div className="wfp-viewbar">
@@ -6738,6 +6727,10 @@ function Board({
             now={now}
             // A STAGE'S TALLY OPENS THE TABLE AT THAT STAGE, every state.
             onOpenStage={(stage) => focus.onStageTable(stage.index, STAGE_ANY_STATE)}
+            // THE ASKS-YOU MARK JUMPS TO THE STEP'S QUESTIONS; with no block on the page it picks the chip.
+            onAsk={(stepId) => {
+              if (!jumpToQuestions(stepId)) pickStep(stepId)
+            }}
           />
           <MergeStrip items={needItems} workflow={workflow} onAnswer={answerQuestions} />
           <LiveBrowsers workflow={workflow} taskById={taskById} picked={picked} onPick={pickStep} now={now} />
