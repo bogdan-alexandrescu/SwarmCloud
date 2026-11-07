@@ -126,6 +126,14 @@ def test_a_zone_outside_the_region_or_a_family_image_is_refused(chosen: dict) ->
         _infra(voice_speech=chosen)
 
 
+@pytest.mark.parametrize("name", ["common-cu128-ubuntu-2204-nvidia-570-v1", "common-cu124-ubuntu-2204-v1"])
+def test_an_image_below_the_driver_floor_is_never_rendered(name: str) -> None:
+    chosen = {"enabled": True, "zone": "europe-west1-b", "image": IMAGES + name}
+    with pytest.raises(ValueError) as raised:
+        _infra(voice_speech=chosen)
+    assert str(raised.value).startswith(tfvars.DRIVER_FLOOR_REFUSAL) and name in str(raised.value)
+
+
 # -- stage 0: the optional choice ---------------------------------------------------
 
 
