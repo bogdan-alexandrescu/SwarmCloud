@@ -2617,14 +2617,17 @@ redact() {
   # 6 November 2026): `${NAME}<v>`, `${NAME},<v>` and `$(cat f);<v>` are masked.
   # Up to three closing quotes before that end, for nested quoting, and a
   # `$(` whose line ends in a continuation is kept, as main kept both.
-  local v_shell='"?[$]((\([a-z][a-z0-9_-]{0,31}( [^()]{0,256})?\)|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ [^{}]{0,256}\}\})(\\{0,15}["'"'"'`]){0,3}'"${v_ends}"'|\([a-z][a-z0-9_-]{0,31} [^()]{0,256}\\$)'
+  # Up to 256 characters inside is written `{0,255}` and one optional
+  # character: BSD sed (macOS) refuses a count over 255 (RE_DUP_MAX) and
+  # prints nothing; tests/unit/scripts/test_redact_bsd_sed_bounds.py holds it.
+  local v_shell='"?[$]((\([a-z][a-z0-9_-]{0,31}( [^()]{0,255}[^()]?)?\)|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ [^{}]{0,255}[^{}]?\}\})(\\{0,15}["'"'"'`]){0,3}'"${v_ends}"'|\([a-z][a-z0-9_-]{0,31} [^()]{0,255}[^()]?\\$)'
   # A masked run goes on past one `;)]}` and a quote or a comma when a value
   # character follows (`_GLUED_RUN`): `token=${NAME};"<v>"`, `${NAME},<v>`.
   # A closed `$(...)` or `${{...}}` with a literal glued after it is masked
   # as one value (`_CLOSED_CONSTRUCT`): `token = $(cat f);<v>`.
   local m_glued_tail='(\\*"|,)[];)}]*[^]",[:space:]\\;)}]'
   local m_glued="[];)}]${m_glued_tail}"
-  local m_construct='[$](\([^()]{0,256}\)|\{\{[^{}]{0,256}\}\})('"${m_glued_tail}"')?'
+  local m_construct='[$](\([^()]{0,255}[^()]?\)|\{\{[^{}]{0,255}[^{}]?\}\})('"${m_glued_tail}"')?'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
