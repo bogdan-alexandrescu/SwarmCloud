@@ -63,6 +63,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/image-scan.sh
 source "${REPO_ROOT}/scripts/lib/image-scan.sh"
+# Which images an environment's tfvars switches off, shared with build-images.sh.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/image-switches.sh
+source "${REPO_ROOT}/scripts/lib/image-switches.sh"
 
 # The same nineteen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
 # agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX, swarm-egress since
@@ -439,56 +443,48 @@ fi
 #     2026-11-06 11:28 UTC: trivy refused swarm-speech, with voice_speech off
 #     in dev, and that refusal held every other image back.
 #
-#     An image switched off is still built, resolved and scanned, and what the
-#     scan found is reported below; it is neither promoted nor allowed to
-#     block. Only a literal `enabled = false` in that environment's own tfvars
-#     switches it off. An absent file or block, an unreadable value, a
-#     --channel that is not ENVIRONMENT: the image counts as deployed and its
-#     refusal blocks exactly as any other. The scan of a deployed image is
-#     never weakened.
+#     The table and the reading of the switch are lib/image-switches.sh's,
+#     shared with build-images.sh.
+#
+#     An image switched off that the manifest holds is still resolved and
+#     scanned, and what the scan found is reported below; it is neither
+#     promoted nor allowed to block. Only a literal `enabled = false` in that
+#     environment's own tfvars switches it off. An absent file or block, an
+#     unreadable value, a --channel that is not ENVIRONMENT: the image counts
+#     as deployed and its refusal blocks exactly as any other. The scan of a
+#     deployed image is never weakened.
+#
+#     A dev release's build leaves a switched-off image out of the manifest
+#     altogether (build-images.sh --reuse-ci, Bogdan's pick of 2026-11-06:
+#     swarm-speech alone was 29 of a release's ~75 minutes). Nothing here
+#     scans an image the manifest does not hold; it is reported as not
+#     deployed, not rebuilt, not scanned.
 # ---------------------------------------------------------------------------
-SWITCHED_IMAGES=("swarm-speech=voice_speech")
-
-# The tfvars switch for image $1, or nothing when no switch deploys it.
-image_switch() {
-  local entry
-  for entry in "${SWITCHED_IMAGES[@]}"; do
-    if [[ "${entry%%=*}" == "$1" ]]; then
-      printf '%s' "${entry#*=}"
-      return 0
+SKIPPED=(); SKIPPED_SWITCH=(); NOT_BUILT=(); NOT_BUILT_SWITCH=()
+if [[ "${CHANNEL}" == "${ENVIRONMENT}" ]]; then
+  for ((i = 0; i < ${#TARGETS[@]}; i++)); do
+    if switch="$(image_switched_off "${TARGETS[$i]}" "${ENVIRONMENT}")"; then
+      SKIPPED+=("${TARGETS[$i]}"); SKIPPED_SWITCH+=("${switch}")
     fi
   done
-}
-
-# Does this environment's tfvars say, literally, `<switch> = { ... enabled =
-# false ... }`? Comments are dropped first, so a commented-out line switches
-# nothing; the block ends where its braces balance.
-switch_is_off() {
-  local switch="$1" tfvars
-  [[ "${CHANNEL}" == "${ENVIRONMENT}" ]] || return 1
-  tfvars="${REPO_ROOT}/terraform/environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars"
-  [[ -f "${tfvars}" ]] || return 1
-  awk -v key="${switch}" '
-    !open && !closed && $0 ~ ("^" key "[[:space:]]*=[[:space:]]*[{]") { open = 1; depth = 0 }
-    open {
-      line = $0
-      sub(/(#|\/\/).*/, "", line)
-      if (line ~ /(^|[{,[:space:]])enabled[[:space:]]*=[[:space:]]*false([[:space:],}]|$)/) off = 1
-      if (line ~ /(^|[{,[:space:]])enabled[[:space:]]*=/ && line !~ /enabled[[:space:]]*=[[:space:]]*false([[:space:],}]|$)/) on = 1
-      depth += gsub(/[{]/, "{", line) - gsub(/[}]/, "}", line)
-      if (depth <= 0) { open = 0; closed = 1 }
-    }
-    END { exit !(closed && off && !on) }
-  ' "${tfvars}"
-}
-
-SKIPPED=(); SKIPPED_SWITCH=()
-for ((i = 0; i < ${#TARGETS[@]}; i++)); do
-  switch="$(image_switch "${TARGETS[$i]}")"
-  if [[ -n "${switch}" ]] && switch_is_off "${switch}"; then
-    SKIPPED+=("${TARGETS[$i]}"); SKIPPED_SWITCH+=("${switch}")
+  if [[ -n "${FROM_MANIFEST}" ]]; then
+    for target in "${ALL_TARGETS[@]}"; do
+      if ! jq -e --arg n "${target}" 'any(.images[]; .name == $n)' "${FROM_MANIFEST}" >/dev/null \
+         && switch="$(image_switched_off "${target}" "${ENVIRONMENT}")"; then
+        NOT_BUILT+=("${target}"); NOT_BUILT_SWITCH+=("${switch}")
+      fi
+    done
   fi
-done
+fi
+
+if [[ "${#NOT_BUILT[@]}" -gt 0 ]]; then
+  summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+  printf '\n### Not deployed in %s: not rebuilt, not scanned\n\n' "${ENVIRONMENT}" >>"${summary}"
+  for ((i = 0; i < ${#NOT_BUILT[@]}; i++)); do
+    info "${NOT_BUILT[$i]}: not deployed in ${ENVIRONMENT}: not rebuilt, not scanned (${NOT_BUILT_SWITCH[$i]} is off in ${ENVIRONMENT}.tfvars, and ${FROM_MANIFEST} does not hold it)"
+    printf -- '- %s (%s off): not rebuilt, not scanned\n' "${NOT_BUILT[$i]}" "${NOT_BUILT_SWITCH[$i]}" >>"${summary}"
+  done
+fi
 
 is_skipped() {
   local name

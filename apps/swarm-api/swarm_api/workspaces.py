@@ -981,6 +981,11 @@ class Workspaces:
         self.console_url = console_url
         self._touched: dict[str, float] = {}
         self._touch_lock = threading.Lock()
+        #: LOAN-ON-READ (`people` module docstring): applies one tenant's
+        #: pending loans when its workspace is ready and answers how many it
+        #: applied; `routes.people.wire_ready_loans` sets it. None: the gate
+        #: refuses as before and the sweep applies the loan.
+        self.ready_loans: Callable[[str], int] | None = None
 
     # -- reads ---------------------------------------------------------------
 
@@ -1058,7 +1063,8 @@ class Workspaces:
 
         Refuses with WORKSPACE_NOT_READY until the record is `ready`, then
         with NO_CLAUDE_ACCOUNT until the tenant has a Claude account, for
-        every runner profile (WD6, confirmed by the owner 2026-10-08)."""
+        every runner profile (WD6, confirmed by the owner 2026-10-08) -- after
+        `ready_loans` has applied any loan still pending for this tenant."""
         if not self.gate or not self.applies_to(ctx, tenant):
             return
         record = self.get(tenant.tenant_id)
@@ -1072,7 +1078,16 @@ class Workspaces:
                 "setup_url": setup_url(self.console_url, "workspace"),
                 "setup_command": SETUP_COMMAND,
             })
-        if not self.claude_accounts(tenant.tenant_id, tenant)["has_account"]:
+        has_account = self.claude_accounts(tenant.tenant_id, tenant)["has_account"]
+        if not has_account and self.ready_loans is not None:
+            # A loan lent while the workspace was being made may be pending
+            # still: apply this tenant's own, then count again.
+            try:
+                if self.ready_loans(tenant.tenant_id):
+                    has_account = self.claude_accounts(tenant.tenant_id, tenant)["has_account"]
+            except Exception as exc:  # noqa: BLE001 - the gate answers; the sweep applies it
+                log.warning("workspace gate: pending loans not applied: %s", type(exc).__name__)
+        if not has_account:
             log.info("workspace gate refused: workspace=%s no claude account",
                      record.get("workspace_id") if record else "-")
             raise NoClaudeAccount(NO_CLAUDE_ACCOUNT_MESSAGE, detail={

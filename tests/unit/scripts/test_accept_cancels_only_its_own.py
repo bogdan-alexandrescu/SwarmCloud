@@ -211,7 +211,8 @@ def _verify(tmp_path: Path, *targets: str, **extra: str) -> subprocess.Completed
     if not describe.exists():
         describe.write_text("{}")
     env = _env(tmp_path, FAKE_DESCRIBE=str(describe), FAKE_EXECUTION="swarm-verify-x7k2q", **extra)
-    env.pop("PROJECT_ID")
+    # PROJECT_ID stays: no script guesses the project any more, so the
+    # caller names it (the fake gcloud answers for any project).
     env.pop("REGION")
     return subprocess.run(["bash", str(VERIFY_REMOTE), *targets], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)

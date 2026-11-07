@@ -39,6 +39,10 @@ OWNER_CHOICES = {
     # Off until the owner's O1 step 3 proves IAP evaluates the attribute;
     # bounds K1 only, which a fresh install does not grant.
     "switch.front_door_admit_role_bound": "front_door_admit_role_bound",
+    # Owner's answer 1 on #2325: approval's platform-side membership ships
+    # behind its switch, off; it widens who may enter a tenant (invariant 9),
+    # so it goes on in dev first, then prod, never by a fresh install.
+    "switch.platform_memberships": "platform_memberships",
 }
 #: Not a bool: a map of refusal codes, every one shipped off (report-only).
 NOT_A_BOOL = {"switch.api_refusals"}

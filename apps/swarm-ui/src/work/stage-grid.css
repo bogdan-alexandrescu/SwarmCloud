@@ -38,6 +38,10 @@ button.sg-tally:focus-visible { outline: 2px solid var(--info); outline-offset: 
 
 .sg-gap { min-height: 46px; }
 
+/* A chip's cell: the chip fills it, and its asks-you mark sits on its corner as a sibling control. */
+.sg-cell { position: relative; display: flex; min-width: 0; }
+.sg-cell > .sg-chip { flex: 1 1 auto; }
+
 .sg-chip {
   position: relative; display: flex; flex-wrap: wrap; align-content: center; align-items: center; gap: 2px 5px;
   min-width: 0; min-height: 46px; padding: 4px 6px;
@@ -71,6 +75,11 @@ button.sg-tally:focus-visible { outline: 2px solid var(--info); outline-offset: 
   background: var(--s-park); color: var(--surface); box-shadow: 0 0 0 2px var(--bg);
   font-weight: 700; font-size: 12px; line-height: 1;
 }
+/* Above a selected chip's outline (z-index 1), and dimmed with its chip. */
+.sg-cell > .sg-ask { z-index: 2; }
+button.sg-ask { padding: 0; border: 0; font-family: inherit; cursor: pointer; }
+button.sg-ask:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.sg-chip.is-dimmed + .sg-ask { opacity: .35; }
 .sg-ask.is-inline { position: static; display: inline-grid; width: 16px; height: 16px; box-shadow: none; }
 
 /* Marks only: a square of state, the "?" smaller so it stays inside the chip's corner. */

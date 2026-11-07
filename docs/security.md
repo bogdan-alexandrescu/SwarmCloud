@@ -502,6 +502,18 @@ That role cannot read a value, and the condition keeps it off the shared
 project's `agents-*` secrets. It is off until BGD applies it with `make
 bootstrap`.
 
+**A managed plugin's secret is read by swarm-api alone.** A plugin's secret
+field is `swarm-tenant-<t>-plg-<16 hex>`. swarm-api adds its versions
+(`terraform/infra/plugins.tf`) and, once `enable_plugin_secrets` is set, reads
+them under `roles/secretmanager.secretAccessor` conditioned on
+`projects/<number>/secrets/swarm-tenant-` with a non-empty tenant before
+`-plg-` (`terraform/bootstrap/plugin_secrets.tf`). CI cannot grant that read:
+a role carrying `secretmanager.versions.access` on its grantable list would
+let it read any secret in the shared project. No tenant worker holds a grant
+on a `-plg-` secret. The switch stays off until the plugin release, which
+hands a value only to an attempt whose signed plugin set names it, is built:
+no swarm-api code reads a `-plg-` value today.
+
 ## Cloud metadata abuse
 
 An agent inside a container can reach `169.254.169.254` and ask for the

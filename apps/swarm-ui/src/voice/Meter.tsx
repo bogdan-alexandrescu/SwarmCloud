@@ -27,6 +27,7 @@ export const LEDGER_REFRESH_MS = 30_000
 const LINE_WORDS: Record<string, string> = {
   talk: 'Talk',
   planner: 'Planner',
+  speech_machine: 'Speech machine',
   work_running: 'Work running',
   work_finished: 'Work finished',
   followups: 'Follow-ups',

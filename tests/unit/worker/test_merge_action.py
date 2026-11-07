@@ -1058,7 +1058,11 @@ def test_a_head_moved_refusal_names_the_commit_and_who_made_it(tmp_path):
     assert refusal["commit"] == {
         "sha": head, "parents": [PINNED, merge_world.BASE_TIP],
         "committer_email": PERSON["email"], "verified": False, "first_parent_accepted": True,
-        "why": "readme.txt is not the clean merge of its parents"}
+        "why": "readme.txt is not the clean merge of its parents",
+        # What the person test compared (#2505): no account linked, no worker
+        # line, and a pull request with no person on it.
+        "committer_login": None, "author_login": None, "by_worker": False,
+        "worker_task": None, "people": []}
     assert PERSON["email"] in refusal["message"] and head in refusal["message"]
     assert "readme.txt is not the clean merge" in refusal["message"]
 

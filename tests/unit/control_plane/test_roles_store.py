@@ -105,10 +105,11 @@ def store(db, clock, signing_key) -> RoleStore:
 
 
 def ctx(email: str, tenant_id: str = "eng", principal: str = ENG_GROUP, *,
-        is_admin: bool = False, via: str = "") -> AuthContext:
+        is_admin: bool = False, via: str = "", member: bool = False) -> AuthContext:
     return AuthContext(
-        principal=Principal(email=email, subject=f"s-{email}", domain="example.com"),
-        tenant_id=tenant_id, is_admin=is_admin, tenant_principal=principal, tenant_via=via)
+        principal=Principal(email=email, subject=f"s-{email}", domain=email.rsplit("@", 1)[1]),
+        tenant_id=tenant_id, is_admin=is_admin, tenant_principal=principal, tenant_via=via,
+        tenant_member=email if member else "", member_scope="continuation" if member else "")
 
 
 def grant(store: RoleStore, subject: str, role: str | None, *, tenant_id: str = "eng",
@@ -183,6 +184,43 @@ def test_a_default_grant_applies_to_everyone_without_an_override(store):
     grant(store, "alice@example.com", "member")
     assert store.resolve(ctx("bob@example.com"), fresh=True).role == "viewer"
     assert store.resolve(ctx("alice@example.com"), fresh=True).role == "member"
+
+
+# -- a service account the workspace lists (contract request 30) ---------------
+
+CI_FIXER = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
+
+
+def test_a_listed_service_account_is_a_member_under_a_viewer_default(store, db):
+    grant(store, roles.DEFAULT_SUBJECT, "viewer")
+    db.asked.clear()
+    me = store.resolve(ctx(CI_FIXER, member=True), fresh=True)
+    assert (me.role, me.source) == ("member", "listing")
+    assert store.require(ctx(CI_FIXER, member=True), roles.MEMBER, fresh=True).role == "member"
+    # The listing decides: no grant is read for it.
+    assert roles.GRANTS_COLLECTION not in db.asked
+
+
+def test_a_listed_service_account_is_never_an_admin(store):
+    # Even with a grant naming it admin written straight to the store (the
+    # routes refuse one with role_person_required), the listing decides.
+    grant(store, CI_FIXER, "admin")
+    me = store.resolve(ctx(CI_FIXER, member=True), fresh=True)
+    assert (me.role, me.source) == ("member", "listing")
+    assert not roles.at_least(me.role, roles.ADMIN)
+
+
+def test_a_person_beside_a_listed_service_account_keeps_the_viewer_default(store):
+    grant(store, roles.DEFAULT_SUBJECT, "viewer")
+    assert store.resolve(ctx(CI_FIXER, member=True), fresh=True).role == "member"
+    me = store.resolve(ctx("bob@example.com"), fresh=True)
+    assert (me.role, me.source) == ("viewer", "default")
+
+
+def test_an_unlisted_service_account_resolves_as_a_person_does(store):
+    grant(store, roles.DEFAULT_SUBJECT, "viewer")
+    me = store.resolve(ctx(CI_FIXER), fresh=True)
+    assert (me.role, me.source) == ("viewer", "default")
 
 
 def test_two_writes_on_a_clock_that_did_not_move_still_order(store):

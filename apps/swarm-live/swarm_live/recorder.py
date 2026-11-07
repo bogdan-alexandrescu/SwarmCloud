@@ -62,7 +62,8 @@ SUFFIX_VIDEO = ".live.webm"
 SUFFIX_ACTIONS = ".live.jsonl"
 _KINDS = {"rec": (SUFFIX_VIDEO, "video/webm"), "actions": (SUFFIX_ACTIONS, "application/x-ndjson")}
 
-#: §7: one-minute segments; 1 fps with nobody watching, up to 10 with a viewer.
+#: §7: one-minute segments; 1 fps with nobody watching, up to 10 with a viewer
+#: (a Live Browsers thumbnail is not one: rendezvous.py `ClientStream`).
 SEGMENT_SECONDS = 60
 IDLE_FPS = 1
 WATCHED_FPS = 10

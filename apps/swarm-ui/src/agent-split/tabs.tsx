@@ -1,14 +1,18 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 
 import { childrenServed, offersChildren } from '../AgentChildren'
+import { loadQuestions, type OwnerAnswer, type TaskQuestions } from '../api'
 import type { TaskPane } from '../App'
 import { checkpointsSay, type CheckpointCount } from '../CheckpointsPane'
-import { isLiveBrowser, ownerQuestionsHold } from '../Handoff'
-import { questionCount } from '../QuestionsCard'
-import { TERMINAL_STATES, type Task } from '../types'
+import type { Result } from '../fetch'
+import { isLiveBrowser, ownerQuestionsHold, type HeldQuestion } from '../Handoff'
+import { HeldQuestionsCard, QuestionsCard, questionCount } from '../QuestionsCard'
+import { useRead } from '../RunFiles'
+import { TERMINAL_STATES, timeAgo, type Task } from '../types'
 import { changesCount } from '../WorkflowChanges'
-import { Tabs, type TabDef } from '../components'
+import { Button, Tabs, type TabDef } from '../components'
 import '../styles/agent-tabs.css'
+import '../styles/agent-questions-row.css'
 
 // THE SPLIT'S TAB BAR (moved out of AgentSplit.tsx by SPEED-D4A, 2026-10-14,
 // unchanged): each tab's name, which tabs the agent offers with their counts,
@@ -48,6 +52,7 @@ export function paneTabs({
   ckpt,
   ckptCount,
   pane = null,
+  questions,
 }: {
   task: Task | null
   base: string
@@ -59,15 +64,19 @@ export function paneTabs({
   ckptCount: number | string | null
   /** The pane the address names: its own tab is always on the strip (task-009). */
   pane?: TaskPane | null
+  /** The open questions `useAgentQuestions` counted; absent, the task's own count. */
+  questions?: number
 }): PaneTab[] {
+  const asks = questions ?? askedCount(task)
   return [
     // THE QUESTIONS' COUNT (part of #1206): the agent's questions for its
-    // owner lead Details, so the tab says how many; no badge when none.
+    // owner lead Details, so the tab says how many are open, a held merge's
+    // included (#2688); no badge when none.
     {
       id: 'detail',
       label: PANE_LABELS.detail,
-      count: questionCount(task) || null,
-      say: questionCount(task) > 0 ? `The agent asked you ${questionCount(task)} question(s); they are at the top of Details.` : null,
+      count: asks || null,
+      say: asks > 0 ? `The agent asked you ${asks} question(s); they are at the top of Details.` : null,
       to: base,
     },
     // DETAILS, BROWSER, LOGS (the mockup, owner decision 2026-10-12): Browser
@@ -655,4 +664,163 @@ function isChild(task: Task | null): boolean {
 function artifactCount(task: Task | null): number | null {
   const a = (task?.result_summary as Record<string, unknown> | null | undefined)?.artifacts
   return Array.isArray(a) ? a.length : null
+}
+
+/** The task's questions as its document counts them: its own, and those holding it (#2313). */
+function askedCount(task: Task | null): number {
+  if (task === null) return 0
+  return questionCount(task) + (ownerQuestionsHold(task)?.questions.length ?? 0)
+}
+
+/** One question the page counts: its words, and the answer stored for it. */
+type Asked = { text: string | null; answer: OwnerAnswer | null }
+
+/** Whose questions to read: the task's own (`rows` null) or the named rows of an asking task. */
+type Ask = { taskId: string; rows: HeldQuestion[] | null }
+
+/** The agent's questions as the page counts them, for the Details tab and `AgQuestionsRow`. */
+export type AgentQuestions = {
+  /** How many are open; null until the first read lands, and none is asked of nobody. */
+  open: number | null
+  /** The first open question's words. */
+  first: string | null
+  /** A blocking question holds the task (`ownerQuestionsHold`). */
+  held: boolean
+  /** The latest stored answer, for "answered". */
+  last: OwnerAnswer | null
+  /** Read them again now. */
+  reread: () => void
+}
+
+/**
+ * THE AGENT'S QUESTIONS, READ ONCE FOR EVERY TAB (BGD, 2026-11-06, part of
+ * #2688): the task's own (`questionCount`) and the ones a merge is held by
+ * (`ownerQuestionsHold`), each from its asking task's questions route. Read
+ * again when the attempt, the state or the stored answers change, and when
+ * the row's card is folded. No read when the task asked none.
+ */
+export function useAgentQuestions(task: Task | null): AgentQuestions {
+  const id = task?.id ?? ''
+  const hold = task === null ? null : ownerQuestionsHold(task)
+  const now: Ask[] = [
+    ...(task !== null && questionCount(task) > 0 ? [{ taskId: task.id, rows: null }] : []),
+    ...[...new Set((hold?.questions ?? []).map((q) => q.task_id))].map((t) => ({
+      taskId: t,
+      rows: (hold?.questions ?? []).filter((q) => q.task_id === t),
+    })),
+  ]
+  // A hold that cleared on its last answer is still read while the page is
+  // open, so the row can say who answered.
+  const kept = useRef<{ id: string; asks: Ask[] }>({ id, asks: now })
+  if (kept.current.id !== id || now.length > 0) kept.current = { id, asks: now }
+  const asks = kept.current.asks
+  const [nonce, setNonce] = useState(0)
+  const own = task === null ? 0 : questionCount(task)
+  const stored = task?.owner_answers?.length ?? 0
+  const key = `${asks.map((a) => `${a.taskId}/${a.rows?.map((r) => r.question_index).join('.') ?? '*'}`).join(',')}:${own}:${task?.attempt_count ?? 0}:${task?.state ?? ''}:${stored}:${nonce}`
+  const { state } = useRead<Asked[]>(() => readAsked(asks, own), id, key, null)
+  const items = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  const fallback = askedCount(task)
+  const open = asks.length === 0 ? 0 : items !== null ? items.filter((q) => q.answer === null).length : state.status === 'error' ? fallback : null
+  const last = (items ?? [])
+    .map((q) => q.answer)
+    .filter((a): a is OwnerAnswer => a !== null)
+    .reduce<OwnerAnswer | null>((l, a) => (l === null || (a.at ?? '') > (l.at ?? '') ? a : l), null)
+  return {
+    open,
+    first: items?.find((q) => q.answer === null)?.text ?? hold?.questions[0]?.question ?? null,
+    held: hold !== null,
+    last,
+    reread: () => setNonce((n) => n + 1),
+  }
+}
+
+/** Each asking task's questions, read together; the first failed read is the answer. */
+async function readAsked(asks: Ask[], own: number): Promise<Result<Asked[]>> {
+  if (asks.length === 0) return { status: 'ok', data: [], fetchedAt: Date.now() }
+  const reads = await Promise.all(asks.map((a) => loadQuestions(a.taskId)))
+  const items: Asked[] = []
+  for (const [i, r] of reads.entries()) {
+    if (r.status === 'error') return r
+    const a = asks[i]!
+    const data: TaskQuestions | null = r.status === 'ok' || r.status === 'stale' ? r.data : null
+    const served = data?.status === 'ok' ? data.questions : null
+    if (a.rows === null) {
+      // Not served (unavailable, none): the document's count, each open.
+      const asked: { question: string | null; answer?: OwnerAnswer | null }[] =
+        served ?? Array.from({ length: own }, () => ({ question: null, answer: null }))
+      items.push(...asked.map((q) => ({ text: q.question, answer: q.answer ?? null })))
+    } else {
+      for (const row of a.rows) {
+        const q = served?.[row.question_index]
+        items.push({ text: q?.question ?? row.question, answer: q?.answer ?? null })
+      }
+    }
+  }
+  return { status: 'ok', data: items, fetchedAt: Date.now() }
+}
+
+/**
+ * THE QUESTIONS ROW (BGD, 2026-11-06, part of #2688: "a way to act on
+ * questions ... in the agent page"). Only Details drew the agent's questions,
+ * so from Logs, Changes, Attempts, Artifacts or Checkpoints nothing said it
+ * asked any. Every tab but Details, whose cards already lead it, now opens on
+ * one row: the asks-you mark, the open count, the first open question on one
+ * line, and Answer, which opens the same card (`QuestionsCard`, or
+ * `HeldQuestionsCard` for a held merge) under the row without leaving the
+ * tab. Once all are answered it reads who answered and when; mounted again
+ * (the next visit), it draws nothing.
+ */
+export function AgQuestionsRow({ task, asked }: { task: Task; asked: AgentQuestions }) {
+  const [open, setOpen] = useState(false)
+  const [seen, setSeen] = useState(false)
+  const n = asked.open
+  useEffect(() => {
+    if (n !== null && n > 0) setSeen(true)
+  }, [n])
+  if (n === null || (n === 0 && !seen && !open)) return null
+  const answered = n === 0
+  const toggle = () => {
+    if (open) asked.reread()
+    setOpen(!open)
+  }
+  const word = `${n} question${n === 1 ? '' : 's'}`
+  return (
+    <div className="aq">
+      <div className={`aq-row${answered ? ' is-answered' : ''}`} role="group" aria-label={answered ? 'Questions answered' : `The agent asks you ${word}`}>
+        {answered ? (
+          <>
+            <span className="aq-mark is-ok" aria-hidden="true">
+              ✓
+            </span>
+            <span className="aq-text">
+              answered
+              {asked.last !== null ? ` · ${asked.last.by ?? 'someone'}${asked.last.at ? `, ${timeAgo(asked.last.at)}` : ''}` : ''}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="aq-mark" aria-hidden="true" title={asked.held ? 'Holds this agent until answered' : 'Asks you'}>
+              ?
+            </span>
+            <span className={`aq-count${asked.held ? ' is-held' : ''}`}>{n}</span>
+            <span className="aq-text" title={asked.first ?? undefined}>
+              {asked.first ?? '—'}
+            </span>
+          </>
+        )}
+        {(!answered || open) && (
+          <Button size="sm" kind={open ? 'ghost' : 'primary'} aria-expanded={open} onClick={toggle}>
+            {open ? 'Close' : 'Answer'}
+          </Button>
+        )}
+      </div>
+      {open && (
+        <div className="aq-card">
+          <HeldQuestionsCard task={task} />
+          <QuestionsCard task={task} />
+        </div>
+      )}
+    </div>
+  )
 }
