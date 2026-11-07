@@ -73,9 +73,10 @@ def _run_verify_remote(tmp_path: Path, *targets: str) -> tuple[subprocess.Comple
         "TMPDIR": str(tmpdir),
         "NO_COLOR": "1",
         # A path that does not exist: load_env falls through to its
-        # defaults (PROJECT_ID, REGION, ...) rather than reading the
-        # operator's real .env.
+        # defaults (REGION, ...) rather than reading the operator's real
+        # .env. PROJECT_ID has no default, so the test names one.
         "SWARM_ENV_FILE": str(tmp_path / "no.env"),
+        "PROJECT_ID": "saga-agents-staging",
     }
 
     proc = subprocess.run(
