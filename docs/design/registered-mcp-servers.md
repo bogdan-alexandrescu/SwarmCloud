@@ -1,6 +1,6 @@
 # Registered MCP servers: an agent queries its caller's own MCP server
 
-**Status: PROPOSED 2026-10-17 (lane CALLER-MCP-DESIGN, part of #1433);
+**Status: PROPOSED 2026-10-17 (lane CALLER-MCP-DESIGN);
 approved by the owner on 2026-10-17 with the answers to §7 in PR 1466's
 comments; BUILT, dark, by 2026-10-18.** §8 says what each build-plan lane
 landed and where the build differs from this text. The feature ships dark:
@@ -10,7 +10,7 @@ approved, amended in place only where the owner decided after approval
 (§1.2 and §4.8, each dated); every choice in it that was this lane's is still
 marked **(proposed)**.
 
-It builds on [workspace-secrets.md](workspace-secrets.md) (#1347): long-lived
+It builds on [workspace-secrets.md](workspace-secrets.md): long-lived
 credentials come from that store, through its grants, and the attempt-signed,
 generation-fenced release is the model for the one new route that serves
 credential material here. It borrows the worker's loopback-shim shape from
@@ -68,7 +68,7 @@ Every code citation is `path::symbol` or a path, read at `35f2a61` on
 
 ### 1.1 What the issue asks
 
-Issue #1433 (opened 2026-10-16) wants to run SwarmCloud workflows from an
+An earlier issue (opened 2026-10-16) wants to run SwarmCloud workflows from an
 application that keeps the knowledge its agents need (an indexed graph of
 documents, conversations and decisions) behind its own MCP server. Each agent
 must **query that server during its run and write results back through it**,
@@ -225,7 +225,7 @@ each option below is judged against them:
   (`runners/claude_code.py::write_mcp_config`), mode 0600, holding no secret.
 * **Firestore never holds a credential value**, and nothing that serves one
   is a GET (`tests/unit/control_plane/test_no_route_serves_credentials.py`
-  names `secrets:release` as its one carve-out, owner decision Q2 of #1347).
+  names `secrets:release` as its one carve-out, owner decision Q2 of an earlier issue).
 * **Egress is open to public addresses on 443, 80 and 22** and closed to
   private ranges (`kubernetes/network-policies/allow-egress.yaml`, rule 4);
   there is no hostname allowlist and none is planned, because the browser
@@ -400,7 +400,7 @@ found through the grant (§4.5), a `dispatch` server's through the agent's
 credential row (§4.4).
 
 **Who registers** is Q1; the recommendation is platform admins only, as for a
-group workspace's secrets (owner decision Q4 of #1347), with a person
+group workspace's secrets (owner decision Q4 of an earlier issue), with a person
 managing their own personal workspace.
 
 **swarm-api never calls a registered URL.** Not at registration and not to
@@ -514,7 +514,7 @@ or a hash.
 ### 4.5 Long-lived credentials: a workspace secret granted to `mcp:<name>`
 
 A registration with `auth.mode: workspace_secret` takes its key from the
-workspace store of #1347, with no new storage:
+workspace store of an earlier issue, with no new storage:
 
 * the consumer catalogue gains a fourth kind, `mcp` (request M2), so a grant
   is `workspace_secret_grants/{secret_id}~mcp:kb`, with the `enabled` flag,
@@ -576,7 +576,7 @@ refusing at the first failure:
 7. **The rows.** One `mcp_attach_releases` row per server
    (`at, task_id, attempt_id, generation, tenant_id, server_id, name,
    revision, auth_mode, secret_id, version, submitted_by`, `expire_at` 90 days
-   out for a Firestore TTL, as owner decision Q6 of #1347 set for release
+   out for a Firestore TTL, as owner decision Q6 of an earlier issue set for release
    rows), in the transaction that re-checks the fence.
 
 **Answer** `200`:
@@ -809,17 +809,17 @@ cheap early answer. An attach that withholds a workflow step's servers for
 their credential alone parks the step the same way (`expired_at` null:
 the attach does not say when), instead of failing the attempt.
 
-**Why a workflow's expired credential waits (BGD, 2026-10-26).** This
+**Why a workflow's expired credential waits (the owner, 2026-10-26).** This
 reverses the rule of 2026-10-18, which held that a per-run credential was one
 "nobody can replace" because the caller who supplied it is not online. For a
-caller like Product Oracle that is not true: it is a service, online for the
+caller like the second peer application that is not true: it is a service, online for the
 whole run, and it mints the credential. On 2026-10-26 its five Code map runs
 (tenant u-or-9a0792) each sent a 7200 s credential sized for the step, then
 waited about 4.7 hours parked `PROVIDER_QUOTA_EXHAUSTED` at `account_assign`,
 because the only account lent to the tenant was under its 7-day floor. The
 credentials lapsed at 20:00Z. When more accounts were lent at about 22:45Z, all
 five were promoted and FAILED `mcp_credential_expired` at once, on a wait that
-was nobody's fault. BGD picked this design over (a) SwarmCloud calling a
+was nobody's fault. The owner picked this design over (a) SwarmCloud calling a
 tenant-registered refresh URL, and (b) the caller rotating when it sees the
 step leave `PARKED`, which races dispatch. The park holds nothing (invariant 1)
 and nothing is leased before the credential is live (invariants 2, 3). The
@@ -889,7 +889,7 @@ contract.
 
 ### Request M1. `profiles.py`: the CLI agent profiles declare the input `mcp_servers`
 
-**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN, part of #1433.
+**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN.
 
 #### Why
 
@@ -973,7 +973,7 @@ signed, so a worker never attaches a server a tampered task document added.
 
 ### Request M2. `models.py` and `profiles.py`: `mcp` is a secret-consumer kind with one slot, `auth`
 
-**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN, part of #1433.
+**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN.
 
 #### Why
 
@@ -1018,7 +1018,7 @@ still a name. 1-8 untouched.
 
 ### Request M3. `models.py`: one spelling for an MCP server's name
 
-**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN, part of #1433.
+**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN.
 
 #### Why
 
@@ -1051,7 +1051,7 @@ Nothing; new names.
 
 ### Request M4. No new spec format, park reason or event type
 
-**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN, part of #1433.
+**Status:** proposed 2026-10-17 by lane CALLER-MCP-DESIGN.
 Requests **no change**, recorded so no lane adds one.
 
 * **Spec signing:** `input` is already in `canonical_step_spec`, so
@@ -1105,7 +1105,7 @@ order with the feature dark, as every new refusal here ships.
 Each is also in this lane's `questions.json`. The recommendation is first.
 
 **Q1. Who may register an MCP server for a group workspace?**
-(a) **platform admins only, as for the workspace's secrets (#1347 Q4)**
+(a) **platform admins only, as for the workspace's secrets (an earlier issue Q4)**
 (recommended: a registration decides where every agent of the workspace may
 send its work); (b) any member registers, admins enable; (c) any member. A
 personal workspace is managed by its person in every option.
@@ -1154,7 +1154,7 @@ service, a release step and Cloud Run workers' access to the feature.
 **Q9. May swarm-api serve credential material on a second route?**
 (a) **yes, only `mcp:attach`, signed, fenced, once per attempt, named in
 `test_no_route_serves_credentials.py`** (recommended; it is the decision Q2
-of #1347 made for `secrets:release`); (b) no: fold MCP into `secrets:release`
+of an earlier issue made for `secrets:release`); (b) no: fold MCP into `secrets:release`
 instead, re-opening that reviewed route.
 
 **Q10. Where does the acceptance group's test MCP server run?**
@@ -1175,14 +1175,14 @@ registration write, a submission naming a server or carrying a credential,
 and an attach are each refused `mcp_unavailable`. No agent can name a server,
 so the scheduler, worker and runner halves below never run.
 
-**Whether it is on is served (FEATURES-READ, part of #1748, 2026-10-20).**
+**Whether it is on is served (FEATURES-READ, 2026-10-20).**
 `GET /v1/tenants/me` carries `features.caller_mcp`: `true` or `false` from
 `mcp_servers_enabled()` as the serving process reads it, `"unknown"` -- never
 `false` -- when that read fails. A caller learns the switch from that read
 instead of from a refused submission; `sc whoami` shows it
 ([multi-tenancy.md](../multi-tenancy.md#get-v1tenantsme-says-which-features-are-on-for-the-workspace)).
 
-**MCP-CONTRACT (part of #1433; the owner accepted it on 2026-10-17).** Contract requests 88-91 in
+**MCP-CONTRACT (part of the MCP servers epic; the owner accepted it on 2026-10-17).** Contract requests 88-91 in
 [contract-change-requests.md](../contract-change-requests.md), the §5
 requests M1-M4 as written: `_MCP_SERVER_INPUTS` in
 `apps/common/swarm_common/profiles.py`, spread into `claude-code`, `codex`
@@ -1192,7 +1192,7 @@ with `RESERVED_MCP_SERVER_NAMES` and `RESERVED_MCP_SERVER_PREFIX`; and no new
 spec format, park reason or event type. Held by
 `tests/unit/common/test_mcp_contract.py`.
 
-**MCP-IAM (part of #1433; the owner applies bootstrap).**
+**MCP-IAM (part of the MCP servers epic; the owner applies bootstrap).**
 `terraform/bootstrap/mcp_credentials.tf` grants swarm-api the conditioned
 read on `swarm-tenant-<t>-mcpc-` secrets and nothing to a tenant worker
 (`tests/terraform/mcp_credentials.tftest.hcl`); the 10-minute sweep job is in
@@ -1201,7 +1201,7 @@ read on `swarm-tenant-<t>-mcpc-` secrets and nothing to a tenant worker
 `mcp_egress_addresses` output of `terraform/infra/outputs.tf`, rendered into
 swarm-api's `MCP_EGRESS_ADDRESSES`.
 
-**MCP-API (part of #1433), and MCP-API-B.** The registration and its
+**MCP-API (part of the MCP servers epic), and MCP-API-B.** The registration and its
 routes (`apps/swarm-api/swarm_api/mcp_servers.py`,
 `apps/swarm-api/swarm_api/routes/mcp_servers.py`: `GET`, `POST`, `PATCH`, no
 `DELETE`), the per-run credential at rest and its sweep
@@ -1220,7 +1220,7 @@ documents and a forged row could otherwise point its agent at a colleague's
 per-run secret; a row that does not verify is no row, for the attach and the
 sweep alike.
 
-**MCP-SUBMIT (part of #1433).** `SubmissionService.check_mcp_servers`
+**MCP-SUBMIT (part of the MCP servers epic).** `SubmissionService.check_mcp_servers`
 (`apps/swarm-api/swarm_api/service.py::SubmissionService.check_mcp_servers`)
 applies §4.3's table in its order, before anything is stored:
 `mcp_server_unregistered`, `mcp_server_profile_refused`,
@@ -1231,7 +1231,7 @@ and uses the parent's rows (`children.py`); a schedule naming a `dispatch`
 server is refused at creation and on edit (`schedules.py`). Held by
 `tests/unit/control_plane/test_mcp_submit.py`.
 
-**MCP-SCHED (part of #1433), and MCP-FAILED-EDGE.**
+**MCP-SCHED (part of the MCP servers epic), and MCP-FAILED-EDGE.**
 `apps/scheduler/scheduler/mcp_admission.py` answers before the lease: a
 disabled, absent or profile-refused registration parks `CREDENTIAL_MISSING`
 with `mcp_server_unavailable`, and the credential sweep promotes it when the
@@ -1244,7 +1244,7 @@ the sweep actually hold an agent in. Admission writes them, with no lease and
 no reservation, in
 `apps/scheduler/scheduler/loop.py::Scheduler._fail_unrunnable`.
 
-**MCP-KEY-PARK (#2498).** A workflow's expired, destroyed or missing
+**MCP-KEY-PARK (a later fix).** A workflow's expired, destroyed or missing
 credential parks instead (`McpRefusal.restorable`, `McpAnswer.
 waits_for_credential`); `Scheduler._promote_credentials` promotes it once
 the row is live and fails it past `MCP_CREDENTIAL_PARK_MAX_SECONDS`;
@@ -1252,7 +1252,7 @@ swarm-api's `routes/workflows.py::restore_mcp_credentials` is the re-store;
 `waiting_detail._credential` serves the park's fields; the worker's
 `Worker._park_mcp_credential` parks at the attach.
 
-**MCP-WORKER (part of #1433).** `apps/agent-worker/agent_worker/mcp_attach.py`
+**MCP-WORKER (part of the MCP servers epic).** `apps/agent-worker/agent_worker/mcp_attach.py`
 calls the attach once per attempt, after the secrets release and before the
 runner's environment, registers every credential for redaction the moment
 the answer is parsed, validates each server again, fails the attempt before
@@ -1266,7 +1266,7 @@ lifecycle's cleanup closes it (`close_mcp_relay` in
 `tests/unit/worker/test_mcp_relay.py` and
 `tests/unit/worker/test_mcp_attach.py`.
 
-**MCP-RUNNERS (part of #1433).** claude-code writes each server into its one
+**MCP-RUNNERS (part of the MCP servers epic).** claude-code writes each server into its one
 `--mcp-config` as an `http` entry at the relay with the local token
 (`apps/agent-worker/agent_worker/runners/claude_code.py::write_mcp_config`)
 and adds one prompt line per server
@@ -1277,21 +1277,21 @@ codex passes `-c mcp_servers.<name>.url` and `bearer_token_env_var`
 through the relay, in the image test. The `.mcp.json` question is answered in
 §1.2. Held by `tests/unit/worker/test_mcp_runner_config.py`.
 
-**MCP-SC (part of #1433).** `swarm_dispatch` and each `swarm_workflow` step
+**MCP-SC (part of the MCP servers epic).** `swarm_dispatch` and each `swarm_workflow` step
 pass `inputs.mcp_servers` and a top-level `mcp_credentials` through; the
 read-only `swarm_mcp_servers` tool lists the workspace's registrations; no
 tool registers a server or takes a store value
 (`apps/swarm-mcp/swarm_mcp/server.py`; held by
 `tests/unit/mcp/test_mcp_servers_tool.py`).
 
-**MCP-UI (part of #1433).** Settings › MCP servers
+**MCP-UI (part of the MCP servers epic).** Settings › MCP servers
 (`apps/swarm-ui/src/McpServers.tsx`, route `/settings/mcp-servers`): every
 member reads the list, a manager registers, edits, enables and disables, the
 NAT addresses and "last used" are shown. Submit offers the enabled
 registrations through `McpServerPicker` and a credential field per
 `dispatch` server that is cleared after submit and never rendered back.
 
-**MCP-ACCEPT (part of #1433), and MCP-ACCEPT-B.** The acceptance group
+**MCP-ACCEPT (part of the MCP servers epic), and MCP-ACCEPT-B.** The acceptance group
 `scripts/acceptance/groups/mcp.sh` and its judge
 `tests/acceptance/test_caller_mcp.py` run the issue's four checks against
 the dev-only echo server (`tests/acceptance/mcp_echo_server/server.py`,
@@ -1301,7 +1301,7 @@ whose own Google ID token is the run's per-run credential. An operator
 registers the server once in the smoke tenant; no registration, a disabled
 one, or the switch off is a skip naming the reason, never a pass.
 
-**MCP-DOCS (2026-10-18, part of #1433).** This section; the two amendments
+**MCP-DOCS (2026-10-18, part of the MCP servers epic).** This section; the two amendments
 the owner decided after approval, §1.2 (claude-code runs without
 `--strict-mcp-config`) and §4.8 (the relay's `credential_in_request` check
 does not apply `key_value_assignment` or `http_authorization`); and the

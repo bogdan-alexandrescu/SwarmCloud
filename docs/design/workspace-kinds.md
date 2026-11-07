@@ -1,6 +1,6 @@
 # Workspace kinds: an admin creates a personal, group or service workspace from Admin › Tenants, and the in-cloud job builds it
 
-**Status: built 2026-10-19 (part of #847), switched off.** Designed by lane
+**Status: built 2026-10-19, switched off.** Designed by lane
 WORKSPACE-KINDS-DESIGN, with every §7 question answered (a) by the owner the
 same day. Every lane of §6 is on `main`, and §8 records what each landed and
 where the code departs from this text. Nothing of it reaches the cloud until
@@ -12,7 +12,7 @@ of K1 to K3, so the job cannot finish one: a service whose S2 IAP refuses
 stops for the owner as `FRONT_DOOR_OWNER` (`ws_front_door_failed` in
 `scripts/register-tenant.sh`), and nothing half-made runs (§4.8).
 
-The owner asked for this on 2026-10-19, on #847:
+The owner asked for this on 2026-10-19, on an earlier issue:
 
 > "why can't we create a way to launch new workspaces without using CI or some
 > operator laptop for terraform but instead swarmcloud gets an integrated way to
@@ -20,12 +20,12 @@ The owner asked for this on 2026-10-19, on #847:
 > ui as a full end to end flow"
 
 They chose to have it designed first and built after. The decision recorded
-on #847 the same day sets the scope: one **New workspace** flow in
+on an earlier issue the same day sets the scope: one **New workspace** flow in
 Admin › Tenants for all three kinds, personal, group (a Google group) and
 service (a service account). The same in-cloud job, `swarm-workspace-apply`,
 runs it, with no CI, no operator laptop and no Terraform. **For new
 workspaces this reverses WD3** (`docs/workspaces.md` §3.2, "Terraform owns
-group and service tenants"). #1590's namespace gap becomes the job's step A7,
+group and service tenants"). An earlier issue's namespace gap becomes the job's step A7,
 for every kind.
 
 Every file and symbol cited below was read on 2026-10-19 at `d2b2d14`. Lines
@@ -75,19 +75,19 @@ What the design settles, one line each:
 
 ### 1.1 A new service tenant took four steps, three of them the owner's
 
-Read on 2026-10-19 from #847 and from the `u-or-9a0792` entry in
+Read on 2026-10-19 from an earlier issue and from the `u-or-9a0792` entry in
 `terraform/environments/dev/dev.tfvars`. Making Oracle's service tenant
-`u-or-9a0792` for `oracle-api@saga-agents-staging.iam.gserviceaccount.com`
-(#1568) took these steps:
+`u-or-9a0792` for `peer-api@example-project.iam.gserviceaccount.com`
+ took these steps:
 
 1. **A `dev.tfvars` entry**, keyed by the id the frozen
    `identity.tenant_id_for_user` computes (lossy and too long, so it carries a
    digest). A test recomputes that id (`tests/unit/scripts/test_oracle_api_tenant.py`).
    Nobody types it in from memory. The entry also needed an `ALLOWED_USERS`
    line in `terraform/infra/locals.tf`, because a service account's domain is
-   never `saga.xyz`.
+   never `example.com`.
 2. **A bootstrap IAM apply** by the owner. It added
-   `serviceAccount:oracle-api@…` to `frontend_iap_members` in
+   `serviceAccount:peer-api@…` to `frontend_iap_members` in
    `terraform/bootstrap/terraform.tfvars`. That grants
    `roles/iap.httpsResourceAccessor` on **both** IAP backends
    (`google_iap_web_backend_service_iam_member.frontend_accessors`,
@@ -96,7 +96,7 @@ Read on 2026-10-19 from #847 and from the `u-or-9a0792` entry in
 3. **An IAM release**, approved in `dev-iam`, which created the account, its
    grants, its secret, its tenant and pool documents and its Cloud Run jobs.
 4. **`kubernetes/apply.sh` by hand**, because releases do not apply tenant
-   namespaces (`APPLY_TENANT_NAMESPACES` is off). That is #1590.
+   namespaces (`APPLY_TENANT_NAMESPACES` is off). That is an earlier issue.
 
 `docs/multi-tenancy.md` ("Each service tenant has to be admitted in three
 places, and the three must agree") records that the front door, swarm-api's
@@ -110,7 +110,7 @@ A group tenant (`eng`, `smoke`) is a `dev.tfvars` entry with
 swarm-api reads at start (`settings.py::ApiSettings.tenant_groups`). So a new
 group needs a release to reach the tenant-resolution code at all, then the
 namespace by hand. `smoke`'s comment in `dev.tfvars` records the failure this
-invites. Its first principal, `swarm-smoke@saga.xyz`, did not exist. A
+invites. Its first principal, `swarm-smoke@example.com`, did not exist. A
 registered group whose lookup fails 503s every caller who is in no higher
 group, by design.
 
@@ -120,7 +120,7 @@ Since 2026-10-11 a person's workspace has been made in the cloud. The person
 requests it, an admin approves, and `swarm-workspace-apply` runs
 `register-tenant.sh --workspace`, steps A1 to A9 (`docs/workspaces.md` §2.2).
 It takes no tfvars entry, no release and no hand apply. The owner's w-752763
-read `verified: 25 of 25 objects` on 2026-10-11 (#847). So the question is
+read `verified: 25 of 25 objects` on 2026-10-11. So the question is
 not whether an in-cloud path can work. It is what the group and service kinds
 need that a person does not:
 
@@ -134,7 +134,7 @@ need that a person does not:
 ### 1.4 What "done" lets someone do that they cannot today
 
 * An admin opens Admin › Tenants, clicks **New workspace**, chooses
-  **Service**, types `reports-bot@saga-agents-staging.iam.gserviceaccount.com`
+  **Service**, types `reports-bot@example-project.iam.gserviceaccount.com`
   and submits. The platform owner approves it in the same screen. A few
   minutes later the row reads `ready`, and the bot's first `POST /v1/tasks`
   is admitted in its own tenant. No tfvars line, no bootstrap apply, no
@@ -172,7 +172,7 @@ need that a person does not:
   (frozen `identity.tenant_id_for_group`: `eng`), so it fits none of them.
   Widening them is the cost of the group kind. §3 compares the ways to pay
   it.
-* **IAM cannot narrow service-account administration by name** (#334,
+* **IAM cannot narrow service-account administration by name** (an earlier issue,
   `docs/workspaces.md` §2.4). The deployer's `swarmWorkspaceAccountAdmin` is
   project-wide and bounded only by the call guard, as accepted on 2026-10-08.
   This design adds no power there. A group's or a service's worker is one
@@ -260,7 +260,7 @@ need that a person does not:
   * **its own GCS prefix**, `tenants/<tenant>/`, by A5's two string-equal
     conditioned grants;
   * **its own namespace**, `swarm-tenant-<tenant>`, by A7, which also closes
-    #1590 for every new workspace.
+    an earlier issue for every new workspace.
 
   Two new risks are closed by refusals, not trust:
   * **a group that would derive someone else's id** (a `u-` slug, a slug equal
@@ -311,7 +311,7 @@ is narrowed again by something only the job can satisfy:
 
 * **The namespace policy** admits a `Namespace` `swarm-tenant-<id>` for any
   id. It does so only on CREATE, and only when the namespace carries
-  `swarm.saga.xyz/workspace: w-<6 hex>`. An UPDATE is allowed only when the
+  `swarm.example.com/workspace: w-<6 hex>`. An UPDATE is allowed only when the
   old object already carries that label. A namespaced object is allowed only
   when `namespaceObject` carries it. `eng`'s, `smoke`'s and every hand-made
   namespace lack the label, so the deployer can never touch them. The policy
@@ -350,7 +350,7 @@ and S2. Groups keep WD3: a tfvars entry, a release and the namespace.
 |---|---|
 | **code** | about two thirds of A: no namespace-policy change, no secret-binder widening, no registry for groups. The service admit in `auth.py` is still needed |
 | **migration** | none |
-| **breaks** | **the owner's request.** "All three kinds … with no CI, no operator laptop and no Terraform". A new group still takes a public file, a release and #1590's hand apply. It is offered as a fallback if the owner rejects A's widening (Q3) |
+| **breaks** | **the owner's request.** "All three kinds … with no CI, no operator laptop and no Terraform". A new group still takes a public file, a release and an earlier issue's hand apply. It is offered as a fallback if the owner rejects A's widening (Q3) |
 
 ### 3.3 Design C: group workspaces made by the job get a `g-` prefixed id
 
@@ -411,7 +411,7 @@ step ids the record carries, in the order the API returns
 
 Why service is different: it is the only kind that **admits a new principal
 at the front door**. A personal or group workspace admits nobody new. The
-domain check already admits every `saga.xyz` person, and a group only selects
+domain check already admits every `example.com` person, and a group only selects
 among people who are already admitted. A service account is outside the
 domain, so its workspace widens who can reach swarm-api at all. That is the
 same posture decision the owner makes today when they apply
@@ -428,7 +428,7 @@ the write, as People's are.
 ```json
 {
   "kind": "service",
-  "principal": "reports-bot@saga-agents-staging.iam.gserviceaccount.com",
+  "principal": "reports-bot@example-project.iam.gserviceaccount.com",
   "display_name": "Reports bot",
   "limits": {"max_active": 4, "capacity_units": 8}
 }
@@ -588,13 +588,13 @@ expectation file, never from an argument.
 | **A4** its own IAM | Workload Identity for the namespace's two KSAs, act-as for scheduler and reconciler | the same | the same |
 | **A5** bucket | `tenants/<tenant>/` grants and marker | the same | the same |
 | **A6** forge slot | the person's App slot `-git-u-<hash>` and twin | the **team** slot `swarm-tenant-<g>-git` and twin, empty (§4.6) | the team slot `swarm-tenant-<t>-git`, empty; no twin (§4.6) |
-| **A7** namespace | `kubernetes/apply.sh`, as today | the same, rendered with `swarm.saga.xyz/workspace: <w-id>` | the same, with the label |
+| **A7** namespace | `kubernetes/apply.sh`, as today | the same, rendered with `swarm.example.com/workspace: <w-id>` | the same, with the label |
 | **A8** documents | `tenants/<t>` `kind=user`, pool | `tenants/<g>` `kind=group`, `principal=<group>`, `directory_group=true`, pool | `tenants/<t>` `kind=user`, `principal=<service account>`, pool |
 | **S2** front-door admit | — | — | add `serviceAccount:<principal>` as `roles/iap.httpsResourceAccessor` on the API backend (§4.5). Read-before-write: a member already present is done |
 | **A9** verify | as today | as today, plus the namespace label and `directory_group` | as today, plus the IAP member read back, and `service.unique_id` unchanged |
 
 **Shared by every kind:** A1 to A9, the guard, the retries, the progress
-writes and the restricted log. **A7 for every kind is what closes #1590 for
+writes and the restricted log. **A7 for every kind is what closes an earlier issue for
 new workspaces.** No workspace the job makes can be `ready` without its
 namespace, because A9 reads every object `kubernetes/render.py::TENANT_FILES`
 produces.
@@ -673,8 +673,8 @@ registry before any job-made workspace exists changes nothing.
 **The scheduler, the reconciler and the worker read nothing new.** They see
 a tenant document and a pool, as they do for a person's workspace.
 `GkeJobDispatcher.namespace_for` prefers `Tenant.namespace`. A8 writes the
-canonical `swarm-tenant-<tenant>`, the spelling #847's 2026-10-11 comment
-found and corrected for `u-bogdan`.
+canonical `swarm-tenant-<tenant>`, the spelling an earlier issue's 2026-10-11 comment
+found and corrected for `u-member`.
 
 ### 4.5 The front-door admit: how narrowly the deployer may grant it
 
@@ -730,7 +730,7 @@ in the flow still holds. This is Q3's fallback for the front door alone.
 * **R7. A stolen deployer token can rewrite the API backend's accessor
   list** for the token's life. It can widen it, for example to
   `allAuthenticatedUsers`. It can also narrow it, which removes
-  `domain:saga.xyz` and locks everyone out. The alert pages on it at once.
+  `domain:example.com` and locks everyone out. The alert pages on it at once.
   Widening admits nobody to swarm-api, whose domain, `ALLOWED_USERS` and
   registry checks are unchanged. Narrowing is an outage until the owner's
   bootstrap apply restores the members, because `frontend_accessors` is
@@ -738,7 +738,7 @@ in the flow still holds. This is Q3's fallback for the front door alone.
   `docs/workspaces.md`, on one more resource.
 
 **Amendment, 2026-10-19: R8, and the owner's decision to sign approvals
-(lane WK-SIGNED-APPROVAL, part of #847).**
+(lane WK-SIGNED-APPROVAL).**
 
 * **R8, as WK-JOB measured it.** Tenant workers hold Firestore create, get
   and update across the whole database (`terraform/modules/tenancy/main.tf`,
@@ -869,15 +869,15 @@ whether the owner would rather block the group kind until the broker is on.
   pattern holds it.
 * swarm-api's checks 2 and 11 keep the job from ever making a record for one
   of their ids or principals.
-* Their namespaces stay outside the job. #847 records Oracle's as applied by
+* Their namespaces stay outside the job. An earlier issue records Oracle's as applied by
   hand on 2026-10-19. This lane did not read the cluster for the other
   three. A rebuilt environment still needs `APPLY_TENANT_NAMESPACES` or a
-  hand apply for these four, which is the part of #1590 this design does not
+  hand apply for these four, which is the this design does not
   close.
 
 Why: they work, and they carry things the job never makes. `eng` and `smoke`
 have authoritative per-provider secret bindings (`secret_manager` module),
-Terraform-made Cloud Run jobs and scheduler jobs. `u-bogdan` alone was 33
+Terraform-made Cloud Run jobs and scheduler jobs. `u-member` alone was 33
 infra instances and 5 bootstrap ones (W9). Moving them buys no capability and
 costs two owner-reviewed plans per tenant.
 
@@ -890,7 +890,7 @@ W9's pattern, per tenant, one tenant per pull request:
    that address. Terraform 1.16 refuses an instance key in `removed`, which
    W9 checked on 2026-10-09. For `eng` and `smoke` this includes the
    `frontend_iap_members`-made bindings only if they are the tenant's.
-   `domain:saga.xyz` stays.
+   `domain:example.com` stays.
 2. Owner: the bootstrap plan, then the release's infra plan. Each must read
    **0 to add, 0 to change, 0 to destroy**, with only forgets. One exception
    is the Nearline `aged_prefixes` in-place change W9 met. Any destroy or
@@ -1021,7 +1021,7 @@ requested:
 * **A registered-groups field anywhere in the contract.** `resolve_tenant`
   already takes the priority tuple as an argument. swarm-api passes a longer
   one.
-* **A label constant in `swarm_common`** for `swarm.saga.xyz/workspace`. It
+* **A label constant in `swarm_common`** for `swarm.example.com/workspace`. It
   is written by `kubernetes/render.py` and read by the admission policy, and
   neither imports the contract for labels today.
 
@@ -1074,9 +1074,9 @@ major.
 |---|---|---|---|
 | 0 | **O1** (the owner, not an agent) | none | the three live reads of §4.5, dated, written to `docs/workspaces.md` §0 by WK-DOCS |
 | 1 | **WK-RECORD** | `apps/swarm-api/swarm_api/workspaces.py`, `people.py`, `routes/people.py`, `errors.py`, `refusals.py`, `groups.py`, `tests/unit/control_plane/test_workspace_kinds_record.py` (new), `tests/unit/control_plane/test_new_refusals_ship_off.py` (only `NOT_SWITCHABLE_CODES` entries, with reasons) | a record with no `kind` reads `personal` and every existing People test passes unchanged; `POST /v1/admin/workspaces` by a non-admin is 403 and writes nothing; a group `u-eng@example.com` is `WORKSPACE_GROUP_ID_RESERVED`; a group whose fake directory raises is `WORKSPACE_GROUP_UNREADABLE` with no document written, and the fake records exactly one `checkTransitiveMembership` carrying `x-goog-user-project`; a group equal to an `ADMIN_GROUPS` entry is refused; a service `swarm-api@…` and a service listed in `ALLOWED_USERS` are each refused; a service account outside the project is refused; ids `eng` and `eng-git-u-x` collide as `WORKSPACE_ID_NESTED`; an admin's group request is `approved` with one `admin_audit` row in the same transaction (an injected failure leaves neither); a service request by a non-owner admin stays `requested`, and approve by that admin is 403 `WORKSPACE_APPROVAL_OWNER_ONLY`; a second identical request is 200 and writes nothing; no response body names `requested_by` |
-| 1 | **WK-IAM** (Track C, security review) | `terraform/bootstrap/workspace_deployer.tf`, `terraform/bootstrap/forge_user_slots.tf`, `terraform/bootstrap/variables.tf`, `tests/terraform/workspace_kinds_iam.tftest.hcl` (new) | with `enable_workspace_kinds = false` the plan adds nothing; with it true: K1's condition is `==` (not `startsWith`) on `projects/<number>/iap_web/compute/services/<generated_id>` of the API backend only, and no binding names `-ui-backend`; K1's role holds exactly its two permissions; K2's expression admits `swarm-tenant-eng-git` and `-git-refresh` and refuses `swarm-tenant-eng-anthropic`, `-wsec-x` and `-git-u-…` (the startsWith/endsWith emulation the existing tests use); K3 admits `swarm-tenant-research-git-u-<hash>` and refuses `swarm-tenant-research-git`; the deployer role-list validation fails on a role outside the list |
+| 1 | **WK-IAM** (Track C, security review) | `terraform/bootstrap/workspace_deployer.tf`, `terraform/bootstrap/forge_user_slots.tf`, `terraform/bootstrap/variables.tf`, `tests/terraform/workspace_kinds_iam.tftest.hcl` (new) | with `enable_workspace_kinds = false` the plan adds nothing; with it true: K1's condition is `==` (not `startsWith`) on `projects/<number>/iap_web/compute/services/<generated_id>` of the API backend only, and no binding names `-ui-backend`; K1's role holds exactly its two permissions; K2's expression admits `swarm-tenant-example-tenant-git` and `-git-refresh` and refuses `swarm-tenant-example-tenant-anthropic`, `-wsec-x` and `-git-u-…` (the startsWith/endsWith emulation the existing tests use); K3 admits `swarm-tenant-team-a-git-u-<hash>` and refuses `swarm-tenant-team-a-git`; the deployer role-list validation fails on a role outside the list |
 | 1 | **WK-CLUSTER** (Track C) | `kubernetes/policies/workspace-provisioner-scope.yaml`, `kubernetes/render.py`, `kubernetes/apply.sh`, `tests/unit/worker/test_workspace_provisioner_scope.py` | the policy admits CREATE of `swarm-tenant-research` with the label, and refuses it without; refuses UPDATE adding the label to an unlabelled namespace; refuses a namespaced object in `swarm-tenant-eng` (unlabelled); refuses CREATE of each name in the rendered Terraform list even with the label; the `swarm-tenant-u-*` arm still admits an unlabelled personal namespace; `render.py` with `--workspace-id w-000000` puts the label on the Namespace and nowhere else |
-| 2 | **WK-RESOLVE** (after RECORD; security review, blocking) | `apps/swarm-api/swarm_api/registry.py` (new), `auth.py`, `settings.py`, `tests/unit/control_plane/test_workspace_registry.py` (new), `tests/unit/control_plane/test_tenant_switcher.py` (new cases only) | with a fake store holding a `ready` group record `research@saga.xyz`: a confirmed member gets `research` in `tenant_choices`, and the directory fake records one membership call per registered group, each with `x-goog-user-project`, and **no** list call; an `applying` group record is in nobody's choices; a member of `eng` keeps `eng` as default (Terraform groups first); a failed lookup of `research` for a caller in no higher group is 503, not a personal-tenant fallback; a `ready` service record admits its account (tenant `tenant_id_for_user` of it) and an `applying` one is 403 `WORKSPACE_NOT_READY`; `X-Swarm-Tenant: eng` from that account is `tenant_not_member`; a registry read failing after a good read serves the cached set and logs `registry_stale`, and with no good read is 503 `registry_unavailable`; an empty registry leaves every existing auth test unchanged |
+| 2 | **WK-RESOLVE** (after RECORD; security review, blocking) | `apps/swarm-api/swarm_api/registry.py` (new), `auth.py`, `settings.py`, `tests/unit/control_plane/test_workspace_registry.py` (new), `tests/unit/control_plane/test_tenant_switcher.py` (new cases only) | with a fake store holding a `ready` group record `research@example.com`: a confirmed member gets `research` in `tenant_choices`, and the directory fake records one membership call per registered group, each with `x-goog-user-project`, and **no** list call; an `applying` group record is in nobody's choices; a member of `eng` keeps `eng` as default (Terraform groups first); a failed lookup of `research` for a caller in no higher group is 503, not a personal-tenant fallback; a `ready` service record admits its account (tenant `tenant_id_for_user` of it) and an `applying` one is 403 `WORKSPACE_NOT_READY`; `X-Swarm-Tenant: eng` from that account is `tenant_not_member`; a registry read failing after a good read serves the cached set and logs `registry_stale`, and with no good read is 503 `registry_unavailable`; an empty registry leaves every existing auth test unchanged |
 | 2 | **WK-JOB** (after IAM, CLUSTER and RECORD; security review, blocking; CODEOWNERS) | `scripts/register-tenant.sh`, `scripts/lib/forge-slot.sh`, `scripts/lib/workspace-guard.sh`, `scripts/lib/workspace-calls.json`, `scripts/lib/workspace-guard-cases.json`, `images/workspace-apply/entry.py`, `tests/unit/scripts/test_register_tenant_workspace.py`, `tests/unit/scripts/test_workspace_deployer_walk.py`, `tests/unit/scripts/test_workspace_firestore_permissions.py`, `tests/unit/scripts/fixtures/workspace_guard_corpus.json` | a full dry-run of a `service` record makes S1, A2-A8, S2, A9 in that order and every call matches a rule; S1 refuses an account on `SHARED_DENY_LIST` and a `swarm-` account with `needs_owner`, before any write; C10 refuses a member other than the approved principal, the `-ui-backend`, and any `remove-iam-policy-binding`; a `group` record's A6 creates `swarm-tenant-<g>-git` and twin and binds only the worker; its A7 renders the label; A1 refuses a group record whose `directory.checked_at` is 25 h old, and a service record approved by a non-owner; the walk maps C10 to K1's permission and condition and fails on a C10 shape no call makes; a `personal` record's run is call-for-call identical to today's (the existing corpus unchanged) |
 | 3 | **WK-UI-DIALOG** (after RECORD) | `apps/swarm-ui/src/NewWorkspace.tsx` (new), `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/types.ts`, `apps/swarm-ui/src/__tests__/tenants.new-workspace.test.tsx` (new) | each tab posts once with `{kind, principal, display_name}` only; a 403 renders the API's message word for word; the service tab says the platform owner approves; after submit the steps render and polling runs every 5 s, stops at `ready` and on close |
 | 4 | **WK-UI-TENANTS** (after UI-DIALOG) | `apps/swarm-ui/src/Activity.tsx`, `apps/swarm-ui/src/__tests__/tenants.test.tsx` (new cases only) | a non-admin sees no New workspace button; "Being created" lists non-ready records with kind and `w-` id and no email; Approve on a service row is absent for a non-owner admin; a `needs_owner` row shows the stopped step |
@@ -1209,7 +1209,7 @@ reader can check it rather than trust it.
   Tested by `tests/terraform/workspace_kinds_iam.tftest.hcl`.
 * **WK-CLUSTER (the admission policy and the label).**
   `kubernetes/policies/workspace-provisioner-scope.yaml` admits a namespace
-  carrying `swarm.saga.xyz/workspace: w-<6 hex>` beside the
+  carrying `swarm.example.com/workspace: w-<6 hex>` beside the
   `swarm-tenant-u-*` arm, and refuses by name every namespace
   `terraform/infra` declares, whatever its labels. Its
   `swarm-workspace-deployer-namespaces` policy refuses an UPDATE that adds the

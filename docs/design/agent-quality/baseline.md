@@ -1,6 +1,6 @@
 # Agent quality baseline
 
-Package one of the agent quality program (BGD, 3 November 2026): complete,
+Package one of the agent quality program (the owner, 3 November 2026): complete,
 harden, connect and measure what SwarmCloud already has, never a second agent
 platform. Every later package and every experiment states its change against
 this page. Read on main at the commit below; a value this page cannot read from
@@ -21,7 +21,7 @@ when one of them moves without this page.
 | Commit | `3e3a9875458719f438df1c2d426ae1844b4122b3` |
 | Branch | `main` |
 | Committed | 2026-11-03 07:03:48Z |
-| Headline | Contract request 134 asks for a builder class, 8 CPU requested and 12 limit with 16 GiB, for the steps that build (part of #2688) (#3101) |
+| Headline | Contract request 134 asks for a builder class, 8 CPU requested and 12 limit with 16 GiB, for the steps that build (part of the Day One install program) |
 
 The program's research read main at its 3 November morning commit. About a
 dozen merges landed between that read and this commit; each is in the tree read

@@ -98,7 +98,7 @@ The refusal lives on the server and nowhere else. The label regex, the tenant re
 **P11 — "add an account" from a browser, if it is ever to exist.** The current draft assumed this away; it is the largest single unlisted blocker in the section. Two independent obstacles:
 
 1. **Policy.** `accountstore.py:91-96` and `account.sh:10-13` both state that the credential value must never pass through a component whose job is bookkeeping. A browser add makes the browser and swarm-api handle a live Claude refresh token, which is standing access to the account — `terraform/modules/secret_manager/main.tf:137-140` calls the refresh secret strictly *more* sensitive than an API key.
-2. **IAM.** Creating the two secrets and setting their bindings needs `secretmanager.secrets.create` and `setIamPolicy`, which no platform service account holds: secret administration is granted to a named human (`terraform/environments/dev/dev.tfvars:244-246`, `user:admin@saga.xyz`).
+2. **IAM.** Creating the two secrets and setting their bindings needs `secretmanager.secrets.create` and `setIamPolicy`, which no platform service account holds: secret administration is granted to a named human (`terraform/environments/dev/dev.tfvars:244-246`, `user:admin@example.com`).
 
 **Recommended scope cut for v1: the browser never sees a credential.** Add is a *guided* flow that collects tenant, label, provider and lend-to, validates them against the API (P9), and then renders the exact `scripts/account.sh add` command to run in a terminal, with a copy button. Everything after onboarding — state, lending, removal, health — is manageable in the browser. If the owner instead wants a true browser add, that is a security decision plus new IAM, and it should be taken deliberately in §8 rather than arrived at by a designer drawing a form.
 
@@ -159,11 +159,11 @@ Sort default: `owner_tenant`, then `label` — the same ordering `account.sh:334
 ```json
 {
   "accounts": [
-    {"account_id":"u-bogdan:personal","owner_tenant":"u-bogdan","label":"personal",
+    {"account_id":"u-member:personal","owner_tenant":"u-member","label":"personal",
      "provider":"anthropic","state":"AVAILABLE","reason":"","lend_to":[],
      "observed_at":null,"windows":{},
-     "secret":"swarm-account-u-bogdan-personal",
-     "refresh_secret":"swarm-account-u-bogdan-personal-refresh"}
+     "secret": $SECRET_SLOT,
+     "refresh_secret": $REFRESH_SLOT}
   ],
   "unreadable": 0,
   "unreadable_ids": [],
@@ -171,7 +171,7 @@ Sort default: `owner_tenant`, then `label` — the same ordering `account.sh:334
 }
 ```
 
-`secret` and `refresh_secret` are **derived server-side** from `secret_name()` (`accounts.py:97-102`), never echoed from a client and never resolved to a payload. No field named `headroom`, `next_reset` or `assigned` appears until its writer does.
+`secret` and `refresh_secret` (here `swarm-account-u-member-personal` and `swarm-account-u-member-personal-refresh`) are **derived server-side** from `secret_name()` (`accounts.py:97-102`), never echoed from a client and never resolved to a payload. No field named `headroom`, `next_reset` or `assigned` appears until its writer does.
 
 #### What it cannot show yet
 
@@ -192,7 +192,7 @@ The table becomes cards. Ten columns is not a phone screen.
 ```
 ┌─────────────────────────────────┐
 │ personal              [AVAILABLE]│   label 17pt semibold, chip right
-│ u-bogdan · anthropic             │   13pt secondary
+│ u-member · anthropic             │   13pt secondary
 │ 5h —  ·  7d —  ·  token —        │   "not measured" row, 12pt, dimmed
 │ ⚠ paused by an operator          │   reason line, amber, only when set
 └─────────────────────────────────┘
@@ -224,15 +224,15 @@ A right-hand drawer on web (480pt), a full sheet on phone. Opened from any row.
 
 **Identity** — `account_id`, owner tenant, label, the Name (below), provider, `lend_to` as removable chips with an "Add tenant" control.
 
-**Name** — what the console calls the account (#1913; owner decision 2026-10-22, BGD, "Editable display name"). An account's Name is **display text, never an id**: any text, trimmed, 1 to 60 characters, capitals and spaces allowed, no control character or line break (`validate_display_name`, `quota_broker/accounts.py`). It is shown in place of the label everywhere the console names the account — the list row's heading, the pane's heading, the Overview's headroom line and checks, the sign-in warning, and the lending, state and holders controls — and the plugin's `swarm_accounts` table and LLM line. Where the id was printed (`eng:ai-eng-2` under the row's heading), it stays, so the Name never hides which account it is. An account with no Name shows its label exactly as before. **Rename**, in the pane, edits it in place and saves at once with no sign-in (`PUT /v1/accounts/{id}/name`, owner only, a `member` of the owning workspace); clearing the field removes the Name and the label shows again. A bad Name is a 422 in the broker's words, drawn under the field.
+**Name** — what the console calls the account (owner decision 2026-10-22, the owner, "Editable display name"). An account's Name is **display text, never an id**: any text, trimmed, 1 to 60 characters, capitals and spaces allowed, no control character or line break (`validate_display_name`, `quota_broker/accounts.py`). It is shown in place of the label everywhere the console names the account — the list row's heading, the pane's heading, the Overview's headroom line and checks, the sign-in warning, and the lending, state and holders controls — and the plugin's `swarm_accounts` table and LLM line. Where the id was printed (`eng:ai-eng-2` under the row's heading), it stays, so the Name never hides which account it is. An account with no Name shows its label exactly as before. **Rename**, in the pane, edits it in place and saves at once with no sign-in (`PUT /v1/accounts/{id}/name`, owner only, a `member` of the owning workspace); clearing the field removes the Name and the label shows again. A bad Name is a 422 in the broker's words, drawn under the field.
 
 **Why the label cannot change, and why renaming is a second field rather than a relabel.** The label is the second half of the account's id (`<owner>:<label>`), and it is built into the Secret Manager secret the credential lives in (`secret_name`, `swarm-account-<owner>--<label>`) and into a Kubernetes annotation, which is why `validate_label` holds it to lowercase letters, digits and dashes. Every hold, assignment log entry, reading and lending grant is keyed by that id. A true relabel would mean a new id, the credential copied to a new secret and the old one deleted — touching live credential secrets to change what a heading says — and it was declined. The Name is written by an update of that one field (`AccountStore.set_display_name`), so a rename changes no hold, reading, history or lending and never interrupts work on the account; re-registering (which is how lending changes) carries it over. Nothing may read the Name as an identity: it never feeds a secret name, an annotation, a filter or `choose()`, and Remove is still armed by typing the **label**, because two accounts may share a Name and only the label says which one goes.
 
 **Credential** — the two derived secret names, each with a copy button and a "never readable from here" note:
 
 ```
-swarm-account-u-bogdan-personal            access token   worker reads · broker writes
-swarm-account-u-bogdan-personal-refresh    refresh token  broker only — the worker is absent
+swarm-account-u-member-personal            access token   worker reads · broker writes
+swarm-account-u-member-personal-refresh    refresh token  broker only — the worker is absent
 ```
 
 The absence of the worker from the refresh secret is the isolation property (`account.sh:130-141`), so it is stated on screen, not left implicit. Neither secret is ever fetched; the UI has no path to a payload and swarm-api has no function that returns one (`swarm_api/credentials.py:23-25`).

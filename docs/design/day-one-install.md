@@ -2,9 +2,9 @@
 
 **For a company installing SwarmCloud, the page is [docs/install.md](../install.md)**, written from the code and the manifest; this document is the design behind it.
 
-**Status:** P0 design, for BGD's approval (GATE 0b). Part of #2688.
+**Status:** P0 design, for the owner's approval (GATE 0b). Part of the Day One install program.
 **Written:** 2026-10-29, against `main` at `17e2ec1`.
-**Inputs:** the Day One brief that BGD approved on 2026-10-28 (GATE 0), with its decisions D1 to D24 kept as they are; the dependency inventory in [`day-one/manifest.draft.yaml`](day-one/manifest.draft.yaml); this repository's code, Terraform, runbooks and history; Google's and GitHub's documentation, cited by URL.
+**Inputs:** the Day One brief that the owner approved on 2026-10-28 (GATE 0), with its decisions D1 to D24 kept as they are; the dependency inventory in [`day-one/manifest.draft.yaml`](day-one/manifest.draft.yaml); this repository's code, Terraform, runbooks and history; Google's and GitHub's documentation, cited by URL.
 
 This document says **how** Day One is built. The brief says **what** and **why**, and this document does not reopen any of its decisions. Section numbers in the form "brief §N" refer to the brief.
 
@@ -272,9 +272,9 @@ Each stage's dependencies are the manifest's `depends_on` for that stage's entri
 | 8 | `cloud-run-service.swarm-api`, `api.cloudidentity` | `workspace-delegation.groups-dwd` (or the admin-role path, section 8), `workspace-group.*` | The first group lookup must succeed before any group is registered, or every request 503s (`docs/multi-tenancy.md:167-171`). |
 | 9 | `cloud-run-service.github-hooks`, `secret.swarm-github-app-*.container` | `github-app-setting.*`, `github-app-installation.per-owner`, `switch.enable_github_app`, `switch.enable_forge_refresh`, `switch.enable_github_hooks` | The webhook is turned on only after its secret has a version. |
 | 10 | `cluster.autopilot` | `cluster-policy.*` (9), `workload.*` | Admission policies before the code that needs them (H33). The workspace deployer's scope policy comes before its RBAC (`kubernetes/render.py:519-528`). |
-| 11 | stages 8 and 10 | `namespace-object.*` (17), `secret.swarm-tenant-provider.*`, `switch.workspace_gate`, `switch.repository_grants_enforced` | A namespace with the right quota and the verify-keys ConfigMap must exist before the first GKE dispatch (#1590, #2039). |
+| 11 | stages 8 and 10 | `namespace-object.*` (17), `secret.swarm-tenant-provider.*`, `switch.workspace_gate`, `switch.repository_grants_enforced` | A namespace with the right quota and the verify-keys ConfigMap must exist before the first GKE dispatch. |
 | 12 | `cloud-run-service.swarm-quota-broker`, stage 11 | `claude-account.subscription` (two accounts) | The pool is inert without the broker URL, which section 5.2 now computes. |
-| 13 | `api.monitoring` | `monitoring.notification-channel`, `monitoring.alert-policies` | `require_alert_channels` defaults to false (`terraform/infra/variables.tf:958-961`); the install sets it to true (#1817). |
+| 13 | `api.monitoring` | `monitoring.notification-channel`, `monitoring.alert-policies` | `require_alert_channels` defaults to false (`terraform/infra/variables.tf:958-961`); the install sets it to true. |
 | 14 | all of the above | `other.verify-scheduler-targets` (H38), `other.verify-digests` (H28), `other.verify-end-to-end`, `other.firestore-migrations` | Done is proven (D3). |
 | 15 | stage 14 | `other.ready-screen`, `addon.*` (offered, off) | |
 
@@ -305,12 +305,12 @@ Brief §7 says the 48 lessons are listed, with sources, in the history research 
 | Pool inert without the broker URL | `declared-value.quota_broker_url` (computed, section 5.2) | The scheduler's `QUOTA_BROKER_URL` is non-empty and answers. |
 | Every request 503s on a failed group lookup | `workspace-delegation.groups-dwd`, `workspace-group.*` | A group is registered only after its probe succeeds (section 8). |
 | 401 code 900 without the programmatic-client allowlist | `iap-setting.frontend-programmatic-clients` | `sc login` with the Desktop client reaches `/healthz`. |
-| `gke_create_job_forbidden` without a namespace (#1590) | `namespace-object.tenant-namespace` | `team add` applies it and checks it exists. |
-| Wrong ResourceQuota on a hand-applied namespace (#2039) | `namespace-object.tenant-resourcequota` | Quota rendered from the tenant record and compared after apply. |
+| `gke_create_job_forbidden` without a namespace | `namespace-object.tenant-namespace` | `team add` applies it and checks it exists. |
+| Wrong ResourceQuota on a hand-applied namespace | `namespace-object.tenant-resourcequota` | Quota rendered from the tenant record and compared after apply. |
 | Missing `swarm-spec-verify-keys` ConfigMap | `namespace-object.verify-keys-configmap` | Present in every tenant namespace. |
-| Alerts reach nobody (#1817) | `monitoring.notification-channel` | `require_alert_channels = true`, with a channel that exists. |
-| Default compute SA holds Editor (#1020) | `iam-binding.default-compute-sa-editor-removed` | No Editor binding remains. |
-| The Job-count quota fills with finished Jobs (#2661) | `quota.cloud-run-jobs` | `doctor` counts Jobs against the quota and checks the TTL. |
+| Alerts reach nobody | `monitoring.notification-channel` | `require_alert_channels = true`, with a channel that exists. |
+| Default compute SA holds Editor | `iam-binding.default-compute-sa-editor-removed` | No Editor binding remains. |
+| The Job-count quota fills with finished Jobs | `quota.cloud-run-jobs` | `doctor` counts Jobs against the quota and checks the TTL. |
 | The certificate waits on DNS | `dns.frontend-hostname` → `certificate.managed-ssl` | DNS must resolve to the reserved address before the certificate wait starts. |
 | A same-day CVE blocks the first deploy | `other.release-bundle` | The installer shows the release's accepted CVEs and their expiry; it never skips a scan. |
 | The App lacked Commit statuses: Read | `github-app-setting.commit-statuses-read-gap` | The manifest flow requests `statuses: read` (section 9.1). |
@@ -445,14 +445,14 @@ Whether the live deployment's Terraform tenants should move to the same single w
 
 ### 6.1 The release home
 
-**D25 (BGD, 2026-10-28):** the release home exists. It is GCP project `swarmcloud-prod` under the Saga org (its display name is `swarmcloud`; the id `swarmcloud` was taken, so the D23 fallback `swarmcloud-releases` was not needed either; PR 2769); billing is linked. Paths: Artifact Registry `us-docker.pkg.dev/swarmcloud-prod/swarmcloud`, bundles in `gs://swarmcloud`.
+**D25 (the owner, 2026-10-28):** the release home exists. It is GCP project `swarmcloud-prod` under the Example org (its display name is `swarmcloud`; the id `swarmcloud` was taken, so the D23 fallback `swarmcloud-releases` was not needed either; PR 2769); billing is linked. Paths: Artifact Registry `us-docker.pkg.dev/swarmcloud-prod/swarmcloud`, bundles in `gs://<release-bucket>`.
 
 It holds three things.
 
-**`gs://swarmcloud`**, free as of 2026-10-28 (D16). Layout:
+**`gs://<release-bucket>`**, free as of 2026-10-28 (D16). Layout:
 
 ```
-gs://swarmcloud/
+gs://<release-bucket>/
   releases/<YYYY.MM.N>/
     module.tgz            terraform/{bootstrap,infra,modules}, no tfvars, no environments/
     swarmcloud-<V>-py3-none-any.whl   the engine + the swarm/sc CLI
@@ -471,12 +471,12 @@ gs://swarmcloud/
 
 **Public read.** The bucket and the repository need `allUsers` read: `roles/storage.objectViewer` and `roles/artifactregistry.reader`.
 
-- If the org enforces Domain Restricted Sharing (`iam.allowedPolicyMemberDomains`), that grant is refused unless the release project carries an exception. That is a decision for BGD (open question 4).
+- If the org enforces Domain Restricted Sharing (`iam.allowedPolicyMemberDomains`), that grant is refused unless the release project carries an exception. That is a decision for the owner (open question 4).
 - Unverified: whether the org enforces it today. Check with `gcloud resource-manager org-policies describe iam.allowedPolicyMemberDomains --project=<release project> --effective`.
 
-### 6.2 The release pipeline (brief §9; workflow files reviewed by BGD)
+### 6.2 The release pipeline (brief §9; workflow files reviewed by the owner)
 
-1. **Tag:** a `v<YYYY.MM.N>` tag on `main` triggers a new `release-public.yml`. It is a workflow file, so P3 writes it as a patch for BGD.
+1. **Tag:** a `v<YYYY.MM.N>` tag on `main` triggers a new `release-public.yml`. It is a workflow file, so P3 writes it as a patch for the owner.
 2. **Build prod-shaped images.**
    - `swarm-ui` stops baking `VITE_SWARM_ENV` (`apps/swarm-ui/src/Brand.tsx:34`) and reads its environment from a `/config.json` that its nginx serves from the container environment.
    - The Dockerfile `# syntax=` lines and `ARG MIRROR_*` defaults are made project-independent (appendix A).
@@ -504,7 +504,7 @@ From then on, nothing in the deployment reads the release home (D21).
 
 ## 7. De-hardcoding
 
-The sweep was `git grep -lE 'saga-agents-staging|saga\.xyz|bogdan-alexandrescu|swarm-mirror-dockerhub|swarm-mirror-ghcr|bogdan-ci|taile0bda9'` over `terraform scripts images apps plugin .claude-plugin kubernetes Makefile .env.example docker-compose.yml`, excluding tests and Markdown. It matches **138 files**, every one listed in appendix A with its literals and lines. `.github/` is not in the sweep: workflow files are BGD-reviewed, and the CI add-on owns them.
+The sweep was `git grep -lE 'example-project|example\.com|example-org|swarm-mirror-dockerhub|swarm-mirror-ghcr|example-ci|example-tailnet'` over `terraform scripts images apps plugin .claude-plugin kubernetes Makefile .env.example docker-compose.yml`, excluding tests and Markdown. It matches **138 files**, every one listed in appendix A with its literals and lines. `.github/` is not in the sweep: workflow files are owner-reviewed, and the CI add-on owns them.
 
 What each group becomes:
 
@@ -633,10 +633,10 @@ GitHub documents the flow at https://docs.github.com/en/apps/sharing-github-apps
 
 A person outside the org who holds the secret still cannot get an ID token IAP accepts.
 
-**Recommendation** (open question 1; BGD decides, and this design builds neither branch until then):
+**Recommendation** (open question 1; the owner decides, and this design builds neither branch until then):
 
 1. In P3, run the PKCE-only exchange once. If Google accepts it, the plugin needs no secret, and the discovery document carries the client id only.
-2. If Google refuses, the recommendation is that the discovery document also carries `oauth_client_secret`. That is consistent with Google's own classification and with the brief's goal that the plugin needs one value, but serving it unauthenticated is BGD's call, not part of the plan: the other options are in section 14 item 1.
+2. If Google refuses, the recommendation is that the discovery document also carries `oauth_client_secret`. That is consistent with Google's own classification and with the brief's goal that the plugin needs one value, but serving it unauthenticated is the owner's call, not part of the plan: the other options are in section 14 item 1.
 3. Either way, the value lives in Secret Manager as `swarm-iap-desktop-client-secret` (a new id), entered by hidden prompt in stage 2, instead of a password manager.
 
 The other branch the brief named, serving the secret "to signed-in members only", is circular: a member signs in *with* that client.
@@ -729,14 +729,14 @@ Disabling an add-on turns its switch off, destroys its Terraform resources, and 
 | R7 | IAM propagation exceeds the bound (H19). | Medium | A spurious failure. | A 10-minute bound with retry; `doctor` tells propagation apart from a missing grant through the Policy Troubleshooter (H48). |
 | R8 | A first install in a new org trips an org policy the preflight did not list. | Medium | A snag in P4. | Preflight reads the effective policy for every constraint the manifest names, and the snag log adds new ones. |
 | R9 | The frozen contract holds a live literal that environment variables cannot override. | Low | A contract request is needed. | Open question 6; raised as a request, never an edit. |
-| R10 | The Desktop client secret is served unauthenticated (section 9.3, if PKCE-only fails). | Certain if chosen | The value is public. | Google classifies it as non-confidential; the boundary is the Internal brand plus IAP. This is BGD's decision (open question 1). |
+| R10 | The Desktop client secret is served unauthenticated (section 9.3, if PKCE-only fails). | Certain if chosen | The value is public. | Google classifies it as non-confidential; the boundary is the Internal brand plus IAP. This is the owner's decision (open question 1). |
 | R11 | The P0 inventory misses a dependency. | Medium | A hand step in P4. | The completeness test (section 3.3), the P2 adversarial review, and two proof installs. |
 
 ---
 
-## 14. Open questions for BGD, and his answers
+## 14. Open questions for the owner, and his answers
 
-**BGD answered all nine on 2026-10-29 (GATE 0b review), each with the recommended option:**
+**The owner answered all nine on 2026-10-29 (GATE 0b review), each with the recommended option:**
 
 | # | Question | Decision |
 |---|---|---|
@@ -746,7 +746,7 @@ Disabling an add-on turns its switch off, destroys its Terraform resources, and 
 | 4 | The release home's public read | **(a)** One org-policy exception for `iam.allowedPolicyMemberDomains` on the release project alone, covering the registry reader and the bucket's object viewer. |
 | 5 | The engine's home | **(a)** A new `apps/swarm-install` package behind the existing `swarm` CLI. |
 | 6 | Frozen-contract literals | **(a)** P2 reads each one; any that environment variables cannot override becomes a contract request. |
-| 7 | Moving platform service accounts into bootstrap | **(a)** The live deployment migrates too, in P3, plan-reviewed by BGD, with the `removed { destroy = false }` + `import` pattern. A plan with any destroy is a merge blocker. |
+| 7 | Moving platform service accounts into bootstrap | **(a)** The live deployment migrates too, in P3, plan-reviewed by the owner, with the `removed { destroy = false }` + `import` pattern. A plan with any destroy is a merge blocker. |
 | 8 | Terraform pin | **Yes:** both roots move to `~> 1.16.2`. |
 | 9 | The 48 history lessons | **(a)** The full list is attached as [`day-one/lessons.md`](day-one/lessons.md); P2's plan maps every lesson to a manifest entry, or says why none is needed. |
 
@@ -772,7 +772,7 @@ The questions as P0 put them follow, for the record.
    **Recommend (a)**, the same mechanism as the discovery service. If the org forbids disabling the invoker check, (b).
 4. **The release home's public read.**
    - (a) An org-policy exception for `iam.allowedPolicyMemberDomains` on the release project alone.
-   - (b) Put the release project outside the Saga org.
+   - (b) Put the release project outside the Example org.
    - (c) Serve the bundle through signed URLs from a small public service.
 
    **Recommend (a)**: one project, one documented exception.
@@ -788,7 +788,7 @@ The questions as P0 put them follow, for the record.
 
    **Recommend (a)**.
 7. **Bootstrap service accounts migration for the live deployment** (section 5.3). It touches the live project's IAM state.
-   - (a) Do it in P3, plan-reviewed by BGD, zero destroys.
+   - (a) Do it in P3, plan-reviewed by the owner, zero destroys.
    - (b) Keep the live deployment on the old layout and have only installs create SAs in bootstrap, through a variable.
 
    **Recommend (a)**: one layout, one code path.
@@ -817,141 +817,141 @@ The command in section 7 lists them. Columns: the file, the literals with their 
 
 | File | Literals | Lines |
 |---|---|---|
-| `.env.example` | saga-agents-staging×4 saga.xyz×5 | 29,51,61,113,164,174,… (8 lines) |
-| `Makefile` | saga.xyz×3 | 381,382 |
-| `apps/common/swarm_common/config.py` | saga.xyz×2 | 46,110 |
-| `apps/common/swarm_common/identity.py` | saga-agents-staging×1 saga.xyz×3 | 8,68,70,169 |
-| `apps/common/swarm_common/models.py` | saga-agents-staging×1 saga.xyz×2 | 164,857 |
-| `apps/quota-broker/quota_broker/credentials.py` | saga-agents-staging×1 | 118 |
-| `apps/quota-broker/quota_broker/publishledger.py` | saga-agents-staging×1 | 6 |
-| `apps/quota-broker/quota_broker/secretstore.py` | saga-agents-staging×2 | 82,464 |
-| `apps/reconciler/reconciler/backends.py` | saga-agents-staging×1 | 983 |
-| `apps/reconciler/reconciler/checkpoints.py` | saga-agents-staging×3 | 57,312,409 |
-| `apps/reconciler/reconciler/detect.py` | saga-agents-staging×1 | 809 |
-| `apps/scheduler/scheduler/judgment.py` | taile0bda9×1 | 80 |
-| `apps/scheduler/scheduler/on_step_failure_audit.py` | saga-agents-staging×1 | 11 |
-| `apps/swarm-api/swarm_api/delegation.py` | saga.xyz×2 | 17,99 |
-| `apps/swarm-api/swarm_api/forge_installation.py` | bogdan-alexandrescu×1 | 5 |
-| `apps/swarm-api/swarm_api/groups.py` | saga-agents-staging×1 saga.xyz×1 | 4,6 |
-| `apps/swarm-api/swarm_api/issueruns.py` | saga-agents-staging×18 | 1280,1281,1282,1284,1285,1286,… (18 lines) |
-| `apps/swarm-api/swarm_api/judgment.py` | taile0bda9×1 | 115 |
-| `apps/swarm-api/swarm_api/platform_secrets.py` | saga-agents-staging×1 | 17 |
-| `apps/swarm-api/swarm_api/qatargets.py` | saga.xyz×1 | 219 |
-| `apps/swarm-api/swarm_api/service.py` | saga.xyz×1 | 504 |
-| `apps/swarm-api/swarm_api/settings.py` | saga.xyz×2 | 380,383 |
-| `apps/swarm-egress/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,44,45 |
-| `apps/swarm-github-hooks/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,52,53 |
-| `apps/swarm-graph/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,53,54 |
-| `apps/swarm-live/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,54,55 |
-| `apps/swarm-live/swarm_live/recorder.py` | saga.xyz×1 | 161 |
-| `apps/swarm-mcp/swarm_mcp/auth.py` | saga.xyz×1 | 173 |
-| `apps/swarm-mcp/swarm_mcp/client.py` | saga.xyz×3 | 264,1510 |
-| `apps/swarm-mcp/swarm_mcp/config.py` | saga.xyz×3 | 6,381 |
-| `apps/swarm-mcp/swarm_mcp/launch.py` | saga.xyz×2 | 35,45 |
-| `apps/swarm-mcp/swarm_mcp/signin.py` | saga.xyz×1 | 3 |
-| `apps/swarm-mcp/swarm_mcp/workflows.py` | saga.xyz×1 | 893 |
-| `apps/swarm-typesafe-fwd/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,48,49 |
-| `apps/swarm-ui/src/IssueSubmit.tsx` | bogdan-alexandrescu×1 | 442 |
-| `apps/swarm-ui/src/api.ts` | bogdan-alexandrescu×5 | 555,587,4786,5064,5332 |
-| `apps/swarm-ui/src/styles/intake.css` | bogdan-alexandrescu×1 | 311 |
-| `docker-compose.yml` | saga-agents-staging×1 saga.xyz×4 | 23,40,41,42,129 |
-| `images/agent-runtime-base/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,61,62 |
-| `images/agent-runtime-browser/Dockerfile` | saga-agents-staging×1 swarm-mirror-dockerhub×1 | 1 |
-| `images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp` | taile0bda9×1 | 74 |
-| `images/agent-runtime-indexer/Dockerfile` | saga-agents-staging×2 swarm-mirror-dockerhub×2 | 1,49 |
-| `images/swarm-api/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,44,45 |
-| `images/swarm-quota-broker/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,44,45 |
-| `images/swarm-reconciler/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,46,47 |
-| `images/swarm-scheduler/Dockerfile` | saga-agents-staging×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,46,47 |
-| `images/swarm-ui/Dockerfile` | saga-agents-staging×2 swarm-mirror-dockerhub×2 | 1,62 |
-| `images/swarm-verify/Dockerfile` | saga-agents-staging×2 swarm-mirror-dockerhub×2 | 1,58 |
-| `images/workspace-apply/Dockerfile` | saga-agents-staging×2 swarm-mirror-dockerhub×1 swarm-mirror-ghcr×1 | 1,94 |
-| `images/workspace-apply/entry.py` | saga-agents-staging×2 | 187,188 |
-| `kubernetes/apply.sh` | saga-agents-staging×2 saga.xyz×4 | 9,147,360,368,1115,1124 |
-| `kubernetes/namespaces/tenant-namespace.yaml` | saga.xyz×3 | 62,63,64 |
-| `kubernetes/network-policies/allow-egress.yaml` | saga.xyz×5 | 105,106,107,108,109 |
-| `kubernetes/network-policies/default-deny.yaml` | saga.xyz×1 | 59 |
-| `kubernetes/network-policies/swarm-system-live.yaml` | saga.xyz×2 | 95,96 |
-| `kubernetes/network_parity.py` | saga.xyz×7 | 21,69,74,75,76,77,… (7 lines) |
-| `kubernetes/policies/workspace-provisioner-scope.yaml` | saga.xyz×11 | 65,157,158,199,252,253,… (11 lines) |
-| `kubernetes/rbac/dispatcher-rbac.yaml` | saga.xyz×2 | 55,130 |
-| `kubernetes/rbac/provisioner-rbac.yaml` | saga.xyz×1 | 71 |
-| `kubernetes/rbac/verify-rbac.yaml` | saga.xyz×1 | 59 |
-| `kubernetes/rbac/worker-rbac.yaml` | saga.xyz×1 | 54 |
-| `kubernetes/render.py` | saga-agents-staging×2 saga.xyz×2 | 880,935,1304,1507 |
-| `kubernetes/service-accounts/legacy-worker-serviceaccount.yaml` | saga.xyz×1 | 49 |
-| `kubernetes/service-accounts/worker-serviceaccount.yaml` | saga.xyz×3 | 64,67,86 |
-| `kubernetes/swarm-system/swarm-egress.yaml` | saga.xyz×1 | 159 |
-| `kubernetes/swarm-system/swarm-graph.yaml` | saga.xyz×1 | 252 |
-| `kubernetes/swarm-system/swarm-live.yaml` | saga.xyz×2 | 101,102 |
-| `kubernetes/swarm-system/swarm-typesafe-fwd.yaml` | saga.xyz×1 | 172 |
-| `kubernetes/swarm-system/tailscale-egress.yaml` | saga.xyz×1 | 169 |
-| `kubernetes/worker-templates/worker-job-browser.yaml` | saga.xyz×3 | 54,55,56 |
-| `kubernetes/worker-templates/worker-job-v2.yaml` | saga.xyz×4 | 62,63,64,69 |
-| `kubernetes/worker-templates/worker-job.yaml` | saga.xyz×3 | 63,64,65 |
-| `plugin/.claude-plugin/plugin.json` | bogdan-alexandrescu×1 | 75 |
-| `plugin/workflows/run.js` | saga.xyz×2 | 1010,1114 |
-| `scripts/acceptance/config.sh` | bogdan-alexandrescu×1 | 40 |
-| `scripts/bootstrap.sh` | saga-agents-staging×1 | 5 |
-| `scripts/build-images.sh` | saga-agents-staging×3 | 355,371,1765 |
-| `scripts/destroy.sh` | saga-agents-staging×16 | 4,98,99,101,104,105,… (16 lines) |
-| `scripts/dev/drive.py` | saga-agents-staging×2 | 24,28 |
-| `scripts/lib/auth-guard.sh` | saga-agents-staging×2 saga.xyz×3 | 70,85,95 |
+| `.env.example` | example-project×4 example.com×5 | 29,51,61,113,164,174,… (8 lines) |
+| `Makefile` | example.com×3 | 381,382 |
+| `apps/common/swarm_common/config.py` | example.com×2 | 46,110 |
+| `apps/common/swarm_common/identity.py` | example-project×1 example.com×3 | 8,68,70,169 |
+| `apps/common/swarm_common/models.py` | example-project×1 example.com×2 | 164,857 |
+| `apps/quota-broker/quota_broker/credentials.py` | example-project×1 | 118 |
+| `apps/quota-broker/quota_broker/publishledger.py` | example-project×1 | 6 |
+| `apps/quota-broker/quota_broker/secretstore.py` | example-project×2 | 82,464 |
+| `apps/reconciler/reconciler/backends.py` | example-project×1 | 983 |
+| `apps/reconciler/reconciler/checkpoints.py` | example-project×3 | 57,312,409 |
+| `apps/reconciler/reconciler/detect.py` | example-project×1 | 809 |
+| `apps/scheduler/scheduler/judgment.py` | example-tailnet×1 | 80 |
+| `apps/scheduler/scheduler/on_step_failure_audit.py` | example-project×1 | 11 |
+| `apps/swarm-api/swarm_api/delegation.py` | example.com×2 | 17,99 |
+| `apps/swarm-api/swarm_api/forge_installation.py` | example-org×1 | 5 |
+| `apps/swarm-api/swarm_api/groups.py` | example-project×1 example.com×1 | 4,6 |
+| `apps/swarm-api/swarm_api/issueruns.py` | example-project×18 | 1280,1281,1282,1284,1285,1286,… (18 lines) |
+| `apps/swarm-api/swarm_api/judgment.py` | example-tailnet×1 | 115 |
+| `apps/swarm-api/swarm_api/platform_secrets.py` | example-project×1 | 17 |
+| `apps/swarm-api/swarm_api/qatargets.py` | example.com×1 | 219 |
+| `apps/swarm-api/swarm_api/service.py` | example.com×1 | 504 |
+| `apps/swarm-api/swarm_api/settings.py` | example.com×2 | 380,383 |
+| `apps/swarm-egress/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,44,45 |
+| `apps/swarm-github-hooks/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,52,53 |
+| `apps/swarm-graph/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,53,54 |
+| `apps/swarm-live/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,54,55 |
+| `apps/swarm-live/swarm_live/recorder.py` | example.com×1 | 161 |
+| `apps/swarm-mcp/swarm_mcp/auth.py` | example.com×1 | 173 |
+| `apps/swarm-mcp/swarm_mcp/client.py` | example.com×3 | 264,1510 |
+| `apps/swarm-mcp/swarm_mcp/config.py` | example.com×3 | 6,381 |
+| `apps/swarm-mcp/swarm_mcp/launch.py` | example.com×2 | 35,45 |
+| `apps/swarm-mcp/swarm_mcp/signin.py` | example.com×1 | 3 |
+| `apps/swarm-mcp/swarm_mcp/workflows.py` | example.com×1 | 893 |
+| `apps/swarm-typesafe-fwd/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,48,49 |
+| `apps/swarm-ui/src/IssueSubmit.tsx` | example-org×1 | 442 |
+| `apps/swarm-ui/src/api.ts` | example-org×5 | 555,587,4786,5064,5332 |
+| `apps/swarm-ui/src/styles/intake.css` | example-org×1 | 311 |
+| `docker-compose.yml` | example-project×1 example.com×4 | 23,40,41,42,129 |
+| `images/agent-runtime-base/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,61,62 |
+| `images/agent-runtime-browser/Dockerfile` | example-project×1 swarm-mirror-dockerhub×1 | 1 |
+| `images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp` | example-tailnet×1 | 74 |
+| `images/agent-runtime-indexer/Dockerfile` | example-project×2 swarm-mirror-dockerhub×2 | 1,49 |
+| `images/swarm-api/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,44,45 |
+| `images/swarm-quota-broker/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,44,45 |
+| `images/swarm-reconciler/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,46,47 |
+| `images/swarm-scheduler/Dockerfile` | example-project×3 swarm-mirror-dockerhub×2 swarm-mirror-ghcr×1 | 1,46,47 |
+| `images/swarm-ui/Dockerfile` | example-project×2 swarm-mirror-dockerhub×2 | 1,62 |
+| `images/swarm-verify/Dockerfile` | example-project×2 swarm-mirror-dockerhub×2 | 1,58 |
+| `images/workspace-apply/Dockerfile` | example-project×2 swarm-mirror-dockerhub×1 swarm-mirror-ghcr×1 | 1,94 |
+| `images/workspace-apply/entry.py` | example-project×2 | 187,188 |
+| `kubernetes/apply.sh` | example-project×2 example.com×4 | 9,147,360,368,1115,1124 |
+| `kubernetes/namespaces/tenant-namespace.yaml` | example.com×3 | 62,63,64 |
+| `kubernetes/network-policies/allow-egress.yaml` | example.com×5 | 105,106,107,108,109 |
+| `kubernetes/network-policies/default-deny.yaml` | example.com×1 | 59 |
+| `kubernetes/network-policies/swarm-system-live.yaml` | example.com×2 | 95,96 |
+| `kubernetes/network_parity.py` | example.com×7 | 21,69,74,75,76,77,… (7 lines) |
+| `kubernetes/policies/workspace-provisioner-scope.yaml` | example.com×11 | 65,157,158,199,252,253,… (11 lines) |
+| `kubernetes/rbac/dispatcher-rbac.yaml` | example.com×2 | 55,130 |
+| `kubernetes/rbac/provisioner-rbac.yaml` | example.com×1 | 71 |
+| `kubernetes/rbac/verify-rbac.yaml` | example.com×1 | 59 |
+| `kubernetes/rbac/worker-rbac.yaml` | example.com×1 | 54 |
+| `kubernetes/render.py` | example-project×2 example.com×2 | 880,935,1304,1507 |
+| `kubernetes/service-accounts/legacy-worker-serviceaccount.yaml` | example.com×1 | 49 |
+| `kubernetes/service-accounts/worker-serviceaccount.yaml` | example.com×3 | 64,67,86 |
+| `kubernetes/swarm-system/swarm-egress.yaml` | example.com×1 | 159 |
+| `kubernetes/swarm-system/swarm-graph.yaml` | example.com×1 | 252 |
+| `kubernetes/swarm-system/swarm-live.yaml` | example.com×2 | 101,102 |
+| `kubernetes/swarm-system/swarm-typesafe-fwd.yaml` | example.com×1 | 172 |
+| `kubernetes/swarm-system/tailscale-egress.yaml` | example.com×1 | 169 |
+| `kubernetes/worker-templates/worker-job-browser.yaml` | example.com×3 | 54,55,56 |
+| `kubernetes/worker-templates/worker-job-v2.yaml` | example.com×4 | 62,63,64,69 |
+| `kubernetes/worker-templates/worker-job.yaml` | example.com×3 | 63,64,65 |
+| `plugin/.claude-plugin/plugin.json` | example-org×1 | 75 |
+| `plugin/workflows/run.js` | example.com×2 | 1010,1114 |
+| `scripts/acceptance/config.sh` | example-org×1 | 40 |
+| `scripts/bootstrap.sh` | example-project×1 | 5 |
+| `scripts/build-images.sh` | example-project×3 | 355,371,1765 |
+| `scripts/destroy.sh` | example-project×16 | 4,98,99,101,104,105,… (16 lines) |
+| `scripts/dev/drive.py` | example-project×2 | 24,28 |
+| `scripts/lib/auth-guard.sh` | example-project×2 example.com×3 | 70,85,95 |
 | `scripts/lib/build-mirror.sh` | swarm-mirror-dockerhub×1 swarm-mirror-ghcr×1 | 14,15 |
-| `scripts/lib/check-contract-parity.sh` | saga.xyz×1 | 106 |
-| `scripts/lib/common.sh` | bogdan-alexandrescu×1 saga-agents-staging×21 | 12,158,271,272,273,275,… (22 lines) |
-| `scripts/lib/destroy-guard-proof-cases.json` | saga-agents-staging×1 | 36 |
-| `scripts/lib/dev.sh` | saga-agents-staging×1 saga.xyz×1 | 13,93 |
-| `scripts/lib/kubectl-guard.sh` | saga-agents-staging×2 | 61,69 |
-| `scripts/lib/plan-guard.sh` | saga-agents-staging×13 | 4,395,399,403,404,407,… (11 lines) |
-| `scripts/lib/quality_metrics.py` | bogdan-alexandrescu×2 | 35,81 |
-| `scripts/lib/testlib.sh` | bogdan-alexandrescu×1 | 593 |
-| `scripts/lib/workspace-calls.json` | saga-agents-staging×1 saga.xyz×2 | 9,152 |
-| `scripts/lib/workspace-guard-cases.json` | saga-agents-staging×18 saga.xyz×3 | 5,40,56,67,79,94,… (21 lines) |
-| `scripts/lib/workspace-guard.sh` | saga-agents-staging×1 saga.xyz×2 | 201,524,1494 |
-| `scripts/prerequisites.sh` | saga-agents-staging×1 saga.xyz×3 | 156,157,212 |
-| `scripts/quality-baseline.sh` | bogdan-alexandrescu×1 | 44 |
-| `scripts/register-tenant.sh` | saga.xyz×4 | 90,276,302,2286 |
-| `scripts/smoke-test.sh` | saga.xyz×1 | 149 |
-| `scripts/swarm.py` | saga-agents-staging×2 | 37,41 |
-| `scripts/verify-destroy-guard.sh` | saga-agents-staging×1 | 5 |
-| `terraform/bootstrap/acceptance.tf` | saga-agents-staging×1 | 138 |
-| `terraform/bootstrap/browser_logins.tf` | bogdan-alexandrescu×1 saga-agents-staging×1 | 79,163 |
-| `terraform/bootstrap/deployer_conditions.tf` | saga-agents-staging×4 | 72,74,215,619 |
-| `terraform/bootstrap/deployer_service_accounts.tf` | saga-agents-staging×1 | 6 |
-| `terraform/bootstrap/forge_user_slots.tf` | saga-agents-staging×1 | 107 |
-| `terraform/bootstrap/iap_programmatic_clients.tf` | saga-agents-staging×1 | 30 |
-| `terraform/bootstrap/mcp_credentials.tf` | saga-agents-staging×1 | 96 |
-| `terraform/bootstrap/platform_roles.tf` | saga-agents-staging×1 | 236 |
-| `terraform/bootstrap/provider_keys.tf` | saga-agents-staging×1 | 97 |
-| `terraform/bootstrap/spec_signing.tf` | saga-agents-staging×1 | 18 |
-| `terraform/bootstrap/terraform.tfvars` | bogdan-alexandrescu×1 saga-agents-staging×10 saga.xyz×3 | 1,6,21,34,107,112,… (14 lines) |
-| `terraform/bootstrap/terraform.tfvars.example` | saga-agents-staging×2 | 8,21 |
-| `terraform/bootstrap/typesafe_forwarder.tf` | saga-agents-staging×1 | 74 |
-| `terraform/bootstrap/variables.tf` | saga-agents-staging×5 saga.xyz×3 | 22,318,500,518,533,549,… (7 lines) |
-| `terraform/bootstrap/wif.tf` | saga-agents-staging×5 | 267,285,286,442,455 |
-| `terraform/bootstrap/workspace_secrets.tf` | saga-agents-staging×1 | 95 |
-| `terraform/environments/dev/dev.tfvars` | bogdan-alexandrescu×1 saga-agents-staging×9 saga.xyz×20 taile0bda9×1 | 4,8,318,321,324,332,… (31 lines) |
-| `terraform/environments/prod/prod.tfvars` | saga-agents-staging×2 saga.xyz×8 | 4,13,108,113,122,131,… (10 lines) |
-| `terraform/infra/acceptance_fixture.tf` | saga.xyz×1 | 14 |
-| `terraform/infra/backend.tf` | saga-agents-staging×1 | 6 |
-| `terraform/infra/build_mirror.tf` | saga-agents-staging×1 | 32 |
-| `terraform/infra/custom_roles_moved_to_bootstrap.tf` | saga-agents-staging×2 | 43,115 |
-| `terraform/infra/deployer.tf` | saga-agents-staging×1 | 15 |
-| `terraform/infra/locals.tf` | saga-agents-staging×2 saga.xyz×4 | 845,1014,1016,1033,1043,1336 |
-| `terraform/infra/log_view.tf` | saga-agents-staging×1 | 23 |
-| `terraform/infra/main.tf` | saga-agents-staging×1 | 39 |
-| `terraform/infra/tailscale.tf` | taile0bda9×1 | 84 |
-| `terraform/infra/tenant_job_vpc.tf` | saga-agents-staging×1 | 47 |
-| `terraform/infra/variables.tf` | saga-agents-staging×1 saga.xyz×3 | 324,811,924,1118 |
-| `terraform/modules/cloud_run/variables.tf` | saga.xyz×1 | 148 |
-| `terraform/modules/firestore/variables.tf` | saga-agents-staging×1 | 12 |
-| `terraform/modules/frontend/main.tf` | saga.xyz×1 | 80 |
-| `terraform/modules/frontend/variables.tf` | saga.xyz×2 | 36,46 |
-| `terraform/modules/gke_autopilot/main.tf` | saga-agents-staging×1 | 23 |
-| `terraform/modules/gke_autopilot/variables.tf` | saga-agents-staging×1 | 173 |
-| `terraform/modules/iam/bindings.tf` | saga-agents-staging×2 | 34,157 |
-| `terraform/modules/project_services/main.tf` | saga-agents-staging×1 | 3 |
-| `terraform/modules/project_services/variables.tf` | saga-agents-staging×1 | 23 |
-| `terraform/modules/service_account_ids/main.tf` | saga-agents-staging×1 | 14 |
-| `terraform/modules/tenancy/variables.tf` | saga.xyz×2 | 67,74 |
+| `scripts/lib/check-contract-parity.sh` | example.com×1 | 106 |
+| `scripts/lib/common.sh` | example-org×1 example-project×21 | 12,158,271,272,273,275,… (22 lines) |
+| `scripts/lib/destroy-guard-proof-cases.json` | example-project×1 | 36 |
+| `scripts/lib/dev.sh` | example-project×1 example.com×1 | 13,93 |
+| `scripts/lib/kubectl-guard.sh` | example-project×2 | 61,69 |
+| `scripts/lib/plan-guard.sh` | example-project×13 | 4,395,399,403,404,407,… (11 lines) |
+| `scripts/lib/quality_metrics.py` | example-org×2 | 35,81 |
+| `scripts/lib/testlib.sh` | example-org×1 | 593 |
+| `scripts/lib/workspace-calls.json` | example-project×1 example.com×2 | 9,152 |
+| `scripts/lib/workspace-guard-cases.json` | example-project×18 example.com×3 | 5,40,56,67,79,94,… (21 lines) |
+| `scripts/lib/workspace-guard.sh` | example-project×1 example.com×2 | 201,524,1494 |
+| `scripts/prerequisites.sh` | example-project×1 example.com×3 | 156,157,212 |
+| `scripts/quality-baseline.sh` | example-org×1 | 44 |
+| `scripts/register-tenant.sh` | example.com×4 | 90,276,302,2286 |
+| `scripts/smoke-test.sh` | example.com×1 | 149 |
+| `scripts/swarm.py` | example-project×2 | 37,41 |
+| `scripts/verify-destroy-guard.sh` | example-project×1 | 5 |
+| `terraform/bootstrap/acceptance.tf` | example-project×1 | 138 |
+| `terraform/bootstrap/browser_logins.tf` | example-org×1 example-project×1 | 79,163 |
+| `terraform/bootstrap/deployer_conditions.tf` | example-project×4 | 72,74,215,619 |
+| `terraform/bootstrap/deployer_service_accounts.tf` | example-project×1 | 6 |
+| `terraform/bootstrap/forge_user_slots.tf` | example-project×1 | 107 |
+| `terraform/bootstrap/iap_programmatic_clients.tf` | example-project×1 | 30 |
+| `terraform/bootstrap/mcp_credentials.tf` | example-project×1 | 96 |
+| `terraform/bootstrap/platform_roles.tf` | example-project×1 | 236 |
+| `terraform/bootstrap/provider_keys.tf` | example-project×1 | 97 |
+| `terraform/bootstrap/spec_signing.tf` | example-project×1 | 18 |
+| `terraform/bootstrap/terraform.tfvars` | example-org×1 example-project×10 example.com×3 | 1,6,21,34,107,112,… (14 lines) |
+| `terraform/bootstrap/terraform.tfvars.example` | example-project×2 | 8,21 |
+| `terraform/bootstrap/typesafe_forwarder.tf` | example-project×1 | 74 |
+| `terraform/bootstrap/variables.tf` | example-project×5 example.com×3 | 22,318,500,518,533,549,… (7 lines) |
+| `terraform/bootstrap/wif.tf` | example-project×5 | 267,285,286,442,455 |
+| `terraform/bootstrap/workspace_secrets.tf` | example-project×1 | 95 |
+| `terraform/environments/dev/dev.tfvars` | example-org×1 example-project×9 example.com×20 example-tailnet×1 | 4,8,318,321,324,332,… (31 lines) |
+| `terraform/environments/prod/prod.tfvars` | example-project×2 example.com×8 | 4,13,108,113,122,131,… (10 lines) |
+| `terraform/infra/acceptance_fixture.tf` | example.com×1 | 14 |
+| `terraform/infra/backend.tf` | example-project×1 | 6 |
+| `terraform/infra/build_mirror.tf` | example-project×1 | 32 |
+| `terraform/infra/custom_roles_moved_to_bootstrap.tf` | example-project×2 | 43,115 |
+| `terraform/infra/deployer.tf` | example-project×1 | 15 |
+| `terraform/infra/locals.tf` | example-project×2 example.com×4 | 845,1014,1016,1033,1043,1336 |
+| `terraform/infra/log_view.tf` | example-project×1 | 23 |
+| `terraform/infra/main.tf` | example-project×1 | 39 |
+| `terraform/infra/tailscale.tf` | example-tailnet×1 | 84 |
+| `terraform/infra/tenant_job_vpc.tf` | example-project×1 | 47 |
+| `terraform/infra/variables.tf` | example-project×1 example.com×3 | 324,811,924,1118 |
+| `terraform/modules/cloud_run/variables.tf` | example.com×1 | 148 |
+| `terraform/modules/firestore/variables.tf` | example-project×1 | 12 |
+| `terraform/modules/frontend/main.tf` | example.com×1 | 80 |
+| `terraform/modules/frontend/variables.tf` | example.com×2 | 36,46 |
+| `terraform/modules/gke_autopilot/main.tf` | example-project×1 | 23 |
+| `terraform/modules/gke_autopilot/variables.tf` | example-project×1 | 173 |
+| `terraform/modules/iam/bindings.tf` | example-project×2 | 34,157 |
+| `terraform/modules/project_services/main.tf` | example-project×1 | 3 |
+| `terraform/modules/project_services/variables.tf` | example-project×1 | 23 |
+| `terraform/modules/service_account_ids/main.tf` | example-project×1 | 14 |
+| `terraform/modules/tenancy/variables.tf` | example.com×2 | 67,74 |

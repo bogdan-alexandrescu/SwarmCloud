@@ -28,7 +28,7 @@ existing `swarm-api`. Consequences that constrain every screen in this section:
   that is a prerequisite, not a design note. Reading Firestore directly from a UI
   backend is off the table — it would bypass `runner_profile` resolution (invariant 10)
   and the tenant filter in `service.capacity()`
-  (`/Users/bogdan/claudespace/agent-swarm-infra/apps/swarm-api/swarm_api/service.py:290-332`).
+  (`<checkout>/apps/swarm-api/swarm_api/service.py:290-332`).
   Note that `swarm-api` is not the only control-plane service: the quota broker runs its
   own FastAPI app with its own routes (e.g. `POST /v1/quota/sweep`,
   `apps/quota-broker/quota_broker/main.py:500`) behind its own audience. A broker route
@@ -202,11 +202,11 @@ was opened and read.
    the `accounts` block of the broker's `POST /v1/quota/sweep` identifies each row by
    **label alone** — two tenants that both use the label `main` are indistinguishable in it.
 6. **Account ambiguity is at the secret, not the document.** `operator-gaps.md` says
-   `swarm-account-u-bogdan-devops-main` is ambiguous between two valid registrations. True
+   `swarm-account-u-member-devops-main` is ambiguous between two valid registrations. True
    for the **Secret Manager name** — `secret_name()` (`accounts.py:97-102`) concatenates
    with a dash that both parts may contain. Not true for the Firestore key:
-   `account_id_for()` (`accounts.py:291-293`) joins with a **colon**, so `u-bogdan:devops-main`
-   and `u-bogdan-devops:main` are distinct documents that collide only on their secret.
+   `account_id_for()` (`accounts.py:291-293`) joins with a **colon**, so `u-member:devops-main`
+   and `u-member-devops:main` are distinct documents that collide only on their secret.
    The UI must key rows on `account_id` and *display* the resolved secret name as a column,
    so the collision is visible rather than inherited.
 6b. **`Account.state` is not safe to render, and this is worse than the brief says.**
@@ -343,7 +343,7 @@ the first thing to look at.*
   these four values are not on any route today — see "What it cannot show yet".**
 * **Dispatch pill**: `DISPATCHING` (green), `DISPATCH PAUSED` (red), or — the third state
   trap 1b forces — `UNKNOWN — no control document` (hatched). When paused it expands
-  inline to `paused by alice@example.com · 14:02 · "provider incident #412"`.
+  inline to `paused by alice@example.com · 14:02 · "provider incident #<N>"`.
 * "as of HH:MM:SS" with the freshness dot, and a manual refresh control.
 
 **Row 2 — four counters**, each a single large numeral with its label:
@@ -472,7 +472,7 @@ And, by design rather than by gap:
 * Pool groups: **card stacks, never a table**, one stack per group, each with its own
   header (`Oversubscribed 1` / `Full 3` / `Drained 2`) so the groups survive the loss of
   colour and column alignment. Each card is one pool: name on line 1 (truncated from the
-  left, so `provider:anthropic:tenant:u-bogdan` shows the tenant), the bar full-width on
+  left, so `provider:anthropic:tenant:u-member` shows the tenant), the bar full-width on
   line 2, `12/12 · capped by quota_derived_limit` on line 3. A drained card adds line 4:
   `2 lease(s) still holding (pool counter)`. An oversubscribed card's bar overflows its
   track in the alert colour rather than clamping at 100%.

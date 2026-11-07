@@ -11,7 +11,7 @@ after batch three, and the protocol of the Jev work-contract experiment
 
 ## 1. The program's rules
 
-These hold for every package and every experiment (BGD, 3 November 2026):
+These hold for every package and every experiment (the owner, 3 November 2026):
 
 1. A model judgment is not an authorization decision. A reviewer's verdict, a
    Jev score or a graph answer never grants a merge, a secret or a repository.
@@ -159,7 +159,7 @@ reported short, never padded.
 
 ## 8. The Jev work-contract experiment (`contract_jev`)
 
-The owner chose on 3 November 2026 (BGD) to use Jev to make the work contract
+The owner chose on 3 November 2026 (the owner) to use Jev to make the work contract
 better and more enforceable: a review at submission (JC1) and a judgment of
 the acceptance criteria at the end of a step (JC2)
 ([jev-contract.md](jev-contract.md)). This section is how the experiment
