@@ -144,7 +144,7 @@ CI_FALLBACK_SECONDS = 900
 #: wait's 60: a release wait is woken once per release, so each refund is a
 #: whole release, the child await's shape and its bound.
 RELEASE_WAIT_MAX_RESUMES = 4
-#: A PROVIDER_QUOTA_EXHAUSTED park-and-exit (#2350, BGD 2026-10-27, "Refund,
+#: A PROVIDER_QUOTA_EXHAUSTED park-and-exit (#2350, the owner 2026-10-27, "Refund,
 #: bounded"): invariant 4's designed path, not a failed attempt, so it is
 #: refunded like a CI wait, counted in `metadata.quota_park_resumes`
 #: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`, reserved by `validation`).
@@ -155,7 +155,7 @@ RELEASE_WAIT_MAX_RESUMES = 4
 #: (`control.QUOTA_MAX_RESUMES`) for its direct path and sends no number here.
 QUOTA_PARK_RESUMES = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
-#: A step stopped at its time limit with its checkpoint uploaded (BGD,
+#: A step stopped at its time limit with its checkpoint uploaded (the owner,
 #: 2026-11-02, "continue at the time limit"): a SCHEDULED_RETRY park whose
 #: detail carries a `time_limit` block is a CONTINUATION, not a failure: its
 #: attempt is refunded, and counted in `metadata.time_limit_continuations`,
@@ -633,7 +633,7 @@ def ci_wait_span(metadata: Mapping[str, Any], last: Mapping[str, Any], head: str
 
 def park_attempt_error(reason: ParkReason, event_detail: Mapping[str, Any]) -> str:
     """The parked attempt's `error`: the park reason, and for a continuation
-    at the time limit what the attempt list says of it (BGD, 2026-11-02)."""
+    at the time limit what the attempt list says of it (the owner, 2026-11-02)."""
     count = event_detail.get(TIME_LIMIT_CONTINUATIONS)
     if (reason is ParkReason.SCHEDULED_RETRY and isinstance(event_detail.get(TIME_LIMIT), Mapping)
             and isinstance(count, int)):
@@ -2166,7 +2166,7 @@ class AttemptState:
         tenant. Anything else is the same 403, whether or not it exists.
 
         Every id is taken from the SIGNED copy of the document it is read
-        from (SIGNED-UPSTREAM, BGD 2026-10-26, part of #2373): a task document
+        from (SIGNED-UPSTREAM, the owner 2026-10-26, part of #2373): a task document
         is tenant-writable after signing (docs/design/tenant-settings-
         integrity.md §1.1), so a field rewritten then would otherwise widen
         what this attempt's reads may name to any task of its tenant

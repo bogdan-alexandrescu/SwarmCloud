@@ -1,7 +1,7 @@
 """The review gate: whether a gated review runs, decided by swarm-api (#2524).
 
 The token analysis of the week 2026-10-20..27 (#2524) found every change got
-a review, whatever it touched and however small. BGD decided on 2026-10-27:
+a review, whatever it touched and however small. The owner decided on 2026-10-27:
 "Risk paths + over 300 lines; reuse renders"; and on 2026-10-28 WHO ends a
 skipped review: "No contract change. The scheduler holds the review PARKED
 (as the #748 control-publish hold does) and swarm-api ends it PARKED ->
@@ -12,7 +12,7 @@ THE BLOCK. A workflow step may carry `metadata.review_gate = {"min_lines":
 300, "risk_paths": [...]}` (`validation.resolve_review_gate`, a 422 for an
 unknown key or a bad type), or `false` to switch the gate off for it.
 
-EVERY REVIEW STEP BY DEFAULT (BGD 2026-10-28, page M8: "every review step").
+EVERY REVIEW STEP BY DEFAULT (the owner 2026-10-28, page M8: "every review step").
 A review step -- one another step's `when` reads a verdict from, the issue
 run's compiled review among them -- that names no block is stored with
 `validation.REVIEW_GATE_DEFAULT_BLOCK` (`is_default`), and its policy is
@@ -23,7 +23,7 @@ default off) where set, else the platform's (`DEFAULT_MIN_LINES`,
 platform's risk paths stay in it (`_gate_from`): a risk path always runs the
 review, never skipped on line count.
 
-THE REQUIREMENTS CHECK (BGD 2026-10-28 ~18:25Z, "Gate + cheap requirements
+THE REQUIREMENTS CHECK (the owner 2026-10-28 ~18:25Z, "Gate + cheap requirements
 check"). An issue run's `requirements-check` step carries
 `review_gate.requirements_check` (`is_requirements_check`) and is held like
 the review it stands beside, then decided the other way round: it runs only
@@ -97,7 +97,7 @@ image under `shots/` -- the directory the browser runner's rendered-review
 rule names (`agent_worker.verdict.RENDERED_REVIEW_SHOTS`); no compare-report
 manifest is written by any runner today, so the listing is the check. What
 was found is recorded on the decision (`renders_published`); it does not
-move the review off the browser (BGD 2026-10-28: a follow-up lane).
+move the review off the browser (the owner 2026-10-28: a follow-up lane).
 """
 
 from __future__ import annotations
@@ -122,10 +122,10 @@ from .validation import (
 
 log = logging.getLogger(__name__)
 
-#: BGD's value, 2026-10-27 (`validation.REVIEW_GATE_DEFAULT_MIN_LINES`).
+#: The owner's value, 2026-10-27 (`validation.REVIEW_GATE_DEFAULT_MIN_LINES`).
 DEFAULT_MIN_LINES = REVIEW_GATE_DEFAULT_MIN_LINES
 
-#: The paths whose change always gets a review, BGD's list (#2524): a glob
+#: The paths whose change always gets a review, the owner's list (#2524): a glob
 #: per entry, `**` crossing directories and `*` not; an entry ending in `/`
 #: is everything under that directory.
 DEFAULT_RISK_PATHS: tuple[str, ...] = (
@@ -156,7 +156,7 @@ DEFAULT_RISK_PATHS: tuple[str, ...] = (
     "terraform/**/iam*",
     "terraform/bootstrap/",
     "scripts/iam-*",
-    # CI: what runs with the repository's tokens (BGD 2026-10-28, #2524).
+    # CI: what runs with the repository's tokens (the owner 2026-10-28, #2524).
     ".github/workflows/",
     ".github/actions/",
 )
@@ -261,7 +261,7 @@ class Gate:
 def _gate_from(block: Mapping[str, Any]) -> Gate | None:
     """`min_lines` and `risk_paths` read from a block; None when they cannot be.
 
-    The platform's risk paths are ALWAYS among the gate's (BGD 2026-10-28):
+    The platform's risk paths are ALWAYS among the gate's (the owner 2026-10-28):
     a step or a workspace naming its own list adds to them, and never
     narrows them, so a change to credentials, IAM, redaction, tenant
     isolation, `.github/workflows/` or the frozen contract is never skipped

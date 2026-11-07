@@ -11,7 +11,7 @@ WHY THE DECLARATION SITS ON THE ROUTE. The guards
 test_schedule_tick.py, test_continuation_scope_is_narrow.py) used to compare
 the gate against one hand-edited literal list each. Two changes that each
 added a route and passed against their own base could then fail together
-(BGD's pick, 6 November 2026: a whole-tree check two green changes must pass
+(the owner's pick, 6 November 2026: a whole-tree check two green changes must pass
 together). Now each route's own file says who may reach it, and the guards
 derive their allow-sets from those declarations, so two changes that each add
 a declared route touch no shared line and pass together.

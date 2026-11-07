@@ -108,7 +108,7 @@ _RAW_HEADERS = {
 _FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 #: `?redaction=` on `/artifacts/raw`: `applied` (the default, today's answer)
-#: or `none`, the owner-only raw patch (BGD's decision on #1857, 2026-10-27).
+#: or `none`, the owner-only raw patch (the owner's decision on #1857, 2026-10-27).
 REDACTION_APPLIED = "applied"
 REDACTION_NONE = "none"
 
@@ -297,7 +297,7 @@ class AgentOutputService:
         Cloud Run refuses an unchunked HTTP/1 response over 32 MiB, and
         uvicorn chunks exactly when no length is declared.
 
-        `redaction="none"` IS THE OWNER-ONLY RAW PATCH (BGD, #1857): a `.patch`
+        `redaction="none"` IS THE OWNER-ONLY RAW PATCH (the owner, #1857): a `.patch`
         whose credential-shaped test fixtures the masking would break, served
         as stored to the one person who submitted the task. `caller` is the
         verified caller's email. Refused 403, naming the rule, unless the name

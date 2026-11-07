@@ -1,6 +1,6 @@
 """A Cloudflare Access service token, held by the gate: two headers to listed hosts only (CF-ACCESS-TOKEN).
 
-Lane CF-ACCESS-TOKEN, part of #2442; BGD decided on 2026-10-26 that browser
+Lane CF-ACCESS-TOKEN, part of #2442; the owner decided on 2026-10-26 that browser
 visual-QA agents reach a site behind Cloudflare Access with a SERVICE TOKEN,
 because an agent cannot pass Access's interactive sign-in and its second
 factor. docs/runbooks/cf-access-service-token.md says how one is made and

@@ -411,7 +411,7 @@ class SecretManagerForgeTokens:
                 # swarm-api has no project-wide secrets.get, so a secret that
                 # does not exist ALSO answers PermissionDenied. Nothing says
                 # this one exists: blaming a grant would send the reader to
-                # Terraform for a token nobody stored (2026-10-13, u-bogdan).
+                # Terraform for a token nobody stored (2026-10-13, example-tenant).
                 raise NoForgeCredential(no_github_credential(tenant)) from None
             raise IssueReadFailed(
                 f"swarm-api may not read {secret_id}: {grant_hint(tenant.tenant_id, provider)}"

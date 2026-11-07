@@ -243,12 +243,12 @@ HUMAN_PARK_MAX_SECONDS = 86_400
 
 #: A workflow's fix loop (docs/design/fix-loop.md, lane FL-SCHED): the
 #: `control_plane` profile whose review-fix / re-review rounds swarm-api runs
-#: as agents of their own. The scheduler parks it FIX_ROUNDS_RUNNING (BGD Q2
+#: as agents of their own. The scheduler parks it FIX_ROUNDS_RUNNING (the owner Q2
 #: (a)) and never leases it, as it parks await-input AWAITING_INPUT.
 FIX_LOOP_PROFILE = "fix-loop"
 #: How long a fix loop's person-park (§4.5) waits before the scheduler ends
 #: the loop FAILED `fix_loop_exhausted`, as a person's "stop" would. 7 days:
-#: BGD 2026-10-27, Q3 (c), chosen over "no expiry" (a) and the 24-hour
+#: The owner 2026-10-27, Q3 (c), chosen over "no expiry" (a) and the 24-hour
 #: hand-off dead-letter (b). The park holds nothing while it waits
 #: (invariant 1), so the bound is about a loop nobody comes back to, not cost.
 FIX_LOOP_PARK_MAX_SECONDS = 7 * 86_400
@@ -283,7 +283,7 @@ def fix_loop_park_phase(task: Task) -> str | None:
 
 def mcp_park_blocked_by(credential: CredentialAnswer, now: datetime) -> list[dict[str, Any]] | None:
     """The `blocked_by` a CREDENTIAL_MISSING park writes when it waits for
-    its caller to re-store a workflow's MCP credential (§4.10, BGD
+    its caller to re-store a workflow's MCP credential (§4.10, the owner
     2026-10-26): one entry naming `reason`, `credential` ("mcp"), `code`, `server`,
     `expired_at` and `parked_at`, which is where the API serves a park's detail on
     the task and what a caller watches. `parked_at` is what the sweep's limit
@@ -508,7 +508,7 @@ def _own_label(account_id: str | None, tenant_id: str | None) -> str | None:
     """The label of `account_id` when it is `tenant_id`'s own account, else None.
 
     An account id is `<owner_tenant>:<label>`. Another workspace's label is
-    never written into this tenant's park (BGD, #2222 Q2: "only within the
+    never written into this tenant's park (the owner, #2222 Q2: "only within the
     same tenant"), so the line says "an account in another workspace".
     """
     if not account_id or not tenant_id or not account_id.startswith(f"{tenant_id}:"):
@@ -814,7 +814,7 @@ class DrainReport:
     #: MCP credential they name expired or was revoked (contract request 99).
     failed_unrunnable: int = 0
     #: Fix loops whose person-park nobody answered within 7 days, ended FAILED
-    #: `fix_loop_exhausted` (docs/design/fix-loop.md §4.5, BGD Q3 (c)).
+    #: `fix_loop_exhausted` (docs/design/fix-loop.md §4.5, the owner Q3 (c)).
     fix_loops_expired: int = 0
     promoted_prewarm: int = 0
     #: SCHEDULED_RETRY parks returned to READY once `next_eligible_at` passed.
@@ -1123,7 +1123,7 @@ class Scheduler:
         report.tenants_seen = max(report.tenants_seen, len(tenants))
         self._metrics.tenants_in_rotation.set(len(tenants))
 
-        # IN BATCHES (BGD, 2026-11-06): each task is prepared in this order,
+        # IN BATCHES (the owner, 2026-11-06): each task is prepared in this order,
         # and every `admission_batch_size` prepared tasks are reserved in one
         # transaction that writes each pool document once, then dispatched in
         # the same order. A task the batch cannot fit stays READY and the
@@ -1368,7 +1368,7 @@ class Scheduler:
         again. Promoting only when an account would be handed over costs a
         container only when one runs.
 
-        AS MANY PARKS AS THE POOL HAS FREE SLOTS (the #2222 rule; BGD's pick
+        AS MANY PARKS AS THE POOL HAS FREE SLOTS (the #2222 rule; the owner's pick
         on PR #3044, "free slots only"): a release is the trigger, not the
         count. Each promotion `claim`s the account `choose()` named (#2222),
         so the next park is asked about one slot fewer, and a wake never
@@ -1741,7 +1741,7 @@ class Scheduler:
         # is no workflow's, is not a park: nobody can hand it a new value, so
         # it ends FAILED here, from READY, in one guarded write that takes no
         # lease and reserves nothing (registered-mcp-servers.md §4.10,
-        # contract request 99). A WORKFLOW's task parks instead (BGD
+        # contract request 99). A WORKFLOW's task parks instead (the owner
         # 2026-10-26): its caller re-stores the credential, and the park's
         # `blocked_by` entry says which server and when it expired.
         if credential.terminal:
@@ -1757,7 +1757,7 @@ class Scheduler:
             )
             return None
 
-        # ASK THE POOL BEFORE THE LEASE (#2222, BGD 2026-10-24, "Ask the pool
+        # ASK THE POOL BEFORE THE LEASE (#2222, the owner 2026-10-24, "Ask the pool
         # before a container"). The worker asks the broker for an account
         # whenever one serves this tenant, key or no key (`lifecycle.
         # _lease_account`), and until now it was the first to: it leased,
@@ -1811,7 +1811,7 @@ class Scheduler:
         fairness order and the store judges it in that order, each task
         all-or-nothing across every pool it needs (invariant 2); a task that
         does not fit stays READY and the rest still admit
-        (`SchedulerStore.acquire_leases`, BGD 2026-11-06). A batch of one is
+        (`SchedulerStore.acquire_leases`, the owner 2026-11-06). A batch of one is
         the frozen single-task transaction, `acquire_lease`, exactly as before
         batching (and `admission_batch_size = 1` makes every batch one).
         """
@@ -1949,7 +1949,7 @@ class Scheduler:
             # `task.last_error` is returned to the caller verbatim.
             # A refusal that is the PLATFORM's (an admission policy, the Job
             # quota) parks PLATFORM_REFUSED and spends no attempt (contract
-            # request 123): BGD's rule is that a quota pauses work and never
+            # request 123): the owner's rule is that a quota pauses work and never
             # fails it. Any other code -- an RBAC 403 included -- is retried
             # and capped as before.
             refused = exc.code in PLATFORM_REFUSAL_CODES
@@ -2173,7 +2173,7 @@ class Scheduler:
         """Park a READY `control_plane` step, which is never leased (invariant 1).
 
         A fix loop parks FIX_ROUNDS_RUNNING (docs/design/fix-loop.md §4.7,
-        BGD Q2 (a)): its rounds are agents of their own, admitted like any
+        the owner Q2 (a)): its rounds are agents of their own, admitted like any
         other, and swarm-api ends the loop or moves it to HUMAN_REQUIRED. No
         sweep reads that reason, so nothing here promotes or expires it. The
         park instant is `next_eligible_at`, as every control-plane park
@@ -2668,7 +2668,7 @@ class Scheduler:
                 continue
             if credential.mcp is not None and credential.mcp.waits_for_credential:
                 # Waiting for its caller to re-store a workflow's MCP
-                # credential (§4.10, BGD 2026-10-26). Promoted below once the
+                # credential (§4.10, the owner 2026-10-26). Promoted below once the
                 # row is live; past the limit it ends PARKED -> FAILED with
                 # the credential's code. Either way nothing was leased.
                 limit = int(getattr(self._settings, "mcp_credential_park_max_seconds",
@@ -2770,7 +2770,7 @@ class Scheduler:
         minutes). Contract request 123, docs/design/dispatch-refusals.md.
 
         THERE IS NO CAP HERE, ON PURPOSE. The refusal spent no attempt, and
-        BGD's rule (2026-09-14) is that a quota pauses work and never fails
+        the owner's rule (2026-09-14) is that a quota pauses work and never fails
         it: a task refused past `PLATFORM_REFUSED_MAX_PARKS` times is still
         promoted, every ten minutes, until the quota frees or the policy is
         corrected, and is reported as trouble meanwhile. A park on a task
@@ -2938,7 +2938,7 @@ class Scheduler:
         answer, no expiry"). Neither holds a lease while it waits (invariant 1).
 
         A fix loop's person-park (`fix_loop_park_phase`, docs/design/fix-loop.md
-        §4.5) is neither spared nor held to the hand-off's bound: BGD's Q3 (c)
+        §4.5) is neither spared nor held to the hand-off's bound: the owner's Q3 (c)
         gives it `FIX_LOOP_PARK_MAX_SECONDS`, 7 days from the park, and then
         ends it FAILED `fix_loop_exhausted` (`_expire_fix_loop`), counted in
         `report.fix_loops_expired` rather than in this sweep's return.
@@ -3011,7 +3011,7 @@ class Scheduler:
 
     def _expire_fix_loop(self, task: Task, phase: str, report: DrainReport, *,
                          now: datetime) -> None:
-        """End a fix loop's person-park 7 days after it opened (BGD Q3 (c)); spare a younger one.
+        """End a fix loop's person-park 7 days after it opened (the owner Q3 (c)); spare a younger one.
 
         The park instant is `next_eligible_at`, which a park writes as the
         moment it parked, with `updated_at` standing in for one that carries
@@ -3051,7 +3051,7 @@ class Scheduler:
     def _wake_owner_hold(self, task: Task, report: DrainReport) -> bool:
         """Return an owner-question hold to READY on the wake tick's marker (#2441).
 
-        MERGE-OUTSIDE-ENDS (BGD 2026-10-26): a merge held on owner questions
+        MERGE-OUTSIDE-ENDS (the owner 2026-10-26): a merge held on owner questions
         whose pull request was merged or closed outside the workflow finishes
         on its own. swarm-api's wake tick reads the pull request -- the
         scheduler holds no forge token -- and marks `merge_wait.owner_hold`

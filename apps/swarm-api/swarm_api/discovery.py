@@ -18,7 +18,7 @@ backend, the one without IAP, with the invoker IAM check disabled. So:
   the install state. tests/unit/control_plane/test_discovery.py fails on any
   extra key.
 * **`oauth_client_secret` only when `DISCOVERY_SERVE_CLIENT_SECRET=true`**:
-  BGD's Q1 decision (design §14 item 1, plan §6.3), switched on by the engine
+  The owner's Q1 decision (design §14 item 1, plan §6.3), switched on by the engine
   only if Google refuses a PKCE-only exchange for the Desktop client. The value
   is then read from Secret Manager (`swarm-iap-desktop-client-secret`, the only
   secret `swarm-discovery` may access), NEVER from an environment variable: a

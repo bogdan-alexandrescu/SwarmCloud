@@ -179,7 +179,7 @@ CHILD_CASCADE_METADATA_KEY = "child_cascade"
 RELEASE_WAIT_RESUMES_METADATA_KEY = "release_wait_resumes"
 RELEASE_WAIT_MAX_RESUMES = 4
 
-#: A provider-quota park (#2350, BGD 2026-10-27, "Refund, bounded"): the
+#: A provider-quota park (#2350, the owner 2026-10-27, "Refund, bounded"): the
 #: PROVIDER_QUOTA_EXHAUSTED parks whose attempt `park` refunded, and the bound
 #: on them. Restated as `swarm_api.attemptstate.QUOTA_PARK_RESUMES` and
 #: `QUOTA_MAX_RESUMES`, which say why 5, and reserved from callers by
@@ -189,7 +189,7 @@ RELEASE_WAIT_MAX_RESUMES = 4
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
 
-#: A continuation at the time limit (BGD, 2026-11-02): a SCHEDULED_RETRY park
+#: A continuation at the time limit (the owner, 2026-11-02): a SCHEDULED_RETRY park
 #: whose detail carries a `TIME_LIMIT_DETAIL_KEY` block, written by
 #: `lifecycle._continue_at_time_limit`. Such a park refunds its attempt, and
 #: adds one to `metadata.time_limit_continuations`, while fewer than

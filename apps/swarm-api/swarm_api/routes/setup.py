@@ -1417,11 +1417,11 @@ def restart_smoke(
 #: The console's two verify runs, by their `verify_runs` key.
 VERIFY_KEYS = ("console_task", "console_workflow")
 #: Fresh runs started per key after the recorded one failed or was cancelled
-#: (BGD, 2026-10-30: "swarm-api restarts a failed key"). The engine waits for
+#: (the owner, 2026-10-30: "swarm-api restarts a failed key"). The engine waits for
 #: a new id at most twice too (VERIFY-ENGINE-2), so a third would go unread.
 MAX_VERIFY_RETRIES = 2
 #: A key's retry count lives in the document's own `retries` field,
-#: `{console_task: n, console_workflow: n}` (BGD, 2026-10-30), so
+#: `{console_task: n, console_workflow: n}` (the owner, 2026-10-30), so
 #: `verify_runs` holds exactly the INTERFACE SHEET's two id keys. A document
 #: written before that kept each count beside its id, as `<key>_retries`:
 #: it is still read (`_verify_retries`), and the next write moves it.

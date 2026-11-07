@@ -214,7 +214,7 @@ attempt fails as usual and the children keep running for the next attempt.
 """
 
 
-#: TOKEN-RENDER (BGD 2026-10-27, #2524 item 2, "Yes, Sonnet child per
+#: TOKEN-RENDER (the owner 2026-10-27, #2524 item 2, "Yes, Sonnet child per
 #: screen"): a review, or an implement step that renders, judges its frames in
 #: ONE SONNET CHILD PER SCREEN, and a text verdict per frame from that child
 #: meets the rule that every frame is reviewed rendered. WHY: a screenshot or
@@ -976,7 +976,7 @@ class ChildPath:
         §3.4): a key `state/open` registered for the state purpose signs under
         `swarm-state-req/v1`, any other registered key -- the child purpose,
         `/child-key`'s -- under `swarm-child-req/v1`, which swarm-api accepts
-        on the read route (BGD, 2026-10-22 08:54Z). `no_attempt_key` only when
+        on the read route (the owner, 2026-10-22 08:54Z). `no_attempt_key` only when
         the worker holds no key: no nonce, a refused registration, a
         tombstone or an unprotected heap's state-only key, which `adopt`
         never takes. Built once, so the relay's hourly budget survives the

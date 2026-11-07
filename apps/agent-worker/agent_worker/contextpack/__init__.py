@@ -116,7 +116,7 @@ def prompt_line(context_file: Path | str) -> str:
     )
 
 
-#: THE LOOKUP LINE (BGD's pick, 6 November 2026, after the 48-hour code
+#: THE LOOKUP LINE (the owner's pick, 6 November 2026, after the 48-hour code
 #: intelligence report; part of #2688). Implement steps called the graph most
 #: (34% of its calls), reviews and fixes almost never, and when a step called
 #: it the graph named a file it then changed in 35 of 56 answers. So a step of
