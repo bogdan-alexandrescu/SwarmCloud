@@ -14,7 +14,8 @@ with a record:
     loan      lend or reclaim a pool account: only one owned by a group tenant
               or by the acting admin's own personal tenant. A lend to a
               workspace that is not `ready` is recorded PENDING and applied
-              by the sweep once it is (LOAN-NEW, below)
+              by the first read that sees it ready, or the sweep (LOAN-NEW,
+              LOAN-ON-READ, below)
     decline   close a person's open loan request without lending, with an
               optional reason they are shown (LOAN-DECLINE, below)
     sweep     publish again an `approved` record nobody claimed in 10 minutes,
@@ -48,7 +49,21 @@ same transaction, and the answer says it will apply when the workspace is
 ready. The sweep (every 10 minutes) applies each pending loan of a `ready`
 workspace through the same broker call a direct lend makes, and only after
 the broker answered removes it, closes the loan request and writes `lend` --
-so a loan is either pending, or lent and audited, never half of each. A grant
+so a loan is either pending, or lent and audited, never half of each.
+
+AND SO DOES THE FIRST READ THAT SEES THE WORKSPACE READY (LOAN-ON-READ, part
+of #2688). On 2026-11-06 a loan to w-4e4036 sat pending at 21:53 though the
+workspace turned ready at 21:50:14: only the sweep applied it, up to ten
+minutes later. swarm-api reads the record on the person's setup poll
+(`GET /v1/workspace`), on the admin People list and at the gate of the
+tenant's first submission with no account (`Workspaces.check`), so each of
+those calls `apply_ready_loans` for THAT tenant alone (invariant 9): it
+re-reads the record in a transaction, claims the loans no read tried in the
+last READ_APPLY_EVERY by stamping `last_attempt_at`, and applies the claimed
+ones through `_apply_pending`, the sweep's path, with its audit, its refusal
+handling (`last_error`) and its checks. The claim is what keeps a page polled
+every 5 s, or two instances answering at once, from calling the broker more
+than once per tenant per interval. The sweep stays, as the backstop. A grant
 that fails on a READY workspace is an error naming the member and the
 broker's reason (`LOAN_GRANT_FAILED`): there, the member should exist.
 
@@ -238,6 +253,12 @@ PENDING_LOANS = "pending_loans"
 LOAN_APPLIED = "applied"
 LOAN_PENDING = "pending"
 LOAN_RECLAIMED = "reclaimed"
+#: How often a READ may try a tenant's pending loans (LOAN-ON-READ): a loan a
+#: read claimed, or one the broker refused, is not tried by another read for
+#: this long. Short, so the loan applies within a minute of `ready`; long
+#: enough that the setup page's 5 s poll costs the broker at most one call a
+#: minute. The sweep ignores it.
+READ_APPLY_EVERY = timedelta(seconds=60)
 
 
 #: Who `GET /v1/admin/people` was read as (ADMIN-PEOPLE-ROLES): a platform
@@ -479,6 +500,17 @@ def _account_name(value: Any) -> str | None:
     the label in its place: the console tells a named account from an
     unnamed one by this being None."""
     return value if isinstance(value, str) else None
+
+
+def _due(last_attempt: Any, now: datetime) -> bool:
+    """Whether a read may try a pending loan last tried at `last_attempt`
+    (READ_APPLY_EVERY). Never tried, or a value that is not a time, is due."""
+    if not isinstance(last_attempt, datetime):
+        return True
+    try:
+        return now - last_attempt >= READ_APPLY_EVERY
+    except TypeError:  # one naive, one aware: not comparable, so not throttled
+        return True
 
 
 def _later(*values: Any) -> datetime | None:
@@ -1117,8 +1149,8 @@ class People:
 
         With a `pool` it then applies the pending loans of every workspace
         now `ready` (`apply_pending_loans`, LOAN-NEW): the job that marks a
-        workspace ready runs no swarm-api code, so this walk is what notices.
-        Without one (the broker client could not be built) `loans` is null."""
+        workspace ready runs no swarm-api code, so this walk is the backstop
+        for the reads that apply them first (`apply_ready_loans`). Without one (the broker client could not be built) `loans` is null."""
         publishing = bool(self._publisher.enabled)
         now = self._now()
         query = self._db.collection(ws.WORKSPACES).where(
@@ -1454,32 +1486,113 @@ class People:
             if not record or ws.state_of(record) != ws.READY:
                 waiting += len(loans)
                 continue
-            for loan in loans:
-                try:
-                    if self._apply_pending(pool, record, loan):
-                        applied += 1
-                    else:
-                        dropped += 1
-                except Exception as exc:  # noqa: BLE001 - one loan, never the sweep
-                    failed += 1
-                    self._note_pending_failure(snap.id, str(record.get("workspace_id")), loan, exc)
+            done = self._apply_each(pool, snap.id, record, loans)
+            applied, failed, dropped = applied + done[0], failed + done[1], dropped + done[2]
         if applied or failed or dropped:
             log.info("pending loans applied=%d failed=%d waiting=%d dropped=%d",
                      applied, failed, waiting, dropped)
         return {"applied": applied, "failed": failed, "waiting": waiting, "dropped": dropped}
 
+    def _apply_each(self, pool: Any, tenant_id: str, record: Mapping[str, Any],
+                    loans: Iterable[Mapping[str, Any]], *,
+                    store: Any = None) -> tuple[int, int, int]:
+        """(applied, failed, dropped) over `loans`, one at a time: a failure
+        is noted on its loan (`last_error`) and never stops the next."""
+        applied = failed = dropped = 0
+        for loan in loans:
+            try:
+                if self._apply_pending(pool, record, loan, store=store):
+                    applied += 1
+                else:
+                    dropped += 1
+            except Exception as exc:  # noqa: BLE001 - one loan, never the caller
+                failed += 1
+                self._note_pending_failure(tenant_id, str(record.get("workspace_id")), loan, exc)
+        return applied, failed, dropped
+
+    def apply_ready_loans(self, pool: Any, tenant_id: str, *, store: Any = None) -> int:
+        """LOAN-ON-READ (module docstring): the pending loans of THIS
+        tenant's workspace, applied now when it is `ready`, by the same path
+        the sweep takes. Called from a read, so it never raises: anything that
+        goes wrong is logged, noted on the loan where the sweep notes it, and
+        left to the next read or the sweep. Returns how many were applied.
+
+        Only the loans `_claim_for_read` claims are tried: none when the
+        workspace is not ready, none a read tried in the last
+        READ_APPLY_EVERY. With `store`, each loan's account must still be one
+        its lender may lend (`_lender_may_lend`), as `set_loan` requires."""
+        try:
+            claimed = self._claim_for_read(tenant_id)
+            if claimed is None:
+                return 0
+            record, loans = claimed
+            applied, failed, dropped = self._apply_each(pool, tenant_id, record, loans,
+                                                        store=store)
+        except Exception as exc:  # noqa: BLE001 - a read is served whatever happens here
+            log.warning("pending loans not applied on read: %s", type(exc).__name__)
+            return 0
+        log.info("pending loans on read workspace=%s applied=%d failed=%d dropped=%d",
+                 record.get("workspace_id"), applied, failed, dropped)
+        return applied
+
+    def _claim_for_read(self, tenant_id: str,
+                        ) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+        """(record, claimed loans), or None when there is nothing to try.
+        One plain read of `pending_loans/{tenant_id}` first, so a page polled
+        with no loan pending costs one document and no transaction. Then, in
+        one transaction: the record re-read and required `ready`, and every
+        loan whose `last_attempt_at` is unset or older than READ_APPLY_EVERY
+        stamped now and claimed -- so two reads at once claim it once."""
+        ref = self._pending_ref(tenant_id)
+        snap = ref.get()
+        if not snap.exists or not (snap.to_dict() or {}).get("loans"):
+            return None
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+            record_snap = _snapshot(txn.get(self._record_ref(tenant_id)))
+            record = record_snap.to_dict() if record_snap.exists else None
+            if not record or ws.state_of(record) != ws.READY \
+                    or str(record.get("tenant_id") or "") != tenant_id:
+                return None
+            pending = _snapshot(txn.get(ref))
+            loans = list(((pending.to_dict() or {}) if pending.exists else {}).get("loans") or [])
+            now = self._now()
+            due = [loan for loan in loans if _due(loan.get("last_attempt_at"), now)]
+            if not due:
+                return None
+            ids = {loan.get("account_id") for loan in due}
+            txn.update(ref, {"loans": [
+                {**loan, "last_attempt_at": now} if loan.get("account_id") in ids else loan
+                for loan in loans]})
+            return record, due
+
+        return _apply(transaction)
+
+    def _lender_may_lend(self, store: Any, by: str, owner: str) -> bool:
+        """`lendable`'s rule for one account, from the store: its owner is
+        the lending admin's own personal tenant, or a group tenant."""
+        if by and owner == ws.personal_tenant_id(by):
+            return True
+        tenant = store.get_tenant(owner)
+        return tenant is not None and getattr(tenant, "kind", None) == "group"
+
     def _apply_pending(self, pool: Any, record: Mapping[str, Any],
-                       loan: Mapping[str, Any]) -> bool:
+                       loan: Mapping[str, Any], *, store: Any = None) -> bool:
         """One pending loan, on a ready workspace. False when it was dropped."""
         tenant_id = str(record["tenant_id"])
         workspace_id = str(record.get("workspace_id"))
         owner = str(loan.get("owner_tenant") or "")
         account_id = str(loan.get("account_id") or "")
         by = str(loan.get("by") or "")
-        listed = pool.list_accounts(owner).get("accounts") or []
-        found = next((a for a in listed if isinstance(a, dict)
-                      and a.get("account_id") == account_id
-                      and a.get("owner_tenant") == owner), None)
+        if store is not None and not self._lender_may_lend(store, by, owner):
+            found = None
+        else:
+            listed = pool.list_accounts(owner).get("accounts") or []
+            found = next((a for a in listed if isinstance(a, dict)
+                          and a.get("account_id") == account_id
+                          and a.get("owner_tenant") == owner), None)
         if found is None or owner == tenant_id:
             self._drop_pending(record, loan)
             log.warning("pending loan dropped workspace=%s: the account is no longer its "
@@ -1539,7 +1652,7 @@ class People:
     # -- the list (§6.4 part 1) ------------------------------------------------------
 
     def everyone(self, *, store: Any, join_requests: list[dict[str, Any]] | None = None,
-                 join_requests_error: str | None = None) -> dict[str, Any]:
+                 join_requests_error: str | None = None, pool: Any = None) -> dict[str, Any]:
         """Everyone who has signed in, and everyone with a workspace record:
         teams, GitHub, workspace state, Claude account source and last
         activity. Pending requests first, then the most recently active.
@@ -1548,7 +1661,16 @@ class People:
         (`join_rows`), read by the route; they count in `pending`, beside the
         personal-workspace requests, because a platform admin decides them
         too (docs/design/join-requests.md §4.6). None, with its error code,
-        when they could not be read: the list is still served."""
+        when they could not be read: the list is still served.
+
+        With a `pool` (the broker client; None when it could not be built),
+        every tenant with a pending loan first has it applied when its
+        workspace is ready (`apply_ready_loans`, LOAN-ON-READ), so the rows
+        below show it lent rather than pending."""
+        if pool is not None:
+            for snap in self._db.collection(PENDING_LOANS).limit(MAX_PEOPLE).stream():
+                if (snap.to_dict() or {}).get("loans"):
+                    self.apply_ready_loans(pool, snap.id, store=store)
         people: dict[str, dict[str, Any]] = {}
         for snap in self._db.collection(ws.PEOPLE).limit(MAX_PEOPLE).stream():
             data = snap.to_dict() or {}

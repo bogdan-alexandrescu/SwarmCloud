@@ -37,6 +37,7 @@ import type {
   PersonRow,
   ScopedPeopleDoc,
   ScopedPersonRow,
+  WorkspaceLoanAnswer,
   WorkspaceState,
 } from './types'
 import { timeAgo } from './types'
@@ -343,7 +344,7 @@ function holderOf(doc: PeopleDoc, email: string): AdminHolder | undefined {
 }
 
 /** One write's outcome, said where it was made from. */
-type Said = { ok: true; text: string; command?: string } | { ok: false; error: ApiError }
+type Said = { ok: true; text: string; command?: string; tip?: { about: string; text: string } } | { ok: false; error: ApiError }
 
 function SaidLine({ said }: { said: Said | null }) {
   if (said === null) return null
@@ -358,7 +359,18 @@ function SaidLine({ said }: { said: Said | null }) {
       </div>
     )
   }
-  if (said.ok) return <p className="ur-hint" role="status">{said.text}</p>
+  if (said.ok)
+    return (
+      <p className="ur-hint" role="status">
+        {said.text}
+        {said.tip !== undefined && (
+          <>
+            {' '}
+            <InfoTip about={said.tip.about} tip={said.tip.text} />
+          </>
+        )}
+      </p>
+    )
   return (
     <p className="ur-small ob-issue" role="alert" data-code={said.error.code ?? undefined}>
       {said.error.code !== null && <b className="ur-bad">{said.error.code}</b>} {said.error.message}
@@ -692,6 +704,32 @@ export function lentToRow(account: LendableAccount, row: PersonRow): boolean {
 }
 
 /**
+ * What a lend or reclaim answered. A PENDING LOAN IS NOT LENT (LOAN-ON-READ,
+ * owner report 2026-11-06): lent to a workspace still being made, the API
+ * records it and grants nothing until the workspace is ready, so the line
+ * says it is recorded (or already pending), never "Lent"; the API's sentence
+ * is behind the (i).
+ */
+function loanSaid(r: Result<WorkspaceLoanAnswer>): Said {
+  const said = outcome(r, (d) =>
+    d.state === 'pending'
+      ? d.changed
+        ? `${d.account_id} is recorded: it applies when their workspace is ready.`
+        : `${d.account_id} is already pending.`
+      : d.changed
+        ? d.lent
+          ? `Lent ${d.account_id}.`
+          : `Reclaimed ${d.account_id}.`
+        : d.lent
+          ? `${d.account_id} was already lent.`
+          : `${d.account_id} was not lent.`,
+  )
+  const data = r.status === 'ok' || r.status === 'stale' ? r.data : null
+  if (said.ok && data?.state === 'pending' && data.message) return { ...said, tip: { about: 'the pending loan', text: data.message } }
+  return said
+}
+
+/**
  * ONE ACCOUNT, ONE VERB. `lend` picks from the pool and lends; otherwise it
  * picks from what is lent to them and reclaims. NEITHER WRITES ON THE FIRST
  * CLICK (live QA ADM-1, 2026-10-11): lending hands one tenant's Claude
@@ -726,11 +764,7 @@ function LoanPicker({
     const r = await setWorkspaceLoan(row.workspace.workspace_id ?? '', chosen.account_id, lend)
     setBusy(false)
     setAsking(false)
-    say(
-      outcome(r, (d) =>
-        d.changed ? (d.lent ? `Lent ${d.account_id}.` : `Reclaimed ${d.account_id}.`) : d.lent ? `${d.account_id} was already lent.` : `${d.account_id} was not lent.`,
-      ),
-    )
+    say(loanSaid(r))
     reload()
   }
   const name = chosen === null ? '' : `${named(chosen)} (${lender(chosen.owner_tenant)})`
@@ -1643,6 +1677,7 @@ function ClaudeCell({ row }: { row: PersonRow }) {
       <ClaudeSummary c={row.claude_account} />
       {row.loan_request?.state === 'requested' && <Chip className="pp-borrow">borrow requested</Chip>}
       {row.loan_request?.state === 'declined' && <Chip className="pp-borrow">loan declined</Chip>}
+      {(row.pending_loans ?? []).length > 0 && <Chip className="pp-borrow">loan pending</Chip>}
     </span>
   )
 }
@@ -1773,6 +1808,14 @@ function ClaudeSection({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; r
             </Chip>
           </>
         )}
+        {/* Lent while the workspace was being made; granted once it is ready (LOAN-ON-READ). */}
+        {(row.pending_loans ?? []).map((p) => (
+          <span key={p.account_id}>
+            {' '}
+            <Chip className="pp-borrow">loan pending: {p.account_id}</Chip>
+            {p.last_error !== null && <InfoTip about={`the pending loan of ${p.account_id}`} tip={`Last try refused: ${p.last_error}`} />}
+          </span>
+        ))}
       </div>
       {row.claude_account.source === 'lent' && lent.length === 0 && lendable !== null && (
         <p className="ur-hint">Lent by an owner whose accounts you may not lend, so it is not yours to reclaim.</p>

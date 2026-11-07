@@ -1,7 +1,7 @@
 // LB-L12b UI-GRAPH acceptance (docs/design/live-browser.md §6 and §9):
 //
-//   * a running browser node expands a card with a paced thumbnail (<= 1 fps
-//     with many on screen, <= 4 fps with few: `thumbIntervalMs`);
+//   * a running browser node expands a card with a paced thumbnail (10 fps
+//     with six or fewer on screen, 5 to twenty, 2 beyond: `thumbIntervalMs`);
 //   * Open Browser tab and ⤢ Theater navigate to the same session;
 //   * no thumbnail stream for a finished step.
 //
@@ -18,11 +18,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   LIVE_BROWSER_PROFILES,
   RfbThumb,
-  THUMB_FEW_INTERVAL_MS,
-  THUMB_MIN_INTERVAL_MS,
+  THUMB_INTERVALS,
   browserTabPath,
   liveSocketUrl,
   theaterPath,
+  thumbIntervalMs,
+  thumbsOnScreen,
   type LiveSocket,
   type OpenLive,
 } from '../src/LiveThumb'
@@ -148,10 +149,10 @@ afterEach(() => {
 })
 
 describe('a running browser node expands a card with a paced thumbnail', () => {
-  // One card on screen is "few" (`THUMB_FEW_VISIBLE`), so it is paced at
-  // `THUMB_FEW_INTERVAL_MS`; the 1 s floor with more on screen is held by
+  // One card on screen is in the first tier of `THUMB_INTERVALS`, so it is
+  // paced at `thumbIntervalMs(1)`; the 20- and 21-card tiers are held by
   // src/__tests__/live.thumb.pace.test.tsx.
-  it('draws the card with a live thumbnail and never asks the gate for more than four frames a second', () => {
+  it('draws the card with a live thumbnail and never asks the gate for more than ten frames a second', () => {
     const gates: FakeGate[] = []
     const open = vi.fn<OpenLive>(() => {
       const g = new FakeGate()
@@ -175,12 +176,15 @@ describe('a running browser node expands a card with a paced thumbnail', () => {
       })
     }
 
+    expect(thumbsOnScreen()).toBe(1)
+    const floor = thumbIntervalMs(1)
+    expect(floor).toBe(100)
     const times = gate.requestTimes
     expect(times.length).toBeGreaterThan(5)
-    const most = 10_000 / THUMB_FEW_INTERVAL_MS + 1
+    const most = 10_000 / floor + 1
     expect(times.length).toBeLessThanOrEqual(most)
     for (let i = 1; i < times.length; i += 1) {
-      expect((times[i] as number) - (times[i - 1] as number)).toBeGreaterThanOrEqual(THUMB_FEW_INTERVAL_MS)
+      expect((times[i] as number) - (times[i - 1] as number)).toBeGreaterThanOrEqual(floor)
     }
     expect(putImageData.mock.calls.length).toBeGreaterThan(5)
     expect(putImageData.mock.calls.length).toBeLessThanOrEqual(most)
@@ -208,12 +212,15 @@ describe('a running browser node expands a card with a paced thumbnail', () => {
   })
 
   it('a resize from the gate is followed by a full request, still paced', () => {
+    // No `minIntervalMs`: the client falls back to the table's slowest tier.
+    const floor = THUMB_INTERVALS.at(-1)![1]
+    expect(floor).toBe(500)
     const sent: Uint8Array[] = []
     let clock = 0
     const timers: { at: number; fn: () => void }[] = []
     const client = new RfbThumb({
       send: (b) => sent.push(Uint8Array.from(b)),
-      sink: { resize: () => {}, draw: () => {} },
+      sink: { resize: () => {}, fillRect: () => {}, drawRaw: () => {}, drawImage: () => {}, commit: () => {} },
       now: () => clock,
       later: (fn, ms) => {
         timers.push({ at: clock + ms, fn })
@@ -228,8 +235,8 @@ describe('a running browser node expands a card with a paced thumbnail', () => {
     client.feed(Uint8Array.from([0, 0, ...u16(1), 0, 0, 0, 0, ...u16(8), ...u16(4), ...u32(-223 >>> 0)]))
     client.feed(Uint8Array.from([3, 0, 0, 0, ...u32(3), 65, 66, 67]))
     expect(client.frames).toBe(1)
-    expect(timers.at(-1)?.at).toBe(THUMB_MIN_INTERVAL_MS)
-    clock = THUMB_MIN_INTERVAL_MS
+    expect(timers.at(-1)?.at).toBe(floor)
+    clock = floor
     timers.at(-1)?.fn()
     const last = sent.at(-1) as Uint8Array
     expect(last[0]).toBe(3)

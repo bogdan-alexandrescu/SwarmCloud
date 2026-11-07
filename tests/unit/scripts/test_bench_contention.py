@@ -126,7 +126,10 @@ def test_the_wrapper_refuses_the_live_database_without_credentials(tmp_path) -> 
     proc = subprocess.run(
         ["bash", str(WRAPPER), "--database", "swarm"],
         capture_output=True, text=True, timeout=60,
-        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_ENV_FILE": str(tmp_path / "none")},
+        # PROJECT_ID named: common.sh has no default project (DAYONE-DESAGA-2),
+        # and the guard under test is the live database's, in the live project.
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_ENV_FILE": str(tmp_path / "none"),
+             "PROJECT_ID": "saga-agents-staging"},
     )
     assert proc.returncode != 0
     assert "bench database" in (proc.stdout + proc.stderr)

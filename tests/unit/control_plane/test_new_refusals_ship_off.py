@@ -526,6 +526,17 @@ NOT_SWITCHABLE_CODES = frozenset({
     # or was confirmed for another call or another session.
     "readback_refused",
     "readback_not_pending",
+    # A checkpoint member read as an image (routes/checkpoints.py, BGD
+    # 2026-11-06, part of #2688): raised
+    # only for a read that sends `?format=image`, which that change introduces
+    # -- a read without it is the text read, as it always was -- so no
+    # existing caller can be refused by them. Continuing past either is the
+    # breach itself: a member whose name or first bytes are not a png, jpeg,
+    # webp or gif served unredacted under an image type (the text read
+    # redacts; this one sends bytes), or a member over MAX_IMAGE_BYTES held
+    # whole in swarm-api's memory to be sent.
+    "checkpoint_member_not_an_image",
+    "checkpoint_image_too_large",
 })
 
 #: What the guard lets through without a switch.

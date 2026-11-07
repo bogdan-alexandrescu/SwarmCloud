@@ -96,6 +96,14 @@
 # a continuation of the lane or another CI fix of the pull request (#2763) is
 # pushing to its branch (1a).
 set -euo pipefail
+# With API_HOST or API_URL set (ci-fix.yml sets API_HOST), this reaches the
+# API by that address and reads no project: common.sh looks the API up in
+# PROJECT_ID only when neither is set. It then says so, so common.sh (no
+# default project, DAYONE-DESAGA-2) does not stop on an unset PROJECT_ID;
+# without either, it still needs one.
+if [[ -n "${API_HOST:-}${API_URL:-}" ]]; then
+  SWARM_NO_PROJECT=1
+fi
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"

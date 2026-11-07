@@ -9,6 +9,14 @@
 # Usage: scripts/prerequisites.sh [--no-cloud] [--quiet]
 
 set -euo pipefail
+# --no-cloud checks only this machine, so it needs no project: say so before
+# common.sh is sourced, which otherwise stops when PROJECT_ID is unset.
+for arg in "$@"; do
+  if [[ "${arg}" == "--no-cloud" ]]; then
+    SWARM_NO_PROJECT=1
+    export SWARM_NO_PROJECT
+  fi
+done
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
@@ -152,10 +160,14 @@ if [[ -z "${ACCOUNT}" || "${ACCOUNT}" == "(unset)" ]]; then
   fail "no active gcloud account; run: gcloud auth login"
 else
   pass "account ${ACCOUNT}"
-  case "${ACCOUNT}" in
-    *@saga.xyz) ;;
-    *) soft "account ${ACCOUNT} is outside saga.xyz; the API only accepts saga.xyz identities" ;;
-  esac
+  # Judged against this deployment's ALLOWED_DOMAINS, not one company's
+  # domain written here: a new install's operator is in their own domain.
+  if [[ -n "${ALLOWED_DOMAINS:-}" ]]; then
+    case ",${ALLOWED_DOMAINS// /}," in
+      *",${ACCOUNT##*@},"*) ;;
+      *) soft "account ${ACCOUNT} is outside ALLOWED_DOMAINS (${ALLOWED_DOMAINS}); the API only accepts identities in those domains" ;;
+    esac
+  fi
 fi
 
 if gcloud projects describe "${PROJECT_ID}" --format='value(projectId)' >/dev/null 2>&1; then
@@ -209,8 +221,14 @@ else
 fi
 
 step "Shared-project guard rails"
-dim "saga-agents-staging is SHARED. These belong to other teams and nothing in this repo may touch them:"
-dim "  GKE cluster agents-staging | VPC agents-staging-vpc | 12 service accounts | 3 pre-existing buckets"
+# The deny-list is keyed by project (common.sh): it is whole in the shared
+# project and empty in any other, so the banner says which this run is.
+if [[ "${PROJECT_ID}" == "${SHARED_PROJECT_ID}" ]]; then
+  dim "${PROJECT_ID} is SHARED. These belong to other teams and nothing in this repo may touch them:"
+  dim "  GKE cluster agents-staging | VPC agents-staging-vpc | ${#SHARED_DENY_LIST[@]} deny-listed resources in scripts/lib/common.sh"
+else
+  dim "${PROJECT_ID} is not the shared project (${SHARED_PROJECT_ID}); its deny-list is empty"
+fi
 if is_shared_resource "${GKE_CLUSTER}"; then
   fail "GKE_CLUSTER=${GKE_CLUSTER} is a deny-listed shared resource; the swarm needs its own cluster"
 else
