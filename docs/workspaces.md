@@ -821,7 +821,7 @@ execution mode; W0b (2), §0). Steps 1 to 3 are `scripts/workspace-apply.sh`, wh
 | A2 | **check the name is free.** If the worker account already exists, read its policy and keys: any binding the mode does not make, or a user-managed key, fails `IDENTITY_NOT_OURS` (the script's existing squat inspection, §2b) | `identity: absent` or `identity: ours` |
 | A3 | **the account.** Create `swarm-agent-worker-u-alice` if absent | `identity: created` |
 | A4 | **its own IAM.** `roles/iam.workloadIdentityUser` for the namespace's two Kubernetes service accounts, and `roles/iam.serviceAccountUser` (act-as) for the scheduler and the reconciler, the grant the script lacks today (§0) | `account bindings: 4` |
-| A5 | **bucket and project grants.** The two `tenants/u-alice/`-conditioned object grants on the artifact bucket and the `.tenant` marker object. The database and bucket-metadata roles are **not** granted here when the one-time principal-set grant exists (WD9, §2.3); on the fallback they are, with the project telemetry roles. The database role follows the record's `worker_firestore_access` (§2.7): false grants none | `access: granted` |
+| A5 | **bucket and project grants.** The two `tenants/u-alice/`-conditioned object grants on the artifact bucket and the `.tenant` marker object. The database and bucket-metadata roles are **not** granted here when the one-time principal-set grant exists (WD9, §2.3); on the fallback they are, with the project telemetry roles. The database role follows the record's `worker_firestore_access` (§2.7): false grants none. When the guard's expectation names the managed plugins bucket, the worker's `objectViewer` on it, conditioned on `platform/` and its own `tenants/u-alice/` (below) | `access: granted` |
 | A6 | **forge slot.** Create the person's empty forge slot and its twin if absent, and grant the worker `secretAccessor` on them | `forge slot: bound` |
 | A7 | **namespace.** `kubernetes/apply.sh` for the tenant, with the record's quota flags (§8) | `namespace: applied` |
 | A8 | **control plane.** Write the tenant and pool documents with the record's limits, as the script's §6 does | `limits: written` |
@@ -890,6 +890,7 @@ re-decision it is the runtime identity of one Cloud Run job,
 | custom `swarmWorkspaceProjectReader` (`resourcemanager.projects.getIamPolicy`, `iam.roles.get`) | project | the WD9 fallback's read of the project policy before it adds the worker's three roles. `iam.roles.get` is held and no call of the job uses it (the operator path's); it stays, as the grants change adds-only | read only |
 | `roles/resourcemanager.projectIamAdmin`, **conditioned** | project | **fallback only** (WD9): add the worker's database and telemetry roles per person | `hasOnly([...])` over exactly the worker Firestore custom role, `roles/logging.logWriter` and `roles/monitoring.metricWriter`, the pattern `terraform/bootstrap/deployer_conditions.tf` uses. **Not granted** when W0 confirms the principal-set grant |
 | custom `swarmWorkspaceBucketIam` (`storage.buckets.get`, `.getIamPolicy`, `.setIamPolicy`) | **the artifact bucket only** | the worker's two prefix-conditioned object grants (and, on the fallback, the bucket-metadata role) | the bucket. Not `roles/storage.legacyBucketReader`, which carries `storage.objects.list` |
+| custom `swarmWorkspaceBucketIam`, **not granted yet** | the managed plugins bucket (`plugins_bucket_name`, else `<project>-swarm-plugins`) | the worker's read of `platform/` and its own `tenants/<tenant>/` (A5, below). Asked of the owner on 2026-11-07: a bootstrap row like the artifact bucket's, on the plugins bucket. Until then the guard's expectation names no plugins bucket and A5 makes no call on it | the bucket |
 | `roles/storage.objectCreator`, **conditioned** | the artifact bucket, to `tenants/` | the `.tenant` marker object A5 writes, with ONE Storage JSON API upload carrying `ifGenerationMatch=0`, a create that can never replace. Not `gcloud storage cp`, which reads the destination object first (below) | the prefix; no read, no delete |
 | custom `swarmWorkspaceSecretBinder` (`secretmanager.secrets.get`, `.getIamPolicy`, `.setIamPolicy`) | project, **conditioned** | bind the worker to its forge slot | `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-u-")`, the full-name form `terraform/bootstrap/forge_user_slots.tf` writes |
 | custom `swarmForgeSlotCreator` (exists) | project | create the empty slot and its twin | the project; creation is checked there. The same role swarm-api holds |
@@ -1334,6 +1335,7 @@ each lane built, is [design/workspace-kinds.md](design/workspace-kinds.md)
 | made by | the release (`terraform/infra`), after the owner's bootstrap grant | the Cloud Run job `swarm-workspace-apply`, `register-tenant.sh --workspace` (§2, §4) |
 | account IAM done by | the release deployer, per-account grant | `swarm-workspace-deployer`, under the call guard |
 | database and bucket-metadata roles | per tenant, by the tenancy module | per worker at A5: the WD9 fallback, on since 2026-10-12 |
+| the managed plugins read (`platform/` and its own `tenants/<t>/`, get only) | `plugins_tenant_read` in `terraform/infra/plugins.tf` | per worker at A5, the same expression character for character, once the guard's expectation names the plugins bucket (§2.3) |
 | Cloud Run jobs | `cloud_run_jobs` module | the dispatcher, on demand (`ensure_job`) |
 | a service account admitted at the front door by | `frontend_iap_members`, the owner's bootstrap apply | step S2, on the API backend only, once K1 is granted (§0, O1); until then the owner's `frontend_iap_members`, which S2 reads and accepts |
 | a group registered for resolution by | `TENANT_GROUPS` | its record reaching `ready` (`apps/swarm-api/swarm_api/registry.py::WorkspaceRegistry`) |
@@ -2102,7 +2104,8 @@ nothing is left that runs, and nothing is deleted while it still runs:
 1. Set the tenant's `enabled = false`. `tenant_for` then refuses new work.
 2. Cancel or drain its work, following `docs/runbooks/tenant-offboarding.md`.
 3. Delete the person's worker account, its bindings on the artifact bucket and
-   its forge slot bindings, by a deprovisioning run of the script.
+   the managed plugins bucket (its `platform/` and `tenants/<t>/` read) and its
+   forge slot bindings, by a deprovisioning run of the script.
 4. Delete the namespace.
 5. Disable the slot versions; delete the slot secrets after the retention the
    owner sets.
