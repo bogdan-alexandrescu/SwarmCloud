@@ -469,11 +469,30 @@ unreadable upstream does.
 
 **Every answered question, not only `needs_owner` (PICK-FIX-ROUND, BGD
 2026-10-26).** A question the owner answered before the review ran goes in
-neither of the review's lists (`owner_questions.guidance`: "an answered
-question goes in neither"), so PR 2451, which compared only `needs_owner`,
-merged past a pick made then. The pick binds the merge whether or not a
-review held for it. An unanswered question the review judged need not hold
-still holds nothing: there is no pick to compare.
+neither of the review's lists (`owner_questions.guidance` then said "an
+answered question goes in neither"), so PR 2451, which compared only
+`needs_owner`, merged past a pick made then. The pick binds the merge whether
+or not a review held for it. An unanswered question the review judged need
+not hold still holds nothing: there is no pick to compare.
+
+**A NOT_YET with no `needs_owner` is pick-checked too (#3149).** A NOT_YET
+that names `needs_owner` is held and pick-fixed like a MERGE verdict, and
+refused `verdict_not_merge` only after (#2764). One that named none refused
+`verdict_not_merge` at once, before any pick was read. wf_f0044e94's
+re-review (task_633db3d4) wrote its one finding, that the owner had answered
+"Widen this lane" where the branch built "Follow-up lane", in `findings`
+with `needs_owner` empty, so the merge failed when a pick-fix round would
+have built the pick. Now such a verdict goes through `_ended_outside` and the
+same unbuilt-pick check: an unbuilt pick parks `owner_pick_fix_pending` for
+a round (or refuses `owner_pick_not_built` once the rounds are spent), and
+the step refuses `verdict_not_merge` once no answered pick is left unbuilt --
+at once, in the words it always used, when none was; naming the re-review the
+head needs when a round built them. It is never held for the owner (a NOT_YET
+with real findings needs a fix step, not an answer), questions that cannot be
+read refuse it `verdict_not_merge` as before, and it is never merged. The
+guidance now tells the review that an answered question whose answer is not
+its `built` goes in `needs_owner` and is not by itself a NOT_YET finding;
+one whose answer is its `built` goes in neither list.
 
 **What passes as before.** A pick equal to `built`; `built: null`; and a
 question with no `built` key at all -- a file written before this check -- so
