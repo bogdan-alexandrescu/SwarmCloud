@@ -33,6 +33,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -1760,6 +1761,37 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["workflow_id", "step_id"],
+        },
+    },
+    {
+        "name": "swarm_fix_loop",
+        "description": (
+            "Answer a workflow's fix loop that waits for you. THIS CHANGES STATE: it "
+            "drives the loop on. A `fix-loop` step parked HUMAN_REQUIRED -- its rounds "
+            "spent without a MERGE (`fix_loop_exhausted`), a fix that changed nothing, a "
+            "round that failed or was refused, or a verdict that did not read -- waits "
+            "for a person; swarm_check flags it STUCK and names this call. `action: "
+            "\"add_round\"` gives it `rounds` more (default 1; any member of the tenant, "
+            "never past 10 rounds in all) with an optional `note` (at most 4 KiB, "
+            "redacted, handed to the next fix as your guidance), and the loop submits "
+            "its next round as an ordinary agent. `action: \"stop\"` accepts the last "
+            "verdict: the loop ends FAILED fix_loop_exhausted and a merge step behind it "
+            "refuses verdict_not_merge, leaving the pull request open. A loop with a "
+            "round running is not waiting for you and the API refuses both. Rounds show "
+            "as `round k of N` on the loop's row (swarm_follow, swarm_status). Calls "
+            "POST /v1/workflows/{workflow_id}/fix-loop/rounds or /fix-loop/end."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string"},
+                "action": {"type": "string", "enum": ["add_round", "stop"]},
+                "rounds": {"type": "integer", "minimum": 1,
+                           "description": "add_round only: how many rounds to add (default 1)."},
+                "note": {"type": "string",
+                         "description": "add_round only: guidance for the next fix, at most 4 KiB."},
+            },
+            "required": ["workflow_id", "action"],
         },
     },
     {
@@ -4840,6 +4872,44 @@ def _text_arg(args: dict[str, Any], name: str, tool: str) -> str:
     return value.strip()
 
 
+#: A workflow id as it may sit in a route path: no separator, no dot segment.
+_WORKFLOW_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+#: `swarm_fix_loop`'s note, in UTF-8 bytes: swarm-api's `fixloop.NOTE_MAX_BYTES`,
+#: spelled again because swarm-api is not installed with the bridge.
+FIX_LOOP_NOTE_MAX_BYTES = 4 * 1024
+
+
+def _fix_loop(client: SwarmClient, args: dict[str, Any]) -> Any:
+    """`swarm_fix_loop` (FL-PLUGIN, docs/design/fix-loop.md §4.5): one POST to
+    FL-DRIVE's add-round or end route. Everything is checked before it is
+    sent; the tenant is the token's, never an argument."""
+    tool = "swarm_fix_loop"
+    workflow_id = _text_arg(args, "workflow_id", tool)
+    if not _WORKFLOW_ID.fullmatch(workflow_id):
+        raise SwarmError(f"{tool}: `workflow_id` {workflow_id!r} is not a workflow id. Nothing was sent")
+    action = args.get("action")
+    if action not in ("add_round", "stop"):
+        raise SwarmError(f"{tool} needs `action`: \"add_round\" or \"stop\", not {action!r}. Nothing was sent")
+    path = f"/v1/workflows/{workflow_id}/fix-loop"
+    if action == "stop":
+        given = sorted(k for k in ("rounds", "note") if k in args)
+        if given:
+            raise SwarmError(f"{tool}: `stop` takes no {given}; they are add_round's. Nothing was sent")
+        return client.request("POST", f"{path}/end", payload={"outcome": "stop"})
+    rounds = args.get("rounds", 1)
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
+        raise SwarmError(f"{tool}: `rounds` is a whole number of at least 1, not {rounds!r}. Nothing was sent")
+    payload: dict[str, Any] = {"rounds": rounds}
+    note = args.get("note")
+    if note is not None:
+        if not isinstance(note, str):
+            raise SwarmError(f"{tool}: `note` is text. Nothing was sent")
+        if len(note.encode("utf-8")) > FIX_LOOP_NOTE_MAX_BYTES:
+            raise SwarmError(f"{tool}: `note` is over {FIX_LOOP_NOTE_MAX_BYTES} bytes. Nothing was sent")
+        payload["note"] = note
+    return client.request("POST", f"{path}/rounds", payload=payload)
+
+
 def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     """The issue-run tools (#454): the calls `sc run` and `sc plan` make.
 
@@ -6217,6 +6287,9 @@ def _call(
             indent=2,
             default=str,
         )
+
+    if name == "swarm_fix_loop":
+        return json.dumps(_fix_loop(client, args), indent=2, default=str)
 
     if name == "swarm_check":
         from . import check

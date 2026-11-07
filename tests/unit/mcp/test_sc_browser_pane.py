@@ -350,5 +350,6 @@ def test_claude_plugin_test_runs_the_pane_against_the_engine(tmp_path):
                           check=False, env=env, cwd=copy)
     assert done.returncode == 0, done.stdout + done.stderr
     # SC-BROWSER-FOLLOWUP's seven beside the four: the re-attach, and the pane
-    # at session start; and SC-BAND's nine in band.test.ts.
-    assert re.search(r"\b20 pass\b", done.stdout + done.stderr), done.stdout + done.stderr
+    # at session start; SC-BAND's nine in band.test.ts, and FL-PLUGIN's fix
+    # loop there (#2509).
+    assert re.search(r"\b21 pass\b", done.stdout + done.stderr), done.stdout + done.stderr

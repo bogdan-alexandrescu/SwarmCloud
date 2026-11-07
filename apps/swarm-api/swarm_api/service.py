@@ -145,6 +145,7 @@ from .validation import (
     McpServerProfileRefused,
     McpServerUnregistered,
     MergePlan,
+    FixLoopPlan,
     SinglePrPlan,
     StepSpec,
     IssueRef,
@@ -173,6 +174,7 @@ from .validation import (
     reject_reserved_metadata,
     resolve_await_input,
     resolve_dispatch_options,
+    resolve_fix_loop,
     resolve_input_layout,
     is_security_review,
     resolve_integrator_step,
@@ -1384,7 +1386,11 @@ class SubmissionService:
         except NotFound:
             return None
 
-    def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate) -> WorkflowSubmission:
+    def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate, *,
+                        fix_loop_round: Mapping[str, Any] | None = None) -> WorkflowSubmission:
+        # `fix_loop_round` is a fix loop's round record (FL-DRIVE,
+        # docs/design/fix-loop.md §4.3), signed into every step's dispatch
+        # block. Only `fixloop` passes it; no route does, so no caller can.
         # A continuation-scoped caller (a listed service account, contract
         # request 30) reaches this route because it is in CONTINUATION_ROUTES,
         # but being on the allow-list opens the ROUTE, not every request to it:
@@ -1511,6 +1517,12 @@ class SubmissionService:
                         "pull_request": ci_fix["pull_request"],
                         "head_sha": ci_fix["head_sha"],
                     })
+            if fix_loop_round is not None:
+                dispatch = replace(dispatch, fix_loop_round=dict(fix_loop_round))
+            # A `fix-loop` step (docs/design/fix-loop.md §4.1, FL-SUBMIT):
+            # checked once the strategy is known and before the merge step is
+            # derived, because a merge behind a loop reads the loop (§4.6).
+            fix_loop = resolve_fix_loop(spec.steps, strategy=dispatch.strategy)
             # The merge step (contract request 47): appended here, once the
             # strategy is known and before anything is built or signed, then
             # checked with the rest of the graph.
@@ -1518,6 +1530,7 @@ class SubmissionService:
                 spec, step_specs, dispatch.strategy, repository_url,
                 tenant_id=tenant.tenant_id,
                 continued_task=continuation.task_id if continuation else None,
+                fix_loop=fix_loop,
             )
             if merged_spec is not spec:
                 spec = merged_spec
@@ -1603,6 +1616,7 @@ class SubmissionService:
                 continuation.task_id if continuation else None,
                 named_pull=named_pull is not None,
                 rereview=rereview_step_id,
+                loop=fix_loop,
             )
             if merge_plan is not None:
                 # At submission, never at merge time: a host no `ForgeMerger`
@@ -1760,6 +1774,12 @@ class SubmissionService:
                 # Signed with the rest of the block (§4.1); None on every other
                 # step, which then stores exactly the block it stored before.
                 await_inputs.get(step_id)
+            ).with_fix_loop(
+                # The loop's block, signed (§4.1), with the review's and the
+                # fix's task ids, which topological order has minted: both
+                # are its ancestors. None on every other step.
+                fix_loop.block(step_task_id)
+                if fix_loop is not None and step_id == fix_loop.step_id else None
             )
             if source.input_from and layout_of[step_id] == INPUT_LAYOUT_BY_PARENT:
                 # Each parent's STEP id beside the task id the worker sees in
@@ -1985,6 +2005,7 @@ class SubmissionService:
         *,
         tenant_id: str,
         continued_task: str | None = None,
+        fix_loop: FixLoopPlan | None = None,
     ) -> tuple[WorkflowCreate, str | None]:
         """`spec`, with a `merge` step appended when the merge choice says so,
         and the id of the re-review appended with it (None when there is none).
@@ -2024,6 +2045,12 @@ class SubmissionService:
             for an admin's setting. An explicit choice, or a stated merge
             step, on such a host is still refused at submission.
 
+        With a `fix-loop` step (`fix_loop`, docs/design/fix-loop.md §4.6,
+        BGD Q8 (a)) the merge reads the loop, whose last re-review is the
+        latest verdict, and "on_merge_verdict" appends ONLY the merge: the
+        loop's `re-review:1` is the re-review it would have appended
+        (`rereview_step_for` is skipped).
+
         `single-pr` ends in its own merge step and is left as submitted.
         """
         if strategy == SINGLE_PR:
@@ -2043,6 +2070,8 @@ class SubmissionService:
                 )
             return spec, None
         if choice == "off":
+            if fix_loop is not None:
+                return spec, None
             return spec, self._stated_rereview(spec, step_specs, strategy)
         explicit = choice is not None
         if not explicit:
@@ -2063,9 +2092,11 @@ class SubmissionService:
                 return spec, None
             if choice == "off":
                 return spec, None
-        if choice == MERGE_ON_VERDICT:
+        if choice == MERGE_ON_VERDICT and fix_loop is None:
             return self._with_verdict_merge(spec, step_specs, strategy, explicit=explicit)
-        appended = merge_step_for(step_specs, strategy, continued_task)
+        # "on", or "on_merge_verdict" behind a loop: one merge step, which
+        # reads the loop's final review when there is a loop.
+        appended = merge_step_for(step_specs, strategy, continued_task, loop=fix_loop)
         if appended is None:
             if explicit:
                 raise DispatchOptionError(
@@ -2444,6 +2475,11 @@ class SubmissionService:
                     else step_task_id[sources.pull_request]
                 ),
                 review=step_task_id[sources.review] if sources.review else None,
+                # Behind a `fix-loop` step (docs/design/fix-loop.md §4.6): the
+                # loop, in place of a review.
+                review_loop=(
+                    step_task_id[sources.review_loop] if sources.review_loop else None
+                ),
                 verdict_file=sources.verdict_file,
                 base=merge_base,
                 # A merge-only continuation's task is of an EARLIER workflow

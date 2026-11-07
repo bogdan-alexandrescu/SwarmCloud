@@ -74,6 +74,9 @@ from .progress import (
     _checksum,
     _payload,
     clip,
+    fix_loop_command,
+    fix_loop_phase,
+    fix_loop_words,
     outcome,
     owner_questions,
     questions_count,
@@ -466,6 +469,10 @@ def progress_line(client: SwarmClient, task: dict[str, Any], now: datetime) -> t
     wake = _wake_key(task)
     if state in _PENDING:
         waited = since_words(task, now)
+        # A FIX LOOP'S COUNTER (FL-PLUGIN, docs/design/fix-loop.md §6.3):
+        # `round k of N` and the half running, a new line when it moves.
+        rounds = fix_loop_words(task)
+        counter = f" · {rounds}" if rounds else ""
         brief = waiting_brief(task)
         if brief is not None:
             # WHY IN THE API'S OWN WORDS (#1782), and a new line only when
@@ -473,9 +480,10 @@ def progress_line(client: SwarmClient, task: dict[str, Any], now: datetime) -> t
             # running task keeps its checkpoint. An older API serves none and
             # keeps the line and key below.
             words = waiting_words(brief, now)
-            return (f"[{label}] {state} · {waited} · waits: {clip(words, 240)}",
-                    f"{wake}|{waiting_key(task)}")
-        return f"[{label}] {state} · {waited} · waits: {waits_for(task)}", f"{wake}|"
+            return (f"[{label}] {state} · {waited}{counter} · waits: {clip(words, 240)}",
+                    f"{wake}|{waiting_key(task)}" + (f"|{rounds}" if rounds else ""))
+        return (f"[{label}] {state} · {waited}{counter} · waits: {waits_for(task)}",
+                f"{wake}|" + (rounds or ""))
     started = parse_time(task.get("started_at"))
     ended = parse_time(task.get("completed_at")) if task.get("terminal") else None
     elapsed = _span(((ended or now) - started).total_seconds()) if started else "elapsed unrecorded"
@@ -913,6 +921,27 @@ def person_wait(client: SwarmClient, task_id: str, task: dict[str, Any], link: s
     entries an answer cannot clear) -- the one the API served, else the
     documented route; a question wait has none. `since` is when the wait
     began."""
+    phase = fix_loop_phase(task)
+    if phase is not None:
+        # A FIX LOOP PARKED FOR A PERSON (FL-PLUGIN, docs/design/fix-loop.md
+        # §4.5): nobody signs in -- `human-ready` refuses a loop with 409 --
+        # and no question is open. Any member adds a round (up to the ceiling
+        # of 10, BGD Q4 (a)) or stops it.
+        began = wait_began(task)
+        workflow_id = _text(task.get("workflow_id"))
+        return {
+            "kind": "fix_loop",
+            "park_phase": phase,
+            "since": began.isoformat() if began else "",
+            "since_clock": clock_at(began, now) if began else "",
+            "workflow_id": workflow_id,
+            "step_id": _text(task.get("step_id")),
+            "questions": [],
+            "console": _text(link),
+            "fix_loop": fix_loop_words(task) or "",
+            "add_round": fix_loop_command(workflow_id, "add_round"),
+            "stop": fix_loop_command(workflow_id, "stop"),
+        }
     hold, entries = _hold_questions(task)
     asked = False
     if not hold:
@@ -953,6 +982,8 @@ def person_line(label: str, wait: dict[str, Any]) -> str:
     if wait["kind"] == "owner_questions":
         n = len(wait["questions"])
         return f"{head} · {n} owner question{'' if n == 1 else 's'}"
+    if wait["kind"] == "fix_loop":
+        return f"{head} · fix loop {wait['fix_loop']} · add a round: {wait['add_round']}"
     return f"{head} · hand-off: sign in on its console page, then say it is ready"
 
 
@@ -971,6 +1002,9 @@ def person_wait_result(task_id: str, wait: dict[str, Any]) -> dict[str, Any]:
         what = (f"answer the {n} blocking question{'' if n == 1 else 's'} its agent asked"
                 if n else "answer the blocking questions its agent asked")
         what += " on its console page or with /sc check; it resumes on its own"
+    elif wait["kind"] == "fix_loop":
+        what = (f"its fix loop is at {wait['fix_loop']}; add a round with {wait['add_round']}, "
+                f"or accept the last verdict with {wait['stop']}")
     elif wait["kind"] == "owner_questions":
         n = len(wait["questions"])
         what = (f"answer the {n} owner question{'' if n == 1 else 's'} its hold names; it resumes on its own"

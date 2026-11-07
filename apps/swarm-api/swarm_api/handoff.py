@@ -84,6 +84,7 @@ from .validation import (  # noqa: F401 - re-exported: the keys this module writ
     HUMAN_RETURNED_METADATA_KEY,
     HUMAN_WAIT_RESUMES_METADATA_KEY,
 )
+from .validation import FIX_LOOP_PROFILE
 
 #: The hand-off's signing purpose (§5.4.1). The worker restates it (lane L4).
 HANDOFF_PURPOSE = "swarm-handoff/v1"
@@ -402,6 +403,14 @@ def ready_writes(txn: Any, db: Any, data: dict[str, Any], *, email: str, now: da
     ):
         raise NotWaitingForAPerson(
             "this task is not parked waiting for a person; nothing was changed"
+        )
+    if data.get("runner_profile") == FIX_LOOP_PROFILE:
+        # A fix loop parked for a person has no attempt to resume: READY would
+        # admit a control-plane step. Its person adds a round or stops it
+        # (docs/design/fix-loop.md §4.5, POST .../fix-loop/rounds and /end).
+        raise NotWaitingForAPerson(
+            "a fix loop is resumed by adding a round or stopped, not made ready; "
+            "nothing was changed"
         )
     current = task_from_dict(data)
     if current.cancel_requested:

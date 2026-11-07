@@ -1234,6 +1234,41 @@ def _append_round_step(db: Any, tenant_id: str, workflow_id: Any, step: Mapping[
     return bool(_apply(transaction))
 
 
+def append_round_agent(db: Any, tenant_id: str, workflow_id: Any, workflow: Any, *,
+                       step_id: str, record: Mapping[str, Any], anchor_task: str,
+                       now: datetime) -> bool:
+    """Append a submitted round workflow's one agent to the workflow it serves.
+
+    One path for every round the platform appends -- a merge's CI, conflict
+    and pick rounds, and a fix loop's `review-fix:<k>` / `re-review:<k>`
+    (`fixloop`, FL-DRIVE): a pointer step `step_id` naming the round's task,
+    whose `input` is `record` -- what the round is, for whoever reads the
+    workflow; the prompt is on the round's own task, masked as every task
+    input is -- under `_append_round_step`'s guard, with `anchor_task` the
+    step it must already hold. False when the workflow has no agent step or
+    the guard refused.
+    """
+    step = next((s for s in workflow.steps if s.task_id), None)
+    if step is None:
+        return False
+    return _append_round_step(db, tenant_id, workflow_id, {
+        "step_id": step_id,
+        "runner_profile": step.runner_profile,
+        "input": dict(record),
+        "depends_on": [],
+        "resource_class": step.resource_class,
+        "input_from": {},
+        "timeout_seconds": None,
+        "task_id": step.task_id,
+    }, merge_task=anchor_task, now=now)
+
+
+#: Shared with `fixloop` (FL-DRIVE): who a round is submitted as, and the
+#: class it runs at. One rule for every round the platform submits.
+submitter = _submitter
+round_resource_class = _round_resource_class
+
+
 def _conflicting_files(writer: GitHubWriter, ref: IssueRef, pull: PullSnapshot,
                        token: str) -> list[str] | None:
     """The files both the pull request and its base changed since the branch
@@ -1921,23 +1956,13 @@ def _submit_round(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: 
     fix_task = fix_step.task_id if fix_step is not None else None
     _record_round(db, tenant_id, task_id, round_no,
                   {"workflow_id": workflow.workflow_id, "task_id": fix_task}, key)
-    if fix_step is not None:
-        _append_round_step(db, tenant_id, doc.get("workflow_id"), {
-            "step_id": round_step_id(key, round_no),
-            "runner_profile": fix_step.runner_profile,
-            # What the round is, for whoever reads the workflow; the prompt
-            # is on the round's own task, masked as every task input is.
-            "input": {"merge_fix_round": {
-                "kind": ROUND_KIND[key], "round": round_no, "head_sha": head,
-                "pull_request": read.pull.number, "merge_task": task_id,
-                "workflow_id": workflow.workflow_id,
-            }},
-            "depends_on": [],
-            "resource_class": fix_step.resource_class,
-            "input_from": {},
-            "timeout_seconds": None,
-            "task_id": fix_task,
-        }, merge_task=task_id, now=now)
+    append_round_agent(db, tenant_id, doc.get("workflow_id"), workflow,
+                       step_id=round_step_id(key, round_no),
+                       record={"merge_fix_round": {
+                           "kind": ROUND_KIND[key], "round": round_no, "head_sha": head,
+                           "pull_request": read.pull.number, "merge_task": task_id,
+                           "workflow_id": workflow.workflow_id,
+                       }}, anchor_task=task_id, now=now)
     log.info("merge wake %s tenant=%s: %s round %d of %d submitted as %s",
              task_id, tenant_id, label, round_no, asked, workflow.workflow_id)
     return _FIXING, None
