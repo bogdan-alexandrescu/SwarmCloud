@@ -395,7 +395,7 @@ _config_list() {
 # every cached file's owner and mode. Returns 1, saying why, on any failure:
 # a stale copy is never served in place of a source that could not be read.
 config_fetch() {
-  local env="${1:-}" dir listing name gen src keep=" " f
+  local env="${1:-}" dir listing name gen src part keep=" " f
   [[ "${env}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { err "config_fetch: '${env}' is not an environment name"; return 1; }
   [[ -n "${PROJECT_ID:-}" ]] || { err "PROJECT_ID is not set, so there is no configuration to fetch"; return 1; }
   dir="$(config_cache_dir "${env}")"
@@ -411,14 +411,20 @@ config_fetch() {
           && "$(cat "${dir}/.${name}.generation" 2>/dev/null || true)" == "${gen}" ]]; then
       continue
     fi
+    # One part file per fetch (mktemp: $$ is the parent's pid in a background
+    # subshell, and bash 3.2 has no BASHPID), renamed into place: two scripts fetching at
+    # once (a plan guard beside a kubectl call) never write one file together,
+    # and a reader sees the old copy or the new one, never half of either.
+    part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
     if [[ "${gen}" == "-" ]]; then
-      ( umask 077 && cp "${src}" "${dir}/.${name}.part" ) || { err "could not copy ${src}"; return 1; }
+      ( umask 077 && cp "${src}" "${part}" ) || { rm -f -- "${part}"; err "could not copy ${src}"; return 1; }
     else
-      ( umask 077 && _config_gcloud storage cp --quiet "${src}" "${dir}/.${name}.part" >/dev/null 2>&1 ) \
-        || { err "could not copy ${src}"; return 1; }
+      ( umask 077 && _config_gcloud storage cp --quiet "${src}" "${part}" >/dev/null 2>&1 ) \
+        || { rm -f -- "${part}"; err "could not copy ${src}"; return 1; }
     fi
-    mv -f "${dir}/.${name}.part" "${dir}/${name}"
-    ( umask 077 && printf '%s' "${gen}" >"${dir}/.${name}.generation" )
+    mv -f "${part}" "${dir}/${name}"
+    part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
+    printf '%s' "${gen}" >"${part}" && mv -f "${part}" "${dir}/.${name}.generation"
   done <<<"${listing}"
   # What the source no longer holds leaves the cache: a deleted object must
   # read as missing, never as its last copy.
