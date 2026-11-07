@@ -33,9 +33,7 @@ afterEach(() => {
 
 describe('no copy says the live view is masked', () => {
   it('the thumbnail’s live tooltip is the live view, not a masked one', () => {
-    expect(STATUS_NOTE.live).toBe(
-      'The live view of this step’s browser, at most one frame a second. Open the Browser tab for the full view.',
-    )
+    expect(STATUS_NOTE.live).toBe('The live view of this step’s browser. Open the Browser tab for the full view.')
     for (const note of Object.values(STATUS_NOTE)) expect(note).not.toMatch(/mask|cover|blank/i)
   })
 
