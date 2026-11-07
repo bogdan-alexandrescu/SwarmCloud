@@ -123,7 +123,17 @@ entries) goes through the same `_ended_outside`, hold and pick-fix round as
 a MERGE verdict, and only once no question is open and no pick is left to
 build does it refuse `verdict_not_merge`: a NOT_YET is never merged without
 a review of the head, which a re-review gives. A NOT_YET with no
-`needs_owner` refuses at once, exactly as before.
+`needs_owner` is never held for the owner -- not for a fix round's open
+blocking question either -- but before #3149 it refused at once, before the
+picks were read, and wf_f0044e94 died that way: its re-review's one finding
+was that the owner's answered pick was not built, written in `findings`
+rather than `needs_owner`. Now it goes through `_ended_outside` and the
+unbuilt-pick check below too: an answered pick the branch did not build gets
+its pick-fix round (or `owner_pick_not_built` once the rounds are spent),
+and it refuses `verdict_not_merge` once no answered pick is left unbuilt --
+at once, in the words it always used, when none was, and naming the
+re-review when a round built them. Questions that cannot be read refuse it
+`verdict_not_merge` too, as before.
 
 ANSWERED IS NOT ENOUGH: THE PICK MUST BE WHAT THE BRANCH BUILT
 (ANSWER-CONTENT-CHECK, part of #2441; owner decision 2026-10-26). Once every
@@ -2162,15 +2172,15 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
             return run.refuse("verdict_unreadable", str(exc))
         summary["verdict"] = verdict.verdict
         found = f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""
-        # #2764: a NOT_YET that names no owner question refuses here, as it
-        # always has; one that names some is held and pick-fixed like a MERGE
-        # verdict below, and refused only after.
-        if verdict.verdict != "MERGE" and not (
-                verdict.needs_owner or verdict.needs_owner_unreadable):
-            return run.refuse(
-                "verdict_not_merge",
-                f"the review's verdict is {verdict.verdict}, not MERGE{found}",
-            )
+        # #2764: a NOT_YET that names owner questions is held and pick-fixed
+        # like a MERGE verdict below, and refused only after. #3149: one that
+        # names none is never held for the owner, but an answered pick its
+        # branch did not build still gets its pick-fix round first: a review
+        # that put "the owner's pick is not built" in `findings` rather than
+        # `needs_owner` (wf_f0044e94) refused the lane the round would mend.
+        owner_less_not_yet = verdict.verdict != "MERGE" and not (
+            verdict.needs_owner or verdict.needs_owner_unreadable)
+        not_merge = f"the review's verdict is {verdict.verdict}, not MERGE{found}"
         # #2441: a hold woken because its pull request was merged or closed
         # outside the workflow ends here, before any question is read again:
         # a merged pull request needs no answers.
@@ -2204,25 +2214,32 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
                 ref for ref in verdict.needs_owner
                 if (ref.task_id, ref.question_index) not in merged_past), asked_by_rounds)
         except InputUnavailable as exc:
+            if owner_less_not_yet:
+                # Refused as before #3149: no pick could be checked.
+                return run.refuse("verdict_not_merge", f"{not_merge}; {exc}")
             summary["refusal"] = {"code": OWNER_QUESTIONS_UNREADABLE, "message": str(exc)}
             return _outcome(TaskState.FAILED, EndCause.INPUTS_UNAVAILABLE, summary, str(exc))
+        if owner_less_not_yet and not unbuilt:
+            # Nothing for a pick-fix round to build: the findings are a fix
+            # step's, and the refusal is word for word the one before #3149.
+            return run.refuse("verdict_not_merge", not_merge)
         held = [_held_row(row) for row in asked_by_rounds
-                if row.get("blocking") is True and row.get("answer") is None]
+                if row.get("blocking") is True and row.get("answer") is None
+                and not owner_less_not_yet]
         if held:
             return run.wait_for_owner(held, unreadable=0)
         if unbuilt:
             fixing = _pick_fix(run, target, opener, unbuilt)
             if fixing is not None:
                 return fixing
-        # #2764: the owner's answers are in and their picks built, but a
-        # NOT_YET verdict's findings still stand: never merged without a
+        # #2764, #3149: the owner's answers are in and their picks built, but
+        # a NOT_YET verdict's findings still stand: never merged without a
         # review of the head.
         if verdict.verdict != "MERGE":
             return run.refuse(
                 "verdict_not_merge",
-                f"the review's verdict is {verdict.verdict}, not MERGE{found}; its "
-                "needs_owner questions are answered and their picks built, so a "
-                "re-review must judge the head",
+                f"{not_merge}; its owner questions are answered and their picks "
+                "built, so a re-review must judge the head",
             )
         still_open = _unanswered(ctx, verdict.open_questions, asked_text=True)
         if still_open:
