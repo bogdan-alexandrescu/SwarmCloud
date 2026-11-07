@@ -1,4 +1,4 @@
-"""`Settings.allowed_domains` has no default domain (contract request 129).
+"""`Settings.allowed_domains` has no default domain (contract request 147).
 
 A deployment trusts only the domains it was given: the dataclass default is
 empty and `Settings.from_env` builds the field from `ALLOWED_DOMAINS` with no

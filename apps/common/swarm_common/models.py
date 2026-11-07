@@ -214,7 +214,7 @@ class Lease:
         (scheduler/store.py) writes DISPATCHED to the lease the moment the
         backend ACCEPTS the create call -- long before a container runs -- so
         that guard excluded essentially every lease this method names. Measured
-        on task_b5dc2568713a40158851 in saga-agents-staging on 2026-09-22:
+        on task_b5dc2568713a40158851 in the live deployment on 2026-09-22:
         `dispatch_overdue` was still False 301 seconds after admission, and the
         `overdue_only=1` operator query returned an empty list at exactly the
         moment it was asked.
@@ -972,7 +972,7 @@ class Tenant:
 
     tenant_id: str
     kind: str                               # "group" | "user"
-    principal: str                          # eng@saga.xyz | alice@saga.xyz
+    principal: str                          # eng@example.com | owner@example.com
     created_at: datetime
     display_name: str | None = None
     max_active: int = 20
