@@ -113,6 +113,7 @@ from ..issueruns import (
     compile_plan,
     deny_list_refusal,
     failure_text,
+    infrastructure_paths,
     issue_read_from_preview,
     owner_refusal,
     parse_edited_plan,
@@ -1391,7 +1392,8 @@ def edit_plan(
     if unlisted:
         # §2.4: an edit cannot add infrastructure files while the never-touch
         # list is not rendered, as the planner's plan could not.
-        raise InvalidPlan(unlisted, detail={"code": DENY_LIST_UNSET})
+        raise InvalidPlan(unlisted, detail={"code": DENY_LIST_UNSET,
+                                            "paths": infrastructure_paths(plan)[:10]})
     # An edit can add a hold but never clears one (§4.5): `widen_hold` over
     # the hold the claim reads.
     found = hard_stops_at_plan(ctx, tenant_id, current, plan)

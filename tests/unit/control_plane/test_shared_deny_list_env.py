@@ -65,8 +65,9 @@ def test_without_the_marker_an_infrastructure_run_is_refused_at_plan(client, db,
 
     # MUTATION: treat an absent list as empty and the run is PLANNED.
     assert run["state"] == "FAILED"
-    assert run["error"].startswith("DENY_LIST_UNSET: ")
-    assert "terraform/infra/network.tf" in run["error"]
+    # MUTATION: interpolate the plan's paths and the error is not the constant.
+    assert run["error"] == issueruns.DENY_LIST_UNSET_REFUSAL
+    assert "terraform/infra/network.tf" not in run["error"]
     assert "SWARM_SHARED_DENY_LIST_SET" in run["error"]
     assert run["plan"] is None
     assert not _workflows(db)
@@ -84,7 +85,7 @@ def test_without_the_marker_a_list_alone_is_not_read(monkeypatch, client, db, ob
 def test_a_malformed_list_is_refused_like_an_absent_one(monkeypatch, value):
     _render(monkeypatch, value)
     assert issueruns.shared_deny_list() is None
-    assert issueruns.deny_list_refusal(INFRA_PLAN).startswith(issueruns.DENY_LIST_UNSET + ":")
+    assert issueruns.deny_list_refusal(INFRA_PLAN) == issueruns.DENY_LIST_UNSET_REFUSAL
 
 
 def test_without_the_marker_a_plan_touching_no_infrastructure_runs(client, db, objects, unrendered):
@@ -99,7 +100,9 @@ def test_without_the_marker_an_edit_adding_infrastructure_is_a_422(client, db, o
         json={"plan_digest": run["plan_digest"], "plan": INFRA_PLAN},
     )
     assert response.status_code == 422, response.text
-    assert response.json()["message"].startswith("DENY_LIST_UNSET: ")
+    body = response.json()
+    assert body["message"] == issueruns.DENY_LIST_UNSET_REFUSAL
+    assert "terraform/infra/network.tf" in body["detail"]["paths"]
 
 
 # --------------------------------------------------------------------------
