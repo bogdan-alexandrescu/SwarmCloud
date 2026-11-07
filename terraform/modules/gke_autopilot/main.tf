@@ -20,7 +20,7 @@ resource "google_container_cluster" "this" {
   # checkov:skip=CKV_GCP_69:The GKE Metadata Server is mandatory and always on under Autopilot. The `node_config.workload_metadata_config` this check looks for is a node-level setting Autopilot does not accept.
   # checkov:skip=CKV_GCP_61:Intranode visibility is always on with Dataplane V2, and VPC flow logs are enabled on the subnet itself (see modules/network/main.tf `log_config`), which is where flows are actually captured.
   # checkov:skip=CKV_GCP_65:Google-group RBAC requires a gke-security-groups@<domain> group to already exist; pointing at one that does not FAILS cluster creation. Opt in with `authenticator_groups_security_group` once the group is created.
-  # checkov:skip=CKV_GCP_66:Binary Authorization enforces a PROJECT-singleton policy, and saga-agents-staging is shared. Turning it on here subjects swarm pods to another team's attestation policy. Opt in with `binary_authorization_mode`.
+  # checkov:skip=CKV_GCP_66:Binary Authorization enforces a PROJECT-singleton policy, and example-project is shared. Turning it on here subjects swarm pods to another team's attestation policy. Opt in with `binary_authorization_mode`.
 
   project = var.project_id
 
@@ -154,9 +154,13 @@ resource "google_container_cluster" "this" {
   resource_labels = merge({ "managed-by" = "swarm-terraform" }, var.labels)
 
   lifecycle {
+    # The shared project's other-team cluster is named only in the
+    # deployment's never-touch list (var.shared_deny_list in terraform/infra,
+    # set by the private tfvars). cluster_name's `swarm-` prefix rule refuses
+    # any other team's name already; this refuses a listed one that carries it.
     precondition {
-      condition     = var.cluster_name != "agents-staging"
-      error_message = "Refusing to manage `agents-staging`: it is a live cluster owned by another team."
+      condition     = !contains(var.refused_cluster_names, var.cluster_name)
+      error_message = "Refusing to manage a cluster on the deployment's never-touch list: it is a live cluster owned by another team."
     }
   }
 }

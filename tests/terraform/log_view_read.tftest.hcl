@@ -8,7 +8,7 @@
 #   Error 403: The caller does not have permission
 #
 # CI's deployer holds roles/logging.configWriter, which cannot set IAM on a log
-# view. BGD decided, 2026-10-23: move L-1 into terraform/bootstrap, as
+# view. the owner decided, 2026-10-23: move L-1 into terraform/bootstrap, as
 # verify_cluster_read.tf did for swarm-verify's clusterViewer, so CI never
 # gains the power to grant on log views. What is held here:
 #
@@ -47,7 +47,7 @@ override_resource {
 }
 
 variables {
-  project_id           = "saga-agents-staging"
+  project_id           = "example-project"
   frontend_iap_members = ["domain:example.com"]
 }
 
@@ -78,7 +78,7 @@ run "swarm_api_reads_the_swarm_workers_view_from_bootstrap" {
 
   # MUTATION: member = "serviceAccount:swarm-scheduler@..." turns this red.
   assert {
-    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].member == "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
     error_message = "the view's reader is swarm-api's account and nobody else (row L-1)"
   }
 
@@ -101,9 +101,9 @@ run "swarm_api_reads_the_swarm_workers_view_from_bootstrap" {
   assert {
     condition = (
       google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].location == "us-central1"
-      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].parent == "projects/saga-agents-staging"
+      && google_logging_log_view_iam_member.swarm_api_reads_swarm_workers[0].parent == "projects/example-project"
     )
-    error_message = "the binding's location is the project's region (us-central1) and its parent projects/saga-agents-staging, as terraform/infra creates the bucket"
+    error_message = "the binding's location is the project's region (us-central1) and its parent projects/example-project, as terraform/infra creates the bucket"
   }
 }
 
@@ -150,7 +150,7 @@ run "ci_may_grant_no_logging_role" {
   # MUTATION: adding "roles/logging.viewAccessor" (or "roles/logging.admin") to deployer_grantable_project_roles turns this red.
   assert {
     condition     = [for r in local.deployer_grantable_project_roles : r if startswith(r, "roles/logging.")] == ["roles/logging.logWriter"]
-    error_message = "deployer_grantable_project_roles carries a logging role besides roles/logging.logWriter, so CI's scoped projectIamAdmin could grant it; row L-1 is the owner's bootstrap grant (BGD, 2026-10-23, #1960)"
+    error_message = "deployer_grantable_project_roles carries a logging role besides roles/logging.logWriter, so CI's scoped projectIamAdmin could grant it; row L-1 is the owner's bootstrap grant (the owner, 2026-10-23, #1960)"
   }
 
   # And none of them reads log entries: the measured file is read, not restated.

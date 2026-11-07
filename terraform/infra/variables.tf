@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 
 variable "project_id" {
-  description = "SHARED project. It holds a live GKE cluster agents-staging, VPC agents-staging-vpc and 12 service accounts owned by other teams."
+  description = "SHARED project. It holds a live GKE cluster peer-cluster, VPC peer-vpc and 12 service accounts owned by other teams."
   type        = string
 }
 
@@ -331,7 +331,7 @@ variable "tenants" {
     # for swarm-api to check at sign-in.
     #
     # It exists because those came apart on 2026-09-19. `smoke` was declared
-    # kind = "group" with principal swarm-smoke@saga.xyz, and no such group had
+    # kind = "group" with principal swarm-smoke@example.com, and no such group had
     # ever been created. A FAILED GROUP LOOKUP IS FATAL BY DESIGN -- a
     # higher-priority group being unknown could file a caller's work under the
     # wrong tenant -- so that one phantom group made every authenticated request
@@ -513,7 +513,7 @@ variable "acceptance_qa_tenant" {
 
     Empty by default, and empty means the case SKIPs every check: the grant is
     made in the console, not by Terraform, so an environment says it here only
-    once that grant exists (dev first, BGD 2026-10-19 Q8).
+    once that grant exists (dev first, the owner 2026-10-19 Q8).
   EOT
   type        = string
   default     = ""
@@ -581,9 +581,9 @@ variable "pr_console_links" {
 
 variable "internal_decision_api_enabled" {
   description = <<-EOT
-    Whether the cluster's Tailscale egress to Saga's decision API is on
+    Whether the cluster's Tailscale egress to the organisation's decision API is on
     (JUDGE-NET: the Tailscale Kubernetes operator in swarm-system with ONE
-    egress Service to decision-api-staging). On, swarm-api and the scheduler
+    egress Service to decision-api). On, swarm-api and the scheduler
     get INTERNAL_DECISION_API_URL, the egress Service's in-cluster address,
     and a workspace's "Internal Jev" / "Internal Laya" judgment backend is
     available (JUDGE-SELECT).
@@ -633,6 +633,26 @@ variable "platform_owner" {
   validation {
     condition     = var.platform_owner == "" || (can(regex("^[^@,\\s]+@[^@,\\s]+$", var.platform_owner)) && !endswith(var.platform_owner, "gserviceaccount.com"))
     error_message = "platform_owner is one person's email address, not a list and not a service account."
+  }
+}
+
+variable "shared_deny_list" {
+  description = <<-EOT
+    The shared project's other-team resources nothing here may touch: their
+    cluster, network, subnets, buckets, registries and service accounts, e.g.
+    ["peer-cluster", "peer-vpc", "peer-subnet", "peer-bucket",
+    "peer-runner@example-shared-project.iam.gserviceaccount.com"]. Rendered
+    on swarm-api as SWARM_SHARED_DENY_LIST (JSON) with
+    SWARM_SHARED_DENY_LIST_SET = "1", and refused as the GKE cluster's name.
+    The live list lives only in the deployment's private tfvars, never in this
+    repository. Empty (the default) is a project that shares nothing.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for e in var.shared_deny_list : trimspace(e) != ""])
+    error_message = "shared_deny_list entries are resource names; an empty or blank entry is refused."
   }
 }
 
@@ -787,7 +807,7 @@ variable "api_invokers" {
 
     This is NOT what authenticates a caller. swarm_api.auth is: it verifies the
     Google ID token against Google's keys, requires email_verified, enforces the
-    saga.xyz hosted domain, and resolves Cloud Identity group membership to pick
+    example.com hosted domain, and resolves Cloud Identity group membership to pick
     the tenant. This variable only decides who the platform lets through to be
     authenticated.
 
@@ -1070,7 +1090,7 @@ variable "work_contracts" {
     review; "off" ignores metadata.work_contract and refuses every step that
     names a plugin. OFF by default, the state swarm-api reads when the
     variable is unset, so an environment that does not set it plans no
-    behaviour change; each environment's tfvars turns it on (dev: BGD,
+    behaviour change; each environment's tfvars turns it on (dev: the owner,
     2026-11-06). workcontract.enabled() reads anything but exactly "on" as
     off; the validation refuses any other value instead, so a misspelt "On"
     or "true" never ships as a silent off.
@@ -1190,7 +1210,7 @@ variable "workspace_gate" {
 }
 
 variable "manage_project_services" {
-  description = "All 18 APIs are already enabled on saga-agents-staging; this holds them enabled rather than turning anything on."
+  description = "All 18 APIs are already enabled on example-project; this holds them enabled rather than turning anything on."
   type        = bool
   default     = true
 }
@@ -1289,7 +1309,7 @@ variable "worker_firestore_access" {
 # of the binding's for_each without re-keying the others: the plan destroys
 # module.tenancy.google_project_iam_member.worker_firestore["<tenant>"] and
 # nothing else. It exists because the cutover goes one tenant at a time (owner
-# decision Q7, confirmed 2026-10-20: u-bogdan, then eng, then all), and
+# decision Q7, confirmed 2026-10-20: u-pat, then eng, then all), and
 # worker_firestore_access is one switch for every Terraform tenant. Distinct
 # from worker_firestore_off_tenants below, which is swarm-api's list for
 # job-made workspace records and creates or destroys no binding. Refused at
@@ -1330,7 +1350,7 @@ variable "worker_firestore_off_tenants" {
   description = <<-EOT
     Tenant ids whose job-made workspace worker gets NO Firestore role
     (swarm-api's WORKER_FIRESTORE_OFF_TENANTS, #1457 design B; owner decision
-    Q7: u-bogdan, then eng, then all). swarm-api writes the record's
+    Q7: u-pat, then eng, then all). swarm-api writes the record's
     worker_firestore_access from it at each approval, retry and ceiling
     change; the workspace job then withholds the role and its A9 check
     requires the worker to hold none. Removing an existing binding is the
@@ -1403,9 +1423,9 @@ variable "swarm_workers_log_view_enabled" {
   # Off by default: it adds an IAM row (L-1) the owner applies at dev-iam, and
   # a second, 30-day copy of every worker log (ingestion and storage cost), so
   # an environment takes it on by its own tfvars line. The sink's writer gets
-  # no grant: BGD decided on 2026-10-22 (#1960) to drop it, since Google
-  # authorizes a sink writing a log bucket in its own project. On in dev (BGD, 2026-10-22,
-  # #1960); prod stays off until BGD turns it on there. The earlier design, a
+  # no grant: the owner decided on 2026-10-22 (#1960) to drop it, since Google
+  # authorizes a sink writing a log bucket in its own project. On in dev (the owner, 2026-10-22,
+  # #1960); prod stays off until the owner turns it on there. The earlier design, a
   # view on _Default, failed (release run 39742374084: "Filter exceeds the view
   # filter nesting depth limit of 1"); this switch now builds the bucket-and-
   # sink design instead.
@@ -1593,8 +1613,8 @@ variable "voice_speech" {
 # one `swarm install`'s verify check and `swarm doctor` look for: a fresh
 # deployment sets nothing. A name is accepted only to adopt a different one;
 # it is never one of the shared project's buckets (SHARED_DENY_LIST in
-# scripts/lib/common.sh), which all start "saga-" or carry "avatars", so a
-# name must contain "swarm".
+# scripts/lib/common.sh), none of which contains "swarm", so a name must
+# contain "swarm".
 variable "plugins_bucket_name" {
   description = "The managed plugins' bucket (plugins.tf). Empty: <project_id>-swarm-plugins."
   type        = string

@@ -8,14 +8,20 @@ variable "region" {
 }
 
 variable "cluster_name" {
-  description = "Must not be `agents-staging`: that cluster exists and belongs to another team."
+  description = "Must start with `swarm-` and must not be on refused_cluster_names: the shared project's other-team cluster (e.g. `peer-cluster`) exists and belongs to another team."
   type        = string
   default     = "swarm-autopilot"
 
   validation {
     condition     = startswith(var.cluster_name, "swarm-")
-    error_message = "cluster_name must start with 'swarm-' so it can never collide with agents-staging."
+    error_message = "cluster_name must start with 'swarm-' so it can never collide with another team's cluster."
   }
+}
+
+variable "refused_cluster_names" {
+  description = "Cluster names this module refuses to manage: the deployment's never-touch list (terraform/infra's shared_deny_list), e.g. [\"peer-cluster\", \"peer-vpc\"]. Empty refuses nothing beyond cluster_name's prefix rule."
+  type        = list(string)
+  default     = []
 }
 
 variable "network" {
@@ -170,7 +176,7 @@ variable "authenticator_groups_security_group" {
 variable "binary_authorization_mode" {
   description = <<-EOT
     Binary Authorization evaluation mode. DISABLED by default because the policy
-    it evaluates is a PROJECT singleton and saga-agents-staging is shared:
+    it evaluates is a PROJECT singleton and example-project is shared:
     enabling enforcement here subjects swarm workloads to whatever attestation
     policy another team has configured project-wide.
   EOT

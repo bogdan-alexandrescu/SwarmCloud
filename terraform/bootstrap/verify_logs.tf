@@ -81,7 +81,7 @@
 #                    buckets/BUCKET_NAME/views/LOG_VIEW_ID\""
 #   docs.cloud.google.com/iam/docs/conditions-resource-attributes, the
 #   resource.name table -- "Cloud Logging log views:
-#   projects/project-id/locations/location-id/buckets/bucket-id/views/view-id"
+#   projects/example-project/locations/location-id/buckets/bucket-id/views/view-id"
 #   (the project ID, not the number), resource type
 #   logging.googleapis.com/LogView.
 #
@@ -150,7 +150,7 @@
 # OPEN, AND CLOSED BY NO CONDITION IN deployer_conditions.tf:
 #
 #   1. It needs nothing it does not already hold. The deployer has
-#      roles/iam.serviceAccountUser on 209012342332-compute@developer
+#      roles/iam.serviceAccountUser on 123456789012-compute@developer
 #      (wif.tf, deployer_acts_as_cloudbuild -- it is what `gcloud builds
 #      submit` runs as), and that account holds roles/editor project-wide,
 #      which carries logging.logEntries.list. A build step, or a Cloud Run job
@@ -171,7 +171,7 @@
 #   3. roles/iam.serviceAccountAdmin (UNSCOPABLE) carries
 #      iam.serviceAccounts.setIamPolicy. CI can grant itself
 #      roles/iam.serviceAccountTokenCreator on any account that reads logs --
-#      the compute account above, or 209012342332@cloudbuild, which holds
+#      the compute account above, or 123456789012@cloudbuild, which holds
 #      roles/cloudbuild.builds.builder (logging.logEntries.list and
 #      logging.views.access) -- and act as it. CLOSED IN CODE 2026-09-29
 #      (#334): the role is granted only on the accounts terraform/infra

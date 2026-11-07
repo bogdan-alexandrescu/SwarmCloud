@@ -44,7 +44,7 @@ run "platform_and_tick_accounts_are_adopted_only_under_the_infra_state_gate" {
   }
 
   variables {
-    project_id              = "saga-agents-staging"
+    project_id              = "example-project"
     frontend_iap_members    = ["domain:example.com"]
     adopt_from_infra_states = []
   }
@@ -91,8 +91,8 @@ run "modules_iam_reads_the_platform_and_tick_accounts_and_creates_none" {
   }
 
   variables {
-    project_id       = "saga-agents-staging"
-    artifact_bucket  = "swarm-artifacts-saga-agents-staging"
+    project_id       = "example-project"
+    artifact_bucket  = "swarm-artifacts-example-project"
     labels           = { "managed-by" = "swarm-terraform" }
     gke_cluster_name = "swarm-autopilot"
     gke_location     = "us-central1"
@@ -116,21 +116,21 @@ run "the_verify_account_is_never_adopted" {
   }
 
   variables {
-    project_id  = "saga-agents-staging"
+    project_id  = "example-project"
     environment = "dev"
     tenants     = {}
 
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -154,9 +154,9 @@ run "the_tenant_worker_is_adopted_because_register_tenant_creates_it_first" {
   }
 
   variables {
-    project_id             = "saga-agents-staging"
-    artifact_bucket        = "swarm-artifacts-saga-agents-staging"
-    workload_identity_pool = "saga-agents-staging.svc.id.goog"
+    project_id             = "example-project"
+    artifact_bucket        = "swarm-artifacts-example-project"
+    workload_identity_pool = "example-project.svc.id.goog"
     labels                 = { "managed-by" = "swarm-terraform" }
 
     tenants = {
@@ -168,7 +168,7 @@ run "the_tenant_worker_is_adopted_because_register_tenant_creates_it_first" {
     }
 
     dispatcher_members = {
-      scheduler = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
+      scheduler = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
     }
   }
 

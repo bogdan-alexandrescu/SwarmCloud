@@ -36,7 +36,7 @@ module "project_services" {
     # does not disable it -- disable_on_destroy is false in this shared
     # project -- it stops releases from re-enabling it. The API itself is
     # turned off once, by hand: `gcloud services disable
-    # containerscanning.googleapis.com --project saga-agents-staging`.
+    # containerscanning.googleapis.com --project example-project`.
     # The personal-workspace job's dispatch, option (ii) of
     # docs/workspaces.md §2.1 (#847, W4b): an Eventarc trigger on the
     # swarm-workspace-apply topic starts a workflow that runs the job. Enabled
@@ -179,6 +179,8 @@ module "gke_autopilot" {
   project_id   = var.project_id
   region       = var.region
   cluster_name = "${var.name_prefix}-autopilot"
+
+  refused_cluster_names = var.shared_deny_list
 
   network             = module.network.network_id
   subnetwork          = module.network.subnetwork_id
@@ -357,7 +359,7 @@ module "cloud_run_api" {
       # QUEUED task adds to it (invariant 1). Every other service still scales
       # to zero.
       min_instances = 2
-      # 2 vCPU AND 2 GiB, NOT 1 AND 1 (BGD's pick, 2026-11-06, part of #2688).
+      # 2 vCPU AND 2 GiB, NOT 1 AND 1 (the owner's pick, 2026-11-06, part of #2688).
       # The load analysis that day found swarm-api at 5 of its 5 instances for
       # 359 of the last 360 minutes, at 91% CPU and 94% memory. Request equals
       # limit for memory, and Cloud Run renders cpu as its one limit
@@ -372,11 +374,11 @@ module "cloud_run_api" {
       # ready the moment it binds, and min_instances stays 2. Every other
       # service keeps 12.
       startup_failure_threshold = 36
-      # STARTUP CPU BOOST ON (BGD's decision, 2026-10-23, #1816 option (a)).
+      # STARTUP CPU BOOST ON (the owner's decision, 2026-10-23, #1816 option (a)).
       # Most of a ~21 s start is Python startup (measured on 1 vCPU), and starts
       # that ran past the probe left callers with Cloud Run's 429 on
       # 2026-10-21. The boost bursts past the cpu limit while an instance
-      # starts, so it is BGD's recorded exception to invariant 7 for this one
+      # starts, so it is the owner's recorded exception to invariant 7 for this one
       # service; about $1 a month at 1 vCPU (35-80 starts a day, ~30 boosted
       # vCPU-seconds each), so about $2 at 2 vCPU. Every other service keeps
       # the module's false, and cpu_idle stays false here.

@@ -11,7 +11,7 @@
 #     unconditioned one already does;
 #   * every expression stays inside IAM's 12-operator limit, which is otherwise
 #     discovered at apply;
-#   * replayed against the live inventory of saga-agents-staging (read-only
+#   * replayed against the live inventory of example-project (read-only
 #     gcloud, 2026-09-24), every name of ours is admitted and every name of the
 #     other team's is refused;
 #   * the scoping terraform/bootstrap/terraform.tfvars names, read from the
@@ -39,7 +39,7 @@ override_resource {
 }
 
 variables {
-  project_id = "saga-agents-staging"
+  project_id = "example-project"
 
   # Required by terraform/bootstrap since IAP membership moved into it (main,
   # #23). It has no default on purpose, so every bootstrap run here needs one;
@@ -56,7 +56,7 @@ run "merging_the_conditions_changes_no_live_grant" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   assert {
@@ -94,13 +94,13 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
     target          = data.google_project.this
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_scoped_roles = [
       "roles/compute.networkAdmin",
       "roles/compute.securityAdmin",
@@ -162,7 +162,7 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
       google_project_iam_member.deployer_container_admin[0].role == "roles/container.admin",
       google_project_iam_member.deployer_datastore_owner[0].role == "roles/datastore.owner",
       google_project_iam_member.deployer_logging_config_writer[0].role == "roles/logging.configWriter",
-      google_project_iam_member.deployer_secrets_scoped[0].role == "projects/saga-agents-staging/roles/swarmSecretProvisioner",
+      google_project_iam_member.deployer_secrets_scoped[0].role == "projects/example-project/roles/swarmSecretProvisioner",
     ])
     error_message = "a scoped grant must be for the role it replaces"
   }
@@ -259,7 +259,7 @@ run "the_network_condition_refuses_their_keycloak_and_argocd_load_balancer" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/compute.networkAdmin"]
   }
 
@@ -267,12 +267,12 @@ run "the_network_condition_refuses_their_keycloak_and_argocd_load_balancer" {
   assert {
     condition = alltrue([
       for n in [
-        "projects/saga-agents-staging/global/backendServices/swarm-ui-backend",
-        "projects/saga-agents-staging/global/backendServices/swarm-ui-ui-backend",
-        "projects/saga-agents-staging/global/forwardingRules/swarm-ui-http",
-        "projects/saga-agents-staging/global/forwardingRules/swarm-ui-https",
-        "projects/saga-agents-staging/global/targetHttpProxies/swarm-ui-http-proxy",
-        "projects/saga-agents-staging/global/targetHttpsProxies/swarm-ui-https-proxy",
+        "projects/example-project/global/backendServices/swarm-ui-backend",
+        "projects/example-project/global/backendServices/swarm-ui-ui-backend",
+        "projects/example-project/global/forwardingRules/swarm-ui-http",
+        "projects/example-project/global/forwardingRules/swarm-ui-https",
+        "projects/example-project/global/targetHttpProxies/swarm-ui-http-proxy",
+        "projects/example-project/global/targetHttpsProxies/swarm-ui-https-proxy",
       ] : anytrue([for p in local.deployer_type_scoped["roles/compute.networkAdmin"].prefixes : startswith(n, p)])
     ])
     error_message = "a load-balancer resource terraform/infra manages is refused; the next release would 403 on it"
@@ -282,20 +282,20 @@ run "the_network_condition_refuses_their_keycloak_and_argocd_load_balancer" {
   assert {
     condition = !anytrue([
       for n in [
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-api-service-api-service-8080-5ieure64p6a2",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-argocd-argocd-server-80-zblgmjdai6zf",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-browser-engine-browser-engine-7101-eamagczv4ba6",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-crawling-serv-crawling-service-we-8088-wurq2kzjfbve",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-gateway-system-gw-serve404-80-m5di3rlf0xh3",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-gateway-system-gw-serve500-80-7wyoqghzztp7",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-keycloak-keycloak-8080-ryv2aw1g3cv9",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-promptlab-promptlab-api-8080-ohq3no6fp8sg",
-        "projects/saga-agents-staging/global/backendServices/gkegw1-7hi6-promptlab-promptlab-web-3000-nfgf0nb3q201",
-        "projects/saga-agents-staging/global/forwardingRules/gkegw1-7hi6-gateway-system-external-https-vcwkifae8uuy",
-        "projects/saga-agents-staging/global/targetHttpsProxies/gkegw1-7hi6-gateway-system-external-https-u7vmggfcx5ue",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-h2ug",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-xstq",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-api-service-api-service-8080-5ieure64p6a2",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-argocd-argocd-server-80-zblgmjdai6zf",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-browser-engine-browser-engine-7101-eamagczv4ba6",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-crawling-serv-crawling-service-we-8088-wurq2kzjfbve",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-gateway-system-gw-serve404-80-m5di3rlf0xh3",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-gateway-system-gw-serve500-80-7wyoqghzztp7",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-keycloak-keycloak-8080-ryv2aw1g3cv9",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-peer-app-peer-app-api-8080-ohq3no6fp8sg",
+        "projects/example-project/global/backendServices/gkegw1-7hi6-peer-app-peer-app-web-3000-nfgf0nb3q201",
+        "projects/example-project/global/forwardingRules/gkegw1-7hi6-gateway-system-external-https-vcwkifae8uuy",
+        "projects/example-project/global/targetHttpsProxies/gkegw1-7hi6-gateway-system-external-https-u7vmggfcx5ue",
+        "projects/example-project/zones/us-central1-a/instances/gke-peer-cluster-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/example-project/zones/us-central1-a/instances/gke-peer-cluster-nap-e2-standard-2--b59db5d4-h2ug",
+        "projects/example-project/zones/us-central1-a/instances/gke-peer-cluster-nap-e2-standard-2--b59db5d4-xstq",
       ] : anytrue([for p in local.deployer_type_scoped["roles/compute.networkAdmin"].prefixes : startswith(n, p)])
     ])
     error_message = "the network condition admits a load balancer or VM belonging to another team"
@@ -323,18 +323,18 @@ run "the_firewall_condition_refuses_their_gke_rules" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/compute.securityAdmin"]
   }
 
   assert {
     condition = alltrue([
       for n in [
-        "projects/saga-agents-staging/global/firewalls/swarm-fw-allow-gke-webhooks",
-        "projects/saga-agents-staging/global/firewalls/swarm-fw-allow-health-checks",
-        "projects/saga-agents-staging/global/firewalls/swarm-fw-allow-internal",
-        "projects/saga-agents-staging/global/firewalls/swarm-fw-deny-all-ingress",
-        "projects/saga-agents-staging/global/firewalls/swarm-fw-deny-worker-ingress",
+        "projects/example-project/global/firewalls/swarm-fw-allow-gke-webhooks",
+        "projects/example-project/global/firewalls/swarm-fw-allow-health-checks",
+        "projects/example-project/global/firewalls/swarm-fw-allow-internal",
+        "projects/example-project/global/firewalls/swarm-fw-deny-all-ingress",
+        "projects/example-project/global/firewalls/swarm-fw-deny-worker-ingress",
       ] : anytrue([for p in local.deployer_type_scoped["roles/compute.securityAdmin"].prefixes : startswith(n, p)])
     ])
     error_message = "a firewall rule terraform/infra manages is refused"
@@ -345,25 +345,25 @@ run "the_firewall_condition_refuses_their_gke_rules" {
   assert {
     condition = !anytrue([
       for n in [
-        "projects/saga-agents-staging/global/firewalls/default-allow-icmp",
-        "projects/saga-agents-staging/global/firewalls/default-allow-internal",
-        "projects/saga-agents-staging/global/firewalls/default-allow-rdp",
-        "projects/saga-agents-staging/global/firewalls/default-allow-ssh",
-        "projects/saga-agents-staging/global/firewalls/gke-agents-staging-a2455d7c-all",
-        "projects/saga-agents-staging/global/firewalls/gke-agents-staging-a2455d7c-exkubelet",
-        "projects/saga-agents-staging/global/firewalls/gke-agents-staging-a2455d7c-inkubelet",
-        "projects/saga-agents-staging/global/firewalls/gke-agents-staging-a2455d7c-vms",
-        "projects/saga-agents-staging/global/firewalls/gkegw1-7hi6-l7-agents-staging-vpc-global",
-        "projects/saga-agents-staging/global/firewalls/gke-swarm-autopilot-4b0b02c7-all",
-        "projects/saga-agents-staging/global/firewalls/gke-swarm-autopilot-4b0b02c7-vms",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/example-project/global/firewalls/default-allow-icmp",
+        "projects/example-project/global/firewalls/default-allow-internal",
+        "projects/example-project/global/firewalls/default-allow-rdp",
+        "projects/example-project/global/firewalls/default-allow-ssh",
+        "projects/example-project/global/firewalls/gke-peer-cluster-a2455d7c-all",
+        "projects/example-project/global/firewalls/gke-peer-cluster-a2455d7c-exkubelet",
+        "projects/example-project/global/firewalls/gke-peer-cluster-a2455d7c-inkubelet",
+        "projects/example-project/global/firewalls/gke-peer-cluster-a2455d7c-vms",
+        "projects/example-project/global/firewalls/gkegw1-7hi6-l7-peer-vpc-global",
+        "projects/example-project/global/firewalls/gke-swarm-autopilot-4b0b02c7-all",
+        "projects/example-project/global/firewalls/gke-swarm-autopilot-4b0b02c7-vms",
+        "projects/example-project/zones/us-central1-a/instances/gke-peer-cluster-nap-e2-standard-2--b59db5d4-bnof",
       ] : anytrue([for p in local.deployer_type_scoped["roles/compute.securityAdmin"].prefixes : startswith(n, p)])
     ])
     error_message = "the firewall condition admits a rule or VM terraform/infra does not manage"
   }
 }
 
-run "the_cluster_condition_refuses_agents_staging_under_either_name" {
+run "the_cluster_condition_refuses_the_peer_cluster_under_either_name" {
   command = plan
 
   module {
@@ -372,29 +372,29 @@ run "the_cluster_condition_refuses_agents_staging_under_either_name" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/container.admin"]
   }
 
   assert {
     condition = alltrue([
       for n in [
-        "projects/saga-agents-staging/locations/us-central1/clusters/swarm-autopilot",
-        "projects/saga-agents-staging/locations/us-central1/clusters/swarm-autopilot/nodePools/default-pool",
+        "projects/example-project/locations/us-central1/clusters/swarm-autopilot",
+        "projects/example-project/locations/us-central1/clusters/swarm-autopilot/nodePools/default-pool",
       ] : anytrue([for p in local.deployer_type_scoped["roles/container.admin"].prefixes : startswith(n, p)])
     ])
     error_message = "the swarm cluster is refused; terraform/infra could not refresh it"
   }
 
-  # agents-staging is zonal (us-central1-a), and GKE accepts both spellings.
+  # peer-cluster is zonal (us-central1-a), and GKE accepts both spellings.
   assert {
     condition = !anytrue([
       for n in [
-        "projects/saga-agents-staging/zones/us-central1-a/clusters/agents-staging",
-        "projects/saga-agents-staging/locations/us-central1-a/clusters/agents-staging",
+        "projects/example-project/zones/us-central1-a/clusters/peer-cluster",
+        "projects/example-project/locations/us-central1-a/clusters/peer-cluster",
       ] : anytrue([for p in local.deployer_type_scoped["roles/container.admin"].prefixes : startswith(n, p)])
     ])
-    error_message = "the cluster condition admits agents-staging, another team's live cluster"
+    error_message = "the cluster condition admits peer-cluster, another team's live cluster"
   }
 }
 
@@ -407,14 +407,14 @@ run "the_firestore_condition_admits_swarm_and_nothing_named_otherwise" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/datastore.owner"]
   }
 
   assert {
     condition = anytrue([
       for p in local.deployer_type_scoped["roles/datastore.owner"].prefixes :
-      startswith("projects/saga-agents-staging/databases/swarm", p)
+      startswith("projects/example-project/databases/swarm", p)
     ])
     error_message = "the swarm database is refused; terraform/infra manages it and its indexes"
   }
@@ -424,7 +424,7 @@ run "the_firestore_condition_admits_swarm_and_nothing_named_otherwise" {
   assert {
     condition = !anytrue([
       for p in local.deployer_type_scoped["roles/datastore.owner"].prefixes :
-      startswith("projects/saga-agents-staging/databases/(default)", p)
+      startswith("projects/example-project/databases/(default)", p)
     ])
     error_message = "the Firestore condition admits a database that is not the platform's"
   }
@@ -446,7 +446,7 @@ run "the_logging_condition_leaves_the_shared_buckets_alone" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/logging.configWriter"]
   }
 
@@ -477,13 +477,13 @@ run "the_secret_condition_refuses_all_63_of_their_secrets" {
     target          = data.google_project.this
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["swarmSecretProvisioner"]
   }
 
@@ -491,7 +491,7 @@ run "the_secret_condition_refuses_all_63_of_their_secrets" {
   assert {
     condition = alltrue([
       for p in local.deployer_type_scoped["swarmSecretProvisioner"].prefixes :
-      startswith(p, "projects/209012342332/secrets/")
+      startswith(p, "projects/123456789012/secrets/")
     ])
     error_message = "Secret Manager resource names use the project number; a prefix on the project id matches nothing"
   }
@@ -499,20 +499,20 @@ run "the_secret_condition_refuses_all_63_of_their_secrets" {
   assert {
     condition = alltrue([
       for n in [
-        "projects/209012342332/secrets/swarm-account-eng--devops-main",
-        "projects/209012342332/secrets/swarm-account-eng--devops-main-refresh",
-        "projects/209012342332/secrets/swarm-account-eng--devops-team",
-        "projects/209012342332/secrets/swarm-account-eng--devops-team-refresh",
-        "projects/209012342332/secrets/swarm-account-eng--saga-personal",
-        "projects/209012342332/secrets/swarm-account-eng--saga-personal-refresh",
-        "projects/209012342332/secrets/swarm-account-eng--team",
-        "projects/209012342332/secrets/swarm-account-eng--team-refresh",
-        "projects/209012342332/secrets/swarm-tenant-eng-anthropic",
-        "projects/209012342332/secrets/swarm-tenant-eng-anthropic-refresh",
-        "projects/209012342332/secrets/swarm-tenant-eng-openai",
-        "projects/209012342332/secrets/swarm-tenant-eng-openai-refresh",
-        "projects/209012342332/secrets/swarm-tenant-u-bogdan-anthropic",
-        "projects/209012342332/secrets/swarm-tenant-u-bogdan-anthropic-refresh",
+        "projects/123456789012/secrets/swarm-account-eng--devops-main",
+        "projects/123456789012/secrets/swarm-account-eng--devops-main-refresh",
+        "projects/123456789012/secrets/swarm-account-eng--devops-team",
+        "projects/123456789012/secrets/swarm-account-eng--devops-team-refresh",
+        "projects/123456789012/secrets/swarm-account-eng--example-personal",
+        "projects/123456789012/secrets/swarm-account-eng--example-personal-refresh",
+        "projects/123456789012/secrets/swarm-account-eng--team",
+        "projects/123456789012/secrets/swarm-account-eng--team-refresh",
+        "projects/123456789012/secrets/swarm-tenant-eng-anthropic",
+        "projects/123456789012/secrets/swarm-tenant-eng-anthropic-refresh",
+        "projects/123456789012/secrets/swarm-tenant-eng-openai",
+        "projects/123456789012/secrets/swarm-tenant-eng-openai-refresh",
+        "projects/123456789012/secrets/swarm-tenant-u-pat-anthropic",
+        "projects/123456789012/secrets/swarm-tenant-u-pat-anthropic-refresh",
       ] : anytrue([for p in local.deployer_type_scoped["swarmSecretProvisioner"].prefixes : startswith(n, p)])
     ])
     error_message = "a secret of the platform's is refused"
@@ -521,69 +521,69 @@ run "the_secret_condition_refuses_all_63_of_their_secrets" {
   assert {
     condition = !anytrue([
       for n in [
-        "projects/209012342332/secrets/agents-aipipeline-db-password",
-        "projects/209012342332/secrets/agents-aipipeline-sentry-dsn",
-        "projects/209012342332/secrets/agents-alertmanager-slack-webhook-url",
-        "projects/209012342332/secrets/agents-api-service-db-password",
-        "projects/209012342332/secrets/agents-api-service-keycloak-admin-client-secret",
-        "projects/209012342332/secrets/agents-api-service-secrets-key",
-        "projects/209012342332/secrets/agents-api-service-sentry-dsn",
-        "projects/209012342332/secrets/agents-api-service-typesafe-api-key",
-        "projects/209012342332/secrets/agents-argocd-github-repo-ssh-private-key",
-        "projects/209012342332/secrets/agents-argocd-github-webhook-secret",
-        "projects/209012342332/secrets/agents-argocd-slack-bot-token",
-        "projects/209012342332/secrets/agents-backend-packages-pat",
-        "projects/209012342332/secrets/agents-browser-engine-cap-token-secret",
-        "projects/209012342332/secrets/agents-browser-engine-login-proxy",
-        "projects/209012342332/secrets/agents-browser-engine-sentry-dsn",
-        "projects/209012342332/secrets/agents-browser-engine-service-db-password",
-        "projects/209012342332/secrets/agents-browser-engine-service-token",
-        "projects/209012342332/secrets/agents-crawling-service-apify-token",
-        "projects/209012342332/secrets/agents-crawling-service-bright-data-customer-id",
-        "projects/209012342332/secrets/agents-crawling-service-bright-data-password",
-        "projects/209012342332/secrets/agents-crawling-service-credential-encryption-key",
-        "projects/209012342332/secrets/agents-crawling-service-db-password",
-        "projects/209012342332/secrets/agents-crawling-service-sentry-dsn",
-        "projects/209012342332/secrets/agents-discord-gateway-db-password",
-        "projects/209012342332/secrets/agents-discord-gateway-sentry-dsn",
-        "projects/209012342332/secrets/agents-discord-ingest-token",
-        "projects/209012342332/secrets/agents-discord-publisher-db-password",
-        "projects/209012342332/secrets/agents-discord-publisher-sentry-dsn",
-        "projects/209012342332/secrets/agents-dispatcher-service-db-password",
-        "projects/209012342332/secrets/agents-dispatcher-service-sentry-dsn",
-        "projects/209012342332/secrets/agents-grafana-admin-password",
-        "projects/209012342332/secrets/agents-homepage-argocd-token",
-        "projects/209012342332/secrets/agents-instagram-app-secret",
-        "projects/209012342332/secrets/agents-instagram-publisher-db-password",
-        "projects/209012342332/secrets/agents-instagram-publisher-sentry-dsn",
-        "projects/209012342332/secrets/agents-instagram-publisher-session-encryption-key",
-        "projects/209012342332/secrets/agents-instagram-webhook-verify-token",
-        "projects/209012342332/secrets/agents-internal-google-oauth-client-id",
-        "projects/209012342332/secrets/agents-internal-google-oauth-client-secret",
-        "projects/209012342332/secrets/agents-keycloak-admin-password",
-        "projects/209012342332/secrets/agents-keycloak-db-password",
-        "projects/209012342332/secrets/agents-keycloak-e2e-customer-admin-password",
-        "projects/209012342332/secrets/agents-keycloak-e2e-customer-manager-password",
-        "projects/209012342332/secrets/agents-keycloak-e2e-platform-admin-password",
-        "projects/209012342332/secrets/agents-keycloak-e2e-saga-admin-password",
-        "projects/209012342332/secrets/agents-keycloak-smtp-password",
-        "projects/209012342332/secrets/agents-keycloak-smtp-user",
-        "projects/209012342332/secrets/agents-langsmith-api-key",
-        "projects/209012342332/secrets/agents-metrics-exporter-db-password",
-        "projects/209012342332/secrets/agents-migration-manager-db-password",
-        "projects/209012342332/secrets/agents-sentry-dsn",
-        "projects/209012342332/secrets/agents-support-slack-bot-token",
-        "projects/209012342332/secrets/agents-tailscale-operator-client-id",
-        "projects/209012342332/secrets/agents-tailscale-operator-client-secret",
-        "projects/209012342332/secrets/agents-tournament-digest-bonoxs-api-key",
-        "projects/209012342332/secrets/agents-user-engagement-crawler-db-password",
-        "projects/209012342332/secrets/agents-user-engagement-crawler-sentry-dsn",
-        "projects/209012342332/secrets/promptlab-db-dsn",
-        "projects/209012342332/secrets/promptlab-fernet-key",
-        "projects/209012342332/secrets/promptlab-galatia-ro-dsn",
-        "projects/209012342332/secrets/promptlab-galatia-ro-dsn-psycopg",
-        "projects/209012342332/secrets/promptlab-ghcr-dockerconfigjson",
-        "projects/209012342332/secrets/promptlab-langsmith-shared-key",
+        "projects/123456789012/secrets/agents-aipipeline-db-password",
+        "projects/123456789012/secrets/agents-aipipeline-sentry-dsn",
+        "projects/123456789012/secrets/agents-alertmanager-slack-webhook-url",
+        "projects/123456789012/secrets/agents-api-service-db-password",
+        "projects/123456789012/secrets/agents-api-service-keycloak-admin-client-secret",
+        "projects/123456789012/secrets/agents-api-service-secrets-key",
+        "projects/123456789012/secrets/agents-api-service-sentry-dsn",
+        "projects/123456789012/secrets/agents-api-service-typesafe-api-key",
+        "projects/123456789012/secrets/agents-argocd-github-repo-ssh-private-key",
+        "projects/123456789012/secrets/agents-argocd-github-webhook-secret",
+        "projects/123456789012/secrets/agents-argocd-slack-bot-token",
+        "projects/123456789012/secrets/agents-backend-packages-pat",
+        "projects/123456789012/secrets/agents-browser-engine-cap-token-secret",
+        "projects/123456789012/secrets/agents-browser-engine-login-proxy",
+        "projects/123456789012/secrets/agents-browser-engine-sentry-dsn",
+        "projects/123456789012/secrets/agents-browser-engine-service-db-password",
+        "projects/123456789012/secrets/agents-browser-engine-service-token",
+        "projects/123456789012/secrets/agents-crawling-service-apify-token",
+        "projects/123456789012/secrets/agents-crawling-service-bright-data-customer-id",
+        "projects/123456789012/secrets/agents-crawling-service-bright-data-password",
+        "projects/123456789012/secrets/agents-crawling-service-credential-encryption-key",
+        "projects/123456789012/secrets/agents-crawling-service-db-password",
+        "projects/123456789012/secrets/agents-crawling-service-sentry-dsn",
+        "projects/123456789012/secrets/agents-discord-gateway-db-password",
+        "projects/123456789012/secrets/agents-discord-gateway-sentry-dsn",
+        "projects/123456789012/secrets/agents-discord-ingest-token",
+        "projects/123456789012/secrets/agents-discord-publisher-db-password",
+        "projects/123456789012/secrets/agents-discord-publisher-sentry-dsn",
+        "projects/123456789012/secrets/agents-dispatcher-service-db-password",
+        "projects/123456789012/secrets/agents-dispatcher-service-sentry-dsn",
+        "projects/123456789012/secrets/agents-grafana-admin-password",
+        "projects/123456789012/secrets/agents-homepage-argocd-token",
+        "projects/123456789012/secrets/agents-instagram-app-secret",
+        "projects/123456789012/secrets/agents-instagram-publisher-db-password",
+        "projects/123456789012/secrets/agents-instagram-publisher-sentry-dsn",
+        "projects/123456789012/secrets/agents-instagram-publisher-session-encryption-key",
+        "projects/123456789012/secrets/agents-instagram-webhook-verify-token",
+        "projects/123456789012/secrets/agents-internal-google-oauth-client-id",
+        "projects/123456789012/secrets/agents-internal-google-oauth-client-secret",
+        "projects/123456789012/secrets/agents-keycloak-admin-password",
+        "projects/123456789012/secrets/agents-keycloak-db-password",
+        "projects/123456789012/secrets/agents-keycloak-e2e-customer-admin-password",
+        "projects/123456789012/secrets/agents-keycloak-e2e-customer-manager-password",
+        "projects/123456789012/secrets/agents-keycloak-e2e-platform-admin-password",
+        "projects/123456789012/secrets/agents-keycloak-e2e-example-admin-password",
+        "projects/123456789012/secrets/agents-keycloak-smtp-password",
+        "projects/123456789012/secrets/agents-keycloak-smtp-user",
+        "projects/123456789012/secrets/agents-langsmith-api-key",
+        "projects/123456789012/secrets/agents-metrics-exporter-db-password",
+        "projects/123456789012/secrets/agents-migration-manager-db-password",
+        "projects/123456789012/secrets/agents-sentry-dsn",
+        "projects/123456789012/secrets/agents-support-slack-bot-token",
+        "projects/123456789012/secrets/agents-tailscale-operator-client-id",
+        "projects/123456789012/secrets/agents-tailscale-operator-client-secret",
+        "projects/123456789012/secrets/agents-tournament-digest-bonoxs-api-key",
+        "projects/123456789012/secrets/agents-user-engagement-crawler-db-password",
+        "projects/123456789012/secrets/agents-user-engagement-crawler-sentry-dsn",
+        "projects/123456789012/secrets/peer-app-db-dsn",
+        "projects/123456789012/secrets/peer-app-fernet-key",
+        "projects/123456789012/secrets/peer-app-example-ro-dsn",
+        "projects/123456789012/secrets/peer-app-example-ro-dsn-psycopg",
+        "projects/123456789012/secrets/peer-app-ghcr-dockerconfigjson",
+        "projects/123456789012/secrets/peer-app-langsmith-shared-key",
       ] : anytrue([for p in local.deployer_type_scoped["swarmSecretProvisioner"].prefixes : startswith(n, p)])
     ])
     error_message = "the secret condition admits one of the other team's 63 secrets -- including setIamPolicy, which is a read"
@@ -599,7 +599,7 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
   }
 
@@ -632,7 +632,7 @@ run "the_iam_admin_condition_refuses_every_role_ci_does_not_hand_out" {
   assert {
     condition = !anytrue([
       for r in [
-        "projects/saga-agents-staging/roles/swarmSecretProvisioner",
+        "projects/example-project/roles/swarmSecretProvisioner",
         "roles/artifactregistry.admin",
         "roles/artifactregistry.reader",
         "roles/artifactregistry.serviceAgent",
@@ -699,7 +699,7 @@ run "the_iam_admin_conditions_hasonly_lists_never_exceed_gcps_ten_element_limit"
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
   }
 
@@ -742,7 +742,7 @@ run "the_iam_admin_conditions_hasonly_lists_never_exceed_gcps_ten_element_limit"
   # applies, so CI may never modify a clusterViewer binding. hasOnly() limits
   # which roles CI grants, never to whom or under what condition: on this list,
   # CI could grant itself clusterViewer unconditioned, which reaches the other
-  # team's agents-staging cluster. No chunk may name any container.* role.
+  # team's peer-cluster cluster. No chunk may name any container.* role.
   # MUTATION: put "roles/container.clusterViewer" back on
   # deployer_grantable_project_roles and this is red.
   assert {
@@ -779,7 +779,7 @@ run "a_changed_role_list_replaces_iam_admin_chunks_new_grant_first" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
   }
 
@@ -831,7 +831,7 @@ run "the_scoping_terraform_tfvars_names_moves_its_own_grants_and_nothing_else" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = run.terraform_tfvars_as_committed.deployer_scoped_roles
   }
 
@@ -884,7 +884,7 @@ run "a_role_with_no_conditioned_grant_cannot_be_switched" {
 
   variables {
     enable_github_wif     = true
-    github_repository     = "saga/agent-swarm-infra"
+    github_repository     = "example-org/example-repo"
     deployer_scoped_roles = ["roles/pubsub.admin"]
   }
 
@@ -902,7 +902,7 @@ run "a_role_the_deployer_does_not_hold_cannot_be_switched" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles = [
       "roles/artifactregistry.admin",
       "roles/cloudbuild.builds.editor",
@@ -931,14 +931,14 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   assert {
     condition = (
       length(google_project_iam_custom_role.deployer_speech_machine) == 1 &&
       length(google_project_iam_member.deployer_speech_machine) == 1 &&
-      google_project_iam_member.deployer_speech_machine[0].role == "projects/saga-agents-staging/roles/swarmSpeechDeployer"
+      google_project_iam_member.deployer_speech_machine[0].role == "projects/example-project/roles/swarmSpeechDeployer"
     )
     # The member is the deployer's email, unknown at plan under the mock;
     # tests/unit/terraform/test_voice_speech.py reads it from the text.
@@ -991,7 +991,7 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
 
   # The expression, rendered, exactly: one extract() per kind, nothing else.
   assert {
-    condition     = local.deployer_speech_machine_condition == "resource.name.extract(\"projects/saga-agents-staging/zones/us-central1-{zone}/instances/swarm-speech-\") != \"\" || resource.name.extract(\"projects/saga-agents-staging/zones/us-central1-{zone}/disks/swarm-speech-\") != \"\""
+    condition     = local.deployer_speech_machine_condition == "resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/instances/swarm-speech-\") != \"\" || resource.name.extract(\"projects/example-project/zones/us-central1-{zone}/disks/swarm-speech-\") != \"\""
     error_message = "the speech machine's condition is not the two extract() tests on its instance and disk names"
   }
 
@@ -1010,10 +1010,10 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
   assert {
     condition = alltrue([
       for n in [
-        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-speech-a",
-        "projects/saga-agents-staging/zones/us-central1-a/disks/swarm-speech-a",
-        "projects/saga-agents-staging/zones/us-central1-c/instances/swarm-speech-c",
-        "projects/saga-agents-staging/zones/us-central1-c/disks/swarm-speech-c",
+        "projects/example-project/zones/us-central1-a/instances/swarm-speech-a",
+        "projects/example-project/zones/us-central1-a/disks/swarm-speech-a",
+        "projects/example-project/zones/us-central1-c/instances/swarm-speech-c",
+        "projects/example-project/zones/us-central1-c/disks/swarm-speech-c",
         ] : anytrue([
           for p in local.deployer_speech_machine_paths :
           startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""
@@ -1025,17 +1025,17 @@ run "the_speech_machine_grant_is_conditioned_to_its_instance_and_disk" {
   assert {
     condition = !anytrue([
       for n in [
-        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-h2ug",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/gke-agents-staging-nap-e2-standard-2--b59db5d4-xstq",
-        "projects/saga-agents-staging/zones/us-central1-a/disks/gke-agents-staging-nap-e2-standard-2--b59db5d4-bnof",
-        "projects/saga-agents-staging/regions/us-central1/addresses/swarm-speech",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-speechx",
-        "projects/saga-agents-staging/zones/us-central1-a/instances/swarm-ui-a",
-        "projects/saga-agents-staging/zones/us-central1-a/instanceGroups/swarm-speech-a",
-        "projects/saga-agents-staging/global/images/swarm-speech-a",
-        "projects/saga-agents-staging/zones/europe-west1-b/instances/swarm-speech-b",
-        "projects/another-project/zones/us-central1-a/instances/swarm-speech-a",
+        "projects/example-project/zones/us-central1-a/instances/gke-peer-cluster-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/example-project/zones/us-central1-a/instances/gke-peer-cluster-nap-e2-standard-2--b59db5d4-h2ug",
+        "projects/example-project/zones/us-central1-a/instances/gke-peer-cluster-nap-e2-standard-2--b59db5d4-xstq",
+        "projects/example-project/zones/us-central1-a/disks/gke-peer-cluster-nap-e2-standard-2--b59db5d4-bnof",
+        "projects/example-project/regions/us-central1/addresses/swarm-speech",
+        "projects/example-project/zones/us-central1-a/instances/swarm-speechx",
+        "projects/example-project/zones/us-central1-a/instances/swarm-ui-a",
+        "projects/example-project/zones/us-central1-a/instanceGroups/swarm-speech-a",
+        "projects/example-project/global/images/swarm-speech-a",
+        "projects/example-project/zones/europe-west1-b/instances/swarm-speech-b",
+        "projects/example-shared-project/zones/us-central1-a/instances/swarm-speech-a",
         ] : anytrue([
           for p in local.deployer_speech_machine_paths :
           startswith(n, p.zone_prefix) && strcontains(trimprefix(n, p.zone_prefix), p.name_prefix) && split(p.name_prefix, trimprefix(n, p.zone_prefix))[0] != ""
@@ -1064,7 +1064,7 @@ run "an_unconditioned_instance_admin_role_cannot_be_given_to_ci" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles = [
       "roles/artifactregistry.admin",
       "roles/compute.instanceAdmin.v1",
@@ -1093,7 +1093,7 @@ run "every_project_role_the_iam_module_grants_is_grantable" {
   }
 
   variables {
-    artifact_bucket  = "swarm-artifacts-saga-agents-staging"
+    artifact_bucket  = "swarm-artifacts-example-project"
     labels           = { "managed-by" = "swarm-terraform" }
     gke_cluster_name = "swarm-autopilot"
     gke_location     = "us-central1"
@@ -1118,8 +1118,8 @@ run "every_project_role_the_tenancy_module_grants_is_grantable" {
   }
 
   variables {
-    artifact_bucket        = "swarm-artifacts-saga-agents-staging"
-    workload_identity_pool = "saga-agents-staging.svc.id.goog"
+    artifact_bucket        = "swarm-artifacts-example-project"
+    workload_identity_pool = "example-project.svc.id.goog"
     labels                 = { "managed-by" = "swarm-terraform" }
     tenants = {
       eng = {
@@ -1129,8 +1129,8 @@ run "every_project_role_the_tenancy_module_grants_is_grantable" {
       }
     }
     dispatcher_members = {
-      scheduler  = "serviceAccount:swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-      reconciler = "serviceAccount:swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
+      scheduler  = "serviceAccount:swarm-scheduler@example-project.iam.gserviceaccount.com"
+      reconciler = "serviceAccount:swarm-reconciler@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -1162,16 +1162,16 @@ run "every_project_role_the_verify_identity_holds_is_grantable" {
     # deploys (main, #24: the precondition on google_cloud_run_v2_job.verify).
     # The same fixture infra_guards.tftest.hcl uses.
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -1210,21 +1210,21 @@ run "the_github_hooks_dedup_role_is_grantable_once_bootstrap_defines_it" {
     target          = data.google_project.this
     override_during = plan
     values = {
-      number = "209012342332"
+      number = "123456789012"
     }
   }
 
   variables {
     enable_github_wif              = true
-    github_repository              = "saga/agent-swarm-infra"
+    github_repository              = "example-org/example-repo"
     deployer_scoped_roles          = ["roles/resourcemanager.projectIamAdmin"]
     enable_github_hooks_dedup_role = true
   }
 
   assert {
     condition = (
-      contains(local.deployer_grantable_project_roles, "projects/saga-agents-staging/roles/swarmGithubHooksDedup")
-      && !contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, "projects/saga-agents-staging/roles/swarmGithubHooksDedup")
+      contains(local.deployer_grantable_project_roles, "projects/example-project/roles/swarmGithubHooksDedup")
+      && !contains(run.every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one.deployer_grantable_project_roles, "projects/example-project/roles/swarmGithubHooksDedup")
     )
     error_message = "swarmGithubHooksDedup is grantable exactly when terraform/bootstrap defines it (enable_github_hooks_dedup_role), and not before"
   }
@@ -1248,17 +1248,17 @@ run "the_github_hooks_firestore_role_is_grantable" {
     # deploys (main, #24: the precondition on google_cloud_run_v2_job.verify).
     # The same fixture infra_guards.tftest.hcl uses.
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "swarm-github-hooks"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-github-hooks"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-github-hooks@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -1287,8 +1287,8 @@ run "the_speech_machines_project_roles_are_grantable" {
     target          = data.google_service_account.voice
     override_during = plan
     values = {
-      email = "swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-voice@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-voice@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-voice@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -1296,8 +1296,8 @@ run "the_speech_machines_project_roles_are_grantable" {
     target          = data.google_service_account.speech
     override_during = plan
     values = {
-      email = "swarm-speech@saga-agents-staging.iam.gserviceaccount.com"
-      name  = "projects/saga-agents-staging/serviceAccounts/swarm-speech@saga-agents-staging.iam.gserviceaccount.com"
+      email = "swarm-speech@example-project.iam.gserviceaccount.com"
+      name  = "projects/example-project/serviceAccounts/swarm-speech@example-project.iam.gserviceaccount.com"
     }
   }
 
@@ -1316,17 +1316,17 @@ run "the_speech_machines_project_roles_are_grantable" {
     # The same fixture infra_guards.tftest.hcl uses, with swarm-voice's
     # digest, which voice_it "on" needs (voice.tf's voice_it_has_an_image).
     image_refs = {
-      "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-      "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-      "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-      "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-      "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-      "swarm-voice"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
-      "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-voice"              = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-voice@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   }
 
@@ -1406,15 +1406,15 @@ run "the_build_can_upload_its_source_and_list_its_bucket" {
   }
 
   variables {
-    deployer_storage_buckets_exact = ["saga-agents-staging_cloudbuild"]
+    deployer_storage_buckets_exact = ["example-project_cloudbuild"]
     enable_github_wif              = true
-    github_repository              = "saga/agent-swarm-infra"
+    github_repository              = "example-org/example-repo"
   }
 
   # The source tarball is an OBJECT in the Cloud Build bucket. An equality test
   # on the bucket admits the bucket and refuses every object in it.
   assert {
-    condition     = strcontains(google_project_iam_member.deployer_storage[0].condition[0].expression, "resource.name.startsWith(\"projects/_/buckets/saga-agents-staging_cloudbuild/objects/\")")
+    condition     = strcontains(google_project_iam_member.deployer_storage[0].condition[0].expression, "resource.name.startsWith(\"projects/_/buckets/example-project_cloudbuild/objects/\")")
     error_message = "the storage condition admits the Cloud Build bucket but not the objects in it; gcloud builds submit could not upload its source"
   }
 
@@ -1423,12 +1423,12 @@ run "the_build_can_upload_its_source_and_list_its_bucket" {
   assert {
     condition = alltrue([
       for n in [
-        "projects/_/buckets/swarm-access-logs-saga-agents-staging",
-        "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/eng/x",
-        "projects/_/buckets/swarm-tfstate-logs-saga-agents-staging",
-        "projects/_/buckets/swarm-tfstate-saga-agents-staging/objects/infra/dev/default.tfstate",
-        "projects/_/buckets/saga-agents-staging_cloudbuild",
-        "projects/_/buckets/saga-agents-staging_cloudbuild/objects/source/1727000000.0-0123456789abcdef.tgz",
+        "projects/_/buckets/swarm-access-logs-example-project",
+        "projects/_/buckets/swarm-artifacts-example-project/objects/tenants/eng/x",
+        "projects/_/buckets/swarm-tfstate-logs-example-project",
+        "projects/_/buckets/swarm-tfstate-example-project/objects/infra/dev/default.tfstate",
+        "projects/_/buckets/example-project_cloudbuild",
+        "projects/_/buckets/example-project_cloudbuild/objects/source/1727000000.0-0123456789abcdef.tgz",
       ] :
       anytrue(concat(
         [for b in var.deployer_storage_bucket_prefixes : startswith(n, "projects/_/buckets/${b}")],
@@ -1441,11 +1441,11 @@ run "the_build_can_upload_its_source_and_list_its_bucket" {
   assert {
     condition = !anytrue([
       for n in [
-        "projects/_/buckets/saga-agents-crawled-media-staging",
-        "projects/_/buckets/saga-agents-files-staging/objects/a",
-        "projects/_/buckets/saga-agents-terraform-state-staging",
-        "projects/_/buckets/saga-agents-terraform-state-staging/objects/default.tfstate",
-        "projects/_/buckets/saga-agents-staging_cloudbuild-lookalike",
+        "projects/_/buckets/peer-media-bucket",
+        "projects/_/buckets/peer-bucket/objects/a",
+        "projects/_/buckets/peer-state-bucket",
+        "projects/_/buckets/peer-state-bucket/objects/default.tfstate",
+        "projects/_/buckets/example-project_cloudbuild-lookalike",
       ] :
       anytrue(concat(
         [for b in var.deployer_storage_bucket_prefixes : startswith(n, "projects/_/buckets/${b}")],
@@ -1486,7 +1486,7 @@ run "the_deployer_holds_no_workload_identity_pool_admin" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
   }
 
   assert {
@@ -1524,7 +1524,7 @@ run "workload_identity_pool_admin_cannot_be_put_back" {
 
   variables {
     enable_github_wif = true
-    github_repository = "saga/agent-swarm-infra"
+    github_repository = "example-org/example-repo"
     deployer_roles    = ["roles/run.admin", "roles/iam.workloadIdentityPoolAdmin"]
   }
 

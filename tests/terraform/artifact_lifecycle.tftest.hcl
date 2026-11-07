@@ -19,9 +19,9 @@
 mock_provider "google" {}
 
 variables {
-  project_id    = "saga-agents-staging"
+  project_id    = "example-project"
   labels        = { "managed-by" = "swarm-terraform" }
-  bucket_suffix = "saga-agents-staging"
+  bucket_suffix = "example-project"
   tenants       = ["eng", "research"]
 
   # Keys as the worker writes them: the index copy and a graph blob under

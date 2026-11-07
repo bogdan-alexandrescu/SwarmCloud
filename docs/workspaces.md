@@ -1425,7 +1425,7 @@ against the project.** The pull request must not merge before the owner's go.
   as `terraform/infra/custom_roles_moved_to_bootstrap.tf` does for the
   broker's grant. A plan with u-bogdan back in `dev.tfvars` fails ("Moved
   object still exists"), which is a guard against re-adding it.
-* `tests/terraform/u_bogdan_removed.tftest.hcl` holds it: dev.tfvars names no
+* `tests/terraform/personal_tenant_removed.tftest.hcl` holds it: dev.tfvars names no
   u-bogdan and the bootstrap plans no grant for it while it still plans eng's;
   terraform/infra plans no u-bogdan resource while it still plans eng's;
   every instance a tenant shaped like u-bogdan gets is a `moved` source; every

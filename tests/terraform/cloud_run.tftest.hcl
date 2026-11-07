@@ -5,35 +5,35 @@
 mock_provider "google" {}
 
 variables {
-  project_id = "saga-agents-staging"
-  network    = "projects/saga-agents-staging/global/networks/swarm-vpc"
-  subnetwork = "projects/saga-agents-staging/regions/us-central1/subnetworks/swarm-subnet-us-central1"
+  project_id = "example-project"
+  network    = "projects/example-project/global/networks/swarm-vpc"
+  subnetwork = "projects/example-project/regions/us-central1/subnetworks/swarm-subnet-us-central1"
   labels     = { "managed-by" = "swarm-terraform" }
 
   services = {
     "swarm-api" = {
-      service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-      image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+      service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
       max_instances         = 20
       cpu                   = "1"
       memory                = "1Gi"
       invokers              = { eng = "group:eng@example.com" }
     }
     "swarm-scheduler" = {
-      service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-      image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+      service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
       max_instances         = 3
       concurrency           = 1
-      invokers              = { tick = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com" }
+      invokers              = { tick = "serviceAccount:swarm-tick@example-project.iam.gserviceaccount.com" }
     }
     "swarm-quota-broker" = {
-      service_account_email = "swarm-quota-broker@saga-agents-staging.iam.gserviceaccount.com"
-      image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker:test"
+      service_account_email = "swarm-quota-broker@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker:test"
       max_instances         = 3
     }
     "swarm-reconciler" = {
-      service_account_email = "swarm-reconciler@saga-agents-staging.iam.gserviceaccount.com"
-      image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler:test"
+      service_account_email = "swarm-reconciler@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler:test"
       max_instances         = 2
       concurrency           = 1
     }
@@ -81,14 +81,14 @@ run "a_service_that_sets_min_instances_keeps_that_floor_and_no_other_does" {
   variables {
     services = {
       "swarm-api" = {
-        service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
         max_instances         = 20
         min_instances         = 2
       }
       "swarm-scheduler" = {
-        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
         max_instances         = 3
         concurrency           = 1
       }
@@ -116,8 +116,8 @@ run "a_floor_above_the_ceiling_is_refused" {
   variables {
     services = {
       "swarm-api" = {
-        service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
         max_instances         = 1
         min_instances         = 2
       }
@@ -208,7 +208,7 @@ run "each_service_runs_as_its_own_identity_with_requests_equal_to_limits" {
   # loop and the reconciler's sweep both run for minutes inside one request.
   #
   # None of the file-level services sets startup_cpu_boost, so every one of
-  # them must come out false: the one exception, swarm-api's (BGD, 2026-10-23,
+  # them must come out false: the one exception, swarm-api's (the owner, 2026-10-23,
   # #1816 option (a)), is held by the two runs at the end of this file.
   assert {
     condition = alltrue([
@@ -254,8 +254,8 @@ run "a_public_invoker_is_accepted_only_while_ingress_is_restricted" {
   variables {
     services = {
       "swarm-api" = {
-        service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
         max_instances         = 20
         invokers              = { everyone = "allUsers" }
       }
@@ -304,14 +304,14 @@ run "a_service_that_sets_a_startup_failure_threshold_gets_it_and_no_other_does" 
   variables {
     services = {
       "swarm-api" = {
-        service_account_email     = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-        image                     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        service_account_email     = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                     = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
         max_instances             = 20
         startup_failure_threshold = 36
       }
       "swarm-scheduler" = {
-        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
         max_instances         = 3
         concurrency           = 1
       }
@@ -355,7 +355,7 @@ run "every_service_that_sets_no_threshold_keeps_twelve" {
 
 # The root sets 36 for swarm-api and for no other service. A test cannot
 # address a child module's resources from terraform/infra, so this reads the
-# root's text, the way u_bogdan_removed.tftest.hcl reads removed.tf.
+# root's text, the way u_pat_removed.tftest.hcl reads removed.tf.
 run "the_infra_root_sets_36_for_swarm_api_and_nothing_else" {
   command = plan
 
@@ -413,7 +413,7 @@ run "the_infra_root_gives_swarm_api_a_request_timeout_above_the_git_call_deadlin
   }
 }
 
-# STARTUP CPU BOOST ON SWARM-API AND NOWHERE ELSE (BGD's decision, 2026-10-23,
+# STARTUP CPU BOOST ON SWARM-API AND NOWHERE ELSE (the owner's decision, 2026-10-23,
 # #1816 option (a)): the one recorded exception to invariant 7 among the Cloud
 # Run services. Boost bursts past the declared limit while an instance starts;
 # swarm-api's Python start on 1 vCPU sometimes outlasted its startup probe.
@@ -427,14 +427,14 @@ run "a_service_that_sets_startup_cpu_boost_gets_it_and_no_other_does" {
   variables {
     services = {
       "swarm-api" = {
-        service_account_email = "swarm-api@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api:test"
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
         max_instances         = 20
         startup_cpu_boost     = true
       }
       "swarm-scheduler" = {
-        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
         max_instances         = 3
         concurrency           = 1
       }
@@ -445,7 +445,7 @@ run "a_service_that_sets_startup_cpu_boost_gets_it_and_no_other_does" {
   # each.value.startup_cpu_boost) and this fails.
   assert {
     condition     = google_cloud_run_v2_service.this["swarm-api"].template[0].containers[0].resources[0].startup_cpu_boost == true
-    error_message = "swarm-api's startup_cpu_boost must reach the revision (BGD, 2026-10-23, #1816 option (a))"
+    error_message = "swarm-api's startup_cpu_boost must reach the revision (the owner, 2026-10-23, #1816 option (a))"
   }
 
   # MUTATION: change the attribute's default from false to true and this fails.
@@ -481,7 +481,7 @@ run "the_infra_root_boosts_swarm_api_and_nothing_else" {
       "(?s)\n    \"swarm-api\" = \\{\n.*?\n      startup_cpu_boost = true\n.*?\n    \"swarm-scheduler\" = \\{",
       file("../../terraform/infra/main.tf"),
     )) == 1
-    error_message = "terraform/infra/main.tf must set startup_cpu_boost = true in swarm-api's block of module \"cloud_run\" (BGD, 2026-10-23, #1816)"
+    error_message = "terraform/infra/main.tf must set startup_cpu_boost = true in swarm-api's block of module \"cloud_run\" (the owner, 2026-10-23, #1816)"
   }
 
   # MUTATION: set startup_cpu_boost on any other service's block (true or
@@ -507,11 +507,11 @@ run "a_grant_on_a_service_another_call_creates_keeps_its_address" {
   variables {
     services = {
       "swarm-scheduler" = {
-        service_account_email = "swarm-scheduler@saga-agents-staging.iam.gserviceaccount.com"
-        image                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler:test"
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
         max_instances         = 3
         concurrency           = 1
-        invokers              = { tick = "serviceAccount:swarm-tick@saga-agents-staging.iam.gserviceaccount.com" }
+        invokers              = { tick = "serviceAccount:swarm-tick@example-project.iam.gserviceaccount.com" }
       }
     }
     invokers_elsewhere = {

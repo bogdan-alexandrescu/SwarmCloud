@@ -783,7 +783,7 @@ locals {
   # Track C's and is asked for in QI-API's questions.json.
   qa_identity_console_account = var.environment == "dev" && local.console_url != "" ? "qa-console@${var.project_id}.iam.gserviceaccount.com" : ""
 
-  # Saga's decision API through the cluster's ONE Tailscale egress Service in
+  # the organisation's decision API through the cluster's ONE Tailscale egress Service in
   # swarm-system (JUDGE-NET; owner decision 2026-10-14). Non-empty is what
   # makes the internal Jev judgment backends available (swarm_api.judgment)
   # and what the scheduler builds a live-browser pod's JEV_API_URL from
@@ -900,7 +900,7 @@ locals {
       #
       # That fallback is working, legitimate code -- which is exactly why this
       # hid. Every request still succeeded and still got *a* tenant; it was just
-      # never the group one. A member of eng@saga.xyz spent their own personal
+      # never the group one. A member of eng@example.com spent their own personal
       # quota and wrote to their own GCS prefix while the shared tenant this
       # file provisions sat unused.
       #
@@ -971,6 +971,13 @@ locals {
       PLATFORM_OWNER          = var.platform_owner
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
+
+      # The never-touch twin (docs/design/generic-repository.md section 2.4):
+      # rendered always, "[]" when the list is empty, so swarm-api tells a
+      # written list from a service that was never rendered (it refuses an
+      # infrastructure issue run when _SET is absent).
+      SWARM_SHARED_DENY_LIST     = jsonencode(var.shared_deny_list)
+      SWARM_SHARED_DENY_LIST_SET = "1"
 
       # The workflow-rollup jobs' identity (modules/scheduler, D17): may call
       # POST /v1/admin/workflows/rollup and no other route
@@ -1097,9 +1104,9 @@ locals {
       # The verification job's identity, admitted past the domain check.
       #
       # swarm-api admits a caller through ALLOWED_USERS or through the frozen
-      # domain check against allowed_domains (saga.xyz). The swarm-verify job
+      # domain check against allowed_domains (example.com). The swarm-verify job
       # authenticates as swarm-verify@<project>.iam.gserviceaccount.com, whose
-      # domain is not saga.xyz and cannot be -- a service account is not a
+      # domain is not example.com and cannot be -- a service account is not a
       # Workspace principal. ALLOWED_USERS exists in settings.py and auth.py
       # for exactly this case and was set by no .tf and no .tfvars, so the
       # in-VPC gate's every request was answered 403 by design.
@@ -1127,7 +1134,7 @@ locals {
       # variables.tf validates secret_admin_members against var.tenants, and
       # that is the whole check -- but Store.ensure_tenant creates a
       # self-service tenant for any allowed-domain caller on first sight, and
-      # var.tenants does not contain those. On 2026-09-21 admin@saga.xyz signed
+      # var.tenants does not contain those. On 2026-09-21 admin@example.com signed
       # in to the web UI and became the principal of tenant u-admin.
       #
       # The `user:`/`group:` prefix is stripped because swarm-api compares
@@ -1197,7 +1204,7 @@ locals {
       # audience of the ID token swarm-api presents. Empty until voice_it is
       # "on"; empty is read by swarm_api.settings as "swarm-voice is not
       # deployed", and every Voice it route answers 503 voice_unavailable.
-      # VOICE_IT_PEOPLE is unset on purpose: PLATFORM_OWNER, BGD alone (§1).
+      # VOICE_IT_PEOPLE is unset on purpose: PLATFORM_OWNER, the owner alone (§1).
       SWARM_VOICE_URL = local.voice_url
 
       # Voice it's own speech machine (voice_speech.tf; docs/design/
@@ -1461,7 +1468,7 @@ locals {
       # WorkerIdentity refuses to start without this when `hardened`, for the
       # same reason PUSH_AUDIENCE exists: no audience means google-auth does not
       # check `aud` at all. It was never set, and `hardened` is driven by
-      # ENVIRONMENT -- which is "dev" for saga-agents-staging, a project that is
+      # ENVIRONMENT -- which is "dev" for example-project, a project that is
       # production-shaped in every way except that label. So the guard written
       # to make this impossible was itself disarmed in the only place it ran.
       BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]

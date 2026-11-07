@@ -1,7 +1,7 @@
 # Custom-mode VPC for the swarm.
 #
 # This is deliberately a NEW network. The project already holds
-# `agents-staging-vpc`, owned by another team, and the default VPC. Neither is
+# `peer-vpc`, owned by another team, and the default VPC. Neither is
 # referenced, read or modified anywhere in this module.
 #
 # Several Compute resources (network, subnetwork, router, NAT, firewall) have no

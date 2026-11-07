@@ -34,7 +34,7 @@ locals {
   # So this defaults OFF, and the boundary is stated honestly rather than
   # claimed falsely: a swarm identity can reach ANY Firestore database in this
   # project. Today that is only `swarm`, so nothing else is exposed. ANYONE
-  # CREATING A SECOND DATABASE IN saga-agents-staging MUST KNOW THIS -- the real
+  # CREATING A SECOND DATABASE IN example-project MUST KNOW THIS -- the real
   # fix is to move Firestore into its own project, where project-level IAM is
   # the database boundary. See docs/security.md.
   #
@@ -157,7 +157,7 @@ resource "google_project_iam_member" "plain" {
 # GKE dispatch and reap, pinned to the swarm's own cluster.
 #
 # A project-level container.* binding covers every cluster in the project, and
-# saga-agents-staging holds a live `agents-staging` cluster owned by another
+# example-project holds a live `peer-cluster` cluster owned by another
 # team. Unconditioned, swarm-scheduler could create Jobs in it and read its Pod
 # logs, and swarm-reconciler could delete its Jobs and Pods.
 #

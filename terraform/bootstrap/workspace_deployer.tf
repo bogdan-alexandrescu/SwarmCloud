@@ -157,7 +157,7 @@ locals {
   # Personal tenants' secrets, and only theirs: `swarm-tenant-u-` is
   # Tenant.secret_name's spelling for a tenant id the frozen contract mints
   # for a person (identity.tenant_id_for_user). The other team's secrets are
-  # agents-* and promptlab-*, which this cannot match.
+  # agents-* and peer-app-*, which this cannot match.
   workspace_personal_secret_prefix = "projects/${local.workspace_project_number}/secrets/swarm-tenant-u-"
 
   # The roles each person's worker holds on the project, and so the only roles
@@ -184,7 +184,7 @@ locals {
     object_creator = "resource.name.startsWith(\"projects/_/buckets/${local.workspace_artifact_bucket}/objects/tenants/\")"
 
     # get-credentials on the swarm cluster; nothing on the other team's
-    # agents-staging. The expression modules/iam builds for the dispatchers.
+    # peer-cluster. The expression modules/iam builds for the dispatchers.
     cluster_viewer = "resource.name.startsWith(\"${local.workspace_cluster_name}\")"
   }
 

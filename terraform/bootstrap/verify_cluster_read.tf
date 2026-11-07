@@ -19,7 +19,7 @@
 # touches, never to whom or under what condition, so granting clusterViewer
 # from terraform/infra would need it on that list -- and then any CI run could
 # grant clusterViewer to itself or anyone, unconditioned, reaching the other
-# team's agents-staging cluster in this shared project. Granted from here, the
+# team's peer-cluster cluster in this shared project. Granted from here, the
 # role stays off CI's list: tests/terraform/deployer_iam.tftest.hcl holds that
 # no container role is on it, and tests/terraform/verify_gke_read.tftest.hcl
 # that terraform/infra grants swarm-verify none.
@@ -35,7 +35,7 @@
 # (`.../clusters/swarm-autopilot/...`). A bare startsWith on the name -- the
 # form workspace_deployer.tf's cluster_viewer uses -- would also admit any
 # cluster whose name began with ours (swarm-autopilot2). Neither form can
-# match agents-staging, whose name does not start with ours.
+# match peer-cluster, whose name does not start with ours.
 #
 # The account is this root's own (platform_service_accounts.tf, DAYONE-BOOT-2),
 # spelled by modules/service_account_ids -- the one spelling both roots read --

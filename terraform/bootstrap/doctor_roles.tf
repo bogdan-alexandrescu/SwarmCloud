@@ -14,7 +14,7 @@
 #     their payload (secretAccessor is not here);
 #   * roles/container.clusterViewer: the swarm cluster's endpoint, conditioned
 #     to that cluster exactly as swarm-verify's is (verify_cluster_read.tf), so
-#     it cannot reach the other team's agents-staging in a shared project.
+#     it cannot reach the other team's peer-cluster in a shared project.
 #
 # Granted here, by the owner's bootstrap apply, never by CI: CI's scoped
 # projectIamAdmin may grant only the roles on deployer_grantable_project_roles

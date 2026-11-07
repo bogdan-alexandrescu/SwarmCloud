@@ -34,20 +34,20 @@ mock_provider "google" {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
 
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -101,17 +101,17 @@ run "the_scheduler_module_reads_the_tick_account" {
     scheduler_push_endpoint = "https://swarm-scheduler-abcdef-uc.a.run.app"
     reconciler_endpoint     = "https://swarm-reconciler-abcdef-uc.a.run.app"
     quota_broker_endpoint   = "https://swarm-quota-broker-abcdef-uc.a.run.app"
-    tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+    tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
     labels                  = { "managed-by" = "swarm-terraform" }
   }
 
   assert {
-    condition     = data.google_service_account.schedule_tick.account_id == "swarm-schedule-tick" && data.google_service_account.schedule_tick.project == "saga-agents-staging"
+    condition     = data.google_service_account.schedule_tick.account_id == "swarm-schedule-tick" && data.google_service_account.schedule_tick.project == "example-project"
     error_message = "the scheduler module must read swarm-schedule-tick in the platform's project"
   }
 
   assert {
-    condition     = output.schedule_tick_email == "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = output.schedule_tick_email == "swarm-schedule-tick@example-project.iam.gserviceaccount.com"
     error_message = "the root renders this address as SCHEDULE_TICK_USERS and grants it run.invoker; it must be the account bootstrap creates"
   }
 
@@ -139,7 +139,7 @@ run "bootstrap_creates_the_tick_account" {
   }
 
   assert {
-    condition     = google_service_account.schedule_tick.account_id == "swarm-schedule-tick" && google_service_account.schedule_tick.project == "saga-agents-staging"
+    condition     = google_service_account.schedule_tick.account_id == "swarm-schedule-tick" && google_service_account.schedule_tick.project == "example-project"
     error_message = "terraform/bootstrap must create swarm-schedule-tick in the platform's project"
   }
 
@@ -166,7 +166,7 @@ run "the_tick_can_invoke_swarm_api_and_swarm_api_knows_its_address" {
 
   variables {
     api_invokers             = ["group:eng@example.com"]
-    deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+    deployer_service_account = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
     tenants = {
       eng = { kind = "group", principal = "eng@example.com", providers = ["anthropic"] }
     }
@@ -183,19 +183,19 @@ run "the_tick_can_invoke_swarm_api_and_swarm_api_knows_its_address" {
   }
 
   assert {
-    condition     = google_cloud_run_v2_service_iam_member.schedule_tick_invokes_api.member == "serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = google_cloud_run_v2_service_iam_member.schedule_tick_invokes_api.member == "serviceAccount:swarm-schedule-tick@example-project.iam.gserviceaccount.com"
     error_message = "the invoker grant must name swarm-schedule-tick"
   }
 
   assert {
-    condition     = local.service_env["swarm-api"]["SCHEDULE_TICK_USERS"] == "swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = local.service_env["swarm-api"]["SCHEDULE_TICK_USERS"] == "swarm-schedule-tick@example-project.iam.gserviceaccount.com"
     error_message = "swarm-api must be told the tick's address as SCHEDULE_TICK_USERS, or auth.SCHEDULE_TICK_ROUTES admits nobody"
   }
 
   # The sweeper's admission is not widened to the tick, nor the tick's to the
   # sweeper.
   assert {
-    condition     = local.service_env["swarm-api"]["ROLLUP_SWEEPER_USERS"] == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+    condition     = local.service_env["swarm-api"]["ROLLUP_SWEEPER_USERS"] == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
     error_message = "ROLLUP_SWEEPER_USERS must still name the sweeper alone"
   }
 
@@ -210,9 +210,9 @@ run "the_tick_can_invoke_swarm_api_and_swarm_api_knows_its_address" {
   # account holds.
   assert {
     condition = (
-      google_service_account_iam_member.deployer_acts_as["swarm-schedule-tick"].service_account_id == "projects/saga-agents-staging/serviceAccounts/swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com"
+      google_service_account_iam_member.deployer_acts_as["swarm-schedule-tick"].service_account_id == "projects/example-project/serviceAccounts/swarm-schedule-tick@example-project.iam.gserviceaccount.com"
       && google_service_account_iam_member.deployer_acts_as["swarm-schedule-tick"].role == "roles/iam.serviceAccountUser"
-      && google_service_account_iam_member.deployer_acts_as["swarm-schedule-tick"].member == "serviceAccount:swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+      && google_service_account_iam_member.deployer_acts_as["swarm-schedule-tick"].member == "serviceAccount:swarm-tf-deployer@example-project.iam.gserviceaccount.com"
     )
     error_message = "the deployer must hold actAs on swarm-schedule-tick, and only the deployer"
   }
@@ -346,11 +346,11 @@ run "the_tick_holds_no_grant_but_run_invoker_on_swarm_api" {
         "",
         "resource \"google_project_iam_member\" \"tick_reads_firestore\" {",
         "  role   = \"roles/datastore.viewer\"",
-        "  member = \"serviceAccount:swarm-schedule-tick@saga-agents-staging.iam.gserviceaccount.com\"",
+        "  member = \"serviceAccount:swarm-schedule-tick@example-project.iam.gserviceaccount.com\"",
         "}",
         "",
         "resource \"google_project_iam_member\" \"someone_else\" {",
-        "  member = \"serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com\"",
+        "  member = \"serviceAccount:swarm-api@example-project.iam.gserviceaccount.com\"",
         "}",
         "",
       ])) : "${m[0]}.${m[1]}" if length(regexall(var.tick_re, replace(m[2], var.depends_on_re, ""))) > 0

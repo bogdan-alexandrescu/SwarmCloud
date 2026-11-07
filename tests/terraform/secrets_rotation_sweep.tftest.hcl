@@ -20,7 +20,7 @@ mock_provider "google" {
 }
 
 variables {
-  project_id  = "saga-agents-staging"
+  project_id  = "example-project"
   environment = "dev"
   labels      = { "managed-by" = "swarm-terraform" }
 
@@ -29,9 +29,9 @@ variables {
   scheduler_push_endpoint = "https://swarm-scheduler-abcdef-uc.a.run.app"
   reconciler_endpoint     = "https://swarm-reconciler-abcdef-uc.a.run.app"
   quota_broker_endpoint   = "https://swarm-quota-broker-abcdef-uc.a.run.app"
-  tick_service_account    = "swarm-tick@saga-agents-staging.iam.gserviceaccount.com"
+  tick_service_account    = "swarm-tick@example-project.iam.gserviceaccount.com"
   publisher_members = {
-    api = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    api = "serviceAccount:swarm-api@example-project.iam.gserviceaccount.com"
   }
 
   # The monitoring module's own inputs.
@@ -39,20 +39,20 @@ variables {
   wake_subscription           = "swarm-scheduler-wake-sub"
   dead_letter_subscription    = "swarm-scheduler-wake-dlq-sub"
   safety_tick_job             = "swarm-scheduler-tick"
-  extra_notification_channels = ["projects/saga-agents-staging/notificationChannels/1234567890"]
+  extra_notification_channels = ["projects/example-project/notificationChannels/1234567890"]
 
   # The infra root's.
   image_refs = {
-    "swarm-api"                = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-    "swarm-scheduler"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
-    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
-    "swarm-reconciler"         = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-    "swarm-ui"                 = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
-    "swarm-verify"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
-    "agent-runtime-base"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   }
 }
 
@@ -92,7 +92,7 @@ run "the_rotation_sweep_runs_hourly_as_the_sweeper" {
 
   assert {
     condition = (
-      google_cloud_scheduler_job.secrets_rotation_sweep[0].http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      google_cloud_scheduler_job.secrets_rotation_sweep[0].http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
       && google_cloud_scheduler_job.secrets_rotation_sweep[0].http_target[0].oidc_token[0].service_account_email == output.rollup_sweeper_email
       && google_cloud_scheduler_job.secrets_rotation_sweep[0].http_target[0].oidc_token[0].service_account_email != var.tick_service_account
     )
@@ -204,7 +204,7 @@ run "the_sweeper_account_names_the_secrets_rotation_sweep" {
   }
 
   variables {
-    project_id           = "saga-agents-staging"
+    project_id           = "example-project"
     frontend_iap_members = ["domain:example.com"]
   }
 
