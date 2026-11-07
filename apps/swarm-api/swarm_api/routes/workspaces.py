@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from ..auth import AuthContext
@@ -43,8 +43,8 @@ from ..errors import WorkspaceIdTaken, WorkspaceNotForServiceAccounts, Workspace
 from ..people import People
 from ..publish_workspace import WorkspacePublisher
 from ..schemas import StrictModel
-from ..workspaces import is_service_identity, personal_tenant_id, view
-from .people import people_service, workspace_publisher
+from ..workspaces import READY, is_service_identity, personal_tenant_id, state_of, view
+from .people import apply_ready_loans, people_service, workspace_publisher
 
 router = APIRouter(prefix="/v1/workspace", tags=["workspace"])
 
@@ -83,13 +83,21 @@ def _own(auth: AuthContext, ctx: AppContext) -> tuple[str, str]:
 
 @router.get("")
 def get_workspace(
+    request: Request,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
     publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
+    """The caller's record. The console polls this every 5 s while the
+    workspace is made, so the first read that finds it `ready` also applies
+    the loans an admin lent meanwhile (LOAN-ON-READ, `apply_ready_loans`):
+    the caller's own tenant's, and only theirs."""
     tenant_id, _ = _own(auth, ctx)
     workspaces = ctx.submissions.workspaces
-    return view(workspaces.get(tenant_id), console_url=workspaces.console_url,
+    record = workspaces.get(tenant_id)
+    if state_of(record) == READY:
+        apply_ready_loans(request.app, tenant_id)
+    return view(record, console_url=workspaces.console_url,
                 publishing=bool(publisher.enabled), now=ctx.now())
 
 
