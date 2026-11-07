@@ -1060,6 +1060,9 @@ function stagePhase(stage) {
 // meta.description leads with the workspace instead -- and the plugin's tests
 // hold the two cuts equal. Counted in code points, as Python counts.
 const TITLE_CHARS = 150
+// The most characters of the NAME in it (#2688): swarm_mcp.workflows.NAME_MAX_CHARS,
+// the cap a name is refused over, so only a name stored before it is cut.
+const NAME_MAX_CHARS = 30
 
 // THE RUN'S KIND, right after `SC` (owner 2026-11-04 23:00: the panel cuts a
 // title at about 28 characters, so the kind is seen before the name). ONE dot
@@ -1116,7 +1119,7 @@ function workspaceNote(workspace) {
 // (swarm_mcp.launch._run_title).
 function runTitle(mark, name, tail) {
   const prefix = 'SC ' + mark + ' '
-  const room = Math.max(1, TITLE_CHARS - Array.from(prefix).length - Array.from(tail).length)
+  const room = Math.max(1, Math.min(NAME_MAX_CHARS, TITLE_CHARS - Array.from(prefix).length - Array.from(tail).length))
   let chars = Array.from(flatText(name) || 'workflow')
   if (chars.length > room) {
     let head = chars.slice(0, room - 1)
