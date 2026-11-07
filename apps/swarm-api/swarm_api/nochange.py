@@ -23,7 +23,11 @@ So a submission is refused, before anything is stored, when a step
     changes nothing (`NO_CHANGE_PHRASES`).
 
 `collect` is never refused: no step there opens a pull request. The refusal
-is new, so it ships report-only (`refusals.SWITCHES`, `step_declares_no_change`).
+is enforced from the next release, by the owner's decision of 7 November 2026
+(`refusals.SWITCHES`, `step_declares_no_change`, default on). It can be
+switched off per environment with
+`api_refusals { step_declares_no_change = false }` in that environment's
+tfvars, which renders REFUSAL_STEP_DECLARES_NO_CHANGE=off.
 """
 
 from __future__ import annotations

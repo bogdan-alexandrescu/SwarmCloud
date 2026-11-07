@@ -616,15 +616,21 @@ SWITCHES: dict[str, Switch] = {
         default=True,
     ),
     # A step whose prompt says it changes nothing, held to a pull request and
-    # submitted without `allow_empty_diff` (nochange.py, part of #2688). Off,
-    # the workflow is stored and the step fails `published_nothing:` naming
-    # its artifacts and the flag, as the worker reports it.
+    # submitted without `allow_empty_diff` (nochange.py, part of #2688). SHIPS
+    # ON (default=True) by owner decision 2026-11-07 (answer "enforced" on the
+    # implement and fix tasks): "analyze and fix this so it never happens like
+    # this again", and report-only would let the next undeclared read-only
+    # workflow fail the same way. Off (REFUSAL_STEP_DECLARES_NO_CHANGE=off, or
+    # api_refusals { step_declares_no_change = false }), the workflow is stored
+    # and the step fails `published_nothing:` naming its artifacts and the
+    # flag, as the worker reports it.
     "step_declares_no_change": Switch(
         code="step_declares_no_change",
         why="a direct-pr step (not a reader, gated step or review) or an integrate integrator "
         "whose prompt says it changes nothing and that left allow_empty_diff out is refused "
-        "422 naming the step. On once the log shows it refused only analysis steps, and "
-        "the submitters that write such steps say allow_empty_diff",
+        "422 naming the step. Ships on by owner decision 2026-11-07; off, the workflow is "
+        "stored and the step fails published_nothing naming its artifacts and the flag",
+        default=True,
     ),
     # Join requests (docs/design/join-requests.md §4.9, lane JOIN-STORE, part
     # of #2325) have NO switch here, deliberately: join_link_unknown,
