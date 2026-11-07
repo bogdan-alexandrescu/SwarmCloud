@@ -27,6 +27,7 @@ No network, no cloud credential; every token and grant is built at runtime.
 
 from __future__ import annotations
 
+import json
 import secrets
 import sys
 from datetime import datetime, timedelta, timezone
@@ -586,3 +587,50 @@ def test_speaks_point_at_is_a_focus_on_the_sessions_stream(client, db, voice):
     neither = client.post(f"/v1/voice/sessions/{call.session_id}/visuals", json={},
                           headers=_grant_headers(call))
     assert neither.status_code == 422
+
+
+# ---- the stream carries them ------------------------------------------------------
+
+
+def test_the_stream_serves_a_visual_a_focus_and_a_note_in_sequence_and_on_replay(client, db,
+                                                                                  voice):
+    from control_plane.test_voice_sessions import _end
+    from control_plane.test_voice_stream import _frames
+
+    call = _start(client, voice)
+    vid = _draw(client, call).json()["visual"]["visual_id"]
+    anchor = {"type": "part", "part_id": "overview"}
+    assert client.post(f"/v1/voice/sessions/{call.session_id}/visuals",
+                       json={"focus": {"visual_id": vid, "anchor": anchor, "caption": "Here."}},
+                       headers=_grant_headers(call)).status_code == 200
+    note = _note(client, call, vid, part="overview").json()["note"]
+    resolved = client.patch(
+        f"/v1/voice/projects/{call.project_id}/visuals/{vid}/notes/{note['note_id']}",
+        json={"state": "resolved", "session_id": call.session_id}, headers=auth_header("alice"))
+    assert resolved.status_code == 200, resolved.text
+    assert _end(client, "alice", call.session_id).status_code == 200
+    url = f"/v1/voice/sessions/{call.session_id}/events"
+
+    frames = _frames(client.get(url, headers=auth_header("alice")).text)
+
+    ours = [f for f in frames if f["event"] in (vvis.VISUAL_UPSERT, vvis.FOCUS, vvis.NOTE_UPSERT)]
+    assert [f["event"] for f in ours] == [vvis.VISUAL_UPSERT, vvis.FOCUS, vvis.NOTE_UPSERT,
+                                          vvis.NOTE_UPSERT]
+    assert [f["id"] for f in ours] == sorted(f["id"] for f in ours)
+    visual = client.get(f"/v1/voice/projects/{call.project_id}/visuals/{vid}",
+                        headers=auth_header("alice")).json()
+    # Each frame carries what the visual and note reads serve, and no more.
+    assert ours[0]["data"]["visual"] == visual["visual"] and "body" not in ours[0]["data"]["visual"]
+    assert {k: ours[1]["data"][k] for k in ("visual_id", "anchor", "caption")} == {
+        "visual_id": vid, "anchor": anchor, "caption": "Here."}
+    assert ours[2]["data"]["note"]["note_id"] == note["note_id"]
+    assert ours[2]["data"]["note"]["state"] == "open"
+    assert ours[3]["data"]["note"] == visual["notes"][0]
+    assert ours[3]["data"]["note"]["state"] == "resolved"
+    for f in ours:
+        assert "tenant_id" not in json.dumps(f["data"]) and '"person"' not in json.dumps(f["data"])
+
+    replay = _frames(client.get(url, headers={**auth_header("alice"),
+                                              "Last-Event-ID": str(ours[0]["id"])}).text)
+    assert [(f["id"], f["event"]) for f in replay if f["id"] <= ours[-1]["id"]] == [
+        (f["id"], f["event"]) for f in ours[1:]]

@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import STAGE_CSS from '../styles/talk-stage.css?raw'
 import TALK_CSS from '../styles/talk-pane.css?raw'
 import STYLES from '../styles.css?raw'
+import { CardList } from '../voice/CardList'
 import { cascade } from './cssgate'
 
 const fetchMock = vi.hoisted(() => {
@@ -302,5 +303,130 @@ describe('on a phone nothing is wider than 390 and nothing pans', () => {
     expect(won(page.querySelector('.vt-cap-text')!, 'overflow-wrap')).toBe('anywhere')
     expect(won(page.querySelector('.vt-subs')!, 'scroll-snap-type')).toBe('y proximity')
     expect(won(page.querySelector('.vt-cap')!, 'scroll-snap-align')).toBe('end')
+  })
+})
+
+// THE STAGE IS LIVE (part of #2688): the session's stream carries the
+// planner's focus, a visual drawn or drawn again, and a note pinned or
+// resolved (swarm_api/voice/stream.py `STAGE_TYPES`); the stage applies each
+// without waiting for its next read.
+//
+// MUTATIONS: listen for none of the three; draw a visual.upsert without
+// re-reading it; leave the stage on its tab after a focus; band no focused
+// line; re-read nothing on a note.upsert; open a stream of the stage's own
+// beside the card list's; band the focus with an inline style instead of
+// talk-stage.css's rule.
+
+/** The session's stream, driven by the test. */
+class FakeEventSource extends EventTarget {
+  static readonly CLOSED = 2
+  static all: FakeEventSource[] = []
+  readyState = 1
+  onerror: ((e: Event) => void) | null = null
+  constructor(readonly url: string) {
+    super()
+    FakeEventSource.all.push(this)
+  }
+  close(): void {
+    this.readyState = 2
+  }
+  frame(type: string, seq: number, data: Record<string, unknown>): void {
+    this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify({ seq, type, ...data }), lastEventId: String(seq) }))
+  }
+}
+
+describe('the stage applies the session stream live', () => {
+  let listed: unknown[]
+  let notes: unknown[]
+  beforeEach(() => {
+    FakeEventSource.all = []
+    vi.stubGlobal('EventSource', FakeEventSource)
+    listed = [LOG]
+    notes = []
+    fetchMock.read.mockImplementation(async (target: { template: string; url: string }) => {
+      if (target.template === '/v1/voice/projects/{project_id}/visuals') return ok({ visuals: listed })
+      if (target.url.endsWith('/vv_slice')) return ok({ visual: VISUAL, body: BODY, notes })
+      if (target.url.endsWith('/vv_log')) return ok({ visual: LOG, body: 'step e2e failed', notes: [] })
+      if (target.template === '/v1/voice/sessions/{session_id}/readbacks/pending') return ok({ readback: null })
+      throw new Error(`no answer for ${target.template}`)
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const stream = (): FakeEventSource => {
+    const s = FakeEventSource.all.find((e) => e.url.startsWith('/v1/voice/sessions/vs_t/events'))
+    if (s === undefined) throw new Error('the stage opened no stream')
+    return s
+  }
+
+  it('draws a visual that arrives on the stream, then moves to the visual and lines the planner points at', async () => {
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    await screen.findByRole('figure', { name: 'e2e, step 4' })
+    listed = [VISUAL, LOG]
+    await act(async () => stream().frame('visual.upsert', 1, { visual: VISUAL }))
+    const frame = await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    expect(within(frame).getByText('L40–44')).toBeTruthy()
+
+    await act(async () => stream().frame('focus', 2, { visual_id: 'vv_log', anchor: null, caption: null }))
+    expect(screen.getByRole('button', { name: /e2e, step 4/ }).getAttribute('aria-pressed')).toBe('true')
+    await screen.findByRole('figure', { name: 'e2e, step 4' })
+
+    await act(async () =>
+      stream().frame('focus', 3, { visual_id: 'vv_slice', anchor: { type: 'lines', from: 41, to: 42 }, caption: 'The counts are read here.' }),
+    )
+    const back = await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    const focused = [...back.querySelectorAll<HTMLElement>('li.vts-line.is-focus')].map((l) => l.dataset.line)
+    expect(focused).toEqual(['41', '42'])
+    expect(within(back).getByText('The counts are read here.')).toBeTruthy()
+    // The page never reloaded: one stream, opened once.
+    expect(FakeEventSource.all.filter((e) => e.url.startsWith('/v1/voice/sessions/vs_t/events'))).toHaveLength(1)
+    // The band is talk-stage.css's rule, not an inline style, and it wins over a note's band.
+    const line = back.querySelector<HTMLElement>('li.vts-line[data-line="42"]')!
+    expect(line.getAttribute('style')).toBeNull()
+    const sheets = [STYLES, STAGE_CSS].join('\n')
+    const won = (prop: string) => cascade(sheets, line, prop, { width: 1280 }).winner?.value ?? null
+    expect(won('background')).toBe('color-mix(in srgb, var(--info) 12%, transparent)')
+    expect(won('box-shadow')).toBe('inset 3px 0 0 var(--info)')
+    line.classList.add('is-noted')
+    expect(won('box-shadow')).toBe('inset 3px 0 0 var(--info)')
+  })
+
+  it("shares the card list's stream: one connection for the session, each reading its own events", async () => {
+    render(
+      <>
+        <TalkStage projectId="vp_t" sessionId="vs_t" live />
+        <CardList sessionId="vs_t" />
+      </>,
+    )
+    await screen.findByRole('figure', { name: 'e2e, step 4' })
+    expect(FakeEventSource.all).toHaveLength(1)
+    listed = [VISUAL, LOG]
+    await act(async () => stream().frame('visual.upsert', 1, { visual: VISUAL }))
+    await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    expect(screen.getByText('No cards in this session yet.')).toBeTruthy()
+    expect(FakeEventSource.all).toHaveLength(1)
+  })
+
+  it('re-reads the visual a note.upsert names, so a pinned note appears and a resolved one leaves', async () => {
+    listed = [VISUAL]
+    render(<TalkStage projectId="vp_t" sessionId="vs_t" live />)
+    await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    expect(screen.queryByRole('button', { name: 'Note 1' })).toBeNull()
+    notes = [NOTE]
+    await act(async () => stream().frame('note.upsert', 1, { note: NOTE }))
+    expect(await screen.findByRole('button', { name: 'Note 1' })).toBeTruthy()
+    notes = [{ ...NOTE, state: 'resolved' }]
+    await act(async () => stream().frame('note.upsert', 2, { note: { ...NOTE, state: 'resolved' } }))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(screen.queryByRole('button', { name: 'Note 1' })).toBeNull()
+  })
+
+  it('opens no stream while no session is live', async () => {
+    listed = [VISUAL]
+    render(<TalkStage projectId="vp_t" sessionId={null} live={false} />)
+    await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    expect(FakeEventSource.all).toHaveLength(0)
   })
 })
