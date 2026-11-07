@@ -24,6 +24,7 @@ from . import artifact_manifest, standalone_outputs
 from .cachedirs import CACHE_ROOT_ENV
 from .checkpoint import CHECKPOINT_BACKOFF_CAP_SECONDS
 from .errors import ConfigError
+from .gitidentity import is_noreply
 
 
 def _require(name: str) -> str:
@@ -325,6 +326,8 @@ class WorkerConfig:
     #: The worker derives the branch from the task id and re-checks this prefix
     #: inside `push_branch`. The agent never supplies a branch name.
     git_branch_prefix: str = "swarm/"
+    #: The worker's own identity, for a task naming no GitHub account. A
+    #: GitHub no-reply address, which `__post_init__` insists on.
     git_author_name: str = "swarmcloud agent"
     git_author_email: str = "swarmcloud-agent@users.noreply.github.com"
 
@@ -598,6 +601,12 @@ class WorkerConfig:
             raise ConfigError("timeout must be positive")
         if self.termination_grace_seconds < 0:
             raise ConfigError("termination grace must not be negative")
+        # Owner rule 2026-11-07: no commit carries an address that identifies
+        # a person or a company, and GitHub refuses a push exposing a private
+        # one (GH007). The worker's own commits are no exception.
+        if not is_noreply(self.git_author_email):
+            raise ConfigError("the worker's git author email must be a GitHub no-reply "
+                              "address (<login>@users.noreply.github.com)")
         if self.spec_signature_mode not in ("enforce", "legacy"):
             raise ConfigError(
                 f"SPEC_SIGNATURE_MODE must be enforce or legacy, got {self.spec_signature_mode!r}"

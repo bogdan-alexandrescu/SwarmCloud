@@ -442,11 +442,13 @@ def test_preparing_again_keeps_the_relay(tmp_path):
 
 _SUBMITTER = "ada@example.invalid"
 _ROBOT = "swarm-accept@project.iam.gserviceaccount.com"
+#: A connected GitHub account's no-reply address: what swarm-api records.
+_NOREPLY = "1815+ada-lovelace@users.noreply.github.com"
 
 _IDENTITY_TASKS = {
     "display name": {"submitted_by": _SUBMITTER, "metadata": {"dispatch": {
         "strategy": "direct-pr",
-        "git_identity": {"name": "Ada Lovelace", "email": _SUBMITTER}}}},
+        "git_identity": {"name": "ada-lovelace", "email": _NOREPLY}}}},
     "bare submitter": {"submitted_by": _SUBMITTER,
                        "metadata": {"dispatch": {"strategy": "direct-pr"}}},
     "service account": {"submitted_by": _ROBOT,
@@ -523,7 +525,7 @@ def test_a_commit_naming_the_person_under_the_bots_committer_is_refused(tmp_path
     path = _path(tmp_path, FakeRoutes())
     _, work = _prepare(path, tmp_path, _IDENTITY_TASKS["display name"])
     name, email = BOT_GIT_IDENTITY
-    _commit_as(work / "repo", {"GIT_AUTHOR_NAME": "Ada Lovelace", "GIT_AUTHOR_EMAIL": _SUBMITTER,
+    _commit_as(work / "repo", {"GIT_AUTHOR_NAME": "ada-lovelace", "GIT_AUTHOR_EMAIL": _NOREPLY,
                                "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email},
                "mixed.txt")
     assert _push_answer(path, work)["refused"] == "foreign_author"
