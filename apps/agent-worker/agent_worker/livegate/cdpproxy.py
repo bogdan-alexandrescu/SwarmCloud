@@ -299,6 +299,7 @@ from .qatarget import (
     REFUSALS_PATH,
     SIGN_IN_FAILED,
     STATE_FAILED,
+    STATE_SIGNING_IN,
     QaTarget,
     QaTargetGuard,
     SignIn,
@@ -1367,7 +1368,9 @@ class CdpProxy:
         except Exception as exc:  # noqa: BLE001 -- the sign-in fails; the gate does not
             log.warning("live gate: the QA sign-in failed (%s)", type(exc).__name__)
             state, cause = STATE_FAILED, SIGN_IN_FAILED
-        target.finished(state, cause)
+        if target.state == STATE_SIGNING_IN:
+            # Not yet said by `qa_sign_in` (it returned before its sign-in ran, or raised).
+            target.finished(state, cause)
 
     async def qa_sign_in(self) -> tuple[str, str | None]:
         """THE HELD SIGN-IN (module docstring): (state, cause). The agent is
@@ -1390,6 +1393,11 @@ class CdpProxy:
             await sign_in.close()
             # From here the login's other origin is no top-frame destination.
             target.signing_in = False
+            # The outcome is the target's BEFORE the agent's tab lands: an app
+            # that refreshes its IdP token on that first load (QA-IDP-POST)
+            # meets the state the gate keeps from here, never `signing_in`
+            # with the sign-in over, which refuses the refresh (#2688).
+            target.finished(*outcome)
             # 2. The agent's tab goes to the target's base URL.
             if target.base_url and not self._gone:
                 await self._qa_land(target.base_url)
