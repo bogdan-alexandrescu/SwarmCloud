@@ -31,7 +31,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { leakedValue, serve, tokenShapedIn, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
-import { COMPANY_NAME } from '../../test/companyName'
+import { listedIn } from '../../test/deploymentPatterns'
 
 const ID = (n: number) => `repo_${String(n).padStart(16, '0')}`
 
@@ -557,7 +557,7 @@ describe('connected but not installed (#780)', () => {
     expect(visible(document.querySelector('.ac-chooser'))).toContain(
       'Install the SwarmCloud GitHub App on an owner on the left',
     )
-    expect(visible(document.body)).not.toMatch(COMPANY_NAME)
+    expect(listedIn(visible(document.body))).toEqual([])
   })
 
   it('draws mixed rows: Enable for the installed owner, Install for the other, and no notice', async () => {
