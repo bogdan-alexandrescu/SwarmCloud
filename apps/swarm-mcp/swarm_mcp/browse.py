@@ -271,8 +271,14 @@ def stages_level(client: SwarmClient, workflow_id: str, now: datetime | None = N
 def _task_note(task: dict[str, Any]) -> str:
     """The one line Level 3 shows after an agent's state."""
     from .compact import waits_for
+    from .progress import fix_loop_words
 
     state = task.get("state")
+    # A FIX LOOP'S COUNTER (FL-PLUGIN, docs/design/fix-loop.md §6.3): `round
+    # k of N` and the half running, or the phase it waits for you on.
+    rounds = fix_loop_words(task)
+    if rounds:
+        return rounds
     if state == "SUCCEEDED":
         pr = describe_task(task).get("pull_request")
         return f"PR {_pr_number(pr)}" if pr else "succeeded"

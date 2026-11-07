@@ -422,7 +422,7 @@ def _spec_format(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def dispatch_of(task: Task) -> dict[str, Any]:
+def dispatch_of(task: Task, masking: TaskMasking | None = None) -> dict[str, Any]:
     """The EFFECTIVE dispatch options for a task, always complete.
 
     `task.metadata["dispatch"]` is where they are stored, and it is absent on
@@ -431,6 +431,10 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     `collect`/`checkpoints` rather than as null. A caller reading this key never
     has to know that the encoding lives in metadata, or that a task may predate
     it.
+
+    `masking` is the task's masker, given where the block is served to a
+    caller: a `fix-loop` step's block (FL-SUBMIT, docs/design/fix-loop.md
+    §4.1) carries the caller's override prompts, so it is served only masked.
     """
     raw = task.metadata.get(DISPATCH_METADATA_KEY)
     block = raw if isinstance(raw, dict) else {}
@@ -462,6 +466,9 @@ def dispatch_of(task: Task) -> dict[str, Any]:
         sources = block.get("budget_from") if task.budget is not None else (
             legacy.get("from") if isinstance(legacy, dict) else None)
         out["budget"] = {**limits, "from": dict(sources) if isinstance(sources, dict) else {}}
+    # A `fix-loop` step's signed block (FL-SUBMIT), only on that step, masked.
+    if masking is not None and isinstance(block.get("fix_loop"), dict):
+        out["fix_loop"], _ = masking.leaves(block["fix_loop"])
     return out
 
 
@@ -673,6 +680,15 @@ def task_to_api(
     if not summary:
         masked_input, input_count = masking.input_value()
         masked_metadata, metadata_count = masking.metadata_value()
+        # `metadata_value` serves `dispatch` as stored, but a `fix-loop`
+        # step's block carries the caller's override prompts (FL-SUBMIT), so
+        # it is masked here as `dispatch_of` masks it.
+        served_dispatch = masked_metadata.get(DISPATCH_METADATA_KEY)
+        if isinstance(served_dispatch, dict) and isinstance(served_dispatch.get("fix_loop"), dict):
+            served_dispatch = dict(served_dispatch)
+            served_dispatch["fix_loop"], found = masking.leaves(served_dispatch["fix_loop"])
+            masked_metadata[DISPATCH_METADATA_KEY] = served_dispatch
+            metadata_count += found
         result_summary, result_summary_count = masking.leaves(task.result_summary)
     else:
         masked_metadata, metadata_count = summary_metadata(task, masking)
@@ -772,7 +788,7 @@ def task_to_api(
         # here so a caller reads the effective values -- including on a task
         # that predates the feature and has no block -- without knowing the
         # encoding.
-        "dispatch": dispatch_of(task),
+        "dispatch": dispatch_of(task, masking),
         # SC-SESSION-SCOPE: the Claude Code session that submitted it, lifted
         # out of `metadata` (and kept in the summary view, which drops it).
         "claude_session": claude_session_of(task, masking),

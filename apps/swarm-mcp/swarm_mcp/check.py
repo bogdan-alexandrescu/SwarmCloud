@@ -44,7 +44,11 @@ THE RULES, each with the control that is NOT flagged:
     -- a provider quota window, a retry backoff -- is the platform waiting by
     design, and is not flagged. A HUMAN_REQUIRED park whose `park_phase` is
     `question_wait` (its agent's blocking questions) says so, and points at
-    `owner_questions`, never at the hand-off's sign-in (#2860).
+    `owner_questions`, never at the hand-off's sign-in (#2860). A fix loop
+    parked HUMAN_REQUIRED (any docs/design/fix-loop.md §4.4 phase) says its
+    phase, round counter and last verdict, and its `next` is the exact
+    `swarm_fix_loop` add-round call; a loop PARKED FIX_ROUNDS_RUNNING has a
+    round in flight and is never flagged, whatever its age (FL-PLUGIN).
     Both (b) and (c) carry `waiting_summary` in their evidence: the API's one
     line on why the task waits (#1782) -- the pull request and the checks
     still pending, the pool that binds -- left out when the API serves none.
@@ -931,6 +935,9 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
             "evidence": _with_summary({"park_reason": reason, "dependencies": dependencies}, task),
         }
     if reason not in ("HUMAN_REQUIRED", "CI_PENDING"):
+        # FIX_ROUNDS_RUNNING among them: a fix loop with a round in flight is
+        # the platform working, whatever its age; only the round's own agent
+        # can be flagged, by (a) and (b) (docs/design/fix-loop.md §6.4).
         return None
     created = render.parse_time(task.get("created_at"))
     events = _need(reads.events(str(task_id_of(task))))
@@ -949,6 +956,14 @@ def _parked(task: dict[str, Any], reads: _Reads, now: datetime,
         evidence.update(_ci_history(task))
         text = (f"PARKED on CI_PENDING for {evidence['age_is']} {age} min (over {CI_PENDING_MINUTES}): "
                 "its pull request's checks have not finished" + _ci_words(evidence))
+    elif progress.fix_loop_phase(task) is not None:
+        # A FIX LOOP PARKED FOR A PERSON (FL-PLUGIN, docs/design/fix-loop.md
+        # §4.4-§4.5, §6.4), on any of its phases: its rounds are spent, a fix
+        # changed nothing, a round failed or was refused, or a verdict did not
+        # read. Nobody signs in (`human-ready` refuses a loop); any member adds
+        # a round, up to the ceiling of 10 (BGD Q4 (a)), or stops it. The park
+        # expires after 7 days as FAILED fix_loop_exhausted (Q3 (c)).
+        return _fix_loop_flag(task, evidence, age)
     elif _question_wait(task) is not None:
         # ITS AGENT'S BLOCKING QUESTIONS (#2860): the question, not a generic
         # wait. The API's line for this park is the hand-off's sign-in
@@ -1035,6 +1050,27 @@ def _train_wait(task: dict[str, Any], reads: _Reads, events: list[dict[str, Any]
     if link:
         flag["next"] = link
     return flag
+
+
+def _fix_loop_flag(task: dict[str, Any], evidence: dict[str, Any], age: int | None) -> dict[str, Any]:
+    """(c) for a fix loop parked for a person: its phase, round counter and last
+    verdict as the evidence, and the exact add-round call as the next command."""
+    view = progress.fix_loop_view(task) or {}
+    phase = view.get("phase")
+    evidence["park_phase"] = phase
+    evidence["fix_loop"] = {"round": view.get("round"), "rounds": view.get("rounds"),
+                            "findings_count": view.get("findings_count"), "verdict": view.get("verdict")}
+    found = view.get("findings_count")
+    verdict = (f"; the last verdict {view['verdict']} with {found} finding(s)" if view.get("verdict")
+               and found is not None else "")
+    text = (f"PARKED on HUMAN_REQUIRED for {evidence['age_is']} {age} min: its fix loop is at round "
+            f"{view.get('round')} of {view.get('rounds')} and waits for you ({phase}){verdict}. Add a "
+            "round, or stop it to accept the last verdict")
+    workflow_id = task.get("workflow_id")
+    return {"kind": STUCK, "rule": "parked", "reason": text, "evidence": _with_summary(evidence, task),
+            "next": (f"{progress.fix_loop_command(workflow_id, 'add_round')} (or "
+                     f"{progress.fix_loop_command(workflow_id, 'stop')}; or scripts/api.sh POST "
+                     f"/workflows/{workflow_id}/fix-loop/rounds)")}
 
 
 def _ci_reading(task: dict[str, Any]) -> dict[str, Any]:
