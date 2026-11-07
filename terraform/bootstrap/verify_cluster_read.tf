@@ -56,11 +56,19 @@ resource "google_project_iam_member" "verify_views_swarm_cluster" {
 
   condition {
     title       = "swarm-cluster-only"
-    description = "managed-by=swarm-terraform; the gate reads the swarm Autopilot cluster's endpoint and CA (e2e-test.sh [10]); agents-staging belongs to another team. Owner-applied: CI never grants it."
+    description = "managed-by=swarm-terraform; the gate reads the swarm Autopilot cluster's endpoint and CA (e2e-test.sh [10]); any other cluster (e.g. peer-cluster) belongs to another team. Owner-applied: CI never grants it."
     expression = join(" || ", [
       "resource.name == \"${local.verify_swarm_cluster}\"",
       "resource.name.startsWith(\"${local.verify_swarm_cluster}/\")",
     ])
+  }
+
+  lifecycle {
+    # The description is generic text; a live deployment's binding keeps its
+    # older text, which only its private state holds. A changed condition
+    # forces the binding's replacement, so the description is ignored: an
+    # existing deployment is not replaced and a fresh one gets this text.
+    ignore_changes = [condition[0].description]
   }
 
   depends_on = [google_service_account.verify]

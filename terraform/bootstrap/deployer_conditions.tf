@@ -521,8 +521,16 @@ resource "google_project_iam_member" "deployer_container_admin" {
 
   condition {
     title       = "swarm clusters only"
-    description = "Cluster-level calls on agents-staging, another team's live cluster, are refused. Does not scope the Kubernetes API inside a cluster."
+    description = "Cluster-level calls on a cluster not named for the platform (another team's, e.g. peer-cluster) are refused. Does not scope the Kubernetes API inside a cluster."
     expression  = local.deployer_conditions["roles/container.admin"]
+  }
+
+  lifecycle {
+    # The description is generic text; a live deployment's binding keeps its
+    # older text, which only its private state holds. A changed condition
+    # forces the binding's replacement, so the description is ignored: an
+    # existing deployment is not replaced and a fresh one gets this text.
+    ignore_changes = [condition[0].description]
   }
 }
 
