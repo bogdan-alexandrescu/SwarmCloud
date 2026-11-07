@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import STAGE_CSS from '../styles/talk-stage.css?raw'
 import TALK_CSS from '../styles/talk-pane.css?raw'
 import STYLES from '../styles.css?raw'
+import { CardList } from '../voice/CardList'
 import { cascade } from './cssgate'
 
 const fetchMock = vi.hoisted(() => {
@@ -312,7 +313,9 @@ describe('on a phone nothing is wider than 390 and nothing pans', () => {
 //
 // MUTATIONS: listen for none of the three; draw a visual.upsert without
 // re-reading it; leave the stage on its tab after a focus; band no focused
-// line; re-read nothing on a note.upsert.
+// line; re-read nothing on a note.upsert; open a stream of the stage's own
+// beside the card list's; band the focus with an inline style instead of
+// talk-stage.css's rule.
 
 /** The session's stream, driven by the test. */
 class FakeEventSource extends EventTarget {
@@ -377,6 +380,31 @@ describe('the stage applies the session stream live', () => {
     expect(within(back).getByText('The counts are read here.')).toBeTruthy()
     // The page never reloaded: one stream, opened once.
     expect(FakeEventSource.all.filter((e) => e.url.startsWith('/v1/voice/sessions/vs_t/events'))).toHaveLength(1)
+    // The band is talk-stage.css's rule, not an inline style, and it wins over a note's band.
+    const line = back.querySelector<HTMLElement>('li.vts-line[data-line="42"]')!
+    expect(line.getAttribute('style')).toBeNull()
+    const sheets = [STYLES, STAGE_CSS].join('\n')
+    const won = (prop: string) => cascade(sheets, line, prop, { width: 1280 }).winner?.value ?? null
+    expect(won('background')).toBe('color-mix(in srgb, var(--info) 12%, transparent)')
+    expect(won('box-shadow')).toBe('inset 3px 0 0 var(--info)')
+    line.classList.add('is-noted')
+    expect(won('box-shadow')).toBe('inset 3px 0 0 var(--info)')
+  })
+
+  it("shares the card list's stream: one connection for the session, each reading its own events", async () => {
+    render(
+      <>
+        <TalkStage projectId="vp_t" sessionId="vs_t" live />
+        <CardList sessionId="vs_t" />
+      </>,
+    )
+    await screen.findByRole('figure', { name: 'e2e, step 4' })
+    expect(FakeEventSource.all).toHaveLength(1)
+    listed = [VISUAL, LOG]
+    await act(async () => stream().frame('visual.upsert', 1, { visual: VISUAL }))
+    await screen.findByRole('figure', { name: 'WorkflowSteps.tsx' })
+    expect(screen.getByText('No cards in this session yet.')).toBeTruthy()
+    expect(FakeEventSource.all).toHaveLength(1)
   })
 
   it('re-reads the visual a note.upsert names, so a pinned note appears and a resolved one leaves', async () => {

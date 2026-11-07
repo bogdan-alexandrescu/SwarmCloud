@@ -17,8 +17,9 @@
  * so the visual never pans in a window of its own; the tabs wrap instead of
  * scrolling with no bar.
  *
- * LIVE (part of #2688). While the session is live the stage also listens to
- * its stream (`GET /v1/voice/sessions/{id}/events`, swarm_api/voice/stream.py
+ * LIVE (part of #2688). While the session is live the stage also reads
+ * its stream, the one connection it shares with the card list (CardList.tsx
+ * `readSessionStream`; `GET /v1/voice/sessions/{id}/events`, swarm_api/voice/stream.py
  * `STAGE_TYPES`): a `visual.upsert` takes the stage at once, a `focus` moves
  * it to the visual the planner points at and bands the lines it names, and a
  * `note.upsert` re-reads the visual it names, so a note pinned or resolved
@@ -47,7 +48,7 @@ import {
 } from '../api'
 import { Button, TOOLTIP_DELAY_MS } from '../components'
 import '../styles/talk-stage.css'
-import { streamEvent, streamUrl } from './CardList'
+import { readSessionStream, STAGE_EVENTS } from './CardList'
 
 /** How often a live session's visuals are read again. */
 export const STAGE_REFRESH_MS = 5_000
@@ -58,8 +59,7 @@ const READBACK_WINDOW_S = 55
 /** How long an answered card shows its answer before it leaves. */
 const ANSWERED_MS = 1_600
 
-/** The stream's events the stage applies (swarm_api/voice/stream.py `STAGE_TYPES`). */
-export const STAGE_EVENTS = ['visual.upsert', 'note.upsert', 'focus'] as const
+export { STAGE_EVENTS }
 
 /** Where the planner points (`speak`'s `point_at`): the visual, the lines of its anchor, and its caption. */
 interface Focus {
@@ -67,9 +67,6 @@ interface Focus {
   lines: { from: number; to: number } | null
   caption: string | null
 }
-
-/** A focused line's band. A token-only inline style: the stage's stylesheet has no focus rule. */
-const FOCUS_BAND = { background: 'color-mix(in srgb, var(--info) 12%, transparent)', boxShadow: 'inset 3px 0 0 var(--info)' } as const
 
 /** What marks a list read as new: a visual drawn, or drawn again, since the last one. */
 const markOf = (v: VoiceVisual | undefined): string | null => (v === undefined ? null : `${v.visual_id}:${v.version}:${v.updated_at ?? ''}`)
@@ -230,7 +227,6 @@ function Lines({
             className={`vts-line${banded.length > 0 ? ' is-noted' : ''}${focused ? ' is-focus' : ''}${tone}`}
             data-line={at}
             aria-current={focused ? 'true' : undefined}
-            style={focused ? FOCUS_BAND : undefined}
           >
             <span className="vts-n" aria-hidden="true">
               {at}
@@ -407,38 +403,34 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
   // The session's stream, while it is live: a visual drawn, the planner's focus, a note pinned or resolved.
   useEffect(() => {
     if (projectId === null || sessionId === null || !live || typeof EventSource === 'undefined') return
-    const source = new EventSource(streamUrl(sessionId, 0))
     let last = 0
-    const on = (type: (typeof STAGE_EVENTS)[number]) => (e: Event) => {
-      const ev = streamEvent(type, e as MessageEvent)
-      // A resumed stream repeats nothing it already sent; a repeat changes nothing here either.
-      if (ev === null || !Number.isInteger(ev.seq) || ev.seq <= last) return
-      last = ev.seq
-      if (type === 'visual.upsert') {
-        const v = normVoiceVisual(ev.data.visual)
-        if (v === null) return
-        const held = listed.current.find((x) => x.visual_id === v.visual_id)
-        if (held !== undefined && held.version >= v.version) return
-        setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
-        newest.current = markOf(v)
-        setPicked(null)
-      } else if (type === 'focus') {
-        const f = focusOf(ev.data)
-        if (f === null) return
-        setFocus(f)
-        setPicked(f.visual_id)
-        if (!listed.current.some((x) => x.visual_id === f.visual_id)) pullList.current()
-      } else {
-        const note = (ev.data.note ?? null) as { visual_id?: unknown } | null
-        if (note !== null && typeof note.visual_id === 'string' && note.visual_id !== '') readVisual(note.visual_id)
-      }
-    }
-    const handlers = STAGE_EVENTS.map((t) => [t, on(t)] as const)
-    for (const [t, h] of handlers) source.addEventListener(t, h)
-    return () => {
-      for (const [t, h] of handlers) source.removeEventListener(t, h)
-      source.close()
-    }
+    // The card list's stream, shared: one connection for the session, however many read it.
+    return readSessionStream(sessionId, 0, {
+      types: STAGE_EVENTS,
+      onEvent: (ev) => {
+        // A resumed stream repeats nothing it already sent; a repeat changes nothing here either.
+        if (!Number.isInteger(ev.seq) || ev.seq <= last) return
+        last = ev.seq
+        if (ev.type === 'visual.upsert') {
+          const v = normVoiceVisual(ev.data.visual)
+          if (v === null) return
+          const held = listed.current.find((x) => x.visual_id === v.visual_id)
+          if (held !== undefined && held.version >= v.version) return
+          setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
+          newest.current = markOf(v)
+          setPicked(null)
+        } else if (ev.type === 'focus') {
+          const f = focusOf(ev.data)
+          if (f === null) return
+          setFocus(f)
+          setPicked(f.visual_id)
+          if (!listed.current.some((x) => x.visual_id === f.visual_id)) pullList.current()
+        } else {
+          const note = (ev.data.note ?? null) as { visual_id?: unknown } | null
+          if (note !== null && typeof note.visual_id === 'string' && note.visual_id !== '') readVisual(note.visual_id)
+        }
+      },
+    })
   }, [projectId, sessionId, live, readVisual])
 
   useEffect(() => {
