@@ -519,7 +519,7 @@ exception, and isolation between the people inside one group tenant is NOT
 yet in force.** Every member of a group tenant runs agents as the tenant's
 one worker account, and an agent can mint that account's token. While that
 account can read the slots (owner decision D7,
-[git-tokens.md](git-tokens.md#built-for-780-per-person-slots-the-migration-policy-retiring-the-tenant-token)),
+[git-tokens.md](git-tokens.md#per-person-slots-the-migration-policy-retiring-the-tenant-token)),
 isolation between tenants holds but isolation between the people inside one
 tenant does not -- and it still can, in every environment: the tenant
 worker's binding, `forge_slot_reader` in
@@ -833,7 +833,7 @@ nothing changes for a tenant until the owner switches it.
      and ceiling change. The workspace job's guard copies it into its
      expectation; under `false` A5 grants no Firestore role and the guard
      refuses one, and A9 fails a worker that still holds one
-     ([docs/workspaces.md §2.7](workspaces.md#27-the-workers-firestore-switch-follows-its-tenant-1457-design-b)).
+     ([docs/workspaces.md §2.7](workspaces.md#27-the-workers-firestore-switch-follows-its-tenant-design-b)).
 
    Each defaults to today's grant, and none removes a binding an earlier run
    made: that is the owner's step at the cutover.

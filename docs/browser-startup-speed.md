@@ -81,7 +81,7 @@ layer:
 
 Each item below was downloaded as the Dockerfile downloads it, unpacked, and
 then re-tarred and `gzip -6`'d, which is how a layer is compressed. This is the
-same method [worker-images.md](worker-images.md#why-the-repository-index-has-its-own-image-625)
+same method [worker-images.md](worker-images.md#why-the-repository-index-has-its-own-image)
 used for the toolbox. Measured 2026-10-13 ~11:30 UTC:
 
 | item | download | unpacked | as a layer (gzip -6) |
