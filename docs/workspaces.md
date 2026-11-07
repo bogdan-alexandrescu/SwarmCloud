@@ -2074,7 +2074,7 @@ workspace. That is why it is recorded here.
   (`apps/swarm-api/swarm_api/workspaces.py::Workspaces.applies_to`). So
   its agent is accepted, and an agent whose profile needs a provider then parks
   `CREDENTIAL_MISSING` at scheduler admission, before any lease
-  (`apps/scheduler/scheduler/loop.py::Scheduler._admit_one`), because the
+  (`apps/scheduler/scheduler/loop.py::Scheduler._prepare_admission`), because the
   tenant has no key and no pool account. It does not stay `QUEUED`, as Q3 (a)
   in qa-identity.md §7 put it; the code is the fact. A `PARKED` agent costs
   nothing (invariant 1). Do not lend it one without the owner's decision:

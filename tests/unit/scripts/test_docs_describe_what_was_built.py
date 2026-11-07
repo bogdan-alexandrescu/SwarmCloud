@@ -1476,7 +1476,7 @@ def test_workspaces_doc_describes_the_qa_identitys_service_workspace():
     # What the QA account submits parks at admission; the WD6 gate exempts it.
     gate = "apps/swarm-api/swarm_api/workspaces.py::Workspaces.applies_to"
     assert f"`{gate}`" in raw and "is_service_identity" in _cited_symbol(*gate.split("::"))
-    admit = "apps/scheduler/scheduler/loop.py::Scheduler._admit_one"
+    admit = "apps/scheduler/scheduler/loop.py::Scheduler._prepare_admission"
     assert f"`{admit}`" in raw
     assert "ParkReason.CREDENTIAL_MISSING" in _cited_symbol(*admit.split("::"))
     assert "parks `CREDENTIAL_MISSING` at scheduler admission, before any lease" in body
@@ -1807,7 +1807,7 @@ def test_architecture_says_where_runner_sizes_live():
     assert "`PUT /v1/admin/runner-sizes`" in body and "Admin › Runner sizes" in body
     # Pinned at admission, cited where the scheduler does it.
     current = "apps/scheduler/scheduler/loop.py::Scheduler._size_version"
-    pinned = "apps/scheduler/scheduler/loop.py::Scheduler._admit_one"
+    pinned = "apps/scheduler/scheduler/loop.py::Scheduler._prepare_admission"
     # MUTATION: cite a method that no longer reads the version -> red.
     assert f"`{current}`" in raw and "sizes_mod.current(" in _cited_symbol(*current.split("::"))
     assert f"`{pinned}`" in raw and "sizes_mod.for_task(" in _cited_symbol(*pinned.split("::"))
