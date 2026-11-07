@@ -342,10 +342,15 @@ def test_it_names_every_missing_setting():
 def test_it_never_runs_in_the_smoke_tenant_a_personal_one_or_as_a_service_account():
     full = dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET)))
     assert _bash("join_settings_problem && echo OK", **full).stdout.strip() == "OK"
+    # The never-touch list is whole only in the shared project (keyed by PROJECT_ID), so the
+    # deny-listed secret is tried there; the project id is read from common.sh, not restated.
+    shared = _bash('printf %s "$SHARED_PROJECT_ID"').stdout.strip()
+    assert shared
     for name, value in ((SETTINGS[0], "smoke"), (SETTINGS[0], "u-someone"), (SETTINGS[0], "Eng"),
                         (SETTINGS[2], "swarm-qa@p.iam.gserviceaccount.com"),
                         (SETTINGS[3], "a/b"), (SETTINGS[3], "oracle-web")):
-        proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value})
+        project = {"PROJECT_ID": shared} if value == "oracle-web" else {}
+        proc = _bash("join_settings_problem || echo REFUSED", **{**full, name: value, **project})
         assert "REFUSED" in proc.stdout, (name, value)
 
 
