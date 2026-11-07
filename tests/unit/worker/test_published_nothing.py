@@ -79,9 +79,13 @@ def test_a_direct_pr_step_that_changed_nothing_fails_and_is_not_retried(
     task = db.doc("tasks/task_1")
     # Attempt 1 of 3, and FAILED rather than READY: a retry repeats it.
     assert task["state"] == TaskState.FAILED.value, task["state"]
+    # The mock writes its `output.txt`, which the error names with the remedy
+    # (part of #2688, test_published_nothing_names_artifacts.py).
     assert task["last_error"] == (
         "published_nothing: the step was to open a pull request and its branch "
         f"has no commits beyond {base}"
+        "; it produced 1 artifacts (output.txt); a step whose deliverable is its "
+        "artifacts is submitted with allow_empty_diff: true"
     ), task["last_error"]
     # The closest existing cause until contract request 46 is decided.
     assert task["end_cause"] == "outputs_missing"
