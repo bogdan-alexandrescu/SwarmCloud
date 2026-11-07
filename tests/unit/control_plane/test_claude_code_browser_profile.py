@@ -315,6 +315,7 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
     # JUDGE-SELECT's two, so every name the hand-off passes is present.
     monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
     monkeypatch.setenv("JEV_API_URL", "https://decision-api.example-tailnet.ts.net/laya/v1/decide")
+    monkeypatch.setenv("SWARM_DECISION_API_TAILNET_NAME", "decision-api.example-tailnet.ts.net")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["SWARM_HANDOFF"] == str(spool)
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
@@ -331,17 +332,22 @@ def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monk
     TypeSafe key: an internal backend needs none."""
     from agent_worker import handoff
 
-    url = "https://decision-api.example-tailnet.ts.net/jev/v1/decide"
+    name = "decision-api.example-tailnet.ts.net"
+    url = f"https://{name}/jev/v1/decide"
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
     monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")
     monkeypatch.setenv("JEV_API_URL", url)
+    monkeypatch.setenv("SWARM_DECISION_API_TAILNET_NAME", name)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
     assert seen["env"]["JEV_API_URL"] == url
+    # The wrapper reads the name from the CLI's environment (no default).
+    assert seen["env"]["SWARM_DECISION_API_TAILNET_NAME"] == name
     assert "TYPESAFE_API_KEY" not in seen["env"]
-    assert {"SWARM_JEV_BACKEND", "JEV_API_URL"} <= set(handoff.AGENT_PASSTHROUGH_ENV)
+    assert {"SWARM_JEV_BACKEND", "JEV_API_URL", "SWARM_DECISION_API_TAILNET_NAME"} <= set(
+        handoff.AGENT_PASSTHROUGH_ENV)
 
 
 def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatch, tmp_path):

@@ -43,7 +43,7 @@ from scheduler.judgment import (
     GATES_REFUSED_SWITCH_OFF,
     GATES_REFUSED_UNREADABLE,
     GATES_REFUSED_UNSIGNED,
-    INTERNAL_DECISION_ORIGIN,
+    DECISION_API_TAILNET_NAME_ENV,
     JEV_JUDGMENTS_ENV,
     JEV_JUDGMENTS_REFUSED_ENV,
     JUDGE_INTERNAL_URL_ENV,
@@ -56,9 +56,19 @@ from .fakes import FakeFirestore
 from .test_dispatch_manifests import NOW, FakeJobsClient, make_lease, make_task
 
 KEY = "settings-" + secrets.token_hex(24)
-JEV_URL = "https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide"
-LAYA_URL = "https://decision-api-staging.taile0bda9.ts.net/laya/v1/decide"
-HOST_ALIASES = [{"ip": "10.48.6.120", "hostnames": ["decision-api-staging.taile0bda9.ts.net"]}]
+#: A placeholder tailnet name, as the platform renders it in
+#: SWARM_DECISION_API_TAILNET_NAME (set for every test here).
+TAILNET_NAME = "decision-api.example-tailnet.ts.net"
+INTERNAL_DECISION_ORIGIN = f"https://{TAILNET_NAME}"
+JEV_URL = f"{INTERNAL_DECISION_ORIGIN}/jev/v1/decide"
+LAYA_URL = f"{INTERNAL_DECISION_ORIGIN}/laya/v1/decide"
+HOST_ALIASES = [{"ip": "10.48.6.120", "hostnames": [TAILNET_NAME]}]
+
+
+@pytest.fixture(autouse=True)
+def tailnet_name(monkeypatch) -> str:
+    monkeypatch.setenv(DECISION_API_TAILNET_NAME_ENV, TAILNET_NAME)
+    return TAILNET_NAME
 
 
 def _signed(fields: dict[str, Any], *, tenant_id: str = "eng", key: str = KEY) -> dict[str, Any]:

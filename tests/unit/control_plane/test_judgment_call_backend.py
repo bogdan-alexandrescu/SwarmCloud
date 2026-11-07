@@ -43,6 +43,13 @@ HOST = "decision-api.example-tailnet.ts.net"
 ADDRESS = "10.10.0.77"
 
 
+@pytest.fixture(autouse=True)
+def tailnet_name(monkeypatch) -> str:
+    """The platform renders the name (SWARM_DECISION_API_TAILNET_NAME)."""
+    monkeypatch.setenv(judgment.DECISION_API_TAILNET_NAME_ENV, HOST)
+    return HOST
+
+
 def _internal(backend: str = judgment.INTERNAL_JEV, *, url: str = TAILNET,
               address: str | None = ADDRESS) -> judgment.CallBackend | judgment.NoBackend:
     return judgment.resolve_call_backend(backend, internal_url=url, address=address,
@@ -85,6 +92,27 @@ def test_the_internal_backends_off_or_misnamed_read_no_route(url):
     resolved = _internal(url=url)
     assert isinstance(resolved, judgment.NoBackend)
     assert (resolved.code, resolved.reason) == ("no_route", judgment.NO_EGRESS)
+
+
+@pytest.mark.parametrize("name", [None, "", "decision-api", TAILNET])
+def test_the_internal_backends_on_without_the_tailnet_name_are_refused(monkeypatch, name):
+    """No default host: INTERNAL_DECISION_API_URL set and the name unset or
+    misshapen is the fixed refusal, never a call to a guessed host."""
+    if name is None:
+        monkeypatch.delenv(judgment.DECISION_API_TAILNET_NAME_ENV)
+    else:
+        monkeypatch.setenv(judgment.DECISION_API_TAILNET_NAME_ENV, name)
+    resolved = _internal()
+    assert isinstance(resolved, judgment.NoBackend)
+    assert (resolved.code, resolved.reason) == ("no_route", judgment.NAME_UNSET)
+
+
+def test_the_url_must_name_the_rendered_host(monkeypatch):
+    monkeypatch.setenv(judgment.DECISION_API_TAILNET_NAME_ENV, "judge.example-tailnet.ts.net")
+    resolved = _internal()
+    assert (resolved.code, resolved.reason) == ("no_route", judgment.NO_EGRESS)
+    resolved = _internal(url="https://judge.example-tailnet.ts.net")
+    assert resolved.url == "https://judge.example-tailnet.ts.net/jev/v1/decide"
 
 
 def test_an_internal_choice_never_falls_back_to_typesafe():

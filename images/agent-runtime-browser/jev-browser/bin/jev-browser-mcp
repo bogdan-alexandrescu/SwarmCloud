@@ -24,14 +24,15 @@
 #   * JEV_MODEL is dropped, and where page text and labels go is the
 #     WORKSPACE'S JUDGMENT BACKEND (JUDGE-SELECT, owner decisions 2026-10-14),
 #     which the dispatcher names in SWARM_JEV_BACKEND:
-#       - internal-jev / internal-laya: Saga's decision API BY ITS TAILNET
-#         NAME, over https, through the cluster's Tailscale egress Service
+#       - internal-jev / internal-laya: the internal decision API BY ITS
+#         TAILNET NAME (SWARM_DECISION_API_TAILNET_NAME, which the dispatcher
+#         passes with the URL; no default here), over https, through the cluster's Tailscale egress Service
 #         (the dispatcher pins the name to the Service with a hostAliases
 #         entry, so TLS verifies the API's own certificate; owner decision
 #         2026-10-15, #1380). JEV_API_URL is passed through ONLY when it is
 #         exactly that origin's /jev or /laya /v1/decide; any other value --
 #         the old in-cluster http address included -- or none (the egress is
-#         off), is refused, so page text is never sent to TypeSafe in its
+#         off), or no name, is refused, so page text is never sent to TypeSafe in its
 #         place. JEV_API_COMPAT=internal is
 #         set with it (JUDGE-ADAPT), so the patched jev() reshapes each request
 #         for the internal API, which is not wire-compatible with TypeSafe's on
@@ -84,16 +85,22 @@ refuse_backend() {
   exit 2
 }
 
-# scheduler.judgment INTERNAL_DECISION_ORIGIN; tests/unit/worker/
-# test_jev_browser_image.py holds the two equal.
-DECISION_SERVICE="https://decision-api-staging.taile0bda9.ts.net"
+# The decision API's tailnet name, from SWARM_DECISION_API_TAILNET_NAME
+# (scheduler.judgment DECISION_API_TAILNET_NAME_ENV; tests/unit/worker/
+# test_jev_browser_image.py holds the two equal). No default: the name
+# identifies one deployment, so an internal backend without it is refused.
+DECISION_SERVICE_NAME="${SWARM_DECISION_API_TAILNET_NAME:-}"
+TAILNET_NAME_RE='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9-]+\.ts\.net$'
 NO_TYPESAFE_KEY="swarm-internal-no-typesafe-key"
 backend="${SWARM_JEV_BACKEND:-}"
 case "${backend}" in
   internal-jev | internal-laya)
-    want="${DECISION_SERVICE}/${backend#internal-}/v1/decide"
+    if [[ ! "${DECISION_SERVICE_NAME}" =~ ${TAILNET_NAME_RE} ]]; then
+      refuse_backend "this workspace judges with ${backend}, and SWARM_DECISION_API_TAILNET_NAME is unset or not one <host>.<tailnet>.ts.net name, so there is no decision API to call. Jev is unavailable here; page text is never sent to TypeSafe instead."
+    fi
+    want="https://${DECISION_SERVICE_NAME}/${backend#internal-}/v1/decide"
     if [[ "${JEV_API_URL:-}" != "${want}" ]]; then
-      refuse_backend "this workspace judges with ${backend}, and this pod has no route to Saga's decision API (the tailnet egress is off). Jev is unavailable here; page text is never sent to TypeSafe instead."
+      refuse_backend "this workspace judges with ${backend}, and this pod has no route to the internal decision API (the tailnet egress is off). Jev is unavailable here; page text is never sent to TypeSafe instead."
     fi
     export JEV_API_URL="${want}"
     export TYPESAFE_API_KEY="${NO_TYPESAFE_KEY}"
