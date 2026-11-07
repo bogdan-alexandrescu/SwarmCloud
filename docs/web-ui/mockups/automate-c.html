@@ -6,9 +6,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Proposal C, "Time first" (AUTOMATE-MOCKS-C, part of #2417).
+ * Proposal C, "Time first" (AUTOMATE-MOCKS-C).
  * Tokens, type scale, shell, lead strip, tables, cards, chips and buttons are
- * Config E's (config-e.html, #2157), which are the console's own (styles.css),
+ * Config E's (config-e.html), which are the console's own (styles.css),
  * light and dark. Only the swimlane parts below the copied block are new, and
  * they are drawn the way account health's proposal B draws its lanes
  * (accounts-b.html). PICKS.md rules: 12px type floor, no all-caps, no
@@ -589,9 +589,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">AUTOMATE-MOCKS-C · part of #2417 · drawn 2026-10-26 · not picked</p>
+<p class="kick">AUTOMATE-MOCKS-C · drawn 2026-10-26 · not picked</p>
 <h1>Automate, proposal C: Time first</h1>
-<p class="lede">One of four competing proposals (A to D) for BGD's redesign of the console's Automate section. BGD picks frames across the four on the picks page. Every frame is drawn at 1440 wide with the console's nav open, or at 390 for the phone. The theme control at the top repaints the page and every frame, light or dark.</p>
+<p class="lede">One of four competing proposals (A to D) for the owner's redesign of the console's Automate section. The owner picks frames across the four on the picks page. Every frame is drawn at 1440 wide with the console's nav open, or at 390 for the phone. The theme control at the top repaints the page and every frame, light or dark.</p>
 
 <section class="idea" aria-label="Proposal C: idea, how it differs, risks">
   <div><h4>Idea</h4><p>Automate is read against time. The landing is a <b>swimlane</b> with one lane per schedule on one shared axis: the last 7 days on the left and the next 24 hours, magnified, on the right of a "now" line. Each past firing is a dot coloured by its outcome. Each next firing is a hollow ring. Under every lane, a band shows each day's spend against the per-day cap. An approval that blocks a firing is <b>pinned where it blocks</b>: a dashed band runs from its request toward its expiry, and the firings it holds up are struck through. Below the lanes comes a <b>master-detail</b> layout. The lanes fold into a list on the left, and the chosen schedule or approval opens on the right with its own lane drawn tall. One approval shows where it sits in its schedule's timeline, and what each answer does to the next firing.</p></div>
@@ -613,7 +613,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <b>What every frame obeys</b>
   <ul>
     <li>PICKS.md: nothing below 12px, no all-caps, no letter-spacing, and a light / dark / system toggle (in the page bar, and in every frame's panel foot). An unknown figure is a dash with its reason, never 0. State words are lower-case words ("waiting", "approved"), never raw enums.</li>
-    <li>The V2 Sky spine and the house style of Config E (#2157) and Subscription accounts A (#2222): tokens, type scale, lead strip, tables, cards, chips and buttons. Only the lanes are new, and they are drawn the way account health's proposal B draws its lanes.</li>
+    <li>The V2 Sky spine and the house style of Config E and Subscription accounts A: tokens, type scale, lead strip, tables, cards, chips and buttons. Only the lanes are new, and they are drawn the way account health's proposal B draws its lanes.</li>
     <li>The time is Mon 26 Oct 2026, 09:00Z. The approval apr_31f74dc3dc84349da9b83697 and its schedule, run, issue and pull request are the real ones. The other schedules and approvals are <b>example data</b> on the same repository.</li>
   </ul>
 </div>
@@ -702,7 +702,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <tr><td><code>owner_name</code> on an approval whose approvers are <code>owner_only</code></td><td>The platform owner's display name, as <code>approver_names</code> gives it for a list of emails.</td><td>A5f tells a member who can decide by name.</td><td>A5f</td></tr>
 <tr><td><code>budget_use</code> on the list route</td><td>Today it is served on the detail route only.</td><td>It supplies the lane's "$38.60 or more of $200 today" words for every schedule.</td><td>A1, A7a</td></tr>
 </tbody></table></div>
-<p class="sm12 dim">Words. The API's approval state <code>rejected</code> is drawn as "denied", because the button BGD asked for is Deny. A schedule's <code>enabled</code> state is drawn as "active", and <code>auto_paused</code> is drawn as "paused by its tripwire" when its <code>pause.code</code> is <code>RUN_OVER_BUDGET</code>, or "paused after failures" for <code>CONSECUTIVE_FAILURES</code>. A held merge (<code>hold.code: NEEDS_OWNER</code>) is "held for the platform owner", as Approvals.tsx says it today.</p>
+<p class="sm12 dim">Words. The API's approval state <code>rejected</code> is drawn as "denied", because the button the owner asked for is Deny. A schedule's <code>enabled</code> state is drawn as "active", and <code>auto_paused</code> is drawn as "paused by its tripwire" when its <code>pause.code</code> is <code>RUN_OVER_BUDGET</code>, or "paused after failures" for <code>CONSECUTIVE_FAILURES</code>. A held merge (<code>hold.code: NEEDS_OWNER</code>) is "held for the platform owner", as Approvals.tsx says it today.</p>
 <p class="sm12 dim">Assumed, not read. Failure review’s <code>policy.overlap</code> is drawn as <code>skip</code>, which is why its firings are skipped while #2392 waits. The live schedule may say otherwise. Under the <code>blocks</code> field above, the server would answer this instead of the drawing.</p>
 </main>
 
@@ -933,13 +933,13 @@ const HIST=[
 const WEEK=FR.days.slice(0,7).reduce((a,b)=>a+b,0);
 function a2Detail(ph){
   const acts=B('Run now','','play')+B('Pause','','pause')+B('Edit','','gear')+B('More','','chevd');
-  const hdr=`<div class="dh"><div class="tl"><span class="h">Failure review</span><span class="chips">${STW.wait}${C('failure-review','ln')}${C('bogdan-alexandrescu/SwarmCloud','ln','repo')}</span></div><div class="acts">${acts}</div></div>`+
+  const hdr=`<div class="dh"><div class="tl"><span class="h">Failure review</span><span class="chips">${STW.wait}${C('failure-review','ln')}${C('example-org/example-repo','ln','repo')}</span></div><div class="acts">${acts}</div></div>`+
    `<p class="say">Every 6 hours, root-cause every agent, workflow and issue run that failed in the last 7, file one issue per cause and start its fix run; hold IAM, contract, secrets, tenancy, shared and cost fixes for the owner.</p>`;
   const lead=LEAD('Waiting on the platform owner','Merge of #2392 waits since 02:40Z. It expires Thu 29 02:40Z.','While it waits, each firing is skipped (overlap: skip). 06:00Z was skipped; 12:00Z, 18:00Z, Tue 00:00Z and 06:00Z will be.',B('Open the approval','p'),'wn');
   const hn=ph?4:8;const hist=CARD('Firing history',`<a class="sm12">Audit ›</a>`,T(['Firing','Outcome','Run','Pull request','#Cost'],HIST.slice(0,hn))+`<p class="sm12 dim" style="margin:8px 0 0">${hn} of the 30 firings since Mon 19 00:00Z. <a>Older firings</a></p>`);
   const spend=CARD('Spend','',`<dl class="kv"><dt>Today</dt><dd><b>$38.60 or more</b> of $200 per day <small class="sm12 dim">· 1 attempt unreported, so the figure is a floor</small></dd><dt>Free today</dt><dd>$161.40 or less</dd><dt>Since Mon 19</dt><dd>${usd(WEEK)} over 7 days, and $38.60 or more today</dd><dt>Per-run tripwire</dt><dd>$60: a firing over it fails and pauses the schedule. The highest in 7 days was $52.30, on Sun 25 at 06:00Z.</dd><dt>At once</dt><dd>1 firing</dd></dl><div class="mtr" style="margin-top:8px"><span class="bar"><i style="width:19.3%"></i></span><span class="sm12 dim">19% of the day</span></div>`);
   const gates=CARD('Gates and approvers',`<a class="sm12">Edit</a>`,`<dl class="kv"><dt>Run</dt><dd>auto <small class="sm12 dim">· the type’s default</small></dd><dt>Plan</dt><dd>auto</dd><dt>Merge</dt><dd>approve <small class="sm12 dim">· the default; auto is allowed for this type, by the audited switch</small></dd><dt>Approvers</dt><dd>any member of this tenant</dd><dt>Held merges</dt><dd>go to the platform owner alone, whatever this says: a workflow, IAM, contract, secrets, tenancy, shared or cost change</dd><dt>An approval lasts</dt><dd>72 h</dd></dl>`);
-  const sets=CARD('Settings',`<a class="sm12">Edit</a>`,`<dl class="kv"><dt>Cadence</dt><dd><span class="mn">0 */6 * * *</span> UTC · every 6 hours</dd><dt>Next firings</dt><dd>12:00Z, 18:00Z, Tue 00:00Z, 06:00Z <small class="sm12 dim">· each skipped while #2392 waits</small></dd><dt>Overlap</dt><dd>skip <small class="sm12 dim">· catch-up: skip · no jitter</small></dd><dt>Target</dt><dd>bogdan-alexandrescu/SwarmCloud</dd><dt>Owner</dt><dd>Operator · revision 4</dd><dt>Id</dt><dd><span class="mn">sch_54e9828e6772</span></dd></dl>`);
+  const sets=CARD('Settings',`<a class="sm12">Edit</a>`,`<dl class="kv"><dt>Cadence</dt><dd><span class="mn">0 */6 * * *</span> UTC · every 6 hours</dd><dt>Next firings</dt><dd>12:00Z, 18:00Z, Tue 00:00Z, 06:00Z <small class="sm12 dim">· each skipped while #2392 waits</small></dd><dt>Overlap</dt><dd>skip <small class="sm12 dim">· catch-up: skip · no jitter</small></dd><dt>Target</dt><dd>example-org/example-repo</dd><dt>Owner</dt><dd>Operator · revision 4</dd><dt>Id</dt><dd><span class="mn">sch_54e9828e6772</span></dd></dl>`);
   return `<div class="dtl">${hdr}${lead}${tallLane(ph)}${ph?hist+spend+gates+sets:`${hist}<div class="g3">${spend}${gates}${sets}</div>`}</div>`;
 }
 function a2(ph){return `<div class="md">${schList('sch_54e9828e6772')}${a2Detail(ph)}</div>`}
@@ -957,7 +957,7 @@ function a3(ph){
     why:`<span class="err">${I('x')}144 firings a day: under the 15-minute floor</span>`};
   const top=LEAD('2 things to fix before it can be saved','The cadence is under the type’s floor, and the per-run budget is over the type’s cap.','Each is marked at its field. Save stays off until both are fixed.',B('Save schedule','p','')+B('Cancel','q'),'bd').replace('class="b p"','class="b p" aria-disabled="true"');
   const s1=`<div class="fsec"><h4><span class="n0">1</span>Type and template</h4><div class="tiles">${TYPES.map(x=>`<div class="opt ${x[2]?'on':''}"><span class="rd"></span><span><b>${x[0]}</b><small>${x[1]}</small></span></div>`).join('')}</div><span class="hint">6 of the 17 types this deployment serves. <a>Show all 17</a></span></div>`;
-  const s2=`<div class="fsec"><h4><span class="n0">2</span>Name and target</h4><div class="frow" style="grid-template-columns:1fr 1.5fr .8fr">${F('Name','Issue sweep · docs label','v')}${F('Repository',I('repo')+'bogdan-alexandrescu/SwarmCloud','v')}${F('Issues with the label','docs','v')}</div></div>`;
+  const s2=`<div class="fsec"><h4><span class="n0">2</span>Name and target</h4><div class="frow" style="grid-template-columns:1fr 1.5fr .8fr">${F('Name','Issue sweep · docs label','v')}${F('Repository',I('repo')+'example-org/example-repo','v')}${F('Issues with the label','docs','v')}</div></div>`;
   const s3=`<div class="fsec"><h4><span class="n0">3</span>Cadence</h4><div class="frow">${F('Cron','*/10 * * * *','v bad',`<span class="err">${I('x')}Fires every 10 minutes. issue-sweep runs at most every 15 minutes.</span>`)}${F('Time zone','UTC','v')}${F('In words','every 10 minutes','')}</div>${previewLane(newS,bad)}</div>`;
   const s4=`<div class="fsec"><h4><span class="n0">4</span>Gates and approvers</h4><div class="frow"><label class="fld"><span>Run</span>${SG(['auto','approve'],0)}</label><label class="fld"><span>Plan</span>${SG(['auto','approve'],1)}</label><label class="fld"><span>Merge</span>${SG(['approve','off'],0)}<span class="hint">auto is a separate, audited switch on the schedule’s page</span></label></div><div class="frow">${F('Approvers','any member of this tenant','v')}${F('An approval lasts','72 hours','v')}<span></span></div></div>`;
   const s5=`<div class="fsec"><h4><span class="n0">5</span>Budget and tripwire</h4><div class="frow">${F('Per-run tripwire','$20.00','v bad',`<span class="err">${I('x')}issue-sweep’s cap is $15 per run.</span>`)}${F('Per day','$120.00','v','<span class="hint">the type’s cap: $120</span>')}${F('At once','8 firings','v','<span class="hint">the type’s cap: 8</span>')}</div><span class="hint">A firing over the per-run tripwire fails and pauses the schedule. The per-day figure is a gate: a firing that would pass it is skipped.</span></div>`;
@@ -1033,7 +1033,7 @@ function a5Timeline(state,ph){
 }
 const EVID=`<div class="ev"><div class="stp ok">${I('check')}<span class="tx"><b>Required checks green at the head</b><small>10 passed, 0 failed, 0 pending · green at dbd00f06c5cd</small></span></div><div class="stp ok">${I('check')}<span class="tx"><b>Review verdict: merge</b><small>at head dbd00f06c5cd</small></span></div><div class="stp wn">${I('warn')}<span class="tx"><b>A hard stop matched: held for the platform owner</b><small>workflows · <span class="mn">.github/workflows/unit-weights-refresh.yml</span></small><small>shared · <span class="mn">scripts/lib/common.sh</span></small></span></div></div>`;
 const SUBJ=`<dl class="kv"><dt>Schedule</dt><dd><a>Failure review</a> · <span class="mn">sch_54e9828e6772</span></dd><dt>Firing</dt><dd>Mon 26 00:00Z · <span class="mn mono-wrap">sch_54e9828e6772:29882880</span></dd><dt>Run</dt><dd><a class="mn">run_682b9c60673341fdaa8e</a></dd><dt>Issue</dt><dd><a>#2364</a></dd><dt>Pull request</dt><dd><a>#2392</a> at dbd00f06c5cd</dd><dt>Requested</dt><dd>2026-10-26 02:40Z</dd><dt>Expires</dt><dd>2026-10-29 02:40Z · 72 h</dd><dt>Digest</dt><dd>merge at dbd00f06c5cd <small class="sm12 dim">· what Approve sends back</small></dd><dt>Id</dt><dd><span class="mn mono-wrap">apr_31f74dc3dc84349da9b83697</span></dd></dl>`;
-const SUMMARY='bogdan-alexandrescu/SwarmCloud#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge';
+const SUMMARY='example-org/example-repo#2364: pull request #2392 is green at dbd00f06c5cd and waits to merge';
 function a5Detail(state,ph){
   const chip={pending:C('waiting','wn'),member:C('waiting','wn'),approved:C('approved','ok','check'),denied:C('denied','bd','x'),expired:C('expired','ln'),superseded:C('superseded','ln')}[state];
   const can=state==='pending';

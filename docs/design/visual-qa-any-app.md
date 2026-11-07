@@ -1,22 +1,22 @@
 # Visual QA of any web application, its findings filed in that application's repository
 
 **Status: DESIGN, not built.** Lane AUTONOMY-DESIGN, 2026-10-22, part of
-#1933. Built by lanes VQ-1 to VQ-7 of [agent-autonomy.md](agent-autonomy.md)
+An earlier issue. Built by lanes VQ-1 to VQ-7 of [agent-autonomy.md](agent-autonomy.md)
 §6, on that document's capabilities (above all the brokered issue writes of
 its §3.2). Nothing here changes behaviour until those lanes merge. The
 owner answered §9's three questions on 2026-10-22 (~06:40Z). Since
 2026-10-25 a target may carry several environments that one dispatch runs
-together, discovering as it captures (#2136): §10 says what that changed
+together, discovering as it captures: §10 says what that changed
 here, and [qa-environments.md](qa-environments.md) is its design.
 
-**The request (BGD, 2026-10-22):** "with the features we have today, can we
+**The request (the owner, 2026-10-22):** "with the features we have today, can we
 dispatch a lane to use our browser agents and do a visual qa of our product
-oracle app at https://oracle.swarm.saga.xyz and report back with issues filed
-in github in the project repo for product-oracle in my personal github?",
+oracle app at https://peer.swarm.example.com and report back with issues filed
+in github in the project repo for peer-app-2 in my personal github?",
 then: "the goal is to be able to QA any web application not specifically
 oracle".
 
-**The owner's decisions this design builds on, not reopens** (BGD, 2026-10-22
+**The owner's decisions this design builds on, not reopens** (the owner, 2026-10-22
 ~05:15Z):
 
 * **Generic, never per app.** No Oracle-specific code, route list, prompt or
@@ -47,11 +47,11 @@ is the console's. Each of those is a lane below.
 | piece | state | proof |
 |---|---|---|
 | the capture tool | **exists, console-shaped** | `images/agent-runtime-browser/swarm_qa.py` (QA-CAPTURE): routes are `{id, path, ready, segments}` under `--base` any origin; it refuses without the live browser (`SWARM_CDP_ENDPOINT`), sets the device by name through the gate, the theme twice (`swarm-handoff theme` and `emulate_media`), segments each page, records text, the accessibility tree and errors, and writes `manifest.json`. Console-specific: every load empties local and session storage (`RESET_STATE_JS`), the settle waits on the console's pending reads (`PENDING_JS`), and the clock is frozen at the route list's instant |
-| device presets and themes | **exists** | QA-KIT: `desktop` (1440) and `phone-390` (`apps/agent-worker/agent_worker/livegate/presets.py`); PHONE-380 (2026-10-26): `phone-380` (380×800, AI Studio's phone mock-up frame), `swarm-handoff device` and `theme` |
+| device presets and themes | **exists** | QA-KIT: `desktop` (1440) and `phone-390` (`apps/agent-worker/agent_worker/livegate/presets.py`); PHONE-380 (2026-10-26): `phone-380` (380×800, the peer application's phone mock-up frame), `swarm-handoff device` and `theme` |
 | flow recording | **exists** | QA-FLOWS: `swarm-handoff record start/stop` writes a GIF per flow |
 | the QA template | **exists, console only** | `docs/qa/console-qa.workflow.json`, 17 steps: six `capture-*` (`claude-code-browser`, haiku), six `review-*` (`claude-code`, opus, each `input_from` its capture tar), three `flow-*` (`claude-code-browser`, jev or Playwright), `report` and `flow-report` (`claude-code`, opus). The findings shape is [visual-qa.md](visual-qa.md) §4.4; QA-REPORT-TARS stages the capture tars into `report` too |
 | signing in | **console only** | QA-IDENTITY ([qa-identity.md](qa-identity.md)): an IAP JWT for the console's one host, handed by the worker to the live gate on `ctl.sock` (verb `qa_identity`, `livegate/qaidentity.py`), added on the gate's own CDP sessions; the agent never holds it |
-| password fields | **cleared on return** (no longer masked for people: BGD, 2026-10-25, [live-browser.md](live-browser.md) §5.3) | the screencast shows the screen as Chromium draws it, password fields included; on the return from a person's control it clears every password input before releasing the agent (`livegate/cdpproxy.py`, "THE ORDER ON RETURN") |
+| password fields | **cleared on return** (no longer masked for people: the owner, 2026-10-25, [live-browser.md](live-browser.md) §5.3) | the screencast shows the screen as Chromium draws it, password fields included; on the return from a person's control it clears every password input before releasing the agent (`livegate/cdpproxy.py`, "THE ORDER ON RETURN") |
 | cookies | **not the agent's** | `cdppolicy.py` refuses the agent `Network.getCookies`, `getAllCookies`, `Storage.getCookies` and every cookie write |
 | an egress host allowlist | **none** | worker pods may reach any public address on 443 (`kubernetes/network-policies/allow-egress.yaml`, `0.0.0.0/0` minus private ranges); Terraform's `restrict_egress` is a port list, not hosts (`terraform/modules/network/variables.tf`); `apps/swarm-egress` is the optional residential proxy and refuses only internal names and ports (`swarm_egress/policy.py`) |
 | filing issues | **missing for an agent** | agent-autonomy.md §2 row 6; designed in its §3.2 |
@@ -74,10 +74,10 @@ not one):
 | `credential` | `{set: bool, set_at, set_by, version}`, never a value | a **reference**: the value is in Secret Manager (§2.1) |
 | `challenge_bypass` | `{kind: "header" \| "cookie", name}`, optional; its value served only as `challenge_bypass_value: {set, set_at, set_by, version}` | §2.5: the app owner's own way past their CAPTCHA, added by the gate on the approved origins only |
 | `screens` | a list `{id, path, ready?, segments?}`, or `discover: {max_pages ≤ 60, max_depth ≤ 3}` | the capture's route list; discovery is bounded and same-origin (§4.1) |
-| `flows` | `{id, goal, start_path, mutating: false, writes?}` each, at most 150 | goal-driven flows, run in **batches** (QA-FLOWS-CAP, BGD 2026-10-26): `flows_per_step` read-only flows a live-browser step, one agent that signs in once and runs its batch in order, each flow ending "STOP and capture" with its own `flow-<id>.tar`. `flows_per_step` is 1-30, chosen by `:run`'s `flows_per_step`, else the workspace's `qa_flows_per_step` (`GET`/`PUT /v1/workspaces/{id}/qa-settings`), else default 15; the run's `qa_target_runs` row records the value and where it came from. 150 because AI Studio's ai-studio-staging needs 132 read-only frame-state flows; it is stated once, in `qaspec.MAX_FLOWS` (the capture tool never reads a flow). A leg over the 50 steps a workflow holds is refused naming the smallest `flows_per_step` that fits (with 60 screens, 150 flows need 5), and one whose prompts pass the 256 KiB of workflow input is refused saying so (§4.1 step 4). `mutating: true` is refused unless `environment` is `non_production` (§3), and needs `writes`, one plain sentence of at most 300 characters saying what the flow writes, refused 422 `qa_flow_writes_required` without it: the flow's brief states it as the limit of what it may write and its report repeats it under "This flow wrote"; a mutating flow stored before that rule runs read-only. The workspace's `writing_flows` QA setting (default on, admin-only, the same `qa-settings` route) off runs every flow read-only and refuses saving a mutating flow, 422 `qa_writing_flows_off` (qa-environments.md §6; BGD, 2026-11-05). `start_path` is relative to **`base_url`**, path included: under `https://h/app/`, `/` opens `https://h/app/` and `/settings` opens `https://h/app/settings`. Screen paths, exclusions and `login_path` are origin-relative instead, because discovery writes routes as the origin's paths (QA-ORIGIN); a flow says where it starts in the app, so it is read from the app's base, through the one join `qaspec.screen_url`, and its start is refused when either reading is excluded (QA-TARGET-FILE, #2062) |
+| `flows` | `{id, goal, start_path, mutating: false, writes?}` each, at most 150 | goal-driven flows, run in **batches** (QA-FLOWS-CAP, the owner 2026-10-26): `flows_per_step` read-only flows a live-browser step, one agent that signs in once and runs its batch in order, each flow ending "STOP and capture" with its own `flow-<id>.tar`. `flows_per_step` is 1-30, chosen by `:run`'s `flows_per_step`, else the workspace's `qa_flows_per_step` (`GET`/`PUT /v1/workspaces/{id}/qa-settings`), else default 15; the run's `qa_target_runs` row records the value and where it came from. 150 because the peer application's peer-app-staging needs 132 read-only frame-state flows; it is stated once, in `qaspec.MAX_FLOWS` (the capture tool never reads a flow). A leg over the 50 steps a workflow holds is refused naming the smallest `flows_per_step` that fits (with 60 screens, 150 flows need 5), and one whose prompts pass the 256 KiB of workflow input is refused saying so (§4.1 step 4). `mutating: true` is refused unless `environment` is `non_production` (§3), and needs `writes`, one plain sentence of at most 300 characters saying what the flow writes, refused 422 `qa_flow_writes_required` without it: the flow's brief states it as the limit of what it may write and its report repeats it under "This flow wrote"; a mutating flow stored before that rule runs read-only. The workspace's `writing_flows` QA setting (default on, admin-only, the same `qa-settings` route) off runs every flow read-only and refuses saving a mutating flow, 422 `qa_writing_flows_off` (qa-environments.md §6; the owner, 2026-11-05). `start_path` is relative to **`base_url`**, path included: under `https://h/app/`, `/` opens `https://h/app/` and `/settings` opens `https://h/app/settings`. Screen paths, exclusions and `login_path` are origin-relative instead, because discovery writes routes as the origin's paths (QA-ORIGIN); a flow says where it starts in the app, so it is read from the app's base, through the one join `qaspec.screen_url`, and its start is refused when either reading is excluded (QA-TARGET-FILE) |
 | `flows_browser_tool` | `playwright` (default, when unset) or `jev` | the tool the flows drive the live browser with (§4.1, step 4); anything else is refused at registration |
 | `widths` | presets by name, default `["desktop", "phone-390"]` (1440 and 390) | the gate's presets, never a viewport override (the gate refuses one) |
-| `themes` | default `["light"]`, through emulated media; name `dark` to capture it too | owner pick 2026-10-27 (PR #2522): light only by default, so an app with no dark theme is never captured or judged in one; a target that names dark has an unchanged dark capture filed as a defect (`dark_differs`) |
+| `themes` | default `["light"]`, through emulated media; name `dark` to capture it too | owner pick 2026-10-27: light only by default, so an app with no dark theme is never captured or judged in one; a target that names dark has an unchanged dark capture filed as a defect (`dark_differs`) |
 | `exclusions` | path globs never visited, element texts or selectors never clicked | always merged with the defaults: `/logout`, `/signout`, and controls whose text names delete, remove, pay, buy, purchase, send, invite, unsubscribe or cancel subscription |
 | `environment` | `production` (default) or `non_production` | §3: only a non-production target can run a mutating flow |
 | `read_posts` | target-origin paths whose `POST` is a read (a GraphQL endpoint) | §3's method rule would otherwise refuse them |
@@ -87,7 +87,7 @@ not one):
 | `authorized_by`, `attested_at` | the registrant's statement that the tenant may test this application | someone else's app: the platform does not decide whose it is, but it records who said it may be tested |
 | `host_state` | `pending`, `approved` (with `approved_by`, `approved_at`) or `revoked` | §1.2 |
 
-**Environments (#2136, §10).** A target may instead carry `environments[]`:
+**Environments (§10).** A target may instead carry `environments[]`:
 `base_url`, `sign_in`, `credential`, `challenge_bypass`, `environment`,
 `read_posts`, `rate` and `host_state` (with its approval) then live in each
 entry, one per leg, and everything else above stays on the target once.
@@ -131,7 +131,7 @@ is the allowlist, made where it can be enforced:
   a platform admin only, which sends the route above once the admin has
   typed the host, and the login's `extra_origin` when one is declared.
 * **The IdP token path is approved in the same place, and nowhere else**
-  (QA-IDP-POST, BGD decided 2026-10-23, #2067). With the `extra_origin`, the
+  (QA-IDP-POST, the owner decided 2026-10-23). With the `extra_origin`, the
   platform admin may name one exact path on it, `idp_token_path` (`/...`; no
   query, fragment, `%`-encoding, glob, empty, `.` or `..` segment), stored as
   `approved_idp_token_path` and audited in the approval's row. It is refused
@@ -149,8 +149,8 @@ is the allowlist, made where it can be enforced:
   entries for the browser pods, read from `qa_targets` by the same lane that
   makes that change; today it is a port list and needs none.
 
-The first target BGD's request names, `https://oracle.swarm.saga.xyz` filed
-into product-oracle in his personal GitHub, is registered exactly this way in
+The first target the owner's request names, `https://peer.swarm.example.com` filed
+into peer-app-2 in his personal GitHub, is registered exactly this way in
 his personal workspace, whose forge slot already holds that repository. It is
 data, not code.
 
@@ -215,7 +215,7 @@ The QA-IDENTITY path, generalised from one header to one sign-in:
    CDP session, on Chromium's pipe, which the agent never sees, it opens
    `login_url`, focuses each field by its selector, types with
    `Input.insertText`, presses the submit control, and reads **the page's
-   own state** (`SignIn._after_submit`, part of #2688):
+   own state** (`SignIn._after_submit`, part of the Day One install program):
    * **Signed in** as soon as `signed_in_selector` shows (looked for through
      open shadow roots too), or once the tab has read as the app for
      `PAGE_SETTLED_SECONDS` (3 s: a page between two redirects reads as the
@@ -265,16 +265,16 @@ The QA-IDENTITY path, generalised from one header to one sign-in:
    one more value, decoding `base64Encoded` bodies before matching. A page
    that echoes the password back ("show password", an error page) reaches
    the agent's screenshots, text and accessibility tree scrubbed. The
-   screencast paints nothing over the screen since BGD's decision of
+   screencast paints nothing over the screen since the owner's decision of
    2026-10-25 (password fields draw as dots, as Chromium draws them); a field
    typed by the gate is cleared before any agent capture can exist.
 
 **Start clicks: a chooser, or a "Sign in" button before an identity
-provider** (BGD, 2026-10-23; lane VQ8-START-CLICKS). Not every login page is
-the form. AI Studio (`https://studio.saga.xyz`, targets
-`ai-studio-staging-routes` and `ai-studio-staging-crawl`) opens on a chooser
+provider** (the owner, 2026-10-23; lane VQ8-START-CLICKS). Not every login page is
+the form. The peer application (`https://peer.example.com`, targets
+`peer-app-staging-routes` and `peer-app-staging-crawl`) opens on a chooser
 with a Staging | Production toggle and a "Sign in" button, which redirects to
-Keycloak on its `extra_origin` (`https://sso.agents-staging.saga.xyz`), where
+Keycloak on its `extra_origin` (`https://sso.peer-cluster.example.com`), where
 the username form lives. Opening `login_url` and looking for a password input
 there finds none, so the sign-in ended `qa_sign_in_no_form` every time. An
 `own_login` target may therefore list `sign_in.start_clicks`, which the gate
@@ -341,7 +341,7 @@ makes in step 3 between opening `login_url` and looking for the form:
   held throughout, MFA and CAPTCHA are refused, password inputs are
   cleared, the gate's tab is closed, and the agent never sees that tab.
 
-**The agent's own tab may land on the chooser again.** AI Studio keeps its
+**The agent's own tab may land on the chooser again.** The peer application keeps its
 access token in page memory, so the agent's tab, sent to `base_url` after the
 gate's tab signed in (step 4), shows the chooser, and one "Sign in" click
 there completes through the Keycloak session with no form. So when a target
@@ -394,7 +394,7 @@ the same target still run and are reported.
 
 ### 2.5 A challenge on an app you own
 
-BGD, 2026-10-23 (#2058, lane CAPTCHA-BYPASS): **a QA target may carry a
+The owner, 2026-10-23 (lane CAPTCHA-BYPASS): **a QA target may carry a
 challenge bypass its owner configures, and only the gate applies it, only on
 the target's own origins.** §2.4 stands for everything else: the gate never
 solves a CAPTCHA, never calls a solver service or a model to solve one, and
@@ -428,7 +428,7 @@ alone), so **no IAM changes**. The target records only
 `challenge_bypass_value: {set, set_at, set_by, version}`, audited
 `qa_target_challenge_bypass_set` with the version, kind, name and
 `via_link`. **The value arrives through a one-time link, as the password
-does** (BGD's Q8 of [secrets-scopes.md](secrets-scopes.md) §11, lane
+does** (the owner's Q8 of [secrets-scopes.md](secrets-scopes.md) §11, lane
 SSC-LINKS): `POST .../credential-links {"field": "challenge_bypass"}` mints a
 link to the console's bypass form (`/qa-targets/{id}/challenge-bypass?t=`),
 only for an entry whose `challenge_bypass` names its kind and name; the PUT
@@ -502,10 +502,10 @@ prompt says the same so the agent does not fight its own gate.
     own sign-in submission and the paths in `read_posts`;
   * **any** request but `GET` and `HEAD` to every other origin, so a
     third-party payment, mail or analytics frame cannot be made to send.
-  **One exception: the IdP token refresh** (QA-IDP-POST; BGD decided
-  2026-10-23, "allow the token path only", #2067). On 2026-10-23 AI Studio's
+  **One exception: the IdP token refresh** (QA-IDP-POST; the owner decided
+  2026-10-23, "allow the token path only"). On 2026-10-23 the peer application's
   run signed in, and then the app's own Keycloak token exchange (a browser
-  `POST` from `studio.saga.xyz` to its `extra_origin`'s
+  `POST` from `peer.example.com` to its `extra_origin`'s
   `/protocol/openid-connect/token`) was answered by the gate's 403 with no
   CORS header: every screen stayed on "Checking your session…" and the run
   filed the gate's refusal as the app's CORS blocker. So a target whose
@@ -587,14 +587,14 @@ finding) carries over.
    keeps only the links under it, still refusing userinfo, a query, a
    fragment, an IP literal and an internal name, because an app served under
    a sub-path (`https://demo.playwright.dev/todomvc/`) was otherwise crawled
-   from its origin's `/` (#1981). `--hash-routes` (off by default) also lists
+   from its origin's `/`. `--hash-routes` (off by default) also lists
    a page's links to itself whose fragment starts with `#/` as routes, never
    `#section`, because a hash-routed app's screens are otherwise one route.
    A page whose main document answered 4xx or 5xx is not listed, because the
    first external proof listed and captured a GitHub Pages 404 as a screen.
 
-   **How a discovery is started and stored** (lane QA-DISCOVER; BGD,
-   2026-10-23, after `ai-studio-staging-crawl` could not be started: "build
+   **How a discovery is started and stored** (lane QA-DISCOVER; the owner,
+   2026-10-23, after `peer-app-staging-crawl` could not be started: "build
    discovery, so a crawl target is started entirely from the console").
    Any member starts one with **Run discovery** on the QA targets page
    (**Run discovery again** once the target has discovered screens), which
@@ -643,7 +643,7 @@ finding) carries over.
    `browser_tool` when `:run` names one; recorded with `swarm-handoff record`,
    each flow at each width. The prompt names the tool's own tools:
    Playwright MCP's `browser_*`, or the jev tools. Since QA-FLOWS-CAP
-   (BGD, 2026-10-26) the read-only flows render as ceil(n / `flows_per_step`)
+   (the owner, 2026-10-26) the read-only flows render as ceil(n / `flows_per_step`)
    batch steps, `flows-1` ... `flows-<k>`, in the target's order, each one
    agent that signs in once and runs its batch's flows one after another;
    each flow ends "STOP and capture" with its own `flow-<id>.json`,
@@ -668,7 +668,7 @@ finding) carries over.
    finding about the run), writing `report.md` and `findings.json` (§4.4).
 6. **file**: `claude-code`, sonnet, `input_from` the report; §5.
 
-**Why flows default to Playwright, not Jev** (lane VQ9-TOOL; BGD,
+**Why flows default to Playwright, not Jev** (lane VQ9-TOOL; the owner,
 2026-10-23). Flows were first rendered with Jev on every target. The
 browser benchmark's batch `bench3-2026-10-23` ([browser-bench.md](../browser-bench.md):
 10 prompts x 3 tools x 3 repeats, 83 runs measured) passed Playwright MCP on
@@ -699,7 +699,7 @@ failed flow never costs the screen findings.
 | `apps/swarm-ui/qa/routes.json` and its six named groups | the target's `screens` or `discovered`, grouped by `qaspec` |
 | every load empties storage (`RESET_STATE_JS`) | `--keep-storage` for `own_login` targets |
 | the settle waits on the console's pending reads (`PENDING_JS`) | `--settle generic`: network idle, then no DOM mutation for 500 ms, bounded as today |
-| the console fixture's `swarm_qa_persona` cookie (`PERSONA_COOKIE`) on every route | not set under `--settle generic` when no route names a `persona` (BGD, 2026-10-22); a generic route list that names one keeps it, and `PERSONAS` still refuses an unknown one |
+| the console fixture's `swarm_qa_persona` cookie (`PERSONA_COOKIE`) on every route | not set under `--settle generic` when no route names a `persona` (the owner, 2026-10-22); a generic route list that names one keeps it, and `PERSONAS` still refuses an unknown one |
 | the clock frozen at the route list's instant | off by default (`--clock` only when the target sets one): freezing `Date` can expire an app's own session token |
 | the three console flows | the target's `flows` |
 | the console's review list | §4.3's checklist plus the app's `design_docs` |
@@ -708,7 +708,7 @@ failed flow never costs the screen findings.
 Nothing else changes: presets by name, the theme set twice, segments, the
 manifest, the tar names, the findings shape.
 
-Two checks hold for every capture, the console's included (#1981). A route
+Two checks hold for every capture, the console's included. A route
 whose main document answered 4xx or 5xx is a failed route at `navigate`,
 with the status, not a captured one. A subresource that answered 4xx or 5xx
 is in the route's `errors.json` as `bad_responses`, its URL (origin and
@@ -723,10 +723,10 @@ clipped capture lifted the gate's device, which the gate now puts back
 (`DeviceController.reassert`, QA-REASSERT).
 
 The gate's refusals are the run's, never the app's (QA-GATE-REFUSALS, part
-of #2067). A 403 the gate makes for a request to another origin carries no
+of an earlier issue). A 403 the gate makes for a request to another origin carries no
 `Access-Control-Allow-Origin`, so Chrome reports it as a CORS block and a
 failed request, exactly as if the app's own server had misconfigured CORS. On
-2026-10-23 the AI Studio run met that on every route (its OIDC token
+2026-10-23 the peer application run met that on every route (its OIDC token
 exchange, a `POST` to its identity provider) and filed the gate's refusal into
 the app's repository as a blocker. So the gate keeps a record of every
 request it answered itself (`QaTarget.refusals`: time, method, origin, path
@@ -744,8 +744,8 @@ from `CdpProxy.qa_refusals`); a gate holding no QA target answers 404, and
 whenever the record cannot be read the capture writes `gate_refused: null` and
 the manifest says so, never an empty list.
 
-**A leg that never got past sign-in is not reviewed (part of #2688).** On
-2026-11-02 an AI Studio staging run captured the app's "Couldn't check your
+**A leg that never got past sign-in is not reviewed (part of the Day One install program).** On
+2026-11-02 an peer application staging run captured the app's "Couldn't check your
 session" card on every screen. The gate had refused the app's `POST` to its
 Keycloak token endpoint 83 times, and the run still read green: its review,
 report and file steps succeeded and filed a contrast finding about the
@@ -825,7 +825,7 @@ holds unchanged:
   <name>, <date>: <n> further findings", so nothing is silently dropped.
 * **De-duplicated by the broker.** The `file` step calls `issue_create` with
   `dedupe_key: "visual-qa:<target_id>:<environment>:<screen>:<normalised title>"`,
-  the leg's name in it since #2136 (§10).
+  the leg's name in it since an earlier issue (§10).
   swarm-api writes `<!-- swarm-qa target=<id> key=<sha256[:12]> -->` into the
   body and, before filing, searches the repository's open issues for that
   marker; a match answers `{existing: N}` and files nothing, and the step
@@ -849,11 +849,11 @@ holds unchanged:
 * **Labels**: `bug` (or the form's), the target's `labels` (default
   `visual-qa`), and `severity:<s>` when the repository has such a label;
   only labels that already exist are applied (§3.2's rule), never created.
-* **Labels by route** (`file.label_rules`, #2062): `[{paths: ["/agents/"],
+* **Labels by route** (`file.label_rules`): `[{paths: ["/agents/"],
   labels: ["agent-page-rework"]}]`. A finding whose `path`, without its
   query, starts with one of a rule's prefixes also gets that rule's labels,
   on top of `labels`; every matching rule adds its own, and a finding no rule
-  matches is filed with `labels` alone. AI Studio asked for it on 2026-10-23:
+  matches is filed with `labels` alone. The peer application asked for it on 2026-10-23:
   their `/agents/{id}` page was being replaced, and they re-check those
   findings against the new build instead of fixing the old one, which until
   then meant labelling them by hand after the file step. The prefixes are
@@ -933,7 +933,7 @@ the safety rules of §3. Approving a host is any platform admin's, audited
 
 ## 9. Questions for the owner: answered
 
-Owner decisions, 2026-10-22 ~06:40Z (BGD, recorded on
+Owner decisions, 2026-10-22 ~06:40Z (the owner, recorded on
 task_1eefab7ffc1941d58986). Each was asked with the options below,
 recommended first; the answer is built, not reopened.
 
@@ -957,10 +957,10 @@ recommended first; the answer is built, not reopened.
 
 ## 10. Environments, the run group and discovery during QA (built, #2136)
 
-BGD asked on 2026-10-23 for one dispatch to QA an app's staging and
+The owner asked on 2026-10-23 for one dispatch to QA an app's staging and
 production legs together, discovering routes while it captures, because a
 run over a stored route list misses what shipped since. The design and its
-reasons are [qa-environments.md](qa-environments.md); BGD's answers are its
+reasons are [qa-environments.md](qa-environments.md); the owner's answers are its
 §10, and what each lane built is its §11. Each paragraph below says what
 changed in this document's model.
 
@@ -991,7 +991,7 @@ serves the group in its own tenant, and the console's run page,
 minute zero, then walks the same graph from the base path and every stored
 route and captures the new routes it owns, the owner fixed by a hash of the
 path so two steps never capture one route (`swarm_qa capture --crawl`).
-`found_per_step` defaults to 8, BGD's answer of 2026-10-23, and is cut so
+`found_per_step` defaults to 8, the owner's answer of 2026-10-23, and is cut so
 stored plus new routes stay within 60 a leg; a crawling step's timeout is
 2,700 s. Every step writes `found.json` and the report gains a coverage
 section per leg. A discovering target with nothing stored renders
@@ -1021,7 +1021,7 @@ admin's PATCH of `screens`. A target with `screens` runs `screens` alone,
 so on it a found route is captured again by the crawl or once promoted
 ([qa-environments.md](qa-environments.md) §5, §11).
 
-**Filing per environment.** One issue per finding per leg (BGD's Q8 (a)):
+**Filing per environment.** One issue per finding per leg (the owner's Q8 (a)):
 the dedupe key is `visual-qa:<target_id>:<environment>:<screen>:<title>`,
 titles start `[<leg>]` (`[staging]`, `[production]`), and a grouped run's
 issue links `/qa-runs/<group_id>`, where the other leg's run is. The two
@@ -1034,7 +1034,7 @@ for writes (`apps/swarm-api/swarm_api/qaspec.py::shares_production_origin`):
 the worker route answers `mutating: false` for every step of it, and no
 mutating flow is rendered for it or for any production leg of a target of
 several entries. The rule compares the entries of one target only: AI
-Studio's legs share `https://studio.saga.xyz` behind a Staging | Production
+Studio's legs share `https://peer.example.com` behind a Staging | Production
 toggle, and they are held read-only by it only while they are entries of one
 target (qa-environments.md §11 says how they are registered today). The
 gate holds one leg per attempt: a second
@@ -1043,6 +1043,6 @@ refused `target_changed` before any field of it is taken
 ([qa-environments.md](qa-environments.md) §1.5, §6).
 
 Nothing of §3 is softened. Every rule there holds on every leg, production
-legs read only (BGD's Q6 (a)), the production account is an MFA-free,
+legs read only (the owner's Q6 (a)), the production account is an MFA-free,
 least-privilege QA account rather than a solved challenge (Q7 (a), §2.4),
 and the shared-origin rule only ever turns a write permission off.

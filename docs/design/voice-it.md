@@ -5,11 +5,11 @@
 2026-10-31) was a session scratchpad file; the facts this design rests on are
 restated here with their sources (§13), so this file stands alone.
 
-**A second engine (BGD, 2026-11-05):** speech on our own L4 machine beside GPT-Live, with
+**A second engine (the owner, 2026-11-05):** speech on our own L4 machine beside GPT-Live, with
 Settings, Telemetry, spoken read-backs and visuals on the Talk page, is designed in
 [voice-it-own-speech.md](voice-it-own-speech.md).
 
-**The owner's ask (BGD, 2026-10-31):** a console page used mainly to talk by
+**The owner's ask (the owner, 2026-10-31):** a console page used mainly to talk by
 voice, with live captions of both sides and a voice oscilloscope while the
 agent speaks, to an agent that is a product designer, software architect and
 development buddy. It plans new apps, backends and projects, features in
@@ -29,22 +29,22 @@ mock-ups, and inputs for details and for credentials.
 
 ## 1. Decision record
 
-BGD answered these on 2026-11-01 at about 03:00 UTC (the evening of
+The owner answered these on 2026-11-01 at about 03:00 UTC (the evening of
 2026-10-31, PDT). They are settled; this design builds on them.
 
-| Decision | BGD chose | Claude had recommended | Where it lands here |
+| Decision | The owner chose | Claude had recommended | Where it lands here |
 |---|---|---|---|
-| How far it acts on its own | **Ships end to end within a budget**: starts, merges and deploys. Only IAM, secrets, the other team's project (`saga-agents-staging`'s shared resources) and cost raises stop it | Acts, but asks at gates | §3.9 safety, §5 shipping path |
-| Budget | **$100 a session, $300 a day**, counting voice minutes and every lane, review and deploy it starts. At a cap it stops starting work and a card asks BGD to raise it | (none) | §3.8, §6 |
-| Who uses it | **BGD only** in version one: one budget, one key, one history. Per-workspace rework later | All workspaces behind a switch | §3.6, §3.7 |
+| How far it acts on its own | **Ships end to end within a budget**: starts, merges and deploys. Only IAM, secrets, the other team's project (`example-project`'s shared resources) and cost raises stop it | Acts, but asks at gates | §3.9 safety, §5 shipping path |
+| Budget | **$100 a session, $300 a day**, counting voice minutes and every lane, review and deploy it starts. At a cap it stops starting work and a card asks the owner to raise it | (none) | §3.8, §6 |
+| Who uses it | **The owner only** in version one: one budget, one key, one history. Per-workspace rework later | All workspaces behind a switch | §3.6, §3.7 |
 | Voice engine | **OpenAI GPT-Live (`gpt-live-1`) in front, Claude Opus planning behind it.** OpenAI receives the raw audio | A Claude-led cascade on LiveKit | §3 |
 | The OpenAI key | Decided at build time; design for a **personal secret** | (none) | §3.6, open question 1 |
-| Memory | **Saved, resumable projects**, plus BGD's **editable preferences** | (none) | §3.7, §3.11 |
+| Memory | **Saved, resumable projects**, plus the owner's **editable preferences** | (none) | §3.7, §3.11 |
 | Microphone | **Open mic with barge-in**, plus **mute** and **push-to-talk** | (none) | §3.10 |
 | Rescue entry point | A **"Talk it through"** button on failed or parked agents, failed workflows, and inbox items | (none) | §3.12 |
 | Credentials | **Never spoken, captioned or seen by the model**: only through the one-time secret form | (none) | §3.9 |
-| Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus BGD's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
-| Layout | **The Jarvis-like presence direction** (2026-11-01, after five directions were drawn as real console frames): the voice as a luminous ring, the card being discussed brought forward, the rest as panels around it, and a heads-up line for budget, running work and what needs BGD | The command deck | §11 |
+| Scenarios | All four (a new app from scratch, a failed workflow rescue, a feature in an existing repository, an approvals walk-through) **plus the owner's flexibility point**: one engine whose cards and plan scale from a one-line fix to a multi-lane product | (none) | §5 |
+| Layout | **The Jarvis-like presence direction** (2026-11-01, after five directions were drawn as real console frames): the voice as a luminous ring, the card being discussed brought forward, the rest as panels around it, and a heads-up line for budget, running work and what needs the owner | The command deck | §11 |
 
 ### Where the research disagreed, recorded and not reopened
 
@@ -59,7 +59,7 @@ BGD answered these on 2026-11-01 at about 03:00 UTC (the evening of
   first audio (a Claude estimate from component figures). Either way Claude is
   the brain behind someone else's ears and mouth: the Claude API has no audio
   input or output [11].
-  **Why it was not chosen:** BGD picked the full-duplex model, which the
+  **Why it was not chosen:** The owner picked the full-duplex model, which the
   research itself rated best on turn-taking (a third-party measurement put
   GPT-Live 205 ms faster at the median than ChatGPT's earlier voice mode, with
   its spread cut from 489 ms to 104 ms [8]), and accepted about $1.80 an hour
@@ -71,7 +71,7 @@ BGD answered these on 2026-11-01 at about 03:00 UTC (the evening of
   LiveKit ships a GPT-Live plugin with client delegation [20], so even a later
   move onto LiveKit would keep this shape.
 * **The research proposed a confirm card before every action that changes
-  something.** BGD chose end-to-end autonomy instead. This design keeps the
+  something.** The owner chose end-to-end autonomy instead. This design keeps the
   research's other rules (the planner writes the cards; the voice speaks the
   planner's summary and points at the card) and replaces per-action
   confirmation with a short **grace window** on actions that spend, which a
@@ -102,16 +102,16 @@ Read on `origin/main`, 2026-11-01.
 | The frozen contract has no conversation, voice or card type | `apps/common/swarm_common/` | Everything Voice it stores is swarm-api's own (§8) |
 | Agents carry free-form `metadata`; `metadata.claude_session` groups "this session's work", and work the platform starts on a tagged item's behalf (an issue run's planner, its workflow, its fix rounds, its merge workflow) copies the tag | frozen `Task.metadata`; `apps/swarm-api/swarm_api/sessiontag.py`; `GET /v1/tasks?claude_session=` | Voice it tags everything with `voice:<project id>`; the ledger and the cards find a project's work, follow-ups included, by that tag |
 | A step may carry its own budget (`{usd}` or `{tokens}`), which only lowers the workspace limit; the worker stops it at 100% at a turn boundary and kills it at 120% | `docs/design/agent-budget.md`, frozen `Task.budget` (contract request 120) | Voice it can **reserve** money before work starts and know each step cannot spend past it (§3.8) |
-| Issue runs plan, wait for a plan approval or approve themselves, compile a workflow, run fix rounds and merge; their plans carry hard-stop holds (`iam`, `workflows`, `secrets`, `tenancy`, `shared`) that only the hold's approvers lift | `apps/swarm-api/swarm_api/routes/runs.py`, `issueruns.py` (`STOP_IAM` and the rest, `SHARED_DENY_LIST` restated and held to `scripts/lib/common.sh` by a test) | The platform already stops exactly where BGD said Voice it must stop. **Code work ships through issue runs** (§5) |
-| swarm-api can create a GitHub issue with the tenant's forge token; there is no route that creates a GitHub repository | `apps/swarm-api/swarm_api/forgewrite.py` (`create_issue`) | Filing an issue is one new route over existing code; a brand-new repository is BGD's step (§5) |
+| Issue runs plan, wait for a plan approval or approve themselves, compile a workflow, run fix rounds and merge; their plans carry hard-stop holds (`iam`, `workflows`, `secrets`, `tenancy`, `shared`) that only the hold's approvers lift | `apps/swarm-api/swarm_api/routes/runs.py`, `issueruns.py` (`STOP_IAM` and the rest, `SHARED_DENY_LIST` restated and held to `scripts/lib/common.sh` by a test) | The platform already stops exactly where the owner said Voice it must stop. **Code work ships through issue runs** (§5) |
+| swarm-api can create a GitHub issue with the tenant's forge token; there is no route that creates a GitHub repository | `apps/swarm-api/swarm_api/forgewrite.py` (`create_issue`) | Filing an issue is one new route over existing code; a brand-new repository is the owner's step (§5) |
 | A workflow step can wait for a person's answer, and the console already draws that card | `apps/swarm-api/swarm_api/routes/await_input.py`, `apps/swarm-ui/src/AwaitInputCard.tsx` | The details card reuses it for lanes' waiting steps |
 | A repository's knowledge graph answers search, territory and impact | `apps/swarm-api/swarm_api/routes/repositories.py` (`/search`, `/territory`, `/impact`) | The planner splits large work by territory (§5) |
 | A fix workflow can push onto an existing pull request's branch by naming the agent | `apps/swarm-api/swarm_api/continuation.py` (`WorkflowCreate.continues_task`) | The rescue path fixes a red pull request in place |
 | A person's preferences live in a document whose id is an HMAC no worker can compute | `apps/swarm-api/swarm_api/preferences.py` | Voice it preferences use the same id scheme (§3.7) |
 | Artifacts are served as `text/plain`, and no screen ever builds HTML from artifact bytes; no diagram renderer exists | `apps/swarm-api/swarm_api/routes/tasks.py` (artifact content), `apps/swarm-ui/src/ArtifactViewer.tsx` | Mock-ups need a sandboxed frame; diagrams need a renderer (§4) |
-| A workspace secret may name provider `openai`; provider-key links are TypeSafe-only; the account pool holds Claude **subscriptions**, not API keys; the codex runner is disabled, and eng's `swarm-tenant-eng-openai` holds one version OpenAI refused on 2026-09-23 | `workspace_secrets.py` (`PROVIDERS`), `validation.py` (`PROVIDER_KEY_PROVIDERS`), `apps/quota-broker/quota_broker/oauth.py`, `apps/common/swarm_common/profiles.py` (the `codex` entry) | BGD adds a fresh personal OpenAI key through Config › Secrets. The planner runs on a Claude subscription account leased from the pool through Claude Code (§3.6, owner 2026-11-02) |
+| A workspace secret may name provider `openai`; provider-key links are TypeSafe-only; the account pool holds Claude **subscriptions**, not API keys; the codex runner is disabled, and eng's `swarm-tenant-example-tenant-openai` holds one version OpenAI refused on 2026-09-23 | `workspace_secrets.py` (`PROVIDERS`), `validation.py` (`PROVIDER_KEY_PROVIDERS`), `apps/quota-broker/quota_broker/oauth.py`, `apps/common/swarm_common/profiles.py` (the `codex` entry) | The owner adds a fresh personal OpenAI key through Config › Secrets. The planner runs on a Claude subscription account leased from the pool through Claude Code (§3.6, owner 2026-11-02) |
 | swarm-api reads the artifact bucket but may write only under narrow, conditioned, create-only grants, one per purpose | `terraform/modules/iam/bindings.tf` (`api_reader`), `terraform/infra/await_input.tf`, `terraform/infra/git_tools.tf` | Voice it's GCS prefix is one more such grant: an IAM change (§10) |
-| `swarm-live` and `swarm-graph` are rolled by named steps in the release and hotfix workflows | `.github/workflows/release.yml`, `.github/workflows/hotfix.yml` | A new service in `swarm-system` needs workflow lines: held for BGD (§10) |
+| `swarm-live` and `swarm-graph` are rolled by named steps in the release and hotfix workflows | `.github/workflows/release.yml`, `.github/workflows/hotfix.yml` | A new service in `swarm-system` needs workflow lines: held for the owner (§10) |
 
 ---
 
@@ -121,7 +121,7 @@ Read on `origin/main`, 2026-11-01.
 
 ```mermaid
 flowchart LR
-  subgraph BR["BGD's browser: Voice it, Talk"]
+  subgraph BR["the owner's browser: Voice it, Talk"]
     MIC[Microphone] --> PC[WebRTC peer]
     PC --> SPK[Agent voice and oscilloscope]
     PC -.->|data channel| CAP[Live captions]
@@ -135,7 +135,7 @@ flowchart LR
   VOICE <-->|"sideband: transcripts, delegations, commentary"| LIVE
   VOICE <-->|"planner turns, strict tools"| OPUS[("Claude Opus 5.5")]
   VOICE -->|"tool calls with the session grant"| API
-  SM[("Secret Manager: BGD's OpenAI and Anthropic keys")] --> VOICE
+  SM[("Secret Manager: the owner's OpenAI and Anthropic keys")] --> VOICE
   API --> FS[("Firestore: projects, sessions, cards, turns, starts, preferences")]
   API --> GCS[("GCS prefix tenants/TENANT/voice/")]
   API --> ROUTES["Existing routes: issues, runs, tasks, workflows, approvals, schedules, cancel"]
@@ -147,7 +147,7 @@ to OpenAI. Our servers carry only the offer and answer that set the call up,
 the transcripts OpenAI sends on the sideband, and text.
 
 **The ephemeral session.** swarm-voice creates each GPT-Live session with
-BGD's key and answers the browser's WebRTC offer itself, which OpenAI's Live
+The owner's key and answers the browser's WebRTC offer itself, which OpenAI's Live
 guide recommends [4]. The browser never holds a key or a client secret.
 
 The alternative is a short-lived client secret minted by the server, which
@@ -162,8 +162,8 @@ both there, with nothing for the page to override.
 
 | Piece | Runs where | Holds | Why there |
 |---|---|---|---|
-| **Talk pane** | BGD's browser | The WebRTC peer, the mic and the agent's track, captions, the oscilloscope, the card list | Media must be peer to peer with OpenAI to keep audio off our servers and to get the browser's echo cancellation, which covers WebRTC remote audio [14] |
-| **GPT-Live session** | OpenAI | The live conversation, its turn-taking and barge-in, the voice | BGD's choice |
+| **Talk pane** | The owner's browser | The WebRTC peer, the mic and the agent's track, captions, the oscilloscope, the card list | Media must be peer to peer with OpenAI to keep audio off our servers and to get the browser's echo cancellation, which covers WebRTC remote audio [14] |
+| **GPT-Live session** | OpenAI | The live conversation, its turn-taking and barge-in, the voice | The owner's choice |
 | **swarm-voice** (new) | One-replica StatefulSet in `swarm-system` on the GKE cluster | Each live session's sideband WebSocket, the planner loop, the session grant (in memory) | It holds long-lived outbound sockets for the length of a conversation, which no request-shaped service can (§3.4) |
 | **Text conversation** (no API key in the pool) | Inside swarm-voice (`swarm_voice/textchat.py`), calling the ChatGPT plan's Codex Responses route | Each text session's turns and its plan lease, in memory | OpenAI serves the plan text but refuses it Live (§3.6, "Both paths"), so the browser sends each spoken turn as text and swarm-voice answers it |
 | **Planner** | Inside swarm-voice, calling the Anthropic Messages API | Nothing between turns: every turn reads the project from Firestore through swarm-api | Opus always thinks [10], so it stays off the spoken path; the voice speaks while it works |
@@ -174,7 +174,7 @@ both there, with nothing for the page to override.
 
 ```mermaid
 sequenceDiagram
-  participant B as BGD's browser
+  participant B as the owner's browser
   participant L as GPT-Live
   participant V as swarm-voice
   participant C as Claude Opus
@@ -270,9 +270,9 @@ verified: that the browser's data channel carries the transcript events when
 the server created the session; if not, captions come through the card stream
 at about a second more delay (§9).
 
-### 3.6 Identity, keys, and how swarm-voice acts as BGD
+### 3.6 Identity, keys, and how swarm-voice acts as the owner
 
-**A session grant.** When BGD starts a session, swarm-api creates a random
+**A session grant.** When the owner starts a session, swarm-api creates a random
 256-bit grant, stores only its hash on the session document, and hands the
 grant to swarm-voice in the internal start call. swarm-voice presents it on
 every call, beside its own Google identity token.
@@ -283,7 +283,7 @@ swarm-api accepts a grant only when:
 * the hash matches a session that is still live;
 * the route is on the Voice it allowlist.
 
-It then acts as BGD in that session's workspace, and stamps
+It then acts as the owner in that session's workspace, and stamps
 `via: voice-it/<session id>` on every audit row and every submission's
 metadata. The grant dies with the session. A swarm-voice restart asks for
 fresh grants for live sessions, as a worker asks again for a live-browser
@@ -426,8 +426,8 @@ is recorded as **refused by OpenAI**, and the owner said "fix it":
 
 **Both paths: the ChatGPT plan's text conversation (owner, 4 November
 2026).** Asked whether OpenAI plans could work here "in the same exact way as
-AI Studio", the owner chose both paths. OpenAI refuses the plan's token for
-GPT-Live (above), but AI Studio runs text inference on the plan, so the plan
+The peer application", the owner chose both paths. OpenAI refuses the plan's token for
+GPT-Live (above), but the peer application runs text inference on the plan, so the plan
 serves Voice it as **text only**:
 
 * **The mode.** `POST /v1/voice/sessions` answers `mode`. swarm-api asks the
@@ -454,7 +454,7 @@ serves Voice it as **text only**:
   for fifteen minutes (`textchat.IDLE_SECONDS`, so a closed tab never keeps
   the plan). The broker is the plan token's one writer and refreshes it; a
   401 only asks the lease for a fresh token.
-* **The wire, as AI Studio measured it (2026-08-10, live ChatGPT Plus
+* **The wire, as the peer application measured it (2026-08-10, live ChatGPT Plus
   token).** `POST https://chatgpt.com/backend-api/codex/responses` with
   the plan's access token as the `Authorization` header's bearer, `OpenAI-Beta:
   responses=experimental`, `originator: codex_cli_rs`, `chatgpt-account-id`
@@ -557,14 +557,14 @@ prefix; another tenant's project is the same 404 as a missing one.
 | `…/sessions/{session}` | State (starting, live, rolling over, ended), the GPT-Live session ids, the grant hash, talk seconds, planner usage, end cause | One live session per person |
 | `…/sessions/{session}/events/{seq}` | The stream's log | Sequence from a counter on the session document |
 | `…/turns/{turn}` | Each planner turn: state, the transcript window it read, cards out, spoken summary, usage, and each action with its idempotency key and reservation | A retried turn reads its own actions before acting again |
-| `voice_starts/{id}` | One row per thing Voice it started: the agent, workflow or run id, project, session, BGD's day, the reservation | What the ledger reads (§3.8) |
-| `voice_preferences/vp_<hmac>` | BGD's editable preferences (§3.11) | The id is an HMAC no worker can compute, as `preferences.py` keys `user_preferences` |
+| `voice_starts/{id}` | One row per thing Voice it started: the agent, workflow or run id, project, session, the owner's day, the reservation | What the ledger reads (§3.8) |
+| `voice_preferences/vp_<hmac>` | The owner's editable preferences (§3.11) | The id is an HMAC no worker can compute, as `preferences.py` keys `user_preferences` |
 | `tenants/<tenant>/voice/<project>/transcripts/<session>/<part>.jsonl` | The redacted transcript | Create-only objects; a new part is a new name |
 | `…/mockups/<card>/<version>.html`, `…/diagrams/<card>/<version>.mmd` or `.json`, `…/plans/<version>.md` | Card bodies too large for a document | Read back through swarm-api as text, never served as HTML |
 
 **swarm-api writes the prefix** under one more conditioned, create-only grant,
 as `terraform/infra/await_input.tf` does for answers, plus a conditioned
-delete for removing a project. Both are IAM changes and wait for BGD.
+delete for removing a project. Both are IAM changes and wait for the owner.
 
 ### 3.8 The budget meter, and how it is enforced
 
@@ -589,7 +589,7 @@ drifted here before.
 2. The ledger adds those budgets, times 1.2, to what is already spent and
    reserved.
 3. It refuses the start if the total would pass **$100 for the session or
-   $300 for BGD's day**. BGD's day is the calendar day in his saved time
+   $300 for the owner's day**. The owner's day is the calendar day in his saved time
    zone (`user_preferences`; UTC when none is saved).
 
 Turns run one at a time, and a person has at most one live session, so the
@@ -604,11 +604,11 @@ spend grow by the second; the meter on the Talk pane shows both caps.
 * **At 80% of either cap** the voice says so once and a Budget card appears.
 * **At the cap** Voice it starts nothing more; act tools are refused with a
   Budget card. Running lanes keep running inside what they reserved. The
-  conversation stays open two more minutes so BGD can raise the cap on the
+  conversation stays open two more minutes so the owner can raise the cap on the
   card, then the session ends; the project is kept.
 
 **A raise is a click and a typed amount** on the Budget card, never a spoken
-yes. The microphone cannot tell BGD from a television (question 3).
+yes. The microphone cannot tell the owner from a television (question 3).
 
 **Not counted, and said on the Budget card:** pod compute for lanes, CI
 runner minutes and deploys. No SwarmCloud cost figure includes them today
@@ -627,7 +627,7 @@ runner minutes and deploys. No SwarmCloud cost figure includes them today
 | Cancel work in flight | Yes, its `stop` tool, which only cancels | Yes |
 | IAM, secrets, the other team's project, budget raises | No | No: not on the grant's allowlist; the platform's holds stop the rest |
 
-**Answering, the first act tool (built; BGD's pick, 6 November 2026).** The
+**Answering, the first act tool (built; the owner's pick, 6 November 2026).** The
 planner's `answer_question` (`swarm_voice/tools_act.py`) answers an agent's
 question with an option label, the person's own words, or both, through the
 grant's one act route, `POST /v1/tasks/{task_id}/answers`, sent `via:
@@ -642,7 +642,7 @@ submitter or an admin, never a viewer.
 
 * IAM, workflow-file, secrets, tenancy and shared-project changes are held by
   the issue run's holds (`issueruns.py`), which only their approvers lift.
-* An IAM plan in a release still waits at the release's IAM gate for BGD.
+* An IAM plan in a release still waits at the release's IAM gate for the owner.
 * The routes that would do the rest are not reachable with a grant (§3.6).
 
 The planner is also told the rules, but the design assumes it can be talked
@@ -680,12 +680,12 @@ planner restates it on the card first.
   it is set**, the same booleans `GET /v1/workspace/secrets` serves. On a
   click, the **console itself** asks
   `POST /v1/workspace/secrets/links` for the one-time form (ten minutes,
-  single use, bound to BGD) and opens it. The value goes from the form to
+  single use, bound to the owner) and opens it. The value goes from the form to
   swarm-api to Secret Manager. It never reaches swarm-voice, the transcript,
   the model or the card.
 * While the form is open, the microphone mutes itself, so a value read aloud
   while typing it is not heard.
-* The voice's instructions tell it to stop BGD and offer the form when he
+* The voice's instructions tell it to stop the owner and offer the form when he
   starts reading a key out.
 * swarm-voice runs the platform's redaction filter (`apps/redaction`) on
   every transcript segment **before** it is stored, sent to the planner or
@@ -694,7 +694,7 @@ planner restates it on the card first.
 
 **Audio and retention.** OpenAI receives the raw audio. Its Live endpoint
 keeps data 30 days for abuse monitoring, and zero data retention is available
-only "with limitations" [7]. BGD accepted this when he chose GPT-Live.
+only "with limitations" [7]. The owner accepted this when he chose GPT-Live.
 
 ### 3.10 The browser
 
@@ -722,7 +722,7 @@ only "with limitations" [7]. BGD accepted this when he chose GPT-Live.
   session ends, nothing calls it and the 15-minute rule applies again. That
   keeps the rule's intent: speech is proof someone is there.
 * **Silence ends a session.** After ten minutes in which neither side speaks,
-  the agent asks once whether BGD is still there, then ends the GPT-Live
+  the agent asks once whether the owner is still there, then ends the GPT-Live
   session to stop the meter. The project is kept.
 * **Keyboard.** Hold Space (outside a text field) to talk, M to mute,
   Escape to stop.
@@ -732,7 +732,7 @@ only "with limitations" [7]. BGD accepted this when he chose GPT-Live.
 ### 3.11 Projects, preferences, resuming and rolling over
 
 * **Starting a session** on a project loads into GPT-Live's instructions
-  (at most 16,384 tokens [5]): the persona and rules, BGD's preferences, the
+  (at most 16,384 tokens [5]): the persona and rules, the owner's preferences, the
   project brief, the open cards' one-line summaries, and the last turns. The
   planner's prompt starts with the same prefix, cached at Anthropic for an
   hour, which is what keeps the planner near the research's cost estimate.
@@ -765,7 +765,7 @@ only "with limitations" [7]. BGD accepted this when he chose GPT-Live.
 * **From there:** a red pull request is fixed in place with a continuation
   workflow (`continues_task`). A lane's waiting question is answered through
   the existing answer routes. An ordinary inbox item is decided after
-  explaining it. A held one is explained, and BGD decides it in the inbox.
+  explaining it. A held one is explained, and the owner decides it in the inbox.
 
 ---
 
@@ -780,11 +780,11 @@ logged. The shape follows Google's A2UI: declarative data drawn only from a
 catalogue of trusted components, "not executable code" [19].
 
 **Every card carries:** id, kind, project, session, version, state, title,
-who created it (planner, platform or BGD), references (agent, workflow, run,
+who created it (planner, platform or the owner), references (agent, workflow, run,
 schedule, pull request, issue), a one-line summary the voice may read out,
 and the time.
 
-**Common states:** proposed, acting, waiting (on the platform or on BGD),
+**Common states:** proposed, acting, waiting (on the platform or on the owner),
 done, failed, cancelled, dismissed. Each kind uses the ones that apply.
 
 | Kind | Shows | Created by | Actions | States |
@@ -798,7 +798,7 @@ done, failed, cancelled, dismissed. Each kind uses the ones that apply.
 | **Credential input** | The secret's name, provider, why it is needed, set or missing. Never a value | Planner | Set it (opens the one-time form; the mic mutes) | waiting, done |
 | **Plan** | Goal, size, waves, lanes with territory, reservations, total against both caps | Planner (draw) | Start (act), Change, Split | proposed, acting, done |
 | **Budget** | Spent and reserved against $100 and $300, by line; what is not counted | swarm-api's ledger | Raise (a click and a typed amount) | waiting, done |
-| **Stop** (held for BGD) | What stopped, which rule (IAM, secrets, shared project, workflow file), where BGD acts | swarm-voice from a hold or a refusal | Open where BGD acts | waiting, done |
+| **Stop** (held for the owner) | What stopped, which rule (IAM, secrets, shared project, workflow file), where the owner acts | swarm-voice from a hold or a refusal | Open where the owner acts | waiting, done |
 | **Rescue** | What failed, the likely cause and its evidence, the proposed fix | Planner on Talk it through | Fix it (act), Explain more | proposed, acting, done |
 
 **Rendering rules.**
@@ -812,7 +812,7 @@ done, failed, cancelled, dismissed. Each kind uses the ones that apply.
   sandboxed-frame pattern MCP Apps uses [18]. The HTML is read from swarm-api
   as text, never served as HTML, which keeps `ArtifactViewer.tsx`'s rule that
   no screen builds HTML from artifact bytes.
-* **Real-product mock-ups** follow BGD's mock-up practice: real console
+* **Real-product mock-ups** follow the owner's mock-up practice: real console
   frames with switchable variants, rendered and reviewed by a
   `claude-code-browser` lane. The card shows those static frames in the same
   frame.
@@ -832,9 +832,9 @@ done, failed, cancelled, dismissed. Each kind uses the ones that apply.
 
 ## 5. From a one-line fix to a twenty-lane project
 
-BGD's flexibility point is met by **one engine with one set of cards**. The
+The owner's flexibility point is met by **one engine with one set of cards**. The
 planner picks the size from the conversation and says which size it picked;
-BGD can say "bigger" or "smaller". Only the counts change.
+The owner can say "bigger" or "smaller". Only the counts change.
 
 | Size | Example | What the planner does | Cards |
 |---|---|---|---|
@@ -842,7 +842,7 @@ BGD can say "bigger" or "smaller". Only the counts change.
 | **One fix** | "Rename that label" | Files a GitHub issue, starts an issue run with one lane and auto-merge | Work, then Review |
 | **A feature** | "Add CSV export to Runs" | Reads the repository graph (`/search`, `/impact`), proposes, draws the flow and a mock-up, files the issue, starts an issue run | Proposal, Diagram, Mock-up, Plan, Work, Review |
 | **A rescue** | Talk it through on a failed workflow | Rescue pack, cause, then a continuation or an answer | Rescue, Work, Review |
-| **An approvals walk** | "What's waiting on me?" | Reads the inbox, explains each item, decides the ordinary ones, leaves held ones to BGD | Details, Stop |
+| **An approvals walk** | "What's waiting on me?" | Reads the inbox, explains each item, decides the ordinary ones, leaves held ones to the owner | Details, Stop |
 | **A product** | "A small app that…" | Proposals, architecture, user flows, mock-ups, then waves of issue runs | All kinds |
 
 **Why code ships through issue runs, even a one-line fix.** The issue run is
@@ -877,13 +877,13 @@ a single agent.
   against the session's and the day's remaining money (§6). The planner
   submits what fits. The rest waits for a raise or the next session, and the
   card says which.
-* **A brand-new repository is BGD's step.** No route creates a GitHub
+* **A brand-new repository is the owner's step.** No route creates a GitHub
   repository. The planner asks with a Details card, then registers the
   repository through the existing Repositories route
   (`POST /v1/repositories`).
 * **"Shipped" means merged, and released where the repository deploys from
   `main`.** For SwarmCloud itself that is the release workflow, whose IAM
-  plans wait for BGD as always; such a wait shows as a Stop card.
+  plans wait for the owner as always; such a wait shows as a Stop card.
 
 ---
 
@@ -904,7 +904,7 @@ At the heavy rate, $100 buys about eleven hours of talk. **The session cap
 binds on lanes, not on talk.**
 
 **Lanes.** No coding-lane cost was measured for this design. The figures
-below are **placeholders** that show the arithmetic. BGD sets the real ones in
+below are **placeholders** that show the arithmetic. The owner sets the real ones in
 Preferences (question 5), and each one is replaced by the measured `cost_usd`
 when its step ends. For scale: the median browser agent cost $0.66
 (`docs/browser-bench.md`), and the two-hour runaway that led to per-agent
@@ -949,7 +949,7 @@ their reservations.
   * Projects, sessions, cards and starts carry the tenant and are read only
     in it.
   * Blobs live under `tenants/<tenant>/voice/`.
-  * The keys are BGD's personal secrets.
+  * The keys are the owner's personal secrets.
   * swarm-voice is a platform pod that no tenant pod can reach (its network
     policy admits only swarm-api). It never holds one session's key in
     another session.
@@ -1020,10 +1020,10 @@ is 128.
 | That agent and workflow submissions accept an idempotency key | A retried turn reads its own recorded actions first (§3.7) |
 | Chrome's echo cancellation in 2026 for this path (older community evidence only) | Agent audio plays from the WebRTC track; headphones advised |
 | Mermaid's `sandbox` security level in the pinned version | Render inside the mock-up card's sandboxed frame |
-| Whether the research's per-hour figures hold for BGD's real talk | The meter measures them from the first session |
+| Whether the research's per-hour figures hold for the owner's real talk | The meter measures them from the first session |
 | GKE and Cloud Run hourly rates | Shown as estimates |
-| That the plan's Codex Responses route accepts the `delegate` function tool, `tool_choice` and `parallel_tool_calls` beside the measured body (the Codex CLI sends its own tools the same way; AI Studio's measurement did not include one) | Drop the tool from the body and send a turn to the planner when the person's words ask for a plan; a 400 on the first text turn shows the refusal at once |
-| That the plan's usage-limit refusal arrives as HTTP 429 with `error.type: usage_limit_reached` and a unix `resets_at` (the Codex CLI's reading; AI Studio measured the headers, not a refusal) | `response.failed` with the same error is read too, and a refusal with no `resets_at` takes the binding window's reset header |
+| That the plan's Codex Responses route accepts the `delegate` function tool, `tool_choice` and `parallel_tool_calls` beside the measured body (the Codex CLI sends its own tools the same way; the peer application's measurement did not include one) | Drop the tool from the body and send a turn to the planner when the person's words ask for a plan; a 400 on the first text turn shows the refusal at once |
+| That the plan's usage-limit refusal arrives as HTTP 429 with `error.type: usage_limit_reached` and a unix `resets_at` (the Codex CLI's reading; the peer application measured the headers, not a refusal) | `response.failed` with the same error is read too, and a refusal with no `resets_at` takes the binding window's reset header |
 | That the `x-codex-*-reset-at` headers are unix seconds | An ISO 8601 value is read as well; a window whose reset is unreadable is not reported |
 | That the broker's `capability: "text"` lease and its voice readings route exist: neither does on 4 November 2026 | A text start is a 502 until the broker accepts the capability; the windows are logged as not taken |
 | **Answered 4 November 2026:** whether a ChatGPT plan's sign-in can open a GPT-Live session. **No.** `POST /v1/live/sessions` answered 403 Forbidden on the Codex sign-in's token (scope `openid profile email offline_access`), and OpenAI documents that Sign in with ChatGPT does not grant API resources (https://developers.openai.com/siwc/quickstart) | Live sessions lease an OpenAI developer API key from the Voice it pool (§3.6, "Why a key and not the ChatGPT plan"); the plan stays in the pools for codex steps |
@@ -1032,34 +1032,34 @@ is 128.
 
 ## 10. Implementation plan
 
-Lanes in four phases. Each phase ends in something BGD can use.
+Lanes in four phases. Each phase ends in something the owner can use.
 
 * **Size:** S is about three files; M is three to six. UI lanes stay at about
   three UI files.
 * **Tests:** each lane pushes its failing test first.
-* **Waits for BGD:** lanes needing an IAM change or a workflow file push a
+* **Waits for the owner:** lanes needing an IAM change or a workflow file push a
   patch or a plan and stop. No lane needs a frozen contract request (§8).
 
 ### Phase 1: talk and captions, the first working slice
 
-| Lane | Files | Size | Needs | Red-first test | Waits for BGD |
+| Lane | Files | Size | Needs | Red-first test | Waits for the owner |
 |---|---|---|---|---|---|
 | **The console has a Voice it section whose Talk, Projects and Preferences panes resolve** | `apps/swarm-ui/src/App.tsx` (`SECTIONS`, `spineOf`), `Spine.tsx` (`SpineSection`, `SPINE`, `PANEL_PAGES`, `PANEL_TITLE`), `paths.ts` (`FIXED`), `.github/ISSUE_TEMPLATE/bug_report.yml` and `feature_request.yml` (the "Where" options), `docs/web-ui/redesign.md` §2 | S | none | `test_issue_forms.py` and `test_nav_headings_agree.py` red until forms, headings and tabs agree; `nav.links.test.tsx` extended | no |
 | **swarm-voice creates a GPT-Live session from a browser's offer and holds its sideband for the session** | `apps/swarm-voice/` (`pyproject.toml`, `uv.lock`, `swarm_voice/main.py`, `live.py`), `tests/unit/voice/test_live_session.py` | M | none | A fake OpenAI server: the offer is answered, the sideband attached, an end closes both | no |
-| **swarm-voice runs as a one-replica StatefulSet in `swarm-system` with its own service account and an egress policy for OpenAI and Anthropic only** | `apps/swarm-voice/Dockerfile`, `kubernetes/swarm-system/swarm-voice.yaml`, `kubernetes/network-policies/`, `terraform/infra/voice.tf` (the service account, Workload Identity, accessor on BGD's OpenAI secret, invoker on swarm-api), `scripts/build-images.sh` | M | swarm-voice exists | The manifest tests (memory request equals limit; one replica) and a `tests/terraform` file asserting the `managed-by=swarm-terraform` labels | **IAM** |
+| **swarm-voice runs as a one-replica StatefulSet in `swarm-system` with its own service account and an egress policy for OpenAI and Anthropic only** | `apps/swarm-voice/Dockerfile`, `kubernetes/swarm-system/swarm-voice.yaml`, `kubernetes/network-policies/`, `terraform/infra/voice.tf` (the service account, Workload Identity, accessor on the owner's OpenAI secret, invoker on swarm-api), `scripts/build-images.sh` | M | swarm-voice exists | The manifest tests (memory request equals limit; one replica) and a `tests/terraform` file asserting the `managed-by=swarm-terraform` labels | **IAM** |
 | **The release and hotfix workflows roll swarm-voice, and the security scan covers its image** | `.github/workflows/release.yml`, `hotfix.yml`, `security.yml`, written as `workflow-lines.patch` | S | the StatefulSet lane | None in the repository; the release run rolls it | **Workflow file** |
-| **swarm-api starts and ends a Voice it session for BGD only and forwards the offer to swarm-voice** | `apps/swarm-api/swarm_api/routes/voice.py`, `swarm_api/voice/sessions.py` (the project and session documents; a new talk gets an untitled project), `settings.py` (`SWARM_VOICE_URL`, the allowed people), `terraform/infra/locals.tf` (the environment variable) | M | swarm-voice exists | `tests/unit/control_plane/test_voice_sessions.py`: anyone else is 403, a second live session is 409, ending marks it ended | no |
+| **swarm-api starts and ends a Voice it session for the owner only and forwards the offer to swarm-voice** | `apps/swarm-api/swarm_api/routes/voice.py`, `swarm_api/voice/sessions.py` (the project and session documents; a new talk gets an untitled project), `settings.py` (`SWARM_VOICE_URL`, the allowed people), `terraform/infra/locals.tf` (the environment variable) | M | swarm-voice exists | `tests/unit/control_plane/test_voice_sessions.py`: anyone else is 403, a second live session is 409, ending marks it ended | no |
 | **The Talk pane plays the agent from the WebRTC track and captions both sides as the speech arrives** | `apps/swarm-ui/src/voice/Talk.tsx`, `voice/rtc.ts`, `voice/captions.ts`, `__tests__/voice.talk.test.tsx` | M | section, session routes | A fake `RTCPeerConnection`: captions land in the log; only final segments are announced | no |
 | **The Talk pane draws the agent's voice as an oscilloscope, offers mute and push-to-talk, and counts speech as input for the idle stop** | `voice/Scope.tsx`, `voice/mic.ts`, `Shell.tsx` (`noteActivity`), `__tests__/voice.mic.test.tsx` | S | Talk pane | `useIdleStop` stays active while speech is noted; push-to-talk enables the track only while held | no |
 
-**Phase 1 is done when** BGD talks for ten minutes on SwarmCloud with
+**Phase 1 is done when** the owner talks for ten minutes on SwarmCloud with
 captions on both sides, the trace moves while the agent speaks, mute and
 push-to-talk work, and ending the session closes the GPT-Live session, which
 is what stops OpenAI's per-second billing.
 
 ### Phase 2: cards (the planner draws; nothing spends but talk)
 
-| Lane | Files | Size | Needs | Red-first test | Waits for BGD |
+| Lane | Files | Size | Needs | Red-first test | Waits for the owner |
 |---|---|---|---|---|---|
 | **Voice it cards, turns, starts, events and preferences are stored per tenant beside the project and session documents, with blobs under a create-only `tenants/<tenant>/voice/` prefix** | `swarm_api/voice/store.py`, `voice/preferences.py`, `routes/voice.py` (projects, preferences), `terraform/infra/voice.tf` (the conditioned create and delete grants), the Firestore index file | M | session routes | Another tenant's project is 404; the path builder refuses anything outside the prefix | **IAM** |
 | **swarm-api accepts a Voice it session grant only from swarm-voice's identity, only on the allowlisted routes, and stamps `via: voice-it` on every audit row** | `apps/swarm-api/swarm_api/auth.py`, `swarm_api/voice/grant.py`, `deps.py`, tests | M | session routes | Wrong identity 401; ended session 401; a walk of the route table finds no typed-confirmation or secret-value route reachable | no; **one security review** (credentials) |
@@ -1072,35 +1072,35 @@ is what stops OpenAI's per-second billing.
 | **Transcripts are redacted before they are stored, planned on or shown again, and a credential spoken aloud raises a rotate card** | `swarm_voice/transcript.py` (uses `apps/redaction`), `swarm_api/voice/transcript.py`, tests | S | storage, planner | A fake key built at runtime never reaches the planner request, Firestore or GCS | no; **in the security review** |
 | **Failed or parked agents and workflows, and inbox items, offer "Talk it through", which opens Voice it on that object** | `AgentDetail.tsx`, `WorkflowViews.tsx`, `ApprovalDecision.tsx`, `swarm_api/voice/rescue.py`, tests | M | planner, card renderers | The button shows only on failed or parked states; the rescue pack holds the last error and the findings | no |
 
-**Phase 2 is done when** BGD talks through a failed workflow and a new idea,
+**Phase 2 is done when** the owner talks through a failed workflow and a new idea,
 and sees a Rescue card, a Proposal, a Diagram and a Mock-up appear as he
 talks, with nothing spent but talk.
 
 ### Phase 3: acting, inside the caps
 
-| Lane | Files | Size | Needs | Red-first test | Waits for BGD |
+| Lane | Files | Size | Needs | Red-first test | Waits for the owner |
 |---|---|---|---|---|---|
-| **The Voice it ledger refuses any start that would pass $100 for the session or $300 for BGD's day, counting talk, planner and every step's budget times 1.2** | `swarm_api/voice/ledger.py`, `modelprices.py` (a per-minute price form), `routes/voice.py`, tests | M | storage | Refused at the cap; a finished step's cost replaces its reservation; the day follows BGD's time zone | no |
+| **The Voice it ledger refuses any start that would pass $100 for the session or $300 for the owner's day, counting talk, planner and every step's budget times 1.2** | `swarm_api/voice/ledger.py`, `modelprices.py` (a per-minute price form), `routes/voice.py`, tests | M | storage | Refused at the cap; a finished step's cost replaces its reservation; the day follows the owner's time zone | no |
 | **swarm-voice files issues, starts issue runs, starts agents and workflows, answers lanes' questions, schedules and cancels, each after the ledger reserves it** | `swarm_voice/tools_act.py`, `swarm_api/voice/issues.py` (over `forgewrite.create_issue`), the grant allowlist, tests | M | grant, ledger | A held approval is refused; a deny-listed name is refused; every submission carries the tag and a step budget | no |
 | **Stop, by voice or by key, cancels the planner turn in flight and every action still in its grace window** | `swarm_voice/turns.py`, `voice/Talk.tsx` (Stop), tests | S | act tools | An action stopped inside its window is never submitted; one already started keeps its card with Cancel | no |
 
-**Phase 3 is done when** BGD asks for a one-line fix and a schedule by voice,
+**Phase 3 is done when** the owner asks for a one-line fix and a schedule by voice,
 sees them start with their reservations, and stops a third request inside its
 grace window.
 
 ### Phase 4: shipping
 
-| Lane | Files | Size | Needs | Red-first test | Waits for BGD |
+| Lane | Files | Size | Needs | Red-first test | Waits for the owner |
 |---|---|---|---|---|---|
 | **Code work Voice it starts ships through issue runs with auto-merge, so the platform's hard-stop holds apply** | `swarm_voice/ship.py` (issue bodies in the form's sections; runs with `plan_approval: required`, approved after reserving the plan; `auto_merge`), tests | M | act tools | A plan touching `**/iam*.tf` is never approved by Voice it and raises a Stop card | no |
 | **While a session is live, swarm-voice follows its project's work by tag and speaks only for a failure, a finished review or a stop** | `swarm_voice/follow.py`, tests | S | ship | A finished step updates its card and is said once; a running step is not said | no |
 | **A project resumes with its brief, open cards and last turns, and a session rolls over to a new GPT-Live session before it expires** | `swarm_voice/instructions.py`, `swarm_voice/live.py`, tests | M | planner | Instructions stay under 16,384 tokens; a rollover keeps the session, ledger and grant | no |
-| **The Projects and Preferences panes list, resume, rename and delete projects and edit BGD's preferences** | `voice/Projects.tsx`, `voice/Preferences.tsx`, test | M | storage | Delete is typed (the body's `confirm` is the project's title; owner pick on #3019) and removes the documents and the prefix; Undo restores a preference changed by voice | no |
+| **The Projects and Preferences panes list, resume, rename and delete projects and edit the owner's preferences** | `voice/Projects.tsx`, `voice/Preferences.tsx`, test | M | storage | Delete is typed (the body's `confirm` is the project's title; owner pick on an earlier issue) and removes the documents and the prefix; Undo restores a preference changed by voice | no |
 | **The planner splits a large project by territory into waves that each fit the remaining budget** | `swarm_voice/waves.py` (over `/territory` and `/search`), the Plan card's waves, tests | M | ship, follow | A fixture graph: two pieces editing one file become one lane; a wave never reserves past either cap | no |
 | **Voice it is documented for operators and readers** | `docs/voice-it.md`, `docs/web-ui/redesign.md`, this file's Status, `docs/mirrored-values.md` if the service address is mirrored | S | the phase's lanes | The docs guards named by the selection | no |
 | **Five scenarios run end to end on SwarmCloud** | none in the repository: a one-line fix, a feature, a rescue, an approvals walk and a new-app plan, each recorded on the epic issue with its spend | n/a | everything deployed | Each scenario's cards, spend and pull requests on the epic | no |
 
-**Lanes that wait for BGD:**
+**Lanes that wait for the owner:**
 
 * **IAM:**
   * the StatefulSet lane (service account, Workload Identity, OpenAI secret
@@ -1116,11 +1116,11 @@ grace window.
 
 ---
 
-## 11. Mock-ups: the layout BGD picked
+## 11. Mock-ups: the layout the owner picked
 
 Five layout directions for the Talk pane were drawn as real console frames in
 both themes, at desktop and phone width, for the same five conversations. On
-2026-11-01 BGD picked **the Jarvis-like presence direction**. Its variant code
+2026-11-01 the owner picked **the Jarvis-like presence direction**. Its variant code
 (the shared Voice it parts and its layout) is where the Talk pane lanes start;
 every mock-up switch is stripped and the invented data is replaced by the card
 stream before anything is committed. The questions the five directions answered:
@@ -1138,7 +1138,7 @@ states, not where they are drawn.
 
 ---
 
-## 12. Open questions for BGD
+## 12. Open questions for the owner
 
 1. **The OpenAI key:** a new personal key added through Config › Secrets.
    Eng's existing key was refused by OpenAI on 2026-09-23.
@@ -1150,7 +1150,7 @@ states, not where they are drawn.
 4. **The grace window on spending actions:** 5 s (recommended), none, or
    longer?
 5. **Per-size reservations** until measured costs exist: the placeholders in
-   §6, or BGD's own figures?
+   §6, or the owner's own figures?
 6. **Pod compute, CI minutes and deploys:** left out of the meter, which says
    so (recommended, since nothing measures them), or charged at a flat
    estimate?
@@ -1182,7 +1182,7 @@ fetcher and the fact is the search engine's excerpt.
 14. MDN `echoCancellation` (via search): https://developer.mozilla.org/docs/Web/API/MediaTrackConstraints/echoCancellation
 15. MDN ARIA live regions: https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Guides/Live_regions
 16. Mermaid `parse` and `render`: https://mermaid.js.org/config/usage.html
-17. Mermaid render failures in generated output (2.6%): https://github.com/FSoft-AI4Code/CodeWiki/issues/141
+17. Mermaid render failures in generated output (2.6%): an earlier issue
 18. MCP Apps (sandboxed frames): https://modelcontextprotocol.io/extensions/apps/overview
 19. Google A2UI (a catalogue of trusted components): https://github.com/google/A2UI
 20. LiveKit GPT-Live plugin: https://docs.livekit.io/agents/models/realtime/plugins/gpt-live

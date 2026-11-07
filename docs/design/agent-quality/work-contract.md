@@ -12,7 +12,7 @@
 | Enforced by the worker | the repository binding and the limits only, through fields it already enforces; everything else waits for contract request 136 and the worker packages |
 | Live-verified | **unknown**: never run against a deployment |
 
-The owner's agent quality program (BGD, 3 November 2026) asks SwarmCloud to
+The owner's agent quality program (the owner, 3 November 2026) asks SwarmCloud to
 complete, harden, connect and measure what it already has, never to build a
 second agent platform. This is its work-contract package: a step's brief stops
 being only a prompt and becomes a versioned document that says what must be

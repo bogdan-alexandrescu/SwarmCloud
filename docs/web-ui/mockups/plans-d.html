@@ -6,9 +6,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Proposal D, "Plan conversation" (PLANS-MOCKS-D, part of #2585).
+ * Proposal D, "Plan conversation" (PLANS-MOCKS-D).
  * Tokens, type scale, lead strip, tables, cards, chips, buttons and the side sheet are
- * automate-a.html's (Config E #2157, Subscription accounts A #2222, Automate #2417), copied
+ * automate-a.html's (Config E, Subscription accounts A, Automate A), copied
  * whole; the plan document, its margin, revisions, diff and trace below are this proposal's.
  * PICKS.md rules: 12px type floor, no all-caps, a theme toggle, an unknown figure is a dash.
  */
@@ -461,12 +461,12 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">PLANS-MOCKS-D · part of #2585 · drawn 2026-10-28 · not picked</p>
+<p class="kick">PLANS-MOCKS-D · drawn 2026-10-28 · not picked</p>
 <h1>Plans, proposal D: Plan conversation</h1>
 <p class="lede">One of four competing proposals (A to D) for how the console shows what automatic runs propose and how a plan is judged before it is approved. Each draws the same frames (P1 to P7). This one treats a plan as a <b>reviewed document with a thread</b>: the planner's reasons sit beside each step, you comment on a step or ask for changes, the planner answers with a new revision (its digest, and a diff from the last), and Approve applies to the revision on the screen.</p>
 
 <div class="idea">
-  <div><h4>Idea</h4><p>Today a plan can be accepted, edited by hand or rejected. Here it can also be <b>shaped</b>: a comment on a step, a requirement or an overlap goes to the planner, which answers in the thread with a new revision. Every revision keeps its digest and its diff from the one before, so "what am I approving" is always one revision, drawn whole, with how it got there beside it. Everything automatic runs propose lands in Automate › Approvals as threads, the ones waiting on you first; a plan opens as a decision page (the #2417 A5 shape), the document on the left and its margin (reasons and thread) on the right. After approval the same thread carries on: steps to tasks, the pull request, CI rounds, the review, the merge.</p></div>
+  <div><h4>Idea</h4><p>Today a plan can be accepted, edited by hand or rejected. Here it can also be <b>shaped</b>: a comment on a step, a requirement or an overlap goes to the planner, which answers in the thread with a new revision. Every revision keeps its digest and its diff from the one before, so "what am I approving" is always one revision, drawn whole, with how it got there beside it. Everything automatic runs propose lands in Automate › Approvals as threads, the ones waiting on you first; a plan opens as a decision page (the Automate A5 shape), the document on the left and its margin (reasons and thread) on the right. After approval the same thread carries on: steps to tasks, the pull request, CI rounds, the review, the merge.</p></div>
   <div><h4>How it differs from the console today</h4><ul>
     <li>Today the plan is in Work › Runs (Runs.tsx) and the inbox projects it as kind <code>plan</code>. Here the plan's page lives at <code>/automate/approvals/&lt;id&gt;</code> and Runs links to it.</li>
     <li>Today there is one plan and a revision number (<code>plan_revision</code>, <code>plan_edited_by</code>). Here every revision is kept and readable, with its diff.</li>
@@ -531,7 +531,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
   <figure class="sub" id="P4a" data-frame="P4a"><div class="sl"><span class="sid">P4a</span><b>Running: CI red, fix round 1 of 3</b><span class="dim">desktop 1440 · example outcome</span></div><div class="scroller" data-f="p4a"></div></figure>
   <div class="pair">
     <figure class="sub" id="P4b" data-frame="P4b"><div class="sl"><span class="sid">P4b</span><b>Merged: every requirement confirmed, Closes #2583</b><span class="dim">example outcome</span></div><div class="scroller solo" data-f="p4b"></div></figure>
-    <figure class="sub" id="P4c" data-frame="P4c"><div class="sl"><span class="sid">P4c</span><b>Merged with one requirement unmet: part of #2583</b><span class="dim">example outcome</span></div><div class="scroller solo" data-f="p4c"></div>
+    <figure class="sub" id="P4c" data-frame="P4c"><div class="sl"><span class="sid">P4c</span><b>Merged with one requirement unmet:</b><span class="dim">example outcome</span></div><div class="scroller solo" data-f="p4c"></div>
     <figcaption><code>Closes #N</code> only when the review confirmed every requirement (<code>requirements_met</code>); otherwise the pull request says part of #N and names the unmet one (<code>requirements_unmet</code>, <code>requirements_note</code>), as issue-runs.md says.</figcaption></figure>
   </div>
 </section>
@@ -623,7 +623,7 @@ function phone(title,body){return `<div class="F ph"><div class="phd">${I('menu'
 const solo=(body,w)=>`<div class="F" style="width:${w||640}px;max-width:100%;background:var(--bg);padding:14px;display:flex;flex-direction:column;gap:12px">${body}</div>`;
 
 /* ---------- the canonical plan, in its own words ---------- */
-const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='bogdan-alexandrescu/SwarmCloud#2583';
+const RUN='run_fba2dc8f6ec9494dae2f',SCH='sch_54e9828e6772',FIRE='sch_54e9828e6772:29885760',ISS='example-org/example-repo#2583';
 const DIG='sha256:be162b53886ee2620…';
 const DIG2='sha256:3f9a07c1d2e4… (example)',DIG3='sha256:81c4e2a90b6f… (example)';
 const SUMMARY="cifix.stamp's ci_fix branch refuses a PR-side CI fix while a lane's merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-1…";
@@ -671,7 +671,7 @@ function preview(){
     `<div class="revbar"><span class="revs"><span class="on">revision 1</span></span><span class="mn">${DIG}</span><span class="dim">mode single · 1 step</span></div>`+
     `<p style="margin:10px 0 6px">${SUMMARY}</p>`+
     `<dl class="kv"><dt>Why it exists</dt><dd>Failure review <span class="mn">${SCH}</span>, firing <span class="mn">${FIRE}</span>, filed <span class="mn">${ISS}</span></dd>`+
-    `<dt>Requirements</dt><dd>7</dd><dt>Overlaps</dt><dd>5 in flight, first <span class="mn">bogdan-alexandrescu/SwarmCloud#2226</span> (pull request)</dd>`+
+    `<dt>Requirements</dt><dd>7</dd><dt>Overlaps</dt><dd>5 in flight, first <span class="mn">example-org/example-repo#2226</span> (pull request)</dd>`+
     `<dt>Step</dt><dd><code>${STEP}</code> · 2 agent-hours · 3 files</dd><dt>Risk paths</dt><dd>${C('none touched','ok','check')}</dd></dl>`+
     `<div class="shs" style="margin-top:10px"><h5>Thread <small>1 message</small></h5>`+
     `<div class="cm pl"><span class="av pl">PL</span><div><div class="who"><b>planner</b><span>00:02Z · revision 1</span></div><p>Plan ready: 1 step, 7 requirements, 5 overlaps.</p></div></div></div>`+
@@ -696,7 +696,7 @@ function blkWhy(){
 const blkSum=()=>`<section class="blk"><h5>Summary</h5><p>${SUMMARY}</p><div class="fold">${I('chevd')}Show the whole summary</div></section>`;
 const blkReq=(extra)=>`<section class="blk"><h5>Requirements <small>7 · what the review checks, and what decides Closes</small></h5><ol><li>${REQ1}</li>${extra||''}</ol><div class="fold">${I('chevd')}Requirements 2 to 7</div></section>`;
 const blkOv=()=>`<section class="blk"><h5>Overlaps with work in flight <small>5</small></h5>`+
-  T(['Ref','Kind','Note','Plan’s action'],[[`<a href="#P2" class="mn" style="white-space:nowrap">SwarmCloud#2226</a><small>bogdan-alexandrescu</small>`,'pull request',`<span style="display:block;max-width:420px;text-align:left">${OV1}</span>`,DASH('the run’s value, not quoted here')]])+
+  T(['Ref','Kind','Note','Plan’s action'],[[`<a href="#P2" class="mn" style="white-space:nowrap">SwarmCloud#2226</a><small>example-org</small>`,'pull request',`<span style="display:block;max-width:420px;text-align:left">${OV1}</span>`,DASH('the run’s value, not quoted here')]])+
   `<div class="fold">${I('chevd')}Overlaps 2 to 5</div><p class="hint" style="margin-top:6px">The plan’s action is <i>none</i> when it does nothing about the overlap and <i>required</i> when it must; a comment on an overlap asks the planner to change that.</p></section>`;
 function stepBlk(o){
   o=o||{};
@@ -753,14 +753,14 @@ function p2c(){
 }
 
 /* ---------- P3: editing ---------- */
-const BGD_C=cm('Operator','00:41Z · on revision 1','Cover the publish_to_pr order too, with its own test, before the refusal.',false);
+const the owner_C=cm('Operator','00:41Z · on revision 1','Cover the publish_to_pr order too, with its own test, before the refusal.',false);
 const PL_A=cm('planner','00:58Z · answered with revision 2 · $1.80','Added step 2, a red-first test for the publish_to_pr order, 1 agent-hour, after step 1.',true);
 function p3a(){
   return desk({},P2HEAD,LEAD('Waiting on you','Revision 2 answers your comment','The planner re-planned from your comment: one step added. Read the diff, then approve, edit or comment again.')+
     revbar('<span>revision 1 · planner</span><span class="on">revision 2 · planner · 00:58Z</span>',DIG2,'<span class="dim">from '+DIG+'</span>')+decide(2,DIG2)+
     `<div class="pdoc"><div class="row"><section class="blk hl"><h5>Steps <small>2 · changed in revision 2</small></h5>${stepBlk({est:'2 agent-hours'})}`+
     `<div class="stp"><div class="sh">${C('step 2 · added','ok')}<b><code>ci-fix-publish-to-pr-test</code></b><span class="dim sm12">1 agent-hour · claude-code · opus · example</span></div><dl class="kv"><dt>Files</dt><dd>${fileList(['apps/swarm-api/swarm_api/cifix.py'])}</dd><dt>Depends on</dt><dd><code>${STEP}</code></dd></dl></div></section>`+
-    `<div class="mg">${BGD_C}${PL_A}<div class="box">Reply…</div></div></div>`+
+    `<div class="mg">${the owner_C}${PL_A}<div class="box">Reply…</div></div></div>`+
     `<div class="row"><section class="blk"><h5>Diff from revision 1</h5><div class="diff"><div class="h">steps[1]</div><div class="a">+ ci-fix-publish-to-pr-test · 1 agent-hour</div><div class="h">steps[1].depends_on</div><div class="a">+ ci-fix-waits-on-continuation</div></div></section><div class="mg">${why('Planner’s reason for step 2','A separate red-first test keeps step 1’s change small to review.')}</div></div></div>`);
 }
 function p3b(){
@@ -774,14 +774,14 @@ function p3b(){
     `<div class="stp gone"><div class="sh">${C('step 2 · removed','bd')}<b><code>ci-fix-publish-to-pr-test</code></b><span style="margin-left:auto">${B('Undo','s q')}</span></div></div>`+
     `<p class="hint">With one step left, its Remove is disabled: a plan keeps at least one step.</p></section>`+
     `<div class="mg"><div class="cd"><div class="ch"><b>Your changes</b></div><div class="diff"><div class="h">steps[0].estimate</div><div class="d">2 agent-hours</div><div class="a">+ 3 agent-hours</div><div class="h">steps[0].prompt</div><div class="a">+ 1 line</div><div class="h">steps[1]</div><div class="d">ci-fix-publish-to-pr-test</div><div class="h">requirements[7]</div><div class="a">+ 1 requirement</div></div></div></div></div>`+
-    `<div class="row"><section class="blk"><h5>Requirements <small>7, and 1 added</small></h5><ol><li>${REQ1}</li></ol><div class="fold">${I('chevd')}Requirements 2 to 7</div><label class="fld" style="margin-top:8px"><span>Requirement 8 (added)</span><span class="inp v">The publish_to_pr order has a red-first test (example)</span></label><div class="acts" style="margin-top:6px">${B('Add a requirement','s q','plus')}</div></section><div class="mg">${why('Why a requirement','The review checks each one; an unmet one turns Closes #2583 into part of #2583.')}</div></div></div>`+
+    `<div class="row"><section class="blk"><h5>Requirements <small>7, and 1 added</small></h5><ol><li>${REQ1}</li></ol><div class="fold">${I('chevd')}Requirements 2 to 7</div><label class="fld" style="margin-top:8px"><span>Requirement 8 (added)</span><span class="inp v">The publish_to_pr order has a red-first test (example)</span></label><div class="acts" style="margin-top:6px">${B('Add a requirement','s q','plus')}</div></section><div class="mg">${why('Why a requirement','The review checks each one; an unmet one turns Closes #2583 into.')}</div></div></div>`+
     `<div class="decide"><span class="grow">Saves as revision 3, replacing <span class="mn">${DIG2}</span>.</span>${B('Cancel','')}${B('Save as revision 3','p','check')}</div>`);
 }
 function p3c(){
   return desk({},P2HEAD,LEAD('Waiting on you','Revision 3, your edit of revision 2','1 step, 8 requirements, estimate 3 agent-hours. Approve applies to revision 3 only.','', 'ok')+
     revbar('<span>revision 1 · planner</span><span>revision 2 · planner</span><span class="on">revision 3 · Operator · 01:06Z</span>',DIG3,'<span class="dim">from '+DIG2+'</span>')+
     `<div class="g2"><section class="blk"><h5>Diff from revision 2</h5><div class="diff"><div class="h">steps[1]</div><div class="d">ci-fix-publish-to-pr-test</div><div class="h">steps[0].estimate</div><div class="d">2 agent-hours</div><div class="a">+ 3 agent-hours</div><div class="h">steps[0].prompt</div><div class="a">+ Also add the publish_to_pr order’s red-first test…</div><div class="h">requirements[7]</div><div class="a">+ The publish_to_pr order has a red-first test</div></div></section>`+
-    `<section class="blk"><h5>Thread <small>3 messages · 2 resolved by revision 2</small></h5>${BGD_C.replace('class="cm ','class="cm res ')}${PL_A.replace('class="cm pl','class="cm pl res')}${cm('Operator','01:06Z','Edited into revision 3: one step, the test inside it.',false)}</section></div>`+
+    `<section class="blk"><h5>Thread <small>3 messages · 2 resolved by revision 2</small></h5>${the owner_C.replace('class="cm ','class="cm res ')}${PL_A.replace('class="cm pl','class="cm pl res')}${cm('Operator','01:06Z','Edited into revision 3: one step, the test inside it.',false)}</section></div>`+
     decide(3,DIG3)+`<div class="bn ok">${I('check')}<div><b>After Approve</b>The decision records <code>approved_digest</code> = <span class="mn">${DIG3}</span>, and the thread carries on in P4.</div></div>`);
 }
 

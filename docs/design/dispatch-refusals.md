@@ -1,4 +1,4 @@
-# Dispatch refusals: when the platform says no to a Job (#1820)
+# Dispatch refusals: when the platform says no to a Job
 
 A 403 on GKE Job create has three causes, and the code an agent ends with used
 to name only one of them. This page records what each 403 is coded as today,
@@ -11,7 +11,7 @@ accepted and applied.
 On 2026-10-20 19:24-20:06Z the admission policy
 `swarm-worker-job-constraints` (`kubernetes/policies/pod-security.yaml`)
 refused every CPU-burst Job with "requests must equal limits": the scheduler
-shipped #1689's sizes before the policy allowed them (PR 1747 corrected the
+shipped an earlier issue's sizes before the policy allowed them (PR 1747 corrected the
 policy). 54-56 dispatches failed, every one coded `gke_create_job_forbidden`,
 and 11-13 agents ended FAILED `dispatch_failed` about two minutes after they
 were submitted. Three merge agents used 10 of 10 attempts.
@@ -131,4 +131,4 @@ would have its tenant's whole queue cycling through the pools.
 A release preflight that server-side dry-runs one rendered Job per GKE profile
 in each tenant namespace before the scheduler revision takes traffic, and a
 shorter Job TTL (3600 s to about 600 s) to raise the per-tenant ceiling, were
-proposed on #1820 and are not part of this step.
+proposed on an earlier issue and are not part of this step.

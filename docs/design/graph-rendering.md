@@ -73,7 +73,7 @@ rendering one.
   `avoidOverlap 0.8`, 200 stabilisation iterations, then physics frozen;
   `html.py` `_html_script` lines 177-203). Nodes are seeded on a golden-angle
   spiral to stop Barnes-Hut recursing on coincident points (`html.py` line 155,
-  their #3699). It has **no layered/DAG layout of its own**, and no ELK or
+  their an earlier issue). It has **no layered/DAG layout of its own**, and no ELK or
   dagre. `tree.html` uses d3's tidy tree. `callflow.html` lets Mermaid lay out
   `flowchart LR` diagrams.
 * **Interaction (graph.html).** Zoom and pan (vis-network defaults); a search

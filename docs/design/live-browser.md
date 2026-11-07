@@ -119,7 +119,7 @@ with a different entrypoint and a **different uid**. It holds three things:
    bar visible (no `--kiosk`, no `--app`): the address bar is part of the
    anti-phishing design.
 3. **The live gate**, one process that: captures the framebuffer, encodes it
-   as RFB with nothing painted over it (section 5.3; BGD, 2026-10-25), injects
+   as RFB with nothing painted over it (section 5.3; the owner, 2026-10-25), injects
    input when and only when a person holds control, exposes a **CDP proxy** on
    `127.0.0.1:9222` for the agent, and opens the outbound tunnel. Frames are
    produced inside the sidecar and leave it only through the tunnel. They
@@ -219,9 +219,9 @@ an instruction; it is not a sandbox, and the pod remains the boundary.
 
 One sanctioned path launches a Chromium that is not the live browser: a
 repository's own headless **test** suite. BROWSER-ENFORCE made a step on
-`claude-code-browser` unable to run `npx playwright test` at all (#2253: the
+`claude-code-browser` unable to run `npx playwright test` at all (an earlier issue: the
 suite's launch hit the stub, and the revision the repository pins had nowhere
-writable to go under the read-only root). BGD decided on 2026-10-24 that a
+writable to go under the read-only root). The owner decided on 2026-10-24 that a
 headless test process may launch its own Chromium while the agent's own
 browsing stays on the live browser, #1030 unchanged; PR #2254 built it. Before
 the CLI starts, the runner makes a writable directory,
@@ -360,15 +360,15 @@ says what it costs: "sends page text to TypeSafe; needs a key".
 **How internal is reached.** Neither the laptop nor GKE was on the tailnet. The
 owner chose Tailscale egress in our cluster (JUDGE-NET): the Tailscale
 Kubernetes operator in `swarm-system` with ONE egress Service to
-`decision-api-staging`, its OAuth client (`tag:swarmcloud`, ACL limited to
-`decision-api-staging:443`) in Secret Manager as `swarm-tailscale-oauth`, stored
+`decision-api`, its OAuth client (`tag:swarmcloud`, ACL limited to
+`decision-api:443`) in Secret Manager as `swarm-tailscale-oauth`, stored
 by the owner and never in the repository, a tfvars file, an environment or a log.
 A pod reaches it **by the decision API's tailnet name**,
-`https://decision-api-staging.taile0bda9.ts.net`, which its `hostAliases`
+`https://decision-api.example-tailnet.ts.net`, which its `hostAliases`
 entry pins to the egress Service's fixed clusterIP (`10.48.6.120`, stated once
 as `terraform/infra/tailscale.tf` `local.decision_api_cluster_ip`). The Service
 passes raw TLS through to the tailnet, so the pod verifies the API's real
-certificate end to end (owner decision 2026-10-15, #1380). The in-cluster name
+certificate end to end (owner decision 2026-10-15). The in-cluster name
 it replaced, `http://decision-api.swarm-system.svc.cluster.local`, never
 worked: the Service has no port 80, and over https the certificate is the
 tailnet name's. `terraform/infra` `internal_decision_api_enabled` (off by
@@ -387,7 +387,7 @@ the browser strip; Settings › API keys has the radio.
 
 **What a pod gets** (`scheduler/judgment.py`, live-browser pods only):
 `SWARM_JEV_BACKEND`, always; for an internal backend with the egress on,
-`JEV_API_URL` (`https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide`
+`JEV_API_URL` (`https://decision-api.example-tailnet.ts.net/jev/v1/decide`
 or `/laya/v1/decide`), the pod label `swarm-judge: internal`, which JUDGE-NET's
 NetworkPolicy keys the decision API's egress on, and the `hostAliases` entry
 that resolves that name to the egress Service -- the three together or none. The worker passes both variables to the CLI
@@ -427,7 +427,7 @@ the setting belong to lanes JUDGE-NET and JUDGE-SELECT. This section is about
 the request shape (JUDGE-ADAPT).
 
 Upstream jev-browser speaks TypeSafe's API. The internal decision API
-(`decision-api-staging` on the tailnet, `/jev` or `/laya` +
+(`decision-api` on the tailnet, `/jev` or `/laya` +
 `/v1/decide`) answers in the same shape (`choice`, `probabilities`,
 `confidence`, `noul`), but it is **not wire-compatible on the request side**.
 The operator measured it over Tailscale from the laptop on 2026-10-14:
@@ -633,16 +633,16 @@ every combination. The worker reads the secret as its own service account,
 the same way it reads every tenant credential. Nothing asks swarm-api for the
 value, because no route serves a credential.
 
-**A personal key on a group agent needs a grant.** An agent bogdan submits in
+**A personal key on a group agent needs a grant.** An agent the owner submits in
 `eng` runs as eng's worker account. swarm-api's write granted
-`swarm-tenant-u-bogdan-typesafe` to u-bogdan's worker only, so eng's worker
+`swarm-tenant-team-a-typesafe` to u-member's worker only, so eng's worker
 gets PERMISSION_DENIED. It logs `jev_key_unreadable` (the secret id and the
 error type) and uses eng's key if eng has one.
 `terraform/bootstrap/typesafe_user_keys.tf` grants one group's worker read
 on one person's key, one row at a time (`typesafe_user_key_readers`; the
 owner applies it). **A row lets every agent in that group read that person's
 key**, because every member runs as the same account in the same container.
-It is the same trade as the GitHub user slots (#780 D7 U1), so a person is
+It is the same trade as the GitHub user slots (an earlier issue D7 U1), so a person is
 listed only by consent.
 
 **How the key reaches only the jev server.** This is the narrowest path that
@@ -751,7 +751,7 @@ gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)--
    (`SWARM_LIVE_URL`, `ws://<reserved internal address>:8080`, + `/v1/view`),
    presenting the viewer ticket as the relay's first message.
 
-#### The agent's browser does not wait on the view (NOLIVE-GUARD, #1366)
+#### The agent's browser does not wait on the view (NOLIVE-GUARD)
 
 The tunnel is the **human's** view. The agent's browser is the gate's CDP
 proxy on the pod's loopback, up before ctl.sock is served, and it needs
@@ -988,7 +988,7 @@ spool (`docs/design/child-tasks.md` (`**Spool, not a localhost endpoint`)) it
 **writes a file** -- `$SWARM_HANDOFF/requests/<id>.json`, atomically -- and
 opens no socket, for the same reasons: no new listener in the agent's reach,
 and the request survives a checkpoint. `wait` blocks for at most 9 minutes
-because claude-code's Bash tool kills a command at 10 (`#736`, recorded in
+because claude-code's Bash tool kills a command at 10 (an earlier issue, recorded in
 `apps/agent-worker/agent_worker/runners/stdin_hook.py`); it exits
 
 | exit | meaning | what the agent should do |
@@ -1050,13 +1050,13 @@ hand-off resolves, and its id carries the request id, so a second hand-off in
 the same attempt is unread again. The parking-fast rule below depends on this
 bell: a person who is coming now hears about it within a feed poll.
 
-**Console bell only (BGD, 2026-10-23; Q8 answered, part of #2058).** The bell
+**Console bell only (the owner, 2026-10-23; Q8 answered).** The bell
 is the one channel a hand-off is told on: no Slack, no email, no other
 outbound integration (there is none in `apps/swarm-api` or `apps/reconciler`,
 and none is to be added for this).
 
-**The gate raises the hand-off itself for a CAPTCHA (CAPTCHA-HANDOFF, BGD
-2026-10-23, part of #2058).** An agent had to notice a CAPTCHA and run
+**The gate raises the hand-off itself for a CAPTCHA (CAPTCHA-HANDOFF, the owner
+2026-10-23).** An agent had to notice a CAPTCHA and run
 `swarm-handoff request`, and many did not. Now, when a frame on the page the
 gate follows -- the agent's tab -- is a challenge, the gate asks for the
 person on the agent's behalf:
@@ -1101,7 +1101,7 @@ Solving or evading a challenge stays out of scope: a CAPTCHA is a site owner
 saying no to automated access, and a person answers it or nobody does.
 
 **The agent's next tool result says so (CAPTCHA-HANDOFF-2, CLD 2026-10-23 on
-lane CAPTCHA-HANDOFF's question; part of #2058).** claude-code tells an agent
+lane CAPTCHA-HANDOFF's question).** claude-code tells an agent
 nothing between its tool calls except through a hook, so an agent whose
 browser call simply blocked on the pause would otherwise learn of the
 hand-off only from `swarm-handoff wait` or `status`. On a live-browser
@@ -1482,7 +1482,7 @@ them: the grey "masking unavailable" frame on pages dev-browser opened
 (#1344), reCAPTCHA frames covered for a whole hand-off because the gate could
 not link them to their iframe boxes (#1340), whole-page blanks on every layout
 change, and the live view going grey under #1030 (LIVE-BLANK). Each fix
-narrowed one cause and left the mechanism. BGD judged on-screen redaction
+narrowed one cause and left the mechanism. The owner judged on-screen redaction
 unnecessary "in any situation". What bounds who sees a frame is unchanged:
 viewers are members of the tenant the agent works for (§5.1), and recordings
 are that tenant's artifacts (§7).
@@ -1509,7 +1509,7 @@ What the gate still does:
   through `Target.setAutoAttach`. It is there to **detect a challenge** --
   reCAPTCHA, hCaptcha or Cloudflare, the `SHOWN_IN_CONTROL` list in
   `livegate/mask.py` -- and raise the CAPTCHA hand-off once per page load
-  (`LiveGate._on_challenge`, §4.1, CAPTCHA-HANDOFF #2058). The module keeps
+  (`LiveGate._on_challenge`, §4.1, CAPTCHA-HANDOFF an earlier issue). The module keeps
   the name `mask.py` for history; it no longer masks.
 * **Tab following** (`tabs.py`, the follower's visibility probe), so the view
   and the challenge detection track the tab on screen.
@@ -1521,7 +1521,7 @@ What the gate still does:
   local cursor -- a watcher, the relay's recorder -- gets the arrow on its
   copy, so the recording shows where the pointer was.
 * **Two frames the gate makes itself.** Before the first capture the hub shows
-  a flat fill (#555). When the attempt has ended and Chromium has closed, the
+  a flat fill. When the attempt has ended and Chromium has closed, the
   desktop name is "The agent has finished; its browser is closed."
   (`REASON_BROWSER_CLOSED`, GREY-TAIL #1344).
 * **The viewer metrics line** keeps `unavailable_ms`,
@@ -1918,7 +1918,7 @@ create with that resource type.
   grant read to any member, itself included, so it can make itself or anyone a
   reader of every personal `-browser-` secret. The name condition limits which
   secrets, not whom it may grant. Detection is deferred to the security epic
-  [#476](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/476#issuecomment-6114767079):
+  an earlier issue:
   an alert on `SetIamPolicy` whose new bindings name anything other than
   `swarm-agent-worker-u-*`.
 * The agent's CDP cannot read or plant cookies. The method policy of §5.4.4
@@ -1940,7 +1940,7 @@ create with that resource type.
 * Secrets follow the forge-token rule: Secret Manager only, read at run time.
 
 **The QA identity's console host is never carried (QI-GATE, recorded
-2026-10-20; [qa-identity.md](qa-identity.md) §4.4, part of #1649).** An agent
+2026-10-20; [qa-identity.md](qa-identity.md) §4.4).** An agent
 that names `input.qa_identity` has its browser signed in to this
 deployment's console as the QA service account, by a credential the gate
 adds to console requests. While it does, the console host is left out of
@@ -1970,9 +1970,9 @@ yet exercised this on dev (qa-identity.md §8, QI-ACCEPT).
 User-scoped forge tokens and provider keys are a separate question (they are
 per tenant today), filed on its own issue.
 
-### 5.5.2 The browser across a park: tabs, and storage under LB-7 (issue #1362)
+### 5.5.2 The browser across a park: tabs, and storage under LB-7
 
-MEASURED 2026-10-15 (QA batch full-1015, `u-bogdan`): S5-resume failed 6 of 6,
+MEASURED 2026-10-15 (QA batch full-1015, `u-member`): S5-resume failed 6 of 6,
 three on Playwright MCP and three on dev-browser. Part one opened
 `https://example.com/?qa=<nonce>`, set `localStorage.qa_state`, asked for a
 hand-off and parked; the agent resumed as attempt 2 from `ckpt-00001`, and the
@@ -2068,7 +2068,7 @@ reliably. It is left for the owner to decide, not done quietly.
 
 **Artifacts are not part of this, by design.** A parked attempt uploads its
 `$SWARM_ARTIFACTS_DIR` at the park, and the attempt that finishes lists those
-files by reference (`carried_from`; [workflows.md](../workflows.md), #166).
+files by reference (`carried_from`; [workflows.md](../workflows.md)).
 The artifacts directory is not checkpointed, so a resumed attempt starts with
 an empty one ([checkpointing.md](../checkpointing.md)). The S5 run's
 `qa-phase1.txt` missing from attempt 2's disk is that rule working, not a
@@ -2124,8 +2124,8 @@ What stands in the way:
    fake one.
 4. **Not over plain HTTP, not to an address.** The gate refuses to enter
    control mode while the top frame is `http:` or its host is an IP literal;
-   the console says why. The one exception, decided by BGD on 2026-10-22
-   (GATE-LOOPBACK, part of #1333) so the live-browser acceptance fixture can
+   the console says why. The one exception, decided by the owner on 2026-10-22
+   (GATE-LOOPBACK) so the live-browser acceptance fixture can
    be controlled, is an origin that is exactly loopback -- `http` at
    `127.0.0.1`, `::1` or `localhost`, any port, no userinfo -- which the gate
    treats as secure, as Chromium does; every other `http:` host stays refused.
@@ -2349,27 +2349,27 @@ for sign-ins that only work on mobile.
   - a wheel becomes a touch scroll.
 
   The RFB key rules (§5.6) are unchanged. In view mode, no input is sent at all.
-* **Nothing is painted over the screen on any preset** (§5.3, BGD
+* **Nothing is painted over the screen on any preset** (§5.3, the owner
   2026-10-25). The challenge detection reads frame URLs, not pixels, so it
   does not depend on the device scale factor.
 * **Who switches the device** is question Q13. The recommendation is the agent,
   plus the person in control. A viewer's switcher shows the current device and
   is disabled.
 
-**Amendment, 2026-10-26: `phone-380` (IMPLEMENT-RENDER, part of #2442).** BGD
+**Amendment, 2026-10-26: `phone-380` (IMPLEMENT-RENDER).** The owner
 decided on 2026-10-26 that a UI lane's implement step, in any repository,
 renders its own branch in the live browser and compares each render with the
 repository's frame PNG (`swarm-handoff compare`; the lane author's half is
 [browser-qa.md §6](../browser-qa.md#6-rendering-your-own-branch-in-another-repositorys-implement-step)).
 A repository whose phone frames are drawn at 380 needs a render at 380, and no
-preset was. `phone-380` is 380×800, the size of AI Studio's phone frames (the
+preset was. `phone-380` is 380×800, the size of the peer application's phone frames (the
 PHONE-380 amendment below), with `phone-390`'s scale, mobile flags, user agent
 and client hints, so a lane changes only the size its frames were drawn at. It follows
 `phone-390` in every copy the QA-KIT amendment below lists (the gate, swarm-api's
 two restatements, the console's three label tables and its fixture), and its
 display fits in the Xvfb already started for the desktop preset.
 
-**Amendment, 2026-10-19: the QA kit (QA-KIT, part of #1649).** The owner
+**Amendment, 2026-10-19: the QA kit (QA-KIT).** The owner
 decided on 2026-10-19 that a live-browser agent should be able to run a visual
 QA sweep at 1440 and 390, light and dark, and that the model must see its
 screenshots. Four things changed. docs/design/visual-qa.md §4.1 and §6 say what
@@ -2432,7 +2432,7 @@ QA-CAPTURE builds on them.
   artifacts. A browser call is a browser MCP tool, or a Bash command that
   drives the browser or the gate. The worker records from those counts
   whether the browser was used, as `result_summary.browser_used`
-  (BROWSER-USE-FLAG, #2322; docs/outcomes.md, "Unused browser time"). It
+  (BROWSER-USE-FLAG; docs/outcomes.md, "Unused browser time"). It
   also writes one `browser_unused` mark on the agent's events when it
   has run 10 minutes with neither. That a live run's
   stream shows the image block has not yet been seen on a deployed run. Each
@@ -2441,8 +2441,8 @@ QA-CAPTURE builds on them.
   stdout capture stays whole up to its own cap), and QA-CAPTURE should expect
   that.
 
-**Amendment, 2026-10-26: the 380-wide phone (PHONE-380, part of #2136).** BGD
-approved a `phone-380` preset, 380×800 @3, after `phone-390`: AI Studio's
+**Amendment, 2026-10-26: the 380-wide phone (PHONE-380).** The owner
+approved a `phone-380` preset, 380×800 @3, after `phone-390`: the peer application's
 phone mock-ups are drawn in 380×800 frames, and a browser step or a QA target
 should render at the size the design was drawn at, not 10 px wider. It is
 `phone-390` in every trait but the size (touch, the mobile flag, iPhone 15's
@@ -2558,7 +2558,7 @@ of view, so a long graph costs what is on screen. Its pace is §6.4's table.
 **Encoding: adaptive JPEG, on at quality 70.** The gate's Tight was
 lossless only because the owner asked for a sharp picture (STREAM-SMOOTH, the
 ENCODINGS paragraph of `livegate/rfb.py`). Asked again with the numbers below
-(pull request #3035, 2026-11-02), the owner picked adaptive JPEG at q70: an
+(an earlier pull request, 2026-11-02), the owner picked adaptive JPEG at q70: an
 update whose changes cover at least 5% of the frame sends its large
 rectangles as Tight JPEG at quality 70 (`JPEG_QUALITY_DEFAULT`), a caret or a
 typed character stays lossless, and 0.4 s after the page stops moving the
@@ -2595,7 +2595,7 @@ handshake and a full frame) and the API's slow reads were the larger cost.
 
 ### 6.4 Thumbnails: the gate's thumbnail mode, paced by cards on screen (2026-11-06)
 
-BGD asked on 6 November 2026 for a faster Live Browsers wall and what 20
+The owner asked on 6 November 2026 for a faster Live Browsers wall and what 20
 agents doing visual QA at 5 fps or more would cost, and picked the adaptive
 rate: **10 fps with six or fewer cards on screen, 5 fps for 7 to 20, 2 fps
 beyond 20**, nothing for a card off screen (LiveThumb.tsx `THUMB_INTERVALS`:
@@ -2639,7 +2639,7 @@ still count every link.
 
 ## 7. Recording and replay (LB-4)
 
-**What is recorded.** The frames the gate publishes, which since BGD's
+**What is recorded.** The frames the gate publishes, which since the owner's
 decision of 2026-10-25 are the screen as Chromium drew it, with nothing
 painted over it (§5.3). The recorder has no local cursor, so the pointer's
 arrow is painted on its copy and is in the recording (rfb.py, THE POINTER).
@@ -2747,7 +2747,7 @@ What ships, and why each piece is the way it is:
   function after the apply.
 * **One command applies it**, `kubernetes/apply.sh --swarm-system --confirm`.
   It reads `terraform output -raw swarm_live_manifest` only after the context
-  checks (the deny-list in `scripts/lib/common.sh`, so never `agents-staging`),
+  checks (the deny-list in `scripts/lib/common.sh`, so never `peer-cluster`),
   and applies it ahead of the namespace's policies in the same apply, because
   it creates the namespace they go into. It refuses when there is no manifest
   (`enable_live_browser` off), and when the manifest holds an object outside
@@ -2769,7 +2769,7 @@ untouched. Proposed starting split, to be measured by lane L5: worker 3 vCPU /
 moved to the sidecar.
 
 **Amendment, 2026-10-20: the browser split is 2 + 2 (BROWSER-SPLIT, part of
-#1689).** The owner moved one core from the display to the worker: display
+An earlier issue).** The owner moved one core from the display to the worker: display
 2 vCPU / 5 GiB, worker 2 vCPU / 3 GiB, still of the class's 4 / 8, so the
 pod's size, its units and its cost do not change, and both containers keep
 `requests == limits`. Measured that day, browser-profile attempts ran with
@@ -2879,7 +2879,7 @@ first, red, then the fix (CLAUDE.md, "Red first").
 | 1 | **L4c SESSION-CARRY** | `apps/agent-worker/agent_worker/livegate/session.py`, `apps/agent-worker/agent_worker/browser_login.py`, `apps/agent-worker/agent_worker/livegate/cdppolicy.py`, `tests/unit/worker/test_browser_session.py` | L2, L4 | in a personal tenant a workflow step's jar is exported on the gate's pipe and written to `swarm-tenant-u-<user>-browser-wf-<wf>`, then imported by the next step before the agent connects; in a group tenant nothing is written and no carry happens; a step outside a workflow carries nothing; `input.browser_login` loads the named login, and an unknown or expired name fails before the agent runs; the agent's cookie-reading and cookie-writing CDP methods are refused; no cookie value in any log, event, checkpoint or output (fake jar built at runtime) |
 | 2 | **L8b VAULT-IAM** | `terraform/bootstrap/browser_logins.tf` (built in bootstrap, not infra: see its header), `tests/terraform/browser_logins.tftest.hcl` | L8 | as built: only a personal tenant's worker holds a grant, on its own `swarm-tenant-u-<user>-browser-` prefix; no group tenant's worker holds any `-browser-` grant; swarm-api may destroy those secrets; no secret version in Terraform; `managed-by=swarm-terraform` on every resource. **Superseded by L8c** (owner decision 2026-10-11): the worker's project-level reader, writer and unconditioned creator are removed, because Terraform cannot name a person whose workspace the job made, and a project-level create cannot be narrowed by name |
 | 2 | **L8c SECRET-PROVISION** | `terraform/bootstrap/browser_logins.tf`, `terraform/modules/custom_role_ids/main.tf`, `tests/terraform/browser_logins.tftest.hcl`, `apps/swarm-api/swarm_api/browser_slots.py`, `apps/swarm-api/swarm_api/routes/browser_slots.py`, `apps/agent-worker/agent_worker/browser_login.py`, `tests/unit/control_plane/test_browser_slots.py`, `tests/unit/worker/test_browser_session.py` | L8b, L4c, L9b | a non-personal tenant is refused a slot; a name outside the caller's prefix is refused before Secret Manager is called; a stale generation is refused; a granted slot binds exactly one member on exactly one secret; no worker in Terraform holds any Secret Manager project grant for `-browser-`; swarm-api's provisioner role carries the condition; the worker asks for the slot before every write and never creates a secret |
-| 2 | **L8e SHIP-RELAY** | `apps/swarm-live/Dockerfile`, `apps/swarm-live/uv.lock`, `scripts/build-images.sh`, `scripts/push-images.sh`, `terraform/infra/live.tf`, `terraform/infra/locals.tf`, `kubernetes/swarm-system/swarm-live.yaml`, `kubernetes/apply.sh`, the two live policies and `network_parity.py`, `tests/terraform/live.tftest.hcl`, `tests/unit/scripts/test_swarm_live_image.py`, `tests/unit/scripts/test_live_netpol.py` | L6, L7, L8 | build-images lists `swarm-live`; `terraform test`: the manifest is on 8080 with no TLS volume, `requests == limits`, and its NetworkPolicy admits only labelled tenant gates and `var.subnet_cidr`; `apply.sh --swarm-system` applies the manifest before the policies and refuses `agents-staging` (section 8.1.1) |
+| 2 | **L8e SHIP-RELAY** | `apps/swarm-live/Dockerfile`, `apps/swarm-live/uv.lock`, `scripts/build-images.sh`, `scripts/push-images.sh`, `terraform/infra/live.tf`, `terraform/infra/locals.tf`, `kubernetes/swarm-system/swarm-live.yaml`, `kubernetes/apply.sh`, the two live policies and `network_parity.py`, `tests/terraform/live.tftest.hcl`, `tests/unit/scripts/test_swarm_live_image.py`, `tests/unit/scripts/test_live_netpol.py` | L6, L7, L8 | build-images lists `swarm-live`; `terraform test`: the manifest is on 8080 with no TLS volume, `requests == limits`, and its NetworkPolicy admits only labelled tenant gates and `var.subnet_cidr`; `apply.sh --swarm-system` applies the manifest before the policies and refuses `peer-cluster` (section 8.1.1) |
 | 2 | **L9b LOGIN-VAULT** | `apps/swarm-api/swarm_api/browser_logins.py`, `apps/swarm-api/swarm_api/routes/browser_logins.py`, `apps/scheduler/scheduler/reconcile.py`, `tests/unit/control_plane/test_browser_logins.py` | L9 | only the workspace's own person can list or revoke its logins; anyone else gets 404; a group-tenant agent naming `browser_login` is refused with `browser_login_personal_only`; a value is never returned; save takes a name and an expiry of at most 30 days; revoke destroys every version; a workflow's carry secret is deleted at its terminal state; the audit records names only |
 | 3 | **L12c UI-LOGINS** | `apps/swarm-ui/src/BrowserLogins.tsx`, `apps/swarm-ui/src/Access.tsx`, `apps/swarm-ui/src/LiveBrowser.tsx`, `apps/swarm-ui/test/BrowserLogins.test.tsx` | L9b, L12 | after Return control on a personal-workspace agent the tab offers "Save as login" with the account warning, and never on a group-tenant agent; Access › Browser logins lists name, site, expiry and last use, never a value; Revoke asks for a typed confirmation |
 | 4 | **L13 ACCEPT** | `.github/workflows/accept.yml`, `tests/acceptance/test_live_browser.py`, `tests/acceptance/fixtures/login.html`, `docs/acceptance.md` | all | on dev: a `claude-code-browser` agent asks for help on a fixture sign-in page; a scripted viewer takes control and types a password generated at run time; the recording's frames have the field's pixels painted; the transcript, logs, checkpoint and outputs do not contain the password; control returns and the agent succeeds; a member of another tenant is refused |
@@ -2887,7 +2887,7 @@ first, red, then the fix (CLAUDE.md, "Red first").
 L1-L3 share `livegate/`, a new directory; they are three lanes because their
 files do not overlap, and L3 waits for L1 because it encodes L1's frames.
 
-**The masking these rows test was removed on 2026-10-25** (BGD's decision,
+**The masking these rows test was removed on 2026-10-25** (the owner's decision,
 §5.3). L1's painted rectangles, sticky password type, stale-report blank and
 redaction-rule match, and L3b's mask on every preset, describe what was built
 then; `observer.js` is deleted and nothing is painted over a frame now. L13's
@@ -2936,7 +2936,7 @@ routes these lanes introduced. `claude-code-browser` already names
 recommendation below: Q1 the submitter, with a per-agent "open to the tenant"
 toggle; Q2 the field; Q3 10 minutes (superseded 2026-10-13 by HANDOFF-POLICY:
 one minute unwatched, extended while watched up to 30, section 4.3); Q4 24 hours; Q5 no; Q6 yes, the submitter
-only; Q7 sign in again; Q8 console only in phase 1 (confirmed by BGD 2026-10-23 for CAPTCHA-HANDOFF: the console bell only, §4.1); Q9 R2; Q10 on; Q11 yes, at
+only; Q7 sign in again; Q8 console only in phase 1 (confirmed by the owner 2026-10-23 for CAPTCHA-HANDOFF: the console bell only, §4.1); Q9 R2; Q10 on; Q11 yes, at
 1 fps; Q12 accept; Q13 the agent and the person in control. The owner also
 approved the mockup of §6 as drawn.
 
