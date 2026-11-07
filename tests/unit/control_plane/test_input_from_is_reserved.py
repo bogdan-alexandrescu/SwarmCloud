@@ -356,6 +356,11 @@ def test_every_service_written_key_is_reserved_in_one_place():
         # written only by the issue-run code. A caller who set it would have
         # its work read as an issue run's.
         "issue_run",
+        # The reconciler's count of re-queues of a silent lease whose worker
+        # never started (part of #2688). A caller who set it would choose how
+        # many more silent leases the task gets before it fails.
+        # MUTATION: drop it from RESERVED_METADATA_KEYS and this tuple is red.
+        "never_started_requeues",
     )
 
 
@@ -393,6 +398,33 @@ def test_a_caller_supplied_quota_park_resumes_is_refused_and_creates_nothing(cli
     assert body["code"] == RESERVED_CODE
     assert body["detail"]["reserved_metadata_keys"] == ["quota_park_resumes"]
     assert "metadata.quota_park_resumes" in body["message"]
+
+
+def test_a_caller_supplied_never_started_requeues_is_refused_and_creates_nothing(client, db):
+    """Part of #2688: the count of never-started re-queues is the reconciler's to write."""
+    response = client.post(
+        "/v1/tasks",
+        headers=auth_header("alice"),
+        json={"runner_profile": "mock",
+              "metadata": {"unit": "payments", "never_started_requeues": -100}},
+    )
+
+    assert _created(db) == {"tasks": [], "workflows": []}
+    # MUTATION: leave the key out of RESERVED_METADATA_KEYS and this is a 201.
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == RESERVED_CODE
+    assert body["detail"]["reserved_metadata_keys"] == ["never_started_requeues"]
+    assert "metadata.never_started_requeues is reserved" in body["message"]
+    assert "Drop the key from metadata." in body["message"]
+
+
+def test_the_reconciler_writes_the_never_started_key_this_service_reserves():
+    """A reservation on a key the reconciler does not write would refuse nothing that matters."""
+    from reconciler.model import NEVER_STARTED_REQUEUES_KEY
+
+    assert NEVER_STARTED_REQUEUES_KEY == "never_started_requeues"
+    assert NEVER_STARTED_REQUEUES_KEY in RESERVED_METADATA_KEYS
 
 
 def test_the_worker_reads_the_key_this_service_reserves():
