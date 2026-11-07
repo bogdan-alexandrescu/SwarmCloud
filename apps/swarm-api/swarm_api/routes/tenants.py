@@ -47,7 +47,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from google.cloud import firestore
 from pydantic import Field
 
@@ -63,6 +63,7 @@ from ..errors import KeyLinkInvalid, ValidationFailed
 from ..schemas import FEATURE_UNKNOWN, CredentialCreate, FeatureState, StrictModel, TenantFeatures
 from ..store import TENANTS
 from ..validation import AWAIT_INPUT_PROFILE, known_providers
+from .people import apply_ready_loans
 from .workspace_name import clean_name
 
 log = logging.getLogger(__name__)
@@ -220,6 +221,9 @@ def _role_field(ctx: AppContext, auth: AuthContext) -> dict:
 
 @router.get("/mine")
 def get_mine(
+    # Injected by FastAPI on every request; None only for a direct call (a
+    # unit test of the entries), which then applies no loans.
+    request: Request = None,  # type: ignore[assignment]
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> list[dict]:
@@ -298,6 +302,13 @@ def get_mine(
         if entry["kind"] == "group" and name is not None:
             entry["group"] = entry["display_name"]
             entry["display_name"] = name
+    # The personal entry is listed only once its workspace is ready, and this
+    # is among the console's first reads after it is: apply the loans an admin
+    # lent while it was being made (LOAN-ON-READ), the caller's own and only
+    # theirs. Never fails the route (`apply_ready_loans` does not raise).
+    for entry in entries:
+        if entry["kind"] == "user" and request is not None:
+            apply_ready_loans(request.app, entry["tenant_id"])
     return entries
 
 
