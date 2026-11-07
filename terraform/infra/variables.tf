@@ -1526,10 +1526,12 @@ variable "voice_speech" {
       image         "" until set: a Deep Learning VM image BY NAME,
                     projects/deeplearning-platform-release/global/images/<name>,
                     with the NVIDIA driver and the container toolkit on it.
+                    The driver is 580 or later (its family ends -nvidia-580
+                    or higher): vLLM 0.33 is built on CUDA 13.
                     Never a /family/ path, which moves under a stopped machine
                     and would replace it at the next plan. Required once
-                    enabled; the installer pins the newest image of the family
-                    at install time.
+                    enabled; the installer pins the newest such image at
+                    install time.
       disk_gb       150: the boot disk (pd-balanced, about $15 a month, idle
                     or not), sized for the image with its driver (~50 GB), the
                     server image (~20 GB), the models' weights (~8 GB) and one
