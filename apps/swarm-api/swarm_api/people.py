@@ -92,7 +92,7 @@ decision says `auto: true`, and the audit entry is
 create, so an automatic one creates nothing an admin's click would not.
 
 A TENANT THAT PREDATES THE WORKSPACE JOB IS NEVER APPROVED HERE (§3.3).
-`u-bogdan`'s identity was made by Terraform, whose tenant document carries
+`example-tenant`'s identity was made by Terraform, whose tenant document carries
 `managed_by = swarm-terraform`, and lane W9 migrates it into a record with
 `migrated = true`. Either holds an admin's own request `requested`
 (`ws.MigrationHold`, not a refusal), so nothing is published that the apply's
@@ -289,7 +289,7 @@ def role_cell(email: str, teams: set[str], column: Mapping[str, Any],
     grant says: `RoleStore.resolve`'s rule (roles.py, Q5), which reads no
     grant for them, so an unread column changes nothing either. Config ›
     People and roles, This workspace and Profile answer the same; the grid
-    drawing the stored `member` was the fourth answer (VQ-044, BGD
+    drawing the stored `member` was the fourth answer (VQ-044, the owner
     2026-10-26). A grant naming them stays stored and editable, and inert."""
     if email in platform_admins:
         return ADMIN
@@ -309,7 +309,7 @@ def mark_platform_admin(row: dict[str, Any], platform_admins: Collection[str]) -
     platform-admin rule, and nothing on anyone else's row. The page draws
     "(platform admin)" under the cell's `admin` from this marker, not from the
     admins list, which a workspace admin's scoped read does not serve: every
-    reader of the grid sees where the cell came from (BGD 2026-10-26, "Mark
+    reader of the grid sees where the cell came from (the owner 2026-10-26, "Mark
     the source"; lane ROLE-MARK, part of #2391)."""
     if row["email"] in platform_admins:
         row["platform_admin"] = True

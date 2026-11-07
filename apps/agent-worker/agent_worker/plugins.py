@@ -1,6 +1,6 @@
 """A step's agent plugins at the start of a step: gstack's and the security audit skill's skills, linked from the image's read-only install.
 
-The owner (BGD, 3 November 2026) chose plugins per step, gstack first, baked
+The owner (3 November 2026) chose plugins per step, gstack first, baked
 into the agent images at a pinned version (docs/design/agent-plugins.md, "The
 start of a step"; docs/design/agent-plugins-packaging.md, "The image build
 proposal"). This is the worker's half, modelled on `qualitygates.prepare`:

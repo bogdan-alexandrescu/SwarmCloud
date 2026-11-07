@@ -1,6 +1,6 @@
 """Jev's two questions about a work contract, as states, questions and readers.
 
-The owner's agent quality program (BGD, 3 November 2026); the design is
+The owner's agent quality program (the owner, 3 November 2026); the design is
 docs/design/agent-quality/jev-contract.md, and the owner's answers to its
 twelve choices are its section 14. Two calls:
 

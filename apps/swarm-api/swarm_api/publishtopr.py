@@ -1,6 +1,6 @@
 """`publish_to_pr`: a lane that lands on an existing pull request (#2183).
 
-WHY (owner approval, BGD, 2026-10-24). A follow-up lane -- a re-review, a fix
+WHY (owner approval, 2026-10-24). A follow-up lane -- a re-review, a fix
 round, the owner's answers applied to a mock-up -- could only open a
 REPLACEMENT pull request: `repository_ref` of the old branch gave an empty
 diff, and `continues_task` takes a workflow of one `direct-pr` step. On

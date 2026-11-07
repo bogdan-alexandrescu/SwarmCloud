@@ -113,7 +113,7 @@ DIGESTS_KEY = "question_digests"
 #: (`text_digest`), in index order. An implement step and its fix step often
 #: ask the same question with other option labels; the bell and the Workflows
 #: list count such a question once by this key (the follow-up picked under
-#: BGD's overnight grant, 6 November 2026). A task without it counts as before.
+#: the owner's overnight grant, 6 November 2026). A task without it counts as before.
 TEXT_DIGESTS_KEY = "question_text_digests"
 #: Hex characters kept of each digest: 64 bits tells one question from the
 #: next at an index, and twenty of them stay small in the summary.

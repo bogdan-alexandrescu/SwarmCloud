@@ -18,7 +18,7 @@ the clone and is the worker's (`agent_worker.verdict.merged_commit_contained`);
 check (c) (a NOT_YET with no finding) is swarm-api's
 (`swarm_api.verdictpublish.noop_verdict_reason`).
 
-THE REVIEW GATE IS NOT DECIDED HERE. BGD, 2026-10-28: the scheduler holds a
+THE REVIEW GATE IS NOT DECIDED HERE. The owner, 2026-10-28: the scheduler holds a
 gated review PARKED, as it holds `integrate`'s integrator for the #748
 publish (`loop.held_for_control_publish`), and swarm-api decides it and ends
 it PARKED -> SUCCEEDED (`swarm_api.reviewgate`). Only the metadata key is

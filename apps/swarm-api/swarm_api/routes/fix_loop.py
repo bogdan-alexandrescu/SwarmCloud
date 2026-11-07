@@ -4,7 +4,7 @@
     POST /v1/workflows/{workflow_id}/fix-loop/end      {outcome: "stop"}
 
 Lane FL-DRIVE. The decisions are `swarm_api.fixloop`'s; this module is the
-HTTP half. BGD's Q4 (a) (2026-10-27): any full member of the workflow's
+HTTP half. The owner's Q4 (a) (2026-10-27): any full member of the workflow's
 tenant may add rounds -- one by default -- and no loop ever runs more than
 `fixloop.FIX_LOOP_ROUNDS_CEILING` (10). The tenant is the caller's token's
 (`tenant_scope`), never a parameter, so another tenant's workflow is a 404.

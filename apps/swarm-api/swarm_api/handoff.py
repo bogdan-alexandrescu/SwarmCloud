@@ -240,7 +240,7 @@ class HandoffRequest(_AttemptFields):
     request_id: str = Field(min_length=1, max_length=64)
     reason: str = Field(max_length=MAX_REASON_CHARS)
     expect: str | None = Field(default=None, max_length=253)
-    #: Who asked (CAPTCHA-HANDOFF, BGD 2026-10-23; part of #2058): the agent
+    #: Who asked (CAPTCHA-HANDOFF, the owner 2026-10-23; part of #2058): the agent
     #: (`swarm-handoff request`), or the live gate, which raises the hand-off
     #: itself when it sees a CAPTCHA on the agent's page. Stored on the wait
     #: and the event so the console and the event log tell them apart. The

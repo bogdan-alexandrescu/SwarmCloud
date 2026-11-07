@@ -124,8 +124,8 @@ class _BaseState(Enum):
     succeeded and found a different token, and the caller published either way.
 
     That is indistinguishable-guard-failure, and it cost 1,741 identical secret
-    versions on `swarm-account-u-bogdan-devops-main` and 1,814 on
-    `swarm-tenant-u-bogdan-anthropic` in saga-agents-staging before anyone
+    versions on `swarm-account-example-tenant-devops-main` and 1,814 on
+    `swarm-tenant-example-tenant-anthropic` in example-project before anyone
     noticed. The broker holds `secretmanager.versions.add` on the worker-facing
     secret but NOT `secretmanager.versions.access` -- verified in the live IAM
     policy on 2026-09-22, where `roles/secretmanager.secretAccessor` on those

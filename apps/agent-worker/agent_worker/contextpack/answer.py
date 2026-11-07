@@ -1,5 +1,5 @@
 """The graph's answer for the step's brief: the files it ranks most relevant,
-each with the one-line reason the graph gives (BGD's pick, 6 November 2026,
+each with the one-line reason the graph gives (the owner's pick, 6 November 2026,
 after the 48-hour code intelligence report; part of #2688).
 
 WHY. Only 62 of 903 steps that had the graph ever called it, but when a step

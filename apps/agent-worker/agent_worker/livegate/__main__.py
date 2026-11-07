@@ -26,7 +26,7 @@ this order:
    only once this socket exists, and its registration is the first (§5.4.2).
 4. THE VIEW. The capture loop (capture.py) publishes every frame to the RFB
    server (rfb.py) as Chromium drew it: nothing is painted over any part of
-   it, in any situation (§5.3; owner decision, BGD 2026-10-25). A gate-only
+   it, in any situation (§5.3; owner decision, 2026-10-25). A gate-only
    CDP session on the page on screen (mask.py) watches for a challenge and
    for the browser closing, and never touches a pixel. The tunnel to the relay
    (tunnel.py) opens when the worker hands over a ticket, and each viewer is
@@ -79,7 +79,7 @@ request. The proxy scrubs the values from everything the agent receives. The
 wipe drops them BEFORE Chromium closes, and the verb is refused after it.
 
 A CAPTCHA ON THE AGENT'S PAGE IS A HAND-OFF THE GATE RAISES (CAPTCHA-HANDOFF;
-docs/design/live-browser.md §4.1, part of #2058). BGD decided on 2026-10-23
+docs/design/live-browser.md §4.1, part of #2058). The owner decided on 2026-10-23
 that an agent need not notice a CAPTCHA itself: when a frame on the page the
 follower shows is a challenge (mask.py `SHOWN_IN_CONTROL`, the list mask.py
 and tabs.py already read), `MaskState` tells `_on_challenge` once per page load,
@@ -1688,7 +1688,7 @@ class LiveGate:
         runs on a thread, so the event loop that reads the controller's input
         is never held by it. The frame is published as captured: nothing is
         painted over any part of it, in any situation (§5.3; owner decision,
-        BGD 2026-10-25). The wait to the next frame counts the work already
+        the owner 2026-10-25). The wait to the next frame counts the work already
         done, so 30 a second is 30, and it ends early when control changes
         hands.
         """

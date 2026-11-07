@@ -166,7 +166,7 @@ def pointer_to_prefix(pointer: Any) -> str | None:
     The pointer is a Firestore field, so it is DATA and not an instruction --
     the same reading `CheckpointManager.find_by_uri` and
     `reconciler.checkpoints.pointer_to_prefix` take. It is written as a store
-    URI (`gs://bucket/tenants/...`, or `file:///...` under
+    URI (`gs://swarm-artifacts-example-project/tenants/...`, or `file:///...` under
     `LOCAL_ARTIFACT_ROOT`), so slicing from `tenants/` yields the key whatever
     wrote it.
 
