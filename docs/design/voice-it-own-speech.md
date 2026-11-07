@@ -637,7 +637,9 @@ Two directions each, drawn in the real console before any build; the design does
 * The ledger gains one computed line, **Speech machine**: the minutes from the start call to the
   stop's `TERMINATED` (counted from the call, so the boot is included and the ledger never
   under-counts), times the machine's catalogue price, attributed to the session that held the lease,
-  including the idle minutes before an idle stop. The 150 GB disk (about $15 a month, idle or not)
+  including the idle minutes before an idle stop. It is spent against `SESSION_CAP_USD` and
+  `DAY_CAP_USD` like Talk, on the day the session started, so a start the machine's minutes would
+  push past a cap is refused. The 150 GB disk (about $15 a month, idle or not)
   is platform cost, said on the Budget card as not counted.
 * **The fast front's turns count against Voice it's budget as the planner's do** (Q3). Their
   counts ride on the turn's `usage` as `{"by_model": {<front pin>: …, <planner pin>: …}, "billing":
