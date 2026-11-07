@@ -17,9 +17,18 @@
  * so the visual never pans in a window of its own; the tabs wrap instead of
  * scrolling with no bar.
  *
+ * LIVE (part of #2688). While the session is live the stage also listens to
+ * its stream (`GET /v1/voice/sessions/{id}/events`, swarm_api/voice/stream.py
+ * `STAGE_TYPES`): a `visual.upsert` takes the stage at once, a `focus` moves
+ * it to the visual the planner points at and bands the lines it names, and a
+ * `note.upsert` re-reads the visual it names, so a note pinned or resolved
+ * shows without waiting for the next read. The reads every few seconds stay,
+ * for a browser without EventSource or a stream that gave up.
+ *
  * The speech controls (mic, engine status) are TalkPane's; the stage draws
  * none. It reads only the routes: GET visuals and one visual, PATCH a note's
- * state, GET the pending read-back, POST go or not-that. Nothing here spends.
+ * state, GET the pending read-back, POST go or not-that, and the session's
+ * stream. Nothing here spends.
  */
 
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
@@ -29,6 +38,7 @@ import {
   loadPendingReadback,
   loadVoiceVisual,
   loadVoiceVisuals,
+  normVoiceVisual,
   resolveVoiceNote,
   type VoiceNote,
   type VoiceReadback,
@@ -37,6 +47,7 @@ import {
 } from '../api'
 import { Button, TOOLTIP_DELAY_MS } from '../components'
 import '../styles/talk-stage.css'
+import { streamEvent, streamUrl } from './CardList'
 
 /** How often a live session's visuals are read again. */
 export const STAGE_REFRESH_MS = 5_000
@@ -46,6 +57,33 @@ export const READBACK_REFRESH_MS = 2_000
 const READBACK_WINDOW_S = 55
 /** How long an answered card shows its answer before it leaves. */
 const ANSWERED_MS = 1_600
+
+/** The stream's events the stage applies (swarm_api/voice/stream.py `STAGE_TYPES`). */
+export const STAGE_EVENTS = ['visual.upsert', 'note.upsert', 'focus'] as const
+
+/** Where the planner points (`speak`'s `point_at`): the visual, the lines of its anchor, and its caption. */
+interface Focus {
+  visual_id: string
+  lines: { from: number; to: number } | null
+  caption: string | null
+}
+
+/** A focused line's band. A token-only inline style: the stage's stylesheet has no focus rule. */
+const FOCUS_BAND = { background: 'color-mix(in srgb, var(--info) 12%, transparent)', boxShadow: 'inset 3px 0 0 var(--info)' } as const
+
+/** What marks a list read as new: a visual drawn, or drawn again, since the last one. */
+const markOf = (v: VoiceVisual | undefined): string | null => (v === undefined ? null : `${v.visual_id}:${v.version}:${v.updated_at ?? ''}`)
+
+function focusOf(data: Record<string, unknown>): Focus | null {
+  if (typeof data.visual_id !== 'string' || data.visual_id === '') return null
+  const a = (data.anchor ?? null) as Record<string, unknown> | null
+  const lined = a !== null && typeof a === 'object' && a.type === 'lines' && typeof a.from === 'number' && typeof a.to === 'number'
+  return {
+    visual_id: data.visual_id,
+    lines: lined ? { from: a.from as number, to: a.to as number } : null,
+    caption: typeof data.caption === 'string' && data.caption !== '' ? data.caption : null,
+  }
+}
 
 const KIND_WORD: Record<VoiceVisual['kind'], string> = { code: 'Code', log: 'Log', mockup: 'Mock-up', diagram: 'Diagram', spec: 'Spec' }
 
@@ -163,8 +201,10 @@ function Lines({
   setOpen,
   onResolve,
   resolving,
+  focus,
 }: {
   detail: VoiceVisualDetail
+  focus: { from: number; to: number } | null
   pins: readonly VoiceNote[]
   open: string | null
   setOpen: (id: string | null) => void
@@ -183,8 +223,15 @@ function Lines({
         const starts = lined.filter((p) => p.from === at)
         const ends = lined.filter((p) => p.to === at)
         const tone = diff ? (text.startsWith('+') ? ' is-add' : text.startsWith('-') ? ' is-del' : '') : ''
+        const focused = focus !== null && at >= focus.from && at <= focus.to
         return (
-          <li key={at} className={`vts-line${banded.length > 0 ? ' is-noted' : ''}${tone}`} data-line={at}>
+          <li
+            key={at}
+            className={`vts-line${banded.length > 0 ? ' is-noted' : ''}${focused ? ' is-focus' : ''}${tone}`}
+            data-line={at}
+            aria-current={focused ? 'true' : undefined}
+            style={focused ? FOCUS_BAND : undefined}
+          >
             <span className="vts-n" aria-hidden="true">
               {at}
             </span>
@@ -289,8 +336,13 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
   const [holdBusy, setHoldBusy] = useState(false)
   const [holdProblem, setHoldProblem] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [focus, setFocus] = useState<Focus | null>(null)
   const mounted = useRef(true)
   const newest = useRef<string | null>(null)
+  const listed = useRef<VoiceVisual[]>([])
+  listed.current = visuals
+  /** The list read of the current project; a focus on a visual it lacks asks it again. */
+  const pullList = useRef<() => void>(() => undefined)
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -303,6 +355,7 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
     setVisuals([])
     setPicked(null)
     setDetail(null)
+    setFocus(null)
     newest.current = null
     if (projectId === null) return
     let stop = false
@@ -311,34 +364,82 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
         if (stop || (r.status !== 'ok' && r.status !== 'stale')) return
         setVisuals(r.data)
         // A visual drawn (or drawn again) since the last read takes the stage from the person's pick.
-        const top = r.data[0]
-        const mark = top === undefined ? null : `${top.visual_id}:${top.version}:${top.updated_at ?? ''}`
+        const mark = markOf(r.data[0])
         if (mark !== newest.current) {
           newest.current = mark
           setPicked(null)
         }
       })
+    pullList.current = pull
     pull()
     const t = live ? window.setInterval(pull, STAGE_REFRESH_MS) : undefined
     return () => {
       stop = true
+      pullList.current = () => undefined
       if (t !== undefined) window.clearInterval(t)
     }
   }, [projectId, live])
 
   const shownId = picked ?? visuals[0]?.visual_id ?? null
   const shownVersion = visuals.find((v) => v.visual_id === shownId)?.version ?? null
+  const shownRef = useRef(shownId)
+  shownRef.current = shownId
+
+  /** One visual read again: its open-note count always, and the stage's detail when it is the one shown. */
+  const readVisual = useCallback(
+    (visualId: string) => {
+      if (projectId === null) return
+      void loadVoiceVisual(projectId, visualId).then((r) => {
+        if (!mounted.current) return
+        if (r.status === 'ok' || r.status === 'stale') {
+          if (r.data.visual.visual_id === shownRef.current) setDetail(r.data)
+          setCounts((c) => ({ ...c, [r.data.visual.visual_id]: openNotes(r.data.notes).length }))
+        }
+      })
+    },
+    [projectId],
+  )
 
   const loadShown = useCallback(() => {
-    if (projectId === null || shownId === null) return
-    void loadVoiceVisual(projectId, shownId).then((r) => {
-      if (!mounted.current) return
-      if (r.status === 'ok' || r.status === 'stale') {
-        setDetail(r.data)
-        setCounts((c) => ({ ...c, [r.data.visual.visual_id]: openNotes(r.data.notes).length }))
+    if (shownId !== null) readVisual(shownId)
+  }, [readVisual, shownId])
+
+  // The session's stream, while it is live: a visual drawn, the planner's focus, a note pinned or resolved.
+  useEffect(() => {
+    if (projectId === null || sessionId === null || !live || typeof EventSource === 'undefined') return
+    const source = new EventSource(streamUrl(sessionId, 0))
+    let last = 0
+    const on = (type: (typeof STAGE_EVENTS)[number]) => (e: Event) => {
+      const ev = streamEvent(type, e as MessageEvent)
+      // A resumed stream repeats nothing it already sent; a repeat changes nothing here either.
+      if (ev === null || !Number.isInteger(ev.seq) || ev.seq <= last) return
+      last = ev.seq
+      if (type === 'visual.upsert') {
+        const v = normVoiceVisual(ev.data.visual)
+        if (v === null) return
+        const held = listed.current.find((x) => x.visual_id === v.visual_id)
+        if (held !== undefined && held.version >= v.version) return
+        setVisuals((vs) => [v, ...vs.filter((x) => x.visual_id !== v.visual_id)])
+        newest.current = markOf(v)
+        setPicked(null)
+      } else if (type === 'focus') {
+        const f = focusOf(ev.data)
+        if (f === null) return
+        setFocus(f)
+        setPicked(f.visual_id)
+        if (!listed.current.some((x) => x.visual_id === f.visual_id)) pullList.current()
+      } else {
+        const note = (ev.data.note ?? null) as { visual_id?: unknown } | null
+        if (note !== null && typeof note.visual_id === 'string' && note.visual_id !== '') readVisual(note.visual_id)
       }
-    })
-  }, [projectId, shownId])
+    }
+    const handlers = STAGE_EVENTS.map((t) => [t, on(t)] as const)
+    for (const [t, h] of handlers) source.addEventListener(t, h)
+    return () => {
+      for (const [t, h] of handlers) source.removeEventListener(t, h)
+      source.close()
+    }
+  }, [projectId, sessionId, live, readVisual])
 
   useEffect(() => {
     setOpenPin(null)
@@ -412,6 +513,7 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
   const loose = shown === null ? [] : pins.map((note, i) => ({ note, n: i + 1 })).filter((p) => !onLines(p.note, shown))
   const where = shown === null ? null : sourceLine(shown.visual)
   const range = shown?.visual.lines ?? null
+  const pointed = shown !== null && focus !== null && focus.visual_id === shown.visual.visual_id ? focus : null
 
   return (
     <section className={`vts${hold !== null ? ' has-hold' : ''}`} aria-label="Stage">
@@ -439,7 +541,7 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
           // not the console's prose: `data-prose-content` keeps it out of the
           // words the prose ratchet counts (proseapp.tsx).
           <figure className={`vts-frame is-${shown.visual.kind}`} aria-label={shown.visual.title} data-prose-content="">
-            {(where !== null || range !== null) && (
+            {(where !== null || range !== null || pointed?.caption) && (
               <figcaption className="vts-head">
                 {where !== null && <code className="vts-where">{where}</code>}
                 {range !== null && shown.visual.kind !== 'mockup' && (
@@ -447,6 +549,7 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
                     L{range.from}–{range.to}
                   </span>
                 )}
+                {pointed?.caption && <span className="vts-focus-caption">{pointed.caption}</span>}
               </figcaption>
             )}
             {shown.visual.kind === 'mockup' ? (
@@ -455,7 +558,7 @@ export function TalkStage({ projectId, sessionId, live }: { projectId: string | 
                 <iframe className="vts-mockup-frame" title={shown.visual.title} sandbox="" srcDoc={shown.body} />
               </div>
             ) : (
-              <Lines detail={shown} pins={pins} open={openPin} setOpen={setOpenPin} onResolve={(n) => void resolve(n)} resolving={resolving} />
+              <Lines detail={shown} focus={pointed?.lines ?? null} pins={pins} open={openPin} setOpen={setOpenPin} onResolve={(n) => void resolve(n)} resolving={resolving} />
             )}
             {loose.length > 0 && (
               <div className="vts-loose">

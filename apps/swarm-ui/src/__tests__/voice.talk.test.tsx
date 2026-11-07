@@ -45,12 +45,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FakeAudioContext, FakePeer, FakeStream, FakeTrack, installMedia, settle } from './voice.fakes'
 
 const fetchMock = vi.hoisted(() => ({ write: vi.fn() }))
-const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn() }))
+const apiMock = vi.hoisted(() => ({ fixtures: false, loadWorkflow: vi.fn(), loadVoiceVisuals: null as null | ReturnType<typeof vi.fn> }))
 
 vi.mock('../api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api')>()
+  // The stage's list read, passed through to api.ts: a test reads which project it asked for.
+  apiMock.loadVoiceVisuals = vi.fn(actual.loadVoiceVisuals)
   return {
     ...actual,
+    loadVoiceVisuals: apiMock.loadVoiceVisuals,
     get USE_FIXTURES() {
       return apiMock.fixtures
     },
@@ -229,17 +232,10 @@ describe('the Talk pane', () => {
     expect(call.projectId).toBe(project)
     call.hangUp()
 
-    const reads = vi.fn(async () => new Response(JSON.stringify({ visuals: [] }), { status: 200, headers: { 'content-type': 'application/json' } }))
-    vi.stubGlobal('fetch', reads)
-    try {
-      render(<TalkPane />)
-      await start()
-      await settle(act)
-      const urls = reads.mock.calls.map((c) => String((c as unknown[])[0]))
-      expect(urls).toContain(`/v1/voice/projects/${project}/visuals`)
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    apiMock.loadVoiceVisuals?.mockClear()
+    render(<TalkPane />)
+    await start()
+    expect(apiMock.loadVoiceVisuals?.mock.calls.map(([p]) => p)).toContain(project)
   })
 
   it('keeps the resumed project for the next try when the first start is refused', async () => {
