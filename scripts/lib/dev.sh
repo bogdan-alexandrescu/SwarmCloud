@@ -95,7 +95,11 @@ export FIRESTORE_EMULATOR_HOST="${EMULATOR_HOST}"
 export PROJECT_ID="${DEV_PROJECT}"
 export FIRESTORE_DATABASE="${DEV_FIRESTORE_DATABASE:-(default)}"
 export ENVIRONMENT="local"
-export ALLOWED_DOMAINS="${ALLOWED_DOMAINS:-saga.xyz}"
+# swarm-api refuses to start when ALLOWED_DOMAINS and ALLOWED_USERS are both
+# empty (SIGN_IN_LIST_REQUIRED). The local loop falls back to the placeholder
+# sign-in domain from scripts/guards/placeholders.json, never a live one; set
+# ALLOWED_DOMAINS or ALLOWED_USERS to sign in as yourself against the emulator.
+export ALLOWED_DOMAINS="${ALLOWED_DOMAINS:-example.com}"
 
 # Seed the pools the scheduler expects. Against the emulator there are no
 # credentials involved, so this is plain unauthenticated REST.
