@@ -320,7 +320,9 @@ def test_a_link_left_on_fails_link_off(tmp_path):
 
 
 def _bash(script: str, **env: str) -> subprocess.CompletedProcess:
-    full = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"), "NO_COLOR": "1", **env}
+    # No script guesses the project any more, so the caller names one.
+    full = {"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/tmp"), "NO_COLOR": "1",
+            "PROJECT_ID": "swarm-dev-test", **env}
     return subprocess.run(["bash", "-c", f'source "{REPO}/scripts/lib/common.sh"\nsource "{GROUP}"\n{script}'],
                           cwd=REPO, env=full,
                           capture_output=True, text=True, timeout=60)
@@ -384,7 +386,7 @@ def test_verify_remote_carries_the_probes_settings_into_the_execution(tmp_path):
     fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(tmp_path),
            "NO_COLOR": "1", "FAKE_DIR": str(tmp_path), "TMPDIR": str(tmp_path),
-           "SWARM_ENV_FILE": str(tmp_path / "no.env"),
+           "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-dev-test",
            SETTINGS[0]: TENANT, SETTINGS[2]: PERSON, SETTINGS[3]: PERSON_SECRET}
     proc = subprocess.run(["bash", str(VERIFY_REMOTE), TARGET], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
