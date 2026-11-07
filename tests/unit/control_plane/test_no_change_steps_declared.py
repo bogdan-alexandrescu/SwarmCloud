@@ -15,8 +15,8 @@ is new, so it ships report-only (`refusals.SWITCHES`): these tests turn it on.
 MUTATIONS: drop the call from `SubmissionService` -- the refused tests see
 201. Read `allow_empty_diff`'s value instead of `model_fields_set` -- the
 explicit-false test is refused. Drop a phrase from `NO_CHANGE_PHRASES` -- its
-parametrised case sees 201. Match "read-only" alone -- its excluded case is
-refused.
+parametrised case sees 201. Match "read-only" alone, or drop the scope-word
+lookahead ("change nothing else") -- its excluded case is refused.
 """
 
 from __future__ import annotations
@@ -139,6 +139,16 @@ def test_report_only_while_the_switch_is_off(client, db, monkeypatch, caplog):
     "if the bug is already fixed, finish without changes",
     "use the read-only token to read the issue, then implement it",
     "rename the helper; no changes outside apps/example",
+    # A scope limit after a listed phrase: the step commits, just not there.
+    "rename the helper and make no changes outside apps/example",
+    "rename the helper and change nothing outside your territory",
+    "implement it; commit nothing that looks like a credential",
+    "implement it; change nothing except the helper",
+    # The platform's own committing rounds (fixloop review-fix, mergewake
+    # pick-fix and merge-fix), in their own words.
+    "Fix every finding below and change nothing else. COMMIT ON TOP",
+    "if the question recorded what the branch built, change nothing for it and report",
+    "commit the merge, and change nothing else.",
 ])
 def test_phrases_a_committing_step_writes_are_accepted(client, db, prompt):
     response = _post(client, _analysis(prompt))
@@ -159,6 +169,11 @@ def test_the_phrase_list_is_the_briefs():
         "do not change the repository", "do not modify the repository",
         "leave the repository unchanged", "read-only step", "read-only task",
     )
+
+
+def test_a_read_only_step_that_says_what_it_writes_is_refused(client, db):
+    response = _post(client, _analysis("This is a read-only step that writes triage.tsv."))
+    assert response.status_code == 422, response.text
 
 
 def test_a_phrase_inside_a_longer_word_is_not_matched(client, db):

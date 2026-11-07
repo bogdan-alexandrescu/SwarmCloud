@@ -64,10 +64,28 @@ NO_CHANGE_PHRASES: tuple[str, ...] = (
     "read-only task",
 )
 
+#: Words that, right after a phrase, turn it into a scope limit on a step that
+#: does commit: "change nothing else" (the platform's own review-fix round),
+#: "make no changes outside X", "commit nothing that looks like a credential",
+#: "change nothing for it". Such a phrase is not a match. "read-only step" and
+#: "read-only task" describe the step itself ("a read-only step that writes
+#: triage.tsv"), so no word after them narrows them.
+_SCOPE_WORDS = ("else", "outside", "except", "but", "for", "that", "which", "beyond")
+_SELF_DESCRIPTIONS = ("read-only step", "read-only task")
+
+
+def _alternation(phrases: Sequence[str]) -> str:
+    return "|".join(re.escape(phrase) for phrase in phrases)
+
+
 _NO_CHANGE = re.compile(
-    r"\b(?:" + "|".join(re.escape(phrase) for phrase in NO_CHANGE_PHRASES) + r")\b",
+    r"\b(?:(?:"
+    + _alternation([p for p in NO_CHANGE_PHRASES if p not in _SELF_DESCRIPTIONS])
+    + r")\b(?![^\S\n]*(?:" + "|".join(_SCOPE_WORDS) + r")\b)|(?:"
+    + _alternation(_SELF_DESCRIPTIONS) + r")\b)",
     re.IGNORECASE,
 )
+
 
 #: The served sentence. Fixed: the step id is in `detail`, never in here.
 NO_CHANGE_UNDECLARED_MESSAGE = (
