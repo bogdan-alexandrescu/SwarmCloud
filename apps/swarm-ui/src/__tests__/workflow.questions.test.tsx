@@ -9,7 +9,8 @@
  * storage; draw one mark for every kind; let the header open but not close;
  * draw a card with nothing waiting; post an answer to the wrong task; draw
  * the section with no questions; let the grid's asks-you mark pick the chip
- * instead of jumping to the step's questions.
+ * instead of jumping to the step's questions; draw the mark inside the chip's
+ * button or out of the tab order; give every step's cards the agent page's ids.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -178,6 +179,25 @@ function Card({ wf = workflow(), byId = tasks() }: { wf?: Workflow; byId?: Map<s
   return <WorkflowNeedsCard items={workflowNeedItems(wf, byId, (s) => s)} workflow={wf} taskById={byId} />
 }
 
+// THE KEYBOARD, as a browser drives it (jsdom moves no focus on Tab and
+// activates nothing on Enter): Tab focuses the next element in the tab order;
+// Enter (on keydown) and Space (on keyup) click a native button the page did
+// not stop.
+const TABBABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]'
+function tabOrder(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(TABBABLE)].filter((e) => e.tabIndex >= 0 && e.closest('[aria-hidden="true"], [hidden]') === null)
+}
+function pressTab() {
+  const order = tabOrder()
+  order[order.indexOf(document.activeElement as HTMLElement) + 1]?.focus()
+}
+function press(key: 'Enter' | ' ') {
+  const el = document.activeElement as HTMLElement
+  const down = fireEvent.keyDown(el, { key })
+  const up = fireEvent.keyUp(el, { key })
+  if (el.tagName === 'BUTTON' && (key === 'Enter' ? down : up)) fireEvent.click(el)
+}
+
 const header = () => screen.getByRole('button', { name: /Needs you/ })
 const body = () => document.getElementById(header().getAttribute('aria-controls') ?? '')!
 
@@ -250,6 +270,17 @@ describe('the questions section', () => {
     expect(design.querySelector('.qc')).toBeNull()
   })
 
+  it("gives each step's cards their own ids, never the agent page's", async () => {
+    render(<WorkflowQuestions workflow={workflow()} taskById={tasks()} stateOf={() => 'done'} />)
+    await within(document.getElementById(questionsBlockId('build'))!).findByRole('radio', { name: /Drop/ })
+    const cards = [...document.querySelectorAll('.wq .qc')].map((e) => e.id)
+    expect(cards).toEqual([`${questionsBlockId('design')}-asked`, `${questionsBlockId('build')}-asked`])
+    const ids = [...document.querySelectorAll('[id]')].map((e) => e.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(document.getElementById('questions')).toBeNull()
+    expect(document.getElementById('held-questions')).toBeNull()
+  })
+
   it('draws no section when no step asked', () => {
     const wf = workflow({ noQuestions: true })
     const { container } = render(<WorkflowQuestions workflow={wf} taskById={tasks()} stateOf={() => 'done'} />)
@@ -289,11 +320,7 @@ describe('on the workflow page', () => {
     } satisfies Result<WorkflowBoard>)
     api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
     render(<Routed initial={`wf=${WF}`} />)
-    const ask = await waitFor(() => {
-      const a = document.querySelector<HTMLElement>('.sg [data-step="design"] .sg-ask')
-      expect(a).toBeTruthy()
-      return a!
-    })
+    const ask = await screen.findByRole('button', { name: 'Answer design: 1 question' })
     expect(document.querySelector('.wfp-main section.wq-needs button[aria-expanded="false"]')).toBeTruthy()
     const block = document.getElementById(questionsBlockId('design'))!
     expect(block).toBeTruthy()
@@ -302,5 +329,44 @@ describe('on the workflow page', () => {
     expect(document.activeElement?.closest(`#${questionsBlockId('design')}`)).toBe(block)
     // The chip was not picked: the inspector still shows the overview.
     expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Workflow overview')
+  })
+
+  function openPage() {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+    api.loadWorkflowBoard.mockResolvedValue({
+      status: 'ok',
+      data: { workflows: [workflow()], taskById: tasks(), statesDetail: null },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowBoard>)
+    api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
+    render(<Routed initial={`wf=${WF}`} />)
+  }
+
+  it("Tab reaches the asks-you mark, and Enter or Space jumps to the step's first unanswered question", async () => {
+    openPage()
+    const mark = await screen.findByRole('button', { name: 'Answer design: 1 question' })
+    const block = document.getElementById(questionsBlockId('design'))!
+    await within(block).findByRole('radio', { name: /Grid/ })
+    // Beside the chip, never inside its button, and next in the tab order.
+    expect(mark.closest('.sg-chip')).toBeNull()
+    expect(mark.parentElement!.closest('button')).toBeNull()
+    document.querySelector<HTMLElement>('.sg-chip[data-step="design"]')!.focus()
+    pressTab()
+    expect(document.activeElement).toBe(mark)
+    press('Enter')
+    expect(document.activeElement?.closest(`#${questionsBlockId('design')}`)).toBe(block)
+    expect(document.activeElement?.getAttribute('role')).toBe('radio')
+    mark.focus()
+    press(' ')
+    expect(document.activeElement?.getAttribute('role')).toBe('radio')
+    expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).toBe('Workflow overview')
+  })
+
+  it("the chip's own click still picks the step", async () => {
+    openPage()
+    await screen.findByRole('button', { name: 'Answer design: 1 question' })
+    fireEvent.click(document.querySelector<HTMLElement>('.sg-chip[data-step="design"]')!)
+    expect(document.querySelector('.sg-chip[data-step="design"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(document.querySelector('.wi-dock')?.getAttribute('aria-label')).not.toBe('Workflow overview')
   })
 })

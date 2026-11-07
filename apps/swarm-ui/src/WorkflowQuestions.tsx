@@ -15,8 +15,9 @@
  *
  * `WorkflowQuestions` draws every step that asked, grouped by step (its name,
  * state and agent page), each answered in place by THE AGENT PAGE'S OWN CARDS
- * (`QuestionsCard`, `HeldQuestionsCard`), mounted unchanged, so the rules, the
- * answer route and the read notification stay one implementation. A step
+ * (`QuestionsCard`, `HeldQuestionsCard`), each given its step's own id, so the
+ * rules, the answer route and the read notification stay one implementation,
+ * and no two cards on the page share an id. A step
  * whose questions are all answered reads as one collapsed row, who and when.
  * No step asked: no section.
  */
@@ -341,8 +342,8 @@ function StepQuestions({ asking, state }: { asking: AskingStep; state: string })
       </div>
       {shown && (
         <div id={bodyId} className="wq-step-body">
-          <QuestionsCard task={task} />
-          <HeldQuestionsCard task={task} />
+          <QuestionsCard task={task} id={`${questionsBlockId(step.step_id)}-asked`} />
+          <HeldQuestionsCard task={task} id={`${questionsBlockId(step.step_id)}-held`} />
         </div>
       )}
     </section>
