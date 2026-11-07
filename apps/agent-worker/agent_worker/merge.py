@@ -618,15 +618,16 @@ WORKER_COMMIT_LINE = "Made by the worker for task "
 
 #: The marks a task carries when it is a writer with a gate of its own, not
 #: a person's plain lane: a CI-fix or PR-side fix (`ci_fix`), a round of a
-#: merge step (`merge_fix_round`, `merge_conflict_round`), pr-shepherd's
-#: conflict fix (`pr_shepherd`) and an issue run's step (`issue_run`). What
+#: merge step (`merge_fix_round`, `merge_conflict_round`), a fix loop's
+#: review-fix round (`fix_loop_round`), pr-shepherd's conflict fix
+#: (`pr_shepherd`) and an issue run's step (`issue_run`). What
 #: `cifix.live_plain_continuation` skips (`PR_WRITER_KINDS` and
 #: `ISSUE_RUN_METADATA_KEY`), restated because the worker image does not
 #: load swarm-api (held equal by tests/unit/worker/test_merge_person_push.py).
 #: A head such a task pushed is the platform's, and `head_moved` when not
 #: accepted (`_person_lane`).
-LANE_WRITER_MARKS = ("ci_fix", "merge_fix_round", "merge_conflict_round", "pr_shepherd",
-                     "issue_run")
+LANE_WRITER_MARKS = ("ci_fix", "merge_fix_round", "merge_conflict_round", "fix_loop_round",
+                     "pr_shepherd", "issue_run")
 
 #: The summary key listing every base merge the walk took that GitHub did not
 #: commit: a person's (or anyone's) clean merge of the base on top of an
