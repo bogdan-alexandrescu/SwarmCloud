@@ -1340,6 +1340,14 @@ SHARED_DENY_LIST_SET_VARIABLE = "SWARM_SHARED_DENY_LIST_SET"
 #: deployment's fault, not the issue's, and planning again after the list is
 #: rendered answers differently.
 DENY_LIST_UNSET = "DENY_LIST_UNSET"
+#: The refusal's whole text, fixed: nothing from the plan or the issue is
+#: interpolated into it.
+DENY_LIST_UNSET_REFUSAL = (
+    f"{DENY_LIST_UNSET}: this deployment's never-touch list is not readable "
+    f"({SHARED_DENY_LIST_SET_VARIABLE} is absent or {SHARED_DENY_LIST_VARIABLE} is not a "
+    "JSON array of names). Nothing that touches infrastructure runs without it; the "
+    "operator renders both variables on swarm-api"
+)
 #: What can reach the shared project's resources: Terraform, manifests, the
 #: scripts and wrappers that run gcloud and kubectl, the installer and the
 #: workflows that deploy. A plan naming any of these is refused while the
@@ -1386,18 +1394,14 @@ def infrastructure_paths(plan: Mapping[str, Any] | None) -> list[str]:
 
 def deny_list_refusal(plan: Mapping[str, Any] | None) -> str | None:
     """The run's `error` when its plan touches infrastructure and the
-    never-touch list is not rendered on this service, or None."""
+    never-touch list is not rendered on this service, or None. Always the
+    fixed DENY_LIST_UNSET_REFUSAL: the plan's paths are planner output steered
+    by issue text, so they go only into a 422's structured detail."""
     if shared_deny_list() is not None:
         return None
-    paths = infrastructure_paths(plan)
-    if not paths:
+    if not infrastructure_paths(plan):
         return None
-    return (
-        f"{DENY_LIST_UNSET}: the plan changes {', '.join(paths[:10])}, and this deployment's "
-        f"never-touch list is not readable ({SHARED_DENY_LIST_SET_VARIABLE} is absent or "
-        f"{SHARED_DENY_LIST_VARIABLE} is not a JSON array of names). Nothing that touches "
-        "infrastructure runs without it; the operator renders both variables on swarm-api"
-    )
+    return DENY_LIST_UNSET_REFUSAL
 
 
 #: A deny-list name, whole: not inside a longer name (`swarm-peer-cluster-x`
