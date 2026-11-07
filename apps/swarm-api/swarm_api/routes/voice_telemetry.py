@@ -7,6 +7,10 @@ voice/speech_telemetry.py).
         -> {session: summary, samples: [...], scope, tz}
     GET /v1/voice/telemetry/days?from=&to=&tz=[&scope=platform]
         -> {days: [{day, sessions, minutes, utterances, ...}, ...], scope, tz}
+
+A session and a day both carry `machine_usd` (the ledger's Speech machine
+line) and `stockouts` (starts the zone refused), each null with its
+`*_reason` when its source cannot be read (speech_telemetry.py).
     GET /v1/voice/telemetry/live[?after=<seq>][&scope=platform]
         -> text/event-stream: the running session's samples, resuming by seq
 

@@ -41,6 +41,19 @@ the zone the console sends (`tz`), so one session can sit on 5 November for a
 viewer in Los Angeles and on 6 November for one in London; nothing per day is
 written.
 
+MACHINE COST AND STOCK-OUTS (§12.4, §12.5) are read, never stored. A
+session's `machine_usd` is the ledger's Speech machine line
+(`ledger.speech_machine_lines`, §13): its stops' `voice_audit` rows, priced
+from the catalogue when the machine stopped, plus the running start's minutes
+so far; a day's is the sum over its sessions. `stockouts` counts the starts
+the zone refused for want of an L4 (`speech_machine.stockouts`, the
+lifecycle's AUDIT_NO_L4 rows): a session's carry its id, a day's are placed
+by the row's own time, so a start refused outright, which never wrote a
+sample, still counts on its day. When a source cannot be read its figure is
+null and `machine_usd_reason` or `stockouts_reason` says which
+(LEDGER_UNREADABLE, AUDIT_UNREADABLE, `ledger.MACHINE_UNPRICED`); the rest of
+the row is served.
+
 WHO READS (routes/voice_telemetry.py). `tenant_id=None` is the platform view
 (every workspace's sessions, for platform admins); a tenant id is that
 workspace's sessions only. The filter is applied here, on the stored tenant,
@@ -66,6 +79,7 @@ from swarm_common.admission import _snapshot
 
 from ..errors import NotFound, ValidationFailed
 from .. import preferences
+from . import ledger
 from . import speech_machine as sm
 
 log = logging.getLogger("swarm_api.voice.telemetry")
@@ -83,6 +97,11 @@ MAX_SPAN_DAYS = 400
 #: A session list page and a live read's batch.
 MAX_SESSIONS = 500
 MAX_SAMPLES = 2000
+
+#: Why a served machine cost or stock-out count is null: its source, the
+#: ledger's Speech machine line or the machine's audit rows, could not be read.
+LEDGER_UNREADABLE = "ledger_unreadable"
+AUDIT_UNREADABLE = "audit_unreadable"
 
 KIND_METRICS = "metrics"
 KIND_STT = "stt"
@@ -350,10 +369,39 @@ class Telemetry:
         found.sort(key=lambda d: _utc(d.get("first_at")) or datetime.min.replace(tzinfo=timezone.utc))
         return found
 
+    def _machine(self, docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]] | None:
+        """The ledger's Speech machine line of each session; None when the
+        ledger cannot be read."""
+        owners = {str(d["session_id"]): str(d.get("tenant_id"))
+                  for d in docs if d.get("session_id")}
+        try:
+            return ledger.speech_machine_lines(self._db, owners, now=self._now)
+        except Exception as exc:  # noqa: BLE001 - the figure is null, the read goes on
+            log.warning("speech telemetry: the ledger's Speech machine line is unreadable (%s)",
+                        type(exc).__name__)
+            return None
+
+    def _stockouts(self, tenant_id: str | None) -> list[dict[str, Any]] | None:
+        """The machine's refused starts; None when its audit cannot be read."""
+        try:
+            return sm.stockouts(self._db, tenant_id=tenant_id)
+        except Exception as exc:  # noqa: BLE001 - the count is null, the read goes on
+            log.warning("speech telemetry: the machine's audit rows are unreadable (%s)",
+                        type(exc).__name__)
+            return None
+
+    def _summaries(self, docs: list[dict[str, Any]], tenant_id: str | None,
+                   zone: ZoneInfo) -> list[dict[str, Any]]:
+        lines, refused = self._machine(docs), self._stockouts(tenant_id)
+        return [{**summary(doc, zone), **_machine_cost(lines, [doc]),
+                 **_stockout_count(refused, lambda r, d=doc: r["session_id"] == d.get("session_id"))}
+                for doc in docs]
+
     def sessions(self, span: Span, *, tenant_id: str | None) -> list[dict[str, Any]]:
-        """Each session that started in the span, newest first, summarised."""
+        """Each session that started in the span, newest first, summarised
+        with its machine cost and stock-outs."""
         docs = self._sessions_in(span, tenant_id)
-        return [summary(doc, span.zone) for doc in reversed(docs[-MAX_SESSIONS:])]
+        return self._summaries(list(reversed(docs[-MAX_SESSIONS:])), tenant_id, span.zone)
 
     def _owned(self, session_id: str, tenant_id: str | None) -> dict[str, Any]:
         snap = _snapshot(self._session_ref(session_id).get())
@@ -365,7 +413,8 @@ class Telemetry:
     def session(self, session_id: str, *, tenant_id: str | None, zone: ZoneInfo) -> dict[str, Any]:
         """One session's summary and its samples still kept (30 days)."""
         doc = self._owned(session_id, tenant_id)
-        return {"session": summary(doc, zone),
+        [served] = self._summaries([doc], tenant_id, zone)
+        return {"session": served,
                 "samples": self.samples(session_id, tenant_id=tenant_id)}
 
     def samples(self, session_id: str, *, tenant_id: str | None,
@@ -394,7 +443,11 @@ class Telemetry:
             day = first.astimezone(span.zone).date()
             if day in by_day:
                 by_day[day].append(doc)
-        return [_day(day, docs) for day, docs in by_day.items()]
+        lines = self._machine([doc for docs in by_day.values() for doc in docs])
+        refused = self._stockouts(tenant_id)
+        return [{**_day(day, docs), **_machine_cost(lines, docs),
+                 **_stockout_count(refused, lambda r, d=day: r["at"].astimezone(span.zone).date() == d)}
+                for day, docs in by_day.items()]
 
 
 def _folded(current: Mapping[str, Any], owner: sm.SessionRef, generation: int, kind: str,
@@ -485,6 +538,30 @@ def _day(day: date, docs: list[dict[str, Any]]) -> dict[str, Any]:
         "stt_final_ms_p90": percentiles(pooled("stt_final_ms"))["p90"],
         "tts_first_audio_ms_p90": percentiles(pooled("tts_first_audio_ms"))["p90"],
     }
+
+
+def _machine_cost(lines: Mapping[str, Mapping[str, Any]] | None,
+                  docs: list[dict[str, Any]]) -> dict[str, Any]:
+    """`machine_usd` of these sessions, the sum of their ledger lines, and
+    `machine_usd_reason`: null with the reason when any line is unknown."""
+    if lines is None:
+        return {"machine_usd": None, "machine_usd_reason": LEDGER_UNREADABLE}
+    usd = 0.0
+    for doc in docs:
+        line = lines.get(str(doc.get("session_id")))
+        if line is None:
+            return {"machine_usd": None, "machine_usd_reason": LEDGER_UNREADABLE}
+        if line.get("usd") is None:
+            return {"machine_usd": None, "machine_usd_reason": line.get("reason")}
+        usd += float(line["usd"])
+    return {"machine_usd": round(usd, 4), "machine_usd_reason": None}
+
+
+def _stockout_count(refused: list[dict[str, Any]] | None,
+                    counts: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+    if refused is None:
+        return {"stockouts": None, "stockouts_reason": AUDIT_UNREADABLE}
+    return {"stockouts": sum(1 for row in refused if counts(row)), "stockouts_reason": None}
 
 
 def _served_sample(seq: str, doc: Mapping[str, Any]) -> dict[str, Any]:

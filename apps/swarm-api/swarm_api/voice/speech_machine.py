@@ -69,6 +69,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Protocol
 
 from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
 
@@ -827,6 +828,26 @@ class SpeechMachine:
             if lease and lease.get("state") == STOPPING:
                 self._ref.update({"state": STOPPED, "stopped_at": now})
         return report
+
+
+def stockouts(db: Any, *, tenant_id: str | None) -> list[dict[str, Any]]:
+    """The starts refused for want of an L4 in the zone: every AUDIT_NO_L4
+    row `start` wrote, as {session_id, tenant_id, at}, under one tenant or
+    (None) every tenant. Read by equality only, so no composite index; a
+    stock-out is rare, and the caller places each on its day. A read that
+    fails raises."""
+    query = db.collection(vs.AUDIT).where(filter=FieldFilter("action", "==", AUDIT_NO_L4))
+    if tenant_id is not None:
+        query = query.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+    rows = []
+    for snap in query.stream():
+        row = snap.to_dict() or {}
+        at = _aware(row.get("at"))
+        if at is None or (tenant_id is not None and row.get("tenant_id") != tenant_id):
+            continue
+        rows.append({"session_id": row.get("session_id"), "tenant_id": row.get("tenant_id"),
+                     "at": at})
+    return rows
 
 
 def new_socket_id() -> str:

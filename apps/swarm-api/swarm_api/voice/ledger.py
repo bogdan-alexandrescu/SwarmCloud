@@ -26,6 +26,11 @@ each time it is read from facts other code already keeps:
                 start covers: fix rounds, merge steps the platform started;
                 their recorded `cost_usd`
 
+  Speech machine the own-speech machine's minutes from the start call to
+                the stop, at the catalogue's price, per session
+                (`speech_machine_lines`, own-speech §13): read by Voice it ›
+                Telemetry; not yet one of LINES, so not against the caps
+
 A second running total is the kind of mirrored value that has drifted here
 before; the start rows hold only what was reserved for them, which is a fact
 of the start, not a sum.
@@ -69,6 +74,8 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from .. import modelprices
 from ..errors import Conflict, NotFound, ValidationFailed
 from . import sessions as vs
+from . import speech_catalogue as cat
+from . import speech_machine as sm
 from . import store as vstore
 
 log = logging.getLogger(__name__)
@@ -106,6 +113,12 @@ NOT_COUNTED = ("pod compute for lanes", "CI runner minutes", "deploys")
 #: (tests/unit/control_plane/test_new_refusals_ship_off.py).
 SESSION_CAP_REACHED = "voice_session_cap"
 DAY_CAP_REACHED = "voice_day_cap"
+
+#: Why a session's Speech machine figure is null: a stop whose machine had
+#: no catalogue price (null is not zero, as for an unmeasured attempt).
+MACHINE_UNPRICED = "machine_unpriced"
+#: `in` takes at most 30 values per query.
+_IN_MAX = 30
 
 
 class VoiceCapReached(Conflict):
@@ -532,3 +545,55 @@ def _follows(starts: Sequence[tuple[datetime | None, Any]], created_at: datetime
             owner = session_id
     return owner
 
+
+
+def speech_machine_lines(db: Any, sessions: Mapping[str, str], *,
+                         now: Callable[[], datetime]) -> dict[str, dict[str, Any]]:
+    """The Speech machine line (docs/design/voice-it-own-speech.md §13) of
+    each session in `sessions` ({session_id: tenant_id}): the machine's
+    minutes from the start call to the stop, at the catalogue's price, for
+    the session that held the lease.
+
+    A finished start is its stop's `voice_audit` row, which
+    `SpeechMachine.stop` priced from the catalogue when it wrote it; the
+    start still holding the lease is its minutes from `started_at` to now at
+    the same catalogue's price. A row under another tenant is not this
+    session's. `{usd, minutes, reason}` per session: `usd` is None with
+    `reason` MACHINE_UNPRICED when a stop carries no price. A read that fails
+    raises: the caller says the ledger could not be read."""
+    lines = {sid: {"usd": 0.0, "minutes": 0.0, "reason": None} for sid in sessions}
+
+    def add(line: dict[str, Any], minutes: Any, usd: Any) -> None:
+        line["minutes"] = round(line["minutes"] + float(minutes or 0.0), 3)
+        if line["reason"] is not None:
+            return
+        if not isinstance(usd, (int, float)) or isinstance(usd, bool):
+            line.update(usd=None, reason=MACHINE_UNPRICED)
+        else:
+            line["usd"] = round(line["usd"] + float(usd), 4)
+
+    ids = sorted(lines)
+    for i in range(0, len(ids), _IN_MAX):
+        query = (db.collection(vs.AUDIT)
+                 .where(filter=FieldFilter("session_id", "in", ids[i:i + _IN_MAX]))
+                 .where(filter=FieldFilter("action", "==", sm.AUDIT_STOPPED)))
+        for snap in query.stream():
+            row = snap.to_dict() or {}
+            sid = row.get("session_id")
+            if sid not in lines or row.get("tenant_id") != sessions[sid]:
+                continue
+            detail = row.get("detail") or {}
+            add(lines[sid], detail.get("minutes"), detail.get("usd"))
+    snap = db.collection(sm.COLLECTION).document(sm.LEASE).get()
+    lease = (snap.to_dict() or {}) if getattr(snap, "exists", False) else {}
+    sid = lease.get("session_id")
+    started = _aware(lease.get("started_at"))
+    # STOPPING: the stop has not written its row yet, so the lease still counts.
+    if sid in lines and lease.get("tenant_id") == sessions[sid] and started is not None \
+            and lease.get("state") in (sm.HOLDING | {sm.STOPPING}):
+        minutes = round(max(0.0, (now() - started).total_seconds()) / 60.0, 3)
+        machine = cat.machine(str(lease.get("machine") or "")) \
+            or cat.machine(cat.DEFAULTS["machine"])
+        add(lines[sid], minutes,
+            round(minutes / 60.0 * machine.usd_per_hour, 4) if machine else None)
+    return lines
