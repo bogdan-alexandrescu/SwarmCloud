@@ -194,7 +194,7 @@ def make_api(db, tokens, group_map, objects, clock, github, slots):
             now=clock, signer=LocalSpecSigner(),
         )
         app = forgeapp.ForgeApp(
-            db, config=forgeapp.AppConfig(client_id=CLIENT_ID, app_id="12345",
+            db, config=forgeapp.AppConfig(client_id=CLIENT_ID, app_id="123456",
                                           slug="swarmcloud"),
             secrets=FakeAppSecret("s" + "x" * 39), slots=slots, send=github, now=clock)
         service = access.AccessService(db, app, send=github, now=clock)

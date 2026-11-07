@@ -120,15 +120,16 @@ def test_a_task_run_is_named_by_its_label_alone(_plugin_root):
     assert out["title"] == name == "SC · lane-a"
     several = launch.for_tasks([
         {"task_id": "task_a", "label": "lane-a", "workspace": "eng"},
-        {"task_id": "task_b", "label": "lane-b", "workspace": "u-bogdan"},
+        {"task_id": "task_b", "label": "lane-b", "workspace": "u-owner"},
     ])
     # One run per task, each titled from its own label (owner 2026-11-04).
     assert [copy["title"] for copy in several["launches"]] == ["SC · lane-a", "SC · lane-b"]
 
 
-def test_a_long_task_label_is_cut_at_150(_plugin_root):
+def test_a_long_task_label_is_cut_at_the_name_cap(_plugin_root):
+    # #2688: a stored label longer than a name's cap is cut at it.
     out = launch.for_tasks([{"task_id": "task_a", "label": "x" * 400, "workspace": "eng"}])
-    assert len(out["title"]) == workflows.TITLE_CHARS
+    assert len(out["title"]) == len("SC · ") + workflows.NAME_MAX_CHARS
     assert out["title"].startswith("SC · xxx") and out["title"].endswith("x…")
     assert "[" not in out["title"]
 
@@ -174,11 +175,11 @@ def test_a_task_runs_description_starts_with_its_workspace(_plugin_root):
 def test_tasks_in_several_workspaces_name_each_once(_plugin_root):
     out = launch.for_tasks([
         {"task_id": "t1", "label": "a", "workspace": "eng"},
-        {"task_id": "t2", "label": "b", "workspace": "u-bogdan"},
+        {"task_id": "t2", "label": "b", "workspace": "u-owner"},
         {"task_id": "t3", "label": "c", "workspace": "eng"},
     ])
     got = [_meta(copy["script_path"])[1].split(" · Started by: ")[0] for copy in out["launches"]]
-    assert got == ["Workspace: eng", "Workspace: u-bogdan", "Workspace: eng"]
+    assert got == ["Workspace: eng", "Workspace: u-owner", "Workspace: eng"]
 
 
 def test_a_clipped_description_keeps_the_workspace(_plugin_root, monkeypatch):
@@ -225,7 +226,7 @@ def test_attach_all_names_runs_alone_and_describes_each_workspace(_plugin_root, 
     monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {"count": 2, "complete": True, "workflows": [
         {"workflow_id": "wf_00", "workspace": "eng", "title": "flow 00", "label": None, "steps_total": 3,
          "claude_session": SESSION},
-        {"workflow_id": "wf_01", "workspace": "u-bogdan", "title": "flow 01", "label": None, "steps_total": 1,
+        {"workflow_id": "wf_01", "workspace": "u-owner", "title": "flow 01", "label": None, "steps_total": 1,
          "claude_session": SESSION},
     ]})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 1, "tasks": [
@@ -235,7 +236,7 @@ def test_attach_all_names_runs_alone_and_describes_each_workspace(_plugin_root, 
     got = [(l["title"], _meta(l["script_path"])[1].split(" · Started by: ")[0]) for l in out["launches"]]
     assert got == [
         ("SC ∴ flow 00 · 3 steps", "Workspace: eng@example.com (eng)"),
-        ("SC ∴ flow 01 · 1 step", "Workspace: u-bogdan"),
+        ("SC ∴ flow 01 · 1 step", "Workspace: u-owner"),
         ("SC · lane-a", "Workspace: eng@example.com (eng)"),
     ]
     assert out["launches"][0]["args"]["workspace"] == "eng@example.com"

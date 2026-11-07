@@ -31,7 +31,7 @@ describe('QA-KIT: the phone-390 preset has one name on every screen', () => {
   })
 })
 
-// IMPLEMENT-RENDER (#2442, BGD 2026-10-26): `phone-380`, phone-390 ten pixels
+// IMPLEMENT-RENDER (#2442, owner 2026-10-26): `phone-380`, phone-390 ten pixels
 // narrower, for a repository whose frames are drawn at 380. Same rule: one
 // name on every screen.
 describe('IMPLEMENT-RENDER: the phone-380 preset has one name on every screen', () => {

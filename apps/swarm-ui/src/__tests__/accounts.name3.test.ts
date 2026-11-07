@@ -3,7 +3,7 @@
 // ACCOUNT-NAME-2 (#1940) gave the Profile payload's accounts `display_name`
 // and named each of 'Your Claude accounts' through `accountName`, but
 // `normAccount` in `api.ts` rebuilds each account from its own allow-list and
-// dropped the Name, so the page still printed the label. BGD, 2026-10-22:
+// dropped the Name, so the page still printed the label. owner, 2026-10-22:
 // "Yes, in a follow-up".
 //
 // `normAccount` is private; these read it through the real `loadProfile`, over

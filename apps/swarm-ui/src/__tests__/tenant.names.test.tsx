@@ -1,6 +1,6 @@
 /**
  * THE SWITCHER NAMES A RENAMED WORKSPACE BY ITS NEW NAME AT ONCE (MINE-NAMES,
- * part of #2157). BGD, 2026-10-25: when a workspace's admins rename it
+ * part of #2157). owner, 2026-10-25: when a workspace's admins rename it
  * (WORKSPACE-ADMIN-FIELDS), everyone's switcher shows the new name, not only
  * after they next act in that workspace. `/v1/tenants/mine` now serves a
  * group workspace's stored name in `display_name`, with the group email as

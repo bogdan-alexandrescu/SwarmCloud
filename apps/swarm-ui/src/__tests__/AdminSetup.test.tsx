@@ -5,7 +5,7 @@
 // 2026-11-02, a checklist beside a working panel; its own cases are in
 // consoleFinish.test.tsx):
 //   * a first run, with swarm install's cloud stages done and nothing done
-//     on this page, draws the checklist's eight steps in BGD's order (the
+//     on this page, draws the checklist's eight steps in the owner's order (the
 //     sign-in client, GitHub App, first team, Claude accounts, the smoke
 //     agent, verify, Send to your team) after the CLI's cloud step, and the
 //     panel is on the next step the person can act on;
@@ -21,7 +21,7 @@
 //   * once the first team exists, Add a team is the same team panel as its
 //     own flow, with the `swarm team add` line beside it, following the form,
 //     and its submit is the setup API's team route (B15);
-//   * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05):
+//   * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05):
 //     the panel's kicker is "Step N of 8" with what it follows as its
 //     tooltip, each team field's hint is its tooltip and its input's
 //     description, and what Add a team and From a terminal do sits behind an
@@ -128,7 +128,7 @@ afterEach(() => {
 describe('Admin › Setup, the page', () => {
   it("first run shows the CLI's stages done and the console's steps pending", async () => {
     await mountPage(firstRun())
-    // The checklist, in BGD's order: the CLI's part, then the console's.
+    // The checklist, in the owner's order: the CLI's part, then the console's.
     // MUTATION: draw the accounts before the first team (the P1-B frames' order) -> fails.
     // MUTATION: leave the sign-in client out, or draw it after the GitHub App -> fails.
     expect(keys()).toEqual(['cloud', 'sign-in-client', 'github', 'team', 'accounts', 'smoke', 'verify', 'send'])

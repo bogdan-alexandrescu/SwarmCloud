@@ -8,7 +8,7 @@
  *
  * WHO MAY DECIDE IS READ, NOT GUESSED. `GET /v1/approvals/{id}` serves
  * `may_decide {approve, reject, why, deciders}`, computed by the checks the
- * decision routes run. Only someone who may approve may reject (BGD
+ * decision routes run. Only someone who may approve may reject (owner
  * 2026-10-26), so a reader who may do neither sees no button at all (B's
  * A5f): the bar says who decides, from `deciders`, and why not them, from
  * `why`. An API that serves no `may_decide` (an older one) gets both verbs, as
@@ -1002,7 +1002,7 @@ function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: 
 }
 
 // ---------------------------------------------------------------------------
-// THE PLAN AS A ONE-PAGE BRIEF (BGD, 6 November 2026: show super quickly what
+// THE PLAN AS A ONE-PAGE BRIEF (owner, 6 November 2026: show super quickly what
 // a plan does, why, what changes where, the risk and the test and QA plan).
 // A plan's page reads top to bottom in the order a decider asks: the header
 // card (purpose, why, size, estimate, risk, overlaps and the decision), the

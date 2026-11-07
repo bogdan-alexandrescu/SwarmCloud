@@ -1,7 +1,7 @@
 """Background GitHub reads go out as the App's installation, not as a person (#1483, QUOTA-INSTALL).
 
 Measured 2026-10-17 00:00-02:10 UTC: every call SwarmCloud made for the eng
-and u-bogdan workspaces went out as user 5000393, through the App USER token
+and u-owner workspaces went out as user 5000393, through the App USER token
 both workspaces connect with. The merge wake's CI reads alone cost ~3,450
 calls an hour and the stranded-PR sweep ~200-400; the person's 5,000/h ran
 out, push tests read as missing permissions and ten lane attempts failed.
@@ -159,67 +159,67 @@ def _source(db, mints: Mints, clock: Clock | None = None, jwt: str | None = None
 # --------------------------------------------------------------------------
 
 def test_the_mint_is_the_apps_scoped_to_one_repository_and_read_only(db):
-    _enable(db, "eng", "bogdan-alexandrescu")
+    _enable(db, "eng", "example-user")
     mints = Mints()
     source, jwt = _source(db, mints)
 
-    token = source.token_for_repo("eng", "Bogdan-Alexandrescu", "product-oracle")
+    token = source.token_for_repo("eng", "example-user", "peer-service")
 
     assert token == mints.issued[0]
     ((method, url, auth, body),) = mints.calls
     assert method == "POST"
     assert url == f"https://api.github.com/app/installations/{INSTALLATION}/access_tokens"
     assert auth == f"Bearer {jwt}"
-    assert body == {"repositories": ["product-oracle"], "permissions": dict(READ_PERMISSIONS)}
+    assert body == {"repositories": ["peer-service"], "permissions": dict(READ_PERMISSIONS)}
     assert set(READ_PERMISSIONS.values()) == {"read"}
 
 
 def test_a_token_is_held_until_five_minutes_before_it_expires(db):
-    _enable(db, "eng", "bogdan-alexandrescu")
+    _enable(db, "eng", "example-user")
     mints, clock = Mints(), Clock()
     source, _ = _source(db, mints, clock)
 
-    first = source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle")
+    first = source.token_for_repo("eng", "example-user", "peer-service")
     clock.at += 3600 - REFRESH_BEFORE - 1
-    assert source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle") == first
+    assert source.token_for_repo("eng", "example-user", "peer-service") == first
     assert len(mints.calls) == 1
 
     clock.at += 1
     mints.now = T0 + timedelta(seconds=3600 - REFRESH_BEFORE)
-    second = source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle")
+    second = source.token_for_repo("eng", "example-user", "peer-service")
     assert second != first and len(mints.calls) == 2
 
 
 def test_each_repository_gets_its_own_token(db):
-    _enable(db, "eng", "bogdan-alexandrescu")
+    _enable(db, "eng", "example-user")
     mints = Mints()
     source, _ = _source(db, mints)
-    a = source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle")
-    b = source.token_for_repo("eng", "bogdan-alexandrescu", "claudeswitch")
+    a = source.token_for_repo("eng", "example-user", "peer-service")
+    b = source.token_for_repo("eng", "example-user", "claudeswitch")
     assert a != b
-    assert [c[3]["repositories"] for c in mints.calls] == [["product-oracle"], ["claudeswitch"]]
+    assert [c[3]["repositories"] for c in mints.calls] == [["peer-service"], ["claudeswitch"]]
 
 
 @pytest.mark.parametrize("case", ["pat", "no_document", "other_tenant", "requested"])
 def test_an_owner_without_this_tenants_installation_mints_nothing(db, case):
     if case == "pat":
-        _enable(db, "eng", "sagaxyz", installation=None, method="pat")
+        _enable(db, "eng", "peer-org", installation=None, method="pat")
     elif case == "other_tenant":
-        _enable(db, "research", "sagaxyz")
+        _enable(db, "research", "peer-org")
     elif case == "requested":
-        _enable(db, "eng", "sagaxyz")
+        _enable(db, "eng", "peer-org")
         doc = next(iter(v for k, v in db.docs.items() if k.startswith("forge_orgs/")))
         doc["install_state"] = "requested"
     mints = Mints()
     source, _ = _source(db, mints)
 
-    assert source.token_for_repo("eng", "sagaxyz", "ai-studio") is None
+    assert source.token_for_repo("eng", "peer-org", "peer-app") is None
     assert mints.calls == []
 
 
 @pytest.mark.parametrize("failure", ["refused", "unreachable", "jwt"])
 def test_a_failed_mint_falls_back_is_logged_once_and_leaks_nothing(db, caplog, failure):
-    _enable(db, "eng", "bogdan-alexandrescu")
+    _enable(db, "eng", "example-user")
     jwt = _value()
     mints = Mints(status=422) if failure == "refused" else Mints(
         raises=OSError(f"connection reset while sending {jwt}") if failure == "unreachable"
@@ -234,9 +234,9 @@ def test_a_failed_mint_falls_back_is_logged_once_and_leaks_nothing(db, caplog, f
     source = InstallationTokens(db, app_jwt=signed, send=mints, clock=clock)
     caplog.set_level(logging.DEBUG)
 
-    assert source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle") is None
+    assert source.token_for_repo("eng", "example-user", "peer-service") is None
     clock.at += FAILURE_HOLD
-    assert source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle") is None
+    assert source.token_for_repo("eng", "example-user", "peer-service") is None
 
     lines = [r for r in caplog.records if "not minted" in r.getMessage()]
     assert len(lines) == 1, [r.getMessage() for r in caplog.records]
@@ -248,25 +248,25 @@ def test_a_failed_mint_falls_back_is_logged_once_and_leaks_nothing(db, caplog, f
 
 
 def test_a_failed_repository_is_not_asked_again_inside_the_hold(db):
-    _enable(db, "eng", "bogdan-alexandrescu")
+    _enable(db, "eng", "example-user")
     mints, clock = Mints(status=403), Clock()
     source, _ = _source(db, mints, clock)
-    source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle")
+    source.token_for_repo("eng", "example-user", "peer-service")
     clock.at += FAILURE_HOLD - 1
-    source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle")
+    source.token_for_repo("eng", "example-user", "peer-service")
     assert len(mints.calls) == 1
     clock.at += 1
     mints.status = 201
-    assert source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle")
+    assert source.token_for_repo("eng", "example-user", "peer-service")
     assert len(mints.calls) == 2
 
 
 def test_a_minted_token_never_reaches_a_log_line(db, caplog):
-    _enable(db, "eng", "bogdan-alexandrescu")
+    _enable(db, "eng", "example-user")
     mints = Mints()
     source, jwt = _source(db, mints)
     caplog.set_level(logging.DEBUG)
-    token = source.token_for_repo("eng", "bogdan-alexandrescu", "product-oracle")
+    token = source.token_for_repo("eng", "example-user", "peer-service")
     assert token and token not in caplog.text and jwt not in caplog.text
     assert token not in repr(source._held)
 
@@ -561,12 +561,12 @@ def test_forgeperms_reads_an_installed_repository_without_the_tenant_token():
         calls.append((path, headers.get("Authorization", "")))
         if path == "/app":
             return forgeapp.HttpAnswer(200, {}, json.dumps({
-                "id": 1, "slug": "swarmcloud-saga", "permissions": {"metadata": "read"},
-                "owner": {"login": "sagaxyz", "type": "Organization"}}).encode())
-        if path == "/repos/bogdan-alexandrescu/product-oracle/installation":
+                "id": 1, "slug": "swarmcloud-app", "permissions": {"metadata": "read"},
+                "owner": {"login": "peer-org", "type": "Organization"}}).encode())
+        if path == "/repos/example-user/peer-service/installation":
             return forgeapp.HttpAnswer(200, {}, json.dumps({
                 "id": INSTALLATION,
-                "account": {"login": "bogdan-alexandrescu", "type": "User"}}).encode())
+                "account": {"login": "example-user", "type": "User"}}).encode())
         if path == f"/app/installations/{INSTALLATION}":
             return forgeapp.HttpAnswer(200, {}, json.dumps(
                 {"id": INSTALLATION, "permissions": {"metadata": "read"}}).encode())
@@ -575,9 +575,9 @@ def test_forgeperms_reads_an_installed_repository_without_the_tenant_token():
     def token() -> str:
         raise AssertionError("an installed repository read the tenant's token")
 
-    service = ForgePermissions(app_jwt=lambda: jwt, app_slug="swarmcloud-saga", send=github)
-    answer = service.compute("eng", [Registered(repo_id="r", owner="bogdan-alexandrescu",
-                                                repo="product-oracle")], token=token, now=T0)
+    service = ForgePermissions(app_jwt=lambda: jwt, app_slug="swarmcloud-app", send=github)
+    answer = service.compute("eng", [Registered(repo_id="r", owner="example-user",
+                                                repo="peer-service")], token=token, now=T0)
 
     assert answer["repositories"][0]["credential"] == "app"
     assert {auth for _, auth in calls} == {f"Bearer {jwt}"}

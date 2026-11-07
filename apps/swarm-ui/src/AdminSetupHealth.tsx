@@ -34,7 +34,7 @@ import './styles/onboarding.css'
 import './styles/admin-setup.css'
 
 /**
- * NO EXPLANATORY PROSE ON THE SURFACE (BGD's standing rule, 2026-11-05): a
+ * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05): a
  * sentence that explains a heading sits behind an (i) beside it, and one that
  * explains a label is that label's tooltip. Both open on hover AND focus (the
  * canonical `Tooltip`), so a keyboard and a phone's tap reach them, and the

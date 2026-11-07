@@ -1,15 +1,15 @@
 # A re-review after MERGE, republished by the control plane without a pod
 
-Status: **declined, not to be built.** BGD answered the question below on
+Status: **declined, not to be built.** The owner answered the question below on
 2026-10-25 with none of A, B or C: "can we then spin up another pod to
 re-review and then merge?" The re-review keeps running in its own pod, as the
 worker runs it today, and then the merge step merges. swarm-api gets no
 artifact write grant. The note stays as the record of why: a later lane that
-wants a pod-less re-review must reopen the question with BGD, not build A.
+wants a pod-less re-review must reopen the question with the owner, not build A.
 
 ## Why
 
-The #2322 audit (tenant eng, 2026-10-24 07:45Z to 2026-10-25 07:45Z) counted
+The earlier issue's audit (tenant eng, 2026-10-24 07:45Z to 2026-10-25 07:45Z) counted
 43 browser pods that ran no agent, all of them fix and re-review steps after a
 MERGE verdict. NO-POD-STEPS made the fix step publishable without a pod when it
 reaches its implementer through the review
@@ -84,7 +84,7 @@ the re-review depends on the fix (its `builds_on`) and on the review:
 4. **On a decline:** only the `metadata.control_publish` marker and the
    parent's wake. That is the fix publisher's behaviour exactly.
 
-### The decision that is BGD's
+### The decision that is the owner's
 
 swarm-api **cannot write the object today**. Its bucket role is
 `roles/storage.objectViewer` (`terraform/modules/iam/bindings.tf`,
@@ -97,7 +97,7 @@ That leaves three options:
 | B | the re-review's artifact entry points at the **review's** object, and `artifact_key` accepts another agent's prefix when that agent is the reader's own signed `verdict_gate.task_id` | worker change in `inputs.py` (Track B) | widens the one rule that keeps a forged `result_summary` inside its own agent's prefix. `result_summary` is unsigned, and a tenant's agents can write it |
 | C | the merge step reads the first review's verdict itself when the re-review ended `published_by: control_plane` | merge-step change | the merge path would branch on an unsigned summary field. It would have to recompute "the first review's verdict is outside the gate" itself, or a forged marker could swap a re-review's NOT_YET for the first review's MERGE |
 
-The recommendation was **A**; BGD chose to keep the re-review's pod instead (Status, above). The bytes are produced exactly as the worker
+The recommendation was **A**; the owner chose to keep the re-review's pod instead (Status, above). The bytes are produced exactly as the worker
 produces them, the merge step and input staging do not change, and the grant
 can be written as narrowly as the purge deleter's. B and C both move a trust
 decision into the merge path.

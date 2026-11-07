@@ -3,7 +3,7 @@
 docs/design/live-browser.md §4.1 and §5.3. Issue #1340 (MEASURED 2026-10-15 on
 task_2ac5d7e22a51460995a2) made a child frame on an exact allowlist of
 challenge hosts (`SHOWN_IN_CONTROL`) visible through a hand-off while the mask
-covered every frame it could not check. BGD decided on 2026-10-25 that the
+covered every frame it could not check. the owner decided on 2026-10-25 that the
 live view paints nothing, so every frame is visible and the allowlist's only
 job is the one CAPTCHA-HANDOFF (#2058) gave it: a frame on it raises the
 hand-off, once per page load. Its matching is what this file holds -- exact
@@ -52,16 +52,16 @@ def test_a_challenge_frame_raises_the_hand_off_for_the_pages_host_only(url):
 
 
 @pytest.mark.parametrize("url", [
-    "https://recaptcha.evil.com/recaptcha/api2/anchor",
-    "https://www.google.com.evil.com/recaptcha/api2/anchor",
+    "https://recaptcha.evil.example/recaptcha/api2/anchor",
+    "https://www.google.com.evil.example/recaptcha/api2/anchor",
     "https://www.google.com/recaptchaX/api2/anchor",
     "https://www.google.com/search?q=recaptcha",
     "https://www.google.com/x/recaptcha/",
-    "https://evil.com/recaptcha/?www.google.com/recaptcha/",
-    "https://www.google.com@evil.com/recaptcha/",
-    "https://hcaptcha.com.evil.com/",
-    "https://evilhcaptcha.com/",
-    "https://challenges.cloudflare.com.evil.com/",
+    "https://evil.example/recaptcha/?www.google.com/recaptcha/",
+    "https://www.google.com@evil.example/recaptcha/",
+    "https://hcaptcha.com.evil.example/",
+    "https://evilhcaptcha.example/",
+    "https://challenges.cloudflare.com.evil.example/",
     "http://www.google.com/recaptcha/api2/anchor",
     "https://www.google.com:8443/recaptcha/api2/anchor",
     "about:blank",

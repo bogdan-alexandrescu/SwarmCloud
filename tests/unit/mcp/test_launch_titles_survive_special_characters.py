@@ -50,7 +50,8 @@ HOSTILE_TITLES = [
     "back`tick` and `${x}`",
     "a\\b and a trailing \\",
     "${process.exit(3)}",
-    "</script><script>alert(1)</script>",
+    # At most 30 characters, a name's cap since #2688.
+    "</script><script>x()</script>",
     "line one\nline two\r\nthree",
     "tab\there",
     "ünïcödé · 中文 · 😀 · עברית",
@@ -58,7 +59,7 @@ HOSTILE_TITLES = [
     "lone \ud800 surrogate",
     "nul \x00 and bell \x07",
     "', name: 'injected",
-    '"}, x: (() => { throw 1 })(), y: {"',
+    '"}, x: (()=>{throw 1})(), y:{"',
 ]
 
 #: Reads each copy's meta the way Claude Code does -- as the literal it is --

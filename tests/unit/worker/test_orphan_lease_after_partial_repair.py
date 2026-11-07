@@ -29,7 +29,7 @@ class _Lease:
         self.lease_id = "lease_1"
         self.task_id = "task_1"
         self.attempt_id = "att_1"
-        self.tenant_id = "u-bogdan"
+        self.tenant_id = "u-owner"
         self.generation = generation
         self.state = __import__("swarm_common.states", fromlist=["TaskState"]).TaskState.LEASED
         self.expires_at = NOW - timedelta(minutes=50)

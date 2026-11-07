@@ -22,7 +22,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 import { painted } from './marks'
-import { COMPANY_NAME } from '../../test/companyName'
+import { listedIn } from '../../test/deploymentPatterns'
 
 type Step = { step: string; state: string; code?: string | null; copy?: string | null; evidence?: Record<string, unknown>; issues?: unknown[] }
 
@@ -242,7 +242,7 @@ describe('the Install the App step (#780, 2026-10-08)', () => {
     await screen.findByRole('list', { name: 'Setup steps' })
     const inst = stepEl('app_installed')
     expect(visible(inst)).toContain("connected as @octo-dev, but the SwarmCloud GitHub App isn't installed anywhere yet")
-    expect(visible(inst)).not.toMatch(COMPANY_NAME)
+    expect(listedIn(visible(inst))).toEqual([])
   })
 
   it('names where the App is installed once it is, and offers no install', async () => {

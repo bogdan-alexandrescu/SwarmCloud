@@ -33,7 +33,7 @@ from merge_world import OPENER, PINNED, TASK, TENANT, MergeWorld
 FIX_TASK = "task_fix1"
 FIXED = "f" * 40
 PATHS = [".github/workflows/auto-merge.yml", ".github/workflows/merge-train.yml"]
-PATCH_URI = "gs://bucket/tenants/eng/tasks/task_int/attempts/att_1/artifacts/workflow-lines.patch"
+PATCH_URI = "gs://swarm-artifacts-example-project/tenants/eng/tasks/task_int/attempts/att_1/artifacts/workflow-lines.patch"
 #: The park code, as the wake tick reads it (`swarm_api.mergewake`).
 PATCH_PENDING = "workflow_patch_pending"
 

@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS
 ---------------
-BGD, 2026-10-23 (#2157): Admin holds every platform-level secret and setting,
+the owner, 2026-10-23 (#2157): Admin holds every platform-level secret and setting,
 is shown only to admins, and only admins may change anything there -- through
 the console, the API, MCP and the plugin. The console hides the section; the
 API is what actually holds the line, because MCP and the plugin call it with
@@ -335,7 +335,7 @@ def test_each_person_is_who_the_sweep_says(world, person, tenant, role) -> None:
 
 #: The one read on the platform surface a workspace admin is answered: Admin ›
 #: People and roles, scoped to the workspaces they administer
-#: (ADMIN-PEOPLE-ROLES; part of #2157, BGD "Both, by scope"). Every other
+#: (ADMIN-PEOPLE-ROLES; part of #2157, the owner "Both, by scope"). Every other
 #: person here is still refused it, and what it serves a workspace admin is
 #: held in test_people_scoped.py; `test_a_workspace_admins_people_read_is_scoped`
 #: holds it here too, so this exception cannot quietly become the whole read.

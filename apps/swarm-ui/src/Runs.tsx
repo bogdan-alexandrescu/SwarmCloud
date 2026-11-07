@@ -1365,8 +1365,8 @@ function put<T extends object, K extends keyof T>(target: T, key: K, value: T[K]
 }
 
 /**
- * `owner/repo#N`, linked. It wrapped at the owner's hyphen ('bogdan- /
- * alexandrescu/SwarmCloud#454', item 6), then was cut to one line past the
+ * `owner/repo#N`, linked. It wrapped at the owner's hyphen ('example- /
+ * org/example-repo#454', item 6), then was cut to one line past the
  * card's edge (owner QA A, 2026-10-04). It takes the card's whole width under
  * its label and breaks only after `/` or `#`; its whole text is the title.
  */

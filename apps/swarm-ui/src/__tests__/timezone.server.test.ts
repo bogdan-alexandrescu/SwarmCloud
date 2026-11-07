@@ -1,5 +1,5 @@
 // THE TIME ZONE IS KEPT ON THE SERVER (lane TIMEZONE-SERVER, part of #2391).
-// BGD decided on 2026-10-26 that a person's zone lives in their server-side
+// The owner decided on 2026-10-26 that a person's zone lives in their server-side
 // preferences, so it follows them to every browser and survives sign-out.
 // `timezone.ts` reads it from GET /v1/profile and saves it through PUT
 // /v1/profile/preferences; this browser's `swarm.timezone:<email>` is only a

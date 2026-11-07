@@ -151,7 +151,7 @@ describe('QA12-04: a hand-off is worded for any reason, not as a sign-in', () =>
     const text = screen.getByRole('status').textContent ?? ''
     expect(text).toContain(`The agent needs your help: ${REASON}`)
     expect(text).not.toMatch(/sign in|sign-in/i)
-    // The live view shows the page as drawn (BGD, 2026-10-25; LIVE-NOMASK-COPY,
+    // The live view shows the page as drawn (owner, 2026-10-25; LIVE-NOMASK-COPY,
     // part of #2298): nothing here may say a field is masked.
     expect(text).not.toMatch(/masked/i)
   })

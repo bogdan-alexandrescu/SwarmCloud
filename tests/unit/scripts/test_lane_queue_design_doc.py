@@ -1,13 +1,13 @@
 """Lane queue, design lane LQD: the doc and the mock-ups say what the owner asked.
 
-WHY THIS EXISTS. Owner decision 2026-10-05 (history V1, epic #640): DESIGN
+WHY THIS EXISTS. Owner decision 2026-10-05 (history V1, the lane-queue epic): DESIGN
 FIRST, no product code. The history analysis counted 141 implement/review/fix
 lanes orchestrated from the operator's laptop -- a spec generator, PR
 watchers, a merge watcher, a watchdog and a launch queue kept in memory notes
 -- against 3 native issue runs. This lane writes the DESIGN
 (docs/lane-queue.md) and the MOCK-UPS (docs/web-ui/mockups/lane-queue.html)
 so the owner can pick before anything is built. The lane outcome ledger
-(#639) was folded into the same design by the owner the same day.
+(its own design) was folded into the same design by the owner the same day.
 
 A design that lost one of the brief's parts (merge dependencies, territory
 locks with seam files, the CI-fix loop, ready-labelling, issue closing,
@@ -77,7 +77,7 @@ def test_the_design_doc_exists_and_is_dated_and_proposed():
     assert "**Status:" in head, "the status line leads, as in docs/repo-index.md"
     assert "2026-10-05" in head, "the design is dated"
     assert "PROPOSED" in head, "nothing is built; the status must not claim otherwise"
-    for ref in ("#640", "#639", "LQD"):
+    for ref in ("the lane-queue epic", "lane-outcome-ledger design", "LQD"):
         assert ref in head, ref
 
 
@@ -108,7 +108,7 @@ def test_the_design_doc_has_every_part_the_brief_names(prefix):
 
 def test_the_why_carries_the_measurements_it_rests_on():
     body = _body("## 1. ")
-    for needle in ("141", "3 native issue runs", "12 of 40", "#588", "#589", "re-typed"):
+    for needle in ("141", "3 native issue runs", "12 of 40", "The first router PR", "the second router PR", "re-typed"):
         assert needle in body, needle
 
 
@@ -123,7 +123,7 @@ def test_the_lane_generalises_issue_runs_by_name():
         "advance_run",
         "advance_tenant_runs",
         "compile_plan",
-        "#454",
+        "An issue run is `issue_runs/{run_id}`",
     ):
         assert needle in body, needle
 
@@ -165,7 +165,7 @@ def test_each_seam_policy_is_written_out_as_an_option(option):
 def test_after_the_pull_request_opens_reuses_the_ci_loop_labels_and_closes():
     body = _body("## 5. ")
     for needle in (
-        "#545",
+        "The CI-fix loop",
         "issueci.py",
         "fix_rounds",
         "ci-fix.yml",

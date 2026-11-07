@@ -644,11 +644,11 @@ def test_a_fetch_bundle_can_be_delivered_as_a_file_instead_of_bytes(world) -> No
 
     def deliver(path: Path, size: int) -> str:
         seen.append((path.read_bytes(), size))
-        return "gs://tenant-prefix/object"
+        return "gs://swarm-artifacts-example-project/object"
 
     fetched = _exec(world).fetch_bundle(url=world["url"], token=_token(), ref="main",
                                         haves=[world["b"]], deliver=deliver)
-    assert (fetched.sha, fetched.bundle, fetched.delivered) == (c, None, "gs://tenant-prefix/object")
+    assert (fetched.sha, fetched.bundle, fetched.delivered) == (c, None, "gs://swarm-artifacts-example-project/object")
     [(data, size)] = seen
     assert size == len(data) == fetched.size and _pack_object_count(data) == 3
     assert _scratch_is_empty(world)

@@ -39,7 +39,7 @@ import './styles/forgeperms.css'
  * with "Manage on GitHub", and when it was read. All of it is the one read
  * the card already makes; nothing new is fetched.
  *
- * WORKFLOWS (WF-APP-PERMS, #2029; BGD 2026-10-23: "this should be reflected
+ * WORKFLOWS (WF-APP-PERMS, #2029; owner 2026-10-23: "this should be reflected
  * also in the repository section where the other permissions are listed as
  * green checks"). The App asks for Workflows: write since 2026-10-23, served
  * as `workflow_files_required` beside `required` and never in `missing`: only
@@ -106,7 +106,7 @@ const LEVEL_WORD: Readonly<Record<string, string>> = { read: 'Read-only', write:
 /**
  * What each use of a permission is, where its level serves more than the
  * `For` words name: the tooltip on the permission's name, never a visible
- * sentence (the console's no-prose rule, BGD 2026-11-05). Actions is Read and
+ * sentence (the console's no-prose rule, owner 2026-11-05). Actions is Read and
  * write: the schedules read workflow runs, and the merge step re-runs a flaky
  * run's failed jobs, which GitHub refuses a read-only token (forgeperms.py).
  */
@@ -475,7 +475,7 @@ function checkedWords(checkedAt: string | null): string {
 }
 
 /**
- * AN ACCEPTED PERMISSION IS A GREEN DOT (PERM-DOT, #1086; BGD 2026-10-27,
+ * AN ACCEPTED PERMISSION IS A GREEN DOT (PERM-DOT, #1086; owner 2026-10-27,
  * "Green dot"). The issue asked for green, and the row drew the console's ok
  * mark, the grey check -- healthy is quiet everywhere else. Here the owner
  * chose the dot: a filled disc in `--ok`, the token the liveness dot already

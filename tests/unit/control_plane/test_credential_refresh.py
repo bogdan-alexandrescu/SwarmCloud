@@ -313,7 +313,7 @@ def test_a_token_already_published_is_not_written_again():
 class _Unreadable(_Store):
     """A store whose worker-facing secret refuses the READ but accepts writes.
 
-    That is not a hypothetical. In saga-agents-staging the broker holds
+    That is not a hypothetical. In example-project the broker holds
     `secretmanager.secretVersionAdder` on every base secret and
     `secretAccessor` on none of them, so `access()` raises PermissionDenied
     and `add_version()` succeeds -- measured, and the usage poller logs the
@@ -348,7 +348,7 @@ def test_an_unreadable_base_secret_is_treated_as_needing_the_token():
 def test_a_blind_publish_happens_once_per_token_not_once_per_sweep():
     """THE 1,665-VERSION BUG, reproduced at the tick rate that produced it.
 
-    `swarm-account-u-bogdan-personal` in saga-agents-staging went from version
+    `swarm-account-u-owner-personal` in example-project went from version
     1 to version 1,665 between 2026-09-18T07:26 and 2026-09-21T21:55 -- one
     every five minutes, no gaps -- while its `-refresh` twin took 21 versions
     over the same span. Only the still-valid branch writes the base alone, so
@@ -591,7 +591,7 @@ def test_the_token_request_is_form_encoded_to_the_right_host():
 # The in-process note shipped in c0175e5 stopped the every-five-minutes leak
 # and left a slower one nothing was looking for: `swarm-quota-broker` runs at
 # minScale=0 and is redeployed several times a day, and a note that lives in
-# the process is empty in every new one. Measured in saga-agents-staging on
+# the process is empty in every new one. Measured in example-project on
 # 2026-09-22, revision creation against base-only secret writes:
 #
 #     rev 00039 created 00:17:50 -> writes at 00:20:06/07
@@ -638,7 +638,7 @@ def test_a_redeploy_does_not_add_one_more_identical_version():
     record the first one left and must write NOTHING.
 
     Anything above 1 here is the leak, just spread over deploys instead of
-    ticks, and it is what took `swarm-tenant-u-bogdan-anthropic` from 1,810 to
+    ticks, and it is what took `swarm-tenant-u-owner-anthropic` from 1,810 to
     1,814 versions in the three hours AFTER it was declared fixed.
     """
     base = "swarm-tenant-eng-anthropic"

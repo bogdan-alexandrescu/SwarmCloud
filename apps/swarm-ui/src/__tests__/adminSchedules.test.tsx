@@ -267,7 +267,7 @@ describe('live QA: automate, admin schedules', () => {
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
   })
 
-  // VQ-056 (BGD, 2026-10-26): every word a person reads says workspace, never
+  // VQ-056 (owner, 2026-10-26): every word a person reads says workspace, never
   // tenant -- the table, its phone labels, the titles and both dialogs. The
   // routes and the API's `tenant_id` do not change.
   it('says workspace, never tenant, in everything a reader sees', async () => {

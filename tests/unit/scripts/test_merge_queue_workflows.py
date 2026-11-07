@@ -1,8 +1,8 @@
 """Every required check reports on a merge queue's `merge_group` ref.
 
 OWNER DECISION, 2026-10-06 (observer P26). main was red from 19:12 to 19:58Z
-because #726 and #727 were each green on their own base and merged nine
-seconds apart: ruleset `main-protection` (24160219) has
+because two pull requests were each green on their own base and merged nine
+seconds apart: ruleset `main-protection` has
 `strict_required_status_checks_policy: false`, so neither ran against the
 other. The owner chose a merge queue. The operator adds the `merge_queue` rule
 after this lands (docs/ci.md, "Merging through the merge queue"); this file
@@ -31,6 +31,7 @@ trigger beside them, and while the queue is off GitHub never raises it.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 
@@ -41,15 +42,21 @@ from .test_ci_gate import GATE_WORKFLOW, SHA, gate, tf_jobs, wait
 from .test_workflow_step_reachability import _events, _triggers
 
 REPO = Path(__file__).resolve().parents[3]
+
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+assert _PLACEHOLDERS_SPEC and _PLACEHOLDERS_SPEC.loader
+placeholders = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(placeholders)
 WORKFLOWS = REPO / ".github" / "workflows"
 CI_DOC = REPO / "docs" / "ci.md"
 
-#: The required status checks of ruleset `main-protection`, id 24160219, read
-#: with `gh api repos/bogdan-alexandrescu/SwarmCloud/rules/branches/main` on
+#: The required status checks of ruleset `main-protection`, read
+#: with `gh api repos/<owner>/<repo>/rules/branches/main` on
 #: 2026-10-01 and unchanged at 2026-10-06 (test_auto_merge_workflow.py's
 #: RULESET_CHECKS is the same read). A context added to the ruleset must be
 #: added here, or the queue can hold on it unnoticed.
-RULESET_ID = 24160219
+#: The docs look the ruleset up by this name, never by its numeric id.
+RULESET_NAME = "main-protection"
 REQUIRED_CONTEXTS = (
     "secret scan",
     "trivy (repo)",
@@ -255,15 +262,21 @@ def _section() -> str:
 def _ruleset_body() -> dict:
     """The JSON body of the section's PUT."""
     section = _section()
-    put = section.index(f"gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/{RULESET_ID}")
+    repo = placeholders.GITHUB_REPOSITORY
+    lookup = section.index(
+        f"RULESET_ID=\"$(gh api repos/{repo}/rulesets"
+        f" --jq '.[] | select(.name==\"{RULESET_NAME}\") | .id')\""
+    )
+    put = section.index(f'gh api -X PUT repos/{repo}/rulesets/"$RULESET_ID"', lookup)
     start = section.index("<<'JSON'\n", put) + len("<<'JSON'\n")
     end = section.index("\nJSON\n", start)
     return json.loads(section[start:end])
 
 
 def test_docs_say_why_with_the_incident():
-    section = _section()
-    for fact in ("2026-10-06", "#726", "#727", "strict"):
+    section = " ".join(_section().split())
+    for fact in ("2026-10-06", "two pull requests were each green on their own base and merged nine seconds apart",
+                 "strict"):
         assert fact in section, fact
 
 
@@ -304,7 +317,7 @@ def test_docs_carry_the_exact_merge_queue_rule():
 def test_the_put_keeps_every_rule_the_ruleset_has_today():
     """The PUT replaces the ruleset whole: a rule it leaves out is deleted."""
     body = _ruleset_body()
-    assert body["name"] == "main-protection"
+    assert body["name"] == RULESET_NAME
     types = [r["type"] for r in body["rules"]]
     assert types == ["deletion", "non_fast_forward", "pull_request", "required_status_checks",
                      "merge_queue"], types

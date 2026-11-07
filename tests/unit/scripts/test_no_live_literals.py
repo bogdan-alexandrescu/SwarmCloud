@@ -89,15 +89,6 @@ EXEMPT: dict[tuple[str, str], str] = {
         "the key of the project-keyed deny-list (plan R4, CLAUDE.md rule 2): the guard "
         "must name the project it protects, and it applies only there"
     ),
-    ("apps/scheduler/scheduler/judgment.py", "DECISION_API_TAILNET_NAME"): (
-        "the internal decision API add-on's one accepted host, off unless "
-        "INTERNAL_DECISION_API_URL is set; making it per install crosses "
-        "test_dispatch_judgment.py, test_judgment_backend.py and the worker's jev "
-        "wrapper (question 2 of this lane)"
-    ),
-    ("apps/swarm-api/swarm_api/judgment.py", "INTERNAL_DECISION_ORIGIN"): (
-        "restates scheduler.judgment.INTERNAL_DECISION_ORIGIN (same question)"
-    ),
 }
 
 

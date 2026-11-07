@@ -46,7 +46,7 @@ import './styles/repositories.css'
  * Classes are `ur-` so a later pass can swap them for lane U0's components.
  *
  * CONFIG › REPOSITORIES IS REPOSITORY MANAGEMENT (REPOS-PAGE; part of #2157,
- * BGD's decisions of 2026-10-23, proposal E, config-e.html S3a-S3c). The list
+ * the owner's decisions of 2026-10-23, proposal E, config-e.html S3a-S3c). The list
  * page is led by what is missing, then "Repositories SwarmCloud may reach as
  * you" (ReachableRepositories.tsx, moved off GitHub access), then the
  * registry's cards with a dashed card for each chosen repository not yet
@@ -56,7 +56,7 @@ import './styles/repositories.css'
  * Remove on a reach row revokes the person's own grant, as it did on
  * Work › Access.
  *
- * BGD'S ANSWERS TO REPOS-PAGE (REPOS-FOLLOWUPS, 2026-10-25): Remove on each
+ * owner'S ANSWERS TO REPOS-PAGE (REPOS-FOLLOWUPS, 2026-10-25): Remove on each
  * registered card unregisters (`DELETE /v1/repositories/{repo_id}`, member
  * role), behind the typed owner/name, and says first that its secrets'
  * grants are disabled with it; the registry is read again, and a repository
@@ -285,7 +285,7 @@ function RepositoryList({
   children: (actions: ReactNode) => ReactNode
 }) {
   const { state, reload } = useUrRead(loadRepositories, 'list')
-  // "REPOSITORIES SWARMCLOUD MAY REACH AS YOU" LEADS THE PAGE (BGD, 2026-10-23;
+  // "REPOSITORIES SWARMCLOUD MAY REACH AS YOU" LEADS THE PAGE (owner, 2026-10-23;
   // config-e.html S3). One `GET /v1/access` feeds the card, the lead and the
   // dashed cards of what is chosen and not registered.
   const access = useUrRead(loadAccess, 'access')
@@ -540,7 +540,7 @@ function RepositoryList({
 }
 
 /**
- * WHAT REMOVE DOES, SAID BEFORE IT IS SENT (BGD, 2026-10-25). The API
+ * WHAT REMOVE DOES, SAID BEFORE IT IS SENT (owner, 2026-10-25). The API
  * disables every grant on the registration's secrets in the transaction that
  * removes it (`delete_repository`), so a re-registration revives none; the
  * person's own access on GitHub and in the reach list is not touched.
@@ -743,7 +743,7 @@ function IndexingUses({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
 }
 
 /**
- * THE CARD SAYS THE TWO SWITCHES' STATE AND NOTHING ELSE (BGD's answer to
+ * THE CARD SAYS THE TWO SWITCHES' STATE AND NOTHING ELSE (the owner's answer to
  * visual QA VQ-043, 2026-10-26: "Show state only on the card"). One read-only
  * line, "Agents may file issues on · Workflow files off", each word the
  * registration's value as served: `agents_may_file_issues` (AU-0 REG-FLAG,

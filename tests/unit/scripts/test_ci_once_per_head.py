@@ -144,7 +144,9 @@ def _required_contexts() -> list[str]:
     """The `required_status_checks` contexts of the ruleset body docs/ci.md
     publishes ("Owner step: require ci-gate"), the one the owner PUTs."""
     text = CI_DOC.read_text()
-    start = text.index("rulesets/24160219 \\")
+    start = text.index(
+        'rulesets/"$RULESET_ID" \\', text.index("### Owner step: require ci-gate")
+    )
     body = text[text.index("<<'JSON'", start) + len("<<'JSON'"):text.index("\nJSON\n", start)]
     rules = json.loads(body)["rules"]
     (checks,) = [r for r in rules if r["type"] == "required_status_checks"]

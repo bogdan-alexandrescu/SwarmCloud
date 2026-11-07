@@ -2,7 +2,7 @@
 // #2322). BROWSER-USE-FLAG serves `browser` on every usage row of
 // `GET /v1/outcomes?usage=...` (span, bucket and group): the ended agents on
 // a browser runtime, their run seconds, and the part whose agent the worker
-// said did not use the browser. BGD's decision, 2026-10-25: unused browser
+// said did not use the browser. the owner's decision, 2026-10-25: unused browser
 // hours are visible, beside the run-time figures, for the selected range and
 // per bucket, linked to the Agents list of the browser agents that did not
 // use it. A missing field is a dash with its reason, never 0 h.

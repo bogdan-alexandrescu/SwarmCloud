@@ -429,7 +429,7 @@ def test_the_lane_round_trips_and_is_served():
 # --------------------------------------------------------------------------
 
 LANE = "run_3507a1b2c3d4"
-BUCKET = "swarm-artifacts-saga-agents-staging"
+BUCKET = "swarm-artifacts-example-project"
 
 
 def _finish_planner(db, objects, run: dict, plan: dict) -> None:

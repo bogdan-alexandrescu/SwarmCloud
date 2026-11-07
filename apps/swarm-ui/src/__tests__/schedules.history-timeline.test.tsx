@@ -1,5 +1,5 @@
 // ONE SCHEDULE'S HISTORY AS A TIMELINE (#1109, lane SCHED-HISTORY-TIMELINE;
-// schedules.html detail A's History pane, BGD 2026-10-25 "build it now").
+// schedules.html detail A's History pane, owner 2026-10-25 "build it now").
 //
 // WHAT EACH CASE HOLDS:
 //   * a schedule with 5 firings draws 5 lanes, and each lane's bars are its
@@ -26,7 +26,7 @@
 //   * a lane's second line reads whole for any attempt count and a longer
 //     profile ("claude-code-browser · succeeded · 12 attempts"): it wraps
 //     between its parts instead of an ellipsis (VQ-SCHEDULES re-review);
-//   * that list is schedules.html's History frame (SCHED-HISTORY-CSS, BGD
+//   * that list is schedules.html's History frame (SCHED-HISTORY-CSS, owner
 //     2026-10-25): under its head, 20px under the lanes, each item's cost right-aligned in its
 //     own column on a desktop ($11.30, $9.80, a dash whose reason is its
 //     title), stacked under the words on a phone (390). Asked of `painted`

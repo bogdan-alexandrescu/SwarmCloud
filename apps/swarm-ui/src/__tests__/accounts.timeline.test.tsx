@@ -1,6 +1,6 @@
 // #2222, ACCOUNTS-TIMELINE: CAPACITY › ACCOUNTS GETS A TABLE / TIMELINE TOGGLE.
 //
-// BGD, 2026-10-24 17:33Z: proposal A, with a toggle beside the verdict whose
+// owner, 2026-10-24 17:33Z: proposal A, with a toggle beside the verdict whose
 // Timeline draws every account the way proposal B does -- one lane per account
 // on a shared axis, each window a band against its floor, the next free slot
 // through every lane with the waiting agents queued against it, the pool row
@@ -14,7 +14,7 @@
 // workspace's account on a duplicate lane, or open a different detail from a
 // lane -- a case below turns red.
 //
-// ACCOUNTS-TIMELINE-MERGE (BGD, 2026-10-25 10:05Z): a lane opens the Table's
+// ACCOUNTS-TIMELINE-MERGE (owner, 2026-10-25 10:05Z): a lane opens the Table's
 // side sheet (the whole screen on a phone), not a detail under the lane; a
 // held lane draws its latest hold deadline as the broker serves it, and a dash
 // with its reason when it does not; the kept half of a duplicate pair is
@@ -103,7 +103,7 @@ function b3(now: number): PoolAccount[] {
   const T = (x: string) => Date.parse(x) - AT + now
   return [
     acct('ai-eng-2', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], windows: { seven_day: win(0.9, now + 29 * H) } }, now),
-    under('ai-eng-3', 'seven_day', 0.97, T('2026-10-27T10:59:00Z'), now),
+    under('acct-3', 'seven_day', 0.97, T('2026-10-27T10:59:00Z'), now),
     under('aieng-claude1', 'five_hour', 0.91, T('2026-10-24T15:10:00Z'), now),
     acct('devops-main', { assigned: 6, can_take_new_agent: false, blocked_by: [{ cap: 6, max_agents: 6 }], windows: { seven_day: win(0.92, now + 2 * D) } }, now),
     acct('devops-team', { assigned: 5, windows: { seven_day: win(0.89, T('2026-10-28T12:00:00Z')) } }, now),
@@ -404,7 +404,7 @@ describe('the Timeline', () => {
     await mount(b3(now))
     expect(lane('eng:devops-team').textContent).toContain('latest hold deadline — not reported')
     // An account nobody holds draws no holds at all.
-    expect(lane('eng:ai-eng-3').querySelector('.acct-tl-holds')).toBeNull()
+    expect(lane('eng:acct-3').querySelector('.acct-tl-holds')).toBeNull()
   })
 
   it('draws a hold deadline the broker does not know as a dash with its reason', async () => {

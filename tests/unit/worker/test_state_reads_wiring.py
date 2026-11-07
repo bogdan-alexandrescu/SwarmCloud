@@ -9,7 +9,7 @@ file holds:
   * a key `state/open` registered for the state purpose gets `$SWARM_STATE`
     and the relay, which signs under `swarm-state-req/v1`;
   * a key registered at `/child-key` (child purpose only) gets them too, and
-    the relay signs under `swarm-child-req/v1` (BGD, 2026-10-22 08:54Z);
+    the relay signs under `swarm-child-req/v1` (the owner, 2026-10-22 08:54Z);
   * an attempt with no key gets neither, and says `no_attempt_key`;
   * a fenced read raises the error the lifecycle exits on (invariant 5) and
     sends nothing but the read: no lease call, no release.

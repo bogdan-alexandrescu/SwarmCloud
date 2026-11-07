@@ -1,4 +1,4 @@
-"""A workflow's description in three labelled parts (BGD, 2026-11-06).
+"""A workflow's description in three labelled parts (the owner, 2026-11-06).
 
 The owner, opening a workflow in the console, asked for what the work is for,
 what it must achieve and what it will produce. A spec sends

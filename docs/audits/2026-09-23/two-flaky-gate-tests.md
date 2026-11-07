@@ -10,8 +10,8 @@ existing.
 
 | # | test | state | fixed by |
 |---|---|---|---|
-| 1 | `test_bench_collectors.py::…::test_a_healthy_run_records_a_baseline_and_passes_against_it` | **FIXED** — cause found, reproduced deterministically in CI, fixed | `da6bf54` on PR #25 (`scripts/lib/benchlib.sh`), pinned by `TestTwoRunsInOneCheckout`, red first on `a1239b5` (run 35975902195) |
-| 2 | `shell.test.tsx` B3 — "the head carries a breadcrumb and the age of the newest successful read" | **FIXED** before this file was committed to main | `b5e84f0` (`beforeEach`) and `054803a` (`afterEach`) on the fix branch, merged in `d3fd290` on 2026-09-22; on main since the squash `0857b46` (#1). `apps/swarm-ui/src/__tests__/setup.ts:35-48` |
+| 1 | `test_bench_collectors.py::…::test_a_healthy_run_records_a_baseline_and_passes_against_it` | **FIXED** — cause found, reproduced deterministically in CI, fixed | `da6bf54` on an earlier pull request (`scripts/lib/benchlib.sh`), pinned by `TestTwoRunsInOneCheckout`, red first on `a1239b5` (run 35975902195) |
+| 2 | `shell.test.tsx` B3 — "the head carries a breadcrumb and the age of the newest successful read" | **FIXED** before this file was committed to main | `b5e84f0` (`beforeEach`) and `054803a` (`afterEach`) on the fix branch, merged in `d3fd290` on 2026-09-22; on main since the squash `0857b46`. `apps/swarm-ui/src/__tests__/setup.ts:35-48` |
 
 The sections below are the original record, left as written, with what was
 learned since added under each one. The original said "Neither is fixed" and
@@ -137,7 +137,7 @@ independently on 2026-09-22 — `b5e84f0` added the `beforeEach`, `054803a` the
 message records that `forgetProbes` itself had been written twice and merged
 without a conflict. This file was committed at `0562842`, before that merge,
 which is why it still called the test unfixed. On main the fix has been present
-since the squash `0857b46` (#1).
+since the squash `0857b46`.
 
 Not re-proved here by reverting it, and CI history was not searched for this
 test's failures: the evidence is the code at `setup.ts:35-48` and its header,

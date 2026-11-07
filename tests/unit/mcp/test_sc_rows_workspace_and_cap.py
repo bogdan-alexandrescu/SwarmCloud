@@ -147,9 +147,9 @@ def test_the_run_js_title_is_the_bridges_title(tmp_path):
     """run.js's Result title is workflow_title's, cut included, with no
     workspace in it (SC-DESC-DETAILS); the result still carries it."""
     name = "a very long workflow name " * 8
-    got = _run(tmp_path, {"attach": "wf_a", "title": name, "workspace": "u-bogdan"}, {
+    got = _run(tmp_path, {"attach": "wf_a", "title": name, "workspace": "u-owner"}, {
         "ATTACH\nworkflow_id: wf_a": {
-            "workflow_id": "wf_a", "workspace": "u-bogdan", "title": name, "label": None, "console": None,
+            "workflow_id": "wf_a", "workspace": "u-owner", "title": name, "label": None, "console": None,
             "state": "RUNNING", "state_note": None, "bridge_version": "0.1.0", "follow_error": None, "error": None,
             "steps": [{"step_id": "implement", "task_id": "t1", "depends_on": [], "state": "RUNNING", "console": None}],
         },
@@ -158,7 +158,7 @@ def test_the_run_js_title_is_the_bridges_title(tmp_path):
     })
     result = got["result"]
     assert result["title"] == launch.workflow_run_title(workflows.title_name(stored=name), 1)
-    assert result["workspace"] == "u-bogdan"
+    assert result["workspace"] == "u-owner"
 
 
 # --------------------------------------------------------------------------
@@ -170,7 +170,7 @@ def test_no_step_row_or_setup_row_label_carries_the_workspace(tmp_path):
     link = "https://c.test/agents/t1"
     got = _run(tmp_path, {"attach": "wf_a", "title": "gate"}, {
         "ATTACH\nworkflow_id: wf_a": {
-            "workflow_id": "wf_a", "workspace": "u-bogdan", "title": "gate", "label": None, "console": None,
+            "workflow_id": "wf_a", "workspace": "u-owner", "title": "gate", "label": None, "console": None,
             "state": "RUNNING", "state_note": None, "bridge_version": "0.1.0", "follow_error": None, "error": None,
             "steps": [{"step_id": "implement", "task_id": "t1", "depends_on": [], "state": "RUNNING", "console": link}],
         },
@@ -182,8 +182,8 @@ def test_no_step_row_or_setup_row_label_carries_the_workspace(tmp_path):
     assert labels[1] == f"[SwarmCloud] gate · stage 1 · implement · {link}"
     assert labels[2] == "[SwarmCloud] gate · 1 step · wf_a · setup · result"
     assert any(line.startswith("implement SUCCEEDED") for line in got["logs"]), got["logs"]
-    assert any(line.startswith("wf_a SUCCEEDED") and "· workspace: u-bogdan" in line for line in got["logs"]), got["logs"]
-    assert not any(line.startswith("[u-bogdan]") for line in got["logs"]), got["logs"]
+    assert any(line.startswith("wf_a SUCCEEDED") and "· workspace: u-owner" in line for line in got["logs"]), got["logs"]
+    assert not any(line.startswith("[u-owner]") for line in got["logs"]), got["logs"]
 
 
 def test_the_attach_row_carries_the_workspace_the_launch_read(tmp_path):
@@ -198,7 +198,7 @@ def test_a_submitted_workflows_rows_carry_the_workspace_the_reply_names(tmp_path
     spec = {"label": "gate", "steps": [{"step_id": "implement", "prompt": "p", "runner_profile": "claude-code"}]}
     got = _run(tmp_path, {"spec": spec}, {
         "SUBMIT": {
-            "workflow_id": "wf_s", "workspace": "u-bogdan", "console": None,
+            "workflow_id": "wf_s", "workspace": "u-owner", "console": None,
             "steps": [{"step_id": "implement", "task_id": "t1", "depends_on": [], "console": None}],
             "repository": None, "repository_notes": [], "spec_digest": workflows.spec_digest(spec),
             "bridge_version": "0.1.0",
@@ -210,7 +210,7 @@ def test_a_submitted_workflows_rows_carry_the_workspace_the_reply_names(tmp_path
     step_rows = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"]
     assert got["result"]["state"] == "SUCCEEDED", got["result"]
     assert step_rows == ["[SwarmCloud] gate · stage 1 · implement"]
-    assert got["result"]["workspace"] == "u-bogdan"
+    assert got["result"]["workspace"] == "u-owner"
     assert got["result"]["title"] == "SC ∴ gate · 1 step"
 
 
@@ -236,12 +236,12 @@ def test_attach_tasks_follows_up_to_the_cap_it_is_handed_clamped(tmp_path, max_r
 
 
 def test_a_task_rows_details_and_result_carry_its_workspace_and_its_label_does_not(tmp_path):
-    entries = [{"task_id": "task_a", "title": "lane-a", "workspace": "u-bogdan"}]
+    entries = [{"task_id": "task_a", "title": "lane-a", "workspace": "u-owner"}]
     got = _run(tmp_path, {"attach_tasks": entries}, _task_answers(entries))
     assert got["calls"][0]["label"] == "[SwarmCloud] lane-a · task"
-    assert "details: Workspace: u-bogdan · " in got["calls"][0]["prompt"]
-    assert got["result"]["tasks"][0]["workspace"] == "u-bogdan"
-    assert got["logs"][-1].startswith("lane-a SUCCEEDED") and got["logs"][-1].endswith("· workspace: u-bogdan")
+    assert "details: Workspace: u-owner · " in got["calls"][0]["prompt"]
+    assert got["result"]["tasks"][0]["workspace"] == "u-owner"
+    assert got["logs"][-1].startswith("lane-a SUCCEEDED") and got["logs"][-1].endswith("· workspace: u-owner")
 
 
 def test_task_rows_are_grouped_by_workspace_in_the_bridges_order_within_each(tmp_path):
@@ -281,14 +281,14 @@ def test_attach_all_groups_by_workspace_closest_to_finish_first(tmp_path):
     (wf_03, 3 of 4): the eng block comes first, and each block runs closest
     first, a tie in steps going to the step that has run longer (wf_01 before
     wf_05, wf_00 before wf_04) -- whatever order the relay passed it on in."""
-    listed = _listed_workflows(6, ("u-bogdan", "eng"))
+    listed = _listed_workflows(6, ("u-owner", "eng"))
     for n, entry in enumerate(listed["workflows"]):
         entry["progress"] = {"done": n % 4, "total": 4, "age_seconds": 60 * (6 - n)}
     got = _run(tmp_path, {"attach": "all"}, {"LIST": listed})
     calls = got["result"]["attach_calls"]
     assert [(c["workspace"], c["attach"]) for c in calls] == [
         ("eng", "wf_03"), ("eng", "wf_01"), ("eng", "wf_05"),
-        ("u-bogdan", "wf_02"), ("u-bogdan", "wf_00"), ("u-bogdan", "wf_04"),
+        ("u-owner", "wf_02"), ("u-owner", "wf_00"), ("u-owner", "wf_04"),
     ]
     assert any(line.startswith("wf_01 flow 01 RUNNING") and "· workspace: eng" in line for line in got["logs"]), got["logs"]
 
@@ -359,27 +359,27 @@ def test_launch_all_honours_the_plugin_option(_plugin_root, monkeypatch):
 
 
 def test_launch_all_groups_several_workspaces_and_uses_display_names(_plugin_root, monkeypatch):
-    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: _running(4, ("u-bogdan", "eng")))
+    monkeypatch.setattr(sc, "running_workflows", lambda client, **_: _running(4, ("u-owner", "eng")))
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     client = types.SimpleNamespace(tenants_mine=lambda: [
         {"tenant_id": "eng", "display_name": "Engineering"},
-        {"tenant_id": "u-bogdan", "display_name": "x" * (workflows.WORKSPACE_NAME_CHARS + 1)},
+        {"tenant_id": "u-owner", "display_name": "x" * (workflows.WORKSPACE_NAME_CHARS + 1)},
     ])
     out = launch.for_all(client)
     assert [(l["workspace"], l["workflow_id"]) for l in out["launches"]] == [
-        ("u-bogdan", "wf_000"), ("u-bogdan", "wf_002"), ("Engineering", "wf_001"), ("Engineering", "wf_003"),
+        ("u-owner", "wf_000"), ("u-owner", "wf_002"), ("Engineering", "wf_001"), ("Engineering", "wf_003"),
     ], "a display name too long to fit is not used: the tenant id is"
 
 
 def test_for_tasks_follows_100_and_lists_the_rest_with_their_workspace(_plugin_root):
-    entries = [{"task_id": f"task_{n:03d}", "label": f"lane {n}", "workspace": "u-bogdan"} for n in range(103)]
+    entries = [{"task_id": f"task_{n:03d}", "label": f"lane {n}", "workspace": "u-owner"} for n in range(103)]
     out = launch.for_tasks(entries)
     assert len(out["launches"]) == 100 and out["task_ids"] == [f"task_{n:03d}" for n in range(100)]
     assert all(len(copy["args"]["attach_tasks"]) == 1 and copy["args"]["max_rows"] == 1 for copy in out["launches"])
     first = dict(out["args"]["attach_tasks"][0])
-    assert first.pop("details").startswith("Workspace: u-bogdan · ")
-    assert first == {"task_id": "task_000", "title": "lane 0", "workspace": "u-bogdan"}
-    assert [n["workspace"] for n in out["not_followed"]] == ["u-bogdan"] * 3
+    assert first.pop("details").startswith("Workspace: u-owner · ")
+    assert first == {"task_id": "task_000", "title": "lane 0", "workspace": "u-owner"}
+    assert [n["workspace"] for n in out["not_followed"]] == ["u-owner"] * 3
 
 
 def test_the_workspace_is_read_from_the_document_never_from_the_session(monkeypatch):
@@ -387,7 +387,7 @@ def test_the_workspace_is_read_from_the_document_never_from_the_session(monkeypa
     third: each row names its own."""
     monkeypatch.setenv("SWARM_TENANT", "configured-elsewhere")
     assert workflows.workspace_of({"tenant_id": "eng"}) == "eng"
-    assert workflows.workspace_of({"tenant_id": "u-bogdan"}) == "u-bogdan"
+    assert workflows.workspace_of({"tenant_id": "u-owner"}) == "u-owner"
     assert workflows.workspace_of({}, fallback="eng") == "eng", "the listing page's tenant, the API's answer"
     assert workflows.workspace_of({}) is None
 
@@ -396,21 +396,21 @@ def test_running_workflows_and_tasks_carry_the_workspace_of_each_document():
     class _Pages:
         def workflows(self, **_):
             return {"tenant_id": "eng", "workflows": [
-                {"workflow_id": "wf_1", "tenant_id": "u-bogdan", "state": "RUNNING", "steps": []},
+                {"workflow_id": "wf_1", "tenant_id": "u-owner", "state": "RUNNING", "steps": []},
                 {"workflow_id": "wf_2", "state": "RUNNING", "steps": []},
             ]}
 
     listing = sc.running_workflows(_Pages(), detail_reads=0)
-    assert [(e["workflow_id"], e["workspace"]) for e in listing["workflows"]] == [("wf_1", "u-bogdan"), ("wf_2", "eng")]
+    assert [(e["workflow_id"], e["workspace"]) for e in listing["workflows"]] == [("wf_1", "u-owner"), ("wf_2", "eng")]
 
 
 def test_a_workflow_report_and_a_created_reply_name_the_workspace():
-    envelope = {"workflow": {"workflow_id": "wf_1", "tenant_id": "u-bogdan", "steps": [], "state": "RUNNING"},
+    envelope = {"workflow": {"workflow_id": "wf_1", "tenant_id": "u-owner", "steps": [], "state": "RUNNING"},
                 "tasks": []}
-    assert workflows.report(envelope)["workspace"] == "u-bogdan"
+    assert workflows.report(envelope)["workspace"] == "u-owner"
     created = json.loads(server._workflow_created(envelope, placed=None, repository=None, digest=None,
                                                   expected_digest=None, given=[]))
-    assert created["workspace"] == "u-bogdan"
+    assert created["workspace"] == "u-owner"
 
 
 def test_swarm_status_names_each_tasks_workspace():
@@ -427,7 +427,7 @@ def test_swarm_status_names_each_tasks_workspace():
 def test_sc_workflows_prints_the_workspace_first_on_every_line(monkeypatch):
     monkeypatch.setattr(sc, "running_workflows", lambda client, **_: {
         "tenant_id": "eng", "count": 1, "complete": True,
-        "workflows": [{"workflow_id": "wf_1", "workspace": "u-bogdan", "label": "gate", "state": "RUNNING",
+        "workflows": [{"workflow_id": "wf_1", "workspace": "u-owner", "label": "gate", "state": "RUNNING",
                        "age_seconds": 90, "current_steps": []}],
     })
     monkeypatch.setattr(sc, "running_tasks", lambda client: {
@@ -438,7 +438,7 @@ def test_sc_workflows_prints_the_workspace_first_on_every_line(monkeypatch):
     args = types.SimpleNamespace(json=False, width=200, color="never", ascii=True, session_start=False)
     sc.cmd_workflows(_NoTenants(), args, out)
     text = out.getvalue()
-    assert "  [u-bogdan] wf_1  gate  RUNNING" in text, text
+    assert "  [u-owner] wf_1  gate  RUNNING" in text, text
     assert "  [eng] task_a  lane  QUEUED" in text, text
 
 
@@ -446,13 +446,13 @@ def test_the_session_start_notice_names_the_workspace_and_the_cap(monkeypatch):
     monkeypatch.delenv("SWARM_PLUGIN_MAX_LIVE_ROWS", raising=False)
     monkeypatch.delenv("CLAUDE_PLUGIN_OPTION_MAX_LIVE_ROWS", raising=False)
     text = sc.session_start_context(
-        {"workflows": [{"workflow_id": "wf_1", "workspace": "u-bogdan", "state": "RUNNING", "current_steps": []}]},
+        {"workflows": [{"workflow_id": "wf_1", "workspace": "u-owner", "state": "RUNNING", "current_steps": []}]},
         {"tasks": [{"task_id": "task_a", "workspace": "eng", "state": "RUNNING"}]},
     )
     # SC-DESC-DETAILS: named after the id, never `[<workspace>]` in front.
-    assert "wf_1 (RUNNING;" in text and "workspace u-bogdan)" in text
+    assert "wf_1 (RUNNING;" in text and "workspace u-owner)" in text
     assert "task_a (RUNNING;" in text and "workspace eng)" in text
-    assert "[u-bogdan]" not in text and "[eng]" not in text
+    assert "[u-owner]" not in text and "[eng]" not in text
     assert "at most 100 workflows and 100 single tasks" in text
 
 

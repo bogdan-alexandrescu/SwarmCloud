@@ -1,6 +1,6 @@
 // TENANT-WORDING-B (VQ-056, part of #2391): the console says "workspace"
 // wherever a reader sees the word, on the Ledger, Config › GitHub access and
-// Workspace setup. BGD's decision of 2026-10-26; Admin › Tenants keeps its
+// Workspace setup. the owner's decision of 2026-10-26; Admin › Tenants keeps its
 // technical name, and the code's identifiers, API fields and routes do not
 // change (the tenant group is still `tenant_id`, the read still `tenant_id`).
 //

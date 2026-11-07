@@ -1,4 +1,4 @@
-// A PLAN'S APPROVAL PAGE AS A ONE-PAGE BRIEF (BGD, 6 November 2026: show
+// A PLAN'S APPROVAL PAGE AS A ONE-PAGE BRIEF (owner, 6 November 2026: show
 // super quickly what a plan does, why, what changes where, the risk and the
 // test and QA plan). Built from the picked mock-up (direction "brief").
 //
@@ -17,7 +17,7 @@
 //     approve with the digest the page read, its reject with the reason, and
 //     Edit opens the run's page.
 //
-// The first plan is a copy of the run BGD linked (one step, five files, three
+// The first plan is a copy of the run owner linked (one step, five files, three
 // overlaps); the high-risk one is the mock-up's invented plan. Placeholders
 // only; nothing is token-shaped.
 
@@ -67,7 +67,7 @@ const LEGACY = {
   requirements: ['A run’s plan lists each train PR that shares a file with a step'],
 }
 
-/** The run BGD linked, with the planner's sections. */
+/** The run owner linked, with the planner's sections. */
 const SECTIONS = {
   ...LEGACY,
   estimate: '2.5 h',

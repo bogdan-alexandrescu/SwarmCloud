@@ -5,7 +5,7 @@
 // that pool's ceiling, served by `/v1/admin/quota` in the same response as
 // `feeds_pool`, so it cannot be older or newer than the cap beside it.
 //
-// G5-03: u-bogdan read `429s (this run) 1` beside `Last 429 —`, on a document
+// G5-03: u-owner read `429s (this run) 1` beside `Last 429 —`, on a document
 // 17 days old. A count with no time is a time nobody recorded, not an absence
 // of 429s; and a count on a document older than twice the sweep is a count
 // at the last report, not "this run".
@@ -83,7 +83,7 @@ describe('G5-02: the Feeds pool cell draws the ceiling admission enforces', () =
 
 describe('G5-03: a 429 count with no time, and a count from an old document', () => {
   it('marks a counted 429 with no time as not recorded, not a bare dash', async () => {
-    const row = await renderRow(quota({ tenant_id: 'u-bogdan', rate_limit_count: 1, last_429_at: null }))
+    const row = await renderRow(quota({ tenant_id: 'u-owner', rate_limit_count: 1, last_429_at: null }))
     const last = row.querySelector('td[data-label="Last 429"]')!
     expect(last.querySelector('.ctl-mark.is-unread')?.textContent).toBe('time not recorded')
     expect(last.querySelector('.ctl-em'), 'a counted 429 is drawn as though none was ever recorded').toBeNull()
@@ -97,7 +97,7 @@ describe('G5-03: a 429 count with no time, and a count from an old document', ()
 
   it('labels the count of a document older than twice the sweep at last report', async () => {
     const row = await renderRow(
-      quota({ tenant_id: 'u-bogdan', updated_at: minutesAgo(17 * 24 * 60), rate_limit_count: 1, last_429_at: null }),
+      quota({ tenant_id: 'u-owner', updated_at: minutesAgo(17 * 24 * 60), rate_limit_count: 1, last_429_at: null }),
     )
     expect(cell(row, '429s (this run)')).toBe('1 (at last report)')
   })

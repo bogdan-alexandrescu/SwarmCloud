@@ -10,7 +10,7 @@ import { useNow } from './useNow'
 import './styles/config.css'
 
 /**
- * THE SETUP STRIP (CONFIG-NAV; part of #2157, BGD's pick of 2026-10-24,
+ * THE SETUP STRIP (CONFIG-NAV; part of #2157, the owner's pick of 2026-10-24,
  * proposal E "Guided setup", docs/web-ui/mockups/config-e.html S1-S6).
  *
  * Proposal E is led by what is missing: across the top of every Config page,

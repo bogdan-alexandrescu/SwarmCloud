@@ -1,6 +1,6 @@
 """A counts mock-up names only runner profiles and pool accounts that exist and run.
 
-Asked for by BGD on 2026-10-24 06:30Z (#2149, answering COUNTS-FIX3-E on
+Asked for by the owner on 2026-10-24 06:30Z (#2149, answering COUNTS-FIX3-E on
 task_a668679281254d5f9822): "add a guard test in a follow-up lane".
 
 WHY THIS IS A TEST. Counts proposal E drew `codex`, `claude-code-review` and a

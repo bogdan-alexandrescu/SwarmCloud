@@ -218,7 +218,7 @@ def test_a_firing_writes_what_changed_with_source_pricing_page_and_the_day_read(
     assert after["claude-opus-4-1"]["as_of"] == DAY
     assert after["claude-opus-4-1"]["updated_by"] == f"schedule:{SCHEDULE_ID}"
     # The page agrees with the seed's figures, so those entries are not
-    # touched: Haiku 5.5's two tiers included (the seed lists them, BGD,
+    # touched: Haiku 5.5's two tiers included (the seed lists them, the owner,
     # 6 November 2026).
     for name in modelprices.SEED:
         assert after[name] == before[name], name

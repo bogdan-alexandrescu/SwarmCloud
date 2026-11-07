@@ -1,5 +1,5 @@
 // THE APP-WIDE PROSE RATCHET: no console page may show more words than it did
-// before the change (BOGDAN'S RULE, 2026-11-05, standing, every console page:
+// before the change (THE OWNER'S RULE, 2026-11-05, standing, every console page:
 // no explanatory prose on the surface; docs/web-ui/design-system.md).
 //
 // The four screen files (prose.budget, prose.budget.capacity, prose.operator,
@@ -15,7 +15,7 @@
 // And a second number: the links whose visible text carries an arrow (→ or ›),
 // an action drawn as a text link where the rule wants a button.
 //
-// WHAT IT IS COMPARED WITH (BGD's pick, 2026-11-06, part of #2688): the same
+// WHAT IT IS COMPARED WITH (the owner's pick, 2026-11-06, part of #2688): the same
 // page on the change's base, rendered in the same test from a copy of the
 // base's src (prosebase.ts says which commit and why). A page fails when its
 // words or its arrow links went up, and the message names the words that are

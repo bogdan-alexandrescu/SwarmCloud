@@ -451,7 +451,7 @@ export function RunnerSizesScreen() {
   const [admits, setAdmits] = useState<Admits | null>(null)
   return (
     <div className="ur-page rs-page">
-      {/* BGD's no-prose rule (2026-11-05): what the page edits, and when a save applies, behind the (i) beside the title. */}
+      {/* the owner's no-prose rule (2026-11-05): what the page edits, and when a save applies, behind the (i) beside the title. */}
       <PageHead
         title="Runner sizes"
         info={
@@ -917,7 +917,7 @@ function unitsAfter(classes: RunnerSizesPreview['classes'] | null, cls: string):
  * start a single agent was silent. The row carries the mark Pools gives the
  * same pool (Capacity.tsx `classifyPool`, `too small`, in the parked tone: no
  * wait clears it), whose tooltip names the class's weight against the pool's
- * ceiling (the line under it went with BGD's no-prose rule, 2026-11-05). A
+ * ceiling (the line under it went with the owner's no-prose rule, 2026-11-05). A
  * pool at limit 0 is not too small:
  * it admits nothing of any class, and Pools marks it `limit 0`.
  */
@@ -1005,7 +1005,7 @@ function AdmitsCell({
   return (
     <span className="rs-admits">
       {figures}{' '}
-      {/* The weight and the ceiling are the mark's tooltip, not a line under it (BGD's no-prose rule, 2026-11-05). */}
+      {/* The weight and the ceiling are the mark's tooltip, not a line under it (the owner's no-prose rule, 2026-11-05). */}
       <ToneMark tone="is-paused" title={`One ${cls} agent weighs ${weighs}, so this pool admits no ${cls} agent. Raise the ceiling or shrink the class.`}>
         too small
       </ToneMark>

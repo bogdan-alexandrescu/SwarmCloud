@@ -35,7 +35,7 @@ from hooks_fixtures import push
 
 REPO = Path(__file__).resolve().parents[3]
 APP = REPO / "apps" / "swarm-github-hooks"
-VERSION = "projects/swarm-test-project/secrets/swarm-github-app-webhook-secret/versions/latest"
+VERSION = "projects/example-project/secrets/swarm-github-app-webhook-secret/versions/latest"
 API = "https://swarm-api-abc-uc.a.run.app"
 
 ENV = {
@@ -110,7 +110,7 @@ def test_create_receiver_wires_the_injected_parts():
 
 @pytest.mark.parametrize("name,value,word", [
     (main.SECRET_ENV, "", main.SECRET_ENV),
-    (main.SECRET_ENV, "projects/swarm-test-project/secrets/swarm-graph-ticket-key/versions/latest", main.SECRET_ENV),
+    (main.SECRET_ENV, "projects/example-project/secrets/swarm-graph-ticket-key/versions/latest", main.SECRET_ENV),
     (main.SECRET_ENV, "projects/x/secrets/swarm-github-app-webhook-secret/versions/latest", main.SECRET_ENV),
     (main.API_URL_ENV, "", main.API_URL_ENV),
     (main.API_URL_ENV, "http://swarm-api-abc-uc.a.run.app", main.API_URL_ENV),
@@ -126,7 +126,7 @@ def test_a_setting_that_could_point_elsewhere_is_refused_by_name(name, value, wo
 def test_the_settings_terraform_passes_are_accepted():
     s = main.settings(ENV)
     assert s.secret_version == VERSION
-    assert s.project == "swarm-test-project"
+    assert s.project == "example-project"
     assert s.api_url == API
     # No custom audience: the token names swarm-api's URL, as the sweeper's
     # Cloud Scheduler jobs' tokens do (modules/scheduler jobs.tf).
@@ -159,12 +159,12 @@ def test_an_unreadable_or_empty_secret_raises_without_quoting_the_answer(respons
 
 def test_a_new_delivery_is_created_with_its_expiry():
     session = Session(Response(200, {"name": "x"}))
-    store = FirestoreDeliveries("swarm-test-project", "swarm", lambda: session)
+    store = FirestoreDeliveries("example-project", "swarm", lambda: session)
     expires = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
     assert store.create("72d3162e-cc78-11e3-81ab-4c9367dc0958", expires) is True
     ((method, url, kwargs),) = session.calls
     assert method == "POST"
-    assert url == ("https://firestore.googleapis.com/v1/projects/swarm-test-project/databases/swarm"
+    assert url == ("https://firestore.googleapis.com/v1/projects/example-project/databases/swarm"
                    "/documents/github_deliveries")
     assert kwargs["params"] == {"documentId": "72d3162e-cc78-11e3-81ab-4c9367dc0958"}
     assert kwargs["json"] == {"fields": {"expires_at": {"timestampValue": "2026-10-23T12:00:00Z"}}}
@@ -172,13 +172,13 @@ def test_a_new_delivery_is_created_with_its_expiry():
 
 def test_an_existing_delivery_is_a_redelivery():
     session = Session(Response(409, {"error": {"status": "ALREADY_EXISTS"}}))
-    store = FirestoreDeliveries("swarm-test-project", "swarm", lambda: session)
+    store = FirestoreDeliveries("example-project", "swarm", lambda: session)
     assert store.create("72d3162e-cc78-11e3-81ab-4c9367dc0958", datetime.now(timezone.utc)) is False
 
 
 @pytest.mark.parametrize("status", [400, 403, 404, 429, 500, 503])
 def test_any_other_answer_is_a_failure_never_a_pass(status):
-    store = FirestoreDeliveries("swarm-test-project", "swarm", lambda: Session(Response(status)))
+    store = FirestoreDeliveries("example-project", "swarm", lambda: Session(Response(status)))
     with pytest.raises(StoreUnavailable):
         store.create("72d3162e-cc78-11e3-81ab-4c9367dc0958", datetime.now(timezone.utc))
 
@@ -191,7 +191,7 @@ def test_the_session_is_built_once_and_only_when_first_needed():
         built.append(1)
         return session
 
-    store = FirestoreDeliveries("swarm-test-project", "swarm", factory)
+    store = FirestoreDeliveries("example-project", "swarm", factory)
     assert built == []
     store.create("a-1", datetime.now(timezone.utc))
     store.create("a-2", datetime.now(timezone.utc))

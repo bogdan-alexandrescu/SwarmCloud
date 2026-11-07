@@ -1,7 +1,7 @@
 # Notifications
 
 What `GET /v1/notifications` serves, where each item comes from, and why the
-feed is derived rather than stored. Issue #1206 (proposal A, picked by the
+feed is derived rather than stored. The notifications design (proposal A, picked by the
 owner on 2026-10-12): every person gets a bell in the console's header, and
 admins get a count on Admin. Lane NOTIF-API built the API
 (`apps/swarm-api/swarm_api/notifications.py`, `routes/notifications.py`);
@@ -97,8 +97,7 @@ Some notes on what each group deliberately leaves out:
   the answer is stored on the agent as `metadata.owner_answers`. The item derives
   only while at least one counted question has no answer. Until then it stays
   for 7 days after its agent ended, and marking it read clears it from the bell's
-  count. **An answer counts only under the question it answered** (part of
-  #3349; the follow-up lane the owner picked on #3355, 2026-11-05). The answer
+  count. **An answer counts only under the question it answered** (the follow-up lane the owner picked for the answer-scoping finding, 2026-11-05). The answer
   card, the question wait and the merge compare a stored answer with the
   question they read (`agent_questions.answers_to`, by `question_digest`). The
   bell's item (`notifications._asked_item`), `open_question_tasks` (`/sc check`)
@@ -123,7 +122,7 @@ Some notes on what each group deliberately leaves out:
   (docs/workspaces.md §1.3). It never says who decided.
 * **A join request rings the people who may decide it, and its decision
   rings the person who asked** ([design/join-requests.md](design/join-requests.md)
-  §4.6, #2325). An open request is `admin:join:<ref>`, a needs-you item in
+  §4.6). An open request is `admin:join:<ref>`, a needs-you item in
   `admin`, "<person> asks to join <workspace>" with their message. It rings
   every platform admin, and a workspace's own `admin` only for that
   workspace and only while the request names the group the workspace has
@@ -220,8 +219,8 @@ invisible. Updates are cut to 50 *after* muting, so a person who mutes
 `admin_pending` drives the Admin pill, not the bell, and is counted before
 muting: an admin who mutes `admin` still sees the pill.
 
-**Two Admin panel counts ride on the feed** (CONFIG-ADMIN-POLISH, part of
-#2157, proposal E S1b): `tenants_waiting`, the workspace requests among the
+**Two Admin panel counts ride on the feed** (CONFIG-ADMIN-POLISH,
+proposal E S1b): `tenants_waiting`, the workspace requests among the
 admin items (Admin › Tenants' "N waiting"), and `platform_secrets_unset`, the
 platform secrets with no enabled version (Admin › Platform secrets). They are
 here because the shell already polls this read every 30 s; a badge that

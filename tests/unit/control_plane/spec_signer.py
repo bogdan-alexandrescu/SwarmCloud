@@ -21,7 +21,7 @@ from swarm_api.specsigning import SpecSignature
 from swarm_common import specsign
 
 KEY_VERSION = (
-    "projects/swarm-test/locations/us-central1/keyRings/swarm-test-specs/"
+    "projects/example-project/locations/us-central1/keyRings/swarm-test-specs/"
     "cryptoKeys/step-spec/cryptoKeyVersions/1"
 )
 

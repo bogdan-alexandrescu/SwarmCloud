@@ -1,5 +1,5 @@
 // CONFIG › PEOPLE AND ROLES DRAWN AS S5b'S CARDS (lane CONFIG-PEOPLE-S5; part
-// of #2391, BGD 2026-10-26: apply the decided mock-up, config-e.html S5b, S5e,
+// of #2391, owner 2026-10-26: apply the decided mock-up, config-e.html S5b, S5e,
 // S5g, S5h, renderers `cpeople` and `cpeopleMember`).
 //
 // WHAT EACH CASE HOLDS:

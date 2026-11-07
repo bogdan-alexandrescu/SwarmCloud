@@ -15,7 +15,7 @@
 //           change of subject
 //
 // QA-044 (the stacked keys in mono) was the platform-wide key face of every
-// stacked record (styles.css, `td[data-label]::before`). BGD decided on
+// stacked record (styles.css, `td[data-label]::before`). owner decided on
 // 2026-10-23 (task_7f0095fb2fd9481790cc q0) to set it sans console-wide;
 // qa044.sanskeys.test.tsx holds it.
 

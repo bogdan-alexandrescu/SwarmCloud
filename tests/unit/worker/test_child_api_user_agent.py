@@ -1,4 +1,4 @@
-"""The worker's swarm-api client names itself with its version (BGD's pick,
+"""The worker's swarm-api client names itself with its version (the owner's pick,
 2026-11-06): the request log tells an agent worker from the plugin bridge."""
 
 from __future__ import annotations

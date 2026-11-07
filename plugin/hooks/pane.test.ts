@@ -113,7 +113,7 @@ test('/sc layout pane saves the layout with one swarm_layout call and opens the 
   expect(called[1].args).toEqual({ level: 'workflows' })
 })
 
-// ---- SC-BROWSER-FOLLOWUP (#2318): BGD's answers of 2026-10-25 ----------------
+// ---- SC-BROWSER-FOLLOWUP (#2318): the owner's answers of 2026-10-25 ----------------
 
 type Queued = { command: string; args: string }
 

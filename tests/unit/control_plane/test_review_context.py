@@ -275,7 +275,7 @@ def test_only_the_named_tenants_index_is_read(api_context, client, db, objects, 
     ("- tests/widgets/test_sort.py:12 [failure]: assert False",
      [("tests/widgets/test_sort.py", None)]),
     (" FAIL  src/ui/List.test.tsx > sorts", [("src/ui/List.test.tsx", None)]),
-    ("error in src/widgets/sort.py:3 and https://x.io/a/test_b.py", []),
+    ("error in src/widgets/sort.py:3 and https://example.com/a/test_b.py", []),
 ])
 def test_failing_tests_are_read_from_ci_output(excerpt, expected):
     assert [(t.path, t.name) for t in reviewcontext.failing_tests(excerpt)] == expected

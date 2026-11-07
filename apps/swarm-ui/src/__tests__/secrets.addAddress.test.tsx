@@ -1,5 +1,5 @@
 // CONFIG › SECRETS' ADD-A-SECRET ADDRESS (lane MCP-LEAD-FORM, part of #2157;
-// BGD 2026-10-25, "Open the form, consumer picked", proposal E S5a: the MCP
+// owner 2026-10-25, "Open the form, consumer picked", proposal E S5a: the MCP
 // servers lead's button "opens setting it").
 //
 // `/config/secrets?add=secret&consumer=<consumer>` (paths.ts

@@ -41,12 +41,12 @@ disagrees:
 | components.html | **A as built**: 32px rows, 8px controls, 12px cards, pill chips; control border token at 3:1 (#7d8ea3 light / #5f7087 dark); radius scale 4/8/9/12/14/999; table heads 12px sentence case; toasts only acknowledge the viewer's own action (failures stay as banners); bars 6px; hatching means only "not measured". One canonical set replaces the 12 button / 11 chip / 7 bar styles in the live app |
 | states.html | **C three tiers**: whole-app states take over the content area with the nav still usable; page states are one banner over dimmed older data; region states show in place. Plus: typed confirm on Cancel workflow while a step runs; a "tab was hidden, reading now" line; an offline banner |
 | timeline.html | **A swimlanes**: one lane per agent grouped under its workflow; bars are attempts holding capacity, hatched bands are parks (no capacity), a cut bar is a fenced generation. Two pages: /timeline Lanes (default) and /timeline/outcomes (today's ledger, unchanged). Reads /v1/attempts and events; no new route |
-| intake-tenants.html | **1A**: a third card on /submit opens /submit/issue, with the issue previewed before submit (title, body, labels), runner, plan approval, auto-merge off by default and disabled until #295, fix rounds (3, range 1-5); a closed issue warns with "Plan it anyway"; submitting lands on a new Work › Runs page at /runs/<id>. **Tenant switcher 2A** on top of #501: collapsed-spine tenant tile, phone header chip, a switch-back toast, and an unsent form is KEPT with its button naming the new tenant |
+| intake-tenants.html | **1A**: a third card on /submit opens /submit/issue, with the issue previewed before submit (title, body, labels), runner, plan approval, auto-merge off by default and disabled until an earlier issue, fix rounds (3, range 1-5); a closed issue warns with "Plan it anyway"; submitting lands on a new Work › Runs page at /runs/<id>. **Tenant switcher 2A** on top of an earlier issue: collapsed-spine tenant tile, phone header chip, a switch-back toast, and an unsent form is KEPT with its button naming the new tenant |
 | agent-detail-2.html | **A in the split detail**: a Children tab on a parent and a "child of …" link on a child; a verdict card on a review step (findings by severity, "Not graded" while the verdict has no severity field); the merge step's ordered checklist card; the Code card opens with one sentence on what happened, then the base-pin line, then the per-file diff; FAILED published_nothing and PUBLISH_REFUSED drawn |
-| viewers.html | **The log dock is SUPERSEDED (owner decision 2026-10-04): logs are a tab.** The owner does not want the log component overlapping the agent details, so the bottom dock -- its strip, resize handle, `Open full` overlay and bottom sheet -- is gone. A full-height **Logs** tab sits beside Details / Attempts / Artifacts / Checkpoints / Children at `/agents/<tab>/<id>/logs` and fills the whole detail area under the header: the four streams as a segmented control (Transcript / Agent stdout / Agent stderr / Runner), attempt picker by generation, search, Follow (live agents only), Wrap, jump to error, masked count, the notice when output is missing between two reads, and the stream metadata (gs path, size) folded by default; one row of controls, overflow into More. An agent opens on Details, whose one-line last log line opens the tab -- a running live-browser agent on Browser (owner decision 2026-10-19, #1646; a running agent opened on Logs from 2026-10-04). A phone has the same tab, full screen. Pick A's viewers for text, JSON, markdown, image, binary and checkpoint contents stand |
+| viewers.html | **The log dock is SUPERSEDED (owner decision 2026-10-04): logs are a tab.** The owner does not want the log component overlapping the agent details, so the bottom dock -- its strip, resize handle, `Open full` overlay and bottom sheet -- is gone. A full-height **Logs** tab sits beside Details / Attempts / Artifacts / Checkpoints / Children at `/agents/<tab>/<id>/logs` and fills the whole detail area under the header: the four streams as a segmented control (Transcript / Agent stdout / Agent stderr / Runner), attempt picker by generation, search, Follow (live agents only), Wrap, jump to error, masked count, the notice when output is missing between two reads, and the stream metadata (gs path, size) folded by default; one row of controls, overflow into More. An agent opens on Details, whose one-line last log line opens the tab -- a running live-browser agent on Browser (owner decision 2026-10-19; a running agent opened on Logs from 2026-10-04). A phone has the same tab, full screen. Pick A's viewers for text, JSON, markdown, image, binary and checkpoint contents stand |
 | wide-workflows.html | **A, extends what is live**: stage rows top to bottom, a stage never wraps; a wide stage's band gains a state-mix bar, failed → running → parked steps as chips, "holds N slots · M waiting hold none", edges bundled one lane per target and lit on hover/select, 1:1 children aligned under their parents; a band count opens the Table filtered to that stage and state. A step skipped by its verdict gate (`result_summary.verdict_gate.agent_ran: false`) gets its own look |
 
-The live app was audited against the batch 1-2 picks on 2026-10-02: #503.
+The live app was audited against the batch 1-2 picks on 2026-10-02: an earlier issue.
 
 ## Agent Details tab, v3 (picked 2026-10-04)
 
@@ -56,7 +56,7 @@ The live app was audited against the batch 1-2 picks on 2026-10-02: #503.
 
 ## Repositories, repository index and git tokens (picked 2026-10-05)
 
-From `repositories.html` (lanes RI0, #573, and RI0b, #578) and the designs in
+From `repositories.html` (lanes RI0, and RI0b) and the designs in
 [`docs/repo-index.md`](../../repo-index.md) and [`docs/git-tokens.md`](../../git-tokens.md).
 
 **The owner's picks:**
@@ -88,14 +88,14 @@ override:
 ## Onboarding: connect GitHub, enable orgs, choose repositories (picked 2026-10-07)
 
 From `onboarding.html` and the design in [`docs/onboarding.md`](../../onboarding.md)
-(#780). The owner's decision D10 on #780, 2026-10-07: chooser A, and the
+. The owner's decision D10 on an earlier issue, 2026-10-07: chooser A, and the
 recommended variant of every other screen. Built by lane OB8 as
 `apps/swarm-ui/src/Onboarding.tsx` (Work › Setup, `/setup`) and
 `apps/swarm-ui/src/Access.tsx` (Work › Access, `/access`).
 
 | Screen | Pick |
 |---|---|
-| 1 · Entry and checklist | **A**: a checklist card on Overview until every step is done, the six step ids the API serves, the failing step's §2.3 copy inline. Hide keeps the steps; Work › Setup still shows them. Hide posts `POST /v1/onboarding/dismiss` (built, #780 step 3), so it is kept per person on the server, in every browser, and read back as `dismissed` from `GET /v1/onboarding`; Work › Setup's Show on Overview posts `{dismissed: false}` |
+| 1 · Entry and checklist | **A**: a checklist card on Overview until every step is done, the six step ids the API serves, the failing step's §2.3 copy inline. Hide keeps the steps; Work › Setup still shows them. Hide posts `POST /v1/onboarding/dismiss` (built, an earlier issue step 3), so it is kept per person on the server, in every browser, and read back as `dismissed` from `GET /v1/onboarding`; Work › Setup's Show on Overview posts `{dismissed: false}` |
 | 2 · Connect GitHub | **A**: one Connect GitHub button for the App (built by OB3 as `GitHubConnect.tsx`) |
 | 3 · Org and repository chooser | **A**: owners on the left (the installations, plus orgs with none), the selected owner's repositories on the right, paged and searched server-side, each Not chosen, Read or Write with push ability shown before Write; "Not listed? type owner/repo" carries the recovery copy |
 | 4 · Verification results | **A**: a grid, failures first, the fix inline; ok / missing / unknown as the permission matrix draws them. Reads only by default (D6); a write grant offers the opt-in **Push test**, which asks first, creates and deletes `swarmcloud/onboarding-check-<nonce>`, draws ok / missing / unknown, and names a branch its delete left behind. A read grant is never offered one (D9) |
@@ -104,7 +104,7 @@ recommended variant of every other screen. Built by lane OB8 as
 
 ## Schedules and the Approvals inbox (placement picked 2026-10-08)
 
-Mock-up page: `schedules.html`, drawn by design lane SCHED0 (#892); the design is
+Mock-up page: `schedules.html`, drawn by design lane SCHED0; the design is
 [docs/schedules.md](../../schedules.md). The owner answered the design's eleven
 questions on 2026-10-08. Only the placement is a screen pick; the other screens
 on the page are still recommendations and **have not been picked**.

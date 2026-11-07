@@ -232,7 +232,7 @@
 .rn-table th[data-col='state'] { width: 108px; }
 .rn-table th[data-col='approval'] { width: 86px; }
 /* SIZED TO WHAT THEY HOLD (owner QA R11, 2026-10-04): at 11% and 10% the
-   Workflow id read 'wf_3c66d93…' and By 'bogdan@sag…' while the Issue column
+   Workflow id read 'wf_3c66d93…' and By 'owner@sag…' while the Issue column
    had room to give. Every id in a row is drawn at the micro size and every
    cell kept 8px a side (6px since N20, below), so at 1056px the run id (24
    mono characters), the workflow id (23), the issue reference (34) and an
@@ -252,7 +252,7 @@
    qafix4.runs.test.tsx. */
 /* BY IS AN ADDRESS, DRAWN AS THE ROW'S OTHER IDS ARE (visual QA QA-081,
    2026-10-20): at --t-meta 'operator@example.com' filled its 134px to the
-   pixel and read 'operator@example.co…' at 1440. The card has no pixel to
+   pixel and read 'operator@example.c…' at 1440. The card has no pixel to
    give it -- Issue needs every one it has for a 34-character reference
    (D11), Run its 24-character id (`new_id`, whatever the preview's shorter
    ids suggest) -- so the address is drawn at the micro size, as the workflow

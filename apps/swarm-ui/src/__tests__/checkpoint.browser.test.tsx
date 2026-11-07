@@ -59,7 +59,7 @@ function listing(over: Partial<CheckpointFiles> = {}): CheckpointFiles {
     attempt_id: 'att_1',
     checkpoint_id: 'ckpt-00001',
     prefix: PREFIX,
-    archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://bucket/${PREFIX}/archive.tar.gz`, bytes: 4096 },
+    archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://swarm-artifacts-example-project/${PREFIX}/archive.tar.gz`, bytes: 4096 },
     manifest: {
       status: 'present',
       detail: null,
@@ -93,11 +93,11 @@ function content(path: string, text: string | null, over: Partial<CheckpointFile
     path,
     content_type: 'text/plain',
     member: { type: 'file', mode: 0o644, size: text?.length ?? 0 },
-    artifact: { name: path, bytes: text?.length ?? 0, uri: `gs://bucket/${PREFIX}/archive.tar.gz` },
+    artifact: { name: path, bytes: text?.length ?? 0, uri: `gs://swarm-artifacts-example-project/${PREFIX}/archive.tar.gz` },
     status: 'ok',
     detail: null,
     key: `${PREFIX}/archive.tar.gz`,
-    uri: `gs://bucket/${PREFIX}/archive.tar.gz`,
+    uri: `gs://swarm-artifacts-example-project/${PREFIX}/archive.tar.gz`,
     content: text,
     total_bytes: text?.length ?? 0,
     offset: 0,
@@ -273,14 +273,14 @@ describe("the archive fact dates the archive by the bucket's own time (#172)", (
 
   it('states how long ago the archive object was written, beside its size', async () => {
     const at = new Date(Date.now() - 9 * 60_000).toISOString()
-    mount(loaders(ok(listing({ archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://bucket/${PREFIX}/archive.tar.gz`, bytes: 4096, object_updated_at: at } }))))
+    mount(loaders(ok(listing({ archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://swarm-artifacts-example-project/${PREFIX}/archive.tar.gz`, bytes: 4096, object_updated_at: at } }))))
     await screen.findByRole('tree')
     expect(archiveFact().textContent).toMatch(/4(\.0)? KiB/)
     expect(archiveFact().textContent).toContain('9m ago')
   })
 
   it('states no time, and invents none, when the store reported none', async () => {
-    mount(loaders(ok(listing({ archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://bucket/${PREFIX}/archive.tar.gz`, bytes: 4096, object_updated_at: null } }))))
+    mount(loaders(ok(listing({ archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://swarm-artifacts-example-project/${PREFIX}/archive.tar.gz`, bytes: 4096, object_updated_at: null } }))))
     await screen.findByRole('tree')
     expect(archiveFact().textContent).not.toMatch(/ago|just now/)
   })

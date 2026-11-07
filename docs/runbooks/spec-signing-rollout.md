@@ -1,7 +1,6 @@
 # Step-spec signing: rollout, rotation and revocation
 
-Contract request 34 ([`docs/contract-change-requests.md`](../contract-change-requests.md),
-issue #342). swarm-api signs every step's canonical spec with a Cloud KMS key
+Contract request 34 ([`docs/contract-change-requests.md`](../contract-change-requests.md)). swarm-api signs every step's canonical spec with a Cloud KMS key
 at submission; every worker verifies the signature before it reads anything
 the spec decides, and refuses an agent that does not verify as
 `spec_signature_invalid`.
@@ -27,7 +26,7 @@ after **2026-10-20T00:00:00Z** whatever the configuration says
 |---|---|---|
 | `cloudkms.googleapis.com`, the key ring `swarm-<env>-specs`, the key `step-spec` (EC P-256, software), swarm-api's `signer` grant, the deployer's `publicKeyViewer` + `viewer` | [`terraform/bootstrap/spec_signing.tf`](../../terraform/bootstrap/spec_signing.tf) | **the owner**, never CI: CI must not hold `setIamPolicy` on the key, or the release could grant itself a signature |
 | the names of both, spelled once | [`terraform/modules/spec_signing_key`](../../terraform/modules/spec_signing_key/main.tf) | both roots |
-| `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler (which copies them onto every Job it creates, Cloud Run and GKE); the signing version (`output.spec_signing_key_version`), which #353 puts on swarm-api as `SPEC_SIGNING_KEY_VERSION` | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
+| `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`, `SPEC_SIGNATURE_MODE`, `SPEC_LEGACY_CUTOVER` on every Cloud Run worker Job and on the scheduler (which copies them onto every Job it creates, Cloud Run and GKE); the signing version (`output.spec_signing_key_version`), which the key-version rollout puts on swarm-api as `SPEC_SIGNING_KEY_VERSION` | [`terraform/infra/spec_signing.tf`](../../terraform/infra/spec_signing.tf), values in [`dev.tfvars`](../../terraform/environments/dev/dev.tfvars) | the release |
 | the `swarm-spec-verify-keys` ConfigMap in each tenant namespace, the GKE pods' **fallback** | [`kubernetes/render.py`](../../kubernetes/render.py) from `terraform output -json spec_verify_keys_configmap`, applied by [`kubernetes/apply.sh`](../../kubernetes/apply.sh) `--spec-verify-keys` | the release's `deploy` job, when `vars.APPLY_TENANT_NAMESPACES` is `true` |
 | `SPEC_VERIFY_KEYS` on the workspace job `swarm-workspace-apply`, and its SHA-256 in the job's fixed command, which is what group and service **approvals** are verified against | [`terraform/bootstrap/workspace_deployer.tf`](../../terraform/bootstrap/workspace_deployer.tf), read from dev's key at plan | **the owner's bootstrap apply**, never a release: see [Rotation](#rotation) |
 | the alert on a refusal | [`terraform/modules/monitoring`](../../terraform/modules/monitoring/alerts.tf), `spec-signature-invalid` | the release |
@@ -41,9 +40,9 @@ environment, on both backends, with a read-only mount as the fallback on GKE:
 no KMS call, no quota and no IAM at attempt start.
 
 **What this does not protect against**, accepted by the owner on 2026-09-29:
-the key lives in the shared `saga-agents-staging` project, so a project Owner
+the key lives in the shared `example-project` project, so a project Owner
 or Editor can redeploy swarm-api to run their own code as its account, and sign
-through it. It does hold against tenant agents, which is who #342 is about.
+through it. It does hold against tenant agents, which is who the tenant-agent spec-forgery concern is about.
 
 ## The rollout
 
@@ -72,7 +71,7 @@ terraform output spec_signing_keys
 # version 1's public key, per environment (dev shown). Bootstrap no longer
 # renders the PEMs itself: it creates the key, and reading each version's key
 # in the same plan that creates it is a for_each over values unknown until
-# apply, which fails the plan (#360). terraform/infra renders them, as
+# apply, which fails the plan. terraform/infra renders them, as
 # `terraform output spec_verify_keys`, from its first release on.
 gcloud kms keys versions get-public-key 1 --key step-spec \
   --keyring swarm-dev-specs --location us-central1
@@ -80,14 +79,14 @@ gcloud kms keys versions get-public-key 1 --key step-spec \
 
 Read the plan for: two key rings and two keys (`dev`, `prod`), each key
 `EC_SIGN_P256_SHA256` / `SOFTWARE`; `roles/cloudkms.signer` for
-`swarm-api@saga-agents-staging.iam.gserviceaccount.com` on each key and nothing
+`swarm-api@example-project.iam.gserviceaccount.com` on each key and nothing
 else; `roles/cloudkms.publicKeyViewer` and `roles/cloudkms.viewer` for
 `swarm-tf-deployer` on each key. Nothing on the project.
 
 Then the Terraform-half pull request merges and releases. It is inert for
 today's code: the worker reads none of these variables yet. It exists first so
 the verifying worker ships onto Jobs that already carry the keys.
-`SPEC_SIGNING_KEY_VERSION` is **not** in it: #353 adds it to swarm-api's
+`SPEC_SIGNING_KEY_VERSION` is **not** in it: the key-version rollout adds it to swarm-api's
 environment in the same change as the code that reads it, because
 `scripts/lib/check-env-parity.sh` refuses a variable no code reads, and the
 hardened swarm-api **refuses to start without it**.
@@ -105,7 +104,7 @@ gcloud run jobs describe swarm-job-eng-claude-code --region us-central1 \
   | select(.name | startswith("SPEC_")) | "\(.name)=\(.value | .[0:80])"'
 ```
 
-### 2. Signing and verifying (#353's release)
+### 2. Signing and verifying (the key-version rollout's release)
 
 swarm-api signs every new agent; every worker verifies. In `legacy`, an unsigned
 agent created before the cutover runs with a WARNING
@@ -150,7 +149,7 @@ gcloud run revisions list --service swarm-api --region us-central1 \
 ```
 
 In dev that was `swarm-api-00119-lcs`, created 2026-09-30T21:24:36.572669Z by
-#353's release; the service routes 100% to the latest ready revision
+the key-version rollout's release; the service routes 100% to the latest ready revision
 (`terraform/modules/cloud_run`), so it took all traffic within that release's
 `terraform apply`.
 
@@ -164,7 +163,7 @@ unsigned agent left fails `spec_signature_invalid` with reason `unsigned`.
 
 ### Prod
 
-Prod enforces from its first release and never had a legacy window (owner decision 2026-10-06 on #355): no unsigned agent was ever parked there, which is the only thing a window protects. `prod.tfvars` states `spec_signature_mode = "enforce"` explicitly rather than inheriting the default, and sets no `spec_legacy_cutover`. The worker's code cap (#739) refuses an unsigned agent created after 2026-09-30T21:24:36Z on every platform, so even a prod `legacy` setting could not re-open the window.
+Prod enforces from its first release and never had a legacy window (owner decision 2026-10-06, the spec-signing-cutover decision): no unsigned agent was ever parked there, which is the only thing a window protects. `prod.tfvars` states `spec_signature_mode = "enforce"` explicitly rather than inheriting the default, and sets no `spec_legacy_cutover`. The worker's code cap refuses an unsigned agent created after 2026-09-30T21:24:36Z on every platform, so even a prod `legacy` setting could not re-open the window.
 
 ## GKE
 
@@ -180,7 +179,7 @@ exists to put there.
 
 This reverses the original GKE design, which delivered them only through the
 ConfigMap. That was enough while GKE ran browser alone in namespaces the
-release applied. Once claude-code moved to GKE (PR 866) and onboarding (#847)
+release applied. Once claude-code moved to GKE (PR 866) and onboarding
 began creating a namespace per person, a namespace with no ConfigMap ended
 every agent `CANNOT_START`.
 
@@ -200,7 +199,7 @@ kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 
 `apply.sh` passes its `${ENVIRONMENT}` to `render.py`, which accepts only that
 environment's key, `projects/<project>/locations/<region>/keyRings/swarm-<env>-specs/cryptoKeys/step-spec`
-(#346). A `keys.json` from another environment, or naming any other key in
+. A `keys.json` from another environment, or naming any other key in
 the shared project, is refused before anything is applied. Set `ENVIRONMENT`
 (or `.env`) to match the Terraform state you read the output from.
 
@@ -288,7 +287,7 @@ cluster. The tenant comes from that resource, which the platform sets --
 from a Cloud Run Job's name -- never from the line's own `labels.tenant_id`.
 That is because the agent, beside the worker as the same uid, can write a
 JSON line into the container's log through tini's `/proc/1/fd/1`, and nothing
-in a JSON payload is the worker's alone (#346, #354 security review). So an
+in a JSON payload is the worker's alone (the log-forgery security review). So an
 agent cannot page in another tenant's name, and no other job or pod in the
 shared project can page at all. It **can** still page from its own worker
 container, under its own job or namespace: a page whose tenant ran an agent at
@@ -308,7 +307,7 @@ built.
 
   ```bash
   gcloud quotas info list --service=cloudkms.googleapis.com \
-    --project=saga-agents-staging --format=json
+    --project=example-project --format=json
   ```
 
   Read 2026-10-01: `crypto_requests` 60,000/min per project,

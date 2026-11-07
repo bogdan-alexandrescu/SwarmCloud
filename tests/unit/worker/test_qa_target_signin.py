@@ -847,7 +847,7 @@ def test_a_public_target_is_handed_over_with_no_credential(tmp_path, db):
 
 
 # --------------------------------------------------------------------------
-# Start clicks before the form (§2.2; BGD, 2026-10-23, AI Studio's chooser)
+# Start clicks before the form (§2.2; the owner, 2026-10-23, a peer application's chooser)
 # --------------------------------------------------------------------------
 
 _CHOOSER = [{"text": "Staging", "css": "button"}, {"text": "Sign in"}]
@@ -973,10 +973,10 @@ def test_the_gate_refuses_a_malformed_start_click_hand_off():
 # Start clicks on fixture pages: only what a person can click counts
 # --------------------------------------------------------------------------
 #
-# AI Studio's staging quality-check run of 4 November 2026 (about 21:45 UTC,
+# A peer application's staging quality-check run of 4 November 2026 (about 21:45 UTC,
 # task_11a0f4181d3245ef8390): the user leg's first capture group ended
 # `qa_sign_in_start_click_missing` on a page reading "Skip to content / Sign
-# in to AI Studio / Staging / From your link / Production / Sign in", with
+# in to a peer application / Staging / From your link / Production / Sign in", with
 # two visible elements whose text is exactly 'Sign in'. That cause comes only
 # from the FIRST start click (`SignIn._start_click`): a re-click that names
 # other than one control stops clicking and the sign-in ends
@@ -1080,12 +1080,12 @@ def _page_node(tag: str, *children: Any, **attrs: Any) -> dict[str, Any]:
 
 
 def _chooser_page(*sign_in: dict[str, Any]) -> dict[str, Any]:
-    """AI Studio's chooser as the failing group's page read: a skip link,
+    """A peer application's chooser as the failing group's page read: a skip link,
     the heading with its own 'Sign in' span, the environments, and `sign_in`."""
     return _page_node(
         "body",
         _page_node("a", "Skip to content", href="#main", id="skip"),
-        _page_node("h1", _page_node("span", "Sign in", id="heading-span"), " to AI Studio", id="heading"),
+        _page_node("h1", _page_node("span", "Sign in", id="heading-span"), " to a peer application", id="heading"),
         _page_node("div", _page_node("button", "Staging", id="staging"),
                    _page_node("span", "From your link"), _page_node("button", "Production", id="production")),
         *sign_in,
@@ -1176,7 +1176,7 @@ def test_the_re_click_also_passes_over_the_heading_span_and_clicks_the_button_ag
 
 def test_what_counts_as_a_control_a_person_can_click():
     def heading_and(control: dict[str, Any]) -> dict[str, Any]:
-        return _page_node("body", _page_node("h1", _page_node("span", "Sign in"), " to AI Studio"), control)
+        return _page_node("body", _page_node("h1", _page_node("span", "Sign in"), " to a peer application"), control)
 
     clicked = [
         _page_node("button", _page_node("span", "Sign in"), id="x"),
@@ -1227,7 +1227,7 @@ def test_a_refusal_names_at_most_three_matches_by_tag_and_role_in_plain_characte
 # A role's own home, already signed in, with no login form (part of #2688)
 # --------------------------------------------------------------------------
 #
-# AI Studio's staging quality-check run of 4 November 2026 (re-run 4, 21:52
+# A peer application's staging quality-check run of 4 November 2026 (re-run 4, 21:52
 # to 22:05 UTC): the reviewer and moderator legs ended `qa_sign_in_no_form`
 # on every capture group while the agent's own tab was signed in. The gate's
 # start click 'Sign in' went to the identity provider, whose session was
@@ -1269,7 +1269,7 @@ def _reviewer_home() -> dict[str, Any]:
     return _page_node(
         "body",
         _page_node("a", "Skip to content", href="#main-content"),
-        _page_node("aside", _page_node("nav", _page_node("a", "AI Studio", href="/"), _page_node("a", "Home", href="/"),
+        _page_node("aside", _page_node("nav", _page_node("a", "A peer application", href="/"), _page_node("a", "Home", href="/"),
                                        _page_node("a", "My queue", href="/rating/queue"),
                                        _page_node("button", "QR", **{"aria-label": "QR, Account"}))),
         _rating_bar("Where you are rating", "Staging", "Production"),

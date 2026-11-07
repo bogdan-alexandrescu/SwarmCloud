@@ -1,7 +1,7 @@
 """A tenant may list service accounts that resolve to it (contract request 30).
 
 WHAT THIS PINS. `.github/workflows/ci-fix.yml` (#273) runs as
-`swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` and has to land in
+`swarm-ci-fix@example-project.iam.gserviceaccount.com` and has to land in
 tenant `eng` to continue `eng`'s red pull requests. A service account is not a
 Workspace principal, and adding it to `eng@example.com` would hand it every grant
 that group holds across the company. So `eng` LISTS it in terraform, and
@@ -312,7 +312,7 @@ def test_an_object_instead_of_a_list_is_refused(env):
 @pytest.mark.parametrize(
     "entry",
     [
-        pytest.param(_entry(email="bogdan@example.com"), id="human"),
+        pytest.param(_entry(email="owner@example.com"), id="human"),
         # A Google-managed service agent whose `gcp-sa-*` half happens to look
         # like a project id: the frozen regex accepts the shape, so it is the
         # pin to THIS project that refuses it (see the test after this one).
@@ -321,8 +321,8 @@ def test_an_object_instead_of_a_list_is_refused(env):
             id="google-managed-service-agent",
         ),
         pytest.param(
-            _entry(email="swarm-ci-fix@other-project.iam.gserviceaccount.com"),
-            id="other-project",
+            _entry(email="swarm-ci-fix@example-shared-project.iam.gserviceaccount.com"),
+            id="example-shared-project",
         ),
         pytest.param(
             _entry(email="123456789012-compute@developer.gserviceaccount.com"),

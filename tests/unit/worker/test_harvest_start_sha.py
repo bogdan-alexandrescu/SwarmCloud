@@ -1,6 +1,6 @@
 """A step publishes only what it made on top of where it started (#2094).
 
-MEASURED 2026-10-23 (product-oracle, strategy `direct-pr`): a read-only
+MEASURED 2026-10-23 (peer-service, strategy `direct-pr`): a read-only
 re-review (`task_aeba00993037460dbe42`) and a NOT_YET review
 (`task_8418c1951306435fbd9b`) each checked out the branch they reviewed and
 committed nothing. The end-of-task harvest diffed HEAD against the clone
@@ -23,7 +23,7 @@ is faked, as in test_strategy_end_to_end.py):
     commits, and a step allowed an empty diff that did nothing opens no pull
     request (the controls).
 
-RELAXED FOR A NEW LOCAL BRANCH (BGD, 2026-10-23 16:47Z, task_306e3aa8dee141a5a390
+RELAXED FOR A NEW LOCAL BRANCH (the owner, 2026-10-23 16:47Z, task_306e3aa8dee141a5a390
 q0). All five implement agents sampled that day ran `git checkout -b <name>`
 from their start and committed there; the strict rule above refused every one.
 A branch the agent CREATED -- one with no `refs/remotes/origin/<name>` in the
@@ -234,7 +234,7 @@ def test_a_step_allowed_an_empty_diff_that_did_nothing_opens_no_pull_request(
     assert f"swarm/{config.task_id}" not in refs(origin)
 
 
-# -- a branch the agent created from its start is its own (BGD, 2026-10-23) --
+# -- a branch the agent created from its start is its own (the owner, 2026-10-23) --
 
 
 def _kept(task_id: str, *subjects: str) -> list[str]:

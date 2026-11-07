@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lightpanda vs headless Chromium, driven by the same Playwright code over CDP.
 
-Part of docs/design/lightpanda-runtime.md (LIGHTPANDA-ANALYSIS, part of #2688).
+Part of docs/design/lightpanda-runtime.md (LIGHTPANDA-ANALYSIS, part of the Day One install program).
 
 WHAT IT MEASURES. For every page in PAGES and for each engine, it starts a
 FRESH browser process listening for CDP on a free 127.0.0.1 port, connects
@@ -93,7 +93,7 @@ PAGES = [
     ("httpbin-form", "plain HTML form POST", "https://httpbin.org/forms/post", "Customer name", "httpbin"),
     ("herokuapp-iframe", "iframe (TinyMCE editor)", "https://the-internet.herokuapp.com/iframe", "An iFrame containing the TinyMCE", None),
     ("herokuapp-frames", "nested frames", "https://the-internet.herokuapp.com/nested_frames", None, None),
-    ("swarm-console", "the SwarmCloud console's sign-in (IAP redirect)", "https://swarm.saga.xyz/", "Sign in", None),
+    ("swarm-console", "the SwarmCloud console's sign-in (IAP redirect)", "https://swarm.example.com/", "Sign in", None),
 ]
 
 

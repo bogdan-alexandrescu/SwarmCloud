@@ -102,7 +102,7 @@ describe('a11y-keyboard-004: every `?` draws the app focus ring', () => {
 describe('a11y-keyboard-003: a pinned section card is a named dialog', () => {
   it('names the pinned card by its title', async () => {
     // Runtimes, not Pools: Pools' title `?` opens its own topics since VQ-033
-    // (BGD 2026-10-26), so its section card is not drawn there.
+    // (owner 2026-10-26), so its section card is not drawn there.
     window.history.replaceState(null, '', '/capacity/runtimes')
     render(<App />)
     const glyph = await waitFor(() => screen.getByRole('button', { name: /^Help: .* answers$/ }), WAIT)

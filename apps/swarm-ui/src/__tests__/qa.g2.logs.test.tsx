@@ -53,7 +53,7 @@ function stream(name: LogStream['stream'], content: string): LogStream {
     status: 'ok',
     detail: null,
     key: `tenants/eng/tasks/${ID}/attempts/${ATT}/logs/${name}.log`,
-    uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/${ATT}/logs/${name}.log`,
+    uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${ID}/attempts/${ATT}/logs/${name}.log`,
     content,
     total_bytes: content.length,
     offset: 0,

@@ -1,6 +1,6 @@
 """A person's push to a merge step's pull request supersedes the step (#2505).
 
-BGD's decision, 2026-10-27 (issue triage, epic #2525): "A distinct
+the owner's decision, 2026-10-27 (issue triage, epic #2525): "A distinct
 non-failure end: superseded_by_person_push (not FAILED) when the committer is
 not the platform identity, so failure-review stops filing it; a foreign head
 from an unknown branch-mate still refuses."
@@ -353,7 +353,7 @@ def test_a_commit_under_the_platforms_own_identity_ends_head_moved(tmp_path):
 
 
 def test_a_persons_merge_the_proof_refuses_still_ends_head_moved(tmp_path):
-    """BGD's decision is about a person's content commit. A two-parent merge
+    """the owner's decision is about a person's content commit. A two-parent merge
     the purity proof refuses stays head_moved: the proof may refuse what git
     accepts, and that is the platform's to look at."""
     world = _world(tmp_path)

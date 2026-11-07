@@ -102,8 +102,8 @@ function ok<T>(data: T): Result<T> {
 
 function account(over: Partial<Account> = {}): Account {
   return {
-    account_id: 'u-bogdan:laptop',
-    owner_tenant: 'u-bogdan',
+    account_id: 'u-owner:laptop',
+    owner_tenant: 'u-owner',
     label: 'laptop',
     provider: 'anthropic',
     state: 'AVAILABLE',
@@ -124,7 +124,7 @@ function account(over: Partial<Account> = {}): Account {
 
 function board(accounts: Account[], fixture = false): AccountsBoard {
   return {
-    page: { accounts, tenant_id: 'u-bogdan', unreadable_documents: [], unreadable_document_count: 0 } as AccountsPage,
+    page: { accounts, tenant_id: 'u-owner', unreadable_documents: [], unreadable_document_count: 0 } as AccountsPage,
     tenants: [],
     tenantsDetail: null,
     readAt: Date.now(),
@@ -141,7 +141,7 @@ async function accounts(list: Account[], fixture = false): Promise<void> {
 function many(n: number): Account[] {
   return Array.from({ length: n }, (_, i) => {
     const label = `acct-${String(i).padStart(2, '0')}`
-    return account({ account_id: `u-bogdan:${label}`, label })
+    return account({ account_id: `u-owner:${label}`, label })
   })
 }
 
@@ -212,7 +212,7 @@ describe('V068/V157: neither half of the card stretches; the page brings the pan
   it('opens a desktop account as a sheet that scrolls itself, at its top, with focus on Close (#2222)', async () => {
     await accounts(many(40))
     scrolled.length = 0
-    fireEvent.click(row('u-bogdan:acct-38'))
+    fireEvent.click(row('u-owner:acct-38'))
     await waitFor(() => expect(document.querySelector('.acct-pane-detail h3')!.textContent).toBe('acct-38'), WAIT)
     const sheet = document.querySelector<HTMLElement>('.acct-split > .acct-pane.acct-sheet')!
     // A sheet over the table does not move the page; it opens at its own top.
@@ -235,7 +235,7 @@ describe('V158: a phone lands on the chosen account\'s head', () => {
     // A phone shows the first cards and "Show all" (#2222, mock-up A P1).
     fireEvent.click(screen.getByRole('button', { name: 'Show all 40' }))
     scrolled.length = 0
-    fireEvent.click(row('u-bogdan:acct-38'))
+    fireEvent.click(row('u-owner:acct-38'))
     await waitFor(() => expect(document.querySelector('.acct-split.is-detail')).not.toBeNull(), WAIT)
     const pane = document.querySelector('.acct-split > .acct-pane')!
     expect(scrolled.filter((s) => s.el === pane).map((s) => s.arg)).toEqual([{ block: 'start' }])
@@ -249,8 +249,8 @@ describe('V158: a phone lands on the chosen account\'s head', () => {
     window.addEventListener('popstate', pops)
     window.addEventListener('hashchange', hashes)
     try {
-      fireEvent.click(row('u-bogdan:acct-01'))
-      await waitFor(() => expect(window.location.hash).toContain('account=u-bogdan%3Aacct-01'), WAIT)
+      fireEvent.click(row('u-owner:acct-01'))
+      await waitFor(() => expect(window.location.hash).toContain('account=u-owner%3Aacct-01'), WAIT)
       expect(hashes).toHaveBeenCalled()
       // A popstate makes the shell put back the scroll it recorded for the
       // address -- for three seconds, over the scroll above.
@@ -290,12 +290,12 @@ describe('V154: Lending\'s serves list', () => {
   it('keeps each comma inside its id, so no line starts with one', async () => {
     await accounts([account({ lend_to: [LONG_TENANT, 'eng'] })])
     // Lending's editor is behind Edit lending in the sheet (#2222).
-    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(row('u-owner:laptop'))
     fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     const serves = [...document.querySelectorAll('.acct-pane .ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'serves')!
     const ids = [...serves.querySelectorAll('.acct-id')].map((e) => e.textContent)
-    expect(ids).toEqual(['u-bogdan,', `${LONG_TENANT},`, 'eng'])
-    expect(serves.querySelector('.acct-ids')!.textContent).toBe(`u-bogdan, ${LONG_TENANT}, eng`)
+    expect(ids).toEqual(['u-owner,', `${LONG_TENANT},`, 'eng'])
+    expect(serves.querySelector('.acct-ids')!.textContent).toBe(`u-owner, ${LONG_TENANT}, eng`)
     // Whole in each title, without the comma.
     expect(serves.querySelectorAll('.acct-id')[1]!.getAttribute('title')).toBe(LONG_TENANT)
   })
@@ -310,7 +310,7 @@ describe('V154: Lending\'s serves list', () => {
 describe('V181: Lending\'s field', () => {
   it('says what it takes in words that fit, the Add form\'s', async () => {
     await accounts([account()])
-    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(row('u-owner:laptop'))
     fireEvent.click(screen.getByRole('button', { name: 'Edit lending' }))
     const input = document.querySelector<HTMLInputElement>('input[aria-label^="Tenants"]')!
     expect(input.placeholder).toBe('tenant ids, comma separated')
@@ -335,7 +335,7 @@ describe('V155: Holding now\'s tenants', () => {
     expect(painted(cut.querySelector('.acct-cut-head')!, 'text-overflow', PHONE)).toBe('ellipsis')
     expect(painted(cut.querySelector('.acct-cut-tail')!, 'flex', PHONE)).toBe('none')
     // A short tenant is one box, as it was.
-    const short = [...document.querySelectorAll('.acct-holding-now .acct-hist-whoin > .mono')].find((e) => e.textContent === 'u-bogdan')!
+    const short = [...document.querySelectorAll('.acct-holding-now .acct-hist-whoin > .mono')].find((e) => e.textContent === 'u-owner')!
     expect(short.classList.contains('acct-cut')).toBe(false)
   })
 
@@ -347,31 +347,31 @@ describe('V155: Holding now\'s tenants', () => {
 describe('V070: the state-change modal and the Replace copy draw ids unbroken', () => {
   it('names the owner as an id in the modal\'s warning', async () => {
     await accounts([account({ assigned: 2 })])
-    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(row('u-owner:laptop'))
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }))
     const dialog = await screen.findByRole('dialog', CONFIRM, WAIT)
     const warn = dialog.querySelector('.warn-text')!
-    expect(warn.textContent).toContain('Every agent in u-bogdan loses it for new work.')
-    expect([...warn.querySelectorAll('.acct-id')].map((e) => e.textContent)).toEqual(['u-bogdan'])
+    expect(warn.textContent).toContain('Every agent in u-owner loses it for new work.')
+    expect([...warn.querySelectorAll('.acct-id')].map((e) => e.textContent)).toEqual(['u-owner'])
   })
 
   it('names the account as an id in Replace the credential', async () => {
     await accounts([account()])
-    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(row('u-owner:laptop'))
     const head = [...document.querySelectorAll('.acct-pane h4')].find((h) => h.textContent === 'Replace the credential')!
     const copy = head.parentElement!.querySelector('p.muted.small')!
     // The full stop inside the id's box, so a cut id never leaves it to start a line.
-    expect(copy.querySelector('.acct-id.mono')!.textContent).toBe('u-bogdan:laptop.')
-    expect(copy.querySelector('.acct-id.mono')!.getAttribute('title')).toBe('u-bogdan:laptop')
-    expect(copy.textContent).toContain('Replaces the credential behind u-bogdan:laptop. Nothing here needs doing')
+    expect(copy.querySelector('.acct-id.mono')!.textContent).toBe('u-owner:laptop.')
+    expect(copy.querySelector('.acct-id.mono')!.getAttribute('title')).toBe('u-owner:laptop')
+    expect(copy.textContent).toContain('Replaces the credential behind u-owner:laptop. Nothing here needs doing')
     expect(copy.querySelector('code')).toBeNull()
   })
 
   it('names it as an id when only a person can replace it', async () => {
     await accounts([account({ state: 'REAUTH_REQUIRED' })])
-    fireEvent.click(row('u-bogdan:laptop'))
+    fireEvent.click(row('u-owner:laptop'))
     const head = [...document.querySelectorAll('.acct-pane h4')].find((h) => h.textContent === 'Sign in again')!
-    expect(head.parentElement!.querySelector('p.muted.small .acct-id')!.textContent).toBe('u-bogdan:laptop')
+    expect(head.parentElement!.querySelector('p.muted.small .acct-id')!.textContent).toBe('u-owner:laptop')
   })
 })
 
@@ -388,7 +388,7 @@ describe('V184: the paste field is one width wherever the sign-in runs', () => {
 
 describe('V182: a finished sign-in shows its receipt, not the form', () => {
   it('draws the receipt alone, and done closes the panel', async () => {
-    const added = account({ account_id: 'u-bogdan:work-laptop', label: 'work-laptop', observed_at: null })
+    const added = account({ account_id: 'u-owner:work-laptop', label: 'work-laptop', observed_at: null })
     api.beginAccountSignIn.mockResolvedValue(
       ok({ authorize_url: 'https://claude.com/cai/oauth/authorize?state=s', state: 's'.repeat(43), expires_in_seconds: 900 }),
     )
@@ -400,7 +400,7 @@ describe('V182: a finished sign-in shows its receipt, not the form', () => {
     const paste = await screen.findByRole('textbox', { name: 'The code the Claude callback page displayed' }, WAIT)
     fireEvent.change(paste, { target: { value: 'code-from-the-page' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add this account' }))
-    const receipt = await screen.findByText(/Signed in — u-bogdan:work-laptop/, undefined, WAIT)
+    const receipt = await screen.findByText(/Signed in — u-owner:work-laptop/, undefined, WAIT)
     const panel = document.querySelector('.acct-add-panel')!
     expect(panel.contains(receipt)).toBe(true)
     // No empty form beside the receipt, Start disabled under it.

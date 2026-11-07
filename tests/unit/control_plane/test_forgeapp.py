@@ -72,7 +72,7 @@ from swarm_api.waker import NullWaker
 from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
 
 T0 = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 CLIENT_ID = "Iv23" + "abcdefgh12"
 transport_log = logging.getLogger("tests.forgeapp.transport")
 
@@ -109,7 +109,7 @@ class FakeGitHub:
         #: `GET /app`: the public key GitHub holds for the App (None: every
         #: JWT is refused), and the App it answers.
         self.app_public_key: Any = None
-        self.app_id = 12345
+        self.app_id = 123456
         self.app_slug = "swarmcloud"
         self.jwts: list[str] = []
 
@@ -319,7 +319,7 @@ def _app(db, tokens, group_map, objects, clock, github, slots, app_secret, *,
     )
     service = forgeapp.ForgeApp(
         db,
-        config=forgeapp.AppConfig(client_id=client_id, app_id="12345" if client_id else "",
+        config=forgeapp.AppConfig(client_id=client_id, app_id="123456" if client_id else "",
                                   slug="swarmcloud" if client_id else ""),
         secrets=app_secret,
         slots=slots,
@@ -825,7 +825,7 @@ def test_the_config_reads_the_apps_public_settings_from_the_environment():
     empty = forgeapp.AppConfig.from_env({})
     assert empty.missing() == ["GITHUB_APP_CLIENT_ID"]
     full = forgeapp.AppConfig.from_env({"GITHUB_APP_CLIENT_ID": CLIENT_ID,
-                                        "GITHUB_APP_ID": "12345",
+                                        "GITHUB_APP_ID": "123456",
                                         "GITHUB_APP_SLUG": "swarmcloud"})
     assert full.missing() == [] and full.client_id == CLIENT_ID
     assert empty.name == "" and full.name == ""
@@ -874,14 +874,14 @@ def _claims(jwt: str) -> tuple[dict[str, Any], dict[str, Any]]:
 def test_the_key_check_signs_an_app_jwt_and_github_answers_the_configured_app(keyed, github):
     answer = keyed.get(APP_CHECK, headers=auth_header("root"))
     assert answer.status_code == 200, answer.text
-    assert answer.json() == {"ok": True, "app_id": 12345, "slug": "swarmcloud", "reason": None}
+    assert answer.json() == {"ok": True, "app_id": 123456, "slug": "swarmcloud", "reason": None}
     (call,) = github.to(forgeapp.APP_URL)
     assert call["method"] == "GET" and call["body"] is None
     assert call["headers"]["Accept"] == "application/vnd.github+json"
     header, claims = _claims(github.jwts[0])
     assert header == {"alg": "RS256", "typ": "JWT"}
     now = int(T0.timestamp())
-    assert claims == {"iss": "12345", "iat": now - 60, "exp": now + 540}
+    assert claims == {"iss": "123456", "iat": now - 60, "exp": now + 540}
 
 
 def test_the_key_check_asks_github_with_a_ten_second_timeout(keyed, github):
@@ -928,16 +928,16 @@ def test_a_malformed_key_is_refused_before_github(keyed, github, app_secret):
 
 
 def test_an_app_id_mismatch_is_not_ok(keyed, github):
-    github.app_id = 999
+    github.app_id = 12345678
     answer = keyed.get(APP_CHECK, headers=auth_header("root"))
-    assert answer.json() == {"ok": False, "app_id": 999, "slug": "swarmcloud",
+    assert answer.json() == {"ok": False, "app_id": 12345678, "slug": "swarmcloud",
                              "reason": "app_id_mismatch"}
 
 
 def test_a_slug_mismatch_is_not_ok(keyed, github):
     github.app_slug = "someone-elses-app"
     answer = keyed.get(APP_CHECK, headers=auth_header("root"))
-    assert answer.json() == {"ok": False, "app_id": 12345, "slug": "someone-elses-app",
+    assert answer.json() == {"ok": False, "app_id": 123456, "slug": "someone-elses-app",
                              "reason": "app_slug_mismatch"}
 
 

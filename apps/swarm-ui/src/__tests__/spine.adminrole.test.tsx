@@ -11,7 +11,7 @@
  *     the page.
  *   * A member of a group workspace who administers none sees Admin with
  *     only Workspaces, their group workspaces read only (admin routes lane,
- *     part of #2688; BGD 3 November).
+ *     part of #2688; owner 3 November).
  *   * Anyone else -- the admin of only their own personal workspace -- sees
  *     no Admin item, flyout or drawer entry, and nothing is drawn while the
  *     reads are in flight. A direct link to an Admin page still lands on
@@ -295,8 +295,8 @@ describe('Admin › Workspaces you admin (NAV-ADMIN-ROLE)', () => {
 
   it('refuses a member in place on a direct /admin/limits (admin-shell-23)', async () => {
     // The fixture build: its caller is a member who administers nothing. The
-    // API's 403 admin_required is unchanged. CONFIG-NAV (BGD 2026-10-23) sent
-    // them to Overview; visual QA pass 1 admin-shell-23 (BGD 2026-10-28,
+    // API's 403 admin_required is unchanged. CONFIG-NAV (owner 2026-10-23) sent
+    // them to Overview; visual QA pass 1 admin-shell-23 (owner 2026-10-28,
     // part of #2596) keeps the address and says the refusal in its place.
     vi.resetModules()
     const { App } = await import('../App')

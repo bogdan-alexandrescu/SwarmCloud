@@ -3,7 +3,7 @@
 Lane VQ-4 (#1979) built the held sign-in in `livegate/qatarget.py` and the
 proxy's half in `cdpproxy.py`, but merged with `__main__.py` unwired: a real
 gate answered `qa_sign_in` with `failed` and own-login targets stayed signed
-out. BGD decided on 2026-10-22: "Wire it + prompt notice". These tests drive
+out. the owner decided on 2026-10-22: "Wire it + prompt notice". These tests drive
 the real `LiveGate` through `test_livegate_main`'s rig over ctl.sock, the way
 the worker does (docs/design/visual-qa-any-app.md §3-§4):
 

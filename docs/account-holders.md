@@ -1,7 +1,7 @@
 # Who holds an account, and who held it
 
 An account in the pool is a Claude subscription several agents run on at
-once. The pool always counted them (`assigned`); since #379 parts 2 and 3
+once. The pool always counted them (`assigned`); since the account-holders design's parts 2 and 3
 (design approved 2026-09-30) it can also say **which** agents, to the people
 allowed to know, and what held the account over the last 90 days.
 
@@ -114,7 +114,7 @@ counted, on the next page), because the broker's cursor is the last row's
 the response echoes the snapped window. Owner and platform windows are not
 snapped. Why: an exact `others` count per window let a borrower recover another
 tenant's start time to the microsecond by halving windows until the count
-flipped (re-review of #413, 2026-10-01). On the grid the finest question a
+flipped (the timing-leak re-review, 2026-10-01). On the grid the finest question a
 borrower can ask is "how many in this hour".
 
 `others` is served only when the page is the whole snapped window: no cursor in,
@@ -131,7 +131,7 @@ T was a precision probe of its own. The scan for a first own row follows at most
 `OWN_PAGE_SCAN_MAX` = 5 broker pages (about 500 Firestore reads per request);
 past that the response says `scan_limited` and offers no cursor.
 
-**A borrower's cursor counts its own spans only** (#361, owner decision
+**A borrower's cursor counts its own spans only** (owner decision
 2026-10-09). The broker's cursor is `<instant>|<skip>`, and its skip counts
 every span at that instant, other tenants' included. A borrower used to be
 handed that number, which told it how many other tenants' spans shared its own
@@ -160,7 +160,7 @@ the admin sees the foreign claim as `recorded: true`, `verified: false`
 (*unverified*). A tenant is served its own hold naming an agent it does not own
 as `recorded: false`, exactly like a hold that named none, because
 `recorded: true` beside `verified: false` would tell it that a task id it does
-not own exists (#361, owner decision 2026-10-09).
+not own exists (owner decision 2026-10-09).
 
 Nothing on this path logs a task id.
 

@@ -221,7 +221,8 @@ def wrapper(tmp_path) -> Path:
 
 def _wrap(wrapper: Path, *argv: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     base = {k: v for k, v in os.environ.items()
-            if not k.startswith(("JEV_", "SWARM_CDP", "SWARM_JEV", "TYPESAFE", "PLAYWRIGHT_SKIP"))}
+            if not k.startswith(("JEV_", "SWARM_CDP", "SWARM_JEV", "SWARM_DECISION", "TYPESAFE",
+                                     "PLAYWRIGHT_SKIP"))}
     return subprocess.run(["bash", str(wrapper), *argv], env={**base, **(env or {})},
                           capture_output=True, text=True, timeout=30, check=False)
 
@@ -268,9 +269,10 @@ def test_the_wrapper_drops_what_would_launch_or_redirect_and_forbids_downloads(w
 
 
 #: The decision API by its tailnet name, over https (owner decision 2026-10-15,
-#: #1380). tests/unit/control_plane/test_dispatch_judgment.py holds the
-#: wrapper's copy equal to scheduler.judgment.INTERNAL_DECISION_ORIGIN.
-DECISION = "https://decision-api-staging.taile0bda9.ts.net"
+#: #1380): a placeholder, the dispatcher's SWARM_DECISION_API_TAILNET_NAME
+#: (scheduler.judgment, which the wrapper reads with no default).
+NAME = "decision-api.example-tailnet.ts.net"
+DECISION = f"https://{NAME}"
 #: The in-cluster http address the wrapper accepted before #1380: the Service
 #: has no port 80, so a pod sent there timed out.
 OLD_DECISION = "http://decision-api.swarm-system.svc.cluster.local"
@@ -282,6 +284,7 @@ def test_an_internal_backend_passes_its_url_through_and_no_typesafe_key(wrapper,
     url = f"{DECISION}/{path}/v1/decide"
     seen = _passed(_wrap(wrapper, env={
         "SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": backend,
+        "SWARM_DECISION_API_TAILNET_NAME": NAME,
         "JEV_API_URL": url, "TYPESAFE_API_KEY": key, "JEV_MODEL": "other",
     }))
     env = seen["env"]
@@ -299,20 +302,43 @@ def test_an_internal_backend_passes_its_url_through_and_no_typesafe_key(wrapper,
     "",  # the egress is off: the dispatcher set no URL
     f"{DECISION}/laya/v1/decide",  # the other backend's path
     "https://api.typesafe.ai/v1/systemone",
-    "https://decision-api-staging.example.invalid/jev/v1/decide",
+    "https://decision-api.example.invalid/jev/v1/decide",
     f"{OLD_DECISION}/jev/v1/decide",  # the old in-cluster http URL (#1380)
     "https://decision-api.swarm-system.svc.cluster.local/jev/v1/decide",  # wrong certificate
-    "http://decision-api-staging.taile0bda9.ts.net/jev/v1/decide",  # the name, without TLS
+    f"http://{NAME}/jev/v1/decide",  # the name, without TLS
 ])
 def test_an_internal_backend_without_its_tailnet_url_is_refused(wrapper, url):
     env = {"SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": "internal-jev",
-           "TYPESAFE_API_KEY": "ts-" + "k" * 24}
+           "SWARM_DECISION_API_TAILNET_NAME": NAME, "TYPESAFE_API_KEY": "ts-" + "k" * 24}
     if url:
         env["JEV_API_URL"] = url
     done = _wrap(wrapper, env=env)
     assert done.returncode == 2, done.stdout
     assert done.stdout == ""
     assert "internal-jev" in done.stderr and "never sent to TypeSafe instead" in done.stderr
+
+
+@pytest.mark.parametrize("name", [None, "", "decision-api", "https://" + NAME, NAME + ":443"])
+def test_an_internal_backend_without_the_tailnet_name_is_refused_with_a_fixed_message(wrapper, name):
+    """No default host: with the add-on on (the dispatcher sent a URL) and
+    SWARM_DECISION_API_TAILNET_NAME unset or misshapen, the wrapper refuses
+    rather than call a guessed host."""
+    env = {"SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": "internal-jev",
+           "JEV_API_URL": f"{DECISION}/jev/v1/decide", "TYPESAFE_API_KEY": "ts-" + "k" * 24}
+    if name is not None:
+        env["SWARM_DECISION_API_TAILNET_NAME"] = name
+    done = _wrap(wrapper, env=env)
+    assert done.returncode == 2, done.stdout
+    assert done.stdout == ""
+    assert ("SWARM_DECISION_API_TAILNET_NAME is unset or not one <host>.<tailnet>.ts.net name"
+            in done.stderr)
+
+
+def test_the_wrapper_holds_no_decision_api_host():
+    """The name is configuration: the wrapper restates no tailnet host."""
+    text = WRAPPER.read_text()
+    assert 'DECISION_SERVICE_NAME="${SWARM_DECISION_API_TAILNET_NAME:-}"' in text
+    assert not re.search(r"[a-z0-9-]+\.[a-z0-9-]+\.ts\.net", text)
 
 
 def test_typesafe_drops_any_url_and_keeps_the_key(wrapper):

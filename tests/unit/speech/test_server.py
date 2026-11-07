@@ -35,7 +35,7 @@ TOKEN = secrets.token_hex(16)
 async def admit_only_token(token: str) -> str:
     if token != TOKEN:
         raise PermissionError("not admitted")
-    return "swarm-api@example.iam.gserviceaccount.com"
+    return "swarm-api@example-project.iam.gserviceaccount.com"
 
 
 def build(tmp_path: Path, *, stt=None, tts=None, models=None, download=None, config_error=None,
@@ -128,7 +128,7 @@ def test_the_caller_check_refuses_to_build_with_no_caller():
 
 # The real check, with google-auth's verifier faked: no credentials, no network.
 # Tenant jobs share the speech machine's subnet, so this allow-list is the gate.
-SWARM_API = "swarm-api@example.iam.gserviceaccount.com"
+SWARM_API = "swarm-api@example-project.iam.gserviceaccount.com"
 
 
 def real_check(monkeypatch, outcome):
@@ -162,7 +162,7 @@ def refused_outcomes():
     from google.auth import exceptions
 
     return [
-        pytest.param({"email": "tenant-job@example.iam.gserviceaccount.com", "email_verified": True},
+        pytest.param({"email": "tenant-job@example-project.iam.gserviceaccount.com", "email_verified": True},
                      id="another-account"),
         pytest.param({"email_verified": True}, id="no-email"),
         pytest.param({"email": SWARM_API, "email_verified": False}, id="unverified"),

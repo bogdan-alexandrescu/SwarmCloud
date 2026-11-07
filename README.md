@@ -7,7 +7,8 @@ blocked on provider quota, or waiting on a dependency costs nothing: it is a row
 in Firestore, not a sleeping container. When nothing is runnable, agent compute
 is zero.
 
-The deployed instance is **SwarmCloud**, at `swarm.saga.xyz`, behind
+A deployed instance serves the console at its own host (for example
+`swarm.example.com`), behind
 Identity-Aware Proxy. It builds most of this repository: a pull request whose
 commit says *"Made by the worker for task …"* was written by a SwarmCloud agent,
 reviewed by another, and merged through the pipeline described below.
@@ -44,7 +45,7 @@ same way a quota wait does. Every layer waits as a Firestore row.
 ## Architecture
 
 ```
- console (swarm.saga.xyz) ─┐
+ console (swarm.example.com) ─┐
  sc plugin / swarm CLI ────┼─▶ swarm-api ──▶ Firestore ──▶ scheduler ──▶ GKE Autopilot
  swarm-mcp bridge ─────────┘   (Cloud Run)   tasks          (admission)   (every agent but mock,
                                   │          leases               │        0→N→0)

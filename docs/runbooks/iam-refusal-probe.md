@@ -1,13 +1,13 @@
 # Prove, once, that the deployer is refused a role it does not hand out
 
-**Who:** the owner. **When:** once, after step 3 of the order recorded on #80:
-PR #73 merged, its targeted bootstrap apply done, about 7 minutes for IAM to
+**Who:** the owner. **When:** once, after step 3 of the recorded deployment order:
+the targeted-grant pull request merged, its targeted bootstrap apply done, about 7 minutes for IAM to
 propagate, and the release after it. **Takes:** a two-minute run.
 **Changes:** nothing, if the condition works. If it does not, the deployer holds
 `roles/browser` for the seconds between the grant and the revert. That role
 adds nothing it does not already have (below).
 
-This is issue #68's refusal-side proof, decided by the owner on 2026-09-25. What
+This is the refusal-side proof, decided by the owner on 2026-09-25. What
 a pass proves, and what it cannot, is in
 [docs/ci.md](../ci.md#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches).
 
@@ -20,8 +20,8 @@ four steps:
 
 | step | what it does | writes? |
 |---|---|---|
-| `preflight (read-only)` | Stops unless the verdict can only be the condition's. The conditioned `projectIamAdmin` bindings are live (one per chunk of at most 10 roles since #275, so two today), and the unconditioned one is gone. Every one of them is exactly the `modifiedGrantsByRole` `hasOnly([...])` test, and none lists `roles/browser`. None lists `swarmSecretLister` either, matched by its role id `.../roles/swarmSecretLister` in either quote style (#69, below). The deployer holds no `roles/browser` binding yet. No other role it holds carries `resourcemanager.projects.setIamPolicy`. | no |
-| `ask for roles/browser as the deployer` | `gcloud projects add-iam-policy-binding`, deployer to itself, `--condition=None`. Passes **only** on a PERMISSION_DENIED for `saga-agents-staging:setIamPolicy`. | only if the condition fails |
+| `preflight (read-only)` | Stops unless the verdict can only be the condition's. The conditioned `projectIamAdmin` bindings are live (one per chunk of at most 10 roles since the role-chunking change, so two today), and the unconditioned one is gone. Every one of them is exactly the `modifiedGrantsByRole` `hasOnly([...])` test, and none lists `roles/browser`. None lists `swarmSecretLister` either, matched by its role id `.../roles/swarmSecretLister` in either quote style (below). The deployer holds no `roles/browser` binding yet. No other role it holds carries `resourcemanager.projects.setIamPolicy`. | no |
+| `ask for roles/browser as the deployer` | `gcloud projects add-iam-policy-binding`, deployer to itself, `--condition=None`. Passes **only** on a PERMISSION_DENIED for `example-project:setIamPolicy`. | only if the condition fails |
 | `revert and read back` | Runs on every path after preflight, including a failed or cancelled grant. Reads the policy. If `roles/browser` is on the deployer, it removes exactly that binding, reads again to confirm, and fails. | only to undo the grant |
 | `what this run means` | Writes one line to the run summary. | no |
 
@@ -35,7 +35,7 @@ Its six permissions (`gcloud iam roles describe roles/browser`, 2026-09-25) are
 project, folder and organisation reads. `projectIamAdmin` already has the
 project ones, and this project has no organisation or folder.
 
-**What a refusal of `roles/browser` also proves (#69).** #69's acceptance is
+**What a refusal of `roles/browser` also proves.** The acceptance-side finding is
 that the deployer cannot bind itself `swarmSecretLister`, whose project-wide
 `secretmanager.secrets.setIamPolicy` reaches the other team's secrets.
 `hasOnly()` treats every role it does not list alike, so a refusal of
@@ -57,17 +57,17 @@ does; a pass says it in the run summary. The probe **never asks for
 1. The targeted apply has landed:
 
    ```bash
-   gcloud projects get-iam-policy saga-agents-staging --format=json \
+   gcloud projects get-iam-policy example-project --format=json \
      | jq -r '.bindings[]
          | select(.role == "roles/resourcemanager.projectIamAdmin")
          | select(any(.members[]; startswith("serviceAccount:swarm-tf-deployer@")))
          | (.condition.title // "NO CONDITION")'
    ```
 
-   Expect one line per chunk and nothing else: since #275 the grant is one
+   Expect one line per chunk and nothing else: since the role-chunking change the grant is one
    conditioned binding per chunk of at most 10 roles, because `hasOnly()`
-   refuses a longer list, so the 15 grantable roles (14 until #1430 turned
-   `swarmGithubHooksDedup` on, and 15 until #150 took `swarmSecretLister` off) read as
+   refuses a longer list, so the 15 grantable roles (14 until the swarmGithubHooksDedup rollout turned
+   it on, and 15 until the swarmSecretLister removal took it off) read as
    `only the roles terraform infra grants (chunk 1 of 2)` and
    `... (chunk 2 of 2)`. Preflight checks every one of them, not the first. A
    `NO CONDITION` line means the apply has not landed, or has been reverted.
@@ -80,7 +80,7 @@ does; a pass says it in the run summary. The probe **never asks for
    makes gcloud retry on 409, which adds noise to a run you will want to read
    once.
 
-Run it **before step 4 (PR #150)**. That step takes `roles/iam.roleAdmin` off
+Run it **before step 4**. That step takes `roles/iam.roleAdmin` off
 the deployer, and with it the permission to read the deployer's custom roles.
 After it, preflight reports those roles as unread. The run still works: a
 refusal is still proof, because no role admitted the write. But a grant could
@@ -102,14 +102,14 @@ refuses any other ref by name, before the auth step is reached.
 
 | the run shows | it means | do |
 |---|---|---|
-| green; summary **PASS** | IAM refused the deployer's grant of `roles/browser` with PERMISSION_DENIED on `saga-agents-staging:setIamPolicy`. The policy read back afterwards has no such binding. Preflight found no chunk listing `swarmSecretLister`, so the refusal stands for a self-grant of it too. | Comment on #68 and #69 with the run URL: the refusal side is proven, for `swarmSecretLister` as well. #68's fifth criterion (#79) is **not** met by this. |
+| green; summary **PASS** | IAM refused the deployer's grant of `roles/browser` with PERMISSION_DENIED on `example-project:setIamPolicy`. The policy read back afterwards has no such binding. Preflight found no chunk listing `swarmSecretLister`, so the refusal stands for a self-grant of it too. | Comment on the refusal-side and acceptance-side findings with the run URL: the refusal side is proven, for `swarmSecretLister` as well. The refusal-side finding's fifth criterion is **not** met by this. |
 | red at `refuse any ref but main` | It was dispatched on another ref. Nothing authenticated. | Dispatch again with `--ref main`. |
 | red at `google-github-actions/auth` | WIF refused the token, or a repository variable is missing. Nothing was attempted. | Read the step. The auth step and variables are the same ones `release.yml` uses. |
-| red at `preflight (read-only)` | Nothing was written. Its last line names the reason: the unconditioned `projectIamAdmin` is still there, there is no conditioned one, one of the chunks' conditions is not the bare `modifiedGrantsByRole` `hasOnly([...])` test or lists `roles/browser`, a chunk lists `swarmSecretLister` (#69), the deployer already holds `roles/browser`, a role it holds carries `setIamPolicy`, or the policy could not be read. | Fix what it names, then dispatch again. **A role that carries `setIamPolicy` is a finding in itself.** Take it to #79, because it means CI can already write the project policy without the condition. **So is a chunk listing `swarmSecretLister`**: the live condition lets CI grant itself project-wide `secrets.setIamPolicy`. Reopen #69 and re-apply `terraform/bootstrap` from `main`. |
-| red at `ask for roles/browser`, **GRANTED — reopen #68**; the revert step says the binding was removed and the read-back confirms it | The condition admitted a role it does not list. | Reopen #68 with the run URL. The binding is already gone. Whether to revert the scoping or fix the condition is an owner decision. |
-| red at `revert and read back`, **REVERT FAILED** | The grant landed, and the probe could not remove it. The deployer may still hold `roles/browser`. | Remove it now ([below](#if-the-revert-did-not-finish)). Reopen #68. |
+| red at `preflight (read-only)` | Nothing was written. Its last line names the reason: the unconditioned `projectIamAdmin` is still there, there is no conditioned one, one of the chunks' conditions is not the bare `modifiedGrantsByRole` `hasOnly([...])` test or lists `roles/browser`, a chunk lists `swarmSecretLister`, the deployer already holds `roles/browser`, a role it holds carries `setIamPolicy`, or the policy could not be read. | Fix what it names, then dispatch again. **A role that carries `setIamPolicy` is a finding in itself.** File it as its own S0 finding, because it means CI can already write the project policy without the condition. **So is a chunk listing `swarmSecretLister`**: the live condition lets CI grant itself project-wide `secrets.setIamPolicy`. Reopen the acceptance-side finding and re-apply `terraform/bootstrap` from `main`. |
+| red at `ask for roles/browser`, **GRANTED — reopen the refusal-side finding**; the revert step says the binding was removed and the read-back confirms it | The condition admitted a role it does not list. | Reopen the refusal-side finding with the run URL. The binding is already gone. Whether to revert the scoping or fix the condition is an owner decision. |
+| red at `revert and read back`, **REVERT FAILED** | The grant landed, and the probe could not remove it. The deployer may still hold `roles/browser`. | Remove it now ([below](#if-the-revert-did-not-finish)). Reopen the refusal-side finding. |
 | red at `ask for roles/browser`, **inconclusive**; the revert step is green | Neither a refusal nor a grant: an auth failure, a network error, a disabled API, or a gcloud wording the probe does not recognise. The green revert means the read-back found nothing bound. | Read the grant step's redacted error. If it is a refusal in words `classify` does not know, fix `classify` in `scripts/iam-refusal-probe.sh` in a pull request and run again. **Do not read it as a pass.** |
-| red at `ask for roles/browser`, **inconclusive**; the revert step is red and says it removed the binding | gcloud failed, but the grant had landed (for example, a timeout after the server applied it). | The same as GRANTED: reopen #68. |
+| red at `ask for roles/browser`, **inconclusive**; the revert step is red and says it removed the binding | gcloud failed, but the grant had landed (for example, a timeout after the server applied it). | The same as GRANTED: reopen the refusal-side finding. |
 | cancelled | The revert still runs, under `always()`, unless the run was force-cancelled. | Open the revert step. If it did not run or did not finish, use the check below. |
 
 ## If the revert did not finish
@@ -117,7 +117,7 @@ refuses any other ref by name, before the auth step is reached.
 Run these as yourself. They print only a count, never the policy:
 
 ```bash
-PROJECT=saga-agents-staging
+PROJECT=example-project
 DEPLOYER="serviceAccount:swarm-tf-deployer@${PROJECT}.iam.gserviceaccount.com"
 
 gcloud projects get-iam-policy "${PROJECT}" --format=json \

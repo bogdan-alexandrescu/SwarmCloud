@@ -1,6 +1,6 @@
 """The three leaks the attacker-lens review of PR #3448 found, closed in both filters.
 
-BGD chose on 6 November 2026 to fix them now (part of #2688). Main served each
+the owner chose on 6 November 2026 to fix them now (part of #2688). Main served each
 literal whole, in `swarm_redaction` and in `redact` in scripts/lib/common.sh:
 
 1. a literal inside a double-quoted string after a `;` `)` `]` or `}` run:

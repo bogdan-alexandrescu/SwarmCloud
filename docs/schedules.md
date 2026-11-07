@@ -1,6 +1,6 @@
 # Schedules: typed recurring jobs per repository and tenant, with gates and approvals
 
-**Status: DESIGN, 2026-10-08 (lane SCHED0, part of #892). None of it is
+**Status: DESIGN, 2026-10-08 (lane SCHED0). None of it is
 built.** The owner answered the eleven open questions (SD1-SD11) the same
 day. Each answer is recorded in §10 as **Owner decision 2026-10-08** and is
 applied in every section it changes; where this document used to say
@@ -80,7 +80,7 @@ compared with them.
 * **Recurring work runs from one person's session.** Job `bdb47d30` is a
   `CronCreate` job in the operator's Claude session. It is session-only, it
   expires after seven days, and nobody else can see, pause or audit it
-  (#892).
+ .
 * **Platform ticks are one Cloud Scheduler job per purpose, mostly one per
   tenant.** `terraform/modules/scheduler/jobs.tf` declares `safety_tick`,
   `reconciler`, `quota_refresh` and `forge_refresh` once each, and
@@ -94,7 +94,7 @@ compared with them.
   ([issue-runs.md](issue-runs.md#the-cloud-scheduler-tick-and-why-every-read-also-advances)).
 * **The repository index already has a per-repository recurring job.**
   Each registration carries `index.interval_hours` (default 24),
-  `index.on_change` (`poll`), `index.min_change_interval_minutes` (default 120 since #2524, was 30),
+  `index.on_change` (`poll`), `index.min_change_interval_minutes` (default 120 since the index-interval-bump change, was 30),
   `index.full_every_days` and `index.paused`. The 5-minute `repo_index_poll`
   tick reads each head with an ETag and queues an index run when the head has
   moved or the interval has passed
@@ -153,7 +153,7 @@ compared with them.
   read on 2026-10-08: its route `POST /v1/admin/issues/sweep`, its module
   `swarm_api/issuesweep.py`, its tenant-document settings and its
   `issue_sweep` scheduler job. The build lane re-reads SWEEP's merged code
-  before it starts. **SWEEP has since merged** (`ce68220`, #898). Lane S0
+  before it starts. **SWEEP has since merged** (`ce68220`). Lane S0
   read its names from `main` on 2026-10-08 and lists where they differ from
   §8.1 in §0.1, check 3.
 * **The console's Work section has ten tabs:** Agents, Workflows, Runs,
@@ -170,7 +170,7 @@ credential, no `gh` and no `gcloud`. So **every result below is read from the
 repository, not measured live**, except check 3, which is a reading of the
 code itself. Each result names the command the operator runs to measure it
 live, and a control showing that the reading could have come out the other
-way. The clone holds one commit, `ce68220` (#898, SWEEP), so nothing older
+way. The clone holds one commit, `ce68220` (SWEEP), so nothing older
 could be compared.
 
 **Check 1. `actions: read` and `checks: read` (§3.7, §3.9).** From the
@@ -209,7 +209,7 @@ repository, not measured live.
   Actions and Checks rows, or read `.permissions` of an installation
   (`GET /app/installations/{id}` with the App's JWT). For a tenant token,
   without printing it: `GH_TOKEN="$(gcloud secrets versions access latest
-  --secret=swarm-tenant-<t>-git --project=saga-agents-staging)" gh api
+  --secret=swarm-tenant-<t>-git --project=example-project)" gh api
   'repos/<owner>/<repo>/actions/runs?per_page=1' --jq .total_count`. A
   number means `actions: read` is held. `HTTP 403` or `HTTP 404` means it is
   not. The same call to
@@ -237,7 +237,7 @@ it exists in the repository.**
   classification as is. S10's `pr-shepherd` lane matches on the measured
   answer.
 * **To measure live** (in a scratch repository with the App installed, not in
-  `saga-agents-staging`): open pull request A, then push to its base a commit
+  `example-project`): open pull request A, then push to its base a commit
   that changes `.github/workflows/x.yml`. Mint an installation token
   (Workflows: none) and call
   `PUT /repos/<o>/<r>/pulls/<A>/update-branch` with `expected_head_sha`.
@@ -246,7 +246,7 @@ it exists in the repository.**
   should answer 202. If both answer 202, the rule in merge-step.md is wrong.
 
 **Check 3. SWEEP's merged names (§8.1, PR 898).** Read from `main` at
-`ce68220`, which is #898 squash-merged, on 2026-10-08. Not branch
+`ce68220`, which is PR 898 squash-merged, on 2026-10-08. Not branch
 `swarm/task_3804051834a74239a9e8`: SWEEP had already merged. These names are
 in the code, so they are measured here:
 
@@ -307,7 +307,7 @@ repository, not measured live.
   terraform/modules/firestore/indexes.tf` is 0. Control: the same count for
   `"tasks"` is 14.
 * **To measure live** (read-only):
-  `gcloud firestore indexes composite list --project=saga-agents-staging --database=swarm --format='table(name,queryScope,fields)' | grep -i schedules`.
+  `gcloud firestore indexes composite list --project=example-project --database=swarm --format='table(name,queryScope,fields)' | grep -i schedules`.
   It should print nothing until S4's release. After it, one `COLLECTION`
   index with `state` and `next_run_at` should appear. Control: the same command
   with `grep -i tasks` lists the task indexes, so an empty answer is not a
@@ -436,7 +436,7 @@ document already there is the duplicate that never happens twice.
 | `state` | §1.4 |
 | `params_digest` | sha256 of the resolved `{type, scope (resolved repo list), params, gate, budget}` the firing ran with. A run approval approves this digest (§4.5) |
 | `work` | `[{kind: issue_run \| task \| workflow \| api_action, id, repo_id}]`, what it created. A sweep creates several |
-| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED`, `DRY_RUN` or `NOTHING_STARTED`. A firing that ran and created nothing ends `succeeded` but is never silent: `NOTHING_STARTED` carries the executor's `reason` (an issue sweep's `no_room` with its `bound`, `repositories_not_read`, `no_eligible_issue`, `no_open_issue`, `no_repository`), or `executor_created_nothing` when it gave none. Before #1133 such a firing had `work: []` and no skip, indistinguishable from one whose every read had failed |
+| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED`, `DRY_RUN` or `NOTHING_STARTED`. A firing that ran and created nothing ends `succeeded` but is never silent: `NOTHING_STARTED` carries the executor's `reason` (an issue sweep's `no_room` with its `bound`, `repositories_not_read`, `no_eligible_issue`, `no_open_issue`, `no_repository`), or `executor_created_nothing` when it gave none. Before the NOTHING_STARTED-reason change such a firing had `work: []` and no skip, indistinguishable from one whose every read had failed |
 | `dry_run` | what a dry run would have created, as data (§2.8) |
 | `selection` | on a real firing whose executor explains itself (`issue-sweep`, `issue-plan-only`): the dry run's answer for the selection it actually made, plus `started` and `start_failures`, so a firing can be compared with its dry run after the fact |
 | `approval_id` | set while a run approval is pending |
@@ -735,7 +735,7 @@ derived from its steps:
   are none. Today the one such code is `WORKFLOWS_PATH`
   (`issueruns.PLANNING_REFUSALS`): the plan changes `.github/workflows/`,
   which SwarmCloud's forge credential cannot push. The refusal is correct, but
-  counted as a failure it made the firing `failed` (#1030's
+  counted as a failure it made the firing `failed` (the LB-Lx issue's
   `run_21bcbaba3ba14235832a`, 2026-10-12), which reads as the schedule being
   broken and counts toward `CONSECUTIVE_FAILURES`. A run that failed for any
   other reason (a planner agent that failed, an invalid plan, a submission
@@ -846,11 +846,11 @@ every tenant's data within one approval's reach.
   - It creates an issue run for each of up to `max_new_per_firing` remaining
     issues, oldest first, subject to `max_live_runs`.
   - **It drops issues somebody is already working on outside an issue run**
-    (2026-10-12). Firing `sch_6ecbe1307511:29862877` took #1030 for idle
+    (2026-10-12). Firing `sch_6ecbe1307511:29862877` took the LB-Lx issue for idle
     because it had no open pull request at that moment, while ~25 dedicated
-    workflows titled "... (LB-Lx; part of #1030)" were building it and
+    workflows titled "... (LB-Lx)" were building it and
     merging one after another; the same day the sweep opened PR 1136 beside
-    a lane's PR 1134 for #1133. "No open pull request" is not "nobody is on
+    a lane's PR 1134, both for the same issue. "No open pull request" is not "nobody is on
     it": between two merges of a multi-lane feature there is none. So:
     - `in_flight_workflow: <workflow_id>` — a **non-terminal** workflow of
       the tenant names the issue in its label or title (`part of #N`,
@@ -1140,7 +1140,7 @@ repository contents. So no tenant's data enters another tenant's worker
 
 ### 3.14 `model-prices-refresh`
 
-Added 2026-10-19 for #1481 (lane PRICES-REFRESH). Model list prices are the
+Added 2026-10-19 for lane PRICES-REFRESH. Model list prices are the
 `model_prices` platform setting. The owner decided on 2026-10-17 that "a weekly
 schedule refreshes them from the provider's pricing page. It writes changed
 figures with `source: pricing-page` and the page's date. A figure it cannot
@@ -1189,7 +1189,7 @@ parse is left as it was, and the run says so … it never writes a guess."
 
 ### 3.15 `model-prices-check`
 
-Added 2026-10-19 for #1481 (owner's comment of 2026-10-17): "a nightly
+Added 2026-10-19 for lane PRICES-REFRESH (owner's comment of 2026-10-17): "a nightly
 observed-rate check. It derives per-token rates per model from finished
 attempts (the CLI's reported cost and usage) and opens an issue when they
 disagree with the price setting by more than 10%."
@@ -1228,7 +1228,7 @@ disagree with the price setting by more than 10%."
 
 ### 3.16 `failure-review`
 
-Designed 2026-10-22 for #1933 (lane AUTONOMY-DESIGN); **built by lane FR-3**
+Designed 2026-10-22 for lane AUTONOMY-DESIGN; **built by lane FR-3**
 (`swarm_api/schedtypes/failure_review.py`, the `TYPES` entry). Nothing fires
 until the owner creates the schedule. The design, and the why behind each rule
 below, is [design/failure-review.md](design/failure-review.md). It builds on
@@ -1314,12 +1314,12 @@ on lanes FR-1 (the hold categories in `issueruns.hard_stop_hold`) and FR-2
 
 ### 3.17 `visual-qa`
 
-Designed 2026-10-22 for #1933 in
+Designed 2026-10-22 for lane AUTONOMY-DESIGN in
 [design/visual-qa-any-app.md](design/visual-qa-any-app.md) §6; **built by lane
 VQ-7** (`swarm_api/schedtypes/visual_qa.py`, the `TYPES` entry), on lane VQ-2's
 QA targets (`swarm_api/qatargets.py`). A schedule is the optional trigger; the
 on-demand one is `POST /v1/qa-targets/{id}:run`. Since lane QAENV-RUN
-(2026-10-23, #2136) a target may carry several environments, and a firing
+(2026-10-23) a target may carry several environments, and a firing
 runs the legs it names
 ([design/qa-environments.md](design/qa-environments.md) §2.2, §7).
 
@@ -1374,17 +1374,17 @@ runs the legs it names
   files issues and changes no code, so there is no merge gate to set.
 * **Budget.** `BUDGET_CAPS` in the executor: `per_run_usd` 80 a leg,
   `per_day_usd` 160, `max_concurrent` 2. `per_run_usd` is a tripwire per
-  work item, and a leg is one. BGD set it at $40 a leg on 2026-10-23
+  work item, and a leg is one. [the owner] set it at $40 a leg on 2026-10-23
   ([design/qa-environments.md](design/qa-environments.md) §10, Q9 (a)), as
-  it bounded a run, and BGD raised it to $80 on 2026-10-26 (QA-TRIPWIRE-MAC)
+  it bounded a run, and [the owner] raised it to $80 on 2026-10-26 (QA-TRIPWIRE-MAC)
   for the batched legs of up to 150 flows that QA-FLOWS-CAP (PR 2409)
   brings: at the bench median of $0.14 a flow run, 132 flows at 2 widths
   cost about $37 before capture, review and the report. `max_concurrent` 2
-  lets a two-leg firing start both legs; $160 a day, also set by BGD on
+  lets a two-leg firing start both legs; $160 a day, also set by [the owner] on
   2026-10-23, holds both legs of one firing at the new cap, and is
   unchanged. A schedule may set lower figures, never higher. The history:
-  BGD first set
-  $40 a run, $80 a day and one at a time on 2026-10-22 (VQ7-CAPS, #1933)
+  [the owner] first set
+  $40 a run, $80 a day and one at a time on 2026-10-22 (VQ7-CAPS)
   from the first measured run, the full-console QA run 5b
   (`wf_025ae735511546d99eff`, 17 steps, 362 screenshots), which cost $23.62,
   94% of the $25 per run the type first shipped with. A leg also pays its
@@ -1399,16 +1399,16 @@ runs the legs it names
 
 ### 3.18 `image-tool-rescan`
 
-Built by lane IMAGE-TOOL-RESCAN (PR 2099, part of #442):
+Built by lane IMAGE-TOOL-RESCAN (PR 2099):
 `swarm_api/schedtypes/image_tool_rescan.py` and its `TYPES` entry in
 `swarm_api/scheduletypes.py`.
 
 * **Why it exists.** `agent-runtime-base` ships without `tofu` and `tflint`
   (their `INSTALL_TOFU` and `INSTALL_TFLINT` holds), because every published
   release of each carried a fixable HIGH CVE and the release's promote gate
-  refuses the whole image for one. BGD decided on 2026-10-01 that each tool
+  refuses the whole image for one. [the owner] decided on 2026-10-01 that each tool
   is added once a release passes the scan, with **no waiver**; and on
-  2026-10-09 that #442 becomes this schedule: "a weekly 'image-tool-rescan'
+  2026-10-09 that the tool-rescan request becomes this schedule: "a weekly 'image-tool-rescan'
   schedule re-scans the newest tofu and tflint releases with the promote
   gate's filter and adds each one that scans clean (no waiver, as decided
   2026-10-01)". A person re-checking by hand is how a tool stays held for
@@ -1660,7 +1660,7 @@ admin, not by a gate set to `auto`.
 
 | stop | detected | what happens |
 |---|---|---|
-| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists. The merge check reads the changed files AND their patches, and a hold whose every stop came from the plan's prompt alone (none from the plan's files or the issue; never `security`) clears there when none of it matches the real change: the run's pull request records `hold_cleared` ("hold set from the plan's prompt; the pull request changes none of it"), and the merge follows the gate's ordinary approval (#2259) |
+| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists. The merge check reads the changed files AND their patches, and a hold whose every stop came from the plan's prompt alone (none from the plan's files or the issue; never `security`) clears there when none of it matches the real change: the run's pull request records `hold_cleared` ("hold set from the plan's prompt; the pull request changes none of it"), and the merge follows the gate's ordinary approval |
 | **The frozen contract**, `apps/common/swarm_common/**`, in a repository whose registration marks it `platform: true` | the same two points | `NEEDS_OWNER` with `approvers: owner_only`, and the inbox item links [contract-change-requests.md](contract-change-requests.md). `platform: true` exists only in a platform repository, so this hold never reaches another tenant |
 | **`.github/workflows/**`** | at plan | **Refused, not held.** The credential cannot push those files (§0), so the step would fail after spending. When the planner's plan names such a file, the plan is not stored: the run moves `PLANNING` → `FAILED`, a transition `RUN_TRANSITIONS` already has, with `error` carrying the code `WORKFLOWS_PATH` and the matched files. No workflow is submitted, no re-plan is attempted, and no state is added. The issue gets a comment saying the change must be made by a person or split out of the issue, and the sweep's cooldown (§3.1) applies to it as to `NOT_READY`. A person's plan edit (`PLANNED` → `PLANNED`) that adds such a path is refused with the existing 422 `invalid_plan`, naming the path |
 | **A security-class issue**: label `security`, or the form's severity S0 | at selection and at plan | Excluded from `issue-sweep` by default. If a member removes `security` from `labels_exclude`, or a run is created on such an issue by any path, its plan is **always** held and its merge is never `auto` (owner decision 2026-10-08). The hold is `NEEDS_OWNER`, `approvers: owner_only`, in a `platform: true` repository, and `NEEDS_SECOND_MEMBER` elsewhere (SD11) |
@@ -1749,12 +1749,12 @@ Approving is one transaction:
 Two approvers racing produce one transition, and the loser gets 409
 `already_decided`.
 
-**Who may reject: only someone who may approve** (**BGD's decision
-2026-10-26**, #2417, frame A5f of the Automate design). Until then any member
+**Who may reject: only someone who may approve** (**[the owner]'s decision
+2026-10-26**, frame A5f of the Automate design). Until then any member
 of the tenant could reject any item, on the reasoning that a rejection ends a
 hold and never opens one. It also ends the work: a rejected merge leaves a
 green pull request unmerged, and a rejected plan or firing is the run that
-will not happen. BGD's pick drew the decision page of a member who may not
+will not happen. [the owner]'s pick drew the decision page of a member who may not
 approve with neither Approve nor Reject offered, and a page that hides a
 button the server would honour is a page that lies. So `:reject` now runs the
 same who-checks `:approve` does -- the gate's `approvers`, the hold (as its
@@ -1763,16 +1763,16 @@ own switch has it), the last-editor rule of a merge-tier item (SD5) and the
 whose `detail.approve_refusal` names the approve's own code. The role floor
 and the platform-scope rule apply first, as before. It is a new refusal, so
 it is behind its switch (`refusals.SWITCHES`, the 2026-10-08 rule), but it
-**ships on**, because BGD's pick showed the 403 and the console reads who may
+**ships on**, because [the owner]'s pick showed the 403 and the console reads who may
 beforehand (below); `REFUSAL_REJECT_APPROVER_REQUIRED=off` lets any member
 reject again. A consequence to know: under a `second_member` hold the run's
 creator, its last plan editor and its schedule's last gate editor may no
 longer reject it either; a second member must, or a workspace admin (next
 paragraph). The run's own `POST /v1/runs/{id}/plan:reject` (Work › Runs) is
-not changed by this; BGD answered on 2026-10-26 that it follows the same rule,
+not changed by this; [the owner] answered on 2026-10-26 that it follows the same rule,
 in a follow-up lane.
 
-**A workspace admin decides a `second_member` hold alone** (BGD, 2026-10-26:
+**A workspace admin decides a `second_member` hold alone** ([the owner], 2026-10-26:
 "let an admin approve it, no need for two approvers"), asked when the reject
 rule above made a held run's creator need a second member to reject it as
 well as to approve it. So the hold's exclusion -- the run's
@@ -1824,7 +1824,7 @@ when what it is read from is not there:
   there is no second member, so that person approves their own after a typed
   confirmation that names the matched paths, and the audit records it.
   **Owner decision 2026-10-08 (SD11).** A workspace admin is never excluded:
-  they approve and reject alone (§4.5, BGD 2026-10-26).
+  they approve and reject alone (§4.5, [the owner] 2026-10-26).
 * **A named list.** Each name must be a member at creation **and** at approval,
   because membership is asked of the directory.
 * **A merge-tier approval needs a second person** (SD5). The member who last
@@ -1833,7 +1833,7 @@ when what it is read from is not there:
   than one member. In a personal `u-*` tenant there is one person, so the
   rule cannot apply, and the console says so on the gate card.
 * **The owner waiver** (**Owner decision 2026-10-24, "Owner may decide,
-  audited"**, #2259). Where only the owner may decide -- the gate's approvers
+  audited"**). Where only the owner may decide -- the gate's approvers
   or the item's hold are `owner_only` -- the second-person rule would leave
   nobody: `owner_only` refuses every other member and the rule refuses the
   owner as the last editor. Measured on `apr_76e9cdc4800ea95c5609fd9b`. So
@@ -1841,7 +1841,7 @@ when what it is read from is not there:
   decision's transaction writes a second `schedule_audit` row,
   `second_person_waived_owner`, naming the approval, the schedule and the
   last editor. Nobody else reaches it. **A named list of the owner alone
-  is owner-only too** (BGD's decision 2026-10-25, "Yes: treat [owner] like
+  is owner-only too** ([the owner]'s decision 2026-10-25, "Yes: treat [owner] like
   owner_only"): its entries, stripped and lower-cased, are one address and
   that address is the owner's, as the caller's own owner check found it. Its
   waiver row records the list as it stands as `approvers`, not `owner_only`,
@@ -1880,7 +1880,7 @@ or slot exists for it, and a plan's planner agent has already ended (invariant
 1). Expiry is a tidy-up of the inbox, not a capacity release. Expired items
 leave the inbox and remain in the schedule's history.
 
-**The last 7 days stay readable** (BGD 2026-10-27, AUTO-A4A5, #2417 A4).
+**The last 7 days stay readable** ([the owner] 2026-10-27, AUTO-A4A5, frame A4 of the Automate design).
 `GET /v1/approvals?state=decided|expired|all` also serves the tenant's items
 approved or rejected (`decided`) or expired (`expired`) in the last 7 days,
 newest first by `decided_at`, each in the shape a pending item has plus its
@@ -2170,8 +2170,8 @@ ticks are in `PlatformCounts.tsx`. Admin's question now reads "...how many
 tasks are in each state, what does the platform run on its own, and who is
 waiting for a workspace?", in `SECTIONS` and redesign.md §2 together.
 
-**Moved by APPROVALS-MOVE, 2026-10-26** (BGD's decision on VQ-030, "Move it,
-and redirect /approvals"; part of #2391). Approvals is at
+**Moved by APPROVALS-MOVE, 2026-10-26** ([the owner]'s decision on VQ-030, "Move it,
+and redirect /approvals"). Approvals is at
 `/automate/approvals` and one item at `/automate/approvals/<id>`, the kind
 filter still riding as `?kind=`. Visual QA found the page at `/approvals`
 while its sibling was `/automate/schedules`, and `/automate/approvals`, the
@@ -2241,7 +2241,7 @@ All of these are tenant-scoped as in §5.1. The new refusals ship report-only
 | `POST /v1/admin/tenants/{tenant_id}/schedules:pause` | §5.3: the same for any tenant, `is_admin` only. `{confirm, reason?}`: `confirm` is the `tenant_id` of the path, typed. An unknown tenant is a 404. Each entry is `admin_pause_all`, `by: admin:<email>`. Live runs are not cancelled (§5.3) |
 | `POST /v1/schedules/{id}:take-ownership` | the caller becomes the owner. Audited |
 | `GET /v1/schedules/{id}/firings` · `/{firing_id}` | the history. A firing shows its work links, cost and dry-run output |
-| `GET /v1/schedules/{id}/spans?firing_id=…` | the History timeline's bars and the list under them (#1109), for ONE page of firings: the `firing_id`s asked, at most 10 firings (`SPAN_FIRINGS`; more is a 422), never every firing ever. For each firing's work item it reads the agent, the workflow's steps or the issue run's planner and workflows, and each agent's attempts (newest 20 attempts, `SPAN_ATTEMPTS`; more says `attempts_truncated`), at most 100 agents across the page (`SPAN_TASKS`; the rest are served `unread` with that reason). Each item carries its `cost`, summed from its attempts' recorded `cost_usd` the way the tick sums the firing's (§4.3), from one batched attempts read for the page: an attempt that recorded none is counted in `unreported_attempts`, and an item with no recorded figure has `reported_usd: null` and an `unread` reason, never $0. An issue run also carries its `issue`: number, reference, url and the title read when the run was created (null when that read failed). Writes nothing. Tenant-scoped: another tenant's schedule is the 404 a missing one gets, a firing id that is not this schedule's (or is stored for another tenant) is listed in `not_found` and not read, and every agent, workflow and issue run is read under the caller's tenant |
+| `GET /v1/schedules/{id}/spans?firing_id=…` | the History timeline's bars and the list under them, for ONE page of firings: the `firing_id`s asked, at most 10 firings (`SPAN_FIRINGS`; more is a 422), never every firing ever. For each firing's work item it reads the agent, the workflow's steps or the issue run's planner and workflows, and each agent's attempts (newest 20 attempts, `SPAN_ATTEMPTS`; more says `attempts_truncated`), at most 100 agents across the page (`SPAN_TASKS`; the rest are served `unread` with that reason). Each item carries its `cost`, summed from its attempts' recorded `cost_usd` the way the tick sums the firing's (§4.3), from one batched attempts read for the page: an attempt that recorded none is counted in `unreported_attempts`, and an item with no recorded figure has `reported_usd: null` and an `unread` reason, never $0. An issue run also carries its `issue`: number, reference, url and the title read when the run was created (null when that read failed). Writes nothing. Tenant-scoped: another tenant's schedule is the 404 a missing one gets, a firing id that is not this schedule's (or is stored for another tenant) is listed in `not_found` and not read, and every agent, workflow and issue run is read under the caller's tenant |
 | `GET /v1/schedules/{id}/audit` | the audit, newest first |
 | `POST /v1/schedules:preview` | §6.3 |
 | `GET /v1/approvals` | the inbox: `approvals/` plus projected `PLANNED` runs, filterable by kind; with `state=decided\|expired\|all`, the last 7 days' decided and expired items too, newest first (§4.7) |
@@ -2392,8 +2392,8 @@ tick. The owner chose not to.
 `quota_refresh`, `reconciler` and `safety_tick` are **platform machinery**.
 They are not jobs a tenant manages, and they stay in Terraform.
 `workflow_rollup` also seals each registered tenant's ended outcome days, so
-the counts over time read sealed days (`seal_outcomes=true`, COUNTS-SEAL,
-#2149; [outcomes.md](outcomes.md#the-nightly-seal-the-workflow-rollup-job-counts-seal-2149)).
+the counts over time read sealed days (`seal_outcomes=true`, COUNTS-SEAL;
+[outcomes.md](outcomes.md#the-nightly-seal-the-workflow-rollup-job-counts-seal)).
 Admin › Platform counts lists them read-only, as "Platform ticks", from a static list
 (`PLATFORM_TICKS` in `PlatformCounts.tsx`, held to `jobs.tf` by a test), so an
 admin sees every recurring thing in one place. They were on Admin › Schedules
@@ -2507,7 +2507,7 @@ phases. New files are named without their root.
   - one plan is approved by a GitHub comment from a verified member;
   - job `bdb47d30` is deleted, with the firing id in the PR.
 
-  These are #892's own acceptance criteria.
+  These are this build plan's own acceptance criteria.
 
 **Owner applies.** Under SD10 (**Owner decision 2026-10-08**: a dedicated
 account), lane S13 needs two things from the owner, in this order:

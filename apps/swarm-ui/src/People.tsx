@@ -113,7 +113,7 @@ import './styles/people.css'
  */
 
 /**
- * THE (i) (BGD's standing rule, 2026-11-05: no explanatory prose on the
+ * THE (i) (the owner's standing rule, 2026-11-05: no explanatory prose on the
  * surface). A sentence that explains a label sits behind this button beside
  * it: open on hover, on focus and on a tap (Safari never focuses a tapped
  * button, so focus alone is not enough), closed on Escape, on the pointer
@@ -270,13 +270,13 @@ export function accountStateWord(state: string): string {
 
 /**
  * WHO LENT IT, AS A WORKSPACE (admin2-04): the select and 'Now using' named
- * the lender by its tenant id, 'lent by u-bogdan'. A workspace is named first
+ * the lender by its tenant id, 'lent by u-owner'. A workspace is named first
  * as the switcher names it (`nameTenants`): the caller's own personal
  * workspace is 'your workspace', a group one its switcher name. Then a group
  * workspace by its column's name, which `withWorkspaceNames` already renamed
  * by the switcher's rule; then a personal workspace by its person, as the
  * People table lists them ("Bo's workspace"), but only when ONE row holds
- * that id: the review's render had two people in u-bogdan and named it by
+ * that id: the review's render had two people in u-owner and named it by
  * whichever sorted first (QA2-FIX-18 review, 2026-10-29). A tenant the page
  * cannot name stays its id.
  */
@@ -332,7 +332,7 @@ function claudeText(c: PersonClaudeAccount, lender: (tenant: string) => string =
     ))
   }
   // The lenders' tenant ids are tokens like the workspace ids beside them:
-  // "lent by u-" over "bogdan" read as a lender called "u-" (rendered review).
+  // "lent by u-" over "owner" read as a lender called "u-" (rendered review).
   if (c.source === 'lent') return c.lent_by.length > 0 ? <>lent by <span className="pp-nobr">{c.lent_by.map(lender).join(', ')}</span></> : `lent (${c.lent})`
   if (c.source === 'provider_key') return 'provider key'
   return 'none'
@@ -867,7 +867,7 @@ function limitParts(limits: Record<string, number> | undefined): string[] {
  * WHAT APPROVING DOES, NOT WHAT IS STORED (visual QA pass 1, admin-shell-20,
  * 2026-10-28): "the record carries no limits" told the approver nothing. With
  * none asked for, Approve creates the workspace at `DEFAULT_CEILING`, and
- * Approve's tooltip says so (BGD's no-prose rule, 2026-11-05: not a line in the row).
+ * Approve's tooltip says so (the owner's no-prose rule, 2026-11-05: not a line in the row).
  */
 function approveTip(row: PersonRow): string | undefined {
   return limitParts(row.workspace.limits).length === 0 ? `No ceiling was asked for: approving sets the default, ${DEFAULT_CEILING} agents at once.` : undefined
@@ -1006,7 +1006,7 @@ export async function loadWorkspaceMembers(tenantId: string, signal?: AbortSigna
 type MembersRead = { ok: true; members: ReadonlyMap<string, WorkspaceMember> } | { ok: false; why: string }
 
 /**
- * THE "JOINED BY REQUEST" MARK'S SOURCE (§4.6; BGD 2026-10-26): each
+ * THE "JOINED BY REQUEST" MARK'S SOURCE (§4.6; owner 2026-10-26): each
  * column's members list, read once per set of columns and again after a
  * decision (`version`). A column absent from the answer is still being read
  * or was not read: it draws no mark, never a guess.
@@ -1075,7 +1075,7 @@ function MembersUnread({ columns, reads }: { columns: readonly PeopleWorkspaceCo
   const lists = same
     ? `${one ? 'its members list' : 'their members lists'} ${membersUnreadWhy(first.why, !one)}`
     : listed(failed.map((f) => `${f.name}’s members list ${membersUnreadWhy(f.why, false)}`))
-  // BGD's no-prose rule (2026-11-05): one short line; which columns, why, and
+  // the owner's no-prose rule (2026-11-05): one short line; which columns, why, and
   // that their roles stand are its (i).
   const tip = `No “joined by request” mark can be drawn in the ${listed(failed.map((f) => f.name))} ${one ? 'column' : 'columns'}: ${lists}. The roles shown ${one ? 'there' : 'in them'} are read separately and are not affected.`
   return (
@@ -1436,7 +1436,7 @@ function PersonCell({ row, doc }: { row: PersonRow; doc: PeopleDoc }) {
 /**
  * THE GRID'S PLATFORM ROLE COLUMN (S5c, visual QA VQ-051): "platform owner",
  * "platform admin", or a dash for no platform role. It was a chip beside the
- * name, which took the room the name needed ("Bogdan Alexand…" at 1440,
+ * name, which took the room the name needed ("Alex Exampl…" at 1440,
  * VQ-052). When `admins` was not read, the dash says that instead: an unread
  * list is not "nobody holds one". A member of an ADMIN_GROUPS group holds no
  * document and reads as none here, as it does in Admins.
@@ -1468,7 +1468,7 @@ function gridColumns(doc: { workspaces?: PeopleWorkspaceColumn[] | null }): Peop
  * whose roles were not read, and says why.
  *
  * A PLATFORM ADMIN'S CELL IS THEIR EFFECTIVE ROLE, "admin (platform admin)"
- * (BGD 2026-10-26, VQ-ROLES; part of #2391): `RoleStore.resolve` makes them
+ * (owner 2026-10-26, VQ-ROLES; part of #2391): `RoleStore.resolve` makes them
  * admin in every group workspace and reads no grant for them, so Config ›
  * People and roles, This workspace and Profile all say admin, and the grid
  * saying their stored `member` was the odd answer out (VQ-044). The rule is
@@ -1476,7 +1476,7 @@ function gridColumns(doc: { workspaces?: PeopleWorkspaceColumn[] | null }): Peop
  * `platform_admin: true` (`people.mark_platform_admin`). The suffix is drawn
  * from that marker, not from the admins list: a workspace admin's scoped read
  * serves no admins list, and every reader is to see where the cell came from
- * (BGD 2026-10-26, "Mark the source"; ROLE-MARK). The drawer still edits the
+ * (owner 2026-10-26, "Mark the source"; ROLE-MARK). The drawer still edits the
  * stored grant, which stays inert while they are one.
  */
 function RoleCell({
@@ -2846,7 +2846,7 @@ function isScoped(doc: PeopleDoc | ScopedPeopleDoc): doc is ScopedPeopleDoc {
 }
 
 /**
- * EACH WORKSPACE BY ITS NAME, NOT ITS GROUP EMAIL (visual QA VQ-056, BGD
+ * EACH WORKSPACE BY ITS NAME, NOT ITS GROUP EMAIL (visual QA VQ-056, owner
  * 2026-10-26; part of #2391). The API names a column, and a join request's
  * workspace, by the group's address; the switcher calls the same workspace
  * 'Engineering', or by its id when it has no name. Every place the page draws
@@ -2998,7 +2998,7 @@ export function PeopleScreen() {
   return (
     <div className="ur-page pp-page">
       {/* Platform people since the admin routes lane (part of #2688): the Admin tab's new name. */}
-      {/* What the page holds is the (i) beside the title, not a line under it (BGD's no-prose rule, 2026-11-05). */}
+      {/* What the page holds is the (i) beside the title, not a line under it (the owner's no-prose rule, 2026-11-05). */}
       <PageHead
         title="Platform people"
         info={

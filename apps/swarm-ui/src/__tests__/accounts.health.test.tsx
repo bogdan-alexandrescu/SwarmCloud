@@ -12,7 +12,7 @@
 //     first); an unreadable read (a dash, what went wrong, Try again);
 //   * ONE read when the sheet opens, none while it stays open (the page's poll
 //     re-rendering it), one more per Refresh; nothing polls;
-//   * at 390 (BGD, D's P2): the three counts stacked, the series, then the
+//   * at 390 (owner, D's P2): the three counts stacked, the series, then the
 //     incidents, the open one expanded and the closed ones folded.
 //
 // BREAK IT: key the read's effect on the account object rather than its id --
@@ -313,13 +313,13 @@ describe('F4 (A): empty and honest states', () => {
   it('leads a re-auth with the fix, for the owner and for a borrower', async () => {
     const h: AccountHealth = {
       ...emptyRecord(),
-      account_id: 'eng:ai-eng-3',
+      account_id: 'eng:acct-3',
       status: 'reauth_needed',
       counts: { last_1h: counts({ assign_refused: 2, reauth: 1, auth: 1, refresh_failed: 2 }), last_24h: counts({ assign_refused: 2, reauth: 1, auth: 1, refresh_failed: 2 }), last_7d: counts({ assign_refused: 2, reauth: 1, auth: 1, refresh_failed: 2 }) },
       events: [ev(10, 'assign_refused'), ev(30, 'reauth'), ev(31, 'auth'), ev(40, 'refresh_failed'), ev(50, 'refresh_failed')],
     }
     api.loadAccountHealth.mockResolvedValue(ok(h))
-    const { unmount } = render(<SheetHealth a={account({ account_id: 'eng:ai-eng-3', state: 'REAUTH_REQUIRED' })} owned />)
+    const { unmount } = render(<SheetHealth a={account({ account_id: 'eng:acct-3', state: 'REAUTH_REQUIRED' })} owned />)
     let s = await section()
     expect(within(s).getByText('Needs re-auth', { selector: '.acct-hs-st' })).toBeTruthy()
     const callout = within(s).getByRole('note')
@@ -328,7 +328,7 @@ describe('F4 (A): empty and honest states', () => {
     // The fix comes before the counts.
     expect(callout.compareDocumentPosition(within(s).getByRole('table')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     unmount()
-    render(<SheetHealth a={account({ account_id: 'eng:ai-eng-3', owner_tenant: 'ops', state: 'REAUTH_REQUIRED' })} owned={false} />)
+    render(<SheetHealth a={account({ account_id: 'eng:acct-3', owner_tenant: 'ops', state: 'REAUTH_REQUIRED' })} owned={false} />)
     s = await section()
     expect(within(s).getByRole('note').textContent).toContain('Its owner, ops, signs in again.')
   })
@@ -390,7 +390,7 @@ describe('one read when the sheet opens, none while it stays open', () => {
   })
 })
 
-describe('at 390 (BGD, D’s P2)', () => {
+describe('at 390 (owner, D’s P2)', () => {
   it('stacks the three counts, then the series, then the incidents: the open one expanded, the closed ones folded', async () => {
     viewport(390)
     api.loadAccountHealth.mockResolvedValue(ok(limited()))

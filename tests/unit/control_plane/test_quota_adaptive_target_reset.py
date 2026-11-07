@@ -1,7 +1,7 @@
 """A platform admin can reset a tenant's throttled AIMD target (QUOTA-RESET).
 
-THE CASE THAT ASKED FOR IT (owner, 2026-10-14). `u-bogdan` hit
-"provider:anthropic:tenant:u-bogdan full": the pool's hard limit was 40 and
+THE CASE THAT ASKED FOR IT (owner, 2026-10-14). `u-owner` hit
+"provider:anthropic:tenant:u-owner full": the pool's hard limit was 40 and
 the quota's `configured_hard_max` 50, but one 429 at 09:47Z had halved the
 AIMD target and the climb back is +1 per 20 consecutive successes, so the
 effective limit sat at 3. After lending the tenant two more accounts the owner
@@ -50,7 +50,7 @@ from .fakes import FakeFirestore, FakeTransaction
 
 T0 = datetime(2026, 10, 14, 9, 47, tzinfo=timezone.utc)
 PROVIDER = "anthropic"
-TENANT = "u-bogdan"
+TENANT = "u-owner"
 DOC = f"quota/{PROVIDER}:{TENANT}"
 POOL = f"pools/provider:{PROVIDER}:tenant:{TENANT}"
 ADMIN = "root@example.com"
@@ -73,7 +73,7 @@ def _broker(db: FakeFirestore, clock: _Clock | None = None) -> QuotaBroker:
 
 
 def _seed(db: FakeFirestore, **fields: Any) -> QuotaState:
-    """The measured u-bogdan state: hard max 50, target 3, window open again."""
+    """The measured u-owner state: hard max 50, target 3, window open again."""
     state = QuotaState(
         provider=PROVIDER,
         tenant_id=TENANT,

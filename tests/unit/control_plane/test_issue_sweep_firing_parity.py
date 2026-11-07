@@ -241,7 +241,7 @@ def _workflow(ctx, schedule: dict[str, Any], *, title: str | None = None,
         meta["title"] = title
     owner = schedulefire.schedule_owner_auth(ctx, schedule)
     # Through the issue-run code's own submission, which alone may carry a
-    # `metadata.issue_run` link (reserved, BGD 2026-11-04).
+    # `metadata.issue_run` link (reserved, the owner 2026-11-04).
     spec = WorkflowCreate(
         steps=[{"step_id": "only", "runner_profile": "mock", "input": {"prompt": "build"}}],
         metadata=meta,

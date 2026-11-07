@@ -4,7 +4,7 @@
 // QA2-OVERVIEW-AGENTS (2026-10-29) and is pinned here as it reads in the DOM:
 //
 //   ovag2-06  the wait line ran `… 5/5 units(holds no capacity)` and named
-//             the pool by its raw key, where Headroom says `anthropic · u-bogdan`
+//             the pool by its raw key, where Headroom says `anthropic · u-owner`
 //   ovag2-16  the failed card's last log line sat right-aligned in a narrow
 //             centre column between its label and `Open logs ›`
 //   oa-23     `No event for …` was said twice, above Now and inside it
@@ -119,7 +119,7 @@ function failed(over: Partial<Task> = {}): AgentRun {
 }
 
 describe('ovag2-06: the wait line names the pool as Headroom does, then a space, then the aside', () => {
-  it('reads `waiting for: anthropic · u-bogdan 5/5 units (holds no capacity)` on the fixture ready agent', async () => {
+  it('reads `waiting for: anthropic · u-owner 5/5 units (holds no capacity)` on the fixture ready agent', async () => {
     const r = await loadAgentRun('task_950b8e4a')
     expect(r.status).toBe('ok')
     if (r.status !== 'ok') return
@@ -133,9 +133,9 @@ describe('ovag2-06: the wait line names the pool as Headroom does, then a space,
     // MUTATION: drop the `{' '}` before the aside -- `units(holds` is back.
     expect(said).not.toMatch(/units\(/)
     // MUTATION: print `waitingLine(task)` as it was -- the raw pool key is back.
-    expect(said).toBe('waiting for: anthropic · u-bogdan 5/5 units (holds no capacity)')
+    expect(said).toBe('waiting for: anthropic · u-owner 5/5 units (holds no capacity)')
     // The raw key stays one hover away.
-    expect(bar.querySelector('[title="provider:anthropic:tenant:u-bogdan"]')).not.toBeNull()
+    expect(bar.querySelector('[title="provider:anthropic:tenant:u-owner"]')).not.toBeNull()
   }, 30_000)
 })
 

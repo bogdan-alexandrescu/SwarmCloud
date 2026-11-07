@@ -168,7 +168,7 @@ export function useStoredRoles(): TenantChoice[] {
 }
 
 /**
- * A GROUP WORKSPACE'S NAME, AS THE SWITCHER DRAWS IT (visual QA VQ-056, BGD
+ * A GROUP WORKSPACE'S NAME, AS THE SWITCHER DRAWS IT (visual QA VQ-056, owner
  * 2026-10-26; part of #2391). `GET /v1/profile` and `GET /v1/admin/people`
  * name a workspace with no stored name by its group email, so Profile and
  * Admin › People and roles read 'eng@…' where the switcher read 'Engineering'.

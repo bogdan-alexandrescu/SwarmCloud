@@ -10,7 +10,7 @@
 //   * Run POSTs `{file}` alone to the target's own `:run`, and the flow
 //     browser chosen for that one run beside it (lane VQ9-TOOL);
 //   * the form shows "Flow browser", Playwright by default or Jev, sends it,
-//     and an edit never drops it (lane VQ9-TOOL; BGD, 2026-10-23);
+//     and an edit never drops it (lane VQ9-TOOL; owner, 2026-10-23);
 //   * the credential form reads its link token from the URL and removes it
 //     from the address bar, as Config › Secrets' key form does, and sends it once as
 //     `link_token` with the username and password, which never stay in the DOM;
@@ -678,7 +678,7 @@ describe('QA targets: registration', () => {
   })
 })
 
-describe('QA targets: the flow browser (VQ9-TOOL; BGD, 2026-10-23)', () => {
+describe('QA targets: the flow browser (VQ9-TOOL; owner, 2026-10-23)', () => {
   async function openForm(label: string, root: ParentNode = document): Promise<HTMLFormElement> {
     await waitFor(() => expect(button(root, label)).not.toBeNull(), WAIT)
     fireEvent.click(button(root, label)!)
@@ -744,7 +744,7 @@ describe('QA targets: the flow browser (VQ9-TOOL; BGD, 2026-10-23)', () => {
 })
 
 describe('QA targets: sign-in start clicks (VQ8-START-CLICKS, §2.2)', () => {
-  // AI Studio's chooser: a Staging | Production toggle, then "Sign in" before the IdP.
+  // Peer App's chooser: a Staging | Production toggle, then "Sign in" before the IdP.
   const CHOOSER = [{ text: 'Staging', css: 'button' }, { text: 'Sign in' }]
   const SSO = 'https://sso.portal.example.test'
   const login = { kind: 'own_login', login_path: '/', signed_in_selector: '#me', extra_origin: SSO, start_clicks: CHOOSER }

@@ -1,4 +1,4 @@
-# Why the console draws what Help describes (#131)
+# Why the console draws what Help describes
 
 **Status:** implemented. `apps/swarm-ui/src/__tests__/help.rationale.test.tsx`
 holds Help's long form free of these sentences and holds every section below
@@ -11,7 +11,7 @@ paragraph went).
 
 Help is read by someone looking at a state who wants to know what it means and
 what to do about it: what they are seeing, what it means, what to do or where
-to look. Issue #131 found the long forms mostly explaining something else —
+to look. An earlier issue found the long forms mostly explaining something else —
 why the console draws a state the way it does, usually by describing a
 hypothetical screen that would have drawn it wrongly.
 
@@ -144,4 +144,4 @@ cards are drawn from, so it cannot disagree with them.
 > action back to them as breakage.
 
 That is why Pool limits draws a pool over its ceiling with a neutral mark
-(`apps/swarm-ui/src/AdminSettings.tsx`, #133).
+(`apps/swarm-ui/src/AdminSettings.tsx`).

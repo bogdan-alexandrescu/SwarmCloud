@@ -1,7 +1,7 @@
 // THE CONSOLE NO LONGER SAYS THE LIVE VIEW IS MASKED (lane LIVE-NOMASK-COPY;
 // part of #2298).
 //
-// BGD decided on 2026-10-25 that the live browser stops redacting any part of
+// The owner decided on 2026-10-25 that the live browser stops redacting any part of
 // the screen, in any situation: lane LIVE-NOMASK removes the painting from the
 // worker's live gate. Every frame the live view, the thumbnails and the
 // recordings show is the screen as Chromium drew it, so copy that tells a

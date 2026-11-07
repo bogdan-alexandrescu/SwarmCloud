@@ -1,7 +1,7 @@
 """The sc plugin shows a fix loop's rounds, and `/sc check` flags the loop a person must answer.
 
 Lane FL-PLUGIN of docs/design/fix-loop.md §8 (§6.3, §6.4), part of #2509.
-BGD's answers (2026-10-27) bind it: Q3 (c) the person-park expires after 7
+the owner's answers (2026-10-27) bind it: Q3 (c) the person-park expires after 7
 days, Q4 (a) any member adds rounds up to the ceiling of 10, Q5 (a)
 `max_rounds` 1-5 default 3, Q10 (a) the profile `fix-loop`.
 

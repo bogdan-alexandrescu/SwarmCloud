@@ -37,7 +37,7 @@ FIRE = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
 SINCE, UNTIL = fd.window(FIRE)
 PLATFORM = "plat"
 OTHER = "acme"
-SA_DOMAIN = "example-proj.iam.gserviceaccount.com"
+SA_DOMAIN = "example-project.iam.gserviceaccount.com"
 #: The await-input step's profile, read from the catalogue rather than guessed.
 AWAIT_PROFILE = next(name for name in RUNNER_PROFILES if is_await_profile(name))
 
@@ -203,7 +203,7 @@ _case(fd.FIX_ROUND_LIVE,
 
 
 _case(fd.PERSON_PUSH,
-      # #2505, BGD 2026-10-27: a merge step a person's push superseded. Until
+      # #2505, the owner 2026-10-27: a merge step a person's push superseded. Until
       # contract request SUPERSEDED_BY_PERSON_PUSH lands the worker ends it
       # FAILED merge_refused with this code; after, CANCELLED with the cause.
       [task("pushed-over", runner_profile="merge", end_cause="merge_refused",
@@ -613,7 +613,7 @@ class FakeLogs:
                  "textPayload": "reclaimed lease of att_1: lease silent"}]
 
 
-VIEW = "projects/swarm-proj/locations/global/buckets/_Default/views/swarm-workers"
+VIEW = "projects/example-project/locations/global/buckets/_Default/views/swarm-workers"
 
 
 def test_the_content_reader_reads_a_streams_last_bytes_in_the_tasks_own_tenant():

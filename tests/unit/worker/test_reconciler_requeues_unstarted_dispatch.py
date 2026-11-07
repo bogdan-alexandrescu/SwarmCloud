@@ -1,6 +1,6 @@
 """A dispatched task whose worker never started is re-queued, not failed (part of #2688).
 
-WHAT WAS WRONG. On 2026-11-06, about 07:40Z, a Product Oracle task sat
+WHAT WAS WRONG. On 2026-11-06, about 07:40Z, a a peer application task sat
 DISPATCHED and ended FAILED with last_error "reconciled: lease silent for 485s
 (grace 90s, expired=True, dispatch_overdue=True)": no attempt, no cost, no
 artifacts. The platform was at its API and pool limits, four other tasks sat
@@ -54,7 +54,7 @@ NEVER_STARTED_REQUEUES_KEY = "never_started_requeues"
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,

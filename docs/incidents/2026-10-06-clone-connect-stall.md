@@ -4,7 +4,7 @@
 96 % of that clone's time was one TCP connect to github.com:443 that stalled
 for 4 to 71 seconds. The transfer itself took a median 1.7 s. That adds a
 median of about 37 s, and a p90 of about 70 s, to every step: about 2 to 3.5
-minutes per three-step workflow. Issue #721, severity S2.
+minutes per three-step workflow. Severity S2.
 
 **The likely cause is the instance's internet egress path, not GitHub.** A
 freshly started Cloud Run instance reaches the internet through Direct VPC
@@ -18,7 +18,7 @@ after the container has started and the control plane has answered.
 **What was decided.** The owner chose to build (a), an egress probe, on
 2026-10-06, and it is in main. (b), why the path stays closed, is an open
 question to Track C and is not started. (c), cloning from a per-SHA bundle in
-GCS, was split into #940 on 2026-10-09, built, measured, and retired on
+GCS, was split into the clone-bundle project on 2026-10-09, built, measured, and retired on
 2026-10-11 because plain forge clones had become faster (§6).
 
 Everything below was measured on 2026-10-06 in dev by the chunk-2 observer,
@@ -30,7 +30,7 @@ otherwise.
 ## 1. What was measured
 
 **The sample.** 60 `clone_timed` events, 2026-10-06 15:31:35Z to 18:24:59Z:
-every clone instrumented by then (the clone trace of #708). 2,831 s of clone
+every clone instrumented by then (the clone-trace instrumentation change). 2,831 s of clone
 time in total.
 
 **The connect.** 2,723 s of those (96.2 %) are `connect_seconds`, from curl's
@@ -108,7 +108,7 @@ The reason each piece is the way it is:
   A dropped SYN is first retransmitted after 1 s. A probe that waits longer
   than that is waiting inside the backoff it exists to avoid.
 * **The interval, `apps/agent-worker/agent_worker/egress.py::EGRESS_PROBE_INTERVAL_SECONDS` = 1 s**
-  between the starts of two rounds: the owner's figure in #721 (a). It is the
+  between the starts of two rounds: the owner's figure here (a). It is the
   most the probe can trail the path opening, against the up to 32 s that one
   connect's backoff can trail it.
 * **The cap, `apps/agent-worker/agent_worker/egress.py::EGRESS_PROBE_CAP_SECONDS` = 80 s**
@@ -219,7 +219,7 @@ answered, read `probe_peer` against `git_peer` (§3).
 by guessing here.
 
 The question: why does the internet egress path of a freshly started Cloud
-Run instance stay closed for 35 to 70 s? The candidates named in #721:
+Run instance stay closed for 35 to 70 s? The candidates named here:
 
 * **Direct VPC egress programming** for the new instance: the documented
   start-up delay the [2026-09-25 incident](2026-09-25-worker-startup-network.md)
@@ -237,10 +237,10 @@ instance to line up against.
 
 ## 6. (c) Clone from a per-SHA git bundle over Private Google Access
 
-**Status: retired 2026-10-11.** Split into #940 on 2026-10-09 and built by PR
-#983. Measured on 2026-10-11 at 10:20Z over 7 days of `clone_timed` marks:
+**Status: retired 2026-10-11.** Split into the clone-bundle project on 2026-10-09 and built by
+the clone-bundle PR. Measured on 2026-10-11 at 10:20Z over 7 days of `clone_timed` marks:
 plain `forge` clones p50 **3.19 s** (n=293), `bundle+delta` p50 **4.69 s**
-(n=124), pure `bundle` n=1. Since #939 moved the runner profiles to GKE
+(n=124), pure `bundle` n=1. Since the runner profiles moved to GKE
 Autopilot, a fresh pod's egress no longer stalls, and that stall was the only
 thing a bundle saved. A bundle cost an upload and storage for a clone that was
 slower than the forge's, so the owner retired the path that day and every
@@ -264,9 +264,9 @@ stall too, which is one more reason (b) matters.
 
 ## 7. Related, and not the same
 
-* **#625 and #667** measure execution creation to container start. This
+* **The execution-to-container-start measurement and the image-size provisioning-delay investigation** measure execution creation to container start. This
   incident is what happens after the container has started, so neither is a
   duplicate of it, and nothing here changes what they cover.
-* **#748**: a MERGE verdict's container and its clone cost about 116 s, and
+* **The MERGE-verdict container-cost issue**: a MERGE verdict's container and its clone cost about 116 s, and
   part of that is this clone stall. Removing that container is a separate
   change.

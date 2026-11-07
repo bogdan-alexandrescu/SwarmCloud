@@ -1,4 +1,4 @@
-"""Three sc plugin faults the Product Oracle session reported (2026-11-06).
+"""Three sc plugin faults the a peer application session reported (2026-11-06).
 
 1. A TASK ROW ENDED AT ONCE ON A TASK STILL DISPATCHED. Run wa0iq1ptb, the
    sc:task row for task_4447f83c08cc45959dc7, returned after about 7 seconds

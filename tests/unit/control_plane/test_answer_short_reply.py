@@ -1,6 +1,6 @@
 """`POST /v1/tasks/{id}/answers?reply=short`: the answer recorded, no question text.
 
-AI Studio's request on BGD's decision of 6 November 2026 (part of #2688):
+A peer application's request on the owner's decision of 6 November 2026 (part of #2688):
 about 404 questions on about 189 finished tasks are closed as moot, and
 each answer's reply served the whole task's questions (about 4,000 tokens),
 so recording them one by one cost about 1.6 million tokens. `reply=short`

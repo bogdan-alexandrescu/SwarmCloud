@@ -12,9 +12,9 @@ THE DEFECT, MEASURED FROM A LAPTOP ON 2026-09-24, in this order:
     SWARM_IMPERSONATE_SA=swarm-verify@...   -> HTTP 403 "Access denied. For
       scripts/api.sh GET /runtimes             user swarm-verify@..."
 
-    and, from a browser signed in as bogdan@example.com, the SAME API over the
+    and, from a browser signed in as owner@example.com, the SAME API over the
     SAME front door:
-      GET https://swarm.saga.xyz/v1/runtimes -> 200, five runner profiles
+      GET https://swarm.example.com/v1/runtimes -> 200, five runner profiles
 
 So the control plane was healthy and the bridge called it unreachable. Two
 independent causes, one per half of this file:
@@ -285,7 +285,7 @@ def test_a_deployment_with_its_own_oauth_client_still_gets_an_id_token(
     _tfvars(tmp_path, 'frontend_hostname = "swarm.example.com"\n')
     monkeypatch.setenv("SWARM_REPO_ROOT", str(tmp_path))
     monkeypatch.setenv("SWARM_IAP_CLIENT_ID", "123.apps.googleusercontent.com")
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     monkeypatch.setattr(
         SwarmClient,
         "access_token",
@@ -386,13 +386,13 @@ def test_impersonation_reaches_the_access_token(monkeypatch, tmp_path):
     calls: list[list[str]] = []
     monkeypatch.setattr(client, "_run", lambda argv, **kw: calls.append(argv) or "TOKEN")
     monkeypatch.setenv("SWARM_REPO_ROOT", str(tmp_path))
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
 
     c = SwarmClient(base_url="https://example.invalid")
     assert c.access_token() == "TOKEN"
     assert calls, "no token was minted at all"
     assert any(
-        arg == "--impersonate-service-account=sa@example.iam.gserviceaccount.com"
+        arg == "--impersonate-service-account=sa@example-project.iam.gserviceaccount.com"
         for arg in calls[-1]
     ), calls[-1]
 
@@ -401,7 +401,7 @@ def test_an_explicit_access_token_beats_impersonation(monkeypatch, tmp_path):
     """Same precedence as `common.sh`: a token the operator supplied is the one
     they meant, and no subprocess runs."""
     monkeypatch.setenv("SWARM_REPO_ROOT", str(tmp_path))
-    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example.iam.gserviceaccount.com")
+    monkeypatch.setenv("SWARM_IMPERSONATE_SA", "sa@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv("SWARM_ACCESS_TOKEN", "SUPPLIED")
     monkeypatch.setattr(client, "_run", _explode)
     assert SwarmClient(base_url="https://example.invalid").access_token() == "SUPPLIED"

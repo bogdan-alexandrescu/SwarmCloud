@@ -2,7 +2,7 @@
  * LANE TASKPANES-FOLLOW (part of #1680, console visual QA run 6). The three
  * items QAFIX6-TASKPANES (PR 2081) left as questions, because each needed a
  * shared test file or a file outside its territory. CLD took the lane's
- * recommended answers on 2026-10-23 under BGD's overnight authority
+ * recommended answers on 2026-10-23 under the owner's overnight authority
  * (task_85db365560234379a4d8); they are reversible UI choices.
  *
  *   1  box 6343793416       (6:flow-find-failure-phone-05) the overflow names
@@ -206,7 +206,7 @@ function transcript(steps: TranscriptStep[]): TaskTranscript {
       source: 'final',
       status: 'ok',
       detail: null,
-      uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/att_1/final/agent_stdout.log`,
+      uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${ID}/attempts/att_1/final/agent_stdout.log`,
       object_updated_at: ago(30),
       age_seconds: 1800,
       total_bytes: 1000,
@@ -234,7 +234,7 @@ function stream(name: LogStream['stream']): LogStream {
     status: 'ok',
     detail: null,
     key: `tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
-    uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
+    uri: `gs://swarm-artifacts-example-project/tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
     content: '',
     total_bytes: 0,
     offset: 0,

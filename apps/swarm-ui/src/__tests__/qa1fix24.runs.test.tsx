@@ -1,5 +1,5 @@
 // CONSOLE VISUAL QA PASS 1, WORK › RUNS (QA1-FIX-24, part of #2596 and #2391,
-// BGD, 2026-10-28). One case per finding this lane changed, each red on main
+// owner, 2026-10-28). One case per finding this lane changed, each red on main
 // before the change:
 //
 //   runs-submit-03  a decision shows its outcome where it was taken, and a

@@ -310,7 +310,7 @@ def test_the_issue_runs_own_rounds_are_not_gated(fix_client, db):
     payload["steps"][0]["input"].pop("issue")
     assert "issue_run" in payload["metadata"] and cifix.CI_FIX_METADATA_FIELD not in payload["metadata"]
     # Inside the issue-run code's exemption, as `issueci` submits it:
-    # `metadata.issue_run` is reserved (BGD, 2026-11-04).
+    # `metadata.issue_run` is reserved (the owner, 2026-11-04).
     with issue_run_mark_allowed(payload["metadata"]["issue_run"]):
         response = fix_client.post("/v1/workflows", headers=FIXER_HEADERS, json=payload)
     # MUTATION: gate every continuation of a live run's task -- the run's

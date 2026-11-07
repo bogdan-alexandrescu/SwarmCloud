@@ -585,7 +585,7 @@ describe('Provider quota says which run its 429 count is of (CP-10)', () => {
     for (const t of tables) {
       expect(t.querySelector('button[aria-expanded]'), 'a ? sits inside a quota table').toBeNull()
     }
-    // THE INDEX IS BEHIND THE PAGE TITLE'S ONE `?` (VQ-033, BGD 2026-10-26),
+    // THE INDEX IS BEHIND THE PAGE TITLE'S ONE `?` (VQ-033, owner 2026-10-26),
     // where the `Reading this screen:` footer was.
     expect(screen.queryByText('Reading this screen:')).toBeNull()
     fireEvent.click(within(document.querySelector<HTMLElement>('.c-phead')!).getByRole('button', { name: /^Help:/ }))

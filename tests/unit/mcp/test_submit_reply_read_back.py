@@ -1,6 +1,6 @@
 """A thin submit reply is checked by reading the workflow back, never by leaving it unwatched (#2206).
 
-MEASURED, 2026-10-24, sc plugin 0.5.49 bridge, AI Studio session (tenant
+MEASURED, 2026-10-24, sc plugin 0.5.49 bridge, a peer application session (tenant
 eng): a one-step `claude-code` spec launched through /sc:swarmcloud came back
 SUBMITTED_UNVERIFIED for wf_effa3d00346b40d1a1d3 -- "the reply carries no spec
 digest ...; step build is in the spec and missing from the reply" -- and no

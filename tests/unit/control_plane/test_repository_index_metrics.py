@@ -1,6 +1,6 @@
 """Each index run's measurements, on the run record the index-runs read serves.
 
-The owner's agent quality program (BGD, 2026-11-03) proves the landed
+The owner's agent quality program (the owner, 2026-11-03) proves the landed
 incremental index carry before relying on it, and its canary
 (scripts/index_canary_report.py) reads these. What is held here:
 

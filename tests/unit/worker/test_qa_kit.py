@@ -87,8 +87,8 @@ def test_phone_390_is_a_preset_with_iphone_15s_mobile_flags():
 
 
 def test_phone_380_is_phone_390_at_ai_studios_frame_size():
-    """IMPLEMENT-RENDER (#2442) and PHONE-380 (#2136), BGD 2026-10-26: a
-    repository whose phone frames are drawn at 380 x 800 (AI Studio's mock-up
+    """IMPLEMENT-RENDER (#2442) and PHONE-380 (#2136), the owner 2026-10-26: a
+    repository whose phone frames are drawn at 380 x 800 (A peer application's mock-up
     frame) renders at that size. Only the size differs from phone-390, so a
     render at either compares with the frame drawn for it."""
     narrow, phone = PRESETS["phone-380"], PRESETS["phone-390"]
@@ -293,7 +293,7 @@ def test_playwright_mcp_saves_its_screenshots_in_the_tasks_artifacts(monkeypatch
 
 
 def test_playwright_mcp_omits_image_responses_in_every_parent_session(monkeypatch, tmp_path):
-    """TOKEN-RENDER (BGD 2026-10-27, part of #2524): @playwright/mcp 0.0.83
+    """TOKEN-RENDER (the owner 2026-10-27, part of #2524): @playwright/mcp 0.0.83
     sends a screenshot back as an image unless `--image-responses omit` says
     otherwise, and an image in a tool result stays in the session's context
     for every later turn (up to 15.7 MB of tool results in one lane). So

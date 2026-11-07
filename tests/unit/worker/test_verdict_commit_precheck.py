@@ -1,4 +1,4 @@
-"""The no-op precheck, check (b) (#2524, BGD 2026-10-28).
+"""The no-op precheck, check (b) (#2524, the owner 2026-10-28).
 
 A review writes the head it judged into verdict.json as `commit`, and a fix
 step gated on NOT_YET does not run its agent when its checkout's HEAD already

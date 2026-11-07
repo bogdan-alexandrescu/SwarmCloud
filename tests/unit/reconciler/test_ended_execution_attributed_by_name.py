@@ -58,7 +58,7 @@ import pytest
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region=REGION,
         firestore_database="swarm",
         heartbeat_grace_seconds=90,

@@ -1,6 +1,6 @@
 """Contract requests 118-121, the per-agent budget, as applied (BUDGET-CONTRACT, part of #2459).
 
-Accepted by BGD 2026-10-26 (~22:15Z) on PR 2466 and applied by lane
+Accepted by the owner 2026-10-26 (~22:15Z) on PR 2466 and applied by lane
 BUDGET-CONTRACT. Each is the request's own wording in
 docs/contract-change-requests.md:
 
@@ -129,4 +129,4 @@ def test_each_request_is_marked_applied():
         section = text.split(f"\n## {number}. ", 1)[1].split("\n## ", 1)[0]
         # scripts/lib/check-frozen-contract.sh passes a swarm_common diff only on an
         # added line saying "accepted by the owner"; this status line is that line.
-        assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner (BGD)"), number
+        assert section.splitlines()[2].startswith("**Status:** ACCEPTED by the owner"), number

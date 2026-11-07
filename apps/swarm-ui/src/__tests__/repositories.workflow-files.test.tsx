@@ -1,8 +1,8 @@
 // CONFIG › REPOSITORIES: whether an agent's push that changes workflow files is
-// made for this repository (#2029, WF-APP-UI; BGD's decision 2026-10-22:
+// made for this repository (#2029, WF-APP-UI; the owner's decision 2026-10-22:
 // self-serve, per-repo opt-in, off by default, chosen when the repo is added).
 //
-// WHERE THE SWITCH IS (BGD's answer to VQ-043, 2026-10-26: "Show state only on
+// WHERE THE SWITCH IS (the owner's answer to VQ-043, 2026-10-26: "Show state only on
 // the card"). The card says the state in one read-only line; the switch, what
 // it means and "Workflows: not granted" are on the repository's own page.
 //
@@ -166,7 +166,7 @@ describe('Repositories: the card says workflow files on or off, and has no switc
     // The role and the GitHub permissions have been read before the absences are.
     await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/tenants/me')).toBe(true), WAIT)
     await waitFor(() => expect(calls.some((c) => c.url.split('?')[0] === '/v1/forge/permissions')).toBe(true), WAIT)
-    // MUTATION: put Turn on / Turn off back on the card (BGD's VQ-043 pick moved it to the page) -> fails.
+    // MUTATION: put Turn on / Turn off back on the card (the owner's VQ-043 pick moved it to the page) -> fails.
     expect(off.querySelector('button')).toBeNull()
     expect(on.querySelector('button')).toBeNull()
     expect(cardOf('example-org/example-api').querySelector('[data-workflow-files-set]')).toBeNull()

@@ -125,7 +125,7 @@ describe('the topics #131 found missing are there (#131)', () => {
 
 describe('Platform counts says its two reads share one Run (COUNTS-ONE-RUN, #2149)', () => {
   it('puts both reads behind the page head’s one priced Run, not a button each', () => {
-    // BGD, 2026-10-25: the state counts and Over time are run by one shared
+    // owner, 2026-10-25: the state counts and Over time are run by one shared
     // Run in the page head, so a topic that still promised "its own priced
     // button" for each sent the reader looking for a second one.
     // MUTATION: restore "Two reads, each behind its own priced button".
