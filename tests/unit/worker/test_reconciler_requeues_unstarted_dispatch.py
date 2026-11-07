@@ -36,11 +36,11 @@ from worker_seeds import TENANT, seed_attempt
 
 from agent_worker import lifecycle
 from agent_worker.errors import ExitCode
-from reconciler.config import ReconcilerConfig
+from reconciler.config import NEVER_STARTED_REQUEUE_LIMIT_MAX, ReconcilerConfig
 from reconciler.logs import build_logger
-from reconciler.model import ExecutionPhase, ExecutionView
+from reconciler.model import ExecutionPhase, ExecutionView, count_never_started
 from reconciler.repair import Reconciler
-from reconciler.store import ControlStore
+from reconciler.store import ControlStore, RepairPlan
 from swarm_common.models import utcnow
 from swarm_common.states import EventType, TaskState
 
@@ -254,3 +254,54 @@ def test_a_stale_worker_of_the_old_generation_exits_without_running(
     assert task["current_generation"] == 2
     assert db.doc("leases/lease_1")["released_at"] == released
     assert pools_active(db) == pools
+
+
+def test_a_worker_that_started_after_the_snapshot_is_judged_as_before(db):
+    """The store re-reads the state inside the transaction: STARTING is a start."""
+    seed_silent_dispatch(db)
+    db.document("tasks/task_1").update({"state": TaskState.STARTING.value})
+    store = ControlStore(
+        db, logger=build_logger(stream=io.StringIO()), txn_runner=FakeTransactionRunner(db)
+    )
+
+    done = store.fence_release_repair(
+        "task_1",
+        expected_generation=1,
+        lease_id="lease_1",
+        release_reason="reconciler:stale_lease",
+        repair=RepairPlan(
+            to_state=TaskState.READY,
+            expected_lease_id="lease_1",
+            error="reconciled: lease silent",
+            never_started_requeue_limit=LIMIT,
+        ),
+    )
+
+    task = db.doc("tasks/task_1")
+    assert done.repaired_to is TaskState.READY and done.never_started_requeues is None, done
+    assert task["attempt_count"] == 1, task
+    assert NEVER_STARTED_REQUEUES_KEY not in (task.get("metadata") or {}), task
+
+
+@pytest.mark.parametrize(
+    ("used", "limit", "requeues", "exhausted"),
+    [(0, 3, 1, False), (2, 3, 3, False), (3, 3, 3, True), (0, 0, 0, True)],
+)
+def test_the_count_requeues_up_to_its_bound_then_fails(used, limit, requeues, exhausted):
+    counted = count_never_started(1, 3, used, limit)
+    assert (counted.requeues, counted.exhausted) == (requeues, exhausted), counted
+    assert counted.attempt_count == (1 if exhausted else 0), counted
+    assert ("never started" in counted.words) and (
+        counted.words.startswith("never started") is exhausted
+    ), counted
+
+
+def test_the_setting_defaults_to_three_and_is_bounded(monkeypatch):
+    assert ReconcilerConfig(
+        project_id="p", region="r", firestore_database="d"
+    ).never_started_requeue_limit == LIMIT
+    monkeypatch.setenv("PROJECT_ID", "swarm-unit-test")
+    monkeypatch.setenv("NEVER_STARTED_REQUEUE_LIMIT", "1000")
+    assert ReconcilerConfig.from_env().never_started_requeue_limit == (
+        NEVER_STARTED_REQUEUE_LIMIT_MAX
+    )

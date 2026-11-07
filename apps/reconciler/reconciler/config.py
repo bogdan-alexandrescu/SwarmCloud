@@ -91,6 +91,11 @@ def _stuck_after_overrides() -> tuple[dict[str, int], tuple[str, ...]]:
 #: of three and still small next to any reasonable `max_attempts`.
 STARTUP_REFUND_LIMIT_MAX = 10
 
+#: The ceiling on `never_started_requeue_limit`, for the same reason as the
+#: one above: each re-queue gives back the attempt, so an override with no
+#: ceiling would let a task that never starts be dispatched for ever.
+NEVER_STARTED_REQUEUE_LIMIT_MAX = 10
+
 
 @dataclass(frozen=True)
 class ReconcilerConfig:
@@ -347,6 +352,19 @@ class ReconcilerConfig:
     #: FAILED (security review, PR #290).
     startup_refund_limit: int = 3
 
+    #: How many times a task whose lease went silent before any attempt
+    #: reached STARTING is re-queued, its attempt not counted, before it is
+    #: FAILED as never started (part of #2688). Such an attempt ran nothing:
+    #: on 2026-11-06 a task sat DISPATCHED for 485 s while the platform was at
+    #: its API and pool limits and ended FAILED with no attempt, no cost and
+    #: no artifacts. Three, like the startup refund: a platform at its limits
+    #: clears within the requeue backoff's 30 s / 2 min / 8 min, and a task
+    #: that still never starts on the fourth dispatch has a cause no further
+    #: dispatch will fix, so it stops holding capacity. 0 fails it at the
+    #: first such silence, with the never-started words. Bounded at
+    #: `NEVER_STARTED_REQUEUE_LIMIT_MAX`.
+    never_started_requeue_limit: int = 3
+
     #: Minutes an unreleased lease may sit past its TTL -- held back for want
     #: of proof, or because its repair keeps failing -- before the pass says
     #: so at ERROR (once per lease per hour) and lists it in the persisted
@@ -529,6 +547,10 @@ class ReconcilerConfig:
             ),
             startup_refund_limit=min(
                 STARTUP_REFUND_LIMIT_MAX, max(0, _int("STARTUP_REFUND_LIMIT", 3))
+            ),
+            never_started_requeue_limit=min(
+                NEVER_STARTED_REQUEUE_LIMIT_MAX,
+                max(0, _int("NEVER_STARTED_REQUEUE_LIMIT", 3)),
             ),
             held_lease_alert_minutes=_int("HELD_LEASE_ALERT_MINUTES", 15),
             never_started_release_seconds=max(
