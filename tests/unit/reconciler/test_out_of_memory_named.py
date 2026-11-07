@@ -1,6 +1,6 @@
 """An attempt that ran out of memory at its limit fails its task the first time, and says so (#1926).
 
-WHAT WAS WRONG. task_021ff60c26f5440eb9c8 (AI Studio, claude-code, 8 GiB) ran
+WHAT WAS WRONG. task_021ff60c26f5440eb9c8 (A peer application, claude-code, 8 GiB) ran
 three attempts over about two hours on 2026-10-21/22. Attempts gen 1 and gen 3
 were OOM-killed (exit 137) and requeued at the same size; gen 5 sat at
 8.58-8.59 GB of its 8,589,934,592-byte limit on every heartbeat sample from
@@ -83,7 +83,7 @@ STALLED_WORDS = (
 @pytest.fixture
 def reconciler_config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,

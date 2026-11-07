@@ -6,7 +6,7 @@ grant): scripts/register-tenant.sh reads it from the guard's expectation, which
 copies it from the record (tests/unit/scripts/
 test_register_tenant_workspace_firestore.py). swarm-api is what writes it, from
 the deployment's cutover list WORKER_FIRESTORE_OFF_TENANTS (owner decision Q7:
-dev first -- u-bogdan, then eng, then all), on every admin action that starts a
+dev first -- u-owner, then eng, then all), on every admin action that starts a
 run for the record: an approval, a retry and a ceiling change.
 
 Over the shipped app and an in-memory Firestore, as test_people_admin.py.
@@ -61,8 +61,8 @@ def _client(db, tokens, group_map, objects, off: tuple[str, ...]) -> TestClient:
 
 CASES = {
     "not-listed": ((), True),
-    "another-tenant": (("u-bogdan",), True),
-    "listed": (("u-bogdan", "u-carol"), False),
+    "another-tenant": (("u-owner",), True),
+    "listed": (("u-owner", "u-carol"), False),
     "everyone": (("*",), False),
 }
 
@@ -115,8 +115,8 @@ def test_the_switch_is_true_unless_the_tenant_is_listed() -> None:
 def test_the_cutover_list_is_read_from_the_environment(monkeypatch) -> None:
     monkeypatch.setenv("PROJECT_ID", "test-project")
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("WORKER_FIRESTORE_OFF_TENANTS", " u-bogdan, eng ,")
+    monkeypatch.setenv("WORKER_FIRESTORE_OFF_TENANTS", " u-owner, eng ,")
     # MUTATION: read another variable (or none) and this goes red.
-    assert ApiSettings.from_env().worker_firestore_off_tenants == ("u-bogdan", "eng")
+    assert ApiSettings.from_env().worker_firestore_off_tenants == ("u-owner", "eng")
     monkeypatch.delenv("WORKER_FIRESTORE_OFF_TENANTS")
     assert ApiSettings.from_env().worker_firestore_off_tenants == ()

@@ -314,7 +314,7 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
     monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
     # JUDGE-SELECT's two, so every name the hand-off passes is present.
     monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
-    monkeypatch.setenv("JEV_API_URL", "https://decision-api-staging.taile0bda9.ts.net/laya/v1/decide")
+    monkeypatch.setenv("JEV_API_URL", "https://decision-api.example-tailnet.ts.net/laya/v1/decide")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["SWARM_HANDOFF"] == str(spool)
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
@@ -331,7 +331,7 @@ def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monk
     TypeSafe key: an internal backend needs none."""
     from agent_worker import handoff
 
-    url = "https://decision-api-staging.taile0bda9.ts.net/jev/v1/decide"
+    url = "https://decision-api.example-tailnet.ts.net/jev/v1/decide"
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
     monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")

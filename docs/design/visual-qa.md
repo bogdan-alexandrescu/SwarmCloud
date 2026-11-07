@@ -1,13 +1,13 @@
 # Visual QA: which browser agent type serves which job, and one workflow that sweeps the console
 
 **Status: built on `main` (recorded 2026-10-27), except the signed-in arm's
-proof.** Written 2026-10-19 as a design (lane QA-GUIDE, part of #1649); the
+proof.** Written 2026-10-19 as a design (lane QA-GUIDE); the
 owner's answers are in §7. What each lane of §6 landed:
 
 * **QA-KIT (built):** the 390×844 `phone-390` preset, the device and theme
   commands in the agent's instructions, and a screenshot that reaches the
   model as an image (`tests/unit/worker/test_qa_kit.py`).
-* **BROWSER-START (built, part of #1366):** the live browser is up before the
+* **BROWSER-START (built):** the live browser is up before the
   agent starts.
 * **QA-IDENTITY (built):** the signed-in arm, designed and built in
   [qa-identity.md](qa-identity.md); its §8 records each lane.
@@ -69,7 +69,7 @@ What the design settles, in one line each:
 
 ## 1. The problem, as measured
 
-### 1.1 What #1649 measured
+### 1.1 What an earlier issue measured
 
 The issue's survey of `origin/main` `7c2e148` (2026-10-19) found seven gaps.
 Each is restated with what this lane read at `2af9bed`:
@@ -115,15 +115,15 @@ Each is restated with what this lane read at `2af9bed`:
    `images/agent-runtime-browser/chromium-policy.json:2-9` (`URLBlocklist`).
    The console's mockups are HTML files in the repository
    (`docs/web-ui/mockups/*.html`, nine of them).
-7. **13% of attempts started without the live browser** (#1366): 8 of 60 on
+7. **13% of attempts started without the live browser**: 8 of 60 on
    benchmark devb-1015 (`docs/design/live-browser.md:696-735`, "NOLIVE-GUARD").
    NOLIVE-GUARD now fails such an attempt retryably (`live_gate_unavailable`)
    rather than letting half of them fall back to a headless browser; the rest
-   of #1366 is lane BROWSER-START.
+   of an earlier issue is lane BROWSER-START.
 
-And the record of how the console's own visual QA ran: #1038 produced at
+And the record of how the console's own visual QA ran: an earlier issue produced at
 least 111 numbered findings (`V001`..`V111` in
-`apps/swarm-ui/src/__tests__/vqa.l11.workflow.test.tsx:1-20`) and #1427
+`apps/swarm-ui/src/__tests__/vqa.l11.workflow.test.tsx:1-20`) and an earlier issue
 re-ran it on 2026-10-16 ("measured in headless Chromium",
 `people.vqa2r4.test.tsx:1-8`). 27 test files under
 `apps/swarm-ui/src/__tests__/` pin those findings (`*vqa*`). The issue says
@@ -328,7 +328,7 @@ estimate below.
 
 #### F7. Plain `claude-code` with headless Playwright against the fixture build
 
-* **What #1038 and #1427 did** (the issue's account). `claude-code` is class
+* **What earlier issues did** (the issue's account). `claude-code` is class
   `standard` on GKE, 7,200 s (`profiles.py:1491-1520`), image
   `agent-runtime-base` with uv and node, **no Chromium and no browser system
   libraries** (`profiles.py:1701`). The fixture build is `npm run dev` in
@@ -407,7 +407,7 @@ resources or backend parameters.** Preserved without a new caller input. The
 template names `claude-code-browser` and `claude-code`, a `browser_tool` by
 name (contract request 77) and a `model_class` by name (contract request 101).
 The device and theme are **agent-side commands inside the profile**
-(`swarm-handoff device <preset>`, `page.emulate_media`), as #1649's constraint
+(`swarm-handoff device <preset>`, `page.emulate_media`), as an earlier issue's constraint
 check asks. The prompt telling an agent to run the capture tool is data to the
 agent, the same as a prompt that says "run pytest": the platform executes only
 the profile's `runner_argv`.
@@ -487,7 +487,7 @@ Four kinds of step:
 4. **Report** (1 step, `claude-code`, `opus`). Merges everything into one
    report with the screenshots and GIFs attached.
 
-* **Code.** QA-KIT, QA-FLOWS, BROWSER-START (all in #1649) and one new lane,
+* **Code.** QA-KIT, QA-FLOWS, BROWSER-START (all in an earlier issue) and one new lane,
   QA-CAPTURE: a ~400-line Python tool in the browser image and a route list
   held to `SECTIONS` by a test (§6).
 * **Latency.** Critical path capture → review → report, about 40-55 minutes
@@ -522,7 +522,7 @@ configuration, against a fixture build deployed at a URL the runner may open.
 
 ### 3.4 Recommendation: B
 
-B is the only design that runs on dev once #1649's own lanes land, needs no
+B is the only design that runs on dev once an earlier issue's own lanes land, needs no
 frozen change and no new public surface, and captures deterministically. A
 costs more and cannot be compared run to run. C's saving is only the capture
 steps' few cents of haiku and their `npm ci`, bought with a contract change, a
@@ -534,7 +534,7 @@ whether to plan for that.
 
 ## 4. The recommended design
 
-### 4.1 What #1649's lanes provide, and what this design assumes of each
+### 4.1 What an earlier issue's lanes provide, and what this design assumes of each
 
 | lane | what the workflow uses | assumed name or shape |
 |---|---|---|
@@ -597,10 +597,10 @@ What it does, in order, and why each:
 File names: `<group>/<route-id>--<preset>--<theme>--s<N>.png`, so the review
 and the report can name every image without opening the manifest.
 
-#### 4.2.1 Amendment, 2026-10-20: what the capture does after the first run (QA-TOOLS-FIX, epic #1680)
+#### 4.2.1 Amendment, 2026-10-20: what the capture does after the first run (QA-TOOLS-FIX, an earlier epic)
 
 Steps 2 and 5 above are the design as written before the first run. That
-run (epic #1680) showed four places where it did not hold, and QA-TOOLS-FIX
+run (an earlier epic) showed four places where it did not hold, and QA-TOOLS-FIX
 (PR 1681) changed the tool. What `images/agent-runtime-browser/swarm_qa.py`
 and `images/agent-runtime-browser/swarm-handoff` do now:
 
@@ -668,7 +668,7 @@ and `images/agent-runtime-browser/swarm-handoff` do now:
   left alone, and cookies are not cleared. A fresh browser context per route would also do it, but opens a
   window the gate has never been measured fitting to a preset.
 
-#### 4.2.2 Amendment, 2026-10-22: what run 4 missed (QAFIX4-QATOOL, epic #1680)
+#### 4.2.2 Amendment, 2026-10-22: what run 4 missed (QAFIX4-QATOOL, an earlier epic)
 
 Visual QA run 4 (workflow `wf_ecd935541ced4a539540`, the fixture build of
 main at `fabe4d6c`) missed parts of pages in four ways, all in the capture
@@ -741,7 +741,7 @@ tool. What `swarm_qa.py` does now:
   cannot be scrolled clear of it: no segment can show them, and the review
   should know that the last ~45 px of a phone agent pane sit under the bar.
 
-#### 4.2.3 Amendment, 2026-10-23: what run 6 missed (QAFIX6-CAPTURE, epic #1680)
+#### 4.2.3 Amendment, 2026-10-23: what run 6 missed (QAFIX6-CAPTURE, an earlier epic)
 
 Visual QA run 6 again found rows in no image, and one capture that called
 itself complete over two identical shots. QAFIX6-CAPTURE (PR 2073) changed
@@ -806,7 +806,7 @@ itself complete over two identical shots. QAFIX6-CAPTURE (PR 2073) changed
   a shot of the wrong size is no capture of the route as it stands.
 
 **A shot whose mask could not be drawn is not stored** (QA-SHOT-MASK, PR
-2114). Finding #2055: on 2026-10-23 a login demo printed its own password on
+2114). Finding an earlier issue: on 2026-10-23 a login demo printed its own password on
 its home page, and while the capture's text and accessibility files carried
 the gate's redaction marker in its place, every stored screenshot showed it
 readable, because "a screenshot is pixels, which no scrub can match"
@@ -859,7 +859,7 @@ in `App.tsx` and fails when a tab is in one and not the other. A sweep that
 silently skips a new tab is the defect CLAUDE.md's "empty output is not
 success" names.
 
-#### 4.3.1 Amendment, 2026-10-22: the capture persona (QAFIX4-FIXTURE-A, epic #1680)
+#### 4.3.1 Amendment, 2026-10-22: the capture persona (QAFIX4-FIXTURE-A, an earlier epic)
 
 Run 4 captured the admin group as a person who is not a platform admin
 (admin-004, admin-005). Admin › Tenants drew only "This needs admin access",
@@ -868,7 +868,7 @@ state, at both presets and in both themes. So none of the admin controls had
 ever been reviewed. The fixture build now answers as one of two **personas**:
 
 * **`member`**: the fixture identity every earlier run captured. That is
-  alice@example.com in `u-bogdan`, not a platform admin
+  alice@example.com in `u-member`, not a platform admin
   (`principal.is_admin: false`), with no group workspace in
   `GET /v1/tenants/mine`. It is the default, and every route that names no
   persona still gets this exact identity.
@@ -996,7 +996,7 @@ repeats that check (§6).
   "title": "Console visual QA",
   "description": "Every console page captured at 1440 and 390 wide, in light and dark.",
   "label": "console-qa",
-  "repository_url": "https://github.com/bogdan-alexandrescu/SwarmCloud",
+  "repository_url": "https://github.com/example-org/example-repo",
   "repository_ref": "main",
   "strategy": "collect",
   "merge": "off",
@@ -1095,7 +1095,7 @@ Why the choices in it:
   review and report** because the judgment is the product (§7 Q1); **`sonnet`
   for flows**, which are mostly tool calls whose judgment jev or the
   screenshot carries.
-* **Two reports, not one (QA-TEMPLATE-SPLIT, 2026-10-20, part of #1680).**
+* **Two reports, not one (QA-TEMPLATE-SPLIT, 2026-10-20).**
   `report` waits for the six captures and the six reviews and
   writes the screen findings, `report.md` and `findings.json`; it stages the
   capture tars because their manifests are what each review's `reviewed`
@@ -1127,7 +1127,7 @@ Why the choices in it:
   That is the run-time half of QA-KIT's "the model receives the screenshot as
   an image": the report quotes it, so a run where the model got no image says
   so in the report.
-* **Amendment, 2026-10-23 (QAFIX6-QATEMPLATE, epic #1680): the flows' error
+* **Amendment, 2026-10-23 (QAFIX6-QATEMPLATE, an earlier epic): the flows' error
   and evidence rules.** The committed template, not the JSON above, is what
   runs; these rules are now in all three flow prompts, and
   `tests/unit/mcp/test_qa_workflow_template.py` holds each.
@@ -1209,7 +1209,7 @@ tenant's default pool of 40 (`pool_limits.default_tenant`, `dev.tfvars:140`).
 |---|---|---|
 | **QA-KIT** | no 390 preset, so `--presets desktop,phone-390` fails; no theme note; screenshots saved only when an agent remembers; nothing proves the model sees images | every capture; `flow-*`; `a11y-keyboard` |
 | **QA-FLOWS** | no GIF; no `http` mockup, so the route list's `mockups` cannot be captured beside the app (and nothing has proved the live browser loads the pod's `localhost`, which every step here assumes) | `flow-*`, the mockup comparison |
-| **BROWSER-START** (part of #1366) | a capture step can land without its live browser; NOLIVE-GUARD fails it retryably, which costs a retry, and a step out of attempts cancels the report | every capture and flow |
+| **BROWSER-START** | a capture step can land without its live browser; NOLIVE-GUARD fails it retryably, which costs a retry, and a step out of attempts cancels the report | every capture and flow |
 | **QA-CAPTURE** (new, §6) | no `swarm_qa`, no route list; an agent writes its own loop each run, and two runs cannot be compared | every capture and review |
 | **QA-IDENTITY** | the run stays on the fixture build, which is the template as written | only the authenticated arm, not in the template |
 
@@ -1231,7 +1231,7 @@ reading).
 
 ### Request A. `profiles.py`: the scripted `browser` runner takes a `color_scheme`
 
-**Status:** proposed by docs/design/visual-qa.md §5 (QA-GUIDE, part of #1649);
+**Status:** proposed by docs/design/visual-qa.md §5 (QA-GUIDE);
 not accepted.
 
 #### Why
@@ -1313,16 +1313,16 @@ passed to `new_context(reduced_motion=...)`.
 
 ## 6. Build plan
 
-Lanes split by territory: no two lanes edit the same file. #1649's own lanes
+Lanes split by territory: no two lanes edit the same file. An earlier issue's own lanes
 (QA-KIT, QA-FLOWS, QA-IDENTITY, BROWSER-START) are briefed by the issue and
 listed here only for their order and the files that bound this design.
 
 | order | lane | files (territory) | red-first tests | depends on |
 |---|---|---|---|---|
-| 1 | **QA-KIT** (#1649) | `livegate/presets.py`, `swarm_api/live.py`, `apps/swarm-ui/src/LiveBrowser.tsx`, `Theater.tsx`, `TheaterTimeline.tsx` (preset labels), `runners/claude_code.py` (`LIVE_BROWSER_NOTE`), the screenshot auto-save, and their tests | the issue's: a 390×844 preset resolves; the note names `swarm-handoff device` and `emulate_media`; dark emulation passes the gate; a screenshot reaches the model as an image | — |
-| 1 | **BROWSER-START** (#1366, #1649) | its own brief | its own | — |
-| 1 | **QA-IDENTITY** (design, #1649) | its design doc | — | — |
-| 2 | **QA-FLOWS** (#1649) | its own brief; if it edits `images/agent-runtime-browser/Dockerfile`, QA-CAPTURE waits for it | the issue's, plus: the live browser loads a page served on the worker's `localhost` | — |
+| 1 | **QA-KIT** | `livegate/presets.py`, `swarm_api/live.py`, `apps/swarm-ui/src/LiveBrowser.tsx`, `Theater.tsx`, `TheaterTimeline.tsx` (preset labels), `runners/claude_code.py` (`LIVE_BROWSER_NOTE`), the screenshot auto-save, and their tests | the issue's: a 390×844 preset resolves; the note names `swarm-handoff device` and `emulate_media`; dark emulation passes the gate; a screenshot reaches the model as an image | — |
+| 1 | **BROWSER-START** | its own brief | its own | — |
+| 1 | **QA-IDENTITY** (design) | its design doc | — | — |
+| 2 | **QA-FLOWS** | its own brief; if it edits `images/agent-runtime-browser/Dockerfile`, QA-CAPTURE waits for it | the issue's, plus: the live browser loads a page served on the worker's `localhost` | — |
 | 3 | **QA-CAPTURE** (new) | `images/agent-runtime-browser/swarm_qa.py` (new); one `COPY` line, axe-core and Pillow pins in `images/agent-runtime-browser/Dockerfile`; `apps/swarm-ui/qa/routes.json` (new); `tests/unit/worker/test_swarm_qa.py` (new); `tests/unit/scripts/test_qa_routes.py` (new) | **`test_capture_refuses_without_the_live_browser`** (no endpoint → exit 2, nothing written); **`test_capture_switches_device_by_preset_and_never_resizes`** (a fake `swarm-handoff` records `device phone-390`; a fake page asserts `set_viewport_size` is never called); **`test_capture_sets_theme_by_emulated_media`**; **`test_capture_writes_the_tarball_when_a_route_fails`** (one route's ready selector times out: the tar exists and `failed` names it); **`test_file_names_carry_route_preset_theme_segment`**; **`test_diff_reports_ratio_and_writes_a_diff_png`**; **`test_every_sections_tab_is_in_a_route_group`** (reads `SECTIONS` in `App.tsx`; fails on a tab added without a route) | QA-KIT (the preset name), QA-FLOWS (the Dockerfile) |
 | 4 | **QA-TEMPLATE** (new) | `docs/qa/console-qa.workflow.json` (new); `docs/browser-qa.md` (new: §1.3 and §1.4 rewritten for users); one link line in `docs/workflows.md`; `tests/unit/mcp/test_qa_workflow_template.py` (new) | **`test_template_reads_as_a_spec`** (`read_spec` and the API's `WorkflowCreate` accept it); **`test_template_captures_every_route_group`** (one capture and one review step per group in `routes.json`); **`test_template_report_reads_every_review_and_flow`**; **`test_template_names_only_profiles_inputs_and_classes`** (no `resource_class`, every `browser_tool` in the declared choices, every `model_class` in `MODEL_CLASSES`) | QA-CAPTURE |
 | 5 | **QA-PROOF** (operator, on dev) | none: submit the template, read the report | the run's own report: each group's `reviewed` equals its manifest's image count; one GIF per flow; `flow-submit-form`'s screenshot descriptions match its PNGs. A second run on the same commit: `swarm_qa diff` of the two captures reports a changed-pixel ratio of 0 for every image, which is the measurement that the capture is deterministic | everything above; for the signed-in arm, the QA-IDENTITY build |
@@ -1349,7 +1349,7 @@ Each has a recommendation, first. They are also in the agent's
 
 **Q1. Which model class reviews the screenshots?**
 1. **`opus` for review and report (recommended).** The review is the product:
-   #1038's 111 findings came from a model looking at renders. About $9-15 of
+   an earlier issue's 111 findings came from a model looking at renders. About $9-15 of
    the run's $16-26.
 2. `sonnet`: about 40-50% less on those steps; weaker on fine layout.
 3. `fable`: 2.5 times `opus` per token (`docs/workflows.md:434`); only if
@@ -1431,11 +1431,11 @@ segment budget (276 of 620 in all), and without the capture manifests the
 report could not say which count was right; nor could it copy the full-size
 screenshots its findings cite (run findings run-001, run-002). The template
 now stages the six capture tars into `report` as well (QA-REPORT-TARS, part
-of #1680), each unpacked into its own directory because every capture tar
+of an earlier issue), each unpacked into its own directory because every capture tar
 carries `manifest.json` at its root.
 
 **Why `flow-submit-form` ran 45 minutes.** Read on 2026-10-20 from the
-attempt's own artifacts, `gs://swarm-artifacts-saga-agents-staging/tenants/eng/tasks/task_cfe142a3ee35418abcdb/attempts/att_d1b50da5a215417d93f7/`
+attempt's own artifacts, `gs://swarm-artifacts-example-project/tenants/eng/tasks/task_cfe142a3ee35418abcdb/attempts/att_d1b50da5a215417d93f7/`
 (`claude-code.stdout.log`, and the gate's `live/actions-*.live.jsonl`); the
 API's task-document read answered 401 to this lane. The flow never reached the form:
 

@@ -469,3 +469,132 @@ def test_sync_refuses_a_malformed_source_and_writes_nothing(tmp_path: Path):
     assert result.returncode != 0
     assert not (record / "gh").exists() and not (record / "sm").exists()
     assert list(scratch.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# The owner's rulings of 7 November 2026 (part of #2688): public hosts, generic
+# workspace slugs, the email rule's false positives and LICENSE line 3 are not
+# deployment values. Every allowed value is read from placeholders.json, so this
+# file restates none of them; every listed value is built at run time.
+# ---------------------------------------------------------------------------
+
+ALLOWLIST = ph.ALL["allowlist"]
+
+
+def _listed_neighbour(tmp_path: Path, allowed_lines: list[str]) -> tuple[list[tuple[str, int, str, str]], str]:
+    """Each allowed line followed by a line that carries a listed value; the findings."""
+    listed_value = _word("Co")
+    lines = [part for line in allowed_lines for part in (line, f"{line} {listed_value}")]
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": "\n".join(lines) + "\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([("C9", "literal", listed_value)]))
+    return findings(result.stdout), result.stdout + result.stderr
+
+
+def _only_the_listed_lines_are_reported(found: list[tuple[str, int, str, str]], count: int) -> None:
+    assert found == [("docs/x.md", 2 * i + 2, "C9", "list:2") for i in range(count)], found
+
+
+def test_every_public_product_host_is_not_reported_but_a_listed_value_beside_it_is(tmp_path: Path):
+    hosts = [entry["host"] for entry in ALLOWLIST["public_product_hosts"]]
+    assert hosts and all(entry["why"] for entry in ALLOWLIST["public_product_hosts"])
+    lines = [f"call https://{host}/v1 and https://sub.{host}/x" for host in hosts]
+    found, out = _listed_neighbour(tmp_path, lines)
+    _only_the_listed_lines_are_reported(found, len(lines))
+
+
+def test_a_host_that_only_ends_like_a_product_host_is_still_reported(tmp_path: Path):
+    host = ALLOWLIST["public_product_hosts"][0]["host"]
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": f"https://{_word('x')}{host}/v1\nhttps://{host}.{_word('e')}.com/\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("docs/x.md", 1, "C4", "url-host"), ("docs/x.md", 2, "C4", "url-host")]
+
+
+def test_every_public_service_address_is_not_reported(tmp_path: Path):
+    addresses = [entry["address"] for entry in ALLOWLIST["public_service_addresses"]]
+    assert addresses and all(entry["why"] for entry in ALLOWLIST["public_service_addresses"])
+    found, _ = _listed_neighbour(tmp_path, [f"grant {a} write" for a in addresses])
+    _only_the_listed_lines_are_reported(found, len(addresses))
+
+
+def test_another_address_at_a_public_service_domain_is_still_reported(tmp_path: Path):
+    domain = ALLOWLIST["public_service_addresses"][0]["address"].split("@", 1)[1]
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": f"mail {_word('p')}@{domain}\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("docs/x.md", 1, "C5", "email")]
+
+
+def test_a_public_documentation_path_is_not_a_project_but_the_same_word_elsewhere_is(tmp_path: Path):
+    paths = [entry["path"] for entry in ALLOWLIST["public_url_paths"]]
+    assert paths and all(entry["why"] for entry in ALLOWLIST["public_url_paths"])
+    word = "a" + _word("p")
+    lines = [f"see https://{p}{word}/x" for p in paths] + [f"see projects/{word}/x"]
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": "\n".join(lines) + "\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("docs/x.md", len(lines), "C1", "project-path")]
+
+
+def test_cluster_dns_names_and_the_cloud_run_url_shape_are_not_reported(tmp_path: Path):
+    lines = [
+        f"http://{_word('s')}.{_word('ns')}.svc:8080/x http://kubernetes.default.svc/api",
+        f"https://{_word('svc-')}-abcdef-uc.a.run.app https://{_word('svc-')}-xxxxxxxxxx-uc.a.run.app",
+        f"https://{_word('svc-')}.example.run.app https://{_word('svc-')}-{ph.PROJECT_NUMBER}.{ph.REGION}.run.app",
+        "http://localhost.localdomain:8080/",
+    ]
+    found, _ = _listed_neighbour(tmp_path, lines)
+    _only_the_listed_lines_are_reported(found, len(lines))
+
+
+def test_a_real_shaped_cloud_run_hash_or_project_number_is_still_reported(tmp_path: Path):
+    real_hash = "".join(secrets.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(9)) + "q"
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": "\n".join([
+        f"https://{_word('svc-')}-{real_hash}-uc.a.run.app/x",
+        f"https://{_word('svc-')}-{_number(12)}.{ph.REGION}.run.app/x",
+        f"http://{_word('s')}.svc.{_word('h')}.com/x",
+    ]) + "\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("docs/x.md", n, "C4", "url-host") for n in (1, 2, 3)]
+
+
+def test_every_generic_workspace_slug_is_not_reported_but_a_listed_value_beside_it_is(tmp_path: Path):
+    slugs = [entry["slug"] for entry in ALLOWLIST["tenant_slugs"]]
+    assert slugs and all(entry["why"] for entry in ALLOWLIST["tenant_slugs"])
+    found, _ = _listed_neighbour(tmp_path, [f"secret swarm-tenant-{s}-git swarm-tenant-{s}-anthropic" for s in slugs])
+    _only_the_listed_lines_are_reported(found, len(slugs))
+
+
+def test_the_two_placeholder_tenants_are_unchanged_and_another_slug_is_still_reported(tmp_path: Path):
+    assert ph.ALL["tenants"] == ["example-tenant", "team-a"]
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": f"secret swarm-tenant-{_word('t')}-git\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("docs/x.md", 1, "C7", "tenant-secret")]
+
+
+def test_a_generic_slug_on_the_private_pattern_list_is_not_allowed(tmp_path: Path):
+    slug = ALLOWLIST["tenant_slugs"][0]["slug"]
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": f"secret swarm-tenant-{slug}-git\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([("C7", "literal", slug)]))
+    assert ("docs/x.md", 1, "C7", "tenant-secret") in findings(result.stdout)
+
+
+def test_a_decorator_or_a_git_config_key_is_not_an_address_but_an_address_after_an_escape_is(tmp_path: Path):
+    domain = _word("d") + ".com"
+    tree = make_tree(tmp_path / "repo", {"tests/x.py": "\n".join([
+        'BODY = "```python\\n@pytest.fixture\\ndef widget():\\n```\\n"',
+        'BODY = "\\n\\n@app.route(\\"/ready\\")\\n"',
+        'KEYS = ("credential.https://github.com.helper", "http.https://github.com.proxy")',
+        f'BODY = "hello\\n{_word("p")}@{domain}"',
+    ]) + "\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("tests/x.py", 4, "C5", "email")]
+
+
+def test_license_line_3_is_exempt_and_line_4_is_not(tmp_path: Path):
+    exempt = ALLOWLIST["exempt_lines"]
+    assert [(e["path"], e["line"]) for e in exempt] == [("LICENSE", 3)] and exempt[0]["why"]
+    holder = _word("Co")
+    tree = make_tree(tmp_path / "repo", {
+        "LICENSE": f"MIT License\n\nCopyright (c) 2026 {holder} {_word('p')}@{_word('d')}.com\n{holder}\n",
+        "docs/x.md": f"x\n\n{holder}\n",
+    })
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([("C9", "literal", holder)]))
+    assert findings(result.stdout) == [("LICENSE", 4, "C9", "list:2"), ("docs/x.md", 3, "C9", "list:2")]

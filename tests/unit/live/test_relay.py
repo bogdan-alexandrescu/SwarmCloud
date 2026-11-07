@@ -1261,7 +1261,7 @@ def test_the_relay_starts_and_serves_with_no_firestore_client_and_no_certificate
         asked.append(version)
         return key + b"\n"
 
-    version = "projects/p-test/secrets/swarm-live-key/versions/latest"
+    version = "projects/example-project/secrets/swarm-live-key/versions/latest"
     # Any import of the Firestore client now fails, so building the relay
     # proves it needs none.
     monkeypatch.setitem(sys.modules, "google.cloud.firestore", None)

@@ -539,7 +539,7 @@ function stepAnswer(answer) {
   return withQuestions(flat, given.questions, given.owner_answers)
 }
 
-// A ROW THAT ENDS WAITING ON A PERSON (#2441, BGD 2026-10-26). Seven merge
+// A ROW THAT ENDS WAITING ON A PERSON (#2441, the owner 2026-10-26). Seven merge
 // rows followed an owner-question hold for 3 to 7 hours, 27 to 35 calls and
 // 0.32-0.46M tokens each. The bridge now ends the follow of a task PARKED on
 // HUMAN_REQUIRED (`stop_reason: "waiting_on_person"`) with a PARKED result
@@ -872,7 +872,7 @@ function readRows(given) {
   return mode === 'summary' || mode === 'per-step' || mode === 'pane' || mode === 'band' ? mode : null
 }
 
-// THE BAND LAYOUT (SC-BAND, BGD 2026-10-26): the sc plugin's strip above the
+// THE BAND LAYOUT (SC-BAND, the owner 2026-10-26): the sc plugin's strip above the
 // prompt follows the work with direct reads and says when a workflow finishes
 // or waits on a person, so this run starts NO row. A spec is still submitted
 // here; an attach given 'band' (a copy written before the switch) follows
@@ -1210,7 +1210,7 @@ const DETAILS_CHARS = 600
 const NOT_REPORTED = 'not reported'
 const BROWSER_PROFILE = 'claude-code-browser'
 
-// A step that asks for claude-code-large (BGD, 2026-11-06): submitted as
+// A step that asks for claude-code-large (the owner, 2026-11-06): submitted as
 // written, with one warning line naming the medium profile and the measured
 // share. swarm_mcp.workflows' LARGE_PROFILE, MEDIUM_PROFILE and
 // LARGE_FIT_MEDIUM_SHARE, restated because a script cannot import them;
@@ -1734,8 +1734,8 @@ function followRefused(workflowId, version, error, workflowConsole) {
   return withConsole({ workflow_id: workflowId, state: 'FOLLOW_REFUSED', error: message, steps: [] }, workflowConsole)
 }
 
-// A ROW BEFORE THE SUBMIT ROW THAT SUBMITTED IS THE SUBMISSION. AI Studio's
-// session, 2026-11-05 (plugin 0.5.79): the `setup · read spec` row ran
+// A ROW BEFORE THE SUBMIT ROW THAT SUBMITTED IS THE SUBMISSION. A peer
+// application's session, 2026-11-05 (plugin 0.5.79): the `setup · read spec` row ran
 // sc:workflow, which also holds swarm_workflow, and SUBMITTED the spec instead
 // of reading its outline -- its answer carried a workflow id, the workflow's
 // steps and no outline. The run judged that NOT_SUBMITTED, the workflow ran
@@ -1974,7 +1974,7 @@ function taskPrompt(task) {
   ].join('\n')
 }
 
-// A TASK ROW HOLDS UNTIL ITS TASK ENDS (Product Oracle, 2026-11-06). Run
+// A TASK ROW HOLDS UNTIL ITS TASK ENDS (a peer application's run, 2026-11-06). Run
 // wa0iq1ptb's sc:task row, started from a swarm_dispatch reply (a ref of
 // refs/pull/1309/head, strategy collect), answered after about 7 s while its
 // task was still DISPATCHED, and the run ended FOLLOWED with no row left. A
@@ -2503,7 +2503,7 @@ function absorbAnswer(answer, byTask) {
   return moved
 }
 
-// THE PANE LAYOUT'S ROW (SC-BROWSER-BUILD, #2318; BGD picked proposal B on
+// THE PANE LAYOUT'S ROW (SC-BROWSER-BUILD, #2318; the owner picked proposal B on
 // 2026-10-25). With `/sc layout pane` the SwarmCloud pane beside the chat is
 // where stages, agents and details are browsed, with direct MCP calls and no
 // model tokens, so a workflow keeps ONE quiet /workflows row whose only job is

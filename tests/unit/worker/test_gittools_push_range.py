@@ -1,7 +1,7 @@
 """A push from a clone reset to a pull request head that does not descend from
 its base sends only the task's own commits (#2413).
 
-THE DEFECT, REPRODUCED. Product Oracle's task_7e644638768e4a8cb57a cloned
+THE DEFECT, REPRODUCED. A peer application's task_7e644638768e4a8cb57a cloned
 `repository_ref` A, ran `git fetch origin B && git reset --hard B` in its
 shell (B a pull request head sharing only an older ancestor C with A),
 committed its fix and called `git_push_branch`. The push lists the commits it
@@ -51,7 +51,7 @@ from test_gittools import (
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 #: Who wrote origin's history: not this task.
-ORACLE = ("Product Oracle", "oracle@example.invalid")
+ORACLE = ("A peer application", "oracle@example.invalid")
 MALLORY = ("Mallory", "mallory@example.invalid")
 
 
@@ -126,7 +126,7 @@ def test_a_push_from_a_pr_head_off_the_base_sends_exactly_the_tasks_own_commit(
     own = _commit(w.clone, "src/fix.py", "fix = 1\n", "the fix")
     answer = diverged.push()
     # MUTATION: dropping the confirmation leaves B's history in the range, and
-    # the first commit of it by Product Oracle is refused foreign_author.
+    # the first commit of it by a peer application is refused foreign_author.
     assert answer.get("result") == {"branch": OWN_BRANCH, "old_sha": None, "new_sha": own}, answer
     # Origin was asked about the newest foreign commit only: B covers the rest.
     assert diverged.confirm_calls() == [[diverged.b]]
@@ -167,7 +167,7 @@ def test_another_authors_commit_only_in_the_clone_is_still_refused_foreign_autho
     # MUTATION: excluding every foreign commit (not only the confirmed ones)
     # pushes Mallory's commit.
     assert refused["code"] == "foreign_author", refused
-    # MUTATION: naming the oldest foreign commit (Product Oracle's, which
+    # MUTATION: naming the oldest foreign commit (A peer application's, which
     # origin has) instead of the one origin lacks fails here.
     assert refused["commit"] == theirs[:12]
     assert refused["on_origin"] is False

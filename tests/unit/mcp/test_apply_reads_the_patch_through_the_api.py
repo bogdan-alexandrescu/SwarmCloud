@@ -55,7 +55,7 @@ class FakeApi:
             "state": "SUCCEEDED",
             "result_summary": {
                 "git": {"patch": PATCH_NAME},
-                "artifacts": [{"name": PATCH_NAME, "uri": "gs://bucket/tenants/t/swarm-work.patch"}],
+                "artifacts": [{"name": PATCH_NAME, "uri": "gs://swarm-artifacts-example-project/tenants/t/swarm-work.patch"}],
             },
         }
 

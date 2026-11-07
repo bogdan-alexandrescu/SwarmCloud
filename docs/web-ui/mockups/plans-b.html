@@ -7,10 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;600;650;700&display=swap" rel="stylesheet">
 <style>
 /*
- * Plans proposal B, "Plan as a review page" (PLANS-MOCKS-B, part of #2585).
+ * Plans proposal B, "Plan as a review page" (PLANS-MOCKS-B).
  * The tokens, type scale, spine, panel, lead, cards, tables, chips, buttons, decision
- * bar and phone rules below are copied unchanged from automate-b.html (#2417), which
- * took them from Config E (config-e.html, #2157), so the four plans proposals differ in
+ * bar and phone rules below are copied unchanged from automate-b.html, which
+ * took them from Config E (config-e.html), so the four plans proposals differ in
  * layout and flow only. This proposal's own pieces (the review page's sticky head,
  * section ticks, requirement checklist, step cards, risk rows, trace) follow after them.
  * PICKS.md rules: 12px type floor, no all-caps, no letter-spacing, a theme toggle,
@@ -650,9 +650,9 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 </div></div>
 
 <main class="doc">
-<p class="kick">PLANS-MOCKS-B · part of #2585 · drawn 2026-10-28 · not picked</p>
+<p class="kick">PLANS-MOCKS-B · drawn 2026-10-28 · not picked</p>
 <h1>Plans: proposal B, Plan as a review page</h1>
-<p class="lede">One of four competing proposals for BGD's redesign of how the console shows what automatic runs propose. The four share Config E's and the Automate redesign's style (#2417) and differ in layout and flow. Every frame has the same id in every proposal (P1 to P7). The theme control at the top repaints the page and every frame, and so does the toggle in each frame's panel foot.</p>
+<p class="lede">One of four competing proposals for the owner's redesign of how the console shows what automatic runs propose. The four share Config E's and the Automate redesign's style and differ in layout and flow. Every frame has the same id in every proposal (P1 to P7). The theme control at the top repaints the page and every frame, and so does the toggle in each frame's panel foot.</p>
 
 <section class="idea" aria-label="Proposal B: idea, pros, risks, how it differs">
   <div><h4>Idea</h4><p>A plan is a <b>full page made for deciding</b>, laid out like a pull request review. A sticky head carries the source (schedule, firing, issue) and the decision: Approve, Edit, Reject with a reason. Below it the evidence reads top to bottom in the order a reviewer judges: summary, requirements as a checklist, overlaps with work in flight, then the steps as cards, each with its files, tests, estimate, runner and model, its prompt folded and its risk paths called out. A rail beside it holds why the plan exists, its cost and time, the risk check, and its digest and revision. Each section has a "read" tick, like a review's "viewed", so a long plan shows how much of it you have read. The landing, Automate › Approvals, lists every proposal from every source and opens this page.</p></div>
@@ -674,7 +674,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <div class="rules">
   <b>Drawing rules for this page</b>
   <ul>
-    <li>The canonical plan is run <code>run_fba2dc8f6ec9494dae2f</code> from the failure-review schedule <code>sch_54e9828e6772</code>, firing <code>sch_54e9828e6772:29885760</code>, issue <code>bogdan-alexandrescu/SwarmCloud#2583</code>. Its words are quoted as the brief gave them, cut where the brief cut them. Text the brief did not quote (requirements 2 to 7, overlaps 2 to 5, the step's title and prompt) is a hatched bar marked "as served", never invented words.</li>
+    <li>The canonical plan is run <code>run_fba2dc8f6ec9494dae2f</code> from the failure-review schedule <code>sch_54e9828e6772</code>, firing <code>sch_54e9828e6772:29885760</code>, issue <code>example-org/example-repo#2583</code>. Its words are quoted as the brief gave them, cut where the brief cut them. Text the brief did not quote (requirements 2 to 7, overlaps 2 to 5, the step's title and prompt) is a hatched bar marked "as served", never invented words.</li>
     <li>Every other row on the page is an example, read as of 2026-10-28 02:40Z.</li>
     <li>State words are lower case: <i>waiting</i>, <i>approved</i>, <i>auto-approved</i>, <i>rejected</i>, <i>expired</i>, <i>superseded</i>. Nothing below 12px, no all-caps, and an unknown figure is a dash with its reason.</li>
   </ul>
@@ -688,7 +688,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <span class="flab">P1</span>
 <h2><span class="n">P1</span>Where proposals land: Automate › Approvals</h2>
 <p>Everything the automatic runs propose, and what a person submitted by hand, in one list. Waiting on a person comes first, oldest first, each with its time to expiry. Decided items follow, newest first. Source and state filter it.</p>
-<div class="sub" id="P1a" data-frame="P1a"><h3><span class="n">P1a</span>All sources, all states</h3><p>Five wait on a person and five are decided. A plan row opens P2; a merge row opens the merge decision page (#2417 A5); a proposal row opens its issue draft.</p>
+<div class="sub" id="P1a" data-frame="P1a"><h3><span class="n">P1a</span>All sources, all states</h3><p>Five wait on a person and five are decided. A plan row opens P2; a merge row opens the merge decision page (Automate A5); a proposal row opens its issue draft.</p>
 <figure class="fr"><div class="scroller" data-f="p1"></div></figure></div>
 <div class="sub" id="P1b" data-frame="P1b"><h3><span class="n">P1b</span>Filtered: failure review, every state</h3><p>The filters narrow both sections. Each source chip keeps its own count; the state chips count within the source chosen. Failure review has one item this week: the canonical plan, waiting. Its merges need no person (its merge gate is auto), so none list here.</p>
 <figure class="fr"><div class="scroller" data-f="p1fr"></div></figure></div>
@@ -700,7 +700,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <p>The review page. The head stays pinned as the page scrolls; the decision names the digest it approves.</p>
 <div class="sub" id="P2a" data-frame="P2a"><h3><span class="n">P2a</span>Waiting, as the platform owner sees it</h3><p>Reject… opens a reason box in the head, beside the buttons (P2e). Approve sends <code>plan_digest</code> sha256:be162b53886ee2620… (D3); a mismatch is 409 <code>plan_changed</code>.</p>
 <figure class="fr"><div class="scroller" data-f="p2"></div></figure></div>
-<div class="sub" id="P2b" data-frame="P2b"><h3><span class="n">P2b</span>As seen by a member who may not approve</h3><p>The same evidence, no Approve or Reject; Edit stays, because <code>plan:edit</code> asks only the member role (a gate’s approvers are checked at approve and reject). Drawn to Requirements; the rest of the page is P2a’s. The head says who can decide, from <code>may_decide</code> (<code>approve: false</code>, <code>why</code>, <code>deciders</code>). Only someone who may approve may reject (BGD 2026-10-26). The panel foot shows the viewer: Sam Ortiz, a member.</p>
+<div class="sub" id="P2b" data-frame="P2b"><h3><span class="n">P2b</span>As seen by a member who may not approve</h3><p>The same evidence, no Approve or Reject; Edit stays, because <code>plan:edit</code> asks only the member role (a gate’s approvers are checked at approve and reject). Drawn to Requirements; the rest of the page is P2a’s. The head says who can decide, from <code>may_decide</code> (<code>approve: false</code>, <code>why</code>, <code>deciders</code>). Only someone who may approve may reject (the owner 2026-10-26). The panel foot shows the viewer: Sam Ortiz, a member.</p>
 <figure class="fr"><div class="scroller" data-f="p2member"></div></figure></div>
 <div class="sub" id="P2c" data-frame="P2c"><h3><span class="n">P2c</span>Superseded: the plan changed after it was shown</h3><p>A poll found the served <code>plan_digest</code> differs from the one on screen (Runs.tsx already detects this). The page never swaps the plan under an open button: it keeps what you read, turns Approve off, and offers the new revision with what changed. Approving the old one is not offered.</p>
 <figure class="fr"><div class="scroller" data-f="p2super"></div></figure></div>
@@ -730,7 +730,7 @@ table.t{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:
 <figure class="fr"><div class="scroller" data-f="p4run"></div></figure></div>
 <div class="sub" id="P4b" data-frame="P4b"><h3><span class="n">P4b</span>Merged, every requirement confirmed: Closes #2583</h3>
 <figure class="fr"><div class="scroller" data-f="p4done"></div></figure></div>
-<div class="sub" id="P4c" data-frame="P4c"><h3><span class="n">P4c</span>Merged with one requirement unmet: part of #2583</h3><p>The review found 6 of 7 met, so the pull request says <code>part of #2583</code> and the issue stays open, naming what is left (<code>requirements_unmet[]</code>).</p>
+<div class="sub" id="P4c" data-frame="P4c"><h3><span class="n">P4c</span>Merged with one requirement unmet:</h3><p>The review found 6 of 7 met, so the pull request says <code>part of #2583</code> and the issue stays open, naming what is left (<code>requirements_unmet[]</code>).</p>
 <figure class="fr"><div class="scroller" data-f="p4part"></div></figure></div>
 </section>
 
@@ -840,7 +840,7 @@ function phone(x,hd,body){
 }
 
 /* ---------- the canonical plan, as the brief quotes it ---------- */
-const REPO='bogdan-alexandrescu/SwarmCloud';
+const REPO='example-org/example-repo';
 const P={
   run:'run_fba2dc8f6ec9494dae2f',sch:'sch_54e9828e6772',firing:'sch_54e9828e6772:29885760',issue:REPO+'#2583',
   summary:"cifix.stamp's ci_fix branch refuses a PR-side CI fix while a lane's merge step, a live issue run, a live conflict fix or a live claim on the same failure holds the pull request, but never while a plain continuation (a <code>continues_task</code> workflow with no writer mark of its own, or a <code>publish_to_pr</code> workflow naming the same branch task) is live on it. #2554 (<code>_refuse_if_fix_live</code>) gates only the opposite order. On 2026-1…",
@@ -857,12 +857,12 @@ const SRC={sweep:['Issue sweep','layers'],fr:['Failure review','warn'],obs:['Obs
 const ROWS=[
   {w:1,src:'sweep',ic:'lock',m:'wn',k:'Plan, held for the owner · '+REPO+'#2571',t:'Plan touches <code>.github/workflows/</code>',s:'The sweep’s gate is plan auto, but the hold stops it: workflows matched <code>.github/workflows/unit.yml</code>.',st:S('wn','waiting · owner only'),sts:'expires in 1 d 22 h<small>asked 27 Oct 00:37Z</small>',a:'Review plan'},
   {w:1,src:'obs',ic:'flag',m:'in',k:'Proposal · file an issue',t:'Observer: three tenants’ pools sat at their ceiling for over an hour',s:'Observer “Platform health”, firing 02:00Z yesterday. Files to '+REPO+' with the bug form.',st:S('wn','waiting'),sts:'expires in 2 d 4 h<small>asked 27 Oct 07:00Z</small>',a:'Open draft'},
-  {w:1,src:'hand',ic:'person',m:'in',k:'Plan · '+REPO+'#2580',t:'Submitted by BGD from Work › Submit from a GitHub issue',s:'2 steps · 3 agent-hours · 7 requirements · 0 overlaps.',st:S('wn','waiting'),sts:'no expiry<small>made by hand · planned 27 Oct 22:14Z</small>',a:'Review plan'},
+  {w:1,src:'hand',ic:'person',m:'in',k:'Plan · '+REPO+'#2580',t:'Submitted by the owner from Work › Submit from a GitHub issue',s:'2 steps · 3 agent-hours · 7 requirements · 0 overlaps.',st:S('wn','waiting'),sts:'no expiry<small>made by hand · planned 27 Oct 22:14Z</small>',a:'Review plan'},
   {w:1,src:'sweep',ic:'pr',m:'in',k:'Merge · pull request #2576 for #2566',t:'Green and reviewed: MERGE',s:'Green at <code>4c1e0a9d7f22</code>. Merge gate: approve.',st:S('wn','waiting'),sts:'expires in 2 d 22 h<small>asked 28 Oct 01:07Z</small>',a:'Decide merge'},
   {w:1,src:'fr',ic:'warn',m:'wn',k:'Plan · '+REPO+'#2583',t:"cifix.stamp's ci_fix branch refuses a PR-side CI fix while … never while a plain continuation is live",s:'1 step · 2 agent-hours · 7 requirements · 5 overlaps. Firing <code>'+P.firing+'</code>.',st:S('wn','waiting'),sts:'expires in 2 d 23 h<small>planned 28 Oct 02:21Z</small>',a:'Review plan',p:1,canon:1},
   {w:0,src:'sweep',ic:'check',m:'',k:'Plan · '+REPO+'#2569',t:'Auto-approved by Bug sweep’s gate',s:'approved_by: auto-approval · its pull request #2578 is checking.',st:S('ok','auto-approved'),sts:'28 Oct 01:37Z<small>gate: plan auto</small>',a:'Open'},
-  {w:0,src:'hand',ic:'check',m:'',k:'Plan · '+REPO+'#2560',t:'Approved by BGD at revision 1, after one edit',s:'Workflow started; pull request #2574 merged with Closes #2560.',st:S('ok','approved'),sts:'27 Oct 18:02Z<small>by bgd</small>',a:'Open'},
-  {w:0,src:'flake',ic:'flag',m:'',k:'Proposal · file an issue',t:'CI flake hunter: test_lease_race flaked 3 times',s:'Rejected: “Already filed as #2551; the flake is the race #2551 fixes.”',st:S('bd','rejected'),sts:'27 Oct 15:40Z<small>by bgd, with a reason</small>',a:'Open'},
+  {w:0,src:'hand',ic:'check',m:'',k:'Plan · '+REPO+'#2560',t:'Approved by the owner at revision 1, after one edit',s:'Workflow started; pull request #2574 merged with Closes #2560.',st:S('ok','approved'),sts:'27 Oct 18:02Z<small>by the owner</small>',a:'Open'},
+  {w:0,src:'flake',ic:'flag',m:'',k:'Proposal · file an issue',t:'CI flake hunter: test_lease_race flaked 3 times',s:'Rejected: “Already filed as #2551; the flake is the race #2551 fixes.”',st:S('bd','rejected'),sts:'27 Oct 15:40Z<small>by the owner, with a reason</small>',a:'Open'},
   {w:0,src:'obs',ic:'flag',m:'',k:'Proposal · file an issue',t:'Observer: an API read p95 over 2 s for an hour',s:'Nobody decided within 72 hours. Nothing was filed.',st:S('nu','expired'),sts:'27 Oct 09:00Z<small>after 72 h</small>',a:'Open'},
   {w:0,src:'sweep',ic:'pr',m:'',k:'Merge · pull request #2549 for #2540',t:'The head moved after the request',s:'Asked for <code>9b20d1e4aa71</code>; a newer merge request replaced it.',st:S('nu','superseded'),sts:'26 Oct 21:15Z<small>head moved</small>',a:'Open'}
 ];
@@ -976,10 +976,10 @@ function TRACE(k){
   h+=row('qa',k==='run'?'bd':'in','CI and fix rounds',k==='run'?`red at <code>7d1e…</code>: 2 failed, 31 passed<small>fix round 1 of 3 running</small>`:`green at <code>e04b…</code> after 1 fix round<small>of 3 allowed</small>`,k==='run'?S('bd','red · fixing'):S('ok','green'));
   h+=row(k==='run'?'clock':'check',k==='run'?'':'in','Review verdict',k==='run'?DASH('not yet: the review runs after CI is green'):k==='part'?'MERGE · 6 of 7 requirements met<small>unmet: requirement 4, as served</small>':'MERGE · 7 of 7 requirements met',k==='run'?'':k==='part'?S('wn','6 of 7'):S('ok','7 of 7'));
   h+=row('merge',k==='run'?'':'in','Merge',k==='run'?DASH('not yet'):'merged at the reviewed sha by the merge step<small>merge gate: auto, set through the audited switch</small>',k==='run'?'':S('ok','merged'));
-  h+=row('flag',k==='run'?'':'in','The issue',k==='run'?'stays open; the PR says part of #2583 until the review decides':k==='part'?'<code>part of #2583</code>: the issue stays open, naming requirement 4':'<code>Closes #2583</code>: the merge closed it',k==='run'?'':k==='part'?S('wn','open'):S('ok','closed'));
+  h+=row('flag',k==='run'?'':'in','The issue',k==='run'?'stays open; the PR says until the review decides':k==='part'?'<code>part of #2583</code>: the issue stays open, naming requirement 4':'<code>Closes #2583</code>: the merge closed it',k==='run'?'':k==='part'?S('wn','open'):S('ok','closed'));
   return `<section class="trace" aria-label="What the plan became">${h}</section>`;
 }
-const p4=k=>ph=>rhead('approved',ph)+(k==='run'?LEAD('Fix round 1 of 3','CI was red at the head; one continuation is fixing it','2 checks failed at 02:58Z. The failure excerpt is on the run. A third red round would end it failed.',B('Open the failure excerpt','s'),'wn'):k==='part'?LEAD('Merged, part of #2583','One requirement was not met, so the issue stays open','The review’s requirements_unmet names it. A new run on #2583 plans what is left.',B('Plan the rest','s'),'nu'):LEAD('Done','Merged, and every requirement was confirmed','The pull request said Closes #2583, and the merge closed the issue.','', 'ok'))+TRACE(k)+`<div class="rv"><div class="col">${SUMMARY(true)}</div><div class="col">${CARD('Digest and revision','',`<dl class="kv"><dt>Approved</dt><dd>${DG}</dd><dt>Revision</dt><dd>0</dd></dl>`)}</div></div>`;
+const p4=k=>ph=>rhead('approved',ph)+(k==='run'?LEAD('Fix round 1 of 3','CI was red at the head; one continuation is fixing it','2 checks failed at 02:58Z. The failure excerpt is on the run. A third red round would end it failed.',B('Open the failure excerpt','s'),'wn'):k==='part'?LEAD('Merged','One requirement was not met, so the issue stays open','The review’s requirements_unmet names it. A new run on #2583 plans what is left.',B('Plan the rest','s'),'nu'):LEAD('Done','Merged, and every requirement was confirmed','The pull request said Closes #2583, and the merge closed the issue.','', 'ok'))+TRACE(k)+`<div class="rv"><div class="col">${SUMMARY(true)}</div><div class="col">${CARD('Digest and revision','',`<dl class="kv"><dt>Approved</dt><dd>${DG}</dd><dt>Revision</dt><dd>0</dd></dl>`)}</div></div>`;
 
 /* ---------- P5: the sources ---------- */
 const GATE=(p,m)=>`<span class="gt"><span><span class="dim sm12">plan</span> ${p}</span><span><span class="dim sm12">merge</span> ${m}</span></span>`;

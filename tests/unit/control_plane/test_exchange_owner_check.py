@@ -40,7 +40,7 @@ from swarm_api.main import create_app as create_api
 
 from .conftest import auth_header
 
-PROJECT = "test-project"
+PROJECT = "example-project"
 
 
 class _Secrets:
@@ -94,7 +94,7 @@ def broker_app(broker, monkeypatch):
     monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setenv(
-        "BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@p.iam.gserviceaccount.com"
+        "BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@example-project.iam.gserviceaccount.com"
     )
     monkeypatch.setenv(
         "WORKER_SERVICE_ACCOUNT_TEMPLATE",

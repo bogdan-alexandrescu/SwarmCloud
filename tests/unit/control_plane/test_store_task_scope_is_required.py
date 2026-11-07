@@ -53,7 +53,7 @@ def test_a_named_submitter_reads_only_its_own_task(store, db):
     assert [t.id for t in store.list_tasks("eng", submitted_by="alice@example.com").items] == [
         "task_1"
     ]
-    assert store.list_tasks("eng", submitted_by="bot@p.iam.gserviceaccount.com").items == []
+    assert store.list_tasks("eng", submitted_by="bot@example-project.iam.gserviceaccount.com").items == []
 
 
 def test_not_yours_reads_exactly_like_does_not_exist(store, db):
@@ -63,7 +63,7 @@ def test_not_yours_reads_exactly_like_does_not_exist(store, db):
 
     db.docs["tasks/task_1"]["submitted_by"] = "alice@example.com"
     with pytest.raises(NotFound) as not_yours:
-        store.get_task("eng", "task_1", submitted_by="bot@p.iam.gserviceaccount.com")
+        store.get_task("eng", "task_1", submitted_by="bot@example-project.iam.gserviceaccount.com")
     with pytest.raises(NotFound) as other_tenant:
         store.get_task("research", "task_1", submitted_by=None)
     assert str(not_yours.value) == str(other_tenant.value)

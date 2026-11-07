@@ -45,7 +45,7 @@ from swarm_common.states import TaskState
 from .conftest import seed_tenant
 from .fakes import FakeFirestore
 
-PROJECT = "saga-agents-staging"
+PROJECT = "example-project"
 REGION = "us-central1"
 TENANT = "eng"
 JOB = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-job-eng-mock"

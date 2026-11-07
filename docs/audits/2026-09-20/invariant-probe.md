@@ -17,12 +17,12 @@ Four real `claude-code` agents were already running (agents working on this
 repository). Thirty `mock` agents were submitted in one batch on top.
 
 `mock` was chosen over `claude-code` deliberately: it shares the `global`,
-`tenant:u-bogdan`, `resource:standard` and `backend:CLOUD_RUN_JOB` pools, so
+`tenant:u-member`, `resource:standard` and `backend:CLOUD_RUN_JOB` pools, so
 it contends for admission identically, and it needs no provider key, so
 thirty of them cost nothing in provider quota. The invariant is exercised the
 same way; only the bill differs.
 
-Note which pool binds. `tenant:u-bogdan` allows 40 and `global` allows 20, so
+Note which pool binds. `tenant:u-member` allows 40 and `global` allows 20, so
 the refusals are `GLOBAL_CONCURRENCY_LIMIT`, not `TENANT_LIMIT`. That
 distinction is the one the UI exists to make: a tenant limit is yours to
 raise, a global limit means the platform is full.

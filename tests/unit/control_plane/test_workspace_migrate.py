@@ -2,7 +2,7 @@
 and `migrated` (docs/workspaces.md §3.3; lane W9 of #847).
 
 The case that shaped it: on 2026-10-09 the owner requested a workspace in the
-console before the migration ran, so `workspaces/u-bogdan` was `requested`
+console before the migration ran, so `workspaces/u-owner` was `requested`
 with an id and a `workspace_ids/` entry. Writing a fresh id would have
 orphaned both. So a `requested`, `failed` or `denied` record is completed in
 place, a missing one is created with a fresh id, a migrated one is left alone,
@@ -19,7 +19,7 @@ import pytest
 from swarm_api import workspaces as ws
 from swarm_api.errors import Conflict
 
-PRINCIPAL = "bogdan@example.com"
+PRINCIPAL = "owner@example.com"
 TENANT = ws.personal_tenant_id(PRINCIPAL)
 KEPT_ID = "w-752763"
 FRESH_ID = "w-0a1b2c"
@@ -58,7 +58,7 @@ def _migrate(db, *, apply: bool = True, expect: str | None = None) -> dict:
 
 
 def test_the_tenant_id_is_the_one_the_principal_derives_to() -> None:
-    assert TENANT == "u-bogdan"
+    assert TENANT == "u-owner"
 
 
 # --------------------------------------------------------------------------

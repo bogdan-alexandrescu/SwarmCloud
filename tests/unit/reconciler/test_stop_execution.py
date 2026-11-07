@@ -230,7 +230,7 @@ def test_a_stop_that_raised_is_retried(db, monkeypatch):
 
 
 def test_the_route_needs_an_allowed_invoker(db, monkeypatch):
-    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@p.iam.gserviceaccount.com")
+    monkeypatch.setenv("RECONCILER_ALLOWED_INVOKERS", "tick@example-project.iam.gserviceaccount.com")
     backend = StopBackend()
     client = TestClient(create_app(object(), logger=build_logger(), stopper=stopper(db, backend)))
 

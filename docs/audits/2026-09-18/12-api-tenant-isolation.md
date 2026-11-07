@@ -18,21 +18,21 @@ The real gap is that **two different verified identities can be handed the *same
 
 `tenant_id_for_group(email)` = `_slug(email)` (no prefix). `tenant_id_for_user(email)` = `_slug(email, prefix="u-")`. The docstring at `identity.py:88` claims the `u-` prefix means a personal tenant "cannot collide with a group" — but nothing stops a *group's* local part from itself starting with `u-`, since the group path adds no prefix at all.
 
-Concrete collision: admin registers `TENANT_GROUPS=...,u-eng@saga.xyz,...` (a plausible name — "unified-eng", abbreviated). `tenant_id_for_group("u-eng@saga.xyz")` → local `"u-eng"`, unchanged by slugging → returns `"u-eng"`.
+Concrete collision: admin registers `TENANT_GROUPS=...,u-eng@example.com,...` (a plausible name — "unified-eng", abbreviated). `tenant_id_for_group("u-eng@example.com")` → local `"u-eng"`, unchanged by slugging → returns `"u-eng"`.
 
-Now any ordinary employee `eng@saga.xyz` who is **not** a member of `u-eng@saga.xyz` sends any authenticated request, e.g.:
+Now any ordinary employee `eng@example.com` who is **not** a member of `u-eng@example.com` sends any authenticated request with its own Google ID token in `$ID_TOKEN`, e.g.:
 ```
 POST /v1/tasks
-Authorization: Bearer <eng@saga.xyz's real Google ID token>
+Authorization: Bearer $ID_TOKEN
 {"runner_profile": "default"}
 ```
-`resolve_tenant()` finds no group match, falls back to `tenant_id_for_user("eng@saga.xyz")` → local `"eng"` → returns `"u-" + "eng"` = `"u-eng"` — **identical** to the group's tenant id. `eng@saga.xyz` is now the `u-eng` tenant: same GSA, same secret prefix, same GCS prefix, same namespace as the `u-eng@saga.xyz` group. `store.py:232` even hard-codes `kind = "user" if tenant_id.startswith("u-") else "group"`, so the store itself assumes this never happens.
+`resolve_tenant()` finds no group match, falls back to `tenant_id_for_user("eng@example.com")` → local `"eng"` → returns `"u-" + "eng"` = `"u-eng"` — **identical** to the group's tenant id. `eng@example.com` is now the `u-eng` tenant: same GSA, same secret prefix, same GCS prefix, same namespace as the `u-eng@example.com` group. `store.py:232` even hard-codes `kind = "user" if tenant_id.startswith("u-") else "group"`, so the store itself assumes this never happens.
 
 ### 2. The read/cancel routes never re-check the collision guard that write routes have (`store.py:254-275`)
 
 `_assert_principal_matches()` is the *only* place that would catch a tenant_id collision, and it only runs inside `ensure_tenant()`, reached solely via `SubmissionService.tenant_for()` — called from `submit_tasks`, `submit_workflow`, `providers()`, `get_me`, and `put_credential`. It is **not** called from `list_tasks`, `get_task`, `cancel_task`, `list_events`, `list_artifacts`, `list_workflows`, `get_workflow`, `cancel_workflow`, `stats()`, or `capacity()` (`routes/tasks.py:64-142`, `routes/workflows.py:27-66`, `service.py:271-332`) — those all just filter Firestore by the raw `tenant_id` string.
 
-So continuing scenario 1: `eng@saga.xyz` can immediately do
+So continuing scenario 1: `eng@example.com` can immediately do
 ```
 GET  /v1/tasks
 GET  /v1/tasks/{task_id}
@@ -40,11 +40,11 @@ POST /v1/tasks/{task_id}/cancel
 GET  /v1/tasks/{task_id}/events
 GET  /v1/workflows
 ```
-and read, and even **cancel**, every task/workflow belonging to the real `u-eng@saga.xyz` group — with a valid, verified token for a completely unrelated identity, and no error, because the only collision check the codebase has is skipped on every one of these paths. The comment at `routes/tasks.py:3-6` explicitly claims "there is no request a caller can construct that reads another tenant's task" — this is the counterexample.
+and read, and even **cancel**, every task/workflow belonging to the real `u-eng@example.com` group — with a valid, verified token for a completely unrelated identity, and no error, because the only collision check the codebase has is skipped on every one of these paths. The comment at `routes/tasks.py:3-6` explicitly claims "there is no request a caller can construct that reads another tenant's task" — this is the counterexample.
 
 ### 3. Same root cause reachable without the `u-` trick, if the deployment allows multiple hosted domains
 
-`_slug()` discards the domain entirely (`identity.py:65`: `principal.split("@", 1)[0]`). If `ALLOWED_DOMAINS` (in the frozen `Settings`) is ever configured with more than one domain (e.g. onboarding a partner org), then `TENANT_GROUPS=eng@saga.xyz,eng@partner.com` collide outright — `tenant_id_for_group` returns `"eng"` for both. Whichever group's member submits an agent first "wins" the tenant document (`ensure_tenant`, `store.py:228-231`); the other group is either blocked with `409 Conflict` the moment any of its members hits a *write* route, or — via finding 2 — can read/cancel the first group's work indefinitely via the unguarded read routes, never triggering the conflict check at all.
+`_slug()` discards the domain entirely (`identity.py:65`: `principal.split("@", 1)[0]`). If `ALLOWED_DOMAINS` (in the frozen `Settings`) is ever configured with more than one domain (e.g. onboarding a partner org), then `TENANT_GROUPS=eng@example.com,eng@example.org` collide outright — `tenant_id_for_group` returns `"eng"` for both. Whichever group's member submits an agent first "wins" the tenant document (`ensure_tenant`, `store.py:228-231`); the other group is either blocked with `409 Conflict` the moment any of its members hits a *write* route, or — via finding 2 — can read/cancel the first group's work indefinitely via the unguarded read routes, never triggering the conflict check at all.
 
 ---
 

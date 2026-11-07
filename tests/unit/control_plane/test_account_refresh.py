@@ -99,7 +99,7 @@ def _refresher(store, endpoint, log=None):
 
 
 def _acct_secret(label):
-    return f"swarm-account-u-bogdan--{label}"
+    return f"swarm-account-u-owner--{label}"
 
 
 # -- the property the pool exists for --------------------------------------

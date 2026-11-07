@@ -173,7 +173,7 @@ def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool =
     # The dispatcher sends JEV_API_URL to an internal backend only while the
     # tailnet egress is on (scheduler.judgment.jev_dispatch); `route` is that.
     if backend in ("internal-jev", "internal-laya") and route:
-        monkeypatch.setenv("JEV_API_URL", f"https://decision-api-staging.taile0bda9.ts.net/"
+        monkeypatch.setenv("JEV_API_URL", f"https://decision-api.example-tailnet.ts.net/"
                                           f"{backend.split('-', 1)[1]}/v1/decide")
     else:
         monkeypatch.delenv("JEV_API_URL", raising=False)
@@ -264,7 +264,7 @@ def test_jev_chosen_without_a_key_runs_on_playwright_and_says_why(monkeypatch, t
 
 @pytest.mark.parametrize("backend", ["internal-jev", "internal-laya"])
 def test_an_internal_backend_without_the_tailnet_registers_no_jev_and_says_why(monkeypatch, tmp_path, backend):
-    """JEV-OFF (#1345): measured on u-bogdan, the jev server was registered,
+    """JEV-OFF (#1345): measured on u-owner, the jev server was registered,
     its wrapper refused for want of JEV_API_URL, and the agent fell back with
     nothing said. The server the wrapper would refuse is not registered, and
     the note says why."""
@@ -277,9 +277,9 @@ def test_an_internal_backend_without_the_tailnet_registers_no_jev_and_says_why(m
     note = claude_code.JEV_UNAVAILABLE_NOTE[browser_tools.NO_ROUTE]
     assert note in seen["prompt"]
     assert "tailnet" in note and "decision API" in note
-    # The company is not named (#1647, SAGA-COPY).
+    # The company is not named (#1647, COPY).
     assert "with your internal decision API, and this attempt has no route to it" in note
-    assert "saga" not in note.lower()
+    assert "@" not in note and ".ts.net" not in note  # no address, no tailnet host
     # Auto registers no jev either, and names no jev strength.
     seen = _run_body(monkeypatch, tmp_path / "auto", payload={"browser_tool": "auto"}, jev_key=False,
                      backend=backend, route=False)

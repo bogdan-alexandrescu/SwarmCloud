@@ -28,7 +28,7 @@ other version. It writes everything under `$TMPDIR/plugin-dir-spike` (`$WORK` be
 * **jev-belay and jev-enforce, wrapped.** The script clones `valentynkit/jev-belay` at `v0.2.0` and checks the commit
   is `ef719db7eaadc56aa4def86c4da4ffff5bcbca35`. It clones `erkamyaman/jev-enforce` at `v1.1.1` and checks
   `ed9c7d79bad2bfdea474df5e414b8b601c0e92cd`; `v1.1.1` is the newest tag on that remote, as `git ls-remote --tags`
-  showed on 6 November 2026. BGD's own fork of jev-enforce is on no remote, so the spike could not run it. The
+  showed on 6 November 2026. The owner's own fork of jev-enforce is on no remote, so the spike could not run it. The
   TypeSafe key is fake, built at run time (`spike-typesafe-` plus 16 random bytes as hex), and only the launcher
   ever hands it to a plugin. `case-config.mjs` writes the launcher's env files and each case's `--settings` from
   the fake values' files, so no file in the repository holds one.
@@ -269,11 +269,11 @@ record.
 * **The real image.** The CLI was `/usr/local/share/npm-global/bin/claude` 2.1.283 in a SwarmCloud agent container.
   That is the same version the image pins (the script checks), but it was not run inside `agent-runtime-base`.
 * **A real TypeSafe key or a real verdict.** The point was that the hooks ran, not what Jev answered.
-* **BGD's jev-enforce fork (`1.1.1-bgd.3`).** It is on no remote. The upstream `v1.1.1` was used instead.
+* **The owner's jev-enforce fork (`1.1.1-owner.3`).** It is on no remote. The upstream `v1.1.1` was used instead.
 * **Some CLI behaviours:**
   * what the CLI does with two `--plugin-dir` plugins that share a manifest name;
   * managed settings' `disableSideloadFlags`, which the CLI's strings say drops `@inline` plugins. No file in this
     repository sets it today; lane 8 should check for it in the image's managed settings at start.
   * a plugin hook alongside the runner's own `--settings` hooks. The design says plugin hooks run in addition and
     never instead; the spike's settings carried no hooks.
-* **Network hosts.** Recording and enforcing them is a later lane by BGD's answer of 6 November 2026.
+* **Network hosts.** Recording and enforcing them is a later lane by the owner's answer of 6 November 2026.

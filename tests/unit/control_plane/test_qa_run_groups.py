@@ -1,6 +1,6 @@
 """One dispatch over an app's environments: `:run` with `environments`, the run
 group, and `GET /v1/qa-runs/{group_id}` (docs/design/qa-environments.md §2.1,
-§7; lane QAENV-RUN of §8; BGD's Q2 (a), 2026-10-23; part of #2136).
+§7; lane QAENV-RUN of §8; the owner's Q2 (a), 2026-10-23; part of #2136).
 
 What these tests hold, over the real app and the in-memory Firestore:
 

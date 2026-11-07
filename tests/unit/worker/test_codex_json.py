@@ -1,6 +1,6 @@
 """codex runs `exec --json`, renders its stream readable, and is metered by its budget (CODEX-JSON, part of #2459).
 
-BGD, 2026-10-26 (BUDGET-CAP question 6, "Switch codex to --json"): the codex
+the owner, 2026-10-26 (BUDGET-CAP question 6, "Switch codex to --json"): the codex
 profile's stdout carries `turn.completed` usage, so a codex step's budget is
 enforced and not only pinned. These run the real codex runner against a fake
 CLI that replays a recorded codex-cli 0.154.0 `exec --json` stream.
@@ -15,7 +15,7 @@ the stop); stop counting `turn.completed` usage (the meter tests read 0); skip
 mid-turn stop never comes); count a rollout reading after `turn.completed`
 (the replacement test reads the turn twice).
 
-BGD, 2026-10-27 (CODEX-JSON question 0, "Also read the rollout"): a codex
+the owner, 2026-10-27 (CODEX-JSON question 0, "Also read the rollout"): a codex
 start's running usage is also read from its rollout's `token_count`
 records, so a step is stopped inside the one turn a `codex exec` start runs.
 """

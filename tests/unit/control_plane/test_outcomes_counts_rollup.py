@@ -1,6 +1,6 @@
 """The ledger's agent counts over time: tokens, run time, retries, estimated cost and pool account (COUNTS-ROLLUP, part of #2149).
 
-BGD's decisions, 2026-10-23 (~19:30Z, #2149), as this file holds them:
+the owner's decisions, 2026-10-23 (~19:30Z, #2149), as this file holds them:
 
 * THE UNIT IS AGENTS, RETRIES APART. An agent is counted once, in the bucket
   of the day it was SUBMITTED (`created_at`), and its attempts beyond the
@@ -371,7 +371,7 @@ def test_a_day_stored_under_v9_is_derived_again_under_v10():
 
 
 def test_a_day_stored_under_v10_is_derived_again_under_v11():
-    """Contract request 118 (BGD 2026-10-27): `budget_exceeded` is a class of
+    """Contract request 118 (the owner 2026-10-27): `budget_exceeded` is a class of
     its own. A day counted under 10 classed every budget stop as a runner
     error, so it is refused and re-derived."""
     base = {
@@ -392,7 +392,7 @@ def test_a_day_stored_under_v10_is_derived_again_under_v11():
 
 
 def test_a_day_stored_under_v11_is_derived_again_under_v12():
-    """Contract request 126 (BGD 2026-10-27): `fix_loop_exhausted` is a class
+    """Contract request 126 (the owner 2026-10-27): `fix_loop_exhausted` is a class
     of its own. A day counted under 11 has no such key, so it is refused and
     re-derived."""
     base = {

@@ -1,6 +1,6 @@
 """A Voice it session grant reaches exactly one new write: the answer to an
 agent's question, `POST /v1/tasks/{task_id}/answers` (docs/design/voice-it.md
-§3.9; BGD's pick of 6 November 2026; swarm_api/voice/grant.py `WRITE_ROUTES`).
+§3.9; the owner's pick of 6 November 2026; swarm_api/voice/grant.py `WRITE_ROUTES`).
 
 The planner's `answer_question` act tool (swarm_voice/tools_act.py) sends it
 with `via: "voice-it"`. Who may answer is the route's rule, unchanged: the

@@ -11,7 +11,7 @@ tenant whose documents name somebody else is one 403, before any route body.
 
 `alice` is in eng with a ready workspace; `dave` is in eng and research with a
 ready workspace; `erin` is in eng with none; `fay` is in eng with one still
-`approved`; `gus` is in eng and his `u-gus` documents name gus@partner.com (the
+`approved`; `gus` is in eng and his `u-gus` documents name gus@example.org (the
 frozen slug drops the domain, so that is a different person's tenant); `carol`
 is in no group with a ready workspace; `hank` is in no group with none.
 """
@@ -31,7 +31,7 @@ from swarm_api.groups import StaticGroups
 from .conftest import ENG_GROUP, RESEARCH_GROUP, api_settings, auth_header, seed_tenant
 from .fakes import FakeFirestore
 
-SVC = "ci-bot@saga-agents-staging.iam.gserviceaccount.com"
+SVC = "ci-bot@example-project.iam.gserviceaccount.com"
 
 
 @pytest.fixture
@@ -78,7 +78,7 @@ def seeded(db: FakeFirestore) -> FakeFirestore:
     seed_personal(db, "alice")
     seed_personal(db, "dave")
     seed_personal(db, "fay", state="approved")
-    seed_personal(db, "gus", principal="gus@partner.com")
+    seed_personal(db, "gus", principal="gus@example.org")
     seed_personal(db, "carol")
     return db
 
@@ -138,7 +138,7 @@ def test_the_list_does_not_depend_on_which_tenant_is_selected(client, seeded):
 def test_no_ready_workspace_is_not_listed(client, seeded):
     assert mine(client, "erin") == [ENG]      # no record at all
     assert mine(client, "fay") == [ENG]       # approved, not yet ready
-    assert mine(client, "gus") == [ENG]       # u-gus is gus@partner.com's
+    assert mine(client, "gus") == [ENG]       # u-gus is gus@example.org's
 
 
 @pytest.mark.parametrize("state", ["requested", "approved", "applying", "needs_owner",
@@ -154,7 +154,7 @@ def test_a_group_kind_document_at_the_personal_id_is_not_offered(client, db):
 
 
 def test_a_workspace_record_naming_someone_else_is_not_offered(client, db):
-    seed_personal(db, "alice", record_principal="alice@partner.com")
+    seed_personal(db, "alice", record_principal="alice@example.org")
     assert mine(client, "alice") == [ENG]
 
 
@@ -178,7 +178,7 @@ def test_a_service_identity_is_never_offered_a_personal_tenant(group_map, db):
     assert (named.tenant_id, named.tenant_principal) == ("u-ci-bot", SVC)
     assert auth.authenticate("Bearer t-svc").tenant_id == "eng"
     # Never as a person's ready workspace: a document naming someone else is refused.
-    db.docs["tenants/u-ci-bot"]["principal"] = "ci-bot@other-project.iam.gserviceaccount.com"
+    db.docs["tenants/u-ci-bot"]["principal"] = "ci-bot@example-shared-project.iam.gserviceaccount.com"
     fresh = Authenticator(api_settings(allowed_users=(SVC,)), StaticTokenVerifier(claims),
                           StaticGroups({**group_map, SVC: (ENG_GROUP,)}),
                           personal=PersonalTenants(db))

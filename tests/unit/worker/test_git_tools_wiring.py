@@ -441,7 +441,7 @@ def test_preparing_again_keeps_the_relay(tmp_path):
 # through the relay `ChildPath` builds.
 
 _SUBMITTER = "ada@example.invalid"
-_ROBOT = "swarm-accept@project.iam.gserviceaccount.com"
+_ROBOT = "swarm-accept@example-project.iam.gserviceaccount.com"
 #: A connected GitHub account's no-reply address: what swarm-api records.
 _NOREPLY = "1815+ada-lovelace@users.noreply.github.com"
 

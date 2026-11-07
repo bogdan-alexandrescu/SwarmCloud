@@ -1,4 +1,4 @@
-# Adopted from saga-prompt-lab's feature form on 2026-09-24 (owner's request):
+# Adopted from a peer application's feature form on 2026-09-24 (owner's request):
 # the shape is theirs, the content is SwarmCloud's. The rules around filing and
 # closing are in CLAUDE.md, "Issues".
 #
@@ -135,5 +135,5 @@ body:
         - label: "Bursting — `requests == limits`, because bursting is what gets a container OOM-killed (invariant 7)"
         - label: "Pending pods, or any running infrastructure, holding a backlog — QUEUED, PARKED and READY cost nothing (invariant 1)"
         - label: "A change to the frozen contract in `apps/common/swarm_common/` — that is a request in `docs/contract-change-requests.md`, not a code change"
-        - label: "Touching the other team's resources in the shared project `saga-agents-staging`"
+        - label: "Touching the other team's resources in the shared project (the deployment's never-touch list)"
         - label: "None of the above, as far as I can tell"

@@ -58,7 +58,7 @@ from .test_issue_runs import FULL_PLAN, PLAN, _approve, _create, _docs, _finish_
 from .test_schedule_tick import seed_schedule
 
 OWNER = "root@example.com"
-SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+SWEEPER = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com"
 SWITCH = refusals.env_name("hold_approver_required")
 REPO = "repo_00000000000000a1"
 #: The first types' executor files, as S6 adds them (test_schedule_routes.py).
@@ -349,7 +349,7 @@ def test_a_report_only_hold_does_not_waive_the_schedules_named_approvers_in_the_
 def test_a_hold_adds_to_an_owner_only_schedule_it_never_replaces_it(client, db, objects, switch_on):
     """owner_only schedule + second_member hold: a non-owner second member is refused by the
     schedule. The owner who is also the run's last plan editor is a platform admin acting in
-    eng, so the hold admits them alone (BGD 2026-10-26, "let an admin approve it, no need for
+    eng, so the hold admits them alone (the owner 2026-10-26, "let an admin approve it, no need for
     two approvers"); before that decision the hold refused them."""
     seed_tenant(db, "eng")
     seed_schedule(db, gate={"run": "approve", "approvers": "owner_only"})
@@ -721,7 +721,7 @@ def test_a_platform_scope_type_that_is_not_owner_only_keeps_the_two_person_rule(
     refused = _switch(client, review, "auto", user="root")
     # MUTATION: exempt every platform-scope schedule (not only an owner-only type) and this is 200.
     assert refused.status_code == 403 and refused.json()["code"] == "second_person_required"
-    # A platform-scope schedule is a platform admin's to change (BGD,
+    # A platform-scope schedule is a platform admin's to change (the owner,
     # 2026-10-24; PLATFORM-SCHED-ADMIN), so the second person is another
     # platform admin, never a member.
     member = _switch(client, review, "auto", user="dave")

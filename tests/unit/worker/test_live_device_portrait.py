@@ -22,7 +22,7 @@ arithmetic shrank the page area under a pinch zoom (innerWidth 196 at scale
 2), so a field outside that shrunken box went unmasked.
 
 THE FIX (mask.py, observer.js, 2026-10-13) sized the page from the visual
-viewport. Since LIVE-NOMASK (BGD, 2026-10-25, design §5.3) the gate paints
+viewport. Since LIVE-NOMASK (the owner, 2026-10-25, design §5.3) the gate paints
 nothing at all, so no device, zoom or page width can turn a frame grey:
 what is held here is that the framebuffer, the window and the emulation
 agree, and that the capture loop publishes the device's frame as captured.

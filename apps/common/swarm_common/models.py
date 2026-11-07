@@ -214,7 +214,7 @@ class Lease:
         (scheduler/store.py) writes DISPATCHED to the lease the moment the
         backend ACCEPTS the create call -- long before a container runs -- so
         that guard excluded essentially every lease this method names. Measured
-        on task_b5dc2568713a40158851 in saga-agents-staging on 2026-09-22:
+        on task_b5dc2568713a40158851 in the live deployment on 2026-09-22:
         `dispatch_overdue` was still False 301 seconds after admission, and the
         `overdue_only=1` operator query returned an empty list at exactly the
         moment it was asked.
@@ -675,7 +675,7 @@ class Task:
     budget: dict[str, float | int] | None = None
     #: Consecutive dispatches the platform refused (PLATFORM_REFUSED parks).
     #: Reset to 0 by a dispatch that succeeds. Contract request 123, accepted
-    #: by BGD 2026-10-28. Last in the class, after `budget`, so no positional
+    #: by the owner 2026-10-28. Last in the class, after `budget`, so no positional
     #: construction of a task changes meaning; absent on every older
     #: document, which decodes as 0.
     platform_refusals: int = 0
@@ -780,9 +780,9 @@ def retries_exhausted(attempt_count: int, max_attempts: int) -> bool:
 #: Consecutive PLATFORM_REFUSED parks after which a task is reported as
 #: trouble (contract request 123). Beside `retries_exhausted` because it is
 #: its counterpart for a refusal that spends no attempt: past it the task
-#: STAYS PARKED and keeps being retried at the longest backoff -- BGD's
+#: STAYS PARKED and keeps being retried at the longest backoff -- the owner's
 #: standing rule (2026-09-14) is that a quota pauses work and never fails
-#: it, and BGD's 2026-10-28 brief applies that to the platform's refusals.
+#: it, and the owner's 2026-10-28 brief applies that to the platform's refusals.
 PLATFORM_REFUSED_MAX_PARKS = 5
 
 
@@ -972,7 +972,7 @@ class Tenant:
 
     tenant_id: str
     kind: str                               # "group" | "user"
-    principal: str                          # eng@saga.xyz | alice@saga.xyz
+    principal: str                          # eng@example.com | owner@example.com
     created_at: datetime
     display_name: str | None = None
     max_active: int = 20

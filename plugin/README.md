@@ -30,10 +30,11 @@ The plugin is a **client for your deployment**, not for this repository's.
 Ask your platform operator for three values first: the deployment URL, and —
 for a deployment behind IAP — its Desktop OAuth client ID and secret.
 
-In a Claude Code session:
+In a Claude Code session (`example-org/example-repo` stands for the repository's
+own address, here and below):
 
 ```text
-/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin marketplace add example-org/example-repo
 /plugin install sc@swarmcloud
 ```
 
@@ -65,7 +66,7 @@ uv run sc whoami   # context, URL, you, your tenant
 ```
 
 Outside a checkout, `sc` runs from the same package the server does:
-`uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
+`uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/example-repo@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
 
 `sc login` finds the deployment because the plugin's MCP server writes it to
 your config file when it starts — so start the server first (the `/mcp` line
@@ -111,7 +112,7 @@ state. `tests/unit/mcp/test_plugin_commands.py` now asserts it exists and points
 at a directory that really holds a `plugin.json`.
 
 ```text
-/plugin marketplace add bogdan-alexandrescu/SwarmCloud
+/plugin marketplace add example-org/example-repo
 /plugin install sc@swarmcloud
 ```
 
@@ -139,7 +140,7 @@ root `.mcp.json` registers the bridge anyway.
 `plugin.json` declares the `swarmcloud` MCP server as
 
 ```text
-uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' swarm-mcp
+uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/example-repo@sc-v<version>#subdirectory=apps/swarm-mcp' swarm-mcp
 ```
 
 `uv tool run` builds a cached environment from a requirement and needs no
@@ -180,7 +181,7 @@ commits to four things:
   `path_source` in `crates/uv-distribution/src/metadata/lowering.rs`. Because
   that is a release note and not a documented contract, CI checks it on every
   run: `uv pip compile` of the pinned requirement must resolve swarm-common
-  to `git+https://github.com/bogdan-alexandrescu/SwarmCloud@<the same commit>#subdirectory=apps/common`.
+  to `git+https://github.com/example-org/example-repo@<the same commit>#subdirectory=apps/common`.
 * **Never shorten it to `uvx swarm-mcp`.** PyPI's `swarm-mcp` is an unrelated
   project (a Foursquare Swarm check-in server). The name before ` @ ` binds the
   URL; a bare name is a PyPI lookup.
@@ -260,7 +261,7 @@ Claude Code:
 SWARM_MCP_FROM="$PWD/apps/swarm-mcp" claude
 
 # an unmerged branch
-SWARM_MCP_FROM='swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@<branch>#subdirectory=apps/swarm-mcp' claude
+SWARM_MCP_FROM='swarm-mcp @ git+https://github.com/example-org/example-repo@<branch>#subdirectory=apps/swarm-mcp' claude
 ```
 
 * A working copy is rebuilt when its source changes: `swarm_mcp/**/*.py` is one
@@ -435,7 +436,7 @@ where the bridge runs and reaches the same version of it:
 |---|---|
 | a checkout of this repository (its `.mcp.json`, or a shell inside it) | `uv run swarm tail <id>` |
 | `uv tool install`, with that install's `swarm` on your PATH | `swarm tail <id>` |
-| the plugin, with nothing installed | `uv tool run --from 'swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail <id>` |
+| the plugin, with nothing installed | `uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/example-repo@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail <id>` |
 | the escape hatch, `SWARM_MCP_FROM` | `uv tool run --from <that value> swarm tail <id>` |
 
 The plugin-only row is rebuilt from the install's own record of where it came
@@ -553,7 +554,7 @@ catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
 profile that declares, the API refuses an undeclared key with 422
 `invalid_input` whoever sends it, so the bridge's refusal is only the earlier
 of two identical answers. **`browser` and `generic` declare too**, since
-contract request 32 ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+contract request 32 (#218):
 `browser` takes a `url` and `actions`, and `generic` a required `command`
 from its runner's catalogue, so the bridge sends a browser task its page and
 steps, and refuses a private address, a missing `command` or an action its
@@ -1315,7 +1316,7 @@ it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
 
 ### Layouts: rows, the SwarmCloud pane (SC-BROWSER-BUILD), or the band
 
-BGD asked on 2026-10-25 (#2318) to follow SwarmCloud work from Claude Code
+The owner asked on 2026-10-25 (#2318) to follow SwarmCloud work from Claude Code
 without spending model tokens on it by default, and picked proposal B, Two
 columns, for every frame of the mock-ups (PR 2328). So the plugin has two
 layouts and a toggle, remembered per project:
@@ -1341,7 +1342,7 @@ layouts and a toggle, remembered per project:
 watch` is; it outranks the plugin's `layout` option, and every launch reads
 it, so it switches without restarting the session. Rows already running keep
 going until they end: a plugin cannot stop a /workflows row. So a switch also
-re-attaches (BGD, 2026-10-25, SC-BROWSER-FOLLOWUP): after it saves, the same
+re-attaches (the owner, 2026-10-25, SC-BROWSER-FOLLOWUP): after it saves, the same
 `/sc layout` run goes on as `/sc attach --all`, one chat turn, and rows in the
 new layout start beside the old ones. (The engine refuses `$.command.run`
 inside a `command.run` hook, so the run is rewritten rather than queued twice;
@@ -1353,7 +1354,7 @@ pane drawing "not read yet" with Refresh: no list read until someone presses
 it. Claude Code seats a pane nobody asked for only from 144 terminal columns;
 below that it waits and a one-line toast says so.
 
-Session start also tracks THIS PROJECT's running work (BGD's note of the same
+Session start also tracks THIS PROJECT's running work (the owner's note of the same
 day), at session start only: the SessionStart hook names, beside this
 session's own work, every workflow and single task still running that clones
 this checkout's origin repository, whichever session started it. In the rows
@@ -1373,7 +1374,7 @@ today's `sc:summary` row, are measured in a live session, not here.
 
 ### The third layout: a band above the prompt (SC-BAND)
 
-BGD decided on 2026-10-26 (part of #2318) that the SwarmCloud view moves out
+The owner decided on 2026-10-26 (part of #2318) that the SwarmCloud view moves out
 of the right-docked pane into a HORIZONTAL STRIP ABOVE THE PROMPT, with one
 summary line BELOW the prompt, and that in this layout the plugin starts no
 /workflows rows at all. Why: in Claude Code's fullscreen layout a Pane docks
@@ -1811,7 +1812,7 @@ bootstrap role, storing a key answers 503 and `sc key set` says
 Every secret of a workspace, a person or a registered repository, and the
 GitHub Actions secrets SwarmCloud writes into a repository, is listed and set
 from Config › Secrets ([docs/design/secrets-scopes.md](../docs/design/secrets-scopes.md)
-§6.4; lane SSC-SC). **A value never passes through Claude** (BGD, Q8 of that
+§6.4; lane SSC-SC). **A value never passes through Claude** (the owner, Q8 of that
 design's §11): it is typed into the console form a one-time link opens. No
 tool's schema has a field a value fits in. Every string argument is an enum
 or a narrow pattern, checked by `swarm_mcp/secrets.py` before anything is sent

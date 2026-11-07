@@ -1,5 +1,5 @@
 """`GET /v1/admin/people` marks a platform admin's row, `platform_admin: true`,
-in both reads (lane ROLE-MARK, part of #2391; BGD 2026-10-26, "Mark the
+in both reads (lane ROLE-MARK, part of #2391; the owner 2026-10-26, "Mark the
 source").
 
 Every reader of Admin › People and roles, a workspace admin's scoped read

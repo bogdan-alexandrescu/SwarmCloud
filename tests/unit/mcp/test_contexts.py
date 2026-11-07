@@ -4,7 +4,7 @@ THE DEFECT, as the owner put it on 2026-09-25: "the cluster deployment is now
 set to my account but could be different for other deployments. Shouldn't the
 plugin be configured by the user with the urls and other credentials needed?"
 
-It was. `client.front_door_host()` found https://swarm.saga.xyz by reading
+It was. `client.front_door_host()` found https://swarm.example.com by reading
 `terraform/environments/<env>/<env>.tfvars` out of whatever checkout the bridge
 was installed from. Anyone installing the `sc` plugin against their OWN
 deployment got the owner's load balancer, and anyone outside a checkout got nothing.
@@ -475,7 +475,7 @@ def test_the_bridge_never_opens_a_tfvars_file_outside_developer_mode(
     monkeypatch, tmp_path, store, watch_tfvars
 ):
     """THE DEFECT, pinned. Before this change, constructing a client in a
-    checkout read the owner's tfvars and pointed every user at swarm.saga.xyz.
+    checkout read the owner's tfvars and pointed every user at swarm.example.com.
 
     THE MUTATION THIS CATCHES: remove the `repo_mode()` gate from
     `client.front_door_host`. The hook then records the open and this fails,

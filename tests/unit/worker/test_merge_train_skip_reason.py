@@ -24,7 +24,7 @@ from test_merge_repository_train import COMMENTS, _comments, _parked_on_train, _
 
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "merge-train.sh"
-RUN = "https://github.com/bogdan-alexandrescu/SwarmCloud/actions/runs/41842863519/job/7"
+RUN = "https://github.com/example-org/example-repo/actions/runs/41842863519/job/7"
 
 
 def _skip_comment(head: str, why: str, key: str = "check:queue_for_auto-merge") -> str:

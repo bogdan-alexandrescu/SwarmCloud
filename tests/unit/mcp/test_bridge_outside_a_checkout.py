@@ -63,7 +63,7 @@ _VARS = (
 #: What uv records for `swarm-mcp @ git+https://...@<ref>#subdirectory=...`:
 #: PEP 610's VCS form. There is no directory on this machine to read.
 _FROM_GIT = {
-    "url": "https://github.com/bogdan-alexandrescu/SwarmCloud",
+    "url": "https://github.com/example-org/example-repo",
     "vcs_info": {
         "vcs": "git",
         "requested_revision": "sc-v0.4.1",

@@ -1,7 +1,7 @@
 """A plan naming workflow files is refused unless the registration's
 `workflow_files` switch is on, and held for the owner when it is (#2029).
 
-BGD, 2026-10-22 (WF-APP-TOKEN): the switch replaces `platform: true` + the
+the owner, 2026-10-22 (WF-APP-TOKEN): the switch replaces `platform: true` + the
 `-git-wf` slot as what decides whether workflow files can be pushed.
 
   * Switch OFF -- whatever `platform` says -- a plan naming a workflow file

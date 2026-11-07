@@ -1,6 +1,6 @@
 """The sc plugin warns on a spec step that asks for claude-code-large (part of #2688).
 
-BGD, 6 November 2026, after the 7-day load analysis: every large request came
+the owner, 6 November 2026, after the 7-day load analysis: every large request came
 from a spec sent through the plugin, and measured without page cache 96% of
 the large attempts fit 6 CPU and 16 GiB. The bridge still submits the step as
 written -- a warning, never a refusal -- and its answer names the medium

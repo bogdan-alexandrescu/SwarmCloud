@@ -65,7 +65,7 @@ CI_EXECUTION = f"{JOB}/executions/ci-acceptance"
 @pytest.fixture
 def config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region=REGION,
         firestore_database="swarm",
         heartbeat_grace_seconds=90,
@@ -511,7 +511,7 @@ def test_a_lease_held_briefly_past_its_ttl_is_not_an_error(db, config):
 
 
 def test_the_held_alert_threshold_is_a_setting(monkeypatch):
-    monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
+    monkeypatch.setenv("PROJECT_ID", "example-project")
     monkeypatch.setenv("HELD_LEASE_ALERT_MINUTES", "40")
     assert ReconcilerConfig.from_env().held_lease_alert_minutes == 40
     monkeypatch.delenv("HELD_LEASE_ALERT_MINUTES")

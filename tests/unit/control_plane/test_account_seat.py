@@ -3,13 +3,13 @@
 POOL-DUP-DETECT (#2222, PR 2247) keyed pool-account duplicates on the
 provider organisation alone. That is right for a personal plan -- one
 organisation per person -- and wrong for a Claude Team organisation, where
-every seat has its own limits. Measured 2026-10-25 ~03:50Z: eng:saga-team
-(7-day 61%), eng:aieng-claude1 (7-day 59%), eng:ai-eng-3 and eng:devops-main
+every seat has its own limits. Measured 2026-10-25 ~03:50Z: eng:org-team
+(7-day 61%), eng:aieng-claude1 (7-day 59%), eng:eng-seat-3 and eng:devops-main
 were withheld as `same_subscription_as: ai-eng-2` (7-day 97%), with 104 tasks
 queued behind 8 running agents. One subscription cannot read 61% and 97% in
 the same week.
 
-BGD, 2026-10-25, "Seat-level fix lane, top priority":
+the owner, 2026-10-25, "Seat-level fix lane, top priority":
 
   * two pool accounts are one subscription only when they share the
     organisation AND the login seat. (Its fallback -- an account whose seat is
@@ -70,7 +70,7 @@ def _login() -> dict:
     return {"uuid": _uuid(), "email_address": f"{secrets.token_hex(4)}@example.test"}
 
 
-def _token_payload(org_id: str, *, login: dict | None = None, name: str = "Saga",
+def _token_payload(org_id: str, *, login: dict | None = None, name: str = "Example",
                    kind: str | None = "claude_team") -> dict:
     org = {"uuid": org_id, "name": name}
     if kind is not None:
@@ -124,7 +124,7 @@ def test_the_seat_is_the_login_uuid_hashed_never_the_uuid_or_the_email():
 def test_the_profile_fills_the_seat_the_token_response_left_out():
     org_id, login = _uuid(), _login()
     token = _token_payload(org_id)  # plan named, no login
-    endpoint_answer = {"organization": {"uuid": org_id, "name": "Saga",
+    endpoint_answer = {"organization": {"uuid": org_id, "name": "Example",
                                         "organization_type": "claude_team"},
                        "account": login}
 
@@ -150,7 +150,7 @@ def test_every_refresh_carries_the_seat_it_ran_on():
 
     fresh = refresh(Credential("a", "r", NOW), _Exchange(), now=NOW)
     assert fresh.organisation == Organisation(
-        organisation_identity(org_id), "Saga", "Team", seat_identity(login["uuid"]))
+        organisation_identity(org_id), "Example", "Team", seat_identity(login["uuid"]))
 
 
 # --------------------------------------------------------------------------
@@ -159,18 +159,18 @@ def test_every_refresh_carries_the_seat_it_ran_on():
 
 
 def test_two_seats_of_one_organisation_with_different_readings_are_both_handed_out():
-    """The 03:50Z reading had ai-eng-2 at 97% of its week, saga-team at 61%;
+    """The 03:50Z reading had ai-eng-2 at 97% of its week, org-team at 61%;
     here the older seat still has room, so `choose()` can offer both."""
     team = organisation_identity(_uuid())
     kept = _acct("ai-eng-2", org=team, seat=seat_identity(_uuid()),
                  registered=NOW - timedelta(days=5), week=0.70, five=0.41)
-    seat = _acct("saga-team", org=team, seat=seat_identity(_uuid()),
+    seat = _acct("org-team", org=team, seat=seat_identity(_uuid()),
                  registered=NOW - timedelta(days=1), week=0.61, five=0.0)
-    # MUTATION: grouping on the organisation alone withholds saga-team.
+    # MUTATION: grouping on the organisation alone withholds org-team.
     assert duplicates([kept, seat]) == {}
     first = choose([kept, seat], ENG, NOW)
     second = choose([kept, seat], ENG, NOW, exclude=[first.account_id])
-    assert {first.label, second.label} == {"ai-eng-2", "saga-team"}
+    assert {first.label, second.label} == {"ai-eng-2", "org-team"}
 
 
 def test_two_seats_with_identical_readings_are_still_two_subscriptions():
@@ -211,9 +211,9 @@ def test_no_seat_recorded_and_different_readings_withholds_neither():
 
 def test_no_seat_recorded_and_identical_readings_withholds_neither():
     """DUP-1's fallback paired these and withheld the newer; a reading is not
-    an identity (#3046, BGD 2026-11-02), so it now only flags them."""
+    an identity (#3046, the owner 2026-11-02), so it now only flags them."""
     team = organisation_identity(_uuid())
-    a = _acct("saga-personal", org=team, registered=NOW - timedelta(days=5))
+    a = _acct("org-personal", org=team, registered=NOW - timedelta(days=5))
     b = _acct("team", org=team, registered=NOW - timedelta(days=1))
     # MUTATION: pairing a seatless account by `readings_identical` withholds team.
     assert duplicates([a, b]) == {}
@@ -246,11 +246,11 @@ def test_pool_blockers_stops_naming_an_unpaired_seat_withheld():
     team = organisation_identity(_uuid())
     kept = _acct("ai-eng-2", org=team, seat=seat_identity(_uuid()),
                  registered=NOW - timedelta(days=5), week=0.97)
-    seat = _acct("saga-team", org=team, seat=seat_identity(_uuid()),
+    seat = _acct("org-team", org=team, seat=seat_identity(_uuid()),
                  registered=NOW - timedelta(days=1), week=0.61)
     blockers = {b["account"]: b for b in pool_blockers([kept, seat], NOW, ENG)}
-    # MUTATION: the organisation key names saga-team `same_subscription_as: ai-eng-2`.
-    assert "withheld" not in blockers["saga-team"]
+    # MUTATION: the organisation key names org-team `same_subscription_as: ai-eng-2`.
+    assert "withheld" not in blockers["org-team"]
     assert "withheld" not in blockers["ai-eng-2"]
     # A real pair is still named, as today.
     again = _acct("again", org=team, seat=kept.seat_id, registered=NOW - timedelta(hours=1))
@@ -275,38 +275,38 @@ def test_the_sweep_clears_a_withheld_mark_the_seats_no_longer_support(broker):
     clock = [NOW - timedelta(days=5), NOW - timedelta(days=1)]
     store = AccountStore(broker.db, now=lambda: clock.pop(0) if clock else NOW)
     store.register(ENG, "ai-eng-2")
-    store.register(ENG, "saga-team")
+    store.register(ENG, "org-team")
     org_id = _uuid()
     store.record_organisation("eng:ai-eng-2",
                               organisation_from_payload(_token_payload(org_id, login=_login())))
-    store.record_organisation("eng:saga-team",
+    store.record_organisation("eng:org-team",
                               organisation_from_payload(_token_payload(org_id, login=_login())))
     # The marks POOL-DUP-DETECT's sweep wrote on the organisation alone.
-    store.set_duplicate("eng:ai-eng-2", "eng:saga-team", withheld=False)
-    store.set_duplicate("eng:saga-team", "eng:ai-eng-2", withheld=True)
+    store.set_duplicate("eng:ai-eng-2", "eng:org-team", withheld=False)
+    store.set_duplicate("eng:org-team", "eng:ai-eng-2", withheld=True)
 
     result = _sweep_account_pool(_NoRefresher(), store, NOW)
 
     by_id = {a.account_id: a for a in store.list()}
-    # MUTATION: keeping the organisation key leaves saga-team withheld.
+    # MUTATION: keeping the organisation key leaves org-team withheld.
     assert {(a.duplicate_of, a.duplicate_withheld) for a in by_id.values()} == {(None, False)}
     assert result["duplicates"] == []
 
 
 def test_a_refresh_records_the_seat_and_one_that_cannot_say_never_erases_it(broker):
     store = AccountStore(broker.db)
-    store.register(ENG, "saga-team")
+    store.register(ENG, "org-team")
     org_id, login = _uuid(), _login()
-    store.record_refresh("eng:saga-team", at=NOW, reason="refreshed", expires_at=None,
+    store.record_refresh("eng:org-team", at=NOW, reason="refreshed", expires_at=None,
                          organisation=organisation_from_payload(
                              _token_payload(org_id, login=login)))
-    assert store.get("eng:saga-team").seat_id == seat_identity(login["uuid"])
-    store.record_refresh("eng:saga-team", at=NOW, reason="refreshed", expires_at=None,
+    assert store.get("eng:org-team").seat_id == seat_identity(login["uuid"])
+    store.record_refresh("eng:org-team", at=NOW, reason="refreshed", expires_at=None,
                          organisation=organisation_from_payload(_token_payload(org_id)))
-    assert store.get("eng:saga-team").seat_id == seat_identity(login["uuid"])
+    assert store.get("eng:org-team").seat_id == seat_identity(login["uuid"])
     # Re-registering (a change of loans) carries the seat over.
-    store.register(ENG, "saga-team", lend_to=[RESEARCH])
-    assert store.get("eng:saga-team").seat_id == seat_identity(login["uuid"])
+    store.register(ENG, "org-team", lend_to=[RESEARCH])
+    assert store.get("eng:org-team").seat_id == seat_identity(login["uuid"])
 
 
 # --------------------------------------------------------------------------
@@ -350,7 +350,7 @@ def broker_app(broker, monkeypatch):
 
     monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@p.iam.gserviceaccount.com")
+    monkeypatch.setenv("BROKER_SERVICE_ACCOUNT", "swarm-quota-broker@example-project.iam.gserviceaccount.com")
     monkeypatch.setenv("WORKER_SERVICE_ACCOUNT_TEMPLATE",
                        "swarm-agent-worker-{tenant}@p.iam.gserviceaccount.com")
     app = create_app(broker, identity=_Identity(), account_store=AccountStore(broker.db))
@@ -378,12 +378,12 @@ def test_a_second_team_seat_registers_and_is_handed_out(broker_app, broker_clien
     assert _add(broker_client, broker_app, _token_payload(org_id, login=_login()),
                 label="ai-eng-2").status_code == 201
     second = _add(broker_client, broker_app, _token_payload(org_id, login=_login()),
-                  label="saga-team")
+                  label="org-team")
     # MUTATION: refusing on the organisation alone turns away a seat with its own quota.
     assert second.status_code == 201, second.text
     listed = broker_client.get("/v1/accounts").json()["accounts"]
     assert {a["label"]: a["duplicate_of"] for a in listed} == {
-        "ai-eng-2": None, "saga-team": None}
+        "ai-eng-2": None, "org-team": None}
     assert not any(a.duplicate_withheld for a in AccountStore(broker.db).list())
 
 
@@ -395,7 +395,7 @@ def test_the_same_seat_again_is_refused_and_a_re_sign_in_onto_its_own_account_is
                 label="ai-eng-2").status_code == 201
     secrets_before = dict(broker_app.state.secret_store.created)
 
-    again = _add(broker_client, broker_app, _token_payload(org_id, login=login), label="ai-eng-3")
+    again = _add(broker_client, broker_app, _token_payload(org_id, login=login), label="eng-seat-3")
     assert again.status_code == 422, again.text
     assert "ai-eng-2" in again.json()["message"]
     assert broker_app.state.secret_store.created == secrets_before
@@ -416,7 +416,7 @@ def test_the_same_seat_in_another_workspace_is_refused_naming_nothing_of_theirs(
     assert other.status_code == 422, other.text
     assert "already registered in another workspace" in other.json()["message"]
     for foreign in ("mine", "eng:", login["uuid"], login["email_address"],
-                    seat_identity(login["uuid"]), org_id, "Saga"):
+                    seat_identity(login["uuid"]), org_id, "Example"):
         assert foreign not in other.text, foreign
     # Another seat of that organisation, from the other workspace, is not refused:
     # a refusal answers only for the seat the caller itself signed in as.

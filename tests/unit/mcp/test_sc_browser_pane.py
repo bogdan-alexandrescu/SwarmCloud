@@ -1,6 +1,6 @@
 """The sc plugin's SwarmCloud pane draws proposal B and reads only on a click (SC-BROWSER-BUILD, #2318).
 
-BGD picked proposal B, Two columns, for every frame on 2026-10-25 (PR 2328).
+the owner picked proposal B, Two columns, for every frame on 2026-10-25 (PR 2328).
 The pane is a Claude Code mod (plugin/hooks/pane.tsx); everything it draws and
 everything a click reads is plugin/hooks/pane/model.ts, which these tests run
 under plain node -- Node 24 strips its types -- with no engine, no network and
@@ -197,7 +197,7 @@ def test_drawing_reads_nothing_and_the_module_starts_no_timer_and_reaches_no_mod
         for forbidden in ("$.clock.after", "$.clock.sleep", "setTimeout", "setInterval",
                           "$.model.", "$.agent.", "$.prompt.submit", "$.tool."):
             assert forbidden not in source, f"{forbidden} would read on a timer or reach the model"  # MUTATION: a 30 s refresh timer.
-    # THE ONE TIMER IS THE BAND'S (SC-BAND, BGD 2026-10-26: "re-reads ... every
+    # THE ONE TIMER IS THE BAND'S (SC-BAND, the owner 2026-10-26: "re-reads ... every
     # 60 s ... stop when nothing runs"): the model has none, and the module's
     # one `$.clock.every` is `startMinute`'s, called only from `afterList`,
     # which returns at once unless the band is on -- so the pane layout, and

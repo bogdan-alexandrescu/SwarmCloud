@@ -43,7 +43,7 @@ from swarm_common.states import TaskState
 @pytest.fixture
 def reconciler_config() -> ReconcilerConfig:
     return ReconcilerConfig(
-        project_id="saga-agents-staging",
+        project_id="example-project",
         region="us-central1",
         firestore_database="swarm",
         heartbeat_grace_seconds=90,

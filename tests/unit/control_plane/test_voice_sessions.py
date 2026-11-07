@@ -730,7 +730,7 @@ def pinned(db, tokens, group_map, objects, voice) -> TestClient:
 
 
 def test_the_start_sends_the_settings_planner_and_conversation_models(pinned, db, voice):
-    """BGD, 6 November 2026 ('wire-in-follow-up', 'front-reads-it'): the
+    """the owner, 6 November 2026 ('wire-in-follow-up', 'front-reads-it'): the
     planner class's pin and the conversation model's id, read at the start.
     A change reaches the next session's start, never the one already started."""
     client = pinned
@@ -760,7 +760,7 @@ def test_unset_or_unlisted_models_are_none_so_swarm_voice_keeps_its_pins(pinned,
 
 def test_the_planner_pin_is_swarm_apis_own_class_models_not_the_environment(
         db, tokens, group_map, objects, voice, monkeypatch):
-    """BGD, 6 November 2026: the voice route builds its sessions with
+    """the owner, 6 November 2026: the voice route builds its sessions with
     `Settings.worker_class_models`, the map every other swarm-api caller
     reads, never a second read of WORKER_CLASS_MODELS. The environment here
     pins `opus` to one model and the settings to another: the settings' wins."""

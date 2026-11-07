@@ -1,4 +1,4 @@
-"""A quality-check run says which leg it is and what it does (BGD, 2026-11-04).
+"""A quality-check run says which leg it is and what it does (the owner, 2026-11-04).
 
 Every leg of one target was titled `Visual QA: <target>`, so in the console
 the reviewer and moderator legs read alike, and none said what it was meant
@@ -28,7 +28,7 @@ def _login() -> dict[str, Any]:
             "start_clicks": [{"text": "Sign in"}]}
 
 
-def _target(name: str = "ai-studio") -> dict[str, Any]:
+def _target(name: str = "peer-app") -> dict[str, Any]:
     return {
         "id": "qat_3f9a", "revision": 4, "name": name, "tenant_id": "tenant-a",
         "repository": "https://github.com/example-org/studio",
@@ -60,7 +60,7 @@ def test_each_leg_is_titled_with_its_role_and_environment(leg, title):
 def test_a_target_that_is_its_own_one_leg_names_its_environment():
     flat = {k: v for k, v in _target().items() if k != "environments"}
     flat.update(base_url="https://staging.example.com", environment="non_production", sign_in={"kind": "none"})
-    assert qaspec.render(flat, file="none")["title"] == "Visual QA: staging, ai-studio"
+    assert qaspec.render(flat, file="none")["title"] == "Visual QA: staging, peer-app"
 
 
 def test_two_legs_of_one_target_read_apart():
@@ -72,10 +72,10 @@ def test_two_legs_of_one_target_read_apart():
 def test_a_leg_carries_a_description_and_its_feature():
     spec = qaspec.render(_leg("stg-moderator"), file="issues")
     description = spec["description"]
-    assert description.startswith("Visual QA of ai-studio signed in as moderator on staging.")
+    assert description.startswith("Visual QA of peer-app signed in as moderator on staging.")
     assert "1 capture group screenshot its screens" in description
     assert "files the new ones as GitHub issues" in description
-    assert spec["feature"] == {"title": "Quality check of ai-studio"}
+    assert spec["feature"] == {"title": "Quality check of peer-app"}
     assert "nothing is filed" in qaspec.render(_leg("stg-moderator"), file="none")["description"]
 
 
@@ -86,14 +86,14 @@ def test_a_discovery_run_is_titled_and_described_by_its_leg():
     spec = qaspec.render_discovery(_leg("stg-moderator", target))
     assert spec["title"] == "Discovery: moderator, staging"
     assert "lists the same-origin screens" in spec["description"]
-    assert spec["feature"] == {"title": "Quality check of ai-studio"}
+    assert spec["feature"] == {"title": "Quality check of peer-app"}
 
 
 def test_the_run_body_carries_them_and_the_api_accepts_it():
     body, _mark, _browser = render_run(_leg("stg-moderator"), screens=None, file="none")
     metadata = body["metadata"]
     assert metadata["title"] == "Visual QA: moderator, staging"
-    assert metadata["feature"] == {"title": "Quality check of ai-studio"}
+    assert metadata["feature"] == {"title": "Quality check of peer-app"}
     created = WorkflowCreate.model_validate(body)
     assert created.metadata["description"] == metadata["description"]
     assert created.metadata["description_source"] == "submitter"

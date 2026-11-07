@@ -1034,13 +1034,13 @@ def test_a_desktop_capture_keeps_a_budget_its_route_names_and_says_when_it_cut(q
     assert entry["truncated"] is True and entry["reached"] == 4 * 900 and entry["total"] == 9 * 900, entry
     assert qa.segment_budget({"segments": 4}, "desktop") == 4
     # QA-CAPTURE-REVIEWABLE-TALL: a route that names no budget is captured to
-    # its end at the desktop too (AI Studio's /docs, about 49,600 px there).
+    # its end at the desktop too (A peer application's /docs, about 49,600 px there).
     assert qa.segment_budget({}, "desktop") == qa.MAX_SEGMENTS
     assert qa.segment_budget({"segments": 3}, "phone-390") == qa.MAX_SEGMENTS
 
 
 def test_the_380_phone_is_captured_to_the_end_as_the_390_one_is(qa):
-    """PHONE-380 (BGD 2026-10-26, part of #2136): AI Studio's 380 x 800 phone
+    """PHONE-380 (the owner 2026-10-26, part of #2136): A peer application's 380 x 800 phone
     frame is a phone at least as tall per page as phone-390, so owner decision
     c49's reason -- phone captures stopped at their budget before the page
     ended -- holds for it too."""
@@ -1569,7 +1569,7 @@ def test_the_dom_change_counter_runs_in_a_page(qa):
     assert _run_js(qa.DOM_CHANGES_JS, dom, None) == [0, None]
 
 
-# VQ5-PERSONA (part of #1933; BGD, 2026-10-22 07:07Z: "Skip it when no route
+# VQ5-PERSONA (part of #1933; the owner, 2026-10-22 07:07Z: "Skip it when no route
 # names a persona and --settle generic"): PERSONA_COOKIE is the console
 # fixture's, so someone else's app is not handed it.
 
@@ -2204,14 +2204,14 @@ def test_a_shot_at_a_scale_of_one_is_still_checked_against_the_viewport(qa):
 
 
 # --------------------------------------------------------------------------
-# QA-CAPTURE-REVIEWABLE-TALL (part of #2688): AI Studio's staging run of
+# QA-CAPTURE-REVIEWABLE-TALL (part of #2688): A peer application's staging run of
 # 2026-11-04 captured only the sign-in chooser on one leg and read reviewable,
 # and cut its /docs page (about 49,600 px at the desktop, 65,300 px at 390 px)
 # at the segment cap
 # --------------------------------------------------------------------------
 
 #: What the run's chooser read: a choice shown before any login form.
-CHOOSER = "Sign in to AI Studio\nChoose where to sign in\nStaging\nProduction"
+CHOOSER = "Sign in to a peer application\nChoose where to sign in\nStaging\nProduction"
 
 
 def _gate_sign_in(qa, world, monkeypatch, state: str, cause: str | None) -> None:

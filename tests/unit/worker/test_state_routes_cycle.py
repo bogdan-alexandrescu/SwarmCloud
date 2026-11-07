@@ -39,7 +39,7 @@ DIGEST = "cd" * 32
 REPO_URL = "https://github.com/acme/widgets.git"
 NEXT_ATTEMPT = "att_remote_2"
 NEXT_LEASE = "lease_remote_2"
-CHECKPOINT = f"gs://bucket/tenants/{TENANT}/tasks/{TASK}/attempts/{ATTEMPT}/checkpoints/c1/"
+CHECKPOINT = f"gs://swarm-artifacts-example-project/tenants/{TENANT}/tasks/{TASK}/attempts/{ATTEMPT}/checkpoints/c1/"
 
 
 @pytest.fixture

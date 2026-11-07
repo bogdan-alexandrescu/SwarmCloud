@@ -1,6 +1,6 @@
 """`swarm_task_answers` and `swarm_task_answer`'s `reply`: answers recorded at fold-time cost.
 
-AI Studio's request on BGD's decision of 6 November 2026 (part of #2688):
+A peer application's request on the owner's decision of 6 November 2026 (part of #2688):
 about 404 questions on about 189 finished tasks are closed as moot, and each
 `swarm_task_answer` reply served the whole task's questions (about 4,000
 tokens). These tests hold the bridge to:

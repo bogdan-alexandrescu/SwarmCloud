@@ -312,7 +312,7 @@ def test_an_artifact_recorded_outside_the_tenant_prefix_is_refused(db, worker_fa
         {
             "name": "summary.md",
             "bytes": 4,
-            "uri": "gs://bucket/tenants/another-tenant/tasks/task_up/attempts/a/artifacts/summary.md",
+            "uri": "gs://swarm-artifacts-example-project/tenants/another-tenant/tasks/task_up/attempts/a/artifacts/summary.md",
         }
     ]
     seed_downstream(db, {"task_up": "summary.md"})
@@ -760,7 +760,7 @@ def test_a_truthful_manifest_still_stages_at_exactly_the_cap(db, store, tmp_path
 def test_a_genuinely_empty_artifact_still_stages(db, store, tmp_path, log_stream):
     """Zero is a real size, and refusing it would be a regression on real data.
 
-    A read-only survey of saga-agents-staging on 2026-09-22 (57 SUCCEEDED
+    A read-only survey of example-project on 2026-09-22 (57 SUCCEEDED
     tasks, 129 manifest entries) found `bytes` ranging from 0 to 25560, so
     zero-byte artifacts exist in production today. The refusal in
     `artifact_reference` is `size < 0`, not `size <= 0`, for exactly that

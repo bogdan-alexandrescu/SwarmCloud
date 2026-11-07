@@ -64,13 +64,13 @@ The eight numbered files above are the feature specification — what could be
 built, and what blocks each screen. Four more files answer different questions
 and are read on their own:
 
-* Issue runs (#454) — the issue form and `Work › Runs` are
+* Issue runs — the issue form and `Work › Runs` are
   [03-agents-and-workflows.md §6](03-agents-and-workflows.md#6-issue-runs-submit-from-a-github-issue-and-work--runs-454);
   why runs work as they do is [docs/issue-runs.md](../issue-runs.md).
 
 * [`agent-inspector-artifacts.md`](agent-inspector-artifacts.md) — the agent
   drawer's Artifacts pane (inputs, the answer, every file, logs and the
-  transcript, live) and the CPU rows in Details (#184): where each figure comes
+  transcript, live) and the CPU rows in Details: where each figure comes
   from, why every byte goes through the API, and what the pane cannot show.
 
 * [`redesign.md`](redesign.md) — the information architecture: what the sections
@@ -356,6 +356,6 @@ is under `/v1`.
 | Account-to-agent assignment: call choose() at admission, record the assignment on the lease, install the account credential in the | accounts | large |
 | TaskEvent needs an `expires_at` field, or the events TTL must be withdrawn. indexes.tf configures a Firestore TTL on events using  | alerts-errors | small |
 | Optional: a denormalised attempts_exhausted boolean on Agent, so 'failures that need a human' becomes a server-side query instead o | alerts-errors | small |
-| Apply contract-change request #2 (docs/contract-change-requests.md:100): add optional input_tokens, output_tokens, cache_read_inpu | user-activity | large |
+| Apply contract-change request 2 (docs/contract-change-requests.md:100): add optional input_tokens, output_tokens, cache_read_inpu | user-activity | large |
 | Contract change REQUEST (never an edit): type runner_profile and resource_class on Attempt, as optional fields defaulting to None. | operator-gaps | small |
 | Accept a list of token audiences. Settings.api_audience is a single string and GoogleTokenVerifier takes audience: str, but a brow | reachability | small |

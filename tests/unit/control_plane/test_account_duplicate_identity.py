@@ -1,7 +1,7 @@
 """A duplicate is decided by the provider's own identity, never by a resemblance (#3046).
 
 On the night of 24 to 25 October 2026 (01:00-04:45Z) the pool withheld
-eng:aieng-claude1 and eng:saga-team -- and eng:ai-eng-3 and eng:devops-main --
+eng:aieng-claude1 and eng:org-team -- and eng:eng-seat-3 and eng:devops-main --
 as `same_subscription_as: ai-eng-2` while ai-eng-2 read 97% of its week and 46
 steps waited. They were distinct seats of one Team organisation, and the rule
 then in force (POOL-DUP-DETECT, #2222) keyed a subscription on the
@@ -9,7 +9,7 @@ organisation alone. #2282 added the seat, but kept a fallback: two accounts on
 one organisation whose seat is not recorded yet were paired by IDENTICAL
 READINGS, and the newer was withheld. A usage reading is not an identity.
 
-BGD, 2026-11-02:
+the owner, 2026-11-02:
 
   * a duplicate is decided only by an identity the provider reports for the
     subscription and that is stable -- the organisation AND the seat, both
@@ -76,13 +76,13 @@ def test_two_accounts_with_different_identities_and_one_spent_are_both_offered()
     team = organisation_identity(_uuid())
     spent = _acct("ai-eng-2", org=team, seat=seat_identity(_uuid()),
                   registered=NOW - timedelta(days=5), week=0.97, five=0.41)
-    other = _acct("saga-team", org=team, seat=seat_identity(_uuid()),
+    other = _acct("org-team", org=team, seat=seat_identity(_uuid()),
                   registered=NOW - timedelta(days=1), week=0.61)
     assert duplicates([spent, other]) == {}
     picked = {choose([spent, other], ENG, NOW, assign_floor=0.0).label,
               choose([spent, other], ENG, NOW, assign_floor=0.0,
-                     exclude=["eng:saga-team"]).label}
-    assert picked == {"ai-eng-2", "saga-team"}
+                     exclude=["eng:org-team"]).label}
+    assert picked == {"ai-eng-2", "org-team"}
 
 
 def test_two_accounts_with_the_same_identity_are_held_together():
@@ -105,7 +105,7 @@ def test_an_account_with_no_seat_reading_is_offered_even_with_identical_readings
     assert duplicates([kept, unknown]) == {}
     assert choose([kept, unknown], ENG, NOW, exclude=["eng:ai-eng-2"]).label == "aieng-claude1"
     # Neither seat recorded: the same.
-    both = _acct("ai-eng-3", org=team, registered=NOW - timedelta(days=4))
+    both = _acct("eng-seat-3", org=team, registered=NOW - timedelta(days=4))
     assert duplicates([both, unknown]) == {}
     # No organisation either.
     bare = _acct("devops-main", registered=NOW - timedelta(days=2))
@@ -118,30 +118,30 @@ def test_a_stored_mark_on_an_account_with_no_identity_does_not_withhold_it(broke
     """Marks the readings fallback wrote, until the next sweep clears them."""
     team = organisation_identity(_uuid())
     kept = _acct("ai-eng-2", org=team, registered=NOW - timedelta(days=5), week=0.97)
-    marked = _acct("saga-team", org=team, registered=NOW - timedelta(days=1),
+    marked = _acct("org-team", org=team, registered=NOW - timedelta(days=1),
                    withheld_mark="eng:ai-eng-2")
-    # MUTATION: honouring every stored `duplicate_withheld` keeps saga-team out.
-    assert choose([kept, marked], ENG, NOW, exclude=["eng:ai-eng-2"]).label == "saga-team"
+    # MUTATION: honouring every stored `duplicate_withheld` keeps org-team out.
+    assert choose([kept, marked], ENG, NOW, exclude=["eng:ai-eng-2"]).label == "org-team"
     assert all("withheld" not in b for b in pool_blockers([kept, marked], NOW, ENG))
     assert account_to_api(marked, now=NOW)["can_take_new_agent"] is True
 
     # And the hold transaction, which reads the raw document, agrees.
     store = AccountStore(broker.db)
-    store.register(ENG, "saga-team")
-    store.record_reading("eng:saga-team", {
+    store.register(ENG, "org-team")
+    store.record_reading("eng:org-team", {
         "five_hour": WindowReading(0.05, FIVE_RESET)}, NOW)
-    store.set_duplicate("eng:saga-team", "eng:ai-eng-2", withheld=True)
-    assert acquire_hold(broker.db, "eng:saga-team", tenant_id=ENG, now=NOW) is not None
+    store.set_duplicate("eng:org-team", "eng:ai-eng-2", withheld=True)
+    assert acquire_hold(broker.db, "eng:org-team", tenant_id=ENG, now=NOW) is not None
 
 
 def test_a_stored_mark_the_listed_partner_no_longer_shares_does_not_withhold():
     team = organisation_identity(_uuid())
     kept = _acct("ai-eng-2", org=team, seat=seat_identity(_uuid()),
                  registered=NOW - timedelta(days=5), week=0.97)
-    seat = _acct("saga-team", org=team, seat=seat_identity(_uuid()),
+    seat = _acct("org-team", org=team, seat=seat_identity(_uuid()),
                  registered=NOW - timedelta(days=1), withheld_mark="eng:ai-eng-2")
     # MUTATION: the organisation-only mark, left until the sweep, withholds it.
-    assert choose([kept, seat], ENG, NOW, exclude=["eng:ai-eng-2"]).label == "saga-team"
+    assert choose([kept, seat], ENG, NOW, exclude=["eng:ai-eng-2"]).label == "org-team"
 
 
 def test_a_stored_mark_on_a_known_identity_whose_partner_is_not_listed_still_withholds():
@@ -193,14 +193,14 @@ def test_an_add_with_no_seat_is_never_held_on_an_existing_seatless_account(broke
     clock = [NOW - timedelta(days=5), NOW - timedelta(days=1)]
     store = AccountStore(broker.db, now=lambda: clock.pop(0) if clock else NOW)
     store.register(ENG, "ai-eng-2")
-    store.register(ENG, "saga-team")
+    store.register(ENG, "org-team")
     shared = Organisation(identity=organisation_identity(_uuid()), name="Team", plan="Team")
     store.record_organisation("eng:ai-eng-2", shared)
-    store.record_organisation("eng:saga-team", shared)
-    for account_id in ("eng:ai-eng-2", "eng:saga-team"):
+    store.record_organisation("eng:org-team", shared)
+    for account_id in ("eng:ai-eng-2", "eng:org-team"):
         store.record_reading(account_id, {
             "five_hour": WindowReading(0.05, FIVE_RESET),
             "seven_day": WindowReading(0.40, WEEK_RESET)}, NOW)
-    # MUTATION: the readings fallback marks saga-team withheld here.
+    # MUTATION: the readings fallback marks org-team withheld here.
     assert mark_duplicates(store) == []
     assert {(a.duplicate_of, a.duplicate_withheld) for a in store.list()} == {(None, False)}
