@@ -76,6 +76,7 @@ import { CardList, FIXTURE_CARDS, applyStreamEvent, EMPTY_LIST, type VoiceCard }
 import { CARD_KINDS } from '../voice/cards'
 import { TalkPane } from '../voice/Talk'
 import { applyCaption, captionEvent, type CaptionLine } from '../voice/captions'
+import { connectTalk } from '../voice/rtc'
 
 const SESSION = 'vs-0001'
 
@@ -215,6 +216,30 @@ describe('the Talk pane', () => {
     await settle(act)
     await start()
     expect(starts()[1]?.[2]).toEqual({ offer_sdp: 'v=0 fake-offer' })
+  })
+
+  it("keeps a new session's project_id on the call, and the stage reads that project's visuals", async () => {
+    const project = 'vp_' + '9'.repeat(32)
+    fetchMock.write.mockImplementation(async (target: { url: string }) =>
+      target.url === '/v1/voice/sessions'
+        ? { status: 'ok', data: { project_id: project, session_id: SESSION, answer_sdp: 'v=0 fake-answer' }, fetchedAt: Date.now() }
+        : { status: 'ok', data: null, fetchedAt: Date.now() },
+    )
+    const call = await connectTalk({ onEvent: () => undefined, onVoice: () => undefined, onDropped: () => undefined })
+    expect(call.projectId).toBe(project)
+    call.hangUp()
+
+    const reads = vi.fn(async () => new Response(JSON.stringify({ visuals: [] }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', reads)
+    try {
+      render(<TalkPane />)
+      await start()
+      await settle(act)
+      const urls = reads.mock.calls.map((c) => String((c as unknown[])[0]))
+      expect(urls).toContain(`/v1/voice/projects/${project}/visuals`)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('keeps the resumed project for the next try when the first start is refused', async () => {
