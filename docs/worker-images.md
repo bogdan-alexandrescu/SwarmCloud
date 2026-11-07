@@ -6,7 +6,7 @@ scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
 | image | built from | carries | runs |
 |---|---|---|---|
-| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser`, `indexer` and `claude-code-lightpanda`: `mock`, `generic`, `claude-code`, `claude-code-large`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
+| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser`, `indexer` and `claude-code-lightpanda`: `mock`, `generic`, `claude-code`, `claude-code-large`, `claude-code-medium`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
 | `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` and `claude-code-browser` (contract request 67, accepted by the owner 2026-10-11), both on GKE Autopilot |
 | `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source, #661), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
 | `agent-runtime-lightpanda` | `agent-runtime-base` by digest | the Lightpanda 1.0.2 headless browser, at `/opt/swarm/lightpanda/lightpanda`, and its licence notices; no Chromium | `claude-code-lightpanda` (contract request 127, accepted by the owner 2026-10-31), on GKE Autopilot ([below](#the-agent-runtime-lightpanda-image-contract-request-127)) |
@@ -169,6 +169,7 @@ fails when a profile's backend moves and this table does not.
 | `browser` | `GKE_AUTOPILOT` | none: Chromium needs the `/dev/shm` GKE gives it |
 | `claude-code-browser` | `GKE_AUTOPILOT` | none: it runs the browser image, for the same `/dev/shm` (contract request 67) |
 | `claude-code-large` | `GKE_AUTOPILOT` | none: born on GKE (contract request 113, 2026-10-22), `claude-code` on the `large` class (8 CPU, 32 GiB) with a 14,400 s timeout, so it has no rollback Job |
+| `claude-code-medium` | `GKE_AUTOPILOT` | none: born on GKE (contract request 147, 2026-11-06), `claude-code` on the `medium` class (6 CPU, 16 GiB), so it has no rollback Job |
 | `claude-code-lightpanda` | `GKE_AUTOPILOT` | none: born on GKE (contract request 127, 2026-10-31), `claude-code` on the `agent-runtime-lightpanda` image and the `standard` class, so it has no rollback Job |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
 | `generic` | `GKE_AUTOPILOT` | none used: since contract request 64 (2026-10-10, #939 option A); each tenant's old Job (one per tenant, no provider) is kept idle as the rollback |

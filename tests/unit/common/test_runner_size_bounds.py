@@ -86,7 +86,7 @@ def test_the_frozen_bounds_are_the_designs():
     assert (profiles.MEMORY_PER_CPU_MIN, profiles.MEMORY_PER_CPU_MAX) == (1.0, 6.5)
     assert profiles.LIVE_WORKER_MIN == (1, 2)
     assert profiles.LIVE_DISPLAY_MIN == (1, 5)
-    assert profiles.CLASS_ORDER == ("standard", "browser", "large")
+    assert profiles.CLASS_ORDER == ("standard", "browser", "medium", "large")
     assert set(profiles.CLASS_ORDER) == set(RESOURCE_CLASSES)
 
 
@@ -99,7 +99,7 @@ def test_units_for(cpu_request, memory_gib, expected):
     assert units_for(cpu_request, memory_gib) == expected
 
 
-@pytest.mark.parametrize("name,expected", [("standard", 1), ("browser", 1), ("large", 4)])
+@pytest.mark.parametrize("name,expected", [("standard", 1), ("browser", 1), ("medium", 2), ("large", 4)])
 def test_units_for_reproduces_todays_classes(name, expected):
     rc = RESOURCE_CLASSES[name]
     # MUTATION: change a class's `units` and both halves fail; the import-time
@@ -245,10 +245,11 @@ def test_equal_neighbouring_classes_are_accepted():
 
 def test_a_larger_class_smaller_than_the_one_below_is_refused():
     browser = default_sizes()["browser"]
-    large = _size(4, 8, 8, 3)  # disk 3 < browser's 4; cpu and memory equal it
-    refusals = check_size(_table(large=large))
+    # medium is the class above browser since contract request 147.
+    medium = _size(4, 8, 8, 3)  # disk 3 < browser's 4; cpu and memory equal it
+    refusals = check_size(_table(medium=medium))
     assert browser.disk_gib == 4
-    assert [r for r in _refused(refusals, "large", "disk_gib") if "browser" in r.bound], refusals
+    assert [r for r in _refused(refusals, "medium", "disk_gib") if "browser" in r.bound], refusals
 
 
 def test_the_default_live_split_is_accepted():

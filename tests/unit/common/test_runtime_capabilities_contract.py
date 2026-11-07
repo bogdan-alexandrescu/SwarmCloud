@@ -33,11 +33,12 @@ PROFILES_PY = Path(profiles.__file__)
 #: managed plugin. The runtimes are the design's closed list (section 5).
 PLUGIN_CAPABILITIES = ("claude_plugins", "node", "bun", "python3", "bash")
 
-#: The five profiles whose runner is the claude-code runner, as swarm-api's
+#: The six profiles whose runner is the claude-code runner, as swarm-api's
 #: plugin catalogue names them.
 CLAUDE_CODE_PROFILES = (
     "claude-code",
     "claude-code-large",
+    "claude-code-medium",
     "claude-code-review",
     "claude-code-browser",
     "claude-code-lightpanda",
@@ -75,7 +76,7 @@ def test_the_five_claude_code_profiles_provide_the_plugin_runtimes():
             if p.runtime_capabilities} == {n: PLUGIN_CAPABILITIES for n in CLAUDE_CODE_PROFILES}
 
 
-def test_the_five_are_the_plugin_catalogues_profiles():
+def test_the_six_are_the_plugin_catalogues_profiles():
     from swarm_api import plugincatalogue
 
     assert plugincatalogue.CLAUDE_CODE_PROFILES == CLAUDE_CODE_PROFILES

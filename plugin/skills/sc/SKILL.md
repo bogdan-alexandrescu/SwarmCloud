@@ -869,6 +869,14 @@ this session supplies.
    [Arming the watch](#arming-the-watch) (the attach would arm it anyway, and
    step 1 there makes sure only once).
 
+### Runner size
+
+Start a step at `claude-code` (the standard class). Name
+`claude-code-medium` (6 CPU, 16 GiB) only for a step that was OOM-killed or
+ran out of time there, and `claude-code-large` only for one that failed on
+medium: 96% of large attempts fit medium (7 days to 6 November 2026). A
+large step is still submitted; relay the answer's `warnings` line.
+
 ### Model classes
 
 A step picks the model it runs by **class**, by name (#1435): `opus` (the
